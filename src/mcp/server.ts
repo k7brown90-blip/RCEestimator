@@ -745,14 +745,6 @@ function createMcpServer(): McpServer {
 // ─── EXPRESS MOUNT ───────────────────────────────────────────────────────────
 
 const transports: Record<string, StreamableHTTPServerTransport> = {};
-let mcpServer: McpServer | null = null;
-
-function getMcpServer(): McpServer {
-  if (!mcpServer) {
-    mcpServer = createMcpServer();
-  }
-  return mcpServer;
-}
 
 export async function handleMcpPost(req: Request, res: Response): Promise<void> {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
@@ -777,7 +769,8 @@ export async function handleMcpPost(req: Request, res: Response): Promise<void> 
         }
       };
 
-      const server = getMcpServer();
+      // Create a fresh McpServer per session to avoid "already connected" errors
+      const server = createMcpServer();
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
       return;
