@@ -12,6 +12,12 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
     return;
   }
 
+  // Skip non-API requests (static files, SPA routes) so login page loads
+  if (!(req as Request & { _isApi?: boolean })._isApi) {
+    next();
+    return;
+  }
+
   // Skip auth for health, PIN login, and MCP endpoints
   if (
     req.path === "/health" ||

@@ -13,11 +13,19 @@ const service = new EstimateService(prisma);
 const REMOVED_ASSEMBLY_NUMBERS = [39, 61, 62, 88] as const;
 
 export const app = express();
+
+// ─── SERVE CLIENT STATIC FILES (before auth, so login page loads) ────────────
+const clientDist = path.join(__dirname, "..", "client", "dist");
+if (fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+}
+
 app.use(express.json({ limit: "1mb" }));
 
-// Strip /api prefix so routes work both with and without it (production vs dev proxy)
-app.use((req, _res, next) => {
+// Strip /api prefix and mark as API request
+app.use((req: express.Request & { _isApi?: boolean }, _res, next) => {
   if (req.path.startsWith("/api/") || req.path === "/api") {
+    req._isApi = true;
     req.url = req.url.replace(/^\/api/, "") || "/";
   }
   next();
@@ -1565,11 +1573,10 @@ app.post("/api/chatkit/message", asyncHandler(async (req, res) => {
   res.json({ reply });
 }));
 
-// ─── SERVE CLIENT IN PRODUCTION ──────────────────────────────────────────────
-const clientDist = path.join(__dirname, "..", "client", "dist");
+// ─── SPA CATCH-ALL (skip API requests) ───────────────────────────────────────
 if (fs.existsSync(clientDist)) {
-  app.use(express.static(clientDist));
-  app.get("{*splat}", (_req, res) => {
+  app.get("{*splat}", (req: express.Request & { _isApi?: boolean }, res, next) => {
+    if (req._isApi) { next(); return; }
     res.sendFile(path.join(clientDist, "index.html"));
   });
 }
