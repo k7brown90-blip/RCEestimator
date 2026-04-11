@@ -15,7 +15,8 @@ const REMOVED_ASSEMBLY_NUMBERS = [39, 61, 62, 88] as const;
 export const app = express();
 
 // ─── SERVE CLIENT STATIC FILES (before auth, so login page loads) ────────────
-const clientDist = path.join(__dirname, "..", "client", "dist");
+// At runtime __dirname is dist/src/, so go up two levels to reach app root
+const clientDist = path.join(__dirname, "..", "..", "client", "dist");
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
 }
