@@ -15,6 +15,14 @@ const REMOVED_ASSEMBLY_NUMBERS = [39, 61, 62, 88] as const;
 export const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+// Strip /api prefix so routes work both with and without it (production vs dev proxy)
+app.use((req, _res, next) => {
+  if (req.path.startsWith("/api/") || req.path === "/api") {
+    req.url = req.url.replace(/^\/api/, "") || "/";
+  }
+  next();
+});
+
 // ─── MCP ENDPOINT ────────────────────────────────────────────────────────────
 const mcpBearerToken = process.env.MCP_BEARER_TOKEN;
 const mcpAuth: express.RequestHandler = (req, res, next) => {
@@ -1556,6 +1564,15 @@ app.post("/api/chatkit/message", asyncHandler(async (req, res) => {
 
   res.json({ reply });
 }));
+
+// ─── SERVE CLIENT IN PRODUCTION ──────────────────────────────────────────────
+const clientDist = path.join(__dirname, "..", "client", "dist");
+if (fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+  app.get("{*splat}", (_req, res) => {
+    res.sendFile(path.join(clientDist, "index.html"));
+  });
+}
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const includeDetails = process.env.NODE_ENV !== "production";

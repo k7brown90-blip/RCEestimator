@@ -5,9 +5,8 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "dev:client": "npm --prefix client run dev",
-    "build": "tsc -p tsconfig.json",
-    "build:client": "npm --prefix client run build",
-    "start": "node dist/server.js",
+    "build": "npm --prefix client install && npm --prefix client run build && npx prisma generate && tsc -p tsconfig.build.json",
+    "start": "npx prisma migrate deploy && node dist/src/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "prisma:generate": "prisma generate",
