@@ -19,6 +19,16 @@ export const app = express();
 const clientDist = path.join(__dirname, "..", "..", "client", "dist");
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
+
+  // SPA fallback: serve index.html for browser navigation requests (not API/file)
+  app.use((req, res, next) => {
+    const accepts = req.headers.accept || "";
+    if (req.method === "GET" && accepts.includes("text/html") && !req.path.startsWith("/api")) {
+      res.sendFile(path.join(clientDist, "index.html"));
+      return;
+    }
+    next();
+  });
 }
 
 app.use(express.json({ limit: "1mb" }));
@@ -1573,14 +1583,6 @@ app.post("/api/chatkit/message", asyncHandler(async (req, res) => {
 
   res.json({ reply });
 }));
-
-// ─── SPA CATCH-ALL (skip API requests) ───────────────────────────────────────
-if (fs.existsSync(clientDist)) {
-  app.get("{*splat}", (req: express.Request & { _isApi?: boolean }, res, next) => {
-    if (req._isApi) { next(); return; }
-    res.sendFile(path.join(clientDist, "index.html"));
-  });
-}
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const includeDetails = process.env.NODE_ENV !== "production";
