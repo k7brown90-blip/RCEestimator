@@ -1,0 +1,7402 @@
+{
+  "generatedAt": "2026-03-24T15:13:23.533Z",
+  "count": 103,
+  "assemblies": [
+    {
+      "assemblyNumber": 1,
+      "name": "Diagnostic Service Call",
+      "category": "diagnostic",
+      "tier": "atomic",
+      "laborClass": "troubleshoot_diagnostic",
+      "labor": [
+        {
+          "code": "LAB-1-DIAG",
+          "desc": "Diagnostic troubleshooting labor",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [
+        {
+          "code": "OTH-1-TRAVEL",
+          "desc": "Travel and consumables allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 35
+        }
+      ],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "diagnostic",
+        "tier": "atomic",
+        "laborClass": "troubleshoot_diagnostic",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        2
+      ],
+      "similarByCategory": [
+        2,
+        3
+      ]
+    },
+    {
+      "assemblyNumber": 2,
+      "name": "Additional Diagnostic Hour",
+      "category": "diagnostic",
+      "tier": "atomic",
+      "laborClass": "troubleshoot_diagnostic",
+      "labor": [
+        {
+          "code": "LAB-2-ADDHR",
+          "desc": "Additional diagnostic labor",
+          "hours": 1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "diagnostic",
+        "tier": "atomic",
+        "laborClass": "troubleshoot_diagnostic",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        1
+      ],
+      "similarByCategory": [
+        1,
+        3
+      ]
+    },
+    {
+      "assemblyNumber": 3,
+      "name": "Make-Safe Temporary Repair",
+      "category": "diagnostic",
+      "tier": "atomic",
+      "laborClass": "make_safe",
+      "labor": [
+        {
+          "code": "LAB-3-MSAF",
+          "desc": "Make-safe labor",
+          "hours": 1.25,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-3-MSAF",
+          "desc": "Temporary repair material allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 35
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "diagnostic",
+        "tier": "atomic",
+        "laborClass": "make_safe",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        1,
+        2
+      ]
+    },
+    {
+      "assemblyNumber": 4,
+      "name": "Replace Standard Receptacle",
+      "category": "devices",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-4-REC",
+          "desc": "Replace receptacle labor",
+          "hours": 0.6,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-4-REC",
+          "desc": "Receptacle and plate",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 8
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "devices",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        5
+      ],
+      "similarByCategory": [
+        5,
+        6,
+        7,
+        8
+      ]
+    },
+    {
+      "assemblyNumber": 5,
+      "name": "Replace GFCI Receptacle",
+      "category": "devices",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-5-GFCI",
+          "desc": "Replace GFCI labor",
+          "hours": 0.8,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-5-GFCI",
+          "desc": "GFCI device and labels",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 28
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "devices",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        4
+      ],
+      "similarByCategory": [
+        4,
+        6,
+        7,
+        8
+      ]
+    },
+    {
+      "assemblyNumber": 6,
+      "name": "Add Receptacle",
+      "category": "devices",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-6-BOX",
+          "desc": "Cut-in box and rough-in",
+          "hours": 0.55,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-6-ROUTE",
+          "desc": "Cable route and fish labor",
+          "hours": 0.05,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        },
+        {
+          "code": "LAB-6-DEVICE",
+          "desc": "Terminate receptacle, install plate, and test",
+          "hours": 0.5,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-6-BOX",
+          "desc": "Single-gang old-work box",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-6-REC15",
+          "desc": "15A duplex receptacle",
+          "qty": 1,
+          "qtyExpr": "device_15a_qty",
+          "unit": "ea",
+          "cost": 2.5
+        },
+        {
+          "code": "MAT-6-REC20",
+          "desc": "20A duplex receptacle",
+          "qty": 1,
+          "qtyExpr": "device_20a_qty",
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-6-PLATE",
+          "desc": "Faceplate",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-6-WNUT",
+          "desc": "Wire connector set (3 wirenuts)",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "set",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-6-FIT",
+          "desc": "Cable fittings and fastening hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-6-CABLE14",
+          "desc": "14/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_14_2",
+          "unit": "lf",
+          "cost": 0.55
+        },
+        {
+          "code": "MAT-6-CABLE12",
+          "desc": "12/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_12_2",
+          "unit": "lf",
+          "cost": 0.65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "device_15a_qty:integer:opt",
+        "device_20a_qty:integer:opt",
+        "device_rating:enum:req",
+        "location_type:enum:req",
+        "run_length:number:req",
+        "run_length_12_2:number:opt",
+        "run_length_14_2:number:opt",
+        "wall_type:enum:req"
+      ],
+      "signature": {
+        "category": "devices",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "device_15a_qty:integer:opt",
+          "device_20a_qty:integer:opt",
+          "device_rating:enum:req",
+          "location_type:enum:req",
+          "run_length:number:req",
+          "run_length_12_2:number:opt",
+          "run_length_14_2:number:opt",
+          "wall_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        4,
+        5,
+        7,
+        8
+      ]
+    },
+    {
+      "assemblyNumber": 7,
+      "name": "Relocate Existing Receptacle",
+      "category": "devices",
+      "tier": "atomic",
+      "laborClass": "extend_from_existing",
+      "labor": [
+        {
+          "code": "LAB-7-DISCONNECT",
+          "desc": "Disconnect existing device and prep relocation",
+          "hours": 0.5,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-7-ROUTE",
+          "desc": "Cable route and fish labor",
+          "hours": 0.05,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        },
+        {
+          "code": "LAB-7-BOX",
+          "desc": "Cut-in relocated box and secure",
+          "hours": 0.45,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-7-DEVICE",
+          "desc": "Reconnect receptacle, install plate, and test",
+          "hours": 0.55,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-7-BOX",
+          "desc": "Single-gang old-work box",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-7-REC15",
+          "desc": "15A duplex receptacle",
+          "qty": 1,
+          "qtyExpr": "device_15a_qty",
+          "unit": "ea",
+          "cost": 2.5
+        },
+        {
+          "code": "MAT-7-REC20",
+          "desc": "20A duplex receptacle",
+          "qty": 1,
+          "qtyExpr": "device_20a_qty",
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-7-PLATE",
+          "desc": "Faceplate",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-7-WNUT",
+          "desc": "Wire connector set (3 wirenuts)",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "set",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-7-FIT",
+          "desc": "Cable fittings and fastening hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-7-CABLE14",
+          "desc": "14/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_14_2",
+          "unit": "lf",
+          "cost": 0.55
+        },
+        {
+          "code": "MAT-7-CABLE12",
+          "desc": "12/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_12_2",
+          "unit": "lf",
+          "cost": 0.65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "device_15a_qty:integer:opt",
+        "device_20a_qty:integer:opt",
+        "device_rating:enum:req",
+        "patch_scope:enum:opt",
+        "route_access:enum:req",
+        "run_length:number:req",
+        "run_length_12_2:number:opt",
+        "run_length_14_2:number:opt"
+      ],
+      "signature": {
+        "category": "devices",
+        "tier": "atomic",
+        "laborClass": "extend_from_existing",
+        "paramKeys": [
+          "device_15a_qty:integer:opt",
+          "device_20a_qty:integer:opt",
+          "device_rating:enum:req",
+          "patch_scope:enum:opt",
+          "route_access:enum:req",
+          "run_length:number:req",
+          "run_length_12_2:number:opt",
+          "run_length_14_2:number:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        4,
+        5,
+        6,
+        8
+      ]
+    },
+    {
+      "assemblyNumber": 8,
+      "name": "Replace Device Plate / Trim Only",
+      "category": "devices",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-8-PLATE",
+          "desc": "Replace plate labor",
+          "hours": 0.35,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-8-PLATE",
+          "desc": "Device plate/trim allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 8
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "plate_style:enum:req"
+      ],
+      "signature": {
+        "category": "devices",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "plate_style:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "assemblyNumber": 9,
+      "name": "Replace Standard Switch",
+      "category": "lighting_controls",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-9-SW",
+          "desc": "Replace switch labor",
+          "hours": 0.6,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-9-SW",
+          "desc": "Switch and plate",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 9
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "lighting_controls",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        10,
+        12,
+        16
+      ],
+      "similarByCategory": [
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ]
+    },
+    {
+      "assemblyNumber": 10,
+      "name": "Replace 3-Way Switch",
+      "category": "lighting_controls",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-10-3WAY",
+          "desc": "Replace 3-way switch labor",
+          "hours": 0.9,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-10-3WAY",
+          "desc": "3-way switch and trim",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 16
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "lighting_controls",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        9,
+        12,
+        16
+      ],
+      "similarByCategory": [
+        9,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ]
+    },
+    {
+      "assemblyNumber": 11,
+      "name": "Add New Switch",
+      "category": "lighting_controls",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-11-ADDSW",
+          "desc": "Add switch labor",
+          "hours": 2.25,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-11-ADDSW",
+          "desc": "Switch, box, cable and trim",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "neutral_present:boolean:opt",
+        "switch_type:enum:req",
+        "wall_type:enum:req"
+      ],
+      "signature": {
+        "category": "lighting_controls",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "neutral_present:boolean:opt",
+          "switch_type:enum:req",
+          "wall_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        9,
+        10,
+        12,
+        13,
+        14,
+        15,
+        16
+      ]
+    },
+    {
+      "assemblyNumber": 12,
+      "name": "Replace Light Fixture",
+      "category": "lighting_controls",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-12-FIXRPL",
+          "desc": "Replace fixture labor",
+          "hours": 0.9,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-12-FIXRPL",
+          "desc": "Hardware/consumables allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 18
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "lighting_controls",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        9,
+        10,
+        16
+      ],
+      "similarByCategory": [
+        9,
+        10,
+        11,
+        13,
+        14,
+        15,
+        16
+      ]
+    },
+    {
+      "assemblyNumber": 13,
+      "name": "Add New Light Fixture",
+      "category": "lighting_controls",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-13-ADDLGT",
+          "desc": "Add light fixture labor",
+          "hours": 2.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-13-ADDLGT",
+          "desc": "Box, cable, connectors and trim",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 95
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "attic_access:enum:req",
+        "ceiling_type:enum:req",
+        "mounting_height:number:opt"
+      ],
+      "signature": {
+        "category": "lighting_controls",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "attic_access:enum:req",
+          "ceiling_type:enum:req",
+          "mounting_height:number:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        9,
+        10,
+        11,
+        12,
+        14,
+        15,
+        16
+      ]
+    },
+    {
+      "assemblyNumber": 14,
+      "name": "Add Recessed Light",
+      "category": "lighting_controls",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-14-RECLED",
+          "desc": "Install recessed light labor",
+          "hours": 2.75,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-14-RECLED",
+          "desc": "Recessed housing and trim allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 115
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "attic_access:enum:req",
+        "ceiling_type:enum:req",
+        "fixture_type:enum:req"
+      ],
+      "signature": {
+        "category": "lighting_controls",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "attic_access:enum:req",
+          "ceiling_type:enum:req",
+          "fixture_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        9,
+        10,
+        11,
+        12,
+        13,
+        15,
+        16
+      ]
+    },
+    {
+      "assemblyNumber": 15,
+      "name": "Add Ceiling Fan Rated Box",
+      "category": "lighting_controls",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-15-MOUNT",
+          "desc": "Mount box and frame in ceiling",
+          "hours": 1.75,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-15-CABLE",
+          "desc": "Cable run and connections",
+          "hours": 0.04,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-15-BOX",
+          "desc": "Ceiling fan box and bracket",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        },
+        {
+          "code": "MAT-15-CABLE",
+          "desc": "14/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.35
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "attic_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "lighting_controls",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "attic_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        16
+      ]
+    },
+    {
+      "assemblyNumber": 16,
+      "name": "Replace Exterior Light",
+      "category": "lighting_controls",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-16-EXTLGT",
+          "desc": "Replace exterior light labor",
+          "hours": 1.1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-16-EXTLGT",
+          "desc": "Exterior hardware and sealant allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 45
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "lighting_controls",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        9,
+        10,
+        12
+      ],
+      "similarByCategory": [
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ]
+    },
+    {
+      "assemblyNumber": 17,
+      "name": "Add Dedicated 120V Circuit",
+      "category": "circuits",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-17-BREAKER",
+          "desc": "Install 20A breaker and terminate at panel",
+          "hours": 0.9,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-17-ROUTE",
+          "desc": "Fish cable in finished walls/ceilings",
+          "hours": 0.05,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        },
+        {
+          "code": "LAB-17-BOX",
+          "desc": "Cut-in single-gang box and secure",
+          "hours": 0.5,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-17-DEVICE",
+          "desc": "Install receptacle, make device terminations, and final test",
+          "hours": 0.7,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-17-BREAKER",
+          "desc": "20A single-pole breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 22
+        },
+        {
+          "code": "MAT-17-BOX",
+          "desc": "Single-gang old-work box",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-17-REC",
+          "desc": "20A duplex receptacle",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-17-PLATE",
+          "desc": "Faceplate",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-17-WNUT",
+          "desc": "Wire connector set (3 wirenuts)",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "set",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-17-FIT",
+          "desc": "Cable fittings and fastening hardware (connector, staple, bushing)",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 6
+        },
+        {
+          "code": "MAT-17-CABLE",
+          "desc": "12/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ampacity:integer:req",
+        "breaker_pole_config:enum:req",
+        "conductor_size:enum:req",
+        "conductor_type:enum:req",
+        "raceway_type:enum:req",
+        "route_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "circuits",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "ampacity:integer:req",
+          "breaker_pole_config:enum:req",
+          "conductor_size:enum:req",
+          "conductor_type:enum:req",
+          "raceway_type:enum:req",
+          "route_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [
+        19
+      ],
+      "similarByCategory": [
+        18,
+        19,
+        20,
+        21
+      ]
+    },
+    {
+      "assemblyNumber": 18,
+      "name": "Add Dedicated 240V Circuit",
+      "category": "circuits",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-18-BREAKER",
+          "desc": "Install breaker and terminate at panel",
+          "hours": 1,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-18-ROUTE",
+          "desc": "Heavy cable route and pull labor",
+          "hours": 0.065,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        },
+        {
+          "code": "LAB-18-END",
+          "desc": "Install endpoint device or hardwire terminations and test",
+          "hours": 0.9,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-18-BREAKER",
+          "desc": "2-pole breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        },
+        {
+          "code": "MAT-18-14-50",
+          "desc": "NEMA 14-50 receptacle, box, cover, and fittings",
+          "qty": 1,
+          "qtyExpr": "endpoint_14_50_qty",
+          "unit": "ea",
+          "cost": 65
+        },
+        {
+          "code": "MAT-18-6-50",
+          "desc": "NEMA 6-50 receptacle, box, cover, and fittings",
+          "qty": 1,
+          "qtyExpr": "endpoint_6_50_qty",
+          "unit": "ea",
+          "cost": 48
+        },
+        {
+          "code": "MAT-18-HARDWIRE",
+          "desc": "Hardwire termination kit, flex, and fittings",
+          "qty": 1,
+          "qtyExpr": "endpoint_hardwire_qty",
+          "unit": "ea",
+          "cost": 28
+        },
+        {
+          "code": "MAT-18-CABLE63",
+          "desc": "6/3 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_6_3",
+          "unit": "lf",
+          "cost": 2
+        },
+        {
+          "code": "MAT-18-CABLE62",
+          "desc": "6/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_6_2",
+          "unit": "lf",
+          "cost": 1.7
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ampacity:integer:req",
+        "breaker_pole_config:enum:req",
+        "conductor_size:enum:req",
+        "conductor_type:enum:req",
+        "endpoint_14_50_qty:integer:opt",
+        "endpoint_6_50_qty:integer:opt",
+        "endpoint_device:enum:req",
+        "endpoint_hardwire_qty:integer:opt",
+        "raceway_type:enum:req",
+        "route_access:enum:req",
+        "run_length:number:req",
+        "run_length_6_2:number:opt",
+        "run_length_6_3:number:opt"
+      ],
+      "signature": {
+        "category": "circuits",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "ampacity:integer:req",
+          "breaker_pole_config:enum:req",
+          "conductor_size:enum:req",
+          "conductor_type:enum:req",
+          "endpoint_14_50_qty:integer:opt",
+          "endpoint_6_50_qty:integer:opt",
+          "endpoint_device:enum:req",
+          "endpoint_hardwire_qty:integer:opt",
+          "raceway_type:enum:req",
+          "route_access:enum:req",
+          "run_length:number:req",
+          "run_length_6_2:number:opt",
+          "run_length_6_3:number:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        17,
+        19,
+        20,
+        21
+      ]
+    },
+    {
+      "assemblyNumber": 19,
+      "name": "Add Multiwire or Multi-Load Appliance Circuit",
+      "category": "circuits",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-19-BASE",
+          "desc": "Panel terminations and shared-neutral circuit testing",
+          "hours": 2.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-19-ROUTE",
+          "desc": "Cable route and pull labor",
+          "hours": 0.065,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-19-BREAKER",
+          "desc": "2-pole common-trip 20A breaker and fittings",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 95
+        },
+        {
+          "code": "MAT-19-CABLE",
+          "desc": "12/3 NM-B cable (shared neutral)",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 1.15
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ampacity:integer:req",
+        "breaker_pole_config:enum:req",
+        "conductor_size:enum:req",
+        "conductor_type:enum:req",
+        "raceway_type:enum:req",
+        "route_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "circuits",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "ampacity:integer:req",
+          "breaker_pole_config:enum:req",
+          "conductor_size:enum:req",
+          "conductor_type:enum:req",
+          "raceway_type:enum:req",
+          "route_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [
+        17
+      ],
+      "similarByCategory": [
+        17,
+        18,
+        20,
+        21
+      ]
+    },
+    {
+      "assemblyNumber": 20,
+      "name": "Feeder to Subpanel",
+      "category": "circuits",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-20-BASE",
+          "desc": "Breaker install and panel terminations at both ends",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-20-ROUTE",
+          "desc": "Feeder route and pull labor",
+          "hours": 0.08,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-20-BREAKER",
+          "desc": "2-pole feeder breaker and fittings",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 130
+        },
+        {
+          "code": "MAT-20-FEEDER",
+          "desc": "Feeder conductors (SER cable or THHN in conduit)",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 3
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ampacity:integer:req",
+        "conductor_size:enum:req",
+        "conductor_type:enum:req",
+        "raceway_type:enum:req",
+        "route_access:enum:req",
+        "run_length:number:req",
+        "voltage_drop_review_required:boolean:opt"
+      ],
+      "signature": {
+        "category": "circuits",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "ampacity:integer:req",
+          "conductor_size:enum:req",
+          "conductor_type:enum:req",
+          "raceway_type:enum:req",
+          "route_access:enum:req",
+          "run_length:number:req",
+          "voltage_drop_review_required:boolean:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        17,
+        18,
+        19,
+        21
+      ]
+    },
+    {
+      "assemblyNumber": 21,
+      "name": "Detached Structure Feeder",
+      "category": "circuits",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-21-BASE",
+          "desc": "Breaker install, entrance fittings and terminations at both ends",
+          "hours": 4,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-21-ROUTE",
+          "desc": "Underground or exterior feeder route and pull labor",
+          "hours": 0.1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-21-BREAKER",
+          "desc": "2-pole feeder breaker, weatherhead and entrance fittings",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 150
+        },
+        {
+          "code": "MAT-21-FEEDER",
+          "desc": "Underground feeder conductors (USE-2 / direct burial)",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 3.75
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ampacity:integer:req",
+        "conductor_size:enum:req",
+        "conductor_type:enum:req",
+        "overhead_or_underground:enum:req",
+        "raceway_type:enum:req",
+        "route_access:enum:req",
+        "run_length:number:req",
+        "voltage_drop_review_required:boolean:opt"
+      ],
+      "signature": {
+        "category": "circuits",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "ampacity:integer:req",
+          "conductor_size:enum:req",
+          "conductor_type:enum:req",
+          "overhead_or_underground:enum:req",
+          "raceway_type:enum:req",
+          "route_access:enum:req",
+          "run_length:number:req",
+          "voltage_drop_review_required:boolean:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        17,
+        18,
+        19,
+        20
+      ]
+    },
+    {
+      "assemblyNumber": 22,
+      "name": "Replace Breaker",
+      "category": "panels",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-22-BKR",
+          "desc": "Replace breaker labor",
+          "hours": 0.7,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-22-BKR",
+          "desc": "Breaker allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 35
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "breaker_family:enum:opt",
+        "breaker_pole_config:enum:req",
+        "panel_make:enum:req"
+      ],
+      "signature": {
+        "category": "panels",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "breaker_family:enum:opt",
+          "breaker_pole_config:enum:req",
+          "panel_make:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        23,
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "assemblyNumber": 23,
+      "name": "Add Breaker to Existing Panel",
+      "category": "panels",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-23-ADDBKR",
+          "desc": "Add breaker labor",
+          "hours": 1.2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-23-ADDBKR",
+          "desc": "Breaker and terminations allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "breaker_pole_config:enum:req",
+        "panel_make:enum:req"
+      ],
+      "signature": {
+        "category": "panels",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "breaker_pole_config:enum:req",
+          "panel_make:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        22,
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "assemblyNumber": 24,
+      "name": "Add AFCI / GFCI Protective Device",
+      "category": "panels",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-24-PROT",
+          "desc": "Install protective device labor",
+          "hours": 1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-24-PROT",
+          "desc": "Protective device allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 85
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "breaker_family:enum:req",
+        "panel_make:enum:req"
+      ],
+      "signature": {
+        "category": "panels",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "breaker_family:enum:req",
+          "panel_make:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        22,
+        23,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "assemblyNumber": 25,
+      "name": "Panel Circuit Rework / Cleanup",
+      "category": "panels",
+      "tier": "atomic",
+      "laborClass": "repair_existing",
+      "labor": [
+        {
+          "code": "LAB-25-REWORK",
+          "desc": "Panel conductor rework and re-termination",
+          "hours": 4.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-25-ORGANIZE",
+          "desc": "Labeling and organization",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-25-HARDWARE",
+          "desc": "Labels, ties, hardware allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 35
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "branch_circuit_count:integer:req",
+        "panel_amp_rating:integer:req"
+      ],
+      "signature": {
+        "category": "panels",
+        "tier": "atomic",
+        "laborClass": "repair_existing",
+        "paramKeys": [
+          "branch_circuit_count:integer:req",
+          "panel_amp_rating:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        22,
+        23,
+        24,
+        26,
+        27
+      ]
+    },
+    {
+      "assemblyNumber": 26,
+      "name": "Replace Subpanel",
+      "category": "panels",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-26-REMOVE",
+          "desc": "Remove old panel and disconnect feeder",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-26-INSTALL",
+          "desc": "Install new panel and terminate feeder",
+          "hours": 4.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-26-TEST",
+          "desc": "Testing and final verification",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-26-PANEL",
+          "desc": "Replacement subpanel and breakers",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 600
+        },
+        {
+          "code": "MAT-26-HARDWARE",
+          "desc": "Mounting hardware and fittings",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 75
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "grounding_upgrade_required:enum:req",
+        "panel_amp_rating:integer:req",
+        "panel_location_type:enum:req"
+      ],
+      "signature": {
+        "category": "panels",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "grounding_upgrade_required:enum:req",
+          "panel_amp_rating:integer:req",
+          "panel_location_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        22,
+        23,
+        24,
+        25,
+        27
+      ]
+    },
+    {
+      "assemblyNumber": 27,
+      "name": "Replace Main Panel",
+      "category": "panels",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-27-PANEL",
+          "desc": "Replace main panel labor",
+          "hours": 16,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-27-PANEL",
+          "desc": "Panel, breakers and fittings allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 1650
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "overhead_or_underground:enum:req",
+        "panel_amp_rating:integer:req",
+        "panel_location_type:enum:req"
+      ],
+      "signature": {
+        "category": "panels",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "overhead_or_underground:enum:req",
+          "panel_amp_rating:integer:req",
+          "panel_location_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        22,
+        23,
+        24,
+        25,
+        26
+      ]
+    },
+    {
+      "assemblyNumber": 28,
+      "name": "Replace Service Entrance Cable",
+      "category": "service_entrance",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-28-SEC",
+          "desc": "Replace service entrance cable labor",
+          "hours": 6,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-28-SEC",
+          "desc": "Service entrance conductors and fittings",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 420
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "conductor_type:enum:req",
+        "overhead_or_underground:enum:req",
+        "service_ampacity:integer:req"
+      ],
+      "signature": {
+        "category": "service_entrance",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "conductor_type:enum:req",
+          "overhead_or_underground:enum:req",
+          "service_ampacity:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        29,
+        30,
+        31,
+        32
+      ]
+    },
+    {
+      "assemblyNumber": 29,
+      "name": "Replace Meter Base",
+      "category": "service_entrance",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-29-METER",
+          "desc": "Replace meter base labor",
+          "hours": 4,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-29-METER",
+          "desc": "Meter base and fittings allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 340
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "meter_base_amp_rating:integer:req",
+        "utility_coordination_required:boolean:opt"
+      ],
+      "signature": {
+        "category": "service_entrance",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "meter_base_amp_rating:integer:req",
+          "utility_coordination_required:boolean:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        28,
+        30,
+        31,
+        32
+      ]
+    },
+    {
+      "assemblyNumber": 30,
+      "name": "Install Exterior Disconnect",
+      "category": "service_entrance",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-30-DISCO",
+          "desc": "Install disconnect labor",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-30-DISCO",
+          "desc": "Disconnect, fittings and labels",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 210
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "interior_or_exterior_disconnect:enum:req",
+        "service_ampacity:integer:req"
+      ],
+      "signature": {
+        "category": "service_entrance",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "interior_or_exterior_disconnect:enum:req",
+          "service_ampacity:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        28,
+        29,
+        31,
+        32
+      ]
+    },
+    {
+      "assemblyNumber": 31,
+      "name": "Service Mast / Weatherhead Repair",
+      "category": "service_entrance",
+      "tier": "atomic",
+      "laborClass": "repair_existing",
+      "labor": [
+        {
+          "code": "LAB-31-REMOVE",
+          "desc": "Remove old fitting and prepare",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-31-INSTALL",
+          "desc": "Install new mast/weatherhead",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-31-MAST",
+          "desc": "Mast or weatherhead assembly",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 185
+        },
+        {
+          "code": "MAT-31-HARDWARE",
+          "desc": "Mounting hardware and sealant",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 45
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "mast_height:number:req",
+        "service_overhead:enum:req"
+      ],
+      "signature": {
+        "category": "service_entrance",
+        "tier": "atomic",
+        "laborClass": "repair_existing",
+        "paramKeys": [
+          "mast_height:number:req",
+          "service_overhead:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        28,
+        29,
+        30,
+        32
+      ]
+    },
+    {
+      "assemblyNumber": 32,
+      "name": "Full Residential Service Upgrade Package",
+      "category": "service_entrance",
+      "tier": "atomic",
+      "laborClass": null,
+      "labor": [
+        {
+          "code": "LAB-32",
+          "desc": "Full Residential Service Upgrade Package labor allowance",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-32",
+          "desc": "Full Residential Service Upgrade Package material allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "bonding_correction_qty:integer:opt",
+        "gec_upgrade_qty:integer:opt",
+        "permit_allowance_qty:integer:opt",
+        "service_ampacity:integer:req",
+        "surge_protection_qty:integer:opt"
+      ],
+      "signature": {
+        "category": "service_entrance",
+        "tier": "atomic",
+        "laborClass": "none",
+        "paramKeys": [
+          "bonding_correction_qty:integer:opt",
+          "gec_upgrade_qty:integer:opt",
+          "permit_allowance_qty:integer:opt",
+          "service_ampacity:integer:req",
+          "surge_protection_qty:integer:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        28,
+        29,
+        30,
+        31
+      ]
+    },
+    {
+      "assemblyNumber": 33,
+      "name": "Grounding Electrode System Install / Upgrade",
+      "category": "grounding_bonding",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-33-GES",
+          "desc": "Install/upgrade grounding system labor",
+          "hours": 4.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-33-GES",
+          "desc": "Ground rods, clamps, conductor allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 185
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ampacity:integer:req",
+        "difficulty_tier:enum:req"
+      ],
+      "signature": {
+        "category": "grounding_bonding",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "ampacity:integer:req",
+          "difficulty_tier:enum:req"
+        ]
+      },
+      "similarBySignature": [
+        37
+      ],
+      "similarByCategory": [
+        34,
+        35,
+        36,
+        37
+      ]
+    },
+    {
+      "assemblyNumber": 34,
+      "name": "Add / Replace Ground Rod(s)",
+      "category": "grounding_bonding",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-34-DRIVE",
+          "desc": "Drive ground rod labor",
+          "hours": 1.2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "rod_qty",
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-34-CLAMP",
+          "desc": "Install clamp and verify connections",
+          "hours": 0.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "rod_qty",
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-34-ROD",
+          "desc": "Copper ground rod (8-10 ft)",
+          "qty": 1,
+          "qtyExpr": "rod_qty",
+          "unit": "ea",
+          "cost": 55
+        },
+        {
+          "code": "MAT-34-CLAMP",
+          "desc": "Ground rod clamp and hardware",
+          "qty": 1,
+          "qtyExpr": "rod_qty",
+          "unit": "ea",
+          "cost": 18
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "electrode_type:enum:req",
+        "rod_qty:integer:req"
+      ],
+      "signature": {
+        "category": "grounding_bonding",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "electrode_type:enum:req",
+          "rod_qty:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        33,
+        35,
+        36,
+        37
+      ]
+    },
+    {
+      "assemblyNumber": 35,
+      "name": "Grounding Electrode Conductor Upgrade",
+      "category": "grounding_bonding",
+      "tier": "atomic",
+      "laborClass": "repair_existing",
+      "labor": [
+        {
+          "code": "LAB-35-GEC",
+          "desc": "Upgrade conductor labor",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-35-GEC",
+          "desc": "Conductor and connection allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ampacity:integer:req",
+        "difficulty_tier:enum:req"
+      ],
+      "signature": {
+        "category": "grounding_bonding",
+        "tier": "atomic",
+        "laborClass": "repair_existing",
+        "paramKeys": [
+          "ampacity:integer:req",
+          "difficulty_tier:enum:req"
+        ]
+      },
+      "similarBySignature": [
+        36
+      ],
+      "similarByCategory": [
+        33,
+        34,
+        36,
+        37
+      ]
+    },
+    {
+      "assemblyNumber": 36,
+      "name": "Bonding Correction",
+      "category": "grounding_bonding",
+      "tier": "atomic",
+      "laborClass": "repair_existing",
+      "labor": [
+        {
+          "code": "LAB-36-BOND",
+          "desc": "Bonding correction labor",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-36-BOND",
+          "desc": "Bonding hardware allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 55
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ampacity:integer:req",
+        "difficulty_tier:enum:req"
+      ],
+      "signature": {
+        "category": "grounding_bonding",
+        "tier": "atomic",
+        "laborClass": "repair_existing",
+        "paramKeys": [
+          "ampacity:integer:req",
+          "difficulty_tier:enum:req"
+        ]
+      },
+      "similarBySignature": [
+        35
+      ],
+      "similarByCategory": [
+        33,
+        34,
+        35,
+        37
+      ]
+    },
+    {
+      "assemblyNumber": 37,
+      "name": "Whole-House Surge Protection",
+      "category": "grounding_bonding",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-37-SPD",
+          "desc": "Install SPD labor",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-37-SPD",
+          "desc": "SPD hardware allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 220
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ampacity:integer:req",
+        "difficulty_tier:enum:req"
+      ],
+      "signature": {
+        "category": "grounding_bonding",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "ampacity:integer:req",
+          "difficulty_tier:enum:req"
+        ]
+      },
+      "similarBySignature": [
+        33
+      ],
+      "similarByCategory": [
+        33,
+        34,
+        35,
+        36
+      ]
+    },
+    {
+      "assemblyNumber": 38,
+      "name": "Detached Garage / Shop Subpanel Package",
+      "category": "detached_exterior",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-38-FEEDER",
+          "desc": "Feeder route and install labor",
+          "hours": 4,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-38-PANEL",
+          "desc": "Subpanel mount and termination",
+          "hours": 3.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-38-DISCONNECT",
+          "desc": "Disconnect installation",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-38-SUBPANEL",
+          "desc": "60-100A subpanel with breakers",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 480
+        },
+        {
+          "code": "MAT-38-FEEDER",
+          "desc": "SER feeder cable sized to amp rating",
+          "qty": 1,
+          "qtyExpr": "feeder_run_length",
+          "unit": "lf",
+          "cost": 2.5
+        },
+        {
+          "code": "MAT-38-DISCONNECT",
+          "desc": "Exterior disconnect enclosure",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 125
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "feeder_run_length:number:req",
+        "feeder_size:enum:req",
+        "panel_amp_rating:integer:req",
+        "route_access:enum:req"
+      ],
+      "signature": {
+        "category": "detached_exterior",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "feeder_run_length:number:req",
+          "feeder_size:enum:req",
+          "panel_amp_rating:integer:req",
+          "route_access:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        39,
+        40,
+        41,
+        42
+      ]
+    },
+    {
+      "assemblyNumber": 39,
+      "name": "Detached Structure Exterior Receptacle",
+      "category": "detached_exterior",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-39-ROUTE",
+          "desc": "Route conduit and pull wire",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-39-INSTALL",
+          "desc": "Install and connect receptacle",
+          "hours": 1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-39-OUTLET",
+          "desc": "Exterior GFCI receptacle and enclosure",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        },
+        {
+          "code": "MAT-39-WIRE",
+          "desc": "12 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.4
+        },
+        {
+          "code": "MAT-39-CONDUIT",
+          "desc": "PVC conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.45
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "mounting_height:enum:opt",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "detached_exterior",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "mounting_height:enum:opt",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        38,
+        40,
+        41,
+        42
+      ]
+    },
+    {
+      "assemblyNumber": 40,
+      "name": "Exterior Dedicated Equipment Circuit",
+      "category": "detached_exterior",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-40-PANEL",
+          "desc": "Panel breaker termination",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-40-ROUTE",
+          "desc": "Route to equipment location",
+          "hours": 0.06,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-40-BREAKER",
+          "desc": "Breaker sized to equipment",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 55
+        },
+        {
+          "code": "MAT-40-WIRE",
+          "desc": "THHN/THW wire per equipment rating",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.8
+        },
+        {
+          "code": "MAT-40-CONDUIT",
+          "desc": "Rigid conduit and fittings",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "breaker_size:integer:req",
+        "equipment_type:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "detached_exterior",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "breaker_size:integer:req",
+          "equipment_type:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        38,
+        39,
+        41,
+        42
+      ]
+    },
+    {
+      "assemblyNumber": 41,
+      "name": "Shed / Outbuilding Power Package",
+      "category": "detached_exterior",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-41-FEEDER",
+          "desc": "Feeder route and pull labor",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-41-DISCONNECT",
+          "desc": "Disconnect installation",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-41-RECEPTACLE",
+          "desc": "Install receptacle and test",
+          "hours": 1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-41-DISCONNECT",
+          "desc": "Exterior disconnect/disconnect-switch enclosure",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 145
+        },
+        {
+          "code": "MAT-41-FEEDER",
+          "desc": "SER feeder cable to shed location",
+          "qty": 1,
+          "qtyExpr": "feeder_run_length",
+          "unit": "lf",
+          "cost": 2
+        },
+        {
+          "code": "MAT-41-RECEPTACLE",
+          "desc": "Weatherproof 15A receptacle",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 35
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "feeder_run_length:number:req",
+        "route_access:enum:req"
+      ],
+      "signature": {
+        "category": "detached_exterior",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "feeder_run_length:number:req",
+          "route_access:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        38,
+        39,
+        40,
+        42
+      ]
+    },
+    {
+      "assemblyNumber": 42,
+      "name": "Gate / Exterior Device Feed",
+      "category": "detached_exterior",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-42-PANEL",
+          "desc": "Panel breaker termination",
+          "hours": 1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-42-ROUTE",
+          "desc": "Route to exterior device location",
+          "hours": 0.05,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-42-BREAKER",
+          "desc": "Small breaker (15-20A)",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 40
+        },
+        {
+          "code": "MAT-42-WIRE",
+          "desc": "14 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.3
+        },
+        {
+          "code": "MAT-42-CONDUIT",
+          "desc": "Conduit and fittings",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.5
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "device_type:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "detached_exterior",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "device_type:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        38,
+        39,
+        40,
+        41
+      ]
+    },
+    {
+      "assemblyNumber": 43,
+      "name": "Water Heater Circuit / Connection",
+      "category": "appliance_equipment",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-43-BREAKER",
+          "desc": "Install breaker and terminate at panel",
+          "hours": 0.8,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-43-ROUTE",
+          "desc": "Cable route and pull labor",
+          "hours": 0.05,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        },
+        {
+          "code": "LAB-43-END",
+          "desc": "Complete water heater endpoint terminations and test",
+          "hours": 0.7,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-43-BREAKER",
+          "desc": "30A 2-pole breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 38
+        },
+        {
+          "code": "MAT-43-14-30",
+          "desc": "NEMA 14-30 receptacle, box, cover, and fittings",
+          "qty": 1,
+          "qtyExpr": "endpoint_14_30_qty",
+          "unit": "ea",
+          "cost": 42
+        },
+        {
+          "code": "MAT-43-HARDWIRE",
+          "desc": "Hardwire whip, disconnect fittings, and terminations",
+          "qty": 1,
+          "qtyExpr": "endpoint_hardwire_qty",
+          "unit": "ea",
+          "cost": 24
+        },
+        {
+          "code": "MAT-43-CABLE103",
+          "desc": "10/3 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_10_3",
+          "unit": "lf",
+          "cost": 1.1
+        },
+        {
+          "code": "MAT-43-CABLE102",
+          "desc": "10/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_10_2",
+          "unit": "lf",
+          "cost": 0.9
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "endpoint_14_30_qty:integer:opt",
+        "endpoint_device:enum:req",
+        "endpoint_hardwire_qty:integer:opt",
+        "route_access:enum:req",
+        "run_length:number:req",
+        "run_length_10_2:number:opt",
+        "run_length_10_3:number:opt"
+      ],
+      "signature": {
+        "category": "appliance_equipment",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "endpoint_14_30_qty:integer:opt",
+          "endpoint_device:enum:req",
+          "endpoint_hardwire_qty:integer:opt",
+          "route_access:enum:req",
+          "run_length:number:req",
+          "run_length_10_2:number:opt",
+          "run_length_10_3:number:opt"
+        ]
+      },
+      "similarBySignature": [
+        45
+      ],
+      "similarByCategory": [
+        44,
+        45,
+        46,
+        47,
+        48,
+        49
+      ]
+    },
+    {
+      "assemblyNumber": 44,
+      "name": "Range Circuit / Connection",
+      "category": "appliance_equipment",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-44-BREAKER",
+          "desc": "Install breaker and terminate at panel",
+          "hours": 0.9,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-44-ROUTE",
+          "desc": "Heavy cable route and pull labor",
+          "hours": 0.07,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        },
+        {
+          "code": "LAB-44-END",
+          "desc": "Install range endpoint hardware and test",
+          "hours": 0.85,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-44-BREAKER",
+          "desc": "50A 2-pole breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        },
+        {
+          "code": "MAT-44-14-50",
+          "desc": "NEMA 14-50 receptacle, box, cover, and fittings",
+          "qty": 1,
+          "qtyExpr": "endpoint_14_50_qty",
+          "unit": "ea",
+          "cost": 65
+        },
+        {
+          "code": "MAT-44-HARDWIRE",
+          "desc": "Hardwire termination kit and fittings",
+          "qty": 1,
+          "qtyExpr": "endpoint_hardwire_qty",
+          "unit": "ea",
+          "cost": 28
+        },
+        {
+          "code": "MAT-44-CABLE63",
+          "desc": "6/3 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_6_3",
+          "unit": "lf",
+          "cost": 2
+        },
+        {
+          "code": "MAT-44-CABLE62",
+          "desc": "6/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_6_2",
+          "unit": "lf",
+          "cost": 1.7
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "endpoint_14_50_qty:integer:opt",
+        "endpoint_device:enum:req",
+        "endpoint_hardwire_qty:integer:opt",
+        "route_access:enum:req",
+        "run_length:number:req",
+        "run_length_6_2:number:opt",
+        "run_length_6_3:number:opt"
+      ],
+      "signature": {
+        "category": "appliance_equipment",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "endpoint_14_50_qty:integer:opt",
+          "endpoint_device:enum:req",
+          "endpoint_hardwire_qty:integer:opt",
+          "route_access:enum:req",
+          "run_length:number:req",
+          "run_length_6_2:number:opt",
+          "run_length_6_3:number:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        43,
+        45,
+        46,
+        47,
+        48,
+        49
+      ]
+    },
+    {
+      "assemblyNumber": 45,
+      "name": "Dryer Circuit / Connection",
+      "category": "appliance_equipment",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-45-BREAKER",
+          "desc": "Install breaker and terminate at panel",
+          "hours": 0.8,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-45-ROUTE",
+          "desc": "Cable route and pull labor",
+          "hours": 0.05,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        },
+        {
+          "code": "LAB-45-END",
+          "desc": "Install dryer endpoint hardware and test",
+          "hours": 0.75,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-45-BREAKER",
+          "desc": "30A 2-pole breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 38
+        },
+        {
+          "code": "MAT-45-14-30",
+          "desc": "NEMA 14-30 receptacle, box, cover, and fittings",
+          "qty": 1,
+          "qtyExpr": "endpoint_14_30_qty",
+          "unit": "ea",
+          "cost": 42
+        },
+        {
+          "code": "MAT-45-HARDWIRE",
+          "desc": "Hardwire termination kit and fittings",
+          "qty": 1,
+          "qtyExpr": "endpoint_hardwire_qty",
+          "unit": "ea",
+          "cost": 24
+        },
+        {
+          "code": "MAT-45-CABLE103",
+          "desc": "10/3 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_10_3",
+          "unit": "lf",
+          "cost": 1.1
+        },
+        {
+          "code": "MAT-45-CABLE102",
+          "desc": "10/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "run_length_10_2",
+          "unit": "lf",
+          "cost": 0.9
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "endpoint_14_30_qty:integer:opt",
+        "endpoint_device:enum:req",
+        "endpoint_hardwire_qty:integer:opt",
+        "route_access:enum:req",
+        "run_length:number:req",
+        "run_length_10_2:number:opt",
+        "run_length_10_3:number:opt"
+      ],
+      "signature": {
+        "category": "appliance_equipment",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "endpoint_14_30_qty:integer:opt",
+          "endpoint_device:enum:req",
+          "endpoint_hardwire_qty:integer:opt",
+          "route_access:enum:req",
+          "run_length:number:req",
+          "run_length_10_2:number:opt",
+          "run_length_10_3:number:opt"
+        ]
+      },
+      "similarBySignature": [
+        43
+      ],
+      "similarByCategory": [
+        43,
+        44,
+        46,
+        47,
+        48,
+        49
+      ]
+    },
+    {
+      "assemblyNumber": 46,
+      "name": "Dishwasher / Disposal Circuit and Connection",
+      "category": "appliance_equipment",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-46-ROUTE",
+          "desc": "Route conduit and pull wire",
+          "hours": 2.2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-46-PANEL",
+          "desc": "Connect breaker and load connections",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-46-BREAKER",
+          "desc": "20A breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 45
+        },
+        {
+          "code": "MAT-46-WIRE",
+          "desc": "12 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.35
+        },
+        {
+          "code": "MAT-46-CONDUIT",
+          "desc": "PVC/EMT conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.45
+        },
+        {
+          "code": "MAT-46-CONN",
+          "desc": "Connectors, splice kits, hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 25
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "route_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "appliance_equipment",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "route_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [
+        47,
+        48,
+        49
+      ],
+      "similarByCategory": [
+        43,
+        44,
+        45,
+        47,
+        48,
+        49
+      ]
+    },
+    {
+      "assemblyNumber": 47,
+      "name": "Microwave / Hood Circuit",
+      "category": "appliance_equipment",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-47-ROUTE",
+          "desc": "Route conduit and pull wire",
+          "hours": 2.3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-47-CONNECT",
+          "desc": "Panel and load connections",
+          "hours": 1.6,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-47-BREAKER",
+          "desc": "20A 240V breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 45
+        },
+        {
+          "code": "MAT-47-WIRE",
+          "desc": "12 AWG 240V wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.5
+        },
+        {
+          "code": "MAT-47-CONDUIT",
+          "desc": "PVC/EMT conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.45
+        },
+        {
+          "code": "MAT-47-CONN",
+          "desc": "Connectors and hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 30
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "route_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "appliance_equipment",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "route_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [
+        46,
+        48,
+        49
+      ],
+      "similarByCategory": [
+        43,
+        44,
+        45,
+        46,
+        48,
+        49
+      ]
+    },
+    {
+      "assemblyNumber": 48,
+      "name": "HVAC Condenser Circuit",
+      "category": "appliance_equipment",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-48-ROUTE",
+          "desc": "Route to exterior and pull wire",
+          "hours": 2.8,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-48-INSTALL",
+          "desc": "Install disconnect and connections",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-48-BREAKER",
+          "desc": "30A 240V breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 48
+        },
+        {
+          "code": "MAT-48-WIRE",
+          "desc": "10 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.6
+        },
+        {
+          "code": "MAT-48-CONDUIT",
+          "desc": "PVC/EMT conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.5
+        },
+        {
+          "code": "MAT-48-DISCONNECT",
+          "desc": "Outdoor disconnect hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 95
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "route_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "appliance_equipment",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "route_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [
+        46,
+        47,
+        49
+      ],
+      "similarByCategory": [
+        43,
+        44,
+        45,
+        46,
+        47,
+        49
+      ]
+    },
+    {
+      "assemblyNumber": 49,
+      "name": "Air Handler / Furnace Electrical Connection",
+      "category": "appliance_equipment",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-49-ROUTE",
+          "desc": "Route and pull wire",
+          "hours": 1.8,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-49-CONNECT",
+          "desc": "Breaker and equipment connections",
+          "hours": 1.2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-49-BREAKER",
+          "desc": "15A breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 40
+        },
+        {
+          "code": "MAT-49-WIRE",
+          "desc": "14 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.25
+        },
+        {
+          "code": "MAT-49-CONDUIT",
+          "desc": "PVC/EMT conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.35
+        },
+        {
+          "code": "MAT-49-CONNECTORS",
+          "desc": "Connectors and hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 20
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "route_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "appliance_equipment",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "route_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [
+        46,
+        47,
+        48
+      ],
+      "similarByCategory": [
+        43,
+        44,
+        45,
+        46,
+        47,
+        48
+      ]
+    },
+    {
+      "assemblyNumber": 50,
+      "name": "Garage / Shop Equipment Circuit",
+      "category": "shop_garage",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-50-ROUTE",
+          "desc": "Route and pull",
+          "hours": 2.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-50-CONNECT",
+          "desc": "Receptacle and panel connections",
+          "hours": 1.8,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-50-BREAKER",
+          "desc": "Equipment breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 55
+        },
+        {
+          "code": "MAT-50-WIRE",
+          "desc": "THHN/THW wire for equipment",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.7
+        },
+        {
+          "code": "MAT-50-CONDUIT",
+          "desc": "Rigid/PVC conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.55
+        },
+        {
+          "code": "MAT-50-RECEPTACLE",
+          "desc": "Heavy-duty equipment receptacle",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 75
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "shop_garage",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        51,
+        52,
+        53,
+        54
+      ],
+      "similarByCategory": [
+        51,
+        52,
+        53,
+        54
+      ]
+    },
+    {
+      "assemblyNumber": 51,
+      "name": "Welder Receptacle / Circuit",
+      "category": "shop_garage",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-51-ROUTE",
+          "desc": "Heavy route and pull",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-51-CONNECT",
+          "desc": "Receptacle termination and panel work",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-51-BREAKER",
+          "desc": "50A 240V breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        },
+        {
+          "code": "MAT-51-WIRE",
+          "desc": "6 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 1.2
+        },
+        {
+          "code": "MAT-51-CONDUIT",
+          "desc": "Rigid conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.75
+        },
+        {
+          "code": "MAT-51-RECEPTACLE",
+          "desc": "50A welder receptacle",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 120
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "shop_garage",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        50,
+        52,
+        53,
+        54
+      ],
+      "similarByCategory": [
+        50,
+        52,
+        53,
+        54
+      ]
+    },
+    {
+      "assemblyNumber": 52,
+      "name": "Air Compressor Circuit / Disconnect",
+      "category": "shop_garage",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-52-ROUTE",
+          "desc": "Route and pull wire",
+          "hours": 2.6,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-52-INSTALL",
+          "desc": "Disconnect and equipment connection",
+          "hours": 1.9,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-52-BREAKER",
+          "desc": "30A 240V breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 48
+        },
+        {
+          "code": "MAT-52-WIRE",
+          "desc": "10 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.6
+        },
+        {
+          "code": "MAT-52-CONDUIT",
+          "desc": "PVC/EMT conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.5
+        },
+        {
+          "code": "MAT-52-DISCONNECT",
+          "desc": "250V disconnect switch",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 85
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "shop_garage",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        50,
+        51,
+        53,
+        54
+      ],
+      "similarByCategory": [
+        50,
+        51,
+        53,
+        54
+      ]
+    },
+    {
+      "assemblyNumber": 53,
+      "name": "Stationary Tool Circuit",
+      "category": "shop_garage",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-53-ROUTE",
+          "desc": "Route and pull",
+          "hours": 2.4,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-53-CONNECT",
+          "desc": "Receptacle and panel connections",
+          "hours": 1.7,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-53-BREAKER",
+          "desc": "30A 240V breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 48
+        },
+        {
+          "code": "MAT-53-WIRE",
+          "desc": "10 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.6
+        },
+        {
+          "code": "MAT-53-CONDUIT",
+          "desc": "Rigid/PVC conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.5
+        },
+        {
+          "code": "MAT-53-RECEPTACLE",
+          "desc": "Heavy-duty receptacle",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "shop_garage",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        50,
+        51,
+        52,
+        54
+      ],
+      "similarByCategory": [
+        50,
+        51,
+        52,
+        54
+      ]
+    },
+    {
+      "assemblyNumber": 54,
+      "name": "Single-Phase Motor Equipment Connection",
+      "category": "shop_garage",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-54-ROUTE",
+          "desc": "Route and pull wire",
+          "hours": 2.7,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-54-CONNECT",
+          "desc": "Motor and disconnect setup",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-54-BREAKER",
+          "desc": "30A 240V breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 48
+        },
+        {
+          "code": "MAT-54-WIRE",
+          "desc": "10 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.6
+        },
+        {
+          "code": "MAT-54-CONDUIT",
+          "desc": "Rigid conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.55
+        },
+        {
+          "code": "MAT-54-DISCONNECT",
+          "desc": "Motor disconnect switch",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 95
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "shop_garage",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        50,
+        51,
+        52,
+        53
+      ],
+      "similarByCategory": [
+        50,
+        51,
+        52,
+        53
+      ]
+    },
+    {
+      "assemblyNumber": 55,
+      "name": "Portable Generator Inlet",
+      "category": "generator_backup",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-55-MOUNT",
+          "desc": "Inlet mount and wire routing",
+          "hours": 2.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-55-CONNECT",
+          "desc": "Panel connection and testing",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-55-INLET",
+          "desc": "Power inlet box with disconnect",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 180
+        },
+        {
+          "code": "MAT-55-WIRE",
+          "desc": "8 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.95
+        },
+        {
+          "code": "MAT-55-CONDUIT",
+          "desc": "Rigid conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.6
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "generator_backup",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        56,
+        57,
+        58
+      ],
+      "similarByCategory": [
+        56,
+        57,
+        58
+      ]
+    },
+    {
+      "assemblyNumber": 56,
+      "name": "Interlock Kit Install",
+      "category": "generator_backup",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-56-INSTALL",
+          "desc": "Interlock kit installation and adjustment",
+          "hours": 2.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-56-INTERLOCK",
+          "desc": "Mechanical interlock kit",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 150
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "generator_backup",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        55,
+        57,
+        58
+      ],
+      "similarByCategory": [
+        55,
+        57,
+        58
+      ]
+    },
+    {
+      "assemblyNumber": 57,
+      "name": "Manual Transfer Switch Install",
+      "category": "generator_backup",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-57-MOUNT",
+          "desc": "Switch mounting and wire routing",
+          "hours": 3.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-57-TERMINATE",
+          "desc": "Breaker and load termination",
+          "hours": 2.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-57-SWITCH",
+          "desc": "Manual transfer switch (sub-main)",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 400
+        },
+        {
+          "code": "MAT-57-WIRE",
+          "desc": "Feeder wire for transfer switch",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.8
+        },
+        {
+          "code": "MAT-57-CONDUIT",
+          "desc": "Rigid conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.6
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "generator_backup",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        55,
+        56,
+        58
+      ],
+      "similarByCategory": [
+        55,
+        56,
+        58
+      ]
+    },
+    {
+      "assemblyNumber": 58,
+      "name": "Standby Generator Electrical Package",
+      "category": "generator_backup",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-58-INSTALL",
+          "desc": "Generator installation and connection labor",
+          "hours": 6,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-58-ELECTRICAL",
+          "desc": "Electrical integration and testing",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [
+        {
+          "code": "OTH-58-TRANSFER",
+          "desc": "Manual transfer switch package allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 800
+        }
+      ],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "generator_backup",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        55,
+        56,
+        57
+      ],
+      "similarByCategory": [
+        55,
+        56,
+        57
+      ]
+    },
+    {
+      "assemblyNumber": 59,
+      "name": "EV Charger Circuit",
+      "category": "specialty",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-59-ROUTE",
+          "desc": "Route to garage and pull wire",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-59-TERMINATE",
+          "desc": "Breaker and termination work",
+          "hours": 1.8,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-59-BREAKER",
+          "desc": "40A 240V breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 52
+        },
+        {
+          "code": "MAT-59-WIRE",
+          "desc": "8 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.95
+        },
+        {
+          "code": "MAT-59-CONDUIT",
+          "desc": "Rigid/PVC conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.6
+        },
+        {
+          "code": "MAT-59-JB",
+          "desc": "Junction box and fittings",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 45
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "specialty",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        60,
+        61,
+        62
+      ],
+      "similarByCategory": [
+        60,
+        61,
+        62
+      ]
+    },
+    {
+      "assemblyNumber": 60,
+      "name": "EV Charger Install with Customer-Supplied Equipment",
+      "category": "specialty",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-60-INSTALL",
+          "desc": "Charger mounting and electrical connection",
+          "hours": 3.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [
+        {
+          "code": "OTH-60-MISC",
+          "desc": "Fasteners, conduit fittings, and hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 35
+        }
+      ],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "specialty",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        59,
+        61,
+        62
+      ],
+      "similarByCategory": [
+        59,
+        61,
+        62
+      ]
+    },
+    {
+      "assemblyNumber": 61,
+      "name": "Exterior Equipment Disconnect",
+      "category": "specialty",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-61-MOUNT",
+          "desc": "Disconnect mounting on exterior",
+          "hours": 1.8,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-61-WIRE",
+          "desc": "Wiring and termination",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-61-DISCONNECT",
+          "desc": "Exterior disconnect enclosure and hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 125
+        },
+        {
+          "code": "MAT-61-WIRE",
+          "desc": "THHN/THW wire for disconnect",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.6
+        },
+        {
+          "code": "MAT-61-CONDUIT",
+          "desc": "Conduit to disconnect",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.55
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "specialty",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        59,
+        60,
+        62
+      ],
+      "similarByCategory": [
+        59,
+        60,
+        62
+      ]
+    },
+    {
+      "assemblyNumber": 62,
+      "name": "Specialty 240V Equipment Circuit",
+      "category": "specialty",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-62-ROUTE",
+          "desc": "Route and pull wire",
+          "hours": 2.6,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-62-CONNECT",
+          "desc": "Receptacle and panel connections",
+          "hours": 1.7,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-62-BREAKER",
+          "desc": "240V breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 52
+        },
+        {
+          "code": "MAT-62-WIRE",
+          "desc": "THHN/THW wire for equipment",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.7
+        },
+        {
+          "code": "MAT-62-CONDUIT",
+          "desc": "Rigid/PVC conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.55
+        },
+        {
+          "code": "MAT-62-RECEPTACLE",
+          "desc": "Specialty 240V receptacle",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 85
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "location_type:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "specialty",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "location_type:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        59,
+        60,
+        61
+      ],
+      "similarByCategory": [
+        59,
+        60,
+        61
+      ]
+    },
+    {
+      "assemblyNumber": 63,
+      "name": "Hot Tub Disconnect / Feed",
+      "category": "pool_spa",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-63-ROUTE",
+          "desc": "Route feeder to hot tub location",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-63-INSTALL",
+          "desc": "Disconnect and equipment connection",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-63-DISCONNECT",
+          "desc": "Hot tub disconnect switch",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 150
+        },
+        {
+          "code": "MAT-63-WIRE",
+          "desc": "6 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 1.2
+        },
+        {
+          "code": "MAT-63-CONDUIT",
+          "desc": "Rigid/PVC conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.6
+        },
+        {
+          "code": "MAT-63-BREAKER",
+          "desc": "50A breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "bonding_required:boolean:opt",
+        "disconnect_type:enum:req",
+        "feeder_ampacity:enum:req",
+        "route_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "pool_spa",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "bonding_required:boolean:opt",
+          "disconnect_type:enum:req",
+          "feeder_ampacity:enum:req",
+          "route_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        64,
+        65
+      ]
+    },
+    {
+      "assemblyNumber": 64,
+      "name": "Pool Equipment Feed",
+      "category": "pool_spa",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-64-ROUTE",
+          "desc": "Route to pool equipment location",
+          "hours": 3.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-64-INSTALL",
+          "desc": "Disconnect and equipment bonding",
+          "hours": 2.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-64-DISCONNECT",
+          "desc": "Pool equipment disconnect",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 160
+        },
+        {
+          "code": "MAT-64-WIRE",
+          "desc": "6 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 1.2
+        },
+        {
+          "code": "MAT-64-CONDUIT",
+          "desc": "Rigid conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.65
+        },
+        {
+          "code": "MAT-64-BREAKER",
+          "desc": "60A breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 70
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "bonding_required:boolean:opt",
+        "equipment_profile:enum:req",
+        "feeder_ampacity:enum:req",
+        "route_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "pool_spa",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "bonding_required:boolean:opt",
+          "equipment_profile:enum:req",
+          "feeder_ampacity:enum:req",
+          "route_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        63,
+        65
+      ]
+    },
+    {
+      "assemblyNumber": 65,
+      "name": "Spa / Hot Tub Full Electrical Package",
+      "category": "pool_spa",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-65-FEEDER",
+          "desc": "Feeder installation and pull",
+          "hours": 3.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-65-DISCONNECT",
+          "desc": "Disconnect installation and bonding setup",
+          "hours": 2.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-65-TESTING",
+          "desc": "Final inspection and equipment testing",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-65-DISCONNECT",
+          "desc": "Spa disconnect enclosure",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 180
+        },
+        {
+          "code": "MAT-65-FEEDER",
+          "desc": "6 AWG THHN/THW feeder wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 1.2
+        },
+        {
+          "code": "MAT-65-CONDUIT",
+          "desc": "Rigid conduit and fittings",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.65
+        },
+        {
+          "code": "MAT-65-BONDING",
+          "desc": "Bonding hardware and jumpers",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 95
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "bonding_required:boolean:opt",
+        "feeder_ampacity:enum:req",
+        "location_type:enum:req",
+        "route_access:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "pool_spa",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "bonding_required:boolean:opt",
+          "feeder_ampacity:enum:req",
+          "location_type:enum:req",
+          "route_access:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        63,
+        64
+      ]
+    },
+    {
+      "assemblyNumber": 66,
+      "name": "Remove Existing Device / Fixture",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_only",
+      "labor": [
+        {
+          "code": "LAB-66-REMOVE",
+          "desc": "Remove device/fixture labor",
+          "hours": 0.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-66-DISPOSAL",
+          "desc": "Disposal and cleanup labor",
+          "hours": 0.25,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "device_type_removed:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_only",
+        "paramKeys": [
+          "device_type_removed:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 67,
+      "name": "Remove Existing Circuit Segment",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_only",
+      "labor": [
+        {
+          "code": "LAB-67-REMOVE",
+          "desc": "Circuit removal labor",
+          "hours": 0.08,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        },
+        {
+          "code": "LAB-67-PATCH",
+          "desc": "Patch and cleanup labor",
+          "hours": 0.75,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "accessibility:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_only",
+        "paramKeys": [
+          "accessibility:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 68,
+      "name": "Demo for Panel Replacement",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_only",
+      "labor": [
+        {
+          "code": "LAB-68-DEMO",
+          "desc": "Panel demo and disconnection labor",
+          "hours": 3.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-68-CLEANUP",
+          "desc": "Site cleanup and disposal",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "hazard_present:enum:req",
+        "panel_location_type:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_only",
+        "paramKeys": [
+          "hazard_present:enum:req",
+          "panel_location_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 69,
+      "name": "Repair Existing Splice / Termination",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "repair_existing",
+      "labor": [
+        {
+          "code": "LAB-69-REPAIR",
+          "desc": "Open, splice, and re-secure labor",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-69-SPLICE",
+          "desc": "Splice kit or termination hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 28
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "access_difficulty:enum:req",
+        "splice_type:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "repair_existing",
+        "paramKeys": [
+          "access_difficulty:enum:req",
+          "splice_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 70,
+      "name": "Rework Existing Panel Conductors",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "repair_existing",
+      "labor": [
+        {
+          "code": "LAB-70-REWORK",
+          "desc": "Panel conductor rework labor",
+          "hours": 3.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "branch_circuit_count:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "repair_existing",
+        "paramKeys": [
+          "branch_circuit_count:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 71,
+      "name": "Access / Fish / Route Difficulty Add-On",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "extend_from_existing",
+      "labor": [
+        {
+          "code": "LAB-71-ACCESS",
+          "desc": "Difficulty add-on labor",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "extend_from_existing",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 72,
+      "name": "Permit Allowance",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "allowance",
+      "labor": [],
+      "material": [],
+      "other": [
+        {
+          "code": "OTH-72-PERMIT",
+          "desc": "Permit allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 350
+        }
+      ],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "allowance",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 73,
+      "name": "Wall Repair / Patch Allowance",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "allowance",
+      "labor": [
+        {
+          "code": "LAB-73-PATCH",
+          "desc": "Patch and finish labor",
+          "hours": 1.25,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "patch_count",
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-73-PATCH",
+          "desc": "Drywall, patch compound, paint allowance",
+          "qty": 1,
+          "qtyExpr": "patch_count",
+          "unit": "ea",
+          "cost": 85
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "patch_count:integer:req",
+        "surface_type:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "allowance",
+        "paramKeys": [
+          "patch_count:integer:req",
+          "surface_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 74,
+      "name": "Junction / Splice Box Add or Replace",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-74-MOUNT",
+          "desc": "Mount and hang box",
+          "hours": 0.75,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-74-CONNECT",
+          "desc": "Make connections and verify",
+          "hours": 0.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-74-BOX",
+          "desc": "Junction/splice box and cover",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 28
+        },
+        {
+          "code": "MAT-74-HARDWARE",
+          "desc": "Clamps and mounting hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 12
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "box_type:enum:req",
+        "installation_type:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "box_type:enum:req",
+          "installation_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 75,
+      "name": "Install Ceiling Fan",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-75-FAN",
+          "desc": "Install fan labor",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-75-FAN",
+          "desc": "Fan hardware/consumables allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 55
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "ceiling_type:enum:req",
+        "support_box_scope:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "ceiling_type:enum:req",
+          "support_box_scope:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 76,
+      "name": "Upgrade Receptacle to GFCI",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-76-UPGFCI",
+          "desc": "Upgrade receptacle labor",
+          "hours": 0.75,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-76-UPGFCI",
+          "desc": "GFCI and label allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 25
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        85,
+        86
+      ],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 77,
+      "name": "Replace Existing Smoke/CO Detector",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-77-SMOKE",
+          "desc": "Replace detector labor",
+          "hours": 0.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-77-SMOKE",
+          "desc": "Smoke/CO detector allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 48
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "device_type:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "device_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 78,
+      "name": "Add New Hardwired Smoke/CO Detector",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-78-BASE",
+          "desc": "Mount, wire and test detector",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-78-ROUTE",
+          "desc": "Interconnect cable route labor",
+          "hours": 0.04,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-78-UNIT",
+          "desc": "Smoke/CO detector unit and box",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 75
+        },
+        {
+          "code": "MAT-78-CABLE",
+          "desc": "14/3 NM-B interconnect cable",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.7
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "attic_access:enum:req",
+        "interconnect_type:enum:req",
+        "run_length:number:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "attic_access:enum:req",
+          "interconnect_type:enum:req",
+          "run_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 79,
+      "name": "Smoke/CO Detector Package",
+      "category": "support",
+      "tier": "package",
+      "laborClass": null,
+      "labor": [],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "access_difficulty_qty:integer:opt",
+        "new_detector_qty:integer:opt",
+        "replace_detector_qty:integer:opt"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "package",
+        "laborClass": "none",
+        "paramKeys": [
+          "access_difficulty_qty:integer:opt",
+          "new_detector_qty:integer:opt",
+          "replace_detector_qty:integer:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 80,
+      "name": "Bathroom Exhaust Fan Install / Replace",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-80-BATHFAN",
+          "desc": "Install/replace bath fan labor",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-80-BATHFAN",
+          "desc": "Fan hardware/duct allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 140
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "attic_access:enum:req",
+        "ducting_scope:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "attic_access:enum:req",
+          "ducting_scope:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 81,
+      "name": "Load Calculation / Panel Schedule Review",
+      "category": "support",
+      "tier": "support",
+      "laborClass": "test_verify",
+      "labor": [
+        {
+          "code": "LAB-81-LOADCALC",
+          "desc": "Technical review labor",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "support",
+        "laborClass": "test_verify",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        82
+      ],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        82,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 82,
+      "name": "Utility Coordination / Disconnect-Reconnect",
+      "category": "support",
+      "tier": "support",
+      "laborClass": "test_verify",
+      "labor": [
+        {
+          "code": "LAB-82-UTIL",
+          "desc": "Utility coordination labor",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "support",
+        "laborClass": "test_verify",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        81
+      ],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        83,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 83,
+      "name": "Trenching / Underground Route",
+      "category": "support",
+      "tier": "support",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-83-BASE",
+          "desc": "Setup, backfill and compaction",
+          "hours": 3,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-83-TRENCH",
+          "desc": "Excavation and conduit laying",
+          "hours": 0.08,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "trench_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-83-BASE",
+          "desc": "Conduit end fittings and markers",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 40
+        },
+        {
+          "code": "MAT-83-COND",
+          "desc": "1\" PVC conduit or UF cable",
+          "qty": 1,
+          "qtyExpr": "trench_length",
+          "unit": "lf",
+          "cost": 0.5
+        }
+      ],
+      "other": [
+        {
+          "code": "OTH-83-RESTORE",
+          "desc": "Restoration/boring allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 450
+        }
+      ],
+      "parameterKeys": [
+        "boring_required:boolean:opt",
+        "depth_class:enum:req",
+        "surface_type:enum:req",
+        "trench_length:number:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "support",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "boring_required:boolean:opt",
+          "depth_class:enum:req",
+          "surface_type:enum:req",
+          "trench_length:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        84,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 84,
+      "name": "Doorbell / Chime Transformer Repair or Replace",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-84-INSTALL",
+          "desc": "Install transformer and chime",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-84-TRANSFORMER",
+          "desc": "Doorbell transformer 24V",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 45
+        },
+        {
+          "code": "MAT-84-CHIME",
+          "desc": "Chime unit allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "chime_type:enum:opt",
+        "transformer_rating:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "chime_type:enum:opt",
+          "transformer_rating:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        85,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 85,
+      "name": "Dimmer / Smart Switch Install or Upgrade",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-85-DIMMER",
+          "desc": "Install dimmer/smart switch labor",
+          "hours": 1.1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-85-DIMMER",
+          "desc": "Device allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 55
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        76,
+        86
+      ],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        86
+      ]
+    },
+    {
+      "assemblyNumber": 86,
+      "name": "Timer / Occupancy Sensor Switch Install",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "remove_and_replace",
+      "labor": [
+        {
+          "code": "LAB-86-INSTALL",
+          "desc": "Switch replacement and testing",
+          "hours": 1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-86-SWITCH",
+          "desc": "Specialty switch device",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "remove_and_replace",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [
+        76,
+        85
+      ],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85
+      ]
+    },
+    {
+      "assemblyNumber": 87,
+      "name": "Electric Baseboard / Wall Heater Circuit / Connection",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-87-ROUTE",
+          "desc": "Route and pull wire to heater",
+          "hours": 2.1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-87-INSTALL",
+          "desc": "Heater and thermostat installation",
+          "hours": 1.8,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-87-BREAKER",
+          "desc": "20A 240V breaker",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 45
+        },
+        {
+          "code": "MAT-87-WIRE",
+          "desc": "12 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.5
+        },
+        {
+          "code": "MAT-87-CONDUIT",
+          "desc": "PVC/EMT conduit",
+          "qty": 1,
+          "qtyExpr": "run_length",
+          "unit": "lf",
+          "cost": 0.45
+        },
+        {
+          "code": "MAT-87-THERMOSTAT",
+          "desc": "Line-voltage thermostat",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 75
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "difficulty_tier:enum:req",
+        "quantity:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "difficulty_tier:enum:req",
+          "quantity:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85
+      ]
+    },
+    {
+      "assemblyNumber": 88,
+      "name": "Install Equipment Disconnect",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-88-DISC",
+          "desc": "Install equipment disconnect labor",
+          "hours": 2.25,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-88-DISC",
+          "desc": "Disconnect hardware allowance",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 145
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "interior_or_exterior_disconnect:enum:req",
+        "service_ampacity:integer:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "interior_or_exterior_disconnect:enum:req",
+          "service_ampacity:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85
+      ]
+    },
+    {
+      "assemblyNumber": 89,
+      "name": "Install New Subpanel",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-89-PANEL",
+          "desc": "Panel mount, bus work and main connections",
+          "hours": 5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-89-FEEDER",
+          "desc": "Feeder route and pull labor",
+          "hours": 0.08,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "feeder_run_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-89-PANEL",
+          "desc": "100A subpanel, breakers and fittings",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 500
+        },
+        {
+          "code": "MAT-89-FEEDER",
+          "desc": "2/0 SER feeder cable",
+          "qty": 1,
+          "qtyExpr": "feeder_run_length",
+          "unit": "lf",
+          "cost": 2.8
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "feeder_run_length:number:req",
+        "panel_amp_rating:integer:req",
+        "route_access:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "feeder_run_length:number:req",
+          "panel_amp_rating:integer:req",
+          "route_access:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85
+      ]
+    },
+    {
+      "assemblyNumber": 90,
+      "name": "New-Construction Receptacle Point",
+      "category": "package",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-90-ROUGH",
+          "desc": "Rough-in box placement and cable",
+          "hours": 0.18,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-90-TRIM",
+          "desc": "Trim device and plate installation",
+          "hours": 0.12,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-90-BOX",
+          "desc": "New-work box",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-90-DEVICE",
+          "desc": "15A duplex receptacle",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 2.5
+        },
+        {
+          "code": "MAT-90-PLATE",
+          "desc": "Faceplate",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-90-WNUT",
+          "desc": "Wire connector set (3 wirenuts)",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "set",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-90-FIT",
+          "desc": "Cable fittings and fastening hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 2.5
+        },
+        {
+          "code": "MAT-90-CABLE",
+          "desc": "14/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "branch_circuit_cable_length",
+          "unit": "lf",
+          "cost": 0.35
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "box_type:enum:req",
+        "branch_circuit_cable_length:number:req",
+        "device_grade:enum:opt",
+        "device_type:enum:opt",
+        "gang_count:integer:opt"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "box_type:enum:req",
+          "branch_circuit_cable_length:number:req",
+          "device_grade:enum:opt",
+          "device_type:enum:opt",
+          "gang_count:integer:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99
+      ]
+    },
+    {
+      "assemblyNumber": 91,
+      "name": "New-Construction Switch Point",
+      "category": "package",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-91-ROUGH",
+          "desc": "Rough-in box placement and cable",
+          "hours": 0.15,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-91-TRIM",
+          "desc": "Trim switch and plate installation",
+          "hours": 0.1,
+          "rate": 90,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-91-BOX",
+          "desc": "New-work box",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 4
+        },
+        {
+          "code": "MAT-91-DEVICE",
+          "desc": "Single-pole switch",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 3
+        },
+        {
+          "code": "MAT-91-PLATE",
+          "desc": "Faceplate",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-91-WNUT",
+          "desc": "Wire connector set (3 wirenuts)",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "set",
+          "cost": 1.5
+        },
+        {
+          "code": "MAT-91-FIT",
+          "desc": "Cable fittings and fastening hardware",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 2.5
+        },
+        {
+          "code": "MAT-91-CABLE",
+          "desc": "14/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "branch_circuit_cable_length",
+          "unit": "lf",
+          "cost": 0.35
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "box_type:enum:req",
+        "branch_circuit_cable_length:number:req",
+        "device_grade:enum:opt",
+        "gang_count:integer:opt",
+        "switch_type:enum:opt"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "box_type:enum:req",
+          "branch_circuit_cable_length:number:req",
+          "device_grade:enum:opt",
+          "gang_count:integer:opt",
+          "switch_type:enum:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        90,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99
+      ]
+    },
+    {
+      "assemblyNumber": 92,
+      "name": "New-Construction Ceiling Light Point",
+      "category": "package",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-92-ROUGH",
+          "desc": "Rough-in box placement and cable",
+          "hours": 0.2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-92-TRIM",
+          "desc": "Trim fixture installation",
+          "hours": 0.15,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-92-BOX",
+          "desc": "Ceiling box and hanger",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 18
+        },
+        {
+          "code": "MAT-92-FIXTURE",
+          "desc": "Basic ceiling light fixture",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 35
+        },
+        {
+          "code": "MAT-92-CABLE",
+          "desc": "14/2 NM-B cable",
+          "qty": 1,
+          "qtyExpr": "branch_circuit_cable_length",
+          "unit": "lf",
+          "cost": 0.35
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "box_type:enum:req",
+        "branch_circuit_cable_length:number:req",
+        "ceiling_type:enum:opt",
+        "fixture_type:enum:req",
+        "mounting_height:enum:opt"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "box_type:enum:req",
+          "branch_circuit_cable_length:number:req",
+          "ceiling_type:enum:opt",
+          "fixture_type:enum:req",
+          "mounting_height:enum:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        90,
+        91,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99
+      ]
+    },
+    {
+      "assemblyNumber": 93,
+      "name": "New-Construction Rough-In Only Point",
+      "category": "package",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-93-ROUGH",
+          "desc": "Rough box placement and cable labor",
+          "hours": 0.18,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-93-BOX",
+          "desc": "Box and fittings per point type",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 15
+        },
+        {
+          "code": "MAT-93-CABLE",
+          "desc": "NM-B cable per point type",
+          "qty": 1,
+          "qtyExpr": "branch_circuit_cable_length",
+          "unit": "lf",
+          "cost": 0.35
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "branch_circuit_cable_length:number:req",
+        "point_type:enum:req"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "branch_circuit_cable_length:number:req",
+          "point_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        90,
+        91,
+        92,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99
+      ]
+    },
+    {
+      "assemblyNumber": 94,
+      "name": "New-Construction Trim-Out Only Point",
+      "category": "package",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-94-TRIM",
+          "desc": "Trim device/fixture installation",
+          "hours": 0.12,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-94-DEVICE",
+          "desc": "Device/fixture per point type",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 20
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "point_type:enum:req"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "point_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        90,
+        91,
+        92,
+        93,
+        95,
+        96,
+        97,
+        98,
+        99
+      ]
+    },
+    {
+      "assemblyNumber": 95,
+      "name": "Bedroom Room Package",
+      "category": "package",
+      "tier": "package",
+      "laborClass": null,
+      "labor": [],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "branch_circuit_cable_length:number:req",
+        "ceiling_fan_qty:integer:opt",
+        "closet_light_qty:integer:opt",
+        "light_qty:integer:req",
+        "receptacle_qty:integer:req",
+        "room_label:string:opt",
+        "smoke_co_qty:integer:opt",
+        "switch_qty:integer:req"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "package",
+        "laborClass": "none",
+        "paramKeys": [
+          "branch_circuit_cable_length:number:req",
+          "ceiling_fan_qty:integer:opt",
+          "closet_light_qty:integer:opt",
+          "light_qty:integer:req",
+          "receptacle_qty:integer:req",
+          "room_label:string:opt",
+          "smoke_co_qty:integer:opt",
+          "switch_qty:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        90,
+        91,
+        92,
+        93,
+        94,
+        96,
+        97,
+        98,
+        99
+      ]
+    },
+    {
+      "assemblyNumber": 96,
+      "name": "Bathroom Room Package",
+      "category": "package",
+      "tier": "package",
+      "laborClass": null,
+      "labor": [],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "bathroom_type:enum:req",
+        "branch_circuit_cable_length:number:req",
+        "dedicated_20a_circuit_qty:integer:req",
+        "exhaust_fan_qty:integer:opt",
+        "gfci_receptacle_qty:integer:req",
+        "light_qty:integer:req",
+        "room_label:string:opt",
+        "switch_qty:integer:req"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "package",
+        "laborClass": "none",
+        "paramKeys": [
+          "bathroom_type:enum:req",
+          "branch_circuit_cable_length:number:req",
+          "dedicated_20a_circuit_qty:integer:req",
+          "exhaust_fan_qty:integer:opt",
+          "gfci_receptacle_qty:integer:req",
+          "light_qty:integer:req",
+          "room_label:string:opt",
+          "switch_qty:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        97,
+        98,
+        99
+      ]
+    },
+    {
+      "assemblyNumber": 97,
+      "name": "Kitchen Room Package",
+      "category": "package",
+      "tier": "package",
+      "laborClass": null,
+      "labor": [],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "branch_circuit_cable_length:number:req",
+        "configuration_type:enum:req",
+        "countertop_gfci_qty:integer:req",
+        "dishwasher_disposal_qty:integer:opt",
+        "light_qty:integer:req",
+        "microwave_hood_qty:integer:opt",
+        "range_circuit_qty:integer:opt",
+        "recessed_light_qty:integer:opt",
+        "room_label:string:opt",
+        "small_appliance_circuit_count:integer:req",
+        "switch_qty:integer:req"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "package",
+        "laborClass": "none",
+        "paramKeys": [
+          "branch_circuit_cable_length:number:req",
+          "configuration_type:enum:req",
+          "countertop_gfci_qty:integer:req",
+          "dishwasher_disposal_qty:integer:opt",
+          "light_qty:integer:req",
+          "microwave_hood_qty:integer:opt",
+          "range_circuit_qty:integer:opt",
+          "recessed_light_qty:integer:opt",
+          "room_label:string:opt",
+          "small_appliance_circuit_count:integer:req",
+          "switch_qty:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        98,
+        99
+      ]
+    },
+    {
+      "assemblyNumber": 98,
+      "name": "Laundry Room Package",
+      "category": "package",
+      "tier": "package",
+      "laborClass": null,
+      "labor": [],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "branch_circuit_cable_length:number:req",
+        "dryer_circuit_qty:integer:opt",
+        "laundry_circuit_qty:integer:req",
+        "light_qty:integer:req",
+        "receptacle_qty:integer:req",
+        "room_label:string:opt",
+        "switch_qty:integer:req",
+        "water_heater_circuit_qty:integer:opt"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "package",
+        "laborClass": "none",
+        "paramKeys": [
+          "branch_circuit_cable_length:number:req",
+          "dryer_circuit_qty:integer:opt",
+          "laundry_circuit_qty:integer:req",
+          "light_qty:integer:req",
+          "receptacle_qty:integer:req",
+          "room_label:string:opt",
+          "switch_qty:integer:req",
+          "water_heater_circuit_qty:integer:opt"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        99
+      ]
+    },
+    {
+      "assemblyNumber": 99,
+      "name": "Garage Room Package",
+      "category": "package",
+      "tier": "package",
+      "laborClass": null,
+      "labor": [],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "branch_circuit_cable_length:number:req",
+        "exterior_receptacle_qty:integer:opt",
+        "garage_door_opener_qty:integer:opt",
+        "garage_size:enum:req",
+        "gfci_receptacle_qty:integer:req",
+        "light_qty:integer:req",
+        "room_label:string:opt",
+        "shop_equipment_circuit_qty:integer:opt",
+        "switch_qty:integer:req"
+      ],
+      "signature": {
+        "category": "package",
+        "tier": "package",
+        "laborClass": "none",
+        "paramKeys": [
+          "branch_circuit_cable_length:number:req",
+          "exterior_receptacle_qty:integer:opt",
+          "garage_door_opener_qty:integer:opt",
+          "garage_size:enum:req",
+          "gfci_receptacle_qty:integer:req",
+          "light_qty:integer:req",
+          "room_label:string:opt",
+          "shop_equipment_circuit_qty:integer:opt",
+          "switch_qty:integer:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98
+      ]
+    },
+    {
+      "assemblyNumber": 100,
+      "name": "Service Entrance Upgrade",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-100-ROUGH",
+          "desc": "Service head and entrance installation",
+          "hours": 6,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-100-HEIGHT",
+          "desc": "Elevated service entry labor",
+          "hours": 0.15,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "service_height",
+          "unit": "ft"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-100-BASE",
+          "desc": "Service entrance hardware and fittings",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 320
+        },
+        {
+          "code": "MAT-100-MAIN",
+          "desc": "Service entrance conductors (SER cable)",
+          "qty": 1,
+          "qtyExpr": "service_height",
+          "unit": "lf",
+          "cost": 3.2
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "current_service_size:integer:req",
+        "new_service_size:integer:req",
+        "service_height:number:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "current_service_size:integer:req",
+          "new_service_size:integer:req",
+          "service_height:number:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85
+      ]
+    },
+    {
+      "assemblyNumber": 101,
+      "name": "Outlet Circuit Extension",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-101-ROUTE",
+          "desc": "Route conduit and pull wire",
+          "hours": 1.8,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-101-PULL",
+          "desc": "Pull wire and make connections",
+          "hours": 0.04,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "circuit_length",
+          "unit": "lf"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-101-BREAKER",
+          "desc": "Breaker rated to amp_rating",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 45
+        },
+        {
+          "code": "MAT-101-WIRE",
+          "desc": "12 AWG THHN/THW wire per amp rating",
+          "qty": 1,
+          "qtyExpr": "circuit_length",
+          "unit": "lf",
+          "cost": 0.4
+        },
+        {
+          "code": "MAT-101-CONDUIT",
+          "desc": "PVC/EMT conduit",
+          "qty": 1,
+          "qtyExpr": "circuit_length",
+          "unit": "lf",
+          "cost": 0.45
+        },
+        {
+          "code": "MAT-101-BOX",
+          "desc": "Outlet box, device and plate",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 20
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "amp_rating:integer:req",
+        "circuit_length:number:req",
+        "location_type:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "amp_rating:integer:req",
+          "circuit_length:number:req",
+          "location_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85
+      ]
+    },
+    {
+      "assemblyNumber": 102,
+      "name": "Lighting Circuit Extension",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "new_install",
+      "labor": [
+        {
+          "code": "LAB-102-ROUTE",
+          "desc": "Route conduit and install boxes",
+          "hours": 1.5,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-102-PULL",
+          "desc": "Pull wire and make connections",
+          "hours": 0.03,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "circuit_length",
+          "unit": "lf"
+        },
+        {
+          "code": "LAB-102-FIXTURE",
+          "desc": "Install light fixtures",
+          "hours": 1.25,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": "fixture_count",
+          "unit": "ea"
+        }
+      ],
+      "material": [
+        {
+          "code": "MAT-102-BREAKER",
+          "desc": "15A breaker for lighting",
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea",
+          "cost": 35
+        },
+        {
+          "code": "MAT-102-WIRE",
+          "desc": "14 AWG THHN/THW wire",
+          "qty": 1,
+          "qtyExpr": "circuit_length",
+          "unit": "lf",
+          "cost": 0.3
+        },
+        {
+          "code": "MAT-102-CONDUIT",
+          "desc": "PVC/EMT conduit",
+          "qty": 1,
+          "qtyExpr": "circuit_length",
+          "unit": "lf",
+          "cost": 0.4
+        },
+        {
+          "code": "MAT-102-FIXTURES",
+          "desc": "Light fixture(s) allowance per unit",
+          "qty": 1,
+          "qtyExpr": "fixture_count",
+          "unit": "ea",
+          "cost": 65
+        }
+      ],
+      "other": [],
+      "parameterKeys": [
+        "circuit_length:number:req",
+        "fixture_count:integer:req",
+        "light_type:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "new_install",
+        "paramKeys": [
+          "circuit_length:number:req",
+          "fixture_count:integer:req",
+          "light_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85
+      ]
+    },
+    {
+      "assemblyNumber": 103,
+      "name": "Load Calculation Assessment",
+      "category": "support",
+      "tier": "atomic",
+      "laborClass": "test_verify",
+      "labor": [
+        {
+          "code": "LAB-103-CALC",
+          "desc": "Load calculation and panel review",
+          "hours": 2,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        },
+        {
+          "code": "LAB-103-REPORT",
+          "desc": "Findings report and recommendations",
+          "hours": 1,
+          "rate": 115,
+          "qty": 1,
+          "qtyExpr": null,
+          "unit": "ea"
+        }
+      ],
+      "material": [],
+      "other": [],
+      "parameterKeys": [
+        "existing_panel_amps:integer:req",
+        "load_type:enum:req"
+      ],
+      "signature": {
+        "category": "support",
+        "tier": "atomic",
+        "laborClass": "test_verify",
+        "paramKeys": [
+          "existing_panel_amps:integer:req",
+          "load_type:enum:req"
+        ]
+      },
+      "similarBySignature": [],
+      "similarByCategory": [
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85
+      ]
+    }
+  ]
+}

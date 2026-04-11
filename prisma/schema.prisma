@@ -1,0 +1,502 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Customer {
+  id          String     @id @default(cuid())
+  name        String
+  email       String?
+  phone       String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  properties  Property[]
+  visits      Visit[]
+}
+
+model Property {
+  id                     String         @id @default(cuid())
+  customerId             String
+  name                   String
+  addressLine1           String
+  addressLine2           String?
+  city                   String
+  state                  String
+  postalCode             String
+  notes                  String?
+  occupancyType          String         @default("residential") // residential | commercial
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+  customer               Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  systemSnapshot         SystemSnapshot?
+  visits                 Visit[]
+  estimates              Estimate[]
+}
+
+model SystemSnapshot {
+  id                     String    @id @default(cuid())
+  propertyId             String    @unique
+  serviceSummary         String?
+  panelSummary           String?
+  groundingSummary       String?
+  wiringMethodSummary    String?
+  deficienciesJson       String?
+  changeLogJson          String?
+  updatedAt              DateTime  @updatedAt
+  property               Property  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+}
+
+model Visit {
+  id                     String            @id @default(cuid())
+  propertyId             String
+  customerId             String
+  mode                   String
+  purpose                String?
+  visitDate              DateTime          @default(now())
+  notes                  String?
+  createdAt              DateTime          @default(now())
+  property               Property          @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  customer               Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  customerRequest        CustomerRequest?
+  observations           Observation[]
+  findings               Finding[]
+  limitations            Limitation[]
+  recommendations        Recommendation[]
+  estimates              Estimate[]
+}
+
+model CustomerRequest {
+  id                     String    @id @default(cuid())
+  visitId                String    @unique
+  requestText            String
+  urgency                String?
+  createdAt              DateTime  @default(now())
+  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+}
+
+model Observation {
+  id                     String    @id @default(cuid())
+  visitId                String
+  location               String?
+  observationText        String
+  createdAt              DateTime  @default(now())
+  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+}
+
+model Finding {
+  id                     String    @id @default(cuid())
+  visitId                String
+  findingText            String
+  confidence             String?
+  createdAt              DateTime  @default(now())
+  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+}
+
+model Limitation {
+  id                     String    @id @default(cuid())
+  visitId                String
+  limitationText         String
+  createdAt              DateTime  @default(now())
+  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+}
+
+model Recommendation {
+  id                     String    @id @default(cuid())
+  visitId                String
+  recommendationText     String
+  priority               String?
+  createdAt              DateTime  @default(now())
+  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+}
+
+model Estimate {
+  id                     String                 @id @default(cuid())
+  visitId                String
+  propertyId             String
+  status                 String                 @default("draft")
+  revision               Int                    @default(1)
+  title                  String
+  notes                  String?
+  materialMarkupPct      Float                  @default(30)
+  laborMarkupPct         Float                  @default(0)
+  lockedAt               DateTime?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  visit                  Visit                  @relation(fields: [visitId], references: [id], onDelete: Restrict)
+  property               Property               @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  options                EstimateOption[]
+  permitStatus           PermitStatus?
+  inspections            InspectionStatus[]
+  proposalDeliveries     ProposalDelivery[]
+  signatures             SignatureRecord[]
+  acceptance             ProposalAcceptance?
+  changeOrders           ChangeOrder[]
+  supportItems           SupportItem[]
+}
+
+model EstimateOption {
+  id                     String             @id @default(cuid())
+  estimateId             String
+  optionLabel            String
+  description            String?
+  sortOrder              Int                @default(0)
+  accepted               Boolean            @default(false)
+  subtotalLabor          Float              @default(0)
+  subtotalMaterial       Float              @default(0)
+  subtotalOther          Float              @default(0)
+  totalCost              Float              @default(0)
+  estimate               Estimate           @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  assemblies             EstimateAssembly[]
+  items                  EstimateItem[]
+  changeOrders           ChangeOrder[]
+}
+
+model AssemblyTemplate {
+  id                     String                  @id
+  assemblyNumber         Int
+  name                   String
+  description            String?
+  category               String?
+  tier                   String
+  laborClass             String?
+  applicableModesJson    String?
+  parametersJson         String?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  components             AssemblyTemplateComponent[]
+  childLinks             AssemblyTemplateChild[] @relation("ParentTemplate")
+  parentLinks            AssemblyTemplateChild[] @relation("ChildTemplate")
+  parameterDefinitions   AssemblyParameterDefinition[]
+  variants               AssemblyTemplateVariant[]
+  estimateAssemblies     EstimateAssembly[]
+}
+
+model AssemblyParameterDefinition {
+  id                     String            @id @default(cuid())
+  templateId             String
+  key                    String
+  label                  String
+  valueType              String
+  required               Boolean           @default(false)
+  defaultValueJson       String?
+  enumOptionsJson        String?
+  unit                   String?
+  helpText               String?
+  estimatorFacing        Boolean           @default(true)
+  sortOrder              Int               @default(0)
+  minValue               Float?
+  maxValue               Float?
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+  template               AssemblyTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, key])
+}
+
+model AssemblyTemplateVariant {
+  id                     String            @id @default(cuid())
+  templateId             String
+  variantKey             String
+  variantValue           String?
+  notes                  String?
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+  template               AssemblyTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, variantKey, variantValue])
+}
+
+model AssemblyTemplateChild {
+  id                     String            @id @default(cuid())
+  parentTemplateId       String
+  childTemplateId        String
+  quantity               Int?
+  qtyParameterRef        String?
+  required               Boolean           @default(true)
+  parentTemplate         AssemblyTemplate  @relation("ParentTemplate", fields: [parentTemplateId], references: [id], onDelete: Cascade)
+  childTemplate          AssemblyTemplate  @relation("ChildTemplate", fields: [childTemplateId], references: [id], onDelete: Restrict)
+}
+
+model AssemblyTemplateComponent {
+  id                     String            @id @default(cuid())
+  templateId             String
+  componentType          String
+  code                   String
+  description            String
+  quantity               Float             @default(1)
+  quantityExpr           String?
+  unit                   String?
+  unitCost               Float             @default(0)
+  laborHours             Float             @default(0)
+  laborRate              Float             @default(0)
+  template               AssemblyTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+}
+
+model EstimateAssembly {
+  id                     String               @id @default(cuid())
+  optionId               String
+  assemblyTemplateId     String
+  location               String?
+  quantity               Int                  @default(1)
+  parametersJson         String?
+  modifiersJson          String?
+  expandedFromPackageId  String?
+  manualLaborOverride    Float?
+  manualMaterialOverride Float?
+  assemblyNotes          String?
+  laborCost              Float                @default(0)
+  materialCost           Float                @default(0)
+  otherCost              Float                @default(0)
+  totalCost              Float                @default(0)
+  option                 EstimateOption       @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  assemblyTemplate       AssemblyTemplate     @relation(fields: [assemblyTemplateId], references: [id], onDelete: Restrict)
+  components             AssemblyComponent[]
+}
+
+model AssemblyComponent {
+  id                     String             @id @default(cuid())
+  estimateAssemblyId     String
+  componentType          String
+  code                   String
+  description            String
+  quantity               Float
+  unit                   String?
+  unitCost               Float              @default(0)
+  laborHours             Float              @default(0)
+  laborRate              Float              @default(0)
+  extendedCost           Float              @default(0)
+  estimateAssembly       EstimateAssembly   @relation(fields: [estimateAssemblyId], references: [id], onDelete: Cascade)
+}
+
+model ProposalDelivery {
+  id                     String         @id @default(cuid())
+  estimateId             String
+  estimateRevision       Int
+  method                 String
+  recipient              String?
+  deliveredAt            DateTime       @default(now())
+  pdfPath                String
+  notes                  String?
+  estimate               Estimate       @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+}
+
+model SignatureRecord {
+  id                     String         @id @default(cuid())
+  estimateId             String
+  estimateRevision       Int
+  signerName             String
+  signerEmail            String?
+  signedAt               DateTime       @default(now())
+  signatureData          String
+  consentText            String
+  ipAddress              String?
+  userAgent              String?
+  estimate               Estimate       @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+}
+
+model ProposalAcceptance {
+  id                     String                    @id @default(cuid())
+  estimateId             String                    @unique
+  estimateRevision       Int
+  optionId               String
+  status                 String
+  acceptedAt             DateTime                  @default(now())
+  signatureId            String?
+  notes                  String?
+  estimate               Estimate                  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+}
+
+model PermitStatus {
+  id                     String                @id @default(cuid())
+  estimateId             String                @unique
+  required               Boolean               @default(false)
+  permitType             String?
+  status                 String               @default("not_required")
+  permitNumber           String?
+  filingDate             DateTime?
+  issuedDate             DateTime?
+  cost                   Float                 @default(0)
+  estimate               Estimate              @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+}
+
+model InspectionStatus {
+  id                     String                     @id @default(cuid())
+  estimateId             String
+  inspectionType         String
+  status                 String                     @default("not_scheduled")
+  scheduledDate          DateTime?
+  resultDate             DateTime?
+  notes                  String?
+  correctionsJson        String?
+  estimate               Estimate                   @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+}
+
+model ChangeOrder {
+  id                     String            @id @default(cuid())
+  estimateId             String
+  parentOptionId         String
+  sequenceNumber         Int
+  title                  String
+  reason                 String?
+  reasonType             String?
+  status                 String            @default("draft")
+  estimateRevision       Int
+  assembliesAddedJson    String?
+  assembliesRemovedJson  String?
+  assembliesModifiedJson String?
+  deltaLabor             Float             @default(0)
+  deltaMaterial          Float             @default(0)
+  deltaOther             Float             @default(0)
+  deltaTotal             Float             @default(0)
+  createdAt              DateTime          @default(now())
+  estimate               Estimate          @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  parentOption           EstimateOption    @relation(fields: [parentOptionId], references: [id], onDelete: Restrict)
+
+  @@unique([estimateId, sequenceNumber])
+}
+// ─── ATOMIC MODEL ────────────────────────────────────────────────────────────
+
+model AtomicUnit {
+  id                   String         @id @default(cuid())
+  code                 String         @unique   // DEV-001, CIR-001, etc.
+  category             String         // DEVICES, LUMINAIRES, CIRCUITING, PROTECTION, PANELS_SERVICE, GROUNDING, EQUIPMENT, SERVICE_DIAGNOSTIC
+  name                 String
+  description          String?
+  unitType             String         // EA, LF, CIRCUIT, HR
+  visibilityTier       Int            @default(1) // 1=user-facing, 2=conditional, 3=system-only
+  baseLaborHrs         Float          @default(0)
+  baseLaborRate        Float          @default(115)
+  baseMaterialCost     Float          @default(0)
+  necRefsJson          String?        // JSON array: ["210.8", "406"]
+  necaSectionRef       String?        // NECA MLU section reference
+  requiresCableLength  Boolean        @default(false) // true for CIRCUIT/FEEDER unit types
+  requiresEndpoint     Boolean        @default(false) // true for branch circuit units (triggers suggestion)
+  resolverGroupId      String?        // links unit to WiringMethodResolver group key
+  isActive             Boolean        @default(true)
+  sortOrder            Int            @default(0)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  estimateItems        EstimateItem[]
+}
+
+model ModifierDef {
+  id               String   @id @default(cuid())
+  modifierType     String   // ACCESS, OCCUPANCY, HEIGHT, SCHEDULE, CONDITION
+  value            String   // NORMAL, DIFFICULT, VERY_DIFFICULT, VACANT, OCCUPIED, STANDARD, LADDER, HIGH_WORK, AFTER_HOURS, EMERGENCY, OPEN, RETROFIT, OBSTRUCTED
+  label            String
+  laborMultiplier  Float    @default(1.0)
+  materialMult     Float    @default(1.0)
+  appliesTo        String   // ITEM, ESTIMATE
+  sortOrder        Int      @default(0)
+  isDefault        Boolean  @default(false)
+
+  @@unique([modifierType, value])
+}
+
+model EstimateItem {
+  id                        String          @id @default(cuid())
+  estimateOptionId          String
+  atomicUnitId              String
+  location                  String?
+  quantity                  Float           @default(1)
+  // Snapshot (locked at creation — catalog changes don't affect existing items)
+  snapshotLaborHrs          Float
+  snapshotLaborRate         Float
+  snapshotMaterialCost      Float
+  // Circuit-specific inputs (required when requiresCableLength = true)
+  circuitVoltage            Int?            // 120 | 240
+  circuitAmperage           Int?            // 15 | 20 | 30 | 40 | 50
+  environment               String?         // interior | exterior | underground
+  exposure                  String?         // concealed | exposed
+  cableLength               Float?          // linear feet — required for CIRCUIT/FEEDER
+  needsThreeWire            Boolean?        // true for dryer/range 120/240V 3-wire endpoints
+  // Resolver outputs (system-computed, not user-editable)
+  resolvedWiringMethod      String?         // NM-B | MC | EMT | UF | PVC+THHN
+  resolvedCableCode         String?         // WIR-001, WIR-002, etc.
+  resolvedCableLaborHrs     Float?          // cable labor hours (@ $90/hr)
+  resolvedCableLaborCost    Float?
+  resolvedCableMaterialCost Float?
+  // Computed totals
+  laborCost                 Float           @default(0)
+  materialCost              Float           @default(0)
+  otherCost                 Float           @default(0)
+  totalCost                 Float           @default(0)
+  notes                     String?
+  sortOrder                 Int             @default(0)
+  createdAt                 DateTime        @default(now())
+  updatedAt                 DateTime        @updatedAt
+  estimateOption            EstimateOption  @relation(fields: [estimateOptionId], references: [id], onDelete: Cascade)
+  atomicUnit                AtomicUnit      @relation(fields: [atomicUnitId], references: [id], onDelete: Restrict)
+  modifiers                 ItemModifier[]
+}
+
+model ItemModifier {
+  id               String       @id @default(cuid())
+  estimateItemId   String
+  modifierType     String       // ACCESS, HEIGHT, CONDITION
+  modifierValue    String       // NORMAL, DIFFICULT, VERY_DIFFICULT, OPEN, RETROFIT, OBSTRUCTED, etc.
+  laborMultiplier  Float        @default(1.0)
+  materialMult     Float        @default(1.0)
+  estimateItem     EstimateItem @relation(fields: [estimateItemId], references: [id], onDelete: Cascade)
+}
+
+model SupportItem {
+  id             String    @id @default(cuid())
+  estimateId     String
+  supportType    String    // MOBILIZATION, PERMIT, LOAD_CALC, UTILITY_COORD, CIRCUIT_TESTING, CLEANUP, PANEL_DEMO
+  description    String
+  laborHrs       Float     @default(0)
+  laborRate      Float     @default(115)
+  laborCost      Float     @default(0)
+  otherCost      Float     @default(0)
+  totalCost      Float     @default(0)
+  isOverridden   Boolean   @default(false)
+  overrideNote   String?
+  sourceRule     String?   // rule/trigger that auto-generated this item
+  sortOrder      Int       @default(0)
+  createdAt      DateTime  @default(now())
+  estimate       Estimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+}
+
+model NECRule {
+  id                String   @id @default(cuid())
+  ruleCode          String   @unique  // NEC-210.8-A
+  necArticle        String
+  triggerCondition  String   // JSON describing trigger logic
+  promptText        String
+  severity          String   // REQUIRED, RECOMMENDED, ADVISORY
+  isActive          Boolean  @default(true)
+  sortOrder         Int      @default(0)
+}
+
+model Preset {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  category    String?
+  itemsJson   String   // JSON array of preset items with unitCode, quantity, notes
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+model JobType {
+  id                  String   @id @default(cuid())
+  name                String   @unique
+  description         String?
+  occupancyDefault    String   @default("residential")
+  environmentDefault  String   @default("interior")
+  exposureDefault     String   @default("concealed")
+  resolverProfileJson String?  // JSON config overrides for WiringMethodResolver
+  isActive            Boolean  @default(true)
+  sortOrder           Int      @default(0)
+}

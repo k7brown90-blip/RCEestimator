@@ -1,0 +1,62 @@
+import { NavLink } from "react-router-dom";
+import type { PropsWithChildren } from "react";
+
+const nav = [
+  { to: "/jobs", label: "Jobs" },
+  { to: "/customers", label: "Customers" },
+  { to: "/catalog", label: "Catalog" },
+  { to: "/takeoff", label: "Takeoff" },
+  { to: "/settings", label: "Settings" },
+];
+
+function NavItem({ to, label }: { to: string; label: string }) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        `rounded-lg px-3 py-2 text-sm font-medium transition ${
+          isActive ? "bg-rce-accent text-white" : "text-rce-navText hover:bg-white/10"
+        }`
+      }
+    >
+      {label}
+    </NavLink>
+  );
+}
+
+export function AppShell({ children }: PropsWithChildren) {
+  return (
+    <div className="min-h-screen bg-rce-bg text-rce-text md:grid md:grid-cols-[236px_1fr]">
+      <aside className="hidden bg-rce-navBg bg-[radial-gradient(circle_at_top_right,rgba(245,158,11,0.22),transparent_45%)] p-4 md:flex md:flex-col md:gap-3">
+        <div className="mb-4 rounded-xl border border-white/10 bg-black/25 px-3 py-3 text-sm font-semibold tracking-[0.08em] text-rce-navText shadow-card">
+          RCE ESTIMATING
+        </div>
+        {nav.map((item) => (
+          <NavItem key={item.to} {...item} />
+        ))}
+      </aside>
+
+      <main className="pb-20 md:pb-0">
+        <div className="mx-auto w-full max-w-7xl p-4 md:p-6">
+          <div className="rounded-2xl border border-rce-border/80 bg-rce-surface/90 p-4 shadow-card backdrop-blur-sm md:p-5">{children}</div>
+        </div>
+      </main>
+
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-rce-border bg-white p-2 md:hidden">
+        {nav.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            className={({ isActive }) =>
+              `rounded-md px-2 py-2 text-center text-xs font-medium ${
+                isActive ? "bg-rce-accentBg text-rce-accentDark" : "text-rce-muted"
+              }`
+            }
+          >
+            {item.label}
+          </NavLink>
+        ))}
+      </nav>
+    </div>
+  );
+}

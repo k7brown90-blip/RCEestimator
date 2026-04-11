@@ -1,0 +1,113 @@
+@import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap");
+
+@theme {
+  --color-rce-bg: #fafaf9;
+  --color-rce-surface: #ffffff;
+  --color-rce-border: #e4e4e0;
+  --color-rce-text: #18181b;
+  --color-rce-muted: #71717a;
+  --color-rce-soft: #a1a1aa;
+  --color-rce-accent: #f59e0b;
+  --color-rce-accentDark: #b45309;
+  --color-rce-accentBg: #fef3c7;
+  --color-rce-success: #16a34a;
+  --color-rce-warning: #d97706;
+  --color-rce-danger: #dc2626;
+  --color-rce-info: #2563eb;
+  --color-rce-navBg: #1c1917;
+  --color-rce-navText: #d6d3d1;
+
+  --font-sans: "Inter", "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+
+  --shadow-card: 0 2px 10px rgba(24, 24, 27, 0.05);
+}
+
+:root {
+  --rce-bg: #fafaf9;
+  --rce-surface: #ffffff;
+  --rce-border: #e4e4e0;
+  --rce-text: #18181b;
+  --rce-muted: #71717a;
+  --rce-soft: #a1a1aa;
+  --rce-accent: #f59e0b;
+  --rce-accent-dark: #b45309;
+  --rce-accent-bg: #fef3c7;
+  --rce-success: #16a34a;
+  --rce-danger: #dc2626;
+  --rce-nav-bg: #1c1917;
+  --rce-nav-text: #d6d3d1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", "Segoe UI", sans-serif;
+  color: var(--rce-text);
+  background: radial-gradient(circle at 95% 8%, #fff7dd 0, rgba(255, 247, 221, 0.35) 28%, transparent 46%), var(--rce-bg);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.card {
+  background: var(--rce-surface);
+  border: 1px solid var(--rce-border);
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(24, 24, 27, 0.05);
+}
+
+.mono {
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+
+.field {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--rce-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: #fff;
+}
+
+.field:focus {
+  outline: 2px solid rgba(245, 158, 11, 0.35);
+  border-color: var(--rce-accent);
+}
+
+.btn {
+  min-height: 44px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--rce-accent);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--rce-accent-dark);
+}
+
+.btn-secondary {
+  background: #fff;
+  border-color: var(--rce-border);
+  color: var(--rce-text);
+}
+
+.btn-danger {
+  background: #fff;
+  color: var(--rce-danger);
+  border-color: rgba(220, 38, 38, 0.25);
+}
