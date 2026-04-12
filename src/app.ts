@@ -1521,7 +1521,7 @@ app.delete(
 );
 
 // ─── CHATKIT SESSION ENDPOINT ────────────────────────────────────────────────
-app.post("/api/chatkit/session", asyncHandler(async (_req, res) => {
+app.post("/chatkit/session", asyncHandler(async (_req, res) => {
   const apiKey = process.env.OPENAI_API_KEY;
   const agentId = process.env.AGENT_DEPLOYMENT_ID;
 
@@ -1542,7 +1542,7 @@ app.post("/api/chatkit/session", asyncHandler(async (_req, res) => {
 }));
 
 // ─── CHATKIT MESSAGE ENDPOINT ────────────────────────────────────────────────
-app.post("/api/chatkit/message", asyncHandler(async (req, res) => {
+app.post("/chatkit/message", asyncHandler(async (req, res) => {
   const apiKey = process.env.OPENAI_API_KEY;
   const agentId = process.env.AGENT_DEPLOYMENT_ID;
 
