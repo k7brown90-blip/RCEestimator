@@ -1585,30 +1585,36 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
     });
   }
 
-  const response = await openai.responses.create({
-    model: "gpt-4.1",
-    instructions: AGENT_INSTRUCTIONS,
-    input: message,
-    tools: tools.length > 0 ? tools : undefined,
-    stream: false,
-    ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
-  } as Parameters<typeof openai.responses.create>[0]);
+  try {
+    const response = await openai.responses.create({
+      model: "gpt-4.1",
+      instructions: AGENT_INSTRUCTIONS,
+      input: message,
+      tools: tools.length > 0 ? tools : undefined,
+      stream: false,
+      ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
+    } as Parameters<typeof openai.responses.create>[0]);
 
-  // Cast to non-streaming response type
-  const resp = response as { id: string; output: Array<{ type: string; content?: Array<{ type: string; text?: string }> }> };
+    // Cast to non-streaming response type
+    const resp = response as { id: string; output: Array<{ type: string; content?: Array<{ type: string; text?: string }> }> };
 
-  // Store response ID for conversation continuity
-  sessionResponseIds[sessionId] = resp.id;
+    // Store response ID for conversation continuity
+    sessionResponseIds[sessionId] = resp.id;
 
-  // Extract text from response output
-  const reply = resp.output
-    ?.filter((item) => item.type === "message")
-    .flatMap((item) => item.content ?? [])
-    .filter((c) => c.type === "output_text")
-    .map((c) => c.text ?? "")
-    .join("\n") ?? "No response";
+    // Extract text from response output
+    const reply = resp.output
+      ?.filter((item) => item.type === "message")
+      .flatMap((item) => item.content ?? [])
+      .filter((c) => c.type === "output_text")
+      .map((c) => c.text ?? "")
+      .join("\n") ?? "No response";
 
-  res.json({ reply });
+    res.json({ reply });
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("OpenAI Responses API error:", errMsg);
+    res.status(502).json({ error: `AI agent error: ${errMsg}` });
+  }
 }));
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

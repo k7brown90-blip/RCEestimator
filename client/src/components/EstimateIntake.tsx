@@ -66,14 +66,18 @@ export function EstimateIntake({ visitId, propertyId }: Props) {
         body: JSON.stringify({ sessionId, message: text, visitId }),
       });
 
-      if (!res.ok) throw new Error("Send failed");
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(errData?.error ?? "Send failed");
+      }
 
       const data = (await res.json()) as { reply: string };
       setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Something went wrong";
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Sorry, something went wrong. Please try again." },
+        { role: "assistant", content: msg },
       ]);
     } finally {
       setLoading(false);
