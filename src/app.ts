@@ -1522,7 +1522,7 @@ app.delete(
 );
 
 // ─── CHATKIT SESSION ENDPOINT ────────────────────────────────────────────────
-app.post("/chatkit/session", asyncHandler(async (_req, res) => {
+app.post("/chatkit/session", asyncHandler(async (req, res) => {
   const apiKey = process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
@@ -1530,7 +1530,11 @@ app.post("/chatkit/session", asyncHandler(async (_req, res) => {
     return;
   }
 
+  const { visitId, propertyId } = req.body as { visitId?: string; propertyId?: string };
   const sessionId = `ses_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+  // Store visit/property context for this session
+  sessionContext[sessionId] = { visitId: visitId ?? null, propertyId: propertyId ?? null };
 
   res.json({
     sessionId,
@@ -1540,6 +1544,8 @@ app.post("/chatkit/session", asyncHandler(async (_req, res) => {
 
 // In-memory map of session -> last response ID for multi-turn conversation
 const sessionResponseIds: Record<string, string> = {};
+// In-memory map of session -> visit/property context
+const sessionContext: Record<string, { visitId: string | null; propertyId: string | null }> = {};
 
 // ─── CHATKIT MESSAGE ENDPOINT ────────────────────────────────────────────────
 app.post("/chatkit/message", asyncHandler(async (req, res) => {
@@ -1560,6 +1566,16 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
   const openai = new OpenAI({ apiKey, timeout: 120_000 });
 
   const previousResponseId = sessionResponseIds[sessionId] ?? undefined;
+  const ctx = sessionContext[sessionId];
+
+  // Build instructions with visit/property context so the agent knows which record to use
+  let instructions = AGENT_INSTRUCTIONS;
+  if (ctx?.visitId || ctx?.propertyId) {
+    instructions += `\n\nCURRENT SESSION CONTEXT — USE THESE IDs FOR ALL TOOL CALLS:\n`;
+    if (ctx.visitId) instructions += `Visit ID: ${ctx.visitId}\n`;
+    if (ctx.propertyId) instructions += `Property ID: ${ctx.propertyId}\n`;
+    instructions += `Do NOT ask the user for visit ID or property ID — you already have them above. Use them directly when calling create_estimate, add_estimate_items, get_visit_context, etc.`;
+  }
 
   // Build MCP tool config if the app's own MCP endpoint is available
   const mcpToken = process.env.MCP_BEARER_TOKEN;
@@ -1589,7 +1605,7 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
   try {
     const response = await openai.responses.create({
       model: "gpt-4.1",
-      instructions: AGENT_INSTRUCTIONS,
+      instructions,
       input: message,
       tools: tools.length > 0 ? tools : undefined,
       stream: false,
