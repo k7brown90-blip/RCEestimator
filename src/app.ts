@@ -1530,16 +1530,17 @@ app.post("/chatkit/session", asyncHandler(async (_req, res) => {
     return;
   }
 
-  const { default: OpenAI } = await import("openai");
-  const openai = new OpenAI({ apiKey });
-
-  const session = await openai.beta.threads.create();
+  // No thread needed for Responses API — use a random session ID to track conversation
+  const sessionId = `ses_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
   res.json({
-    sessionId: session.id,
+    sessionId,
     agentId,
   });
 }));
+
+// In-memory map of session -> last response ID for multi-turn conversation
+const sessionResponseIds: Record<string, string> = {};
 
 // ─── CHATKIT MESSAGE ENDPOINT ────────────────────────────────────────────────
 app.post("/chatkit/message", asyncHandler(async (req, res) => {
@@ -1560,25 +1561,23 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
   const { default: OpenAI } = await import("openai");
   const openai = new OpenAI({ apiKey });
 
-  await openai.beta.threads.messages.create(sessionId, {
-    role: "user",
-    content: message,
+  const previousResponseId = sessionResponseIds[sessionId] ?? undefined;
+
+  const response = await openai.responses.create({
+    model: agentId,
+    input: message,
+    ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
   });
 
-  const run = await openai.beta.threads.runs.createAndPoll(sessionId, {
-    assistant_id: agentId,
-  });
+  // Store response ID for conversation continuity
+  sessionResponseIds[sessionId] = response.id;
 
-  if (run.status !== "completed") {
-    res.status(500).json({ error: `Run ended with status: ${run.status}` });
-    return;
-  }
-
-  const msgs = await openai.beta.threads.messages.list(sessionId, { limit: 1, order: "desc" });
-  const last = msgs.data[0];
-  const reply = last?.content
-    ?.filter((c) => c.type === "text")
-    .map((c) => (c as unknown as { text: { value: string } }).text.value)
+  // Extract text from response output
+  const reply = response.output
+    ?.filter((item) => item.type === "message")
+    .flatMap((item) => "content" in item ? (item as { content: Array<{ type: string; text?: string }> }).content : [])
+    .filter((c) => c.type === "output_text")
+    .map((c) => c.text ?? "")
     .join("\n") ?? "No response";
 
   res.json({ reply });
