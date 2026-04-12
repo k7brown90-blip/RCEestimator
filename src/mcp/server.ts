@@ -241,10 +241,9 @@ function createMcpServer(): McpServer {
     },
     async ({ visitId, propertyId, title }) => {
       const estimate = await service.createEstimate({ visitId, propertyId, title });
-      const full = await prisma.estimate.findUnique({
-        where: { id: estimate.id },
-        include: { options: true },
-      });
+
+      // Auto-create a default option so items can be added immediately
+      const defaultOption = await service.addOption(estimate.id, "Default", "Primary estimate option");
 
       return {
         content: [
@@ -253,7 +252,7 @@ function createMcpServer(): McpServer {
             text: JSON.stringify(
               {
                 estimateId: estimate.id,
-                optionId: full?.options[0]?.id ?? null,
+                optionId: defaultOption.id,
                 title: estimate.title,
                 status: estimate.status,
               },
