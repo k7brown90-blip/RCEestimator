@@ -1557,7 +1557,7 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
   }
 
   const { default: OpenAI } = await import("openai");
-  const openai = new OpenAI({ apiKey });
+  const openai = new OpenAI({ apiKey, timeout: 120_000 });
 
   const previousResponseId = sessionResponseIds[sessionId] ?? undefined;
 
@@ -1573,6 +1573,7 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
       server_label: "rce_estimator",
       server_url: `${baseUrl}/mcp`,
       headers: { Authorization: `Bearer ${mcpToken}` },
+      require_approval: "never",
     });
   }
 
