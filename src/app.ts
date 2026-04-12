@@ -1538,7 +1538,7 @@ app.post("/chatkit/session", asyncHandler(async (req, res) => {
 
   res.json({
     sessionId,
-    agentId: "gpt-4.1",
+    agentId: "gpt-5.1",
   });
 }));
 
@@ -1604,7 +1604,7 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
 
   try {
     const response = await openai.responses.create({
-      model: "gpt-4.1",
+      model: "gpt-5.1",
       instructions,
       input: message,
       tools: tools.length > 0 ? tools : undefined,
