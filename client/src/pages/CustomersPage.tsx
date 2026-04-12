@@ -7,7 +7,7 @@ import { api } from "../lib/api";
 
 export function CustomersPage() {
   const queryClient = useQueryClient();
-  const { data: customers = [], isLoading } = useQuery({ queryKey: ["customers"], queryFn: api.customers });
+  const { data: customers = [], isLoading, error } = useQuery({ queryKey: ["customers"], queryFn: api.customers });
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -50,6 +50,7 @@ export function CustomersPage() {
       </form>
 
       {isLoading ? <p className="text-sm text-rce-muted">Loading customers...</p> : null}
+      {error ? <p className="text-sm text-red-500">Error loading customers: {error.message}</p> : null}
 
       <div className="space-y-3">
         {customers.map((customer) => (

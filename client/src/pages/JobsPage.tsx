@@ -17,7 +17,7 @@ const MODES = [
 export function JobsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: jobs = [], isLoading } = useQuery({ queryKey: ["jobs"], queryFn: api.jobs });
+  const { data: jobs = [], isLoading, error } = useQuery({ queryKey: ["jobs"], queryFn: api.jobs });
   const { data: properties = [] } = useQuery({ queryKey: ["properties"], queryFn: api.properties });
   const [showNewVisit, setShowNewVisit] = useState(false);
   const [propertyId, setPropertyId] = useState("");
@@ -87,6 +87,7 @@ export function JobsPage() {
       ) : null}
 
       {isLoading ? <p className="text-sm text-rce-muted">Loading jobs...</p> : null}
+      {error ? <p className="text-sm text-red-500">Error loading jobs: {error.message}</p> : null}
 
       <section className="space-y-3">
         {jobs.map((job) => (

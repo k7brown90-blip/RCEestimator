@@ -14,6 +14,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      localStorage.removeItem("rce_token");
+      window.location.href = "/login";
+      throw new Error("Session expired");
+    }
     const text = await response.text();
     if (text) {
       let parsedError: string | undefined;
