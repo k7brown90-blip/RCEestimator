@@ -8,6 +8,7 @@ import { EstimateService } from "./services/estimateService";
 import { resolveItemCable } from "./services/wiringMethodResolver";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
+import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 
 const service = new EstimateService(prisma);
 const REMOVED_ASSEMBLY_NUMBERS = [39, 61, 62, 88] as const;
@@ -1523,19 +1524,17 @@ app.delete(
 // ─── CHATKIT SESSION ENDPOINT ────────────────────────────────────────────────
 app.post("/chatkit/session", asyncHandler(async (_req, res) => {
   const apiKey = process.env.OPENAI_API_KEY;
-  const agentId = process.env.AGENT_DEPLOYMENT_ID;
 
-  if (!apiKey || !agentId) {
-    res.status(500).json({ error: "Agent not configured" });
+  if (!apiKey) {
+    res.status(500).json({ error: "Agent not configured: OPENAI_API_KEY missing" });
     return;
   }
 
-  // No thread needed for Responses API — use a random session ID to track conversation
   const sessionId = `ses_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
   res.json({
     sessionId,
-    agentId,
+    agentId: "gpt-4.1",
   });
 }));
 
@@ -1545,10 +1544,9 @@ const sessionResponseIds: Record<string, string> = {};
 // ─── CHATKIT MESSAGE ENDPOINT ────────────────────────────────────────────────
 app.post("/chatkit/message", asyncHandler(async (req, res) => {
   const apiKey = process.env.OPENAI_API_KEY;
-  const agentId = process.env.AGENT_DEPLOYMENT_ID;
 
-  if (!apiKey || !agentId) {
-    res.status(500).json({ error: "Agent not configured" });
+  if (!apiKey) {
+    res.status(500).json({ error: "Agent not configured: OPENAI_API_KEY missing" });
     return;
   }
 
@@ -1563,19 +1561,49 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
 
   const previousResponseId = sessionResponseIds[sessionId] ?? undefined;
 
+  // Build MCP tool config if the app's own MCP endpoint is available
+  const mcpToken = process.env.MCP_BEARER_TOKEN;
+  const baseUrl = process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : "http://localhost:3000";
+  const tools: Array<Record<string, unknown>> = [];
+  if (mcpToken) {
+    tools.push({
+      type: "mcp",
+      server_label: "rce_estimator",
+      server_url: `${baseUrl}/mcp`,
+      headers: { Authorization: `Bearer ${mcpToken}` },
+    });
+  }
+
+  // Add NEC 2017 file search if vector store is configured
+  const vectorStoreId = process.env.NEC_VECTOR_STORE_ID;
+  if (vectorStoreId) {
+    tools.push({
+      type: "file_search",
+      vector_store_ids: [vectorStoreId],
+    });
+  }
+
   const response = await openai.responses.create({
-    model: agentId,
+    model: "gpt-4.1",
+    instructions: AGENT_INSTRUCTIONS,
     input: message,
+    tools: tools.length > 0 ? tools : undefined,
+    stream: false,
     ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
-  });
+  } as Parameters<typeof openai.responses.create>[0]);
+
+  // Cast to non-streaming response type
+  const resp = response as { id: string; output: Array<{ type: string; content?: Array<{ type: string; text?: string }> }> };
 
   // Store response ID for conversation continuity
-  sessionResponseIds[sessionId] = response.id;
+  sessionResponseIds[sessionId] = resp.id;
 
   // Extract text from response output
-  const reply = response.output
+  const reply = resp.output
     ?.filter((item) => item.type === "message")
-    .flatMap((item) => "content" in item ? (item as { content: Array<{ type: string; text?: string }> }).content : [])
+    .flatMap((item) => item.content ?? [])
     .filter((c) => c.type === "output_text")
     .map((c) => c.text ?? "")
     .join("\n") ?? "No response";
