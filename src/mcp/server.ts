@@ -427,7 +427,7 @@ function createMcpServer(): McpServer {
                   modifierType: m.modifierType,
                   modifierValue: m.modifierValue,
                   laborMultiplier: m.laborMultiplier,
-                  materialMultiplier: m.materialMult,
+                  materialMult: m.materialMult,
                 })),
               },
             },
@@ -735,6 +735,274 @@ function createMcpServer(): McpServer {
           },
         ],
       };
+    }
+  );
+
+  // ─── NEW WRITE TOOLS ──────────────────────────────────────────────────────────
+
+  server.registerTool(
+    "delete_estimate_item",
+    {
+      description:
+        "Delete an item from an estimate option. Use when the estimator wants to remove an incorrectly added atomic unit.",
+      inputSchema: {
+        estimateId: z.string().describe("The estimate ID"),
+        optionId: z.string().describe("The option ID the item belongs to"),
+        itemId: z.string().describe("The estimate item ID to delete"),
+      },
+    },
+    async ({ estimateId, optionId, itemId }) => {
+      try {
+        const item = await prisma.estimateItem.findFirst({
+          where: { id: itemId, estimateOptionId: optionId },
+          include: { estimateOption: { select: { estimateId: true } } },
+        });
+
+        if (!item || item.estimateOption.estimateId !== estimateId) {
+          return {
+            content: [{ type: "text" as const, text: "Item not found on this estimate/option" }],
+            isError: true,
+          };
+        }
+
+        await service.assertUnlockedEstimate(estimateId);
+        await prisma.estimateItem.delete({ where: { id: itemId } });
+        await service.recalculateOption(optionId);
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ deleted: itemId, optionId, estimateId }, null, 2),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "change_estimate_status",
+    {
+      description:
+        "Change the status of an estimate. Valid transitions: draft→review, review→draft, review→sent, sent→declined, sent→expired, sent→revised, declined→revised, expired→revised, revised→draft. Use 'accepted' only via proposal flow.",
+      inputSchema: {
+        estimateId: z.string().describe("The estimate ID"),
+        status: z.enum(["draft", "review", "sent", "declined", "expired", "revised"]).describe("Target status"),
+      },
+    },
+    async ({ estimateId, status }) => {
+      try {
+        const updated = await service.changeEstimateStatus(estimateId, status);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                { estimateId: updated.id, status: updated.status, revision: updated.revision },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "update_estimate_markup",
+    {
+      description:
+        "Set material and/or labor markup percentages for the estimate. Recalculates all option totals.",
+      inputSchema: {
+        estimateId: z.string().describe("The estimate ID"),
+        materialMarkupPct: z.number().min(0).max(200).optional().describe("Material markup percentage (0-200)"),
+        laborMarkupPct: z.number().min(0).max(200).optional().describe("Labor markup percentage (0-200)"),
+      },
+    },
+    async ({ estimateId, materialMarkupPct, laborMarkupPct }) => {
+      try {
+        const updated = await service.updateEstimateMarkup(estimateId, { materialMarkupPct, laborMarkupPct });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  estimateId: updated?.id,
+                  materialMarkupPct: updated?.materialMarkupPct,
+                  laborMarkupPct: updated?.laborMarkupPct,
+                  options: updated?.options.map((o: { id: string; optionLabel: string; totalCost: number }) => ({
+                    id: o.id,
+                    label: o.optionLabel,
+                    totalCost: o.totalCost,
+                  })),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "add_option",
+    {
+      description:
+        "Add a new option (tier) to an estimate. Use for good/better/best pricing or alternative scopes.",
+      inputSchema: {
+        estimateId: z.string().describe("The estimate ID"),
+        optionLabel: z.string().describe("Label for the option (e.g. 'Standard', 'Premium', 'Budget')"),
+        description: z.string().optional().describe("Description of this option"),
+      },
+    },
+    async ({ estimateId, optionLabel, description }) => {
+      try {
+        const option = await service.addOption(estimateId, optionLabel, description);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                { optionId: option.id, estimateId, optionLabel: option.optionLabel },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "set_estimate_modifiers",
+    {
+      description:
+        "Set estimate-level modifiers (OCCUPANCY, SCHEDULE). These multiply all labor and/or material costs across the entire estimate. Replaces any existing estimate modifiers.",
+      inputSchema: {
+        estimateId: z.string().describe("The estimate ID"),
+        modifiers: z.array(
+          z.object({
+            modifierType: z.enum(["OCCUPANCY", "SCHEDULE"]).describe("Modifier type"),
+            modifierValue: z.string().describe("Modifier value (e.g. OCCUPIED, AFTER_HOURS, EMERGENCY)"),
+            laborMultiplier: z.number().positive().describe("Labor cost multiplier (e.g. 1.15 for occupied, 1.5 for after-hours)"),
+            materialMult: z.number().positive().describe("Material cost multiplier (e.g. 1.1 for occupied)"),
+          })
+        ).describe("Array of estimate-level modifiers to apply"),
+      },
+    },
+    async ({ estimateId, modifiers }) => {
+      try {
+        const updated = await service.setEstimateModifiers(estimateId, modifiers);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  estimateId,
+                  modifiers,
+                  options: updated?.options.map((o: { id: string; optionLabel: string; totalCost: number }) => ({
+                    id: o.id,
+                    label: o.optionLabel,
+                    totalCost: o.totalCost,
+                  })),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "generate_proposal_pdf",
+    {
+      description:
+        "Generate a customer-facing proposal PDF for the estimate. Returns the file path and delivery record ID.",
+      inputSchema: {
+        estimateId: z.string().describe("The estimate ID"),
+      },
+    },
+    async ({ estimateId }) => {
+      try {
+        const result = await service.generateProposalPdf(estimateId);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "delete_estimate",
+    {
+      description:
+        "Delete a draft estimate. Cannot delete accepted/locked estimates.",
+      inputSchema: {
+        estimateId: z.string().describe("The estimate ID to delete"),
+      },
+    },
+    async ({ estimateId }) => {
+      try {
+        await service.deleteEstimate(estimateId);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ deleted: estimateId }, null, 2),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
     }
   );
 

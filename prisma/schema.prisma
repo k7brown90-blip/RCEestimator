@@ -141,6 +141,7 @@ model Estimate {
   acceptance             ProposalAcceptance?
   changeOrders           ChangeOrder[]
   supportItems           SupportItem[]
+  estimateModifiers      EstimateModifier[]
 }
 
 model EstimateOption {
@@ -447,6 +448,18 @@ model ItemModifier {
   laborMultiplier  Float        @default(1.0)
   materialMult     Float        @default(1.0)
   estimateItem     EstimateItem @relation(fields: [estimateItemId], references: [id], onDelete: Cascade)
+}
+
+model EstimateModifier {
+  id              String   @id @default(cuid())
+  estimateId      String
+  modifierType    String   // OCCUPANCY, SCHEDULE
+  modifierValue   String   // OCCUPIED, AFTER_HOURS, EMERGENCY, etc.
+  laborMultiplier Float    @default(1.0)
+  materialMult    Float    @default(1.0)
+  estimate        Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+
+  @@unique([estimateId, modifierType])
 }
 
 model SupportItem {

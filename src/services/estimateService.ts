@@ -768,7 +768,7 @@ export class EstimateService {
   async recalculateOption(optionId: string) {
     const option = await this.prisma.estimateOption.findUnique({
       where: { id: optionId },
-      include: { estimate: { select: { materialMarkupPct: true, laborMarkupPct: true } } },
+      include: { estimate: { select: { id: true, materialMarkupPct: true, laborMarkupPct: true } } },
     });
     if (!option) return;
 
@@ -787,9 +787,19 @@ export class EstimateService {
     const itemLabor = items.reduce((acc, i) => acc + i.laborCost, 0);
     const itemMaterial = items.reduce((acc, i) => acc + i.materialCost, 0);
 
-    const subtotalLabor = asmLabor + itemLabor;
-    const subtotalMaterial = asmMaterial + itemMaterial;
+    let subtotalLabor = asmLabor + itemLabor;
+    let subtotalMaterial = asmMaterial + itemMaterial;
     const subtotalOther = asmOther;
+
+    // Apply estimate-level modifiers (OCCUPANCY, SCHEDULE)
+    const estModifiers = await this.prisma.estimateModifier.findMany({
+      where: { estimateId: option.estimate.id },
+    });
+    for (const mod of estModifiers) {
+      subtotalLabor *= mod.laborMultiplier;
+      subtotalMaterial *= mod.materialMult;
+    }
+
     const { materialMarkupPct, laborMarkupPct } = option.estimate;
     const totalCost =
       subtotalLabor * (1 + laborMarkupPct / 100) +
@@ -998,7 +1008,10 @@ export class EstimateService {
       const scopedOptionCount = await this.prisma.estimateOption.count({
         where: {
           estimateId,
-          assemblies: { some: {} },
+          OR: [
+            { assemblies: { some: {} } },
+            { items: { some: {} } },
+          ],
         },
       });
       if (scopedOptionCount <= 0) {
@@ -1084,7 +1097,12 @@ export class EstimateService {
       where: { id: estimateId },
       include: {
         property: { include: { customer: true } },
-        options: { include: { assemblies: { include: { assemblyTemplate: true, components: true } } } },
+        options: {
+          include: {
+            assemblies: { include: { assemblyTemplate: true, components: true } },
+            items: { include: { atomicUnit: true } },
+          },
+        },
       },
     });
     if (!estimate) {
@@ -1126,6 +1144,11 @@ export class EstimateService {
               `   * ${component.description}: ${component.quantity}${component.unit ? ` ${component.unit}` : ""} @ $${component.extendedCost.toFixed(2)}`,
             );
           }
+        }
+        // Atomic items
+        for (const item of option.items) {
+          const cableInfo = item.resolvedCableCode ? ` + ${item.resolvedCableCode} ${item.cableLength ?? 0} LF` : "";
+          doc.text(`- ${item.atomicUnit.code}: ${item.atomicUnit.name} × ${item.quantity} (${item.location ?? "unspecified"}) - $${item.totalCost.toFixed(2)}${cableInfo}`);
         }
         doc.text(`Labor Subtotal: $${option.subtotalLabor.toFixed(2)}`);
         doc.text(`Material Subtotal: $${option.subtotalMaterial.toFixed(2)}`);
@@ -1315,6 +1338,40 @@ export class EstimateService {
     });
   }
 
+  async setEstimateModifiers(
+    estimateId: string,
+    modifiers: Array<{ modifierType: string; modifierValue: string; laborMultiplier: number; materialMult: number }>,
+  ) {
+    await this.assertUnlockedEstimate(estimateId);
+
+    // Delete existing estimate-level modifiers
+    await this.prisma.estimateModifier.deleteMany({ where: { estimateId } });
+
+    // Create new ones
+    for (const mod of modifiers) {
+      await this.prisma.estimateModifier.create({
+        data: {
+          estimateId,
+          modifierType: mod.modifierType,
+          modifierValue: mod.modifierValue,
+          laborMultiplier: mod.laborMultiplier,
+          materialMult: mod.materialMult,
+        },
+      });
+    }
+
+    // Recalculate all options
+    const options = await this.prisma.estimateOption.findMany({
+      where: { estimateId },
+      select: { id: true },
+    });
+    for (const option of options) {
+      await this.recalculateOption(option.id);
+    }
+
+    return this.getEstimateById(estimateId);
+  }
+
   async getEstimateById(estimateId: string) {
     const estimate = await this.prisma.estimate.findUnique({
       where: { id: estimateId },
@@ -1333,6 +1390,12 @@ export class EstimateService {
                 components: true,
               },
             },
+            items: {
+              include: {
+                atomicUnit: true,
+                modifiers: true,
+              },
+            },
           },
         },
         permitStatus: true,
@@ -1341,6 +1404,7 @@ export class EstimateService {
         signatures: true,
         acceptance: true,
         changeOrders: true,
+        estimateModifiers: true,
       },
     });
 
