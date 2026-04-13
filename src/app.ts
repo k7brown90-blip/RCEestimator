@@ -87,7 +87,7 @@ app.get("/health", (_req, res) => {
 
 // ─── LEAD WEBHOOK (no JWT — uses shared secret) ────────────────────────────
 app.post("/leads", asyncHandler(async (req, res) => {
-  const secret = req.headers["x-rce-webhook-secret"];
+  const secret = req.headers["webhook_secret"];
   if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
     res.status(401).json({ error: "Invalid or missing webhook secret" });
     return;
