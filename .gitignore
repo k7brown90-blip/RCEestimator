@@ -7,3 +7,8 @@ node_modules
 *.db-journal
 dist/
 runtime-logs/
+
+# Google OAuth credentials
+client_secret*.json
+credentials.json
+token.json

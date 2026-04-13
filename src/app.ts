@@ -115,43 +115,25 @@ app.get("/calendar/availability", asyncHandler(async (_req, res) => {
 const KYLE_PHONE = "9706661626";
 
 app.get("/customer/lookup", asyncHandler(async (req, res) => {
-  const rawPhone = (readParam(req, "phone") ?? "").replace(/\D/g, "").slice(-10);
-  if (!rawPhone || rawPhone.length < 10) {
+  const phoneRaw = (readQuery(req, "phone") ?? "").replace(/\D/g, "").slice(-10);
+  const nameRaw = (readQuery(req, "name") ?? "").trim();
+
+  // Must provide phone or name
+  if ((!phoneRaw || phoneRaw.length < 10) && !nameRaw) {
     res.json({ found: false });
     return;
   }
 
-  // Kyle's cell → transfer signal
-  if (rawPhone === KYLE_PHONE) {
+  // Kyle's cell → transfer signal (phone lookup only)
+  if (phoneRaw === KYLE_PHONE) {
     res.json({ found: true, type: "kyle_transfer", name: "Kyle" });
     return;
   }
 
-  // Search customers by phone (last 10 digits match)
-  const customers = await prisma.customer.findMany({
-    where: { phone: { contains: rawPhone } },
-    include: {
-      properties: {
-        include: {
-          visits: {
-            orderBy: { visitDate: "desc" as const },
-            include: {
-              estimates: {
-                where: { status: "accepted" },
-                include: { options: { where: { accepted: true } } },
-              },
-            },
-          },
-        },
-      },
-    },
-  });
-
-  if (customers.length > 0) {
-    const customer = customers[0];
+  // ── Helper: build full customer response ──
+  const buildCustomerResponse = async (customer: Awaited<ReturnType<typeof prisma.customer.findMany>>[0] & { properties: Array<{ id: string; addressLine1: string; city: string | null; state: string | null; postalCode: string | null; occupancyType: string | null; visits: Array<{ id: string; visitDate: Date; mode: string; purpose: string | null; estimates: Array<{ status: string; options: Array<{ accepted: boolean; totalPrice?: number }> }> }> }> }) => {
     const now = new Date();
     const oneYearAgo = new Date(now.getTime() - 365 * 86_400_000);
-
     let warrantyEligible = false;
     let warrantyNote: string | null = null;
 
@@ -162,13 +144,10 @@ app.get("/customer/lookup", asyncHandler(async (req, res) => {
       visits: prop.visits.map((visit) => {
         const acceptedOpt = visit.estimates[0]?.options.find((o) => o.accepted);
         const total = acceptedOpt ? (acceptedOpt as unknown as { totalPrice?: number }).totalPrice ?? 0 : 0;
-
-        // Check warranty eligibility
         if (visit.estimates.length > 0 && visit.visitDate >= oneYearAgo) {
           warrantyEligible = true;
           warrantyNote = `${visit.purpose || "Work"} completed ${visit.visitDate.toISOString().slice(0, 10)} — within 12 month warranty window`;
         }
-
         return {
           visitId: visit.id,
           date: visit.visitDate.toISOString().slice(0, 10),
@@ -182,14 +161,12 @@ app.get("/customer/lookup", asyncHandler(async (req, res) => {
 
     const allVisits = properties.flatMap((p) => p.visits);
     const mostRecent = allVisits[0] ?? null;
-
-    // Open leads for this customer
     const openLeads = await prisma.lead.findMany({
       where: { customerId: customer.id, status: { in: ["new", "contacted"] } },
       orderBy: { createdAt: "desc" },
     });
 
-    res.json({
+    return {
       found: true,
       type: "customer",
       name: customer.name,
@@ -212,33 +189,80 @@ app.get("/customer/lookup", asyncHandler(async (req, res) => {
         jobType: l.jobType,
         createdAt: l.createdAt.toISOString().slice(0, 10),
       })),
-    });
-    return;
-  }
+    };
+  };
 
-  // Search leads by phone
-  const leads = await prisma.lead.findMany({
-    where: { phone: { contains: rawPhone }, status: { in: ["new", "contacted"] } },
-    orderBy: { createdAt: "desc" },
+  const customerInclude = {
+    properties: {
+      include: {
+        visits: {
+          orderBy: { visitDate: "desc" as const },
+          include: {
+            estimates: {
+              where: { status: "accepted" },
+              include: { options: { where: { accepted: true } } },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const buildLeadResponse = (lead: { id: string; name: string; phone: string | null; email: string | null; address: string | null; jobType: string | null; status: string; callType: string | null; notes: string | null; createdAt: Date }) => ({
+    found: true,
+    type: "lead",
+    name: lead.name,
+    leadId: lead.id,
+    phone: lead.phone,
+    email: lead.email,
+    address: lead.address,
+    jobType: lead.jobType,
+    status: lead.status,
+    callType: lead.callType,
+    notes: lead.notes,
+    createdAt: lead.createdAt.toISOString().slice(0, 10),
   });
 
-  if (leads.length > 0) {
-    const lead = leads[0];
-    res.json({
-      found: true,
-      type: "lead",
-      name: lead.name,
-      leadId: lead.id,
-      phone: lead.phone,
-      email: lead.email,
-      address: lead.address,
-      jobType: lead.jobType,
-      status: lead.status,
-      callType: lead.callType,
-      notes: lead.notes,
-      createdAt: lead.createdAt.toISOString().slice(0, 10),
+  // ── Phone-based lookup ──
+  if (phoneRaw && phoneRaw.length === 10) {
+    const customers = await prisma.customer.findMany({
+      where: { phone: { contains: phoneRaw } },
+      include: customerInclude,
     });
-    return;
+    if (customers.length > 0) {
+      res.json(await buildCustomerResponse(customers[0] as Parameters<typeof buildCustomerResponse>[0]));
+      return;
+    }
+
+    const leads = await prisma.lead.findMany({
+      where: { phone: { contains: phoneRaw }, status: { in: ["new", "contacted"] } },
+      orderBy: { createdAt: "desc" },
+    });
+    if (leads.length > 0) {
+      res.json(buildLeadResponse(leads[0]));
+      return;
+    }
+  }
+
+  // ── Name-based lookup (for Kyle transfer scenario) ──
+  if (nameRaw) {
+    const customers = await prisma.customer.findMany({
+      where: { name: { contains: nameRaw } },
+      include: customerInclude,
+    });
+    if (customers.length > 0) {
+      res.json(await buildCustomerResponse(customers[0] as Parameters<typeof buildCustomerResponse>[0]));
+      return;
+    }
+
+    const leads = await prisma.lead.findMany({
+      where: { name: { contains: nameRaw }, status: { in: ["new", "contacted"] } },
+      orderBy: { createdAt: "desc" },
+    });
+    if (leads.length > 0) {
+      res.json(buildLeadResponse(leads[0]));
+      return;
+    }
   }
 
   res.json({ found: false });
