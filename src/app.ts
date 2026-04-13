@@ -7,6 +7,7 @@ import { ensureAssemblyCatalogReady } from "./bootstrap/ensureAssemblyCatalog";
 import { EstimateService } from "./services/estimateService";
 import { resolveItemCable } from "./services/wiringMethodResolver";
 import { generateSupportItems } from "./services/supportItemTriggers";
+import { getAvailability } from "./services/googleCalendar";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
@@ -102,6 +103,12 @@ app.post("/api/vapi/assistant-config", (_req, res) => {
   });
   res.json({ variableValues: { current_date, current_time } });
 });
+
+// ─── CALENDAR AVAILABILITY (no auth — called by Vapi AI assistant) ───────────
+app.get("/api/calendar/availability", asyncHandler(async (_req, res) => {
+  const data = await getAvailability();
+  res.json(data);
+}));
 
 // ─── LEAD WEBHOOK (no JWT — uses shared secret) ────────────────────────────
 app.post("/leads", asyncHandler(async (req, res) => {
