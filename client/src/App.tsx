@@ -4,6 +4,7 @@ import { CatalogPage } from "./pages/CatalogPage";
 import { CustomerDetailPage } from "./pages/CustomerDetailPage";
 import { CustomersPage } from "./pages/CustomersPage";
 import { JobsPage } from "./pages/JobsPage";
+import { LeadsPage } from "./pages/LeadsPage";
 import { PinLoginPage } from "./pages/PinLoginPage";
 import { PropertyDetailPage } from "./pages/PropertyDetailPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -31,6 +32,7 @@ function App() {
               <Routes>
                 <Route path="/" element={<Navigate to="/jobs" replace />} />
                 <Route path="/jobs" element={<JobsPage />} />
+                <Route path="/leads" element={<LeadsPage />} />
                 <Route path="/customers" element={<CustomersPage />} />
                 <Route path="/customers/:customerId" element={<CustomerDetailPage />} />
                 <Route path="/properties/:propertyId" element={<PropertyDetailPage />} />

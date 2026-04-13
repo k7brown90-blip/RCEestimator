@@ -1,4 +1,4 @@
-import type { AssemblyTemplate, CompanionSuggestion, Customer, Estimate, EstimateAssembly, JobSummary, Property, Visit, AtomicUnit, ModifierDef, EstimateItem, SupportItem, NECAlert } from "./types";
+import type { AssemblyTemplate, CompanionSuggestion, Customer, Estimate, EstimateAssembly, JobSummary, Property, Visit, AtomicUnit, ModifierDef, EstimateItem, SupportItem, NECAlert, Lead } from "./types";
 
 const API_BASE = "/api";
 
@@ -186,4 +186,13 @@ export const api = {
     request<SupportItem>(`/estimates/${estimateId}/support-items/${itemId}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteSupportItem: (estimateId: string, itemId: string) =>
     request<void>(`/estimates/${estimateId}/support-items/${itemId}`, { method: "DELETE" }),
+  // ─── Leads ────────────────────────────────────────────────────────────────
+  leads: (status?: string) => {
+    const suffix = status ? `?status=${status}` : "";
+    return request<Lead[]>(`/leads${suffix}`);
+  },
+  updateLead: (leadId: string, input: { status?: string; notes?: string }) =>
+    request<Lead>(`/leads/${leadId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  convertLead: (leadId: string) =>
+    request<{ customer: Customer; property: Property | null; visit: Visit | null; lead: Lead }>(`/leads/${leadId}/convert`, { method: "PATCH" }),
 };

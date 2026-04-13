@@ -1589,6 +1589,26 @@ app.get("/leads", asyncHandler(async (req, res) => {
   res.json(leads);
 }));
 
+app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
+  const leadId = readParam(req, "leadId");
+  const body = req.body as { status?: string; notes?: string };
+  const validStatuses = ["new", "contacted", "converted", "lost"];
+  if (body.status && !validStatuses.includes(body.status)) {
+    res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
+    return;
+  }
+
+  const data: Record<string, unknown> = {};
+  if (body.status) data.status = body.status;
+  if (body.notes !== undefined) data.notes = body.notes;
+
+  const lead = await prisma.lead.update({
+    where: { id: leadId },
+    data,
+  });
+  res.json(lead);
+}));
+
 app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
   const leadId = readParam(req, "leadId");
   const lead = await prisma.lead.findUnique({ where: { id: leadId } });

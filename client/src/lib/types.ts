@@ -292,3 +292,23 @@ export type NECAlert = {
   promptText: string;
   severity: "REQUIRED" | "RECOMMENDED" | "ADVISORY";
 };
+
+export type LeadStatus = "new" | "contacted" | "converted" | "lost";
+export type LeadSource = "email" | "phone" | "web";
+
+export type Lead = {
+  id: string;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  source: LeadSource;
+  status: LeadStatus;
+  notes?: string | null;
+  address?: string | null;
+  jobType?: string | null;
+  customerId?: string | null;
+  propertyId?: string | null;
+  visitId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
