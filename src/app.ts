@@ -229,10 +229,14 @@ app.get("/customer/lookup", asyncHandler(async (req, res) => {
       type: "lead",
       name: lead.name,
       leadId: lead.id,
-      status: lead.status,
-      jobType: lead.jobType,
+      phone: lead.phone,
+      email: lead.email,
       address: lead.address,
+      jobType: lead.jobType,
+      status: lead.status,
+      callType: lead.callType,
       notes: lead.notes,
+      createdAt: lead.createdAt.toISOString().slice(0, 10),
     });
     return;
   }
