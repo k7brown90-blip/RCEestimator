@@ -238,8 +238,9 @@ function buildAtomicUnit(row: CsvRow, catalog: string): AtomicUnitInput {
 // ─── LOAD ATOMIC UNITS FROM CSV FILES ───────────────────────────────────────────
 
 function loadAtomicUnits(): AtomicUnitInput[] {
-  // CSV files are at the repo root (same level as package.json)
-  const csvDir = path.resolve(__dirname, "..");
+  // CSV files are at the repo root (same level as package.json).
+  // Use process.cwd() because __dirname differs between tsx (scripts/) and compiled (dist/scripts/).
+  const csvDir = process.cwd();
   const newWorkPath = path.join(csvDir, "new_work_catalog.csv");
   const oldWorkPath = path.join(csvDir, "old_work_catalog.csv");
   const servicePath = path.join(csvDir, "service_catalog.csv");
