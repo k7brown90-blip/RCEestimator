@@ -87,7 +87,7 @@ app.get("/health", (_req, res) => {
 });
 
 // ─── VAPI DYNAMIC VARIABLES (no auth — called at start of each inbound call) ──
-app.post("/api/vapi/assistant-config", (_req, res) => {
+app.post("/vapi/assistant-config", (_req, res) => {
   const now = new Date();
   const current_date = now.toLocaleDateString("en-US", {
     timeZone: "America/Chicago",
@@ -105,7 +105,7 @@ app.post("/api/vapi/assistant-config", (_req, res) => {
 });
 
 // ─── CALENDAR AVAILABILITY (no auth — called by Vapi AI assistant) ───────────
-app.get("/api/calendar/availability", asyncHandler(async (_req, res) => {
+app.get("/calendar/availability", asyncHandler(async (_req, res) => {
   const data = await getAvailability();
   res.json(data);
 }));
