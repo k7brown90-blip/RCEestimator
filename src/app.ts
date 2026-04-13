@@ -85,6 +85,35 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+// ─── LEAD WEBHOOK (no JWT — uses shared secret) ────────────────────────────
+app.post("/leads", asyncHandler(async (req, res) => {
+  const secret = req.headers["x-rce-webhook-secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string };
+  if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+
+  const lead = await prisma.lead.create({
+    data: {
+      name: body.name.trim(),
+      email: body.email?.trim() || null,
+      phone: body.phone?.trim() || null,
+      source: body.source || "email",
+      notes: body.notes?.trim() || null,
+      address: body.address?.trim() || null,
+      jobType: body.jobType?.trim() || null,
+    },
+  });
+
+  res.status(201).json(lead);
+}));
+
 // ─── PIN AUTH ────────────────────────────────────────────────────────────────
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
 app.use(pinAuthMiddleware);
@@ -1544,6 +1573,109 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
     console.error("OpenAI Responses API error:", errMsg);
     res.status(502).json({ error: `AI agent error: ${errMsg}` });
   }
+}));
+
+// ─── LEADS (authenticated) ─────────────────────────────────────────────────
+
+app.get("/leads", asyncHandler(async (req, res) => {
+  const status = readParam(req, "status");
+  const where: Record<string, unknown> = {};
+  if (status) where["status"] = status;
+
+  const leads = await prisma.lead.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+  });
+  res.json(leads);
+}));
+
+app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
+  const leadId = readParam(req, "leadId");
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!lead) {
+    res.status(404).json({ error: "Lead not found" });
+    return;
+  }
+  if (lead.status === "converted") {
+    res.status(400).json({ error: "Lead already converted" });
+    return;
+  }
+
+  // Parse address into components if possible (basic "city, state zip" pattern)
+  let addressLine1 = lead.address ?? "";
+  let city = "";
+  let state = "";
+  let postalCode = "";
+  if (lead.address) {
+    const match = lead.address.match(/^(.+?),\s*([^,]+),\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$/i);
+    if (match) {
+      addressLine1 = match[1].trim();
+      city = match[2].trim();
+      state = match[3].trim().toUpperCase();
+      postalCode = match[4].trim();
+    }
+  }
+
+  // Map jobType string to visit mode
+  function deriveMode(jobType: string | null): string {
+    if (!jobType) return "service_diagnostic";
+    const jt = jobType.toLowerCase();
+    if (jt.includes("remodel") || jt.includes("renovation") || jt.includes("addition")) return "remodel";
+    if (jt.includes("new construction") || jt.includes("new build")) return "new_construction";
+    return "service_diagnostic";
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const customer = await tx.customer.create({
+      data: {
+        name: lead.name,
+        email: lead.email,
+        phone: lead.phone,
+      },
+    });
+
+    let property: { id: string } | null = null;
+    if (lead.address) {
+      property = await tx.property.create({
+        data: {
+          customerId: customer.id,
+          name: addressLine1,
+          addressLine1,
+          city,
+          state,
+          postalCode,
+        },
+      });
+      // Create empty system snapshot (matches existing property creation pattern)
+      await tx.systemSnapshot.create({ data: { propertyId: property.id } });
+    }
+
+    let visit: { id: string } | null = null;
+    if (property) {
+      visit = await tx.visit.create({
+        data: {
+          propertyId: property.id,
+          customerId: customer.id,
+          mode: deriveMode(lead.jobType),
+          purpose: lead.notes ?? undefined,
+        },
+      });
+    }
+
+    const updatedLead = await tx.lead.update({
+      where: { id: leadId },
+      data: {
+        status: "converted",
+        customerId: customer.id,
+        propertyId: property?.id ?? null,
+        visitId: visit?.id ?? null,
+      },
+    });
+
+    return { customer, property, visit, lead: updatedLead };
+  });
+
+  res.json(result);
 }));
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

@@ -516,3 +516,20 @@ model JobType {
   isActive            Boolean  @default(true)
   sortOrder           Int      @default(0)
 }
+
+model Lead {
+  id          String   @id @default(cuid())
+  name        String
+  email       String?
+  phone       String?
+  source      String   @default("email")   // "email" | "phone" | "web"
+  status      String   @default("new")     // "new" | "contacted" | "converted" | "lost"
+  notes       String?
+  address     String?
+  jobType     String?
+  customerId  String?
+  propertyId  String?
+  visitId     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
