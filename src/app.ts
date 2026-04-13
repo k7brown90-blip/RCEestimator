@@ -85,6 +85,24 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+// ─── VAPI DYNAMIC VARIABLES (no auth — called at start of each inbound call) ──
+app.post("/api/vapi/assistant-config", (_req, res) => {
+  const now = new Date();
+  const current_date = now.toLocaleDateString("en-US", {
+    timeZone: "America/Chicago",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const current_time = now.toLocaleTimeString("en-US", {
+    timeZone: "America/Chicago",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  res.json({ variableValues: { current_date, current_time } });
+});
+
 // ─── LEAD WEBHOOK (no JWT — uses shared secret) ────────────────────────────
 app.post("/leads", asyncHandler(async (req, res) => {
   const secret = req.headers["webhook_secret"];
