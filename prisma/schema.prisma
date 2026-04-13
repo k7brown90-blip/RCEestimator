@@ -368,18 +368,19 @@ model ChangeOrder {
 
 model AtomicUnit {
   id                   String         @id @default(cuid())
-  code                 String         @unique   // DEV-001, CIR-001, etc.
-  category             String         // DEVICES, LUMINAIRES, CIRCUITING, PROTECTION, PANELS_SERVICE, GROUNDING, EQUIPMENT, SERVICE_DIAGNOSTIC
+  code                 String         // LINE-001, RI-001, TRIM-D01, DM-001, etc.
+  catalog              String         @default("shared") // "new_work" | "old_work" | "service" | "shared"
+  category             String         // LINE, ROUGH_IN, TRIM, DEMO, PANEL, ACCESS, CIRCUIT_MOD, SURFACE, DIAG, TROUBLE, INSPECT
   name                 String
   description          String?
-  unitType             String         // EA, LF, CIRCUIT, HR
+  unitType             String         // EA, LF, HR
   visibilityTier       Int            @default(1) // 1=user-facing, 2=conditional, 3=system-only
   baseLaborHrs         Float          @default(0)
   baseLaborRate        Float          @default(115)
   baseMaterialCost     Float          @default(0)
   necRefsJson          String?        // JSON array: ["210.8", "406"]
   necaSectionRef       String?        // NECA MLU section reference
-  requiresCableLength  Boolean        @default(false) // true for CIRCUIT/FEEDER unit types
+  requiresCableLength  Boolean        @default(false) // true for LF unit types (cable, conduit, conductor)
   requiresEndpoint     Boolean        @default(false) // true for branch circuit units (triggers suggestion)
   resolverGroupId      String?        // links unit to WiringMethodResolver group key
   isActive             Boolean        @default(true)
@@ -387,6 +388,8 @@ model AtomicUnit {
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
   estimateItems        EstimateItem[]
+
+  @@unique([catalog, code])
 }
 
 model ModifierDef {

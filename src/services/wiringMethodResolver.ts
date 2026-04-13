@@ -14,7 +14,7 @@
  *
  * Outputs:
  *   - wiringMethod:      human-readable label ('NM-B 12/2', 'MC 12/2', 'EMT ¾" + THHN', etc.)
- *   - cableCode:         atomic unit code ('WIR-002', 'WIR-008', 'CON-001', etc.)
+ *   - cableCode:         atomic unit code ('RI-012', 'RI-024', 'RI-044', 'LINE-042', etc.)
  *   - laborHrs:          total cable/conduit labor hours
  *   - laborCost:         labor at $90/hr (NECA helper rate)
  *   - materialCost:      cable/conduit material cost (markup applied downstream)
@@ -44,29 +44,86 @@ const CABLE_LABOR_RATE = 90; // $90/hr — NECA helper rate for cable routing
 // ─── Cable specs by code ──────────────────────────────────────────────────────
 
 type CableSpec = {
-  code: string;       // WIR-001, WIR-002, etc.
+  code: string;       // RI-011, RI-012, etc. (new_work catalog codes)
   laborHrPerLF: number;
   materialCostPerLF: number;
   label: string;
 };
 
 const CABLE_SPECS: Record<string, CableSpec> = {
-  "WIR-001": { code: "WIR-001", laborHrPerLF: 0.04, materialCostPerLF: 0.45, label: "NM-B 14/2" },
-  "WIR-002": { code: "WIR-002", laborHrPerLF: 0.05, materialCostPerLF: 0.65, label: "NM-B 12/2" },
-  "WIR-003": { code: "WIR-003", laborHrPerLF: 0.05, materialCostPerLF: 1.15, label: "NM-B 12/3" },
-  "WIR-004": { code: "WIR-004", laborHrPerLF: 0.05, materialCostPerLF: 0.90, label: "NM-B 10/2" },
-  "WIR-005": { code: "WIR-005", laborHrPerLF: 0.06, materialCostPerLF: 1.10, label: "NM-B 10/3" },
-  "WIR-006": { code: "WIR-006", laborHrPerLF: 0.07, materialCostPerLF: 1.70, label: "NM-B 6/2" },
-  "WIR-007": { code: "WIR-007", laborHrPerLF: 0.07, materialCostPerLF: 2.00, label: "NM-B 6/3" },
-  "WIR-008": { code: "WIR-008", laborHrPerLF: 0.06, materialCostPerLF: 0.85, label: "MC 12/2" },
-  "WIR-009": { code: "WIR-009", laborHrPerLF: 0.08, materialCostPerLF: 4.50, label: "SER 2/0" },
-  "WIR-010": { code: "WIR-010", laborHrPerLF: 0.10, materialCostPerLF: 3.75, label: "UF / Direct-Burial" },
-  "WIR-011": { code: "WIR-011", laborHrPerLF: 0.02, materialCostPerLF: 0.12, label: "Low-Voltage 18/2" },
-  "CON-001": { code: "CON-001", laborHrPerLF: 0.06, materialCostPerLF: 1.12, label: "EMT ¾\"" },
-  "CON-002": { code: "CON-002", laborHrPerLF: 0.07, materialCostPerLF: 1.45, label: "EMT 1\"" },
-  "CON-003": { code: "CON-003", laborHrPerLF: 0.05, materialCostPerLF: 0.84, label: "PVC ¾\"" },
-  "CON-004": { code: "CON-004", laborHrPerLF: 0.06, materialCostPerLF: 1.00, label: "PVC 1\"" },
-  "CON-005": { code: "CON-005", laborHrPerLF: 0.07, materialCostPerLF: 1.00, label: "Liquidtight Flex ¾\"" },
+  // NM-B (Romex) — new work, interior concealed
+  "RI-011": { code: "RI-011", laborHrPerLF: 0.005, materialCostPerLF: 0.40, label: "NM-B 14/2" },
+  "RI-012": { code: "RI-012", laborHrPerLF: 0.006, materialCostPerLF: 0.50, label: "NM-B 12/2" },
+  "RI-013": { code: "RI-013", laborHrPerLF: 0.006, materialCostPerLF: 0.65, label: "NM-B 14/3" },
+  "RI-014": { code: "RI-014", laborHrPerLF: 0.007, materialCostPerLF: 0.75, label: "NM-B 12/3" },
+  "RI-015": { code: "RI-015", laborHrPerLF: 0.007, materialCostPerLF: 0.80, label: "NM-B 10/2" },
+  "RI-016": { code: "RI-016", laborHrPerLF: 0.008, materialCostPerLF: 1.00, label: "NM-B 10/3" },
+  "RI-017": { code: "RI-017", laborHrPerLF: 0.008, materialCostPerLF: 1.20, label: "NM-B 8/2" },
+  "RI-018": { code: "RI-018", laborHrPerLF: 0.009, materialCostPerLF: 1.50, label: "NM-B 8/3" },
+  "RI-019": { code: "RI-019", laborHrPerLF: 0.010, materialCostPerLF: 1.60, label: "NM-B 6/2" },
+  "RI-020": { code: "RI-020", laborHrPerLF: 0.011, materialCostPerLF: 1.90, label: "NM-B 6/3" },
+  // MC Cable — exposed interior
+  "RI-023": { code: "RI-023", laborHrPerLF: 0.007, materialCostPerLF: 0.70, label: "MC 14/2" },
+  "RI-024": { code: "RI-024", laborHrPerLF: 0.008, materialCostPerLF: 0.85, label: "MC 12/2" },
+  "RI-025": { code: "RI-025", laborHrPerLF: 0.009, materialCostPerLF: 1.30, label: "MC 12/3" },
+  "RI-026": { code: "RI-026", laborHrPerLF: 0.009, materialCostPerLF: 1.00, label: "MC 10/2" },
+  "RI-027": { code: "RI-027", laborHrPerLF: 0.010, materialCostPerLF: 1.50, label: "MC 10/3" },
+  // UF-B — exterior / direct burial
+  "RI-028": { code: "RI-028", laborHrPerLF: 0.012, materialCostPerLF: 0.85, label: "UF-B 12/2" },
+  "RI-029": { code: "RI-029", laborHrPerLF: 0.013, materialCostPerLF: 1.20, label: "UF-B 10/2" },
+  // Low-voltage
+  "RI-030": { code: "RI-030", laborHrPerLF: 0.003, materialCostPerLF: 0.12, label: "Low-Voltage 18/2" },
+  // SER / SEU cable (LINE section)
+  "LINE-041": { code: "LINE-041", laborHrPerLF: 0.025, materialCostPerLF: 7.00, label: "SER 4/0" },
+  "LINE-042": { code: "LINE-042", laborHrPerLF: 0.022, materialCostPerLF: 4.50, label: "SER 2/0" },
+  "LINE-043": { code: "LINE-043", laborHrPerLF: 0.020, materialCostPerLF: 3.50, label: "SER 1/0" },
+  // EMT Conduit — 1/2" through 4"
+  "RI-043": { code: "RI-043", laborHrPerLF: 0.020, materialCostPerLF: 0.75, label: "EMT ½\"" },
+  "RI-044": { code: "RI-044", laborHrPerLF: 0.025, materialCostPerLF: 1.00, label: "EMT ¾\"" },
+  "RI-045": { code: "RI-045", laborHrPerLF: 0.030, materialCostPerLF: 1.45, label: "EMT 1\"" },
+  "RI-046": { code: "RI-046", laborHrPerLF: 0.035, materialCostPerLF: 1.80, label: "EMT 1-1/4\"" },
+  "RI-047": { code: "RI-047", laborHrPerLF: 0.040, materialCostPerLF: 2.25, label: "EMT 1-1/2\"" },
+  "RI-048": { code: "RI-048", laborHrPerLF: 0.045, materialCostPerLF: 3.00, label: "EMT 2\"" },
+  "RI-069": { code: "RI-069", laborHrPerLF: 0.055, materialCostPerLF: 4.50, label: "EMT 2-1/2\"" },
+  "RI-070": { code: "RI-070", laborHrPerLF: 0.065, materialCostPerLF: 6.00, label: "EMT 3\"" },
+  "RI-071": { code: "RI-071", laborHrPerLF: 0.075, materialCostPerLF: 7.75, label: "EMT 3-1/2\"" },
+  "RI-072": { code: "RI-072", laborHrPerLF: 0.085, materialCostPerLF: 9.50, label: "EMT 4\"" },
+  // PVC Conduit — 1/2" through 4"
+  "RI-049": { code: "RI-049", laborHrPerLF: 0.018, materialCostPerLF: 0.55, label: "PVC ½\"" },
+  "RI-050": { code: "RI-050", laborHrPerLF: 0.022, materialCostPerLF: 0.75, label: "PVC ¾\"" },
+  "RI-051": { code: "RI-051", laborHrPerLF: 0.025, materialCostPerLF: 1.00, label: "PVC 1\"" },
+  "RI-052": { code: "RI-052", laborHrPerLF: 0.030, materialCostPerLF: 1.20, label: "PVC 1-1/4\"" },
+  "RI-053": { code: "RI-053", laborHrPerLF: 0.035, materialCostPerLF: 1.60, label: "PVC 1-1/2\"" },
+  "RI-054": { code: "RI-054", laborHrPerLF: 0.040, materialCostPerLF: 2.15, label: "PVC 2\"" },
+  "RI-073": { code: "RI-073", laborHrPerLF: 0.048, materialCostPerLF: 3.25, label: "PVC 2-1/2\"" },
+  "RI-074": { code: "RI-074", laborHrPerLF: 0.055, materialCostPerLF: 4.50, label: "PVC 3\"" },
+  "RI-075": { code: "RI-075", laborHrPerLF: 0.065, materialCostPerLF: 5.75, label: "PVC 3-1/2\"" },
+  "RI-076": { code: "RI-076", laborHrPerLF: 0.075, materialCostPerLF: 7.00, label: "PVC 4\"" },
+  // RMC Rigid Steel — 1/2" through 4"
+  "RI-077": { code: "RI-077", laborHrPerLF: 0.035, materialCostPerLF: 2.00, label: "RMC ½\"" },
+  "RI-055": { code: "RI-055", laborHrPerLF: 0.040, materialCostPerLF: 2.50, label: "RMC ¾\"" },
+  "RI-056": { code: "RI-056", laborHrPerLF: 0.045, materialCostPerLF: 3.25, label: "RMC 1\"" },
+  "RI-078": { code: "RI-078", laborHrPerLF: 0.050, materialCostPerLF: 4.25, label: "RMC 1-1/4\"" },
+  "RI-079": { code: "RI-079", laborHrPerLF: 0.060, materialCostPerLF: 5.50, label: "RMC 1-1/2\"" },
+  "RI-080": { code: "RI-080", laborHrPerLF: 0.070, materialCostPerLF: 7.00, label: "RMC 2\"" },
+  "RI-081": { code: "RI-081", laborHrPerLF: 0.085, materialCostPerLF: 9.50, label: "RMC 2-1/2\"" },
+  "RI-082": { code: "RI-082", laborHrPerLF: 0.100, materialCostPerLF: 12.50, label: "RMC 3\"" },
+  "RI-083": { code: "RI-083", laborHrPerLF: 0.115, materialCostPerLF: 15.00, label: "RMC 3-1/2\"" },
+  "RI-084": { code: "RI-084", laborHrPerLF: 0.130, materialCostPerLF: 18.00, label: "RMC 4\"" },
+  // FMC Flex Steel — 1/2" through 2"
+  "RI-057": { code: "RI-057", laborHrPerLF: 0.015, materialCostPerLF: 0.60, label: "FMC ½\"" },
+  "RI-058": { code: "RI-058", laborHrPerLF: 0.018, materialCostPerLF: 0.85, label: "FMC ¾\"" },
+  "RI-085": { code: "RI-085", laborHrPerLF: 0.022, materialCostPerLF: 1.20, label: "FMC 1\"" },
+  "RI-086": { code: "RI-086", laborHrPerLF: 0.028, materialCostPerLF: 1.60, label: "FMC 1-1/4\"" },
+  "RI-087": { code: "RI-087", laborHrPerLF: 0.032, materialCostPerLF: 2.00, label: "FMC 1-1/2\"" },
+  "RI-088": { code: "RI-088", laborHrPerLF: 0.038, materialCostPerLF: 2.75, label: "FMC 2\"" },
+  // LFMC Liquidtight — 1/2" through 2"
+  "RI-059": { code: "RI-059", laborHrPerLF: 0.018, materialCostPerLF: 0.80, label: "LFMC ½\"" },
+  "RI-060": { code: "RI-060", laborHrPerLF: 0.022, materialCostPerLF: 1.00, label: "LFMC ¾\"" },
+  "RI-061": { code: "RI-061", laborHrPerLF: 0.025, materialCostPerLF: 1.40, label: "LFMC 1\"" },
+  "RI-089": { code: "RI-089", laborHrPerLF: 0.030, materialCostPerLF: 1.80, label: "LFMC 1-1/4\"" },
+  "RI-090": { code: "RI-090", laborHrPerLF: 0.035, materialCostPerLF: 2.25, label: "LFMC 1-1/2\"" },
+  "RI-091": { code: "RI-091", laborHrPerLF: 0.042, materialCostPerLF: 3.00, label: "LFMC 2\"" },
 };
 
 // ─── Breaker cost by amperage ─────────────────────────────────────────────────
@@ -93,14 +150,15 @@ function resolveNMBGauge(
   needsThreeWire: boolean
 ): string {
   if (voltage === 120) {
-    if (amperage <= 15) return "WIR-001"; // 14/2
-    return "WIR-002";                     // 12/2 (20A)
+    if (amperage <= 15) return "RI-011"; // 14/2
+    return "RI-012";                     // 12/2 (20A)
   }
   // 240V
-  if (amperage <= 20) return "WIR-002";   // 12/2
-  if (amperage <= 30)  return needsThreeWire ? "WIR-005" : "WIR-004"; // 10/3 or 10/2
-  if (amperage <= 50)  return needsThreeWire ? "WIR-007" : "WIR-006"; // 6/3 or 6/2
-  return "WIR-009"; // SER for larger feeders
+  if (amperage <= 20) return "RI-012";   // 12/2
+  if (amperage <= 30)  return needsThreeWire ? "RI-016" : "RI-015"; // 10/3 or 10/2
+  if (amperage <= 40)  return needsThreeWire ? "RI-018" : "RI-017"; // 8/3 or 8/2
+  if (amperage <= 50)  return needsThreeWire ? "RI-020" : "RI-019"; // 6/3 or 6/2
+  return "LINE-042"; // SER 2/0 for larger feeders
 }
 
 // ─── Resolution logic ─────────────────────────────────────────────────────────
@@ -133,13 +191,13 @@ export function resolveWiringMethod(input: ResolveCableInput): ResolveCableResul
     // Same-building feeder: SER cable
     // Detached / underground: UF
     const isUnderground = environment === "underground";
-    const spec = isUnderground ? CABLE_SPECS["WIR-010"] : CABLE_SPECS["WIR-009"];
+    const spec = isUnderground ? CABLE_SPECS["RI-028"] : CABLE_SPECS["LINE-042"];
     return buildResult(spec, cableLength, voltage, amperage, "double");
   }
 
   // ── Branch circuit: underground ──────────────────────────────────────────
   if (environment === "underground") {
-    const spec = CABLE_SPECS["WIR-010"]; // UF cable
+    const spec = CABLE_SPECS["RI-028"]; // UF-B 12/2
     return buildResult(spec, cableLength, voltage, amperage, voltage === 120 ? "single" : "double");
   }
 
@@ -154,20 +212,18 @@ export function resolveWiringMethod(input: ResolveCableInput): ResolveCableResul
 
     if (environment === "interior" && exposure === "exposed") {
       // MC cable for residential exposed interior
-      const spec = CABLE_SPECS["WIR-008"];
+      const spec = CABLE_SPECS["RI-024"]; // MC 12/2
       return buildResult(spec, cableLength, voltage, amperage, voltage === 120 ? "single" : "double");
     }
 
     if (environment === "exterior") {
-      // UF for exterior / direct-burial capable
-      const spec = CABLE_SPECS["WIR-010"];
+      // UF-B for exterior / direct-burial capable
+      const spec = CABLE_SPECS["RI-028"]; // UF-B 12/2
       return buildResult(spec, cableLength, voltage, amperage, voltage === 120 ? "single" : "double");
     }
   }
 
   // ── Commercial (Phase 1 fallback — uses residential until Phase 2) ────────
-  // Phase 2: EMT + THHN for commercial interior/exposed
-  // For now, fall through to the same residential logic
   if (environment === "interior" && exposure === "concealed") {
     const cableCode = resolveNMBGauge(voltage, amperage, needsThreeWire);
     const spec = CABLE_SPECS[cableCode];
@@ -175,12 +231,12 @@ export function resolveWiringMethod(input: ResolveCableInput): ResolveCableResul
   }
 
   if (environment === "interior" && exposure === "exposed") {
-    const spec = CABLE_SPECS["CON-001"]; // EMT ¾" as commercial default
+    const spec = CABLE_SPECS["RI-044"]; // EMT ¾" as commercial default
     return buildResult(spec, cableLength, voltage, amperage, voltage === 120 ? "single" : "double");
   }
 
   // Fallback: NM-B 12/2 for anything unmatched
-  const spec = CABLE_SPECS["WIR-002"];
+  const spec = CABLE_SPECS["RI-012"];
   return buildResult(spec, cableLength, voltage, amperage, voltage === 120 ? "single" : "double");
 }
 

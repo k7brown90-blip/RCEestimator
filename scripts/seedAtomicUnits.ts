@@ -1,1832 +1,291 @@
 /**
- * Seed: Atomic Units, Modifier Definitions, NEC Rules, Presets
+ * Seed: Atomic Units (CSV-driven), Modifier Definitions, NEC Rules, Presets, Job Types
+ *
+ * System B Migration — loads ~442 atomic units from three CSV catalog files
+ * instead of the previous 79 hardcoded System A units.
  *
  * Architecture (locked decisions):
- * - Tier 1: ~30 user-facing units
- * - Tier 2: conditional units (suggested by system, less frequent)
- * - Tier 3: system-only (WIR/CON — hidden, resolved by WiringMethodResolver)
- * - Cable is HIDDEN from estimator; entered as cable length only on circuit items
- * - Condition modifier: open (0.85×), retrofit (1.00× default), obstructed (1.20×)
+ * - System B codes: LINE (panels/service/breakers/grounding), RI (rough-in boxes/cable),
+ *   TRIM (devices/fixtures/specialty), DM (demo), PNL (panel ops), AC (access),
+ *   CM (circuit mods), SF (surface), DIAG/TR/INS (service catalog)
+ * - Three CSV catalogs: new_work_catalog.csv, old_work_catalog.csv, service_catalog.csv
+ * - Catalog field values: "shared" (LINE & TRIM — identical in both new/old work),
+ *   "new_work" (RI items for open-framing), "old_work" (RI items for finished-space,
+ *   plus DEMO/PANEL/ACCESS/CIRCUIT-MOD/SURFACE), "service" (DIAG/TROUBLE/INSPECT)
+ * - Tier 1: user-facing units (panels, breakers, devices, fixtures, boxes, etc.)
+ * - Tier 2: conditional units (service equipment LINE-011–013, grounding LINE-014–018)
+ * - Tier 3: system-only (cable/conduit runs per LF — hidden, resolved by system)
+ * - $90/hr for LF cable/conduit items in RI and LINE sections
+ * - $115/hr for all other labor
+ * - Condition modifier: open (0.85x), retrofit (1.00x default), obstructed (1.20x)
  * - Occupancy/Schedule at estimate level; Access/Height/Condition at item level
- * - $90/hr for hidden cable labor; $115/hr for all other labor
  */
 
 import { PrismaClient } from "@prisma/client";
+import { readFileSync } from "fs";
+import path from "path";
 
 const prisma = new PrismaClient();
 
-// ─── ATOMIC UNITS ────────────────────────────────────────────────────────────
+// ─── TYPES ──────────────────────────────────────────────────────────────────────
 
-type UnitInput = {
+type CsvRow = {
+  section: string;
   code: string;
+  name: string;
+  unit: string;
+  laborHrs: string;
+  materialCost: string;
+  description: string;
+  source: "new_work" | "old_work" | "service";
+  rowIndex: number;
+};
+
+type AtomicUnitInput = {
+  code: string;
+  catalog: string;
   category: string;
   name: string;
-  description?: string;
-  unitType: string; // EA | LF | CIRCUIT | HR
-  visibilityTier: number; // 1=user-facing | 2=conditional | 3=system-only
+  description: string;
+  unitType: string;
+  visibilityTier: number;
   baseLaborHrs: number;
   baseLaborRate: number;
   baseMaterialCost: number;
-  necRefsJson?: string;
-  necaSectionRef?: string;
-  requiresCableLength?: boolean;
-  requiresEndpoint?: boolean;
-  resolverGroupId?: string;
+  requiresCableLength: boolean;
   sortOrder: number;
 };
 
-const ATOMIC_UNITS: UnitInput[] = [
-  // ─── DEVICES (NEC 404, 406) ──────────────────────────────────────────────
-  // Tier 1: core swap devices — box exists, circuit exists
-  {
-    code: "DEV-001",
-    category: "DEVICES",
-    name: "Receptacle — Replace",
-    description: "Remove old, install new 15/20A receptacle + plate. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.35,
-    baseLaborRate: 115,
-    baseMaterialCost: 8,
-    necRefsJson: JSON.stringify(["406"]),
-    necaSectionRef: "26-06-23",
-    sortOrder: 10,
-  },
-  {
-    code: "DEV-002",
-    category: "DEVICES",
-    name: "GFCI Receptacle — Replace/Upgrade",
-    description: "Install GFCI receptacle + plate + labels. Replaces standard or existing GFCI.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.45,
-    baseLaborRate: 115,
-    baseMaterialCost: 28,
-    necRefsJson: JSON.stringify(["406", "210.8"]),
-    necaSectionRef: "26-06-23",
-    sortOrder: 20,
-  },
-  {
-    code: "DEV-003",
-    category: "DEVICES",
-    name: "Switch Single-Pole — Replace",
-    description: "Swap single-pole switch + plate. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.35,
-    baseLaborRate: 115,
-    baseMaterialCost: 9,
-    necRefsJson: JSON.stringify(["404"]),
-    necaSectionRef: "26-06-21",
-    sortOrder: 30,
-  },
-  {
-    code: "DEV-004",
-    category: "DEVICES",
-    name: "3-Way Switch — Replace",
-    description: "Swap 3-way switch + plate. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 16,
-    necRefsJson: JSON.stringify(["404"]),
-    necaSectionRef: "26-06-21",
-    sortOrder: 40,
-  },
-  {
-    code: "DEV-005",
-    category: "DEVICES",
-    name: "Dimmer Switch — Replace",
-    description: "Swap to dimmer in existing box. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 55,
-    necRefsJson: JSON.stringify(["404"]),
-    necaSectionRef: "26-06-21",
-    sortOrder: 50,
-  },
-  {
-    code: "DEV-006",
-    category: "DEVICES",
-    name: "Smoke/CO Detector — Replace",
-    description: "Swap detector in existing base/box. Base and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 48,
-    necRefsJson: JSON.stringify(["760", "210.12"]),
-    necaSectionRef: "26-06-80",
-    sortOrder: 60,
-  },
-  // Tier 2 devices (less frequent, conditional)
-  {
-    code: "DEV-007",
-    category: "DEVICES",
-    name: "Timer/Occupancy Switch — Replace",
-    description: "Install timer or occupancy sensor switch in existing box.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 0.65,
-    baseLaborRate: 115,
-    baseMaterialCost: 65,
-    necRefsJson: JSON.stringify(["404"]),
-    necaSectionRef: "26-06-21",
-    sortOrder: 70,
-  },
-  {
-    code: "DEV-008",
-    category: "DEVICES",
-    name: "AFCI Receptacle — Replace",
-    description: "Install AFCI outlet device in existing box.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 0.45,
-    baseLaborRate: 115,
-    baseMaterialCost: 35,
-    necRefsJson: JSON.stringify(["406", "210.12"]),
-    necaSectionRef: "26-06-23",
-    sortOrder: 80,
-  },
-  {
-    code: "DEV-009",
-    category: "DEVICES",
-    name: "Device Plate/Trim — Replace",
-    description: "Replace wall plate or trim only.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 0.15,
-    baseLaborRate: 115,
-    baseMaterialCost: 8,
-    sortOrder: 90,
-  },
-  {
-    code: "DEV-010",
-    category: "DEVICES",
-    name: "Doorbell/Chime — Replace",
-    description: "Replace transformer + chime unit.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 1.00,
-    baseLaborRate: 115,
-    baseMaterialCost: 110,
-    sortOrder: 100,
-  },
+// ─── CSV PARSER ─────────────────────────────────────────────────────────────────
 
-  // ─── LUMINAIRES (NEC 410) ────────────────────────────────────────────────
-  // Tier 1: replace and new install
-  {
-    code: "LUM-001",
-    category: "LUMINAIRES",
-    name: "Light Fixture — Replace",
-    description: "Remove old, mount new fixture in existing box, connect. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.90,
-    baseLaborRate: 115,
-    baseMaterialCost: 18,
-    necRefsJson: JSON.stringify(["410"]),
-    necaSectionRef: "26-50-05",
-    sortOrder: 110,
-  },
-  {
-    code: "LUM-002",
-    category: "LUMINAIRES",
-    name: "Light Fixture — New Install",
-    description: "Mount new ceiling/wall box, install fixture, connect. Cable run resolved separately.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 1.75,
-    baseLaborRate: 115,
-    baseMaterialCost: 95,
-    necRefsJson: JSON.stringify(["410", "314"]),
-    necaSectionRef: "26-50-05",
-    sortOrder: 120,
-  },
-  {
-    code: "LUM-003",
-    category: "LUMINAIRES",
-    name: "Recessed Light — New Install",
-    description: "Install housing + trim in ceiling, connect. Cable run resolved separately.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 1.75,
-    baseLaborRate: 115,
-    baseMaterialCost: 115,
-    necRefsJson: JSON.stringify(["410", "314"]),
-    necaSectionRef: "26-50-05",
-    sortOrder: 130,
-  },
-  {
-    code: "LUM-004",
-    category: "LUMINAIRES",
-    name: "Exterior Light — Replace",
-    description: "Remove old, mount new exterior fixture, seal. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.75,
-    baseLaborRate: 115,
-    baseMaterialCost: 45,
-    necRefsJson: JSON.stringify(["410", "225"]),
-    necaSectionRef: "26-50-05",
-    sortOrder: 140,
-  },
-  {
-    code: "LUM-005",
-    category: "LUMINAIRES",
-    name: "Ceiling Fan — Install",
-    description: "Mount fan-rated box + assemble/hang fan. Cable run resolved separately.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 1.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 55,
-    necRefsJson: JSON.stringify(["422", "314"]),
-    necaSectionRef: "26-50-20",
-    sortOrder: 150,
-  },
-  // Tier 2 luminaires
-  {
-    code: "LUM-006",
-    category: "LUMINAIRES",
-    name: "Ceiling Fan Box — Install",
-    description: "Install fan-rated box only (no fan). Cable run resolved separately.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 1.75,
-    baseLaborRate: 115,
-    baseMaterialCost: 65,
-    necRefsJson: JSON.stringify(["314.27"]),
-    necaSectionRef: "26-05-37",
-    sortOrder: 160,
-  },
-  {
-    code: "LUM-007",
-    category: "LUMINAIRES",
-    name: "Bathroom Exhaust Fan — Install",
-    description: "Mount fan, connect, duct connection. Cable run resolved separately.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 2.25,
-    baseLaborRate: 115,
-    baseMaterialCost: 140,
-    necRefsJson: JSON.stringify(["410", "422"]),
-    necaSectionRef: "26-50-20",
-    sortOrder: 170,
-  },
+/** Parse a single CSV line, handling quoted fields that may contain commas. */
+function parseCsvLine(line: string): string[] {
+  const fields: string[] = [];
+  let current = "";
+  let inQuotes = false;
 
-  // ─── CIRCUITING (NEC 210, 215) ───────────────────────────────────────────
-  // Tier 1: collapsed to 2 units. Amperage/voltage selected via sub-prompt.
-  // Cable is Tier 3 system-only, resolved from circuitVoltage + circuitAmperage + environment + exposure.
-  {
-    code: "CIR-001",
-    category: "CIRCUITING",
-    name: "Add Circuit",
-    description:
-      "Install breaker + panel termination for new branch circuit. " +
-      "Prompts: voltage (120/240), amperage, environment, exposure, cable length. " +
-      "Cable auto-resolved by system (hidden). Endpoint suggested immediately.",
-    unitType: "CIRCUIT",
-    visibilityTier: 1,
-    baseLaborHrs: 0.90, // breaker + panel termination (cable labor added by resolver)
-    baseLaborRate: 115,
-    baseMaterialCost: 0, // breaker cost computed from amperage at runtime
-    necRefsJson: JSON.stringify(["210", "240"]),
-    necaSectionRef: "26-12-19",
-    requiresCableLength: true,
-    requiresEndpoint: true,
-    resolverGroupId: "branch_circuit",
-    sortOrder: 200,
-  },
-  {
-    code: "CIR-002",
-    category: "CIRCUITING",
-    name: "Add Feeder",
-    description:
-      "Install feeder breaker + termination at both ends for subpanel or detached structure. " +
-      "Prompts: same-building or detached, amperage, environment, cable length. " +
-      "Cable auto-resolved by system (hidden).",
-    unitType: "CIRCUIT",
-    visibilityTier: 1,
-    baseLaborHrs: 3.00, // feeder termination labor (cable labor added by resolver)
-    baseLaborRate: 115,
-    baseMaterialCost: 0, // feeder breaker cost computed from amperage at runtime
-    necRefsJson: JSON.stringify(["215", "225", "240"]),
-    necaSectionRef: "26-12-19",
-    requiresCableLength: true,
-    requiresEndpoint: false, // feeder terminates at subpanel, not an endpoint device
-    resolverGroupId: "feeder_circuit",
-    sortOrder: 210,
-  },
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        // Escaped quote ("") inside quoted field
+        if (i + 1 < line.length && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ",") {
+        fields.push(current);
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+  }
+  fields.push(current);
+  return fields;
+}
 
-  // ─── PROTECTION (NEC 240, 285) ───────────────────────────────────────────
-  // Tier 1: all 4 — breakers are a daily operation
-  {
-    code: "PRT-001",
-    category: "PROTECTION",
-    name: "Breaker — Replace",
-    description: "Remove and replace breaker (same type/size) in existing panel.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.70,
-    baseLaborRate: 115,
-    baseMaterialCost: 35,
-    necRefsJson: JSON.stringify(["240"]),
-    necaSectionRef: "26-12-19",
-    sortOrder: 300,
-  },
-  {
-    code: "PRT-002",
-    category: "PROTECTION",
-    name: "Breaker — Add New",
-    description: "Install new breaker in available panel space.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 1.20,
-    baseLaborRate: 115,
-    baseMaterialCost: 65,
-    necRefsJson: JSON.stringify(["240"]),
-    necaSectionRef: "26-12-19",
-    sortOrder: 310,
-  },
-  {
-    code: "PRT-003",
-    category: "PROTECTION",
-    name: "AFCI/GFCI Breaker — Install",
-    description: "Install AFCI, GFCI, or dual-function breaker.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 1.00,
-    baseLaborRate: 115,
-    baseMaterialCost: 85,
-    necRefsJson: JSON.stringify(["240", "210.12"]),
-    necaSectionRef: "26-12-19",
-    sortOrder: 320,
-  },
-  {
-    code: "PRT-004",
-    category: "PROTECTION",
-    name: "Surge Protective Device (SPD)",
-    description: "Install whole-house SPD at panel.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 1.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 220,
-    necRefsJson: JSON.stringify(["285"]),
-    necaSectionRef: "26-43-13",
-    sortOrder: 330,
-  },
+/** Read and parse a CSV catalog file. Skips the header row and NOTES rows (Code = "---"). */
+function parseCsv(
+  filePath: string,
+  source: "new_work" | "old_work" | "service"
+): CsvRow[] {
+  const content = readFileSync(filePath, "utf-8");
+  const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const rows: CsvRow[] = [];
 
-  // ─── PANELS / SERVICE (NEC 408, 230) ────────────────────────────────────
-  // Tier 1: 6 common panels/service units
-  {
-    code: "PNL-001",
-    category: "PANELS_SERVICE",
-    name: "Main Panel — Replace",
-    description: "Remove existing, mount new panel, reconnect all circuits, label.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 16.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 1650,
-    necRefsJson: JSON.stringify(["408", "230"]),
-    necaSectionRef: "26-12-16",
-    sortOrder: 400,
-  },
-  {
-    code: "PNL-002",
-    category: "PANELS_SERVICE",
-    name: "Subpanel — Replace",
-    description: "Remove existing, mount new subpanel, reconnect circuits.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 9.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 675,
-    necRefsJson: JSON.stringify(["408"]),
-    necaSectionRef: "26-12-16",
-    sortOrder: 410,
-  },
-  {
-    code: "PNL-003",
-    category: "PANELS_SERVICE",
-    name: "Subpanel — New Install",
-    description: "Mount new subpanel, terminate feeder at panel end. Feeder cable resolved separately.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 5.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 500,
-    necRefsJson: JSON.stringify(["408"]),
-    necaSectionRef: "26-12-16",
-    sortOrder: 420,
-  },
-  {
-    code: "PNL-004",
-    category: "PANELS_SERVICE",
-    name: "Panel Rework / Cleanup",
-    description: "Re-terminate, organize, and label all circuits in existing panel.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 6.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 35,
-    necRefsJson: JSON.stringify(["408"]),
-    necaSectionRef: "26-12-16",
-    sortOrder: 430,
-  },
-  {
-    code: "SVC-001",
-    category: "PANELS_SERVICE",
-    name: "Service Entrance Cable — Replace",
-    description: "Replace SEC from weatherhead to meter/panel.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 6.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 420,
-    necRefsJson: JSON.stringify(["230"]),
-    necaSectionRef: "26-12-13",
-    sortOrder: 440,
-  },
-  {
-    code: "SVC-002",
-    category: "PANELS_SERVICE",
-    name: "Meter Base — Replace",
-    description: "Replace meter base, reconnect.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 4.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 340,
-    necRefsJson: JSON.stringify(["230"]),
-    necaSectionRef: "26-12-13",
-    sortOrder: 450,
-  },
-  // Tier 2 panels/service (less common)
-  {
-    code: "SVC-003",
-    category: "PANELS_SERVICE",
-    name: "Exterior Disconnect — Install",
-    description: "Mount and wire exterior service disconnect.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 3.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 210,
-    necRefsJson: JSON.stringify(["230.71"]),
-    necaSectionRef: "26-12-13",
-    sortOrder: 460,
-  },
-  {
-    code: "SVC-004",
-    category: "PANELS_SERVICE",
-    name: "Service Mast/Weatherhead — Repair",
-    description: "Remove old, install new mast + weatherhead.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 5.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 230,
-    necRefsJson: JSON.stringify(["230"]),
-    necaSectionRef: "26-12-13",
-    sortOrder: 470,
-  },
-  {
-    code: "SVC-005",
-    category: "PANELS_SERVICE",
-    name: "Service Entrance Upgrade",
-    description: "Full service upgrade: mast, meter, panel entrance work (excl. cable).",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 6.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 320,
-    necRefsJson: JSON.stringify(["230"]),
-    necaSectionRef: "26-12-13",
-    sortOrder: 480,
-  },
-  {
-    code: "PNL-005",
-    category: "PANELS_SERVICE",
-    name: "Panel Conductor Rework",
-    description: "Re-route and re-terminate conductors in panel.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 3.5,
-    baseLaborRate: 115,
-    baseMaterialCost: 0,
-    necRefsJson: JSON.stringify(["408"]),
-    necaSectionRef: "26-12-16",
-    sortOrder: 490,
-  },
+  // Skip header row (index 0)
+  for (let i = 1; i < lines.length; i++) {
+    const fields = parseCsvLine(lines[i]);
+    if (fields.length < 6) continue;
 
-  // ─── GROUNDING / BONDING (NEC 250) ──────────────────────────────────────
-  // Tier 1: GES (full system) + bonding correction (common repair)
-  {
-    code: "GND-001",
-    category: "GROUNDING",
-    name: "Grounding Electrode System",
-    description: "Full GES: rods, clamps, GEC, connections.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 4.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 185,
-    necRefsJson: JSON.stringify(["250"]),
-    necaSectionRef: "26-05-26",
-    sortOrder: 500,
-  },
-  {
-    code: "GND-002",
-    category: "GROUNDING",
-    name: "Bonding Correction",
-    description: "Install/repair bonding jumpers (water pipe, gas, structural steel).",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 2.00,
-    baseLaborRate: 115,
-    baseMaterialCost: 55,
-    necRefsJson: JSON.stringify(["250"]),
-    necaSectionRef: "26-05-26",
-    sortOrder: 510,
-  },
-  // Tier 2 grounding
-  {
-    code: "GND-003",
-    category: "GROUNDING",
-    name: "Ground Rod — Drive + Connect",
-    description: "Drive rod, install clamp, connect conductor.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 1.70,
-    baseLaborRate: 115,
-    baseMaterialCost: 73,
-    necRefsJson: JSON.stringify(["250.52"]),
-    necaSectionRef: "26-05-26",
-    sortOrder: 520,
-  },
-  {
-    code: "GND-004",
-    category: "GROUNDING",
-    name: "GEC Upgrade",
-    description: "Replace/upgrade grounding electrode conductor.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 2.00,
-    baseLaborRate: 115,
-    baseMaterialCost: 65,
-    necRefsJson: JSON.stringify(["250.64"]),
-    necaSectionRef: "26-05-26",
-    sortOrder: 530,
-  },
+    const section = (fields[0] || "").trim();
+    const code = (fields[1] || "").trim();
+    const name = (fields[2] || "").trim();
+    const unit = (fields[3] || "").trim();
+    const laborHrs = (fields[4] || "").trim();
+    const materialCost = (fields[5] || "").trim();
+    const description = (fields[6] || "").trim();
 
-  // ─── SPECIALTY EQUIPMENT (NEC 422, 440, 625, 680) ───────────────────────
-  // Tier 1: receptacle endpoints (needed for Add Circuit flow) + disconnect + EV
-  {
-    code: "EQP-001",
-    category: "EQUIPMENT",
-    name: "Receptacle Endpoint — 120V",
-    description: "Install device box + 120V receptacle as circuit endpoint.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.55,
-    baseLaborRate: 115,
-    baseMaterialCost: 12,
-    necRefsJson: JSON.stringify(["406"]),
-    necaSectionRef: "26-06-23",
-    sortOrder: 600,
-  },
-  {
-    code: "EQP-002",
-    category: "EQUIPMENT",
-    name: "Receptacle Endpoint — 240V",
-    description: "Install 240V receptacle (NEMA 6-xx or 14-xx) as circuit endpoint.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.85,
-    baseLaborRate: 115,
-    baseMaterialCost: 55,
-    necRefsJson: JSON.stringify(["406"]),
-    necaSectionRef: "26-06-23",
-    sortOrder: 610,
-  },
-  {
-    code: "EQP-003",
-    category: "EQUIPMENT",
-    name: "Equipment Disconnect — Install",
-    description: "Mount disconnect switch near equipment (HVAC, water heater, etc.).",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 1.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 95,
-    necRefsJson: JSON.stringify(["430", "440"]),
-    necaSectionRef: "26-13-16",
-    sortOrder: 620,
-  },
-  // Tier 2 equipment (specialty/less frequent)
-  {
-    code: "EQP-004",
-    category: "EQUIPMENT",
-    name: "Hardwire Endpoint — 120V",
-    description: "Junction box + whip for hardwired 120V equipment.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 0.70,
-    baseLaborRate: 115,
-    baseMaterialCost: 28,
-    necRefsJson: JSON.stringify(["422"]),
-    necaSectionRef: "26-06-23",
-    sortOrder: 630,
-  },
-  {
-    code: "EQP-005",
-    category: "EQUIPMENT",
-    name: "Hardwire Endpoint — 240V",
-    description: "Junction box + whip for hardwired 240V equipment.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 0.90,
-    baseLaborRate: 115,
-    baseMaterialCost: 28,
-    necRefsJson: JSON.stringify(["422"]),
-    necaSectionRef: "26-06-23",
-    sortOrder: 640,
-  },
-  {
-    code: "EQP-006",
-    category: "EQUIPMENT",
-    name: "EV Charger — Install",
-    description: "Install EVSE circuit endpoint (customer-supplied charger mount).",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 3.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 45,
-    necRefsJson: JSON.stringify(["625"]),
-    necaSectionRef: "26-28-13",
-    sortOrder: 650,
-  },
-  {
-    code: "EQP-007",
-    category: "EQUIPMENT",
-    name: "Generator Inlet Box",
-    description: "Install power inlet box for portable generator.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 2.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 180,
-    necRefsJson: JSON.stringify(["702"]),
-    necaSectionRef: "26-32-33",
-    sortOrder: 660,
-  },
-  {
-    code: "EQP-008",
-    category: "EQUIPMENT",
-    name: "Interlock Kit — Install",
-    description: "Install panel interlock kit for generator.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 2.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 150,
-    necRefsJson: JSON.stringify(["702"]),
-    necaSectionRef: "26-32-33",
-    sortOrder: 670,
-  },
-  {
-    code: "EQP-009",
-    category: "EQUIPMENT",
-    name: "Manual Transfer Switch",
-    description: "Install manual transfer switch.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 6.00,
-    baseLaborRate: 115,
-    baseMaterialCost: 400,
-    necRefsJson: JSON.stringify(["702"]),
-    necaSectionRef: "26-32-33",
-    sortOrder: 680,
-  },
-  {
-    code: "EQP-010",
-    category: "EQUIPMENT",
-    name: "Hot Tub/Spa — Disconnect + Connection",
-    description: "Install GFCI disconnect, connect spa equipment.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 5.00,
-    baseLaborRate: 115,
-    baseMaterialCost: 150,
-    necRefsJson: JSON.stringify(["680"]),
-    necaSectionRef: "26-42-13",
-    sortOrder: 690,
-  },
-  {
-    code: "EQP-011",
-    category: "EQUIPMENT",
-    name: "Pool Equipment — Disconnect + Connection",
-    description: "Install disconnect, connect pool equipment.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 6.00,
-    baseLaborRate: 115,
-    baseMaterialCost: 160,
-    necRefsJson: JSON.stringify(["680"]),
-    necaSectionRef: "26-42-13",
-    sortOrder: 700,
-  },
-  {
-    code: "EQP-012",
-    category: "EQUIPMENT",
-    name: "Baseboard Heater — Connect",
-    description: "Connect baseboard heater + thermostat.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 2.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 75,
-    necRefsJson: JSON.stringify(["424"]),
-    necaSectionRef: "26-55-13",
-    sortOrder: 710,
-  },
-  {
-    code: "EQP-013",
-    category: "EQUIPMENT",
-    name: "Smoke/CO Detector — New Install",
-    description: "Mount new box, install detector. Cable run resolved separately.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 1.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 75,
-    necRefsJson: JSON.stringify(["760"]),
-    necaSectionRef: "26-06-80",
-    sortOrder: 720,
-  },
+    // Skip NOTES rows
+    if (code === "---") continue;
 
-  // ─── SERVICE / DIAGNOSTIC ────────────────────────────────────────────────
-  // Tier 1: diagnostic call + cut-in box (manual, standalone)
-  {
-    code: "SRV-001",
-    category: "SERVICE_DIAGNOSTIC",
-    name: "Diagnostic Service Call",
-    description: "Travel + on-site diagnosis (1.5 hr included). Mobilization auto-applied separately.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 1.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 0,
-    sortOrder: 800,
-  },
-  {
-    code: "SRV-002",
-    category: "SERVICE_DIAGNOSTIC",
-    name: "Cut-In Box",
-    description:
-      "Cut opening, mount old-work box in finished wall. Tier 1 standalone — added manually by estimator. " +
-      "Box comes first; may be used as junction with blank cover (no device).",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.75,
-    baseLaborRate: 115,
-    baseMaterialCost: 12,
-    necRefsJson: JSON.stringify(["314"]),
-    necaSectionRef: "26-05-33",
-    sortOrder: 810,
-  },
-  // Tier 2 service/diagnostic
-  {
-    code: "SRV-003",
-    category: "SERVICE_DIAGNOSTIC",
-    name: "Additional Diagnostic Hour",
-    description: "Extended diagnosis beyond initial call.",
-    unitType: "HR",
-    visibilityTier: 2,
-    baseLaborHrs: 1.00,
-    baseLaborRate: 115,
-    baseMaterialCost: 0,
-    sortOrder: 820,
-  },
-  {
-    code: "SRV-004",
-    category: "SERVICE_DIAGNOSTIC",
-    name: "Make-Safe Temporary Repair",
-    description: "Emergency stabilization of electrical hazard.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 1.25,
-    baseLaborRate: 115,
-    baseMaterialCost: 35,
-    sortOrder: 830,
-  },
-  {
-    code: "SRV-005",
-    category: "SERVICE_DIAGNOSTIC",
-    name: "Splice / Termination Repair",
-    description: "Repair failed splice or termination.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 1.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 28,
-    sortOrder: 840,
-  },
-  {
-    code: "SRV-006",
-    category: "SERVICE_DIAGNOSTIC",
-    name: "Junction / Splice Box",
-    description: "Install accessible junction box for splice (NEC 314.29).",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 1.25,
-    baseLaborRate: 115,
-    baseMaterialCost: 40,
-    necRefsJson: JSON.stringify(["314.29"]),
-    necaSectionRef: "26-05-33",
-    sortOrder: 850,
-  },
-  {
-    code: "SRV-007",
-    category: "SERVICE_DIAGNOSTIC",
-    name: "Splice-Through at Device Box",
-    description: "Splice through existing device location, blank plate.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 0.75,
-    baseLaborRate: 115,
-    baseMaterialCost: 5,
-    sortOrder: 860,
-  },
+    rows.push({
+      section,
+      code,
+      name,
+      unit,
+      laborHrs,
+      materialCost,
+      description,
+      source,
+      rowIndex: i - 1,
+    });
+  }
 
-  // ─── RACEWAY / CONDUCTOR (Tier 3 — System-Only) ──────────────────────────
-  // These are NEVER shown to estimator. WiringMethodResolver selects from these.
-  // Labor rate = $90/hr (NECA helper rate for cable routing).
-  {
-    code: "WIR-001",
-    category: "WIRING",
-    name: "NM-B 14/2 Cable",
-    description: "Route and secure 14/2 NM-B cable (15A circuits, residential interior concealed).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.04,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.45,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 900,
-  },
-  {
-    code: "WIR-002",
-    category: "WIRING",
-    name: "NM-B 12/2 Cable",
-    description: "Route and secure 12/2 NM-B cable (20A circuits, residential interior concealed).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.05,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.65,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 910,
-  },
-  {
-    code: "WIR-003",
-    category: "WIRING",
-    name: "NM-B 12/3 Cable",
-    description: "Route and secure 12/3 NM-B cable (multi-wire branch circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.05,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.15,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 920,
-  },
-  {
-    code: "WIR-004",
-    category: "WIRING",
-    name: "NM-B 10/2 Cable",
-    description: "Route and secure 10/2 NM-B cable (30A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.05,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.90,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 930,
-  },
-  {
-    code: "WIR-005",
-    category: "WIRING",
-    name: "NM-B 10/3 Cable",
-    description: "Route and secure 10/3 NM-B cable (30A 3-wire circuits e.g. dryer).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.06,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.10,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 940,
-  },
-  {
-    code: "WIR-006",
-    category: "WIRING",
-    name: "NM-B 6/2 Cable",
-    description: "Route and secure 6/2 NM-B cable (40–50A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.07,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.70,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 950,
-  },
-  {
-    code: "WIR-007",
-    category: "WIRING",
-    name: "NM-B 6/3 Cable",
-    description: "Route and secure 6/3 NM-B cable (50A 3-wire circuits e.g. range).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.07,
-    baseLaborRate: 90,
-    baseMaterialCost: 2.00,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 960,
-  },
-  {
-    code: "WIR-008",
-    category: "WIRING",
-    name: "MC Cable 12/2",
-    description: "Route MC (metal-clad) cable (commercial interior or residential exposed).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.06,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.85,
-    necRefsJson: JSON.stringify(["330"]),
-    resolverGroupId: "cable_mc",
-    sortOrder: 970,
-  },
-  {
-    code: "WIR-009",
-    category: "WIRING",
-    name: "SER Cable 2/0",
-    description: "Route service entrance rated cable.",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.08,
-    baseLaborRate: 90,
-    baseMaterialCost: 4.50,
-    necRefsJson: JSON.stringify(["338"]),
-    resolverGroupId: "cable_service",
-    sortOrder: 980,
-  },
-  {
-    code: "WIR-010",
-    category: "WIRING",
-    name: "UF Cable / Direct-Burial",
-    description: "Route UF or direct-burial rated cable (underground/outdoor).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.10,
-    baseLaborRate: 90,
-    baseMaterialCost: 3.75,
-    necRefsJson: JSON.stringify(["340"]),
-    resolverGroupId: "cable_uf",
-    sortOrder: 990,
-  },
-  {
-    code: "WIR-011",
-    category: "WIRING",
-    name: "Low-Voltage Cable",
-    description: "Route thermostat / doorbell / control wire (18/2).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.02,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.12,
-    necRefsJson: JSON.stringify(["725"]),
-    resolverGroupId: "cable_lv",
-    sortOrder: 1000,
-  },
-  {
-    code: "CON-001",
-    category: "WIRING",
-    name: "EMT Conduit 3/4\"",
-    description: "Install EMT conduit + fittings (commercial or residential exposed).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.06,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.12,
-    necRefsJson: JSON.stringify(["358"]),
-    resolverGroupId: "conduit_emt",
-    sortOrder: 1010,
-  },
-  {
-    code: "CON-002",
-    category: "WIRING",
-    name: "EMT Conduit 1\"",
-    description: "Install EMT conduit + fittings (larger feeders).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.07,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.45,
-    necRefsJson: JSON.stringify(["358"]),
-    resolverGroupId: "conduit_emt",
-    sortOrder: 1020,
-  },
-  {
-    code: "CON-003",
-    category: "WIRING",
-    name: "PVC Conduit 3/4\"",
-    description: "Install PVC conduit + fittings (underground).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.05,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.84,
-    necRefsJson: JSON.stringify(["352"]),
-    resolverGroupId: "conduit_pvc",
-    sortOrder: 1030,
-  },
-  {
-    code: "CON-004",
-    category: "WIRING",
-    name: "PVC Conduit 1\"",
-    description: "Install PVC conduit + fittings (underground, larger feeders).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.06,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.00,
-    necRefsJson: JSON.stringify(["352"]),
-    resolverGroupId: "conduit_pvc",
-    sortOrder: 1040,
-  },
-  {
-    code: "CON-005",
-    category: "WIRING",
-    name: "Liquidtight Flex 3/4\"",
-    description: "Install LFMC + fittings (equipment connections, wet locations).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.07,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.00,
-    necRefsJson: JSON.stringify(["350"]),
-    resolverGroupId: "conduit_lfmc",
-    sortOrder: 1050,
-  },
+  return rows;
+}
 
-  // ─── NM-B CABLE — MISSING 3/4-WIRE & LARGER SIZES ────────────────────────
-  {
-    code: "WIR-012",
-    category: "WIRING",
-    name: "NM-B 14/3 Cable",
-    description: "Route and secure 14/3 NM-B cable (3-way switch legs, multi-wire branch circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.09,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.25,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 1060,
-  },
-  {
-    code: "WIR-013",
-    category: "WIRING",
-    name: "NM-B 8/2 Cable",
-    description: "Route and secure 8/2 NM-B cable (40A circuits, e.g. range, HVAC).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.07,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.40,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 1070,
-  },
-  {
-    code: "WIR-014",
-    category: "WIRING",
-    name: "NM-B 8/3 Cable",
-    description: "Route and secure 8/3 NM-B cable (40A 3-wire circuits, e.g. range, dryer).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.08,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.85,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 1080,
-  },
-  {
-    code: "WIR-015",
-    category: "WIRING",
-    name: "NM-B 4/3 Cable",
-    description: "Route and secure 4/3 NM-B cable (larger feeders, spa circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.07,
-    baseLaborRate: 90,
-    baseMaterialCost: 2.50,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 1090,
-  },
-  {
-    code: "WIR-016",
-    category: "WIRING",
-    name: "NM-B 2 AWG Cable",
-    description: "Route and secure 2 AWG NM-B cable (larger subfeeds, 60A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.08,
-    baseLaborRate: 90,
-    baseMaterialCost: 3.25,
-    necRefsJson: JSON.stringify(["334"]),
-    resolverGroupId: "cable_nmb",
-    sortOrder: 1100,
-  },
+// ─── CATALOG & CLASSIFICATION HELPERS ───────────────────────────────────────────
 
-  // ─── MC CABLE — ADDITIONAL SIZES ─────────────────────────────────────────
-  {
-    code: "WIR-017",
-    category: "WIRING",
-    name: "MC Cable 14/2",
-    description: "Route MC (metal-clad) 14/2 cable (15A commercial/exposed residential).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.02,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.70,
-    necRefsJson: JSON.stringify(["330"]),
-    resolverGroupId: "cable_mc",
-    sortOrder: 1110,
-  },
-  {
-    code: "WIR-018",
-    category: "WIRING",
-    name: "MC Cable 12/3",
-    description: "Route MC (metal-clad) 12/3 cable (20A 3-wire, commercial/exposed).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.027,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.30,
-    necRefsJson: JSON.stringify(["330"]),
-    resolverGroupId: "cable_mc",
-    sortOrder: 1120,
-  },
-  {
-    code: "WIR-019",
-    category: "WIRING",
-    name: "MC Cable 10/2",
-    description: "Route MC (metal-clad) 10/2 cable (30A commercial/exposed residential).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.025,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.00,
-    necRefsJson: JSON.stringify(["330"]),
-    resolverGroupId: "cable_mc",
-    sortOrder: 1130,
-  },
-  {
-    code: "WIR-020",
-    category: "WIRING",
-    name: "MC Cable 10/3",
-    description: "Route MC (metal-clad) 10/3 cable (30A 3-wire, commercial/exposed).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.03,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.50,
-    necRefsJson: JSON.stringify(["330"]),
-    resolverGroupId: "cable_mc",
-    sortOrder: 1140,
-  },
+const SHARED_SECTIONS = new Set(["LINE", "TRIM"]);
+const OLD_WORK_SECTIONS = new Set([
+  "DEMO",
+  "PANEL",
+  "ACCESS",
+  "CIRCUIT-MOD",
+  "SURFACE",
+]);
+const SERVICE_SECTIONS = new Set(["DIAG", "TROUBLE", "INSPECT"]);
 
-  // ─── THHN INDIVIDUAL CONDUCTORS (in conduit) ─────────────────────────────
-  {
-    code: "WIR-021",
-    category: "WIRING",
-    name: "THHN 14 AWG Cu",
-    description: "Pull single THHN 14 AWG copper conductor in conduit (15A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.006,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.10,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1200,
-  },
-  {
-    code: "WIR-022",
-    category: "WIRING",
-    name: "THHN 12 AWG Cu",
-    description: "Pull single THHN 12 AWG copper conductor in conduit (20A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.007,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.15,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1210,
-  },
-  {
-    code: "WIR-023",
-    category: "WIRING",
-    name: "THHN 10 AWG Cu",
-    description: "Pull single THHN 10 AWG copper conductor in conduit (30A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.008,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.20,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1220,
-  },
-  {
-    code: "WIR-024",
-    category: "WIRING",
-    name: "THHN 8 AWG Cu",
-    description: "Pull single THHN 8 AWG copper conductor in conduit (40A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.010,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.40,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1230,
-  },
-  {
-    code: "WIR-025",
-    category: "WIRING",
-    name: "THHN 6 AWG Cu",
-    description: "Pull single THHN 6 AWG copper conductor in conduit (50-60A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.012,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.65,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1240,
-  },
-  {
-    code: "WIR-026",
-    category: "WIRING",
-    name: "THHN 4 AWG Cu",
-    description: "Pull single THHN 4 AWG copper conductor in conduit (70A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.015,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.10,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1250,
-  },
-  {
-    code: "WIR-027",
-    category: "WIRING",
-    name: "THHN 2 AWG Cu",
-    description: "Pull single THHN 2 AWG copper conductor in conduit (100A circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.019,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.80,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1260,
-  },
-  {
-    code: "WIR-028",
-    category: "WIRING",
-    name: "THHN 1/0 AWG Cu",
-    description: "Pull single THHN 1/0 AWG copper conductor in conduit (150A feeders).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.024,
-    baseLaborRate: 90,
-    baseMaterialCost: 3.00,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1270,
-  },
-  {
-    code: "WIR-029",
-    category: "WIRING",
-    name: "THHN 2/0 AWG Cu",
-    description: "Pull single THHN 2/0 AWG copper conductor in conduit (175A feeders).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.027,
-    baseLaborRate: 90,
-    baseMaterialCost: 3.75,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1280,
-  },
-  {
-    code: "WIR-030",
-    category: "WIRING",
-    name: "THHN 3/0 AWG Cu",
-    description: "Pull single THHN 3/0 AWG copper conductor in conduit (200A feeders).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.030,
-    baseLaborRate: 90,
-    baseMaterialCost: 4.50,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1290,
-  },
-  {
-    code: "WIR-031",
-    category: "WIRING",
-    name: "THHN 4/0 AWG Cu",
-    description: "Pull single THHN 4/0 AWG copper conductor in conduit (200A+ feeders/services).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.033,
-    baseLaborRate: 90,
-    baseMaterialCost: 5.75,
-    necRefsJson: JSON.stringify(["310"]),
-    resolverGroupId: "thhn_conduit",
-    sortOrder: 1300,
-  },
+/** Determine catalog value for a given CSV section and source file. */
+function getCatalog(
+  section: string,
+  source: "new_work" | "old_work" | "service"
+): string {
+  if (SHARED_SECTIONS.has(section)) return "shared";
+  if (OLD_WORK_SECTIONS.has(section)) return "old_work";
+  if (SERVICE_SECTIONS.has(section)) return "service";
+  // ROUGH-IN items differ between new_work and old_work
+  if (section === "ROUGH-IN") return source;
+  return source;
+}
 
-  // ─── SER / SEU SERVICE CABLE — ADDITIONAL SIZES ──────────────────────────
-  {
-    code: "WIR-032",
-    category: "WIRING",
-    name: "SER Cable 4/0",
-    description: "Route service entrance rated SER 4/0 cable (200A services).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.09,
-    baseLaborRate: 90,
-    baseMaterialCost: 7.00,
-    necRefsJson: JSON.stringify(["338"]),
-    resolverGroupId: "cable_service",
-    sortOrder: 1310,
-  },
-  {
-    code: "WIR-033",
-    category: "WIRING",
-    name: "SEU Cable 4/0",
-    description: "Route SEU 4/0 service entrance cable (meter to panel, 200A).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.09,
-    baseLaborRate: 90,
-    baseMaterialCost: 6.50,
-    necRefsJson: JSON.stringify(["338"]),
-    resolverGroupId: "cable_service",
-    sortOrder: 1320,
-  },
-  {
-    code: "WIR-034",
-    category: "WIRING",
-    name: "SER Cable 1/0 (4/C)",
-    description: "Route SER 1/0 4-conductor cable (100A feeders, detached structures).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.07,
-    baseLaborRate: 90,
-    baseMaterialCost: 4.00,
-    necRefsJson: JSON.stringify(["338"]),
-    resolverGroupId: "cable_service",
-    sortOrder: 1330,
-  },
+/** Normalize CSV Section column to category enum: ROUGH-IN → ROUGH_IN, CIRCUIT-MOD → CIRCUIT_MOD */
+function normalizeCategory(section: string): string {
+  return section.replace(/-/g, "_");
+}
 
-  // ─── CONDUIT — ADDITIONAL SIZES & TYPES ──────────────────────────────────
-  {
-    code: "CON-006",
-    category: "WIRING",
-    name: "EMT Conduit 1/2\"",
-    description: "Install 1/2\" EMT conduit + fittings (smallest trade size, branch circuits).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.045,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.75,
-    necRefsJson: JSON.stringify(["358"]),
-    resolverGroupId: "conduit_emt",
-    sortOrder: 1400,
-  },
-  {
-    code: "CON-007",
-    category: "WIRING",
-    name: "EMT Conduit 1-1/4\"",
-    description: "Install 1-1/4\" EMT conduit + fittings (larger branch circuits, small feeders).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.062,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.80,
-    necRefsJson: JSON.stringify(["358"]),
-    resolverGroupId: "conduit_emt",
-    sortOrder: 1410,
-  },
-  {
-    code: "CON-008",
-    category: "WIRING",
-    name: "EMT Conduit 1-1/2\"",
-    description: "Install 1-1/2\" EMT conduit + fittings (feeders).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.070,
-    baseLaborRate: 90,
-    baseMaterialCost: 2.25,
-    necRefsJson: JSON.stringify(["358"]),
-    resolverGroupId: "conduit_emt",
-    sortOrder: 1420,
-  },
-  {
-    code: "CON-009",
-    category: "WIRING",
-    name: "EMT Conduit 2\"",
-    description: "Install 2\" EMT conduit + fittings (large feeders, service runs).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.080,
-    baseLaborRate: 90,
-    baseMaterialCost: 3.00,
-    necRefsJson: JSON.stringify(["358"]),
-    resolverGroupId: "conduit_emt",
-    sortOrder: 1430,
-  },
-  {
-    code: "CON-010",
-    category: "WIRING",
-    name: "PVC Conduit 1/2\"",
-    description: "Install 1/2\" PVC conduit + fittings (underground, smallest trade size).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.041,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.55,
-    necRefsJson: JSON.stringify(["352"]),
-    resolverGroupId: "conduit_pvc",
-    sortOrder: 1440,
-  },
-  {
-    code: "CON-011",
-    category: "WIRING",
-    name: "PVC Conduit 1-1/4\"",
-    description: "Install 1-1/4\" PVC conduit + fittings (underground feeders).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.060,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.20,
-    necRefsJson: JSON.stringify(["352"]),
-    resolverGroupId: "conduit_pvc",
-    sortOrder: 1450,
-  },
-  {
-    code: "CON-012",
-    category: "WIRING",
-    name: "PVC Conduit 1-1/2\"",
-    description: "Install 1-1/2\" PVC conduit + fittings (underground feeders).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.070,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.60,
-    necRefsJson: JSON.stringify(["352"]),
-    resolverGroupId: "conduit_pvc",
-    sortOrder: 1460,
-  },
-  {
-    code: "CON-013",
-    category: "WIRING",
-    name: "PVC Conduit 2\"",
-    description: "Install 2\" PVC conduit + fittings (underground, large feeders/services).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.080,
-    baseLaborRate: 90,
-    baseMaterialCost: 2.15,
-    necRefsJson: JSON.stringify(["352"]),
-    resolverGroupId: "conduit_pvc",
-    sortOrder: 1470,
-  },
-  {
-    code: "CON-014",
-    category: "WIRING",
-    name: "RMC Rigid Steel 3/4\"",
-    description: "Install 3/4\" rigid metal conduit + threaded fittings (service masts, exposed).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.060,
-    baseLaborRate: 90,
-    baseMaterialCost: 2.50,
-    necRefsJson: JSON.stringify(["344"]),
-    resolverGroupId: "conduit_rmc",
-    sortOrder: 1480,
-  },
-  {
-    code: "CON-015",
-    category: "WIRING",
-    name: "RMC Rigid Steel 1\"",
-    description: "Install 1\" rigid metal conduit + threaded fittings (service masts, exposed).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.070,
-    baseLaborRate: 90,
-    baseMaterialCost: 3.25,
-    necRefsJson: JSON.stringify(["344"]),
-    resolverGroupId: "conduit_rmc",
-    sortOrder: 1490,
-  },
-  {
-    code: "CON-016",
-    category: "WIRING",
-    name: "FMC Flex Steel 1/2\"",
-    description: "Install 1/2\" flexible metal conduit (equipment whips, tight spaces).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.040,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.60,
-    necRefsJson: JSON.stringify(["348"]),
-    resolverGroupId: "conduit_fmc",
-    sortOrder: 1500,
-  },
-  {
-    code: "CON-017",
-    category: "WIRING",
-    name: "FMC Flex Steel 3/4\"",
-    description: "Install 3/4\" flexible metal conduit (equipment whips, tight spaces).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.050,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.85,
-    necRefsJson: JSON.stringify(["348"]),
-    resolverGroupId: "conduit_fmc",
-    sortOrder: 1510,
-  },
-  {
-    code: "CON-018",
-    category: "WIRING",
-    name: "LFMC Liquidtight 1/2\"",
-    description: "Install 1/2\" liquidtight flexible conduit + fittings (wet/outdoor equipment).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.050,
-    baseLaborRate: 90,
-    baseMaterialCost: 0.80,
-    necRefsJson: JSON.stringify(["350"]),
-    resolverGroupId: "conduit_lfmc",
-    sortOrder: 1520,
-  },
-  {
-    code: "CON-019",
-    category: "WIRING",
-    name: "LFMC Liquidtight 1\"",
-    description: "Install 1\" liquidtight flexible conduit + fittings (larger equipment connections).",
-    unitType: "LF",
-    visibilityTier: 3,
-    baseLaborHrs: 0.080,
-    baseLaborRate: 90,
-    baseMaterialCost: 1.40,
-    necRefsJson: JSON.stringify(["350"]),
-    resolverGroupId: "conduit_lfmc",
-    sortOrder: 1530,
-  },
+/** LINE codes that are Tier 2: service equipment (011-013) and grounding (014-018). */
+const TIER_2_LINE_CODES = new Set([
+  "LINE-011",
+  "LINE-012",
+  "LINE-013",
+  "LINE-014",
+  "LINE-015",
+  "LINE-016",
+  "LINE-017",
+  "LINE-018",
+]);
 
-  // ─── DEVICES — NEW INSTALL VARIANTS & MISSING TYPES ──────────────────────
-  {
-    code: "DEV-011",
-    category: "DEVICES",
-    name: "Receptacle — New Install",
-    description: "Mount new device box + install receptacle + plate in finished wall. Cable run resolved separately.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.55,
-    baseLaborRate: 115,
-    baseMaterialCost: 12,
-    necRefsJson: JSON.stringify(["406", "314"]),
-    necaSectionRef: "26-06-23",
-    requiresEndpoint: false,
-    sortOrder: 1600,
-  },
-  {
-    code: "DEV-012",
-    category: "DEVICES",
-    name: "Switch — New Install",
-    description: "Mount new device box + install single-pole switch + plate in finished wall. Cable run resolved separately.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.55,
-    baseLaborRate: 115,
-    baseMaterialCost: 12,
-    necRefsJson: JSON.stringify(["404", "314"]),
-    necaSectionRef: "26-06-21",
-    requiresEndpoint: false,
-    sortOrder: 1610,
-  },
-  {
-    code: "DEV-013",
-    category: "DEVICES",
-    name: "4-Way Switch — Replace",
-    description: "Swap 4-way switch + plate. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.45,
-    baseLaborRate: 115,
-    baseMaterialCost: 22,
-    necRefsJson: JSON.stringify(["404"]),
-    necaSectionRef: "26-06-21",
-    sortOrder: 1620,
-  },
-  {
-    code: "DEV-014",
-    category: "DEVICES",
-    name: "240V Receptacle — Replace",
-    description: "Replace 240V receptacle (NEMA 6-xx, 10-xx, or 14-xx, 30-60A). Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 35,
-    necRefsJson: JSON.stringify(["406"]),
-    necaSectionRef: "26-06-23",
-    sortOrder: 1630,
-  },
+/**
+ * Determine visibility tier:
+ * - Tier 2: LINE service equipment (011-013) and grounding (014-018)
+ * - Tier 3: RI cable/conduit runs (LF items), LINE conductors (LF items)
+ * - Tier 1: everything else (panels, breakers, devices, fixtures, boxes, etc.)
+ */
+function getVisibilityTier(
+  code: string,
+  section: string,
+  unitType: string
+): number {
+  // Tier 2 check first — LINE-016 is LF but belongs to grounding (Tier 2, not Tier 3)
+  if (TIER_2_LINE_CODES.has(code)) return 2;
 
-  // ─── LUMINAIRES — MISSING TYPES ──────────────────────────────────────────
-  {
-    code: "LUM-008",
-    category: "LUMINAIRES",
-    name: "Ceiling Fan — Replace",
-    description: "Remove existing fan, install new fan on existing fan-rated box. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 1.10,
-    baseLaborRate: 115,
-    baseMaterialCost: 35,
-    necRefsJson: JSON.stringify(["422", "314"]),
-    necaSectionRef: "26-50-20",
-    sortOrder: 1700,
-  },
-  {
-    code: "LUM-009",
-    category: "LUMINAIRES",
-    name: "Wall Sconce / Vanity Light — Replace",
-    description: "Remove old, mount new wall sconce or vanity light. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.60,
-    baseLaborRate: 115,
-    baseMaterialCost: 20,
-    necRefsJson: JSON.stringify(["410"]),
-    necaSectionRef: "26-50-05",
-    sortOrder: 1710,
-  },
-  {
-    code: "LUM-010",
-    category: "LUMINAIRES",
-    name: "Under-Cabinet Light — Install",
-    description: "Mount and wire under-cabinet light fixture. Cable run resolved separately.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 0.55,
-    baseLaborRate: 115,
-    baseMaterialCost: 45,
-    necRefsJson: JSON.stringify(["410"]),
-    necaSectionRef: "26-50-05",
-    sortOrder: 1720,
-  },
-  {
-    code: "LUM-011",
-    category: "LUMINAIRES",
-    name: "LED Recessed Light — Retrofit",
-    description: "Install LED retrofit module in existing recessed can housing.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.30,
-    baseLaborRate: 115,
-    baseMaterialCost: 25,
-    necRefsJson: JSON.stringify(["410"]),
-    necaSectionRef: "26-50-05",
-    sortOrder: 1730,
-  },
-  {
-    code: "LUM-012",
-    category: "LUMINAIRES",
-    name: "Chandelier — Install",
-    description: "Assemble and hang chandelier from existing box/support. Box and circuit exist.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 1.75,
-    baseLaborRate: 115,
-    baseMaterialCost: 30,
-    necRefsJson: JSON.stringify(["410", "314"]),
-    necaSectionRef: "26-50-05",
-    sortOrder: 1740,
-  },
+  // Tier 3: LF items in ROUGH-IN and LINE sections (cable runs, conduit, conductors)
+  if (unitType === "LF" && (section === "ROUGH-IN" || section === "LINE"))
+    return 3;
 
-  // ─── PANELS / SERVICE — MISSING TYPES ────────────────────────────────────
-  {
-    code: "SVC-006",
-    category: "PANELS_SERVICE",
-    name: "Meter/Main Combo — Replace",
-    description: "Replace combined meter base and main breaker panel unit.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 8.0,
-    baseLaborRate: 115,
-    baseMaterialCost: 900,
-    necRefsJson: JSON.stringify(["230", "408"]),
-    necaSectionRef: "26-12-13",
-    sortOrder: 1800,
-  },
-  {
-    code: "SVC-007",
-    category: "PANELS_SERVICE",
-    name: "Service Mast — New Install",
-    description: "Install new mast pipe, weatherhead, and fasteners (up to 30 ft).",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 4.5,
-    baseLaborRate: 115,
-    baseMaterialCost: 250,
-    necRefsJson: JSON.stringify(["230"]),
-    necaSectionRef: "26-12-13",
-    sortOrder: 1810,
-  },
+  // Tier 1: everything else
+  return 1;
+}
 
-  // ─── GROUNDING — MISSING TYPES ───────────────────────────────────────────
-  {
-    code: "GND-005",
-    category: "GROUNDING",
-    name: "Water Pipe Bond Clamp",
-    description: "Install bonding clamp and jumper to metal water pipe per NEC 250.104.",
-    unitType: "EA",
-    visibilityTier: 2,
-    baseLaborHrs: 1.50,
-    baseLaborRate: 115,
-    baseMaterialCost: 25,
-    necRefsJson: JSON.stringify(["250.104"]),
-    necaSectionRef: "26-05-26",
-    sortOrder: 1900,
-  },
+/**
+ * Base labor rate:
+ * - $90/hr for cable/conduit LF items in RI and LINE sections
+ * - $115/hr for all other labor
+ */
+function getBaseLaborRate(section: string, unitType: string): number {
+  if (unitType === "LF" && (section === "ROUGH-IN" || section === "LINE"))
+    return 90;
+  return 115;
+}
 
-  // ─── SERVICE / DIAGNOSTIC — MISSING TYPES ────────────────────────────────
-  {
-    code: "SRV-008",
-    category: "SERVICE_DIAGNOSTIC",
-    name: "Permit Fee",
-    description: "AHJ electrical permit fee (passthrough cost, no labor).",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0,
-    baseLaborRate: 115,
-    baseMaterialCost: 0,
-    sortOrder: 2000,
-  },
-  {
-    code: "SRV-009",
-    category: "SERVICE_DIAGNOSTIC",
-    name: "Mobilization / Travel",
-    description: "Travel to job site, vehicle, tools, setup/cleanup. Standard 45 min one-way.",
-    unitType: "EA",
-    visibilityTier: 1,
-    baseLaborHrs: 0.75,
-    baseLaborRate: 115,
-    baseMaterialCost: 0,
-    sortOrder: 2010,
-  },
-];
+/** Parse material cost, treating "---" or empty as 0. */
+function parseMaterialCost(val: string): number {
+  if (!val || val === "---" || val === "") return 0;
+  const parsed = parseFloat(val);
+  return isNaN(parsed) ? 0 : parsed;
+}
 
-// ─── MODIFIER DEFINITIONS ────────────────────────────────────────────────────
+/** Build an AtomicUnitInput from a parsed CSV row. */
+function buildAtomicUnit(row: CsvRow, catalog: string): AtomicUnitInput {
+  const unitType = row.unit;
+  return {
+    code: row.code,
+    catalog,
+    category: normalizeCategory(row.section),
+    name: row.name,
+    description: row.description,
+    unitType,
+    baseLaborHrs: parseFloat(row.laborHrs) || 0,
+    baseLaborRate: getBaseLaborRate(row.section, unitType),
+    baseMaterialCost: parseMaterialCost(row.materialCost),
+    visibilityTier: getVisibilityTier(row.code, row.section, unitType),
+    requiresCableLength: unitType === "LF",
+    sortOrder: row.rowIndex,
+  };
+}
+
+// ─── LOAD ATOMIC UNITS FROM CSV FILES ───────────────────────────────────────────
+
+function loadAtomicUnits(): AtomicUnitInput[] {
+  // CSV files are at the workspace root (parent of app/)
+  const csvDir = path.resolve(__dirname, "../..");
+  const newWorkPath = path.join(csvDir, "new_work_catalog.csv");
+  const oldWorkPath = path.join(csvDir, "old_work_catalog.csv");
+  const servicePath = path.join(csvDir, "service_catalog.csv");
+
+  const newWorkRows = parseCsv(newWorkPath, "new_work");
+  const oldWorkRows = parseCsv(oldWorkPath, "old_work");
+  const serviceRows = parseCsv(servicePath, "service");
+
+  console.log(
+    `  CSV rows parsed — new_work: ${newWorkRows.length}, old_work: ${oldWorkRows.length}, service: ${serviceRows.length}`
+  );
+
+  // Build unified map keyed by "${catalog}:${code}".
+  // Process new_work first, then old_work (overwrites shared items with old_work's
+  // more generic names — e.g. TRIM-ASD items without "(New Work)" qualifier),
+  // then service.
+  // For RI items, new_work and old_work produce different catalog keys
+  // (new_work:RI-xxx vs old_work:RI-xxx), so both are kept.
+  const itemMap = new Map<string, AtomicUnitInput>();
+
+  for (const row of newWorkRows) {
+    const catalog = getCatalog(row.section, row.source);
+    const key = `${catalog}:${row.code}`;
+    itemMap.set(key, buildAtomicUnit(row, catalog));
+  }
+
+  for (const row of oldWorkRows) {
+    const catalog = getCatalog(row.section, row.source);
+    const key = `${catalog}:${row.code}`;
+    // Shared items: overwrite with old_work data (more generic names)
+    // Old_work-only sections (DEMO, PANEL, ACCESS, CIRCUIT-MOD, SURFACE): add new
+    // RI items: different key from new_work RI items, so both kept
+    itemMap.set(key, buildAtomicUnit(row, catalog));
+  }
+
+  for (const row of serviceRows) {
+    const catalog = getCatalog(row.section, row.source);
+    const key = `${catalog}:${row.code}`;
+    itemMap.set(key, buildAtomicUnit(row, catalog));
+  }
+
+  return Array.from(itemMap.values());
+}
+
+// ─── MODIFIER DEFINITIONS ───────────────────────────────────────────────────────
+// Unchanged from System A
 
 type ModifierInput = {
   modifierType: string;
@@ -1840,7 +299,7 @@ type ModifierInput = {
 };
 
 const MODIFIER_DEFS: ModifierInput[] = [
-  // ACCESS (per item) — replaces old assembly #71
+  // ACCESS (per item)
   { modifierType: "ACCESS", value: "NORMAL", label: "Normal Access", laborMultiplier: 1.00, materialMult: 1.00, appliesTo: "ITEM", sortOrder: 1, isDefault: true },
   { modifierType: "ACCESS", value: "DIFFICULT", label: "Difficult Access", laborMultiplier: 1.25, materialMult: 1.00, appliesTo: "ITEM", sortOrder: 2, isDefault: false },
   { modifierType: "ACCESS", value: "VERY_DIFFICULT", label: "Very Difficult Access", laborMultiplier: 1.50, materialMult: 1.00, appliesTo: "ITEM", sortOrder: 3, isDefault: false },
@@ -1850,7 +309,7 @@ const MODIFIER_DEFS: ModifierInput[] = [
   { modifierType: "HEIGHT", value: "LADDER", label: "Ladder Work (10–14 ft)", laborMultiplier: 1.10, materialMult: 1.00, appliesTo: "ITEM", sortOrder: 2, isDefault: false },
   { modifierType: "HEIGHT", value: "HIGH_WORK", label: "High Work (>14 ft)", laborMultiplier: 1.25, materialMult: 1.00, appliesTo: "ITEM", sortOrder: 3, isDefault: false },
 
-  // CONDITION (per item) — replaces NC units and "Finished" occupancy
+  // CONDITION (per item)
   { modifierType: "CONDITION", value: "OPEN", label: "Open (new construction / open framing)", laborMultiplier: 0.85, materialMult: 1.00, appliesTo: "ITEM", sortOrder: 1, isDefault: false },
   { modifierType: "CONDITION", value: "RETROFIT", label: "Retrofit (finished space — baseline)", laborMultiplier: 1.00, materialMult: 1.00, appliesTo: "ITEM", sortOrder: 2, isDefault: true },
   { modifierType: "CONDITION", value: "OBSTRUCTED", label: "Obstructed (attic, crawl, tight chase)", laborMultiplier: 1.20, materialMult: 1.00, appliesTo: "ITEM", sortOrder: 3, isDefault: false },
@@ -1865,7 +324,8 @@ const MODIFIER_DEFS: ModifierInput[] = [
   { modifierType: "SCHEDULE", value: "EMERGENCY", label: "Emergency Call", laborMultiplier: 2.00, materialMult: 1.00, appliesTo: "ESTIMATE", sortOrder: 3, isDefault: false },
 ];
 
-// ─── NEC RULES ───────────────────────────────────────────────────────────────
+// ─── NEC RULES ──────────────────────────────────────────────────────────────────
+// Updated to System B codes
 
 type NECRuleInput = {
   ruleCode: string;
@@ -1880,94 +340,145 @@ const NEC_RULES: NECRuleInput[] = [
   {
     ruleCode: "NEC-210.8-A",
     necArticle: "210.8(A)",
-    triggerCondition: JSON.stringify({ location_contains: ["kitchen", "bath", "garage", "outdoor", "exterior"] }),
-    promptText: "GFCI protection required for receptacles in this location. Add DEV-002 or PRT-003 (GFCI breaker).",
+    triggerCondition: JSON.stringify({
+      location_contains: ["kitchen", "bath", "garage", "outdoor", "exterior"],
+    }),
+    promptText:
+      "GFCI protection required for receptacles in this location. " +
+      "Add GFCI receptacle (TRIM-D03/D04 or TRIM-T03/T04) or GFCI breaker (LINE-023/024).",
     severity: "REQUIRED",
     sortOrder: 10,
   },
   {
     ruleCode: "NEC-210.11-C1",
     necArticle: "210.11(C)(1)",
-    triggerCondition: JSON.stringify({ location_contains: ["kitchen"] }),
-    promptText: "Minimum 2 small-appliance branch circuits required in kitchen. Verify circuit count.",
+    triggerCondition: JSON.stringify({
+      location_contains: ["kitchen"],
+    }),
+    promptText:
+      "Minimum 2 small-appliance branch circuits required in kitchen. Verify circuit count.",
     severity: "REQUIRED",
     sortOrder: 20,
   },
   {
     ruleCode: "NEC-210.11-C2",
     necArticle: "210.11(C)(2)",
-    triggerCondition: JSON.stringify({ location_contains: ["laundry", "washer"] }),
-    promptText: "Dedicated laundry circuit required. Verify CIR-001 (20A) is on estimate.",
+    triggerCondition: JSON.stringify({
+      location_contains: ["laundry", "washer"],
+    }),
+    promptText:
+      "Dedicated laundry circuit required. Verify 20A circuit is on estimate.",
     severity: "REQUIRED",
     sortOrder: 30,
   },
   {
     ruleCode: "NEC-210.12",
     necArticle: "210.12(A)",
-    triggerCondition: JSON.stringify({ location_contains: ["bedroom"] }),
-    promptText: "AFCI protection required for bedroom circuits. Add PRT-003 (AFCI breaker) or DEV-008 (AFCI receptacle).",
+    triggerCondition: JSON.stringify({
+      location_contains: ["bedroom"],
+    }),
+    promptText:
+      "AFCI protection required for bedroom circuits. " +
+      "Add AFCI breaker (LINE-021/022) or dual-function breaker (LINE-025/026).",
     severity: "REQUIRED",
     sortOrder: 40,
   },
   {
     ruleCode: "NEC-230.71",
     necArticle: "230.71",
-    triggerCondition: JSON.stringify({ units_present: ["PNL-001", "SVC-001", "SVC-002"] }),
-    promptText: "Service entrance work detected. Verify exterior disconnect (SVC-003) is included if required.",
+    triggerCondition: JSON.stringify({
+      units_present: [
+        "LINE-001", "LINE-001A",
+        "LINE-002", "LINE-002A", "LINE-002B",
+        "LINE-006", "LINE-011",
+      ],
+    }),
+    promptText:
+      "Service entrance work detected. Verify exterior disconnect (LINE-012) is included if required.",
     severity: "RECOMMENDED",
     sortOrder: 50,
   },
   {
     ruleCode: "NEC-250.50",
     necArticle: "250.50",
-    triggerCondition: JSON.stringify({ units_present: ["PNL-001", "PNL-003", "SVC-001", "SVC-002"] }),
-    promptText: "Panel or service work detected. Grounding electrode system required — add GND-001 if not existing.",
+    triggerCondition: JSON.stringify({
+      units_present: [
+        "LINE-001", "LINE-001A",
+        "LINE-002", "LINE-002A", "LINE-002B",
+        "LINE-003", "LINE-003A", "LINE-003B",
+        "LINE-004", "LINE-004A",
+        "LINE-005", "LINE-005A",
+        "LINE-006",
+      ],
+    }),
+    promptText:
+      "Panel or service work detected. Grounding electrode system required — " +
+      "add ground rod (LINE-014), clamp (LINE-015), and conductor (LINE-016) if not existing.",
     severity: "REQUIRED",
     sortOrder: 60,
   },
   {
     ruleCode: "NEC-250.104",
     necArticle: "250.104",
-    triggerCondition: JSON.stringify({ location_contains: ["water heater", "gas"] }),
-    promptText: "Bonding of metal water piping required. Verify GND-002 (Bonding Correction) is on estimate.",
+    triggerCondition: JSON.stringify({
+      location_contains: ["water heater", "gas"],
+    }),
+    promptText:
+      "Bonding of metal water piping required. Verify water pipe bond clamp (LINE-017) is on estimate.",
     severity: "REQUIRED",
     sortOrder: 70,
   },
   {
     ruleCode: "NEC-285.1",
     necArticle: "285",
-    triggerCondition: JSON.stringify({ units_present: ["PNL-001", "SVC-001"] }),
-    promptText: "Panel replacement / new service — SPD recommended (required per 2020 NEC). Add PRT-004?",
+    triggerCondition: JSON.stringify({
+      units_present: [
+        "LINE-001", "LINE-001A",
+        "LINE-002", "LINE-002A", "LINE-002B",
+      ],
+    }),
+    promptText:
+      "Panel replacement / new service — SPD recommended (required per 2020 NEC). Add LINE-034 (SPD)?",
     severity: "RECOMMENDED",
     sortOrder: 80,
   },
   {
     ruleCode: "NEC-406.12",
     necArticle: "406.12",
-    triggerCondition: JSON.stringify({ units_present: ["DEV-001", "DEV-002", "EQP-001"] }),
-    promptText: "Tamper-resistant receptacles required in dwelling units per 406.12.",
+    triggerCondition: JSON.stringify({
+      units_present: ["TRIM-D01", "TRIM-D02", "TRIM-T01", "TRIM-T02"],
+    }),
+    promptText:
+      "Tamper-resistant receptacles required in dwelling units per 406.12.",
     severity: "ADVISORY",
     sortOrder: 90,
   },
   {
     ruleCode: "NEC-680.21",
     necArticle: "680.21",
-    triggerCondition: JSON.stringify({ units_present: ["EQP-010", "EQP-011"] }),
-    promptText: "GFCI protection required for pool/spa circuits. Verify GFCI disconnect is in scope.",
+    triggerCondition: JSON.stringify({
+      units_present: ["TRIM-038"],
+    }),
+    promptText:
+      "GFCI protection required for pool/spa circuits. Verify GFCI disconnect (TRIM-038) is in scope.",
     severity: "REQUIRED",
     sortOrder: 100,
   },
   {
     ruleCode: "NEC-680.26",
     necArticle: "680.26",
-    triggerCondition: JSON.stringify({ units_present: ["EQP-010", "EQP-011"] }),
-    promptText: "Equipotential bonding required for pool/spa. Verify GND-002 (Bonding Correction) is on estimate.",
+    triggerCondition: JSON.stringify({
+      units_present: ["TRIM-038"],
+    }),
+    promptText:
+      "Equipotential bonding required for pool/spa. Verify bonding clamp (LINE-017) is on estimate.",
     severity: "REQUIRED",
     sortOrder: 110,
   },
 ];
 
-// ─── PRESETS ─────────────────────────────────────────────────────────────────
+// ─── PRESETS ────────────────────────────────────────────────────────────────────
+// Updated to System B codes
 
 type PresetItem = {
   unitCode: string;
@@ -1986,73 +497,79 @@ type PresetInput = {
 const PRESETS: PresetInput[] = [
   {
     name: "Service Upgrade — Standard",
-    description: "Full residential service upgrade with panel, GES, and SPD.",
+    description:
+      "Full residential service upgrade: 200A panel, meter base, grounding, SPD.",
     category: "service",
     items: [
-      { unitCode: "PNL-001", quantity: 1, notes: "New 200A panel" },
-      { unitCode: "SVC-001", quantity: 1 },
-      { unitCode: "SVC-002", quantity: 1 },
-      { unitCode: "GND-001", quantity: 1 },
-      { unitCode: "PRT-004", quantity: 1 },
+      { unitCode: "LINE-002", quantity: 1, notes: "200A main breaker panel mount" },
+      { unitCode: "LINE-006", quantity: 1, notes: "200A meter base mount" },
+      { unitCode: "LINE-014", quantity: 2, notes: "Ground rods (2 required)" },
+      { unitCode: "LINE-015", quantity: 2, notes: "Ground rod clamps" },
+      { unitCode: "LINE-016", quantity: 15, notes: "Ground rod conductor (bare Cu) — 15 LF" },
+      { unitCode: "LINE-034", quantity: 1, notes: "Surge protective device (SPD)" },
     ],
     sortOrder: 10,
   },
   {
     name: "EV Charger Install",
-    description: "Level 2 EV charger: 40A circuit + EVSE mount.",
+    description: "Level 2 EV charger: 50A breaker + EVSE mount. Cable run priced separately.",
     category: "equipment",
     items: [
-      { unitCode: "CIR-001", quantity: 1, notes: "240V 40A circuit — enter cable length" },
-      { unitCode: "EQP-006", quantity: 1 },
+      { unitCode: "LINE-030", quantity: 1, notes: "50A 240V 2-pole breaker" },
+      { unitCode: "TRIM-029", quantity: 1, notes: "EV charger (EVSE) mount + connect" },
     ],
     sortOrder: 20,
   },
   {
     name: "Subpanel — New Detached Structure",
-    description: "Power for garage or outbuilding: feeder + subpanel + GES.",
+    description:
+      "Power for garage or outbuilding: subpanel + grounding. Feeder cable priced separately.",
     category: "service",
     items: [
-      { unitCode: "CIR-002", quantity: 1, notes: "Detached feeder — enter cable length" },
-      { unitCode: "PNL-003", quantity: 1 },
-      { unitCode: "GND-001", quantity: 1 },
+      { unitCode: "LINE-009", quantity: 1, notes: "100A subpanel mount" },
+      { unitCode: "LINE-014", quantity: 2, notes: "Ground rods (2 required)" },
+      { unitCode: "LINE-015", quantity: 2, notes: "Ground rod clamps" },
+      { unitCode: "LINE-016", quantity: 15, notes: "Ground rod conductor (bare Cu) — 15 LF" },
     ],
     sortOrder: 30,
   },
   {
     name: "Bathroom Remodel",
-    description: "Typical bathroom: GFCI receptacle + exhaust fan + light.",
+    description:
+      "Typical bathroom: GFCI receptacle + vanity light + exhaust fan.",
     category: "remodel",
     items: [
-      { unitCode: "DEV-002", quantity: 1, notes: "GFCI receptacle" },
-      { unitCode: "LUM-007", quantity: 1, notes: "Exhaust fan" },
-      { unitCode: "LUM-001", quantity: 1, notes: "Vanity light" },
+      { unitCode: "TRIM-D03", quantity: 1, notes: "15A GFCI Decora receptacle" },
+      { unitCode: "TRIM-ASD25", quantity: 1, notes: "ASD 18 in vanity light" },
+      { unitCode: "TRIM-025", quantity: 1, notes: "Bathroom exhaust fan (client-supplied)" },
     ],
     sortOrder: 40,
   },
   {
     name: "Kitchen Remodel",
-    description: "Kitchen update: GFCI receptacles + dedicated circuits.",
+    description:
+      "Kitchen update: GFCI receptacles + under-cabinet lighting. Circuit breakers priced separately.",
     category: "remodel",
     items: [
-      { unitCode: "DEV-002", quantity: 4, notes: "GFCI receptacles (countertop)" },
-      { unitCode: "CIR-001", quantity: 2, notes: "Small appliance circuits 20A" },
-      { unitCode: "LUM-001", quantity: 1, notes: "Under-cabinet / overhead" },
+      { unitCode: "TRIM-D03", quantity: 4, notes: "GFCI receptacles (countertop)" },
+      { unitCode: "TRIM-ASD29", quantity: 1, notes: "ASD 18 in under-cabinet LED" },
     ],
     sortOrder: 50,
   },
   {
     name: "Portable Generator Backup",
-    description: "Generator inlet + panel interlock.",
+    description: "Generator inlet box + panel interlock kit.",
     category: "equipment",
     items: [
-      { unitCode: "EQP-007", quantity: 1 },
-      { unitCode: "EQP-008", quantity: 1 },
+      { unitCode: "TRIM-035", quantity: 1, notes: "Generator inlet box" },
+      { unitCode: "TRIM-036", quantity: 1, notes: "Interlock kit" },
     ],
     sortOrder: 60,
   },
 ];
 
-// ─── JOB TYPES ───────────────────────────────────────────────────────────────
+// ─── JOB TYPES ──────────────────────────────────────────────────────────────────
+// Unchanged from System A
 
 type JobTypeInput = {
   name: string;
@@ -2101,74 +618,108 @@ const JOB_TYPES: JobTypeInput[] = [
   },
   {
     name: "Commercial (Future)",
-    description: "Commercial occupancy — resolver interface built, residential-only Phase 1.",
+    description:
+      "Commercial occupancy — resolver interface built, residential-only Phase 1.",
     occupancyDefault: "commercial",
     environmentDefault: "interior",
     exposureDefault: "concealed",
-    resolverProfileJson: JSON.stringify({ phase: "future", note: "Commercial resolver not yet implemented" }),
+    resolverProfileJson: JSON.stringify({
+      phase: "future",
+      note: "Commercial resolver not yet implemented",
+    }),
     sortOrder: 50,
   },
 ];
 
-// ─── SEED FUNCTION ───────────────────────────────────────────────────────────
+// ─── SEED FUNCTION ──────────────────────────────────────────────────────────────
 
 async function seed() {
-  console.log("Seeding atomic units...");
+  console.log("Seeding atomic units from CSV catalogs...\n");
 
-  // Atomic units
+  // ── 1. Load atomic units from CSVs ──────────────────────────────────────────
+  const atomicUnits = loadAtomicUnits();
+
+  const tier1 = atomicUnits.filter((u) => u.visibilityTier === 1).length;
+  const tier2 = atomicUnits.filter((u) => u.visibilityTier === 2).length;
+  const tier3 = atomicUnits.filter((u) => u.visibilityTier === 3).length;
+  const catalogs: Record<string, number> = {};
+  for (const u of atomicUnits) {
+    catalogs[u.catalog] = (catalogs[u.catalog] || 0) + 1;
+  }
+  console.log(
+    `  Loaded ${atomicUnits.length} atomic units ` +
+      `(Tier 1: ${tier1}, Tier 2: ${tier2}, Tier 3: ${tier3})`
+  );
+  console.log(
+    `  Catalogs: ${Object.entries(catalogs)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(", ")}`
+  );
+
+  // ── 2. Deactivate all existing AtomicUnit records ───────────────────────────
+  // Preserves FK references from existing EstimateItems
+  const deactivated = await prisma.atomicUnit.updateMany({
+    data: { isActive: false },
+  });
+  console.log(`  Deactivated ${deactivated.count} existing atomic units`);
+
+  // ── 3. Upsert each atomic unit ──────────────────────────────────────────────
   let upsertedUnits = 0;
-  for (const unit of ATOMIC_UNITS) {
+  for (const unit of atomicUnits) {
     await prisma.atomicUnit.upsert({
-      where: { code: unit.code },
+      where: {
+        catalog_code: { catalog: unit.catalog, code: unit.code },
+      },
       update: {
         category: unit.category,
         name: unit.name,
-        description: unit.description ?? null,
+        description: unit.description || null,
         unitType: unit.unitType,
         visibilityTier: unit.visibilityTier,
         baseLaborHrs: unit.baseLaborHrs,
         baseLaborRate: unit.baseLaborRate,
         baseMaterialCost: unit.baseMaterialCost,
-        necRefsJson: unit.necRefsJson ?? null,
-        necaSectionRef: unit.necaSectionRef ?? null,
-        requiresCableLength: unit.requiresCableLength ?? false,
-        requiresEndpoint: unit.requiresEndpoint ?? false,
-        resolverGroupId: unit.resolverGroupId ?? null,
+        necRefsJson: null,
+        necaSectionRef: null,
+        requiresCableLength: unit.requiresCableLength,
+        requiresEndpoint: false,
+        resolverGroupId: null,
         sortOrder: unit.sortOrder,
         isActive: true,
       },
       create: {
         code: unit.code,
+        catalog: unit.catalog,
         category: unit.category,
         name: unit.name,
-        description: unit.description ?? null,
+        description: unit.description || null,
         unitType: unit.unitType,
         visibilityTier: unit.visibilityTier,
         baseLaborHrs: unit.baseLaborHrs,
         baseLaborRate: unit.baseLaborRate,
         baseMaterialCost: unit.baseMaterialCost,
-        necRefsJson: unit.necRefsJson ?? null,
-        necaSectionRef: unit.necaSectionRef ?? null,
-        requiresCableLength: unit.requiresCableLength ?? false,
-        requiresEndpoint: unit.requiresEndpoint ?? false,
-        resolverGroupId: unit.resolverGroupId ?? null,
+        necRefsJson: null,
+        necaSectionRef: null,
+        requiresCableLength: unit.requiresCableLength,
+        requiresEndpoint: false,
+        resolverGroupId: null,
         sortOrder: unit.sortOrder,
         isActive: true,
       },
     });
     upsertedUnits++;
   }
-  const tier1 = ATOMIC_UNITS.filter((u) => u.visibilityTier === 1).length;
-  const tier2 = ATOMIC_UNITS.filter((u) => u.visibilityTier === 2).length;
-  const tier3 = ATOMIC_UNITS.filter((u) => u.visibilityTier === 3).length;
-  console.log(
-    `  ✓ ${upsertedUnits} atomic units (Tier 1: ${tier1}, Tier 2: ${tier2}, Tier 3 system-only: ${tier3})`
-  );
+  console.log(`  ✓ ${upsertedUnits} atomic units upserted`);
 
-  // Modifier definitions
+  // ── 4. Modifier definitions ─────────────────────────────────────────────────
   for (const mod of MODIFIER_DEFS) {
     await prisma.modifierDef.upsert({
-      where: { modifierType_value: { modifierType: mod.modifierType, value: mod.value } },
+      where: {
+        modifierType_value: {
+          modifierType: mod.modifierType,
+          value: mod.value,
+        },
+      },
       update: {
         label: mod.label,
         laborMultiplier: mod.laborMultiplier,
@@ -2191,7 +742,7 @@ async function seed() {
   }
   console.log(`  ✓ ${MODIFIER_DEFS.length} modifier definitions`);
 
-  // NEC rules
+  // ── 5. NEC rules ────────────────────────────────────────────────────────────
   for (const rule of NEC_RULES) {
     await prisma.nECRule.upsert({
       where: { ruleCode: rule.ruleCode },
@@ -2216,9 +767,11 @@ async function seed() {
   }
   console.log(`  ✓ ${NEC_RULES.length} NEC rules`);
 
-  // Presets
+  // ── 6. Presets ──────────────────────────────────────────────────────────────
   for (const preset of PRESETS) {
-    const existing = await prisma.preset.findFirst({ where: { name: preset.name } });
+    const existing = await prisma.preset.findFirst({
+      where: { name: preset.name },
+    });
     if (existing) {
       await prisma.preset.update({
         where: { id: existing.id },
@@ -2245,7 +798,7 @@ async function seed() {
   }
   console.log(`  ✓ ${PRESETS.length} presets`);
 
-  // Job types
+  // ── 7. Job types ────────────────────────────────────────────────────────────
   for (const jt of JOB_TYPES) {
     await prisma.jobType.upsert({
       where: { name: jt.name },

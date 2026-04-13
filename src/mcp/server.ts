@@ -7,6 +7,7 @@ import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { EstimateService } from "../services/estimateService";
 import { resolveItemCable } from "../services/wiringMethodResolver";
+import { generateSupportItems } from "../services/supportItemTriggers";
 
 const service = new EstimateService(prisma);
 
@@ -22,15 +23,17 @@ function createMcpServer(): McpServer {
     "query_atomic_units",
     {
       description:
-        "Search the atomic unit catalog. Returns unit codes, names, categories, labor/material costs, and whether cable length is required.",
+        "Search the atomic unit catalog. Returns unit codes, names, categories, labor/material costs, and whether cable length is required. Use the catalog filter to narrow results to a specific work type.",
       inputSchema: {
-        category: z.string().optional().describe("Filter by category (e.g. RECEPTACLE, SWITCH, LIGHTING, CIRCUIT, PANEL, SERVICE, SPECIALTY, LOW_VOLTAGE, ROUGH_IN)"),
+        category: z.string().optional().describe("Filter by category (e.g. LINE, ROUGH_IN, TRIM, DEMO, PANEL, ACCESS, CIRCUIT_MOD, SURFACE, DIAG, TROUBLE, INSPECT)"),
         searchTerm: z.string().optional().describe("Free-text search against unit name or code"),
+        catalog: z.string().optional().describe("Filter by catalog: 'new_work', 'old_work', 'service', or 'shared'. Omit to search all catalogs."),
       },
     },
-    async ({ category, searchTerm }) => {
+    async ({ category, searchTerm, catalog }) => {
       const where: Record<string, unknown> = { isActive: true };
       if (category) where["category"] = category;
+      if (catalog) where["catalog"] = catalog;
 
       let units = await prisma.atomicUnit.findMany({
         where,
@@ -53,6 +56,7 @@ function createMcpServer(): McpServer {
             text: JSON.stringify(
               units.map((u) => ({
                 code: u.code,
+                catalog: u.catalog,
                 name: u.name,
                 category: u.category,
                 unitType: u.unitType,
@@ -275,7 +279,7 @@ function createMcpServer(): McpServer {
         optionId: z.string().describe("The option ID"),
         items: z.array(
           z.object({
-            atomicUnitCode: z.string().describe("Atomic unit code (e.g. REC-001, CIR-001)"),
+            atomicUnitCode: z.string().describe("Atomic unit code (e.g. LINE-002, TRIM-D01, RI-001)"),
             quantity: z.number().positive().describe("Quantity"),
             location: z.string().optional().describe("Location (e.g. 'kitchen', 'master bedroom')"),
             notes: z.string().optional().describe("Item notes"),
@@ -330,8 +334,8 @@ function createMcpServer(): McpServer {
 
       for (const item of items) {
         try {
-          const unit = await prisma.atomicUnit.findUnique({
-            where: { code: item.atomicUnitCode },
+          const unit = await prisma.atomicUnit.findFirst({
+            where: { code: item.atomicUnitCode, isActive: true },
           });
 
           if (!unit) {
@@ -497,78 +501,14 @@ function createMcpServer(): McpServer {
       }
 
       const allItems = estimate.options.flatMap((o) => o.items);
-      const unitCodes = allItems.map((i) => i.atomicUnit.code);
+      const itemInfos = allItems.map((i) => ({
+        code: i.atomicUnit.code,
+        category: i.atomicUnit.category,
+        name: i.atomicUnit.name,
+      }));
       const laborRate = 115;
 
-      const generated: Array<{
-        supportType: string;
-        description: string;
-        laborHrs: number;
-        otherCost: number;
-        sourceRule: string;
-      }> = [];
-
-      // Mobilization — always
-      generated.push({
-        supportType: "MOBILIZATION",
-        description: "Mobilization / Travel",
-        laborHrs: 0,
-        otherCost: 35,
-        sourceRule: "ALWAYS",
-      });
-
-      // Permit — new circuits, panel, or service work
-      const triggerPermit = unitCodes.some((c) =>
-        ["CIR-001", "CIR-002", "PNL-001", "PNL-002", "PNL-003", "SVC-001", "SVC-002"].includes(c)
-      );
-      if (triggerPermit) {
-        generated.push({
-          supportType: "PERMIT",
-          description: "Permit Allowance",
-          laborHrs: 0,
-          otherCost: 350,
-          sourceRule: "NEW_CIRCUIT_OR_SERVICE",
-        });
-      }
-
-      // Load calculation — panel or service
-      const triggerLoadCalc = unitCodes.some((c) =>
-        ["PNL-001", "PNL-002", "SVC-001", "SVC-002", "SVC-005"].includes(c)
-      );
-      if (triggerLoadCalc) {
-        generated.push({
-          supportType: "LOAD_CALC",
-          description: "Load Calculation Review",
-          laborHrs: 1.5,
-          otherCost: 0,
-          sourceRule: "PANEL_OR_SERVICE",
-        });
-      }
-
-      // Cleanup — always if more than 2 items
-      if (allItems.length > 2) {
-        generated.push({
-          supportType: "CLEANUP",
-          description: "Jobsite Cleanup",
-          laborHrs: 0.5,
-          otherCost: 0,
-          sourceRule: "MULTI_ITEM",
-        });
-      }
-
-      // Panel labeling — panel work
-      const triggerLabeling = unitCodes.some((c) =>
-        ["PNL-001", "PNL-002", "PNL-003"].includes(c)
-      );
-      if (triggerLabeling) {
-        generated.push({
-          supportType: "PANEL_LABELING",
-          description: "Panel Directory / Labeling",
-          laborHrs: 0.75,
-          otherCost: 0,
-          sourceRule: "PANEL_WORK",
-        });
-      }
+      const generated = generateSupportItems(itemInfos, laborRate);
 
       // Delete existing auto-generated support items, keep overridden
       const existingAutoIds = estimate.supportItems

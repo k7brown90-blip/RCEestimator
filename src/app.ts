@@ -6,6 +6,7 @@ import { prisma } from "./lib/prisma";
 import { ensureAssemblyCatalogReady } from "./bootstrap/ensureAssemblyCatalog";
 import { EstimateService } from "./services/estimateService";
 import { resolveItemCable } from "./services/wiringMethodResolver";
+import { generateSupportItems } from "./services/supportItemTriggers";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
@@ -955,7 +956,7 @@ app.get("/atomic-units", asyncHandler(async (req, res) => {
 // GET /atomic-units/:code — single unit detail
 app.get("/atomic-units/:code", asyncHandler(async (req, res) => {
   const code = readParam(req, "code");
-  const unit = await prisma.atomicUnit.findUnique({ where: { code } });
+  const unit = await prisma.atomicUnit.findFirst({ where: { code, isActive: true } });
   if (!unit) {
     res.status(404).json({ error: "Atomic unit not found" });
     return;
@@ -1055,8 +1056,8 @@ app.post(
     }
 
     // Fetch atomic unit
-    const unit = await prisma.atomicUnit.findUnique({
-      where: { code: body.atomicUnitCode },
+    const unit = await prisma.atomicUnit.findFirst({
+      where: { code: body.atomicUnitCode, isActive: true },
     });
     if (!unit) {
       res.status(404).json({ error: `Atomic unit '${body.atomicUnitCode}' not found` });
@@ -1329,103 +1330,14 @@ app.post(
     }
 
     const allItems = estimate.options.flatMap((o) => o.items);
-    const unitCodes = allItems.map((i) => i.atomicUnit.code);
-    const newCircuitCount = unitCodes.filter((c) => c === "CIR-001" || c === "CIR-002").length;
+    const itemInfos = allItems.map((i) => ({
+      code: i.atomicUnit.code,
+      category: i.atomicUnit.category,
+      name: i.atomicUnit.name,
+    }));
 
     const laborRate = 115;
-    const generated: Array<{
-      supportType: string;
-      description: string;
-      laborHrs: number;
-      otherCost: number;
-      sourceRule: string;
-    }> = [];
-
-    // Mobilization — always
-    generated.push({
-      supportType: "MOBILIZATION",
-      description: "Mobilization / Travel",
-      laborHrs: 0,
-      otherCost: 35,
-      sourceRule: "ALWAYS",
-    });
-
-    // Permit — any new circuits, panel, or service work
-    const triggerPermit = unitCodes.some((c) =>
-      ["CIR-001", "CIR-002", "PNL-001", "PNL-002", "PNL-003", "SVC-001", "SVC-002"].includes(c)
-    );
-    if (triggerPermit) {
-      generated.push({
-        supportType: "PERMIT",
-        description: "Permit Allowance",
-        laborHrs: 0,
-        otherCost: 350,
-        sourceRule: "NEW_CIRCUIT_OR_SERVICE",
-      });
-    }
-
-    // Load calculation — panel replacement or service upgrade
-    const triggerLoadCalc = unitCodes.some((c) =>
-      ["PNL-001", "PNL-002", "SVC-001", "SVC-002", "SVC-005"].includes(c)
-    );
-    if (triggerLoadCalc) {
-      const loadCalcHrs = 1.5;
-      generated.push({
-        supportType: "LOAD_CALC",
-        description: "Load Calculation Review",
-        laborHrs: loadCalcHrs,
-        otherCost: 0,
-        sourceRule: "PANEL_OR_SERVICE",
-      });
-    }
-
-    // Utility coordination — service entrance or meter work
-    const triggerUtility = unitCodes.some((c) =>
-      ["SVC-001", "SVC-002", "SVC-003"].includes(c)
-    );
-    if (triggerUtility) {
-      generated.push({
-        supportType: "UTILITY_COORD",
-        description: "Utility Coordination",
-        laborHrs: 2.0,
-        otherCost: 0,
-        sourceRule: "SERVICE_ENTRANCE",
-      });
-    }
-
-    // Circuit testing — 0.25 hr per new circuit, min 0
-    if (newCircuitCount > 0) {
-      generated.push({
-        supportType: "CIRCUIT_TESTING",
-        description: `Circuit Testing / Checkout (${newCircuitCount} circuit${newCircuitCount > 1 ? "s" : ""})`,
-        laborHrs: parseFloat((0.25 * newCircuitCount).toFixed(2)),
-        otherCost: 0,
-        sourceRule: "NEW_CIRCUITS",
-      });
-    }
-
-    // Cleanup — 0.5 hr flat + 0.1 hr per item over 5
-    const itemCount = allItems.length;
-    const cleanupHrs = parseFloat((0.5 + Math.max(0, (itemCount - 5) * 0.1)).toFixed(2));
-    generated.push({
-      supportType: "CLEANUP",
-      description: `Cleanup / Debris Removal (${itemCount} line item${itemCount !== 1 ? "s" : ""})`,
-      laborHrs: cleanupHrs,
-      otherCost: 0,
-      sourceRule: "ALWAYS",
-    });
-
-    // Panel demo — PNL-001 or PNL-002
-    const triggerPanelDemo = unitCodes.some((c) => ["PNL-001", "PNL-002"].includes(c));
-    if (triggerPanelDemo) {
-      generated.push({
-        supportType: "PANEL_DEMO",
-        description: "Panel Demo / Removal Prep",
-        laborHrs: 5.0,
-        otherCost: 0,
-        sourceRule: "PANEL_REPLACE",
-      });
-    }
+    const generated = generateSupportItems(itemInfos, laborRate);
 
     // Delete non-overridden auto items and replace
     await prisma.supportItem.deleteMany({
