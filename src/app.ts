@@ -8,6 +8,7 @@ import { EstimateService } from "./services/estimateService";
 import { resolveItemCable } from "./services/wiringMethodResolver";
 import { generateSupportItems } from "./services/supportItemTriggers";
 import { getAvailability } from "./services/googleCalendar";
+import { getDailySummary } from "./services/dailySummary";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
@@ -110,6 +111,141 @@ app.get("/calendar/availability", asyncHandler(async (_req, res) => {
   res.json(data);
 }));
 
+// ─── CUSTOMER LOOKUP (no auth — called by Vapi AI assistant) ─────────────────
+const KYLE_PHONE = "9706661626";
+
+app.get("/customer/lookup", asyncHandler(async (req, res) => {
+  const rawPhone = (readParam(req, "phone") ?? "").replace(/\D/g, "").slice(-10);
+  if (!rawPhone || rawPhone.length < 10) {
+    res.json({ found: false });
+    return;
+  }
+
+  // Kyle's cell → transfer signal
+  if (rawPhone === KYLE_PHONE) {
+    res.json({ found: true, type: "kyle_transfer", name: "Kyle" });
+    return;
+  }
+
+  // Search customers by phone (last 10 digits match)
+  const customers = await prisma.customer.findMany({
+    where: { phone: { contains: rawPhone } },
+    include: {
+      properties: {
+        include: {
+          visits: {
+            orderBy: { visitDate: "desc" as const },
+            include: {
+              estimates: {
+                where: { status: "accepted" },
+                include: { options: { where: { accepted: true } } },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (customers.length > 0) {
+    const customer = customers[0];
+    const now = new Date();
+    const oneYearAgo = new Date(now.getTime() - 365 * 86_400_000);
+
+    let warrantyEligible = false;
+    let warrantyNote: string | null = null;
+
+    const properties = customer.properties.map((prop) => ({
+      propertyId: prop.id,
+      address: [prop.addressLine1, prop.city, prop.state, prop.postalCode].filter(Boolean).join(", "),
+      occupancyType: prop.occupancyType || "residential",
+      visits: prop.visits.map((visit) => {
+        const acceptedOpt = visit.estimates[0]?.options.find((o) => o.accepted);
+        const total = acceptedOpt ? (acceptedOpt as unknown as { totalPrice?: number }).totalPrice ?? 0 : 0;
+
+        // Check warranty eligibility
+        if (visit.estimates.length > 0 && visit.visitDate >= oneYearAgo) {
+          warrantyEligible = true;
+          warrantyNote = `${visit.purpose || "Work"} completed ${visit.visitDate.toISOString().slice(0, 10)} — within 12 month warranty window`;
+        }
+
+        return {
+          visitId: visit.id,
+          date: visit.visitDate.toISOString().slice(0, 10),
+          mode: visit.mode,
+          purpose: visit.purpose,
+          estimateStatus: visit.estimates[0]?.status ?? null,
+          estimateTotal: total,
+        };
+      }),
+    }));
+
+    const allVisits = properties.flatMap((p) => p.visits);
+    const mostRecent = allVisits[0] ?? null;
+
+    // Open leads for this customer
+    const openLeads = await prisma.lead.findMany({
+      where: { customerId: customer.id, status: { in: ["new", "contacted"] } },
+      orderBy: { createdAt: "desc" },
+    });
+
+    res.json({
+      found: true,
+      type: "customer",
+      name: customer.name,
+      customerId: customer.id,
+      phone: customer.phone,
+      email: customer.email,
+      properties,
+      totalVisits: allVisits.length,
+      mostRecentVisit: mostRecent ? {
+        date: mostRecent.date,
+        mode: mostRecent.mode,
+        purpose: mostRecent.purpose,
+        propertyAddress: properties.find((p) => p.visits.some((v) => v.visitId === mostRecent.visitId))?.address ?? "",
+      } : null,
+      warrantyEligible,
+      warrantyNote,
+      openLeads: openLeads.map((l) => ({
+        leadId: l.id,
+        status: l.status,
+        jobType: l.jobType,
+        createdAt: l.createdAt.toISOString().slice(0, 10),
+      })),
+    });
+    return;
+  }
+
+  // Search leads by phone
+  const leads = await prisma.lead.findMany({
+    where: { phone: { contains: rawPhone }, status: { in: ["new", "contacted"] } },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (leads.length > 0) {
+    const lead = leads[0];
+    res.json({
+      found: true,
+      type: "lead",
+      name: lead.name,
+      leadId: lead.id,
+      status: lead.status,
+      jobType: lead.jobType,
+      address: lead.address,
+      notes: lead.notes,
+    });
+    return;
+  }
+
+  res.json({ found: false });
+}));
+
+// ─── DAILY CALL SUMMARY (no auth — public endpoint) ─────────────────────────
+app.get("/calls/daily-summary", asyncHandler(async (_req, res) => {
+  const data = await getDailySummary();
+  res.json(data);
+}));
+
 // ─── LEAD WEBHOOK (no JWT — uses shared secret) ────────────────────────────
 app.post("/leads", asyncHandler(async (req, res) => {
   const secret = req.headers["webhook_secret"];
@@ -118,7 +254,7 @@ app.post("/leads", asyncHandler(async (req, res) => {
     return;
   }
 
-  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string };
+  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string };
   if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
     res.status(400).json({ error: "name is required" });
     return;
@@ -133,6 +269,13 @@ app.post("/leads", asyncHandler(async (req, res) => {
       notes: body.notes?.trim() || null,
       address: body.address?.trim() || null,
       jobType: body.jobType?.trim() || null,
+      callType: body.callType?.trim() || null,
+      referredBy: body.referredBy?.trim() || null,
+      urgentFlag: body.urgentFlag ?? false,
+      warrantyCall: body.warrantyCall ?? false,
+      warrantyNote: body.warrantyNote?.trim() || null,
+      estimateId: body.estimateId?.trim() || null,
+      existingVisitId: body.existingVisitId?.trim() || null,
     },
   });
 
@@ -1616,7 +1759,7 @@ app.get("/leads", asyncHandler(async (req, res) => {
 
 app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
   const leadId = readParam(req, "leadId");
-  const body = req.body as { status?: string; notes?: string };
+  const body = req.body as { status?: string; notes?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string };
   const validStatuses = ["new", "contacted", "converted", "lost"];
   if (body.status && !validStatuses.includes(body.status)) {
     res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
@@ -1626,6 +1769,13 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
   const data: Record<string, unknown> = {};
   if (body.status) data.status = body.status;
   if (body.notes !== undefined) data.notes = body.notes;
+  if (body.callType !== undefined) data.callType = body.callType;
+  if (body.referredBy !== undefined) data.referredBy = body.referredBy;
+  if (body.urgentFlag !== undefined) data.urgentFlag = body.urgentFlag;
+  if (body.warrantyCall !== undefined) data.warrantyCall = body.warrantyCall;
+  if (body.warrantyNote !== undefined) data.warrantyNote = body.warrantyNote;
+  if (body.estimateId !== undefined) data.estimateId = body.estimateId;
+  if (body.existingVisitId !== undefined) data.existingVisitId = body.existingVisitId;
 
   const lead = await prisma.lead.update({
     where: { id: leadId },

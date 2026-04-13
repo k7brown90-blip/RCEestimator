@@ -2,7 +2,7 @@ import { google } from "googleapis";
 
 const TZ = "America/Chicago";
 const BUSINESS_START = 8;  // 8 AM CT
-const BUSINESS_END = 17;   // 5 PM CT
+const BUSINESS_END = 15;   // 3 PM CT
 const LOOKAHEAD_DAYS = 7;
 
 interface AvailableSlot {

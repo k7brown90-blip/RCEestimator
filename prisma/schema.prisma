@@ -518,18 +518,25 @@ model JobType {
 }
 
 model Lead {
-  id          String   @id @default(cuid())
-  name        String
-  email       String?
-  phone       String?
-  source      String   @default("email")   // "email" | "phone" | "web"
-  status      String   @default("new")     // "new" | "contacted" | "converted" | "lost"
-  notes       String?
-  address     String?
-  jobType     String?
-  customerId  String?
-  propertyId  String?
-  visitId     String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String   @id @default(cuid())
+  name            String
+  email           String?
+  phone           String?
+  source          String   @default("email")   // "email" | "phone" | "web"
+  status          String   @default("new")     // "new" | "contacted" | "converted" | "lost"
+  notes           String?
+  address         String?
+  jobType         String?
+  callType        String?  // "new_job" | "warranty" | "reschedule" | "cancellation" | "estimate_followup" | "callback" | "vendor" | "referral" | "invoice" | "dispute" | "wrong_number" | "solicitation" | "other"
+  referredBy      String?
+  urgentFlag      Boolean  @default(false)
+  warrantyCall    Boolean  @default(false)
+  warrantyNote    String?
+  estimateId      String?
+  existingVisitId String?
+  customerId      String?
+  propertyId      String?
+  visitId         String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
