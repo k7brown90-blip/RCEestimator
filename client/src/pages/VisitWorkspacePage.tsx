@@ -1568,7 +1568,7 @@ export function VisitWorkspacePage() {
           setShowPicker(false);
           setIsBuildingOptionScope(false);
         }}
-        onSubmit={async (input) => {
+        onSubmit={async (input: { assemblyTemplateId: string; location?: string; quantity?: number; parameters?: Record<string, unknown>; notes?: string }) => {
           if (isBuildingOptionScope) {
             if (!estimateId) {
               setOptionBuildError("Estimate not found. Refresh or create a new estimate first.");
@@ -1612,7 +1612,7 @@ export function VisitWorkspacePage() {
           await addAssemblyMutation.mutateAsync({
             assemblyTemplateId: input.assemblyTemplateId,
             location: input.location,
-            quantity: input.quantity,
+            quantity: input.quantity ?? 1,
             parameters: input.parameters,
             assemblyNotes: input.notes,
           });
