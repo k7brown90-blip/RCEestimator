@@ -343,13 +343,14 @@ app.post("/leads/classify", asyncHandler(async (req, res) => {
     return;
   }
 
-  const { subject, from, body: emailBody } = req.body as {
-    subject?: string; from?: string; body?: string;
-  };
+  const subject = (req.body.subject || req.query.subject || "") as string;
+  const from = (req.body.from || req.query.from || "") as string;
+  const emailBody = (req.body.body || req.query.body || "") as string;
+  const fromName = (req.body.name || req.query.name || "") as string;
 
   const fallback = {
     classification: "real_customer", reason: "OpenAI not available",
-    name: "", phone: "", email: from || "", address: "",
+    name: fromName, phone: "", email: from, address: "",
     jobType: "", summary: subject || "", source: "email",
   };
 
@@ -373,10 +374,10 @@ Given an inbound email, do TWO things:
 Respond with JSON only:
 {"classification":"...","reason":"one sentence","name":"extracted name or empty string","phone":"extracted phone or empty string","email":"extracted email or empty string","address":"extracted address or empty string","jobType":"short description of electrical work needed or empty string","summary":"one sentence summary of the request"}
 
-Email subject: ${subject ?? ""}
-Email from: ${from ?? ""}
+Email subject: ${subject}
+Email from: ${fromName ? `${fromName} <${from}>` : from}
 Email body:
-${emailBody ?? ""}`;
+${emailBody}`;
 
   try {
     const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -408,12 +409,12 @@ ${emailBody ?? ""}`;
     res.json({
       classification: parsed.classification,
       reason: parsed.reason,
-      name: parsed.name || "",
+      name: parsed.name || fromName,
       phone: parsed.phone || "",
-      email: parsed.email || from || "",
+      email: parsed.email || from,
       address: parsed.address || "",
       jobType: parsed.jobType || "",
-      summary: parsed.summary || subject || "",
+      summary: parsed.summary || subject,
       source: "email",
     });
   } catch {
