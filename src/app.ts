@@ -102,7 +102,7 @@ app.post("/vapi/assistant-config", (_req, res) => {
     hour: "2-digit",
     minute: "2-digit",
   });
-  res.json({ variableValues: { current_date, current_time } });
+  res.json({ variableValues: { current_date, current_time, currentDateTime: `${current_date}, ${current_time} Central Time` } });
 });
 
 // ─── CALENDAR AVAILABILITY (no auth — called by Vapi AI assistant) ───────────
@@ -308,6 +308,48 @@ app.post("/leads", asyncHandler(async (req, res) => {
   });
 
   res.status(201).json(lead);
+}));
+
+// ─── UPDATE LEAD (no JWT — webhook secret, called by Vapi) ──────────────────
+app.patch("/vapi/update-lead", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const body = req.body as {
+    leadId?: string; notes?: string; callType?: string; address?: string;
+    jobType?: string; warrantyCall?: boolean; warrantyNote?: string;
+    urgentFlag?: boolean; referredBy?: string; email?: string;
+    estimateId?: string; existingVisitId?: string; status?: string;
+  };
+
+  if (!body.leadId) {
+    res.status(400).json({ error: "leadId is required" });
+    return;
+  }
+
+  const data: Record<string, unknown> = {};
+  if (body.notes !== undefined) data.notes = body.notes;
+  if (body.callType !== undefined) data.callType = body.callType;
+  if (body.address !== undefined) data.address = body.address;
+  if (body.jobType !== undefined) data.jobType = body.jobType;
+  if (body.warrantyCall !== undefined) data.warrantyCall = body.warrantyCall;
+  if (body.warrantyNote !== undefined) data.warrantyNote = body.warrantyNote;
+  if (body.urgentFlag !== undefined) data.urgentFlag = body.urgentFlag;
+  if (body.referredBy !== undefined) data.referredBy = body.referredBy;
+  if (body.email !== undefined) data.email = body.email;
+  if (body.estimateId !== undefined) data.estimateId = body.estimateId;
+  if (body.existingVisitId !== undefined) data.existingVisitId = body.existingVisitId;
+  if (body.status !== undefined) data.status = body.status;
+
+  const lead = await prisma.lead.update({
+    where: { id: body.leadId },
+    data,
+  });
+
+  res.json(lead);
 }));
 
 // ─── PIN AUTH ────────────────────────────────────────────────────────────────
