@@ -18,11 +18,16 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  // Skip auth for health, PIN login, and MCP endpoints
+  // Skip auth for health, PIN login, MCP, and public Vapi/webhook endpoints
   if (
     req.path === "/health" ||
     req.path === "/auth/pin" ||
-    req.path.startsWith("/mcp")
+    req.path.startsWith("/mcp") ||
+    req.path.startsWith("/vapi/") ||
+    req.path === "/leads" ||
+    req.path === "/customer/lookup" ||
+    req.path === "/calendar/availability" ||
+    req.path === "/calls/daily-summary"
   ) {
     next();
     return;
