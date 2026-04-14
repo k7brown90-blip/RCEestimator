@@ -4,16 +4,21 @@ const TZ = "America/Chicago";
 const BUSINESS_START = 8;  // 8 AM CT
 const BUSINESS_END = 15;   // 3 PM CT
 const LOOKAHEAD_DAYS = 7;
+const SLOT_DURATION = 2;   // 2-hour appointment windows
 
-interface AvailableSlot {
-  date: string;
+interface SlotTime {
   start: string;
   end: string;
+}
+
+interface DayAvailability {
+  date: string;
+  slots: SlotTime[];
   timezone: string;
 }
 
 interface AvailabilityResponse {
-  available_slots: AvailableSlot[];
+  available_slots: DayAvailability[];
   current_time_central: string;
   current_date_central: string;
 }
@@ -124,9 +129,9 @@ export async function getAvailability(): Promise<AvailabilityResponse> {
 
   busyPeriods.sort((a, b) => a.start.getTime() - b.start.getTime());
 
-  const slots: { start: Date; end: Date }[] = [];
+  const days: DayAvailability[] = [];
 
-  // For each of the next 7 days, compute free slots within business hours
+  // For each of the next 7 days, generate 2-hour appointment windows
   for (let offset = 0; offset < LOOKAHEAD_DAYS; offset++) {
     const dayBase = new Date(windowStart.getTime() + offset * 86_400_000);
     const dayParts = getCentralParts(dayBase);
@@ -134,48 +139,55 @@ export async function getAvailability(): Promise<AvailabilityResponse> {
     // Skip weekends
     if (dayParts.weekday === 0 || dayParts.weekday === 6) continue;
 
-    const dayStart = centralToUtc(dayParts.year, dayParts.month, dayParts.day, BUSINESS_START);
     const dayEnd = centralToUtc(dayParts.year, dayParts.month, dayParts.day, BUSINESS_END);
 
     // Skip entire day if it's already past business hours
     if (dayEnd.getTime() <= now.getTime()) continue;
 
-    // Effective start is max(dayStart, now)
-    const effectiveStart = dayStart.getTime() < now.getTime() ? now : dayStart;
-
     // Filter busy periods that overlap this day's business hours
+    const dayStart = centralToUtc(dayParts.year, dayParts.month, dayParts.day, BUSINESS_START);
     const dayBusy = busyPeriods.filter(
       (b) => b.start.getTime() < dayEnd.getTime() && b.end.getTime() > dayStart.getTime(),
     );
 
-    // Interval complement: walk through busy periods, collect gaps
-    let cursor = effectiveStart;
+    // Generate fixed 2-hour windows: 8-10, 10-12, 12-2, 1-3
+    const windowStarts = [8, 10, 12, 13]; // overlapping last slot for flexibility
+    const freeSlots: SlotTime[] = [];
 
-    for (const busy of dayBusy) {
-      const clippedStart = busy.start.getTime() < dayStart.getTime() ? dayStart : busy.start;
-      const clippedEnd = busy.end.getTime() > dayEnd.getTime() ? dayEnd : busy.end;
+    for (const wStart of windowStarts) {
+      const wEnd = wStart + SLOT_DURATION;
+      if (wEnd > BUSINESS_END) continue;
 
-      if (cursor.getTime() < clippedStart.getTime()) {
-        slots.push({ start: new Date(cursor.getTime()), end: clippedStart });
-      }
-      if (clippedEnd.getTime() > cursor.getTime()) {
-        cursor = clippedEnd;
+      const slotStart = centralToUtc(dayParts.year, dayParts.month, dayParts.day, wStart);
+      const slotEnd = centralToUtc(dayParts.year, dayParts.month, dayParts.day, wEnd);
+
+      // Skip if slot is entirely in the past
+      if (slotEnd.getTime() <= now.getTime()) continue;
+
+      // Check if any busy period overlaps this slot
+      const conflict = dayBusy.some(
+        (b) => b.start.getTime() < slotEnd.getTime() && b.end.getTime() > slotStart.getTime(),
+      );
+
+      if (!conflict) {
+        freeSlots.push({
+          start: formatTime(slotStart),
+          end: formatTime(slotEnd),
+        });
       }
     }
 
-    // Remaining gap after last busy period
-    if (cursor.getTime() < dayEnd.getTime()) {
-      slots.push({ start: new Date(cursor.getTime()), end: dayEnd });
+    if (freeSlots.length > 0) {
+      days.push({
+        date: formatDate(dayStart),
+        slots: freeSlots,
+        timezone: "Central Time",
+      });
     }
   }
 
   return {
-    available_slots: slots.map((s) => ({
-      date: formatDate(s.start),
-      start: formatTime(s.start),
-      end: formatTime(s.end),
-      timezone: "Central Time",
-    })),
+    available_slots: days,
     current_time_central: formatTime(now),
     current_date_central: formatDate(now),
   };
