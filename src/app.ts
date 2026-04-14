@@ -37,6 +37,18 @@ if (fs.existsSync(clientDist)) {
 
 app.use(express.json({ limit: "1mb" }));
 
+// CORS headers for public endpoints
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, webhook_secret");
+  if (req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
 // Strip /api prefix and mark as API request
 app.use((req: express.Request & { _isApi?: boolean }, _res, next) => {
   if (req.path.startsWith("/api/") || req.path === "/api") {
