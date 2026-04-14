@@ -63,6 +63,14 @@ model Visit {
   purpose                String?
   visitDate              DateTime          @default(now())
   notes                  String?
+  // ── Job tracking fields (Phase 1 data model) ──
+  estimatedJobLength     Float?            // hours — used for calendar blocking
+  estimatedCost          Float?
+  actualMaterialCost     Float?            @default(0)
+  laborHours             Float?            @default(0)
+  overheadAllocation     Float?            @default(0)
+  revenue                Float?
+  // ── Timestamps & relations ──
   createdAt              DateTime          @default(now())
   property               Property          @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   customer               Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
@@ -72,6 +80,8 @@ model Visit {
   limitations            Limitation[]
   recommendations        Recommendation[]
   estimates              Estimate[]
+  documents              Document[]
+  materialOrders         MaterialOrder[]
 }
 
 model CustomerRequest {
@@ -518,25 +528,72 @@ model JobType {
 }
 
 model Lead {
-  id              String   @id @default(cuid())
-  name            String
-  email           String?
-  phone           String?
-  source          String   @default("email")   // "email" | "phone" | "web"
-  status          String   @default("new")     // "new" | "contacted" | "converted" | "lost"
-  notes           String?
-  address         String?
-  jobType         String?
-  callType        String?  // "new_job" | "warranty" | "reschedule" | "cancellation" | "estimate_followup" | "callback" | "vendor" | "referral" | "invoice" | "dispute" | "wrong_number" | "solicitation" | "other"
-  referredBy      String?
-  urgentFlag      Boolean  @default(false)
-  warrantyCall    Boolean  @default(false)
-  warrantyNote    String?
-  estimateId      String?
-  existingVisitId String?
-  customerId      String?
-  propertyId      String?
-  visitId         String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                String    @id @default(cuid())
+  name              String
+  email             String?
+  phone             String?
+  source            String    @default("email")   // "email" | "phone" | "web"
+  status            String    @default("new")     // "new" | "contacted" | "converted" | "lost"
+  notes             String?
+  address           String?
+  jobType           String?
+  callType          String?  // "new_job" | "warranty" | "reschedule" | "cancellation" | "estimate_followup" | "callback" | "vendor" | "referral" | "invoice" | "dispute" | "wrong_number" | "solicitation" | "other"
+  referredBy        String?
+  urgentFlag        Boolean   @default(false)
+  warrantyCall      Boolean   @default(false)
+  warrantyNote      String?
+  // ── Follow-up & pipeline fields (Phase 1 data model) ──
+  contactPreference String?   // "phone" | "email" | "either"
+  leadStatus        String    @default("new") // "new" | "booked" | "unresolved" | "planning" | "no_answer" | "lost" | "won"
+  followUpDate      DateTime?
+  followUpReason    String?   // "comparing_estimates" | "still_planning" | "consulting_partner" | "no_answer"
+  followUpCount     Int       @default(0)
+  lostReason        String?   // "price" | "timing" | "referral" | "trust" | "scope" | "other"
+  lostNotes         String?   // internal only — verbatim customer feedback, never shared
+  bestTimeToReach   String?   // free text, e.g. "mornings" or "after 3pm"
+  // ── Existing linking fields ──
+  estimateId        String?
+  existingVisitId   String?
+  customerId        String?
+  propertyId        String?
+  visitId           String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
+// ─── PHASE 1 DATA MODEL — NEW MODELS ────────────────────────────────────────
+
+model Receipt {
+  id           String   @id @default(cuid())
+  jobId        String?  // visit ID — null for overhead/gas not tied to a specific job
+  category     String   // "materials" | "gas" | "maintenance" | "overhead"
+  vendor       String?
+  amount       Float
+  lineItems    String?  // JSON array: [{name, qty, unit, unitCost}]
+  imageUrl     String?
+  receivedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+}
+
+model Document {
+  id           String    @id @default(cuid())
+  jobId        String    // visit ID
+  type         String    // "work_order" | "material_list" | "contract" | "change_order" | "signed"
+  pdfUrl       String
+  signedAt     DateTime?
+  signedByIp   String?
+  signedByName String?
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
+  job          Visit     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+}
+
+model MaterialOrder {
+  id         String    @id @default(cuid())
+  jobId      String    // visit ID
+  supplier   String
+  items      String    // JSON array: [{name, qty, unit, partNumber?}]
+  sentAt     DateTime?
+  createdAt  DateTime  @default(now())
+  job        Visit     @relation(fields: [jobId], references: [id], onDelete: Cascade)
 }

@@ -24,6 +24,17 @@ export type JobSummary = {
     totalCost: number | null;
     hasAcceptance: boolean;
   } | null;
+  costs: {
+    estimatedCost: number | null;
+    materialCost: number;
+    laborHours: number;
+    laborCost: number;
+    overhead: number;
+    totalCost: number;
+    revenue: number | null;
+    grossProfit: number | null;
+    margin: number | null;
+  };
 };
 
 export type Customer = {
@@ -306,6 +317,7 @@ export type Lead = {
   notes?: string | null;
   address?: string | null;
   jobType?: string | null;
+  callType?: string | null;
   customerId?: string | null;
   propertyId?: string | null;
   visitId?: string | null;

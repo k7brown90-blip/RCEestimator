@@ -7,7 +7,6 @@ const nav = [
   { to: "/jobs", label: "Jobs" },
   { to: "/leads", label: "Leads", badgeQuery: true },
   { to: "/customers", label: "Customers" },
-  { to: "/catalog", label: "Catalog" },
   { to: "/takeoff", label: "Takeoff" },
   { to: "/settings", label: "Settings" },
 ];

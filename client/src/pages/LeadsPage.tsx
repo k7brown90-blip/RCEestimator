@@ -103,6 +103,17 @@ export function LeadsPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-lg font-semibold">{lead.name}</h2>
               <div className="flex items-center gap-2">
+                {lead.callType ? (
+                  <span className={`inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold ${
+                    lead.callType === "warranty" ? "bg-orange-100 text-orange-700" :
+                    lead.callType === "callback" ? "bg-blue-100 text-blue-700" :
+                    lead.callType === "new_job" ? "bg-green-100 text-green-700" :
+                    lead.callType === "cancellation" ? "bg-red-100 text-red-700" :
+                    "bg-zinc-100 text-zinc-600"
+                  }`}>
+                    {lead.callType.replace(/_/g, " ").toUpperCase()}
+                  </span>
+                ) : null}
                 <span className={`inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold ${sourceBadgeClass[lead.source]}`}>
                   {lead.source.toUpperCase()}
                 </span>

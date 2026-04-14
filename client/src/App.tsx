@@ -1,6 +1,5 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
-import { CatalogPage } from "./pages/CatalogPage";
 import { CustomerDetailPage } from "./pages/CustomerDetailPage";
 import { CustomersPage } from "./pages/CustomersPage";
 import { JobsPage } from "./pages/JobsPage";
@@ -37,7 +36,6 @@ function App() {
                 <Route path="/customers/:customerId" element={<CustomerDetailPage />} />
                 <Route path="/properties/:propertyId" element={<PropertyDetailPage />} />
                 <Route path="/visits/:visitId" element={<VisitWorkspacePage />} />
-                <Route path="/catalog" element={<CatalogPage />} />
                 <Route path="/takeoff" element={<TakeoffPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>

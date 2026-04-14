@@ -3,18 +3,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { prisma } from "./lib/prisma";
-import { ensureAssemblyCatalogReady } from "./bootstrap/ensureAssemblyCatalog";
+
 import { EstimateService } from "./services/estimateService";
 import { resolveItemCable } from "./services/wiringMethodResolver";
 import { generateSupportItems } from "./services/supportItemTriggers";
 import { getAvailability } from "./services/googleCalendar";
 import { getDailySummary } from "./services/dailySummary";
+import { getTodaySchedule, getWeekSchedule, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
+import { sendSms, isFromKyle, KYLE_PHONE } from "./services/twilio";
+import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
+import { sendConfirmationEmail } from "./services/confirmationEmail";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 
 const service = new EstimateService(prisma);
-const REMOVED_ASSEMBLY_NUMBERS = [39, 61, 62, 88] as const;
 
 export const app = express();
 
@@ -28,6 +31,7 @@ if (fs.existsSync(clientDist)) {
   app.use((req, res, next) => {
     const accepts = req.headers.accept || "";
     if (req.method === "GET" && accepts.includes("text/html") && !req.path.startsWith("/api")) {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.sendFile(path.join(clientDist, "index.html"));
       return;
     }
@@ -36,6 +40,7 @@ if (fs.existsSync(clientDist)) {
 }
 
 app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: false }));
 
 // CORS headers for public endpoints
 app.use((req, res, next) => {
@@ -124,7 +129,7 @@ app.get("/calendar/availability", asyncHandler(async (_req, res) => {
 }));
 
 // ─── CUSTOMER LOOKUP (no auth — called by Vapi AI assistant) ─────────────────
-const KYLE_PHONE = "9706661626";
+const KYLE_PHONE_10 = "9706661626";
 
 app.get("/customer/lookup", asyncHandler(async (req, res) => {
   const phoneRaw = (readQuery(req, "phone") ?? "").replace(/\D/g, "").slice(-10);
@@ -137,7 +142,7 @@ app.get("/customer/lookup", asyncHandler(async (req, res) => {
   }
 
   // Kyle's cell → transfer signal (phone lookup only)
-  if (phoneRaw === KYLE_PHONE) {
+  if (phoneRaw === KYLE_PHONE_10) {
     res.json({ found: true, type: "kyle_transfer", name: "Kyle" });
     return;
   }
@@ -294,7 +299,7 @@ app.post("/leads", asyncHandler(async (req, res) => {
     return;
   }
 
-  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string };
+  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string; contactPreference?: string; leadStatus?: string; bestTimeToReach?: string };
   if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
     res.status(400).json({ error: "name is required" });
     return;
@@ -316,10 +321,104 @@ app.post("/leads", asyncHandler(async (req, res) => {
       warrantyNote: body.warrantyNote?.trim() || null,
       estimateId: body.estimateId?.trim() || null,
       existingVisitId: body.existingVisitId?.trim() || null,
+      contactPreference: body.contactPreference?.trim() || null,
+      leadStatus: body.leadStatus?.trim() || "new",
+      bestTimeToReach: body.bestTimeToReach?.trim() || null,
     },
   });
 
   res.status(201).json(lead);
+
+  // SMS Kyle for web leads (fire-and-forget)
+  if ((body.source === "web") && lead.phone) {
+    sendSms(KYLE_PHONE, `New web lead — ${lead.name}, ${lead.jobType ?? "general"}, ${lead.phone}`).catch(() => {});
+  }
+}));
+
+// ─── SPAM CLASSIFICATION (webhook secret) ──────────────────────────────────
+app.post("/leads/classify", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const { subject, from, body: emailBody } = req.body as {
+    subject?: string; from?: string; body?: string;
+  };
+
+  const fallback = {
+    classification: "real_customer", reason: "OpenAI not available",
+    name: "", phone: "", email: from || "", address: "",
+    jobType: "", summary: subject || "", source: "email",
+  };
+
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    res.json({ ...fallback, reason: "OpenAI not configured" });
+    return;
+  }
+
+  const prompt = `You are an email classifier and data extractor for Red Cedar Electric LLC, a residential electrical contractor in Middle Tennessee.
+
+Given an inbound email, do TWO things:
+1. Classify it into ONE category:
+   - real_customer_high — clearly a real person with a legitimate electrical need
+   - real_customer_low — probably real but vague or incomplete
+   - likely_spam — SEO pitches, marketing offers, automated notifications, nonsensical text
+   - scammer — phishing, fake urgency, suspicious links
+   - vendor — supplier or vendor solicitation
+2. Extract any contact/job details you can find in the email
+
+Respond with JSON only:
+{"classification":"...","reason":"one sentence","name":"extracted name or empty string","phone":"extracted phone or empty string","email":"extracted email or empty string","address":"extracted address or empty string","jobType":"short description of electrical work needed or empty string","summary":"one sentence summary of the request"}
+
+Email subject: ${subject ?? ""}
+Email from: ${from ?? ""}
+Email body:
+${emailBody ?? ""}`;
+
+  try {
+    const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0,
+        max_tokens: 300,
+      }),
+    });
+
+    if (!aiRes.ok) {
+      res.json({ ...fallback, reason: "OpenAI API error" });
+      return;
+    }
+
+    const aiData = await aiRes.json() as { choices: Array<{ message: { content: string } }> };
+    const raw = aiData.choices?.[0]?.message?.content ?? "";
+    const parsed = JSON.parse(raw) as {
+      classification: string; reason: string;
+      name: string; phone: string; email: string;
+      address: string; jobType: string; summary: string;
+    };
+    res.json({
+      classification: parsed.classification,
+      reason: parsed.reason,
+      name: parsed.name || "",
+      phone: parsed.phone || "",
+      email: parsed.email || from || "",
+      address: parsed.address || "",
+      jobType: parsed.jobType || "",
+      summary: parsed.summary || subject || "",
+      source: "email",
+    });
+  } catch {
+    res.json({ ...fallback, reason: "Classification failed" });
+  }
 }));
 
 // ─── UPDATE LEAD (no JWT — webhook secret, called by Vapi) ──────────────────
@@ -335,6 +434,9 @@ app.patch("/vapi/update-lead", asyncHandler(async (req, res) => {
     jobType?: string; warrantyCall?: boolean; warrantyNote?: string;
     urgentFlag?: boolean; referredBy?: string; email?: string;
     estimateId?: string; existingVisitId?: string; status?: string;
+    contactPreference?: string; leadStatus?: string;
+    followUpDate?: string; followUpReason?: string; followUpCount?: number;
+    lostReason?: string; lostNotes?: string; bestTimeToReach?: string;
   };
 
   if (!body.leadId) {
@@ -355,13 +457,585 @@ app.patch("/vapi/update-lead", asyncHandler(async (req, res) => {
   if (body.estimateId !== undefined) data.estimateId = body.estimateId;
   if (body.existingVisitId !== undefined) data.existingVisitId = body.existingVisitId;
   if (body.status !== undefined) data.status = body.status;
+  if (body.contactPreference !== undefined) data.contactPreference = body.contactPreference;
+  if (body.leadStatus !== undefined) data.leadStatus = body.leadStatus;
+  if (body.followUpDate !== undefined) data.followUpDate = body.followUpDate ? new Date(body.followUpDate) : null;
+  if (body.followUpReason !== undefined) data.followUpReason = body.followUpReason;
+  if (body.followUpCount !== undefined) data.followUpCount = body.followUpCount;
+  if (body.lostReason !== undefined) data.lostReason = body.lostReason;
+  if (body.lostNotes !== undefined) data.lostNotes = body.lostNotes;
+  if (body.bestTimeToReach !== undefined) data.bestTimeToReach = body.bestTimeToReach;
 
   const lead = await prisma.lead.update({
     where: { id: body.leadId },
     data,
   });
 
+  // Fire confirmation email when lead is booked and has an email
+  if (body.leadStatus === "booked" && lead.email) {
+    const apptDate = lead.followUpDate
+      ? lead.followUpDate.toLocaleDateString("en-US", { timeZone: "America/Chicago", weekday: "long", month: "long", day: "numeric" })
+      : "TBD";
+    const apptWindow = lead.followUpDate
+      ? `${lead.followUpDate.toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric", minute: "2-digit" })} — 2hr window`
+      : "To be confirmed";
+
+    sendConfirmationEmail({
+      customerName: lead.name,
+      customerEmail: lead.email,
+      appointmentDate: apptDate,
+      appointmentWindow: apptWindow,
+      serviceAddress: lead.address ?? "See appointment details",
+      jobType: lead.jobType ?? undefined,
+    }).catch((err) => console.error("[update-lead] Confirmation email error:", err));
+  }
+
   res.json(lead);
+}));
+
+// ─── SCHEDULE ENDPOINTS (webhook-secret auth — called by Make.com SMS dispatch) ──
+
+app.get("/schedule/today", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+  const schedule = await getTodaySchedule();
+  res.json(schedule);
+}));
+
+app.get("/schedule/week", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+  const schedule = await getWeekSchedule();
+  res.json(schedule);
+}));
+
+app.post("/schedule/block-time", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+  const body = z.object({
+    summary: z.string().default("Blocked"),
+    startTime: z.string(),
+    endTime: z.string(),
+    description: z.string().optional(),
+  }).parse(req.body);
+
+  const event = await createCalendarEvent({
+    summary: body.summary,
+    description: body.description,
+    startTime: new Date(body.startTime),
+    endTime: new Date(body.endTime),
+  });
+
+  res.status(201).json(event);
+}));
+
+app.post("/schedule/move-job", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+  const body = z.object({
+    eventId: z.string(),
+    newStartTime: z.string(),
+    newEndTime: z.string(),
+  }).parse(req.body);
+
+  const event = await moveCalendarEvent(body.eventId, new Date(body.newStartTime), new Date(body.newEndTime));
+  res.json(event);
+}));
+
+app.delete("/schedule/cancel-job", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+  const body = z.object({ eventId: z.string() }).parse(req.body);
+  await deleteCalendarEvent(body.eventId);
+  res.json({ deleted: true, eventId: body.eventId });
+}));
+
+app.post("/schedule/update-job", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+  const body = z.object({
+    visitId: z.string(),
+    notes: z.string().optional(),
+    status: z.string().optional(),
+    estimatedJobLength: z.number().optional(),
+  }).parse(req.body);
+
+  const data: Record<string, unknown> = {};
+  if (body.notes !== undefined) data.notes = body.notes;
+  if (body.estimatedJobLength !== undefined) data.estimatedJobLength = body.estimatedJobLength;
+
+  const visit = await prisma.visit.update({
+    where: { id: body.visitId },
+    data,
+  });
+
+  res.json(visit);
+}));
+
+// ─── RECEIPT ENDPOINTS (webhook-secret auth — called by Make.com receipt OCR) ──
+
+app.post("/receipts", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+  const body = z.object({
+    jobId: z.string().optional(),
+    category: z.enum(["materials", "gas", "maintenance", "overhead"]),
+    vendor: z.string().optional(),
+    amount: z.number(),
+    lineItems: z.unknown().optional(),
+    imageUrl: z.string().optional(),
+  }).parse(req.body);
+
+  const receipt = await prisma.receipt.create({
+    data: {
+      jobId: body.jobId || null,
+      category: body.category,
+      vendor: body.vendor || null,
+      amount: body.amount,
+      lineItems: body.lineItems ? JSON.stringify(body.lineItems) : null,
+      imageUrl: body.imageUrl || null,
+    },
+  });
+
+  // If tied to a job, update the job's actualMaterialCost
+  if (body.jobId && body.category === "materials") {
+    const jobReceipts = await prisma.receipt.findMany({
+      where: { jobId: body.jobId, category: "materials" },
+    });
+    const totalMaterials = jobReceipts.reduce((sum, r) => sum + r.amount, 0);
+    await prisma.visit.update({
+      where: { id: body.jobId },
+      data: { actualMaterialCost: totalMaterials },
+    });
+  }
+
+  res.status(201).json(receipt);
+}));
+
+app.get("/receipts", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+  const jobId = req.query["jobId"] as string | undefined;
+
+  const receipts = await prisma.receipt.findMany({
+    where: jobId ? { jobId } : undefined,
+    orderBy: { createdAt: "desc" },
+  });
+
+  res.json(receipts);
+}));
+
+// ─── INBOUND SMS WEBHOOK (Twilio → Make.com passes through, or direct) ──────
+
+app.post("/sms/inbound", asyncHandler(async (req, res) => {
+  // Twilio sends form-encoded data; Express needs urlencoded parser
+  // Make.com will usually proxy as JSON, so handle both
+  const from = (req.body?.From || req.body?.from || "") as string;
+  const body = (req.body?.Body || req.body?.body || "") as string;
+
+  if (!isFromKyle(from)) {
+    // Reject SMS from non-Kyle numbers
+    res.status(403).json({ error: "Unauthorized sender" });
+    return;
+  }
+
+  // Log the inbound message — Make.com will handle routing via its scenario
+  console.log(`[SMS] From Kyle: ${body}`);
+
+  // Return 200 OK — Make.com or Twilio expects a quick response
+  res.json({ received: true, from, body });
+}));
+
+// ─── LEAD FOLLOW-UP & LOSS TRACKING ─────────────────────────────────────────
+
+app.get("/leads/follow-ups-due", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const now = new Date();
+  const leads = await prisma.lead.findMany({
+    where: {
+      followUpDate: { lte: now },
+      followUpCount: { lt: 2 },
+      leadStatus: { in: ["unresolved", "planning", "no_answer"] },
+    },
+    orderBy: { followUpDate: "asc" },
+  });
+
+  res.json({ count: leads.length, leads });
+}));
+
+app.patch("/leads/:id/lost", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const body = z.object({
+    lostReason: z.enum(["price", "timing", "referral", "trust", "scope", "other"]),
+    lostNotes: z.string().optional(),
+  }).parse(req.body);
+
+  const lead = await prisma.lead.update({
+    where: { id: readParam(req, "id") },
+    data: {
+      leadStatus: "lost",
+      status: "lost",
+      lostReason: body.lostReason,
+      lostNotes: body.lostNotes || null,
+    },
+  });
+
+  res.json(lead);
+}));
+
+app.patch("/leads/:id/won", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const lead = await prisma.lead.update({
+    where: { id: readParam(req, "id") },
+    data: {
+      leadStatus: "won",
+      status: "converted",
+    },
+  });
+
+  res.json(lead);
+}));
+
+app.get("/leads/loss-report", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const allLeads = await prisma.lead.findMany({
+    where: {
+      leadStatus: { in: ["lost", "won"] },
+    },
+    select: {
+      leadStatus: true,
+      lostReason: true,
+      lostNotes: true,
+      createdAt: true,
+    },
+  });
+
+  const won = allLeads.filter((l) => l.leadStatus === "won").length;
+  const lost = allLeads.filter((l) => l.leadStatus === "lost").length;
+  const total = won + lost;
+
+  // Group lost reasons
+  const reasonCounts: Record<string, number> = {};
+  for (const l of allLeads) {
+    if (l.leadStatus === "lost" && l.lostReason) {
+      reasonCounts[l.lostReason] = (reasonCounts[l.lostReason] || 0) + 1;
+    }
+  }
+
+  res.json({
+    total,
+    won,
+    lost,
+    winRate: total > 0 ? Math.round((won / total) * 100) : 0,
+    lossReasons: reasonCounts,
+  });
+}));
+
+// ─── E-SIGNATURE FLOW (no auth — public signing page) ──────────────────────
+
+app.get("/sign/:documentId", asyncHandler(async (req, res) => {
+  const docId = readParam(req, "documentId");
+  const doc = await prisma.document.findUnique({ where: { id: docId } });
+
+  if (!doc) {
+    res.status(404).send("<h1>Document not found</h1>");
+    return;
+  }
+
+  if (doc.signedAt) {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Already Signed</title><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+      <body style="font-family:sans-serif;max-width:560px;margin:40px auto;padding:0 20px;color:#333;">
+        <h1 style="color:#1a5c2e;">Document Already Signed</h1>
+        <p>This document was signed by <strong>${doc.signedByName}</strong> on ${doc.signedAt.toLocaleDateString("en-US", { timeZone: "America/Chicago" })}.</p>
+        <p>If you need a copy, please contact Red Cedar Electric at (615) 857-6389.</p>
+      </body></html>
+    `);
+    return;
+  }
+
+  res.send(`
+    <!DOCTYPE html>
+    <html><head><title>Sign Document — Red Cedar Electric</title><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+    <body style="font-family:sans-serif;max-width:560px;margin:40px auto;padding:0 20px;color:#333;">
+      <div style="background:#1a5c2e;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0;">
+        <h1 style="margin:0;font-size:20px;">Red Cedar Electric LLC</h1>
+        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">${doc.type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</p>
+      </div>
+      <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
+        <p>Please review the document and sign below to confirm your agreement.</p>
+        <p><a href="/api/documents/${docId}/pdf" target="_blank" style="color:#1a5c2e;">View Full Document (PDF)</a></p>
+        <form method="POST" action="/api/documents/${docId}/sign" style="margin-top:24px;">
+          <label style="display:block;margin-bottom:12px;">
+            <span style="font-weight:600;">Full Name (as signature)</span><br>
+            <input name="name" type="text" required style="width:100%;padding:10px;font-size:16px;border:1px solid #ccc;border-radius:4px;margin-top:4px;" placeholder="Your full name">
+          </label>
+          <label style="display:block;margin-bottom:20px;">
+            <input type="checkbox" name="agree" value="yes" required>
+            I have read and agree to the terms of this document.
+          </label>
+          <button type="submit" style="background:#1a5c2e;color:#fff;border:none;padding:12px 32px;font-size:16px;border-radius:6px;cursor:pointer;">I Agree &amp; Sign</button>
+        </form>
+      </div>
+    </body></html>
+  `);
+}));
+
+app.post("/documents/:id/sign", asyncHandler(async (req, res) => {
+  const docId = readParam(req, "id");
+  const body = req.body as { name?: string; agree?: string };
+
+  if (!body.name?.trim()) {
+    res.status(400).send("<h1>Name is required</h1>");
+    return;
+  }
+
+  const doc = await prisma.document.findUnique({
+    where: { id: docId },
+    include: { job: { include: { property: true, customer: true } } },
+  });
+
+  if (!doc) {
+    res.status(404).send("<h1>Document not found</h1>");
+    return;
+  }
+
+  if (doc.signedAt) {
+    res.send("<h1>This document has already been signed.</h1>");
+    return;
+  }
+
+  const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "unknown";
+
+  await markDocumentSigned(docId, body.name.trim(), ip);
+
+  // Notify Kyle via SMS
+  const addr = doc.job?.property
+    ? [doc.job.property.addressLine1, doc.job.property.city].filter(Boolean).join(", ")
+    : "";
+  sendSms(KYLE_PHONE, `${body.name.trim()} signed the ${doc.type.replace(/_/g, " ")} for ${addr}`).catch(() => {});
+
+  res.send(`
+    <!DOCTYPE html>
+    <html><head><title>Signed — Red Cedar Electric</title><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+    <body style="font-family:sans-serif;max-width:560px;margin:40px auto;padding:0 20px;color:#333;">
+      <div style="background:#1a5c2e;color:#fff;padding:20px 24px;border-radius:8px;text-align:center;">
+        <h1 style="margin:0;font-size:22px;">Document Signed Successfully</h1>
+      </div>
+      <div style="padding:20px;text-align:center;">
+        <p>Thank you, <strong>${body.name.trim()}</strong>. Your signature has been recorded.</p>
+        <p style="font-size:14px;color:#666;">A confirmation will be sent to your email. If you have any questions, call (615) 857-6389.</p>
+      </div>
+    </body></html>
+  `);
+}));
+
+app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
+  const docId = readParam(req, "id");
+  const doc = await prisma.document.findUnique({ where: { id: docId } });
+
+  if (!doc || !doc.pdfUrl) {
+    res.status(404).json({ error: "Document not found" });
+    return;
+  }
+
+  const fs = await import("node:fs");
+  if (!fs.existsSync(doc.pdfUrl)) {
+    res.status(404).json({ error: "PDF file not found" });
+    return;
+  }
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="${doc.type}-${docId}.pdf"`);
+  fs.createReadStream(doc.pdfUrl).pipe(res);
+}));
+
+// ─── PDF GENERATION ENDPOINTS (webhook_secret auth) ────────────────────────
+
+app.post("/documents/generate-contract", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const { jobId, customerName, serviceAddress, scopeOfWork, totalPrice, estimatedHours, paymentTerms } = req.body as {
+    jobId: string; customerName: string; serviceAddress: string; scopeOfWork: string;
+    totalPrice: number; estimatedHours?: number; paymentTerms?: string;
+  };
+
+  if (!jobId || !customerName || !serviceAddress || !scopeOfWork || totalPrice == null) {
+    res.status(400).json({ error: "Missing required fields: jobId, customerName, serviceAddress, scopeOfWork, totalPrice" });
+    return;
+  }
+
+  const result = await generateContract({ jobId, customerName, serviceAddress, scopeOfWork, totalPrice, estimatedHours, paymentTerms });
+  res.json({ ...result, signUrl: `/sign/${result.documentId}` });
+}));
+
+app.post("/documents/generate-change-order", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const { jobId, customerName, serviceAddress, originalScope, changes, priceAdjustment, newTotal } = req.body as {
+    jobId: string; customerName: string; serviceAddress: string; originalScope: string;
+    changes: string; priceAdjustment: number; newTotal: number;
+  };
+
+  if (!jobId || !customerName || !changes || priceAdjustment == null || newTotal == null) {
+    res.status(400).json({ error: "Missing required fields" });
+    return;
+  }
+
+  const result = await generateChangeOrder({ jobId, customerName, serviceAddress: serviceAddress ?? "", originalScope: originalScope ?? "", changes, priceAdjustment, newTotal });
+  res.json({ ...result, signUrl: `/sign/${result.documentId}` });
+}));
+
+app.post("/documents/generate-work-order", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const { jobId, customerName, serviceAddress, scheduledDate, scopeOfWork, materialsNeeded } = req.body as {
+    jobId: string; customerName: string; serviceAddress: string; scheduledDate: string;
+    scopeOfWork: string; materialsNeeded: string;
+  };
+
+  const result = await generateWorkOrder({ jobId, customerName: customerName ?? "", serviceAddress: serviceAddress ?? "", scheduledDate: scheduledDate ?? "", scopeOfWork: scopeOfWork ?? "", materialsNeeded: materialsNeeded ?? "" });
+  res.json(result);
+}));
+
+app.post("/documents/generate-material-list", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const { jobId, serviceAddress, items } = req.body as {
+    jobId: string; serviceAddress: string;
+    items: Array<{ name: string; quantity: number; unit?: string; supplier?: string }>;
+  };
+
+  const result = await generateMaterialList({ jobId, serviceAddress: serviceAddress ?? "", items: items ?? [] });
+  res.json(result);
+}));
+
+// ─── EMAIL BOOKING FLOW (webhook_secret auth — called by Make.com) ─────────
+
+app.post("/bookings/from-email", asyncHandler(async (req, res) => {
+  const secret = req.headers["webhook_secret"];
+  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+    res.status(401).json({ error: "Invalid or missing webhook secret" });
+    return;
+  }
+
+  const { leadId, slotStart, durationHours, customerEmail } = req.body as {
+    leadId: string; slotStart: string; durationHours?: number; customerEmail?: string;
+  };
+
+  if (!leadId || !slotStart) {
+    res.status(400).json({ error: "leadId and slotStart are required" });
+    return;
+  }
+
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!lead) {
+    res.status(404).json({ error: "Lead not found" });
+    return;
+  }
+
+  const startTime = new Date(slotStart);
+  const hours = durationHours ?? 2;
+  const endTime = new Date(startTime.getTime() + hours * 3_600_000);
+
+  // Book Google Calendar
+  const event = await createCalendarEvent({
+    summary: `${lead.jobType ?? "Service"} — ${lead.name}`,
+    description: lead.notes ?? undefined,
+    location: lead.address ?? undefined,
+    startTime,
+    endTime,
+  });
+
+  // Update lead to booked
+  await prisma.lead.update({
+    where: { id: leadId },
+    data: { leadStatus: "booked", status: "contacted" },
+  });
+
+  // Send confirmation email
+  const email = customerEmail ?? lead.email;
+  if (email) {
+    const apptDate = startTime.toLocaleDateString("en-US", { timeZone: "America/Chicago", weekday: "long", month: "long", day: "numeric" });
+    const apptWindow = `${startTime.toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric", minute: "2-digit" })} — ${hours}hr window`;
+
+    sendConfirmationEmail({
+      customerName: lead.name,
+      customerEmail: email,
+      appointmentDate: apptDate,
+      appointmentWindow: apptWindow,
+      serviceAddress: lead.address ?? "See appointment details",
+      jobType: lead.jobType ?? undefined,
+    }).catch((err) => console.error("[booking] Confirmation email error:", err));
+  }
+
+  // Notify Kyle
+  const dateStr = startTime.toLocaleDateString("en-US", { timeZone: "America/Chicago", weekday: "short", month: "short", day: "numeric" });
+  const timeStr = startTime.toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric", minute: "2-digit" });
+  sendSms(KYLE_PHONE, `Email booking: ${lead.name} — ${lead.jobType ?? "service"} — ${dateStr} ${timeStr}`).catch(() => {});
+
+  res.json({ booked: true, eventId: event.id, leadId });
 }));
 
 // ─── PIN AUTH ────────────────────────────────────────────────────────────────
@@ -394,6 +1068,12 @@ app.get("/jobs", asyncHandler(async (_req, res) => {
       }
     }
 
+    const revenue = visit.revenue ?? acceptedOption?.totalCost ?? null;
+    const materialCost = visit.actualMaterialCost ?? 0;
+    const laborCost = (visit.laborHours ?? 0) * 75; // $75/hr default labor rate
+    const overhead = visit.overheadAllocation ?? 0;
+    const totalCost = materialCost + laborCost + overhead;
+
     return {
       visitId: visit.id,
       visitDate: visit.visitDate,
@@ -420,6 +1100,17 @@ app.get("/jobs", asyncHandler(async (_req, res) => {
           hasAcceptance: Boolean(latestEstimate.acceptance),
         }
         : null,
+      costs: {
+        estimatedCost: visit.estimatedCost,
+        materialCost,
+        laborHours: visit.laborHours ?? 0,
+        laborCost,
+        overhead,
+        totalCost,
+        revenue,
+        grossProfit: revenue != null ? revenue - totalCost : null,
+        margin: revenue != null && revenue > 0 ? Math.round(((revenue - totalCost) / revenue) * 100) : null,
+      },
     };
   });
 
@@ -614,77 +1305,6 @@ app.get("/visits/:visitId", asyncHandler(async (req, res) => {
   res.json(visit);
 }));
 
-app.get("/assemblies", asyncHandler(async (req, res) => {
-  const query = readQuery(req, "query");
-  const category = readQuery(req, "category");
-  const tier = readQuery(req, "tier");
-
-  await ensureAssemblyCatalogReady();
-
-  const templates = await prisma.assemblyTemplate.findMany({
-    where: {
-      assemblyNumber: { notIn: REMOVED_ASSEMBLY_NUMBERS as unknown as number[] },
-      name: query ? { contains: query } : undefined,
-      category: category ? { equals: category } : undefined,
-      tier: tier ? { equals: tier } : undefined,
-    },
-    include: {
-      components: true,
-      parameterDefinitions: {
-        orderBy: [{ sortOrder: "asc" }, { key: "asc" }],
-      },
-      variants: {
-        orderBy: [{ variantKey: "asc" }, { variantValue: "asc" }],
-      },
-      childLinks: {
-        include: {
-          childTemplate: true,
-        },
-      },
-    },
-    orderBy: [{ category: "asc" }, { assemblyNumber: "asc" }],
-  });
-
-  res.json(templates);
-}));
-
-app.get("/assemblies/:templateId", asyncHandler(async (req, res) => {
-  const templateId = readParam(req, "templateId");
-  const template = await prisma.assemblyTemplate.findUnique({
-    where: { id: templateId },
-    include: {
-      components: true,
-      parameterDefinitions: {
-        orderBy: [{ sortOrder: "asc" }, { key: "asc" }],
-      },
-      variants: {
-        orderBy: [{ variantKey: "asc" }, { variantValue: "asc" }],
-      },
-      childLinks: {
-        include: {
-          childTemplate: true,
-        },
-      },
-      parentLinks: {
-        include: {
-          parentTemplate: true,
-        },
-      },
-    },
-  });
-
-  if (!template) {
-    res.status(404).json({ error: "Assembly template not found" });
-    return;
-  }
-
-  if ((REMOVED_ASSEMBLY_NUMBERS as unknown as number[]).includes(template.assemblyNumber)) {
-    res.status(404).json({ error: "Assembly template not found" });
-    return;
-  }
-
-  res.json(template);
-}));
 
 app.get("/proposals/:deliveryId/download", asyncHandler(async (req, res) => {
   const deliveryId = readParam(req, "deliveryId");
@@ -1008,79 +1628,6 @@ app.delete("/options/:optionId", asyncHandler(async (req, res) => {
   res.status(204).send();
 }));
 
-app.post("/options/:optionId/assemblies", asyncHandler(async (req, res) => {
-  const optionId = readParam(req, "optionId");
-  const body = z.object({
-    assemblyTemplateId: z.string(),
-    location: z.string().optional(),
-    quantity: z.number().int().min(1).optional(),
-    parameters: z.record(z.string(), z.unknown()).optional(),
-    assemblyNotes: z.string().optional(),
-    modifiers: z.array(z.string()).optional(),
-    manualLaborOverride: z.number().nonnegative().optional(),
-    manualMaterialOverride: z.number().nonnegative().optional(),
-  }).parse(req.body);
-
-  const created = await service.addAssemblyToOption({
-    optionId,
-    ...body,
-  });
-
-  res.status(201).json(created);
-}));
-
-app.get("/options/:optionId/assembly-suggestions", asyncHandler(async (req, res) => {
-  const optionId = readParam(req, "optionId");
-  const assemblyTemplateId = readQuery(req, "assemblyTemplateId");
-  const assemblyNumberRaw = readQuery(req, "assemblyNumber");
-
-  let assemblyNumber: number | undefined;
-  if (assemblyNumberRaw !== undefined) {
-    const parsed = Number(assemblyNumberRaw);
-    if (Number.isNaN(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
-      res.status(400).json({ error: "assemblyNumber must be a positive integer" });
-      return;
-    }
-    assemblyNumber = parsed;
-  }
-
-  if (!assemblyTemplateId && assemblyNumber === undefined) {
-    res.status(400).json({ error: "assemblyTemplateId or assemblyNumber query parameter is required" });
-    return;
-  }
-
-  const suggestions = await service.getAssemblyCompanionSuggestions({
-    optionId,
-    assemblyTemplateId: assemblyTemplateId || undefined,
-    assemblyNumber,
-  });
-
-  res.json({ suggestions });
-}));
-
-app.patch("/assemblies/:assemblyId", asyncHandler(async (req, res) => {
-  const assemblyId = readParam(req, "assemblyId");
-  const body = z.object({
-    location: z.string().optional().nullable(),
-    quantity: z.number().int().min(1).optional(),
-    parameters: z.record(z.string(), z.unknown()).optional(),
-  }).parse(req.body);
-
-  const updated = await service.updateAssembly({
-    assemblyId,
-    location: body.location,
-    quantity: body.quantity,
-    parameters: body.parameters,
-  });
-
-  res.json(updated);
-}));
-
-app.delete("/assemblies/:assemblyId", asyncHandler(async (req, res) => {
-  const assemblyId = readParam(req, "assemblyId");
-  await service.deleteAssembly(assemblyId);
-  res.status(204).send();
-}));
 
 app.get("/options/:optionId/materials", asyncHandler(async (req, res) => {
   const optionId = readParam(req, "optionId");

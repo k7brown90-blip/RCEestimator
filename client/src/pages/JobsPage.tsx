@@ -102,6 +102,34 @@ export function JobsPage() {
               <p><span className="text-rce-soft">Revision:</span> {job.estimate ? `Rev ${job.estimate.revision}` : "-"}</p>
               <p className="font-semibold"><span className="text-rce-soft">Total:</span> {money(job.estimate?.totalCost)}</p>
             </div>
+
+            {/* Cost / Profit Widget */}
+            {(job.costs.revenue != null || job.costs.materialCost > 0 || job.costs.laborHours > 0) ? (
+              <div className="mt-3 grid gap-2 rounded-lg bg-rce-bg p-3 text-xs md:grid-cols-5">
+                <div>
+                  <span className="text-rce-soft">Materials</span>
+                  <p className="font-semibold">{money(job.costs.materialCost)}</p>
+                </div>
+                <div>
+                  <span className="text-rce-soft">Labor ({job.costs.laborHours}h)</span>
+                  <p className="font-semibold">{money(job.costs.laborCost)}</p>
+                </div>
+                <div>
+                  <span className="text-rce-soft">Overhead</span>
+                  <p className="font-semibold">{money(job.costs.overhead)}</p>
+                </div>
+                <div>
+                  <span className="text-rce-soft">Revenue</span>
+                  <p className="font-semibold">{money(job.costs.revenue)}</p>
+                </div>
+                <div>
+                  <span className="text-rce-soft">Profit</span>
+                  <p className={`font-semibold ${(job.costs.grossProfit ?? 0) >= 0 ? "text-rce-success" : "text-red-500"}`}>
+                    {job.costs.grossProfit != null ? `${money(job.costs.grossProfit)} (${job.costs.margin}%)` : "—"}
+                  </p>
+                </div>
+              </div>
+            ) : null}
             {job.estimate && job.estimate.status !== "accepted" ? (
               <div className="mt-3 flex justify-end">
                 <button
