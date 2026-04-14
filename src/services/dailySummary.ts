@@ -121,10 +121,12 @@ export async function getDailySummary(): Promise<DailySummaryResponse> {
 export async function sendDailySummaryEmail(): Promise<void> {
   const toEmail = process.env.SUMMARY_EMAIL;
   const gmailUser = process.env.GMAIL_USER;
-  const gmailPass = process.env.GMAIL_APP_PASSWORD;
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
 
-  if (!toEmail || !gmailUser || !gmailPass) {
-    console.log("[DailySummary] Missing SUMMARY_EMAIL, GMAIL_USER, or GMAIL_APP_PASSWORD — skipping email.");
+  if (!toEmail || !gmailUser || !clientId || !clientSecret || !refreshToken) {
+    console.log("[DailySummary] Missing SUMMARY_EMAIL, GMAIL_USER, or Google OAuth credentials — skipping email.");
     return;
   }
 
@@ -136,7 +138,13 @@ export async function sendDailySummaryEmail(): Promise<void> {
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
-    auth: { user: gmailUser, pass: gmailPass },
+    auth: {
+      type: "OAuth2",
+      user: gmailUser,
+      clientId,
+      clientSecret,
+      refreshToken,
+    },
   });
 
   const renderLead = (l: LeadSummary) => `
