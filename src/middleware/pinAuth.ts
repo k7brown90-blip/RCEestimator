@@ -24,6 +24,7 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
     req.path === "/auth/pin" ||
     req.path.startsWith("/mcp") ||
     req.path.startsWith("/vapi/") ||
+    req.path.startsWith("/agent") ||
     req.path === "/leads" ||
     req.path === "/customer/lookup" ||
     req.path === "/calendar/availability" ||

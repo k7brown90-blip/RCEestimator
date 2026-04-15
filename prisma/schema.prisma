@@ -597,3 +597,13 @@ model MaterialOrder {
   createdAt  DateTime  @default(now())
   job        Visit     @relation(fields: [jobId], references: [id], onDelete: Cascade)
 }
+
+model AgentAuditLog {
+  id          String   @id @default(cuid())
+  action      String
+  visitId     String?
+  entityType  String?
+  entityId    String?
+  payloadJson String?
+  createdAt   DateTime @default(now())
+}

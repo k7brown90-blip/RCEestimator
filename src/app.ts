@@ -16,6 +16,7 @@ import { sendConfirmationEmail } from "./services/confirmationEmail";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
+import { agentRouter } from "./routes/agent";
 
 const service = new EstimateService(prisma);
 
@@ -1038,6 +1039,9 @@ app.post("/bookings/from-email", asyncHandler(async (req, res) => {
 
   res.json({ booked: true, eventId: event.id, leadId });
 }));
+
+// ─── AGENT API (Jerry — voice/SMS field assistant) ────────────────────────────
+app.use("/agent", agentRouter);
 
 // ─── PIN AUTH ────────────────────────────────────────────────────────────────
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
