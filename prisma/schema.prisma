@@ -599,11 +599,26 @@ model MaterialOrder {
 }
 
 model AgentAuditLog {
-  id          String   @id @default(cuid())
-  action      String
-  visitId     String?
-  entityType  String?
-  entityId    String?
-  payloadJson String?
-  createdAt   DateTime @default(now())
+  id              String   @id @default(cuid())
+  action          String
+  endpoint        String?
+  visitId         String?
+  entityType      String?
+  entityId        String?
+  payloadJson     String?
+  responseStatus  Int?
+  durationMs      Int?
+  clientRequestId String?
+  createdAt       DateTime @default(now())
+}
+
+model AgentIdempotency {
+  id              String   @id @default(cuid())
+  clientRequestId String
+  endpoint        String
+  visitId         String?
+  responseJson    String
+  createdAt       DateTime @default(now())
+
+  @@unique([clientRequestId, endpoint])
 }

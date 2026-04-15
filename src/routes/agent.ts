@@ -28,6 +28,13 @@ const FULL_VISIT_INCLUDE = {
   },
 } as const;
 
+// ─── STRING HELPERS ─────────────────────────────────────────────────────────────
+
+function truncate(s: unknown, max: number): string {
+  const text = typeof s === "string" ? s : String(s ?? "");
+  return text.length <= max ? text : text.slice(0, max) + "…";
+}
+
 // ─── AUDIT LOG ──────────────────────────────────────────────────────────────────
 
 function logAgent(action: string, details: {
@@ -35,6 +42,10 @@ function logAgent(action: string, details: {
   entityType?: string;
   entityId?: string;
   payload?: unknown;
+  endpoint?: string;
+  responseStatus?: number;
+  durationMs?: number;
+  clientRequestId?: string;
 }): void {
   prisma.agentAuditLog.create({
     data: {
@@ -43,8 +54,128 @@ function logAgent(action: string, details: {
       entityType: details.entityType,
       entityId: details.entityId,
       payloadJson: details.payload ? JSON.stringify(details.payload) : null,
+      endpoint: details.endpoint,
+      responseStatus: details.responseStatus,
+      durationMs: details.durationMs,
+      clientRequestId: details.clientRequestId,
     },
   }).catch((err) => console.error("[AgentAudit] log failed:", err));
+}
+
+// ─── IDEMPOTENCY ────────────────────────────────────────────────────────────────
+
+const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+async function checkIdempotency(
+  clientRequestId: string | undefined,
+  endpoint: string,
+): Promise<object | null> {
+  if (!clientRequestId) return null;
+
+  // Fire-and-forget cleanup of expired records
+  prisma.agentIdempotency.deleteMany({
+    where: { createdAt: { lt: new Date(Date.now() - IDEMPOTENCY_TTL_MS) } },
+  }).catch(() => {});
+
+  const existing = await prisma.agentIdempotency.findUnique({
+    where: { clientRequestId_endpoint: { clientRequestId, endpoint } },
+  });
+
+  if (!existing) return null;
+
+  if (Date.now() - existing.createdAt.getTime() > IDEMPOTENCY_TTL_MS) {
+    await prisma.agentIdempotency.delete({ where: { id: existing.id } }).catch(() => {});
+    return null;
+  }
+
+  return JSON.parse(existing.responseJson);
+}
+
+async function saveIdempotency(
+  clientRequestId: string | undefined,
+  endpoint: string,
+  visitId: string | undefined,
+  responseBody: object,
+): Promise<void> {
+  if (!clientRequestId) return;
+  await prisma.agentIdempotency.create({
+    data: {
+      clientRequestId,
+      endpoint,
+      visitId,
+      responseJson: JSON.stringify(responseBody),
+    },
+  }).catch(() => {}); // ignore duplicate key errors on race
+}
+
+// ─── SPOKEN CONFIRMATION ────────────────────────────────────────────────────────
+
+function spokenConfirmation(action: string, details: Record<string, unknown>): string {
+  switch (action) {
+    case "create_observation":
+      return `Got it — ${truncate(details.observationText, 60)}${details.location ? `, ${details.location}` : ""}. Added to observations.`;
+    case "create_finding":
+      return `Logged: ${truncate(details.findingText, 60)}${details.confidence ? `, ${details.confidence} confidence` : ""}.`;
+    case "add_deficiency":
+      return `Added deficiency: ${truncate(details.deficiency, 60)}.`;
+    case "create_limitation":
+      return `Noted limitation: ${truncate(details.limitationText, 60)}.`;
+    case "create_recommendation":
+      return `Recommendation added: ${truncate(details.recommendationText, 60)}${details.priority ? `, ${details.priority} priority` : ""}.`;
+    case "upsert_customer_request":
+      return `Customer request updated: ${truncate(details.requestText, 60)}.`;
+    case "update_system_snapshot": {
+      const fields = Object.keys(details).filter(k => details[k]).join(", ");
+      return `System snapshot updated: ${fields}.`;
+    }
+    case "bulk_assessment": {
+      const counts = Object.entries(details)
+        .filter(([, v]) => v)
+        .map(([k, v]) => Array.isArray(v) ? `${(v as unknown[]).length} ${k}` : k);
+      return `Bulk update: added ${counts.join(", ")}.`;
+    }
+    case "create_estimate":
+      return "Estimate created with a default option. Ready for line items.";
+    default:
+      return "Done.";
+  }
+}
+
+// ─── AGENT ERROR HELPERS ────────────────────────────────────────────────────────
+
+function agentZodError(err: ZodError): { code: string; message: string; spoken_fallback: string } {
+  const issue = err.issues[0];
+  let spoken_fallback: string;
+  let message: string;
+  const path = issue.path.join(".");
+
+  switch (issue.code) {
+    case "invalid_value": {
+      const vals = "values" in issue ? (issue.values as string[]).join(", ") : "";
+      message = `${path || "value"} must be one of: ${vals}`;
+      spoken_fallback = `That wasn't one of the options — pick from ${vals}.`;
+      break;
+    }
+    case "too_small":
+      message = `${path || "value"} is required`;
+      spoken_fallback = "I didn't catch that — could you say it again?";
+      break;
+    case "invalid_type": {
+      const expected = "expected" in issue ? String(issue.expected) : "valid input";
+      message = `${path || "value"} must be a ${expected}`;
+      spoken_fallback = `I need a ${expected} there.`;
+      break;
+    }
+    default:
+      message = issue.message;
+      spoken_fallback = "Something wasn't right with that input. Try again?";
+  }
+
+  return { code: "VALIDATION_FAILED", message, spoken_fallback };
+}
+
+function visitNotFoundError(): { error: { code: string; message: string; spoken_fallback: string } } {
+  return { error: { code: "NOT_FOUND", message: "Visit not found", spoken_fallback: "I couldn't find that visit. Try setting the active visit first." } };
 }
 
 // ─── ACTIVE VISIT STATE ─────────────────────────────────────────────────────────
@@ -95,10 +226,10 @@ agentRouter.param("id", (_req, res, next, val) => {
   next();
 });
 
-// Zod error handler
+// Zod error handler — agent-friendly
 agentRouter.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (err instanceof ZodError) {
-    res.status(422).json({ error: "Validation failed", issues: err.issues });
+    res.status(422).json({ error: agentZodError(err) });
     return;
   }
   next(err);
@@ -125,55 +256,129 @@ agentRouter.get("/active-visit", asyncHandler(async (_req, res) => {
 }));
 
 agentRouter.post("/active-visit", asyncHandler(async (req, res) => {
-  const body = z.union([
-    z.object({ visitId: z.string().min(1) }),
-    z.object({ address: z.string().min(3) }),
-  ]).parse(req.body);
+  const body = z.object({ query: z.string().min(1) }).parse(req.body);
+  const query = body.query.trim();
 
-  let visitId: string;
+  type Candidate = { visitId: string; label: string };
+  const candidates: Candidate[] = [];
 
-  if ("visitId" in body) {
-    const exists = await prisma.visit.findUnique({ where: { id: body.visitId }, select: { id: true } });
-    if (!exists) {
-      res.status(404).json({ error: "Visit not found" });
-      return;
-    }
-    visitId = body.visitId;
-  } else {
-    // Fuzzy match by address
-    const searchTerm = body.address.toLowerCase();
-    const properties = await prisma.property.findMany({
-      where: { addressLine1: { contains: searchTerm } },
-      select: { id: true, addressLine1: true },
+  // 1. Direct ID — looks like a cuid (cl... or 25+ chars)
+  if (/^cl[a-z0-9]{20,}$/i.test(query) || query.length >= 25) {
+    const visit = await prisma.visit.findUnique({
+      where: { id: query },
+      include: { customer: { select: { name: true } }, property: { select: { addressLine1: true } } },
     });
-
-    if (properties.length === 0) {
-      res.status(404).json({ error: "No property found matching that address" });
-      return;
+    if (visit) {
+      candidates.push({ visitId: visit.id, label: `${visit.customer.name} — ${visit.property.addressLine1}` });
     }
-
-    // Find most recent visit for matched property
-    const latestVisit = await prisma.visit.findFirst({
-      where: { propertyId: { in: properties.map((p) => p.id) } },
-      orderBy: { visitDate: "desc" },
-      select: { id: true },
-    });
-
-    if (!latestVisit) {
-      res.status(404).json({ error: "No visits found for matched property" });
-      return;
-    }
-    visitId = latestVisit.id;
   }
 
+  // 2. "current" / "the one I'm at" — most recently updated visit in last 4 hours
+  if (candidates.length === 0 && /^(current|the one i'?m at|this one|latest)$/i.test(query)) {
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+    const recent = await prisma.visit.findFirst({
+      where: { visitDate: { gte: fourHoursAgo } },
+      orderBy: { visitDate: "desc" },
+      include: { customer: { select: { name: true } }, property: { select: { addressLine1: true } } },
+    });
+    if (recent) {
+      candidates.push({ visitId: recent.id, label: `${recent.customer.name} — ${recent.property.addressLine1}` });
+    }
+  }
+
+  // 3. Customer name
+  if (candidates.length === 0) {
+    const customers = await prisma.customer.findMany({
+      where: { name: { contains: query } },
+      select: { id: true, name: true },
+      take: 5,
+    });
+    if (customers.length > 0) {
+      const visits = await prisma.visit.findMany({
+        where: { customerId: { in: customers.map(c => c.id) } },
+        orderBy: { visitDate: "desc" },
+        take: 5,
+        include: { customer: { select: { name: true } }, property: { select: { addressLine1: true } } },
+      });
+      for (const v of visits) {
+        const date = v.visitDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        candidates.push({ visitId: v.id, label: `${v.customer.name} — ${v.property.addressLine1} (${date})` });
+      }
+    }
+  }
+
+  // 4. Address
+  if (candidates.length === 0) {
+    const properties = await prisma.property.findMany({
+      where: { addressLine1: { contains: query } },
+      select: { id: true, addressLine1: true },
+      take: 5,
+    });
+    if (properties.length > 0) {
+      const visits = await prisma.visit.findMany({
+        where: { propertyId: { in: properties.map(p => p.id) } },
+        orderBy: { visitDate: "desc" },
+        take: 5,
+        include: { customer: { select: { name: true } }, property: { select: { addressLine1: true } } },
+      });
+      for (const v of visits) {
+        const date = v.visitDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        candidates.push({ visitId: v.id, label: `${v.customer.name} — ${v.property.addressLine1} (${date})` });
+      }
+    }
+  }
+
+  // 5. Lead/job type — search purpose and customer request text
+  if (candidates.length === 0) {
+    const visits = await prisma.visit.findMany({
+      where: {
+        OR: [
+          { purpose: { contains: query } },
+          { customerRequest: { requestText: { contains: query } } },
+        ],
+      },
+      orderBy: { visitDate: "desc" },
+      take: 5,
+      include: { customer: { select: { name: true } }, property: { select: { addressLine1: true } } },
+    });
+    for (const v of visits) {
+      const date = v.visitDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      candidates.push({ visitId: v.id, label: `${v.customer.name} — ${v.property.addressLine1} (${date})` });
+    }
+  }
+
+  // No matches at all
+  if (candidates.length === 0) {
+    res.status(404).json({
+      error: { code: "NOT_FOUND", message: "No visits matched that query", spoken_fallback: "I couldn't find a visit matching that. Try a customer name or address." },
+    });
+    return;
+  }
+
+  // Disambiguation — multiple matches
+  if (candidates.length > 1) {
+    res.json({ disambiguation: candidates.slice(0, 3) });
+    return;
+  }
+
+  // Exactly 1 match — set active
+  const visitId = candidates[0].visitId;
   activeVisit = { visitId, setAt: Date.now() };
-  logAgent("set_active_visit", { visitId });
+  logAgent("set_active_visit", { visitId, endpoint: "/active-visit" });
 
   const visit = await prisma.visit.findUnique({
     where: { id: visitId },
     include: FULL_VISIT_INCLUDE,
   });
-  res.json(visit);
+  res.json({ ...visit, spoken_confirmation: `Active visit set to ${candidates[0].label}.` });
+}));
+
+// ─── CLEAR ACTIVE VISIT ─────────────────────────────────────────────────────────
+
+agentRouter.post("/active-visit/clear", asyncHandler(async (_req, res) => {
+  activeVisit = null;
+  logAgent("clear_active_visit", { endpoint: "/active-visit/clear" });
+  res.json({ cleared: true, spoken_confirmation: "Active visit cleared. Ready for the next job." });
 }));
 
 // ─── VISIT READ ─────────────────────────────────────────────────────────────────
@@ -185,7 +390,7 @@ agentRouter.get("/visits/:id", asyncHandler(async (req, res) => {
     include: FULL_VISIT_INCLUDE,
   });
   if (!visit) {
-    res.status(404).json({ error: "Visit not found" });
+    res.status(404).json(visitNotFoundError());
     return;
   }
   res.json(visit);
@@ -194,7 +399,14 @@ agentRouter.get("/visits/:id", asyncHandler(async (req, res) => {
 // ─── CUSTOMER REQUEST ───────────────────────────────────────────────────────────
 
 agentRouter.patch("/visits/:id/customer-request", asyncHandler(async (req, res) => {
+  const start = Date.now();
   const visitId = readParam(req, "id");
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/visits/:id/customer-request";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
   const body = z.object({
     requestText: z.string().min(1),
     urgency: z.string().optional(),
@@ -206,28 +418,50 @@ agentRouter.patch("/visits/:id/customer-request", asyncHandler(async (req, res) 
     create: { visitId, ...body },
   });
 
-  logAgent("upsert_customer_request", { visitId, entityType: "CustomerRequest", entityId: result.id, payload: body });
-  res.json(result);
+  const confirmation = spokenConfirmation("upsert_customer_request", body);
+  const responseBody = { ...result, spoken_confirmation: confirmation };
+
+  await saveIdempotency(clientRequestId, endpoint, visitId, responseBody);
+  logAgent("upsert_customer_request", { visitId, entityType: "CustomerRequest", entityId: result.id, payload: body, endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });
+  res.json(responseBody);
 }));
 
 // ─── OBSERVATIONS ───────────────────────────────────────────────────────────────
 
 agentRouter.post("/visits/:id/observations", asyncHandler(async (req, res) => {
+  const start = Date.now();
   const visitId = readParam(req, "id");
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/visits/:id/observations";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
   const body = z.object({
     observationText: z.string().min(1),
     location: z.string().optional(),
   }).parse(req.body);
 
   const created = await prisma.observation.create({ data: { visitId, ...body } });
-  logAgent("create_observation", { visitId, entityType: "Observation", entityId: created.id, payload: body });
-  res.status(201).json(created);
+  const confirmation = spokenConfirmation("create_observation", body);
+  const responseBody = { ...created, spoken_confirmation: confirmation };
+
+  await saveIdempotency(clientRequestId, endpoint, visitId, responseBody);
+  logAgent("create_observation", { visitId, entityType: "Observation", entityId: created.id, payload: body, endpoint, responseStatus: 201, durationMs: Date.now() - start, clientRequestId });
+  res.status(201).json(responseBody);
 }));
 
 // ─── SYSTEM SNAPSHOT ────────────────────────────────────────────────────────────
 
 agentRouter.patch("/visits/:id/system-snapshot", asyncHandler(async (req, res) => {
+  const start = Date.now();
   const visitId = readParam(req, "id");
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/visits/:id/system-snapshot";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
   const body = z.object({
     serviceSummary: z.string().optional(),
     panelSummary: z.string().optional(),
@@ -238,7 +472,7 @@ agentRouter.patch("/visits/:id/system-snapshot", asyncHandler(async (req, res) =
   // Look up propertyId through the visit
   const visit = await prisma.visit.findUnique({ where: { id: visitId }, select: { propertyId: true } });
   if (!visit) {
-    res.status(404).json({ error: "Visit not found" });
+    res.status(404).json(visitNotFoundError());
     return;
   }
 
@@ -254,19 +488,30 @@ agentRouter.patch("/visits/:id/system-snapshot", asyncHandler(async (req, res) =
     },
   });
 
-  logAgent("update_system_snapshot", { visitId, entityType: "SystemSnapshot", entityId: result.id, payload: body });
-  res.json(result);
+  const confirmation = spokenConfirmation("update_system_snapshot", body);
+  const responseBody = { ...result, spoken_confirmation: confirmation };
+
+  await saveIdempotency(clientRequestId, endpoint, visitId, responseBody);
+  logAgent("update_system_snapshot", { visitId, entityType: "SystemSnapshot", entityId: result.id, payload: body, endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });
+  res.json(responseBody);
 }));
 
 // ─── DEFICIENCIES (append to JSON array on SystemSnapshot) ──────────────────────
 
 agentRouter.post("/visits/:id/deficiencies", asyncHandler(async (req, res) => {
+  const start = Date.now();
   const visitId = readParam(req, "id");
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/visits/:id/deficiencies";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
   const body = z.object({ deficiency: z.string().min(1) }).parse(req.body);
 
   const visit = await prisma.visit.findUnique({ where: { id: visitId }, select: { propertyId: true } });
   if (!visit) {
-    res.status(404).json({ error: "Visit not found" });
+    res.status(404).json(visitNotFoundError());
     return;
   }
 
@@ -290,58 +535,101 @@ agentRouter.post("/visits/:id/deficiencies", asyncHandler(async (req, res) => {
     data: { deficienciesJson: JSON.stringify(deficiencies) },
   });
 
-  logAgent("add_deficiency", { visitId, entityType: "SystemSnapshot", entityId: updated.id, payload: body });
-  res.status(201).json({ deficiencies });
+  const confirmation = spokenConfirmation("add_deficiency", body);
+  const responseBody = { deficiencies, spoken_confirmation: confirmation };
+
+  await saveIdempotency(clientRequestId, endpoint, visitId, responseBody);
+  logAgent("add_deficiency", { visitId, entityType: "SystemSnapshot", entityId: updated.id, payload: body, endpoint, responseStatus: 201, durationMs: Date.now() - start, clientRequestId });
+  res.status(201).json(responseBody);
 }));
 
 // ─── FINDINGS ───────────────────────────────────────────────────────────────────
 
 agentRouter.post("/visits/:id/findings", asyncHandler(async (req, res) => {
+  const start = Date.now();
   const visitId = readParam(req, "id");
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/visits/:id/findings";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
   const body = z.object({
     findingText: z.string().min(1),
     confidence: z.enum(["high", "medium", "low"]).optional(),
   }).parse(req.body);
 
   const created = await prisma.finding.create({ data: { visitId, ...body } });
-  logAgent("create_finding", { visitId, entityType: "Finding", entityId: created.id, payload: body });
-  res.status(201).json(created);
+  const confirmation = spokenConfirmation("create_finding", body);
+  const responseBody = { ...created, spoken_confirmation: confirmation };
+
+  await saveIdempotency(clientRequestId, endpoint, visitId, responseBody);
+  logAgent("create_finding", { visitId, entityType: "Finding", entityId: created.id, payload: body, endpoint, responseStatus: 201, durationMs: Date.now() - start, clientRequestId });
+  res.status(201).json(responseBody);
 }));
 
 // ─── LIMITATIONS ────────────────────────────────────────────────────────────────
 
 agentRouter.post("/visits/:id/limitations", asyncHandler(async (req, res) => {
+  const start = Date.now();
   const visitId = readParam(req, "id");
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/visits/:id/limitations";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
   const body = z.object({ limitationText: z.string().min(1) }).parse(req.body);
 
   const created = await prisma.limitation.create({ data: { visitId, ...body } });
-  logAgent("create_limitation", { visitId, entityType: "Limitation", entityId: created.id, payload: body });
-  res.status(201).json(created);
+  const confirmation = spokenConfirmation("create_limitation", body);
+  const responseBody = { ...created, spoken_confirmation: confirmation };
+
+  await saveIdempotency(clientRequestId, endpoint, visitId, responseBody);
+  logAgent("create_limitation", { visitId, entityType: "Limitation", entityId: created.id, payload: body, endpoint, responseStatus: 201, durationMs: Date.now() - start, clientRequestId });
+  res.status(201).json(responseBody);
 }));
 
 // ─── RECOMMENDATIONS ────────────────────────────────────────────────────────────
 
 agentRouter.post("/visits/:id/recommendations", asyncHandler(async (req, res) => {
+  const start = Date.now();
   const visitId = readParam(req, "id");
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/visits/:id/recommendations";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
   const body = z.object({
     recommendationText: z.string().min(1),
     priority: z.enum(["high", "medium", "low"]).optional(),
   }).parse(req.body);
 
   const created = await prisma.recommendation.create({ data: { visitId, ...body } });
-  logAgent("create_recommendation", { visitId, entityType: "Recommendation", entityId: created.id, payload: body });
-  res.status(201).json(created);
+  const confirmation = spokenConfirmation("create_recommendation", body);
+  const responseBody = { ...created, spoken_confirmation: confirmation };
+
+  await saveIdempotency(clientRequestId, endpoint, visitId, responseBody);
+  logAgent("create_recommendation", { visitId, entityType: "Recommendation", entityId: created.id, payload: body, endpoint, responseStatus: 201, durationMs: Date.now() - start, clientRequestId });
+  res.status(201).json(responseBody);
 }));
 
 // ─── BULK ASSESSMENT ────────────────────────────────────────────────────────────
 
 agentRouter.post("/visits/:id/assessment/bulk", asyncHandler(async (req, res) => {
+  const start = Date.now();
   const visitId = readParam(req, "id");
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/visits/:id/assessment/bulk";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
 
   // Verify visit exists
   const visit = await prisma.visit.findUnique({ where: { id: visitId }, select: { id: true, propertyId: true } });
   if (!visit) {
-    res.status(404).json({ error: "Visit not found" });
+    res.status(404).json(visitNotFoundError());
     return;
   }
 
@@ -406,21 +694,32 @@ agentRouter.post("/visits/:id/assessment/bulk", asyncHandler(async (req, res) =>
     }
   });
 
-  logAgent("bulk_assessment", { visitId, payload: body });
-  res.status(201).json(result);
+  logAgent("bulk_assessment", { visitId, payload: body, endpoint, responseStatus: 201, durationMs: Date.now() - start, clientRequestId });
+
+  const confirmation = spokenConfirmation("bulk_assessment", body);
+  const responseBody = { ...result, spoken_confirmation: confirmation };
+
+  await saveIdempotency(clientRequestId, endpoint, visitId, responseBody);
+  res.status(201).json(responseBody);
 }));
 
 // ─── AI ESTIMATE TRIGGER ────────────────────────────────────────────────────────
 
 agentRouter.post("/visits/:id/ai-estimate/run", asyncHandler(async (req, res) => {
+  const start = Date.now();
   const visitId = readParam(req, "id");
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/visits/:id/ai-estimate/run";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
 
   const visit = await prisma.visit.findUnique({
     where: { id: visitId },
     select: { id: true, propertyId: true, mode: true },
   });
   if (!visit) {
-    res.status(404).json({ error: "Visit not found" });
+    res.status(404).json(visitNotFoundError());
     return;
   }
 
@@ -446,25 +745,111 @@ agentRouter.post("/visits/:id/ai-estimate/run", asyncHandler(async (req, res) =>
     include: { options: true },
   });
 
-  logAgent("create_estimate", { visitId, entityType: "Estimate", entityId: estimate.id });
-  res.status(201).json(full);
+  logAgent("create_estimate", { visitId, entityType: "Estimate", entityId: estimate.id, endpoint, responseStatus: 201, durationMs: Date.now() - start, clientRequestId });
+
+  const confirmation = spokenConfirmation("create_estimate", {});
+  const responseBody = { ...full, spoken_confirmation: confirmation };
+
+  await saveIdempotency(clientRequestId, endpoint, visitId, responseBody);
+  res.status(201).json(responseBody);
+}));
+
+// ─── WALK SUMMARY ──────────────────────────────────────────────────────────────
+
+agentRouter.get("/visits/:id/walk-summary", asyncHandler(async (req, res) => {
+  const visitId = readParam(req, "id");
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    include: {
+      observations: true,
+      findings: true,
+      limitations: true,
+      recommendations: true,
+      property: { include: { systemSnapshot: true } },
+    },
+  });
+
+  if (!visit) {
+    res.status(404).json(visitNotFoundError());
+    return;
+  }
+
+  const deficiencies: string[] = visit.property.systemSnapshot?.deficienciesJson
+    ? JSON.parse(visit.property.systemSnapshot.deficienciesJson)
+    : [];
+
+  const counts = {
+    observations: visit.observations.length,
+    findings: visit.findings.length,
+    deficiencies: deficiencies.length,
+    limitations: visit.limitations.length,
+    recommendations: visit.recommendations.length,
+  };
+
+  // Build highlights from high-confidence findings and deficiencies
+  const highFindings = visit.findings.filter(f => f.confidence === "high");
+  const highlightParts: string[] = [];
+  if (highFindings.length > 0) {
+    const names = highFindings.slice(0, 3).map(f => truncate(f.findingText, 40));
+    highlightParts.push(`${highFindings.length} high-confidence finding${highFindings.length > 1 ? "s" : ""} including ${names.join(" and ")}`);
+  }
+  if (deficiencies.length > 0) {
+    highlightParts.push(`${deficiencies.length} code deficienc${deficiencies.length > 1 ? "ies" : "y"} flagged`);
+  }
+  const highlights = highlightParts.length > 0 ? highlightParts.join(". ") + "." : "No high-priority items flagged.";
+
+  // Build spoken summary
+  const parts: string[] = [];
+  if (counts.observations > 0) parts.push(`${counts.observations} observation${counts.observations > 1 ? "s" : ""}`);
+  if (counts.findings > 0) parts.push(`${counts.findings} finding${counts.findings > 1 ? "s" : ""}`);
+  if (counts.deficiencies > 0) parts.push(`${counts.deficiencies} deficienc${counts.deficiencies > 1 ? "ies" : "y"}`);
+  if (counts.limitations > 0) parts.push(`${counts.limitations} limitation${counts.limitations > 1 ? "s" : ""}`);
+  if (counts.recommendations > 0) parts.push(`${counts.recommendations} recommendation${counts.recommendations > 1 ? "s" : ""}`);
+
+  let spoken_summary = `Walk complete. ${parts.join(", ")} captured.`;
+  if (highFindings.length > 0) {
+    const topConcerns = highFindings.slice(0, 2).map(f => truncate(f.findingText, 40)).join(" and ");
+    spoken_summary += ` Top concern${highFindings.length > 1 ? "s" : ""}: ${topConcerns}, ${highFindings.length > 1 ? "both" : ""} high confidence.`;
+  }
+
+  res.json({ counts, highlights, spoken_summary });
 }));
 
 // ─── OPENAPI SPEC ───────────────────────────────────────────────────────────────
 
 agentRouter.get("/openapi.json", (_req, res) => {
+  const idempotencyHeader = { name: "x-client-request-id", in: "header", required: false, schema: { type: "string" }, description: "Optional — prevents duplicate writes on retry" };
+  const idParam = { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Visit ID or 'active'" };
+  const spokenConfirmField = { type: "string", description: "Short natural-language confirmation for voice readback" };
+  const agentErrorSchema = {
+    type: "object",
+    properties: {
+      error: {
+        type: "object",
+        properties: {
+          code: { type: "string" },
+          message: { type: "string" },
+          spoken_fallback: { type: "string" },
+        },
+      },
+    },
+  };
+
   res.json({
     openapi: "3.0.3",
     info: {
       title: "Red Cedar Agent API",
       description: "REST API for Jerry — the voice/SMS field assistant for job walks",
-      version: "1.0.0",
+      version: "2.0.0",
     },
     servers: [{ url: "https://rceestimator-production.up.railway.app/api/agent" }],
     security: [{ bearerAuth: [] }],
     components: {
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer", description: "AGENT_API_TOKEN" },
+      },
+      schemas: {
+        AgentError: agentErrorSchema,
       },
     },
     paths: {
@@ -474,56 +859,89 @@ agentRouter.get("/openapi.json", (_req, res) => {
           responses: { "200": { description: "Full visit object" }, "404": { description: "No active visit" } },
         },
         post: {
-          summary: "Set the active visit by ID or address search",
+          summary: "Set active visit by natural-language query (name, address, 'current', or visit ID)",
           requestBody: {
             required: true,
             content: {
               "application/json": {
                 schema: {
-                  oneOf: [
-                    { type: "object", properties: { visitId: { type: "string" } }, required: ["visitId"] },
-                    { type: "object", properties: { address: { type: "string", minLength: 3 } }, required: ["address"] },
-                  ],
+                  type: "object",
+                  properties: { query: { type: "string", minLength: 1, description: "Customer name, address, visit ID, or 'current'" } },
+                  required: ["query"],
                 },
               },
             },
           },
-          responses: { "200": { description: "Full visit object" }, "404": { description: "No match found" } },
+          responses: {
+            "200": { description: "Full visit object with spoken_confirmation, or disambiguation array" },
+            "404": { description: "No match found" },
+            "422": { description: "Validation error", content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } } },
+          },
+        },
+      },
+      "/active-visit/clear": {
+        post: {
+          summary: "Clear the active visit",
+          responses: { "200": { description: "{ cleared: true, spoken_confirmation }" } },
         },
       },
       "/visits/{id}": {
         get: {
           summary: "Get full visit state",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" }, description: "Visit ID or 'active'" }],
+          parameters: [idParam],
           responses: { "200": { description: "Full visit object" }, "404": { description: "Not found" } },
+        },
+      },
+      "/visits/{id}/walk-summary": {
+        get: {
+          summary: "Get walk summary with counts, highlights, and spoken summary",
+          parameters: [idParam],
+          responses: {
+            "200": {
+              description: "Walk summary",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      counts: { type: "object", properties: { observations: { type: "integer" }, findings: { type: "integer" }, deficiencies: { type: "integer" }, limitations: { type: "integer" }, recommendations: { type: "integer" } } },
+                      highlights: { type: "string" },
+                      spoken_summary: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+            "404": { description: "Not found" },
+          },
         },
       },
       "/visits/{id}/customer-request": {
         patch: {
           summary: "Upsert customer request",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          parameters: [idParam, idempotencyHeader],
           requestBody: {
             required: true,
             content: { "application/json": { schema: { type: "object", properties: { requestText: { type: "string" }, urgency: { type: "string" } }, required: ["requestText"] } } },
           },
-          responses: { "200": { description: "Updated customer request" } },
+          responses: { "200": { description: "Updated customer request with spoken_confirmation" } },
         },
       },
       "/visits/{id}/observations": {
         post: {
           summary: "Add an observation",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          parameters: [idParam, idempotencyHeader],
           requestBody: {
             required: true,
             content: { "application/json": { schema: { type: "object", properties: { observationText: { type: "string" }, location: { type: "string" } }, required: ["observationText"] } } },
           },
-          responses: { "201": { description: "Created observation" } },
+          responses: { "201": { description: "Created observation with spoken_confirmation" } },
         },
       },
       "/visits/{id}/system-snapshot": {
         patch: {
           summary: "Update system snapshot (service, panel, grounding, wiring)",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          parameters: [idParam, idempotencyHeader],
           requestBody: {
             required: true,
             content: {
@@ -540,24 +958,24 @@ agentRouter.get("/openapi.json", (_req, res) => {
               },
             },
           },
-          responses: { "200": { description: "Updated snapshot" } },
+          responses: { "200": { description: "Updated snapshot with spoken_confirmation" } },
         },
       },
       "/visits/{id}/deficiencies": {
         post: {
           summary: "Append a deficiency",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          parameters: [idParam, idempotencyHeader],
           requestBody: {
             required: true,
             content: { "application/json": { schema: { type: "object", properties: { deficiency: { type: "string" } }, required: ["deficiency"] } } },
           },
-          responses: { "201": { description: "Updated deficiencies array" } },
+          responses: { "201": { description: "Updated deficiencies array with spoken_confirmation" } },
         },
       },
       "/visits/{id}/findings": {
         post: {
           summary: "Add a finding",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          parameters: [idParam, idempotencyHeader],
           requestBody: {
             required: true,
             content: {
@@ -570,24 +988,24 @@ agentRouter.get("/openapi.json", (_req, res) => {
               },
             },
           },
-          responses: { "201": { description: "Created finding" } },
+          responses: { "201": { description: "Created finding with spoken_confirmation" } },
         },
       },
       "/visits/{id}/limitations": {
         post: {
           summary: "Add a limitation",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          parameters: [idParam, idempotencyHeader],
           requestBody: {
             required: true,
             content: { "application/json": { schema: { type: "object", properties: { limitationText: { type: "string" } }, required: ["limitationText"] } } },
           },
-          responses: { "201": { description: "Created limitation" } },
+          responses: { "201": { description: "Created limitation with spoken_confirmation" } },
         },
       },
       "/visits/{id}/recommendations": {
         post: {
           summary: "Add a recommendation",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          parameters: [idParam, idempotencyHeader],
           requestBody: {
             required: true,
             content: {
@@ -600,13 +1018,13 @@ agentRouter.get("/openapi.json", (_req, res) => {
               },
             },
           },
-          responses: { "201": { description: "Created recommendation" } },
+          responses: { "201": { description: "Created recommendation with spoken_confirmation" } },
         },
       },
       "/visits/{id}/assessment/bulk": {
         post: {
           summary: "Bulk update assessment — append multiple items at once",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          parameters: [idParam, idempotencyHeader],
           requestBody: {
             required: true,
             content: {
@@ -625,14 +1043,14 @@ agentRouter.get("/openapi.json", (_req, res) => {
               },
             },
           },
-          responses: { "201": { description: "Created records" } },
+          responses: { "201": { description: "Created records with spoken_confirmation" } },
         },
       },
       "/visits/{id}/ai-estimate/run": {
         post: {
           summary: "Create a new estimate for this visit",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
-          responses: { "201": { description: "Created estimate with default option" } },
+          parameters: [idParam, idempotencyHeader],
+          responses: { "201": { description: "Created estimate with default option and spoken_confirmation" } },
         },
       },
     },
