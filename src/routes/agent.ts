@@ -1,6 +1,7 @@
 import express from "express";
 import { z, ZodError } from "zod";
 import { prisma } from "../lib/prisma";
+import { sendSms, KYLE_PHONE } from "../services/twilio";
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────────
 
@@ -815,6 +816,91 @@ agentRouter.get("/visits/:id/walk-summary", asyncHandler(async (req, res) => {
   res.json({ counts, highlights, spoken_summary });
 }));
 
+// ─── SAVANNAH — OWNER QUESTION ─────────────────────────────────────────────────
+
+function normalizePhone(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return `+${digits}`;
+}
+
+agentRouter.post("/savannah/owner-question", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/savannah/owner-question";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const body = z.object({
+    customer_name: z.string().min(1),
+    callback_phone: z.string().min(7),
+    question: z.string().min(1),
+    context: z.string().optional(),
+  }).parse(req.body);
+
+  const phone = normalizePhone(body.callback_phone);
+
+  // Upsert customer by phone
+  let customer = await prisma.customer.findFirst({ where: { phone } });
+  if (!customer) {
+    customer = await prisma.customer.create({
+      data: { name: body.customer_name, phone },
+    });
+  }
+
+  // Create lead
+  const lead = await prisma.lead.create({
+    data: {
+      name: body.customer_name,
+      phone,
+      source: "savannah_text",
+      status: "new",
+      leadStatus: "new",
+      notes: body.question,
+      customerId: customer.id,
+    },
+  });
+
+  // Build SMS
+  let smsBody = `\u{1F4DE} Question from ${body.customer_name} (${phone}):\n\n"${body.question}"`;
+  if (body.context) smsBody += `\n\n${body.context}`;
+  smsBody += "\n\nReply directly to them.";
+
+  const smsResult = await sendSms(KYLE_PHONE, smsBody);
+
+  if (!smsResult) {
+    res.status(502).json({
+      error: {
+        code: "SMS_FAILED",
+        message: "Failed to send SMS to owner",
+        spoken_fallback: "I wasn't able to text Kyle right now. Would you like to leave a voicemail or try calling back later?",
+      },
+    });
+    return;
+  }
+
+  const responseBody = {
+    success: true,
+    leadId: lead.id,
+    spoken_confirmation: "Got it \u2014 texted Kyle. He'll reach out when he can.",
+  };
+
+  await saveIdempotency(clientRequestId, endpoint, undefined, responseBody);
+  logAgent("savannah_owner_question", {
+    entityType: "Lead",
+    entityId: lead.id,
+    payload: { customer_name: body.customer_name, phone, question: body.question },
+    endpoint,
+    responseStatus: 200,
+    durationMs: Date.now() - start,
+    clientRequestId,
+  });
+
+  res.json(responseBody);
+}));
+
 // ─── OPENAPI SPEC ───────────────────────────────────────────────────────────────
 
 agentRouter.get("/openapi.json", (_req, res) => {
@@ -839,8 +925,8 @@ agentRouter.get("/openapi.json", (_req, res) => {
     openapi: "3.0.3",
     info: {
       title: "Red Cedar Agent API",
-      description: "REST API for Jerry — the voice/SMS field assistant for job walks",
-      version: "2.0.0",
+      description: "REST API for Jerry and Savannah — voice/SMS agents for Red Cedar Electric",
+      version: "2.1.0",
     },
     servers: [{ url: "https://rceestimator-production.up.railway.app/api/agent" }],
     security: [{ bearerAuth: [] }],
@@ -1051,6 +1137,34 @@ agentRouter.get("/openapi.json", (_req, res) => {
           summary: "Create a new estimate for this visit",
           parameters: [idParam, idempotencyHeader],
           responses: { "201": { description: "Created estimate with default option and spoken_confirmation" } },
+        },
+      },
+      "/savannah/owner-question": {
+        post: {
+          summary: "Text Kyle a customer question via SMS — used by Savannah phone agent",
+          parameters: [idempotencyHeader],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    customer_name: { type: "string", description: "Caller's name" },
+                    callback_phone: { type: "string", description: "Caller's phone number" },
+                    question: { type: "string", description: "The question to relay to Kyle" },
+                    context: { type: "string", description: "Optional extra context from the call" },
+                  },
+                  required: ["customer_name", "callback_phone", "question"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "{ success, leadId, spoken_confirmation }" },
+            "502": { description: "SMS delivery failed", content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } } },
+            "422": { description: "Validation error", content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } } },
+          },
         },
       },
     },
