@@ -901,6 +901,61 @@ agentRouter.post("/savannah/owner-question", asyncHandler(async (req, res) => {
   res.json(responseBody);
 }));
 
+// ─── SAVANNAH — SEND CONFIRMATION TO CUSTOMER ──────────────────────────────────
+
+agentRouter.post("/savannah/send-confirmation", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/savannah/send-confirmation";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const body = z.object({
+    customer_name: z.string().min(1),
+    callback_phone: z.string().min(7),
+    context: z.string().optional(),
+  }).parse(req.body);
+
+  const phone = normalizePhone(body.callback_phone);
+
+  let smsBody: string;
+  if (body.context) {
+    smsBody = `Thanks for calling Red Cedar Electric! Regarding your ${body.context} — Kyle will reach out to you at (731) 462-0443.\n\nReply STOP to opt out of texts.`;
+  } else {
+    smsBody = `Thanks for calling Red Cedar Electric! Kyle will reach out to you at (731) 462-0443.\n\nReply STOP to opt out of texts.`;
+  }
+
+  const smsResult = await sendSms(phone, smsBody);
+
+  if (!smsResult) {
+    res.status(502).json({
+      error: {
+        code: "SMS_FAILED",
+        message: "Failed to send confirmation SMS to customer",
+        spoken_fallback: "I wasn't able to send that text right now. You can always reach us at 731-462-0443.",
+      },
+    });
+    return;
+  }
+
+  const responseBody = {
+    success: true,
+    spoken_confirmation: "Sent! They'll get a text shortly.",
+  };
+
+  await saveIdempotency(clientRequestId, endpoint, undefined, responseBody);
+  logAgent("savannah_send_confirmation", {
+    payload: { customer_name: body.customer_name, phone, context: body.context },
+    endpoint,
+    responseStatus: 200,
+    durationMs: Date.now() - start,
+    clientRequestId,
+  });
+
+  res.json(responseBody);
+}));
+
 // ─── OPENAPI SPEC ───────────────────────────────────────────────────────────────
 
 agentRouter.get("/openapi.json", (_req, res) => {
@@ -926,7 +981,7 @@ agentRouter.get("/openapi.json", (_req, res) => {
     info: {
       title: "Red Cedar Agent API",
       description: "REST API for Jerry and Savannah — voice/SMS agents for Red Cedar Electric",
-      version: "2.1.0",
+      version: "2.2.0",
     },
     servers: [{ url: "https://rceestimator-production.up.railway.app/api/agent" }],
     security: [{ bearerAuth: [] }],
@@ -1162,6 +1217,33 @@ agentRouter.get("/openapi.json", (_req, res) => {
           },
           responses: {
             "200": { description: "{ success, leadId, spoken_confirmation }" },
+            "502": { description: "SMS delivery failed", content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } } },
+            "422": { description: "Validation error", content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } } },
+          },
+        },
+      },
+      "/savannah/send-confirmation": {
+        post: {
+          summary: "Send confirmation SMS to the customer — used by Savannah after verbal consent",
+          parameters: [idempotencyHeader],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    customer_name: { type: "string", description: "Caller's name" },
+                    callback_phone: { type: "string", description: "Caller's phone number — SMS is sent here" },
+                    context: { type: "string", description: "Optional context, e.g. 'panel upgrade estimate'" },
+                  },
+                  required: ["customer_name", "callback_phone"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "{ success, spoken_confirmation }" },
             "502": { description: "SMS delivery failed", content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } } },
             "422": { description: "Validation error", content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } } },
           },
