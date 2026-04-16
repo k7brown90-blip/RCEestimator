@@ -227,6 +227,64 @@ export async function sendCancellationEmail(input: CancellationInput): Promise<b
   }
 }
 
+// ─── PROPOSAL EMAIL ──────────────────────────────────────────────────────────
+
+interface ProposalEmailInput {
+  customerName: string;
+  customerEmail: string;
+  serviceAddress: string;
+  jobDescription: string;
+  signUrl: string;
+}
+
+export async function sendProposalEmail(input: ProposalEmailInput): Promise<boolean> {
+  const mail = getTransporter();
+  if (!mail) {
+    console.warn("[ProposalEmail] Gmail not configured — skipping.");
+    return false;
+  }
+
+  const html = `
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
+      <div style="background:#1a5c2e;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0;">
+        <h1 style="margin:0;font-size:18px;">Your Proposal from Red Cedar Electric</h1>
+      </div>
+      <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;">
+        <p style="font-size:15px;">Hi ${input.customerName},</p>
+        <p style="font-size:14px;">Thank you for choosing Red Cedar Electric. Your proposal is ready for review.</p>
+        <div style="background:#f7f7f7;border:1px solid #e0e0e0;border-radius:8px;padding:16px;margin:16px 0;">
+          <p style="margin:0 0 6px;font-size:13px;color:#888;">Service Address</p>
+          <p style="margin:0;font-weight:600;">${input.serviceAddress}</p>
+          <p style="margin:12px 0 6px;font-size:13px;color:#888;">Description</p>
+          <p style="margin:0;">${input.jobDescription}</p>
+        </div>
+        <div style="text-align:center;margin:24px 0;">
+          <a href="${input.signUrl}" style="display:inline-block;background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 36px;font-size:16px;font-weight:600;border-radius:6px;">
+            Review &amp; Sign Your Proposal
+          </a>
+        </div>
+        <p style="font-size:13px;color:#888;">If you have any questions, feel free to call or reply to this email.</p>
+      </div>
+      <div style="padding:12px 24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
+        ${BRANDED_FOOTER}
+      </div>
+    </div>`;
+
+  try {
+    await mail.transporter.sendMail({
+      from: mail.from,
+      to: input.customerEmail,
+      subject: "Your Proposal from Red Cedar Electric — Review & Sign",
+      html,
+    });
+    console.log(`[ProposalEmail] Sent to ${input.customerEmail}`);
+    return true;
+  } catch (err) {
+    console.error("[ProposalEmail] Failed:", err);
+    return false;
+  }
+}
+
 // ─── KYLE NOTIFICATION EMAIL ──────────────────────────────────────────────────
 
 export async function sendKyleNotificationEmail(subject: string, body: string): Promise<boolean> {

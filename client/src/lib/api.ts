@@ -67,6 +67,9 @@ export const api = {
     postalCode: string;
     notes?: string;
   }) => request<Property>("/properties", { method: "POST", body: JSON.stringify(input) }),
+  updateProperty: (propertyId: string, input: { name?: string; addressLine1?: string; city?: string; state?: string; postalCode?: string; notes?: string }) =>
+    request<Property>(`/properties/${propertyId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteProperty: (propertyId: string) => request<void>(`/properties/${propertyId}`, { method: "DELETE" }),
   updateSnapshot: (propertyId: string, input: {
     serviceSummary?: string;
     panelSummary?: string;
@@ -77,6 +80,9 @@ export const api = {
   visits: () => request<Visit[]>("/visits"),
   visit: (visitId: string) => request<Visit>(`/visits/${visitId}`),
   createVisit: (input: { propertyId: string; customerId: string; mode: string; purpose?: string; notes?: string }) => request<Visit>("/visits", { method: "POST", body: JSON.stringify(input) }),
+  updateVisit: (visitId: string, input: { mode?: string; purpose?: string; jobType?: string; notes?: string }) =>
+    request<Visit>(`/visits/${visitId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteVisit: (visitId: string) => request<void>(`/visits/${visitId}`, { method: "DELETE" }),
   upsertCustomerRequest: (visitId: string, input: { requestText: string; urgency?: string }) => request(`/visits/${visitId}/customer-request`, { method: "POST", body: JSON.stringify(input) }),
   updateCustomerRequest: (visitId: string, input: { requestText: string; urgency?: string }) => request(`/visits/${visitId}/customer-request`, { method: "PATCH", body: JSON.stringify(input) }),
   addObservation: (visitId: string, input: { observationText: string; location?: string }) => request(`/visits/${visitId}/observations`, { method: "POST", body: JSON.stringify(input) }),
@@ -118,6 +124,9 @@ export const api = {
   upsertPermitStatus: (estimateId: string, input: { required: boolean; permitType?: string; status: string; permitNumber?: string; cost?: number }) => request(`/estimates/${estimateId}/permit-status`, { method: "PUT", body: JSON.stringify(input) }),
   upsertInspectionStatus: (estimateId: string, input: { inspectionType: string; status: string; notes?: string; corrections?: string[] }) => request(`/estimates/${estimateId}/inspection-status`, { method: "PUT", body: JSON.stringify(input) }),
   generateProposal: (estimateId: string) => request<{ filePath: string; deliveryId: string }>(`/estimates/${estimateId}/proposals`, { method: "POST" }),
+  sendProposal: (estimateId: string) => request<{ signUrl: string; documentId: string; emailSent: boolean }>(`/estimates/${estimateId}/send-proposal`, { method: "POST" }),
+  generateWorkOrder: (estimateId: string) => request<{ filePath: string; documentId: string }>(`/estimates/${estimateId}/work-order`, { method: "POST" }),
+  generateMaterialListDoc: (estimateId: string) => request<{ filePath: string; documentId: string }>(`/estimates/${estimateId}/material-list`, { method: "POST" }),
   materialList: (optionId: string) => request<{ optionLabel: string; items: Array<{ code: string; description: string; quantity: number; unit: string; unitCost: number }> }>(`/options/${optionId}/materials`),
   recordSignature: (estimateId: string, input: { signerName: string; signerEmail?: string; signatureData: string; consentText: string }) => request<{ id: string }>(`/estimates/${estimateId}/signatures`, { method: "POST", body: JSON.stringify(input) }),
   acceptProposal: (estimateId: string, input: { optionId: string; signatureId?: string; notes?: string; status?: "accepted" | "declined" }) => request(`/estimates/${estimateId}/acceptance`, { method: "POST", body: JSON.stringify(input) }),
@@ -191,8 +200,10 @@ export const api = {
     const suffix = status ? `?status=${status}` : "";
     return request<Lead[]>(`/leads${suffix}`);
   },
-  updateLead: (leadId: string, input: { status?: string; notes?: string }) =>
+  updateLead: (leadId: string, input: { name?: string; email?: string; phone?: string; address?: string; jobType?: string; status?: string; notes?: string }) =>
     request<Lead>(`/leads/${leadId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteLead: (leadId: string) =>
+    request<void>(`/leads/${leadId}`, { method: "DELETE" }),
   convertLead: (leadId: string) =>
     request<{ customer: Customer; property: Property | null; visit: Visit | null; lead: Lead }>(`/leads/${leadId}/convert`, { method: "PATCH" }),
 };

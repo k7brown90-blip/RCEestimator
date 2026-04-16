@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { AssemblyPicker } from "../components/AssemblyPicker";
 import { AtomicItemsSection } from "../components/AtomicItemsSection";
 import { ServiceDiagnosticFlow } from "../components/ServiceDiagnosticFlow";
@@ -62,6 +62,7 @@ const CHANGE_ORDER_TYPES = [
 
 export function VisitWorkspacePage() {
   const { visitId = "" } = useParams();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabKey>("assessment");
   const [showPicker, setShowPicker] = useState(false);
@@ -69,6 +70,11 @@ export function VisitWorkspacePage() {
   const [activeWorkflow, setActiveWorkflow] = useState<"none" | "service" | "specific_request" | "remodel" | "new_construction">("none");
   const [showMaterialList, setShowMaterialList] = useState(false);
   const [isBuildingOptionScope, setIsBuildingOptionScope] = useState(false);
+  const [editingVisit, setEditingVisit] = useState(false);
+  const [visitEditForm, setVisitEditForm] = useState({ mode: "", purpose: "", jobType: "", notes: "" });
+  const [signUrl, setSignUrl] = useState<string | null>(null);
+  const [workOrderDocId, setWorkOrderDocId] = useState<string | null>(null);
+  const [materialListDocId, setMaterialListDocId] = useState<string | null>(null);
 
   const { data: visit, isLoading } = useQuery({ queryKey: ["visit", visitId], queryFn: () => api.visit(visitId), enabled: Boolean(visitId) });
   const estimateId = visit?.estimates?.[0]?.id;
@@ -260,6 +266,28 @@ export function VisitWorkspacePage() {
   const updateRecommendationMutation = useMutation({ mutationFn: (input: { id: string; recommendationText: string; priority?: string }) => api.updateRecommendation(visitId, input.id, { recommendationText: input.recommendationText, priority: input.priority }), onSuccess: () => { setEditingRecommendationId(null); refreshVisit(); } });
   const deleteRecommendationMutation = useMutation({ mutationFn: (recommendationId: string) => api.deleteRecommendation(visitId, recommendationId), onSuccess: refreshVisit });
 
+  const updateVisitMutation = useMutation({
+    mutationFn: () => api.updateVisit(visitId, visitEditForm),
+    onSuccess: () => { setEditingVisit(false); refreshVisit(); },
+  });
+  const deleteVisitMutation = useMutation({
+    mutationFn: () => api.deleteVisit(visitId),
+    onSuccess: () => navigate("/"),
+  });
+
+  const hasAcceptedEstimate = estimate?.status === "accepted";
+
+  function startEditVisit() {
+    if (!visit) return;
+    setVisitEditForm({
+      mode: visit.mode ?? "",
+      purpose: visit.purpose ?? "",
+      jobType: visit.jobType ?? "",
+      notes: visit.notes ?? "",
+    });
+    setEditingVisit(true);
+  }
+
   const createEstimateMutation = useMutation({
     mutationFn: () => {
       if (!visit?.propertyId) throw new Error("Visit property not found");
@@ -314,6 +342,9 @@ export function VisitWorkspacePage() {
   const inspectionMutation = useMutation({ mutationFn: () => api.upsertInspectionStatus(String(estimateId), { inspectionType, status: inspectionStatus, notes: inspectionNotes || undefined }), onSuccess: refreshVisit });
 
   const generateProposalMutation = useMutation({ mutationFn: () => api.generateProposal(String(estimateId)), onSuccess: refreshVisit });
+  const sendProposalMutation = useMutation({ mutationFn: () => api.sendProposal(String(estimateId)), onSuccess: (data) => { setSignUrl(data.signUrl); refreshVisit(); } });
+  const generateWorkOrderMutation = useMutation({ mutationFn: () => api.generateWorkOrder(String(estimateId)), onSuccess: (data) => { setWorkOrderDocId(data.documentId); } });
+  const generateMaterialListDocMutation = useMutation({ mutationFn: () => api.generateMaterialListDoc(String(estimateId)), onSuccess: (data) => { setMaterialListDocId(data.documentId); } });
   const deleteEstimateMutation = useMutation({
     mutationFn: () => api.deleteEstimate(String(estimateId)),
     onSuccess: () => {
@@ -390,8 +421,52 @@ export function VisitWorkspacePage() {
       <PageHeader
         title={visit.property?.addressLine1 ?? "Visit"}
         subtitle={`${shortDate(visit.visitDate)} | ${visit.mode.replaceAll("_", " ")} | ${visit.customer?.name ?? ""}`}
-        actions={status ? <StatusBadge status={status} /> : <span className="text-xs text-rce-soft">No estimate</span>}
+        actions={
+          <div className="flex items-center gap-2">
+            {status ? <StatusBadge status={status} /> : <span className="text-xs text-rce-soft">No estimate</span>}
+            {!hasAcceptedEstimate && (
+              <>
+                <button type="button" className="rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100" onClick={startEditVisit}>Edit</button>
+                <button type="button" className="rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100" disabled={deleteVisitMutation.isPending} onClick={() => { if (window.confirm("Delete this visit and all its data? This cannot be undone.")) deleteVisitMutation.mutate(); }}>Delete</button>
+              </>
+            )}
+          </div>
+        }
       />
+
+      {editingVisit && (
+        <form className="card mb-4 space-y-3 p-4" onSubmit={(e) => { e.preventDefault(); updateVisitMutation.mutate(); }}>
+          <h3 className="text-sm font-semibold">Edit Visit</h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-rce-soft">Mode</label>
+              <select className="input w-full" value={visitEditForm.mode} onChange={(e) => setVisitEditForm({ ...visitEditForm, mode: e.target.value })}>
+                <option value="assessment">Assessment</option>
+                <option value="inspection">Inspection</option>
+                <option value="troubleshooting">Troubleshooting</option>
+                <option value="service_call">Service Call</option>
+                <option value="follow_up">Follow Up</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-rce-soft">Job Type</label>
+              <input className="input w-full" value={visitEditForm.jobType} onChange={(e) => setVisitEditForm({ ...visitEditForm, jobType: e.target.value })} />
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-rce-soft">Purpose</label>
+            <input className="input w-full" value={visitEditForm.purpose} onChange={(e) => setVisitEditForm({ ...visitEditForm, purpose: e.target.value })} />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-rce-soft">Notes</label>
+            <textarea className="input w-full" rows={2} value={visitEditForm.notes} onChange={(e) => setVisitEditForm({ ...visitEditForm, notes: e.target.value })} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600" onClick={() => setEditingVisit(false)}>Cancel</button>
+            <button type="submit" className="btn btn-primary text-xs" disabled={updateVisitMutation.isPending}>Save</button>
+          </div>
+        </form>
+      )}
 
       <div className="mb-5 flex flex-wrap gap-2 rounded-2xl border border-rce-border/70 bg-rce-surface/85 p-2 shadow-card backdrop-blur-sm">
         {TABS.map((tab) => (
@@ -1245,10 +1320,14 @@ export function VisitWorkspacePage() {
                     <button
                       className="btn btn-primary"
                       type="button"
-                      disabled={estimate.proposalDeliveries.length === 0}
-                      onClick={() => changeStatusMutation.mutate("sent")}
+                      disabled={estimate.proposalDeliveries.length === 0 || sendProposalMutation.isPending}
+                      onClick={() => {
+                        if (window.confirm("This will email the proposal to the customer with a link to review and sign. Continue?")) {
+                          sendProposalMutation.mutate();
+                        }
+                      }}
                     >
-                      Send to Customer (Email stub)
+                      {sendProposalMutation.isPending ? "Sending..." : "Send to Customer"}
                     </button>
                   ) : null}
                 </div>
@@ -1257,43 +1336,39 @@ export function VisitWorkspacePage() {
 
               {estimate.status === "sent" ? (
                 <article className="card p-4">
-                  <h3 className="mb-3 text-lg font-semibold">Record Signature and Acceptance</h3>
-                  <form
-                    className="grid gap-3 md:grid-cols-2"
-                    onSubmit={(event: FormEvent<HTMLFormElement>) => {
-                      event.preventDefault();
-                      acceptMutation.mutate("accepted");
-                    }}
-                  >
-                    <label className="text-sm font-medium md:col-span-2">
-                      Accepted Option
-                      <select className="field mt-1" value={acceptOptionId} onChange={(event) => setAcceptOptionId(event.target.value)}>
-                        {estimate.options.map((option) => (
-                          <option key={option.id} value={option.id}>{option.optionLabel} - {money(option.totalCost)}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="text-sm font-medium">
-                      Customer Name
-                      <input className="field mt-1" value={signatureName} onChange={(event) => setSignatureName(event.target.value)} required />
-                    </label>
-                    <label className="text-sm font-medium">
-                      Customer Email
-                      <input className="field mt-1" value={signatureEmail} onChange={(event) => setSignatureEmail(event.target.value)} />
-                    </label>
-                    <label className="text-sm font-medium md:col-span-2">
-                      Signature
-                      <textarea className="field mt-1 min-h-24" value={signatureName ? `Signed by ${signatureName}` : ""} readOnly />
-                    </label>
-                    <div className="md:col-span-2 flex gap-2">
-                      <button className="btn btn-primary" type="submit" disabled={acceptMutation.isPending}>Confirm Acceptance</button>
-                      <button className="btn btn-danger" type="button" onClick={() => acceptMutation.mutate("declined")} disabled={acceptMutation.isPending}>Mark Declined</button>
+                  <h3 className="mb-3 text-lg font-semibold">Customer Signature</h3>
+                  {signUrl ? (
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+                      <p className="text-sm font-medium text-blue-800">Proposal sent to customer. Sign page:</p>
+                      <a href={signUrl} target="_blank" rel="noopener noreferrer" className="mt-1 block text-sm text-blue-600 underline break-all">{signUrl}</a>
                     </div>
-                  </form>
+                  ) : (
+                    <p className="text-sm text-rce-muted">Waiting for customer to sign via the link sent in their email.</p>
+                  )}
+                  <div className="mt-4 flex gap-2">
+                    <button className="btn btn-danger" type="button" onClick={() => acceptMutation.mutate("declined")} disabled={acceptMutation.isPending}>Mark Declined</button>
+                  </div>
                 </article>
               ) : null}
 
               {estimate.status === "accepted" ? (
+                <>
+                <article className="card p-4">
+                  <h3 className="mb-3 text-lg font-semibold">Work Order &amp; Material List</h3>
+                  <div className="flex flex-wrap gap-3">
+                    <button className="btn btn-primary" type="button" disabled={generateWorkOrderMutation.isPending} onClick={() => generateWorkOrderMutation.mutate()}>
+                      {generateWorkOrderMutation.isPending ? "Generating..." : "Generate Work Order"}
+                    </button>
+                    <button className="btn btn-primary" type="button" disabled={generateMaterialListDocMutation.isPending} onClick={() => generateMaterialListDocMutation.mutate()}>
+                      {generateMaterialListDocMutation.isPending ? "Generating..." : "Generate Material List"}
+                    </button>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-3">
+                    {workOrderDocId && <a className="btn btn-secondary inline-flex items-center" href={`/api/documents/${workOrderDocId}/pdf`} target="_blank" rel="noopener noreferrer">Download Work Order</a>}
+                    {materialListDocId && <a className="btn btn-secondary inline-flex items-center" href={`/api/documents/${materialListDocId}/pdf`} target="_blank" rel="noopener noreferrer">Download Material List</a>}
+                  </div>
+                </article>
+
                 <article className="card p-4">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-lg font-semibold">Create Change Order</h3>
@@ -1367,6 +1442,7 @@ export function VisitWorkspacePage() {
                     ))}
                   </div>
                 </article>
+                </>
               ) : null}
             </>
           )}

@@ -14,6 +14,15 @@ const MODES = [
   { value: "maintenance", label: "Maintenance" },
 ];
 
+const STATUS_FILTERS: Array<{ value: string; label: string }> = [
+  { value: "", label: "All" },
+  { value: "draft", label: "Draft" },
+  { value: "review", label: "Review" },
+  { value: "sent", label: "Sent" },
+  { value: "accepted", label: "Accepted" },
+  { value: "no_estimate", label: "No Estimate" },
+];
+
 export function JobsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -23,6 +32,14 @@ export function JobsPage() {
   const [propertyId, setPropertyId] = useState("");
   const [mode, setMode] = useState("service_diagnostic");
   const [purpose, setPurpose] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+
+  const filteredJobs = statusFilter
+    ? jobs.filter((job) => {
+        if (statusFilter === "no_estimate") return !job.estimate;
+        return job.estimate?.status === statusFilter;
+      })
+    : jobs;
 
   const createVisit = useMutation({
     mutationFn: api.createVisit,
@@ -89,8 +106,25 @@ export function JobsPage() {
       {isLoading ? <p className="text-sm text-rce-muted">Loading jobs...</p> : null}
       {error ? <p className="text-sm text-red-500">Error loading jobs: {error.message}</p> : null}
 
+      <div className="mb-5 flex flex-wrap gap-2">
+        {STATUS_FILTERS.map((f) => (
+          <button
+            key={f.value}
+            type="button"
+            onClick={() => setStatusFilter(f.value)}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+              statusFilter === f.value
+                ? "bg-rce-accent text-white"
+                : "bg-rce-border/40 text-rce-muted hover:bg-rce-border"
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
       <section className="space-y-3">
-        {jobs.map((job) => (
+        {filteredJobs.map((job) => (
           <Link key={job.visitId} to={`/visits/${job.visitId}`} className="card block p-4 transition hover:border-rce-accent">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-lg font-semibold">{job.property.addressLine1} - {job.customer.name}</h2>

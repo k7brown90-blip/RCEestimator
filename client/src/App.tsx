@@ -7,7 +7,6 @@ import { LeadsPage } from "./pages/LeadsPage";
 import { PinLoginPage } from "./pages/PinLoginPage";
 import { PropertyDetailPage } from "./pages/PropertyDetailPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { TakeoffPage } from "./pages/TakeoffPage";
 import { VisitWorkspacePage } from "./pages/VisitWorkspacePage";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -36,7 +35,6 @@ function App() {
                 <Route path="/customers/:customerId" element={<CustomerDetailPage />} />
                 <Route path="/properties/:propertyId" element={<PropertyDetailPage />} />
                 <Route path="/visits/:visitId" element={<VisitWorkspacePage />} />
-                <Route path="/takeoff" element={<TakeoffPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
             </AppShell>

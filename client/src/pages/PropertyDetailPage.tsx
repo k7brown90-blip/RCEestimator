@@ -60,6 +60,33 @@ export function PropertyDetailPage() {
     },
   });
 
+  const [editingProperty, setEditingProperty] = useState(false);
+  const [propertyForm, setPropertyForm] = useState({ name: "", addressLine1: "", city: "", state: "", postalCode: "", notes: "" });
+
+  const updatePropertyMutation = useMutation({
+    mutationFn: () => api.updateProperty(propertyId, propertyForm),
+    onSuccess: () => { setEditingProperty(false); queryClient.invalidateQueries({ queryKey: ["property", propertyId] }); },
+  });
+  const deletePropertyMutation = useMutation({
+    mutationFn: () => api.deleteProperty(propertyId),
+    onSuccess: () => navigate(`/customers/${property?.customerId}`),
+  });
+
+  function startEditProperty() {
+    if (!property) return;
+    setPropertyForm({
+      name: property.name ?? "",
+      addressLine1: property.addressLine1 ?? "",
+      city: property.city ?? "",
+      state: property.state ?? "",
+      postalCode: property.postalCode ?? "",
+      notes: property.notes ?? "",
+    });
+    setEditingProperty(true);
+  }
+
+  const hasVisits = (property?.visits?.length ?? 0) > 0;
+
   function submitVisit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!property) return;
@@ -83,7 +110,57 @@ export function PropertyDetailPage() {
 
   return (
     <div>
-      <PageHeader title={property.addressLine1} subtitle={`${property.city}, ${property.state} ${property.postalCode}`} actions={<Link className="btn btn-secondary" to={`/customers/${property.customerId}`}>Back to Customer</Link>} />
+      <PageHeader
+        title={property.addressLine1}
+        subtitle={`${property.city}, ${property.state} ${property.postalCode}`}
+        actions={
+          <div className="flex items-center gap-2">
+            <Link className="btn btn-secondary" to={`/customers/${property.customerId}`}>Back to Customer</Link>
+            <button type="button" className="rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100" onClick={startEditProperty}>Edit</button>
+            {!hasVisits && (
+              <button type="button" className="rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100" disabled={deletePropertyMutation.isPending} onClick={() => { if (window.confirm("Delete this property? This cannot be undone.")) deletePropertyMutation.mutate(); }}>Delete</button>
+            )}
+          </div>
+        }
+      />
+
+      {editingProperty && (
+        <form className="card mb-4 space-y-3 p-4" onSubmit={(e) => { e.preventDefault(); updatePropertyMutation.mutate(); }}>
+          <h3 className="text-sm font-semibold">Edit Property</h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-rce-soft">Name</label>
+              <input className="input w-full" value={propertyForm.name} onChange={(e) => setPropertyForm({ ...propertyForm, name: e.target.value })} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-rce-soft">Address</label>
+              <input className="input w-full" value={propertyForm.addressLine1} onChange={(e) => setPropertyForm({ ...propertyForm, addressLine1: e.target.value })} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-rce-soft">City</label>
+              <input className="input w-full" value={propertyForm.city} onChange={(e) => setPropertyForm({ ...propertyForm, city: e.target.value })} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-rce-soft">State</label>
+                <input className="input w-full" value={propertyForm.state} onChange={(e) => setPropertyForm({ ...propertyForm, state: e.target.value })} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-rce-soft">Zip</label>
+                <input className="input w-full" value={propertyForm.postalCode} onChange={(e) => setPropertyForm({ ...propertyForm, postalCode: e.target.value })} />
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-rce-soft">Notes</label>
+            <textarea className="input w-full" rows={2} value={propertyForm.notes} onChange={(e) => setPropertyForm({ ...propertyForm, notes: e.target.value })} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600" onClick={() => setEditingProperty(false)}>Cancel</button>
+            <button type="submit" className="btn btn-primary text-xs" disabled={updatePropertyMutation.isPending}>Save</button>
+          </div>
+        </form>
+      )}
 
       <section className="card mb-5 p-4">
         <h2 className="mb-3 text-lg font-semibold">Start New Visit</h2>

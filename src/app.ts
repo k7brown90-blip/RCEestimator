@@ -12,7 +12,7 @@ import { getDailySummary } from "./services/dailySummary";
 import { getTodaySchedule, getWeekSchedule, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
 import { sendSms, isFromKyle, KYLE_PHONE } from "./services/twilio";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
-import { sendConfirmationEmail } from "./services/confirmationEmail";
+import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail } from "./services/confirmationEmail";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
@@ -1396,6 +1396,44 @@ app.post("/properties", asyncHandler(async (req, res) => {
   res.status(201).json(property);
 }));
 
+app.patch("/properties/:propertyId", asyncHandler(async (req, res) => {
+  const propertyId = readParam(req, "propertyId");
+  const prop = await prisma.property.findUnique({ where: { id: propertyId } });
+  if (!prop) { res.status(404).json({ error: "Property not found" }); return; }
+
+  const body = req.body as { name?: string; addressLine1?: string; addressLine2?: string; city?: string; state?: string; postalCode?: string; notes?: string };
+  const data: Record<string, unknown> = {};
+  if (body.name !== undefined) data.name = body.name.trim();
+  if (body.addressLine1 !== undefined) data.addressLine1 = body.addressLine1.trim();
+  if (body.addressLine2 !== undefined) data.addressLine2 = body.addressLine2?.trim() || null;
+  if (body.city !== undefined) data.city = body.city.trim();
+  if (body.state !== undefined) data.state = body.state.trim();
+  if (body.postalCode !== undefined) data.postalCode = body.postalCode.trim();
+  if (body.notes !== undefined) data.notes = body.notes?.trim() || null;
+
+  const updated = await prisma.property.update({ where: { id: propertyId }, data });
+  res.json(updated);
+}));
+
+app.delete("/properties/:propertyId", asyncHandler(async (req, res) => {
+  const propertyId = readParam(req, "propertyId");
+  const prop = await prisma.property.findUnique({
+    where: { id: propertyId },
+    include: { visits: { select: { id: true }, take: 1 } },
+  });
+  if (!prop) { res.status(404).json({ error: "Property not found" }); return; }
+  if (prop.visits.length > 0) {
+    res.status(409).json({ error: "Cannot delete a property with existing visits" });
+    return;
+  }
+
+  await prisma.$transaction([
+    prisma.systemSnapshot.deleteMany({ where: { propertyId } }),
+    prisma.property.delete({ where: { id: propertyId } }),
+  ]);
+  res.status(204).end();
+}));
+
 app.patch("/properties/:propertyId/snapshot", asyncHandler(async (req, res) => {
   const propertyId = readParam(req, "propertyId");
   const schema = z.object({
@@ -1432,6 +1470,60 @@ app.post("/visits", asyncHandler(async (req, res) => {
   const body = schema.parse(req.body);
   const visit = await prisma.visit.create({ data: body });
   res.status(201).json(visit);
+}));
+
+app.patch("/visits/:visitId", asyncHandler(async (req, res) => {
+  const visitId = readParam(req, "visitId");
+  const visit = await prisma.visit.findUnique({ where: { id: visitId } });
+  if (!visit) { res.status(404).json({ error: "Visit not found" }); return; }
+
+  // Block edits on accepted/completed visits
+  if (visit.status === "accepted" || visit.status === "completed") {
+    res.status(409).json({ error: "Cannot edit a finalized visit" });
+    return;
+  }
+
+  const body = req.body as { mode?: string; purpose?: string; jobType?: string; notes?: string };
+  const validModes = ["new_construction", "remodel", "service_diagnostic", "maintenance"];
+  if (body.mode && !validModes.includes(body.mode)) {
+    res.status(400).json({ error: `Invalid mode. Must be one of: ${validModes.join(", ")}` });
+    return;
+  }
+
+  const data: Record<string, unknown> = {};
+  if (body.mode !== undefined) data.mode = body.mode;
+  if (body.purpose !== undefined) data.purpose = body.purpose?.trim() || null;
+  if (body.jobType !== undefined) data.jobType = body.jobType?.trim() || null;
+  if (body.notes !== undefined) data.notes = body.notes?.trim() || null;
+
+  const updated = await prisma.visit.update({ where: { id: visitId }, data });
+  res.json(updated);
+}));
+
+app.delete("/visits/:visitId", asyncHandler(async (req, res) => {
+  const visitId = readParam(req, "visitId");
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    include: { estimates: { select: { id: true, status: true } } },
+  });
+  if (!visit) { res.status(404).json({ error: "Visit not found" }); return; }
+
+  // Block delete if any accepted estimate exists
+  if (visit.estimates.some(e => e.status === "accepted")) {
+    res.status(409).json({ error: "Cannot delete a visit with an accepted estimate" });
+    return;
+  }
+
+  // Cascade delete related records
+  await prisma.$transaction([
+    prisma.observation.deleteMany({ where: { visitId } }),
+    prisma.finding.deleteMany({ where: { visitId } }),
+    prisma.limitation.deleteMany({ where: { visitId } }),
+    prisma.recommendation.deleteMany({ where: { visitId } }),
+    prisma.customerRequest.deleteMany({ where: { visitId } }),
+    prisma.visit.delete({ where: { id: visitId } }),
+  ]);
+  res.status(204).end();
 }));
 
 app.post("/visits/:visitId/customer-request", asyncHandler(async (req, res) => {
@@ -1704,6 +1796,64 @@ app.post("/estimates/:estimateId/proposals", asyncHandler(async (req, res) => {
   res.status(201).json(generated);
 }));
 
+app.post("/estimates/:estimateId/send-proposal", asyncHandler(async (req, res) => {
+  const estimateId = readParam(req, "estimateId");
+
+  // Load estimate with visit, customer, property data
+  const est = await prisma.estimate.findUnique({
+    where: { id: estimateId },
+    include: {
+      visit: {
+        include: {
+          customer: { select: { name: true, email: true } },
+          property: { select: { addressLine1: true, city: true, state: true } },
+        },
+      },
+      options: { select: { id: true, optionLabel: true, totalCost: true } },
+    },
+  });
+
+  if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
+  if (!est.visit?.customer?.email) { res.status(400).json({ error: "Customer has no email address on file" }); return; }
+
+  const customerName = est.visit.customer.name;
+  const customerEmail = est.visit.customer.email;
+  const serviceAddress = `${est.visit.property?.addressLine1 ?? ""}, ${est.visit.property?.city ?? ""}, ${est.visit.property?.state ?? ""}`;
+  const scopeOfWork = est.options.map(o => `${o.optionLabel} — $${Number(o.totalCost).toFixed(2)}`).join("; ");
+  const totalPrice = est.options.reduce((sum, o) => sum + Number(o.totalCost), 0);
+
+  // Generate contract document with sign URL
+  const contract = await generateContract({
+    jobId: est.visitId,
+    customerName,
+    serviceAddress,
+    scopeOfWork,
+    totalPrice,
+  });
+
+  const signUrl = `${req.protocol}://${req.get("host")}/sign/${contract.documentId}`;
+
+  // Send proposal email to customer
+  await sendProposalEmail({
+    customerName,
+    customerEmail,
+    serviceAddress,
+    jobDescription: est.title ?? scopeOfWork,
+    signUrl,
+  });
+
+  // Notify Kyle
+  sendKyleNotificationEmail(
+    `Proposal Sent: ${customerName}`,
+    `Proposal "${est.title}" sent to ${customerEmail}.\nAddress: ${serviceAddress}\nSign URL: ${signUrl}`,
+  ).catch(() => {});
+
+  // Change status to "sent"
+  await service.changeEstimateStatus(estimateId, "sent");
+
+  res.json({ signUrl, documentId: contract.documentId, emailSent: true });
+}));
+
 app.post("/estimates/:estimateId/signatures", asyncHandler(async (req, res) => {
   const estimateId = readParam(req, "estimateId");
   const body = z.object({
@@ -1768,6 +1918,83 @@ app.post("/estimates/:estimateId/change-orders", asyncHandler(async (req, res) =
   });
 
   res.status(201).json(changeOrder);
+}));
+
+// ─── CRM Work Order + Material List (JWT auth, auto-populated from estimate) ──
+
+app.post("/estimates/:estimateId/work-order", asyncHandler(async (req, res) => {
+  const estimateId = readParam(req, "estimateId");
+  const est = await prisma.estimate.findUnique({
+    where: { id: estimateId },
+    include: {
+      visit: {
+        include: {
+          customer: { select: { name: true } },
+          property: { select: { addressLine1: true, city: true, state: true } },
+        },
+      },
+      options: { where: { accepted: true }, include: { assemblies: { include: { assemblyTemplate: true } } }, take: 1 },
+    },
+  });
+
+  if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
+
+  const acceptedOption = est.options[0];
+  const scopeOfWork = acceptedOption
+    ? acceptedOption.assemblies.map(a => `${a.assemblyTemplate?.name ?? a.assemblyTemplateId} x${a.quantity}`).join("; ")
+    : est.title ?? "";
+
+  const result = await generateWorkOrder({
+    jobId: est.visitId,
+    customerName: est.visit?.customer?.name ?? "",
+    serviceAddress: `${est.visit?.property?.addressLine1 ?? ""}, ${est.visit?.property?.city ?? ""}`,
+    scheduledDate: est.visit?.scheduledStart?.toISOString() ?? "",
+    scopeOfWork,
+    materialsNeeded: "",
+  });
+  res.json(result);
+}));
+
+app.post("/estimates/:estimateId/material-list", asyncHandler(async (req, res) => {
+  const estimateId = readParam(req, "estimateId");
+  const est = await prisma.estimate.findUnique({
+    where: { id: estimateId },
+    include: {
+      options: {
+        where: { accepted: true },
+        include: {
+          assemblies: {
+            include: {
+              components: { where: { componentType: "material" } },
+              assemblyTemplate: true,
+            },
+          },
+        },
+        take: 1,
+      },
+      visit: { include: { property: { select: { addressLine1: true, city: true } } } },
+    },
+  });
+
+  if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
+
+  const acceptedOption = est.options[0];
+  const items = acceptedOption
+    ? acceptedOption.assemblies.flatMap(a =>
+        (a.components ?? []).map(c => ({
+          name: c.description ?? c.code ?? "Material",
+          quantity: c.quantity * a.quantity,
+          unit: c.unit ?? "ea",
+        }))
+      )
+    : [];
+
+  const result = await generateMaterialList({
+    jobId: est.visitId,
+    serviceAddress: `${est.visit?.property?.addressLine1 ?? ""}, ${est.visit?.property?.city ?? ""}`,
+    items,
+  });
+  res.json(result);
 }));
 
 app.get("/estimates/:estimateId", asyncHandler(async (req, res) => {
@@ -2436,7 +2663,7 @@ app.get("/leads", asyncHandler(async (req, res) => {
 
 app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
   const leadId = readParam(req, "leadId");
-  const body = req.body as { status?: string; notes?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string };
+  const body = req.body as { name?: string; email?: string; phone?: string; address?: string; jobType?: string; status?: string; notes?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string };
   const validStatuses = ["new", "contacted", "converted", "lost"];
   if (body.status && !validStatuses.includes(body.status)) {
     res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
@@ -2444,6 +2671,11 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
   }
 
   const data: Record<string, unknown> = {};
+  if (body.name !== undefined) data.name = body.name.trim();
+  if (body.email !== undefined) data.email = body.email?.trim() || null;
+  if (body.phone !== undefined) data.phone = body.phone?.trim() || null;
+  if (body.address !== undefined) data.address = body.address?.trim() || null;
+  if (body.jobType !== undefined) data.jobType = body.jobType?.trim() || null;
   if (body.status) data.status = body.status;
   if (body.notes !== undefined) data.notes = body.notes;
   if (body.callType !== undefined) data.callType = body.callType;
@@ -2459,6 +2691,18 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     data,
   });
   res.json(lead);
+}));
+
+app.delete("/leads/:leadId", asyncHandler(async (req, res) => {
+  const leadId = readParam(req, "leadId");
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!lead) { res.status(404).json({ error: "Lead not found" }); return; }
+  if (lead.status === "converted") {
+    res.status(409).json({ error: "Cannot delete a converted lead" });
+    return;
+  }
+  await prisma.lead.delete({ where: { id: leadId } });
+  res.status(204).end();
 }));
 
 app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
