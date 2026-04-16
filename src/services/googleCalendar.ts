@@ -2,7 +2,7 @@ import { google } from "googleapis";
 
 const TZ = "America/Chicago";
 const BUSINESS_START = 8;  // 8 AM CT
-const BUSINESS_END = 15;   // 3 PM CT
+const BUSINESS_END = 16;   // 4 PM CT
 const LOOKAHEAD_DAYS = 7;
 const SLOT_DURATION = 2;   // 2-hour appointment windows
 
@@ -72,6 +72,7 @@ function formatDate(d: Date): string {
     weekday: "long",
     month: "long",
     day: "numeric",
+    year: "numeric",
   });
 }
 
@@ -151,7 +152,7 @@ export async function getAvailability(): Promise<AvailabilityResponse> {
     );
 
     // Generate fixed 2-hour windows: 8-10, 10-12, 12-2, 1-3
-    const windowStarts = [8, 10, 12, 13]; // overlapping last slot for flexibility
+    const windowStarts = [8, 10, 12, 14]; // 8-10, 10-12, 12-2, 2-4
     const freeSlots: SlotTime[] = [];
 
     for (const wStart of windowStarts) {
@@ -190,5 +191,74 @@ export async function getAvailability(): Promise<AvailabilityResponse> {
     available_slots: days,
     current_time_central: formatTime(now),
     current_date_central: formatDate(now),
+  };
+}
+
+// ── Book appointment ────────────────────────────────────────────────────────
+
+interface BookingParams {
+  date: string;         // "Wednesday, April 16, 2026" (from availability response)
+  startTime: string;    // "10:00 AM" (from availability response)
+  customerName: string;
+  description: string;
+  address?: string;
+}
+
+interface BookingResult {
+  eventId: string;
+  start: string;
+  end: string;
+  summary: string;
+}
+
+function parseAvailabilityDate(dateStr: string, timeStr: string): Date {
+  // Parse "Wednesday, April 16, 2026" + "10:00 AM"
+  // Remove weekday prefix: "April 16, 2026"
+  const withoutWeekday = dateStr.replace(/^\w+,\s*/, "");
+
+  // Parse time: "10:00 AM" → hour 10, minute 0
+  const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!timeMatch) throw new Error(`Cannot parse time: "${timeStr}"`);
+  let hour = parseInt(timeMatch[1]);
+  const minute = parseInt(timeMatch[2]);
+  const ampm = timeMatch[3].toUpperCase();
+  if (ampm === "PM" && hour !== 12) hour += 12;
+  if (ampm === "AM" && hour === 12) hour = 0;
+
+  // Parse date: "April 16, 2026"
+  const dateParsed = new Date(withoutWeekday);
+  if (isNaN(dateParsed.getTime())) {
+    throw new Error(`Cannot parse date: "${dateStr}"`);
+  }
+  const month = dateParsed.getMonth() + 1;
+  const day = dateParsed.getDate();
+  const year = dateParsed.getFullYear();
+
+  return centralToUtc(year, month, day, hour, minute);
+}
+
+export async function bookAppointment(params: BookingParams): Promise<BookingResult> {
+  const calendar = getCalendarClient();
+  const startUtc = parseAvailabilityDate(params.date, params.startTime);
+  const endUtc = new Date(startUtc.getTime() + SLOT_DURATION * 3600_000);
+
+  const summary = `RCE: ${params.customerName} — ${params.description.substring(0, 80)}`;
+
+  const event = await calendar.events.insert({
+    calendarId: "primary",
+    requestBody: {
+      summary,
+      description: params.description,
+      location: params.address,
+      start: { dateTime: startUtc.toISOString(), timeZone: TZ },
+      end: { dateTime: endUtc.toISOString(), timeZone: TZ },
+    },
+  });
+
+  return {
+    eventId: event.data.id!,
+    start: startUtc.toISOString(),
+    end: endUtc.toISOString(),
+    summary,
   };
 }

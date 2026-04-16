@@ -7,7 +7,7 @@ import { prisma } from "./lib/prisma";
 import { EstimateService } from "./services/estimateService";
 import { resolveItemCable } from "./services/wiringMethodResolver";
 import { generateSupportItems } from "./services/supportItemTriggers";
-import { getAvailability } from "./services/googleCalendar";
+import { getAvailability, bookAppointment } from "./services/googleCalendar";
 import { getDailySummary } from "./services/dailySummary";
 import { getTodaySchedule, getWeekSchedule, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
 import { sendSms, isFromKyle, KYLE_PHONE } from "./services/twilio";
@@ -130,6 +130,16 @@ app.post("/vapi/assistant-config", (_req, res) => {
 app.get("/calendar/availability", asyncHandler(async (_req, res) => {
   const data = await getAvailability();
   res.json(data);
+}));
+
+// ─── CALENDAR BOOKING (no auth — called by Vapi AI assistant) ────────────────
+app.post("/calendar/book", asyncHandler(async (req, res) => {
+  const { date, startTime, customerName, description, address } = req.body;
+  if (!date || !startTime || !customerName || !description) {
+    return res.status(400).json({ error: "Required: date, startTime, customerName, description" });
+  }
+  const result = await bookAppointment({ date, startTime, customerName, description, address });
+  res.json(result);
 }));
 
 // ─── CUSTOMER LOOKUP (no auth — called by Vapi AI assistant) ─────────────────
