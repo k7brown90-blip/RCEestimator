@@ -6,6 +6,9 @@ const BUSINESS_END = 16;   // 4 PM CT
 const LOOKAHEAD_DAYS = 7;
 const SLOT_DURATION = 2;   // 2-hour appointment windows
 
+// Comma-separated list of additional calendar IDs to check for conflicts
+const EXTRA_CALENDAR_IDS = (process.env.EXTRA_CALENDAR_IDS ?? "").split(",").filter(Boolean);
+
 interface SlotTime {
   start: string;
   end: string;
@@ -114,19 +117,26 @@ export async function getAvailability(): Promise<AvailabilityResponse> {
   const endParts = getCentralParts(new Date(windowStart.getTime() + LOOKAHEAD_DAYS * 86_400_000));
   const windowEnd = centralToUtc(endParts.year, endParts.month, endParts.day, 23, 59);
 
+  const calendarItems = [
+    { id: "primary" },
+    ...EXTRA_CALENDAR_IDS.map(id => ({ id: id.trim() })),
+  ];
+
   const response = await calendar.freebusy.query({
     requestBody: {
       timeMin: windowStart.toISOString(),
       timeMax: windowEnd.toISOString(),
       timeZone: TZ,
-      items: [{ id: "primary" }],
+      items: calendarItems,
     },
   });
 
-  const busyPeriods = (response.data.calendars?.["primary"]?.busy ?? []).map((b) => ({
-    start: new Date(b.start!),
-    end: new Date(b.end!),
-  }));
+  const calendarsData = response.data.calendars ?? {};
+  const busyPeriods = Object.values(calendarsData)
+    .flatMap(cal => ((cal as any).busy ?? []).map((b: any) => ({
+      start: new Date(b.start!),
+      end: new Date(b.end!),
+    })));
 
   busyPeriods.sort((a, b) => a.start.getTime() - b.start.getTime());
 
@@ -201,7 +211,7 @@ interface BookingParams {
   startTime: string;    // "10:00 AM" (from availability response)
   customerName: string;
   description: string;
-  address?: string;
+  address: string;
 }
 
 interface BookingResult {
