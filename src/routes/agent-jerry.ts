@@ -15,7 +15,7 @@ import {
   successResponse,
   errorResponse,
 } from "./agent-helpers";
-import { scheduleJob, ConflictError } from "../services/scheduling";
+import { scheduleJob, rescheduleJob, cancelJob, ConflictError } from "../services/scheduling";
 
 const TZ = "America/Chicago";
 
@@ -113,6 +113,187 @@ jerryRouter.post("/jobs/schedule", asyncHandler(async (req, res) => {
     }
     throw err;
   }
+}));
+
+// ─── POST /jerry/lookup-job ────────────────────────────────────────────────────
+
+jerryRouter.post("/lookup-job", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/jerry/lookup-job";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const body = z.object({
+    phone: z.string().optional(),
+    address: z.string().optional(),
+  }).refine(
+    (d) => d.phone || d.address,
+    { message: "At least one of phone or address is required" },
+  ).parse(req.body);
+
+  const customerConditions: Array<{ customerId: { in: string[] } }> = [];
+
+  if (body.phone) {
+    const digits10 = body.phone.replace(/\D/g, "").slice(-10);
+    const matchingCustomers = await prisma.customer.findMany({
+      where: { phone: { contains: digits10 } },
+      select: { id: true },
+      take: 10,
+    });
+    if (matchingCustomers.length > 0) {
+      customerConditions.push({ customerId: { in: matchingCustomers.map(c => c.id) } });
+    }
+  }
+
+  if (body.address) {
+    const matchingProperties = await prisma.property.findMany({
+      where: { addressLine1: { contains: body.address } },
+      select: { id: true, customerId: true },
+      take: 10,
+    });
+    if (matchingProperties.length > 0) {
+      customerConditions.push({ customerId: { in: matchingProperties.map(p => p.customerId) } });
+    }
+  }
+
+  if (customerConditions.length === 0) {
+    res.status(404).json(errorResponse("NOT_FOUND", "No matching jobs", "I couldn't find any jobs with that info."));
+    return;
+  }
+
+  const jobs = await prisma.visit.findMany({
+    where: {
+      OR: customerConditions,
+      status: { in: ["scheduled", "in_progress"] },
+    },
+    include: {
+      customer: { select: { name: true, phone: true } },
+      property: { select: { addressLine1: true, city: true } },
+    },
+    orderBy: { scheduledStart: "asc" },
+    take: 3,
+  });
+
+  if (jobs.length === 0) {
+    res.status(404).json(errorResponse("NOT_FOUND", "No scheduled jobs found", "I found the customer but they have no scheduled jobs."));
+    return;
+  }
+
+  const data = jobs.map(j => ({
+    job_id: j.id,
+    customer_name: j.customer.name,
+    address: `${j.property.addressLine1}, ${j.property.city}`,
+    scheduled_start: j.scheduledStart?.toISOString() ?? null,
+    scheduled_end: j.scheduledEnd?.toISOString() ?? null,
+    duration_days: j.estimatedDurationDays ?? 1,
+    job_type: j.jobType ?? "service",
+    status: j.status,
+  }));
+
+  const spoken = `Found ${data.length} job${data.length > 1 ? "s" : ""}. ${data[0].customer_name}'s ${data[0].job_type} is ${data[0].status}.`;
+
+  const resp = successResponse({ jobs: data }, spoken);
+  await saveIdempotency(clientRequestId, endpoint, undefined, resp, "jerry");
+  logAgent("jerry_lookup_job", { agent: "jerry", endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });
+  res.json(resp);
+}));
+
+// ─── POST /jerry/reschedule-job ───────────────────────────────────────────────
+
+jerryRouter.post("/reschedule-job", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/jerry/reschedule-job";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  if (req.body && ("new_duration" in req.body || "duration_days" in req.body)) {
+    res.status(400).json(errorResponse(
+      "INVALID_PARAMETER",
+      "Duration changes are not allowed on reschedule.",
+      "I can't change the duration of a job. I can only move it to a new date.",
+    ));
+    return;
+  }
+
+  const body = z.object({
+    job_id: z.string().min(1),
+    new_start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+    new_start_time: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    reason: z.string().min(1),
+  }).parse(req.body);
+
+  try {
+    const result = await rescheduleJob(
+      body.job_id,
+      body.new_start_date,
+      body.new_start_time ?? null,
+      body.reason,
+    );
+
+    const formatDate = (d: Date) => d.toLocaleDateString("en-US", {
+      timeZone: TZ, weekday: "short", month: "short", day: "numeric",
+    });
+    const formatTime = (d: Date) => d.toLocaleTimeString("en-US", {
+      timeZone: TZ, hour: "numeric", minute: "2-digit",
+    });
+
+    const resp = successResponse(
+      {
+        job_id: result.jobId,
+        scheduled_start: result.scheduledStart.toISOString(),
+        scheduled_end: result.scheduledEnd.toISOString(),
+        duration_days: result.durationDays,
+        customer_notified: result.customerNotified,
+        kyle_notified: result.kyleNotified,
+      },
+      `Rescheduled to ${formatDate(result.scheduledStart)} at ${formatTime(result.scheduledStart)}. Customer and Kyle both notified.`,
+    );
+    await saveIdempotency(clientRequestId, endpoint, body.job_id, resp, "jerry");
+    logAgent("jerry_reschedule_job", { agent: "jerry", endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });
+    res.json(resp);
+  } catch (err) {
+    if (err instanceof ConflictError) {
+      const resp = errorResponse("CALENDAR_CONFLICT", err.message, err.spokenFallback);
+      logAgent("jerry_reschedule_conflict", { agent: "jerry", endpoint, responseStatus: 409, durationMs: Date.now() - start, clientRequestId });
+      res.status(409).json(resp);
+      return;
+    }
+    throw err;
+  }
+}));
+
+// ─── POST /jerry/cancel-job ───────────────────────────────────────────────────
+
+jerryRouter.post("/cancel-job", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/jerry/cancel-job";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const body = z.object({
+    job_id: z.string().min(1),
+    reason: z.string().min(1),
+  }).parse(req.body);
+
+  const result = await cancelJob(body.job_id, body.reason);
+
+  const resp = successResponse(
+    {
+      cancelled: true,
+      customer_notified: result.customerNotified,
+      kyle_notified: result.kyleNotified,
+    },
+    `Job cancelled. ${result.customerNotified ? "Customer has been notified." : "Customer could not be reached."} Reason: ${body.reason}`,
+  );
+  await saveIdempotency(clientRequestId, endpoint, body.job_id, resp, "jerry");
+  logAgent("jerry_cancel_job", { agent: "jerry", endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });
+  res.json(resp);
 }));
 
 // ─── DELETE /jerry/visits/active/last-item ──────────────────────────────────────
