@@ -8,6 +8,7 @@ import { prisma } from "../lib/prisma";
 import { EstimateService } from "../services/estimateService";
 import { resolveItemCable } from "../services/wiringMethodResolver";
 import { generateSupportItems } from "../services/supportItemTriggers";
+import { validateEstimate } from "../services/estimateValidator";
 
 const service = new EstimateService(prisma);
 
@@ -943,6 +944,88 @@ function createMcpServer(): McpServer {
           isError: true,
         };
       }
+    }
+  );
+
+  // ─── VALIDATION TOOL ────────────────────────────────────────────────────────
+
+  server.registerTool(
+    "validate_estimate",
+    {
+      description:
+        "Run reasonableness and material cost validation on a completed estimate. " +
+        "Call this AFTER get_estimate_summary and BEFORE presenting the estimate to the estimator. " +
+        "Returns a validation report with flags for: missing material costs, out-of-range pricing, " +
+        "excessive labor hours, double-counted items, and support item imbalances. " +
+        "If validation fails (has errors), DO NOT advance the estimate — fix the flagged issues first.",
+      inputSchema: {
+        estimateId: z.string().describe("The estimate ID to validate"),
+      },
+    },
+    async ({ estimateId }) => {
+      const estimate = await prisma.estimate.findUnique({
+        where: { id: estimateId },
+        include: {
+          supportItems: true,
+          options: {
+            include: {
+              items: { include: { atomicUnit: true } },
+            },
+          },
+        },
+      });
+
+      if (!estimate) {
+        return {
+          content: [{ type: "text" as const, text: "Estimate not found" }],
+          isError: true,
+        };
+      }
+
+      // Validate each option independently
+      const results: Record<string, unknown> = {};
+
+      for (const option of estimate.options) {
+        const itemsForValidation = option.items.map((item) => ({
+          id: item.id,
+          atomicUnitCode: item.atomicUnit.code,
+          atomicUnitCategory: item.atomicUnit.category,
+          atomicUnitName: item.atomicUnit.name,
+          quantity: item.quantity,
+          snapshotLaborHrs: item.snapshotLaborHrs,
+          snapshotLaborRate: item.snapshotLaborRate,
+          snapshotMaterialCost: item.snapshotMaterialCost,
+          catalogMaterialCost: item.atomicUnit.baseMaterialCost,
+          laborCost: item.laborCost,
+          materialCost: item.materialCost,
+        }));
+
+        const supportForValidation = estimate.supportItems.map((s) => ({
+          supportType: s.supportType,
+          description: s.description,
+          laborHrs: s.laborHrs,
+          laborCost: s.laborCost,
+          otherCost: s.otherCost,
+          totalCost: s.totalCost,
+        }));
+
+        const result = validateEstimate({
+          items: itemsForValidation,
+          supportItems: supportForValidation,
+          materialMarkupPct: estimate.materialMarkupPct,
+        });
+
+        results[option.optionLabel || option.id] = result;
+      }
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(results, null, 2),
+          },
+        ],
+      };
     }
   );
 

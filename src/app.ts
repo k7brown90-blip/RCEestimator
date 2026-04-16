@@ -17,6 +17,9 @@ import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
+import { savannahRouter } from "./routes/agent-savannah";
+import { jerryRouter } from "./routes/agent-jerry";
+import { sharedAgentRouter } from "./routes/agent-shared";
 
 const service = new EstimateService(prisma);
 
@@ -1042,6 +1045,9 @@ app.post("/bookings/from-email", asyncHandler(async (req, res) => {
 
 // ─── AGENT API (Jerry — voice/SMS field assistant) ────────────────────────────
 app.use("/agent", agentRouter);
+app.use("/agent/savannah", savannahRouter);
+app.use("/agent/jerry", jerryRouter);
+app.use("/agent/calendar", sharedAgentRouter);
 
 // ─── PIN AUTH ────────────────────────────────────────────────────────────────
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
@@ -2369,12 +2375,39 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
       .map((c) => c.text ?? "")
       .join("\n") ?? "No response";
 
-    res.json({ reply });
+    res.json({ reply, sessionId });
+
+    // Persist conversation history (non-blocking, don't break chat on failure)
+    const chatVisitId = sessionContext[sessionId]?.visitId ?? null;
+    prisma.chatMessage.createMany({
+      data: [
+        { sessionId, visitId: chatVisitId, role: "user", content: message },
+        { sessionId, visitId: chatVisitId, role: "assistant", content: reply, openaiResponseId: resp.id },
+      ],
+    }).catch((e: unknown) => console.error("Failed to persist chat messages:", e));
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error("OpenAI Responses API error:", errMsg);
     res.status(502).json({ error: `AI agent error: ${errMsg}` });
   }
+}));
+
+// ─── CHATKIT HISTORY ──────────────────────────────────────────────────────
+
+app.get("/chatkit/history", asyncHandler(async (req, res) => {
+  const sessionId = readParam(req, "sessionId");
+  const visitId = readParam(req, "visitId");
+  if (!sessionId && !visitId) {
+    return res.status(400).json({ error: "Provide sessionId or visitId" });
+  }
+  const where: Record<string, string> = {};
+  if (sessionId) where.sessionId = sessionId;
+  if (visitId) where.visitId = visitId;
+  const messages = await prisma.chatMessage.findMany({
+    where,
+    orderBy: { createdAt: "asc" },
+  });
+  res.json({ messages });
 }));
 
 // ─── LEADS (authenticated) ─────────────────────────────────────────────────

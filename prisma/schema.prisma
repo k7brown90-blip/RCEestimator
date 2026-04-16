@@ -64,7 +64,15 @@ model Visit {
   visitDate              DateTime          @default(now())
   notes                  String?
   // ── Job tracking fields (Phase 1 data model) ──
+  status                 String            @default("estimate") // estimate | contracted | scheduled | in_progress | completed | cancelled
+  jobType                String?           // e.g. "Panel Upgrade", "Lighting Install"
   estimatedJobLength     Float?            // hours — used for calendar blocking
+  estimatedDurationDays  Int?              // working days for calendar blocking
+  estimatedDurationHours Float?            // hours within each day
+  scheduledStart         DateTime?
+  scheduledEnd           DateTime?
+  googleEventId          String?
+  contractedAt           DateTime?
   estimatedCost          Float?
   actualMaterialCost     Float?            @default(0)
   laborHours             Float?            @default(0)
@@ -478,7 +486,7 @@ model EstimateModifier {
 model SupportItem {
   id             String    @id @default(cuid())
   estimateId     String
-  supportType    String    // MOBILIZATION, PERMIT, LOAD_CALC, UTILITY_COORD, CIRCUIT_TESTING, CLEANUP, PANEL_DEMO
+  supportType    String    // PERMIT, UTILITY_COORD, PANEL_LABELING
   description    String
   laborHrs       Float     @default(0)
   laborRate      Float     @default(115)
@@ -601,6 +609,7 @@ model MaterialOrder {
 model AgentAuditLog {
   id              String   @id @default(cuid())
   action          String
+  agent           String?  // "savannah" | "jerry"
   endpoint        String?
   visitId         String?
   entityType      String?
@@ -616,9 +625,21 @@ model AgentIdempotency {
   id              String   @id @default(cuid())
   clientRequestId String
   endpoint        String
+  agent           String?  // "savannah" | "jerry"
   visitId         String?
   responseJson    String
   createdAt       DateTime @default(now())
+  expiresAt       DateTime
 
   @@unique([clientRequestId, endpoint])
+}
+
+model ChatMessage {
+  id               String   @id @default(cuid())
+  sessionId        String
+  visitId          String?
+  role             String   // "user" | "assistant"
+  content          String
+  openaiResponseId String?
+  createdAt        DateTime @default(now())
 }

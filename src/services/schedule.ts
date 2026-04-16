@@ -242,3 +242,174 @@ function mapEvent(e: any): CalendarEvent {
     location: e.location ?? null,
   };
 }
+
+// ─── AVAILABILITY CHECKING (used by scheduling endpoints) ───────────────────────
+
+export interface AvailabilityCheckResult {
+  available: boolean;
+  conflicts: Array<{ date: string; reason: string }>;
+}
+
+function getCTParts(d: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    weekday: "short",
+  }).formatToParts(d);
+
+  const get = (t: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((p) => p.type === t)!.value);
+
+  const wdMap: Record<string, number> = {
+    Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+  };
+  const wdStr = parts.find((p) => p.type === "weekday")!.value;
+
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour: get("hour") === 24 ? 0 : get("hour"),
+    minute: get("minute"),
+    weekday: wdMap[wdStr] ?? 0,
+  };
+}
+
+/** Convert Central Time components → UTC Date */
+function ctToUtc(year: number, month: number, day: number, hour: number, minute = 0): Date {
+  const guess = new Date(Date.UTC(year, month - 1, day, hour + 6, minute));
+  const actual = getCTParts(guess);
+  const wantMin = hour * 60 + minute;
+  const gotMin = actual.hour * 60 + actual.minute;
+  const delta = gotMin - wantMin;
+  return new Date(guess.getTime() - delta * 60_000);
+}
+
+/**
+ * Check if a block of consecutive working days is available on the calendar.
+ * Skips Sundays. Mon–Fri 7am–5pm, Sat 8am–12pm.
+ */
+export async function checkAvailabilityBlock(
+  startDate: Date,
+  daysNeeded: number,
+  excludeEventId?: string,
+): Promise<AvailabilityCheckResult> {
+  const calendar = getCalendarClient();
+
+  // Build working day list (skip Sundays)
+  const workDays: Date[] = [];
+  let cursor = new Date(startDate);
+  while (workDays.length < daysNeeded) {
+    const dp = getCTParts(cursor);
+    if (dp.weekday !== 0) { // Skip Sundays
+      workDays.push(new Date(cursor));
+    }
+    cursor = new Date(cursor.getTime() + 86_400_000);
+  }
+
+  // Query freebusy for the full range
+  const firstParts = getCTParts(workDays[0]);
+  const rangeStart = ctToUtc(firstParts.year, firstParts.month, firstParts.day, 0);
+  const lastParts = getCTParts(workDays[workDays.length - 1]);
+  const rangeEnd = ctToUtc(lastParts.year, lastParts.month, lastParts.day, 23, 59);
+
+  const response = await calendar.freebusy.query({
+    requestBody: {
+      timeMin: rangeStart.toISOString(),
+      timeMax: rangeEnd.toISOString(),
+      timeZone: TZ,
+      items: [{ id: "primary" }],
+    },
+  });
+
+  let busyPeriods = (response.data.calendars?.["primary"]?.busy ?? []).map((b) => ({
+    start: new Date(b.start!),
+    end: new Date(b.end!),
+  }));
+
+  // If excluding a specific event (reschedule), filter its busy block
+  if (excludeEventId) {
+    try {
+      const event = await calendar.events.get({ calendarId: "primary", eventId: excludeEventId });
+      const es = event.data.start?.dateTime ?? event.data.start?.date;
+      const ee = event.data.end?.dateTime ?? event.data.end?.date;
+      if (es && ee) {
+        const exStart = new Date(es).getTime();
+        const exEnd = new Date(ee).getTime();
+        busyPeriods = busyPeriods.filter(
+          (b) => !(b.start.getTime() === exStart && b.end.getTime() === exEnd),
+        );
+      }
+    } catch {
+      // Event may have been deleted — proceed without exclusion
+    }
+  }
+
+  const conflicts: Array<{ date: string; reason: string }> = [];
+
+  for (const day of workDays) {
+    const dp = getCTParts(day);
+    const isSaturday = dp.weekday === 6;
+    const bhStart = isSaturday ? 8 : 7;
+    const bhEnd = isSaturday ? 12 : 17;
+    const dayStart = ctToUtc(dp.year, dp.month, dp.day, bhStart);
+    const dayEnd = ctToUtc(dp.year, dp.month, dp.day, bhEnd);
+
+    const dayBusy = busyPeriods.filter(
+      (b) => b.start.getTime() < dayEnd.getTime() && b.end.getTime() > dayStart.getTime(),
+    );
+
+    if (dayBusy.length > 0) {
+      const summaries = dayBusy.map((b) =>
+        `${formatTimeCT(b.start)}–${formatTimeCT(b.end)}`
+      ).join(", ");
+      conflicts.push({
+        date: formatDateCT(day),
+        reason: `Busy: ${summaries}`,
+      });
+    }
+  }
+
+  return { available: conflicts.length === 0, conflicts };
+}
+
+/**
+ * Find the next block of consecutive open working days.
+ */
+export async function findConsecutiveOpenDays(
+  fromDate: Date,
+  daysNeeded: number,
+  lookAheadDays: number = 30,
+): Promise<Date[]> {
+  let cursor = new Date(fromDate);
+  const limit = new Date(fromDate.getTime() + lookAheadDays * 86_400_000);
+
+  while (cursor < limit) {
+    const dp = getCTParts(cursor);
+    if (dp.weekday === 0) { // Skip Sundays
+      cursor = new Date(cursor.getTime() + 86_400_000);
+      continue;
+    }
+
+    const result = await checkAvailabilityBlock(cursor, daysNeeded);
+    if (result.available) {
+      const days: Date[] = [];
+      let c = new Date(cursor);
+      while (days.length < daysNeeded) {
+        const cdp = getCTParts(c);
+        if (cdp.weekday !== 0) days.push(new Date(c));
+        c = new Date(c.getTime() + 86_400_000);
+      }
+      return days;
+    }
+
+    cursor = new Date(cursor.getTime() + 86_400_000);
+  }
+
+  return [];
+}

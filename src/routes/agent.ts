@@ -2,16 +2,19 @@ import express from "express";
 import { z, ZodError } from "zod";
 import { prisma } from "../lib/prisma";
 import { sendSms, KYLE_PHONE } from "../services/twilio";
+import {
+  asyncHandler,
+  readParam,
+  truncate,
+  normalizePhone,
+  logAgent,
+  checkIdempotency,
+  saveIdempotency,
+  agentZodError,
+  agentAuth,
+} from "./agent-helpers";
 
-// ─── HELPERS ────────────────────────────────────────────────────────────────────
-
-const asyncHandler = (fn: express.RequestHandler): express.RequestHandler =>
-  (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
-
-const readParam = (req: express.Request, key: string): string => {
-  const raw = req.params[key];
-  return Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
-};
+// ─── HELPERS (imported from agent-helpers.ts) ──────────────────────────────────
 
 // ─── FULL VISIT INCLUDE (matches app.ts GET /visits/:visitId) ───────────────
 
@@ -29,85 +32,11 @@ const FULL_VISIT_INCLUDE = {
   },
 } as const;
 
-// ─── STRING HELPERS ─────────────────────────────────────────────────────────────
+// ─── STRING HELPERS (truncate imported from agent-helpers.ts) ───────────────────
 
-function truncate(s: unknown, max: number): string {
-  const text = typeof s === "string" ? s : String(s ?? "");
-  return text.length <= max ? text : text.slice(0, max) + "…";
-}
+// ─── AUDIT LOG (logAgent imported from agent-helpers.ts) ────────────────────────
 
-// ─── AUDIT LOG ──────────────────────────────────────────────────────────────────
-
-function logAgent(action: string, details: {
-  visitId?: string;
-  entityType?: string;
-  entityId?: string;
-  payload?: unknown;
-  endpoint?: string;
-  responseStatus?: number;
-  durationMs?: number;
-  clientRequestId?: string;
-}): void {
-  prisma.agentAuditLog.create({
-    data: {
-      action,
-      visitId: details.visitId,
-      entityType: details.entityType,
-      entityId: details.entityId,
-      payloadJson: details.payload ? JSON.stringify(details.payload) : null,
-      endpoint: details.endpoint,
-      responseStatus: details.responseStatus,
-      durationMs: details.durationMs,
-      clientRequestId: details.clientRequestId,
-    },
-  }).catch((err) => console.error("[AgentAudit] log failed:", err));
-}
-
-// ─── IDEMPOTENCY ────────────────────────────────────────────────────────────────
-
-const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000; // 10 minutes
-
-async function checkIdempotency(
-  clientRequestId: string | undefined,
-  endpoint: string,
-): Promise<object | null> {
-  if (!clientRequestId) return null;
-
-  // Fire-and-forget cleanup of expired records
-  prisma.agentIdempotency.deleteMany({
-    where: { createdAt: { lt: new Date(Date.now() - IDEMPOTENCY_TTL_MS) } },
-  }).catch(() => {});
-
-  const existing = await prisma.agentIdempotency.findUnique({
-    where: { clientRequestId_endpoint: { clientRequestId, endpoint } },
-  });
-
-  if (!existing) return null;
-
-  if (Date.now() - existing.createdAt.getTime() > IDEMPOTENCY_TTL_MS) {
-    await prisma.agentIdempotency.delete({ where: { id: existing.id } }).catch(() => {});
-    return null;
-  }
-
-  return JSON.parse(existing.responseJson);
-}
-
-async function saveIdempotency(
-  clientRequestId: string | undefined,
-  endpoint: string,
-  visitId: string | undefined,
-  responseBody: object,
-): Promise<void> {
-  if (!clientRequestId) return;
-  await prisma.agentIdempotency.create({
-    data: {
-      clientRequestId,
-      endpoint,
-      visitId,
-      responseJson: JSON.stringify(responseBody),
-    },
-  }).catch(() => {}); // ignore duplicate key errors on race
-}
+// ─── IDEMPOTENCY (checkIdempotency/saveIdempotency imported from agent-helpers.ts) ──
 
 // ─── SPOKEN CONFIRMATION ────────────────────────────────────────────────────────
 
@@ -142,38 +71,7 @@ function spokenConfirmation(action: string, details: Record<string, unknown>): s
   }
 }
 
-// ─── AGENT ERROR HELPERS ────────────────────────────────────────────────────────
-
-function agentZodError(err: ZodError): { code: string; message: string; spoken_fallback: string } {
-  const issue = err.issues[0];
-  let spoken_fallback: string;
-  let message: string;
-  const path = issue.path.join(".");
-
-  switch (issue.code) {
-    case "invalid_value": {
-      const vals = "values" in issue ? (issue.values as string[]).join(", ") : "";
-      message = `${path || "value"} must be one of: ${vals}`;
-      spoken_fallback = `That wasn't one of the options — pick from ${vals}.`;
-      break;
-    }
-    case "too_small":
-      message = `${path || "value"} is required`;
-      spoken_fallback = "I didn't catch that — could you say it again?";
-      break;
-    case "invalid_type": {
-      const expected = "expected" in issue ? String(issue.expected) : "valid input";
-      message = `${path || "value"} must be a ${expected}`;
-      spoken_fallback = `I need a ${expected} there.`;
-      break;
-    }
-    default:
-      message = issue.message;
-      spoken_fallback = "Something wasn't right with that input. Try again?";
-  }
-
-  return { code: "VALIDATION_FAILED", message, spoken_fallback };
-}
+// ─── AGENT ERROR HELPERS (agentZodError imported from agent-helpers.ts) ─────────
 
 function visitNotFoundError(): { error: { code: string; message: string; spoken_fallback: string } } {
   return { error: { code: "NOT_FOUND", message: "Visit not found", spoken_fallback: "I couldn't find that visit. Try setting the active visit first." } };
@@ -196,21 +94,6 @@ function getActiveVisitId(): string | null {
 // ─── ROUTER ─────────────────────────────────────────────────────────────────────
 
 export const agentRouter = express.Router();
-
-// Bearer token auth
-const agentAuth: express.RequestHandler = (req, res, next) => {
-  const AGENT_API_TOKEN = process.env.AGENT_API_TOKEN;
-  if (!AGENT_API_TOKEN) {
-    res.status(503).json({ error: "Agent API not configured" });
-    return;
-  }
-  const auth = req.headers.authorization;
-  if (!auth || auth !== `Bearer ${AGENT_API_TOKEN}`) {
-    res.status(401).json({ error: "Invalid or missing agent token" });
-    return;
-  }
-  next();
-};
 
 agentRouter.use(agentAuth);
 
@@ -818,13 +701,6 @@ agentRouter.get("/visits/:id/walk-summary", asyncHandler(async (req, res) => {
 
 // ─── SAVANNAH — OWNER QUESTION ─────────────────────────────────────────────────
 
-function normalizePhone(raw: string): string {
-  const digits = raw.replace(/\D/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  return `+${digits}`;
-}
-
 agentRouter.post("/savannah/owner-question", asyncHandler(async (req, res) => {
   const start = Date.now();
   const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
@@ -981,7 +857,7 @@ agentRouter.get("/openapi.json", (_req, res) => {
     info: {
       title: "Red Cedar Agent API",
       description: "REST API for Jerry and Savannah — voice/SMS agents for Red Cedar Electric",
-      version: "2.2.0",
+      version: "3.0.0",
     },
     servers: [{ url: "https://rceestimator-production.up.railway.app/api/agent" }],
     security: [{ bearerAuth: [] }],
@@ -1246,6 +1122,161 @@ agentRouter.get("/openapi.json", (_req, res) => {
             "200": { description: "{ success, spoken_confirmation }" },
             "502": { description: "SMS delivery failed", content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } } },
             "422": { description: "Validation error", content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } } },
+          },
+        },
+      },
+      "/savannah/lookup-job": {
+        post: {
+          summary: "Look up a scheduled job by phone or address — used by Savannah for existing customer calls",
+          parameters: [idempotencyHeader],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    phone: { type: "string", description: "Customer phone number" },
+                    address: { type: "string", description: "Property address (partial match)" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "{ success, data: { matches[], disambiguation_hint }, spoken_confirmation }" },
+          },
+        },
+      },
+      "/savannah/job-schedule": {
+        post: {
+          summary: "Get current schedule details for a job",
+          parameters: [idempotencyHeader],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: { job_id: { type: "string" } },
+                  required: ["job_id"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "{ success, data: { job_id, scheduled_start, duration_days, ... }, spoken_confirmation }" },
+            "404": { description: "Job not found" },
+          },
+        },
+      },
+      "/savannah/reschedule-job": {
+        post: {
+          summary: "Reschedule a job to a new date — preserves original duration",
+          parameters: [idempotencyHeader],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    job_id: { type: "string" },
+                    new_start_date: { type: "string", format: "date", description: "YYYY-MM-DD" },
+                    new_start_time: { type: "string", description: "HH:MM (optional, defaults to 07:00)" },
+                    reason: { type: "string", description: "Why the customer is rescheduling" },
+                  },
+                  required: ["job_id", "new_start_date", "reason"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "{ success, data: { job_id, scheduled_start, scheduled_end, ... }, spoken_confirmation }" },
+            "400": { description: "Duration change rejected" },
+            "409": { description: "Calendar conflict — Kyle notified" },
+          },
+        },
+      },
+      "/jerry/jobs/ready-to-schedule": {
+        post: {
+          summary: "List contracted jobs ready to be scheduled — Jerry Mode 2",
+          parameters: [idempotencyHeader],
+          responses: {
+            "200": { description: "{ success, data: { jobs[] }, spoken_confirmation }" },
+          },
+        },
+      },
+      "/jerry/jobs/schedule": {
+        post: {
+          summary: "Schedule a contracted job — creates calendar event + notifies customer + Kyle",
+          parameters: [idempotencyHeader],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    job_id: { type: "string" },
+                    start_date: { type: "string", format: "date", description: "YYYY-MM-DD" },
+                    start_time: { type: "string", description: "HH:MM (optional, defaults to 07:00)" },
+                  },
+                  required: ["job_id", "start_date"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "{ success, data: { job_id, scheduled_start, ... }, spoken_confirmation }" },
+            "409": { description: "Calendar conflict" },
+          },
+        },
+      },
+      "/calendar/availability-block": {
+        post: {
+          summary: "Check calendar availability for a block of consecutive working days",
+          parameters: [idempotencyHeader],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    start_date: { type: "string", format: "date", description: "YYYY-MM-DD" },
+                    days_needed: { type: "integer", minimum: 1, maximum: 10 },
+                    exclude_event_id: { type: "string", description: "Google Calendar event ID to ignore (for rescheduling)" },
+                  },
+                  required: ["start_date", "days_needed"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "{ success, data: { available, conflicts[] }, spoken_confirmation }" },
+          },
+        },
+      },
+      "/jerry/visits/active/last-item": {
+        delete: {
+          summary: "Delete the most recent dictated item from the active visit",
+          parameters: [idempotencyHeader],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    item_type: { type: "string", enum: ["observation", "finding", "deficiency", "limitation", "recommendation"], description: "Type of item to delete (omit to delete most recent of any type)" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "{ success, data: { deleted_type, deleted_content }, spoken_confirmation }" },
+            "404": { description: "No items to delete" },
           },
         },
       },

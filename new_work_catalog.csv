@@ -1,16 +1,16 @@
 Section,Code,Name,Unit,Labor Hrs,Material Cost ($),Description
-LINE,LINE-001,200A Meter/Main Combo Panel (40-space 40-circuit) — Mount,EA,2.00,0.00,"Mount and secure 200A meter/main combo panel (40-space 40-circuit). Ref: SQ-D HOM4080M200PCVP / Eaton BR4040B200R. Wiring and breakers separate. PRICE TBD."
-LINE,LINE-001A,200A Meter/Main Combo Panel (30-space 42-circuit) — Mount,EA,2.00,0.00,"Mount and secure 200A meter/main combo panel (30-space 42-circuit). Ref: SQ-D HOM3042M200PC. Wiring and breakers separate. PRICE TBD."
-LINE,LINE-002,200A Main Breaker Panel (40-space 40-circuit) — Mount,EA,2.00,0.00,"Mount and secure 200A main breaker panel (40-space 40-circuit). Ref: SQ-D HOM4080M200PCVP / Eaton BR4040B200R / Siemens P4040B1200CU. Wiring and breakers separate. PRICE TBD."
-LINE,LINE-002A,200A Main Breaker Panel (42-space 42-circuit) — Mount,EA,2.00,0.00,"Mount and secure 200A main breaker panel (42-space 42-circuit). Ref: SQ-D QO142M200P / Eaton BR4242B200R / CH42B200R / Siemens P4242B1200CU. Wiring and breakers separate. PRICE TBD."
-LINE,LINE-002B,200A Main Breaker Panel (30-space 60-circuit) — Mount,EA,2.00,0.00,"Mount and secure 200A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M200PCVP / QO130M200P / Eaton BR3040B200 / Siemens P3040B1200CU. Wiring and breakers separate. PRICE TBD."
-LINE,LINE-003,150A Main Breaker Panel (30-space 60-circuit) — Mount,EA,2.00,0.00,Mount and secure 150A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M150PCVP / Eaton BR3040B150 / Siemens P3040B1150CU. Wiring and breakers separate. PRICE TBD.
-LINE,LINE-003A,150A Main Breaker Panel (40-space 80-circuit) — Mount,EA,2.00,0.00,Mount and secure 150A main breaker panel (40-space 80-circuit). Ref: SQ-D QO140M150P / Eaton BR4040B150 / Siemens P4040B1150CU. Wiring and breakers separate. PRICE TBD.
-LINE,LINE-003B,150A Main Breaker Panel (42-space 42-circuit) — Mount,EA,2.00,0.00,Mount and secure 150A main breaker panel (42-space 42-circuit). Ref: SQ-D QO142M150P / Eaton BR4242B150R / CH42B150R / Siemens P4242B1150CU. Wiring and breakers separate. PRICE TBD.
-LINE,LINE-004,125A Main Breaker Panel (30-space 60-circuit) — Mount,EA,1.75,0.00,Mount and secure 125A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M125PC / QO130M125P / Eaton BR3040B125 / Siemens P3040B1125CU. Wiring and breakers separate. PRICE TBD.
-LINE,LINE-004A,125A Main Breaker Panel (40-space 40-circuit) — Mount,EA,1.75,0.00,Mount and secure 125A main breaker panel (40-space 40-circuit). Ref: Eaton BR4040B125 / Siemens P4040B1125CU. Wiring and breakers separate. PRICE TBD.
-LINE,LINE-005,100A Main Breaker Panel (30-space 40-circuit) — Mount,EA,1.50,0.00,"Mount and secure 100A main breaker panel (30-space 40-circuit). Ref: SQ-D HOM3060M100PC / Eaton BR3040B100 / Siemens P3040B1100CU. Wiring and breakers separate. PRICE TBD."
-LINE,LINE-005A,100A Main Breaker Panel (20-space 40-circuit) — Mount,EA,1.50,0.00,"Mount and secure 100A main breaker panel (20-space 40-circuit). Ref: SQ-D HOM2040M100PC / QO120M100P / Eaton BR2020B100 / Siemens P2040B1100CU. Wiring and breakers separate. PRICE TBD."
+LINE,LINE-001,200A Meter/Main Combo Panel (40-space 40-circuit) — Mount,EA,2.00,375.00,"Mount and secure 200A meter/main combo panel (40-space 40-circuit). Ref: SQ-D SC4080M200PS / Eaton BR4040B200R combo. Wiring and breakers separate."
+LINE,LINE-001A,200A Meter/Main Combo Panel (30-space 42-circuit) — Mount,EA,2.00,225.00,"Mount and secure 200A meter/main combo panel (30-space 42-circuit). Ref: SQ-D SC3042M200PS. Wiring and breakers separate."
+LINE,LINE-002,200A Main Breaker Panel (40-space 40-circuit) — Mount,EA,2.00,210.00,"Mount and secure 200A main breaker panel (40-space 40-circuit). Ref: SQ-D HOM4080M200PCVP / Eaton BR4040B200R / Siemens P4040B1200CU. Wiring and breakers separate."
+LINE,LINE-002A,200A Main Breaker Panel (42-space 42-circuit) — Mount,EA,2.00,275.00,"Mount and secure 200A main breaker panel (42-space 42-circuit). Ref: SQ-D QO142M200P / Eaton BR4242B200R / CH42B200R / Siemens P4242B1200CU. Wiring and breakers separate."
+LINE,LINE-002B,200A Main Breaker Panel (30-space 60-circuit) — Mount,EA,2.00,185.00,"Mount and secure 200A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M200PCVP / QO130M200P / Eaton BR3040B200 / Siemens P3040B1200CU. Wiring and breakers separate."
+LINE,LINE-003,150A Main Breaker Panel (30-space 60-circuit) — Mount,EA,2.00,175.00,"Mount and secure 150A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M150PCVP / Eaton BR3040B150 / Siemens P3040B1150CU. Wiring and breakers separate."
+LINE,LINE-003A,150A Main Breaker Panel (40-space 80-circuit) — Mount,EA,2.00,210.00,"Mount and secure 150A main breaker panel (40-space 80-circuit). Ref: SQ-D QO140M150P / Eaton BR4040B150 / Siemens P4040B1150CU. Wiring and breakers separate."
+LINE,LINE-003B,150A Main Breaker Panel (42-space 42-circuit) — Mount,EA,2.00,250.00,"Mount and secure 150A main breaker panel (42-space 42-circuit). Ref: SQ-D QO142M150P / Eaton BR4242B150R / CH42B150R / Siemens P4242B1150CU. Wiring and breakers separate."
+LINE,LINE-004,125A Main Breaker Panel (30-space 60-circuit) — Mount,EA,1.75,165.00,"Mount and secure 125A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M125PC / QO130M125P / Eaton BR3040B125 / Siemens P3040B1125CU. Wiring and breakers separate."
+LINE,LINE-004A,125A Main Breaker Panel (40-space 40-circuit) — Mount,EA,1.75,185.00,"Mount and secure 125A main breaker panel (40-space 40-circuit). Ref: Eaton BR4040B125 / Siemens P4040B1125CU. Wiring and breakers separate."
+LINE,LINE-005,100A Main Breaker Panel (30-space 40-circuit) — Mount,EA,1.50,140.00,"Mount and secure 100A main breaker panel (30-space 40-circuit). Ref: SQ-D HOM3060M100PC / Eaton BR3040B100 / Siemens P3040B1100CU. Wiring and breakers separate."
+LINE,LINE-005A,100A Main Breaker Panel (20-space 40-circuit) — Mount,EA,1.50,110.00,"Mount and secure 100A main breaker panel (20-space 40-circuit). Ref: SQ-D HOM2040M100PC / QO120M100P / Eaton BR2020B100 / Siemens P2040B1100CU. Wiring and breakers separate."
 LINE,LINE-006,200A Meter Base — Mount,EA,1.50,175.00,Mount meter base to exterior wall. Wiring separate.
 LINE,LINE-007,150A Subpanel (30-space) — Mount,EA,1.50,180.00,Mount subpanel to wall. Feeder and breakers separate.
 LINE,LINE-008,125A Subpanel (24-space) — Mount,EA,1.25,165.00,Mount subpanel to wall. Feeder and breakers separate.
@@ -24,22 +24,22 @@ LINE,LINE-015,Ground Rod Clamp — Install,EA,0.15,8.00,Install clamp on ground 
 LINE,LINE-016,Ground Rod Conductor (bare Cu) — Run,LF,0.005,1.50,Run bare copper grounding electrode conductor from panel to rod.
 LINE,LINE-017,Water Pipe Bond Clamp — Install,EA,0.25,12.00,Install bonding clamp on metal water pipe and connect jumper.
 LINE,LINE-018,Intersystem Bonding Termination — Install,EA,0.25,15.00,Install IBTS device at service for telecom/CATV bonding.
-LINE,LINE-019,15A Single-Pole Breaker — Install,EA,0.25,8.00,Snap in and land 15A single-pole breaker on bus.
-LINE,LINE-020,20A Single-Pole Breaker — Install,EA,0.25,9.00,Snap in and land 20A single-pole breaker on bus.
-LINE,LINE-021,15A AFCI Breaker — Install,EA,0.35,45.00,Snap in and land 15A AFCI breaker. Pigtail to neutral bus.
-LINE,LINE-022,20A AFCI Breaker — Install,EA,0.35,48.00,Snap in and land 20A AFCI breaker. Pigtail to neutral bus.
-LINE,LINE-023,15A GFCI Breaker — Install,EA,0.35,45.00,Snap in and land 15A GFCI breaker. Pigtail to neutral bus.
-LINE,LINE-024,20A GFCI Breaker — Install,EA,0.35,48.00,Snap in and land 20A GFCI breaker. Pigtail to neutral bus.
-LINE,LINE-025,15A Dual-Function (AFCI/GFCI) Breaker — Install,EA,0.35,55.00,Snap in and land 15A dual-function breaker. Pigtail to neutral bus.
-LINE,LINE-026,20A Dual-Function (AFCI/GFCI) Breaker — Install,EA,0.35,58.00,Snap in and land 20A dual-function breaker. Pigtail to neutral bus.
-LINE,LINE-027,20A 240V 2-Pole Breaker — Install,EA,0.35,25.00,Snap in and land 20A 2-pole breaker on bus.
-LINE,LINE-028,30A 240V 2-Pole Breaker — Install,EA,0.35,28.00,Snap in and land 30A 2-pole breaker on bus.
-LINE,LINE-029,40A 240V 2-Pole Breaker — Install,EA,0.35,30.00,Snap in and land 40A 2-pole breaker on bus.
-LINE,LINE-030,50A 240V 2-Pole Breaker — Install,EA,0.35,32.00,Snap in and land 50A 2-pole breaker on bus.
-LINE,LINE-031,60A 240V 2-Pole Breaker — Install,EA,0.35,35.00,Snap in and land 60A 2-pole breaker on bus.
-LINE,LINE-032,100A 240V 2-Pole Breaker — Install,EA,0.35,65.00,Snap in and land 100A 2-pole breaker on bus.
-LINE,LINE-033,200A 240V Main Breaker — Install,EA,0.50,85.00,Snap in and land 200A main breaker.
-LINE,LINE-034,Surge Protective Device (SPD) — Install,EA,0.50,150.00,Install SPD module at panel and connect.
+LINE,LINE-019,15A Single-Pole Breaker — Install,EA,0.28,8.00,Snap in and land 15A single-pole breaker on bus. Includes re-landing time.
+LINE,LINE-020,20A Single-Pole Breaker — Install,EA,0.28,9.00,Snap in and land 20A single-pole breaker on bus. Includes re-landing time.
+LINE,LINE-021,15A AFCI Breaker — Install,EA,0.38,45.00,Snap in and land 15A AFCI breaker. Pigtail to neutral bus. Includes re-landing time.
+LINE,LINE-022,20A AFCI Breaker — Install,EA,0.38,48.00,Snap in and land 20A AFCI breaker. Pigtail to neutral bus. Includes re-landing time.
+LINE,LINE-023,15A GFCI Breaker — Install,EA,0.38,45.00,Snap in and land 15A GFCI breaker. Pigtail to neutral bus. Includes re-landing time.
+LINE,LINE-024,20A GFCI Breaker — Install,EA,0.38,48.00,Snap in and land 20A GFCI breaker. Pigtail to neutral bus. Includes re-landing time.
+LINE,LINE-025,15A Dual-Function (AFCI/GFCI) Breaker — Install,EA,0.38,55.00,Snap in and land 15A dual-function breaker. Pigtail to neutral bus. Includes re-landing time.
+LINE,LINE-026,20A Dual-Function (AFCI/GFCI) Breaker — Install,EA,0.38,58.00,Snap in and land 20A dual-function breaker. Pigtail to neutral bus. Includes re-landing time.
+LINE,LINE-027,20A 240V 2-Pole Breaker — Install,EA,0.38,25.00,Snap in and land 20A 2-pole breaker on bus. Includes re-landing time.
+LINE,LINE-028,30A 240V 2-Pole Breaker — Install,EA,0.38,28.00,Snap in and land 30A 2-pole breaker on bus. Includes re-landing time.
+LINE,LINE-029,40A 240V 2-Pole Breaker — Install,EA,0.38,30.00,Snap in and land 40A 2-pole breaker on bus. Includes re-landing time.
+LINE,LINE-030,50A 240V 2-Pole Breaker — Install,EA,0.38,32.00,Snap in and land 50A 2-pole breaker on bus. Includes re-landing time.
+LINE,LINE-031,60A 240V 2-Pole Breaker — Install,EA,0.38,35.00,Snap in and land 60A 2-pole breaker on bus. Includes re-landing time.
+LINE,LINE-032,100A 240V 2-Pole Breaker — Install,EA,0.38,65.00,Snap in and land 100A 2-pole breaker on bus. Includes re-landing time.
+LINE,LINE-033,200A 240V Main Breaker — Install,EA,0.53,85.00,Snap in and land 200A main breaker. Includes re-landing time.
+LINE,LINE-034,Surge Protective Device (SPD) — Install,EA,0.53,150.00,Install SPD module at panel and connect.
 LINE,LINE-035,4/0 AWG Aluminum Service Conductor — Pull,LF,0.020,1.00,"Pull single 4/0 aluminum conductor. Multiply qty by conductor count (3 for single-phase, 4 for three-phase)."
 LINE,LINE-036,4/0 AWG Copper Service Conductor — Pull,LF,0.020,2.00,"Pull single 4/0 copper conductor. Multiply qty by conductor count (3 for single-phase, 4 for three-phase)."
 LINE,LINE-037,2/0 AWG Aluminum Service Conductor — Pull,LF,0.018,0.70,"Pull single 2/0 aluminum conductor. Multiply qty by conductor count."
@@ -220,4 +220,4 @@ TRIM,TRIM-035,Generator Inlet Box — Mount + Wire,EA,0.50,65.00,Mount power inl
 TRIM,TRIM-036,Interlock Kit — Install at Panel,EA,0.50,85.00,Install mechanical interlock kit on panel cover.
 TRIM,TRIM-037,Manual Transfer Switch — Mount + Wire,EA,2.00,250.00,Mount transfer switch near panel and wire all circuits.
 TRIM,TRIM-038,Hot Tub / Spa GFCI Disconnect — Mount + Wire,EA,0.75,95.00,Mount GFCI disconnect near spa and wire. Whip to spa separate.
-TRIM,TRIM-039,Panel Cover + Label — Final,EA,0.50,0.00,Install panel dead front / cover and apply circuit directory labels.
+TRIM,TRIM-039,Panel Cover + Label — Final,EA,0.50,8.00,Install panel dead front / cover and apply circuit directory labels.
