@@ -7,6 +7,7 @@
 import { prisma } from "../lib/prisma";
 import { createCalendarEvent, deleteCalendarEvent, moveCalendarEvent, checkAvailabilityBlock } from "./schedule";
 import * as notify from "./notifications";
+import { sendRescheduleEmail, sendCancellationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
 
 const TZ = "America/Chicago";
 const DEFAULT_START_TIME = process.env.DEFAULT_JOB_START_TIME ?? "07:00";
@@ -123,7 +124,7 @@ export async function scheduleJob(
     startTime: timeDisplay,
   };
 
-  // Send both SMS
+  // Send both SMS (will silently fail while A2P is pending)
   let customerNotified = false;
   let kyleNotified = false;
 
@@ -138,11 +139,29 @@ export async function scheduleJob(
   const kyleResult = await notify.sendKyleSms(notify.kyleWorkScheduled(jobData));
   kyleNotified = kyleResult !== null;
 
-  // If customer SMS failed and phone was provided, roll back the calendar event
-  if (job.customer.phone && !customerNotified) {
-    await deleteCalendarEvent(event.id).catch(() => {});
-    throw new Error("Customer SMS failed — calendar event rolled back");
+  // Send email notifications (primary channel while A2P is pending)
+  const formatDateLong = (d: Date) => d.toLocaleDateString("en-US", { timeZone: TZ, weekday: "long", month: "long", day: "numeric", year: "numeric" });
+
+  if (job.customer.email) {
+    const { sendConfirmationEmail: sendEmail } = await import("./confirmationEmail");
+    sendEmail({
+      customerName: job.customer.name,
+      customerEmail: job.customer.email,
+      appointmentDate: formatDateLong(scheduledStart),
+      appointmentWindow: `${timeDisplay} – ${formatTimeCT(scheduledEnd)}`,
+      serviceAddress: `${job.property.addressLine1}, ${job.property.city}`,
+      jobType: job.jobType ?? undefined,
+    }).catch(err => console.error("[scheduleJob] Customer email failed:", err));
+    customerNotified = true;
   }
+
+  sendKyleNotificationEmail("Job Scheduled", [
+    `Customer: ${job.customer.name}`,
+    `Phone: ${job.customer.phone ?? "N/A"}`,
+    `Address: ${job.property.addressLine1}, ${job.property.city}`,
+    `Job: ${job.jobType ?? "service work"} — ${durationDays} day(s)`,
+    `Start: ${formatDateLong(scheduledStart)} at ${timeDisplay}`,
+  ].join("\n")).catch(err => console.error("[scheduleJob] Kyle email failed:", err));
 
   // Update the job record
   await prisma.visit.update({
@@ -219,7 +238,7 @@ export async function rescheduleJob(
   const oldDates: notify.DateRange = { start: job.scheduledStart, end: job.scheduledEnd, time: oldTimeDisplay };
   const newDates: notify.DateRange = { start: newStart, end: newEnd, time: newTimeDisplay };
 
-  // Send both SMS
+  // Send both SMS (will silently fail while A2P is pending)
   let customerNotified = false;
   let kyleNotified = false;
 
@@ -234,11 +253,33 @@ export async function rescheduleJob(
   const kyleResult = await notify.sendKyleSms(notify.kyleReschedule(jobData, oldDates, newDates, reason));
   kyleNotified = kyleResult !== null;
 
-  // If customer SMS failed, roll back the calendar move
-  if (job.customer.phone && !customerNotified) {
-    await moveCalendarEvent(job.googleEventId, job.scheduledStart, job.scheduledEnd).catch(() => {});
-    throw new Error("Customer SMS failed — calendar event rolled back");
+  // Send email notifications (primary channel while A2P is pending)
+  const formatDateLong = (d: Date) => d.toLocaleDateString("en-US", { timeZone: TZ, weekday: "long", month: "long", day: "numeric", year: "numeric" });
+
+  if (job.customer.email) {
+    sendRescheduleEmail({
+      customerName: job.customer.name,
+      customerEmail: job.customer.email,
+      oldDate: formatDateLong(oldDates.start),
+      oldWindow: oldDates.time,
+      newDate: formatDateLong(newDates.start),
+      newWindow: newDates.time,
+      serviceAddress: `${job.property.addressLine1}, ${job.property.city}`,
+      jobType: job.jobType ?? undefined,
+    }).catch(err => console.error("[rescheduleJob] Customer email failed:", err));
+    customerNotified = true;
   }
+
+  const kyleRescheduleBody = [
+    `Customer: ${job.customer.name}`,
+    `Phone: ${job.customer.phone ?? "N/A"}`,
+    `Address: ${job.property.addressLine1}, ${job.property.city}`,
+    `Was: ${oldDates.start.toLocaleDateString("en-US", { timeZone: TZ })} at ${oldDates.time}`,
+    `Now: ${newDates.start.toLocaleDateString("en-US", { timeZone: TZ })} at ${newDates.time}`,
+    `Reason: ${reason}`,
+  ].join("\n");
+  sendKyleNotificationEmail("Job Rescheduled", kyleRescheduleBody)
+    .catch(err => console.error("[rescheduleJob] Kyle email failed:", err));
 
   // Update the job record
   await prisma.visit.update({
@@ -258,6 +299,86 @@ export async function rescheduleJob(
     kyleNotified,
     googleEventId: job.googleEventId,
   };
+}
+
+// ─── CANCEL A JOB ──────────────────────────────────────────────────────────────
+
+export async function cancelJob(
+  jobId: string,
+  reason: string,
+): Promise<{ cancelled: true; customerNotified: boolean; kyleNotified: boolean }> {
+  const job = await prisma.visit.findUnique({
+    where: { id: jobId },
+    include: { customer: true, property: true },
+  });
+  if (!job) throw new Error("Job not found");
+  if (!job.scheduledStart || !job.scheduledEnd) throw new Error("Job is not currently scheduled");
+
+  // Delete calendar event if exists
+  if (job.googleEventId) {
+    await deleteCalendarEvent(job.googleEventId).catch(err =>
+      console.error("[cancelJob] Calendar delete failed:", err),
+    );
+  }
+
+  const timeDisplay = formatTimeCT(job.scheduledStart);
+  const formatDateLong = (d: Date) => d.toLocaleDateString("en-US", { timeZone: TZ, weekday: "long", month: "long", day: "numeric", year: "numeric" });
+
+  let customerNotified = false;
+  let kyleNotified = false;
+
+  // Send customer cancellation email
+  if (job.customer.email) {
+    const sent = await sendCancellationEmail({
+      customerName: job.customer.name,
+      customerEmail: job.customer.email,
+      appointmentDate: formatDateLong(job.scheduledStart),
+      serviceAddress: `${job.property.addressLine1}, ${job.property.city}`,
+      jobType: job.jobType ?? undefined,
+    }).catch(() => false);
+    customerNotified = sent === true;
+  }
+
+  // Send customer cancellation SMS (will work once A2P is approved)
+  if (job.customer.phone) {
+    const jobData: notify.JobData = {
+      customerName: job.customer.name,
+      phone: job.customer.phone,
+      address: `${job.property.addressLine1}, ${job.property.city}`,
+      jobType: job.jobType ?? "service work",
+      scheduledStart: job.scheduledStart,
+      scheduledEnd: job.scheduledEnd,
+      durationDays: job.estimatedDurationDays ?? 1,
+      startTime: timeDisplay,
+    };
+    const smsResult = await notify.sendCustomerSms(job.customer.phone, notify.customerCancellation(jobData));
+    if (smsResult) customerNotified = true;
+  }
+
+  // Notify Kyle
+  const kyleBody = [
+    `Customer: ${job.customer.name}`,
+    `Phone: ${job.customer.phone ?? "N/A"}`,
+    `Address: ${job.property.addressLine1}, ${job.property.city}`,
+    `Was: ${formatDateLong(job.scheduledStart)} at ${timeDisplay}`,
+    `Reason: ${reason}`,
+  ].join("\n");
+  const kyleEmailSent = await sendKyleNotificationEmail("Job Cancelled", kyleBody).catch(() => false);
+  const kyleSmsSent = await notify.sendKyleSms(`CANCELLED: ${job.customer.name} — ${formatDateLong(job.scheduledStart)} at ${timeDisplay}. Reason: ${reason}`);
+  kyleNotified = kyleEmailSent === true || kyleSmsSent !== null;
+
+  // Update the job record
+  await prisma.visit.update({
+    where: { id: jobId },
+    data: {
+      status: "cancelled",
+      googleEventId: null,
+      scheduledStart: null,
+      scheduledEnd: null,
+    },
+  });
+
+  return { cancelled: true, customerNotified, kyleNotified };
 }
 
 // ─── ERROR TYPES ────────────────────────────────────────────────────────────────

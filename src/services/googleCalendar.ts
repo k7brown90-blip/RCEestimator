@@ -1,5 +1,7 @@
 import { google } from "googleapis";
 
+import { sendConfirmationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
+
 const TZ = "America/Chicago";
 const BUSINESS_START = 8;  // 8 AM CT
 const BUSINESS_END = 16;   // 4 PM CT
@@ -212,6 +214,8 @@ interface BookingParams {
   customerName: string;
   description: string;
   address: string;
+  phone?: string;
+  email?: string;
 }
 
 interface BookingResult {
@@ -264,6 +268,33 @@ export async function bookAppointment(params: BookingParams): Promise<BookingRes
       end: { dateTime: endUtc.toISOString(), timeZone: TZ },
     },
   });
+
+  const endTimeStr = formatTime(endUtc);
+  const appointmentWindow = `${params.startTime} – ${endTimeStr}`;
+
+  // Send confirmation email to customer (fire-and-forget)
+  if (params.email) {
+    sendConfirmationEmail({
+      customerName: params.customerName,
+      customerEmail: params.email,
+      appointmentDate: params.date,
+      appointmentWindow,
+      serviceAddress: params.address,
+      jobType: params.description,
+    }).catch(err => console.error("[bookAppointment] Customer email failed:", err));
+  }
+
+  // Notify Kyle (fire-and-forget)
+  const kyleBody = [
+    `Customer: ${params.customerName}`,
+    params.phone ? `Phone: ${params.phone}` : null,
+    params.email ? `Email: ${params.email}` : null,
+    `Address: ${params.address}`,
+    `Date: ${params.date} at ${params.startTime}`,
+    `Description: ${params.description}`,
+  ].filter(Boolean).join("\n");
+  sendKyleNotificationEmail("New Estimate Booked", kyleBody)
+    .catch(err => console.error("[bookAppointment] Kyle email failed:", err));
 
   return {
     eventId: event.data.id!,
