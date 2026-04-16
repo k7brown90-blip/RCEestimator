@@ -192,8 +192,8 @@ export function VisitWorkspacePage() {
   const [inspectionStatus, setInspectionStatus] = useState("not_scheduled");
   const [inspectionNotes, setInspectionNotes] = useState("");
 
-  const [signatureName, setSignatureName] = useState("");
-  const [signatureEmail, setSignatureEmail] = useState("");
+  const [signatureName] = useState("");
+  const [signatureEmail] = useState("");
   const [acceptOptionId, setAcceptOptionId] = useState("");
 
   const [changeOrderTitle, setChangeOrderTitle] = useState("");

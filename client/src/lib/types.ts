@@ -79,6 +79,7 @@ export type Visit = {
   customerId: string;
   mode: string;
   purpose?: string | null;
+  jobType?: string | null;
   notes?: string | null;
   visitDate: string;
   property?: Property;
