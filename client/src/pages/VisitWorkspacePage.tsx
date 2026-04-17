@@ -20,7 +20,7 @@ import {
   validateParameterForm,
   type ParameterFormValues,
 } from "../lib/assemblyParameters";
-import { money, parseJsonArray, shortDate } from "../lib/utils";
+import { money, shortDate } from "../lib/utils";
 import { EstimateIntake } from "../components/EstimateIntake";
 import { JobScheduler } from "../components/JobScheduler";
 
@@ -123,45 +123,6 @@ export function VisitWorkspacePage() {
     setLatestCompanionSuggestions([]);
   }, [selectedOptionId]);
 
-  const [requestText, setRequestText] = useState("");
-  const [urgency, setUrgency] = useState("");
-  useEffect(() => {
-    setRequestText(visit?.customerRequest?.requestText ?? "");
-    setUrgency(visit?.customerRequest?.urgency ?? "");
-  }, [visit?.customerRequest?.requestText, visit?.customerRequest?.urgency]);
-
-  useEffect(() => {
-    setServiceSummary(visit?.property?.systemSnapshot?.serviceSummary ?? "");
-    setPanelSummary(visit?.property?.systemSnapshot?.panelSummary ?? "");
-    setGroundingSummary(visit?.property?.systemSnapshot?.groundingSummary ?? "");
-    setWiringMethodSummary(visit?.property?.systemSnapshot?.wiringMethodSummary ?? "");
-    setDeficienciesText(parseJsonArray(visit?.property?.systemSnapshot?.deficienciesJson).join("\n"));
-  }, [visit?.property?.systemSnapshot?.deficienciesJson, visit?.property?.systemSnapshot?.groundingSummary, visit?.property?.systemSnapshot?.panelSummary, visit?.property?.systemSnapshot?.serviceSummary, visit?.property?.systemSnapshot?.wiringMethodSummary]);
-
-  const [observationText, setObservationText] = useState("");
-  const [observationLocation, setObservationLocation] = useState("");
-  const [editingObservationId, setEditingObservationId] = useState<string | null>(null);
-  const [editingObservationText, setEditingObservationText] = useState("");
-  const [editingObservationLocation, setEditingObservationLocation] = useState("");
-  const [findingText, setFindingText] = useState("");
-  const [findingConfidence, setFindingConfidence] = useState("medium");
-  const [editingFindingId, setEditingFindingId] = useState<string | null>(null);
-  const [editingFindingText, setEditingFindingText] = useState("");
-  const [editingFindingConfidence, setEditingFindingConfidence] = useState("medium");
-  const [limitationText, setLimitationText] = useState("");
-  const [editingLimitationId, setEditingLimitationId] = useState<string | null>(null);
-  const [editingLimitationText, setEditingLimitationText] = useState("");
-  const [recommendationText, setRecommendationText] = useState("");
-  const [recommendationPriority, setRecommendationPriority] = useState("Priority 2");
-  const [editingRecommendationId, setEditingRecommendationId] = useState<string | null>(null);
-  const [editingRecommendationText, setEditingRecommendationText] = useState("");
-  const [editingRecommendationPriority, setEditingRecommendationPriority] = useState("Priority 2");
-
-  const [serviceSummary, setServiceSummary] = useState("");
-  const [panelSummary, setPanelSummary] = useState("");
-  const [groundingSummary, setGroundingSummary] = useState("");
-  const [wiringMethodSummary, setWiringMethodSummary] = useState("");
-  const [deficienciesText, setDeficienciesText] = useState("");
 
   const [estimateTitle, setEstimateTitle] = useState("Service Estimate");
   const [optionLabel, setOptionLabel] = useState("Option A");
@@ -228,42 +189,6 @@ export function VisitWorkspacePage() {
     queryClient.invalidateQueries({ queryKey: ["jobs"] });
   };
 
-  const customerRequestMutation = useMutation({
-    mutationFn: () => {
-      const input = { requestText, urgency: urgency || undefined };
-      if (visit?.customerRequest) {
-        return api.updateCustomerRequest(visitId, input);
-      }
-      return api.upsertCustomerRequest(visitId, input);
-    },
-    onSuccess: refreshVisit,
-  });
-  const snapshotMutation = useMutation({
-    mutationFn: () => {
-      if (!visit?.propertyId) throw new Error("Visit property not found");
-      const deficiencies = deficienciesText.split("\n").map((line) => line.trim()).filter(Boolean);
-      return api.updateSnapshot(visit.propertyId, {
-        serviceSummary: serviceSummary || undefined,
-        panelSummary: panelSummary || undefined,
-        groundingSummary: groundingSummary || undefined,
-        wiringMethodSummary: wiringMethodSummary || undefined,
-        deficiencies,
-      });
-    },
-    onSuccess: refreshVisit,
-  });
-  const observationMutation = useMutation({ mutationFn: () => api.addObservation(visitId, { observationText, location: observationLocation || undefined }), onSuccess: () => { setObservationText(""); setObservationLocation(""); refreshVisit(); } });
-  const updateObservationMutation = useMutation({ mutationFn: (input: { id: string; observationText: string; location?: string }) => api.updateObservation(visitId, input.id, { observationText: input.observationText, location: input.location }), onSuccess: () => { setEditingObservationId(null); refreshVisit(); } });
-  const deleteObservationMutation = useMutation({ mutationFn: (observationId: string) => api.deleteObservation(visitId, observationId), onSuccess: refreshVisit });
-  const findingMutation = useMutation({ mutationFn: () => api.addFinding(visitId, { findingText, confidence: findingConfidence }), onSuccess: () => { setFindingText(""); refreshVisit(); } });
-  const updateFindingMutation = useMutation({ mutationFn: (input: { id: string; findingText: string; confidence?: string }) => api.updateFinding(visitId, input.id, { findingText: input.findingText, confidence: input.confidence }), onSuccess: () => { setEditingFindingId(null); refreshVisit(); } });
-  const deleteFindingMutation = useMutation({ mutationFn: (findingId: string) => api.deleteFinding(visitId, findingId), onSuccess: refreshVisit });
-  const limitationMutation = useMutation({ mutationFn: () => api.addLimitation(visitId, { limitationText }), onSuccess: () => { setLimitationText(""); refreshVisit(); } });
-  const updateLimitationMutation = useMutation({ mutationFn: (input: { id: string; limitationText: string }) => api.updateLimitation(visitId, input.id, { limitationText: input.limitationText }), onSuccess: () => { setEditingLimitationId(null); refreshVisit(); } });
-  const deleteLimitationMutation = useMutation({ mutationFn: (limitationId: string) => api.deleteLimitation(visitId, limitationId), onSuccess: refreshVisit });
-  const recommendationMutation = useMutation({ mutationFn: () => api.addRecommendation(visitId, { recommendationText, priority: recommendationPriority }), onSuccess: () => { setRecommendationText(""); refreshVisit(); } });
-  const updateRecommendationMutation = useMutation({ mutationFn: (input: { id: string; recommendationText: string; priority?: string }) => api.updateRecommendation(visitId, input.id, { recommendationText: input.recommendationText, priority: input.priority }), onSuccess: () => { setEditingRecommendationId(null); refreshVisit(); } });
-  const deleteRecommendationMutation = useMutation({ mutationFn: (recommendationId: string) => api.deleteRecommendation(visitId, recommendationId), onSuccess: refreshVisit });
 
   const updateVisitMutation = useMutation({
     mutationFn: () => api.updateVisit(visitId, visitEditForm),
@@ -393,7 +318,6 @@ export function VisitWorkspacePage() {
     return <p className="text-sm text-rce-muted">Loading visit...</p>;
   }
 
-  const deficiencies = parseJsonArray(visit.property?.systemSnapshot?.deficienciesJson);
   const estimateLocked = estimate?.status === "accepted";
   const acceptedWithoutOptions = (estimate?.status === "accepted") && ((estimate?.options.length ?? 0) === 0);
   const status = estimate?.status;
