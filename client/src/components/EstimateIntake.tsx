@@ -1,4 +1,28 @@
-import { useState, useRef, useEffect, type FormEvent } from "react";
+import { useState, useRef, useEffect, useCallback, type FormEvent } from "react";
+
+// Browser SpeechRecognition types
+interface SpeechRecognitionEvent {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+interface SpeechRecognitionErrorEvent {
+  error: string;
+}
+interface SpeechRecognitionInstance extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+}
+
+function getSpeechRecognition(): (new () => SpeechRecognitionInstance) | null {
+  const w = window as unknown as Record<string, unknown>;
+  return (w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null) as (new () => SpeechRecognitionInstance) | null;
+}
 
 interface Message {
   role: "user" | "assistant";
@@ -17,8 +41,62 @@ export function EstimateIntake({ visitId, propertyId }: Props) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const [listening, setListening] = useState(false);
+  const hasSpeechApi = !!getSpeechRecognition();
 
   const token = localStorage.getItem("rce_token") ?? "";
+
+  const stopListening = useCallback(() => {
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    setListening(false);
+  }, []);
+
+  const startListening = useCallback(() => {
+    const SR = getSpeechRecognition();
+    if (!SR) return;
+    const recognition = new SR();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    let finalTranscript = "";
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          finalTranscript += result[0].transcript;
+        } else {
+          interim += result[0].transcript;
+        }
+      }
+      setInput(finalTranscript + interim);
+    };
+
+    recognition.onerror = () => {
+      stopListening();
+    };
+
+    recognition.onend = () => {
+      setListening(false);
+      recognitionRef.current = null;
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }, [stopListening]);
+
+  const toggleListening = useCallback(() => {
+    if (listening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+  }, [listening, stopListening, startListening]);
 
   // Initialize session on mount
   useEffect(() => {
@@ -148,11 +226,29 @@ export function EstimateIntake({ visitId, propertyId }: Props) {
         <input
           type="text"
           className="field flex-1"
-          placeholder="Describe the electrical work…"
+          placeholder={listening ? "Listening…" : "Describe the electrical work…"}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           disabled={loading || !sessionId}
         />
+        {hasSpeechApi && (
+          <button
+            type="button"
+            onClick={toggleListening}
+            disabled={loading || !sessionId}
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border transition disabled:opacity-40 ${
+              listening
+                ? "border-red-400 bg-red-50 text-red-600 animate-pulse"
+                : "border-rce-border bg-rce-bg text-rce-muted hover:bg-rce-surface"
+            }`}
+            title={listening ? "Stop recording" : "Voice input"}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+              <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
+              <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V21h-2a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-3.07A7 7 0 0 0 19 11Z" />
+            </svg>
+          </button>
+        )}
         <button
           type="submit"
           disabled={!input.trim() || loading || !sessionId}
