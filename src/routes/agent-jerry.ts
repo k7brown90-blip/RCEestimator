@@ -447,5 +447,53 @@ jerryRouter.post("/lookup-customer", asyncHandler(async (req, res) => {
   res.json(resp);
 }));
 
+// ─── POST /jerry/lookup-customer-by-email ───────────────────────────────────────
+
+jerryRouter.post("/lookup-customer-by-email", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/jerry/lookup-customer-by-email";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const body = z.object({
+    email: z.string().min(1, "Email is required"),
+  }).parse(req.body);
+
+  const customers = await prisma.customer.findMany({
+    where: { email: { contains: body.email } },
+    include: {
+      properties: { select: { id: true, addressLine1: true, city: true, state: true, postalCode: true } },
+    },
+    take: 5,
+  });
+
+  if (customers.length === 0) {
+    res.status(404).json(errorResponse("NOT_FOUND", "No customers found with that Email", `I couldn't find any customer with the email ${body.email}.`));
+    return;
+  }
+
+  const data = customers.map(c => ({
+    customer_id: c.id,
+    name: c.name,
+    phone: c.phone ?? null,
+    email: c.email ?? null,
+    service_addresses: c.properties.map(p => ({
+      property_id: p.id,
+      address: `${p.addressLine1}, ${p.city}, ${p.state} ${p.postalCode}`,
+    })),
+  }));
+
+  const spoken = customers.length === 1
+    ? `Found ${data[0].name} with email ${data[0].email}${data[0].service_addresses.length > 0 ? ` at ${data[0].service_addresses[0].address}` : ""}.`
+    : `Found ${customers.length} customers matching that email.`;
+
+  const resp = successResponse({ customers: data }, spoken);
+  await saveIdempotency(clientRequestId, endpoint, undefined, resp, "jerry");
+  logAgent("jerry_lookup_customer_by_email", { agent: "jerry", endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });
+  res.json(resp);
+}));
+
 // Zod error handler — must be after all routes
 jerryRouter.use(zodErrorMiddleware as express.ErrorRequestHandler);
