@@ -5,7 +5,7 @@ import { sendConfirmationEmail, sendKyleNotificationEmail } from "./confirmation
 const TZ = "America/Chicago";
 const BUSINESS_START = 8;  // 8 AM CT
 const BUSINESS_END = 16;   // 4 PM CT
-const LOOKAHEAD_DAYS = 7;
+const LOOKAHEAD_DAYS = 30;
 const SLOT_DURATION = 2;   // 2-hour appointment windows
 
 // Comma-separated list of additional calendar IDs to check for conflicts
@@ -109,13 +109,14 @@ function getCalendarClient() {
 
 // ── Main availability function ───────────────────────────────────────────────
 
-export async function getAvailability(): Promise<AvailabilityResponse> {
+export async function getAvailability(startDate?: Date): Promise<AvailabilityResponse> {
   const calendar = getCalendarClient();
   const now = new Date();
-  const nowCt = getCentralParts(now);
+  const baseDate = startDate ?? now;
+  const baseCt = getCentralParts(baseDate);
 
-  // Build 7-day query window starting from today in CT
-  const windowStart = centralToUtc(nowCt.year, nowCt.month, nowCt.day, 0);
+  // Build query window starting from baseDate in CT
+  const windowStart = centralToUtc(baseCt.year, baseCt.month, baseCt.day, 0);
   const endParts = getCentralParts(new Date(windowStart.getTime() + LOOKAHEAD_DAYS * 86_400_000));
   const windowEnd = centralToUtc(endParts.year, endParts.month, endParts.day, 23, 59);
 

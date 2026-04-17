@@ -30,7 +30,14 @@ sharedAgentRouter.post("/check-availability", asyncHandler(async (req, res) => {
   const cached = await checkIdempotency(clientRequestId, endpoint);
   if (cached) { res.json(cached); return; }
 
-  const availability = await getAvailability();
+  // Optional start_date param (YYYY-MM-DD) to check availability from a specific date
+  let startDate: Date | undefined;
+  if (req.body?.start_date && typeof req.body.start_date === "string") {
+    const parsed = new Date(`${req.body.start_date}T12:00:00Z`);
+    if (!isNaN(parsed.getTime())) startDate = parsed;
+  }
+
+  const availability = await getAvailability(startDate);
 
   const spoken = `I have availability for the next ${availability.available_slots.length} business days. Let me share the open slots.`;
 
