@@ -318,6 +318,12 @@ export type CalendarEvent = {
   location: string | null;
 };
 
+export type MonthSchedule = {
+  year: number;
+  month: number;
+  days: Array<{ date: string; dayOfMonth: number; weekday: number; events: CalendarEvent[] }>;
+};
+
 export type WeekSchedule = {
   weekOf: string;
   days: Array<{ date: string; events: CalendarEvent[] }>;

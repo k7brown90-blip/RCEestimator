@@ -146,6 +146,60 @@ export async function getWeekSchedule(): Promise<{ weekOf: string; days: Array<{
   };
 }
 
+/** Get calendar events for an entire month */
+export async function getMonthSchedule(year: number, month: number): Promise<{
+  year: number;
+  month: number;
+  days: Array<{ date: string; dayOfMonth: number; weekday: number; events: CalendarEvent[] }>;
+}> {
+  const calendar = getCalendarClient();
+
+  // First and last day of the month in CT
+  const firstDay = new Date(Date.UTC(year, month - 1, 1, 12)); // noon UTC to avoid boundary issues
+  const rangeStart = startOfDayCT(firstDay);
+  const lastDayNum = new Date(year, month, 0).getDate(); // days in this month
+  const lastDay = new Date(Date.UTC(year, month - 1, lastDayNum, 12));
+  const rangeEnd = endOfDayCT(lastDay);
+
+  const response = await calendar.events.list({
+    calendarId: "primary",
+    timeMin: rangeStart.toISOString(),
+    timeMax: rangeEnd.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+  });
+
+  const events = (response.data.items ?? []).map(mapEvent);
+
+  const days: Array<{ date: string; dayOfMonth: number; weekday: number; events: CalendarEvent[] }> = [];
+  for (let d = 1; d <= lastDayNum; d++) {
+    const dayDate = new Date(Date.UTC(year, month - 1, d, 12));
+    const dayStart = startOfDayCT(dayDate);
+    const dayEndDt = endOfDayCT(dayDate);
+
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: TZ,
+      weekday: "short",
+    }).formatToParts(dayDate);
+    const wdStr = parts.find((p) => p.type === "weekday")!.value;
+    const wdMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+    const dayEvents = events.filter((e) => {
+      const s = new Date(e.start);
+      return s >= dayStart && s < dayEndDt;
+    });
+
+    days.push({
+      date: formatDateCT(dayDate),
+      dayOfMonth: d,
+      weekday: wdMap[wdStr] ?? 0,
+      events: dayEvents,
+    });
+  }
+
+  return { year, month, days };
+}
+
 /** Get next day's schedule — used for Kyle's daily SMS digest */
 export async function getNextDaySchedule(): Promise<{ date: string; events: CalendarEvent[] }> {
   const tomorrow = new Date(Date.now() + 86_400_000);

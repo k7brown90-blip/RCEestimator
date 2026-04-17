@@ -9,7 +9,7 @@ import { resolveItemCable } from "./services/wiringMethodResolver";
 import { generateSupportItems } from "./services/supportItemTriggers";
 import { getAvailability, bookAppointment } from "./services/googleCalendar";
 import { getDailySummary } from "./services/dailySummary";
-import { getTodaySchedule, getWeekSchedule, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
+import { getTodaySchedule, getWeekSchedule, getMonthSchedule, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
 import { sendSms, isFromKyle, KYLE_PHONE } from "./services/twilio";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
 import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail } from "./services/confirmationEmail";
@@ -1076,6 +1076,13 @@ app.get("/crm/schedule/week", asyncHandler(async (_req, res) => {
 
 app.get("/crm/schedule/availability", asyncHandler(async (_req, res) => {
   const data = await getAvailability();
+  res.json(data);
+}));
+
+app.get("/crm/schedule/month", asyncHandler(async (req, res) => {
+  const year = parseInt(req.query.year as string) || new Date().getFullYear();
+  const month = parseInt(req.query.month as string) || (new Date().getMonth() + 1);
+  const data = await getMonthSchedule(year, month);
   res.json(data);
 }));
 
