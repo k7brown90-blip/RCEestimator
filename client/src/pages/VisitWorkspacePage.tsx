@@ -24,11 +24,9 @@ import { money, parseJsonArray, shortDate } from "../lib/utils";
 import { EstimateIntake } from "../components/EstimateIntake";
 import { JobScheduler } from "../components/JobScheduler";
 
-type TabKey = "assessment" | "findings" | "estimate" | "proposal" | "ai";
+type TabKey = "estimate" | "proposal" | "ai";
 
 const TABS: Array<{ key: TabKey; label: string }> = [
-  { key: "assessment", label: "Assessment" },
-  { key: "findings", label: "Findings" },
   { key: "estimate", label: "Estimate" },
   { key: "proposal", label: "Proposal" },
   { key: "ai", label: "AI Estimate" },
@@ -65,7 +63,7 @@ export function VisitWorkspacePage() {
   const { visitId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<TabKey>("assessment");
+  const [activeTab, setActiveTab] = useState<TabKey>("estimate");
   const [showPicker, setShowPicker] = useState(false);
   const [showWorkflowSelector, setShowWorkflowSelector] = useState(false);
   const [activeWorkflow, setActiveWorkflow] = useState<"none" | "service" | "specific_request" | "remodel" | "new_construction">("none");
@@ -442,7 +440,6 @@ export function VisitWorkspacePage() {
             <div>
               <label className="mb-1 block text-xs font-medium text-rce-soft">Mode</label>
               <select className="input w-full" value={visitEditForm.mode} onChange={(e) => setVisitEditForm({ ...visitEditForm, mode: e.target.value })}>
-                <option value="assessment">Assessment</option>
                 <option value="inspection">Inspection</option>
                 <option value="troubleshooting">Troubleshooting</option>
                 <option value="service_call">Service Call</option>
@@ -487,8 +484,8 @@ export function VisitWorkspacePage() {
         ))}
       </div>
 
-      {activeTab === "assessment" ? (
-        <section className="space-y-4">
+      {activeTab === "estimate" ? (
+        <section className="space-y-5 pb-24">
           <JobScheduler
             jobId={visitId}
             status={visit.status ?? "estimate"}
@@ -497,350 +494,6 @@ export function VisitWorkspacePage() {
             durationDays={visit.estimatedDurationDays}
             onScheduled={refreshVisit}
           />
-          <article className="card p-4">
-            <h2 className="mb-2 text-lg font-semibold">Customer Request</h2>
-            <form className="grid gap-3 md:grid-cols-2" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); customerRequestMutation.mutate(); }}>
-              <label className="text-sm font-medium md:col-span-2">
-                Request
-                <textarea className="field mt-1 min-h-24" value={requestText} onChange={(event) => setRequestText(event.target.value)} />
-              </label>
-              <label className="text-sm font-medium">
-                Urgency
-                <input className="field mt-1" value={urgency} onChange={(event) => setUrgency(event.target.value)} />
-              </label>
-              <div className="flex items-end">
-                <button className="btn btn-primary" type="submit" disabled={customerRequestMutation.isPending}>Save Request</button>
-              </div>
-            </form>
-          </article>
-
-          <article className="card p-4">
-            <h2 className="mb-2 text-lg font-semibold">Observations</h2>
-            <form className="mb-3 grid gap-3 md:grid-cols-3" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); observationMutation.mutate(); }}>
-              <label className="text-sm font-medium md:col-span-2">
-                Observation
-                <input className="field mt-1" value={observationText} onChange={(event) => setObservationText(event.target.value)} required />
-              </label>
-              <label className="text-sm font-medium">
-                Location
-                <input className="field mt-1" value={observationLocation} onChange={(event) => setObservationLocation(event.target.value)} />
-              </label>
-              <div className="md:col-span-3">
-                <button className="btn btn-secondary" type="submit" disabled={observationMutation.isPending}>+ Add Observation</button>
-              </div>
-            </form>
-            <div className="space-y-2">
-              {visit.observations?.map((item) => (
-                <div key={item.id} className="rounded-lg border border-rce-border p-3 text-sm">
-                  {editingObservationId === item.id ? (
-                    <form
-                      className="space-y-2"
-                      onSubmit={(event: FormEvent<HTMLFormElement>) => {
-                        event.preventDefault();
-                        updateObservationMutation.mutate({
-                          id: item.id,
-                          observationText: editingObservationText,
-                          location: editingObservationLocation || undefined,
-                        });
-                      }}
-                    >
-                      <input className="field" value={editingObservationText} onChange={(event) => setEditingObservationText(event.target.value)} required />
-                      <input className="field" value={editingObservationLocation} onChange={(event) => setEditingObservationLocation(event.target.value)} placeholder="Location" />
-                      <div className="flex gap-2">
-                        <button className="btn btn-secondary" type="submit" disabled={updateObservationMutation.isPending}>Save</button>
-                        <button className="btn btn-secondary" type="button" onClick={() => setEditingObservationId(null)}>Cancel</button>
-                      </div>
-                    </form>
-                  ) : (
-                    <>
-                      <p>{item.observationText}</p>
-                      <p className="text-xs text-rce-soft">{item.location || "No location"}</p>
-                      <div className="mt-2 flex gap-2">
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => {
-                            setEditingObservationId(item.id);
-                            setEditingObservationText(item.observationText);
-                            setEditingObservationLocation(item.location ?? "");
-                          }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => {
-                            if (window.confirm("Delete this observation?")) {
-                              deleteObservationMutation.mutate(item.id);
-                            }
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </article>
-
-          <article className="card p-4">
-            <h2 className="mb-2 text-lg font-semibold">Existing System Snapshot</h2>
-            <form className="grid gap-3 md:grid-cols-2" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); snapshotMutation.mutate(); }}>
-              <label className="text-sm font-medium">
-                Service
-                <input className="field mt-1" value={serviceSummary} onChange={(event) => setServiceSummary(event.target.value)} placeholder="Not recorded" />
-              </label>
-              <label className="text-sm font-medium">
-                Panel
-                <input className="field mt-1" value={panelSummary} onChange={(event) => setPanelSummary(event.target.value)} placeholder="Not recorded" />
-              </label>
-              <label className="text-sm font-medium">
-                Grounding
-                <input className="field mt-1" value={groundingSummary} onChange={(event) => setGroundingSummary(event.target.value)} placeholder="Not recorded" />
-              </label>
-              <label className="text-sm font-medium">
-                Wiring
-                <input className="field mt-1" value={wiringMethodSummary} onChange={(event) => setWiringMethodSummary(event.target.value)} placeholder="Not recorded" />
-              </label>
-              <label className="text-sm font-medium md:col-span-2">
-                Deficiencies (one per line)
-                <textarea className="field mt-1 min-h-24" value={deficienciesText} onChange={(event) => setDeficienciesText(event.target.value)} />
-              </label>
-              <div className="md:col-span-2">
-                <button className="btn btn-secondary" type="submit" disabled={snapshotMutation.isPending}>Save Snapshot</button>
-              </div>
-            </form>
-            {deficiencies.length ? <p className="mt-2 text-xs text-rce-soft">Current recorded deficiencies: {deficiencies.length}</p> : null}
-          </article>
-        </section>
-      ) : null}
-
-      {activeTab === "findings" ? (
-        <section className="space-y-4">
-          <article className="card p-4">
-            <h2 className="mb-2 text-lg font-semibold">Findings</h2>
-            <form className="mb-3 grid gap-3 md:grid-cols-3" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); findingMutation.mutate(); }}>
-              <label className="text-sm font-medium md:col-span-2">
-                Finding
-                <input className="field mt-1" value={findingText} onChange={(event) => setFindingText(event.target.value)} required />
-              </label>
-              <label className="text-sm font-medium">
-                Confidence
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {(["low", "medium", "high"] as const).map((value) => (
-                    <label key={value} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-full border border-rce-border px-3 text-sm capitalize">
-                      <input
-                        type="radio"
-                        name="findingConfidence"
-                        value={value}
-                        checked={findingConfidence === value}
-                        onChange={(event) => setFindingConfidence(event.target.value)}
-                      />
-                      {value}
-                    </label>
-                  ))}
-                </div>
-              </label>
-              <div className="md:col-span-3">
-                <button className="btn btn-secondary" type="submit" disabled={findingMutation.isPending}>+ Add Finding</button>
-              </div>
-            </form>
-            <div className="space-y-2">
-              {visit.findings?.map((item) => (
-                <div key={item.id} className="rounded-lg border border-rce-border p-3 text-sm">
-                  {editingFindingId === item.id ? (
-                    <form
-                      className="space-y-2"
-                      onSubmit={(event: FormEvent<HTMLFormElement>) => {
-                        event.preventDefault();
-                        updateFindingMutation.mutate({
-                          id: item.id,
-                          findingText: editingFindingText,
-                          confidence: editingFindingConfidence || undefined,
-                        });
-                      }}
-                    >
-                      <input className="field" value={editingFindingText} onChange={(event) => setEditingFindingText(event.target.value)} required />
-                      <select className="field" value={editingFindingConfidence} onChange={(event) => setEditingFindingConfidence(event.target.value)}>
-                        <option value="low">low</option>
-                        <option value="medium">medium</option>
-                        <option value="high">high</option>
-                      </select>
-                      <div className="flex gap-2">
-                        <button className="btn btn-secondary" type="submit" disabled={updateFindingMutation.isPending}>Save</button>
-                        <button className="btn btn-secondary" type="button" onClick={() => setEditingFindingId(null)}>Cancel</button>
-                      </div>
-                    </form>
-                  ) : (
-                    <>
-                      <p>{item.findingText}</p>
-                      <p className="text-xs text-rce-soft">Confidence: {item.confidence || "n/a"}</p>
-                      <div className="mt-2 flex gap-2">
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => {
-                            setEditingFindingId(item.id);
-                            setEditingFindingText(item.findingText);
-                            setEditingFindingConfidence(item.confidence ?? "medium");
-                          }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => {
-                            if (window.confirm("Delete this finding?")) {
-                              deleteFindingMutation.mutate(item.id);
-                            }
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </article>
-
-          <article className="card p-4">
-            <h2 className="mb-2 text-lg font-semibold">Limitations</h2>
-            <form className="mb-3" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); limitationMutation.mutate(); }}>
-              <input className="field" value={limitationText} onChange={(event) => setLimitationText(event.target.value)} placeholder="Enter limitation" required />
-              <button className="btn btn-secondary mt-3" type="submit" disabled={limitationMutation.isPending}>+ Add Limitation</button>
-            </form>
-            <div className="space-y-2">
-              {visit.limitations?.map((item) => (
-                <div key={item.id} className="rounded-lg border border-rce-border p-3 text-sm">
-                  {editingLimitationId === item.id ? (
-                    <form
-                      className="space-y-2"
-                      onSubmit={(event: FormEvent<HTMLFormElement>) => {
-                        event.preventDefault();
-                        updateLimitationMutation.mutate({ id: item.id, limitationText: editingLimitationText });
-                      }}
-                    >
-                      <input className="field" value={editingLimitationText} onChange={(event) => setEditingLimitationText(event.target.value)} required />
-                      <div className="flex gap-2">
-                        <button className="btn btn-secondary" type="submit" disabled={updateLimitationMutation.isPending}>Save</button>
-                        <button className="btn btn-secondary" type="button" onClick={() => setEditingLimitationId(null)}>Cancel</button>
-                      </div>
-                    </form>
-                  ) : (
-                    <>
-                      <p>{item.limitationText}</p>
-                      <div className="mt-2 flex gap-2">
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => {
-                            setEditingLimitationId(item.id);
-                            setEditingLimitationText(item.limitationText);
-                          }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => {
-                            if (window.confirm("Delete this limitation?")) {
-                              deleteLimitationMutation.mutate(item.id);
-                            }
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </article>
-
-          <article className="card p-4">
-            <h2 className="mb-2 text-lg font-semibold">Recommendations</h2>
-            <form className="mb-3 grid gap-3 md:grid-cols-3" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); recommendationMutation.mutate(); }}>
-              <label className="text-sm font-medium md:col-span-2">
-                Recommendation
-                <input className="field mt-1" value={recommendationText} onChange={(event) => setRecommendationText(event.target.value)} required />
-              </label>
-              <label className="text-sm font-medium">
-                Priority
-                <input className="field mt-1" value={recommendationPriority} onChange={(event) => setRecommendationPriority(event.target.value)} />
-              </label>
-              <div className="md:col-span-3">
-                <button className="btn btn-secondary" type="submit" disabled={recommendationMutation.isPending}>+ Add Recommendation</button>
-              </div>
-            </form>
-            <div className="space-y-2">
-              {visit.recommendations?.map((item) => (
-                <div key={item.id} className="rounded-lg border border-rce-border p-3 text-sm">
-                  {editingRecommendationId === item.id ? (
-                    <form
-                      className="space-y-2"
-                      onSubmit={(event: FormEvent<HTMLFormElement>) => {
-                        event.preventDefault();
-                        updateRecommendationMutation.mutate({
-                          id: item.id,
-                          recommendationText: editingRecommendationText,
-                          priority: editingRecommendationPriority || undefined,
-                        });
-                      }}
-                    >
-                      <input className="field" value={editingRecommendationText} onChange={(event) => setEditingRecommendationText(event.target.value)} required />
-                      <input className="field" value={editingRecommendationPriority} onChange={(event) => setEditingRecommendationPriority(event.target.value)} placeholder="Priority" />
-                      <div className="flex gap-2">
-                        <button className="btn btn-secondary" type="submit" disabled={updateRecommendationMutation.isPending}>Save</button>
-                        <button className="btn btn-secondary" type="button" onClick={() => setEditingRecommendationId(null)}>Cancel</button>
-                      </div>
-                    </form>
-                  ) : (
-                    <>
-                      <p>{item.recommendationText}</p>
-                      <p className="text-xs text-rce-soft">{item.priority || "No priority"}</p>
-                      <div className="mt-2 flex gap-2">
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => {
-                            setEditingRecommendationId(item.id);
-                            setEditingRecommendationText(item.recommendationText);
-                            setEditingRecommendationPriority(item.priority ?? "Priority 2");
-                          }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => {
-                            if (window.confirm("Delete this recommendation?")) {
-                              deleteRecommendationMutation.mutate(item.id);
-                            }
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </article>
-        </section>
-      ) : null}
-
-      {activeTab === "estimate" ? (
-        <section className="space-y-5 pb-24">
           {!estimate ? (
             <article className="card rounded-2xl border border-rce-border/70 p-5">
               <h2 className="text-lg font-semibold">Create Estimate</h2>
