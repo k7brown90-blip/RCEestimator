@@ -132,6 +132,11 @@ app.get("/calendar/availability", asyncHandler(async (_req, res) => {
   res.json(data);
 }));
 
+app.post("/calendar/availability", asyncHandler(async (_req, res) => {
+  const data = await getAvailability();
+  res.json(data);
+}));
+
 // ─── CALENDAR BOOKING (no auth — called by Vapi AI assistant) ────────────────
 app.post("/calendar/book", asyncHandler(async (req, res) => {
   const { date, startTime, customerName, description, address, email, phone } = req.body;
