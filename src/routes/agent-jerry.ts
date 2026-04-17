@@ -399,5 +399,53 @@ jerryRouter.delete("/visits/active/last-item", asyncHandler(async (req, res) => 
   res.json(resp);
 }));
 
+// ─── POST /jerry/lookup-customer ────────────────────────────────────────────────
+
+jerryRouter.post("/lookup-customer", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/jerry/lookup-customer";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const body = z.object({
+    name: z.string().min(1, "Customer name is required"),
+  }).parse(req.body);
+
+  const customers = await prisma.customer.findMany({
+    where: { name: { contains: body.name } },
+    include: {
+      properties: { select: { id: true, addressLine1: true, city: true, state: true } },
+    },
+    take: 5,
+  });
+
+  if (customers.length === 0) {
+    res.status(404).json(errorResponse("NOT_FOUND", "No customers found with that name", `I couldn't find any customer named ${body.name}.`));
+    return;
+  }
+
+  const data = customers.map(c => ({
+    customer_id: c.id,
+    name: c.name,
+    phone: c.phone ?? null,
+    email: c.email ?? null,
+    properties: c.properties.map(p => ({
+      property_id: p.id,
+      address: `${p.addressLine1}, ${p.city}, ${p.state}`,
+    })),
+  }));
+
+  const spoken = customers.length === 1
+    ? `Found ${data[0].name}${data[0].properties.length > 0 ? ` at ${data[0].properties[0].address}` : ""}.`
+    : `Found ${customers.length} customers matching "${body.name}".`;
+
+  const resp = successResponse({ customers: data }, spoken);
+  await saveIdempotency(clientRequestId, endpoint, undefined, resp, "jerry");
+  logAgent("jerry_lookup_customer", { agent: "jerry", endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });
+  res.json(resp);
+}));
+
 // Zod error handler — must be after all routes
 jerryRouter.use(zodErrorMiddleware as express.ErrorRequestHandler);
