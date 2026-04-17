@@ -66,6 +66,10 @@ export function customerVisitConfirmation(visit: VisitData): string {
   return `Hi ${firstName(visit.customerName)}, this is Red Cedar Electric. Your free estimate is confirmed for ${formatDayOfWeek(visit.date)} ${formatDate(visit.date)} at ${visit.time}. Kyle will text the morning of with his arrival window. Reply STOP to opt out.`;
 }
 
+export function customerDiagnosticConfirmation(visit: VisitData): string {
+  return `Hi ${firstName(visit.customerName)}, this is Red Cedar Electric. Your diagnostic visit is confirmed for ${formatDayOfWeek(visit.date)} ${formatDate(visit.date)} at ${visit.time}. The fee is $175 flat — up to 2 hours. If you go ahead with the repair, the $175 comes right off the total. Kyle will text the morning of. Reply STOP to opt out.`;
+}
+
 export function customerWorkScheduled(job: JobData): string {
   return `Hi ${firstName(job.customerName)}, this is Red Cedar Electric. Your ${job.jobType} is scheduled to start ${formatDayOfWeek(job.scheduledStart)} ${formatDate(job.scheduledStart)} at ${job.startTime}. We expect ${job.durationDays} day(s) on site. Kyle will text the morning of with arrival details. Reply STOP to opt out.`;
 }

@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 
 import { sendConfirmationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
+import { customerVisitConfirmation, customerDiagnosticConfirmation, kyleNewBooking, sendCustomerSms, sendKyleSms } from "./notifications";
 
 const TZ = "America/Chicago";
 const BUSINESS_START = 8;  // 8 AM CT
@@ -217,6 +218,7 @@ interface BookingParams {
   address: string;
   phone?: string;
   email?: string;
+  visitType?: "estimate" | "diagnostic"; // defaults to "estimate"
 }
 
 interface BookingResult {
@@ -254,10 +256,13 @@ function parseAvailabilityDate(dateStr: string, timeStr: string): Date {
 
 export async function bookAppointment(params: BookingParams): Promise<BookingResult> {
   const calendar = getCalendarClient();
+  const isDiagnostic = params.visitType === "diagnostic";
+  const durationHours = isDiagnostic ? 2 : SLOT_DURATION;
   const startUtc = parseAvailabilityDate(params.date, params.startTime);
-  const endUtc = new Date(startUtc.getTime() + SLOT_DURATION * 3600_000);
+  const endUtc = new Date(startUtc.getTime() + durationHours * 3600_000);
 
-  const summary = `RCE: ${params.customerName} — ${params.description.substring(0, 80)}`;
+  const prefix = isDiagnostic ? "DIAG" : "EST";
+  const summary = `${prefix}: ${params.customerName} — ${params.address.substring(0, 60)}`;
 
   const event = await calendar.events.insert({
     calendarId: "primary",
@@ -281,20 +286,44 @@ export async function bookAppointment(params: BookingParams): Promise<BookingRes
       appointmentDate: params.date,
       appointmentWindow,
       serviceAddress: params.address,
-      jobType: params.description,
+      jobType: isDiagnostic ? `Diagnostic ($175 flat fee) — ${params.description}` : params.description,
     }).catch(err => console.error("[bookAppointment] Customer email failed:", err));
   }
 
-  // Notify Kyle (fire-and-forget)
+  // Send dual SMS notifications (fire-and-forget)
+  const visitData: import("./notifications").VisitData = {
+    customerName: params.customerName,
+    phone: params.phone ?? "",
+    address: params.address,
+    date: startUtc,
+    time: params.startTime,
+    jobDescription: params.description,
+  };
+
+  // Customer SMS
+  if (params.phone) {
+    const customerMsg = isDiagnostic
+      ? customerDiagnosticConfirmation(visitData)
+      : customerVisitConfirmation(visitData);
+    sendCustomerSms(params.phone, customerMsg)
+      .catch(err => console.error("[bookAppointment] Customer SMS failed:", err));
+  }
+
+  // Kyle SMS
+  sendKyleSms(kyleNewBooking({ ...visitData, urgency: isDiagnostic ? "Diagnostic ($175)" : undefined }))
+    .catch(err => console.error("[bookAppointment] Kyle SMS failed:", err));
+
+  // Kyle notification email (fire-and-forget)
   const kyleBody = [
     `Customer: ${params.customerName}`,
     params.phone ? `Phone: ${params.phone}` : null,
     params.email ? `Email: ${params.email}` : null,
     `Address: ${params.address}`,
     `Date: ${params.date} at ${params.startTime}`,
+    `Type: ${isDiagnostic ? "Diagnostic ($175)" : "Free Estimate"}`,
     `Description: ${params.description}`,
   ].filter(Boolean).join("\n");
-  sendKyleNotificationEmail("New Estimate Booked", kyleBody)
+  sendKyleNotificationEmail(isDiagnostic ? "New Diagnostic Booked" : "New Estimate Booked", kyleBody)
     .catch(err => console.error("[bookAppointment] Kyle email failed:", err));
 
   return {

@@ -14,7 +14,8 @@ interface TwilioConfig {
 function getConfig(): TwilioConfig | null {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const phoneNumber = process.env.TWILIO_PHONE_NUMBER;
+  // Prefer TWILIO_SMS_NUMBER (615 SMS line) over TWILIO_PHONE_NUMBER (731 voice line)
+  const phoneNumber = process.env.TWILIO_SMS_NUMBER ?? process.env.TWILIO_PHONE_NUMBER;
 
   if (!accountSid || !authToken || !phoneNumber) {
     return null;
