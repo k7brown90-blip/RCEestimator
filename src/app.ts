@@ -17,6 +17,7 @@ import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
+import { scheduleJob, rescheduleJob, cancelJob, ConflictError } from "./services/scheduling";
 import { savannahRouter } from "./routes/agent-savannah";
 import { jerryRouter } from "./routes/agent-jerry";
 import { sharedAgentRouter } from "./routes/agent-shared";
@@ -1084,6 +1085,55 @@ app.get("/crm/schedule/month", asyncHandler(async (req, res) => {
   const month = parseInt(req.query.month as string) || (new Date().getMonth() + 1);
   const data = await getMonthSchedule(year, month);
   res.json(data);
+}));
+
+// ─── CRM JOB SCHEDULING (JWT-protected) ──────────────────────────────────────
+app.post("/crm/jobs/:jobId/schedule", asyncHandler(async (req, res) => {
+  const jobId = (req as any).params.jobId;
+  const body = z.object({
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+    startTime: z.string().optional(),
+  }).parse(req.body);
+
+  try {
+    const result = await scheduleJob(jobId, body.startDate, body.startTime);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof ConflictError) {
+      res.status(409).json({ error: err.message, conflicts: err.conflicts });
+      return;
+    }
+    throw err;
+  }
+}));
+
+app.post("/crm/jobs/:jobId/reschedule", asyncHandler(async (req, res) => {
+  const jobId = (req as any).params.jobId;
+  const body = z.object({
+    newStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+    reason: z.string().min(1),
+  }).parse(req.body);
+
+  try {
+    const result = await rescheduleJob(jobId, body.newStartDate, null, body.reason);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof ConflictError) {
+      res.status(409).json({ error: err.message, conflicts: err.conflicts });
+      return;
+    }
+    throw err;
+  }
+}));
+
+app.post("/crm/jobs/:jobId/cancel", asyncHandler(async (req, res) => {
+  const jobId = (req as any).params.jobId;
+  const body = z.object({
+    reason: z.string().min(1),
+  }).parse(req.body);
+
+  const result = await cancelJob(jobId, body.reason);
+  res.json(result);
 }));
 
 app.get("/jobs", asyncHandler(async (_req, res) => {

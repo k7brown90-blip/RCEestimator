@@ -1,4 +1,4 @@
-import type { AssemblyTemplate, AvailabilityResponse, CompanionSuggestion, Customer, Estimate, EstimateAssembly, JobSummary, MonthSchedule, Property, Visit, AtomicUnit, ModifierDef, EstimateItem, SupportItem, NECAlert, Lead, WeekSchedule } from "./types";
+import type { AssemblyTemplate, AvailabilityResponse, CompanionSuggestion, Customer, Estimate, EstimateAssembly, JobSummary, MonthSchedule, Property, ScheduleJobResult, Visit, AtomicUnit, ModifierDef, EstimateItem, SupportItem, NECAlert, Lead, WeekSchedule } from "./types";
 
 const API_BASE = "/api";
 
@@ -210,4 +210,11 @@ export const api = {
   weekSchedule: () => request<WeekSchedule>("/crm/schedule/week"),
   monthSchedule: (year: number, month: number) => request<MonthSchedule>(`/crm/schedule/month?year=${year}&month=${month}`),
   calendarAvailability: () => request<AvailabilityResponse>("/crm/schedule/availability"),
+  // ─── Job Scheduling ──────────────────────────────────────────────────────
+  scheduleJob: (jobId: string, input: { startDate: string; startTime?: string }) =>
+    request<ScheduleJobResult>(`/crm/jobs/${jobId}/schedule`, { method: "POST", body: JSON.stringify(input) }),
+  rescheduleJob: (jobId: string, input: { newStartDate: string; reason: string }) =>
+    request<ScheduleJobResult>(`/crm/jobs/${jobId}/reschedule`, { method: "POST", body: JSON.stringify(input) }),
+  cancelJob: (jobId: string, input: { reason: string }) =>
+    request<{ jobId: string; cancelled: boolean }>(`/crm/jobs/${jobId}/cancel`, { method: "POST", body: JSON.stringify(input) }),
 };

@@ -81,7 +81,12 @@ export type Visit = {
   purpose?: string | null;
   jobType?: string | null;
   notes?: string | null;
+  status?: string | null;
   visitDate: string;
+  scheduledStart?: string | null;
+  scheduledEnd?: string | null;
+  estimatedDurationDays?: number | null;
+  googleEventId?: string | null;
   property?: Property;
   customer?: Customer;
   customerRequest?: {
@@ -335,6 +340,16 @@ export type AvailabilityResponse = {
   available_slots: DayAvailability[];
   current_time_central: string;
   current_date_central: string;
+};
+
+export type ScheduleJobResult = {
+  jobId: string;
+  scheduledStart: string;
+  scheduledEnd: string;
+  durationDays: number;
+  customerNotified: boolean;
+  kyleNotified: boolean;
+  googleEventId: string;
 };
 
 export type LeadStatus = "new" | "contacted" | "converted" | "lost";

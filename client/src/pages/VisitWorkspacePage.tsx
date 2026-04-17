@@ -22,6 +22,7 @@ import {
 } from "../lib/assemblyParameters";
 import { money, parseJsonArray, shortDate } from "../lib/utils";
 import { EstimateIntake } from "../components/EstimateIntake";
+import { JobScheduler } from "../components/JobScheduler";
 
 type TabKey = "assessment" | "findings" | "estimate" | "proposal" | "ai";
 
@@ -488,6 +489,14 @@ export function VisitWorkspacePage() {
 
       {activeTab === "assessment" ? (
         <section className="space-y-4">
+          <JobScheduler
+            jobId={visitId}
+            status={visit.status ?? "estimate"}
+            scheduledStart={visit.scheduledStart}
+            scheduledEnd={visit.scheduledEnd}
+            durationDays={visit.estimatedDurationDays}
+            onScheduled={refreshVisit}
+          />
           <article className="card p-4">
             <h2 className="mb-2 text-lg font-semibold">Customer Request</h2>
             <form className="grid gap-3 md:grid-cols-2" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); customerRequestMutation.mutate(); }}>
