@@ -10,6 +10,20 @@ import { prisma } from "../lib/prisma";
 import { v4 as uuidv4 } from "uuid";
 
 const GENERATED_DIR = path.join(process.cwd(), "generated", "documents");
+const LOGO_PATH = path.join(process.cwd(), "public", "logo.png");
+
+// Brand colors from website
+const BRAND = {
+  cedar: "#1e2d12",
+  copper: "#c49818",
+  gold: "#dab830",
+  cream: "#fffbee",
+  mahogany: "#3d1408",
+  text: "#1a1a0e",
+  muted: "#5a5838",
+  divider: "#c49818",
+  footerText: "#8a8668",
+};
 
 function ensureDir() {
   fs.mkdirSync(GENERATED_DIR, { recursive: true });
@@ -51,23 +65,42 @@ interface MaterialListInput {
 }
 
 function addHeader(doc: PDFKit.PDFDocument, title: string) {
-  doc.fontSize(18).text("Red Cedar Electric LLC", { align: "center" });
-  doc.fontSize(10).text("Licensed & Insured · Serving Middle Tennessee", { align: "center" });
-  doc.text("Phone: (615) 857-6389 · service@redcedarelectricllc.com", { align: "center" });
+  const pageWidth = doc.page.width;
+  const margin = 36;
+
+  // Logo — centered at top
+  if (fs.existsSync(LOGO_PATH)) {
+    const logoSize = 72;
+    doc.image(LOGO_PATH, (pageWidth - logoSize) / 2, margin, { width: logoSize, height: logoSize });
+    doc.y = margin + logoSize + 8;
+  }
+
+  doc.fillColor(BRAND.cedar).fontSize(18).text("Red Cedar Electric LLC", { align: "center" });
+  doc.fillColor(BRAND.muted).fontSize(9).text("Licensed & Insured · Serving Middle Tennessee", { align: "center" });
+  doc.text("(615) 857-6389 · service@redcedarelectricllc.com", { align: "center" });
   doc.moveDown(0.5);
-  doc.moveTo(36, doc.y).lineTo(576, doc.y).stroke("#1a5c2e");
+
+  // Gold divider line
+  const y = doc.y;
+  doc.moveTo(margin, y).lineTo(pageWidth - margin, y).lineWidth(1.5).stroke(BRAND.copper);
   doc.moveDown(0.5);
-  doc.fontSize(14).text(title, { underline: true });
+
+  doc.fillColor(BRAND.cedar).fontSize(14).text(title, { underline: true });
   doc.moveDown(0.5);
+  doc.fillColor(BRAND.text);
 }
 
 function addFooter(doc: PDFKit.PDFDocument) {
   doc.moveDown(1);
-  doc.fillColor("#888").fontSize(8).text(
+  // Thin divider
+  const y = doc.y;
+  doc.moveTo(36, y).lineTo(doc.page.width - 36, y).lineWidth(0.5).stroke(BRAND.copper);
+  doc.moveDown(0.3);
+  doc.fillColor(BRAND.footerText).fontSize(8).text(
     `Generated ${new Date().toLocaleString("en-US", { timeZone: "America/Chicago" })} CT — Red Cedar Electric LLC`,
     { align: "center" },
   );
-  doc.fillColor("#333");
+  doc.fillColor(BRAND.text);
 }
 
 async function savePdf(doc: PDFKit.PDFDocument, filename: string): Promise<string> {
@@ -89,24 +122,24 @@ export async function generateContract(input: ContractInput): Promise<{ document
 
   addHeader(doc, "Service Contract");
 
-  doc.fontSize(11);
+  doc.fontSize(11).fillColor(BRAND.text);
   doc.text(`Date: ${new Date().toLocaleDateString("en-US", { timeZone: "America/Chicago" })}`);
   doc.text(`Customer: ${input.customerName}`);
   doc.text(`Service Address: ${input.serviceAddress}`);
   doc.moveDown();
 
-  doc.fontSize(12).text("Scope of Work", { underline: true });
-  doc.fontSize(10).text(input.scopeOfWork);
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Scope of Work", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(10).text(input.scopeOfWork);
   doc.moveDown();
 
-  doc.fontSize(12).text("Pricing", { underline: true });
-  doc.fontSize(10).text(`Total Price: $${input.totalPrice.toFixed(2)}`);
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Pricing", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(10).text(`Total Price: $${input.totalPrice.toFixed(2)}`);
   if (input.estimatedHours) doc.text(`Estimated Duration: ${input.estimatedHours} hours`);
   doc.text(`Payment Terms: ${input.paymentTerms ?? "Due upon completion"}`);
   doc.moveDown();
 
-  doc.fontSize(12).text("Terms & Conditions", { underline: true });
-  doc.fontSize(9);
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Terms & Conditions", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(9);
   doc.text("1. All work performed in accordance with NEC 2017 and local AHJ requirements.");
   doc.text("2. Warranty: 12 months parts and labor from date of completion.");
   doc.text("3. Customer provides access to electrical panel and all work areas.");
@@ -114,7 +147,7 @@ export async function generateContract(input: ContractInput): Promise<{ document
   doc.text("5. Red Cedar Electric LLC is not responsible for pre-existing conditions not specified in this contract.");
   doc.moveDown(2);
 
-  doc.fontSize(11).text("Customer Signature: ____________________________     Date: __________");
+  doc.fillColor(BRAND.text).fontSize(11).text("Customer Signature: ____________________________     Date: __________");
   doc.moveDown(0.5);
   doc.text("Contractor Signature: ____________________________     Date: __________");
 
@@ -140,22 +173,22 @@ export async function generateChangeOrder(input: ChangeOrderInput): Promise<{ do
 
   addHeader(doc, "Change Order");
 
-  doc.fontSize(11);
+  doc.fontSize(11).fillColor(BRAND.text);
   doc.text(`Date: ${new Date().toLocaleDateString("en-US", { timeZone: "America/Chicago" })}`);
   doc.text(`Customer: ${input.customerName}`);
   doc.text(`Service Address: ${input.serviceAddress}`);
   doc.moveDown();
 
-  doc.fontSize(12).text("Original Scope", { underline: true });
-  doc.fontSize(10).text(input.originalScope);
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Original Scope", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(10).text(input.originalScope);
   doc.moveDown();
 
-  doc.fontSize(12).text("Changes Requested", { underline: true });
-  doc.fontSize(10).text(input.changes);
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Changes Requested", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(10).text(input.changes);
   doc.moveDown();
 
-  doc.fontSize(12).text("Price Adjustment", { underline: true });
-  doc.fontSize(10);
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Price Adjustment", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(10);
   const sign = input.priceAdjustment >= 0 ? "+" : "";
   doc.text(`Adjustment: ${sign}$${input.priceAdjustment.toFixed(2)}`);
   doc.text(`New Total: $${input.newTotal.toFixed(2)}`);
@@ -185,22 +218,22 @@ export async function generateWorkOrder(input: WorkOrderInput): Promise<{ docume
 
   addHeader(doc, "Work Order");
 
-  doc.fontSize(11);
+  doc.fontSize(11).fillColor(BRAND.text);
   doc.text(`Scheduled Date: ${input.scheduledDate}`);
   doc.text(`Customer: ${input.customerName}`);
   doc.text(`Service Address: ${input.serviceAddress}`);
   doc.moveDown();
 
-  doc.fontSize(12).text("Scope of Work", { underline: true });
-  doc.fontSize(10).text(input.scopeOfWork);
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Scope of Work", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(10).text(input.scopeOfWork);
   doc.moveDown();
 
-  doc.fontSize(12).text("Materials Needed", { underline: true });
-  doc.fontSize(10).text(input.materialsNeeded);
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Materials Needed", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(10).text(input.materialsNeeded);
   doc.moveDown();
 
-  doc.fontSize(12).text("Field Notes", { underline: true });
-  doc.fontSize(10).text("_______________________________________________");
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Field Notes", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(10).text("_______________________________________________");
   doc.text("_______________________________________________");
   doc.text("_______________________________________________");
 
@@ -226,22 +259,23 @@ export async function generateMaterialList(input: MaterialListInput): Promise<{ 
 
   addHeader(doc, "Material List");
 
-  doc.fontSize(11);
+  doc.fontSize(11).fillColor(BRAND.text);
   doc.text(`Service Address: ${input.serviceAddress}`);
   doc.text(`Date: ${new Date().toLocaleDateString("en-US", { timeZone: "America/Chicago" })}`);
   doc.moveDown();
 
   // Table header
-  doc.fontSize(10);
+  doc.fontSize(10).fillColor(BRAND.cedar);
   const colX = [36, 280, 380, 440];
   doc.text("Item", colX[0], doc.y, { continued: false });
   const headerY = doc.y - 12;
   doc.text("Qty", colX[1], headerY);
   doc.text("Unit", colX[2], headerY);
   doc.text("Supplier", colX[3], headerY);
-  doc.moveTo(36, doc.y + 2).lineTo(576, doc.y + 2).stroke("#ccc");
+  doc.moveTo(36, doc.y + 2).lineTo(576, doc.y + 2).lineWidth(0.5).stroke(BRAND.copper);
   doc.moveDown(0.3);
 
+  doc.fillColor(BRAND.text);
   for (const item of input.items) {
     const y = doc.y;
     doc.text(item.name, colX[0], y);

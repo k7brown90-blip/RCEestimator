@@ -1118,9 +1118,26 @@ export class EstimateService {
       const stream = fs.createWriteStream(filePath);
       doc.pipe(stream);
 
-      doc.fontSize(18).text("Red Cedar Electric LLC - Proposal", { underline: true });
+      const pageWidth = doc.page.width;
+      const margin = 36;
+
+      // Logo
+      const logoPath = path.join(process.cwd(), "public", "logo.png");
+      if (fs.existsSync(logoPath)) {
+        const logoSize = 72;
+        doc.image(logoPath, (pageWidth - logoSize) / 2, margin, { width: logoSize, height: logoSize });
+        doc.y = margin + logoSize + 8;
+      }
+
+      doc.fillColor("#1e2d12").fontSize(18).text("Red Cedar Electric LLC", { align: "center" });
+      doc.fillColor("#5a5838").fontSize(9).text("Licensed & Insured · Serving Middle Tennessee", { align: "center" });
+      doc.text("(615) 857-6389 · service@redcedarelectricllc.com", { align: "center" });
       doc.moveDown(0.5);
-      doc.fontSize(11).text(`Estimate: ${estimate.title}`);
+      doc.moveTo(margin, doc.y).lineTo(pageWidth - margin, doc.y).lineWidth(1.5).stroke("#c49818");
+      doc.moveDown(0.5);
+      doc.fillColor("#1e2d12").fontSize(14).text("Proposal", { underline: true });
+      doc.moveDown(0.5);
+      doc.fillColor("#1a1a0e").fontSize(11).text(`Estimate: ${estimate.title}`);
       doc.text(`Revision: ${estimate.revision}`);
       doc.text(`Date: ${new Date().toLocaleDateString()}`);
       doc.text(`Customer: ${estimate.property.customer?.name ?? "N/A"}`);
@@ -1135,8 +1152,8 @@ export class EstimateService {
           0,
         );
 
-        doc.fontSize(13).text(`Option: ${option.optionLabel}`);
-        doc.fontSize(10).text(option.description ?? "");
+        doc.fillColor("#1e2d12").fontSize(13).text(`Option: ${option.optionLabel}`);
+        doc.fillColor("#1a1a0e").fontSize(10).text(option.description ?? "");
         for (const asm of option.assemblies) {
           doc.text(`- ${asm.assemblyTemplate.name} (${asm.location ?? "unspecified"}) - $${asm.totalCost.toFixed(2)}`);
           for (const component of asm.components) {
@@ -1159,8 +1176,15 @@ export class EstimateService {
       }
 
       doc.moveDown();
-      doc.fontSize(9).text(
+      doc.moveTo(36, doc.y).lineTo(pageWidth - 36, doc.y).lineWidth(0.5).stroke("#c49818");
+      doc.moveDown(0.3);
+      doc.fillColor("#5a5838").fontSize(9).text(
         "This estimate references NEC 2017 for estimating purposes only. It is not a substitute for adopted code, AHJ requirements, utility requirements, or licensed professional judgment.",
+      );
+      doc.moveDown(0.3);
+      doc.fillColor("#8a8668").fontSize(8).text(
+        `Generated ${new Date().toLocaleString("en-US", { timeZone: "America/Chicago" })} CT — Red Cedar Electric LLC`,
+        { align: "center" },
       );
       doc.end();
 

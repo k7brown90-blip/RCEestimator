@@ -41,9 +41,10 @@ export function AppShell({ children }: PropsWithChildren) {
 
   return (
     <div className="min-h-screen bg-rce-bg text-rce-text md:grid md:grid-cols-[236px_1fr]">
-      <aside className="hidden bg-rce-navBg bg-[radial-gradient(circle_at_top_right,rgba(245,158,11,0.22),transparent_45%)] p-4 md:flex md:flex-col md:gap-3">
-        <div className="mb-4 rounded-xl border border-white/10 bg-black/25 px-3 py-3 text-sm font-semibold tracking-[0.08em] text-rce-navText shadow-card">
-          RCE ESTIMATING
+      <aside className="hidden bg-rce-navBg bg-[radial-gradient(circle_at_top_right,rgba(196,152,24,0.15),transparent_45%)] p-4 md:flex md:flex-col md:gap-3">
+        <div className="mb-4 flex flex-col items-center gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-3 shadow-card">
+          <img src="/logo.png" alt="Red Cedar Electric LLC" className="h-16 w-16 rounded-lg object-contain" />
+          <span className="font-heading text-sm font-semibold tracking-wide text-rce-navText">RCE ESTIMATING</span>
         </div>
         {nav.map((item) => (
           <NavItem key={item.to} to={item.to} label={item.label} badge={item.badgeQuery ? newLeadCount : undefined} />
@@ -56,7 +57,7 @@ export function AppShell({ children }: PropsWithChildren) {
         </div>
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-rce-border bg-white p-2 md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-rce-border bg-rce-surface p-2 md:hidden">
         {nav.map((item) => (
           <NavLink
             key={item.to}
