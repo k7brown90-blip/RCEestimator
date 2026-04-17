@@ -29,7 +29,7 @@ export function CalendarPage() {
 
   // Build calendar grid with leading empty cells
   const firstWeekday = schedule?.days[0]?.weekday ?? 0;
-  const cells: Array<{ dayOfMonth: number; events: CalendarEvent[] } | null> = [];
+  const cells: Array<{ dayOfMonth: number; weekday: number; events: CalendarEvent[] } | null> = [];
   for (let i = 0; i < firstWeekday; i++) cells.push(null);
   for (const d of schedule?.days ?? []) cells.push(d);
 
