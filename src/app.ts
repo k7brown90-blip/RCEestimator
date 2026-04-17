@@ -319,7 +319,7 @@ app.post("/leads", asyncHandler(async (req, res) => {
     return;
   }
 
-  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string; contactPreference?: string; leadStatus?: string; bestTimeToReach?: string };
+  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string; contactPreference?: string; leadStatus?: string; bestTimeToReach?: string; customerId?: string; propertyId?: string };
   if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
     res.status(400).json({ error: "name is required" });
     return;
@@ -344,6 +344,8 @@ app.post("/leads", asyncHandler(async (req, res) => {
       contactPreference: body.contactPreference?.trim() || null,
       leadStatus: body.leadStatus?.trim() || "new",
       bestTimeToReach: body.bestTimeToReach?.trim() || null,
+      customerId: body.customerId?.trim() || null,
+      propertyId: body.propertyId?.trim() || null,
     },
   });
 
@@ -2815,16 +2817,25 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
   }
 
   const result = await prisma.$transaction(async (tx) => {
-    const customer = await tx.customer.create({
-      data: {
-        name: lead.name,
-        email: lead.email,
-        phone: lead.phone,
-      },
-    });
+    // Reuse existing customer if lead is already linked (returning customer)
+    let customer: { id: string; name: string; email: string | null; phone: string | null };
+    if (lead.customerId) {
+      const existing = await tx.customer.findUnique({ where: { id: lead.customerId } });
+      if (existing) {
+        customer = existing;
+      } else {
+        customer = await tx.customer.create({ data: { name: lead.name, email: lead.email, phone: lead.phone } });
+      }
+    } else {
+      customer = await tx.customer.create({ data: { name: lead.name, email: lead.email, phone: lead.phone } });
+    }
 
+    // Reuse existing property if lead is already linked
     let property: { id: string } | null = null;
-    if (lead.address) {
+    if (lead.propertyId) {
+      property = await tx.property.findUnique({ where: { id: lead.propertyId }, select: { id: true } });
+    }
+    if (!property && lead.address) {
       property = await tx.property.create({
         data: {
           customerId: customer.id,
@@ -2835,7 +2846,6 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
           postalCode,
         },
       });
-      // Create empty system snapshot (matches existing property creation pattern)
       await tx.systemSnapshot.create({ data: { propertyId: property.id } });
     }
 

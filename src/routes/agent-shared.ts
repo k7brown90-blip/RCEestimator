@@ -22,7 +22,7 @@ sharedAgentRouter.use(agentAuth);
 
 // ─── POST /calendar/check-availability ─────────────────────────────────────────
 
-sharedAgentRouter.post("/check-availability", asyncHandler(async (req, res) => {
+sharedAgentRouter.all("/check-availability", asyncHandler(async (req, res) => {
   const start = Date.now();
   const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
   const endpoint = "/calendar/check-availability";
@@ -32,8 +32,9 @@ sharedAgentRouter.post("/check-availability", asyncHandler(async (req, res) => {
 
   // Optional start_date param (YYYY-MM-DD) to check availability from a specific date
   let startDate: Date | undefined;
-  if (req.body?.start_date && typeof req.body.start_date === "string") {
-    const parsed = new Date(`${req.body.start_date}T12:00:00Z`);
+  const rawStartDate = req.body?.start_date ?? req.query?.start_date;
+  if (rawStartDate && typeof rawStartDate === "string") {
+    const parsed = new Date(`${rawStartDate}T12:00:00Z`);
     if (!isNaN(parsed.getTime())) startDate = parsed;
   }
 
