@@ -15,9 +15,30 @@ import {
   successResponse,
 } from "./agent-helpers";
 import { checkAvailabilityBlock } from "../services/schedule";
+import { getAvailability } from "../services/googleCalendar";
 
 export const sharedAgentRouter = express.Router();
 sharedAgentRouter.use(agentAuth);
+
+// ─── POST /calendar/check-availability ─────────────────────────────────────────
+
+sharedAgentRouter.post("/check-availability", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/calendar/check-availability";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const availability = await getAvailability();
+
+  const spoken = `I have availability for the next ${availability.available_slots.length} business days. Let me share the open slots.`;
+
+  const resp = successResponse(availability, spoken);
+  await saveIdempotency(clientRequestId, endpoint, undefined, resp);
+  logAgent("check_availability", { endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });
+  res.json(resp);
+}));
 
 // ─── POST /calendar/availability-block ──────────────────────────────────────────
 
