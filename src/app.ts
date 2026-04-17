@@ -1068,6 +1068,17 @@ app.use("/agent/calendar", sharedAgentRouter);
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
 app.use(pinAuthMiddleware);
 
+// ─── CRM SCHEDULE ENDPOINTS (JWT-protected) ──────────────────────────────────
+app.get("/crm/schedule/week", asyncHandler(async (_req, res) => {
+  const data = await getWeekSchedule();
+  res.json(data);
+}));
+
+app.get("/crm/schedule/availability", asyncHandler(async (_req, res) => {
+  const data = await getAvailability();
+  res.json(data);
+}));
+
 app.get("/jobs", asyncHandler(async (_req, res) => {
   const visits = await prisma.visit.findMany({
     include: {

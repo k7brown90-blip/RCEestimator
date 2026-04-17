@@ -1,4 +1,4 @@
-import type { AssemblyTemplate, CompanionSuggestion, Customer, Estimate, EstimateAssembly, JobSummary, Property, Visit, AtomicUnit, ModifierDef, EstimateItem, SupportItem, NECAlert, Lead } from "./types";
+import type { AssemblyTemplate, AvailabilityResponse, CompanionSuggestion, Customer, Estimate, EstimateAssembly, JobSummary, Property, Visit, AtomicUnit, ModifierDef, EstimateItem, SupportItem, NECAlert, Lead, WeekSchedule } from "./types";
 
 const API_BASE = "/api";
 
@@ -206,4 +206,7 @@ export const api = {
     request<void>(`/leads/${leadId}`, { method: "DELETE" }),
   convertLead: (leadId: string) =>
     request<{ customer: Customer; property: Property | null; visit: Visit | null; lead: Lead }>(`/leads/${leadId}/convert`, { method: "PATCH" }),
+  // ─── Calendar / Schedule ────────────────────────────────────────────────────
+  weekSchedule: () => request<WeekSchedule>("/crm/schedule/week"),
+  calendarAvailability: () => request<AvailabilityResponse>("/crm/schedule/availability"),
 };

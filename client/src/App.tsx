@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
+import { CalendarPage } from "./pages/CalendarPage";
 import { CustomerDetailPage } from "./pages/CustomerDetailPage";
 import { CustomersPage } from "./pages/CustomersPage";
 import { JobsPage } from "./pages/JobsPage";
@@ -30,6 +31,7 @@ function App() {
               <Routes>
                 <Route path="/" element={<Navigate to="/jobs" replace />} />
                 <Route path="/jobs" element={<JobsPage />} />
+                <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/leads" element={<LeadsPage />} />
                 <Route path="/customers" element={<CustomersPage />} />
                 <Route path="/customers/:customerId" element={<CustomerDetailPage />} />

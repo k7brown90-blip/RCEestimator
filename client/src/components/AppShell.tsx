@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 
 const nav = [
   { to: "/jobs", label: "Jobs" },
+  { to: "/calendar", label: "Calendar" },
   { to: "/leads", label: "Leads", badgeQuery: true },
   { to: "/customers", label: "Customers" },
   { to: "/settings", label: "Settings" },
@@ -55,7 +56,7 @@ export function AppShell({ children }: PropsWithChildren) {
         </div>
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-rce-border bg-white p-2 md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-rce-border bg-white p-2 md:hidden">
         {nav.map((item) => (
           <NavLink
             key={item.to}

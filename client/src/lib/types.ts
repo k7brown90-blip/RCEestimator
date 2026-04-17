@@ -305,6 +305,32 @@ export type NECAlert = {
   severity: "REQUIRED" | "RECOMMENDED" | "ADVISORY";
 };
 
+// ─── Calendar / Schedule Types ───────────────────────────────────────────────
+
+export type CalendarEvent = {
+  id: string;
+  summary: string;
+  description: string | null;
+  start: string;
+  end: string;
+  startLocal: string;
+  endLocal: string;
+  location: string | null;
+};
+
+export type WeekSchedule = {
+  weekOf: string;
+  days: Array<{ date: string; events: CalendarEvent[] }>;
+};
+
+export type AvailabilitySlot = { start: string; end: string };
+export type DayAvailability = { date: string; slots: AvailabilitySlot[]; timezone: string };
+export type AvailabilityResponse = {
+  available_slots: DayAvailability[];
+  current_time_central: string;
+  current_date_central: string;
+};
+
 export type LeadStatus = "new" | "contacted" | "converted" | "lost";
 export type LeadSource = "email" | "phone" | "web";
 
