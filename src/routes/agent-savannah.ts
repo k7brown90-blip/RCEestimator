@@ -403,5 +403,55 @@ savannahRouter.post("/lookup-customer-by-email", asyncHandler(async (req, res) =
   res.json(resp);
 }));
 
+// ─── POST /savannah/update-customer ──────────────────────────────────────────
+
+savannahRouter.post("/update-customer", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/savannah/update-customer";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const body = z.object({
+    customer_id: z.string().min(1, "customer_id is required"),
+    phone: z.string().optional(),
+    email: z.string().optional(),
+    name: z.string().optional(),
+  }).refine(
+    (d) => d.phone || d.email || d.name,
+    { message: "At least one field to update is required (phone, email, or name)" },
+  ).parse(req.body);
+
+  const customer = await prisma.customer.findUnique({ where: { id: body.customer_id } });
+  if (!customer) {
+    res.status(404).json(errorResponse("NOT_FOUND", "Customer not found", "I couldn't find that customer in our system."));
+    return;
+  }
+
+  const updateData: Record<string, string> = {};
+  if (body.phone) updateData.phone = normalizePhone(body.phone);
+  if (body.email) updateData.email = body.email;
+  if (body.name) updateData.name = body.name;
+
+  const updated = await prisma.customer.update({
+    where: { id: body.customer_id },
+    data: updateData,
+  });
+
+  const changes = Object.keys(updateData).join(", ");
+  const spoken = `Updated ${updated.name}'s ${changes}.`;
+
+  const resp = successResponse({
+    customer_id: updated.id,
+    name: updated.name,
+    phone: updated.phone,
+    email: updated.email,
+  }, spoken);
+  await saveIdempotency(clientRequestId, endpoint, undefined, resp, "savannah");
+  logAgent("savannah_update_customer", { agent: "savannah", endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });
+  res.json(resp);
+}));
+
 // Zod error handler — must be after all routes
 savannahRouter.use(zodErrorMiddleware as express.ErrorRequestHandler);
