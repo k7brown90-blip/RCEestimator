@@ -1,4 +1,4 @@
-const CACHE_NAME = "rce-v2";
+const CACHE_NAME = "rce-v3";
 const PRECACHE = ["/", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
