@@ -12,6 +12,68 @@ import { validateEstimate } from "../services/estimateValidator";
 
 const service = new EstimateService(prisma);
 
+/**
+ * Run estimateValidator across every option of an estimate and return
+ * a flat list of error-severity flags. Used to gate status advancement
+ * and PDF generation. If the estimate cannot be loaded, returns an empty
+ * list (the caller will fail downstream with a real error).
+ */
+async function collectValidationErrors(
+  estimateId: string
+): Promise<Array<{ option: string; code: string; message: string; item?: string }>> {
+  const estimate = await prisma.estimate.findUnique({
+    where: { id: estimateId },
+    include: {
+      supportItems: true,
+      options: {
+        include: {
+          items: { include: { atomicUnit: true } },
+        },
+      },
+    },
+  });
+  if (!estimate) return [];
+
+  const errors: Array<{ option: string; code: string; message: string; item?: string }> = [];
+  for (const option of estimate.options) {
+    const result = validateEstimate({
+      items: option.items.map((item) => ({
+        id: item.id,
+        atomicUnitCode: item.atomicUnit.code,
+        atomicUnitCategory: item.atomicUnit.category,
+        atomicUnitName: item.atomicUnit.name,
+        quantity: item.quantity,
+        snapshotLaborHrs: item.snapshotLaborHrs,
+        snapshotLaborRate: item.snapshotLaborRate,
+        snapshotMaterialCost: item.snapshotMaterialCost,
+        catalogMaterialCost: item.atomicUnit.baseMaterialCost,
+        laborCost: item.laborCost,
+        materialCost: item.materialCost,
+      })),
+      supportItems: estimate.supportItems.map((s) => ({
+        supportType: s.supportType,
+        description: s.description,
+        laborHrs: s.laborHrs,
+        laborCost: s.laborCost,
+        otherCost: s.otherCost,
+        totalCost: s.totalCost,
+      })),
+      materialMarkupPct: estimate.materialMarkupPct,
+    });
+    for (const flag of result.flags) {
+      if (flag.severity === "error") {
+        errors.push({
+          option: option.optionLabel || option.id,
+          code: flag.code,
+          message: flag.message,
+          item: flag.item,
+        });
+      }
+    }
+  }
+  return errors;
+}
+
 function createMcpServer(): McpServer {
   const server = new McpServer({
     name: "red-cedar-estimating",
@@ -99,30 +161,6 @@ function createMcpServer(): McpServer {
           {
             type: "text" as const,
             text: JSON.stringify(mods, null, 2),
-          },
-        ],
-      };
-    }
-  );
-
-  server.registerTool(
-    "query_nec_rules",
-    {
-      description:
-        "List active NEC rules with trigger conditions, articles, and prompt text.",
-      inputSchema: {},
-    },
-    async () => {
-      const rules = await prisma.nECRule.findMany({
-        where: { isActive: true },
-        orderBy: { sortOrder: "asc" },
-      });
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(rules, null, 2),
           },
         ],
       };
@@ -567,89 +605,6 @@ function createMcpServer(): McpServer {
   );
 
   server.registerTool(
-    "run_nec_check",
-    {
-      description:
-        "Run NEC 2017 compliance check against estimate items. Returns triggered rules with article references and prompt text.",
-      inputSchema: {
-        estimateId: z.string().describe("The estimate ID"),
-      },
-    },
-    async ({ estimateId }) => {
-      const estimate = await prisma.estimate.findUnique({
-        where: { id: estimateId },
-        include: {
-          options: {
-            include: {
-              items: { include: { atomicUnit: true } },
-            },
-          },
-        },
-      });
-
-      if (!estimate) {
-        return {
-          content: [{ type: "text" as const, text: "Estimate not found" }],
-          isError: true,
-        };
-      }
-
-      const allItems = estimate.options.flatMap((o) => o.items);
-      const unitCodesPresent = [...new Set(allItems.map((i) => i.atomicUnit.code))];
-      const locationsPresent = allItems.map((i) => (i.location ?? "").toLowerCase());
-
-      const allRules = await prisma.nECRule.findMany({
-        where: { isActive: true },
-        orderBy: { sortOrder: "asc" },
-      });
-
-      const prompts: Array<{
-        ruleCode: string;
-        necArticle: string;
-        promptText: string;
-        severity: string;
-      }> = [];
-
-      for (const rule of allRules) {
-        let trigger: { units_present?: string[]; location_contains?: string[] };
-        try {
-          trigger = JSON.parse(rule.triggerCondition);
-        } catch {
-          continue;
-        }
-
-        let fired = false;
-        if (trigger.units_present) {
-          fired = trigger.units_present.some((code) => unitCodesPresent.includes(code));
-        }
-        if (!fired && trigger.location_contains) {
-          fired = trigger.location_contains.some((kw) =>
-            locationsPresent.some((loc) => loc.includes(kw))
-          );
-        }
-
-        if (fired) {
-          prompts.push({
-            ruleCode: rule.ruleCode,
-            necArticle: rule.necArticle,
-            promptText: rule.promptText,
-            severity: rule.severity,
-          });
-        }
-      }
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ estimateId, prompts }, null, 2),
-          },
-        ],
-      };
-    }
-  );
-
-  server.registerTool(
     "get_estimate_summary",
     {
       description:
@@ -739,6 +694,28 @@ function createMcpServer(): McpServer {
     },
     async ({ estimateId, status }) => {
       try {
+        // Gate forward-flow transitions on a clean validator run.
+        if (status === "review" || status === "sent") {
+          const errors = await collectValidationErrors(estimateId);
+          if (errors.length > 0) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(
+                    {
+                      error: `Cannot transition to "${status}" — validator returned ${errors.length} blocking error(s). Fix these and try again.`,
+                      validationErrors: errors,
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
         const updated = await service.changeEstimateStatus(estimateId, status);
         return {
           content: [
@@ -900,6 +877,25 @@ function createMcpServer(): McpServer {
     },
     async ({ estimateId }) => {
       try {
+        const errors = await collectValidationErrors(estimateId);
+        if (errors.length > 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  {
+                    error: `Cannot generate proposal PDF — validator returned ${errors.length} blocking error(s). Fix these and try again.`,
+                    validationErrors: errors,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+            isError: true,
+          };
+        }
         const result = await service.generateProposalPdf(estimateId);
         return {
           content: [

@@ -2144,15 +2144,6 @@ app.get("/job-types", asyncHandler(async (_req, res) => {
   res.json(jobTypes);
 }));
 
-// GET /nec-rules — all active NEC rules
-app.get("/nec-rules", asyncHandler(async (_req, res) => {
-  const rules = await prisma.nECRule.findMany({
-    where: { isActive: true },
-    orderBy: { sortOrder: "asc" },
-  });
-  res.json(rules);
-}));
-
 // ─── ESTIMATE ITEMS (atomic) ─────────────────────────────────────────────────
 
 const itemModifierSchema = z.object({
@@ -2383,79 +2374,6 @@ app.delete(
   })
 );
 
-// POST /estimates/:estimateId/nec-check — run NEC validation against estimate items
-app.post(
-  "/estimates/:estimateId/nec-check",
-  asyncHandler(async (req, res) => {
-    const estimateId = readParam(req, "estimateId");
-
-    const estimate = await prisma.estimate.findUnique({
-      where: { id: estimateId },
-      include: {
-        options: {
-          include: {
-            items: {
-              include: { atomicUnit: true },
-            },
-          },
-        },
-      },
-    });
-    if (!estimate) {
-      res.status(404).json({ error: "Estimate not found" });
-      return;
-    }
-
-    // Collect all unit codes and locations across all options/items
-    const allItems = estimate.options.flatMap((o) => o.items);
-    const unitCodesPresent = [...new Set(allItems.map((i) => i.atomicUnit.code))];
-    const locationsPresent = allItems.map((i) => (i.location ?? "").toLowerCase());
-
-    const allRules = await prisma.nECRule.findMany({
-      where: { isActive: true },
-      orderBy: { sortOrder: "asc" },
-    });
-
-    const prompts: Array<{
-      ruleCode: string;
-      necArticle: string;
-      promptText: string;
-      severity: string;
-    }> = [];
-
-    for (const rule of allRules) {
-      let trigger: { units_present?: string[]; location_contains?: string[] };
-      try {
-        trigger = JSON.parse(rule.triggerCondition);
-      } catch {
-        continue;
-      }
-
-      let fired = false;
-
-      if (trigger.units_present) {
-        fired = trigger.units_present.some((code) => unitCodesPresent.includes(code));
-      }
-      if (!fired && trigger.location_contains) {
-        fired = trigger.location_contains.some((kw) =>
-          locationsPresent.some((loc) => loc.includes(kw))
-        );
-      }
-
-      if (fired) {
-        prompts.push({
-          ruleCode: rule.ruleCode,
-          necArticle: rule.necArticle,
-          promptText: rule.promptText,
-          severity: rule.severity,
-        });
-      }
-    }
-
-    res.json({ estimateId, prompts });
-  })
-);
-
 // POST /estimates/:estimateId/support-items — auto-generate support scope
 app.post(
   "/estimates/:estimateId/support-items/generate",
@@ -2670,6 +2588,7 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
       input: message,
       tools: tools.length > 0 ? tools : undefined,
       stream: false,
+      max_output_tokens: 16000,
       ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
     } as Parameters<typeof openai.responses.create>[0]);
 
@@ -2707,8 +2626,8 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
 // ─── CHATKIT HISTORY ──────────────────────────────────────────────────────
 
 app.get("/chatkit/history", asyncHandler(async (req, res) => {
-  const sessionId = readParam(req, "sessionId");
-  const visitId = readParam(req, "visitId");
+  const sessionId = readQuery(req, "sessionId");
+  const visitId = readQuery(req, "visitId");
   if (!sessionId && !visitId) {
     return res.status(400).json({ error: "Provide sessionId or visitId" });
   }
@@ -2720,6 +2639,127 @@ app.get("/chatkit/history", asyncHandler(async (req, res) => {
     orderBy: { createdAt: "asc" },
   });
   res.json({ messages });
+}));
+
+// ─── CHATKIT SESSIONS (list distinct sessions for a visit) ────────────────
+
+app.get("/chatkit/sessions", asyncHandler(async (req, res) => {
+  const visitId = readQuery(req, "visitId");
+  if (!visitId) {
+    return res.status(400).json({ error: "visitId is required" });
+  }
+  // Group by sessionId to surface one row per conversation
+  const grouped = await prisma.chatMessage.groupBy({
+    by: ["sessionId"],
+    where: { visitId },
+    _count: { _all: true },
+    _min: { createdAt: true },
+    _max: { createdAt: true },
+  });
+  const sessions = grouped
+    .map((g) => ({
+      sessionId: g.sessionId,
+      messageCount: g._count._all,
+      firstMessageAt: g._min.createdAt,
+      lastMessageAt: g._max.createdAt,
+    }))
+    .sort((a, b) => {
+      const aT = a.lastMessageAt?.getTime() ?? 0;
+      const bT = b.lastMessageAt?.getTime() ?? 0;
+      return bT - aT;
+    });
+  res.json({ sessions });
+}));
+
+// ─── CHATKIT EXPORT (JSON / Markdown / TXT) ───────────────────────────────
+
+app.get("/chatkit/export", asyncHandler(async (req, res) => {
+  const sessionId = readQuery(req, "sessionId");
+  const visitId = readQuery(req, "visitId");
+  const format = (readQuery(req, "format") ?? "json").toLowerCase();
+  if (!sessionId && !visitId) {
+    return res.status(400).json({ error: "Provide sessionId or visitId" });
+  }
+
+  const where: Record<string, string> = {};
+  if (sessionId) where.sessionId = sessionId;
+  if (visitId) where.visitId = visitId;
+
+  const messages = await prisma.chatMessage.findMany({
+    where,
+    orderBy: { createdAt: "asc" },
+  });
+
+  // Pull a little visit context for the header
+  let visitHeader: { id: string; visitDate: Date; mode: string; purpose: string | null; customer: string; address: string } | null = null;
+  const headerVisitId = visitId ?? messages.find((m) => m.visitId)?.visitId ?? null;
+  if (headerVisitId) {
+    const visit = await prisma.visit.findUnique({
+      where: { id: headerVisitId },
+      include: { customer: true, property: true },
+    });
+    if (visit) {
+      visitHeader = {
+        id: visit.id,
+        visitDate: visit.visitDate,
+        mode: visit.mode,
+        purpose: visit.purpose,
+        customer: visit.customer.name,
+        address: [visit.property.addressLine1, visit.property.city, visit.property.state, visit.property.postalCode]
+          .filter(Boolean).join(", "),
+      };
+    }
+  }
+
+  const slug = (visitHeader?.address ?? sessionId ?? visitId ?? "chat")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  const dateStamp = new Date().toISOString().slice(0, 10);
+
+  if (format === "json") {
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename="rce-chat-${slug}-${dateStamp}.json"`);
+    res.json({ visit: visitHeader, sessionId: sessionId ?? null, visitId: visitId ?? null, messages });
+    return;
+  }
+
+  if (format === "md" || format === "markdown" || format === "txt") {
+    const lines: string[] = [];
+    lines.push(`# RCE AI Estimator Conversation`);
+    lines.push("");
+    if (visitHeader) {
+      lines.push(`- **Customer:** ${visitHeader.customer}`);
+      lines.push(`- **Address:** ${visitHeader.address}`);
+      lines.push(`- **Visit:** ${visitHeader.id} (${visitHeader.mode}) — ${visitHeader.visitDate.toISOString().slice(0, 10)}`);
+      if (visitHeader.purpose) lines.push(`- **Purpose:** ${visitHeader.purpose}`);
+    }
+    if (sessionId) lines.push(`- **Session:** ${sessionId}`);
+    lines.push(`- **Exported:** ${new Date().toISOString()}`);
+    lines.push(`- **Messages:** ${messages.length}`);
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+    for (const m of messages) {
+      const ts = m.createdAt.toISOString();
+      const who = m.role === "user" ? "User" : "Assistant";
+      lines.push(`## ${who} — ${ts}`);
+      if (m.openaiResponseId) lines.push(`*OpenAI response: ${m.openaiResponseId}*`);
+      lines.push("");
+      lines.push(m.content);
+      lines.push("");
+    }
+    const body = lines.join("\n");
+    const ext = format === "txt" ? "txt" : "md";
+    const ctype = format === "txt" ? "text/plain" : "text/markdown";
+    res.setHeader("Content-Type", `${ctype}; charset=utf-8`);
+    res.setHeader("Content-Disposition", `attachment; filename="rce-chat-${slug}-${dateStamp}.${ext}"`);
+    res.send(body);
+    return;
+  }
+
+  res.status(400).json({ error: `Unsupported format: ${format}. Use json, md, or txt.` });
 }));
 
 // ─── LEADS (authenticated) ─────────────────────────────────────────────────

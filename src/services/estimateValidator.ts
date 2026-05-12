@@ -104,7 +104,7 @@ export function validateEstimate(input: ValidationInput): ValidationResult {
       const deviation = Math.abs(snap - catalog) / catalog;
       if (deviation > CATALOG_DEVIATION_THRESHOLD) {
         flags.push({
-          severity: "warning",
+          severity: "error",
           code: "CATALOG_DEVIATION",
           message: `${item.atomicUnitCode} snapshot material $${snap.toFixed(2)} differs from catalog $${catalog.toFixed(2)} by ${(deviation * 100).toFixed(0)}%. Verify pricing is current.`,
           item: item.atomicUnitCode,

@@ -501,17 +501,6 @@ model SupportItem {
   estimate       Estimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
 }
 
-model NECRule {
-  id                String   @id @default(cuid())
-  ruleCode          String   @unique  // NEC-210.8-A
-  necArticle        String
-  triggerCondition  String   // JSON describing trigger logic
-  promptText        String
-  severity          String   // REQUIRED, RECOMMENDED, ADVISORY
-  isActive          Boolean  @default(true)
-  sortOrder         Int      @default(0)
-}
-
 model Preset {
   id          String   @id @default(cuid())
   name        String
@@ -642,4 +631,7 @@ model ChatMessage {
   content          String
   openaiResponseId String?
   createdAt        DateTime @default(now())
+
+  @@index([visitId, createdAt])
+  @@index([sessionId, createdAt])
 }

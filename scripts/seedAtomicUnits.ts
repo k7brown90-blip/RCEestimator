@@ -1,5 +1,5 @@
 /**
- * Seed: Atomic Units (CSV-driven), Modifier Definitions, NEC Rules, Presets, Job Types
+ * Seed: Atomic Units (CSV-driven), Modifier Definitions, Presets, Job Types
  *
  * System B Migration — loads ~442 atomic units from three CSV catalog files
  * instead of the previous 79 hardcoded System A units.
@@ -325,159 +325,6 @@ const MODIFIER_DEFS: ModifierInput[] = [
   { modifierType: "SCHEDULE", value: "EMERGENCY", label: "Emergency Call", laborMultiplier: 2.00, materialMult: 1.00, appliesTo: "ESTIMATE", sortOrder: 3, isDefault: false },
 ];
 
-// ─── NEC RULES ──────────────────────────────────────────────────────────────────
-// Updated to System B codes
-
-type NECRuleInput = {
-  ruleCode: string;
-  necArticle: string;
-  triggerCondition: string; // JSON string
-  promptText: string;
-  severity: string; // REQUIRED | RECOMMENDED | ADVISORY
-  sortOrder: number;
-};
-
-const NEC_RULES: NECRuleInput[] = [
-  {
-    ruleCode: "NEC-210.8-A",
-    necArticle: "210.8(A)",
-    triggerCondition: JSON.stringify({
-      location_contains: ["kitchen", "bath", "garage", "outdoor", "exterior"],
-    }),
-    promptText:
-      "GFCI protection required for receptacles in this location. " +
-      "Add GFCI receptacle (TRIM-D03/D04 or TRIM-T03/T04) or GFCI breaker (LINE-023/024).",
-    severity: "REQUIRED",
-    sortOrder: 10,
-  },
-  {
-    ruleCode: "NEC-210.11-C1",
-    necArticle: "210.11(C)(1)",
-    triggerCondition: JSON.stringify({
-      location_contains: ["kitchen"],
-    }),
-    promptText:
-      "Minimum 2 small-appliance branch circuits required in kitchen. Verify circuit count.",
-    severity: "REQUIRED",
-    sortOrder: 20,
-  },
-  {
-    ruleCode: "NEC-210.11-C2",
-    necArticle: "210.11(C)(2)",
-    triggerCondition: JSON.stringify({
-      location_contains: ["laundry", "washer"],
-    }),
-    promptText:
-      "Dedicated laundry circuit required. Verify 20A circuit is on estimate.",
-    severity: "REQUIRED",
-    sortOrder: 30,
-  },
-  {
-    ruleCode: "NEC-210.12",
-    necArticle: "210.12(A)",
-    triggerCondition: JSON.stringify({
-      location_contains: ["bedroom"],
-    }),
-    promptText:
-      "AFCI protection required for bedroom circuits. " +
-      "Add AFCI breaker (LINE-021/022) or dual-function breaker (LINE-025/026).",
-    severity: "REQUIRED",
-    sortOrder: 40,
-  },
-  {
-    ruleCode: "NEC-230.71",
-    necArticle: "230.71",
-    triggerCondition: JSON.stringify({
-      units_present: [
-        "LINE-001", "LINE-001A",
-        "LINE-002", "LINE-002A", "LINE-002B",
-        "LINE-006", "LINE-011",
-      ],
-    }),
-    promptText:
-      "Service entrance work detected. Verify exterior disconnect (LINE-012) is included if required.",
-    severity: "RECOMMENDED",
-    sortOrder: 50,
-  },
-  {
-    ruleCode: "NEC-250.50",
-    necArticle: "250.50",
-    triggerCondition: JSON.stringify({
-      units_present: [
-        "LINE-001", "LINE-001A",
-        "LINE-002", "LINE-002A", "LINE-002B",
-        "LINE-003", "LINE-003A", "LINE-003B",
-        "LINE-004", "LINE-004A",
-        "LINE-005", "LINE-005A",
-        "LINE-006",
-      ],
-    }),
-    promptText:
-      "Panel or service work detected. Grounding electrode system required — " +
-      "add ground rod (LINE-014), clamp (LINE-015), and conductor (LINE-016) if not existing.",
-    severity: "REQUIRED",
-    sortOrder: 60,
-  },
-  {
-    ruleCode: "NEC-250.104",
-    necArticle: "250.104",
-    triggerCondition: JSON.stringify({
-      location_contains: ["water heater", "gas"],
-    }),
-    promptText:
-      "Bonding of metal water piping required. Verify water pipe bond clamp (LINE-017) is on estimate.",
-    severity: "REQUIRED",
-    sortOrder: 70,
-  },
-  {
-    ruleCode: "NEC-285.1",
-    necArticle: "285",
-    triggerCondition: JSON.stringify({
-      units_present: [
-        "LINE-001", "LINE-001A",
-        "LINE-002", "LINE-002A", "LINE-002B",
-      ],
-    }),
-    promptText:
-      "Panel replacement / new service — SPD recommended (required per 2020 NEC). Add LINE-034 (SPD)?",
-    severity: "RECOMMENDED",
-    sortOrder: 80,
-  },
-  {
-    ruleCode: "NEC-406.12",
-    necArticle: "406.12",
-    triggerCondition: JSON.stringify({
-      units_present: ["TRIM-D01", "TRIM-D02", "TRIM-T01", "TRIM-T02"],
-    }),
-    promptText:
-      "Tamper-resistant receptacles required in dwelling units per 406.12.",
-    severity: "ADVISORY",
-    sortOrder: 90,
-  },
-  {
-    ruleCode: "NEC-680.21",
-    necArticle: "680.21",
-    triggerCondition: JSON.stringify({
-      units_present: ["TRIM-038"],
-    }),
-    promptText:
-      "GFCI protection required for pool/spa circuits. Verify GFCI disconnect (TRIM-038) is in scope.",
-    severity: "REQUIRED",
-    sortOrder: 100,
-  },
-  {
-    ruleCode: "NEC-680.26",
-    necArticle: "680.26",
-    triggerCondition: JSON.stringify({
-      units_present: ["TRIM-038"],
-    }),
-    promptText:
-      "Equipotential bonding required for pool/spa. Verify bonding clamp (LINE-017) is on estimate.",
-    severity: "REQUIRED",
-    sortOrder: 110,
-  },
-];
-
 // ─── PRESETS ────────────────────────────────────────────────────────────────────
 // Updated to System B codes
 
@@ -743,32 +590,7 @@ async function seed() {
   }
   console.log(`  ✓ ${MODIFIER_DEFS.length} modifier definitions`);
 
-  // ── 5. NEC rules ────────────────────────────────────────────────────────────
-  for (const rule of NEC_RULES) {
-    await prisma.nECRule.upsert({
-      where: { ruleCode: rule.ruleCode },
-      update: {
-        necArticle: rule.necArticle,
-        triggerCondition: rule.triggerCondition,
-        promptText: rule.promptText,
-        severity: rule.severity,
-        sortOrder: rule.sortOrder,
-        isActive: true,
-      },
-      create: {
-        ruleCode: rule.ruleCode,
-        necArticle: rule.necArticle,
-        triggerCondition: rule.triggerCondition,
-        promptText: rule.promptText,
-        severity: rule.severity,
-        sortOrder: rule.sortOrder,
-        isActive: true,
-      },
-    });
-  }
-  console.log(`  ✓ ${NEC_RULES.length} NEC rules`);
-
-  // ── 6. Presets ──────────────────────────────────────────────────────────────
+  // ── 5. Presets ──────────────────────────────────────────────────────────────
   for (const preset of PRESETS) {
     const existing = await prisma.preset.findFirst({
       where: { name: preset.name },
@@ -825,6 +647,30 @@ async function seed() {
     });
   }
   console.log(`  ✓ ${JOB_TYPES.length} job types`);
+
+  // ── 8. Regression guard — fail if any active TRIM/LINE/DIAG row is still
+  //      priced at $0 with "PRICE TBD" in the description. Every catalog row
+  //      must carry a real landed cost before it can ship to production.
+  const tbd = await prisma.atomicUnit.findMany({
+    where: {
+      isActive: true,
+      baseMaterialCost: 0,
+      description: { contains: "PRICE TBD" },
+    },
+    select: { catalog: true, code: true, name: true },
+  });
+  if (tbd.length > 0) {
+    console.error(
+      `\n✗ Seed regression guard FAILED: ${tbd.length} active row(s) still flagged "PRICE TBD" at $0:`
+    );
+    for (const row of tbd) {
+      console.error(`    [${row.catalog}] ${row.code} — ${row.name}`);
+    }
+    console.error(
+      "  Fill in real landed prices in the CSV and re-run the seed before deploying.\n"
+    );
+    process.exit(2);
+  }
 
   console.log("\nAtomic seed complete.");
 }

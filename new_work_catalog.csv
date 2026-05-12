@@ -1,16 +1,16 @@
 Section,Code,Name,Unit,Labor Hrs,Material Cost ($),Description
-LINE,LINE-001,200A Meter/Main Combo Panel (40-space 40-circuit) — Mount,EA,2.00,375.00,"Mount and secure 200A meter/main combo panel (40-space 40-circuit). Ref: SQ-D SC4080M200PS / Eaton BR4040B200R combo. Wiring and breakers separate."
-LINE,LINE-001A,200A Meter/Main Combo Panel (30-space 42-circuit) — Mount,EA,2.00,225.00,"Mount and secure 200A meter/main combo panel (30-space 42-circuit). Ref: SQ-D SC3042M200PS. Wiring and breakers separate."
-LINE,LINE-002,200A Main Breaker Panel (40-space 40-circuit) — Mount,EA,2.00,210.00,"Mount and secure 200A main breaker panel (40-space 40-circuit). Ref: SQ-D HOM4080M200PCVP / Eaton BR4040B200R / Siemens P4040B1200CU. Wiring and breakers separate."
-LINE,LINE-002A,200A Main Breaker Panel (42-space 42-circuit) — Mount,EA,2.00,275.00,"Mount and secure 200A main breaker panel (42-space 42-circuit). Ref: SQ-D QO142M200P / Eaton BR4242B200R / CH42B200R / Siemens P4242B1200CU. Wiring and breakers separate."
-LINE,LINE-002B,200A Main Breaker Panel (30-space 60-circuit) — Mount,EA,2.00,185.00,"Mount and secure 200A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M200PCVP / QO130M200P / Eaton BR3040B200 / Siemens P3040B1200CU. Wiring and breakers separate."
-LINE,LINE-003,150A Main Breaker Panel (30-space 60-circuit) — Mount,EA,2.00,175.00,"Mount and secure 150A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M150PCVP / Eaton BR3040B150 / Siemens P3040B1150CU. Wiring and breakers separate."
-LINE,LINE-003A,150A Main Breaker Panel (40-space 80-circuit) — Mount,EA,2.00,210.00,"Mount and secure 150A main breaker panel (40-space 80-circuit). Ref: SQ-D QO140M150P / Eaton BR4040B150 / Siemens P4040B1150CU. Wiring and breakers separate."
-LINE,LINE-003B,150A Main Breaker Panel (42-space 42-circuit) — Mount,EA,2.00,250.00,"Mount and secure 150A main breaker panel (42-space 42-circuit). Ref: SQ-D QO142M150P / Eaton BR4242B150R / CH42B150R / Siemens P4242B1150CU. Wiring and breakers separate."
-LINE,LINE-004,125A Main Breaker Panel (30-space 60-circuit) — Mount,EA,1.75,165.00,"Mount and secure 125A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M125PC / QO130M125P / Eaton BR3040B125 / Siemens P3040B1125CU. Wiring and breakers separate."
-LINE,LINE-004A,125A Main Breaker Panel (40-space 40-circuit) — Mount,EA,1.75,185.00,"Mount and secure 125A main breaker panel (40-space 40-circuit). Ref: Eaton BR4040B125 / Siemens P4040B1125CU. Wiring and breakers separate."
-LINE,LINE-005,100A Main Breaker Panel (30-space 40-circuit) — Mount,EA,1.50,140.00,"Mount and secure 100A main breaker panel (30-space 40-circuit). Ref: SQ-D HOM3060M100PC / Eaton BR3040B100 / Siemens P3040B1100CU. Wiring and breakers separate."
-LINE,LINE-005A,100A Main Breaker Panel (20-space 40-circuit) — Mount,EA,1.50,110.00,"Mount and secure 100A main breaker panel (20-space 40-circuit). Ref: SQ-D HOM2040M100PC / QO120M100P / Eaton BR2020B100 / Siemens P2040B1100CU. Wiring and breakers separate."
+LINE,LINE-001,200A Meter/Main Combo Panel (40-space 40-circuit) — Mount,EA,2.00,375.00,Mount and secure 200A meter/main combo panel (40-space 40-circuit). Ref: SQ-D SC4080M200PS / Eaton BR4040B200R combo. Wiring and breakers separate.
+LINE,LINE-001A,200A Meter/Main Combo Panel (30-space 42-circuit) — Mount,EA,2.00,225.00,Mount and secure 200A meter/main combo panel (30-space 42-circuit). Ref: SQ-D SC3042M200PS. Wiring and breakers separate.
+LINE,LINE-002,200A Main Breaker Panel (40-space 40-circuit) — Mount,EA,2.00,210.00,Mount and secure 200A main breaker panel (40-space 40-circuit). Ref: SQ-D HOM4080M200PCVP / Eaton BR4040B200R / Siemens P4040B1200CU. Wiring and breakers separate.
+LINE,LINE-002A,200A Main Breaker Panel (42-space 42-circuit) — Mount,EA,2.00,275.00,Mount and secure 200A main breaker panel (42-space 42-circuit). Ref: SQ-D QO142M200P / Eaton BR4242B200R / CH42B200R / Siemens P4242B1200CU. Wiring and breakers separate.
+LINE,LINE-002B,200A Main Breaker Panel (30-space 60-circuit) — Mount,EA,2.00,185.00,Mount and secure 200A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M200PCVP / QO130M200P / Eaton BR3040B200 / Siemens P3040B1200CU. Wiring and breakers separate.
+LINE,LINE-003,150A Main Breaker Panel (30-space 60-circuit) — Mount,EA,2.00,175.00,Mount and secure 150A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M150PCVP / Eaton BR3040B150 / Siemens P3040B1150CU. Wiring and breakers separate.
+LINE,LINE-003A,150A Main Breaker Panel (40-space 80-circuit) — Mount,EA,2.00,210.00,Mount and secure 150A main breaker panel (40-space 80-circuit). Ref: SQ-D QO140M150P / Eaton BR4040B150 / Siemens P4040B1150CU. Wiring and breakers separate.
+LINE,LINE-003B,150A Main Breaker Panel (42-space 42-circuit) — Mount,EA,2.00,250.00,Mount and secure 150A main breaker panel (42-space 42-circuit). Ref: SQ-D QO142M150P / Eaton BR4242B150R / CH42B150R / Siemens P4242B1150CU. Wiring and breakers separate.
+LINE,LINE-004,125A Main Breaker Panel (30-space 60-circuit) — Mount,EA,1.75,165.00,Mount and secure 125A main breaker panel (30-space 60-circuit). Ref: SQ-D HOM3060M125PC / QO130M125P / Eaton BR3040B125 / Siemens P3040B1125CU. Wiring and breakers separate.
+LINE,LINE-004A,125A Main Breaker Panel (40-space 40-circuit) — Mount,EA,1.75,185.00,Mount and secure 125A main breaker panel (40-space 40-circuit). Ref: Eaton BR4040B125 / Siemens P4040B1125CU. Wiring and breakers separate.
+LINE,LINE-005,100A Main Breaker Panel (30-space 40-circuit) — Mount,EA,1.50,140.00,Mount and secure 100A main breaker panel (30-space 40-circuit). Ref: SQ-D HOM3060M100PC / Eaton BR3040B100 / Siemens P3040B1100CU. Wiring and breakers separate.
+LINE,LINE-005A,100A Main Breaker Panel (20-space 40-circuit) — Mount,EA,1.50,110.00,Mount and secure 100A main breaker panel (20-space 40-circuit). Ref: SQ-D HOM2040M100PC / QO120M100P / Eaton BR2020B100 / Siemens P2040B1100CU. Wiring and breakers separate.
 LINE,LINE-006,200A Meter Base — Mount,EA,1.50,175.00,Mount meter base to exterior wall. Wiring separate.
 LINE,LINE-007,150A Subpanel (30-space) — Mount,EA,1.50,180.00,Mount subpanel to wall. Feeder and breakers separate.
 LINE,LINE-008,125A Subpanel (24-space) — Mount,EA,1.25,165.00,Mount subpanel to wall. Feeder and breakers separate.
@@ -42,10 +42,10 @@ LINE,LINE-033,200A 240V Main Breaker — Install,EA,0.53,85.00,Snap in and land 
 LINE,LINE-034,Surge Protective Device (SPD) — Install,EA,0.53,150.00,Install SPD module at panel and connect.
 LINE,LINE-035,4/0 AWG Aluminum Service Conductor — Pull,LF,0.020,1.00,"Pull single 4/0 aluminum conductor. Multiply qty by conductor count (3 for single-phase, 4 for three-phase)."
 LINE,LINE-036,4/0 AWG Copper Service Conductor — Pull,LF,0.020,2.00,"Pull single 4/0 copper conductor. Multiply qty by conductor count (3 for single-phase, 4 for three-phase)."
-LINE,LINE-037,2/0 AWG Aluminum Service Conductor — Pull,LF,0.018,0.70,"Pull single 2/0 aluminum conductor. Multiply qty by conductor count."
-LINE,LINE-038,2/0 AWG Copper Service Conductor — Pull,LF,0.018,1.50,"Pull single 2/0 copper conductor. Multiply qty by conductor count."
-LINE,LINE-039,1/0 AWG Aluminum Feeder Conductor — Pull,LF,0.016,0.55,"Pull single 1/0 aluminum conductor for feeder."
-LINE,LINE-040,1/0 AWG Copper Feeder Conductor — Pull,LF,0.016,1.20,"Pull single 1/0 copper conductor for feeder."
+LINE,LINE-037,2/0 AWG Aluminum Service Conductor — Pull,LF,0.018,0.70,Pull single 2/0 aluminum conductor. Multiply qty by conductor count.
+LINE,LINE-038,2/0 AWG Copper Service Conductor — Pull,LF,0.018,1.50,Pull single 2/0 copper conductor. Multiply qty by conductor count.
+LINE,LINE-039,1/0 AWG Aluminum Feeder Conductor — Pull,LF,0.016,0.55,Pull single 1/0 aluminum conductor for feeder.
+LINE,LINE-040,1/0 AWG Copper Feeder Conductor — Pull,LF,0.016,1.20,Pull single 1/0 copper conductor for feeder.
 LINE,LINE-041,SER Cable 4/0 (3-conductor + ground) — Run,LF,0.025,7.00,Run SER 4/0 cable from main panel to subpanel or service point.
 LINE,LINE-042,SER Cable 2/0 (3-conductor + ground) — Run,LF,0.022,4.50,Run SER 2/0 cable from main panel to subpanel.
 LINE,LINE-043,SER Cable 1/0 (3-conductor + ground) — Run,LF,0.020,3.50,Run SER 1/0 cable from main panel to subpanel.
@@ -58,7 +58,7 @@ ROUGH-IN,RI-005,4-Square Box + Single-Gang Mud Ring — Mount,EA,0.15,2.25,Mount
 ROUGH-IN,RI-006,4-Square Box + Double-Gang Mud Ring — Mount,EA,0.18,2.75,Mount 4-square box with double-gang plaster ring.
 ROUGH-IN,RI-007,Octagon / Round Ceiling Box — Mount,EA,0.12,1.25,Mount octagon box to joist for standard light fixture.
 ROUGH-IN,RI-008,Fan-Rated Ceiling Box — Mount,EA,0.20,8.00,Mount fan-rated box with brace bar between joists.
-ROUGH-IN,RI-008A,RAB Rough-In Plate w/ Nailer Bar (3/4/6/8 in Universal) — Mount,EA,0.10,12.00,"Mount RAB DLPLATE-WFR3468-NB adjustable rough-in plate with nailer bar between joists for canless wafer light backing. Fits 3 in / 4 in / 6 in / 8 in lights. Install before drywall."
+ROUGH-IN,RI-008A,RAB Rough-In Plate w/ Nailer Bar (3/4/6/8 in Universal) — Mount,EA,0.10,12.00,Mount RAB DLPLATE-WFR3468-NB adjustable rough-in plate with nailer bar between joists for canless wafer light backing. Fits 3 in / 4 in / 6 in / 8 in lights. Install before drywall.
 ROUGH-IN,RI-009,Weatherproof Box (single-gang) — Mount,EA,0.15,6.00,Mount weatherproof box on exterior wall.
 ROUGH-IN,RI-010,Panel Box Knockout — Prep,EA,0.10,0.50,Remove knockout and install connector at panel.
 ROUGH-IN,RI-011,14/2 NM-B (Romex) — Run,LF,0.005,0.40,Run and secure 14/2 Romex along framing.
@@ -142,22 +142,22 @@ ROUGH-IN,RI-088,FMC Flex Steel 2 in — Install,LF,0.038,2.75,Install 2 in flexi
 ROUGH-IN,RI-089,LFMC Liquidtight 1-1/4 in — Install,LF,0.030,1.80,Install 1-1/4 in liquidtight flex conduit with fittings.
 ROUGH-IN,RI-090,LFMC Liquidtight 1-1/2 in — Install,LF,0.035,2.25,Install 1-1/2 in liquidtight flex conduit with fittings.
 ROUGH-IN,RI-091,LFMC Liquidtight 2 in — Install,LF,0.042,3.00,Install 2 in liquidtight flex conduit with fittings.
-TRIM,TRIM-D01,15A Decora Receptacle (TR) + Decora Plate — Install,EA,0.15,0.00,"Install 15A tamper-resistant Decora receptacle and Decora wall plate. Ref: Leviton T5325-WMP (10-pk). PRICE TBD."
-TRIM,TRIM-D02,20A Decora Receptacle (TR) + Decora Plate — Install,EA,0.15,0.00,"Install 20A tamper-resistant Decora receptacle and Decora wall plate. Ref: Leviton T5820-WMP (10-pk). PRICE TBD."
-TRIM,TRIM-D03,15A GFCI Decora Receptacle + Decora Plate — Install,EA,0.20,0.00,"Install 15A GFCI Decora receptacle and plate. Wire and test. Ref: Leviton GFNT1-W or 3-pack GFNT1-3W. PRICE TBD."
-TRIM,TRIM-D04,20A GFCI Decora Receptacle + Decora Plate — Install,EA,0.20,0.00,"Install 20A GFCI Decora receptacle and plate. Wire and test. Ref: Leviton GFNT2-W. PRICE TBD."
-TRIM,TRIM-D05,15A Single-Pole Decora Switch + Decora Plate — Install,EA,0.12,0.00,"Install 15A single-pole Decora rocker switch and plate. Ref: Leviton 5601-2WM (10-pk). PRICE TBD."
-TRIM,TRIM-D06,15A 3-Way Decora Switch + Decora Plate — Install,EA,0.15,0.00,"Install 15A 3-way Decora rocker switch and plate. Ref: Leviton 5603-2WM (10-pk). PRICE TBD."
-TRIM,TRIM-D07,15A 4-Way Decora Switch + Decora Plate — Install,EA,0.15,0.00,"Install 15A 4-way Decora rocker switch and plate. PRICE TBD."
-TRIM,TRIM-D08,20A Single-Pole Decora Switch + Decora Plate — Install,EA,0.12,0.00,"Install 20A single-pole Decora rocker switch and plate. Ref: Leviton 5621-2W. PRICE TBD."
-TRIM,TRIM-T01,15A Standard Duplex Receptacle (TR) + Plate — Install,EA,0.15,0.00,"Install 15A tamper-resistant standard duplex receptacle and plate. Ref: Leviton 5320-WCP (10-pk) / Eaton TR270W-10P (10-pk). PRICE TBD."
-TRIM,TRIM-T02,20A Standard Duplex Receptacle (TR) + Plate — Install,EA,0.15,0.00,"Install 20A tamper-resistant standard duplex receptacle and plate. Ref: Leviton T5820-WMP (10-pk). PRICE TBD."
-TRIM,TRIM-T03,15A GFCI Receptacle (Standard) + Plate — Install,EA,0.20,0.00,"Install 15A GFCI receptacle (standard body) and plate. Wire and test. PRICE TBD."
-TRIM,TRIM-T04,20A GFCI Receptacle (Standard) + Plate — Install,EA,0.20,0.00,"Install 20A GFCI receptacle (standard body) and plate. Wire and test. PRICE TBD."
-TRIM,TRIM-T05,15A Single-Pole Toggle Switch + Plate — Install,EA,0.12,0.00,"Install 15A single-pole toggle switch and plate. Ref: Leviton 1451-2WM (10-pk) / Eaton 1301-7W-10P (10-pk). PRICE TBD."
-TRIM,TRIM-T06,15A 3-Way Toggle Switch + Plate — Install,EA,0.15,0.00,"Install 15A 3-way toggle switch and plate. Ref: Leviton 1453-2WM (10-pk) / Eaton 1303-7W-10P (10-pk). PRICE TBD."
-TRIM,TRIM-T07,15A 4-Way Toggle Switch + Plate — Install,EA,0.15,0.00,"Install 15A 4-way toggle switch and plate. PRICE TBD."
-TRIM,TRIM-T08,20A Single-Pole Toggle Switch + Plate — Install,EA,0.12,0.00,"Install 20A single-pole toggle switch and plate. Ref: Leviton 1221-2W. PRICE TBD."
+TRIM,TRIM-D01,15A Decora Receptacle (TR) + Decora Plate — Install,EA,0.15,2.50,Install 15A tamper-resistant Decora receptacle and Decora wall plate. Ref: Leviton T5325-WMP (10-pk).
+TRIM,TRIM-D02,20A Decora Receptacle (TR) + Decora Plate — Install,EA,0.15,4.90,Install 20A tamper-resistant Decora receptacle and Decora wall plate. Ref: Leviton T5820-WMP (10-pk).
+TRIM,TRIM-D03,15A GFCI Decora Receptacle + Decora Plate — Install,EA,0.20,14.55,Install 15A GFCI Decora receptacle and plate. Wire and test. Ref: Leviton GFNT1-W or 3-pack GFNT1-3W.
+TRIM,TRIM-D04,20A GFCI Decora Receptacle + Decora Plate — Install,EA,0.20,15.03,Install 20A GFCI Decora receptacle and plate. Wire and test. Ref: Leviton GFNT2-W.
+TRIM,TRIM-D05,15A Single-Pole Decora Switch + Decora Plate — Install,EA,0.12,2.40,Install 15A single-pole Decora rocker switch and plate. Ref: Leviton 5601-2WM (10-pk).
+TRIM,TRIM-D06,15A 3-Way Decora Switch + Decora Plate — Install,EA,0.15,4.30,Install 15A 3-way Decora rocker switch and plate. Ref: Leviton 5603-2WM (10-pk).
+TRIM,TRIM-D07,15A 4-Way Decora Switch + Decora Plate — Install,EA,0.15,12.30,Install 15A 4-way Decora rocker switch and plate.
+TRIM,TRIM-D08,20A Single-Pole Decora Switch + Decora Plate — Install,EA,0.12,5.80,Install 20A single-pole Decora rocker switch and plate. Ref: Leviton 5621-2W.
+TRIM,TRIM-T01,15A Standard Duplex Receptacle (TR) + Plate — Install,EA,0.15,2.50,Install 15A tamper-resistant standard duplex receptacle and plate. Ref: Leviton 5320-WCP (10-pk) / Eaton TR270W-10P (10-pk).
+TRIM,TRIM-T02,20A Standard Duplex Receptacle (TR) + Plate — Install,EA,0.15,4.90,Install 20A tamper-resistant standard duplex receptacle and plate. Ref: Leviton T5820-WMP (10-pk).
+TRIM,TRIM-T03,15A GFCI Receptacle (Standard) + Plate — Install,EA,0.20,14.55,Install 15A GFCI receptacle (standard body) and plate. Wire and test.
+TRIM,TRIM-T04,20A GFCI Receptacle (Standard) + Plate — Install,EA,0.20,15.03,Install 20A GFCI receptacle (standard body) and plate. Wire and test.
+TRIM,TRIM-T05,15A Single-Pole Toggle Switch + Plate — Install,EA,0.12,2.30,Install 15A single-pole toggle switch and plate. Ref: Leviton 1451-2WM (10-pk) / Eaton 1301-7W-10P (10-pk).
+TRIM,TRIM-T06,15A 3-Way Toggle Switch + Plate — Install,EA,0.15,3.30,Install 15A 3-way toggle switch and plate. Ref: Leviton 1453-2WM (10-pk) / Eaton 1303-7W-10P (10-pk).
+TRIM,TRIM-T07,15A 4-Way Toggle Switch + Plate — Install,EA,0.15,10.30,Install 15A 4-way toggle switch and plate.
+TRIM,TRIM-T08,20A Single-Pole Toggle Switch + Plate — Install,EA,0.12,5.80,Install 20A single-pole toggle switch and plate. Ref: Leviton 1221-2W.
 TRIM,TRIM-005,20A 240V Receptacle (NEMA 6-20) + Wall Plate — Install,EA,0.20,12.00,Install 240V receptacle into box and attach plate. Wire connections.
 TRIM,TRIM-006,30A 240V Receptacle (NEMA 14-30 dryer) + Wall Plate — Install,EA,0.25,18.00,Install 30A dryer receptacle into box and attach plate.
 TRIM,TRIM-007,50A 240V Receptacle (NEMA 14-50 range) + Wall Plate — Install,EA,0.25,22.00,Install 50A range receptacle into box and attach plate.
@@ -165,52 +165,77 @@ TRIM,TRIM-011,Dimmer Switch (Decora) + Wall Plate — Install,EA,0.15,25.00,Inst
 TRIM,TRIM-012,Timer / Occupancy Sensor Switch + Wall Plate — Install,EA,0.20,35.00,Install timer or occupancy sensor switch and plate.
 TRIM,TRIM-013,Blank Wall Plate — Install,EA,0.05,1.50,Install blank cover plate over junction box.
 TRIM,TRIM-014,Weatherproof Cover (in-use) — Install,EA,0.10,8.00,Install weatherproof while-in-use cover on exterior box.
-TRIM,TRIM-015,Smoke Detector (hardwired) — Install,EA,0.15,28.00,Mount and connect hardwired smoke detector to box.
+TRIM,TRIM-015,Smoke Detector (hardwired) — Install,EA,0.15,22.00,Mount and connect hardwired smoke detector to box.
 TRIM,TRIM-016,CO Detector (hardwired) — Install,EA,0.15,32.00,Mount and connect hardwired CO detector to box.
-TRIM,TRIM-017,Smoke/CO Combo Detector (hardwired) — Install,EA,0.15,38.00,Mount and connect hardwired combo detector to box.
-TRIM,TRIM-018,Standard Light Fixture — Hang + Connect (Client-Supplied),EA,0.30,0.00,"Hang homeowner/client-supplied light fixture and make wire connections. Fixture material not included."
-TRIM,TRIM-019,Ceiling Fan — Assemble + Hang + Connect (Client-Supplied),EA,0.75,0.00,"Assemble and hang homeowner/client-supplied ceiling fan. Fan material not included."
-TRIM,TRIM-ASD01,ASD 4 in Recessed LED Wafer 9W (New Work) — Install + Connect,EA,0.20,0.00,"Install ASD JBR 4 in 9W canless LED wafer light. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBR-4D9WH-12P. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD02,ASD 4 in Recessed LED Wafer 12W (New Work) — Install + Connect,EA,0.20,0.00,"Install ASD JBR 4 in 12W canless LED wafer light. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBR-4D12WH-12P. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD03,ASD 6 in Recessed LED Wafer 12W (New Work) — Install + Connect,EA,0.20,0.00,"Install ASD JBR 6 in 12W canless LED wafer light. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBR-6D12WH-12P. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD04,ASD 6 in Recessed LED Wafer 15W (New Work) — Install + Connect,EA,0.20,0.00,"Install ASD JBR 6 in 15W canless LED wafer light. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBR-6D15WH-12P. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD05,ASD 4 in Baffle Wafer 9W (New Work) — Install + Connect,EA,0.20,0.00,"Install ASD JBRB 4 in 9W baffle trim canless LED. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBRB-4D9WH-12P. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD06,ASD 6 in Baffle Wafer 12W (New Work) — Install + Connect,EA,0.20,0.00,"Install ASD JBRB 6 in 12W baffle trim canless LED. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBRB-6D12WH-12P. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD07,ASD 4 in Square Wafer 10W (New Work) — Install + Connect,EA,0.20,0.00,"Install ASD JBS 4 in 10W square canless LED. 5CCT selectable. CRI 90+. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD08,ASD 6 in Square Wafer 15W (New Work) — Install + Connect,EA,0.20,0.00,"Install ASD JBS 6 in 15W square canless LED. 5CCT selectable. CRI 90+. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD09,ASD 4 in Retrofit Downlight 10W (Retrofit) — Install + Connect,EA,0.20,0.00,"Install ASD LRKR 4 in 10W retrofit kit into existing 4 in can. 5CCT. CRI 90+. E26+TP24 connectors. 12-pk: ASD-LRKR-M4D10WH-12P. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD10,ASD 6 in Retrofit Downlight 12W (Retrofit) — Install + Connect,EA,0.20,0.00,"Install ASD LRKR 6 in 12W retrofit kit into existing 5/6 in can. 5CCT. CRI 90+. E26+TP24 connectors. 12-pk: ASD-LRKR-M6D12WH-12P. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD11,ASD 4 in LED Disk Light 10W — Install + Connect,EA,0.20,0.00,"Install ASD LDS 4 in 10W surface mount disk light. 5CCT. CRI 90+. Wet rated. 12-pk: ASD-LDS-4D10AC-WH-12PACK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD12,ASD 6 in LED Disk Light 15W — Install + Connect,EA,0.20,0.00,"Install ASD LDS 6 in 15W surface mount disk light. 5CCT. CRI 90+. Wet rated. 12-pk: ASD-LDS-6D15AC-WH-12PACK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD13,ASD 10 in LED Flush Mount (Dbl Ring) 16W — Install + Connect,EA,0.30,0.00,"Install ASD LFMDR 10 in 16W flush mount ceiling light. 3CCT. Damp rated. ASD-LFMDR-10D16CC-NK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD14,ASD 12 in LED Flush Mount (Dbl Ring) 20W — Install + Connect,EA,0.30,0.00,"Install ASD LFMDR 12 in 20W flush mount ceiling light. 5CCT. Damp rated. ASD-LFMDR-12D20CC-NK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD15,ASD 14 in LED Flush Mount (Dbl Ring) 21W — Install + Connect,EA,0.30,0.00,"Install ASD LFMDR 14 in 21W flush mount ceiling light. 5CCT. Damp rated. ASD-LFMDR-14D21CC-NK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD16,ASD 16 in LED Flush Mount (Dbl Ring) 24W — Install + Connect,EA,0.30,0.00,"Install ASD LFMDR 16 in 24W flush mount ceiling light. 5CCT. Damp rated. ASD-LFMDR-16D24CC-NK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD17,ASD 18 in LED Flush Mount (Dbl Ring) 28W — Install + Connect,EA,0.30,0.00,"Install ASD LFMDR 18 in 28W flush mount ceiling light. 5CCT. Damp rated. ASD-LFMDR-18D28CC-NK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD18,ASD 13 in Exterior Sconce 12W (Black) — Mount + Connect,EA,0.30,0.00,"Mount ASD LWS26 13 in 12W outdoor wall sconce. Seeded glass. 3CCT. IP44 wet rated. ASD-LWS26S-13D12BK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD19,ASD 18 in Exterior Sconce 12W (Black) — Mount + Connect,EA,0.30,0.00,"Mount ASD LWS26 18 in 12W outdoor wall sconce. Seeded glass. 3CCT. IP44 wet rated. ASD-LWS26S-18D12BK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD20,ASD 24 in Exterior Sconce 20W (Black) — Mount + Connect,EA,0.30,0.00,"Mount ASD LWS26 24 in 20W outdoor wall sconce. Seeded glass. 3CCT. Multi-volt. ASD-LWS26S-MV-24D20CC-BK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD21,ASD 24 in Exterior Sconce w/ Photocell 12W — Mount + Connect,EA,0.30,0.00,"Mount ASD LWS26 24 in 12W outdoor sconce with photocell (dusk-to-dawn). ASD-LWS26S-24N12BK-PC. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD22,ASD Small Wallpack 28W (Bronze) — Mount + Connect,EA,0.35,0.00,"Mount ASD SWP 28W residential wallpack. 3CCT. IP65. 120V. ASD-SWP-28BR-PC. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD23,ASD Small Wallpack Multi-Volt 28W (Bronze) — Mount + Connect,EA,0.35,0.00,"Mount ASD SWP multi-volt 20/24/28W selectable residential wallpack. 3CCT. IP65. 120-277V. 0-10V dim. ASD-SWP-MV-A28BR-PC. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD24,ASD LED Flood Light 60W (Black) — Mount + Connect,EA,0.50,0.00,"Mount ASD FL2 15/30/60W selectable flood light. 3CCT. IP65. Photocell. 120-277V. ASD-FL2-60BK-PC-AM or -FL. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD25,ASD 18 in Vanity Light 20W (Nickel) — Mount + Connect,EA,0.25,0.00,"Mount ASD LVF21 18 in 20W vanity bar light. 3CCT. Damp rated. ASD-LVF21-18D20CC-NK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD26,ASD 24 in Vanity Light 25W (Nickel) — Mount + Connect,EA,0.25,0.00,"Mount ASD LVF21 24 in 25W vanity bar light. 3CCT. Damp rated. ASD-LVF21-24D25CC-NK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD27,ASD 36 in Vanity Light 30W (Nickel) — Mount + Connect,EA,0.25,0.00,"Mount ASD LVF21 36 in 30W vanity bar light. 3CCT. Damp rated. ASD-LVF21-36D30CC-NK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD28,ASD 48 in Vanity Light 35W (Nickel) — Mount + Connect,EA,0.25,0.00,"Mount ASD LVF21 48 in 35W vanity bar light. 3CCT. Damp rated. ASD-LVF21-48D35CC-NK. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD29,ASD 18 in Under-Cabinet LED 8W — Mount + Connect,EA,0.20,0.00,"Mount ASD UCL 18 in 8W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-18D8CC-WH. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD30,ASD 24 in Under-Cabinet LED 12W — Mount + Connect,EA,0.20,0.00,"Mount ASD UCL 24 in 12W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-24D12CC-WH. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD31,ASD 32 in Under-Cabinet LED 16W — Mount + Connect,EA,0.20,0.00,"Mount ASD UCL 32 in 16W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-32D16CC-WH. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD32,ASD 40 in Under-Cabinet LED 20W — Mount + Connect,EA,0.20,0.00,"Mount ASD UCL 40 in 20W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-40D20CC-WH. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-ASD33,ASD 48 in Under-Cabinet LED 24W — Mount + Connect,EA,0.20,0.00,"Mount ASD UCL 48 in 24W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-48D24CC-WH. Contractor provided (ASD). PRICE TBD."
-TRIM,TRIM-022,Vanity / Wall Sconce — Hang + Connect (Client-Supplied),EA,0.25,0.00,"Hang homeowner/client-supplied vanity or sconce and connect. Fixture not included."
-TRIM,TRIM-023,Exterior Light Fixture — Mount + Connect (Client-Supplied),EA,0.30,0.00,"Mount homeowner/client-supplied exterior fixture and connect. Fixture not included."
-TRIM,TRIM-024,Under-Cabinet Light — Mount + Connect (Client-Supplied),EA,0.20,0.00,"Mount homeowner/client-supplied under-cabinet light and connect."
-TRIM,TRIM-025,Bathroom Exhaust Fan — Mount + Connect (Client-Supplied),EA,0.50,0.00,"Mount homeowner/client-supplied exhaust fan and connect. Duct not included."
-TRIM,TRIM-026,Chandelier — Assemble + Hang + Connect (Client-Supplied),EA,1.00,0.00,"Assemble and hang homeowner/client-supplied chandelier. Fixture not included."
+TRIM,TRIM-017,Smoke/CO Combo Detector (hardwired) — Install,EA,0.15,50.00,Mount and connect hardwired combo detector to box.
+TRIM,TRIM-017S,Smart Smoke/CO Detector (Google Nest Protect) — Install,EA,0.30,120.00,Mount and connect smart hardwired Smoke/CO unit (Google Nest Protect or equivalent). Includes Wi-Fi commissioning.
+TRIM,TRIM-018,Standard Light Fixture — Hang + Connect (Client-Supplied),EA,0.30,0.00,Hang homeowner/client-supplied light fixture and make wire connections. Fixture material not included.
+TRIM,TRIM-019,Ceiling Fan — Assemble + Hang + Connect (Client-Supplied),EA,0.75,0.00,Assemble and hang homeowner/client-supplied ceiling fan. Fan material not included.
+TRIM,TRIM-ASD01,ASD 4 in Recessed LED Wafer 9W (New Work) — Install + Connect,EA,0.20,11.00,Install ASD JBR 4 in 9W canless LED wafer light. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBR-4D9WH-12P. Contractor provided (ASD).
+TRIM,TRIM-ASD02,ASD 4 in Recessed LED Wafer 12W (New Work) — Install + Connect,EA,0.20,14.17,Install ASD JBR 4 in 12W canless LED wafer light. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBR-4D12WH-12P. Contractor provided (ASD).
+TRIM,TRIM-ASD03,ASD 6 in Recessed LED Wafer 12W (New Work) — Install + Connect,EA,0.20,15.00,Install ASD JBR 6 in 12W canless LED wafer light. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBR-6D12WH-12P. Contractor provided (ASD).
+TRIM,TRIM-ASD04,ASD 6 in Recessed LED Wafer 15W (New Work) — Install + Connect,EA,0.20,16.67,Install ASD JBR 6 in 15W canless LED wafer light. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBR-6D15WH-12P. Contractor provided (ASD).
+TRIM,TRIM-ASD05,ASD 4 in Baffle Wafer 9W (New Work) — Install + Connect,EA,0.20,12.00,Install ASD JBRB 4 in 9W baffle trim canless LED. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBRB-4D9WH-12P. Contractor provided (ASD).
+TRIM,TRIM-ASD06,ASD 6 in Baffle Wafer 12W (New Work) — Install + Connect,EA,0.20,16.00,Install ASD JBRB 6 in 12W baffle trim canless LED. 5CCT selectable. CRI 90+. Wet rated. 12-pk: ASD-JBRB-6D12WH-12P. Contractor provided (ASD).
+TRIM,TRIM-ASD07,ASD 4 in Square Wafer 10W (New Work) — Install + Connect,EA,0.20,12.00,Install ASD JBS 4 in 10W square canless LED. 5CCT selectable. CRI 90+. Contractor provided (ASD).
+TRIM,TRIM-ASD08,ASD 6 in Square Wafer 15W (New Work) — Install + Connect,EA,0.20,17.50,Install ASD JBS 6 in 15W square canless LED. 5CCT selectable. CRI 90+. Contractor provided (ASD).
+TRIM,TRIM-ASD09,ASD 4 in Retrofit Downlight 10W (Retrofit) — Install + Connect,EA,0.20,9.50,Install ASD LRKR 4 in 10W retrofit kit into existing 4 in can. 5CCT. CRI 90+. E26+TP24 connectors. 12-pk: ASD-LRKR-M4D10WH-12P. Contractor provided (ASD).
+TRIM,TRIM-ASD10,ASD 6 in Retrofit Downlight 12W (Retrofit) — Install + Connect,EA,0.20,11.00,Install ASD LRKR 6 in 12W retrofit kit into existing 5/6 in can. 5CCT. CRI 90+. E26+TP24 connectors. 12-pk: ASD-LRKR-M6D12WH-12P. Contractor provided (ASD).
+TRIM,TRIM-ASD11,ASD 4 in LED Disk Light 10W — Install + Connect,EA,0.20,10.50,Install ASD LDS 4 in 10W surface mount disk light. 5CCT. CRI 90+. Wet rated. 12-pk: ASD-LDS-4D10AC-WH-12PACK. Contractor provided (ASD).
+TRIM,TRIM-ASD12,ASD 6 in LED Disk Light 15W — Install + Connect,EA,0.20,13.50,Install ASD LDS 6 in 15W surface mount disk light. 5CCT. CRI 90+. Wet rated. 12-pk: ASD-LDS-6D15AC-WH-12PACK. Contractor provided (ASD).
+TRIM,TRIM-ASD13,ASD 10 in LED Flush Mount (Dbl Ring) 16W — Install + Connect,EA,0.30,25.00,Install ASD LFMDR 10 in 16W flush mount ceiling light. 3CCT. Damp rated. ASD-LFMDR-10D16CC-NK. Contractor provided (ASD).
+TRIM,TRIM-ASD14,ASD 12 in LED Flush Mount (Dbl Ring) 20W — Install + Connect,EA,0.30,30.00,Install ASD LFMDR 12 in 20W flush mount ceiling light. 5CCT. Damp rated. ASD-LFMDR-12D20CC-NK. Contractor provided (ASD).
+TRIM,TRIM-ASD15,ASD 14 in LED Flush Mount (Dbl Ring) 21W — Install + Connect,EA,0.30,38.00,Install ASD LFMDR 14 in 21W flush mount ceiling light. 5CCT. Damp rated. ASD-LFMDR-14D21CC-NK. Contractor provided (ASD).
+TRIM,TRIM-ASD16,ASD 16 in LED Flush Mount (Dbl Ring) 24W — Install + Connect,EA,0.30,45.00,Install ASD LFMDR 16 in 24W flush mount ceiling light. 5CCT. Damp rated. ASD-LFMDR-16D24CC-NK. Contractor provided (ASD).
+TRIM,TRIM-ASD17,ASD 18 in LED Flush Mount (Dbl Ring) 28W — Install + Connect,EA,0.30,52.00,Install ASD LFMDR 18 in 28W flush mount ceiling light. 5CCT. Damp rated. ASD-LFMDR-18D28CC-NK. Contractor provided (ASD).
+TRIM,TRIM-ASD18,ASD 13 in Exterior Sconce 12W (Black) — Mount + Connect,EA,0.30,38.00,Mount ASD LWS26 13 in 12W outdoor wall sconce. Seeded glass. 3CCT. IP44 wet rated. ASD-LWS26S-13D12BK. Contractor provided (ASD).
+TRIM,TRIM-ASD19,ASD 18 in Exterior Sconce 12W (Black) — Mount + Connect,EA,0.30,48.00,Mount ASD LWS26 18 in 12W outdoor wall sconce. Seeded glass. 3CCT. IP44 wet rated. ASD-LWS26S-18D12BK. Contractor provided (ASD).
+TRIM,TRIM-ASD20,ASD 24 in Exterior Sconce 20W (Black) — Mount + Connect,EA,0.30,65.00,Mount ASD LWS26 24 in 20W outdoor wall sconce. Seeded glass. 3CCT. Multi-volt. ASD-LWS26S-MV-24D20CC-BK. Contractor provided (ASD).
+TRIM,TRIM-ASD21,ASD 24 in Exterior Sconce w/ Photocell 12W — Mount + Connect,EA,0.30,55.00,Mount ASD LWS26 24 in 12W outdoor sconce with photocell (dusk-to-dawn). ASD-LWS26S-24N12BK-PC. Contractor provided (ASD).
+TRIM,TRIM-ASD22,ASD Small Wallpack 28W (Bronze) — Mount + Connect,EA,0.35,55.00,Mount ASD SWP 28W residential wallpack. 3CCT. IP65. 120V. ASD-SWP-28BR-PC. Contractor provided (ASD).
+TRIM,TRIM-ASD23,ASD Small Wallpack Multi-Volt 28W (Bronze) — Mount + Connect,EA,0.35,75.00,Mount ASD SWP multi-volt 20/24/28W selectable residential wallpack. 3CCT. IP65. 120-277V. 0-10V dim. ASD-SWP-MV-A28BR-PC. Contractor provided (ASD).
+TRIM,TRIM-ASD24,ASD LED Flood Light 60W (Black) — Mount + Connect,EA,0.50,65.00,Mount ASD FL2 15/30/60W selectable flood light. 3CCT. IP65. Photocell. 120-277V. ASD-FL2-60BK-PC-AM or -FL. Contractor provided (ASD).
+TRIM,TRIM-ASD25,ASD 18 in Vanity Light 20W (Nickel) — Mount + Connect,EA,0.25,55.00,Mount ASD LVF21 18 in 20W vanity bar light. 3CCT. Damp rated. ASD-LVF21-18D20CC-NK. Contractor provided (ASD).
+TRIM,TRIM-ASD26,ASD 24 in Vanity Light 25W (Nickel) — Mount + Connect,EA,0.25,70.00,Mount ASD LVF21 24 in 25W vanity bar light. 3CCT. Damp rated. ASD-LVF21-24D25CC-NK. Contractor provided (ASD).
+TRIM,TRIM-ASD27,ASD 36 in Vanity Light 30W (Nickel) — Mount + Connect,EA,0.25,90.00,Mount ASD LVF21 36 in 30W vanity bar light. 3CCT. Damp rated. ASD-LVF21-36D30CC-NK. Contractor provided (ASD).
+TRIM,TRIM-ASD28,ASD 48 in Vanity Light 35W (Nickel) — Mount + Connect,EA,0.25,115.00,Mount ASD LVF21 48 in 35W vanity bar light. 3CCT. Damp rated. ASD-LVF21-48D35CC-NK. Contractor provided (ASD).
+TRIM,TRIM-ASD29,ASD 18 in Under-Cabinet LED 8W — Mount + Connect,EA,0.20,28.00,Mount ASD UCL 18 in 8W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-18D8CC-WH. Contractor provided (ASD).
+TRIM,TRIM-ASD30,ASD 24 in Under-Cabinet LED 12W — Mount + Connect,EA,0.20,35.00,Mount ASD UCL 24 in 12W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-24D12CC-WH. Contractor provided (ASD).
+TRIM,TRIM-ASD31,ASD 32 in Under-Cabinet LED 16W — Mount + Connect,EA,0.20,45.00,Mount ASD UCL 32 in 16W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-32D16CC-WH. Contractor provided (ASD).
+TRIM,TRIM-ASD32,ASD 40 in Under-Cabinet LED 20W — Mount + Connect,EA,0.20,55.00,Mount ASD UCL 40 in 20W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-40D20CC-WH. Contractor provided (ASD).
+TRIM,TRIM-ASD33,ASD 48 in Under-Cabinet LED 24W — Mount + Connect,EA,0.20,65.00,Mount ASD UCL 48 in 24W hardwire under-cabinet light. 3CCT. Linkable. CRI 90+. ASD-UCL-48D24CC-WH. Contractor provided (ASD).
+TRIM,TRIM-022,Vanity / Wall Sconce — Hang + Connect (Client-Supplied),EA,0.25,0.00,Hang homeowner/client-supplied vanity or sconce and connect. Fixture not included.
+TRIM,TRIM-023,Exterior Light Fixture — Mount + Connect (Client-Supplied),EA,0.30,0.00,Mount homeowner/client-supplied exterior fixture and connect. Fixture not included.
+TRIM,TRIM-024,Under-Cabinet Light — Mount + Connect (Client-Supplied),EA,0.20,0.00,Mount homeowner/client-supplied under-cabinet light and connect.
+TRIM,TRIM-025,Bathroom Exhaust Fan — Mount + Connect (Client-Supplied),EA,0.50,0.00,Mount homeowner/client-supplied exhaust fan and connect. Duct not included.
+TRIM,TRIM-026,Chandelier — Assemble + Hang + Connect (Client-Supplied),EA,1.00,0.00,Assemble and hang homeowner/client-supplied chandelier. Fixture not included.
 TRIM,TRIM-027,Doorbell Button + Chime — Install + Connect,EA,0.35,45.00,Install doorbell button and chime unit and connect low-voltage wiring.
 TRIM,TRIM-028,Thermostat — Install + Connect,EA,0.25,0.00,Mount and connect customer-supplied thermostat.
 TRIM,TRIM-029,EV Charger (EVSE) — Mount + Connect,EA,1.00,0.00,Mount and connect customer-supplied EV charger. Unit not included.
+TRIM,TRIM-EV01,EV Charger — Supply + Install (Tesla Wall Connector 48A),EA,1.50,475.00,Supply and install Tesla Wall Connector (48A hardwired). Best for Tesla owners; supports ALMS via Neurio meter.
+TRIM,TRIM-EV02,EV Charger — Supply + Install (Wallbox Pulsar Plus 48A),EA,1.50,625.00,Supply and install Wallbox Pulsar Plus (48A hardwired). Small footprint with Power Boost ALMS.
+TRIM,TRIM-EV03,EV Charger — Supply + Install (Eaton Green Motion Breaker-Only),EA,1.00,580.00,Supply and install Eaton Green Motion smart breaker-only EV charger. Saves panel space; no separate cabinet.
+TRIM,TRIM-EV04,EV Charger — Supply + Install (Eaton Wall Charger Kit Bundle),EA,1.75,1000.00,Supply and install Eaton Wall Charger Kit (cabinet + 25 ft cord bundle).
+TRIM,TRIM-EV05,EV Charger — Supply + Install (Legrand Radiant Hardwired 48A),EA,1.50,490.00,"Supply and install Legrand Radiant hardwired EVSE (48A, 11.5 kW). Aesthetic design."
+TRIM,TRIM-EV06,EV Charger — Supply + Install (Legrand Radiant Plug-In 40A),EA,1.00,440.00,"Supply and install Legrand Radiant plug-in EVSE (40A, NEMA 14-50). Aesthetic design."
+TRIM,TRIM-EV07,EV Charger — Supply + Install (ChargePoint Home Flex 50A),EA,1.50,725.00,"Supply and install ChargePoint Home Flex (50A hardwired). High-end build, flexible cable."
+TRIM,TRIM-EV08,EV Charger — Supply + Install (Emporia 48A),EA,1.50,425.00,Supply and install Emporia EV Charger (48A). Budget-friendly with deep energy data.
+TRIM,TRIM-EV09,EV Charger — Supply + Install (Grizzl-E Classic 40A),EA,1.00,400.00,"Supply and install Grizzl-E Classic (40A, NEMA 14-50 plug-in). Rugged outdoor-rated."
+TRIM,TRIM-EV10,EV Charger — Supply + Install (Enel X Way JuiceBox 48A),EA,1.50,650.00,Supply and install Enel X Way JuiceBox (48A). Smart-grid features and connectivity.
+TRIM,TRIM-EV11,EV Charger — Supply + Install (Autel MaxiCharger 50A),EA,1.50,575.00,"Supply and install Autel MaxiCharger (50A hardwired). Built-in holster, cold-weather rated."
+TRIM,TRIM-EV12,EV Charger — Supply + Install (Lectron V-BOX 48A),EA,1.50,425.00,Supply and install Lectron V-BOX (48A hardwired). Entry-level hardwired option.
+TRIM,TRIM-EV13,EV Charger — Supply + Install (Ford Connected Charge Station 48A),EA,1.50,850.00,Supply and install Ford Connected Charge Station (48A). Integration for F-150 Lightning owners.
+TRIM,TRIM-EV14,EV Charger — Supply + Install (Blink HQ 200 50A),EA,1.50,625.00,Supply and install Blink HQ 200 (50A hardwired). High amperage for non-Tesla residential installs.
+TRIM,TRIM-LM01,Load Mgmt — Tesla Neurio W2 Meter — Install,EA,1.00,250.00,Install Tesla Neurio W2 power meter at panel with CTs and pair to Tesla Wall Connector for ALMS.
+TRIM,TRIM-LM02,Load Mgmt — Wallbox Carlo Gavazzi Meter — Install,EA,1.00,315.00,Install Wallbox Carlo Gavazzi power meter at panel with CTs and pair to Wallbox Pulsar Plus (Power Boost).
+TRIM,TRIM-LM03,Load Mgmt — Eaton Green Motion LMEZ Kit — Install,EA,1.50,550.00,Install Eaton Green Motion LMEZ load management kit at panel with CTs; commission with Eaton EVSE.
+TRIM,TRIM-LM04,Load Mgmt — Emporia Vue Energy Monitor — Install,EA,1.00,175.00,Install Emporia Vue energy monitor at panel with CTs; pair with Emporia EVSE for ALMS.
+TRIM,TRIM-LM05,Load Mgmt — SimpleSwitch EVEMS — Install,EA,2.00,889.00,Install SimpleSwitch universal EVEMS load shedder. Wires between existing 240V load and EVSE branch circuit.
+TRIM,TRIM-LM06,Load Mgmt — Black Box EVEMS (60–100A service) — Install,EA,2.00,895.00,Install Black Box Innovations EVEMS for 60A–100A service. Universal; mounts at panel.
+TRIM,TRIM-LM07,Load Mgmt — Black Box EVEMS (125–200A service) — Install,EA,2.00,915.00,Install Black Box Innovations EVEMS for 125A–200A service. Universal; mounts at panel.
+TRIM,TRIM-LM08,Load Mgmt — DCC-10 (200A max) — Install,EA,2.00,965.00,Install DCC-10 EV current-monitoring load mgmt enclosure between meter base and main panel (200A max service).
+TRIM,TRIM-LM09,Load Mgmt — DCC-9 Service Splitter — Install,EA,2.50,1362.00,Install DCC-9 service splitter load mgmt enclosure with dedicated EV feeder tap.
+TRIM,TRIM-029D,NEMA 14-50R Outlet for EV — Install (Trim Only),EA,0.40,18.00,Install NEMA 14-50R receptacle and weatherproof cover for plug-in EV charger. Connects to existing rough-in.
 TRIM,TRIM-030,Equipment Disconnect Switch — Mount + Wire,EA,0.50,45.00,Mount disconnect switch near equipment and wire.
 TRIM,TRIM-031,Equipment Whip (flex connector to unit) — Connect,EA,0.25,15.00,Connect flexible conduit whip from disconnect/box to equipment.
 TRIM,TRIM-032,Appliance Hardwire Connection (120V) — Connect,EA,0.20,5.00,Make final hardwire connection to 120V appliance (disposal / dishwasher).

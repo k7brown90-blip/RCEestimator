@@ -47,6 +47,32 @@ export function EstimateIntake({ visitId, propertyId }: Props) {
 
   const token = localStorage.getItem("rce_token") ?? "";
 
+  const downloadExport = useCallback(
+    async (format: "md" | "json") => {
+      try {
+        const res = await fetch(`/api/chatkit/export?visitId=${visitId}&format=${format}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error("Export failed");
+        const blob = await res.blob();
+        const disposition = res.headers.get("Content-Disposition") ?? "";
+        const match = disposition.match(/filename="([^"]+)"/);
+        const filename = match?.[1] ?? `rce-chat-${visitId}.${format}`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch {
+        setError("Export failed. Try again.");
+      }
+    },
+    [visitId, token],
+  );
+
   const stopListening = useCallback(() => {
     recognitionRef.current?.stop();
     recognitionRef.current = null;
@@ -169,6 +195,24 @@ export function EstimateIntake({ visitId, propertyId }: Props) {
         <span className="inline-block h-2.5 w-2.5 rounded-full bg-rce-success" />
         <h2 className="text-base font-semibold text-rce-text">AI Estimate Assistant</h2>
         <span className="text-xs text-rce-muted">powered by GPT-5.1</span>
+        <div className="ml-auto flex gap-2">
+          <button
+            type="button"
+            onClick={() => downloadExport("md")}
+            className="rounded-md border border-rce-border bg-rce-surface px-2 py-1 text-xs text-rce-text hover:bg-rce-bg"
+            title="Download conversation as Markdown"
+          >
+            Export .md
+          </button>
+          <button
+            type="button"
+            onClick={() => downloadExport("json")}
+            className="rounded-md border border-rce-border bg-rce-surface px-2 py-1 text-xs text-rce-text hover:bg-rce-bg"
+            title="Download full conversation as JSON"
+          >
+            Export .json
+          </button>
+        </div>
       </div>
 
       {/* Error state */}
