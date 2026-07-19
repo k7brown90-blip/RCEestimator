@@ -372,3 +372,87 @@ export type Lead = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type LeadPipelineStatus =
+  | "new"
+  | "booked"
+  | "unresolved"
+  | "planning"
+  | "no_answer"
+  | "won"
+  | "lost";
+
+export type AnalyticsRange = {
+  startDate: string;
+  endDate: string;
+  start: string;
+  end: string;
+};
+
+export type FunnelStage = {
+  status: LeadPipelineStatus;
+  count: number;
+  percent: number;
+};
+
+export type CrmFunnelMetrics = {
+  range: AnalyticsRange;
+  total: number;
+  openCount: number;
+  wonCount: number;
+  lostCount: number;
+  stages: FunnelStage[];
+};
+
+export type OverdueLead = {
+  id: string;
+  name: string;
+  phone?: string | null;
+  source: string;
+  jobType?: string | null;
+  leadStatus: string;
+  followUpDate?: string | null;
+};
+
+export type CrmFollowUpsMetrics = {
+  asOf: string;
+  openLeadCount: number;
+  overdueCount: number;
+  dueTodayCount: number;
+  dueNext7DaysCount: number;
+  noFollowUpCount: number;
+  overdueLeads: OverdueLead[];
+};
+
+export type CrmWinLossMetrics = {
+  range: AnalyticsRange;
+  totalClosed: number;
+  won: number;
+  lost: number;
+  winRate: number;
+  lossReasons: Record<string, number>;
+  sourceSummary: Record<string, { won: number; lost: number }>;
+};
+
+export type CrmCycleTimeMetrics = {
+  range: AnalyticsRange;
+  wonLeadCount: number;
+  averageDaysToClose: number | null;
+  medianDaysToClose: number | null;
+  cycleTimes: Array<{
+    id: string;
+    name: string;
+    source: string;
+    daysToClose: number;
+  }>;
+  estimateCounts: Record<string, number>;
+  estimateAcceptanceRateFromSent: number;
+};
+
+export type CrmOverview = {
+  generatedAt: string;
+  funnel: CrmFunnelMetrics;
+  followUps: CrmFollowUpsMetrics;
+  winLoss: CrmWinLossMetrics;
+  cycleTime: CrmCycleTimeMetrics;
+};

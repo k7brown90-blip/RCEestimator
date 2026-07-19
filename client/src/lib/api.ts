@@ -1,6 +1,38 @@
-import type { AssemblyTemplate, AvailabilityResponse, CompanionSuggestion, Customer, Estimate, EstimateAssembly, JobSummary, MonthSchedule, Property, ScheduleJobResult, Visit, AtomicUnit, ModifierDef, EstimateItem, SupportItem, NECAlert, Lead, WeekSchedule } from "./types";
+import type {
+  AssemblyTemplate,
+  AvailabilityResponse,
+  CompanionSuggestion,
+  CrmCycleTimeMetrics,
+  CrmFollowUpsMetrics,
+  CrmFunnelMetrics,
+  CrmOverview,
+  CrmWinLossMetrics,
+  Customer,
+  Estimate,
+  EstimateAssembly,
+  JobSummary,
+  MonthSchedule,
+  Property,
+  ScheduleJobResult,
+  Visit,
+  AtomicUnit,
+  ModifierDef,
+  EstimateItem,
+  SupportItem,
+  NECAlert,
+  Lead,
+  WeekSchedule,
+} from "./types";
 
 const API_BASE = "/api";
+
+function withDateRange(path: string, range?: { startDate?: string; endDate?: string }) {
+  const search = new URLSearchParams();
+  if (range?.startDate) search.set("startDate", range.startDate);
+  if (range?.endDate) search.set("endDate", range.endDate);
+  const query = search.toString();
+  return query ? `${path}?${query}` : path;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = typeof localStorage !== "undefined" ? localStorage.getItem("rce_token") : null;
@@ -210,6 +242,16 @@ export const api = {
   weekSchedule: () => request<WeekSchedule>("/crm/schedule/week"),
   monthSchedule: (year: number, month: number) => request<MonthSchedule>(`/crm/schedule/month?year=${year}&month=${month}`),
   calendarAvailability: () => request<AvailabilityResponse>("/crm/schedule/availability"),
+  // ─── CRM Analytics ────────────────────────────────────────────────────────
+  crmOverview: (range?: { startDate?: string; endDate?: string }) =>
+    request<CrmOverview>(withDateRange("/crm/analytics/overview", range)),
+  crmFunnel: (range?: { startDate?: string; endDate?: string }) =>
+    request<CrmFunnelMetrics>(withDateRange("/crm/analytics/funnel", range)),
+  crmFollowUps: () => request<CrmFollowUpsMetrics>("/crm/analytics/follow-ups"),
+  crmWinLoss: (range?: { startDate?: string; endDate?: string }) =>
+    request<CrmWinLossMetrics>(withDateRange("/crm/analytics/win-loss", range)),
+  crmCycleTime: (range?: { startDate?: string; endDate?: string }) =>
+    request<CrmCycleTimeMetrics>(withDateRange("/crm/analytics/cycle-time", range)),
   // ─── Job Scheduling ──────────────────────────────────────────────────────
   scheduleJob: (jobId: string, input: { startDate: string; startTime?: string }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/schedule`, { method: "POST", body: JSON.stringify(input) }),

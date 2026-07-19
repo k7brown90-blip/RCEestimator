@@ -13,6 +13,14 @@ import { getTodaySchedule, getWeekSchedule, getMonthSchedule, createCalendarEven
 import { sendSms, isFromKyle, KYLE_PHONE } from "./services/twilio";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
 import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail } from "./services/confirmationEmail";
+import {
+  getCrmOverview,
+  getCycleTimeMetrics,
+  getLeadFollowUpMetrics,
+  getLeadFunnelMetrics,
+  getWinLossMetrics,
+  resolveAnalyticsRange,
+} from "./services/crmAnalytics";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
@@ -1070,6 +1078,50 @@ app.use("/agent/calendar", sharedAgentRouter);
 // ─── PIN AUTH ────────────────────────────────────────────────────────────────
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
 app.use(pinAuthMiddleware);
+
+const analyticsRangeQuerySchema = z.object({
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+
+const readAnalyticsRange = (req: express.Request) => {
+  const parsed = analyticsRangeQuerySchema.parse({
+    startDate: readQuery(req, "startDate"),
+    endDate: readQuery(req, "endDate"),
+  });
+
+  return resolveAnalyticsRange(parsed);
+};
+
+// ─── CRM ANALYTICS ENDPOINTS (JWT-protected) ───────────────────────────────
+app.get("/crm/analytics/overview", asyncHandler(async (req, res) => {
+  const range = readAnalyticsRange(req);
+  const data = await getCrmOverview(range);
+  res.json(data);
+}));
+
+app.get("/crm/analytics/funnel", asyncHandler(async (req, res) => {
+  const range = readAnalyticsRange(req);
+  const data = await getLeadFunnelMetrics(range);
+  res.json(data);
+}));
+
+app.get("/crm/analytics/follow-ups", asyncHandler(async (_req, res) => {
+  const data = await getLeadFollowUpMetrics();
+  res.json(data);
+}));
+
+app.get("/crm/analytics/win-loss", asyncHandler(async (req, res) => {
+  const range = readAnalyticsRange(req);
+  const data = await getWinLossMetrics(range);
+  res.json(data);
+}));
+
+app.get("/crm/analytics/cycle-time", asyncHandler(async (req, res) => {
+  const range = readAnalyticsRange(req);
+  const data = await getCycleTimeMetrics(range);
+  res.json(data);
+}));
 
 // ─── CRM SCHEDULE ENDPOINTS (JWT-protected) ──────────────────────────────────
 app.get("/crm/schedule/week", asyncHandler(async (_req, res) => {

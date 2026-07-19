@@ -4,6 +4,7 @@ import type { PropsWithChildren } from "react";
 import { api } from "../lib/api";
 
 const nav = [
+  { to: "/dashboard", label: "Dashboard" },
   { to: "/jobs", label: "Jobs" },
   { to: "/calendar", label: "Calendar" },
   { to: "/leads", label: "Leads", badgeQuery: true },
@@ -57,7 +58,7 @@ export function AppShell({ children }: PropsWithChildren) {
         </div>
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-rce-border bg-rce-surface p-2 md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-rce-border bg-rce-surface p-2 md:hidden">
         {nav.map((item) => (
           <NavLink
             key={item.to}

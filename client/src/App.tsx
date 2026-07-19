@@ -3,6 +3,7 @@ import { AppShell } from "./components/AppShell";
 import { CalendarPage } from "./pages/CalendarPage";
 import { CustomerDetailPage } from "./pages/CustomerDetailPage";
 import { CustomersPage } from "./pages/CustomersPage";
+import { DashboardPage } from "./pages/DashboardPage";
 import { JobsPage } from "./pages/JobsPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { PinLoginPage } from "./pages/PinLoginPage";
@@ -29,7 +30,8 @@ function App() {
           <RequireAuth>
             <AppShell>
               <Routes>
-                <Route path="/" element={<Navigate to="/jobs" replace />} />
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
                 <Route path="/jobs" element={<JobsPage />} />
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/leads" element={<LeadsPage />} />
