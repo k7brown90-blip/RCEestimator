@@ -411,6 +411,7 @@ export type OverdueLead = {
   source: string;
   jobType?: string | null;
   leadStatus: string;
+  status: LeadStatus;
   followUpDate?: string | null;
 };
 
@@ -422,6 +423,15 @@ export type CrmFollowUpsMetrics = {
   dueNext7DaysCount: number;
   noFollowUpCount: number;
   overdueLeads: OverdueLead[];
+  callType?: string | null;
+  leadStatus?: LeadPipelineStatus;
+  followUpDate?: string | null;
+  followUpReason?: string | null;
+  followUpCount?: number;
+  lostReason?: string | null;
+  lostNotes?: string | null;
+  bestTimeToReach?: string | null;
+  contactPreference?: string | null;
 };
 
 export type CrmWinLossMetrics = {

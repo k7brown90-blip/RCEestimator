@@ -232,7 +232,26 @@ export const api = {
     const suffix = status ? `?status=${status}` : "";
     return request<Lead[]>(`/leads${suffix}`);
   },
-  updateLead: (leadId: string, input: { name?: string; email?: string; phone?: string; address?: string; jobType?: string; status?: string; notes?: string }) =>
+  updateLead: (
+    leadId: string,
+    input: {
+      name?: string;
+      email?: string;
+      phone?: string;
+      address?: string;
+      jobType?: string;
+      status?: string;
+      notes?: string;
+      leadStatus?: string;
+      followUpDate?: string | null;
+      followUpReason?: string | null;
+      followUpCount?: number;
+      lostReason?: string | null;
+      lostNotes?: string | null;
+      bestTimeToReach?: string | null;
+      contactPreference?: string | null;
+    },
+  ) =>
     request<Lead>(`/leads/${leadId}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteLead: (leadId: string) =>
     request<void>(`/leads/${leadId}`, { method: "DELETE" }),

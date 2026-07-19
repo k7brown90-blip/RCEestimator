@@ -2817,9 +2817,11 @@ app.get("/chatkit/export", asyncHandler(async (req, res) => {
 // ─── LEADS (authenticated) ─────────────────────────────────────────────────
 
 app.get("/leads", asyncHandler(async (req, res) => {
-  const status = readParam(req, "status");
+  const status = readQuery(req, "status");
+  const leadStatus = readQuery(req, "leadStatus");
   const where: Record<string, unknown> = {};
   if (status) where["status"] = status;
+  if (leadStatus) where["leadStatus"] = leadStatus;
 
   const leads = await prisma.lead.findMany({
     where,
@@ -2830,10 +2832,38 @@ app.get("/leads", asyncHandler(async (req, res) => {
 
 app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
   const leadId = readParam(req, "leadId");
-  const body = req.body as { name?: string; email?: string; phone?: string; address?: string; jobType?: string; status?: string; notes?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string };
+  const body = req.body as {
+    name?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+    jobType?: string;
+    status?: string;
+    notes?: string;
+    callType?: string;
+    referredBy?: string;
+    urgentFlag?: boolean;
+    warrantyCall?: boolean;
+    warrantyNote?: string;
+    estimateId?: string;
+    existingVisitId?: string;
+    leadStatus?: string;
+    followUpDate?: string | null;
+    followUpReason?: string | null;
+    followUpCount?: number;
+    lostReason?: string | null;
+    lostNotes?: string | null;
+    bestTimeToReach?: string | null;
+    contactPreference?: string | null;
+  };
   const validStatuses = ["new", "contacted", "converted", "lost"];
+  const validLeadStatuses = ["new", "booked", "unresolved", "planning", "no_answer", "lost", "won"];
   if (body.status && !validStatuses.includes(body.status)) {
     res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
+    return;
+  }
+  if (body.leadStatus && !validLeadStatuses.includes(body.leadStatus)) {
+    res.status(400).json({ error: `Invalid leadStatus. Must be one of: ${validLeadStatuses.join(", ")}` });
     return;
   }
 
@@ -2852,6 +2882,26 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
   if (body.warrantyNote !== undefined) data.warrantyNote = body.warrantyNote;
   if (body.estimateId !== undefined) data.estimateId = body.estimateId;
   if (body.existingVisitId !== undefined) data.existingVisitId = body.existingVisitId;
+  if (body.leadStatus !== undefined) data.leadStatus = body.leadStatus;
+  if (body.followUpReason !== undefined) data.followUpReason = body.followUpReason;
+  if (body.followUpCount !== undefined) data.followUpCount = body.followUpCount;
+  if (body.lostReason !== undefined) data.lostReason = body.lostReason;
+  if (body.lostNotes !== undefined) data.lostNotes = body.lostNotes;
+  if (body.bestTimeToReach !== undefined) data.bestTimeToReach = body.bestTimeToReach;
+  if (body.contactPreference !== undefined) data.contactPreference = body.contactPreference;
+
+  if (body.followUpDate !== undefined) {
+    if (body.followUpDate === null || body.followUpDate === "") {
+      data.followUpDate = null;
+    } else {
+      const parsed = new Date(body.followUpDate);
+      if (Number.isNaN(parsed.getTime())) {
+        res.status(400).json({ error: "Invalid followUpDate" });
+        return;
+      }
+      data.followUpDate = parsed;
+    }
+  }
 
   const lead = await prisma.lead.update({
     where: { id: leadId },
@@ -2957,6 +3007,8 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
       where: { id: leadId },
       data: {
         status: "converted",
+        leadStatus: "won",
+        followUpDate: null,
         customerId: customer.id,
         propertyId: property?.id ?? null,
         visitId: visit?.id ?? null,

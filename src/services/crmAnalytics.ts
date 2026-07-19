@@ -109,6 +109,7 @@ export async function getLeadFollowUpMetrics() {
         phone: true,
         source: true,
         jobType: true,
+        status: true,
         leadStatus: true,
         followUpDate: true,
       },

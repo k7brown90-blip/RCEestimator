@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
 
@@ -12,6 +12,7 @@ function statusLabel(status: string) {
 }
 
 export function DashboardPage() {
+  const queryClient = useQueryClient();
   const today = useMemo(() => new Date(), []);
   const defaultStart = useMemo(() => {
     const d = new Date(today);
@@ -27,6 +28,25 @@ export function DashboardPage() {
     queryKey: ["crm-analytics", "overview", startDate, endDate],
     queryFn: () => api.crmOverview({ startDate, endDate }),
   });
+
+  const leadActionMutation = useMutation({
+    mutationFn: ({ leadId, input }: { leadId: string; input: Parameters<typeof api.updateLead>[1] }) =>
+      api.updateLead(leadId, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["crm-analytics", "overview"] });
+      queryClient.invalidateQueries({ queryKey: ["leads"] });
+    },
+  });
+
+  const runLeadAction = (leadId: string, input: Parameters<typeof api.updateLead>[1]) => {
+    leadActionMutation.mutate({ leadId, input });
+  };
+
+  const isoDatePlusDays = (days: number) => {
+    const date = new Date();
+    date.setDate(date.getDate() + days);
+    return date.toISOString();
+  };
 
   const topOverdue = data?.followUps.overdueLeads.slice(0, 8) ?? [];
   const topLossReasons = Object.entries(data?.winLoss.lossReasons ?? {})
@@ -126,6 +146,58 @@ export function DashboardPage() {
                         <p className="text-xs text-rce-muted">
                           {lead.jobType || "Unknown job"} • {lead.source} • Due {lead.followUpDate ? new Date(lead.followUpDate).toLocaleDateString() : "N/A"}
                         </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            className="rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                            disabled={leadActionMutation.isPending}
+                            onClick={() =>
+                              runLeadAction(lead.id, {
+                                status: "contacted",
+                                leadStatus: "unresolved",
+                              })}
+                          >
+                            Mark Contacted
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-md border border-zinc-300 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
+                            disabled={leadActionMutation.isPending}
+                            onClick={() =>
+                              runLeadAction(lead.id, {
+                                leadStatus: "planning",
+                                followUpDate: isoDatePlusDays(2),
+                              })}
+                          >
+                            Snooze +2d
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-md border border-green-300 bg-green-50 px-2 py-1 text-xs font-medium text-green-700 hover:bg-green-100"
+                            disabled={leadActionMutation.isPending}
+                            onClick={() =>
+                              runLeadAction(lead.id, {
+                                status: "converted",
+                                leadStatus: "won",
+                                followUpDate: null,
+                              })}
+                          >
+                            Mark Won
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-md border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
+                            disabled={leadActionMutation.isPending}
+                            onClick={() =>
+                              runLeadAction(lead.id, {
+                                status: "lost",
+                                leadStatus: "lost",
+                                followUpDate: null,
+                              })}
+                          >
+                            Mark Lost
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ul>
