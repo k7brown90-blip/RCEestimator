@@ -147,7 +147,11 @@ app.get("/health", (_req, res) => {
 });
 
 // ─── VAPI DYNAMIC VARIABLES (no auth — called at start of each inbound call) ──
-app.post("/vapi/assistant-config", (_req, res) => {
+// Vapi hits this on every inbound call when the phone number's `server.url` is
+// pointed here. On `assistant-request` we reply with the existing assistantId
+// and per-call variableValues; on any other message type we ack with 200 so
+// Vapi treats the request as handled without changing the assistant.
+app.post("/vapi/assistant-config", (req, res) => {
   const now = new Date();
   const current_date = now.toLocaleDateString("en-US", {
     timeZone: "America/Chicago",
@@ -161,7 +165,25 @@ app.post("/vapi/assistant-config", (_req, res) => {
     hour: "2-digit",
     minute: "2-digit",
   });
-  res.json({ variableValues: { current_date, current_time, currentDateTime: `${current_date}, ${current_time} Central Time` } });
+  const variableValues = {
+    current_date,
+    current_time,
+    currentDateTime: `${current_date}, ${current_time} Central Time`,
+  };
+
+  const messageType = (req.body?.message?.type ?? req.body?.type) as string | undefined;
+  const savannahAssistantId = process.env.VAPI_ASSISTANT_ID ?? "91c88bcc-098e-4816-b374-06688208c0a3";
+
+  if (messageType === "assistant-request") {
+    res.json({
+      assistantId: savannahAssistantId,
+      assistantOverrides: { variableValues },
+    });
+    return;
+  }
+
+  // Legacy / manual test callers still get the raw variableValues.
+  res.json({ variableValues, assistantId: savannahAssistantId });
 });
 
 // ─── CALENDAR AVAILABILITY (no auth — called by Vapi AI assistant) ───────────
