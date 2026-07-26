@@ -231,6 +231,7 @@ function HealthInspectionHistory({ customerId }: { customerId: string }) {
                   </span>
                   {shortDate(inspection.inspectionDate)} · {inspection.itemsAssessed} items ·{" "}
                   {inspection.technician?.name ?? "unassigned"}
+                  {inspection.technician?.employeeNumber ? ` (${inspection.technician.employeeNumber})` : ""}
                   {criticals.length > 0 && (
                     <span className="ml-2 font-semibold text-red-600">⚠ {criticals.join(", ")}</span>
                   )}

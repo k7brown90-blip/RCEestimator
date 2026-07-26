@@ -113,7 +113,7 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
           Assign inspection
         </button>
         {activeTechs.length === 0 && (
-          <span className="text-xs text-rce-muted">No technicians yet — add them in Settings.</span>
+          <span className="text-xs text-rce-muted">No technicians yet — add them in the Team tab.</span>
         )}
       </div>
 
@@ -123,6 +123,11 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
             <li key={assignment.id} className="flex items-center justify-between rounded-lg border border-rce-border bg-white px-3 py-2 text-sm">
               <span>
                 <span className="font-medium">{assignment.technician.name}</span>
+                {assignment.technician.employeeNumber ? (
+                  <span className="ml-1.5 rounded bg-rce-accentBg px-1 py-0.5 font-mono text-[10px] text-rce-accentDark">
+                    {assignment.technician.employeeNumber}
+                  </span>
+                ) : null}
                 <span className="ml-2 text-xs text-rce-muted">
                   {assignment.role} · {assignment.status}
                   {assignment.completedAt ? ` · completed ${new Date(assignment.completedAt).toLocaleDateString()}` : ""}
@@ -171,6 +176,7 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                       </span>
                       {new Date(inspection.inspectionDate).toLocaleDateString()} ·{" "}
                       {inspection.itemsAssessed} items · {inspection.technician?.name ?? "unassigned"}
+                      {inspection.technician?.employeeNumber ? ` (${inspection.technician.employeeNumber})` : ""}
                       {criticals.length > 0 && (
                         <span className="ml-2 font-semibold text-red-600">
                           ⚠ {criticals.length} critical ({criticals.join(", ")})

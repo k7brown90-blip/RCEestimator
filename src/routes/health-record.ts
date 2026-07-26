@@ -20,7 +20,7 @@ import { generateHealthReport } from "../services/pdfGenerator";
 // ─── TECHNICIAN AUTH ────────────────────────────────────────────────────────────
 
 interface TechRequest extends express.Request {
-  technician?: { id: string; name: string; role: string };
+  technician?: { id: string; name: string; role: string; employeeNumber: string | null };
 }
 
 const technicianAuth: express.RequestHandler = (req: TechRequest, res, next) => {
@@ -35,7 +35,7 @@ const technicianAuth: express.RequestHandler = (req: TechRequest, res, next) => 
       res.status(401).json({ success: false, error: { code: "unauthorized", message: "Invalid or inactive technician token" } });
       return;
     }
-    req.technician = { id: technician.id, name: technician.name, role: technician.role };
+    req.technician = { id: technician.id, name: technician.name, role: technician.role, employeeNumber: technician.employeeNumber };
     next();
   })().catch(next);
 };
@@ -295,7 +295,7 @@ healthRecordAdminRouter.post("/visits/:visitId/assign", asyncHandler(async (req,
 healthRecordAdminRouter.get("/visits/:visitId/assignments", asyncHandler(async (req, res) => {
   const assignments = await prisma.visitAssignment.findMany({
     where: { visitId: readParam(req, "visitId") },
-    include: { technician: { select: { id: true, name: true, role: true, isActive: true } } },
+    include: { technician: { select: { id: true, name: true, role: true, isActive: true, employeeNumber: true } } },
     orderBy: { assignedAt: "asc" },
   });
   res.json(assignments);
@@ -318,7 +318,7 @@ const inspectionSummary = {
   criticalFindingsJson: true,
   contractorReviewed: true,
   syncedAt: true,
-  technician: { select: { id: true, name: true } },
+  technician: { select: { id: true, name: true, employeeNumber: true } },
 } as const;
 
 /** Inspection history for a customer (newest first) — the retention record. */

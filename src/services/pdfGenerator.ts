@@ -329,7 +329,7 @@ export async function generateHealthReport(
     include: {
       customer: { select: { name: true } },
       property: { select: { addressLine1: true, city: true, state: true, postalCode: true } },
-      technician: { select: { name: true } },
+      technician: { select: { name: true, employeeNumber: true } },
       photos: { select: { id: true } },
     },
   });
@@ -358,7 +358,10 @@ export async function generateHealthReport(
   doc.fontSize(11).fillColor(BRAND.text);
   doc.text(`Customer: ${inspection.customer.name}`);
   doc.text(`Property: ${inspection.property.addressLine1}, ${inspection.property.city}, ${inspection.property.state} ${inspection.property.postalCode}`);
-  doc.text(`Inspected: ${dateStr}${inspection.technician ? ` by ${inspection.technician.name}` : ""} · Jurisdiction: ${inspection.jurisdictionId}`);
+  const techLabel = inspection.technician
+    ? ` by ${inspection.technician.name}${inspection.technician.employeeNumber ? ` (Emp #${inspection.technician.employeeNumber})` : ""}`
+    : "";
+  doc.text(`Inspected: ${dateStr}${techLabel} · Jurisdiction: ${inspection.jurisdictionId}`);
   doc.moveDown();
 
   // Headline score + band

@@ -1147,6 +1147,37 @@ app.use(pinAuthMiddleware);
 // ─── HEALTH RECORD ADMIN (CRM client — rides the PIN/JWT session) ─────────────
 app.use("/health-record-admin", healthRecordAdminRouter);
 
+// ─── COMPANY SETTINGS (key-value config store — PIN/JWT protected) ────────────
+const SETTING_KEYS = ["companyProfile", "operatingHours", "territories", "legal"] as const;
+
+app.get("/crm/settings", asyncHandler(async (_req, res) => {
+  const rows = await prisma.companySetting.findMany();
+  const settings: Record<string, unknown> = {};
+  for (const row of rows) {
+    try {
+      settings[row.key] = JSON.parse(row.valueJson);
+    } catch {
+      settings[row.key] = null;
+    }
+  }
+  res.json(settings);
+}));
+
+app.put("/crm/settings/:key", asyncHandler(async (req, res) => {
+  const key = readParam(req, "key");
+  if (!SETTING_KEYS.includes(key as (typeof SETTING_KEYS)[number])) {
+    res.status(400).json({ error: `Unknown settings key. Valid keys: ${SETTING_KEYS.join(", ")}` });
+    return;
+  }
+  const valueJson = JSON.stringify(req.body ?? {});
+  const row = await prisma.companySetting.upsert({
+    where: { key },
+    update: { valueJson },
+    create: { key, valueJson },
+  });
+  res.json({ key: row.key, value: JSON.parse(row.valueJson), updatedAt: row.updatedAt });
+}));
+
 const analyticsRangeQuerySchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),

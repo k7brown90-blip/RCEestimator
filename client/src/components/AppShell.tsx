@@ -9,6 +9,7 @@ const nav = [
   { to: "/calendar", label: "Calendar" },
   { to: "/leads", label: "Leads", badgeQuery: true },
   { to: "/customers", label: "Customers" },
+  { to: "/team", label: "Team" },
   { to: "/settings", label: "Settings" },
 ];
 
@@ -58,7 +59,7 @@ export function AppShell({ children }: PropsWithChildren) {
         </div>
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-rce-border bg-rce-surface p-2 md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-rce-border bg-rce-surface p-2 md:hidden">
         {nav.map((item) => (
           <NavLink
             key={item.to}

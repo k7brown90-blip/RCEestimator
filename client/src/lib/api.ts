@@ -277,9 +277,9 @@ export const api = {
     request<{ jobId: string; cancelled: boolean }>(`/crm/jobs/${jobId}/cancel`, { method: "POST", body: JSON.stringify(input) }),
   // ─── Health Record (field inspection PWA) ─────────────────────────────────
   technicians: () => request<Technician[]>("/health-record-admin/technicians"),
-  createTechnician: (input: { name: string; email?: string; phone?: string; role?: string }) =>
+  createTechnician: (input: { name: string; email?: string; phone?: string; employeeNumber?: string; role?: string }) =>
     request<Technician>("/health-record-admin/technicians", { method: "POST", body: JSON.stringify(input) }),
-  updateTechnician: (technicianId: string, input: { name?: string; isActive?: boolean; rotateToken?: boolean }) =>
+  updateTechnician: (technicianId: string, input: { name?: string; isActive?: boolean; rotateToken?: boolean; employeeNumber?: string | null }) =>
     request<Technician>(`/health-record-admin/technicians/${technicianId}`, { method: "PATCH", body: JSON.stringify(input) }),
   assignTechnician: (visitId: string, input: { technicianId: string; role?: "primary" | "helper" }) =>
     request<VisitAssignment>(`/health-record-admin/visits/${visitId}/assign`, { method: "POST", body: JSON.stringify(input) }),
@@ -309,6 +309,13 @@ export const api = {
       `/health-record-admin/inspections/${inspectionId}/report`,
       { method: "POST", body: JSON.stringify({}) },
     ),
+  // ─── Company settings ───────────────────────────────────────────────────
+  companySettings: () => request<CompanySettings>("/crm/settings"),
+  saveCompanySetting: (key: string, value: unknown) =>
+    request<{ key: string; value: unknown; updatedAt: string }>(`/crm/settings/${key}`, {
+      method: "PUT",
+      body: JSON.stringify(value),
+    }),
 };
 
 // ─── Health Record types ─────────────────────────────────────────────────────
@@ -318,11 +325,61 @@ export interface Technician {
   name: string;
   email?: string | null;
   phone?: string | null;
+  employeeNumber?: string | null;
   role: string;
   accessToken: string;
   isActive: boolean;
   createdAt: string;
   _count?: { assignments: number; healthInspections: number };
+}
+
+// ─── Company settings types ─────────────────────────────────────────────
+
+export interface CompanyProfile {
+  companyName: string;
+  address: string;
+  phone: string;
+  email: string;
+  licenseNumber: string;
+  licenseState: string;
+  licenseExpiration: string;
+  insuranceCarrier: string;
+  insurancePolicyNumber: string;
+  insuranceExpiration: string;
+}
+
+export interface OperatingHours {
+  weekdays: string;
+  saturday: string;
+  sunday: string;
+  afterHoursPolicy: string;
+}
+
+export interface Territory {
+  zip: string;
+  area: string;
+  codeCycle: string;
+  utilityProvider: string;
+  utilityPhone: string;
+  utilityEmail: string;
+  utilityNotes: string;
+  inspectorName: string;
+  inspectorPhone: string;
+  inspectorEmail: string;
+  inspectorNotes: string;
+}
+
+export interface LegalInfo {
+  warrantyText: string;
+  policiesText: string;
+  insuranceNotes: string;
+}
+
+export interface CompanySettings {
+  companyProfile?: CompanyProfile | null;
+  operatingHours?: OperatingHours | null;
+  territories?: Territory[] | null;
+  legal?: LegalInfo | null;
 }
 
 export interface VisitAssignment {
@@ -333,7 +390,7 @@ export interface VisitAssignment {
   status: string;
   assignedAt: string;
   completedAt?: string | null;
-  technician: { id: string; name: string; role?: string; isActive?: boolean };
+  technician: { id: string; name: string; role?: string; isActive?: boolean; employeeNumber?: string | null };
 }
 
 export interface HealthInspectionSummary {
@@ -348,7 +405,7 @@ export interface HealthInspectionSummary {
   criticalFindingsJson: string;
   contractorReviewed: boolean;
   syncedAt: string;
-  technician?: { id: string; name: string } | null;
+  technician?: { id: string; name: string; employeeNumber?: string | null } | null;
 }
 
 export interface HealthInspectionDetail extends HealthInspectionSummary {

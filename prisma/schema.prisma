@@ -117,6 +117,16 @@ model Technician {
   healthInspections HealthInspection[]
 }
 
+// Flexible company configuration store — license info, operating territories,
+// utility providers, hours, legal/warranty text. One row per section key; the
+// value is a JSON document owned by the Settings UI. Key-value keeps schema
+// churn out of company-profile edits.
+model CompanySetting {
+  key       String   @id // companyProfile | operatingHours | territories | legal
+  valueJson String
+  updatedAt DateTime @updatedAt
+}
+
 model VisitAssignment {
   id           String     @id @default(cuid())
   visitId      String
