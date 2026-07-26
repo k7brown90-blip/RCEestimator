@@ -243,6 +243,7 @@ healthRecordAdminRouter.post("/technicians", asyncHandler(async (req, res) => {
     name: z.string().min(1),
     email: z.string().email().optional(),
     phone: z.string().optional(),
+    employeeNumber: z.string().min(1).optional(),
     role: z.enum(["technician", "supervisor", "admin"]).optional(),
   }).parse(req.body);
 
@@ -257,6 +258,7 @@ healthRecordAdminRouter.patch("/technicians/:id", asyncHandler(async (req, res) 
     name: z.string().min(1).optional(),
     email: z.string().email().nullable().optional(),
     phone: z.string().nullable().optional(),
+    employeeNumber: z.string().min(1).nullable().optional(),
     role: z.enum(["technician", "supervisor", "admin"]).optional(),
     isActive: z.boolean().optional(),
     rotateToken: z.boolean().optional(),

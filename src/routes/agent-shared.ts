@@ -189,6 +189,121 @@ sharedAgentRouter.post("/call-disposition", asyncHandler(async (req, res) => {
   res.json(resp);
 }));
 
+// ─── POST /technicians/verify ──────────────────────────────────────────────────
+// Voice-agent field-team authentication. A caller who claims to be internal
+// staff (technician, supervisor, admin) is verified by employee number. On
+// match, we return the technician's identity, role, active assignments, and
+// recent job history so the agent can transition into administrative mode and
+// tie every downstream action back to a real employee (audit + payroll).
+
+sharedAgentRouter.post("/technicians/verify", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/technicians/verify";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const body = z.object({
+    employee_number: z.string().min(1),
+    stated_name: z.string().optional(),
+  }).parse(req.body);
+
+  const trimmed = body.employee_number.trim();
+  const technician = await prisma.technician.findUnique({
+    where: { employeeNumber: trimmed },
+    include: {
+      assignments: {
+        where: { status: { in: ["assigned", "in_progress"] } },
+        orderBy: { assignedAt: "desc" },
+        take: 5,
+        include: {
+          visit: {
+            select: {
+              id: true,
+              scheduledStart: true,
+              purpose: true,
+              status: true,
+              customer: { select: { name: true } },
+              property: { select: { addressLine1: true, city: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!technician || !technician.isActive) {
+    const resp = {
+      success: false,
+      data: { verified: false },
+      spoken_confirmation:
+        "I don't have that verified — I'll flag your request for our operations lead.",
+      error: { code: "TECH_NOT_VERIFIED", message: "Employee number not recognized or technician is inactive" },
+    };
+    logAgent("technician_verify_failed", {
+      endpoint,
+      payload: { employee_number_masked: trimmed.slice(0, 2) + "***", stated_name: body.stated_name },
+      responseStatus: 401,
+      durationMs: Date.now() - start,
+      clientRequestId,
+    });
+    res.status(401).json(resp);
+    return;
+  }
+
+  const activeAssignments = technician.assignments.map((a) => ({
+    visit_id: a.visit.id,
+    customer_name: a.visit.customer.name,
+    address: [a.visit.property.addressLine1, a.visit.property.city].filter(Boolean).join(", "),
+    purpose: a.visit.purpose,
+    status: a.visit.status,
+    scheduled_start: a.visit.scheduledStart?.toISOString() ?? null,
+    assignment_status: a.status,
+  }));
+
+  const nextJob = activeAssignments
+    .filter((a) => a.scheduled_start)
+    .sort((a, b) => (a.scheduled_start! < b.scheduled_start! ? -1 : 1))[0] ?? null;
+
+  const spokenParts: string[] = [`Got it — thanks, verified as ${technician.name}.`];
+  if (nextJob) {
+    const when = new Date(nextJob.scheduled_start!).toLocaleString("en-US", {
+      timeZone: "America/Chicago",
+      weekday: "long",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    spokenParts.push(`Your next job is ${nextJob.customer_name} on ${when}.`);
+  } else if (activeAssignments.length > 0) {
+    spokenParts.push(`You have ${activeAssignments.length} active assignment${activeAssignments.length === 1 ? "" : "s"}.`);
+  }
+
+  const resp = successResponse(
+    {
+      verified: true,
+      technician_id: technician.id,
+      name: technician.name,
+      role: technician.role,
+      active_assignments: activeAssignments,
+      next_job: nextJob,
+    },
+    spokenParts.join(" "),
+  );
+
+  await saveIdempotency(clientRequestId, endpoint, undefined, resp);
+  logAgent("technician_verify_success", {
+    endpoint,
+    entityType: "Technician",
+    entityId: technician.id,
+    payload: { role: technician.role, active_count: activeAssignments.length },
+    responseStatus: 200,
+    durationMs: Date.now() - start,
+    clientRequestId,
+  });
+  res.json(resp);
+}));
+
 // ─── POST /documents/send ──────────────────────────────────────────────────────
 // Re-send an existing document PDF (contract, work order, material list, change
 // order, health report) to a customer by email, SMS, or both. Used by the
