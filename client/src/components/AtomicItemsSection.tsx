@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { EstimateItem, SupportItem, NECAlert } from "../lib/types";
+import type { EstimateItem, SupportItem } from "../lib/types";
 import { AddAtomicItemModal } from "./AddAtomicItemModal";
 import { money } from "../lib/utils";
 
@@ -13,18 +13,6 @@ const SUPPORT_TYPE_LABELS: Record<string, string> = {
   CIRCUIT_TESTING: "Circuit Testing / Checkout",
   CLEANUP: "Cleanup / Debris Removal",
   PANEL_DEMO: "Panel Demo / Removal",
-};
-
-const SEVERITY_COLORS: Record<string, string> = {
-  REQUIRED: "border-rce-danger/40 bg-red-50",
-  RECOMMENDED: "border-rce-warning/40 bg-amber-50",
-  ADVISORY: "border-rce-border/60 bg-gray-50",
-};
-
-const SEVERITY_BADGE: Record<string, string> = {
-  REQUIRED: "bg-red-100 text-red-700",
-  RECOMMENDED: "bg-amber-100 text-amber-700",
-  ADVISORY: "bg-gray-100 text-gray-600",
 };
 
 type Props = {
@@ -52,18 +40,9 @@ export function AtomicItemsSection({ estimateId, optionId, locked }: Props) {
     enabled: Boolean(estimateId),
   });
 
-  const { data: necResult } = useQuery({
-    queryKey: ["nec-check", estimateId],
-    queryFn: () => api.necCheck(estimateId),
-    enabled: Boolean(estimateId) && items.length > 0,
-  });
-
-  const necAlerts: NECAlert[] = necResult?.alerts ?? [];
-
   const refreshAll = () => {
     queryClient.invalidateQueries({ queryKey: ["items", estimateId, optionId] });
     queryClient.invalidateQueries({ queryKey: ["support-items", estimateId] });
-    queryClient.invalidateQueries({ queryKey: ["nec-check", estimateId] });
     queryClient.invalidateQueries({ queryKey: ["estimate", estimateId] });
   };
 
@@ -179,29 +158,6 @@ export function AtomicItemsSection({ estimateId, optionId, locked }: Props) {
             </div>
           </div>
         </>
-      )}
-
-      {/* ── NEC Alerts ─────────────────────────────────────────────────────── */}
-      {necAlerts.length > 0 && (
-        <div className="mt-5 space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-rce-soft">NEC Prompts</p>
-          {necAlerts.map((alert) => (
-            <div
-              key={alert.ruleCode}
-              className={`rounded-lg border p-3 ${SEVERITY_COLORS[alert.severity] ?? "border-rce-border/60"}`}
-            >
-              <div className="flex items-start gap-2">
-                <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-semibold ${SEVERITY_BADGE[alert.severity] ?? ""}`}>
-                  {alert.severity}
-                </span>
-                <div>
-                  <p className="text-sm font-medium">Art. {alert.necArticle}</p>
-                  <p className="text-sm">{alert.promptText}</p>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
       )}
 
       {/* ── Support Items ──────────────────────────────────────────────────── */}

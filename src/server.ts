@@ -4,8 +4,27 @@ import { sendDailySummaryEmail } from "./services/dailySummary";
 import { getNextDaySchedule } from "./services/schedule";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { sendPendingSupplierEmails } from "./services/supplierEmail";
+import { generateInspectionRenewalLeads } from "./services/inspectionRetention";
 
 const port = Number(process.env.PORT ?? 4000);
+
+// Fail fast on missing security-critical configuration in production.
+// Without PIN_HASH the entire CRM is public; without WEBHOOK_SECRET the lead
+// and scheduling webhooks reject everything; the default JWT secret is public;
+// without AGENT_API_TOKEN the voice-agent scheduling tools reject everything.
+if (process.env.NODE_ENV === "production") {
+  const required = ["PIN_HASH", "JWT_SECRET", "WEBHOOK_SECRET", "AGENT_API_TOKEN"] as const;
+  const missing = required.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    throw new Error(`Refusing to start in production without: ${missing.join(", ")}`);
+  }
+  if (!process.env.RAILWAY_PUBLIC_DOMAIN) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[startup] RAILWAY_PUBLIC_DOMAIN is not set — the OpenAI agent MCP URL will fall back to localhost and be unreachable.",
+    );
+  }
+}
 
 async function startServer(): Promise<void> {
   app.listen(port, () => {
@@ -48,6 +67,19 @@ async function startServer(): Promise<void> {
       if (sent > 0) console.log(`[Cron] Sent ${sent} supplier order(s).`);
     } catch (err) {
       console.error("[Cron] Supplier emails failed:", err);
+    }
+
+    // 4. Annual-inspection retention sweep — renewal leads ~11 months after
+    // each property's most recent health inspection (idempotent).
+    console.log("[Cron] Running inspection retention sweep...");
+    try {
+      const result = await generateInspectionRenewalLeads();
+      if (result.created > 0) {
+        console.log(`[Cron] Created ${result.created} inspection renewal lead(s).`);
+        await sendSms(KYLE_PHONE, `Retention: ${result.created} annual inspection renewal lead(s) created — check the follow-up queue.\n\nRed Cedar Electric`).catch((err) => console.error("[Cron] Retention SMS failed:", err));
+      }
+    } catch (err) {
+      console.error("[Cron] Inspection retention sweep failed:", err);
     }
   }, { timezone: "America/Chicago" });
 

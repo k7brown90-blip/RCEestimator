@@ -1258,6 +1258,40 @@ agentRouter.get("/openapi.json", (_req, res) => {
           },
         },
       },
+      "/calendar/call-disposition": {
+        post: {
+          summary:
+            "REQUIRED before ending every call: log the structured outcome (lead status + follow-up) so no conversation leaves the pipeline without a state. Resolves the lead by id, then phone, and creates one as a last resort.",
+          parameters: [idempotencyHeader],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    lead_id: { type: "string", description: "Lead ID if known" },
+                    phone: { type: "string", description: "Caller's phone — used to match the most recent lead" },
+                    name: { type: "string", description: "Caller's name — used when creating a lead" },
+                    call_type: { type: "string", description: "new_job | warranty | reschedule | cancellation | estimate_followup | callback | other" },
+                    lead_status: { type: "string", enum: ["new", "booked", "unresolved", "planning", "no_answer", "lost", "won"] },
+                    follow_up_date: { type: "string", format: "date", description: "YYYY-MM-DD — when to follow up (sets the follow-up queue)" },
+                    follow_up_reason: { type: "string", description: "comparing_estimates | still_planning | consulting_partner | no_answer" },
+                    lost_reason: { type: "string", description: "price | timing | referral | trust | scope | other (only when lead_status=lost)" },
+                    best_time_to_reach: { type: "string" },
+                    notes: { type: "string", description: "One-line summary of the call outcome" },
+                  },
+                  required: ["call_type", "lead_status"],
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "{ success, data: { lead_id, lead_created, lead_status, follow_up_date }, spoken_confirmation }" },
+            "422": { description: "Provide lead_id, phone, or name" },
+          },
+        },
+      },
       "/jerry/visits/active/last-item": {
         delete: {
           summary: "Delete the most recent dictated item from the active visit",

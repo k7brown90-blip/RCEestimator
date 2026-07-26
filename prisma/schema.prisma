@@ -8,7 +8,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -21,6 +21,9 @@ model Customer {
   updatedAt   DateTime   @updatedAt
   properties  Property[]
   visits      Visit[]
+  healthInspections HealthInspection[]
+
+  @@index([phone])
 }
 
 model Property {
@@ -40,6 +43,7 @@ model Property {
   systemSnapshot         SystemSnapshot?
   visits                 Visit[]
   estimates              Estimate[]
+  healthInspections      HealthInspection[]
 }
 
 model SystemSnapshot {
@@ -90,6 +94,103 @@ model Visit {
   estimates              Estimate[]
   documents              Document[]
   materialOrders         MaterialOrder[]
+  assignments            VisitAssignment[]
+  healthInspections      HealthInspection[]
+
+  @@index([customerId, visitDate])
+  @@index([status, scheduledStart])
+}
+
+// ─── Health Record (field inspection PWA) integration ──────────────────────
+
+model Technician {
+  id          String   @id @default(cuid())
+  name        String
+  email       String?
+  phone       String?
+  role        String   @default("technician") // technician | supervisor | admin
+  accessToken String   @unique // bearer token used by the field PWA
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  assignments VisitAssignment[]
+  healthInspections HealthInspection[]
+}
+
+model VisitAssignment {
+  id           String     @id @default(cuid())
+  visitId      String
+  technicianId String
+  role         String     @default("primary") // primary | helper
+  status       String     @default("assigned") // assigned | in_progress | completed
+  assignedAt   DateTime   @default(now())
+  completedAt  DateTime?
+  visit        Visit      @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  technician   Technician @relation(fields: [technicianId], references: [id], onDelete: Restrict)
+
+  @@unique([visitId, technicianId])
+}
+
+// Transactional day-claim that closes the check-then-book race between the
+// availability read and the calendar write. The unique constraint on holdDate
+// makes claiming a business day atomic across concurrent voice-agent calls —
+// the second caller gets a conflict instead of a double-booking. Holds are
+// short-lived (released after booking completes; TTL covers process crashes).
+model SlotHold {
+  id        String   @id @default(cuid())
+  holdDate  String // YYYY-MM-DD (America/Chicago business day)
+  jobId     String?
+  heldBy    String // "scheduler" | "savannah" | "jerry" | "admin"
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([holdDate])
+  @@index([expiresAt])
+}
+
+// One row per completed PWA inspection. The id is the PWA-generated inspection
+// UUID, which makes sync pushes idempotent. Versioned history: one property can
+// accumulate many inspections over time (year-over-year record).
+model HealthInspection {
+  id                   String     @id
+  visitId              String
+  propertyId           String
+  customerId           String
+  technicianId         String?
+  jurisdictionId       String
+  inspectionDate       DateTime
+  score                Int
+  itemsAssessed        Int
+  criticalFindingsJson String // string[] of checklist item ids
+  contractorReviewed   Boolean    @default(false)
+  reviewedAt           DateTime?
+  reviewedBy           String?
+  itemsJson            String // full ItemResult[] from the PWA
+  loadCalcJson         String? // { input, result } NEC Art. 220 record
+  appVersion           String?
+  syncedAt             DateTime   @default(now())
+  visit                Visit      @relation(fields: [visitId], references: [id], onDelete: Restrict)
+  property             Property   @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  customer             Customer   @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  technician           Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+  photos               InspectionPhoto[]
+
+  @@index([customerId, inspectionDate])
+  @@index([propertyId, inspectionDate])
+}
+
+// Photo evidence uploaded from the field PWA. Stored in Postgres (bytea) so the
+// evidence rides the managed database backups — no volume configuration needed.
+// The id is the PWA-generated photo UUID, making uploads idempotent.
+model InspectionPhoto {
+  id           String           @id
+  inspectionId String
+  mimeType     String
+  sizeBytes    Int
+  data         Bytes
+  uploadedAt   DateTime         @default(now())
+  inspection   HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+
+  @@index([inspectionId])
 }
 
 model CustomerRequest {
@@ -556,6 +657,11 @@ model Lead {
   visitId           String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+
+  @@index([customerId])
+  @@index([leadStatus, followUpDate])
+  @@index([phone])
+  @@index([createdAt])
 }
 
 // ─── PHASE 1 DATA MODEL — NEW MODELS ────────────────────────────────────────

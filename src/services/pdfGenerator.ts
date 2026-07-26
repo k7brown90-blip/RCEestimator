@@ -116,8 +116,7 @@ async function savePdf(doc: PDFKit.PDFDocument, filename: string): Promise<strin
   });
 }
 
-export async function generateContract(input: ContractInput): Promise<{ documentId: string; pdfPath: string }> {
-  const docId = uuidv4();
+export async function generateContract(input: ContractInput): Promise<{ documentId: string; pdfPath: string }> {  const docId = uuidv4();
   const doc = new PDFDocument({ margin: 36 });
 
   addHeader(doc, "Service Contract");
@@ -293,6 +292,126 @@ export async function generateMaterialList(input: MaterialListInput): Promise<{ 
       id: docId,
       jobId: input.jobId,
       type: "material_list",
+      pdfUrl: pdfPath,
+    },
+  });
+
+  return { documentId: docId, pdfPath };
+}
+
+// ─── HEALTH RECORD REPORT ───────────────────────────────────────────────────────
+
+function scoreBand(score: number, hasCritical: boolean): string {
+  if (hasCritical) return score < 60 ? "Priority" : "Needs attention";
+  if (score >= 90) return "Excellent";
+  if (score >= 75) return "Good / Serviceable";
+  if (score >= 60) return "Needs attention";
+  return "Priority";
+}
+
+const RESULT_LABEL: Record<string, string> = {
+  PASS: "Pass",
+  MONITOR: "Monitor",
+  ACTION: "Action required",
+  BELOW_STANDARD: "Meets code — below Red Cedar standard",
+  NA: "Not applicable (logged)",
+};
+
+/**
+ * Render a synced field inspection into the customer's document chain, so the
+ * health report lives alongside contracts and proposals with one delivery path.
+ */
+export async function generateHealthReport(
+  inspectionId: string,
+): Promise<{ documentId: string; pdfPath: string }> {
+  const inspection = await prisma.healthInspection.findUnique({
+    where: { id: inspectionId },
+    include: {
+      customer: { select: { name: true } },
+      property: { select: { addressLine1: true, city: true, state: true, postalCode: true } },
+      technician: { select: { name: true } },
+      photos: { select: { id: true } },
+    },
+  });
+  if (!inspection) throw new Error(`Inspection ${inspectionId} not found`);
+
+  const items = JSON.parse(inspection.itemsJson) as Array<{
+    itemId: string;
+    result: string;
+    gradedState?: string;
+    note?: string;
+    photoIds: string[];
+  }>;
+  const criticals = JSON.parse(inspection.criticalFindingsJson) as string[];
+  const loadCalc = inspection.loadCalcJson
+    ? (JSON.parse(inspection.loadCalcJson) as {
+        result?: { governingAmps?: number; serviceAmps?: number; loadPct?: number; spareAmps?: number; methodUsed?: string };
+      }).result ?? null
+    : null;
+
+  const docId = uuidv4();
+  const doc = new PDFDocument({ margin: 36 });
+
+  addHeader(doc, "Electrical Health Record");
+
+  const dateStr = inspection.inspectionDate.toLocaleDateString("en-US", { timeZone: "America/Chicago" });
+  doc.fontSize(11).fillColor(BRAND.text);
+  doc.text(`Customer: ${inspection.customer.name}`);
+  doc.text(`Property: ${inspection.property.addressLine1}, ${inspection.property.city}, ${inspection.property.state} ${inspection.property.postalCode}`);
+  doc.text(`Inspected: ${dateStr}${inspection.technician ? ` by ${inspection.technician.name}` : ""} · Jurisdiction: ${inspection.jurisdictionId}`);
+  doc.moveDown();
+
+  // Headline score + band
+  doc.fillColor(BRAND.cedar).fontSize(22).text(
+    `Health Score: ${inspection.score}  —  ${scoreBand(inspection.score, criticals.length > 0)}`,
+  );
+  doc.fillColor(BRAND.muted).fontSize(9).text(`${inspection.itemsAssessed} items assessed`);
+  doc.moveDown(0.5);
+
+  if (criticals.length > 0) {
+    doc.fillColor("#b91c1c").fontSize(12).text(
+      `CRITICAL FINDING${criticals.length > 1 ? "S" : ""}: ${criticals.join(", ")} — headline score capped at 69 until resolved.`,
+    );
+    doc.fillColor(BRAND.text);
+    doc.moveDown(0.5);
+  }
+
+  if (loadCalc?.governingAmps !== undefined) {
+    doc.fillColor(BRAND.cedar).fontSize(12).text("Electrical Capacity (NEC Article 220)", { underline: true });
+    doc.fillColor(BRAND.text).fontSize(10).text(
+      `Calculated load ${loadCalc.governingAmps} A on a ${loadCalc.serviceAmps} A service — ` +
+      `${loadCalc.loadPct}% used, ${loadCalc.spareAmps} A spare (code basis 230.42; method: ${loadCalc.methodUsed ?? "optional"}).`,
+    );
+    doc.moveDown();
+  }
+
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Findings by Item", { underline: true });
+  doc.fillColor(BRAND.text).fontSize(9);
+  for (const item of items) {
+    const grade = item.gradedState ? ` (${item.gradedState})` : "";
+    const critical = criticals.includes(item.itemId) ? "  ⚠ CRITICAL" : "";
+    doc.text(`${item.itemId}: ${RESULT_LABEL[item.result] ?? item.result}${grade}${critical}${item.note ? ` — ${item.note}` : ""}`);
+  }
+  doc.moveDown();
+
+  doc.fillColor(BRAND.muted).fontSize(8).text(
+    `Photo evidence on file: ${inspection.photos.length} image(s). ` +
+    `Contractor review: ${inspection.contractorReviewed ? `completed${inspection.reviewedBy ? ` by ${inspection.reviewedBy}` : ""}` : "pending"}.`,
+  );
+  doc.moveDown(0.5);
+  doc.fillColor(BRAND.muted).fontSize(8).text(
+    "This score reflects severity, likelihood, and how hidden each issue is — weighted from national fire/shock data, not our opinion.",
+  );
+
+  addFooter(doc);
+
+  const pdfPath = await savePdf(doc, `health-report-${docId}.pdf`);
+
+  await prisma.document.create({
+    data: {
+      id: docId,
+      jobId: inspection.visitId,
+      type: "health_report",
       pdfUrl: pdfPath,
     },
   });

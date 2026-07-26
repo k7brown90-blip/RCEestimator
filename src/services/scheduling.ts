@@ -8,6 +8,7 @@ import { prisma } from "../lib/prisma";
 import { createCalendarEvent, deleteCalendarEvent, moveCalendarEvent, checkAvailabilityBlock } from "./schedule";
 import * as notify from "./notifications";
 import { sendRescheduleEmail, sendCancellationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
+import { acquireSlotHolds, releaseSlotHolds, workingDaysCT, SlotContentionError } from "./slotHolds";
 
 const TZ = "America/Chicago";
 const DEFAULT_START_TIME = process.env.DEFAULT_JOB_START_TIME ?? "07:00";
@@ -95,22 +96,45 @@ export async function scheduleJob(
   const scheduledEnd = computeEndDate(scheduledStart, durationDays);
   const timeDisplay = formatTimeCT(scheduledStart);
 
-  // Check availability
-  const availability = await checkAvailabilityBlock(scheduledStart, durationDays);
-  if (!availability.available) {
-    const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
-    throw new ConflictError(`Calendar conflict: ${conflictSummary}`, availability.conflicts);
+  // Atomically claim the business days BEFORE the availability read, so two
+  // concurrent bookings can't both pass the check (check-then-book race).
+  const holdDates = workingDaysCT(scheduledStart, durationDays);
+  try {
+    await acquireSlotHolds(holdDates, "scheduler", jobId);
+  } catch (err) {
+    if (err instanceof SlotContentionError) {
+      throw new ConflictError(
+        `Another booking is in progress for ${err.dates.join(", ")}`,
+        err.dates.map((date) => ({ date, reason: "booking in progress" })),
+        "Someone else is booking that date right now. Want to try a different date?",
+      );
+    }
+    throw err;
   }
 
-  // Create calendar event
-  const calendarTitle = `JOB: ${job.customer.name} — ${job.jobType ?? "service"} — ${durationDays}d`;
-  const event = await createCalendarEvent({
-    summary: calendarTitle,
-    description: `Job ID: ${jobId}\nCustomer: ${job.customer.name}\nPhone: ${job.customer.phone ?? "N/A"}\nAddress: ${job.property.addressLine1}`,
-    location: `${job.property.addressLine1}, ${job.property.city}, ${job.property.state}`,
-    startTime: scheduledStart,
-    endTime: scheduledEnd,
-  });
+  let event: { id: string };
+  try {
+    // Check availability
+    const availability = await checkAvailabilityBlock(scheduledStart, durationDays);
+    if (!availability.available) {
+      const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
+      throw new ConflictError(`Calendar conflict: ${conflictSummary}`, availability.conflicts);
+    }
+
+    // Create calendar event
+    const calendarTitle = `JOB: ${job.customer.name} — ${job.jobType ?? "service"} — ${durationDays}d`;
+    event = await createCalendarEvent({
+      summary: calendarTitle,
+      description: `Job ID: ${jobId}\nCustomer: ${job.customer.name}\nPhone: ${job.customer.phone ?? "N/A"}\nAddress: ${job.property.addressLine1}`,
+      location: `${job.property.addressLine1}, ${job.property.city}, ${job.property.state}`,
+      startTime: scheduledStart,
+      endTime: scheduledEnd,
+    });
+  } finally {
+    // The calendar event itself blocks the days from here on (or the booking
+    // failed) — either way the transient hold has done its job.
+    await releaseSlotHolds(holdDates);
+  }
 
   // Build notification data
   const jobData: notify.JobData = {
@@ -219,21 +243,41 @@ export async function rescheduleJob(
     startTime: oldTimeDisplay,
   };
 
-  // Check availability (exclude current event)
-  const availability = await checkAvailabilityBlock(newStart, durationDays, job.googleEventId);
-  if (!availability.available) {
-    const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
-    // Notify Kyle about the blocked reschedule
-    await notify.sendKyleSms(notify.kyleRescheduleConflict(jobData, newStart, conflictSummary));
-    throw new ConflictError(
-      `Calendar conflict: ${conflictSummary}`,
-      availability.conflicts,
-      "I wasn't able to reschedule — there's a conflict on that date. I've notified Kyle, and he'll call you back to find another date.",
-    );
+  // Atomically claim the target days before the availability read (same race
+  // protection as scheduleJob).
+  const holdDates = workingDaysCT(newStart, durationDays);
+  try {
+    await acquireSlotHolds(holdDates, "scheduler", jobId);
+  } catch (err) {
+    if (err instanceof SlotContentionError) {
+      throw new ConflictError(
+        `Another booking is in progress for ${err.dates.join(", ")}`,
+        err.dates.map((date) => ({ date, reason: "booking in progress" })),
+        "Someone else is booking that date right now. Want to try a different date?",
+      );
+    }
+    throw err;
   }
 
-  // Move the calendar event
-  await moveCalendarEvent(job.googleEventId, newStart, newEnd);
+  try {
+    // Check availability (exclude current event)
+    const availability = await checkAvailabilityBlock(newStart, durationDays, job.googleEventId);
+    if (!availability.available) {
+      const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
+      // Notify Kyle about the blocked reschedule
+      await notify.sendKyleSms(notify.kyleRescheduleConflict(jobData, newStart, conflictSummary));
+      throw new ConflictError(
+        `Calendar conflict: ${conflictSummary}`,
+        availability.conflicts,
+        "I wasn't able to reschedule — there's a conflict on that date. I've notified Kyle, and he'll call you back to find another date.",
+      );
+    }
+
+    // Move the calendar event
+    await moveCalendarEvent(job.googleEventId, newStart, newEnd);
+  } finally {
+    await releaseSlotHolds(holdDates);
+  }
 
   const oldDates: notify.DateRange = { start: job.scheduledStart, end: job.scheduledEnd, time: oldTimeDisplay };
   const newDates: notify.DateRange = { start: newStart, end: newEnd, time: newTimeDisplay };

@@ -2,6 +2,7 @@ import { google } from "googleapis";
 
 import { sendConfirmationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
 import { customerVisitConfirmation, customerDiagnosticConfirmation, kyleNewBooking, sendCustomerSms, sendKyleSms } from "./notifications";
+import { acquireSlotHolds, releaseSlotHolds, slotKeyCT, SlotContentionError } from "./slotHolds";
 
 const TZ = "America/Chicago";
 const BUSINESS_START = 8;  // 8 AM CT
@@ -254,6 +255,13 @@ function parseAvailabilityDate(dateStr: string, timeStr: string): Date {
   return centralToUtc(year, month, day, hour, minute);
 }
 
+export class BookingConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BookingConflictError";
+  }
+}
+
 export async function bookAppointment(params: BookingParams): Promise<BookingResult> {
   const calendar = getCalendarClient();
   const isDiagnostic = params.visitType === "diagnostic";
@@ -261,19 +269,49 @@ export async function bookAppointment(params: BookingParams): Promise<BookingRes
   const startUtc = parseAvailabilityDate(params.date, params.startTime);
   const endUtc = new Date(startUtc.getTime() + durationHours * 3600_000);
 
+  // Serialize concurrent bookings of the same slot (check-then-book race):
+  // claim the slot atomically, then RE-verify the window against the calendar
+  // before writing — this endpoint previously inserted blind.
+  const slotKey = slotKeyCT(startUtc);
+  try {
+    await acquireSlotHolds([slotKey], "vapi-booking");
+  } catch (err) {
+    if (err instanceof SlotContentionError) {
+      throw new BookingConflictError("Someone else is booking that time right now — please pick a different slot.");
+    }
+    throw err;
+  }
+
+  let eventId: string;
   const prefix = isDiagnostic ? "DIAG" : "EST";
   const summary = `${prefix}: ${params.customerName} — ${params.address.substring(0, 60)}`;
+  try {
+    const freebusy = await calendar.freebusy.query({
+      requestBody: {
+        timeMin: startUtc.toISOString(),
+        timeMax: endUtc.toISOString(),
+        items: [{ id: "primary" }],
+      },
+    });
+    const busy = freebusy.data.calendars?.primary?.busy ?? [];
+    if (busy.length > 0) {
+      throw new BookingConflictError("That time was just taken — please pick a different slot.");
+    }
 
-  const event = await calendar.events.insert({
-    calendarId: "primary",
-    requestBody: {
-      summary,
-      description: params.description,
-      location: params.address,
-      start: { dateTime: startUtc.toISOString(), timeZone: TZ },
-      end: { dateTime: endUtc.toISOString(), timeZone: TZ },
-    },
-  });
+    const inserted = await calendar.events.insert({
+      calendarId: "primary",
+      requestBody: {
+        summary,
+        description: params.description,
+        location: params.address,
+        start: { dateTime: startUtc.toISOString(), timeZone: TZ },
+        end: { dateTime: endUtc.toISOString(), timeZone: TZ },
+      },
+    });
+    eventId = inserted.data.id!;
+  } finally {
+    await releaseSlotHolds([slotKey]);
+  }
 
   const endTimeStr = formatTime(endUtc);
   const appointmentWindow = `${params.startTime} – ${endTimeStr}`;
@@ -327,7 +365,7 @@ export async function bookAppointment(params: BookingParams): Promise<BookingRes
     .catch(err => console.error("[bookAppointment] Kyle email failed:", err));
 
   return {
-    eventId: event.data.id!,
+    eventId,
     start: startUtc.toISOString(),
     end: endUtc.toISOString(),
     summary,

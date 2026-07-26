@@ -303,13 +303,6 @@ export type SupportItem = {
   sourceRule?: string | null;
 };
 
-export type NECAlert = {
-  ruleCode: string;
-  necArticle: string;
-  promptText: string;
-  severity: "REQUIRED" | "RECOMMENDED" | "ADVISORY";
-};
-
 // ─── Calendar / Schedule Types ───────────────────────────────────────────────
 
 export type CalendarEvent = {

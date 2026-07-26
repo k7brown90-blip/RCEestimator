@@ -186,6 +186,61 @@ export function CustomerDetailPage() {
           </article>
         ))}
       </section>
+
+      <HealthInspectionHistory customerId={customerId} />
     </div>
+  );
+}
+
+function HealthInspectionHistory({ customerId }: { customerId: string }) {
+  const { data: inspections } = useQuery({
+    queryKey: ["customerInspections", customerId],
+    queryFn: () => api.customerInspections(customerId),
+    enabled: Boolean(customerId),
+  });
+
+  if (!inspections || inspections.length === 0) return null;
+
+  const criticalOf = (json: string): string[] => {
+    try {
+      return JSON.parse(json) as string[];
+    } catch {
+      return [];
+    }
+  };
+
+  return (
+    <section className="card mt-5 p-4">
+      <h2 className="text-lg font-semibold">Electrical health record history</h2>
+      <p className="text-xs text-rce-muted">
+        Year-over-year inspection scores from the field app — the customer's retention record.
+      </p>
+      <ul className="mt-3 space-y-2">
+        {inspections.map((inspection) => {
+          const criticals = criticalOf(inspection.criticalFindingsJson);
+          return (
+            <li key={inspection.id} className="rounded-lg border border-rce-border p-3 text-sm">
+              <Link to={`/visits/${inspection.visitId}`} className="flex items-center justify-between gap-2">
+                <span>
+                  <span
+                    className={`mr-2 inline-block rounded px-2 py-0.5 text-xs font-bold text-white ${
+                      criticals.length > 0 ? "bg-red-600" : inspection.score >= 90 ? "bg-emerald-600" : inspection.score >= 75 ? "bg-emerald-500" : "bg-amber-500"
+                    }`}
+                  >
+                    {inspection.score}
+                  </span>
+                  {shortDate(inspection.inspectionDate)} · {inspection.itemsAssessed} items ·{" "}
+                  {inspection.technician?.name ?? "unassigned"}
+                  {criticals.length > 0 && (
+                    <span className="ml-2 font-semibold text-red-600">⚠ {criticals.join(", ")}</span>
+                  )}
+                </span>
+                <span className="text-xs text-rce-muted">open visit →</span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

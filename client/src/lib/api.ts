@@ -19,7 +19,6 @@ import type {
   ModifierDef,
   EstimateItem,
   SupportItem,
-  NECAlert,
   Lead,
   WeekSchedule,
 } from "./types";
@@ -217,8 +216,6 @@ export const api = {
     request<EstimateItem[]>(`/estimates/${estimateId}/options/${optionId}/items`),
   deleteItem: (estimateId: string, optionId: string, itemId: string) =>
     request<void>(`/estimates/${estimateId}/options/${optionId}/items/${itemId}`, { method: "DELETE" }),
-  necCheck: (estimateId: string) =>
-    request<{ alerts: NECAlert[] }>(`/estimates/${estimateId}/nec-check`, { method: "POST", body: JSON.stringify({}) }),
   generateSupportItems: (estimateId: string) =>
     request<{ supportItems: SupportItem[] }>(`/estimates/${estimateId}/support-items/generate`, { method: "POST", body: JSON.stringify({}) }),
   supportItems: (estimateId: string) =>
@@ -278,4 +275,87 @@ export const api = {
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/reschedule`, { method: "POST", body: JSON.stringify(input) }),
   cancelJob: (jobId: string, input: { reason: string }) =>
     request<{ jobId: string; cancelled: boolean }>(`/crm/jobs/${jobId}/cancel`, { method: "POST", body: JSON.stringify(input) }),
+  // ─── Health Record (field inspection PWA) ─────────────────────────────────
+  technicians: () => request<Technician[]>("/health-record-admin/technicians"),
+  createTechnician: (input: { name: string; email?: string; phone?: string; role?: string }) =>
+    request<Technician>("/health-record-admin/technicians", { method: "POST", body: JSON.stringify(input) }),
+  updateTechnician: (technicianId: string, input: { name?: string; isActive?: boolean; rotateToken?: boolean }) =>
+    request<Technician>(`/health-record-admin/technicians/${technicianId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  assignTechnician: (visitId: string, input: { technicianId: string; role?: "primary" | "helper" }) =>
+    request<VisitAssignment>(`/health-record-admin/visits/${visitId}/assign`, { method: "POST", body: JSON.stringify(input) }),
+  visitAssignments: (visitId: string) => request<VisitAssignment[]>(`/health-record-admin/visits/${visitId}/assignments`),
+  removeAssignment: (assignmentId: string) =>
+    request<void>(`/health-record-admin/assignments/${assignmentId}`, { method: "DELETE" }),
+  customerInspections: (customerId: string) =>
+    request<HealthInspectionSummary[]>(`/health-record-admin/customers/${customerId}/inspections`),
+  propertyInspections: (propertyId: string) =>
+    request<HealthInspectionSummary[]>(`/health-record-admin/properties/${propertyId}/inspections`),
+  visitInspections: (visitId: string) =>
+    request<HealthInspectionSummary[]>(`/health-record-admin/visits/${visitId}/inspections`),
+  healthInspection: (inspectionId: string) =>
+    request<HealthInspectionDetail>(`/health-record-admin/inspections/${inspectionId}`),
+  reviewInspection: (inspectionId: string, input: { reviewedBy: string }) =>
+    request<{ id: string; contractorReviewed: boolean; reviewedAt: string; reviewedBy: string }>(
+      `/health-record-admin/inspections/${inspectionId}/review`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  runInspectionRetention: () =>
+    request<{ checked: number; created: number }>("/health-record-admin/retention/run", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  generateHealthReport: (inspectionId: string) =>
+    request<{ documentId: string; pdfPath: string }>(
+      `/health-record-admin/inspections/${inspectionId}/report`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
 };
+
+// ─── Health Record types ─────────────────────────────────────────────────────
+
+export interface Technician {
+  id: string;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  role: string;
+  accessToken: string;
+  isActive: boolean;
+  createdAt: string;
+  _count?: { assignments: number; healthInspections: number };
+}
+
+export interface VisitAssignment {
+  id: string;
+  visitId: string;
+  technicianId: string;
+  role: string;
+  status: string;
+  assignedAt: string;
+  completedAt?: string | null;
+  technician: { id: string; name: string; role?: string; isActive?: boolean };
+}
+
+export interface HealthInspectionSummary {
+  id: string;
+  visitId: string;
+  propertyId: string;
+  customerId: string;
+  jurisdictionId: string;
+  inspectionDate: string;
+  score: number;
+  itemsAssessed: number;
+  criticalFindingsJson: string;
+  contractorReviewed: boolean;
+  syncedAt: string;
+  technician?: { id: string; name: string } | null;
+}
+
+export interface HealthInspectionDetail extends HealthInspectionSummary {
+  itemsJson: string;
+  loadCalcJson?: string | null;
+  appVersion?: string | null;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+  photos?: Array<{ id: string; mimeType: string; sizeBytes: number; uploadedAt: string }>;
+}

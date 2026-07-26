@@ -2,12 +2,13 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { rateLimit } from "express-rate-limit";
 import { prisma } from "./lib/prisma";
 
 import { EstimateService } from "./services/estimateService";
 import { resolveItemCable } from "./services/wiringMethodResolver";
 import { generateSupportItems } from "./services/supportItemTriggers";
-import { getAvailability, bookAppointment } from "./services/googleCalendar";
+import { getAvailability, bookAppointment, BookingConflictError } from "./services/googleCalendar";
 import { getDailySummary } from "./services/dailySummary";
 import { getTodaySchedule, getWeekSchedule, getMonthSchedule, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
 import { sendSms, isFromKyle, KYLE_PHONE } from "./services/twilio";
@@ -25,6 +26,7 @@ import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
+import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError } from "./services/scheduling";
 import { savannahRouter } from "./routes/agent-savannah";
 import { jerryRouter } from "./routes/agent-jerry";
@@ -72,6 +74,33 @@ app.use((req: express.Request & { _isApi?: boolean }, _res, next) => {
   if (req.path.startsWith("/api/") || req.path === "/api") {
     req._isApi = true;
     req.url = req.url.replace(/^\/api/, "") || "/";
+  }
+  next();
+});
+
+// ─── RATE LIMITING ───────────────────────────────────────────────────────────
+// Public, unauthenticated endpoints get a tight per-IP budget; everything else
+// under the API gets a generous safety net. Disabled under test.
+const skipLimiter = () => process.env.NODE_ENV === "test";
+const publicLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipLimiter,
+});
+const apiLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipLimiter,
+});
+app.use(["/leads", "/customer/lookup", "/calendar/availability", "/calendar/book", "/vapi", "/auth/pin"], publicLimiter);
+app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
+  if (req._isApi) {
+    apiLimiter(req, res, next);
+    return;
   }
   next();
 });
@@ -152,8 +181,19 @@ app.post("/calendar/book", asyncHandler(async (req, res) => {
   if (!date || !startTime || !customerName || !description || !address) {
     return res.status(400).json({ error: "Required: date, startTime, customerName, description, address" });
   }
-  const result = await bookAppointment({ date, startTime, customerName, description, address, email, phone });
-  res.json(result);
+  try {
+    const result = await bookAppointment({ date, startTime, customerName, description, address, email, phone });
+    res.json(result);
+  } catch (err) {
+    if (err instanceof BookingConflictError) {
+      res.status(409).json({
+        error: err.message,
+        spoken_fallback: "That time just became unavailable. Let me check the openings again and offer you another slot.",
+      });
+      return;
+    }
+    throw err;
+  }
 }));
 
 // ─── CUSTOMER LOOKUP (no auth — called by Vapi AI assistant) ─────────────────
@@ -1075,9 +1115,15 @@ app.use("/agent/savannah", savannahRouter);
 app.use("/agent/jerry", jerryRouter);
 app.use("/agent/calendar", sharedAgentRouter);
 
+// ─── HEALTH RECORD PWA (per-technician bearer auth — before PIN middleware) ───
+app.use("/health-record", healthRecordTechRouter);
+
 // ─── PIN AUTH ────────────────────────────────────────────────────────────────
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
 app.use(pinAuthMiddleware);
+
+// ─── HEALTH RECORD ADMIN (CRM client — rides the PIN/JWT session) ─────────────
+app.use("/health-record-admin", healthRecordAdminRouter);
 
 const analyticsRangeQuerySchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -2207,6 +2253,10 @@ const itemModifierSchema = z.object({
 
 const createItemSchema = z.object({
   atomicUnitCode: z.string().min(1),
+  // Some codes exist in multiple catalogs at different prices (e.g. RI-001 in
+  // new_work vs old_work). Callers should pass the catalog; without it the
+  // lookup falls back to a deterministic order (new_work first).
+  catalog: z.enum(["shared", "new_work", "old_work", "service"]).optional(),
   quantity: z.number().positive(),
   location: z.string().optional(),
   notes: z.string().optional(),
@@ -2247,9 +2297,15 @@ app.post(
       return;
     }
 
-    // Fetch atomic unit
+    // Fetch atomic unit. Catalog narrows duplicate codes; ordering keeps the
+    // fallback deterministic instead of insertion-order-dependent pricing.
     const unit = await prisma.atomicUnit.findFirst({
-      where: { code: body.atomicUnitCode, isActive: true },
+      where: {
+        code: body.atomicUnitCode,
+        isActive: true,
+        ...(body.catalog ? { catalog: body.catalog } : {}),
+      },
+      orderBy: { catalog: "asc" },
     });
     if (!unit) {
       res.status(404).json({ error: `Atomic unit '${body.atomicUnitCode}' not found` });
