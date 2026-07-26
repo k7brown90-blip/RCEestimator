@@ -41,6 +41,38 @@ export function clearCrmSettings(): void {
   localStorage.removeItem(TOKEN_KEY)
 }
 
+/**
+ * Enrollment via the QR code on the CRM's Team page, which encodes
+ * /field/#t=<token>.
+ *
+ * The token arrives in the URL fragment rather than a query string because
+ * fragments are never sent to the server — the credential stays out of the
+ * request logs. We strip it from the URL immediately so it doesn't linger in
+ * browser history or get handed on if the technician shares the address.
+ *
+ * Must run before React mounts: PropertyScreen reads the connection state in a
+ * useState initializer, which only runs once.
+ *
+ * Returns true if a token was consumed from the fragment.
+ */
+export function consumeEnrollmentToken(): boolean {
+  const hash = window.location.hash
+  if (!hash) return false
+
+  const token = new URLSearchParams(hash.slice(1)).get('t')?.trim()
+  // Always clear the fragment, even on a malformed one — leaving a partial
+  // credential in the address bar is worse than a no-op.
+  if (hash.includes('t=')) {
+    history.replaceState(null, '', window.location.pathname + window.location.search)
+  }
+  if (!token) return false
+
+  // Overwrite any existing token: re-scanning is how a device is moved to a
+  // different technician.
+  saveCrmSettings({ baseUrl: defaultBaseUrl(), token })
+  return true
+}
+
 async function crmRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')

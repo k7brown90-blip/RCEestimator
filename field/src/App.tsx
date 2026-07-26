@@ -54,7 +54,7 @@ function toInspection(session: Session, status: 'draft' | 'complete', contractor
   }
 }
 
-function App() {
+function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
   const [screen, setScreen] = useState<Screen>('property')
   const [session, setSession] = useState<Session | null>(null)
   const [activeItemId, setActiveItemId] = useState<string | null>(null)
@@ -76,6 +76,7 @@ function App() {
   if (screen === 'property' || !session || !profile) {
     return (
       <PropertyScreen
+        justEnrolled={justEnrolled}
         onStart={(property, technician) => {
           setSession({
             inspectionId: crypto.randomUUID(),

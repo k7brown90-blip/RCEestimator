@@ -5,6 +5,7 @@ import {
   clearCrmSettings,
   defaultBaseUrl,
   fetchAssignments,
+  fetchMe,
   getCrmSettings,
   pendingSyncCount,
   saveCrmSettings,
@@ -14,6 +15,8 @@ import type { Property } from '../../domain/types'
 
 interface Props {
   onStart: (property: Property, technician: string) => void
+  /** A token was just consumed from the enrollment QR's URL fragment. */
+  justEnrolled?: boolean
 }
 
 // Best-effort jurisdiction guess from the CRM property's city; the technician
@@ -24,8 +27,17 @@ function guessJurisdiction(city: string): string {
   return match?.id ?? 'rutherford'
 }
 
-function CrmSection({ technician, onStart }: { technician: string; onStart: Props['onStart'] }) {
+function CrmSection({
+  technician,
+  onStart,
+  justEnrolled,
+}: {
+  technician: string
+  onStart: Props['onStart']
+  justEnrolled?: boolean
+}) {
   const [configured, setConfigured] = useState(getCrmSettings() !== null)
+  const [enrolledAs, setEnrolledAs] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   // Pre-filled with the origin we were served from — the technician normally
   // only needs to paste a token. Still editable for pointing at another environment.
@@ -40,6 +52,27 @@ function CrmSection({ technician, onStart }: { technician: string; onStart: Prop
     if (configured) void loadAssignments()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configured])
+
+  // Confirm a QR enrollment against /me rather than trusting the scan. A bad or
+  // revoked token would otherwise present as an empty assignment list, which
+  // looks exactly like having no work scheduled.
+  useEffect(() => {
+    if (!justEnrolled) return
+    fetchMe()
+      .then((me) => {
+        setEnrolledAs(me.name)
+        setStatus(null)
+      })
+      .catch((error: unknown) => {
+        clearCrmSettings()
+        setConfigured(false)
+        setStatus(
+          error instanceof Error
+            ? `Enrollment failed: ${error.message}. Ask the office for a fresh QR code.`
+            : 'Enrollment failed. Ask the office for a fresh QR code.',
+        )
+      })
+  }, [justEnrolled])
 
   async function loadAssignments() {
     try {
@@ -88,6 +121,12 @@ function CrmSection({ technician, onStart }: { technician: string; onStart: Prop
           {configured ? 'connection' : 'connect'}
         </button>
       </div>
+
+      {enrolledAs && (
+        <p className="rounded bg-emerald-900/50 p-2 text-xs text-emerald-200">
+          Connected as {enrolledAs}.
+        </p>
+      )}
 
       {pending > 0 && (
         <p className="rounded bg-amber-900/50 p-2 text-xs text-amber-200">
@@ -180,7 +219,7 @@ function CrmSection({ technician, onStart }: { technician: string; onStart: Prop
   )
 }
 
-export function PropertyScreen({ onStart }: Props) {
+export function PropertyScreen({ onStart, justEnrolled }: Props) {
   const [properties, setProperties] = useState<Property[]>([])
   const [address, setAddress] = useState('')
   const [jurisdictionId, setJurisdictionId] = useState(jurisdictions[0].id)
@@ -220,7 +259,7 @@ export function PropertyScreen({ onStart }: Props) {
         />
       </label>
 
-      <CrmSection technician={technician} onStart={onStart} />
+      <CrmSection technician={technician} onStart={onStart} justEnrolled={justEnrolled} />
 
       {properties.length > 0 && (
         <section className="space-y-2">

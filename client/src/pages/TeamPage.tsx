@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
+import { TechnicianQr } from "../components/TechnicianQr";
 import { api } from "../lib/api";
 
 /**
@@ -17,6 +18,7 @@ export function TeamPage() {
   const [employeeNumber, setEmployeeNumber] = useState("");
   const [role, setRole] = useState("technician");
   const [revealedTokenId, setRevealedTokenId] = useState<string | null>(null);
+  const [qrTokenId, setQrTokenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editEmployeeNumber, setEditEmployeeNumber] = useState("");
 
@@ -162,6 +164,13 @@ export function TeamPage() {
                   <button
                     type="button"
                     className="text-xs font-medium text-rce-accent"
+                    onClick={() => setQrTokenId(qrTokenId === tech.id ? null : tech.id)}
+                  >
+                    {qrTokenId === tech.id ? "Hide QR" : "Show QR"}
+                  </button>
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-rce-accent"
                     onClick={() => updateMutation.mutate({ technicianId: tech.id, rotateToken: true })}
                   >
                     Rotate token
@@ -205,6 +214,7 @@ export function TeamPage() {
                   {tech.accessToken}
                 </p>
               )}
+              {qrTokenId === tech.id && <TechnicianQr token={tech.accessToken} name={tech.name} />}
             </li>
           ))}
         </ul>
