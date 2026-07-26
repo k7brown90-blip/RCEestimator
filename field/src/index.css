@@ -1,0 +1,13 @@
+﻿@import 'tailwindcss';
+
+body {
+  margin: 0;
+  background: #0b1622;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+}

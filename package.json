@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "dev:client": "npm --prefix client run dev",
-    "build": "npm --prefix client install && npm --prefix client run build && npx prisma generate && tsc -p tsconfig.build.json",
+    "build": "npm --prefix client install && npm --prefix client run build && npm --prefix field install && npm --prefix field run build && npx prisma generate && tsc -p tsconfig.build.json",
+    "dev:field": "npm --prefix field run dev",
     "start": "npx prisma migrate deploy && node dist/scripts/seedAtomicUnits.js && node dist/src/server.js",
     "test": "vitest run",
     "test:watch": "vitest",

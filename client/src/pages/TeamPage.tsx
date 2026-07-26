@@ -74,6 +74,14 @@ export function TeamPage() {
           themselves. Keep it short and memorable (e.g. RCE-01). Technicians sign in to the
           Health Record field app with the access token generated on creation.
         </p>
+        <p className="mt-2 text-sm text-rce-muted">
+          Field app:{" "}
+          <a className="underline" href="/field/" target="_blank" rel="noopener noreferrer">
+            open the Health Record inspection app
+          </a>{" "}
+          — open this link on a phone and use “Add to Home Screen” to install it, then paste
+          that technician’s access token to connect.
+        </p>
 
         <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={submit}>
           <label className="text-sm font-medium">

@@ -39,6 +39,46 @@ const service = new EstimateService(prisma);
 
 export const app = express();
 
+// ─── SERVE THE HEALTH RECORD FIELD PWA (/field) ──────────────────────────────
+// Mounted BEFORE the CRM's SPA fallback below, which would otherwise swallow
+// every HTML navigation and hand back the CRM shell instead. The PWA is built
+// with base '/field/' (field/vite.config.ts) — the two must stay in step.
+//
+// Not behind pinAuthMiddleware by design: it's an offline-first PWA, so a
+// session-gated shell would break installation and service-worker updates. The
+// shell holds no data — everything comes from /health-record/*, which requires a
+// technician bearer token. noindex keeps it out of search results.
+const fieldDist = path.join(__dirname, "..", "..", "field", "dist");
+if (fs.existsSync(fieldDist)) {
+  app.use(
+    "/field",
+    (_req, res, next) => {
+      res.setHeader("X-Robots-Tag", "noindex, nofollow");
+      next();
+    },
+    express.static(fieldDist, {
+      setHeaders: (res, filePath) => {
+        // The shell and the worker gate every update an installed phone sees;
+        // a stale cached copy of either strands the device on an old build.
+        if (/index\.html$|service-worker\.js$/.test(filePath)) {
+          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        }
+      },
+    }),
+  );
+
+  // SPA fallback scoped to /field, so deep links land in the PWA, not the CRM.
+  app.use("/field", (req, res, next) => {
+    const accepts = req.headers.accept || "";
+    if (req.method === "GET" && accepts.includes("text/html")) {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.sendFile(path.join(fieldDist, "index.html"));
+      return;
+    }
+    next();
+  });
+}
+
 // ─── SERVE CLIENT STATIC FILES (before auth, so login page loads) ────────────
 // At runtime __dirname is dist/src/, so go up two levels to reach app root
 const clientDist = path.join(__dirname, "..", "..", "client", "dist");
