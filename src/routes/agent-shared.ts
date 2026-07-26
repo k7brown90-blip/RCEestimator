@@ -18,6 +18,9 @@ import {
 import { checkAvailabilityBlock } from "../services/schedule";
 import { getAvailability } from "../services/googleCalendar";
 import { prisma } from "../lib/prisma";
+import { sendSms } from "../services/twilio";
+import { sendDocumentEmail, humanizeDocType } from "../services/documentDelivery";
+import { generateHealthReport } from "../services/pdfGenerator";
 
 export const sharedAgentRouter = express.Router();
 sharedAgentRouter.use(agentAuth);
@@ -184,6 +187,182 @@ sharedAgentRouter.post("/call-disposition", asyncHandler(async (req, res) => {
     responseStatus: 200, durationMs: Date.now() - start, clientRequestId,
   });
   res.json(resp);
+}));
+
+// ─── POST /documents/send ──────────────────────────────────────────────────────
+// Re-send an existing document PDF (contract, work order, material list, change
+// order, health report) to a customer by email, SMS, or both. Used by the
+// receptionist agent to fulfill "send me my invoice/receipt/health report"
+// requests without human intervention. For SMS, the caller is told the file is
+// on the way to their email — the PDF itself is delivered via email attachment.
+// Health reports are generated fresh from live inspection data on each send.
+
+sharedAgentRouter.post("/documents/send", asyncHandler(async (req, res) => {
+  const start = Date.now();
+  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
+  const endpoint = "/documents/send";
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
+
+  const body = z.object({
+    kind: z.enum(["document", "health_report"]),
+    id: z.string().min(1),
+    method: z.enum(["email", "sms", "both"]),
+    email: z.string().email().optional(),
+    phone: z.string().min(7).optional(),
+    note: z.string().max(500).optional(),
+  }).parse(req.body);
+
+  let pdfPath: string;
+  let docType: string;
+  let documentId: string | null = null;
+  let customerName: string;
+  let customerEmail: string | null;
+  let customerPhone: string | null;
+
+  if (body.kind === "document") {
+    const doc = await prisma.document.findUnique({
+      where: { id: body.id },
+      include: { job: { include: { customer: true } } },
+    });
+    if (!doc) {
+      res.status(404).json({
+        success: false,
+        data: null,
+        spoken_confirmation: "I couldn't find that document. Let me try again or take a message.",
+        error: { code: "NOT_FOUND", message: "Document not found" },
+      });
+      return;
+    }
+    pdfPath = doc.pdfUrl;
+    docType = doc.type;
+    documentId = doc.id;
+    customerName = doc.job.customer.name;
+    customerEmail = doc.job.customer.email;
+    customerPhone = doc.job.customer.phone;
+  } else {
+    const inspection = await prisma.healthInspection.findUnique({
+      where: { id: body.id },
+      include: { customer: true },
+    });
+    if (!inspection) {
+      res.status(404).json({
+        success: false,
+        data: null,
+        spoken_confirmation: "I couldn't find that health record. Let me try again or take a message.",
+        error: { code: "NOT_FOUND", message: "Health inspection not found" },
+      });
+      return;
+    }
+    // Generate a fresh PDF (also persists a Document row).
+    const generated = await generateHealthReport(inspection.id);
+    pdfPath = generated.pdfPath;
+    documentId = generated.documentId;
+    docType = "health_report";
+    customerName = inspection.customer.name;
+    customerEmail = inspection.customer.email;
+    customerPhone = inspection.customer.phone;
+  }
+
+  const recipientEmail = body.email ?? customerEmail ?? null;
+  const recipientPhone = body.phone ?? customerPhone ?? null;
+
+  const wantEmail = body.method === "email" || body.method === "both";
+  const wantSms = body.method === "sms" || body.method === "both";
+
+  if (wantEmail && !recipientEmail) {
+    res.status(400).json({
+      success: false,
+      data: null,
+      spoken_confirmation: "I don't have an email address on file. Can you spell out an address to send it to?",
+      error: { code: "NO_EMAIL", message: "No email on file for this customer; provide one in the 'email' field" },
+    });
+    return;
+  }
+  if (wantSms && !recipientPhone) {
+    res.status(400).json({
+      success: false,
+      data: null,
+      spoken_confirmation: "I don't have a phone number on file for a text. What number should I use?",
+      error: { code: "NO_PHONE", message: "No phone on file for this customer; provide one in the 'phone' field" },
+    });
+    return;
+  }
+
+  const label = humanizeDocType(docType);
+
+  let emailed = false;
+  if (wantEmail && recipientEmail) {
+    emailed = await sendDocumentEmail({
+      to: recipientEmail,
+      customerName,
+      docType,
+      pdfPath,
+      note: body.note,
+    });
+  }
+
+  let smsSent = false;
+  if (wantSms && recipientPhone) {
+    // MMS with public URL is not wired up — SMS acts as a notification only.
+    const emailNote = emailed
+      ? ` It's on the way to ${recipientEmail}.`
+      : recipientEmail
+        ? ` We'll send the PDF to ${recipientEmail} shortly.`
+        : "";
+    const noteLine = body.note ? `\n\n${body.note}` : "";
+    const smsBody = `Hi ${customerName}, your ${label} from Red Cedar Electric is ready.${emailNote}${noteLine}\n\nReply STOP to opt out.`;
+    const result = await sendSms(recipientPhone, smsBody);
+    smsSent = !!result;
+  }
+
+  if (documentId && emailed) {
+    await prisma.document.update({
+      where: { id: documentId },
+      data: { sentAt: new Date() },
+    }).catch((err) => console.error("[documents/send] Failed to stamp sentAt:", err));
+  }
+
+  const anySent = emailed || smsSent;
+  const spoken = anySent
+    ? `Sent your ${label.toLowerCase()}${emailed && smsSent ? " by email and text" : emailed ? " to your email" : " by text"}.`
+    : `I couldn't send that right now. I'll flag it for Kyle to handle personally.`;
+
+  const status = anySent ? 200 : 502;
+  const resp = anySent
+    ? successResponse(
+        {
+          document_id: documentId,
+          doc_type: docType,
+          emailed,
+          sms_sent: smsSent,
+          recipient_email: emailed ? recipientEmail : null,
+          recipient_phone: smsSent ? recipientPhone : null,
+        },
+        spoken,
+      )
+    : {
+        success: false,
+        data: null,
+        spoken_confirmation: spoken,
+        error: {
+          code: "DELIVERY_FAILED",
+          message: "Neither email nor SMS delivery succeeded — check GMAIL/Twilio credentials",
+        },
+      };
+
+  await saveIdempotency(clientRequestId, endpoint, undefined, resp);
+  logAgent("send_document", {
+    endpoint,
+    entityType: "Document",
+    entityId: documentId ?? undefined,
+    payload: { kind: body.kind, method: body.method, emailed, smsSent },
+    responseStatus: status,
+    durationMs: Date.now() - start,
+    clientRequestId,
+  });
+  res.status(status).json(resp);
 }));
 
 // Zod error handler — must be after all routes
