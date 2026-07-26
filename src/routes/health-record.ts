@@ -16,6 +16,7 @@ import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
 import { generateHealthReport } from "../services/pdfGenerator";
+import { notifyTechnicianOfAssignment } from "../services/visitConfirmations";
 
 // ─── TECHNICIAN AUTH ────────────────────────────────────────────────────────────
 
@@ -223,6 +224,129 @@ healthRecordTechRouter.put(
   }),
 );
 
+/**
+ * PUT /health-record/visits/:visitId/photos/:photoId — job-site photo upload
+ * from the tech PWA. Idempotent (client UUID is the primary key); raw image
+ * body; optional caption via the x-photo-caption header.
+ */
+healthRecordTechRouter.put(
+  "/visits/:visitId/photos/:photoId",
+  express.raw({ type: "image/*", limit: "15mb" }),
+  asyncHandler(async (req: TechRequest, res) => {
+    const visitId = readParam(req, "visitId");
+    const photoId = readParam(req, "photoId");
+    const body = req.body as Buffer;
+
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      res.status(400).json({ success: false, error: { code: "bad_request", message: "Raw image body required (Content-Type: image/*)" } });
+      return;
+    }
+
+    const visit = await prisma.visit.findUnique({ where: { id: visitId }, select: { id: true } });
+    if (!visit) {
+      res.status(404).json({ success: false, error: { code: "not_found", message: `Visit ${visitId} not found` } });
+      return;
+    }
+
+    const rawCaption = typeof req.headers["x-photo-caption"] === "string" ? (req.headers["x-photo-caption"] as string) : null;
+    // Captions are URI-encoded by the PWA (HTTP headers are latin-1 only)
+    let caption: string | null = null;
+    if (rawCaption) {
+      try {
+        caption = decodeURIComponent(rawCaption).slice(0, 500);
+      } catch {
+        caption = rawCaption.slice(0, 500);
+      }
+    }
+    const data = {
+      visitId,
+      technicianId: req.technician!.id,
+      mimeType: req.headers["content-type"] ?? "image/jpeg",
+      sizeBytes: body.length,
+      data: body,
+    };
+    await prisma.visitPhoto.upsert({
+      where: { id: photoId },
+      create: { id: photoId, ...data, caption },
+      // Retries without the caption header must not wipe an existing caption
+      update: { ...data, ...(caption != null ? { caption } : {}) },
+    });
+    res.status(201).json({ success: true, data: { id: photoId, sizeBytes: body.length } });
+  }),
+);
+
+/**
+ * PUT /health-record/receipts/:receiptId — receipt photo upload from the tech
+ * PWA. Idempotent (client UUID id). Raw image body; metadata via query params
+ * (jobId, category, vendor, amount). Missing amount/vendor are extracted from
+ * the image via OpenAI Vision; unparseable receipts land in pending_review.
+ */
+healthRecordTechRouter.put(
+  "/receipts/:receiptId",
+  express.raw({ type: "image/*", limit: "15mb" }),
+  asyncHandler(async (req: TechRequest, res) => {
+    const receiptId = readParam(req, "receiptId");
+    const body = req.body as Buffer;
+
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      res.status(400).json({ success: false, error: { code: "bad_request", message: "Raw image body required (Content-Type: image/*)" } });
+      return;
+    }
+
+    const query = z.object({
+      jobId: z.string().optional(),
+      category: z.enum(["materials", "gas", "maintenance", "overhead"]).optional(),
+      vendor: z.string().optional(),
+      amount: z.coerce.number().positive().optional(),
+    }).parse(req.query);
+
+    if (query.jobId) {
+      const visit = await prisma.visit.findUnique({ where: { id: query.jobId }, select: { id: true } });
+      if (!visit) {
+        res.status(404).json({ success: false, error: { code: "not_found", message: `Visit ${query.jobId} not found` } });
+        return;
+      }
+    }
+
+    // Vision-parse when the tech didn't key in the details manually
+    const { parseReceiptImage } = await import("../services/receiptVision");
+    const mimeType = (req.headers["content-type"] as string | undefined) ?? "image/jpeg";
+    const parsed = query.amount == null || !query.vendor ? await parseReceiptImage(body, mimeType) : null;
+
+    const amount = query.amount ?? parsed?.total ?? 0;
+    const data = {
+      jobId: query.jobId ?? null,
+      category: query.category ?? parsed?.category ?? "materials",
+      vendor: query.vendor ?? parsed?.vendor ?? null,
+      amount,
+      lineItems: parsed && parsed.lineItems.length > 0 ? JSON.stringify(parsed.lineItems) : null,
+      source: "tech_pwa",
+      status: "pending_review",
+      technicianId: req.technician!.id,
+      imageData: body,
+      imageMime: mimeType,
+      ...(parsed?.purchaseDate ? { receivedAt: new Date(`${parsed.purchaseDate}T12:00:00Z`) } : {}),
+    };
+    const receipt = await prisma.receipt.upsert({
+      where: { id: receiptId },
+      create: { id: receiptId, ...data },
+      update: data,
+    });
+
+    res.status(201).json({
+      success: true,
+      data: {
+        id: receipt.id,
+        amount: receipt.amount,
+        vendor: receipt.vendor,
+        category: receipt.category,
+        status: receipt.status,
+        parsed: parsed != null,
+      },
+    });
+  }),
+);
+
 healthRecordTechRouter.use(zodErrorHandler);
 
 // ─── ADMIN ROUTER (CRM client, PIN/JWT session) ────────────────────────────────
@@ -289,6 +413,11 @@ healthRecordAdminRouter.post("/visits/:visitId/assign", asyncHandler(async (req,
     update: { role: body.role ?? "primary", status: "assigned", completedAt: null },
     include: { technician: true },
   });
+
+  // Dual-channel job notification to the tech (fire-and-forget)
+  notifyTechnicianOfAssignment(body.technicianId, visitId, "assigned")
+    .catch((err) => console.error("[assign] Tech notify failed:", err));
+
   res.status(201).json(assignment);
 }));
 
@@ -302,7 +431,13 @@ healthRecordAdminRouter.get("/visits/:visitId/assignments", asyncHandler(async (
 }));
 
 healthRecordAdminRouter.delete("/assignments/:id", asyncHandler(async (req, res) => {
-  await prisma.visitAssignment.delete({ where: { id: readParam(req, "id") } });
+  const id = readParam(req, "id");
+  const assignment = await prisma.visitAssignment.findUnique({ where: { id }, select: { technicianId: true, visitId: true } });
+  await prisma.visitAssignment.delete({ where: { id } });
+  if (assignment) {
+    notifyTechnicianOfAssignment(assignment.technicianId, assignment.visitId, "cancelled")
+      .catch((err) => console.error("[unassign] Tech notify failed:", err));
+  }
   res.status(204).end();
 }));
 
@@ -419,6 +554,105 @@ healthRecordAdminRouter.post("/inspections/:id/report", asyncHandler(async (req,
   }
   const result = await generateHealthReport(id);
   res.status(201).json(result);
+}));
+
+// ─── JOB-SITE PHOTOS (CRM views) ────────────────────────────────────────────────
+
+healthRecordAdminRouter.get("/visits/:visitId/photos", asyncHandler(async (req, res) => {
+  const photos = await prisma.visitPhoto.findMany({
+    where: { visitId: readParam(req, "visitId") },
+    select: { id: true, mimeType: true, sizeBytes: true, caption: true, uploadedAt: true, technician: { select: { id: true, name: true } } },
+    orderBy: { uploadedAt: "asc" },
+  });
+  res.json(photos);
+}));
+
+healthRecordAdminRouter.get("/visit-photos/:photoId", asyncHandler(async (req, res) => {
+  const photo = await prisma.visitPhoto.findUnique({ where: { id: readParam(req, "photoId") } });
+  if (!photo) {
+    res.status(404).json({ error: "Photo not found" });
+    return;
+  }
+  res.setHeader("Content-Type", photo.mimeType);
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  res.send(Buffer.from(photo.data));
+}));
+
+// ─── RECEIPT REVIEW QUEUE (CRM) ────────────────────────────────────────────────
+// Receipts captured via tech PWA / MMS land in pending_review; the office
+// confirms (possibly correcting vendor/amount/job) before they hit job costs.
+
+healthRecordAdminRouter.get("/receipts", asyncHandler(async (req, res) => {
+  const status = typeof req.query.status === "string" ? req.query.status : undefined;
+  const receipts = await prisma.receipt.findMany({
+    where: status ? { status } : undefined,
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    select: {
+      id: true, jobId: true, category: true, vendor: true, amount: true, lineItems: true,
+      source: true, status: true, technicianId: true, imageMime: true, receivedAt: true, createdAt: true,
+    },
+  });
+  // Attach tech names without dragging image bytes along
+  const techIds = [...new Set(receipts.map((r) => r.technicianId).filter((id): id is string => id != null))];
+  const techs = techIds.length > 0 ? await prisma.technician.findMany({ where: { id: { in: techIds } }, select: { id: true, name: true } }) : [];
+  const techMap = new Map(techs.map((t) => [t.id, t.name]));
+  res.json(receipts.map((r) => ({ ...r, technicianName: r.technicianId ? techMap.get(r.technicianId) ?? null : null })));
+}));
+
+healthRecordAdminRouter.get("/receipts/:id/image", asyncHandler(async (req, res) => {
+  const receipt = await prisma.receipt.findUnique({
+    where: { id: readParam(req, "id") },
+    select: { imageData: true, imageMime: true },
+  });
+  if (!receipt || !receipt.imageData) {
+    res.status(404).json({ error: "Receipt image not found" });
+    return;
+  }
+  res.setHeader("Content-Type", receipt.imageMime ?? "image/jpeg");
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  res.send(Buffer.from(receipt.imageData));
+}));
+
+healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => {
+  const body = z.object({
+    jobId: z.string().nullable().optional(),
+    category: z.enum(["materials", "gas", "maintenance", "overhead"]).optional(),
+    vendor: z.string().nullable().optional(),
+    amount: z.number().nonnegative().optional(),
+    lineItems: z.unknown().optional(),
+    status: z.enum(["pending_review", "confirmed"]).optional(),
+  }).parse(req.body);
+
+  const id = readParam(req, "id");
+  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true, jobId: true } });
+  if (!existing) {
+    res.status(404).json({ error: "Receipt not found" });
+    return;
+  }
+
+  const receipt = await prisma.receipt.update({
+    where: { id },
+    data: {
+      ...(body.jobId !== undefined ? { jobId: body.jobId } : {}),
+      ...(body.category !== undefined ? { category: body.category } : {}),
+      ...(body.vendor !== undefined ? { vendor: body.vendor } : {}),
+      ...(body.amount !== undefined ? { amount: body.amount } : {}),
+      ...(body.lineItems !== undefined ? { lineItems: body.lineItems ? JSON.stringify(body.lineItems) : null } : {}),
+      ...(body.status !== undefined ? { status: body.status } : {}),
+    },
+    select: { id: true, jobId: true, category: true, vendor: true, amount: true, status: true },
+  });
+
+  // Re-roll material cost for any job the receipt touched (old and new)
+  const jobsToRoll = [...new Set([existing.jobId, receipt.jobId].filter((j): j is string => j != null))];
+  for (const jobId of jobsToRoll) {
+    const jobReceipts = await prisma.receipt.findMany({ where: { jobId, category: "materials", status: "confirmed" }, select: { amount: true } });
+    const totalMaterials = jobReceipts.reduce((sum, r) => sum + r.amount, 0);
+    await prisma.visit.update({ where: { id: jobId }, data: { actualMaterialCost: totalMaterials } }).catch(() => {});
+  }
+
+  res.json(receipt);
 }));
 
 healthRecordAdminRouter.use(zodErrorHandler);

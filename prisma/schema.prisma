@@ -77,6 +77,12 @@ model Visit {
   scheduledEnd           DateTime?
   googleEventId          String?
   contractedAt           DateTime?
+  // ── Customer appointment confirmation (dual-channel email + SMS) ──
+  confirmationStatus     String            @default("unconfirmed") // unconfirmed | confirmed | reschedule_requested | cancel_requested
+  confirmationToken      String?           @unique // public token for the /confirm/:token page
+  confirmedAt            DateTime?
+  confirmationChannel    String?           // email_link | sms_reply | crm
+  reminderSentAt         DateTime?
   estimatedCost          Float?
   actualMaterialCost     Float?            @default(0)
   laborHours             Float?            @default(0)
@@ -96,6 +102,7 @@ model Visit {
   materialOrders         MaterialOrder[]
   assignments            VisitAssignment[]
   healthInspections      HealthInspection[]
+  visitPhotos            VisitPhoto[]
 
   @@index([customerId, visitDate])
   @@index([status, scheduledStart])
@@ -115,6 +122,7 @@ model Technician {
   createdAt      DateTime @default(now())
   assignments    VisitAssignment[]
   healthInspections HealthInspection[]
+  visitPhotos    VisitPhoto[]
 }
 
 // Flexible company configuration store — license info, operating territories,
@@ -685,6 +693,12 @@ model Receipt {
   amount       Float
   lineItems    String?  // JSON array: [{name, qty, unit, unitCost}]
   imageUrl     String?
+  // ── Capture provenance & review workflow ──
+  source       String   @default("webhook") // webhook | tech_pwa | mms | manual
+  status       String   @default("confirmed") // pending_review | confirmed
+  technicianId String?  // who captured it (tech PWA or matched MMS sender)
+  imageData    Bytes?   // original receipt photo — rides DB backups like InspectionPhoto
+  imageMime    String?
   receivedAt   DateTime @default(now())
   createdAt    DateTime @default(now())
 }
@@ -710,6 +724,39 @@ model MaterialOrder {
   sentAt     DateTime?
   createdAt  DateTime  @default(now())
   job        Visit     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+}
+
+// Job-site photo uploaded from the tech PWA. Client-generated UUID id makes
+// offline-queue retries idempotent (same pattern as InspectionPhoto). Stored
+// in Postgres so evidence rides the managed backups.
+model VisitPhoto {
+  id           String      @id // client-generated UUID — idempotency key
+  visitId      String
+  technicianId String?
+  mimeType     String
+  sizeBytes    Int
+  caption      String?
+  data         Bytes
+  uploadedAt   DateTime    @default(now())
+  visit        Visit       @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  technician   Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+
+  @@index([visitId])
+}
+
+// Audit log of every inbound SMS/MMS hitting the Twilio webhook — who it
+// matched (customer / tech / Kyle / unknown) and how it was routed.
+model InboundMessage {
+  id        String   @id @default(cuid())
+  fromPhone String
+  body      String
+  numMedia  Int      @default(0)
+  matchType String   // kyle | customer | technician | unknown
+  matchId   String?  // customerId or technicianId when matched
+  handledAs String?  // confirmation_reply | tech_note | receipt | forwarded | kyle_dispatch | ignored
+  createdAt DateTime @default(now())
+
+  @@index([fromPhone, createdAt])
 }
 
 model AgentAuditLog {

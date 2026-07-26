@@ -11,7 +11,7 @@ import { generateSupportItems } from "./services/supportItemTriggers";
 import { getAvailability, bookAppointment, BookingConflictError } from "./services/googleCalendar";
 import { getDailySummary } from "./services/dailySummary";
 import { getTodaySchedule, getWeekSchedule, getMonthSchedule, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
-import { sendSms, isFromKyle, KYLE_PHONE } from "./services/twilio";
+import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
 import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail } from "./services/confirmationEmail";
 import {
@@ -31,6 +31,9 @@ import { scheduleJob, rescheduleJob, cancelJob, ConflictError } from "./services
 import { savannahRouter } from "./routes/agent-savannah";
 import { jerryRouter } from "./routes/agent-jerry";
 import { sharedAgentRouter } from "./routes/agent-shared";
+import { inboundSmsRouter } from "./routes/inboundSms";
+import { confirmPageRouter } from "./routes/confirmPage";
+import { sendWebLeadAutoReply } from "./services/visitConfirmations";
 
 const service = new EstimateService(prisma);
 
@@ -96,7 +99,7 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
   skip: skipLimiter,
 });
-app.use(["/leads", "/customer/lookup", "/calendar/availability", "/calendar/book", "/vapi", "/auth/pin"], publicLimiter);
+app.use(["/leads", "/customer/lookup", "/calendar/availability", "/calendar/book", "/vapi", "/auth/pin", "/confirm", "/sms/inbound"], publicLimiter);
 app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
   if (req._isApi) {
     apiLimiter(req, res, next);
@@ -425,6 +428,11 @@ app.post("/leads", asyncHandler(async (req, res) => {
   if ((body.source === "web") && lead.phone) {
     sendSms(KYLE_PHONE, `New web lead — ${lead.name}, ${lead.jobType ?? "general"}, ${lead.phone}`).catch(() => {});
   }
+
+  // Instant auto-reply email for web-form leads (fire-and-forget)
+  if (body.source === "web" && lead.email) {
+    sendWebLeadAutoReply({ name: lead.name, email: lead.email, jobType: lead.jobType }).catch((err) => console.error("[leads] Auto-reply email failed:", err));
+  }
 }));
 
 // ─── SPAM CLASSIFICATION (webhook secret) ──────────────────────────────────
@@ -742,26 +750,13 @@ app.get("/receipts", asyncHandler(async (req, res) => {
   res.json(receipts);
 }));
 
-// ─── INBOUND SMS WEBHOOK (Twilio → Make.com passes through, or direct) ──────
+// ─── INBOUND SMS/MMS WEBHOOK (Twilio) ───────────────────────────────────────
+// Routes every inbound message: Kyle dispatch, tech notes/receipts, customer
+// confirmation replies, unknown-sender forwarding. See routes/inboundSms.ts.
+app.use(inboundSmsRouter);
 
-app.post("/sms/inbound", asyncHandler(async (req, res) => {
-  // Twilio sends form-encoded data; Express needs urlencoded parser
-  // Make.com will usually proxy as JSON, so handle both
-  const from = (req.body?.From || req.body?.from || "") as string;
-  const body = (req.body?.Body || req.body?.body || "") as string;
-
-  if (!isFromKyle(from)) {
-    // Reject SMS from non-Kyle numbers
-    res.status(403).json({ error: "Unauthorized sender" });
-    return;
-  }
-
-  // Log the inbound message — Make.com will handle routing via its scenario
-  console.log(`[SMS] From Kyle: ${body}`);
-
-  // Return 200 OK — Make.com or Twilio expects a quick response
-  res.json({ received: true, from, body });
-}));
+// Public appointment confirmation page (token-authenticated).
+app.use(confirmPageRouter);
 
 // ─── LEAD FOLLOW-UP & LOSS TRACKING ─────────────────────────────────────────
 

@@ -9,9 +9,19 @@ import { createCalendarEvent, deleteCalendarEvent, moveCalendarEvent, checkAvail
 import * as notify from "./notifications";
 import { sendRescheduleEmail, sendCancellationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
 import { acquireSlotHolds, releaseSlotHolds, workingDaysCT, SlotContentionError } from "./slotHolds";
+import { sendVisitConfirmationRequest, notifyTechnicianOfAssignment } from "./visitConfirmations";
 
 const TZ = "America/Chicago";
 const DEFAULT_START_TIME = process.env.DEFAULT_JOB_START_TIME ?? "07:00";
+
+/** Fire-and-forget: notify every tech assigned to a visit about an event. */
+async function notifyAssignedTechs(visitId: string, event: "assigned" | "changed" | "cancelled"): Promise<void> {
+  const assignments = await prisma.visitAssignment.findMany({
+    where: { visitId, status: { in: ["assigned", "in_progress"] } },
+    select: { technicianId: true },
+  });
+  await Promise.all(assignments.map((a) => notifyTechnicianOfAssignment(a.technicianId, visitId, event)));
+}
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────────
 
@@ -195,8 +205,23 @@ export async function scheduleJob(
       scheduledStart,
       scheduledEnd,
       googleEventId: event.id,
+      confirmationStatus: "unconfirmed",
+      confirmedAt: null,
+      reminderSentAt: null,
     },
   });
+
+  // Dual-channel confirmation request + tech notifications (fire-and-forget)
+  sendVisitConfirmationRequest({
+    visitId: jobId,
+    customerName: job.customer.name,
+    email: job.customer.email,
+    phone: job.customer.phone,
+    address: `${job.property.addressLine1}, ${job.property.city}`,
+    scheduledStart,
+    jobType: job.jobType,
+  }).catch((err) => console.error("[scheduleJob] Confirmation request failed:", err));
+  notifyAssignedTechs(jobId, "assigned").catch((err) => console.error("[scheduleJob] Tech notify failed:", err));
 
   return {
     jobId,
@@ -331,8 +356,23 @@ export async function rescheduleJob(
     data: {
       scheduledStart: newStart,
       scheduledEnd: newEnd,
+      confirmationStatus: "unconfirmed",
+      confirmedAt: null,
+      reminderSentAt: null,
     },
   });
+
+  // Re-request confirmation for the new time + tech notifications (fire-and-forget)
+  sendVisitConfirmationRequest({
+    visitId: jobId,
+    customerName: job.customer.name,
+    email: job.customer.email,
+    phone: job.customer.phone,
+    address: `${job.property.addressLine1}, ${job.property.city}`,
+    scheduledStart: newStart,
+    jobType: job.jobType,
+  }).catch((err) => console.error("[rescheduleJob] Confirmation request failed:", err));
+  notifyAssignedTechs(jobId, "changed").catch((err) => console.error("[rescheduleJob] Tech notify failed:", err));
 
   return {
     jobId,
@@ -421,6 +461,8 @@ export async function cancelJob(
       scheduledEnd: null,
     },
   });
+
+  notifyAssignedTechs(jobId, "cancelled").catch((err) => console.error("[cancelJob] Tech notify failed:", err));
 
   return { cancelled: true, customerNotified, kyleNotified };
 }

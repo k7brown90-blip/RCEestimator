@@ -67,6 +67,41 @@ export async function sendSms(to: string, body: string): Promise<{ sid: string }
 export const KYLE_PHONE = "+19706661626";
 
 /**
+ * Download an MMS media attachment from Twilio's media URL (requires basic
+ * auth with the account credentials). Returns null when Twilio is not
+ * configured or the fetch fails.
+ */
+export async function fetchTwilioMedia(mediaUrl: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const config = getConfig();
+  if (!config) {
+    console.warn("[Twilio] Not configured — cannot fetch media", mediaUrl);
+    return null;
+  }
+  // Only ever fetch from Twilio's own API host — the URL arrives from an
+  // inbound webhook and must not become an SSRF vector.
+  let parsed: URL;
+  try {
+    parsed = new URL(mediaUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname !== "api.twilio.com") {
+    console.warn("[Twilio] Refusing to fetch media from non-Twilio URL:", mediaUrl);
+    return null;
+  }
+
+  const auth = Buffer.from(`${config.accountSid}:${config.authToken}`).toString("base64");
+  const res = await fetch(parsed.toString(), { headers: { Authorization: `Basic ${auth}` }, redirect: "follow" });
+  if (!res.ok) {
+    console.error("[Twilio] Media fetch failed:", res.status);
+    return null;
+  }
+  const contentType = res.headers.get("content-type") ?? "application/octet-stream";
+  const buffer = Buffer.from(await res.arrayBuffer());
+  return { buffer, contentType };
+}
+
+/**
  * Validate an inbound Twilio webhook request.
  * For now, just checks that the From number matches Kyle's.
  * TODO: Add Twilio signature validation for production security.

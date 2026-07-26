@@ -5,6 +5,7 @@ import { getNextDaySchedule } from "./services/schedule";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { sendPendingSupplierEmails } from "./services/supplierEmail";
 import { generateInspectionRenewalLeads } from "./services/inspectionRetention";
+import { sendVisitReminders } from "./services/visitConfirmations";
 
 const port = Number(process.env.PORT ?? 4000);
 
@@ -84,6 +85,20 @@ async function startServer(): Promise<void> {
   }, { timezone: "America/Chicago" });
 
   console.log("[Cron] Daily automation suite scheduled for 6:00 PM CT Mon-Fri");
+
+  // 8:00 AM Central daily — 24-hour appointment reminders (email + SMS).
+  // The 18–30h window inside sendVisitReminders catches next-day visits.
+  cron.schedule("0 8 * * *", async () => {
+    console.log("[Cron] Running visit reminder sweep...");
+    try {
+      const sent = await sendVisitReminders();
+      if (sent > 0) console.log(`[Cron] Sent ${sent} appointment reminder(s).`);
+    } catch (err) {
+      console.error("[Cron] Visit reminders failed:", err);
+    }
+  }, { timezone: "America/Chicago" });
+
+  console.log("[Cron] Appointment reminder sweep scheduled for 8:00 AM CT daily");
 }
 
 startServer().catch((error) => {
