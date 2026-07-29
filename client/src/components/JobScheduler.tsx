@@ -10,18 +10,32 @@ interface Props {
   scheduledEnd?: string | null;
   durationDays?: number | null;
   onScheduled?: () => void;
+  /** Open straight into the date picker — used when launched from Leads or Calendar. */
+  autoOpen?: boolean;
 }
 
-export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, onScheduled }: Props) {
+/** Everything a booking touches. Kept in one place so no call site forgets one. */
+const SCHEDULE_QUERY_KEYS = [["jobs"], ["visit"], ["leads"], ["calendar"], ["account"]];
+
+export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, onScheduled, autoOpen }: Props) {
   const queryClient = useQueryClient();
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [startTime, setStartTime] = useState("07:00");
+  // Estimates are customer-facing visits, so they default to mid-morning rather
+  // than the 7am crew start used for production work.
+  const isEstimateVisit = status === "estimate";
+  const [startTime, setStartTime] = useState(isEstimateVisit ? "09:00" : "07:00");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<"idle" | "schedule" | "reschedule" | "cancel">("idle");
+  const [mode, setMode] = useState<"idle" | "schedule" | "reschedule" | "cancel">(
+    autoOpen ? (scheduledStart ? "reschedule" : "schedule") : "idle",
+  );
+
+  const invalidateAll = () => {
+    for (const key of SCHEDULE_QUERY_KEYS) queryClient.invalidateQueries({ queryKey: key });
+  };
 
   const { data: schedule } = useQuery<MonthSchedule>({
     queryKey: ["schedule", "month", year, month],
@@ -32,8 +46,7 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   const scheduleMutation = useMutation({
     mutationFn: () => api.scheduleJob(jobId, { startDate: selectedDate!, startTime }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["visit"] });
+      invalidateAll();
       setMode("idle");
       setSelectedDate(null);
       setError(null);
@@ -43,10 +56,9 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   });
 
   const rescheduleMutation = useMutation({
-    mutationFn: () => api.rescheduleJob(jobId, { newStartDate: selectedDate!, reason }),
+    mutationFn: () => api.rescheduleJob(jobId, { newStartDate: selectedDate!, newStartTime: startTime, reason }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["visit"] });
+      invalidateAll();
       setMode("idle");
       setSelectedDate(null);
       setReason("");
@@ -59,8 +71,7 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   const cancelMutation = useMutation({
     mutationFn: () => api.cancelJob(jobId, { reason }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["visit"] });
+      invalidateAll();
       setMode("idle");
       setReason("");
       setError(null);
@@ -69,9 +80,10 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
     onError: (err: Error) => setError(err.message),
   });
 
-  const isScheduled = status === "scheduled";
-  const isContracted = status === "contracted";
-  const canSchedule = isContracted;
+  // Booked-ness comes from scheduledStart, not status: an estimate visit stays at
+  // status "estimate" once booked, because it hasn't become production work yet.
+  const isScheduled = Boolean(scheduledStart);
+  const canSchedule = !isScheduled && (status === "contracted" || status === "estimate");
   const canReschedule = isScheduled;
   const canCancel = isScheduled;
 
@@ -101,17 +113,31 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   const formatScheduled = (iso: string) => new Date(iso).toLocaleDateString("en-US", {
     timeZone: "America/Chicago", weekday: "long", month: "long", day: "numeric", year: "numeric",
   });
+  const formatTime = (iso: string) => new Date(iso).toLocaleTimeString("en-US", {
+    timeZone: "America/Chicago", hour: "numeric", minute: "2-digit",
+  });
 
   return (
     <div className="rounded-lg border border-rce-border bg-rce-bg p-4">
-      <h3 className="mb-3 text-sm font-semibold">Job Scheduling</h3>
+      <h3 className="mb-3 text-sm font-semibold">
+        {isEstimateVisit ? "Estimate Appointment" : "Job Scheduling"}
+      </h3>
 
       {/* Current status */}
       {isScheduled && scheduledStart && (
         <div className="mb-3 rounded-md bg-green-50 border border-green-200 p-3 text-sm">
-          <p className="font-medium text-green-800">Scheduled</p>
-          <p className="text-green-700">{formatScheduled(scheduledStart)}{scheduledEnd && ` – ${formatScheduled(scheduledEnd)}`}</p>
-          {durationDays && <p className="text-green-600 text-xs">{durationDays} day(s)</p>}
+          <p className="font-medium text-green-800">
+            {isEstimateVisit ? "Estimate booked" : "Scheduled"}
+          </p>
+          <p className="text-green-700">
+            {formatScheduled(scheduledStart)}
+            {isEstimateVisit
+              ? ` · ${formatTime(scheduledStart)}${scheduledEnd ? `–${formatTime(scheduledEnd)}` : ""}`
+              : scheduledEnd && ` – ${formatScheduled(scheduledEnd)}`}
+          </p>
+          {isEstimateVisit
+            ? <p className="text-green-600 text-xs">2 hr visit + 1 hr travel leeway</p>
+            : durationDays ? <p className="text-green-600 text-xs">{durationDays} day(s)</p> : null}
         </div>
       )}
 
@@ -120,7 +146,7 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
         <div className="flex flex-wrap gap-2">
           {canSchedule && (
             <button onClick={() => setMode("schedule")} className="btn btn-primary text-sm">
-              Schedule Work
+              {isEstimateVisit ? "Book Estimate Visit" : "Schedule Work"}
             </button>
           )}
           {canReschedule && (
@@ -134,9 +160,7 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
             </button>
           )}
           {!canSchedule && !canReschedule && !canCancel && (
-            <p className="text-xs text-rce-muted">
-              {status === "estimate" ? "Job must be contracted before scheduling." : `Status: ${status}`}
-            </p>
+            <p className="text-xs text-rce-muted">Not schedulable — status: {status}</p>
           )}
         </div>
       )}
@@ -173,6 +197,12 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
           <p className="text-sm font-medium">
             {mode === "schedule" ? "Pick a start date:" : "Pick a new start date:"}
           </p>
+          {isEstimateVisit && (
+            <p className="text-xs text-rce-muted">
+              Books a 2-hour block plus an hour of travel leeway. The rest of the day
+              stays open for production work.
+            </p>
+          )}
 
           {/* Month nav */}
           <div className="flex items-center justify-between">

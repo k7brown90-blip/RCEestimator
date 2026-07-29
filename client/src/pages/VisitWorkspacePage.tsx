@@ -24,6 +24,8 @@ import { money, shortDate } from "../lib/utils";
 import { EstimateIntake } from "../components/EstimateIntake";
 import { JobScheduler } from "../components/JobScheduler";
 import { HealthRecordPanel } from "../components/HealthRecordPanel";
+import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
+import { CapacityCheckPanel } from "../components/CapacityCheckPanel";
 
 type TabKey = "estimate" | "proposal" | "ai";
 
@@ -420,6 +422,8 @@ export function VisitWorkspacePage() {
             onScheduled={refreshVisit}
           />
           <HealthRecordPanel visitId={visitId} />
+          <FindingLedgerPanel propertyId={visit.propertyId} />
+          <CapacityCheckPanel propertyId={visit.propertyId} visitId={visitId} />
           {!estimate ? (
             <article className="card rounded-2xl border border-rce-border/70 p-5">
               <h2 className="text-lg font-semibold">Create Estimate</h2>

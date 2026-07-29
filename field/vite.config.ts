@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -8,6 +9,15 @@ import { VitePWA } from 'vite-plugin-pwa'
 // all have to agree on the prefix. Change this and the Express mount together.
 export default defineConfig({
   base: '/field/',
+  // The Article 220 engine lives in app/shared/, outside this package, so the
+  // CRM and the server can run the same calculation. Vite sandboxes file reads
+  // to the project root by default, so it has to be allowed explicitly.
+  server: { fs: { allow: ['..'] } },
+  test: {
+    // Vitest's default include is rooted here, which would silently stop running
+    // the 609 lines of Annex D tests the moment the engine moved out of src/.
+    include: ['src/**/*.test.{ts,tsx}', '../shared/**/*.test.ts'],
+  },
   plugins: [
     react(),
     tailwindcss(),

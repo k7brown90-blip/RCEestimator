@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { checklist } from './checklist'
 import { jurisdictions } from './jurisdictions'
-import { bannerListedItemIds, weights } from './weights'
+import { bannerListedItemIds, conditionalBannerItems } from './criticalItems'
 import { checklistItemDefSchema, jurisdictionProfileSchema } from '../domain/schemas'
 
 describe('checklist data integrity', () => {
@@ -21,18 +21,28 @@ describe('checklist data integrity', () => {
     expect([...prefixes].sort()).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'])
   })
 
-  it('every scored item has a weight entry', () => {
-    const weightedIds = new Set(weights.map((entry) => entry.itemId))
-    // C1 and I1 have no row in the published §3 weight table // VERIFY pending contractor lock
-    const unweighted = checklist
-      .map((item) => item.id)
-      .filter((id) => !weightedIds.has(id))
-    expect(unweighted).toEqual(['C1', 'I1'])
-  })
-
-  it('bannerListed flags match the explicit banner list (D1/D5 handled in engine)', () => {
+  it('bannerListed flags match the explicit banner list', () => {
     const flagged = checklist.filter((item) => item.bannerListed).map((item) => item.id)
     expect(flagged.sort()).toEqual([...bannerListedItemIds].sort())
+  })
+
+  it('every banner-listed id is a real checklist item', () => {
+    // A typo here would silently drop an item out of the critical banner.
+    const ids = new Set(checklist.map((item) => item.id))
+    for (const id of bannerListedItemIds) {
+      expect(ids.has(id), `banner list references unknown item ${id}`).toBe(true)
+    }
+    for (const id of Object.keys(conditionalBannerItems)) {
+      expect(ids.has(id), `conditional banner references unknown item ${id}`).toBe(true)
+    }
+  })
+
+  it('only banners a graded item at a grade that item actually offers', () => {
+    for (const [id, { gradedState }] of Object.entries(conditionalBannerItems)) {
+      const def = checklist.find((item) => item.id === id)
+      expect(def?.graded, `${id} is conditionally bannered but is not graded`).toBeDefined()
+      expect(def?.graded).toContain(gradedState)
+    }
   })
 
   it('marks exactly E1, E2, E3, H1 as life-safety class (Scoring Design Step 1c)', () => {
@@ -41,8 +51,10 @@ describe('checklist data integrity', () => {
   })
 
   it('allows N/A only where the Blueprint permits it', () => {
+    // C5 no subpanels · C6 no gas piping · D5 all-copper · D4 and D7 a strictly
+    // disconnect-only enclosure, which has neither a directory nor branch breakers.
     const naItems = checklist.filter((item) => item.naAllowed).map((item) => item.id)
-    expect(naItems.sort()).toEqual(['C5', 'C6', 'D5'])
+    expect(naItems.sort()).toEqual(['C5', 'C6', 'D4', 'D5', 'D7'])
   })
 
   it('D1 carries the three graded states', () => {
@@ -51,7 +63,7 @@ describe('checklist data integrity', () => {
   })
 
   it('keeps {placeholders} referenced by whatWeFound resolvable from input fields', () => {
-    // Placeholders that are merged from computed/report context, not direct inputs.
+    // Placeholders that are merged from report context, not direct inputs.
     const contextTokens = new Set([
       'plain_result',
       'edition_note',
@@ -60,13 +72,40 @@ describe('checklist data integrity', () => {
       'spd_code_stance',
       'spd_requirement_line',
     ])
+    const fieldIdsOf = (id: string) =>
+      new Set(checklist.find((item) => item.id === id)?.inputFields.map((field) => field.id) ?? [])
+
     for (const item of checklist) {
-      const fieldIds = new Set(item.inputFields.map((field) => field.id))
-      const tokens = [...item.reasoning.whatWeFound.matchAll(/\{(\w+)\}/g)].map((m) => m[1])
+      const fieldIds = fieldIdsOf(item.id)
+      // `[\w.]` so a cross-item {ITEM.field} reference is caught, not skipped.
+      const tokens = [...item.reasoning.whatWeFound.matchAll(/\{([\w.]+)\}/g)].map((m) => m[1])
       for (const token of tokens) {
+        if (token.includes('.')) {
+          const [otherId, fieldId] = token.split('.')
+          expect(
+            fieldIdsOf(otherId).has(fieldId),
+            `${item.id}: {${token}} references a field ${otherId} does not have`,
+          ).toBe(true)
+          continue
+        }
         expect(
           fieldIds.has(token) || contextTokens.has(token),
           `${item.id}: unresolvable placeholder {${token}}`,
+        ).toBe(true)
+      }
+    }
+  })
+
+  it('never cites a cross-item value from an item assessed in a later phase', () => {
+    // A Phase 1 report is delivered before Phase 2 is walked, so a backward
+    // reference would print an em dash on every Phase 1 record.
+    const phaseOf = new Map(checklist.map((item) => [item.id, item.phase]))
+    for (const item of checklist) {
+      const tokens = [...item.reasoning.whatWeFound.matchAll(/\{(\w+)\.(\w+)\}/g)]
+      for (const [, otherId] of tokens) {
+        expect(
+          (phaseOf.get(otherId) ?? 1) <= item.phase,
+          `${item.id} (phase ${item.phase}) cites ${otherId} (phase ${phaseOf.get(otherId)})`,
         ).toBe(true)
       }
     }

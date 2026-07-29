@@ -339,7 +339,13 @@ sharedAgentRouter.post("/documents/send", asyncHandler(async (req, res) => {
   if (body.kind === "document") {
     const doc = await prisma.document.findUnique({
       where: { id: body.id },
-      include: { job: { include: { customer: true } } },
+      // A document belongs to a job or, since the finding ledger, directly to an
+      // address — a cure certificate for a third-party repair has no Red Cedar
+      // visit behind it. Either way there's exactly one customer to send it to.
+      include: {
+        job: { include: { customer: true } },
+        property: { include: { customer: true } },
+      },
     });
     if (!doc) {
       res.status(404).json({
@@ -350,12 +356,22 @@ sharedAgentRouter.post("/documents/send", asyncHandler(async (req, res) => {
       });
       return;
     }
+    const recipient = doc.job?.customer ?? doc.property?.customer;
+    if (!recipient) {
+      res.status(409).json({
+        success: false,
+        data: null,
+        spoken_confirmation: "That document isn't attached to a customer yet, so I can't send it.",
+        error: { code: "NO_RECIPIENT", message: "Document has neither a job nor a property to resolve a customer from" },
+      });
+      return;
+    }
     pdfPath = doc.pdfUrl;
     docType = doc.type;
     documentId = doc.id;
-    customerName = doc.job.customer.name;
-    customerEmail = doc.job.customer.email;
-    customerPhone = doc.job.customer.phone;
+    customerName = recipient.name;
+    customerEmail = recipient.email;
+    customerPhone = recipient.phone;
   } else {
     const inspection = await prisma.healthInspection.findUnique({
       where: { id: body.id },

@@ -200,6 +200,23 @@ export async function getMonthSchedule(year: number, month: number): Promise<{
   return { year, month, days };
 }
 
+/**
+ * Raw events between two instants. Used by the CRM calendar, which drives its
+ * grid off Visit rows and folds these in only as an overlay for events that
+ * have no linked job (manual or personal entries).
+ */
+export async function getEventsInRange(start: Date, end: Date): Promise<CalendarEvent[]> {
+  const calendar = getCalendarClient();
+  const response = await calendar.events.list({
+    calendarId: "primary",
+    timeMin: start.toISOString(),
+    timeMax: end.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+  });
+  return (response.data.items ?? []).map(mapEvent);
+}
+
 /** Get next day's schedule — used for Kyle's daily SMS digest */
 export async function getNextDaySchedule(): Promise<{ date: string; events: CalendarEvent[] }> {
   const tomorrow = new Date(Date.now() + 86_400_000);

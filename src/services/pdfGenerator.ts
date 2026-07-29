@@ -7,7 +7,15 @@ import PDFDocument from "pdfkit";
 import fs from "node:fs";
 import path from "node:path";
 import { prisma } from "../lib/prisma";
+import { parseJsonArray, parseJsonStringArray } from "../lib/json";
 import { v4 as uuidv4 } from "uuid";
+import {
+  DEFAULT_COMPANY_PROFILE,
+  getCompanyProfile,
+  licenseLine,
+  type CompanyProfile,
+} from "./companyProfile";
+import { findingCitations } from "./findingLedger";
 
 const GENERATED_DIR = path.join(process.cwd(), "generated", "documents");
 const LOGO_PATH = path.join(process.cwd(), "public", "logo.png");
@@ -64,7 +72,13 @@ interface MaterialListInput {
   items: Array<{ name: string; quantity: number; unit?: string; supplier?: string }>;
 }
 
-function addHeader(doc: PDFKit.PDFDocument, title: string) {
+/**
+ * @param profile the company's details. Passed in rather than read here so
+ * `addHeader` stays synchronous — every caller already awaits something.
+ * Omitting it falls back to the defaults, which keeps the older generators
+ * working unchanged.
+ */
+function addHeader(doc: PDFKit.PDFDocument, title: string, profile: CompanyProfile = DEFAULT_COMPANY_PROFILE) {
   const pageWidth = doc.page.width;
   const margin = 36;
 
@@ -75,9 +89,9 @@ function addHeader(doc: PDFKit.PDFDocument, title: string) {
     doc.y = margin + logoSize + 8;
   }
 
-  doc.fillColor(BRAND.cedar).fontSize(18).text("Red Cedar Electric LLC", { align: "center" });
-  doc.fillColor(BRAND.muted).fontSize(9).text("Licensed & Insured · Serving Middle Tennessee", { align: "center" });
-  doc.text("(615) 857-6389 · service@redcedarelectricllc.com", { align: "center" });
+  doc.fillColor(BRAND.cedar).fontSize(18).text(profile.legalName, { align: "center" });
+  doc.fillColor(BRAND.muted).fontSize(9).text(profile.tagline, { align: "center" });
+  doc.text(`${profile.phone} · ${profile.email}`, { align: "center" });
   doc.moveDown(0.5);
 
   // Gold divider line
@@ -100,6 +114,71 @@ function addFooter(doc: PDFKit.PDFDocument) {
     `Generated ${new Date().toLocaleString("en-US", { timeZone: "America/Chicago" })} CT — Red Cedar Electric LLC`,
     { align: "center" },
   );
+  doc.fillColor(BRAND.text);
+}
+
+/**
+ * Scope and limitations, on every delivered Record.
+ *
+ * A code-cited defect report with no limitations block reads as a clean bill of
+ * health for everything it doesn't mention. Duplicated from
+ * field/src/data/reportLimitations.ts rather than imported: the PWA renders its
+ * own preview from a bundle that may be weeks old, and this is the copy that
+ * ships to the customer. If one changes, change both.
+ *
+ * // VERIFY: reviewed by counsel before the first customer-facing delivery.
+ */
+const REPORT_LIMITATIONS: { heading: string; body: string[] }[] = [
+  {
+    heading: "What this record is",
+    body: [
+      "An Electrical Health Record is a documented condition assessment of the electrical system at this address, on the date stated, performed by a licensed electrician. It records what was observed and measured, cites the code provision each finding is assessed against, and states what it would take to correct anything found.",
+      "It is not a municipal inspection and does not substitute for one. A permit inspection is performed by the authority having jurisdiction and results in an approval; this record results in information.",
+    ],
+  },
+  {
+    heading: "What was not assessed",
+    body: [
+      "Only the items listed in this record were assessed. Anything not listed was not examined, and no statement is made about it either way.",
+      "The assessment is non-destructive. Conditions concealed behind finished walls, ceilings and floors, inside sealed equipment, underground, or otherwise inaccessible on the day were not evaluated.",
+      "Equipment on the utility's side of the meter is the utility's. Where something there warranted attention this record says so and refers it to them; we do not open sealed equipment.",
+    ],
+  },
+  {
+    heading: "What it means about the future",
+    body: [
+      "This record describes the system as it was on the date of the assessment. Electrical systems change with use, alteration, weather and age. It is not a warranty, a guarantee against future failure, or a prediction of remaining service life beyond the manufacturer figures cited.",
+      "An item recorded as meeting requirements met the cited requirement at the time it was observed. It is not certified for any period afterward.",
+    ],
+  },
+  {
+    heading: "Codes and jurisdiction",
+    body: [
+      "Findings are assessed against the code edition adopted in this jurisdiction as of the assessment date, stated above. The National Electrical Code is not retroactive: work that was compliant when installed is not a violation because a later edition changed the requirement. Where that distinction applies, this record says so.",
+      "Items recorded as below Red Cedar's enhanced standard are not violations of anything. They are installations that meet code and that we would nonetheless do differently.",
+    ],
+  },
+  {
+    heading: "Limitation of liability",
+    body: [
+      "Red Cedar Electric's liability arising from this record is limited to the fee paid for it. This record is provided to the party who commissioned it, for their use.",
+      "Every version of this record is retained permanently and can be reproduced on request, including by a future owner of this property.",
+    ],
+  },
+];
+
+function addLimitations(doc: PDFKit.PDFDocument) {
+  doc.moveDown(0.8);
+  doc.fillColor(BRAND.cedar).fontSize(11).text("Scope & limitations");
+  doc.moveDown(0.2);
+  for (const section of REPORT_LIMITATIONS) {
+    doc.fillColor(BRAND.text).fontSize(9).text(section.heading);
+    doc.fillColor(BRAND.muted).fontSize(8);
+    for (const paragraph of section.body) {
+      doc.text(paragraph, { align: "left" });
+    }
+    doc.moveDown(0.35);
+  }
   doc.fillColor(BRAND.text);
 }
 
@@ -301,6 +380,11 @@ export async function generateMaterialList(input: MaterialListInput): Promise<{ 
 
 // ─── HEALTH RECORD REPORT ───────────────────────────────────────────────────────
 
+/**
+ * v1 banding. The 0-100 score was retired in favour of leading with the items
+ * that need correcting, but reports already delivered to customers carry a
+ * score and re-rendering one has to reproduce what was sent.
+ */
 function scoreBand(score: number, hasCritical: boolean): string {
   if (hasCritical) return score < 60 ? "Priority" : "Needs attention";
   if (score >= 90) return "Excellent";
@@ -309,13 +393,57 @@ function scoreBand(score: number, hasCritical: boolean): string {
   return "Priority";
 }
 
+/** `ACTION` is retained for v1 records written before the rename to FAIL. */
 const RESULT_LABEL: Record<string, string> = {
   PASS: "Pass",
   MONITOR: "Monitor",
-  ACTION: "Action required",
+  FAIL: "Needs correction",
+  ACTION: "Needs correction",
   BELOW_STANDARD: "Meets code — below Red Cedar standard",
   NA: "Not applicable (logged)",
 };
+
+/** Section roll-ups, mirroring field/src/domain/report.ts. */
+const ROLLUP_GROUPS: { label: string; itemIds: string[] }[] = [
+  { label: "Service Entrance", itemIds: ["A1", "A2", "A3", "B1", "B2"] },
+  { label: "Grounding & Bonding", itemIds: ["C1", "C2", "C3", "C4", "C5", "C6", "C7"] },
+  { label: "Panel & Overcurrent", itemIds: ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "H2"] },
+  { label: "Branch Protection", itemIds: ["E1", "E2", "E3", "F1", "F2", "F3"] },
+  { label: "Disconnects & Safety", itemIds: ["G1", "G2", "G3", "H1", "I1"] },
+];
+
+const SEVERITY_ORDER = ["NA", "PASS", "BELOW_STANDARD", "MONITOR", "FAIL"];
+
+const ROLLUP_LABEL: Record<string, string> = {
+  PASS: "PASS",
+  MONITOR: "MONITOR",
+  FAIL: "NEEDS CORRECTION",
+  BELOW_STANDARD: "BELOW STANDARD",
+  NA: "NOT APPLICABLE",
+  NOT_ASSESSED: "NOT ASSESSED",
+};
+
+const normalizeResult = (raw: string): string => (raw === "ACTION" ? "FAIL" : raw);
+
+interface ReportItemRow {
+  itemId: string;
+  result: string;
+  gradedState?: string;
+  note?: string;
+  resolutionNote?: string;
+  photoIds: string[];
+}
+
+function rollupStatus(items: ReportItemRow[], itemIds: string[]): string {
+  const inGroup = items.filter((item) => itemIds.includes(item.itemId));
+  if (inGroup.length === 0) return "NOT_ASSESSED";
+  let worst = "NA";
+  for (const item of inGroup) {
+    const result = normalizeResult(item.result);
+    if (SEVERITY_ORDER.indexOf(result) > SEVERITY_ORDER.indexOf(worst)) worst = result;
+  }
+  return worst;
+}
 
 /**
  * Render a synced field inspection into the customer's document chain, so the
@@ -335,14 +463,8 @@ export async function generateHealthReport(
   });
   if (!inspection) throw new Error(`Inspection ${inspectionId} not found`);
 
-  const items = JSON.parse(inspection.itemsJson) as Array<{
-    itemId: string;
-    result: string;
-    gradedState?: string;
-    note?: string;
-    photoIds: string[];
-  }>;
-  const criticals = JSON.parse(inspection.criticalFindingsJson) as string[];
+  const items = parseJsonArray<ReportItemRow>(inspection.itemsJson);
+  const criticals = parseJsonStringArray(inspection.criticalFindingsJson);
   const loadCalc = inspection.loadCalcJson
     ? (JSON.parse(inspection.loadCalcJson) as {
         result?: { governingAmps?: number; serviceAmps?: number; loadPct?: number; spareAmps?: number; methodUsed?: string };
@@ -364,16 +486,43 @@ export async function generateHealthReport(
   doc.text(`Inspected: ${dateStr}${techLabel} · Jurisdiction: ${inspection.jurisdictionId}`);
   doc.moveDown();
 
-  // Headline score + band
-  doc.fillColor(BRAND.cedar).fontSize(22).text(
-    `Health Score: ${inspection.score}  —  ${scoreBand(inspection.score, criticals.length > 0)}`,
-  );
-  doc.fillColor(BRAND.muted).fontSize(9).text(`${inspection.itemsAssessed} items assessed`);
-  doc.moveDown(0.5);
+  const isV1 = inspection.schemaVersion === "v1" && inspection.score !== null;
+
+  if (isV1) {
+    // Reproduce the delivered report exactly, score and all.
+    doc.fillColor(BRAND.cedar).fontSize(22).text(
+      `Health Score: ${inspection.score}  —  ${scoreBand(inspection.score!, criticals.length > 0)}`,
+    );
+    doc.fillColor(BRAND.muted).fontSize(9).text(`${inspection.itemsAssessed} items assessed`);
+    doc.moveDown(0.5);
+  } else {
+    if (inspection.scope === "phase1") {
+      doc.fillColor(BRAND.muted).fontSize(10).text(
+        "Phase 1 — service entrance & exterior assessment. Interior items are covered separately.",
+      );
+      doc.moveDown(0.25);
+    }
+    doc.fillColor(BRAND.cedar).fontSize(14).text(
+      `${inspection.failCount} need correction · ${inspection.monitorCount} to monitor · ${inspection.passCount} pass`,
+    );
+    doc.moveDown(0.5);
+
+    // Section status, the way the report opens.
+    doc.fillColor(BRAND.cedar).fontSize(12).text("Section Status", { underline: true });
+    doc.fontSize(10);
+    for (const group of ROLLUP_GROUPS) {
+      const status = rollupStatus(items, group.itemIds);
+      doc.fillColor(status === "FAIL" ? "#b91c1c" : BRAND.text)
+        .text(`${group.label}: ${ROLLUP_LABEL[status] ?? status}`);
+    }
+    doc.fillColor(BRAND.text);
+    doc.moveDown(0.5);
+  }
 
   if (criticals.length > 0) {
     doc.fillColor("#b91c1c").fontSize(12).text(
-      `CRITICAL FINDING${criticals.length > 1 ? "S" : ""}: ${criticals.join(", ")} — headline score capped at 69 until resolved.`,
+      `CRITICAL FINDING${criticals.length > 1 ? "S" : ""}: ${criticals.join(", ")}` +
+      (isV1 ? " — headline score capped at 69 until resolved." : " — contractor review required before delivery."),
     );
     doc.fillColor(BRAND.text);
     doc.moveDown(0.5);
@@ -388,24 +537,72 @@ export async function generateHealthReport(
     doc.moveDown();
   }
 
-  doc.fillColor(BRAND.cedar).fontSize(12).text("Findings by Item", { underline: true });
-  doc.fillColor(BRAND.text).fontSize(9);
-  for (const item of items) {
-    const grade = item.gradedState ? ` (${item.gradedState})` : "";
-    const critical = criticals.includes(item.itemId) ? "  ⚠ CRITICAL" : "";
-    doc.text(`${item.itemId}: ${RESULT_LABEL[item.result] ?? item.result}${grade}${critical}${item.note ? ` — ${item.note}` : ""}`);
+  if (isV1) {
+    doc.fillColor(BRAND.cedar).fontSize(12).text("Findings by Item", { underline: true });
+    doc.fillColor(BRAND.text).fontSize(9);
+    for (const item of items) {
+      const grade = item.gradedState ? ` (${item.gradedState})` : "";
+      const critical = criticals.includes(item.itemId) ? "  ⚠ CRITICAL" : "";
+      doc.text(`${item.itemId}: ${RESULT_LABEL[item.result] ?? item.result}${grade}${critical}${item.note ? ` — ${item.note}` : ""}`);
+    }
+    doc.moveDown();
+  } else {
+    // Action items first, with their resolutions — the part that gets acted on.
+    const byResult = (state: string) =>
+      items.filter((item) => normalizeResult(item.result) === state);
+
+    const renderGroup = (title: string, rows: ReportItemRow[], color: string, withResolution = false) => {
+      if (rows.length === 0) return;
+      doc.fillColor(BRAND.cedar).fontSize(12).text(`${title} (${rows.length})`, { underline: true });
+      doc.fontSize(9);
+      for (const item of rows) {
+        const grade = item.gradedState ? ` (${item.gradedState})` : "";
+        const critical = criticals.includes(item.itemId) ? "  ⚠ CRITICAL" : "";
+        doc.fillColor(color).text(`${item.itemId}${grade}${critical}`);
+        doc.fillColor(BRAND.text);
+        if (item.note) doc.text(`    Found: ${item.note}`);
+        if (withResolution && item.resolutionNote) doc.text(`    Resolution: ${item.resolutionNote}`);
+        if (item.photoIds.length > 0) {
+          doc.fillColor(BRAND.muted).text(`    ${item.photoIds.length} photo(s) on file`);
+          doc.fillColor(BRAND.text);
+        }
+      }
+      doc.moveDown(0.5);
+    };
+
+    renderGroup("Needs Correction", byResult("FAIL"), "#b91c1c", true);
+    renderGroup("Worth Monitoring", byResult("MONITOR"), "#b45309");
+    renderGroup("Below Red Cedar Standard", byResult("BELOW_STANDARD"), BRAND.text);
+
+    const passed = byResult("PASS");
+    if (passed.length > 0) {
+      doc.fillColor(BRAND.cedar).fontSize(12).text(`Passed (${passed.length})`, { underline: true });
+      doc.fillColor(BRAND.text).fontSize(9).text(passed.map((item) => item.itemId).join(", "));
+      doc.moveDown(0.5);
+    }
+
+    const na = byResult("NA");
+    if (na.length > 0) {
+      doc.fillColor(BRAND.muted).fontSize(9).text(
+        `Not applicable: ${na.map((item) => item.itemId).join(", ")}`,
+      );
+      doc.fillColor(BRAND.text);
+      doc.moveDown(0.5);
+    }
   }
-  doc.moveDown();
 
   doc.fillColor(BRAND.muted).fontSize(8).text(
     `Photo evidence on file: ${inspection.photos.length} image(s). ` +
     `Contractor review: ${inspection.contractorReviewed ? `completed${inspection.reviewedBy ? ` by ${inspection.reviewedBy}` : ""}` : "pending"}.`,
   );
   doc.moveDown(0.5);
-  doc.fillColor(BRAND.muted).fontSize(8).text(
-    "This score reflects severity, likelihood, and how hidden each issue is — weighted from national fire/shock data, not our opinion.",
-  );
+  if (isV1) {
+    doc.fillColor(BRAND.muted).fontSize(8).text(
+      "This score reflects severity, likelihood, and how hidden each issue is — weighted from national fire/shock data, not our opinion.",
+    );
+  }
 
+  addLimitations(doc);
   addFooter(doc);
 
   const pdfPath = await savePdf(doc, `health-report-${docId}.pdf`);
@@ -417,6 +614,370 @@ export async function generateHealthReport(
       type: "health_report",
       pdfUrl: pdfPath,
     },
+  });
+
+  return { documentId: docId, pdfPath };
+}
+
+// ─── FINDING LEDGER DOCUMENTS ───────────────────────────────────────────────
+//
+// A Health Record documents what is wrong. These three document what happened
+// next — corrected, upgraded, or refused. Without them the Record is a one-sided
+// paper trail: it can prove the owner was told and never that they acted.
+
+type LedgerFindingRow = {
+  id: string;
+  itemId: string;
+  title: string;
+  section: string | null;
+  citationsJson: string;
+  jurisdictionId: string;
+  severity: string;
+  findingText: string;
+  openedAt: Date;
+  openedInspectionId: string;
+  cycle: number;
+  resolutionMethod: string | null;
+  resolvedAt: Date | null;
+  resolvedByParty: string | null;
+  resolvedByPartyName: string | null;
+  resolutionDetail: string | null;
+  verifiedPassAt: Date | null;
+  verifiedPassInspectionId: string | null;
+  declinedByName: string | null;
+  declinedByRelation: string | null;
+  declinedVerbatim: string | null;
+  declinedAt: Date | null;
+};
+
+const PARTY_LABEL: Record<string, string> = {
+  red_cedar: "Red Cedar Electric LLC",
+  owner_self: "the property owner",
+  third_party: "a third-party contractor",
+};
+
+const METHOD_LABEL: Record<string, string> = {
+  corrected: "corrected",
+  replaced: "replaced",
+  upgraded: "upgraded",
+  equipment_removed: "removed from service",
+  verified_prior_repair: "verified as previously repaired",
+};
+
+const dateOnly = (value: Date | null) =>
+  value ? value.toLocaleDateString("en-US", { timeZone: "America/Chicago" }) : "—";
+
+/**
+ * How we know the work was done — stated plainly, because a certificate is only
+ * worth what its weakest verification is.
+ *
+ * "Verified by re-assessment" and "attested by the technician who did the work"
+ * are different claims, and a document that presents them identically is lying
+ * by omission the first time one of them is challenged.
+ */
+function verificationBasis(finding: LedgerFindingRow, photoCount: number): string {
+  if (finding.verifiedPassAt) {
+    return `Verified by re-assessment on ${dateOnly(finding.verifiedPassAt)}: this item was recorded as passing.`;
+  }
+  if (finding.resolvedByParty === "red_cedar") {
+    return photoCount > 0
+      ? `Verified by the correcting technician; ${photoCount} photograph(s) of the completed work are on file.`
+      : "Verified by the correcting technician. No photographic record is on file for this item.";
+  }
+  return `Reported as complete by ${finding.resolvedByPartyName ?? PARTY_LABEL[finding.resolvedByParty ?? ""] ?? "others"} and accepted on that basis. Red Cedar Electric did not perform or re-assess this work.`;
+}
+
+interface CertificateInput {
+  propertyId: string;
+  findingIds: string[];
+  attestedBy: string;
+  /** Present when Red Cedar did the work — links the certificate to the job. */
+  visitId?: string | null;
+}
+
+/**
+ * A cure certificate — the defect track's close-out.
+ *
+ * Covers many findings at once because that's how remediation actually happens:
+ * one visit, several items. Only findings that reached `corrected` are eligible;
+ * anything still open, declined or superseded is refused rather than quietly
+ * dropped, because a certificate that silently omits an item is exactly the
+ * document a plaintiff wants.
+ */
+export async function generateCureCertificate(
+  input: CertificateInput,
+): Promise<{ documentId: string; pdfPath: string; findingIds: string[] }> {
+  return generateLedgerCertificate(input, {
+    track: "defect",
+    eligibleStatus: "corrected",
+    docType: "cure_certificate",
+    title: "Certificate of Correction",
+    filePrefix: "cure-certificate",
+    intro:
+      "This certifies that the electrical conditions listed below, documented in an Electrical Health Record for this property, have been corrected. Each item is reproduced with the citation under which it was documented.",
+    itemHeading: "Correction",
+  });
+}
+
+/**
+ * The upgrade track's equivalent.
+ *
+ * Deliberately different language: nothing here was a violation. It records that
+ * better equipment was installed, which is a sales record and a service history
+ * — not a remediation, and it must never read like one.
+ */
+export async function generateUpgradeRecord(
+  input: CertificateInput,
+): Promise<{ documentId: string; pdfPath: string; findingIds: string[] }> {
+  return generateLedgerCertificate(input, {
+    track: "upgrade",
+    eligibleStatus: "upgraded",
+    docType: "upgrade_record",
+    title: "Record of Upgrade",
+    filePrefix: "upgrade-record",
+    intro:
+      "This records the equipment upgrades and planned replacements completed at this property. The items below were documented as wear, end-of-service-life, or installations below Red Cedar's enhanced standard — none was a code violation.",
+    itemHeading: "Work performed",
+  });
+}
+
+async function generateLedgerCertificate(
+  input: CertificateInput,
+  spec: {
+    track: "defect" | "upgrade";
+    eligibleStatus: string;
+    docType: string;
+    title: string;
+    filePrefix: string;
+    intro: string;
+    itemHeading: string;
+  },
+): Promise<{ documentId: string; pdfPath: string; findingIds: string[] }> {
+  const [profile, property, findings] = await Promise.all([
+    getCompanyProfile(),
+    prisma.property.findUnique({
+      where: { id: input.propertyId },
+      include: { customer: { select: { name: true } } },
+    }),
+    prisma.propertyFinding.findMany({
+      where: { id: { in: input.findingIds }, propertyId: input.propertyId },
+      orderBy: { openedAt: "asc" },
+    }),
+  ]);
+
+  if (!property) throw new Error(`Property ${input.propertyId} not found`);
+  if (findings.length === 0) throw new Error("No findings supplied for this certificate");
+
+  const ineligible = findings.filter((f) => f.status !== spec.eligibleStatus || f.track !== spec.track);
+  if (ineligible.length > 0) {
+    throw new Error(
+      `Cannot certify ${ineligible.map((f) => `${f.itemId} (${f.track}/${f.status})`).join(", ")} — ` +
+      `only ${spec.track}-track findings at status "${spec.eligibleStatus}" may appear on this document`,
+    );
+  }
+  const missing = input.findingIds.filter((id) => !findings.some((f) => f.id === id));
+  if (missing.length > 0) {
+    throw new Error(`Findings not found at this property: ${missing.join(", ")}`);
+  }
+
+  // Photo counts back the "verified by the correcting technician" claim.
+  const photoCounts = new Map<string, number>();
+  for (const finding of findings) {
+    const count = await prisma.inspectionPhoto.count({
+      where: { inspectionId: finding.openedInspectionId },
+    });
+    photoCounts.set(finding.id, count);
+  }
+
+  const docId = uuidv4();
+  const certificateNo = `RCE-${spec.track === "defect" ? "CC" : "UR"}-${docId.slice(0, 8).toUpperCase()}`;
+  const doc = new PDFDocument({ margin: 36 });
+  addHeader(doc, spec.title, profile);
+
+  const address = [property.addressLine1, property.addressLine2, property.city, property.state, property.postalCode]
+    .filter(Boolean)
+    .join(", ");
+
+  doc.fontSize(10).fillColor(BRAND.text);
+  doc.text(`Certificate no. ${certificateNo}`);
+  doc.text(`Issued ${dateOnly(new Date())}`);
+  doc.text(`Property: ${address}`);
+  doc.text(`Account: ${property.customer.name}`);
+  doc.moveDown(0.7);
+
+  doc.fontSize(10).fillColor(BRAND.muted).text(spec.intro, { align: "left" });
+  doc.moveDown(0.8);
+
+  findings.forEach((finding, index) => {
+    const citations = findingCitations(finding);
+    doc.fillColor(BRAND.cedar).fontSize(11).text(`${index + 1}. ${finding.itemId} — ${finding.title}`);
+    doc.fillColor(BRAND.text).fontSize(9);
+    if (citations.length > 0) {
+      doc.fillColor(BRAND.muted).text(citations.join(" · "));
+    } else {
+      doc.fillColor(BRAND.muted).text(
+        "Citations unavailable — this finding predates the citation record.",
+      );
+    }
+    doc.fillColor(BRAND.text);
+    doc.moveDown(0.2);
+    doc.text(`Documented ${dateOnly(finding.openedAt)} under the ${finding.jurisdictionId} code edition then in effect${finding.cycle > 1 ? ` (occurrence ${finding.cycle} at this location)` : ""}.`);
+    doc.text(`As found: ${finding.findingText}`);
+    doc.moveDown(0.2);
+    doc.fillColor(BRAND.cedar).text(
+      `${spec.itemHeading}: ${METHOD_LABEL[finding.resolutionMethod ?? ""] ?? finding.resolutionMethod ?? "completed"} ` +
+      `on ${dateOnly(finding.resolvedAt)} by ${finding.resolvedByPartyName ?? PARTY_LABEL[finding.resolvedByParty ?? ""] ?? "others"}.`,
+    );
+    doc.fillColor(BRAND.text);
+    if (finding.resolutionDetail) doc.text(finding.resolutionDetail);
+    doc.fillColor(BRAND.muted).text(verificationBasis(finding, photoCounts.get(finding.id) ?? 0));
+    doc.fillColor(BRAND.text);
+    doc.moveDown(0.6);
+  });
+
+  // ── Scope limitation ──
+  // Without this the certificate reads as a whole-house warranty, which converts
+  // a defence into a new liability. It is not boilerplate; it is the point.
+  doc.moveDown(0.3);
+  doc.fillColor(BRAND.cedar).fontSize(10).text("Scope and limitations");
+  doc.fillColor(BRAND.muted).fontSize(8.5).text(
+    `This document certifies only the specific items listed above, as observed on the dates stated. ` +
+    `It is not a warranty, a guarantee of future condition, or a statement that any other part of this ` +
+    `electrical system is free of defects. Conditions concealed by finishes, equipment not accessible ` +
+    `on the day of assessment, and anything outside the scope of the originating Electrical Health Record ` +
+    `were not evaluated. Electrical systems change with use, alteration, and age; this certificate ` +
+    `speaks only to the date it was issued.`,
+    { align: "left" },
+  );
+  doc.moveDown(0.7);
+
+  doc.fillColor(BRAND.cedar).fontSize(10).text("Contractor attestation");
+  doc.fillColor(BRAND.text).fontSize(9).text(
+    `I attest that the work described above was completed or verified as described, and that this record ` +
+    `is accurate to the best of my knowledge.`,
+  );
+  doc.moveDown(0.4);
+  doc.text(input.attestedBy);
+  doc.fillColor(BRAND.muted).text(`${profile.legalName} — ${licenseLine(profile)}`);
+  doc.fillColor(BRAND.text);
+
+  addFooter(doc);
+  const pdfPath = await savePdf(doc, `${spec.filePrefix}-${docId}.pdf`);
+
+  await prisma.document.create({
+    data: {
+      id: docId,
+      // Property-scoped, not job-scoped: a third-party repair has no Red Cedar
+      // visit, and this document belongs to the address either way.
+      jobId: input.visitId ?? null,
+      propertyId: input.propertyId,
+      type: spec.docType,
+      pdfUrl: pdfPath,
+    },
+  });
+
+  await prisma.propertyFinding.updateMany({
+    where: { id: { in: findings.map((f) => f.id) } },
+    data: { certificateDocId: docId },
+  });
+
+  return { documentId: docId, pdfPath, findingIds: findings.map((f) => f.id) };
+}
+
+/**
+ * A declination letter — the customer's refusal, in their own words, for them
+ * to sign.
+ *
+ * This is the one ledger document the customer signs. The certificates are the
+ * contractor's own statement; a declination is the owner's, and it is only worth
+ * anything with their name on it. Signing rides the existing public
+ * /sign/:documentId page, so it uses Document.signedAt/signedByName/signedByIp —
+ * SignatureRecord is keyed to an estimate and cannot hold this.
+ */
+export async function generateFindingDeclination(input: {
+  propertyId: string;
+  findingIds: string[];
+  preparedBy: string;
+}): Promise<{ documentId: string; pdfPath: string }> {
+  const [profile, property, findings] = await Promise.all([
+    getCompanyProfile(),
+    prisma.property.findUnique({
+      where: { id: input.propertyId },
+      include: { customer: { select: { name: true } } },
+    }),
+    prisma.propertyFinding.findMany({
+      where: { id: { in: input.findingIds }, propertyId: input.propertyId, status: "declined" },
+      orderBy: { openedAt: "asc" },
+    }),
+  ]);
+
+  if (!property) throw new Error(`Property ${input.propertyId} not found`);
+  if (findings.length === 0) throw new Error("No declined findings supplied");
+
+  const docId = uuidv4();
+  const doc = new PDFDocument({ margin: 36 });
+  addHeader(doc, "Acknowledgment of Declined Work", profile);
+
+  const address = [property.addressLine1, property.addressLine2, property.city, property.state, property.postalCode]
+    .filter(Boolean)
+    .join(", ");
+
+  doc.fontSize(10).fillColor(BRAND.text);
+  doc.text(`Property: ${address}`);
+  doc.text(`Account: ${property.customer.name}`);
+  doc.text(`Prepared ${dateOnly(new Date())} by ${input.preparedBy}`);
+  doc.moveDown(0.7);
+
+  doc.fillColor(BRAND.muted).fontSize(10).text(
+    "The conditions below were identified and explained at this property, and the recommended work was " +
+    "declined. This document records that decision. It is not a criticism — it is a record that the " +
+    "information was provided, so that everyone involved knows where things stand.",
+  );
+  doc.moveDown(0.8);
+
+  findings.forEach((finding, index) => {
+    const citations = findingCitations(finding);
+    doc.fillColor(BRAND.cedar).fontSize(11).text(`${index + 1}. ${finding.itemId} — ${finding.title}`);
+    doc.fillColor(BRAND.muted).fontSize(9).text(
+      citations.length > 0 ? citations.join(" · ") : "Citations unavailable — this finding predates the citation record.",
+    );
+    doc.fillColor(BRAND.text).fontSize(9);
+    doc.text(`Documented ${dateOnly(finding.openedAt)}. As found: ${finding.findingText}`);
+    if (finding.declinedVerbatim) {
+      doc.moveDown(0.2);
+      doc.text(
+        `Declined ${dateOnly(finding.declinedAt)} by ${finding.declinedByName ?? "the customer"}` +
+        `${finding.declinedByRelation ? ` (${finding.declinedByRelation.replace(/_/g, " ")})` : ""}: ` +
+        `"${finding.declinedVerbatim}"`,
+      );
+    }
+    doc.moveDown(0.6);
+  });
+
+  doc.moveDown(0.3);
+  doc.fillColor(BRAND.cedar).fontSize(10).text("Acknowledgment");
+  doc.fillColor(BRAND.text).fontSize(9).text(
+    "By signing, I confirm that the conditions above were explained to me and that I have chosen not to " +
+    "have the recommended work performed at this time. I understand these conditions remain present and " +
+    "may worsen. This acknowledgment can be withdrawn at any time by asking Red Cedar Electric to proceed.",
+  );
+  doc.moveDown(1.2);
+  doc.text("Signature: ______________________________     Date: ______________");
+  doc.moveDown(0.4);
+  doc.text("Print name: ____________________________     Capacity (owner / tenant / manager): ____________");
+  doc.moveDown(0.8);
+  doc.fillColor(BRAND.muted).fontSize(8).text(`${profile.legalName} — ${licenseLine(profile)}`);
+  doc.fillColor(BRAND.text);
+
+  addFooter(doc);
+  const pdfPath = await savePdf(doc, `finding-declination-${docId}.pdf`);
+
+  await prisma.document.create({
+    data: { id: docId, jobId: null, propertyId: input.propertyId, type: "finding_declination", pdfUrl: pdfPath },
+  });
+  await prisma.propertyFinding.updateMany({
+    where: { id: { in: findings.map((f) => f.id) } },
+    data: { declinationDocId: docId },
   });
 
   return { documentId: docId, pdfPath };

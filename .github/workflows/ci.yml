@@ -42,5 +42,14 @@ jobs:
       - name: Run test suite (pushes schema + seeds via globalSetup)
         run: npm run test
 
+      # The field PWA is a separate npm package with its own vitest config, so the
+      # root suite never covered it — the load-calc, scoring and schema tests were
+      # running nowhere. It needs no database.
+      - name: Install field PWA dependencies
+        run: npm --prefix field ci
+
+      - name: Run field PWA test suite
+        run: npm --prefix field run test
+
       - name: Build (client + prisma generate + server tsc)
         run: npm run build

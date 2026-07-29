@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { InspectionResultChip } from "./InspectionResultChip";
 
 /**
  * Health Record panel for the visit workspace: assign the inspection to a
@@ -167,15 +168,19 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                     onClick={() => setExpandedInspectionId(expanded ? null : inspection.id)}
                   >
                     <span>
-                      <span
-                        className={`mr-2 inline-block rounded px-2 py-0.5 text-xs font-bold text-white ${
-                          criticals.length > 0 ? "bg-red-600" : inspection.score >= 90 ? "bg-emerald-600" : inspection.score >= 75 ? "bg-emerald-500" : "bg-amber-500"
-                        }`}
-                      >
-                        {inspection.score}
+                      <span className="mr-2">
+                        <InspectionResultChip
+                          criticalCount={criticals.length}
+                          failCount={inspection.failCount}
+                          monitorCount={inspection.monitorCount}
+                          schemaVersion={inspection.schemaVersion}
+                          score={inspection.score}
+                        />
                       </span>
                       {new Date(inspection.inspectionDate).toLocaleDateString()} ·{" "}
-                      {inspection.itemsAssessed} items · {inspection.technician?.name ?? "unassigned"}
+                      {inspection.itemsAssessed} items
+                      {inspection.scope === "phase1" && " (Phase 1)"} ·{" "}
+                      {inspection.technician?.name ?? "unassigned"}
                       {inspection.technician?.employeeNumber ? ` (${inspection.technician.employeeNumber})` : ""}
                       {criticals.length > 0 && (
                         <span className="ml-2 font-semibold text-red-600">

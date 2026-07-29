@@ -1,23 +1,66 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+import { JobScheduler } from "../components/JobScheduler";
+import { Modal } from "../components/Modal";
+import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
-import type { MonthSchedule, AvailabilityResponse, CalendarEvent } from "../lib/types";
+import type {
+  AvailabilityResponse,
+  CalendarAppointment,
+  CalendarSchedule,
+  UnscheduledJob,
+} from "../lib/types";
+import { money } from "../lib/utils";
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
 ];
 const DAY_HEADERS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const TZ = "America/Chicago";
+
+const APPOINTMENT_CLASS: Record<string, string> = {
+  estimate: "bg-blue-100 text-blue-800",
+  contracted: "bg-indigo-100 text-indigo-800",
+  scheduled: "bg-rce-accent/20 text-rce-accentDark",
+  in_progress: "bg-amber-100 text-amber-900",
+  completed: "bg-green-100 text-green-800",
+};
+
+/** YYYY-MM-DD in Central, which is how the server keys the schedule. */
+function dayKeyCT(iso: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date(iso));
+  const get = (type: string) => parts.find((p) => p.type === type)!.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+const timeCT = (iso: string) =>
+  new Date(iso).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" });
+
+const dateCT = (iso: string) =>
+  new Date(iso).toLocaleDateString("en-US", {
+    timeZone: TZ, weekday: "long", month: "long", day: "numeric",
+  });
+
+const pad = (n: number) => String(n).padStart(2, "0");
 
 export function CalendarPage() {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
-  const [month, setMonth] = useState(today.getMonth() + 1); // 1-indexed
-  const [selectedDay, setSelectedDay] = useState<number | null>(null);
+  const [month, setMonth] = useState(today.getMonth() + 1);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [rescheduling, setRescheduling] = useState<CalendarAppointment | UnscheduledJob | null>(null);
 
-  const { data: schedule, isLoading } = useQuery<MonthSchedule>({
-    queryKey: ["schedule", "month", year, month],
-    queryFn: () => api.monthSchedule(year, month),
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const rangeStart = `${year}-${pad(month)}-01`;
+  const rangeEnd = `${year}-${pad(month)}-${pad(daysInMonth)}`;
+
+  const { data: schedule, isLoading, error } = useQuery<CalendarSchedule>({
+    queryKey: ["calendar", rangeStart, rangeEnd],
+    queryFn: () => api.calendarSchedule(rangeStart, rangeEnd),
   });
 
   const { data: availability } = useQuery<AvailabilityResponse>({
@@ -25,136 +68,239 @@ export function CalendarPage() {
     queryFn: () => api.calendarAvailability(),
   });
 
-  const todayDay = today.getFullYear() === year && today.getMonth() + 1 === month ? today.getDate() : null;
+  /** Appointments and unlinked Google events bucketed by Central calendar day. */
+  const byDay = useMemo(() => {
+    const map = new Map<string, { appointments: CalendarAppointment[]; googleEvents: CalendarSchedule["googleOnlyEvents"] }>();
+    const bucket = (key: string) => {
+      if (!map.has(key)) map.set(key, { appointments: [], googleEvents: [] });
+      return map.get(key)!;
+    };
 
-  // Build calendar grid with leading empty cells
-  const firstWeekday = schedule?.days[0]?.weekday ?? 0;
-  const cells: Array<{ dayOfMonth: number; weekday: number; events: CalendarEvent[] } | null> = [];
-  for (let i = 0; i < firstWeekday; i++) cells.push(null);
-  for (const d of schedule?.days ?? []) cells.push(d);
+    for (const appointment of schedule?.appointments ?? []) {
+      // A multi-day job occupies every day it spans, not just its start.
+      const start = dayKeyCT(appointment.scheduledStart);
+      const end = appointment.scheduledEnd ? dayKeyCT(appointment.scheduledEnd) : start;
+      const cursor = new Date(`${start}T12:00:00Z`);
+      const last = new Date(`${end}T12:00:00Z`);
+      while (cursor <= last) {
+        bucket(cursor.toISOString().slice(0, 10)).appointments.push(appointment);
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+    }
+    for (const event of schedule?.googleOnlyEvents ?? []) {
+      bucket(dayKeyCT(event.start)).googleEvents.push(event);
+    }
+    return map;
+  }, [schedule]);
 
-  const selectedDayData = schedule?.days.find((d) => d.dayOfMonth === selectedDay);
+  const firstWeekday = new Date(year, month - 1, 1).getDay();
+  const cells: Array<string | null> = [
+    ...Array.from({ length: firstWeekday }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => `${year}-${pad(month)}-${pad(i + 1)}`),
+  ];
 
-  function prevMonth() {
-    if (month === 1) { setYear(year - 1); setMonth(12); }
-    else setMonth(month - 1);
-    setSelectedDay(null);
-  }
-  function nextMonth() {
-    if (month === 12) { setYear(year + 1); setMonth(1); }
-    else setMonth(month + 1);
-    setSelectedDay(null);
+  const todayKey = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+  const selectedData = selectedDate ? byDay.get(selectedDate) : undefined;
+
+  function shiftMonth(delta: number) {
+    const next = month + delta;
+    if (next < 1) { setYear(year - 1); setMonth(12); }
+    else if (next > 12) { setYear(year + 1); setMonth(1); }
+    else setMonth(next);
+    setSelectedDate(null);
   }
 
   return (
     <div className="space-y-6">
-      {/* Month Header */}
+      <PageHeader
+        title="Calendar"
+        subtitle="Appointments and job timelines — scheduling lives here"
+      />
+
       <div className="flex items-center justify-between">
-        <button onClick={prevMonth} className="rounded-lg border border-rce-border px-3 py-1.5 text-sm font-medium hover:bg-rce-bg">
+        <button onClick={() => shiftMonth(-1)} className="rounded-lg border border-rce-border px-3 py-1.5 text-sm font-medium hover:bg-rce-bg">
           &larr; Prev
         </button>
-        <h1 className="text-xl font-bold">
-          {MONTH_NAMES[month - 1]} {year}
-        </h1>
-        <button onClick={nextMonth} className="rounded-lg border border-rce-border px-3 py-1.5 text-sm font-medium hover:bg-rce-bg">
+        <h2 className="text-xl font-bold">{MONTH_NAMES[month - 1]} {year}</h2>
+        <button onClick={() => shiftMonth(1)} className="rounded-lg border border-rce-border px-3 py-1.5 text-sm font-medium hover:bg-rce-bg">
           Next &rarr;
         </button>
       </div>
 
-      {/* Calendar Grid */}
-      {isLoading ? (
-        <p className="text-rce-muted text-sm">Loading calendar...</p>
-      ) : (
-        <div className="overflow-hidden rounded-lg border border-rce-border">
-          {/* Day headers */}
-          <div className="grid grid-cols-7 bg-rce-bg">
-            {DAY_HEADERS.map((d) => (
-              <div key={d} className="border-b border-rce-border px-2 py-2 text-center text-xs font-semibold text-rce-muted">
-                {d}
-              </div>
-            ))}
-          </div>
-          {/* Day cells */}
-          <div className="grid grid-cols-7">
-            {cells.map((cell, i) => {
-              if (!cell) {
-                return <div key={`empty-${i}`} className="min-h-[72px] border-b border-r border-rce-border bg-rce-bg/50" />;
-              }
-              const isToday = cell.dayOfMonth === todayDay;
-              const isSelected = cell.dayOfMonth === selectedDay;
-              const hasEvents = cell.events.length > 0;
-              const isWeekend = cell.weekday === 0 || cell.weekday === 6;
+      {error ? <p className="text-sm text-red-500">Error loading calendar: {error.message}</p> : null}
 
-              return (
-                <button
-                  key={cell.dayOfMonth}
-                  onClick={() => setSelectedDay(cell.dayOfMonth === selectedDay ? null : cell.dayOfMonth)}
-                  className={`relative min-h-[72px] border-b border-r border-rce-border p-1.5 text-left transition hover:bg-rce-accentBg/30 ${
-                    isSelected ? "bg-rce-accentBg/40 ring-2 ring-inset ring-rce-accent" : ""
-                  } ${isWeekend ? "bg-rce-bg/40" : ""}`}
-                >
-                  <span
-                    className={`inline-flex h-7 w-7 items-center justify-center rounded-full text-sm font-medium ${
-                      isToday
-                        ? "bg-rce-accent text-white"
-                        : isWeekend
-                        ? "text-rce-muted"
-                        : "text-rce-text"
-                    }`}
-                  >
-                    {cell.dayOfMonth}
-                  </span>
-                  {hasEvents && (
-                    <div className="mt-0.5 space-y-0.5">
-                      {cell.events.slice(0, 2).map((ev) => (
-                        <div
-                          key={ev.id}
-                          className="truncate rounded bg-rce-accent/15 px-1 text-[10px] font-medium text-rce-accentDark"
-                          title={ev.summary}
-                        >
-                          {ev.summary}
-                        </div>
-                      ))}
-                      {cell.events.length > 2 && (
-                        <div className="px-1 text-[10px] text-rce-muted">
-                          +{cell.events.length - 2} more
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Selected Day Detail */}
-      {selectedDayData && (
-        <section className="rounded-lg border border-rce-border bg-rce-bg p-4">
-          <h2 className="mb-3 text-base font-semibold">{selectedDayData.date}</h2>
-          {selectedDayData.events.length === 0 ? (
-            <p className="text-sm text-rce-muted">No events scheduled</p>
+      <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
+        <div className="space-y-4">
+          {isLoading ? (
+            <p className="text-sm text-rce-muted">Loading calendar…</p>
           ) : (
-            <ul className="space-y-2">
-              {selectedDayData.events.map((ev) => (
-                <li key={ev.id} className="rounded-md bg-rce-surface p-3 shadow-sm">
-                  <p className="font-medium">{ev.summary}</p>
-                  <p className="text-sm text-rce-muted">
-                    {ev.startLocal} – {ev.endLocal}
-                  </p>
-                  {ev.location && (
-                    <p className="mt-0.5 text-sm text-rce-muted">{ev.location}</p>
-                  )}
-                  {ev.description && (
-                    <p className="mt-1 text-xs text-rce-muted whitespace-pre-line">{ev.description}</p>
-                  )}
-                </li>
-              ))}
-            </ul>
+            <div className="overflow-hidden rounded-lg border border-rce-border">
+              <div className="grid grid-cols-7 bg-rce-bg">
+                {DAY_HEADERS.map((d) => (
+                  <div key={d} className="border-b border-rce-border px-2 py-2 text-center text-xs font-semibold text-rce-muted">
+                    {d}
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7">
+                {cells.map((dateKey, i) => {
+                  if (!dateKey) {
+                    return <div key={`empty-${i}`} className="min-h-[86px] border-b border-r border-rce-border bg-rce-bg/50" />;
+                  }
+                  const data = byDay.get(dateKey);
+                  const appointments = data?.appointments ?? [];
+                  const googleEvents = data?.googleEvents ?? [];
+                  const dayOfMonth = Number(dateKey.slice(-2));
+                  const weekday = new Date(year, month - 1, dayOfMonth).getDay();
+                  const isWeekend = weekday === 0 || weekday === 6;
+
+                  return (
+                    <button
+                      key={dateKey}
+                      onClick={() => setSelectedDate(dateKey === selectedDate ? null : dateKey)}
+                      className={`relative min-h-[86px] border-b border-r border-rce-border p-1.5 text-left align-top transition hover:bg-rce-accentBg/30 ${
+                        dateKey === selectedDate ? "bg-rce-accentBg/40 ring-2 ring-inset ring-rce-accent" : ""
+                      } ${isWeekend ? "bg-rce-bg/40" : ""}`}
+                    >
+                      <span
+                        className={`inline-flex h-7 w-7 items-center justify-center rounded-full text-sm font-medium ${
+                          dateKey === todayKey ? "bg-rce-accent text-white" : isWeekend ? "text-rce-muted" : "text-rce-text"
+                        }`}
+                      >
+                        {dayOfMonth}
+                      </span>
+                      <div className="mt-0.5 space-y-0.5">
+                        {appointments.slice(0, 2).map((appointment) => (
+                          <div
+                            key={appointment.visitId}
+                            className={`flex items-center gap-1 truncate rounded px-1 text-[10px] font-medium ${
+                              APPOINTMENT_CLASS[appointment.status] ?? "bg-zinc-200 text-zinc-700"
+                            }`}
+                            title={`${appointment.customerName} — ${appointment.address}`}
+                          >
+                            {appointment.confirmationStatus === "confirmed" && (
+                              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" title="Confirmed" />
+                            )}
+                            <span className="truncate">
+                              {appointment.appointmentKind === "estimate" ? "EST " : ""}
+                              {timeCT(appointment.scheduledStart)} {appointment.customerName}
+                            </span>
+                          </div>
+                        ))}
+                        {googleEvents.slice(0, 1).map((event) => (
+                          <div key={event.id} className="truncate rounded bg-zinc-100 px-1 text-[10px] italic text-zinc-500" title={event.summary}>
+                            {event.summary}
+                          </div>
+                        ))}
+                        {appointments.length + googleEvents.length > 3 && (
+                          <div className="px-1 text-[10px] text-rce-muted">
+                            +{appointments.length + googleEvents.length - 3} more
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           )}
-        </section>
-      )}
+
+          {/* Day detail */}
+          {selectedDate && (
+            <section className="rounded-lg border border-rce-border bg-rce-bg p-4">
+              <h3 className="mb-3 text-base font-semibold">{dateCT(`${selectedDate}T12:00:00Z`)}</h3>
+
+              {(selectedData?.appointments.length ?? 0) === 0 && (selectedData?.googleEvents.length ?? 0) === 0 ? (
+                <p className="text-sm text-rce-muted">Nothing scheduled.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {selectedData?.appointments.map((appointment) => (
+                    <li key={appointment.visitId} className="rounded-md bg-rce-surface p-3 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <Link to={`/visits/${appointment.visitId}`} className="font-medium hover:text-rce-accent">
+                            {appointment.customerName}
+                          </Link>
+                          <p className="text-sm text-rce-muted">{appointment.address}</p>
+                        </div>
+                        <span className={`rounded px-2 py-0.5 text-xs font-semibold uppercase ${APPOINTMENT_CLASS[appointment.status] ?? "bg-zinc-200 text-zinc-700"}`}>
+                          {appointment.appointmentKind === "estimate" ? "Estimate" : appointment.status.replaceAll("_", " ")}
+                        </span>
+                      </div>
+
+                      <p className="mt-1 text-sm">
+                        {timeCT(appointment.scheduledStart)}
+                        {appointment.scheduledEnd && ` – ${timeCT(appointment.scheduledEnd)}`}
+                        {appointment.travelBufferMinutes > 0 && (
+                          <span className="text-rce-muted"> (+{appointment.travelBufferMinutes} min travel)</span>
+                        )}
+                        {appointment.estimatedDurationDays && appointment.estimatedDurationDays > 1 && (
+                          <span className="text-rce-muted"> · {appointment.estimatedDurationDays}-day job</span>
+                        )}
+                      </p>
+
+                      <p className="mt-1 text-xs text-rce-muted">
+                        {appointment.jobType || appointment.purpose || "No job type set"}
+                        {appointment.estimateTotal != null && ` · ${money(appointment.estimateTotal)}`}
+                        {appointment.technicians.length > 0 && ` · ${appointment.technicians.map((t) => t.name).join(", ")}`}
+                      </p>
+
+                      <p className="mt-1 text-xs">
+                        <span className={appointment.confirmationStatus === "confirmed" ? "text-rce-success" : "text-rce-muted"}>
+                          {appointment.confirmationStatus === "confirmed" ? "Customer confirmed" : "Awaiting customer confirmation"}
+                        </span>
+                      </p>
+
+                      <div className="mt-2 flex gap-2">
+                        <button type="button" className="btn btn-secondary text-xs" onClick={() => setRescheduling(appointment)}>
+                          Reschedule / Cancel
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+
+                  {selectedData?.googleEvents.map((event) => (
+                    <li key={event.id} className="rounded-md border border-dashed border-rce-border bg-rce-surface/60 p-3">
+                      <p className="font-medium text-rce-muted">{event.summary}</p>
+                      <p className="text-sm text-rce-muted">{event.startLocal} – {event.endLocal}</p>
+                      {event.location && <p className="text-sm text-rce-muted">{event.location}</p>}
+                      <p className="mt-1 text-xs italic text-rce-soft">Google calendar — no linked job</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+        </div>
+
+        {/* Needs-scheduling rail — the pipe from Leads into the calendar */}
+        <aside className="space-y-2">
+          <h3 className="text-sm font-semibold">Needs scheduling</h3>
+          <p className="text-xs text-rce-muted">Jobs with no appointment yet.</p>
+          {(schedule?.unscheduled ?? []).map((job) => (
+            <div key={job.visitId} className="rounded-lg border border-rce-border bg-rce-bg p-3">
+              <Link to={`/visits/${job.visitId}`} className="text-sm font-medium hover:text-rce-accent">
+                {job.customerName}
+              </Link>
+              <p className="text-xs text-rce-muted">{job.address}</p>
+              <p className="mt-1 text-xs text-rce-soft">
+                {job.appointmentKind === "estimate" ? "Estimate visit" : "Production work"}
+                {job.jobType && ` · ${job.jobType}`}
+              </p>
+              <button
+                type="button"
+                className="btn btn-primary mt-2 w-full text-xs"
+                onClick={() => setRescheduling(job)}
+              >
+                Schedule
+              </button>
+            </div>
+          ))}
+          {(schedule?.unscheduled ?? []).length === 0 && !isLoading && (
+            <p className="text-xs text-rce-muted">Everything's booked.</p>
+          )}
+        </aside>
+      </div>
 
       {/* AI Availability */}
       <section>
@@ -164,32 +310,44 @@ export function CalendarPage() {
           {availability && ` Current time: ${availability.current_time_central}`}
         </p>
         {!availability ? (
-          <p className="text-rce-muted text-sm">Loading availability...</p>
+          <p className="text-sm text-rce-muted">Loading availability…</p>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {availability.available_slots.map((day) => (
               <div key={day.date} className="rounded-lg border border-rce-border bg-rce-bg p-3">
                 <h3 className="mb-2 text-sm font-semibold">{day.date}</h3>
-                {day.slots.length === 0 ? (
-                  <span className="inline-block rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
-                    Fully booked
-                  </span>
-                ) : (
-                  <ul className="space-y-1">
-                    {day.slots.map((slot, i) => (
-                      <li key={i}>
-                        <span className="inline-block rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
-                          {slot.start} – {slot.end}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <ul className="space-y-1">
+                  {day.slots.map((slot, i) => (
+                    <li key={i}>
+                      <span className="inline-block rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
+                        {slot.start} – {slot.end}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             ))}
           </div>
         )}
       </section>
+
+      {rescheduling && (
+        <Modal
+          title={rescheduling.customerName}
+          subtitle={rescheduling.address}
+          onClose={() => setRescheduling(null)}
+        >
+          <JobScheduler
+            autoOpen
+            jobId={rescheduling.visitId}
+            status={rescheduling.status}
+            scheduledStart={"scheduledStart" in rescheduling ? rescheduling.scheduledStart : null}
+            scheduledEnd={"scheduledEnd" in rescheduling ? rescheduling.scheduledEnd : null}
+            durationDays={rescheduling.estimatedDurationDays}
+            onScheduled={() => setRescheduling(null)}
+          />
+        </Modal>
+      )}
     </div>
   );
 }

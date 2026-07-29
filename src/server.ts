@@ -4,7 +4,7 @@ import { sendDailySummaryEmail } from "./services/dailySummary";
 import { getNextDaySchedule } from "./services/schedule";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { sendPendingSupplierEmails } from "./services/supplierEmail";
-import { generateInspectionRenewalLeads } from "./services/inspectionRetention";
+import { generateInspectionRenewalLeads, generateUpgradeFollowUpLeads } from "./services/inspectionRetention";
 import { sendVisitReminders } from "./services/visitConfirmations";
 
 const port = Number(process.env.PORT ?? 4000);
@@ -81,6 +81,20 @@ async function startServer(): Promise<void> {
       }
     } catch (err) {
       console.error("[Cron] Inspection retention sweep failed:", err);
+    }
+
+    // 5. Upgrade-track follow-up — equipment documented as MONITOR that is
+    // approaching its published end of service life. This is the "call back for
+    // other work" loop: a planned replacement, six months ahead of the failure.
+    console.log("[Cron] Running equipment end-of-life sweep...");
+    try {
+      const result = await generateUpgradeFollowUpLeads();
+      if (result.created > 0) {
+        console.log(`[Cron] Created ${result.created} planned-replacement lead(s).`);
+        await sendSms(KYLE_PHONE, `Upgrade track: ${result.created} planned replacement lead(s) created from documented end-of-life equipment.\n\nRed Cedar Electric`).catch((err) => console.error("[Cron] EOL SMS failed:", err));
+      }
+    } catch (err) {
+      console.error("[Cron] Equipment end-of-life sweep failed:", err);
     }
   }, { timezone: "America/Chicago" });
 

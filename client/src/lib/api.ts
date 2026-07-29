@@ -1,6 +1,10 @@
 import type {
+  Account,
+  AccountSummary,
   AssemblyTemplate,
   AvailabilityResponse,
+  CalendarSchedule,
+  LeadPipeline,
   CompanionSuggestion,
   CrmCycleTimeMetrics,
   CrmFollowUpsMetrics,
@@ -19,7 +23,12 @@ import type {
   ModifierDef,
   EstimateItem,
   SupportItem,
+  CapacityCheckRecord,
+  CapacityCheckResult,
+  DemandStudyOrder,
+  FindingEvent,
   Lead,
+  PropertyFinding,
   WeekSchedule,
 } from "./types";
 
@@ -80,12 +89,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  jobs: () => request<JobSummary[]>("/jobs"),
-  customers: () => request<Customer[]>("/customers"),
-  customer: (customerId: string) => request<Customer>(`/customers/${customerId}`),
-  createCustomer: (input: { name: string; email?: string; phone?: string }) => request<Customer>("/customers", { method: "POST", body: JSON.stringify(input) }),
-  updateCustomer: (customerId: string, input: { name?: string; email?: string | null; phone?: string | null }) => request<Customer>(`/customers/${customerId}`, { method: "PATCH", body: JSON.stringify(input) }),
-  deleteCustomer: (customerId: string) => request<void>(`/customers/${customerId}`, { method: "DELETE" }),
+  jobs: (params?: { archived?: boolean }) => {
+    const suffix = params?.archived === undefined ? "" : `?archived=${params.archived}`;
+    return request<JobSummary[]>(`/jobs${suffix}`);
+  },
+
+  // ─── Accounts ─────────────────────────────────────────────────────────────
+  // The server exposes these under both /accounts and /customers (same handlers,
+  // Prisma model is still Customer). The client speaks "account" throughout.
+  accounts: () => request<Account[]>("/accounts"),
+  account: (accountId: string) => request<Account>(`/accounts/${accountId}`),
+  accountSummary: (accountId: string) => request<AccountSummary>(`/accounts/${accountId}/summary`),
+  createAccount: (input: { name: string; email?: string; phone?: string }) =>
+    request<Account>("/accounts", { method: "POST", body: JSON.stringify(input) }),
+  updateAccount: (accountId: string, input: { name?: string; email?: string | null; phone?: string | null }) =>
+    request<Account>(`/accounts/${accountId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteAccount: (accountId: string) => request<void>(`/accounts/${accountId}`, { method: "DELETE" }),
+
+  // The server still serves /customers for the voice agents and webhooks; the
+  // CRM client speaks only "account".
   properties: () => request<Property[]>("/properties"),
   property: (propertyId: string) => request<Property>(`/properties/${propertyId}`),
   createProperty: (input: {
@@ -225,9 +247,16 @@ export const api = {
   deleteSupportItem: (estimateId: string, itemId: string) =>
     request<void>(`/estimates/${estimateId}/support-items/${itemId}`, { method: "DELETE" }),
   // ─── Leads ────────────────────────────────────────────────────────────────
-  leads: (status?: string) => {
-    const suffix = status ? `?status=${status}` : "";
-    return request<Lead[]>(`/leads${suffix}`);
+  // `pipeline` is the funnel filter behind the Leads tab; `status` is the older
+  // per-lead state, kept because several callers still filter on it directly.
+  leads: (params?: string | { status?: string; leadStatus?: string; pipeline?: LeadPipeline }) => {
+    const normalized = typeof params === "string" ? { status: params } : params ?? {};
+    const search = new URLSearchParams();
+    if (normalized.status) search.set("status", normalized.status);
+    if (normalized.leadStatus) search.set("leadStatus", normalized.leadStatus);
+    if (normalized.pipeline) search.set("pipeline", normalized.pipeline);
+    const query = search.toString();
+    return request<Lead[]>(`/leads${query ? `?${query}` : ""}`);
   },
   updateLead: (
     leadId: string,
@@ -258,6 +287,9 @@ export const api = {
   weekSchedule: () => request<WeekSchedule>("/crm/schedule/week"),
   monthSchedule: (year: number, month: number) => request<MonthSchedule>(`/crm/schedule/month?year=${year}&month=${month}`),
   calendarAvailability: () => request<AvailabilityResponse>("/crm/schedule/availability"),
+  /** Appointments from the DB plus unlinked Google events. `start`/`end` are YYYY-MM-DD, end inclusive. */
+  calendarSchedule: (start: string, end: string) =>
+    request<CalendarSchedule>(`/crm/schedule/calendar?start=${start}&end=${end}`),
   // ─── CRM Analytics ────────────────────────────────────────────────────────
   crmOverview: (range?: { startDate?: string; endDate?: string }) =>
     request<CrmOverview>(withDateRange("/crm/analytics/overview", range)),
@@ -271,7 +303,7 @@ export const api = {
   // ─── Job Scheduling ──────────────────────────────────────────────────────
   scheduleJob: (jobId: string, input: { startDate: string; startTime?: string }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/schedule`, { method: "POST", body: JSON.stringify(input) }),
-  rescheduleJob: (jobId: string, input: { newStartDate: string; reason: string }) =>
+  rescheduleJob: (jobId: string, input: { newStartDate: string; newStartTime?: string; reason: string }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/reschedule`, { method: "POST", body: JSON.stringify(input) }),
   cancelJob: (jobId: string, input: { reason: string }) =>
     request<{ jobId: string; cancelled: boolean }>(`/crm/jobs/${jobId}/cancel`, { method: "POST", body: JSON.stringify(input) }),
@@ -297,6 +329,88 @@ export const api = {
   reviewInspection: (inspectionId: string, input: { reviewedBy: string }) =>
     request<{ id: string; contractorReviewed: boolean; reviewedAt: string; reviewedBy: string }>(
       `/health-record-admin/inspections/${inspectionId}/review`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  // ─── Article 220 capacity checks ──────────────────────────────────────────
+  // The server re-runs the calculation from the raw inputs; the client never
+  // supplies a verdict, because the 220.87 gate reads the stored one.
+  capacityChecks: (params: { propertyId?: string; visitId?: string }) => {
+    const query = new URLSearchParams();
+    if (params.propertyId) query.set("propertyId", params.propertyId);
+    if (params.visitId) query.set("visitId", params.visitId);
+    return request<CapacityCheckRecord[]>(`/capacity-checks?${query.toString()}`);
+  },
+  runCapacityCheck: (input: {
+    id: string;
+    visitId?: string | null;
+    propertyId: string;
+    serviceAmps: number;
+    floorAreaSqFt: number;
+    loads: Record<string, unknown>[];
+    newLoads: Record<string, unknown>[];
+  }) => request<CapacityCheckResult>("/capacity-checks", { method: "POST", body: JSON.stringify(input) }),
+  orderDemandStudy: (
+    checkId: string,
+    input: { customerDeclinedUpgrade: true; customerStatement: string; startDate: string },
+  ) =>
+    request<DemandStudyOrder>(`/capacity-checks/${checkId}/order-demand-study`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  completeDemandStudy: (
+    checkId: string,
+    input: {
+      id: string;
+      measuredMaxDemandVA: number;
+      source: "utility_12mo" | "recorded_30day";
+      monthsOfData?: number;
+      recordedDays?: number;
+      intervalMinutes?: number;
+      windowStart?: string;
+      windowEnd?: string;
+    },
+  ) =>
+    request<Record<string, unknown>>(`/capacity-checks/${checkId}/complete-demand-study`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  // ─── Finding ledger ───────────────────────────────────────────────────────
+  ledgerFindings: (params: { propertyId?: string; customerId?: string; track?: string; status?: string; needsCloseout?: boolean }) => {
+    const query = new URLSearchParams();
+    if (params.propertyId) query.set("propertyId", params.propertyId);
+    if (params.customerId) query.set("customerId", params.customerId);
+    if (params.track) query.set("track", params.track);
+    if (params.status) query.set("status", params.status);
+    if (params.needsCloseout) query.set("needsCloseout", "true");
+    return request<PropertyFinding[]>(`/health-record-admin/findings?${query.toString()}`);
+  },
+  // Named `ledger*` throughout: `Finding` is also a visit-scoped observation on
+  // the older estimate flow, and confusing the two would be expensive.
+  ledgerFinding: (findingId: string) =>
+    request<PropertyFinding & { events: FindingEvent[] }>(`/health-record-admin/findings/${findingId}`),
+  /**
+   * The owner's transitions. Resolving lives here and nowhere else — a
+   * technician can claim a cure, but only the licence holder signs one.
+   */
+  updateLedgerFinding: (findingId: string, input: Record<string, unknown>) =>
+    request<PropertyFinding>(`/health-record-admin/findings/${findingId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  issueFindingCertificate: (input: {
+    propertyId: string;
+    findingIds: string[];
+    track: "defect" | "upgrade";
+    attestedBy: string;
+    visitId?: string | null;
+  }) =>
+    request<{ documentId: string; pdfPath: string; findingIds: string[] }>(
+      "/health-record-admin/findings/certificate",
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  issueFindingDeclination: (input: { propertyId: string; findingIds: string[]; preparedBy: string }) =>
+    request<{ documentId: string; pdfPath: string }>(
+      "/health-record-admin/findings/declination-letter",
       { method: "POST", body: JSON.stringify(input) },
     ),
   runInspectionRetention: () =>
@@ -400,8 +514,16 @@ export interface HealthInspectionSummary {
   customerId: string;
   jurisdictionId: string;
   inspectionDate: string;
-  score: number;
+  /** v1 only — the retired 0-100 headline. Null on findings-led v2 records. */
+  score: number | null;
+  schemaVersion: "v1" | "v2";
+  scope: "full" | "phase1";
   itemsAssessed: number;
+  failCount: number;
+  monitorCount: number;
+  passCount: number;
+  belowStandardCount: number;
+  naCount: number;
   criticalFindingsJson: string;
   contractorReviewed: boolean;
   syncedAt: string;

@@ -10,7 +10,7 @@ import { resolveItemCable } from "./services/wiringMethodResolver";
 import { generateSupportItems } from "./services/supportItemTriggers";
 import { getAvailability, bookAppointment, BookingConflictError } from "./services/googleCalendar";
 import { getDailySummary } from "./services/dailySummary";
-import { getTodaySchedule, getWeekSchedule, getMonthSchedule, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
+import { getTodaySchedule, getWeekSchedule, getMonthSchedule, getEventsInRange, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
 import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail } from "./services/confirmationEmail";
@@ -27,7 +27,13 @@ import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
-import { scheduleJob, rescheduleJob, cancelJob, ConflictError } from "./services/scheduling";
+import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
+import {
+  scheduleJob, rescheduleJob, cancelJob, ConflictError,
+  appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES,
+} from "./services/scheduling";
+import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal } from "./services/jobCosting";
+import { parseJsonArrayLength, parseJsonStringArray } from "./lib/json";
 import { savannahRouter } from "./routes/agent-savannah";
 import { jerryRouter } from "./routes/agent-jerry";
 import { sharedAgentRouter } from "./routes/agent-shared";
@@ -1174,6 +1180,9 @@ app.use("/agent/calendar", sharedAgentRouter);
 
 // ─── HEALTH RECORD PWA (per-technician bearer auth — before PIN middleware) ───
 app.use("/health-record", healthRecordTechRouter);
+// Capacity checks run on ordinary service calls with no assessment in progress,
+// so this is its own router rather than a branch of the health record.
+app.use("/health-record/capacity-checks", capacityCheckTechRouter);
 
 // ─── PIN AUTH ────────────────────────────────────────────────────────────────
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
@@ -1181,6 +1190,7 @@ app.use(pinAuthMiddleware);
 
 // ─── HEALTH RECORD ADMIN (CRM client — rides the PIN/JWT session) ─────────────
 app.use("/health-record-admin", healthRecordAdminRouter);
+app.use("/capacity-checks", capacityCheckAdminRouter);
 
 // ─── COMPANY SETTINGS (key-value config store — PIN/JWT protected) ────────────
 const SETTING_KEYS = ["companyProfile", "operatingHours", "territories", "legal"] as const;
@@ -1275,6 +1285,117 @@ app.get("/crm/schedule/month", asyncHandler(async (req, res) => {
   res.json(data);
 }));
 
+/**
+ * The CRM calendar. The DB is authoritative — Visit.scheduledStart/End carries
+ * the job link, the P&L, the technician assignment and the confirmation status,
+ * none of which a Google event knows about. Google events are folded in only
+ * when they have no matching Visit, so manual entries don't silently vanish.
+ */
+app.get("/crm/schedule/calendar", asyncHandler(async (req, res) => {
+  const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+  const today = new Date();
+  const startStr = dateSchema.optional().parse(readQuery(req, "start"))
+    ?? new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+  const endStr = dateSchema.optional().parse(readQuery(req, "end"))
+    ?? new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
+
+  const rangeStart = new Date(`${startStr}T00:00:00.000Z`);
+  // Inclusive end date — push to the end of that day.
+  const rangeEnd = new Date(new Date(`${endStr}T00:00:00.000Z`).getTime() + 86_400_000);
+
+  const visitInclude = {
+    property: { select: { id: true, addressLine1: true, city: true, state: true, postalCode: true } },
+    customer: { select: { id: true, name: true, phone: true } },
+    assignments: {
+      where: { status: { not: "completed" } },
+      include: { technician: { select: { id: true, name: true } } },
+    },
+    estimates: {
+      orderBy: { createdAt: "desc" as const },
+      take: 1,
+      include: { options: true },
+    },
+  };
+
+  const [scheduled, unscheduledVisits] = await Promise.all([
+    prisma.visit.findMany({
+      where: {
+        scheduledStart: { gte: rangeStart, lt: rangeEnd },
+        status: { not: "cancelled" },
+      },
+      include: visitInclude,
+      orderBy: { scheduledStart: "asc" },
+    }),
+    prisma.visit.findMany({
+      where: { scheduledStart: null, status: { in: ["estimate", "contracted"] } },
+      include: visitInclude,
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    }),
+  ]);
+
+  const formatAddress = (p: { addressLine1: string; city: string; state: string }) =>
+    `${p.addressLine1}, ${p.city}, ${p.state}`;
+
+  const appointments = scheduled.map((visit) => {
+    const { displayTotal } = estimateOptionTotal(visit.estimates[0]?.options ?? []);
+    const kind = appointmentKindFor(visit.status);
+    return {
+      visitId: visit.id,
+      customerId: visit.customer.id,
+      customerName: visit.customer.name,
+      customerPhone: visit.customer.phone,
+      propertyId: visit.property.id,
+      address: formatAddress(visit.property),
+      status: visit.status,
+      jobType: visit.jobType,
+      purpose: visit.purpose,
+      appointmentKind: kind,
+      scheduledStart: visit.scheduledStart,
+      scheduledEnd: visit.scheduledEnd,
+      travelBufferMinutes: kind === "estimate" ? ESTIMATE_TRAVEL_BUFFER_MINUTES : 0,
+      estimatedDurationDays: visit.estimatedDurationDays,
+      estimatedDurationHours: visit.estimatedDurationHours,
+      confirmationStatus: visit.confirmationStatus,
+      googleEventId: visit.googleEventId,
+      technicians: visit.assignments.map((a) => ({ id: a.technician.id, name: a.technician.name, role: a.role })),
+      revenue: visit.revenue,
+      estimateTotal: displayTotal,
+    };
+  });
+
+  // Google is an overlay: keep only what the CRM doesn't already know about.
+  const linkedEventIds = new Set(scheduled.map((v) => v.googleEventId).filter(Boolean));
+  let googleOnlyEvents: Awaited<ReturnType<typeof getEventsInRange>> = [];
+  try {
+    const events = await getEventsInRange(rangeStart, rangeEnd);
+    googleOnlyEvents = events.filter((e) => !linkedEventIds.has(e.id));
+  } catch (err) {
+    // A calendar outage must not blank out the schedule the CRM owns.
+    console.error("[crm/schedule/calendar] Google overlay unavailable:", err);
+  }
+
+  res.json({
+    start: startStr,
+    end: endStr,
+    appointments,
+    unscheduled: unscheduledVisits.map((visit) => ({
+      visitId: visit.id,
+      customerId: visit.customer.id,
+      customerName: visit.customer.name,
+      propertyId: visit.property.id,
+      address: formatAddress(visit.property),
+      status: visit.status,
+      jobType: visit.jobType,
+      purpose: visit.purpose,
+      appointmentKind: appointmentKindFor(visit.status),
+      estimatedDurationDays: visit.estimatedDurationDays,
+      createdAt: visit.createdAt,
+    })),
+    googleOnlyEvents,
+  });
+}));
+
 // ─── CRM JOB SCHEDULING (JWT-protected) ──────────────────────────────────────
 app.post("/crm/jobs/:jobId/schedule", asyncHandler(async (req, res) => {
   const jobId = (req as any).params.jobId;
@@ -1324,43 +1445,67 @@ app.post("/crm/jobs/:jobId/cancel", asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
-app.get("/jobs", asyncHandler(async (_req, res) => {
-  const visits = await prisma.visit.findMany({
-    include: {
-      property: true,
-      customer: true,
-      estimates: {
-        orderBy: { createdAt: "desc" },
-        include: {
-          options: true,
-          acceptance: true,
+/** A job is archived once it's finished or called off; everything else is active. */
+export const ARCHIVED_JOB_STATUSES = ["completed", "cancelled"] as const;
+
+app.get("/jobs", asyncHandler(async (req, res) => {
+  // Absent ?archived returns every job, so existing callers are unaffected.
+  const archivedParam = readQuery(req, "archived");
+  const statusFilter =
+    archivedParam === "true"
+      ? { status: { in: [...ARCHIVED_JOB_STATUSES] } }
+      : archivedParam === "false"
+        ? { status: { notIn: [...ARCHIVED_JOB_STATUSES] } }
+        : {};
+
+  const [visits, laborRate] = await Promise.all([
+    prisma.visit.findMany({
+      where: statusFilter,
+      include: {
+        property: true,
+        customer: true,
+        estimates: {
+          orderBy: { createdAt: "desc" },
+          include: {
+            options: true,
+            acceptance: true,
+          },
+        },
+        assignments: {
+          where: { status: { not: "completed" } },
+          include: { technician: { select: { id: true, name: true, role: true } } },
         },
       },
-    },
-    orderBy: { visitDate: "desc" },
-  });
+      orderBy: { visitDate: "desc" },
+    }),
+    getLaborRate(),
+  ]);
 
   const jobs = visits.map((visit: typeof visits[number]) => {
     const latestEstimate = visit.estimates[0] ?? null;
-    const acceptedOption = latestEstimate?.options.find((o: typeof latestEstimate.options[number]) => o.accepted) ?? null;
-    let highestOption: typeof latestEstimate.options[number] | null = null;
-    for (const option of latestEstimate?.options ?? []) {
-      if (!highestOption || option.totalCost > highestOption.totalCost) {
-        highestOption = option;
-      }
-    }
-
-    const revenue = visit.revenue ?? acceptedOption?.totalCost ?? null;
-    const materialCost = visit.actualMaterialCost ?? 0;
-    const laborCost = (visit.laborHours ?? 0) * 75; // $75/hr default labor rate
-    const overhead = visit.overheadAllocation ?? 0;
-    const totalCost = materialCost + laborCost + overhead;
+    const { acceptedTotal, displayTotal } = estimateOptionTotal(latestEstimate?.options ?? []);
 
     return {
       visitId: visit.id,
       visitDate: visit.visitDate,
       mode: visit.mode,
       purpose: visit.purpose,
+      // ── Job lifecycle & schedule (drives the Jobs Active/Archived split
+      //    and the DB-authoritative calendar) ──
+      status: visit.status,
+      jobType: visit.jobType,
+      scheduledStart: visit.scheduledStart,
+      scheduledEnd: visit.scheduledEnd,
+      estimatedDurationDays: visit.estimatedDurationDays,
+      estimatedDurationHours: visit.estimatedDurationHours,
+      contractedAt: visit.contractedAt,
+      confirmationStatus: visit.confirmationStatus,
+      technicians: visit.assignments.map((a) => ({
+        id: a.technician.id,
+        name: a.technician.name,
+        role: a.role,
+        assignmentStatus: a.status,
+      })),
       property: {
         id: visit.property.id,
         name: visit.property.name,
@@ -1378,28 +1523,23 @@ app.get("/jobs", asyncHandler(async (_req, res) => {
           title: latestEstimate.title,
           status: latestEstimate.status,
           revision: latestEstimate.revision,
-          totalCost: acceptedOption?.totalCost ?? highestOption?.totalCost ?? null,
+          totalCost: displayTotal,
           hasAcceptance: Boolean(latestEstimate.acceptance),
         }
         : null,
-      costs: {
-        estimatedCost: visit.estimatedCost,
-        materialCost,
-        laborHours: visit.laborHours ?? 0,
-        laborCost,
-        overhead,
-        totalCost,
-        revenue,
-        grossProfit: revenue != null ? revenue - totalCost : null,
-        margin: revenue != null && revenue > 0 ? Math.round(((revenue - totalCost) / revenue) * 100) : null,
-      },
+      costs: rollupJobCosts(visit, acceptedTotal, laborRate),
     };
   });
 
   res.json(jobs);
 }));
 
-app.get("/customers", asyncHandler(async (_req, res) => {
+// ─── ACCOUNTS (a.k.a. customers) ─────────────────────────────────────────────
+//
+// "Account" is the CRM-facing name: one account, many properties. The Prisma
+// model stays `Customer` so the voice agents, webhooks and PDF services keep
+// working untouched — these handlers are registered under both paths.
+const listCustomers = asyncHandler(async (_req: express.Request, res: express.Response) => {
   const customers = await prisma.customer.findMany({
     include: {
       properties: {
@@ -1412,9 +1552,11 @@ app.get("/customers", asyncHandler(async (_req, res) => {
   });
 
   res.json(customers);
-}));
+});
+app.get("/customers", listCustomers);
+app.get("/accounts", listCustomers);
 
-app.get("/customers/:customerId", asyncHandler(async (req, res) => {
+const getCustomer = asyncHandler(async (req: express.Request, res: express.Response) => {
   const customerId = readParam(req, "customerId");
   const customer = await prisma.customer.findUnique({
     where: { id: customerId },
@@ -1450,9 +1592,11 @@ app.get("/customers/:customerId", asyncHandler(async (req, res) => {
   }
 
   res.json(customer);
-}));
+});
+app.get("/customers/:customerId", getCustomer);
+app.get("/accounts/:customerId", getCustomer);
 
-app.patch("/customers/:customerId", asyncHandler(async (req, res) => {
+const patchCustomer = asyncHandler(async (req: express.Request, res: express.Response) => {
   const customerId = readParam(req, "customerId");
   const body = z.object({
     name: z.string().min(1).optional(),
@@ -1466,9 +1610,11 @@ app.patch("/customers/:customerId", asyncHandler(async (req, res) => {
   }
   const updated = await prisma.customer.update({ where: { id: customerId }, data: body });
   res.json(updated);
-}));
+});
+app.patch("/customers/:customerId", patchCustomer);
+app.patch("/accounts/:customerId", patchCustomer);
 
-app.delete("/customers/:customerId", asyncHandler(async (req, res) => {
+const deleteCustomer = asyncHandler(async (req: express.Request, res: express.Response) => {
   const customerId = readParam(req, "customerId");
   const customer = await prisma.customer.findUnique({
     where: { id: customerId },
@@ -1485,7 +1631,9 @@ app.delete("/customers/:customerId", asyncHandler(async (req, res) => {
   }
   await prisma.customer.delete({ where: { id: customerId } });
   res.status(204).send();
-}));
+});
+app.delete("/customers/:customerId", deleteCustomer);
+app.delete("/accounts/:customerId", deleteCustomer);
 
 app.get("/properties", asyncHandler(async (_req, res) => {
   const properties = await prisma.property.findMany({
@@ -1623,7 +1771,7 @@ app.get("/proposals/:deliveryId/download", asyncHandler(async (req, res) => {
   stream.pipe(res);
 }));
 
-app.post("/customers", asyncHandler(async (req, res) => {
+const createCustomer = asyncHandler(async (req: express.Request, res: express.Response) => {
   const schema = z.object({
     name: z.string().min(1),
     email: z.string().email().optional(),
@@ -1632,6 +1780,221 @@ app.post("/customers", asyncHandler(async (req, res) => {
   const body = schema.parse(req.body);
   const created = await prisma.customer.create({ data: body });
   res.status(201).json(created);
+});
+app.post("/customers", createCustomer);
+app.post("/accounts", createCustomer);
+
+/**
+ * Everything the Accounts detail page needs in one round trip: contact info,
+ * every property on the account, per-job costs with their POs and receipts, and
+ * lifetime totals.
+ *
+ * Assembled server-side rather than composed on the client because there's no
+ * ?customerId= filter on /jobs — the client would have to pull every job in the
+ * business and then fan out per-job for receipts. It also keeps rollupJobCosts
+ * as the single source of truth for money, so the Jobs tab and this page can
+ * never quote different numbers for the same job.
+ */
+app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
+  const customerId = readParam(req, "customerId");
+
+  const account = await prisma.customer.findUnique({
+    where: { id: customerId },
+    include: {
+      properties: { orderBy: { createdAt: "asc" } },
+      visits: {
+        include: {
+          property: { select: { id: true, name: true, addressLine1: true, city: true, state: true } },
+          estimates: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            include: { options: true, acceptance: true },
+          },
+          documents: { orderBy: { createdAt: "desc" } },
+          materialOrders: { orderBy: { createdAt: "desc" } },
+        },
+        orderBy: { visitDate: "desc" },
+      },
+      healthInspections: {
+        orderBy: { inspectionDate: "desc" },
+        select: {
+          id: true, visitId: true, propertyId: true, inspectionDate: true,
+          score: true, schemaVersion: true, scope: true, itemsAssessed: true,
+          failCount: true, monitorCount: true, passCount: true,
+          belowStandardCount: true, naCount: true,
+          criticalFindingsJson: true, contractorReviewed: true,
+        },
+      },
+    },
+  });
+
+  if (!account) {
+    res.status(404).json({ error: "Account not found" });
+    return;
+  }
+
+  const visitIds = account.visits.map((v) => v.id);
+  const [receipts, laborRate, findings] = await Promise.all([
+    visitIds.length
+      ? prisma.receipt.findMany({
+        where: { jobId: { in: visitIds } },
+        orderBy: { receivedAt: "desc" },
+        // Never select imageData here — the blobs would dwarf the payload.
+        select: {
+          id: true, jobId: true, vendor: true, category: true, amount: true,
+          status: true, source: true, receivedAt: true,
+        },
+      })
+      : Promise.resolve([]),
+    getLaborRate(),
+    // The finding ledger for every address on the account. Served from here for
+    // the same reason the rest of this endpoint exists: one round trip, and the
+    // account page never has to fan out per property.
+    prisma.propertyFinding.findMany({
+      where: { customerId },
+      orderBy: [{ status: "asc" }, { critical: "desc" }, { openedAt: "desc" }],
+      take: 500,
+    }),
+  ]);
+  const receiptsByJob = new Map<string, typeof receipts>();
+  for (const receipt of receipts) {
+    if (!receipt.jobId) continue;
+    const list = receiptsByJob.get(receipt.jobId) ?? [];
+    list.push(receipt);
+    receiptsByJob.set(receipt.jobId, list);
+  }
+
+  const jobs = account.visits.map((visit) => {
+    const latestEstimate = visit.estimates[0] ?? null;
+    const { acceptedTotal, displayTotal } = estimateOptionTotal(latestEstimate?.options ?? []);
+    return {
+      visitId: visit.id,
+      propertyId: visit.property.id,
+      propertyLabel: `${visit.property.name} — ${visit.property.addressLine1}, ${visit.property.city}`,
+      status: visit.status,
+      archived: ARCHIVED_JOB_STATUSES.includes(visit.status as (typeof ARCHIVED_JOB_STATUSES)[number]),
+      jobType: visit.jobType,
+      purpose: visit.purpose,
+      mode: visit.mode,
+      visitDate: visit.visitDate,
+      scheduledStart: visit.scheduledStart,
+      scheduledEnd: visit.scheduledEnd,
+      costs: rollupJobCosts(visit, acceptedTotal, laborRate),
+      purchaseOrders: visit.materialOrders.map((order) => ({
+        id: order.id,
+        supplier: order.supplier,
+        itemCount: parseJsonArrayLength(order.items),
+        sentAt: order.sentAt,
+        createdAt: order.createdAt,
+      })),
+      receipts: receiptsByJob.get(visit.id) ?? [],
+      documents: visit.documents.map((doc) => ({
+        id: doc.id, type: doc.type, signedAt: doc.signedAt, sentAt: doc.sentAt,
+      })),
+      latestEstimate: latestEstimate
+        ? {
+          id: latestEstimate.id,
+          title: latestEstimate.title,
+          status: latestEstimate.status,
+          revision: latestEstimate.revision,
+          totalCost: displayTotal,
+          hasAcceptance: Boolean(latestEstimate.acceptance),
+        }
+        : null,
+    };
+  });
+
+  const jobsByProperty = new Map<string, typeof jobs>();
+  for (const job of jobs) {
+    const list = jobsByProperty.get(job.propertyId) ?? [];
+    list.push(job);
+    jobsByProperty.set(job.propertyId, list);
+  }
+  const lastInspectionByProperty = new Map<string, Date>();
+  for (const inspection of account.healthInspections) {
+    if (!lastInspectionByProperty.has(inspection.propertyId)) {
+      lastInspectionByProperty.set(inspection.propertyId, inspection.inspectionDate);
+    }
+  }
+
+  res.json({
+    account: {
+      id: account.id,
+      name: account.name,
+      email: account.email,
+      phone: account.phone,
+      createdAt: account.createdAt,
+    },
+    properties: account.properties.map((property) => {
+      const propertyJobs = jobsByProperty.get(property.id) ?? [];
+      const propertyFindings = findings.filter((f) => f.propertyId === property.id);
+      return {
+        ...property,
+        activeJobCount: propertyJobs.filter((j) => !j.archived).length,
+        completedJobCount: propertyJobs.filter((j) => j.archived).length,
+        lastInspectionDate: lastInspectionByProperty.get(property.id) ?? null,
+        openFindingCount: propertyFindings.filter((f) => f.status === "open" || f.status === "scheduled").length,
+        openDefectCount: propertyFindings.filter(
+          (f) => f.track === "defect" && (f.status === "open" || f.status === "scheduled"),
+        ).length,
+      };
+    }),
+    findings: findings.map((finding) => ({
+      id: finding.id,
+      propertyId: finding.propertyId,
+      itemId: finding.itemId,
+      locationKey: finding.locationKey,
+      cycle: finding.cycle,
+      track: finding.track,
+      title: finding.title,
+      citations: parseJsonStringArray(finding.citationsJson),
+      // Rendered as "citations unavailable — pre-ledger record" rather than an
+      // empty block that reads as though there were nothing to cite.
+      citationsAvailable: parseJsonStringArray(finding.citationsJson).length > 0,
+      jurisdictionId: finding.jurisdictionId,
+      severity: finding.severity,
+      critical: finding.critical,
+      findingText: finding.findingText,
+      resolutionNote: finding.resolutionNote,
+      expectedEolYear: finding.expectedEolYear,
+      status: finding.status,
+      openedAt: finding.openedAt,
+      observedCount: finding.observedCount,
+      verifiedPassAt: finding.verifiedPassAt,
+      scheduledVisitId: finding.scheduledVisitId,
+      resolvedAt: finding.resolvedAt,
+      resolutionMethod: finding.resolutionMethod,
+      resolvedByParty: finding.resolvedByParty,
+      certificateDocId: finding.certificateDocId,
+      declinedAt: finding.declinedAt,
+      declinedByName: finding.declinedByName,
+      declinedByRelation: finding.declinedByRelation,
+    })),
+    jobs,
+    totals: {
+      ...sumJobCosts(jobs.map((j) => j.costs)),
+      activeJobCount: jobs.filter((j) => !j.archived).length,
+      completedJobCount: jobs.filter((j) => j.archived).length,
+      propertyCount: account.properties.length,
+    },
+    inspections: account.healthInspections.map((inspection) => ({
+      id: inspection.id,
+      visitId: inspection.visitId,
+      propertyId: inspection.propertyId,
+      inspectionDate: inspection.inspectionDate,
+      score: inspection.score,
+      schemaVersion: inspection.schemaVersion,
+      scope: inspection.scope,
+      itemsAssessed: inspection.itemsAssessed,
+      failCount: inspection.failCount,
+      monitorCount: inspection.monitorCount,
+      passCount: inspection.passCount,
+      belowStandardCount: inspection.belowStandardCount,
+      naCount: inspection.naCount,
+      criticalFindings: parseJsonStringArray(inspection.criticalFindingsJson),
+      contractorReviewed: inspection.contractorReviewed,
+    })),
+  });
 }));
 
 app.post("/properties", asyncHandler(async (req, res) => {
@@ -2960,18 +3323,88 @@ app.get("/chatkit/export", asyncHandler(async (req, res) => {
 
 // ─── LEADS (authenticated) ─────────────────────────────────────────────────
 
+/**
+ * The Lead → Visit link is a bare String column with no Prisma relation, so the
+ * join has to be done by hand. Every lead gets a `linkedVisit` regardless of the
+ * requested pipeline, so the client can render funnel state without a second call.
+ */
+type LinkedVisit = {
+  id: string;
+  status: string;
+  scheduledStart: Date | null;
+  scheduledEnd: Date | null;
+  estimatedDurationDays: number | null;
+  jobType: string | null;
+  purpose: string | null;
+};
+
+async function attachLinkedVisits<T extends { visitId: string | null; existingVisitId: string | null }>(
+  leads: T[],
+): Promise<(T & { linkedVisit: LinkedVisit | null })[]> {
+  const visitIds = [
+    ...new Set(
+      leads.flatMap((l) => [l.visitId, l.existingVisitId]).filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  const visits = visitIds.length
+    ? await prisma.visit.findMany({
+      where: { id: { in: visitIds } },
+      select: {
+        id: true, status: true, scheduledStart: true, scheduledEnd: true,
+        estimatedDurationDays: true, jobType: true, purpose: true,
+      },
+    })
+    : [];
+  const byId = new Map(visits.map((v) => [v.id, v]));
+  return leads.map((lead) => ({
+    ...lead,
+    linkedVisit: byId.get(lead.visitId ?? "") ?? byId.get(lead.existingVisitId ?? "") ?? null,
+  }));
+}
+
+const isLostLead = (lead: { status: string; leadStatus: string }) =>
+  lead.status === "lost" || lead.leadStatus === "lost";
+
+const isFinishedVisit = (visit: LinkedVisit | null) =>
+  visit != null && ARCHIVED_JOB_STATUSES.includes(visit.status as (typeof ARCHIVED_JOB_STATUSES)[number]);
+
 app.get("/leads", asyncHandler(async (req, res) => {
   const status = readQuery(req, "status");
   const leadStatus = readQuery(req, "leadStatus");
+  const pipeline = readQuery(req, "pipeline");
   const where: Record<string, unknown> = {};
   if (status) where["status"] = status;
   if (leadStatus) where["leadStatus"] = leadStatus;
 
-  const leads = await prisma.lead.findMany({
+  const rows = await prisma.lead.findMany({
     where,
     orderBy: { createdAt: "desc" },
   });
-  res.json(leads);
+  const leads = await attachLinkedVisits(rows);
+
+  if (!pipeline) {
+    res.json(leads);
+    return;
+  }
+
+  // "open" is the Leads tab: anyone not yet scheduled and not written off.
+  // A converted lead whose visit has no appointment yet is still open — conversion
+  // creates a job, not an appointment, and the rule is "yet to be contacted/scheduled".
+  const filtered = leads.filter((lead) => {
+    const scheduled = lead.linkedVisit?.scheduledStart != null;
+    switch (pipeline) {
+      case "open":
+        return !isLostLead(lead) && !scheduled && !isFinishedVisit(lead.linkedVisit);
+      case "scheduled":
+        return scheduled && !isFinishedVisit(lead.linkedVisit);
+      case "closed":
+        return isLostLead(lead) || isFinishedVisit(lead.linkedVisit);
+      default:
+        return true;
+    }
+  });
+
+  res.json(filtered);
 }));
 
 app.patch("/leads/:leadId", asyncHandler(async (req, res) => {

@@ -120,8 +120,14 @@ describe("health record CRM integration", () => {
     expect(assignment).toBeDefined();
     expect(assignment.customerId).toBe(customerId);
     expect(assignment.propertyId).toBe(propertyId);
-    expect(assignment.address).toContain("123 Integration Way");
-    expect(assignment.city).toBe("Murfreesboro");
+    // Address is structured rather than a single string, so the PWA can render
+    // the parts without re-parsing what the server already had split apart.
+    expect(assignment.address.line1).toBe("123 Integration Way");
+    expect(assignment.address.city).toBe("Murfreesboro");
+    expect(assignment.address.formatted).toContain("123 Integration Way");
+    // Jurisdiction is resolved by the office, never guessed on the phone.
+    expect(assignment.jurisdictionId).toBe("murfreesboro");
+    expect(assignment.jurisdictionSource).toBe("city");
   });
 
   it("technician pushes a completed inspection — saved to the customer account", async () => {
@@ -137,6 +143,9 @@ describe("health record CRM integration", () => {
     expect(stored?.propertyId).toBe(propertyId);
     expect(stored?.technicianId).toBe(technicianId);
     expect(stored?.score).toBe(69);
+    // A payload carrying a score is a v1 record and stays labelled as one, so
+    // the PDF reproduces the report that was actually delivered.
+    expect(stored?.schemaVersion).toBe("v1");
     expect(JSON.parse(stored!.criticalFindingsJson)).toEqual(["C4"]);
     expect(JSON.parse(stored!.loadCalcJson!).result.governingAmps).toBe(109);
 
@@ -149,6 +158,74 @@ describe("health record CRM integration", () => {
     const findings = await prisma.finding.findMany({ where: { visitId } });
     expect(findings.length).toBe(1);
     expect(findings[0].findingText).toContain("C4");
+  });
+
+  it("accepts a v2 findings-led push with no score", async () => {
+    const res = await request(app)
+      .post("/health-record/inspections")
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({
+        ...inspectionPayload(),
+        inspectionId: "hr-test-inspection-v2",
+        score: undefined,
+        schemaVersion: "v2",
+        scope: "phase1",
+        failCount: 2,
+        monitorCount: 1,
+        passCount: 16,
+        belowStandardCount: 0,
+        naCount: 1,
+      })
+      .expect(201);
+    expect(res.body.data.id).toBe("hr-test-inspection-v2");
+
+    const stored = await prisma.healthInspection.findUnique({
+      where: { id: "hr-test-inspection-v2" },
+    });
+    expect(stored?.score).toBeNull();
+    expect(stored?.schemaVersion).toBe("v2");
+    expect(stored?.scope).toBe("phase1");
+    expect(stored?.failCount).toBe(2);
+    expect(stored?.monitorCount).toBe(1);
+    expect(stored?.passCount).toBe(16);
+    expect(stored?.naCount).toBe(1);
+
+    // This suite shares state across blocks; later tests count inspections and
+    // findings. Each distinct inspection id mints its own tagged Finding.
+    await prisma.healthInspection.delete({ where: { id: "hr-test-inspection-v2" } });
+    await prisma.finding.deleteMany({ where: { findingText: { contains: "hr-test-inspection-v2" } } });
+  });
+
+  it("still accepts a v1 payload from a phone running a stale service worker", async () => {
+    // Rejecting the old shape would silently lose inspections already queued on
+    // a technician's device.
+    await request(app)
+      .post("/health-record/inspections")
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({ ...inspectionPayload(), inspectionId: "hr-test-inspection-legacy", score: 82 })
+      .expect(201);
+
+    const stored = await prisma.healthInspection.findUnique({
+      where: { id: "hr-test-inspection-legacy" },
+    });
+    expect(stored?.score).toBe(82);
+    expect(stored?.schemaVersion).toBe("v1");
+    expect(stored?.scope).toBe("full");
+
+    await prisma.healthInspection.delete({ where: { id: "hr-test-inspection-legacy" } });
+    await prisma.finding.deleteMany({ where: { findingText: { contains: "hr-test-inspection-legacy" } } });
+  });
+
+  it("no longer writes the capped-score language into the finding chain", async () => {
+    await request(app)
+      .post("/health-record/inspections")
+      .set("Authorization", `Bearer ${techToken}`)
+      .send(inspectionPayload())
+      .expect(201);
+
+    const findings = await prisma.finding.findMany({ where: { visitId } });
+    expect(findings[0].findingText).not.toContain("capped");
+    expect(findings[0].findingText).toContain("contractor review required");
   });
 
   it("push is idempotent — offline-queue retry replays the identical payload without duplicating", async () => {

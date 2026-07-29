@@ -7,6 +7,7 @@ import {
   type LoadItem,
   type LoadType,
 } from '../../domain/loadcalc'
+import { ALL_TYPES, FUTURE_PICKS, QUICK_PICKS, newLoadItem } from '../../data/loadPicks'
 import type { InspectionLoadCalc } from '../../domain/types'
 
 interface Props {
@@ -14,46 +15,10 @@ interface Props {
   onApply: (record: InspectionLoadCalc) => void
 }
 
-// Fast-path pick list — typical nameplates, all editable (spec §5b Tech mode).
-// nameplateRead starts false (assumed) until the tech confirms the plate.
-const QUICK_PICKS: { label: string; item: Omit<LoadItem, 'id'> }[] = [
-  { label: 'Range 12 kW', item: { type: 'range', label: 'Range', nameplateKW: 12, volts: 240 } },
-  { label: 'Wall oven 4 kW', item: { type: 'oven', label: 'Wall oven', nameplateKW: 4, volts: 240 } },
-  { label: 'Cooktop 5 kW', item: { type: 'cooktop', label: 'Cooktop', nameplateKW: 5, volts: 240 } },
-  { label: 'Dryer 5 kW', item: { type: 'dryer', label: 'Dryer', nameplateKW: 5, volts: 240 } },
-  { label: 'Water heater 4.5 kW', item: { type: 'waterHeaterTank', label: 'Water heater (tank)', nameplateKW: 4.5, volts: 240 } },
-  { label: 'Tankless WH 24 kW', item: { type: 'waterHeaterTankless', label: 'Tankless water heater', nameplateKW: 24, volts: 240 } },
-  { label: 'Dishwasher 1.2 kW', item: { type: 'fixedAppliance', label: 'Dishwasher', nameplateKW: 1.2, volts: 120 } },
-  { label: 'Disposal 0.9 kW', item: { type: 'fixedAppliance', label: 'Disposal', nameplateKW: 0.9, volts: 120 } },
-  { label: 'Microwave 1.5 kW', item: { type: 'fixedAppliance', label: 'Built-in microwave', nameplateKW: 1.5, volts: 120 } },
-  { label: 'Electric heat 10 kW', item: { type: 'spaceHeat', label: 'Electric space heat', nameplateKW: 10, volts: 240, separatelyControlledUnits: 1 } },
-  { label: 'A/C 28 A', item: { type: 'cooling', label: 'Central A/C', amps: 28, volts: 240 } },
-  { label: 'Heat pump + supp.', item: { type: 'heatPump', label: 'Heat pump + supplemental', heatPump: { compressorVA: 7680, supplementalVA: 10000, lockout: false }, volts: 240 } },
-  { label: 'Well pump 1 kVA', item: { type: 'motor', label: 'Well pump', nameplateVA: 1000, volts: 240 } },
-  { label: 'Pool pump 2.9 kVA', item: { type: 'poolPump', label: 'Pool pump', nameplateVA: 2880, volts: 240 } },
-  { label: 'EV charger 9.6 kW', item: { type: 'evse', label: 'EV charger', nameplateKW: 9.6, volts: 240 } },
-]
-
-const FUTURE_PICKS: { label: string; item: Omit<LoadItem, 'id'> }[] = [
-  { label: 'EV charger 9.6 kW', item: { type: 'evse', label: 'EV charger (future)', nameplateKW: 9.6, volts: 240 } },
-  { label: 'EV charger 11.5 kW', item: { type: 'evse', label: 'EV charger 48 A (future)', nameplateKW: 11.5, volts: 240 } },
-  { label: 'Tankless WH 18 kW', item: { type: 'waterHeaterTankless', label: 'Tankless WH (future)', nameplateKW: 18, volts: 240 } },
-  { label: 'Hot tub 8 kW', item: { type: 'spaSelfContained', label: 'Hot tub (future)', nameplateKW: 8, volts: 240, continuous: false } },
-  { label: 'Heat pump 7.7 kVA', item: { type: 'heatPump', label: 'Heat pump (future)', heatPump: { compressorVA: 7680, supplementalVA: 0, lockout: false }, volts: 240 } },
-]
-
-// Full-inventory type list (spec §5 taxonomy) for unusual homes.
-const ALL_TYPES: LoadType[] = [
-  'fixedAppliance', 'range', 'oven', 'cooktop', 'dryer',
-  'waterHeaterTank', 'waterHeaterTankless', 'spaceHeat', 'cooling', 'heatPump',
-  'motor', 'poolPump', 'poolHeater', 'poolBlower', 'spaSelfContained',
-  'evse', 'arcWelder', 'resistanceWelder', 'elevatorLift', 'snowMeltDeice',
-  'exteriorCircuit', 'generalLighting', 'other',
-]
-
-function newItem(partial: Omit<LoadItem, 'id'>): LoadItem {
-  return { id: crypto.randomUUID(), nameplateRead: false, ...partial }
-}
+// Pick lists live in data/loadPicks.ts so this panel, the standalone capacity
+// check and the CRM's phone-quoting panel can't disagree about what a typical
+// water heater is.
+const newItem = newLoadItem
 
 function kwOf(item: LoadItem): number {
   return resolveVA(item) / 1000

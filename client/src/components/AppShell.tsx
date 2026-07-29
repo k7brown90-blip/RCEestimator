@@ -3,12 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import type { PropsWithChildren } from "react";
 import { api } from "../lib/api";
 
+// Ordered to follow the funnel: a lead becomes an appointment on the calendar,
+// then a job, and the account is the ledger all of it rolls up into.
 const nav = [
   { to: "/dashboard", label: "Dashboard" },
-  { to: "/jobs", label: "Jobs" },
-  { to: "/calendar", label: "Calendar" },
   { to: "/leads", label: "Leads", badgeQuery: true },
-  { to: "/customers", label: "Customers" },
+  { to: "/calendar", label: "Calendar" },
+  { to: "/jobs", label: "Jobs" },
+  { to: "/accounts", label: "Accounts" },
   { to: "/team", label: "Team" },
   { to: "/settings", label: "Settings" },
 ];
@@ -34,12 +36,14 @@ function NavItem({ to, label, badge }: { to: string; label: string; badge?: numb
 }
 
 export function AppShell({ children }: PropsWithChildren) {
-  const { data: newLeads = [] } = useQuery({
-    queryKey: ["leads", "new"],
-    queryFn: () => api.leads("new"),
+  // Badge counts the open pipeline, so it always matches what the tab shows —
+  // a lead that's been contacted but not booked still needs attention.
+  const { data: openLeads = [] } = useQuery({
+    queryKey: ["leads", { pipeline: "open" }],
+    queryFn: () => api.leads({ pipeline: "open" }),
     refetchInterval: 60_000,
   });
-  const newLeadCount = newLeads.length;
+  const newLeadCount = openLeads.length;
 
   return (
     <div className="min-h-screen bg-rce-bg text-rce-text md:grid md:grid-cols-[236px_1fr]">

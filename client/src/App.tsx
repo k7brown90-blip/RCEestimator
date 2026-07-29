@@ -1,8 +1,8 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
+import { AccountDetailPage } from "./pages/AccountDetailPage";
+import { AccountsPage } from "./pages/AccountsPage";
 import { CalendarPage } from "./pages/CalendarPage";
-import { CustomerDetailPage } from "./pages/CustomerDetailPage";
-import { CustomersPage } from "./pages/CustomersPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { JobsPage } from "./pages/JobsPage";
 import { LeadsPage } from "./pages/LeadsPage";
@@ -21,6 +21,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/** Customers were renamed to Accounts; keep old links and bookmarks working. */
+function RedirectCustomerToAccount() {
+  const { customerId } = useParams();
+  return <Navigate to={`/accounts/${customerId}`} replace />;
+}
+
 function App() {
   return (
     <Routes>
@@ -36,8 +42,10 @@ function App() {
                 <Route path="/jobs" element={<JobsPage />} />
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/leads" element={<LeadsPage />} />
-                <Route path="/customers" element={<CustomersPage />} />
-                <Route path="/customers/:customerId" element={<CustomerDetailPage />} />
+                <Route path="/accounts" element={<AccountsPage />} />
+                <Route path="/accounts/:accountId" element={<AccountDetailPage />} />
+                <Route path="/customers" element={<Navigate to="/accounts" replace />} />
+                <Route path="/customers/:customerId" element={<RedirectCustomerToAccount />} />
                 <Route path="/properties/:propertyId" element={<PropertyDetailPage />} />
                 <Route path="/visits/:visitId" element={<VisitWorkspacePage />} />
                 <Route path="/team" element={<TeamPage />} />

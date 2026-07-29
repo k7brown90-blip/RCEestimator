@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
+import type { JobSummary } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
 const MODES = [
@@ -14,7 +15,11 @@ const MODES = [
   { value: "maintenance", label: "Maintenance" },
 ];
 
-const STATUS_FILTERS: Array<{ value: string; label: string }> = [
+/**
+ * Estimate-lifecycle filters. These only apply to Active — an estimate's status
+ * is meaningless once the job itself is finished or cancelled.
+ */
+const ESTIMATE_FILTERS: Array<{ value: string; label: string }> = [
   { value: "", label: "All" },
   { value: "draft", label: "Draft" },
   { value: "review", label: "Review" },
@@ -23,23 +28,34 @@ const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "no_estimate", label: "No Estimate" },
 ];
 
+const JOB_STATUS_CLASS: Record<string, string> = {
+  estimate: "bg-zinc-200 text-zinc-700",
+  contracted: "bg-blue-100 text-blue-700",
+  scheduled: "bg-rce-accentBg text-rce-warning",
+  in_progress: "bg-amber-100 text-amber-800",
+  completed: "bg-green-100 text-rce-success",
+  cancelled: "bg-red-100 text-red-700",
+};
+
+type ArchiveTab = "active" | "archived";
+
 export function JobsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: jobs = [], isLoading, error } = useQuery({ queryKey: ["jobs"], queryFn: api.jobs });
-  const { data: properties = [] } = useQuery({ queryKey: ["properties"], queryFn: api.properties });
+  const [tab, setTab] = useState<ArchiveTab>("active");
   const [showNewVisit, setShowNewVisit] = useState(false);
   const [propertyId, setPropertyId] = useState("");
   const [mode, setMode] = useState("service_diagnostic");
   const [purpose, setPurpose] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
+  const [estimateFilter, setEstimateFilter] = useState("");
+  const [sortNewestFirst, setSortNewestFirst] = useState(true);
 
-  const filteredJobs = statusFilter
-    ? jobs.filter((job) => {
-        if (statusFilter === "no_estimate") return !job.estimate;
-        return job.estimate?.status === statusFilter;
-      })
-    : jobs;
+  const archived = tab === "archived";
+  const { data: jobs = [], isLoading, error } = useQuery({
+    queryKey: ["jobs", { archived }],
+    queryFn: () => api.jobs({ archived }),
+  });
+  const { data: properties = [] } = useQuery({ queryKey: ["properties"], queryFn: api.properties });
 
   const createVisit = useMutation({
     mutationFn: api.createVisit,
@@ -52,17 +68,29 @@ export function JobsPage() {
 
   const deleteEstimate = useMutation({
     mutationFn: (estimateId: string) => api.deleteEstimate(estimateId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
   });
+
+  const visibleJobs = useMemo(() => {
+    const filtered = archived || !estimateFilter
+      ? jobs
+      : jobs.filter((job) => {
+        if (estimateFilter === "no_estimate") return !job.estimate;
+        return job.estimate?.status === estimateFilter;
+      });
+
+    if (!archived) return filtered;
+    // Archived is a ledger, so let the owner flip the ordering.
+    return [...filtered].sort((a, b) => {
+      const diff = new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime();
+      return sortNewestFirst ? diff : -diff;
+    });
+  }, [jobs, archived, estimateFilter, sortNewestFirst]);
 
   function submitVisit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const selected = properties.find((property) => property.id === propertyId);
-    if (!selected) {
-      return;
-    }
+    if (!selected) return;
     createVisit.mutate({ propertyId, customerId: selected.customerId, mode, purpose });
   }
 
@@ -70,9 +98,29 @@ export function JobsPage() {
     <div>
       <PageHeader
         title="Jobs"
-        subtitle="Active visits and estimates"
-        actions={<button className="btn btn-primary" type="button" onClick={() => setShowNewVisit((value) => !value)}>+ Start New Visit</button>}
+        subtitle={archived ? "Completed and cancelled work" : "Active and ongoing work"}
+        actions={
+          <button className="btn btn-primary" type="button" onClick={() => setShowNewVisit((value) => !value)}>
+            + Start New Visit
+          </button>
+        }
       />
+
+      {/* Active / Archived */}
+      <div className="mb-4 inline-flex rounded-lg border border-rce-border p-1">
+        {(["active", "archived"] as ArchiveTab[]).map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setTab(value)}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium capitalize transition ${
+              tab === value ? "bg-rce-accent text-white" : "text-rce-muted hover:bg-rce-border/40"
+            }`}
+          >
+            {value}
+          </button>
+        ))}
+      </div>
 
       {showNewVisit ? (
         <form className="card mb-5 grid gap-3 p-4 md:grid-cols-4" onSubmit={submitVisit}>
@@ -103,88 +151,152 @@ export function JobsPage() {
         </form>
       ) : null}
 
-      {isLoading ? <p className="text-sm text-rce-muted">Loading jobs...</p> : null}
+      {/* Secondary filter — estimate lifecycle only makes sense on live work */}
+      {!archived && (
+        <div className="mb-5 flex flex-wrap gap-2">
+          {ESTIMATE_FILTERS.map((f) => (
+            <button
+              key={f.value}
+              type="button"
+              onClick={() => setEstimateFilter(f.value)}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                estimateFilter === f.value
+                  ? "bg-rce-accent text-white"
+                  : "bg-rce-border/40 text-rce-muted hover:bg-rce-border"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {archived && (
+        <div className="mb-5">
+          <button
+            type="button"
+            className="text-sm font-medium text-rce-accent"
+            onClick={() => setSortNewestFirst((s) => !s)}
+          >
+            {sortNewestFirst ? "Newest first ↓" : "Oldest first ↑"}
+          </button>
+        </div>
+      )}
+
+      {isLoading ? <p className="text-sm text-rce-muted">Loading jobs…</p> : null}
       {error ? <p className="text-sm text-red-500">Error loading jobs: {error.message}</p> : null}
 
-      <div className="mb-5 flex flex-wrap gap-2">
-        {STATUS_FILTERS.map((f) => (
-          <button
-            key={f.value}
-            type="button"
-            onClick={() => setStatusFilter(f.value)}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-              statusFilter === f.value
-                ? "bg-rce-accent text-white"
-                : "bg-rce-border/40 text-rce-muted hover:bg-rce-border"
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
-
       <section className="space-y-3">
-        {filteredJobs.map((job) => (
-          <Link key={job.visitId} to={`/visits/${job.visitId}`} className="card block p-4 transition hover:border-rce-accent">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-lg font-semibold">{job.property.addressLine1} - {job.customer.name}</h2>
-              {job.estimate ? <StatusBadge status={job.estimate.status} /> : <span className="text-xs text-rce-soft">NO ESTIMATE YET</span>}
-            </div>
-            <p className="mt-1 text-sm text-rce-muted">{job.mode.replaceAll("_", " ")} | Opened {shortDate(job.visitDate)}</p>
-            <div className="mt-3 grid gap-2 text-sm md:grid-cols-3">
-              <p><span className="text-rce-soft">Estimate:</span> {job.estimate?.title ?? "No estimate yet"}</p>
-              <p><span className="text-rce-soft">Revision:</span> {job.estimate ? `Rev ${job.estimate.revision}` : "-"}</p>
-              <p className="font-semibold"><span className="text-rce-soft">Total:</span> {money(job.estimate?.totalCost)}</p>
-            </div>
-
-            {/* Cost / Profit Widget */}
-            {(job.costs.revenue != null || job.costs.materialCost > 0 || job.costs.laborHours > 0) ? (
-              <div className="mt-3 grid gap-2 rounded-lg bg-rce-bg p-3 text-xs md:grid-cols-5">
-                <div>
-                  <span className="text-rce-soft">Materials</span>
-                  <p className="font-semibold">{money(job.costs.materialCost)}</p>
-                </div>
-                <div>
-                  <span className="text-rce-soft">Labor ({job.costs.laborHours}h)</span>
-                  <p className="font-semibold">{money(job.costs.laborCost)}</p>
-                </div>
-                <div>
-                  <span className="text-rce-soft">Overhead</span>
-                  <p className="font-semibold">{money(job.costs.overhead)}</p>
-                </div>
-                <div>
-                  <span className="text-rce-soft">Revenue</span>
-                  <p className="font-semibold">{money(job.costs.revenue)}</p>
-                </div>
-                <div>
-                  <span className="text-rce-soft">Profit</span>
-                  <p className={`font-semibold ${(job.costs.grossProfit ?? 0) >= 0 ? "text-rce-success" : "text-red-500"}`}>
-                    {job.costs.grossProfit != null ? `${money(job.costs.grossProfit)} (${job.costs.margin}%)` : "—"}
-                  </p>
-                </div>
-              </div>
-            ) : null}
-            {job.estimate && job.estimate.status !== "accepted" ? (
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  className="btn btn-danger"
-                  disabled={deleteEstimate.isPending}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (window.confirm("Delete this estimate? This cannot be undone.")) {
-                      deleteEstimate.mutate(job.estimate!.id);
-                    }
-                  }}
-                >
-                  Delete Estimate
-                </button>
-              </div>
-            ) : null}
-          </Link>
+        {visibleJobs.map((job) => (
+          <JobCard
+            key={job.visitId}
+            job={job}
+            onDeleteEstimate={(estimateId) => deleteEstimate.mutate(estimateId)}
+            deleting={deleteEstimate.isPending}
+          />
         ))}
+        {!isLoading && visibleJobs.length === 0 && (
+          <p className="text-sm text-rce-muted">
+            {archived
+              ? "No completed or cancelled jobs."
+              : estimateFilter
+                ? "No active jobs match that estimate status."
+                : "No active jobs. Start a visit to open one."}
+          </p>
+        )}
       </section>
     </div>
+  );
+}
+
+function JobCard({
+  job, onDeleteEstimate, deleting,
+}: { job: JobSummary; onDeleteEstimate: (estimateId: string) => void; deleting: boolean }) {
+  const hasCostData = job.costs.revenue != null || job.costs.materialCost > 0 || job.costs.laborHours > 0;
+
+  const scheduleLine = job.scheduledStart
+    ? new Date(job.scheduledStart).toLocaleString("en-US", {
+      timeZone: "America/Chicago",
+      weekday: "short", month: "short", day: "numeric",
+      hour: "numeric", minute: "2-digit",
+    })
+    : null;
+
+  return (
+    <Link to={`/visits/${job.visitId}`} className="card block p-4 transition hover:border-rce-accent">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold">{job.property.addressLine1} — {job.customer.name}</h2>
+        <div className="flex items-center gap-2">
+          <span className={`rounded px-2 py-0.5 text-xs font-semibold uppercase ${JOB_STATUS_CLASS[job.status] ?? "bg-zinc-200 text-zinc-700"}`}>
+            {job.status.replaceAll("_", " ")}
+          </span>
+          {job.estimate ? <StatusBadge status={job.estimate.status} /> : <span className="text-xs text-rce-soft">NO ESTIMATE YET</span>}
+        </div>
+      </div>
+
+      <p className="mt-1 text-sm text-rce-muted">
+        {job.jobType || job.mode.replaceAll("_", " ")} · Opened {shortDate(job.visitDate)}
+        {scheduleLine && ` · Scheduled ${scheduleLine}`}
+        {job.estimatedDurationDays && job.estimatedDurationDays > 1 && ` (${job.estimatedDurationDays} days)`}
+      </p>
+
+      {job.technicians.length > 0 && (
+        <p className="mt-1 text-xs text-rce-soft">
+          Assigned: {job.technicians.map((t) => t.name).join(", ")}
+        </p>
+      )}
+
+      <div className="mt-3 grid gap-2 text-sm md:grid-cols-3">
+        <p><span className="text-rce-soft">Estimate:</span> {job.estimate?.title ?? "No estimate yet"}</p>
+        <p><span className="text-rce-soft">Revision:</span> {job.estimate ? `Rev ${job.estimate.revision}` : "-"}</p>
+        <p className="font-semibold"><span className="text-rce-soft">Total:</span> {money(job.estimate?.totalCost)}</p>
+      </div>
+
+      {hasCostData ? (
+        <div className="mt-3 grid gap-2 rounded-lg bg-rce-bg p-3 text-xs md:grid-cols-5">
+          <div>
+            <span className="text-rce-soft">Materials</span>
+            <p className="font-semibold">{money(job.costs.materialCost)}</p>
+          </div>
+          <div>
+            <span className="text-rce-soft">Labor ({job.costs.laborHours}h)</span>
+            <p className="font-semibold">{money(job.costs.laborCost)}</p>
+          </div>
+          <div>
+            <span className="text-rce-soft">Overhead</span>
+            <p className="font-semibold">{money(job.costs.overhead)}</p>
+          </div>
+          <div>
+            <span className="text-rce-soft">Revenue</span>
+            <p className="font-semibold">{money(job.costs.revenue)}</p>
+          </div>
+          <div>
+            <span className="text-rce-soft">Profit</span>
+            <p className={`font-semibold ${(job.costs.grossProfit ?? 0) >= 0 ? "text-rce-success" : "text-red-500"}`}>
+              {job.costs.grossProfit != null ? `${money(job.costs.grossProfit)} (${job.costs.margin}%)` : "—"}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {job.estimate && job.estimate.status !== "accepted" ? (
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            className="btn btn-danger"
+            disabled={deleting}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (window.confirm("Delete this estimate? This cannot be undone.")) {
+                onDeleteEstimate(job.estimate!.id);
+              }
+            }}
+          >
+            Delete Estimate
+          </button>
+        </div>
+      ) : null}
+    </Link>
   );
 }

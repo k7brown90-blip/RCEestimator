@@ -37,6 +37,10 @@ model Property {
   postalCode             String
   notes                  String?
   occupancyType          String         @default("residential") // residential | commercial
+  // Explicit office override for the code jurisdiction at this address. Null means
+  // "derive it" — see services/jurisdictionResolver.ts, which falls back to the
+  // ZIP-keyed territories setting, then a city map. The field PWA must never guess.
+  jurisdictionId         String?
   createdAt              DateTime       @default(now())
   updatedAt              DateTime       @updatedAt
   customer               Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
@@ -44,6 +48,164 @@ model Property {
   visits                 Visit[]
   estimates              Estimate[]
   healthInspections      HealthInspection[]
+  findings               PropertyFinding[]
+  documents              Document[]
+}
+
+// ─── Finding ledger ────────────────────────────────────────────────────────
+//
+// What the Health Record was missing: it could show what was *known* at an
+// address, never what was known *and fixed*. That gap is both a remediation
+// close the business needs and a liability the business carries — a written,
+// code-cited defect report is legal notice, and an owner who ignores it makes
+// the report the plaintiff's exhibit unless the record can also show the cure.
+//
+// Two tracks share this table. `defect` (FAIL) ends in *corrected* and produces
+// a cure certificate. `upgrade` (MONITOR / BELOW_STANDARD) ends in *replaced or
+// upgraded* — wear tracked against a published service life, or work that meets
+// code but not our standard. Both are documented whether or not the work is done.
+model PropertyFinding {
+  id             String   @id @default(cuid())
+  propertyId     String
+  customerId     String
+  itemId         String // checklist item, e.g. "C4"
+  // Which enclosure. NOT nullable: Postgres treats NULLs as distinct in a unique
+  // index, so a nullable column would silently duplicate every Phase 1 row.
+  // Not defaulted to a real location either — that would assert a place the
+  // technician never recorded.
+  locationKey    String   @default("_default")
+  cycle          Int      @default(1) // nth time this has been documented here
+
+  track          String // defect | upgrade
+
+  // ── Snapshot taken when the finding opened. Never re-derived: a 2017-NEC
+  // finding must not be recited under 2023 because the county adopted it later.
+  title          String
+  section        String?
+  citationsJson  String // string[]
+  jurisdictionId String
+  severity       String // FAIL | MONITOR | BELOW_STANDARD
+  gradedState    String?
+  critical       Boolean  @default(false)
+  findingText    String
+  resolutionNote String?
+
+  // ── Upgrade track only ──
+  expectedEolYear Int?
+  followUpAt      DateTime?
+
+  status String @default("open")
+  // defect  : open | scheduled | corrected | declined | superseded
+  // upgrade : open | scheduled | upgraded  | declined | superseded
+
+  openedInspectionId   String
+  openedVisitId        String
+  openedAt             DateTime
+  openedByTechnicianId String?
+
+  lastObservedInspectionId String?
+  lastObservedAt           DateTime?
+  observedCount            Int       @default(1)
+  // A later PASS is evidence, not proof of what was corrected, by whom, or when.
+  // It queues the row for close-out; only the licence holder cures it.
+  verifiedPassInspectionId String?
+  verifiedPassAt           DateTime?
+
+  scheduledVisitId String?
+  scheduledAt      DateTime?
+
+  resolvedAt             DateTime?
+  resolutionMethod       String? // corrected | replaced | upgraded | equipment_removed | verified_prior_repair
+  resolvedByParty        String? // red_cedar | owner_self | third_party
+  resolvedByPartyName    String?
+  resolvedByVisitId      String?
+  resolvedByTechnicianId String?
+  resolutionDetail       String?
+  certificateDocId       String?
+
+  declinedAt         DateTime?
+  declinedByName     String?
+  declinedByRelation String? // owner | tenant | property_manager — legally load-bearing
+  declinedVerbatim   String?
+  declinedChannel    String?
+  declinationDocId   String?
+
+  createdAt DateTime               @default(now())
+  updatedAt DateTime               @updatedAt
+  property  Property               @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  events    PropertyFindingEvent[]
+
+  @@index([propertyId, status])
+  @@index([customerId, status])
+  @@index([track, status, followUpAt])
+}
+
+// One run of the Article 220 capacity question: "can this existing service take
+// the load the customer wants to add?"
+//
+// Client-generated UUID id, same rationale as HealthInspection — a technician
+// runs this in a crawlspace and the offline queue retries the push.
+//
+// 220.83 is the default and the one used constantly. 220.87 is a separate,
+// explicitly-priced service line (recorder rental + return visit + a 30-day
+// wait) and is only reachable when a 220.83 check has already failed AND the
+// customer has said they want to avoid the upgrade cost.
+model CapacityCheck {
+  id             String   @id // client-generated UUID
+  visitId        String?
+  propertyId     String
+  customerId     String
+  technicianId   String?
+  method         String // "220.83" | "220.87"
+  serviceAmps    Int
+  serviceVoltage Int      @default(240)
+  floorAreaSqFt  Int      @default(0)
+  variant        String? // A | B — 220.83 only
+  newLoadLabel   String?
+  calculatedAmps Float
+  loadPct        Float
+  fits           Boolean
+  // 220.87 only: false when the demand data does not meet the code's own
+  // requirements (short window, wrong interval). A number from unqualified data
+  // is worse than no number.
+  qualifies      Boolean  @default(true)
+  inputJson      String
+  resultJson     String
+  // Set when a later check replaces this one, so a superseded calculation stays
+  // readable rather than being edited into something that was never issued.
+  supersedesId   String?
+  documentId     String?
+  // 220.87 study tracking — the two visits it takes and when the window closes.
+  studyInstallVisitId String?
+  studyRemovalVisitId String?
+  studyOrderedAt      DateTime?
+  createdAt      DateTime @default(now())
+
+  @@index([propertyId, createdAt])
+  @@index([visitId])
+}
+
+// Append-only history. Every status change and every re-observation lands here,
+// so the record can show the sequence — documented, declined, recurred, corrected
+// — which is the part that actually defends anybody.
+model PropertyFindingEvent {
+  id           String   @id @default(cuid())
+  findingId    String
+  fromStatus   String?
+  toStatus     String
+  actorType    String // technician | owner | system
+  actorId      String?
+  actorName    String
+  visitId      String?
+  inspectionId String?
+  documentId   String?
+  note         String?
+  createdAt    DateTime        @default(now())
+  finding      PropertyFinding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  // Replaying the same push must not double-log. The sync queue retries.
+  @@unique([findingId, inspectionId, toStatus])
+  @@index([findingId, createdAt])
 }
 
 model SystemSnapshot {
@@ -177,8 +339,19 @@ model HealthInspection {
   technicianId         String?
   jurisdictionId       String
   inspectionDate       DateTime
-  score                Int
+  // v1 records carried a 0-100 headline score. It was dropped because a number
+  // invites "why not 100?" instead of "what needs fixing?" — v2 reports lead with
+  // the items that need correction. Kept nullable so historical reports still
+  // render with the score they were delivered with.
+  score                Int?
+  schemaVersion        String     @default("v1") // v1 (scored) | v2 (findings-led)
+  scope                String     @default("full") // full | phase1
   itemsAssessed        Int
+  failCount            Int        @default(0)
+  monitorCount         Int        @default(0)
+  passCount            Int        @default(0)
+  belowStandardCount   Int        @default(0)
+  naCount              Int        @default(0)
   criticalFindingsJson String // string[] of checklist item ids
   contractorReviewed   Boolean    @default(false)
   reviewedAt           DateTime?
@@ -701,19 +874,29 @@ model Receipt {
   imageMime    String?
   receivedAt   DateTime @default(now())
   createdAt    DateTime @default(now())
+
+  // The account summary pulls receipts by job id across an account's whole history.
+  @@index([jobId])
 }
 
 model Document {
   id           String    @id @default(cuid())
-  jobId        String    // visit ID
-  type         String    // "work_order" | "material_list" | "contract" | "change_order" | "signed"
+  // Nullable since the ledger: a cure certificate for work a third party did has
+  // no Red Cedar visit to hang on, and inventing a synthetic Visit would pollute
+  // the Jobs list and every calendar and revenue rollup built on it.
+  jobId        String?   // visit ID
+  propertyId   String?   // set when the document belongs to an address, not a job
+  type         String    // "work_order" | "material_list" | "contract" | "change_order" | "signed" | "cure_certificate" | "upgrade_record" | "finding_declination"
   pdfUrl       String
   signedAt     DateTime?
   signedByIp   String?
   signedByName String?
   sentAt       DateTime?
   createdAt    DateTime  @default(now())
-  job          Visit     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  job          Visit?    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  property     Property? @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, type])
 }
 
 model MaterialOrder {

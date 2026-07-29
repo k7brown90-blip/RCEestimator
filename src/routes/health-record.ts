@@ -11,43 +11,28 @@
 
 import express from "express";
 import crypto from "node:crypto";
-import { z, ZodError } from "zod";
+import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
-import { generateHealthReport } from "../services/pdfGenerator";
+import {
+  generateCureCertificate,
+  generateFindingDeclination,
+  generateHealthReport,
+  generateUpgradeRecord,
+} from "../services/pdfGenerator";
 import { notifyTechnicianOfAssignment } from "../services/visitConfirmations";
-
-// ─── TECHNICIAN AUTH ────────────────────────────────────────────────────────────
-
-interface TechRequest extends express.Request {
-  technician?: { id: string; name: string; role: string; employeeNumber: string | null };
-}
-
-const technicianAuth: express.RequestHandler = (req: TechRequest, res, next) => {
-  void (async () => {
-    const token = req.headers.authorization?.replace("Bearer ", "");
-    if (!token) {
-      res.status(401).json({ success: false, error: { code: "unauthorized", message: "Technician token required" } });
-      return;
-    }
-    const technician = await prisma.technician.findUnique({ where: { accessToken: token } });
-    if (!technician || !technician.isActive) {
-      res.status(401).json({ success: false, error: { code: "unauthorized", message: "Invalid or inactive technician token" } });
-      return;
-    }
-    req.technician = { id: technician.id, name: technician.name, role: technician.role, employeeNumber: technician.employeeNumber };
-    next();
-  })().catch(next);
-};
-
-const zodErrorHandler: express.ErrorRequestHandler = (err, _req, res, next) => {
-  if (err instanceof ZodError) {
-    res.status(422).json({ success: false, error: { code: "validation", message: err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") } });
-    return;
-  }
-  next(err);
-};
+import { resolveJurisdictions } from "../services/jurisdictionResolver";
+import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
+import {
+  declineFinding,
+  findingCitations,
+  logFindingEvent,
+  reconcileInspection,
+  reopenFinding,
+  resolveFinding,
+  scheduleFinding,
+} from "../services/findingLedger";
 
 // ─── TECH ROUTER (PWA-facing) ───────────────────────────────────────────────────
 
@@ -82,38 +67,162 @@ healthRecordTechRouter.get("/assignments", asyncHandler(async (req: TechRequest,
     orderBy: { assignedAt: "asc" },
   });
 
-  const data = assignments.map((a) => ({
-    assignmentId: a.id,
-    assignmentStatus: a.status,
-    visitId: a.visit.id,
-    customerId: a.visit.customer.id,
-    customerName: a.visit.customer.name,
-    propertyId: a.visit.property.id,
-    address: [a.visit.property.addressLine1, a.visit.property.addressLine2, a.visit.property.city, a.visit.property.state, a.visit.property.postalCode]
-      .filter(Boolean)
-      .join(", "),
-    city: a.visit.property.city,
-    state: a.visit.property.state,
-    scheduledStart: a.visit.scheduledStart?.toISOString() ?? null,
-    purpose: a.visit.purpose ?? "Electrical health inspection",
-  }));
+  const properties = assignments.map((a) => a.visit.property);
+  const propertyIds = [...new Set(properties.map((p) => p.id))];
+  const [jurisdictions, lastInspections, openFindings] = await Promise.all([
+    resolveJurisdictions(properties),
+    // Most recent inspection per property, so the tech can see whether this
+    // address has been assessed before without opening the CRM.
+    propertyIds.length
+      ? prisma.healthInspection.findMany({
+        where: { propertyId: { in: propertyIds } },
+        select: { propertyId: true, inspectionDate: true },
+        orderBy: { inspectionDate: "desc" },
+      })
+      : Promise.resolve([]),
+    // What's already known at each address. Batched into this fan-out rather
+    // than fetched per-card, so the queue stays one round trip on a phone.
+    propertyIds.length
+      ? prisma.propertyFinding.groupBy({
+        by: ["propertyId", "status"],
+        where: { propertyId: { in: propertyIds }, status: { in: ["open", "scheduled", "declined"] } },
+        _count: { _all: true },
+      })
+      : Promise.resolve([]),
+  ]);
+
+  const findingCounts = new Map<string, { open: number; declined: number }>();
+  for (const row of openFindings) {
+    const counts = findingCounts.get(row.propertyId) ?? { open: 0, declined: 0 };
+    if (row.status === "declined") counts.declined += row._count._all;
+    else counts.open += row._count._all;
+    findingCounts.set(row.propertyId, counts);
+  }
+
+  const lastInspectionByProperty = new Map<string, Date>();
+  for (const inspection of lastInspections) {
+    if (!lastInspectionByProperty.has(inspection.propertyId)) {
+      lastInspectionByProperty.set(inspection.propertyId, inspection.inspectionDate);
+    }
+  }
+
+  const data = assignments.map((a) => {
+    const property = a.visit.property;
+    const jurisdiction = jurisdictions.get(property)!;
+    return {
+      assignmentId: a.id,
+      assignmentStatus: a.status,
+      role: a.role,
+      visitId: a.visit.id,
+      visitStatus: a.visit.status,
+      jobType: a.visit.jobType,
+      purpose: a.visit.purpose ?? "Electrical health inspection",
+      scheduledStart: a.visit.scheduledStart?.toISOString() ?? null,
+      scheduledEnd: a.visit.scheduledEnd?.toISOString() ?? null,
+      estimatedDurationDays: a.visit.estimatedDurationDays,
+      customerId: a.visit.customer.id,
+      customerName: a.visit.customer.name,
+      customerPhone: a.visit.customer.phone,
+      propertyId: property.id,
+      propertyName: property.name,
+      address: {
+        line1: property.addressLine1,
+        line2: property.addressLine2,
+        city: property.city,
+        state: property.state,
+        postalCode: property.postalCode,
+        formatted: [property.addressLine1, property.addressLine2, property.city, property.state, property.postalCode]
+          .filter(Boolean)
+          .join(", "),
+      },
+      // Resolved by the office, never guessed on the phone. `source: "default"`
+      // means nobody has actually set this — the PWA surfaces that rather than
+      // silently applying a code edition.
+      jurisdictionId: jurisdiction.jurisdictionId,
+      jurisdictionSource: jurisdiction.source,
+      lastInspectionDate: lastInspectionByProperty.get(property.id)?.toISOString() ?? null,
+      // Declined is counted separately and deliberately shown: a tech who
+      // re-pitches work the customer already refused loses the customer.
+      openFindingCount: findingCounts.get(property.id)?.open ?? 0,
+      declinedFindingCount: findingCounts.get(property.id)?.declined ?? 0,
+    };
+  });
 
   res.json({ success: true, data });
 }));
 
+/**
+ * Accepts both the v1 (scored) and v2 (findings-led) payload shapes.
+ *
+ * That tolerance isn't optional: the PWA is service-worker cached, so a
+ * technician can be running an arbitrarily old bundle. Rejecting v1 would mean
+ * silently losing completed inspections queued on their phone.
+ */
 const inspectionPushSchema = z.object({
   inspectionId: z.string().min(1), // PWA-generated UUID — idempotency key
   visitId: z.string().min(1),
   jurisdictionId: z.string().min(1),
   inspectionDate: z.string().min(1),
-  score: z.number().int(),
+  score: z.number().int().nullable().optional(), // v1 only
+  schemaVersion: z.enum(["v1", "v2"]).default("v1"),
+  scope: z.enum(["full", "phase1"]).default("full"),
   itemsAssessed: z.number().int().nonnegative(),
+  failCount: z.number().int().nonnegative().default(0),
+  monitorCount: z.number().int().nonnegative().default(0),
+  passCount: z.number().int().nonnegative().default(0),
+  belowStandardCount: z.number().int().nonnegative().default(0),
+  naCount: z.number().int().nonnegative().default(0),
   criticalFindings: z.array(z.string()),
   contractorReviewed: z.boolean(),
   items: z.array(z.unknown()),
   loadCalc: z.unknown().optional(),
   appVersion: z.string().optional(),
+  /**
+   * Self-describing findings for the ledger — the title and citations travel
+   * with the push because the server has no copy of the checklist.
+   *
+   * Optional, and that is load-bearing: the PWA is service-worker cached, so a
+   * technician can be running a bundle older than this field. Requiring it would
+   * start rejecting completed inspections queued on somebody's phone. Records
+   * that arrive without it are reconciled later by the backfill script.
+   */
+  findings: z
+    .array(
+      z.object({
+        itemId: z.string().min(1),
+        locationKey: z.string().optional(),
+        result: z.enum(["FAIL", "MONITOR", "BELOW_STANDARD"]),
+        track: z.enum(["defect", "upgrade"]).optional(),
+        gradedState: z.string().nullable().optional(),
+        title: z.string().optional(),
+        section: z.string().nullable().optional(),
+        citations: z.array(z.string()).optional(),
+        critical: z.boolean().optional(),
+        findingText: z.string().optional(),
+        note: z.string().nullable().optional(),
+        resolutionNote: z.string().nullable().optional(),
+        expectedEolYear: z.number().int().nullable().optional(),
+      }),
+    )
+    .optional(),
 });
+
+/**
+ * Item ids the technician recorded at a given result.
+ *
+ * `items` is `unknown[]` because its shape is the PWA's and has changed twice
+ * already. Reading two fields defensively beats versioning a schema the server
+ * has no other use for.
+ */
+function itemIdsWithResult(items: unknown[], result: string): string[] {
+  return items
+    .filter((item): item is { itemId: string; result: string } => {
+      if (!item || typeof item !== "object") return false;
+      const record = item as Record<string, unknown>;
+      return typeof record.itemId === "string" && record.result === result;
+    })
+    .map((item) => item.itemId);
+}
 
 /**
  * POST /health-record/inspections — push a completed inspection from the PWA.
@@ -140,8 +249,15 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     technicianId: req.technician!.id,
     jurisdictionId: body.jurisdictionId,
     inspectionDate: new Date(body.inspectionDate),
-    score: body.score,
+    score: body.score ?? null,
+    schemaVersion: body.schemaVersion,
+    scope: body.scope,
     itemsAssessed: body.itemsAssessed,
+    failCount: body.failCount,
+    monitorCount: body.monitorCount,
+    passCount: body.passCount,
+    belowStandardCount: body.belowStandardCount,
+    naCount: body.naCount,
     criticalFindingsJson: JSON.stringify(body.criticalFindings),
     contractorReviewed: body.contractorReviewed,
     itemsJson: JSON.stringify(body.items),
@@ -161,6 +277,27 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     data: { status: "completed", completedAt: new Date() },
   });
 
+  // Fold this record into the finding ledger — what's known at this address and
+  // whether it was ever fixed. A record from a bundle older than the `findings`
+  // field still reconciles its PASS/NA observations, so an existing ledger row
+  // is closed out or superseded correctly; only the opening of new rows waits
+  // for the backfill.
+  const ledger = await reconcileInspection(
+    {
+      inspectionId: inspection.id,
+      visitId: visit.id,
+      propertyId: visit.propertyId,
+      customerId: visit.customerId,
+      jurisdictionId: body.jurisdictionId,
+      inspectionDate: new Date(body.inspectionDate),
+      technicianId: req.technician!.id,
+      technicianName: req.technician!.name,
+      passedItemIds: itemIdsWithResult(body.items, "PASS"),
+      naItemIds: itemIdsWithResult(body.items, "NA"),
+    },
+    body.findings ?? [],
+  );
+
   // Surface critical findings into the visit's Finding chain so they appear in
   // the existing CRM history views. Tagged so re-syncs don't duplicate.
   if (body.criticalFindings.length > 0) {
@@ -172,14 +309,17 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
       await prisma.finding.create({
         data: {
           visitId: visit.id,
-          findingText: `${tag} Critical finding(s): ${body.criticalFindings.join(", ")} — health score ${body.score} (capped ≤69 until resolved)`,
+          findingText: `${tag} Critical finding(s): ${body.criticalFindings.join(", ")} — contractor review required before delivery`,
           confidence: "high",
         },
       });
     }
   }
 
-  res.status(201).json({ success: true, data: { id: inspection.id, syncedAt: inspection.syncedAt.toISOString() } });
+  res.status(201).json({
+    success: true,
+    data: { id: inspection.id, syncedAt: inspection.syncedAt.toISOString(), ledger },
+  });
 }));
 
 /**
@@ -347,6 +487,171 @@ healthRecordTechRouter.put(
   }),
 );
 
+// ─── FINDING LEDGER (technician) ───────────────────────────────────────────────
+
+/** Shape a ledger row for either client. Citations come from the snapshot. */
+function serializeFinding(finding: {
+  id: string; itemId: string; locationKey: string; cycle: number; track: string;
+  title: string; section: string | null; citationsJson: string; jurisdictionId: string;
+  severity: string; gradedState: string | null; critical: boolean; findingText: string;
+  resolutionNote: string | null; expectedEolYear: number | null; status: string;
+  openedAt: Date; openedInspectionId: string; openedVisitId: string;
+  lastObservedAt: Date | null; observedCount: number; verifiedPassAt: Date | null;
+  scheduledVisitId: string | null; scheduledAt: Date | null;
+  resolvedAt: Date | null; resolutionMethod: string | null; resolvedByParty: string | null;
+  resolvedByPartyName: string | null; resolutionDetail: string | null; certificateDocId: string | null;
+  declinedAt: Date | null; declinedByName: string | null; declinedByRelation: string | null;
+  declinedVerbatim: string | null; propertyId: string; customerId: string;
+}) {
+  const citations = findingCitations(finding);
+  return {
+    id: finding.id,
+    propertyId: finding.propertyId,
+    customerId: finding.customerId,
+    itemId: finding.itemId,
+    locationKey: finding.locationKey,
+    cycle: finding.cycle,
+    track: finding.track,
+    title: finding.title,
+    section: finding.section,
+    citations,
+    // The CRM says "citations unavailable — pre-ledger record" rather than
+    // rendering an empty block that reads as though there were none to cite.
+    citationsAvailable: citations.length > 0,
+    jurisdictionId: finding.jurisdictionId,
+    severity: finding.severity,
+    gradedState: finding.gradedState,
+    critical: finding.critical,
+    findingText: finding.findingText,
+    resolutionNote: finding.resolutionNote,
+    expectedEolYear: finding.expectedEolYear,
+    status: finding.status,
+    openedAt: finding.openedAt.toISOString(),
+    openedInspectionId: finding.openedInspectionId,
+    openedVisitId: finding.openedVisitId,
+    lastObservedAt: finding.lastObservedAt?.toISOString() ?? null,
+    observedCount: finding.observedCount,
+    verifiedPassAt: finding.verifiedPassAt?.toISOString() ?? null,
+    scheduledVisitId: finding.scheduledVisitId,
+    scheduledAt: finding.scheduledAt?.toISOString() ?? null,
+    resolvedAt: finding.resolvedAt?.toISOString() ?? null,
+    resolutionMethod: finding.resolutionMethod,
+    resolvedByParty: finding.resolvedByParty,
+    resolvedByPartyName: finding.resolvedByPartyName,
+    resolutionDetail: finding.resolutionDetail,
+    certificateDocId: finding.certificateDocId,
+    declinedAt: finding.declinedAt?.toISOString() ?? null,
+    declinedByName: finding.declinedByName,
+    declinedByRelation: finding.declinedByRelation,
+    declinedVerbatim: finding.declinedVerbatim,
+  };
+}
+
+/**
+ * GET /health-record/properties/:propertyId/findings — what we already know
+ * about this house, before the technician opens a single cover.
+ *
+ * Declined findings matter most here: without them a tech re-sells work the
+ * customer already refused, which is the fastest way to lose one.
+ */
+healthRecordTechRouter.get("/properties/:propertyId/findings", asyncHandler(async (req: TechRequest, res) => {
+  const propertyId = readParam(req, "propertyId");
+  // Scoped to the technician's own assignments — the field app has no business
+  // enumerating findings at an address nobody sent this person to.
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: {
+      technicianId: req.technician!.id,
+      visit: { propertyId },
+    },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not assigned to this property" } });
+    return;
+  }
+
+  const findings = await prisma.propertyFinding.findMany({
+    where: { propertyId, status: { in: ["open", "scheduled", "declined"] } },
+    orderBy: [{ critical: "desc" }, { openedAt: "desc" }],
+  });
+  res.json({ success: true, data: findings.map(serializeFinding) });
+}));
+
+/**
+ * POST /health-record/findings/:id/cure-claim — the technician fixed it on a
+ * service call.
+ *
+ * The common cure isn't a re-inspection; it's this. The claim does NOT set a
+ * terminal status: it drafts the close-out and queues it for the licence holder,
+ * mirroring the contractorReviewed gate. Field asserts, contractor countersigns.
+ */
+healthRecordTechRouter.post("/findings/:id/cure-claim", asyncHandler(async (req: TechRequest, res) => {
+  const body = z.object({
+    claimId: z.string().min(1), // client UUID — makes the offline retry idempotent
+    workPerformed: z.string().min(1),
+    performedAt: z.string().min(1),
+    visitId: z.string().optional(),
+    photoIds: z.array(z.string()).default([]),
+  }).parse(req.body);
+
+  const id = readParam(req, "id");
+  const finding = await prisma.propertyFinding.findUnique({ where: { id } });
+  if (!finding) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Finding not found" } });
+    return;
+  }
+
+  const existing = await prisma.propertyFindingEvent.findFirst({
+    where: { findingId: id, toStatus: "cure_claimed", note: { contains: body.claimId } },
+  });
+  if (!existing) {
+    await logFindingEvent(prisma, {
+      findingId: id,
+      fromStatus: finding.status,
+      toStatus: "cure_claimed",
+      actorType: "technician",
+      actorId: req.technician!.id,
+      actorName: req.technician!.name,
+      visitId: body.visitId ?? null,
+      note: `[claim ${body.claimId}] ${body.workPerformed} (performed ${body.performedAt}; ${body.photoIds.length} photo(s))`,
+    });
+  }
+
+  res.status(201).json({
+    success: true,
+    data: { findingId: id, status: finding.status, awaitingContractorCloseout: true },
+  });
+}));
+
+/**
+ * POST /health-record/findings/:id/declination — capture a refusal at the door,
+ * in the customer's own words, while the technician is still standing there.
+ */
+healthRecordTechRouter.post("/findings/:id/declination", asyncHandler(async (req: TechRequest, res) => {
+  const body = z.object({
+    declinedByName: z.string().min(1),
+    declinedByRelation: z.enum(["owner", "tenant", "property_manager"]),
+    declinedVerbatim: z.string().min(1),
+    declinedChannel: z.enum(["in_person", "phone", "email", "sms"]).default("in_person"),
+  }).parse(req.body);
+
+  const id = readParam(req, "id");
+  const exists = await prisma.propertyFinding.findUnique({ where: { id }, select: { id: true } });
+  if (!exists) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Finding not found" } });
+    return;
+  }
+
+  const finding = await declineFinding({
+    findingId: id,
+    ...body,
+    actorType: "technician",
+    actorId: req.technician!.id,
+    actorName: req.technician!.name,
+  });
+  res.json({ success: true, data: serializeFinding(finding) });
+}));
+
 healthRecordTechRouter.use(zodErrorHandler);
 
 // ─── ADMIN ROUTER (CRM client, PIN/JWT session) ────────────────────────────────
@@ -441,6 +746,10 @@ healthRecordAdminRouter.delete("/assignments/:id", asyncHandler(async (req, res)
   res.status(204).end();
 }));
 
+// HealthInspectionSummary (client/src/lib/api.ts) declares schemaVersion, scope
+// and all five counts as required, and HealthRecordPanel renders them. Omitting
+// them here made every one of those undefined on the Visit workspace while the
+// account summary, which selects them properly, showed the same record fine.
 const inspectionSummary = {
   id: true,
   visitId: true,
@@ -449,7 +758,14 @@ const inspectionSummary = {
   jurisdictionId: true,
   inspectionDate: true,
   score: true,
+  schemaVersion: true,
+  scope: true,
   itemsAssessed: true,
+  failCount: true,
+  monitorCount: true,
+  passCount: true,
+  belowStandardCount: true,
+  naCount: true,
   criticalFindingsJson: true,
   contractorReviewed: true,
   syncedAt: true,
@@ -554,6 +870,218 @@ healthRecordAdminRouter.post("/inspections/:id/report", asyncHandler(async (req,
   }
   const result = await generateHealthReport(id);
   res.status(201).json(result);
+}));
+
+// ─── FINDING LEDGER (owner) ────────────────────────────────────────────────────
+
+/**
+ * GET /health-record-admin/findings — the ledger, filterable.
+ *
+ * `needsCloseout=true` is the queue that matters: findings whose item passed on a
+ * later assessment and are waiting for someone with a licence to say what was
+ * actually done about them.
+ */
+healthRecordAdminRouter.get("/findings", asyncHandler(async (req, res) => {
+  const query = z.object({
+    propertyId: z.string().optional(),
+    customerId: z.string().optional(),
+    track: z.enum(["defect", "upgrade"]).optional(),
+    status: z.string().optional(),
+    needsCloseout: z.enum(["true", "false"]).optional(),
+  }).parse(req.query);
+
+  const findings = await prisma.propertyFinding.findMany({
+    where: {
+      ...(query.propertyId ? { propertyId: query.propertyId } : {}),
+      ...(query.customerId ? { customerId: query.customerId } : {}),
+      ...(query.track ? { track: query.track } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.needsCloseout === "true"
+        ? { verifiedPassAt: { not: null }, status: { in: ["open", "scheduled"] } }
+        : {}),
+    },
+    orderBy: [{ critical: "desc" }, { openedAt: "desc" }],
+    take: 500,
+  });
+  res.json(findings.map(serializeFinding));
+}));
+
+healthRecordAdminRouter.get("/findings/:id", asyncHandler(async (req, res) => {
+  const finding = await prisma.propertyFinding.findUnique({
+    where: { id: readParam(req, "id") },
+    include: { events: { orderBy: { createdAt: "asc" } } },
+  });
+  if (!finding) {
+    res.status(404).json({ error: "Finding not found" });
+    return;
+  }
+  res.json({
+    ...serializeFinding(finding),
+    events: finding.events.map((event) => ({
+      ...event,
+      createdAt: event.createdAt.toISOString(),
+    })),
+  });
+}));
+
+/**
+ * PATCH /health-record-admin/findings/:id — the owner's transitions.
+ *
+ * Resolving is here and nowhere else. A technician can claim a cure; only the
+ * licence holder signs one.
+ */
+healthRecordAdminRouter.patch("/findings/:id", asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const body = z.discriminatedUnion("toStatus", [
+    z.object({
+      toStatus: z.literal("resolved"),
+      resolutionMethod: z.enum(["corrected", "replaced", "upgraded", "equipment_removed", "verified_prior_repair"]),
+      resolvedByParty: z.enum(["red_cedar", "owner_self", "third_party"]),
+      resolvedByPartyName: z.string().nullable().optional(),
+      resolvedByVisitId: z.string().nullable().optional(),
+      resolvedByTechnicianId: z.string().nullable().optional(),
+      resolutionDetail: z.string().min(1),
+      resolvedAt: z.string().optional(),
+      attestedBy: z.string().min(1),
+    }),
+    z.object({
+      toStatus: z.literal("scheduled"),
+      visitId: z.string().min(1),
+      scheduledAt: z.string().nullable().optional(),
+      actorName: z.string().min(1),
+    }),
+    z.object({
+      toStatus: z.literal("declined"),
+      declinedByName: z.string().min(1),
+      declinedByRelation: z.enum(["owner", "tenant", "property_manager"]),
+      declinedVerbatim: z.string().min(1),
+      declinedChannel: z.enum(["in_person", "phone", "email", "sms"]).default("phone"),
+      actorName: z.string().min(1),
+    }),
+    z.object({
+      toStatus: z.literal("open"),
+      actorName: z.string().min(1),
+      note: z.string().optional(),
+    }),
+    z.object({
+      toStatus: z.literal("superseded"),
+      actorName: z.string().min(1),
+      // A superseded finding is one that stopped applying — the equipment went
+      // away, the item was never relevant. Saying why is not optional, because
+      // "superseded" with no reason is indistinguishable from a quiet deletion.
+      note: z.string().min(1),
+    }),
+  ]).parse(req.body);
+
+  const existing = await prisma.propertyFinding.findUnique({ where: { id }, select: { id: true, status: true } });
+  if (!existing) {
+    res.status(404).json({ error: "Finding not found" });
+    return;
+  }
+
+  try {
+    if (body.toStatus === "resolved") {
+      const finding = await resolveFinding({
+        findingId: id,
+        resolutionMethod: body.resolutionMethod,
+        resolvedByParty: body.resolvedByParty,
+        resolvedByPartyName: body.resolvedByPartyName,
+        resolvedByVisitId: body.resolvedByVisitId,
+        resolvedByTechnicianId: body.resolvedByTechnicianId,
+        resolutionDetail: body.resolutionDetail,
+        resolvedAt: body.resolvedAt ? new Date(body.resolvedAt) : undefined,
+        attestedBy: body.attestedBy,
+      });
+      res.json(serializeFinding(finding));
+      return;
+    }
+    if (body.toStatus === "scheduled") {
+      const finding = await scheduleFinding(
+        id,
+        body.visitId,
+        body.scheduledAt ? new Date(body.scheduledAt) : null,
+        body.actorName,
+      );
+      res.json(serializeFinding(finding));
+      return;
+    }
+    if (body.toStatus === "declined") {
+      const finding = await declineFinding({
+        findingId: id,
+        declinedByName: body.declinedByName,
+        declinedByRelation: body.declinedByRelation,
+        declinedVerbatim: body.declinedVerbatim,
+        declinedChannel: body.declinedChannel,
+        actorType: "owner",
+        actorName: body.actorName,
+      });
+      res.json(serializeFinding(finding));
+      return;
+    }
+    if (body.toStatus === "open") {
+      const finding = await reopenFinding(id, body.actorName, body.note);
+      res.json(serializeFinding(finding));
+      return;
+    }
+
+    const finding = await prisma.propertyFinding.update({
+      where: { id },
+      data: { status: "superseded", followUpAt: null },
+    });
+    await logFindingEvent(prisma, {
+      findingId: id,
+      fromStatus: existing.status,
+      toStatus: "superseded",
+      actorType: "owner",
+      actorName: body.actorName,
+      note: body.note,
+    });
+    res.json(serializeFinding(finding));
+  } catch (error) {
+    res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+}));
+
+/**
+ * POST /health-record-admin/findings/certificate — issue the close-out document.
+ *
+ * The generator refuses to certify anything that isn't already at its track's
+ * terminal status, so this cannot be used to declare work done. It documents
+ * work that the ledger already records as done.
+ */
+healthRecordAdminRouter.post("/findings/certificate", asyncHandler(async (req, res) => {
+  const body = z.object({
+    propertyId: z.string().min(1),
+    findingIds: z.array(z.string().min(1)).min(1),
+    track: z.enum(["defect", "upgrade"]),
+    attestedBy: z.string().min(1),
+    visitId: z.string().nullable().optional(),
+  }).parse(req.body);
+
+  try {
+    const result = body.track === "defect"
+      ? await generateCureCertificate(body)
+      : await generateUpgradeRecord(body);
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+}));
+
+/** The customer-signed side: a written record that work was offered and refused. */
+healthRecordAdminRouter.post("/findings/declination-letter", asyncHandler(async (req, res) => {
+  const body = z.object({
+    propertyId: z.string().min(1),
+    findingIds: z.array(z.string().min(1)).min(1),
+    preparedBy: z.string().min(1),
+  }).parse(req.body);
+
+  try {
+    const result = await generateFindingDeclination(body);
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 }));
 
 // ─── JOB-SITE PHOTOS (CRM views) ────────────────────────────────────────────────

@@ -1,19 +1,25 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { checklist } from './data/checklist'
 import { jurisdictions } from './data/jurisdictions'
-import { saveDraft } from './db/database'
-import { queueInspectionSync } from './lib/crmSync'
+import { saveDraft, type FindingRecord } from './db/database'
+import { fetchPropertyFindings, queueInspectionSync } from './lib/crmSync'
 import { buildReport } from './domain/report'
-import { scoreInspection } from './domain/scoring'
-import type { Inspection, InspectionLoadCalc, ItemResult, Property } from './domain/types'
+import { summarizeFindings } from './domain/findings'
+import type {
+  ChecklistItemDef, CrmAssignment, Inspection, InspectionLoadCalc, ItemResult, Property,
+} from './domain/types'
+import { AssignmentScreen } from './ui/screens/AssignmentScreen'
+import { CapacityCheckScreen } from './ui/screens/CapacityCheckScreen'
 import { ChecklistScreen } from './ui/screens/ChecklistScreen'
 import { ItemCardScreen } from './ui/screens/ItemCardScreen'
 import { JurisdictionScreen } from './ui/screens/JurisdictionScreen'
-import { PropertyScreen } from './ui/screens/PropertyScreen'
+import { OpenFindingsScreen } from './ui/screens/OpenFindingsScreen'
 import { ReportScreen } from './ui/screens/ReportScreen'
 import { ReviewScreen } from './ui/screens/ReviewScreen'
 
-type Screen = 'property' | 'jurisdiction' | 'checklist' | 'item' | 'review' | 'report'
+type Screen =
+  | 'assignment' | 'jurisdiction' | 'checklist' | 'item' | 'review' | 'report'
+  | 'findings' | 'capacity'
 
 interface Session {
   inspectionId: string
@@ -23,42 +29,66 @@ interface Session {
   loadCalc?: InspectionLoadCalc
 }
 
-function toInspection(session: Session, status: 'draft' | 'complete', contractorReviewed = false): Inspection {
+function toInspection(
+  session: Session,
+  status: 'draft' | 'complete',
+  contractorReviewed = false,
+  visibleItems: ChecklistItemDef[] = [],
+): Inspection {
   const items = Object.values(session.results)
-  const score = scoreInspection({
+  const base: Inspection = {
     id: session.inspectionId,
     propertyId: session.property.id,
     jurisdictionId: session.property.jurisdictionId,
     technician: session.technician,
     date: new Date().toISOString(),
     items,
-    score: 0,
-    itemsAssessed: 0,
+    scope: 'full',
+    itemsAssessed: items.length,
     criticalFindings: [],
-    contractorReviewed,
-    status,
-  })
-  return {
-    id: session.inspectionId,
-    propertyId: session.property.id,
-    jurisdictionId: session.property.jurisdictionId,
-    technician: session.technician,
-    date: new Date().toISOString(),
-    items,
-    score: score.score,
-    itemsAssessed: score.itemsAssessed,
-    criticalFindings: score.criticalFindings,
     contractorReviewed,
     status,
     loadCalc: session.loadCalc,
   }
+  const summary = summarizeFindings(base, visibleItems)
+  return { ...base, itemsAssessed: summary.itemsAssessed, criticalFindings: summary.criticalFindings }
 }
 
 function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
-  const [screen, setScreen] = useState<Screen>('property')
+  const [screen, setScreen] = useState<Screen>('assignment')
   const [session, setSession] = useState<Session | null>(null)
   const [activeItemId, setActiveItemId] = useState<string | null>(null)
   const [completed, setCompleted] = useState<Inspection | null>(null)
+  const [findings, setFindings] = useState<FindingRecord[]>([])
+  const [capacityAssignment, setCapacityAssignment] = useState<CrmAssignment | null>(null)
+
+  // Pull the ledger once when a job starts, so every item card can show what was
+  // already documented here without another round trip on a phone.
+  const propertyId = session?.property.crm.propertyId
+  useEffect(() => {
+    if (!propertyId) {
+      setFindings([])
+      return
+    }
+    let cancelled = false
+    void fetchPropertyFindings(propertyId).then((result) => {
+      if (!cancelled) setFindings(result.findings)
+    })
+    return () => { cancelled = true }
+  }, [propertyId])
+
+  const findingByItem = useMemo(() => {
+    const map = new Map<string, FindingRecord>()
+    for (const finding of findings) {
+      // Live findings win over declined ones — if both exist for an item, what
+      // is currently outstanding is the more useful thing to show.
+      const existing = map.get(finding.itemId)
+      if (!existing || (existing.status === 'declined' && finding.status !== 'declined')) {
+        map.set(finding.itemId, finding)
+      }
+    }
+    return map
+  }, [findings])
 
   const profile = useMemo(
     () => jurisdictions.find((j) => j.id === session?.property.jurisdictionId),
@@ -73,10 +103,25 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     [profile],
   )
 
-  if (screen === 'property' || !session || !profile) {
+  // Before the !session guard on purpose: the capacity check is what a
+  // technician runs on an ordinary service call, with no assessment open.
+  if (screen === 'capacity') {
     return (
-      <PropertyScreen
+      <CapacityCheckScreen
+        assignment={capacityAssignment ?? undefined}
+        onBack={() => setScreen(session ? 'checklist' : 'assignment')}
+      />
+    )
+  }
+
+  if (screen === 'assignment' || !session || !profile) {
+    return (
+      <AssignmentScreen
         justEnrolled={justEnrolled}
+        onCapacityCheck={(assignment) => {
+          setCapacityAssignment(assignment)
+          setScreen('capacity')
+        }}
         onStart={(property, technician) => {
           setSession({
             inspectionId: crypto.randomUUID(),
@@ -95,8 +140,21 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     return (
       <JurisdictionScreen
         profile={profile}
+        source={session.property.jurisdictionSource}
+        address={session.property.address}
         onConfirm={() => setScreen('checklist')}
-        onBack={() => setScreen('property')}
+        onBack={() => setScreen('assignment')}
+      />
+    )
+  }
+
+  if (screen === 'findings') {
+    return (
+      <OpenFindingsScreen
+        propertyId={session.property.crm.propertyId}
+        addressLabel={session.property.address}
+        visitId={session.property.crm.visitId}
+        onBack={() => setScreen('checklist')}
       />
     )
   }
@@ -108,6 +166,10 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
         <ItemCardScreen
           item={item}
           existing={session.results[item.id]}
+          // Lets a formula read a value already recorded on another item, so the
+          // technician never types the same measurement twice.
+          otherResults={session.results}
+          openFinding={findingByItem.get(item.id)}
           existingLoadCalc={item.id === 'A2' ? session.loadCalc : undefined}
           onBack={() => setScreen('checklist')}
           onSave={(result, loadCalc) => {
@@ -117,7 +179,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
               loadCalc: loadCalc ?? session.loadCalc,
             }
             setSession(next)
-            void saveDraft(toInspection(next, 'draft'))
+            void saveDraft(toInspection(next, 'draft', false, visibleItems))
             setScreen('checklist')
           }}
         />
@@ -126,14 +188,14 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
   }
 
   if (screen === 'review') {
-    const draft = toInspection(session, 'draft')
+    const draft = toInspection(session, 'draft', false, visibleItems)
     return (
       <ReviewScreen
         results={session.results}
-        score={scoreInspection(draft)}
+        summary={summarizeFindings(draft, visibleItems)}
         onBack={() => setScreen('checklist')}
         onComplete={(contractorReviewed) => {
-          const final = toInspection(session, 'complete', contractorReviewed)
+          const final = toInspection(session, 'complete', contractorReviewed, visibleItems)
           void saveDraft(final) // transitions the draft to its immutable completed version
           void queueInspectionSync(final, session.property) // auto-push to the CRM (queued offline)
           setCompleted(final)
@@ -146,12 +208,12 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
   if (screen === 'report' && completed) {
     return (
       <ReportScreen
-        report={buildReport(completed, profile)}
+        report={buildReport(completed, profile, visibleItems)}
         inspection={completed}
         property={session.property}
         onNewInspection={() => {
           setSession(null)
-          setScreen('property')
+          setScreen('assignment')
         }}
       />
     )
@@ -161,6 +223,9 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     <ChecklistScreen
       items={visibleItems}
       results={session.results}
+      knownFindingCount={findings.filter((f) => f.status !== 'declined').length}
+      declinedFindingCount={findings.filter((f) => f.status === 'declined').length}
+      onOpenFindings={() => setScreen('findings')}
       onOpenItem={(itemId) => {
         setActiveItemId(itemId)
         setScreen('item')

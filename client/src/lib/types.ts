@@ -1,10 +1,54 @@
 export type EstimateStatus = "draft" | "review" | "sent" | "accepted" | "declined" | "expired" | "revised";
 
+/** Visit.status — the job's own lifecycle, distinct from its estimate's status. */
+export type JobStatus =
+  | "estimate"
+  | "contracted"
+  | "scheduled"
+  | "in_progress"
+  | "completed"
+  | "cancelled";
+
+/** Jobs in these states belong to the Archived tab. */
+export const ARCHIVED_JOB_STATUSES: JobStatus[] = ["completed", "cancelled"];
+
+export const isArchivedJob = (status: string): boolean =>
+  ARCHIVED_JOB_STATUSES.includes(status as JobStatus);
+
+export type JobCosts = {
+  estimatedCost: number | null;
+  materialCost: number;
+  laborHours: number;
+  laborRate: number;
+  laborCost: number;
+  overhead: number;
+  totalCost: number;
+  revenue: number | null;
+  grossProfit: number | null;
+  margin: number | null;
+};
+
+export type AssignedTechnician = {
+  id: string;
+  name: string;
+  role: string;
+  assignmentStatus?: string;
+};
+
 export type JobSummary = {
   visitId: string;
   visitDate: string;
   mode: string;
   purpose?: string | null;
+  status: JobStatus;
+  jobType?: string | null;
+  scheduledStart?: string | null;
+  scheduledEnd?: string | null;
+  estimatedDurationDays?: number | null;
+  estimatedDurationHours?: number | null;
+  contractedAt?: string | null;
+  confirmationStatus?: string | null;
+  technicians: AssignedTechnician[];
   property: {
     id: string;
     name: string;
@@ -24,17 +68,7 @@ export type JobSummary = {
     totalCost: number | null;
     hasAcceptance: boolean;
   } | null;
-  costs: {
-    estimatedCost: number | null;
-    materialCost: number;
-    laborHours: number;
-    laborCost: number;
-    overhead: number;
-    totalCost: number;
-    revenue: number | null;
-    grossProfit: number | null;
-    margin: number | null;
-  };
+  costs: JobCosts;
 };
 
 export type Customer = {
@@ -86,7 +120,15 @@ export type Visit = {
   scheduledStart?: string | null;
   scheduledEnd?: string | null;
   estimatedDurationDays?: number | null;
+  estimatedDurationHours?: number | null;
   googleEventId?: string | null;
+  confirmationStatus?: string | null;
+  contractedAt?: string | null;
+  estimatedCost?: number | null;
+  actualMaterialCost?: number | null;
+  laborHours?: number | null;
+  overheadAllocation?: number | null;
+  revenue?: number | null;
   property?: Property;
   customer?: Customer;
   customerRequest?: {
@@ -335,18 +377,97 @@ export type AvailabilityResponse = {
   current_date_central: string;
 };
 
+/**
+ * Estimates book a 2-hour slot with an hour of travel leeway; production work
+ * claims whole business days. Derived server-side from Visit.status.
+ */
+export type AppointmentKind = "estimate" | "production";
+
 export type ScheduleJobResult = {
   jobId: string;
   scheduledStart: string;
   scheduledEnd: string;
   durationDays: number;
+  appointmentKind: AppointmentKind;
+  travelBufferMinutes: number;
   customerNotified: boolean;
   kyleNotified: boolean;
   googleEventId: string;
 };
 
+export type CalendarAppointment = {
+  visitId: string;
+  customerId: string;
+  customerName: string;
+  customerPhone: string | null;
+  propertyId: string;
+  address: string;
+  status: JobStatus;
+  jobType: string | null;
+  purpose: string | null;
+  appointmentKind: AppointmentKind;
+  scheduledStart: string;
+  scheduledEnd: string | null;
+  travelBufferMinutes: number;
+  estimatedDurationDays: number | null;
+  estimatedDurationHours: number | null;
+  confirmationStatus: string | null;
+  googleEventId: string | null;
+  technicians: AssignedTechnician[];
+  revenue: number | null;
+  estimateTotal: number | null;
+};
+
+export type UnscheduledJob = {
+  visitId: string;
+  customerId: string;
+  customerName: string;
+  propertyId: string;
+  address: string;
+  status: JobStatus;
+  jobType: string | null;
+  purpose: string | null;
+  appointmentKind: AppointmentKind;
+  estimatedDurationDays: number | null;
+  createdAt: string;
+};
+
+/**
+ * The CRM calendar. Appointments come from Visit rows (authoritative — they carry
+ * the job link, costs and tech assignments); googleOnlyEvents are calendar entries
+ * with no matching job, kept visible so manual bookings don't disappear.
+ */
+export type CalendarSchedule = {
+  start: string;
+  end: string;
+  appointments: CalendarAppointment[];
+  unscheduled: UnscheduledJob[];
+  googleOnlyEvents: CalendarEvent[];
+};
+
 export type LeadStatus = "new" | "contacted" | "converted" | "lost";
 export type LeadSource = "email" | "phone" | "web";
+
+/**
+ * Where a lead sits in the funnel.
+ * - open — not yet scheduled and not written off. This is the Leads tab.
+ *   A converted lead still counts as open until it has an appointment;
+ *   conversion creates a job, not a booking.
+ * - scheduled — has an appointment, so it lives on the Calendar.
+ * - closed — lost, or its job is completed/cancelled.
+ */
+export type LeadPipeline = "open" | "scheduled" | "closed";
+
+/** The Visit a lead was converted into, resolved server-side. */
+export type LeadLinkedVisit = {
+  id: string;
+  status: JobStatus;
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
+  estimatedDurationDays: number | null;
+  jobType: string | null;
+  purpose: string | null;
+};
 
 export type Lead = {
   id: string;
@@ -355,6 +476,7 @@ export type Lead = {
   phone?: string | null;
   source: LeadSource;
   status: LeadStatus;
+  leadStatus?: LeadPipelineStatus;
   notes?: string | null;
   address?: string | null;
   jobType?: string | null;
@@ -362,6 +484,8 @@ export type Lead = {
   customerId?: string | null;
   propertyId?: string | null;
   visitId?: string | null;
+  existingVisitId?: string | null;
+  linkedVisit?: LeadLinkedVisit | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -374,6 +498,207 @@ export type LeadPipelineStatus =
   | "no_answer"
   | "won"
   | "lost";
+
+// ─── ACCOUNTS ────────────────────────────────────────────────────────────────
+//
+// "Account" is the CRM-facing name for a client: one account, many properties.
+// The server model is still Customer, so Account aliases it rather than
+// duplicating the shape.
+
+export type Account = Customer;
+
+export type AccountProperty = Property & {
+  activeJobCount: number;
+  completedJobCount: number;
+  lastInspectionDate: string | null;
+  openFindingCount: number;
+  openDefectCount: number;
+};
+
+/**
+ * A row in the finding ledger — what was documented at an address and whether it
+ * was ever resolved.
+ *
+ * `track` is the whole design in one field. `defect` is a code violation or
+ * hazard and ends *corrected*; `upgrade` is wear or an installation below our
+ * standard and ends *upgraded*. Only the defect track produces cure certificates.
+ */
+export type PropertyFinding = {
+  id: string;
+  propertyId: string;
+  itemId: string;
+  locationKey: string;
+  cycle: number;
+  track: "defect" | "upgrade";
+  title: string;
+  citations: string[];
+  /** False for pre-ledger records. The UI says so rather than showing nothing. */
+  citationsAvailable: boolean;
+  jurisdictionId: string;
+  severity: "FAIL" | "MONITOR" | "BELOW_STANDARD";
+  critical: boolean;
+  findingText: string;
+  resolutionNote: string | null;
+  expectedEolYear: number | null;
+  status: string;
+  openedAt: string;
+  observedCount: number;
+  /** Set when a later assessment passed this item. Evidence, never a cure. */
+  verifiedPassAt: string | null;
+  scheduledVisitId: string | null;
+  resolvedAt: string | null;
+  resolutionMethod: string | null;
+  resolvedByParty: string | null;
+  certificateDocId: string | null;
+  declinedAt: string | null;
+  declinedByName: string | null;
+  declinedByRelation: string | null;
+};
+
+/** A stored Article 220 capacity check. */
+export type CapacityCheckRecord = {
+  id: string;
+  visitId: string | null;
+  propertyId: string;
+  method: string;
+  serviceAmps: number;
+  variant: string | null;
+  newLoadLabel: string | null;
+  calculatedAmps: number;
+  loadPct: number;
+  fits: boolean;
+  qualifies: boolean;
+  supersedesId: string | null;
+  studyOrderedAt: string | null;
+  studyInstallVisitId: string | null;
+  studyRemovalVisitId: string | null;
+  createdAt: string;
+};
+
+export type CapacityCheckResult = {
+  id: string;
+  method: string;
+  variant: "A" | "B";
+  totalVA: number;
+  amps: number;
+  serviceAmps: number;
+  loadPct: number;
+  spareAmps: number;
+  fits: boolean;
+  citation: string;
+  assumedValues: string[];
+  breakdown: { label: string; appliedVA: number; rule: string }[];
+  /** What to do next, decided by the calculation rather than by the salesperson. */
+  nextStep: "quote_addition" | "quote_service_upgrade" | "data_insufficient";
+};
+
+export type DemandStudyOrder = {
+  capacityCheckId: string;
+  installVisitId: string;
+  removalVisitId: string;
+  recordingWindow: { start: string; end: string; days: number };
+  scheduled: { visitId: string; date: string; error?: string }[];
+};
+
+/** Append-only history for one finding — the sequence is what defends anybody. */
+export type FindingEvent = {
+  id: string;
+  fromStatus: string | null;
+  toStatus: string;
+  actorType: string;
+  actorName: string;
+  visitId: string | null;
+  inspectionId: string | null;
+  note: string | null;
+  createdAt: string;
+};
+
+export type AccountPurchaseOrder = {
+  id: string;
+  supplier: string;
+  itemCount: number;
+  sentAt: string | null;
+  createdAt: string;
+};
+
+export type AccountReceipt = {
+  id: string;
+  jobId: string | null;
+  vendor: string | null;
+  category: string;
+  amount: number;
+  status: string;
+  source: string;
+  receivedAt: string;
+};
+
+export type AccountJob = {
+  visitId: string;
+  propertyId: string;
+  propertyLabel: string;
+  status: JobStatus;
+  archived: boolean;
+  jobType: string | null;
+  purpose: string | null;
+  mode: string;
+  visitDate: string;
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
+  costs: JobCosts;
+  purchaseOrders: AccountPurchaseOrder[];
+  receipts: AccountReceipt[];
+  documents: { id: string; type: string; signedAt: string | null; sentAt: string | null }[];
+  latestEstimate: {
+    id: string;
+    title: string;
+    status: EstimateStatus;
+    revision: number;
+    totalCost: number | null;
+    hasAcceptance: boolean;
+  } | null;
+};
+
+export type AccountInspectionSummary = {
+  id: string;
+  visitId: string;
+  propertyId: string;
+  inspectionDate: string;
+  /** v1 only — the retired 0-100 headline. Null on findings-led v2 records. */
+  score: number | null;
+  schemaVersion: "v1" | "v2";
+  scope: "full" | "phase1";
+  itemsAssessed: number;
+  failCount: number;
+  monitorCount: number;
+  passCount: number;
+  belowStandardCount: number;
+  naCount: number;
+  criticalFindings: string[];
+  contractorReviewed: boolean;
+};
+
+export type AccountSummary = {
+  account: {
+    id: string;
+    name: string;
+    email: string | null;
+    phone: string | null;
+    createdAt: string;
+  };
+  properties: AccountProperty[];
+  jobs: AccountJob[];
+  totals: {
+    lifetimeRevenue: number;
+    lifetimeCost: number;
+    lifetimeProfit: number;
+    lifetimeMargin: number | null;
+    activeJobCount: number;
+    completedJobCount: number;
+    propertyCount: number;
+  };
+  inspections: AccountInspectionSummary[];
+  findings: PropertyFinding[];
+};
 
 export type AnalyticsRange = {
   startDate: string;

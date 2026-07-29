@@ -14,6 +14,31 @@ import { sendVisitConfirmationRequest, notifyTechnicianOfAssignment } from "./vi
 const TZ = "America/Chicago";
 const DEFAULT_START_TIME = process.env.DEFAULT_JOB_START_TIME ?? "07:00";
 
+// ─── APPOINTMENT KINDS ─────────────────────────────────────────────────────────
+
+/**
+ * Estimates and production work occupy the calendar very differently.
+ *
+ * A production job claims whole business days through SlotHold, because the crew
+ * is committed for the duration. An estimate is a 2-hour visit plus an hour of
+ * travel leeway — claiming a whole day for it would burn capacity the owner
+ * still needs to sell into. So estimates book by the hour and never take a hold.
+ *
+ * The kind is derived from Visit.status rather than stored, so there's no way
+ * for a job to be scheduled as one kind and reported as the other.
+ */
+export type AppointmentKind = "estimate" | "production";
+
+export const ESTIMATE_BLOCK_MINUTES = 120;
+export const ESTIMATE_TRAVEL_BUFFER_MINUTES = 60;
+
+export function appointmentKindFor(visitStatus: string): AppointmentKind {
+  return visitStatus === "estimate" ? "estimate" : "production";
+}
+
+/** Statuses from which a visit may be put on the calendar. */
+const SCHEDULABLE_STATUSES = ["estimate", "contracted"] as const;
+
 /** Fire-and-forget: notify every tech assigned to a visit about an event. */
 async function notifyAssignedTechs(visitId: string, event: "assigned" | "changed" | "cancelled"): Promise<void> {
   const assignments = await prisma.visitAssignment.findMany({
@@ -30,6 +55,9 @@ export interface ScheduleJobResult {
   scheduledStart: Date;
   scheduledEnd: Date;
   durationDays: number;
+  appointmentKind: AppointmentKind;
+  /** Minutes of travel leeway reserved after an estimate block; 0 for production. */
+  travelBufferMinutes: number;
   customerNotified: boolean;
   kyleNotified: boolean;
   googleEventId: string;
@@ -99,51 +127,75 @@ export async function scheduleJob(
     include: { customer: true, property: true },
   });
   if (!job) throw new Error("Job not found");
-  if (job.status !== "contracted") throw new Error(`Job status is "${job.status}", expected "contracted"`);
+  if (!SCHEDULABLE_STATUSES.includes(job.status as (typeof SCHEDULABLE_STATUSES)[number])) {
+    throw new Error(`Job status is "${job.status}", expected one of ${SCHEDULABLE_STATUSES.join(", ")}`);
+  }
 
-  const durationDays = job.estimatedDurationDays ?? 1;
+  const kind = appointmentKindFor(job.status);
+  const isEstimate = kind === "estimate";
+  const travelBufferMinutes = isEstimate ? ESTIMATE_TRAVEL_BUFFER_MINUTES : 0;
+
+  // An estimate is a fixed 2-hour block regardless of the job's day estimate —
+  // durationDays only describes the work, not the visit that prices it.
+  const durationDays = isEstimate ? 1 : (job.estimatedDurationDays ?? 1);
   const scheduledStart = buildStartDate(startDateStr, startTime);
-  const scheduledEnd = computeEndDate(scheduledStart, durationDays);
+  const scheduledEnd = isEstimate
+    ? new Date(scheduledStart.getTime() + ESTIMATE_BLOCK_MINUTES * 60_000)
+    : computeEndDate(scheduledStart, durationDays);
   const timeDisplay = formatTimeCT(scheduledStart);
 
-  // Atomically claim the business days BEFORE the availability read, so two
-  // concurrent bookings can't both pass the check (check-then-book race).
-  const holdDates = workingDaysCT(scheduledStart, durationDays);
-  try {
-    await acquireSlotHolds(holdDates, "scheduler", jobId);
-  } catch (err) {
-    if (err instanceof SlotContentionError) {
-      throw new ConflictError(
-        `Another booking is in progress for ${err.dates.join(", ")}`,
-        err.dates.map((date) => ({ date, reason: "booking in progress" })),
-        "Someone else is booking that date right now. Want to try a different date?",
-      );
+  // Production work claims the business days atomically BEFORE the availability
+  // read, so two concurrent bookings can't both pass the check. Estimates skip
+  // the hold entirely — they don't own the day, so there's nothing to contend.
+  const holdDates = isEstimate ? [] : workingDaysCT(scheduledStart, durationDays);
+  if (holdDates.length > 0) {
+    try {
+      await acquireSlotHolds(holdDates, "scheduler", jobId);
+    } catch (err) {
+      if (err instanceof SlotContentionError) {
+        throw new ConflictError(
+          `Another booking is in progress for ${err.dates.join(", ")}`,
+          err.dates.map((date) => ({ date, reason: "booking in progress" })),
+          "Someone else is booking that date right now. Want to try a different date?",
+        );
+      }
+      throw err;
     }
-    throw err;
   }
 
   let event: { id: string };
   try {
-    // Check availability
-    const availability = await checkAvailabilityBlock(scheduledStart, durationDays);
-    if (!availability.available) {
-      const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
-      throw new ConflictError(`Calendar conflict: ${conflictSummary}`, availability.conflicts);
+    if (!isEstimate) {
+      const availability = await checkAvailabilityBlock(scheduledStart, durationDays);
+      if (!availability.available) {
+        const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
+        throw new ConflictError(`Calendar conflict: ${conflictSummary}`, availability.conflicts);
+      }
     }
 
-    // Create calendar event
-    const calendarTitle = `JOB: ${job.customer.name} — ${job.jobType ?? "service"} — ${durationDays}d`;
+    // The estimate event runs long by the travel buffer so the calendar — and
+    // therefore the availability the voice agents read — reserves the drive.
+    const eventEnd = new Date(scheduledEnd.getTime() + travelBufferMinutes * 60_000);
+    const calendarTitle = isEstimate
+      ? `ESTIMATE: ${job.customer.name} — ${job.jobType ?? "site visit"}`
+      : `JOB: ${job.customer.name} — ${job.jobType ?? "service"} — ${durationDays}d`;
     event = await createCalendarEvent({
       summary: calendarTitle,
-      description: `Job ID: ${jobId}\nCustomer: ${job.customer.name}\nPhone: ${job.customer.phone ?? "N/A"}\nAddress: ${job.property.addressLine1}`,
+      description: [
+        `Job ID: ${jobId}`,
+        `Customer: ${job.customer.name}`,
+        `Phone: ${job.customer.phone ?? "N/A"}`,
+        `Address: ${job.property.addressLine1}`,
+        ...(isEstimate ? [`Includes ${travelBufferMinutes} min travel leeway after the visit.`] : []),
+      ].join("\n"),
       location: `${job.property.addressLine1}, ${job.property.city}, ${job.property.state}`,
       startTime: scheduledStart,
-      endTime: scheduledEnd,
+      endTime: eventEnd,
     });
   } finally {
     // The calendar event itself blocks the days from here on (or the booking
     // failed) — either way the transient hold has done its job.
-    await releaseSlotHolds(holdDates);
+    if (holdDates.length > 0) await releaseSlotHolds(holdDates);
   }
 
   // Build notification data
@@ -197,11 +249,17 @@ export async function scheduleJob(
     `Start: ${formatDateLong(scheduledStart)} at ${timeDisplay}`,
   ].join("\n")).catch(err => console.error("[scheduleJob] Kyle email failed:", err));
 
-  // Update the job record
+  // Update the job record.
+  //
+  // An estimate visit stays at status "estimate" once booked — it's still at the
+  // estimate stage of the funnel, and "scheduled" is reserved for production work
+  // that's been contracted. Booked-ness is expressed by scheduledStart, not status.
+  // This also keeps appointmentKindFor() honest: flipping the status here would
+  // make a booked estimate report itself as production work.
   await prisma.visit.update({
     where: { id: jobId },
     data: {
-      status: "scheduled",
+      ...(isEstimate ? {} : { status: "scheduled" }),
       scheduledStart,
       scheduledEnd,
       googleEventId: event.id,
@@ -228,6 +286,8 @@ export async function scheduleJob(
     scheduledStart,
     scheduledEnd,
     durationDays,
+    appointmentKind: kind,
+    travelBufferMinutes,
     customerNotified,
     kyleNotified,
     googleEventId: event.id,
@@ -250,10 +310,16 @@ export async function rescheduleJob(
   if (!job.scheduledStart || !job.scheduledEnd) throw new Error("Job is not currently scheduled");
   if (!job.googleEventId) throw new Error("Job has no calendar event to reschedule");
 
-  // Preserve original duration
-  const durationDays = job.estimatedDurationDays ?? 1;
+  // Preserve the original shape of the appointment — an estimate stays a 2-hour
+  // block with its travel leeway; production work keeps its day count.
+  const kind = appointmentKindFor(job.status);
+  const isEstimate = kind === "estimate";
+  const travelBufferMinutes = isEstimate ? ESTIMATE_TRAVEL_BUFFER_MINUTES : 0;
+  const durationDays = isEstimate ? 1 : (job.estimatedDurationDays ?? 1);
   const newStart = buildStartDate(newStartDateStr, newStartTime);
-  const newEnd = computeEndDate(newStart, durationDays);
+  const newEnd = isEstimate
+    ? new Date(newStart.getTime() + ESTIMATE_BLOCK_MINUTES * 60_000)
+    : computeEndDate(newStart, durationDays);
   const newTimeDisplay = formatTimeCT(newStart);
   const oldTimeDisplay = formatTimeCT(job.scheduledStart);
 
@@ -269,39 +335,47 @@ export async function rescheduleJob(
   };
 
   // Atomically claim the target days before the availability read (same race
-  // protection as scheduleJob).
-  const holdDates = workingDaysCT(newStart, durationDays);
-  try {
-    await acquireSlotHolds(holdDates, "scheduler", jobId);
-  } catch (err) {
-    if (err instanceof SlotContentionError) {
-      throw new ConflictError(
-        `Another booking is in progress for ${err.dates.join(", ")}`,
-        err.dates.map((date) => ({ date, reason: "booking in progress" })),
-        "Someone else is booking that date right now. Want to try a different date?",
-      );
+  // protection as scheduleJob). Estimates take no hold — they don't own the day.
+  const holdDates = isEstimate ? [] : workingDaysCT(newStart, durationDays);
+  if (holdDates.length > 0) {
+    try {
+      await acquireSlotHolds(holdDates, "scheduler", jobId);
+    } catch (err) {
+      if (err instanceof SlotContentionError) {
+        throw new ConflictError(
+          `Another booking is in progress for ${err.dates.join(", ")}`,
+          err.dates.map((date) => ({ date, reason: "booking in progress" })),
+          "Someone else is booking that date right now. Want to try a different date?",
+        );
+      }
+      throw err;
     }
-    throw err;
   }
 
   try {
-    // Check availability (exclude current event)
-    const availability = await checkAvailabilityBlock(newStart, durationDays, job.googleEventId);
-    if (!availability.available) {
-      const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
-      // Notify Kyle about the blocked reschedule
-      await notify.sendKyleSms(notify.kyleRescheduleConflict(jobData, newStart, conflictSummary));
-      throw new ConflictError(
-        `Calendar conflict: ${conflictSummary}`,
-        availability.conflicts,
-        "I wasn't able to reschedule — there's a conflict on that date. I've notified Kyle, and he'll call you back to find another date.",
-      );
+    if (!isEstimate) {
+      // Check availability (exclude current event)
+      const availability = await checkAvailabilityBlock(newStart, durationDays, job.googleEventId);
+      if (!availability.available) {
+        const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
+        // Notify Kyle about the blocked reschedule
+        await notify.sendKyleSms(notify.kyleRescheduleConflict(jobData, newStart, conflictSummary));
+        throw new ConflictError(
+          `Calendar conflict: ${conflictSummary}`,
+          availability.conflicts,
+          "I wasn't able to reschedule — there's a conflict on that date. I've notified Kyle, and he'll call you back to find another date.",
+        );
+      }
     }
 
-    // Move the calendar event
-    await moveCalendarEvent(job.googleEventId, newStart, newEnd);
+    // Move the calendar event, keeping the travel leeway on the far side.
+    await moveCalendarEvent(
+      job.googleEventId,
+      newStart,
+      new Date(newEnd.getTime() + travelBufferMinutes * 60_000),
+    );
   } finally {
-    await releaseSlotHolds(holdDates);
+    if (holdDates.length > 0) await releaseSlotHolds(holdDates);
   }
 
   const oldDates: notify.DateRange = { start: job.scheduledStart, end: job.scheduledEnd, time: oldTimeDisplay };
@@ -379,6 +453,8 @@ export async function rescheduleJob(
     scheduledStart: newStart,
     scheduledEnd: newEnd,
     durationDays,
+    appointmentKind: kind,
+    travelBufferMinutes,
     customerNotified,
     kyleNotified,
     googleEventId: job.googleEventId,

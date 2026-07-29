@@ -69,7 +69,7 @@ export function PropertyDetailPage() {
   });
   const deletePropertyMutation = useMutation({
     mutationFn: () => api.deleteProperty(propertyId),
-    onSuccess: () => navigate(`/customers/${property?.customerId}`),
+    onSuccess: () => navigate(`/accounts/${property?.customerId}`),
   });
 
   function startEditProperty() {
@@ -115,7 +115,7 @@ export function PropertyDetailPage() {
         subtitle={`${property.city}, ${property.state} ${property.postalCode}`}
         actions={
           <div className="flex items-center gap-2">
-            <Link className="btn btn-secondary" to={`/customers/${property.customerId}`}>Back to Customer</Link>
+            <Link className="btn btn-secondary" to={`/accounts/${property.customerId}`}>Back to Account</Link>
             <button type="button" className="rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100" onClick={startEditProperty}>Edit</button>
             {!hasVisits && (
               <button type="button" className="rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100" disabled={deletePropertyMutation.isPending} onClick={() => { if (window.confirm("Delete this property? This cannot be undone.")) deletePropertyMutation.mutate(); }}>Delete</button>

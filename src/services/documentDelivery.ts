@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import nodemailer from "nodemailer";
+import { getCompanyProfile } from "./companyProfile";
 
 const BRANDED_FOOTER = `
   <p style="font-size:14px;color:#888;margin:16px 0 0;border-top:1px solid #eee;padding-top:12px;">
@@ -48,6 +49,9 @@ export function humanizeDocType(type: string): string {
     case "change_order": return "Change Order";
     case "signed": return "Signed Agreement";
     case "health_report": return "Electrical Health Record";
+    case "cure_certificate": return "Certificate of Correction";
+    case "upgrade_record": return "Record of Upgrade";
+    case "finding_declination": return "Acknowledgment of Declined Work";
     default:
       return type
         .split("_")
@@ -78,6 +82,10 @@ export async function sendDocumentEmail(input: SendDocumentEmailInput): Promise<
 
   const label = humanizeDocType(input.docType);
   const filename = path.basename(input.pdfPath);
+  // The same number the attached PDF prints in its footer. These had drifted —
+  // the document said one thing and the email delivering it said another, which
+  // on a code-cited certificate undercuts the one claim it's making.
+  const { phone } = await getCompanyProfile();
   const noteBlock = input.note
     ? `<p style="font-size:15px;margin:0 0 16px;">${escapeHtml(input.note)}</p>`
     : "";
@@ -92,7 +100,7 @@ export async function sendDocumentEmail(input: SendDocumentEmailInput): Promise<
         <p style="font-size:16px;margin:0 0 16px;">Hi ${escapeHtml(input.customerName)},</p>
         <p style="font-size:15px;margin:0 0 16px;">Your ${label.toLowerCase()} from Red Cedar Electric is attached to this email.</p>
         ${noteBlock}
-        <p style="font-size:14px;color:#555;">If you have any questions, reply to this email or call (731) 462-0443.</p>
+        <p style="font-size:14px;color:#555;">If you have any questions, reply to this email or call ${phone}.</p>
         ${BRANDED_FOOTER}
       </div>
     </div>`;
