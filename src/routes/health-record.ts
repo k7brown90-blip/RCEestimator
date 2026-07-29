@@ -24,6 +24,7 @@ import {
 import { notifyTechnicianOfAssignment } from "../services/visitConfirmations";
 import { resolveJurisdictions } from "../services/jurisdictionResolver";
 import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
+import { recordInspectionLoadCalc } from "../services/capacityCheckStore";
 import {
   declineFinding,
   findingCitations,
@@ -275,6 +276,17 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
   await prisma.visitAssignment.updateMany({
     where: { visitId: visit.id, technicianId: req.technician!.id, status: { not: "completed" } },
     data: { status: "completed", completedAt: new Date() },
+  });
+
+  // The A2 calculation joins the address's one capacity-check history, so an
+  // assessment and a phone quote read from the same list instead of two.
+  await recordInspectionLoadCalc({
+    inspectionId: inspection.id,
+    visitId: visit.id,
+    propertyId: visit.propertyId,
+    customerId: visit.customerId,
+    technicianId: req.technician!.id,
+    loadCalc: body.loadCalc,
   });
 
   // Fold this record into the finding ledger — what's known at this address and

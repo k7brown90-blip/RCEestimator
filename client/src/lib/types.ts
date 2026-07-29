@@ -569,6 +569,8 @@ export type CapacityCheckRecord = {
   fits: boolean;
   qualifies: boolean;
   supersedesId: string | null;
+  /** Set when the calculation was taken during a Health Record, not run standalone. */
+  sourceInspectionId: string | null;
   studyOrderedAt: string | null;
   studyInstallVisitId: string | null;
   studyRemovalVisitId: string | null;

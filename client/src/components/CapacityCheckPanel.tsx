@@ -178,6 +178,37 @@ export function CapacityCheckPanel({
           study ordered.
         </p>
       )}
+
+      {(history.data ?? []).length > 0 && (
+        <div className="mt-5 border-t border-rce-border pt-4">
+          <h3 className="text-sm font-semibold">Calculation history at this address</h3>
+          <p className="text-xs text-rce-soft">
+            Every calculation for this property, whether run here or taken during a Health Record.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {(history.data ?? []).map((row) => (
+              <li key={row.id} className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+                <span>
+                  <span className="font-medium">
+                    {row.method}
+                    {row.variant ? `(${row.variant})` : ""}
+                  </span>{" "}
+                  — {row.calculatedAmps} A of {row.serviceAmps} A ({row.loadPct}%)
+                  {row.newLoadLabel ? ` · adding ${row.newLoadLabel}` : ""}
+                </span>
+                <span className="text-rce-soft">
+                  {new Date(row.createdAt).toLocaleDateString()}
+                  {/* A calculation taken with the panel open and the plates read is
+                      not the same document as one keyed in on the phone. */}
+                  {row.sourceInspectionId ? " · from a Health Record" : " · quoted"}
+                  {row.studyOrderedAt ? " · study ordered" : ""}
+                  {!row.fits && " · did not clear"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </article>
   );
 }

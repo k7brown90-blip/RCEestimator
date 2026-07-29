@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   calculateLoad,
+  capacityCheck220_83,
   isContinuous,
   resolveVA,
   type LoadCalcInput,
@@ -166,6 +167,20 @@ export function LoadCalcPanel({ initial, onApply }: Props) {
 
   const result = useMemo(() => calculateLoad(input), [input])
 
+  /**
+   * The same house under 220.83, shown alongside.
+   *
+   * These answer different questions — calculateLoad asks "what does this house
+   * draw?", 220.83 asks "can it take one more thing?" — and they legitimately
+   * produce different numbers. Rendering only one of them is how an assessment
+   * and a phone quote end up citing different amperages for the same service
+   * with nothing on screen explaining why.
+   *
+   * The panel's "future loads" are 220.83's new loads: that's the same list,
+   * asked the same question.
+   */
+  const capacity = useMemo(() => capacityCheck220_83(input, futureLoads), [input, futureLoads])
+
   const update = (setter: typeof setLoads) => (id: string, next: LoadItem) =>
     setter((list) => list.map((l) => (l.id === id ? next : l)))
   const remove = (setter: typeof setLoads) => (id: string) =>
@@ -284,7 +299,15 @@ export function LoadCalcPanel({ initial, onApply }: Props) {
         )}
       </div>
 
+      {/*
+        Two methods, both shown, each labelled. They answer different questions
+        and a different number from each is expected — an unexplained difference
+        between two Red Cedar documents is not.
+      */}
       <div className="space-y-1 rounded-lg border border-slate-700 bg-slate-800/80 p-3 text-sm text-slate-200">
+        <p className="text-xs font-medium uppercase tracking-wide text-sky-300">
+          What this house draws — Article 220 {result.methodUsed} method
+        </p>
         <p className="text-lg font-semibold text-white">
           Calculated load {result.governingAmps} A on a {serviceAmps} A service —{' '}
           {result.loadPct}% used, {result.spareAmps} A spare
@@ -320,6 +343,35 @@ export function LoadCalcPanel({ initial, onApply }: Props) {
           <p className="text-xs text-slate-500">
             Continuous candidates carry the ×1.25 factor in the capacity check only — the
             220 calculated load is not inflated (no double-count).
+          </p>
+        )}
+      </div>
+
+      <div
+        className={`space-y-1 rounded-lg border p-3 text-sm ${
+          capacity.fits ? 'border-emerald-800 bg-emerald-950/30' : 'border-red-800 bg-red-950/30'
+        }`}
+      >
+        <p className="text-xs font-medium uppercase tracking-wide text-sky-300">
+          Can it take the new load — 220.83({capacity.variant})
+        </p>
+        <p className="text-lg font-semibold text-white">
+          {capacity.amps} A of {capacity.serviceAmps} A — {capacity.loadPct}% loaded
+        </p>
+        <p className={`text-xs font-medium ${capacity.fits ? 'text-emerald-300' : 'text-red-300'}`}>
+          {futureLoads.length === 0
+            ? 'No new load entered — this is the existing-dwelling figure for the house as it stands.'
+            : capacity.fits
+              ? `Calculates with ${capacity.spareAmps} A spare. Quote the addition.`
+              : `Over by ${Math.abs(capacity.spareAmps)} A. Quote the service upgrade.`}
+        </p>
+        <p className="text-xs text-slate-400">{capacity.citation}</p>
+        {/* Why the two figures differ, said before anyone has to ask. */}
+        {capacity.amps !== result.governingAmps && (
+          <p className="text-xs text-slate-500">
+            Different from the {result.governingAmps} A above because 220.83 stages an existing
+            dwelling's load differently from the {result.methodUsed} method. Both are correct; this
+            is the one that answers whether the new load fits.
           </p>
         )}
       </div>

@@ -142,6 +142,172 @@ describe("POST /capacity-checks", () => {
   });
 });
 
+describe("the A2 calculation joins the same history", () => {
+  // An assessment and a phone quote must read from one list. Two stores is how
+  // two Red Cedar documents end up quoting different amperages for one service.
+  // Its own address: the suite-level beforeEach clears visits at the shared
+  // property, and a HealthInspection holds a Restrict reference to its visit.
+  let a2CustomerId: string;
+  let a2PropertyId: string;
+  let technicianId: string;
+  let techToken: string;
+  let visitId: string;
+  const INSPECTION_ID = "cap-a2-inspection-0001";
+
+  const loadCalc = {
+    input: {
+      mode: "tech",
+      occupancy: "dwellingSingleFamily",
+      serviceAmps: 100,
+      serviceVoltage: 240,
+      floorAreaSqFt: 1500,
+      loads: EXISTING_LOADS,
+      futureLoads: [
+        { id: "evse", type: "evse", label: "48 A EVSE", amps: 48, volts: 240, nameplateRead: true },
+      ],
+    },
+    result: { governingAmps: 109 },
+  };
+
+  const push = (overrides: Record<string, unknown> = {}) => ({
+    inspectionId: INSPECTION_ID,
+    visitId,
+    jurisdictionId: "murfreesboro",
+    inspectionDate: "2026-08-01T15:30:00Z",
+    schemaVersion: "v2",
+    scope: "phase1",
+    itemsAssessed: 1,
+    criticalFindings: [],
+    contractorReviewed: false,
+    items: [{ itemId: "A2", result: "PASS", measured: {}, photoIds: [] }],
+    loadCalc,
+    ...overrides,
+  });
+
+  beforeAll(async () => {
+    const tech = await request(app)
+      .post("/health-record-admin/technicians")
+      .send({ name: "Capacity A2 Tech" })
+      .expect(201);
+    technicianId = tech.body.id;
+    techToken = tech.body.accessToken;
+
+    const customer = await prisma.customer.create({ data: { name: "Capacity A2 Customer" } });
+    a2CustomerId = customer.id;
+    const property = await prisma.property.create({
+      data: {
+        customerId: a2CustomerId,
+        name: "Capacity A2 House",
+        addressLine1: "12 Calculation Court",
+        city: "Murfreesboro",
+        state: "TN",
+        postalCode: "37127",
+      },
+    });
+    a2PropertyId = property.id;
+
+    const visit = await prisma.visit.create({
+      data: { propertyId: a2PropertyId, customerId: a2CustomerId, mode: "diagnostic", status: "scheduled" },
+    });
+    visitId = visit.id;
+    await request(app)
+      .post(`/health-record-admin/visits/${visitId}/assign`)
+      .send({ technicianId })
+      .expect(201);
+  });
+
+  beforeEach(async () => {
+    await prisma.capacityCheck.deleteMany({ where: { propertyId: a2PropertyId } });
+    await prisma.healthInspection.deleteMany({ where: { propertyId: a2PropertyId } });
+  });
+
+  afterAll(async () => {
+    await prisma.capacityCheck.deleteMany({ where: { propertyId: a2PropertyId } });
+    await prisma.healthInspection.deleteMany({ where: { propertyId: a2PropertyId } });
+    await prisma.visitAssignment.deleteMany({ where: { visitId } });
+    await prisma.technician.deleteMany({ where: { id: technicianId } });
+    await prisma.visit.deleteMany({ where: { id: visitId } });
+    await prisma.property.deleteMany({ where: { id: a2PropertyId } });
+    await prisma.customer.deleteMany({ where: { id: a2CustomerId } });
+  });
+
+  it("files the A2 calculation as a capacity check on the same property", async () => {
+    await request(app)
+      .post("/health-record/inspections")
+      .set("Authorization", `Bearer ${techToken}`)
+      .send(push())
+      .expect(201);
+
+    const rows = await prisma.capacityCheck.findMany({
+      where: { propertyId: a2PropertyId, sourceInspectionId: INSPECTION_ID },
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].method).toBe("220.83");
+    expect(rows[0].variant).toBe("A");
+    // The panel's future loads are 220.83's new loads — same list, same question.
+    expect(rows[0].newLoadLabel).toContain("48 A EVSE");
+    expect(rows[0].calculatedAmps).toBe(100);
+  });
+
+  it("reconciles on re-push instead of stacking a new calculation each retry", async () => {
+    // The offline queue replays. An account should not accumulate one
+    // calculation per retry.
+    await request(app)
+      .post("/health-record/inspections")
+      .set("Authorization", `Bearer ${techToken}`)
+      .send(push())
+      .expect(201);
+    await request(app)
+      .post("/health-record/inspections")
+      .set("Authorization", `Bearer ${techToken}`)
+      .send(push())
+      .expect(201);
+
+    const rows = await prisma.capacityCheck.findMany({
+      where: { propertyId: a2PropertyId, sourceInspectionId: INSPECTION_ID },
+    });
+    expect(rows.length).toBe(1);
+  });
+
+  it("still accepts a record whose load calc is unusable", async () => {
+    // A malformed loadCalc from an old bundle must not cost a technician the
+    // whole record — the assessment is the thing that matters.
+    await request(app)
+      .post("/health-record/inspections")
+      .set("Authorization", `Bearer ${techToken}`)
+      .send(push({ inspectionId: "cap-a2-bad-0001", loadCalc: { input: { nonsense: true } } }))
+      .expect(201);
+
+    const inspection = await prisma.healthInspection.findUnique({ where: { id: "cap-a2-bad-0001" } });
+    expect(inspection).not.toBeNull();
+    const rows = await prisma.capacityCheck.findMany({
+      where: { sourceInspectionId: "cap-a2-bad-0001" },
+    });
+    expect(rows.length).toBe(0);
+
+    await prisma.healthInspection.deleteMany({ where: { id: "cap-a2-bad-0001" } });
+  });
+
+  it("marks where each calculation came from, so their weight is distinguishable", async () => {
+    await request(app)
+      .post("/health-record/inspections")
+      .set("Authorization", `Bearer ${techToken}`)
+      .send(push())
+      .expect(201);
+    // A quote run against the same address, so both land in one history.
+    await request(app)
+      .post("/capacity-checks")
+      .send({ ...nearMiss("cap-a2-standalone"), propertyId: a2PropertyId })
+      .expect(201);
+
+    const all = await prisma.capacityCheck.findMany({ where: { propertyId: a2PropertyId } });
+    const fromRecord = all.filter((row) => row.sourceInspectionId !== null);
+    const quoted = all.filter((row) => row.sourceInspectionId === null);
+    expect(fromRecord.length).toBe(1);
+    expect(quoted.length).toBe(1);
+  });
+});
+
 describe("POST /capacity-checks/:id/order-demand-study", () => {
   const order = {
     customerDeclinedUpgrade: true,
