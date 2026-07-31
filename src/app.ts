@@ -148,7 +148,28 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
   skip: skipLimiter,
 });
-app.use(["/leads", "/customer/lookup", "/calendar/availability", "/calendar/book", "/vapi", "/auth/pin", "/confirm", "/sms/inbound"], publicLimiter);
+/**
+ * Booking is its own budget, and a small one.
+ *
+ * `POST /calendar/book` writes a real event to the calendar, consumes the slot,
+ * and sends a confirmation SMS and email to whatever phone number and address
+ * the request supplies — from Red Cedar's Twilio number and Gmail account. That
+ * makes an unauthenticated 30/min into a way to spend money and get the number
+ * flagged as spam, which would take real customer confirmations down with it.
+ *
+ * The agent books one appointment per call, so five a minute costs nothing
+ * legitimate. This is a stopgap: the real fix is the shared secret below, which
+ * has to wait for the Vapi dashboard.
+ */
+const bookingLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipLimiter,
+});
+app.use(["/leads", "/customer/lookup", "/calendar/availability", "/vapi", "/auth/pin", "/confirm", "/sms/inbound"], publicLimiter);
+app.use("/calendar/book", bookingLimiter);
 app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
   if (req._isApi) {
     apiLimiter(req, res, next);
@@ -238,19 +259,34 @@ app.post("/vapi/assistant-config", (req, res) => {
   res.json({ variableValues, assistantId: savannahAssistantId });
 });
 
-// ─── CALENDAR AVAILABILITY (no auth — called by Vapi AI assistant) ───────────
-app.get("/calendar/availability", asyncHandler(async (_req, res) => {
+// ─── CALENDAR AVAILABILITY (agent endpoint — see middleware/webhookSecret) ───
+// Free/busy windows only: when Kyle is working and how full he is. No names, no
+// addresses, no contact details — roughly what a customer learns by calling and
+// asking. Behind the flag with its neighbours for consistency, not urgency.
+const availability = asyncHandler(async (_req: express.Request, res: express.Response) => {
   const data = await getAvailability();
   res.json(data);
-}));
+});
+app.get("/calendar/availability", requireWebhookSecretWhenEnabled("GET /calendar/availability"), availability);
+app.post("/calendar/availability", requireWebhookSecretWhenEnabled("POST /calendar/availability"), availability);
 
-app.post("/calendar/availability", asyncHandler(async (_req, res) => {
-  const data = await getAvailability();
-  res.json(data);
-}));
-
-// ─── CALENDAR BOOKING (no auth — called by Vapi AI assistant) ────────────────
-app.post("/calendar/book", asyncHandler(async (req, res) => {
+/**
+ * CALENDAR BOOKING — the endpoint with real teeth.
+ *
+ * A successful call writes an event to the live Google Calendar, takes the slot
+ * so no one else can have it, and sends a confirmation SMS and email to whatever
+ * phone number and address the request supplied — from Red Cedar's Twilio number
+ * and Gmail account.
+ *
+ * Unauthenticated, that is an open relay: a way to spend money sending branded
+ * messages to arbitrary recipients, and to get the number flagged as spam, which
+ * would take real customer confirmations down with it. It is also a way to book
+ * out the calendar so no genuine customer can get a slot.
+ *
+ * Rate-limited to 5/min above as a stopgap. The actual fix is the shared secret,
+ * waiting on the Vapi dashboard.
+ */
+app.post("/calendar/book", requireWebhookSecretWhenEnabled("POST /calendar/book"), asyncHandler(async (req, res) => {
   const { date, startTime, customerName, description, address, email, phone } = req.body;
   if (!date || !startTime || !customerName || !description || !address) {
     return res.status(400).json({ error: "Required: date, startTime, customerName, description, address" });
@@ -285,11 +321,12 @@ const KYLE_PHONE_10 = "9706661626";
  * changed in one commit. Locking it blind would find out whether the dashboard
  * was updated by failing during a customer's call.
  *
- * So enforcement sits behind LOOKUP_REQUIRES_SECRET, and every unauthenticated
- * call is logged either way. Add the `webhook_secret` header to the Vapi tool,
- * watch the log go quiet, then set the flag. See docs/SECURING_THE_AGENT.md.
+ * So enforcement sits behind AGENT_ENDPOINTS_REQUIRE_SECRET, and every
+ * unauthenticated call is logged either way. Add the `webhook_secret` header to
+ * the Vapi tools, watch the log go quiet, then set the flag.
+ * See docs/SECURING_THE_AGENT.md.
  */
-app.get("/customer/lookup", requireWebhookSecretWhenEnabled("LOOKUP_REQUIRES_SECRET", "GET /customer/lookup"), asyncHandler(async (req, res) => {
+app.get("/customer/lookup", requireWebhookSecretWhenEnabled("GET /customer/lookup"), asyncHandler(async (req, res) => {
   const phoneRaw = (readQuery(req, "phone") ?? "").replace(/\D/g, "").slice(-10);
   const nameRaw = (readQuery(req, "name") ?? "").trim();
 

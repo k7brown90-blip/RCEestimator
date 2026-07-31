@@ -23,12 +23,12 @@ beforeAll(() => {
 });
 
 afterEach(() => {
-  delete process.env.LOOKUP_REQUIRES_SECRET;
+  delete process.env.AGENT_ENDPOINTS_REQUIRE_SECRET;
 });
 
 afterAll(async () => {
   delete process.env.WEBHOOK_SECRET;
-  delete process.env.LOOKUP_REQUIRES_SECRET;
+  delete process.env.AGENT_ENDPOINTS_REQUIRE_SECRET;
   await prisma.lead.deleteMany({ where: { name: { startsWith: TAG } } });
   await prisma.customer.deleteMany({ where: { name: { startsWith: TAG } } });
 });
@@ -48,26 +48,52 @@ describe("GET /calls/daily-summary", () => {
   });
 });
 
-describe("GET /customer/lookup", () => {
-  it("still answers unauthenticated while the flag is off", async () => {
-    // The phone agent's tool definitions live in the Vapi dashboard, outside this
-    // repo, so the endpoint cannot be locked in the same commit that updates its
-    // caller. Off by default; the log names whoever is still calling bare.
-    await request(app).get("/customer/lookup?phone=6155550000").expect(200);
+describe("the agent endpoints, behind one flag", () => {
+  // The phone agent's tool definitions live in the Vapi dashboard, outside this
+  // repo, so these cannot be locked in the same commit that updates their caller.
+  // Off by default; the log names whichever endpoint is still called bare.
+  const AGENT_ENDPOINTS = [
+    ["get", "/customer/lookup?phone=6155550000"],
+    ["get", "/calendar/availability"],
+  ] as const;
+
+  it("all answer unauthenticated while the flag is off", async () => {
+    for (const [method, path] of AGENT_ENDPOINTS) {
+      const res = await request(app)[method](path);
+      expect(res.status, `${method.toUpperCase()} ${path}`).not.toBe(401);
+    }
   });
 
-  it("refuses unauthenticated once the flag is on", async () => {
-    process.env.LOOKUP_REQUIRES_SECRET = "true";
-    await request(app).get("/customer/lookup?phone=6155550000").expect(401);
+  it("all refuse unauthenticated once the flag is on", async () => {
+    process.env.AGENT_ENDPOINTS_REQUIRE_SECRET = "true";
+    for (const [method, path] of AGENT_ENDPOINTS) {
+      await request(app)[method](path).expect(401);
+    }
   });
 
-  it("allows the secret holder once the flag is on", async () => {
-    process.env.LOOKUP_REQUIRES_SECRET = "true";
+  it("all allow the secret holder once the flag is on", async () => {
+    process.env.AGENT_ENDPOINTS_REQUIRE_SECRET = "true";
+    for (const [method, path] of AGENT_ENDPOINTS) {
+      const res = await request(app)[method](path).set("webhook_secret", SECRET);
+      expect(res.status, `${method.toUpperCase()} ${path}`).not.toBe(401);
+    }
+  });
+
+  it("covers booking, which writes to the calendar and sends messages", async () => {
+    // The one with teeth: it puts a real event on the calendar, takes the slot,
+    // and sends SMS and email to whatever contact details the request supplies.
+    process.env.AGENT_ENDPOINTS_REQUIRE_SECRET = "true";
     await request(app)
-      .get("/customer/lookup?phone=6155550000")
-      .set("webhook_secret", SECRET)
-      .expect(200);
+      .post("/calendar/book")
+      .send({
+        date: "2026-09-01", startTime: "9:00 AM", customerName: "Nobody",
+        description: "Unauthorized", address: "1 Nowhere",
+      })
+      .expect(401);
   });
+});
+
+describe("GET /customer/lookup", () => {
 
   it("will not enumerate the customer base from a one-letter name", async () => {
     await prisma.customer.create({ data: { name: `${TAG} Enumerable`, phone: "6155551234" } });

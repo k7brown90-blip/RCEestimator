@@ -27,22 +27,35 @@ export const requireWebhookSecret = (req: Request, res: Response, next: NextFunc
 };
 
 /**
- * Require the secret only once `flagName` is switched on, and log every
- * unauthenticated call either way.
+ * The one switch that closes the phone agent's endpoints.
  *
- * The problem this solves: the phone agent's tool definitions live in the Vapi
- * dashboard, not in this repository, so an endpoint cannot be locked and its
- * caller updated in the same commit. Turning enforcement on blind would answer
- * "did the dashboard change land?" by breaking the phone during a customer call.
+ * Three routes — caller lookup, availability, booking — are called by Savannah,
+ * whose tool definitions live in the Vapi dashboard rather than in this
+ * repository. So an endpoint cannot be locked and its caller updated in the same
+ * commit, and enforcing blind would answer "did the dashboard change land?" by
+ * failing during a customer's call.
  *
- * So: deploy with the flag off and watch the log. Silence means every caller is
- * already sending the header and the flag is safe to turn on. Entries name who
- * is still calling unauthenticated, so nothing is guessed.
+ * One flag rather than three because they're updated in one sitting, and the log
+ * already says which endpoint is still calling bare — that's where the
+ * granularity is needed, not in the number of switches to remember.
  */
-export function requireWebhookSecretWhenEnabled(flagName: string, label: string) {
+export const AGENT_SECRET_FLAG = "AGENT_ENDPOINTS_REQUIRE_SECRET";
+
+export function agentEndpointsEnforcing(): boolean {
+  return process.env[AGENT_SECRET_FLAG] === "true";
+}
+
+/**
+ * Log every unauthenticated call; refuse it only once the flag is on.
+ *
+ * Deploy with the flag off and watch the log. Silence means every caller is
+ * already sending the header and the flag is safe to turn on. Entries name the
+ * endpoint still being called bare, so nothing has to be guessed.
+ */
+export function requireWebhookSecretWhenEnabled(label: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const authorized = hasValidWebhookSecret(req);
-    const enforcing = process.env[flagName] === "true";
+    const enforcing = agentEndpointsEnforcing();
 
     if (!authorized) {
       console.warn(
@@ -50,7 +63,7 @@ export function requireWebhookSecretWhenEnabled(flagName: string, label: string)
         `(enforcing=${enforcing}, ua="${req.headers["user-agent"] ?? "none"}"). ` +
         (enforcing
           ? "Refused."
-          : `Allowed — set ${flagName}=true once the caller sends the header.`),
+          : `Allowed — set ${AGENT_SECRET_FLAG}=true once every agent tool sends the header.`),
       );
     }
 
