@@ -408,7 +408,13 @@ app.get("/customer/lookup", asyncHandler(async (req, res) => {
   }
 
   // ── Name-based lookup (for Kyle transfer scenario) ──
-  if (nameRaw) {
+  //
+  // Minimum length is a guard, not a nicety. This endpoint is unauthenticated
+  // (see the block comment above the route) and returns a full customer record,
+  // so `?name=a` was a substring match that would walk the customer base one
+  // letter at a time. Three characters is long enough that a caller's actual name
+  // still matches and short enough not to break any real lookup.
+  if (nameRaw.length >= 3) {
     const customers = await prisma.customer.findMany({
       where: { name: { contains: nameRaw } },
       include: customerInclude,
@@ -431,7 +437,13 @@ app.get("/customer/lookup", asyncHandler(async (req, res) => {
   res.json({ found: false });
 }));
 
-// ─── DAILY CALL SUMMARY (no auth — public endpoint) ─────────────────────────
+// ─── DAILY CALL SUMMARY ─────────────────────────────────────────────────────
+// ⚠ UNAUTHENTICATED, and it returns today's leads with names, phone numbers,
+// addresses and notes. Nothing in this repo calls it — if that's still true when
+// you read this, it should move behind the webhook secret like its neighbours.
+// Left as-is only because an external caller (a cron or an automation) may
+// depend on it, and breaking Kyle's morning digest silently is worse than the
+// exposure until someone confirms.
 app.get("/calls/daily-summary", asyncHandler(async (_req, res) => {
   const data = await getDailySummary();
   res.json(data);
