@@ -2,6 +2,7 @@ import express from "express";
 import { z, ZodError } from "zod";
 import { prisma } from "../lib/prisma";
 import { sendSms, KYLE_PHONE } from "../services/twilio";
+import { findCustomerMatches } from "../services/customerMatch";
 import {
   asyncHandler,
   readParam,
@@ -718,13 +719,20 @@ agentRouter.post("/savannah/owner-question", asyncHandler(async (req, res) => {
 
   const phone = normalizePhone(body.callback_phone);
 
-  // Upsert customer by phone
-  let customer = await prisma.customer.findFirst({ where: { phone } });
-  if (!customer) {
-    customer = await prisma.customer.create({
-      data: { name: body.customer_name, phone },
-    });
-  }
+  // Find the caller's account, or open one.
+  //
+  // This used to be `findFirst({ where: { phone } })` against the normalized
+  // form, which finds "+16155550101" and misses "(615) 555-0101" and
+  // "615-555-0101" — both of which exist in this database. A caller stored in
+  // either of those formats got a brand-new duplicate account on every call.
+  //
+  // findCustomerMatches narrows on the last four digits then confirms the full
+  // ten in JS, so it finds the same number however it was written down. It is a
+  // pure read; the create below is still this route's own decision.
+  const [match] = await findCustomerMatches({ phone, name: body.customer_name, limit: 1 });
+  const customer = match
+    ? await prisma.customer.findUniqueOrThrow({ where: { id: match.customerId } })
+    : await prisma.customer.create({ data: { name: body.customer_name, phone } });
 
   // Create lead
   const lead = await prisma.lead.create({

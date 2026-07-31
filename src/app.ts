@@ -36,6 +36,7 @@ import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal } from "
 import { parseJsonArrayLength, parseJsonStringArray } from "./lib/json";
 import { findCustomerMatches } from "./services/customerMatch";
 import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
+import { requireWebhookSecret, requireWebhookSecretWhenEnabled } from "./middleware/webhookSecret";
 import { savannahRouter } from "./routes/agent-savannah";
 import { jerryRouter } from "./routes/agent-jerry";
 import { sharedAgentRouter } from "./routes/agent-shared";
@@ -272,7 +273,23 @@ app.post("/calendar/book", asyncHandler(async (req, res) => {
 // ─── CUSTOMER LOOKUP (no auth — called by Vapi AI assistant) ─────────────────
 const KYLE_PHONE_10 = "9706661626";
 
-app.get("/customer/lookup", asyncHandler(async (req, res) => {
+/**
+ * Caller lookup for the phone agent.
+ *
+ * Returns a complete customer record — name, phone, email, every property
+ * address, every visit with its purpose and estimate total, warranty status and
+ * open leads. It has never required authentication.
+ *
+ * It cannot simply be locked: the tool definitions that call it live in the Vapi
+ * dashboard, outside this repository, so the caller and the endpoint cannot be
+ * changed in one commit. Locking it blind would find out whether the dashboard
+ * was updated by failing during a customer's call.
+ *
+ * So enforcement sits behind LOOKUP_REQUIRES_SECRET, and every unauthenticated
+ * call is logged either way. Add the `webhook_secret` header to the Vapi tool,
+ * watch the log go quiet, then set the flag. See docs/SECURING_THE_AGENT.md.
+ */
+app.get("/customer/lookup", requireWebhookSecretWhenEnabled("LOOKUP_REQUIRES_SECRET", "GET /customer/lookup"), asyncHandler(async (req, res) => {
   const phoneRaw = (readQuery(req, "phone") ?? "").replace(/\D/g, "").slice(-10);
   const nameRaw = (readQuery(req, "name") ?? "").trim();
 
@@ -438,13 +455,12 @@ app.get("/customer/lookup", asyncHandler(async (req, res) => {
 }));
 
 // ─── DAILY CALL SUMMARY ─────────────────────────────────────────────────────
-// ⚠ UNAUTHENTICATED, and it returns today's leads with names, phone numbers,
-// addresses and notes. Nothing in this repo calls it — if that's still true when
-// you read this, it should move behind the webhook secret like its neighbours.
-// Left as-is only because an external caller (a cron or an automation) may
-// depend on it, and breaking Kyle's morning digest silently is worse than the
-// exposure until someone confirms.
-app.get("/calls/daily-summary", asyncHandler(async (_req, res) => {
+// Returns today's leads with names, phone numbers, addresses and notes, so it
+// takes the shared secret like every other machine-to-machine endpoint.
+//
+// The 6pm digest is unaffected: it calls getDailySummary() directly as a
+// function (services/dailySummary.ts:133), never over HTTP.
+app.get("/calls/daily-summary", requireWebhookSecret, asyncHandler(async (_req, res) => {
   const data = await getDailySummary();
   res.json(data);
 }));
