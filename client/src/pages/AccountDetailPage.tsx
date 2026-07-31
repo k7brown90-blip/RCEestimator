@@ -7,6 +7,7 @@ import { FindingLedger } from "../components/FindingLedger";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
+import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
 import type { AccountJob, AccountSummary } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
@@ -27,6 +28,107 @@ function JobStatusPill({ status }: { status: string }) {
   );
 }
 
+/**
+ * One address, add and edit. Includes the fields the add form used to drop —
+ * the unit line and notes were accepted by the API and collected nowhere, and
+ * the code jurisdiction is what the Health Record reads to decide which NEC
+ * edition an address is assessed under.
+ */
+interface AddressForm {
+  name: string;
+  addressLine1: string;
+  addressLine2: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  occupancyType: string;
+  jurisdictionId: string;
+  notes: string;
+}
+
+const blankAddress = (): AddressForm => ({
+  name: "",
+  addressLine1: "",
+  addressLine2: "",
+  city: "",
+  state: "TN",
+  postalCode: "",
+  occupancyType: "residential",
+  jurisdictionId: "",
+  notes: "",
+});
+
+/** Empty strings mean "not set" on the wire, not "set to blank". */
+function toPropertyPayload(form: AddressForm) {
+  return {
+    name: form.name,
+    addressLine1: form.addressLine1,
+    addressLine2: form.addressLine2 || null,
+    city: form.city,
+    state: form.state,
+    postalCode: form.postalCode,
+    occupancyType: form.occupancyType,
+    // Null hands the decision back to services/jurisdictionResolver.ts, which
+    // derives it from the ZIP. That's the right default — an explicit value here
+    // is an override the office has deliberately made.
+    jurisdictionId: form.jurisdictionId || null,
+    notes: form.notes || null,
+  };
+}
+
+const JURISDICTIONS = ["murfreesboro", "brentwood", "rutherford", "franklin", "nashville"];
+
+function AddressFields({ form, onChange }: { form: AddressForm; onChange: (next: AddressForm) => void }) {
+  const set = (patch: Partial<AddressForm>) => onChange({ ...form, ...patch });
+  return (
+    <>
+      <label className="text-sm font-medium">
+        Property Name
+        <input className="field mt-1" value={form.name} onChange={(e) => set({ name: e.target.value })} required />
+      </label>
+      <label className="text-sm font-medium md:col-span-2">
+        Address
+        <input className="field mt-1" value={form.addressLine1} onChange={(e) => set({ addressLine1: e.target.value })} required />
+      </label>
+      <label className="text-sm font-medium">
+        Unit / Apt <span className="text-rce-soft">(optional)</span>
+        <input className="field mt-1" value={form.addressLine2} onChange={(e) => set({ addressLine2: e.target.value })} />
+      </label>
+      <label className="text-sm font-medium">
+        City
+        <input className="field mt-1" value={form.city} onChange={(e) => set({ city: e.target.value })} required />
+      </label>
+      <label className="text-sm font-medium">
+        State / ZIP
+        <div className="mt-1 grid grid-cols-2 gap-2">
+          <input className="field" value={form.state} onChange={(e) => set({ state: e.target.value.toUpperCase() })} maxLength={2} required />
+          <input className="field" value={form.postalCode} onChange={(e) => set({ postalCode: e.target.value })} required />
+        </div>
+      </label>
+      <label className="text-sm font-medium">
+        Occupancy
+        <select className="field mt-1" value={form.occupancyType} onChange={(e) => set({ occupancyType: e.target.value })}>
+          <option value="residential">Residential</option>
+          <option value="commercial">Commercial</option>
+        </select>
+      </label>
+      <label className="text-sm font-medium">
+        Code jurisdiction
+        <select className="field mt-1" value={form.jurisdictionId} onChange={(e) => set({ jurisdictionId: e.target.value })}>
+          <option value="">Derive from ZIP</option>
+          {JURISDICTIONS.map((id) => (
+            <option key={id} value={id}>{id}</option>
+          ))}
+        </select>
+      </label>
+      <label className="text-sm font-medium md:col-span-2">
+        Notes <span className="text-rce-soft">(optional)</span>
+        <input className="field mt-1" value={form.notes} onChange={(e) => set({ notes: e.target.value })} />
+      </label>
+    </>
+  );
+}
+
 export function AccountDetailPage() {
   const { accountId = "" } = useParams();
   const navigate = useNavigate();
@@ -43,16 +145,19 @@ export function AccountDetailPage() {
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
 
-  const [propertyName, setPropertyName] = useState("");
-  const [addressLine1, setAddressLine1] = useState("");
-  const [city, setCity] = useState("");
-  const [state, setState] = useState("TN");
-  const [postalCode, setPostalCode] = useState("");
   const [showAddProperty, setShowAddProperty] = useState(false);
+  const [addForm, setAddForm] = useState<AddressForm>(blankAddress());
 
+  const [editingPropertyId, setEditingPropertyId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<AddressForm>(blankAddress());
+
+  // Every list that shows an address, invalidated together. Missing
+  // ["properties"] here is what kept a newly added address out of the Jobs
+  // page's picker until a hard reload.
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ["account", accountId] });
-    queryClient.invalidateQueries({ queryKey: ["accounts"] });
+    for (const key of ADDRESS_QUERY_KEYS) {
+      queryClient.invalidateQueries({ queryKey: [...key] });
+    }
   };
 
   const updateAccount = useMutation({
@@ -67,7 +172,7 @@ export function AccountDetailPage() {
   const deleteAccount = useMutation({
     mutationFn: () => api.deleteAccount(accountId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      invalidate();
       navigate("/accounts");
     },
   });
@@ -76,12 +181,23 @@ export function AccountDetailPage() {
     mutationFn: api.createProperty,
     onSuccess: () => {
       invalidate();
-      setPropertyName("");
-      setAddressLine1("");
-      setCity("");
-      setPostalCode("");
+      setAddForm(blankAddress());
       setShowAddProperty(false);
     },
+  });
+
+  const updateProperty = useMutation({
+    mutationFn: (input: { propertyId: string; form: AddressForm }) =>
+      api.updateProperty(input.propertyId, toPropertyPayload(input.form)),
+    onSuccess: () => {
+      invalidate();
+      setEditingPropertyId(null);
+    },
+  });
+
+  const deleteProperty = useMutation({
+    mutationFn: (propertyId: string) => api.deleteProperty(propertyId),
+    onSuccess: invalidate,
   });
 
   function startEdit() {
@@ -98,7 +214,30 @@ export function AccountDetailPage() {
 
   function submitProperty(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    createProperty.mutate({ customerId: accountId, name: propertyName, addressLine1, city, state, postalCode });
+    createProperty.mutate({ customerId: accountId, ...toPropertyPayload(addForm) });
+  }
+
+  function startEditProperty(property: AccountSummary["properties"][number]) {
+    // No extra fetch: the account summary already spreads the whole property row.
+    setEditForm({
+      name: property.name,
+      addressLine1: property.addressLine1,
+      addressLine2: property.addressLine2 ?? "",
+      city: property.city,
+      state: property.state,
+      postalCode: property.postalCode,
+      occupancyType: property.occupancyType ?? "residential",
+      jurisdictionId: property.jurisdictionId ?? "",
+      notes: property.notes ?? "",
+    });
+    setEditingPropertyId(property.id);
+    setShowAddProperty(false);
+  }
+
+  function confirmDeleteProperty(property: AccountSummary["properties"][number]) {
+    if (window.confirm(`Remove ${property.name} — ${property.addressLine1} from this account?`)) {
+      deleteProperty.mutate(property.id);
+    }
   }
 
   function confirmDelete() {
@@ -199,59 +338,83 @@ export function AccountDetailPage() {
 
         {showAddProperty && (
           <form className="mt-4 grid gap-3 rounded-lg border border-rce-border p-3 md:grid-cols-5" onSubmit={submitProperty}>
-            <label className="text-sm font-medium">
-              Property Name
-              <input className="field mt-1" value={propertyName} onChange={(e) => setPropertyName(e.target.value)} required />
-            </label>
-            <label className="text-sm font-medium md:col-span-2">
-              Address
-              <input className="field mt-1" value={addressLine1} onChange={(e) => setAddressLine1(e.target.value)} required />
-            </label>
-            <label className="text-sm font-medium">
-              City
-              <input className="field mt-1" value={city} onChange={(e) => setCity(e.target.value)} required />
-            </label>
-            <label className="text-sm font-medium">
-              State / ZIP
-              <div className="mt-1 grid grid-cols-2 gap-2">
-                <input className="field" value={state} onChange={(e) => setState(e.target.value)} required />
-                <input className="field" value={postalCode} onChange={(e) => setPostalCode(e.target.value)} required />
-              </div>
-            </label>
+            <AddressFields form={addForm} onChange={setAddForm} />
             <div className="md:col-span-5">
               <button className="btn btn-primary" type="submit" disabled={createProperty.isPending}>
                 {createProperty.isPending ? "Adding…" : "Add Property"}
               </button>
             </div>
+            {createProperty.error && (
+              <p className="text-sm text-red-600 md:col-span-5">{(createProperty.error as Error).message}</p>
+            )}
           </form>
         )}
 
         <div className="mt-4 space-y-2">
-          {properties.map((property) => (
-            <div key={property.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rce-border p-3">
-              <div>
-                <p className="font-medium">{property.name}</p>
-                <p className="text-sm text-rce-muted">
-                  {property.addressLine1}
-                  {property.addressLine2 ? `, ${property.addressLine2}` : ""}, {property.city}, {property.state} {property.postalCode}
-                </p>
-                <p className="mt-1 text-xs text-rce-soft">
-                  {property.activeJobCount} active · {property.completedJobCount} completed
-                  {property.lastInspectionDate && ` · last assessed ${shortDate(property.lastInspectionDate)}`}
-                </p>
-                {property.openFindingCount > 0 && (
-                  <p className="mt-1 text-xs font-medium text-amber-700">
-                    {property.openFindingCount} open finding{property.openFindingCount === 1 ? "" : "s"}
-                    {property.openDefectCount > 0 &&
-                      ` · ${property.openDefectCount} needing correction`}
-                  </p>
+          {properties.map((property) => {
+            const jobCount = property.activeJobCount + property.completedJobCount;
+            return editingPropertyId === property.id ? (
+              <form
+                key={property.id}
+                className="grid gap-3 rounded-lg border border-rce-accent p-3 md:grid-cols-5"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  updateProperty.mutate({ propertyId: property.id, form: editForm });
+                }}
+              >
+                <AddressFields form={editForm} onChange={setEditForm} />
+                <div className="flex gap-2 md:col-span-5">
+                  <button className="btn btn-primary" type="submit" disabled={updateProperty.isPending}>
+                    {updateProperty.isPending ? "Saving…" : "Save Address"}
+                  </button>
+                  <button className="btn btn-secondary" type="button" onClick={() => setEditingPropertyId(null)}>
+                    Cancel
+                  </button>
+                </div>
+                {updateProperty.error && (
+                  <p className="text-sm text-red-600 md:col-span-5">{(updateProperty.error as Error).message}</p>
                 )}
+              </form>
+            ) : (
+              <div key={property.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rce-border p-3">
+                <div>
+                  <p className="font-medium">{property.name}</p>
+                  <p className="text-sm text-rce-muted">
+                    {property.addressLine1}
+                    {property.addressLine2 ? `, ${property.addressLine2}` : ""}, {property.city}, {property.state} {property.postalCode}
+                  </p>
+                  <p className="mt-1 text-xs text-rce-soft">
+                    {property.activeJobCount} active · {property.completedJobCount} completed
+                    {property.lastInspectionDate && ` · last assessed ${shortDate(property.lastInspectionDate)}`}
+                    {property.jurisdictionId && ` · ${property.jurisdictionId}`}
+                  </p>
+                  {property.openFindingCount > 0 && (
+                    <p className="mt-1 text-xs font-medium text-amber-700">
+                      {property.openFindingCount} open finding{property.openFindingCount === 1 ? "" : "s"}
+                      {property.openDefectCount > 0 &&
+                        ` · ${property.openDefectCount} needing correction`}
+                    </p>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <button className="btn btn-secondary" onClick={() => startEditProperty(property)}>Edit</button>
+                  {/* Hidden once there's job history, but the server's 409 is the
+                      real guard — findings and documents aren't in these counts. */}
+                  {jobCount === 0 && (
+                    <button className="btn btn-danger" onClick={() => confirmDeleteProperty(property)}>
+                      Delete
+                    </button>
+                  )}
+                  <Link to={`/properties/${property.id}`} className="btn btn-secondary">Open Property</Link>
+                </div>
               </div>
-              <Link to={`/properties/${property.id}`} className="btn btn-secondary">Open Property</Link>
-            </div>
-          ))}
+            );
+          })}
           {properties.length === 0 && (
             <p className="text-sm text-rce-muted">No addresses on this account yet.</p>
+          )}
+          {deleteProperty.error && (
+            <p className="text-sm text-red-600">{(deleteProperty.error as Error).message}</p>
           )}
         </div>
       </section>

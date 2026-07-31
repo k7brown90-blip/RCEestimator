@@ -12,11 +12,13 @@ import type {
   CrmOverview,
   CrmWinLossMetrics,
   Customer,
+  CustomerMatch,
   Estimate,
   EstimateAssembly,
   JobSummary,
   MonthSchedule,
   Property,
+  PropertyWriteInput,
   ScheduleJobResult,
   Visit,
   AtomicUnit,
@@ -28,6 +30,7 @@ import type {
   DemandStudyOrder,
   FindingEvent,
   Lead,
+  LeadWriteInput,
   PropertyFinding,
   WeekSchedule,
 } from "./types";
@@ -40,6 +43,18 @@ function withDateRange(path: string, range?: { startDate?: string; endDate?: str
   if (range?.endDate) search.set("endDate", range.endDate);
   const query = search.toString();
   return query ? `${path}?${query}` : path;
+}
+
+/**
+ * An error that kept the response body.
+ *
+ * Most failures only need their message rendered, but some are a question rather
+ * than a fault — the duplicate-account 409 hands back the accounts it matched so
+ * the caller can offer them.
+ */
+export class ApiError extends Error {
+  status?: number;
+  body?: Record<string, unknown>;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -62,8 +77,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await response.text();
     if (text) {
       let parsedError: string | undefined;
+      let body: Record<string, unknown> | undefined;
       try {
         const parsed = JSON.parse(text) as { error?: string; details?: unknown };
+        body = parsed as Record<string, unknown>;
         if (parsed.error) {
           parsedError = parsed.error;
         }
@@ -71,9 +88,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         // Non-JSON error body; fall back to plain text
       }
 
-      throw new Error(parsedError || text);
+      // Some refusals carry data the UI needs to act on rather than just
+      // display — the duplicate-account 409 returns the matching accounts so the
+      // picker can open. The message alone would throw that away.
+      throw Object.assign(new ApiError(parsedError || text), { status: response.status, body });
     }
-    throw new Error(`Request failed: ${response.status}`);
+    throw Object.assign(new ApiError(`Request failed: ${response.status}`), { status: response.status });
   }
 
   if (response.status === 204) {
@@ -110,17 +130,10 @@ export const api = {
   // CRM client speaks only "account".
   properties: () => request<Property[]>("/properties"),
   property: (propertyId: string) => request<Property>(`/properties/${propertyId}`),
-  createProperty: (input: {
-    customerId: string;
-    name: string;
-    addressLine1: string;
-    addressLine2?: string;
-    city: string;
-    state: string;
-    postalCode: string;
-    notes?: string;
-  }) => request<Property>("/properties", { method: "POST", body: JSON.stringify(input) }),
-  updateProperty: (propertyId: string, input: { name?: string; addressLine1?: string; city?: string; state?: string; postalCode?: string; notes?: string }) =>
+  createProperty: (input: PropertyWriteInput & { customerId: string; name: string; addressLine1: string; city: string; state: string; postalCode: string }) =>
+    request<Property>("/properties", { method: "POST", body: JSON.stringify(input) }),
+  /** `customerId` moves an address between accounts — 409s once it has job history. */
+  updateProperty: (propertyId: string, input: PropertyWriteInput) =>
     request<Property>(`/properties/${propertyId}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteProperty: (propertyId: string) => request<void>(`/properties/${propertyId}`, { method: "DELETE" }),
   updateSnapshot: (propertyId: string, input: {
@@ -258,31 +271,50 @@ export const api = {
     const query = search.toString();
     return request<Lead[]>(`/leads${query ? `?${query}` : ""}`);
   },
-  updateLead: (
-    leadId: string,
-    input: {
-      name?: string;
-      email?: string;
-      phone?: string;
-      address?: string;
-      jobType?: string;
-      status?: string;
-      notes?: string;
-      leadStatus?: string;
-      followUpDate?: string | null;
-      followUpReason?: string | null;
-      followUpCount?: number;
-      lostReason?: string | null;
-      lostNotes?: string | null;
-      bestTimeToReach?: string | null;
-      contactPreference?: string | null;
-    },
-  ) =>
+  /**
+   * Manual lead entry. `POST /crm/leads`, not `POST /leads` — the latter is the
+   * intake webhook and is gated on a shared secret the browser cannot hold.
+   */
+  createLead: (input: LeadWriteInput) =>
+    request<{ lead: Lead; matches: CustomerMatch[] }>("/crm/leads", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateLead: (leadId: string, input: LeadWriteInput) =>
     request<Lead>(`/leads/${leadId}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteLead: (leadId: string) =>
     request<void>(`/leads/${leadId}`, { method: "DELETE" }),
-  convertLead: (leadId: string) =>
-    request<{ customer: Customer; property: Property | null; visit: Visit | null; lead: Lead }>(`/leads/${leadId}/convert`, { method: "PATCH" }),
+  /**
+   * Convert. The optional body is how the duplicate picker answers the server's
+   * 409: link to a chosen account and address, or confirm a genuinely new one.
+   */
+  convertLead: (
+    leadId: string,
+    input?: {
+      customerId?: string;
+      propertyId?: string;
+      propertyName?: string;
+      addressLine1?: string;
+      addressLine2?: string | null;
+      city?: string;
+      state?: string;
+      postalCode?: string;
+      jurisdictionId?: string;
+      createNewAccount?: boolean;
+    },
+  ) =>
+    request<{ customer: Customer; property: Property | null; visit: Visit | null; lead: Lead }>(
+      `/leads/${leadId}/convert`,
+      { method: "PATCH", body: JSON.stringify(input ?? {}) },
+    ),
+  /** Accounts that might already be this caller — drives the duplicate picker. */
+  customerMatches: (params: { phone?: string; email?: string; name?: string }) => {
+    const search = new URLSearchParams();
+    if (params.phone?.trim()) search.set("phone", params.phone.trim());
+    if (params.email?.trim()) search.set("email", params.email.trim());
+    if (params.name?.trim()) search.set("name", params.name.trim());
+    return request<{ matches: CustomerMatch[] }>(`/crm/customer-matches?${search.toString()}`);
+  },
   // ─── Calendar / Schedule ────────────────────────────────────────────────────
   weekSchedule: () => request<WeekSchedule>("/crm/schedule/week"),
   monthSchedule: (year: number, month: number) => request<MonthSchedule>(`/crm/schedule/month?year=${year}&month=${month}`),

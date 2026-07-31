@@ -50,6 +50,17 @@ model Property {
   healthInspections      HealthInspection[]
   findings               PropertyFinding[]
   documents              Document[]
+
+  // Prisma doesn't index relation scalars on Postgres, and every account read
+  // fans out by customerId — the account summary, the customer list, and now
+  // add/edit/delete-address, which all re-read the account afterwards.
+  //
+  // Deliberately NO unique constraint on the address. Normalising well enough for
+  // a key ("St" vs "Street", unit numbers, case) is its own project, and a false
+  // positive would block a legitimate second unit at one street address — a
+  // duplex or an ADU, which is exactly the multi-address case this supports.
+  // Near-duplicates are surfaced as a client-side warning instead.
+  @@index([customerId])
 }
 
 // ─── Finding ledger ────────────────────────────────────────────────────────
@@ -828,10 +839,24 @@ model Lead {
   name              String
   email             String?
   phone             String?
-  source            String    @default("email")   // "email" | "phone" | "web"
+  source            String    @default("email")   // email | phone | web | manual | referral | savannah_text | retention
   status            String    @default("new")     // "new" | "contacted" | "converted" | "lost"
   notes             String?
+  // ── Address, two tracks ──
+  // `address` is free text the phone/email intake fills. Conversion parses it
+  // with a regex that needs exactly "line1, city, ST 12345" — a fallback that
+  // exists only for those callers.
+  //
+  // The five structured columns are what the CRM's manual form fills, and
+  // conversion consumes them verbatim with no parsing. They are all-or-nothing:
+  // a lead either has a complete structured address or none, which is what stops
+  // a Property being created with empty-string city/state/ZIP.
   address           String?
+  addressLine1      String?
+  addressLine2      String?
+  city              String?
+  state             String?
+  postalCode        String?
   jobType           String?
   callType          String?  // "new_job" | "warranty" | "reschedule" | "cancellation" | "estimate_followup" | "callback" | "vendor" | "referral" | "invoice" | "dispute" | "wrong_number" | "solicitation" | "other"
   referredBy        String?

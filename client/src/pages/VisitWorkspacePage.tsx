@@ -366,7 +366,7 @@ export function VisitWorkspacePage() {
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs font-medium text-rce-soft">Mode</label>
-              <select className="input w-full" value={visitEditForm.mode} onChange={(e) => setVisitEditForm({ ...visitEditForm, mode: e.target.value })}>
+              <select className="field" value={visitEditForm.mode} onChange={(e) => setVisitEditForm({ ...visitEditForm, mode: e.target.value })}>
                 <option value="inspection">Inspection</option>
                 <option value="troubleshooting">Troubleshooting</option>
                 <option value="service_call">Service Call</option>
@@ -375,16 +375,16 @@ export function VisitWorkspacePage() {
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-rce-soft">Job Type</label>
-              <input className="input w-full" value={visitEditForm.jobType} onChange={(e) => setVisitEditForm({ ...visitEditForm, jobType: e.target.value })} />
+              <input className="field" value={visitEditForm.jobType} onChange={(e) => setVisitEditForm({ ...visitEditForm, jobType: e.target.value })} />
             </div>
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-rce-soft">Purpose</label>
-            <input className="input w-full" value={visitEditForm.purpose} onChange={(e) => setVisitEditForm({ ...visitEditForm, purpose: e.target.value })} />
+            <input className="field" value={visitEditForm.purpose} onChange={(e) => setVisitEditForm({ ...visitEditForm, purpose: e.target.value })} />
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-rce-soft">Notes</label>
-            <textarea className="input w-full" rows={2} value={visitEditForm.notes} onChange={(e) => setVisitEditForm({ ...visitEditForm, notes: e.target.value })} />
+            <textarea className="field" rows={2} value={visitEditForm.notes} onChange={(e) => setVisitEditForm({ ...visitEditForm, notes: e.target.value })} />
           </div>
           <div className="flex justify-end gap-2">
             <button type="button" className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600" onClick={() => setEditingVisit(false)}>Cancel</button>

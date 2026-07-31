@@ -89,10 +89,38 @@ export type Property = {
   state: string;
   postalCode: string;
   notes?: string | null;
+  occupancyType?: string | null;
+  /**
+   * Explicit office override for the code jurisdiction at this address. Null means
+   * "derive it from the ZIP" — see services/jurisdictionResolver.ts. The Health
+   * Record reads this to decide which NEC edition an address is assessed under.
+   */
+  jurisdictionId?: string | null;
   customer?: Customer;
   systemSnapshot?: SystemSnapshot | null;
   visits?: Visit[];
   estimates?: Estimate[];
+};
+
+/**
+ * One shape for creating and editing an address.
+ *
+ * `null` clears a field; omitting it leaves it alone. `jurisdictionId: null` hands
+ * the decision back to the ZIP-based resolver, which is the right default — a
+ * value here is an override the office made deliberately.
+ */
+export type PropertyWriteInput = {
+  name?: string;
+  addressLine1?: string;
+  addressLine2?: string | null;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  notes?: string | null;
+  occupancyType?: string;
+  jurisdictionId?: string | null;
+  /** Moves the address to another account. Refused once it has job history. */
+  customerId?: string;
 };
 
 export type SystemSnapshot = {
@@ -446,7 +474,23 @@ export type CalendarSchedule = {
 };
 
 export type LeadStatus = "new" | "contacted" | "converted" | "lost";
-export type LeadSource = "email" | "phone" | "web";
+/**
+ * Every value that actually reaches this column. `savannah_text` is written by
+ * the SMS agent and `retention` by the annual-renewal sweep — both were missing,
+ * so the source badge rendered unstyled for them. `manual` is the CRM's own form.
+ */
+export type LeadSource =
+  | "manual"
+  | "phone"
+  | "email"
+  | "web"
+  | "referral"
+  | "savannah_text"
+  | "retention";
+
+export const LEAD_SOURCES: LeadSource[] = [
+  "manual", "phone", "email", "web", "referral", "savannah_text", "retention",
+];
 
 /**
  * Where a lead sits in the funnel.
@@ -478,9 +522,27 @@ export type Lead = {
   status: LeadStatus;
   leadStatus?: LeadPipelineStatus;
   notes?: string | null;
+  /** Free text from the intake webhook. Manual entry fills the structured fields. */
   address?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
   jobType?: string | null;
   callType?: string | null;
+  referredBy?: string | null;
+  urgentFlag?: boolean;
+  warrantyCall?: boolean;
+  warrantyNote?: string | null;
+  contactPreference?: string | null;
+  bestTimeToReach?: string | null;
+  followUpDate?: string | null;
+  followUpReason?: string | null;
+  followUpCount?: number;
+  lostReason?: string | null;
+  /** Internal only — verbatim customer feedback, never shown to the customer. */
+  lostNotes?: string | null;
   customerId?: string | null;
   propertyId?: string | null;
   visitId?: string | null;
@@ -489,6 +551,69 @@ export type Lead = {
   createdAt: string;
   updatedAt: string;
 };
+
+/** One shape for create and edit, so the two can't drift apart. */
+export type LeadWriteInput = {
+  name?: string;
+  email?: string | null;
+  phone?: string | null;
+  source?: LeadSource;
+  status?: LeadStatus;
+  leadStatus?: LeadPipelineStatus;
+  notes?: string | null;
+  address?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  jobType?: string | null;
+  callType?: string | null;
+  referredBy?: string | null;
+  urgentFlag?: boolean;
+  warrantyCall?: boolean;
+  warrantyNote?: string | null;
+  contactPreference?: string | null;
+  bestTimeToReach?: string | null;
+  followUpDate?: string | null;
+  followUpReason?: string | null;
+  lostReason?: string | null;
+  lostNotes?: string | null;
+  customerId?: string | null;
+  propertyId?: string | null;
+};
+
+/** An account that might already be this caller. See services/customerMatch.ts. */
+export type CustomerMatch = {
+  customerId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  score: number;
+  /** Why it surfaced — rendered in words, never as a bare score. */
+  matchedOn: ("phone" | "email" | "name")[];
+  properties: {
+    id: string;
+    name: string;
+    addressLine1: string;
+    addressLine2: string | null;
+    city: string;
+    state: string;
+    postalCode: string;
+  }[];
+  visitCount: number;
+  lastVisitAt: string | null;
+};
+
+export const LEAD_LOST_REASONS = ["price", "timing", "referral", "trust", "scope", "other"] as const;
+export const LEAD_FOLLOW_UP_REASONS = [
+  "comparing_estimates", "still_planning", "consulting_partner", "no_answer",
+] as const;
+export const LEAD_CONTACT_PREFERENCES = ["phone", "email", "either"] as const;
+export const LEAD_CALL_TYPES = [
+  "new_job", "warranty", "reschedule", "cancellation", "estimate_followup", "callback",
+  "vendor", "referral", "invoice", "dispute", "wrong_number", "solicitation", "other",
+] as const;
 
 export type LeadPipelineStatus =
   | "new"

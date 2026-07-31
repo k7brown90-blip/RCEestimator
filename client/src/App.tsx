@@ -6,6 +6,7 @@ import { CalendarPage } from "./pages/CalendarPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { JobsPage } from "./pages/JobsPage";
 import { LeadsPage } from "./pages/LeadsPage";
+import { LeadFormPage } from "./pages/LeadFormPage";
 import { PinLoginPage } from "./pages/PinLoginPage";
 import { PropertyDetailPage } from "./pages/PropertyDetailPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -42,6 +43,8 @@ function App() {
                 <Route path="/jobs" element={<JobsPage />} />
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/leads" element={<LeadsPage />} />
+                <Route path="/leads/new" element={<LeadFormPage />} />
+                <Route path="/leads/:leadId/edit" element={<LeadFormPage />} />
                 <Route path="/accounts" element={<AccountsPage />} />
                 <Route path="/accounts/:accountId" element={<AccountDetailPage />} />
                 <Route path="/customers" element={<Navigate to="/accounts" replace />} />

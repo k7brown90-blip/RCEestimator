@@ -18,14 +18,25 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  // Skip auth for health, PIN login, MCP, and public Vapi/webhook endpoints
+  // Skip auth for health, PIN login, MCP, and public Vapi/webhook endpoints.
+  //
+  // Every path here resolves BEFORE this middleware is installed (app.ts:1189),
+  // so these entries no longer gate anything — their remaining effect is to keep
+  // an unmatched sub-path under a mounted router returning 404 rather than 401.
+  //
+  // `/leads` used to be on this list and was different in kind: `GET /leads` is
+  // registered at app.ts:3371, AFTER this middleware, so the exemption made the
+  // entire lead list world-readable — every customer's name, phone, email and
+  // address, plus `lostNotes`, which the schema marks "internal only, never
+  // shared". The webhook `POST /leads` sits at app.ts:434 with its own
+  // webhook_secret check and never needed the exemption. Do not re-add it; the
+  // authenticated create path is POST /crm/leads.
   if (
     req.path === "/health" ||
     req.path === "/auth/pin" ||
     req.path.startsWith("/mcp") ||
     req.path.startsWith("/vapi/") ||
     req.path.startsWith("/agent") ||
-    req.path === "/leads" ||
     req.path === "/customer/lookup" ||
     req.path === "/calendar/availability" ||
     req.path === "/calls/daily-summary"

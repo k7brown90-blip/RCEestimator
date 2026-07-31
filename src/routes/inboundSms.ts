@@ -18,14 +18,13 @@ import { asyncHandler } from "./agent-helpers";
 import { sendSms, KYLE_PHONE, isFromKyle, fetchTwilioMedia } from "../services/twilio";
 import { parseReceiptImage } from "../services/receiptVision";
 import { applyConfirmationAction, type ConfirmationAction } from "../services/visitConfirmations";
+import { findCustomerMatches, phoneDigits10 } from "../services/customerMatch";
 
 export const inboundSmsRouter = express.Router();
 
 const TZ = "America/Chicago";
 
-function last10(phone: string): string {
-  return phone.replace(/\D/g, "").slice(-10);
-}
+const last10 = (phone: string): string => phoneDigits10(phone) ?? "";
 
 function formatWhen(d: Date): string {
   return `${d.toLocaleDateString("en-US", { timeZone: TZ, weekday: "long", month: "long", day: "numeric" })} at ${d.toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" })}`;
@@ -46,14 +45,18 @@ async function matchTechnician(from10: string) {
   return techs.find((t) => last10(t.phone!) === from10) ?? null;
 }
 
+/**
+ * The best-scoring account for an inbound number.
+ *
+ * This route's last-4-narrow-then-confirm-in-JS approach is what
+ * services/customerMatch.ts generalized, so it now calls the shared version
+ * rather than keeping a second copy of the strategy.
+ */
 async function matchCustomer(from10: string) {
   if (!from10) return null;
-  const candidates = await prisma.customer.findMany({
-    where: { phone: { contains: from10.slice(-4) } },
-    orderBy: { updatedAt: "desc" },
-    take: 25,
-  });
-  return candidates.find((c) => c.phone && last10(c.phone) === from10) ?? null;
+  const [best] = await findCustomerMatches({ phone: from10, limit: 1 });
+  if (!best) return null;
+  return prisma.customer.findUnique({ where: { id: best.customerId } });
 }
 
 /** Extract Twilio media URLs from the webhook payload. */

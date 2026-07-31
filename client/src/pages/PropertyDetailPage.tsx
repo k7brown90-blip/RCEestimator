@@ -130,30 +130,30 @@ export function PropertyDetailPage() {
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs font-medium text-rce-soft">Name</label>
-              <input className="input w-full" value={propertyForm.name} onChange={(e) => setPropertyForm({ ...propertyForm, name: e.target.value })} />
+              <input className="field" value={propertyForm.name} onChange={(e) => setPropertyForm({ ...propertyForm, name: e.target.value })} />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-rce-soft">Address</label>
-              <input className="input w-full" value={propertyForm.addressLine1} onChange={(e) => setPropertyForm({ ...propertyForm, addressLine1: e.target.value })} />
+              <input className="field" value={propertyForm.addressLine1} onChange={(e) => setPropertyForm({ ...propertyForm, addressLine1: e.target.value })} />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-rce-soft">City</label>
-              <input className="input w-full" value={propertyForm.city} onChange={(e) => setPropertyForm({ ...propertyForm, city: e.target.value })} />
+              <input className="field" value={propertyForm.city} onChange={(e) => setPropertyForm({ ...propertyForm, city: e.target.value })} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="mb-1 block text-xs font-medium text-rce-soft">State</label>
-                <input className="input w-full" value={propertyForm.state} onChange={(e) => setPropertyForm({ ...propertyForm, state: e.target.value })} />
+                <input className="field" value={propertyForm.state} onChange={(e) => setPropertyForm({ ...propertyForm, state: e.target.value })} />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-rce-soft">Zip</label>
-                <input className="input w-full" value={propertyForm.postalCode} onChange={(e) => setPropertyForm({ ...propertyForm, postalCode: e.target.value })} />
+                <input className="field" value={propertyForm.postalCode} onChange={(e) => setPropertyForm({ ...propertyForm, postalCode: e.target.value })} />
               </div>
             </div>
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-rce-soft">Notes</label>
-            <textarea className="input w-full" rows={2} value={propertyForm.notes} onChange={(e) => setPropertyForm({ ...propertyForm, notes: e.target.value })} />
+            <textarea className="field" rows={2} value={propertyForm.notes} onChange={(e) => setPropertyForm({ ...propertyForm, notes: e.target.value })} />
           </div>
           <div className="flex justify-end gap-2">
             <button type="button" className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600" onClick={() => setEditingProperty(false)}>Cancel</button>

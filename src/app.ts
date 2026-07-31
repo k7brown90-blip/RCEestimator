@@ -34,6 +34,8 @@ import {
 } from "./services/scheduling";
 import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal } from "./services/jobCosting";
 import { parseJsonArrayLength, parseJsonStringArray } from "./lib/json";
+import { findCustomerMatches } from "./services/customerMatch";
+import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
 import { savannahRouter } from "./routes/agent-savannah";
 import { jerryRouter } from "./routes/agent-jerry";
 import { sharedAgentRouter } from "./routes/agent-shared";
@@ -380,6 +382,11 @@ app.get("/customer/lookup", asyncHandler(async (req, res) => {
   });
 
   // ── Phone-based lookup ──
+  // TODO: switch to services/customerMatch.findCustomerMatches. `contains phoneRaw`
+  // finds "+16155550101" but misses "(615) 555-0101", so the shared matcher would
+  // find strictly more accounts — but this is the live voice-agent path, and what
+  // it returns changes what a caller hears. Pin the current behaviour with a test
+  // before swapping it.
   if (phoneRaw && phoneRaw.length === 10) {
     const customers = await prisma.customer.findMany({
       where: { phone: { contains: phoneRaw } },
@@ -2002,30 +2009,65 @@ app.post("/properties", asyncHandler(async (req, res) => {
     customerId: z.string().min(1),
     name: z.string().min(1),
     addressLine1: z.string().min(1),
-    addressLine2: z.string().optional(),
+    addressLine2: z.string().nullable().optional(),
     city: z.string().min(1),
     state: z.string().min(1),
     postalCode: z.string().min(1),
-    notes: z.string().optional(),
+    notes: z.string().nullable().optional(),
+    occupancyType: z.enum(["residential", "commercial"]).default("residential"),
+    // The explicit per-address override documented as step 1 of
+    // services/jurisdictionResolver.ts. It had no write path at all, so that step
+    // was dead code and the Health Record could only ever derive it from the ZIP.
+    // The enum is imported from the resolver so it can't drift from the field
+    // app's profile list.
+    jurisdictionId: z.enum(KNOWN_JURISDICTION_IDS).nullable().optional(),
   });
   const body = schema.parse(req.body);
-  const property = await prisma.property.create({ data: body });
-  await prisma.systemSnapshot.create({
-    data: {
-      propertyId: property.id,
-      deficienciesJson: JSON.stringify([]),
-      changeLogJson: JSON.stringify([]),
-    },
-  });
+  const property = await createPropertyWithSnapshot(prisma, body);
   res.status(201).json(property);
 }));
 
 app.patch("/properties/:propertyId", asyncHandler(async (req, res) => {
   const propertyId = readParam(req, "propertyId");
-  const prop = await prisma.property.findUnique({ where: { id: propertyId } });
+  const prop = await prisma.property.findUnique({
+    where: { id: propertyId },
+    include: { visits: { select: { id: true }, take: 1 } },
+  });
   if (!prop) { res.status(404).json({ error: "Property not found" }); return; }
 
-  const body = req.body as { name?: string; addressLine1?: string; addressLine2?: string; city?: string; state?: string; postalCode?: string; notes?: string };
+  const body = req.body as {
+    name?: string; addressLine1?: string; addressLine2?: string | null; city?: string;
+    state?: string; postalCode?: string; notes?: string | null;
+    occupancyType?: string; jurisdictionId?: string | null; customerId?: string;
+  };
+
+  // Moving an address between accounts — a duplicate will get filed under the
+  // wrong one eventually. Blocked once there's history, because Visit.customerId
+  // is denormalized alongside Visit.propertyId and moving the property alone
+  // would leave every past job pointing at the old account.
+  if (body.customerId !== undefined && body.customerId !== prop.customerId) {
+    if (prop.visits.length > 0) {
+      res.status(409).json({
+        error: "Cannot move an address that already has job history",
+        message:
+          "Past jobs at this address are recorded against the current account. Moving the " +
+          "address would leave that history pointing at the wrong one.",
+      });
+      return;
+    }
+    const target = await prisma.customer.findUnique({ where: { id: body.customerId }, select: { id: true } });
+    if (!target) { res.status(400).json({ error: "Target account not found" }); return; }
+  }
+
+  if (body.jurisdictionId != null && !KNOWN_JURISDICTION_IDS.includes(body.jurisdictionId as never)) {
+    res.status(400).json({ error: `Invalid jurisdictionId. Must be one of: ${KNOWN_JURISDICTION_IDS.join(", ")}` });
+    return;
+  }
+  if (body.occupancyType !== undefined && !["residential", "commercial"].includes(body.occupancyType)) {
+    res.status(400).json({ error: "occupancyType must be residential or commercial" });
+    return;
+  }
+
   const data: Record<string, unknown> = {};
   if (body.name !== undefined) data.name = body.name.trim();
   if (body.addressLine1 !== undefined) data.addressLine1 = body.addressLine1.trim();
@@ -2034,6 +2076,9 @@ app.patch("/properties/:propertyId", asyncHandler(async (req, res) => {
   if (body.state !== undefined) data.state = body.state.trim();
   if (body.postalCode !== undefined) data.postalCode = body.postalCode.trim();
   if (body.notes !== undefined) data.notes = body.notes?.trim() || null;
+  if (body.occupancyType !== undefined) data.occupancyType = body.occupancyType;
+  if (body.jurisdictionId !== undefined) data.jurisdictionId = body.jurisdictionId;
+  if (body.customerId !== undefined) data.customerId = body.customerId;
 
   const updated = await prisma.property.update({ where: { id: propertyId }, data });
   res.json(updated);
@@ -2043,11 +2088,37 @@ app.delete("/properties/:propertyId", asyncHandler(async (req, res) => {
   const propertyId = readParam(req, "propertyId");
   const prop = await prisma.property.findUnique({
     where: { id: propertyId },
-    include: { visits: { select: { id: true }, take: 1 } },
+    include: {
+      visits: { select: { id: true }, take: 1 },
+      // Findings and Documents cascade — deleting the address would silently
+      // destroy the defect ledger and any cure certificates issued against it,
+      // which are the legal record. Inspections and Estimates are Restrict, so
+      // they'd surface as a raw FK error and a 500. CapacityCheck has no relation
+      // at all and would orphan. All five are checked here instead.
+      findings: { select: { id: true } },
+      documents: { select: { id: true } },
+      healthInspections: { select: { id: true }, take: 1 },
+      estimates: { select: { id: true }, take: 1 },
+    },
   });
   if (!prop) { res.status(404).json({ error: "Property not found" }); return; }
-  if (prop.visits.length > 0) {
-    res.status(409).json({ error: "Cannot delete a property with existing visits" });
+
+  const capacityChecks = await prisma.capacityCheck.count({ where: { propertyId } });
+  const blockers = [
+    prop.visits.length > 0 && "job history",
+    prop.findings.length > 0 && `${prop.findings.length} finding${prop.findings.length === 1 ? "" : "s"} on record`,
+    prop.documents.length > 0 && `${prop.documents.length} document${prop.documents.length === 1 ? "" : "s"}`,
+    prop.healthInspections.length > 0 && "a Health Record",
+    prop.estimates.length > 0 && "an estimate",
+    capacityChecks > 0 && "a capacity calculation",
+  ].filter((b): b is string => typeof b === "string");
+
+  if (blockers.length > 0) {
+    res.status(409).json({
+      error: `Cannot delete this address — it has ${blockers.join(", ")}.`,
+      message: "Remove or move that history first, or keep the address and stop using it.",
+      blockers,
+    });
     return;
   }
 
@@ -3368,6 +3439,235 @@ const isLostLead = (lead: { status: string; leadStatus: string }) =>
 const isFinishedVisit = (visit: LinkedVisit | null) =>
   visit != null && ARCHIVED_JOB_STATUSES.includes(visit.status as (typeof ARCHIVED_JOB_STATUSES)[number]);
 
+// ─── Lead vocabularies ──────────────────────────────────────────────────────
+// Shared by every lead write path. `PATCH /leads/:id/lost` (line 829) validated
+// lostReason against an enum while `PATCH /leads/:leadId` stored anything, so one
+// typo from any caller permanently skewed GET /leads/loss-report. One definition
+// each, used everywhere, so they cannot drift again.
+
+export const LEAD_STATUSES = ["new", "contacted", "converted", "lost"] as const;
+export const LEAD_PIPELINE_STATUSES = [
+  "new", "booked", "unresolved", "planning", "no_answer", "lost", "won",
+] as const;
+export const LOST_REASONS = ["price", "timing", "referral", "trust", "scope", "other"] as const;
+export const FOLLOW_UP_REASONS = [
+  "comparing_estimates", "still_planning", "consulting_partner", "no_answer",
+] as const;
+export const CONTACT_PREFERENCES = ["phone", "email", "either"] as const;
+export const CALL_TYPES = [
+  "new_job", "warranty", "reschedule", "cancellation", "estimate_followup", "callback",
+  "vendor", "referral", "invoice", "dispute", "wrong_number", "solicitation", "other",
+] as const;
+/** `manual` is what the CRM's own form uses; the rest are what writes them today. */
+export const LEAD_SOURCES = [
+  "manual", "phone", "email", "web", "referral", "savannah_text", "retention",
+] as const;
+
+/**
+ * A lead's address, resolved once into something that cannot be half-formed.
+ *
+ * The old convert path kept four mutable strings and a regex that silently left
+ * three of them empty. Making the empty case its own variant means a Property can
+ * never be created from a partial address — the type won't let you.
+ */
+type LeadAddress =
+  | { kind: "structured" | "parsed"; parts: { addressLine1: string; addressLine2: string | null; city: string; state: string; postalCode: string } }
+  | { kind: "none" };
+
+/** Exactly `line1, city, ST 12345`. Webhook and voice-agent leads only. */
+const FREE_TEXT_ADDRESS = /^(.+?),\s*([^,]+),\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$/i;
+
+function resolveLeadAddress(lead: {
+  address: string | null; addressLine1: string | null; addressLine2: string | null;
+  city: string | null; state: string | null; postalCode: string | null;
+}): LeadAddress {
+  // Structured wins outright when present — it was typed by a person into
+  // labelled fields, which beats anything a regex can infer.
+  const line1 = lead.addressLine1?.trim();
+  const city = lead.city?.trim();
+  const state = lead.state?.trim();
+  const zip = lead.postalCode?.trim();
+  if (line1 && city && state && zip) {
+    return {
+      kind: "structured",
+      parts: {
+        addressLine1: line1, addressLine2: lead.addressLine2?.trim() || null,
+        city, state: state.toUpperCase(), postalCode: zip,
+      },
+    };
+  }
+
+  const match = lead.address?.trim().match(FREE_TEXT_ADDRESS);
+  if (match) {
+    return {
+      kind: "parsed",
+      parts: {
+        addressLine1: match[1].trim(), addressLine2: null, city: match[2].trim(),
+        state: match[3].trim().toUpperCase(), postalCode: match[4].trim(),
+      },
+    };
+  }
+
+  // Present but unparseable counts as none. Writing "somewhere off Rutherford
+  // Blvd" into addressLine1 with a blank city is worse than refusing.
+  return { kind: "none" };
+}
+
+/** jobType → Visit mode. Module scope; it was being rebuilt per request. */
+function deriveVisitMode(jobType: string | null): string {
+  if (!jobType) return "service_diagnostic";
+  const jt = jobType.toLowerCase();
+  if (jt.includes("remodel") || jt.includes("renovation") || jt.includes("addition")) return "remodel";
+  if (jt.includes("new construction") || jt.includes("new build")) return "new_construction";
+  return "service_diagnostic";
+}
+
+/**
+ * One way to birth a Property.
+ *
+ * `POST /properties` seeded `deficienciesJson: "[]"` and convert seeded neither,
+ * so anything parsing that column had to handle null on converted properties
+ * only. Both paths come through here now.
+ */
+async function createPropertyWithSnapshot(
+  tx: Pick<typeof prisma, "property" | "systemSnapshot">,
+  data: {
+    customerId: string; name: string; addressLine1: string; addressLine2?: string | null;
+    city: string; state: string; postalCode: string; notes?: string | null;
+    occupancyType?: string; jurisdictionId?: string | null;
+  },
+) {
+  const property = await tx.property.create({ data });
+  await tx.systemSnapshot.create({
+    data: { propertyId: property.id, deficienciesJson: "[]", changeLogJson: "[]" },
+  });
+  return property;
+}
+
+/** Structured address is all-or-nothing — the guarantee convert relies on. */
+const leadAddressSchema = z.object({
+  addressLine1: z.string().trim().min(1).optional(),
+  addressLine2: z.string().trim().nullable().optional(),
+  city: z.string().trim().min(1).optional(),
+  state: z.string().trim().length(2).optional(),
+  postalCode: z.string().trim().regex(/^\d{5}(-\d{4})?$/, "ZIP must be 12345 or 12345-6789").optional(),
+});
+
+/**
+ * Whether a merged address is complete, empty, or a fragment.
+ *
+ * Evaluated against the row as it will END UP, not the patch alone — otherwise
+ * clearing just `city` would sneak a fragment past the check.
+ */
+function addressCompleteness(a: {
+  addressLine1?: string | null; city?: string | null; state?: string | null; postalCode?: string | null;
+}): "complete" | "empty" | "partial" {
+  const present = [a.addressLine1, a.city, a.state, a.postalCode].filter((v) => Boolean(v?.trim())).length;
+  if (present === 4) return "complete";
+  if (present === 0) return "empty";
+  return "partial";
+}
+
+const PARTIAL_ADDRESS_ERROR =
+  "An address needs street, city, state and ZIP together — or leave all four blank. " +
+  "A partial address would create a property with no city, which is what this replaced.";
+
+/**
+ * POST /crm/leads — manual lead entry.
+ *
+ * Not `POST /leads`: that route lives at line 434, ~750 lines before
+ * `pinAuthMiddleware` is installed, so a browser request can never reach a JWT
+ * check there — it's gated on a `webhook_secret` header the browser has no way to
+ * hold. Line 148 also mounts `publicLimiter` on the `/leads` PREFIX at 30 req/min,
+ * already shared by every list refetch, PATCH and convert the SPA makes.
+ *
+ * `/crm/*` is the established CRM-only prefix: after pin auth, not rate-limited.
+ */
+app.post("/crm/leads", asyncHandler(async (req, res) => {
+  const body = z.object({
+    name: z.string().trim().min(1),
+    email: z.string().trim().email().nullable().optional(),
+    phone: z.string().trim().nullable().optional(),
+    source: z.enum(LEAD_SOURCES).default("manual"),
+    // A lead being entered by hand is by definition not yet converted —
+    // conversion is a transition that creates records, not an initial state.
+    status: z.enum(["new", "contacted", "lost"]).default("new"),
+    leadStatus: z.enum(LEAD_PIPELINE_STATUSES).default("new"),
+    notes: z.string().trim().nullable().optional(),
+    jobType: z.string().trim().nullable().optional(),
+    callType: z.enum(CALL_TYPES).nullable().optional(),
+    referredBy: z.string().trim().nullable().optional(),
+    urgentFlag: z.boolean().default(false),
+    warrantyCall: z.boolean().default(false),
+    warrantyNote: z.string().trim().nullable().optional(),
+    contactPreference: z.enum(CONTACT_PREFERENCES).nullable().optional(),
+    bestTimeToReach: z.string().trim().nullable().optional(),
+    followUpDate: z.coerce.date().nullable().optional(),
+    followUpReason: z.enum(FOLLOW_UP_REASONS).nullable().optional(),
+    lostReason: z.enum(LOST_REASONS).nullable().optional(),
+    lostNotes: z.string().trim().nullable().optional(),
+    address: z.string().trim().nullable().optional(),
+    customerId: z.string().min(1).nullable().optional(),
+    propertyId: z.string().min(1).nullable().optional(),
+  }).merge(leadAddressSchema).parse(req.body);
+
+  if (addressCompleteness(body) === "partial") {
+    res.status(400).json({ error: PARTIAL_ADDRESS_ERROR });
+    return;
+  }
+
+  if (body.customerId) {
+    const customer = await prisma.customer.findUnique({ where: { id: body.customerId }, select: { id: true } });
+    if (!customer) { res.status(400).json({ error: "Linked account not found" }); return; }
+  }
+  if (body.propertyId) {
+    const property = await prisma.property.findUnique({
+      where: { id: body.propertyId },
+      select: { id: true, customerId: true },
+    });
+    if (!property) { res.status(400).json({ error: "Linked address not found" }); return; }
+    // Without this a lead could point at another account's address, and convert
+    // would then attach a Visit across two accounts.
+    if (body.customerId && property.customerId !== body.customerId) {
+      res.status(400).json({ error: "That address belongs to a different account" });
+      return;
+    }
+  }
+
+  const lead = await prisma.lead.create({
+    data: {
+      ...body,
+      state: body.state ? body.state.toUpperCase() : undefined,
+    },
+  });
+
+  // Returned even though the client normally looks matches up first: a second
+  // tab or a fast typist can submit without ever having called the lookup, and
+  // the owner asked to be shown duplicates rather than stopped by them.
+  const matches = await findCustomerMatches({
+    phone: lead.phone, email: lead.email, name: lead.name,
+  });
+  res.status(201).json({ lead, matches });
+}));
+
+/**
+ * GET /crm/customer-matches — accounts that might already be this caller.
+ *
+ * Each match carries its addresses, so the picker can offer "link to this
+ * account → and which address" without a second round trip.
+ */
+app.get("/crm/customer-matches", asyncHandler(async (req, res) => {
+  const phone = readQuery(req, "phone");
+  const email = readQuery(req, "email");
+  const name = readQuery(req, "name");
+  if (!phone && !email && !name) {
+    res.status(400).json({ error: "Provide at least one of phone, email or name" });
+    return;
+  }
+  const matches = await findCustomerMatches({ phone, email, name, limit: 10 });
+  res.json({ matches });
+}));
+
 app.get("/leads", asyncHandler(async (req, res) => {
   const status = readQuery(req, "status");
   const leadStatus = readQuery(req, "leadStatus");
@@ -3432,19 +3732,84 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     lostNotes?: string | null;
     bestTimeToReach?: string | null;
     contactPreference?: string | null;
+    // ── Added for manual editing ──
+    source?: string;
+    addressLine1?: string | null;
+    addressLine2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postalCode?: string | null;
+    // Re-pointing a lead at a known account is the common case: a webhook lead
+    // arrives, the owner recognizes the customer, and links it before converting.
+    // `visitId` is deliberately NOT accepted — that's conversion's output and the
+    // scheduler's business, and writing it here could point a lead at someone
+    // else's job.
+    customerId?: string | null;
+    propertyId?: string | null;
   };
-  const validStatuses = ["new", "contacted", "converted", "lost"];
-  const validLeadStatuses = ["new", "booked", "unresolved", "planning", "no_answer", "lost", "won"];
-  if (body.status && !validStatuses.includes(body.status)) {
-    res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
+
+  // Existing row first: PATCH was the only lead route with no 404 guard, so a bad
+  // id surfaced as a Prisma error and a 500. It's also needed to evaluate the
+  // address against the MERGED result rather than the patch alone.
+  const existing = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!existing) { res.status(404).json({ error: "Lead not found" }); return; }
+
+  const oneOf = (value: string | null | undefined, allowed: readonly string[], field: string) => {
+    if (value === undefined || value === null) return null;
+    return allowed.includes(value) ? null : `Invalid ${field}. Must be one of: ${allowed.join(", ")}`;
+  };
+  const invalid =
+    oneOf(body.status, LEAD_STATUSES, "status") ??
+    oneOf(body.leadStatus, LEAD_PIPELINE_STATUSES, "leadStatus") ??
+    oneOf(body.source, LEAD_SOURCES, "source") ??
+    oneOf(body.lostReason, LOST_REASONS, "lostReason") ??
+    oneOf(body.followUpReason, FOLLOW_UP_REASONS, "followUpReason") ??
+    oneOf(body.contactPreference, CONTACT_PREFERENCES, "contactPreference") ??
+    oneOf(body.callType, CALL_TYPES, "callType");
+  if (invalid) { res.status(400).json({ error: invalid }); return; }
+
+  const pick = <T,>(patched: T | undefined, current: T): T => (patched === undefined ? current : patched);
+  const merged = {
+    addressLine1: pick(body.addressLine1, existing.addressLine1),
+    city: pick(body.city, existing.city),
+    state: pick(body.state, existing.state),
+    postalCode: pick(body.postalCode, existing.postalCode),
+  };
+  if (addressCompleteness(merged) === "partial") {
+    res.status(400).json({ error: PARTIAL_ADDRESS_ERROR });
     return;
   }
-  if (body.leadStatus && !validLeadStatuses.includes(body.leadStatus)) {
-    res.status(400).json({ error: `Invalid leadStatus. Must be one of: ${validLeadStatuses.join(", ")}` });
+  if (body.postalCode && !/^\d{5}(-\d{4})?$/.test(body.postalCode.trim())) {
+    res.status(400).json({ error: "ZIP must be 12345 or 12345-6789" });
     return;
   }
 
+  // An address must belong to the account the lead will end up on.
+  const effectiveCustomerId = pick(body.customerId, existing.customerId);
+  if (body.propertyId) {
+    const property = await prisma.property.findUnique({
+      where: { id: body.propertyId }, select: { id: true, customerId: true },
+    });
+    if (!property) { res.status(400).json({ error: "Linked address not found" }); return; }
+    if (effectiveCustomerId && property.customerId !== effectiveCustomerId) {
+      res.status(400).json({ error: "That address belongs to a different account" });
+      return;
+    }
+  }
+  if (body.customerId) {
+    const customer = await prisma.customer.findUnique({ where: { id: body.customerId }, select: { id: true } });
+    if (!customer) { res.status(400).json({ error: "Linked account not found" }); return; }
+  }
+
   const data: Record<string, unknown> = {};
+  if (body.source !== undefined) data.source = body.source;
+  if (body.addressLine1 !== undefined) data.addressLine1 = body.addressLine1?.trim() || null;
+  if (body.addressLine2 !== undefined) data.addressLine2 = body.addressLine2?.trim() || null;
+  if (body.city !== undefined) data.city = body.city?.trim() || null;
+  if (body.state !== undefined) data.state = body.state?.trim().toUpperCase() || null;
+  if (body.postalCode !== undefined) data.postalCode = body.postalCode?.trim() || null;
+  if (body.customerId !== undefined) data.customerId = body.customerId;
+  if (body.propertyId !== undefined) data.propertyId = body.propertyId;
   if (body.name !== undefined) data.name = body.name.trim();
   if (body.email !== undefined) data.email = body.email?.trim() || null;
   if (body.phone !== undefined) data.phone = body.phone?.trim() || null;
@@ -3499,86 +3864,134 @@ app.delete("/leads/:leadId", asyncHandler(async (req, res) => {
   res.status(204).end();
 }));
 
+/**
+ * PATCH /leads/:leadId/convert — lead becomes account + address + job.
+ *
+ * Three things changed here, all of them about not writing records nobody asked
+ * for:
+ *
+ * 1. **The duplicate guard rail.** This used to create a brand-new Customer every
+ *    time, with no phone or email matching anywhere — so a repeat customer asking
+ *    about a second property got a duplicate account instead of a second address.
+ *    Now, if it's about to mint an account and a match exists, it refuses with 409
+ *    and the matches, having written nothing. It never adopts a match on its own,
+ *    even a perfect one: that's a merge decision, and merges are hard to undo.
+ *    One flag (`createNewAccount`) says "yes, genuinely new".
+ * 2. **No half-conversions.** An unparseable or missing address used to produce a
+ *    Customer, no Property, no Visit — and because the lead was then marked
+ *    converted, `DELETE` 409'd on it forever. Now that's a 400 with nothing
+ *    written, so the lead stays fixable and deletable.
+ * 3. **No empty-string addresses.** `resolveLeadAddress` returns a complete
+ *    address or none at all.
+ */
 app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
   const leadId = readParam(req, "leadId");
+  const body = z.object({
+    customerId: z.string().min(1).optional(),
+    propertyId: z.string().min(1).optional(),
+    propertyName: z.string().trim().min(1).optional(),
+    jurisdictionId: z.enum(KNOWN_JURISDICTION_IDS).optional(),
+    /** Explicit acknowledgement that a duplicate-looking account is intended. */
+    createNewAccount: z.boolean().optional(),
+  }).merge(leadAddressSchema).parse(req.body ?? {});
+
   const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) {
     res.status(404).json({ error: "Lead not found" });
     return;
   }
   if (lead.status === "converted") {
-    res.status(400).json({ error: "Lead already converted" });
+    // 409, matching DELETE's vocabulary for the same state conflict.
+    res.status(409).json({ error: "Lead already converted" });
     return;
   }
 
-  // Parse address into components if possible (basic "city, state zip" pattern)
-  let addressLine1 = lead.address ?? "";
-  let city = "";
-  let state = "";
-  let postalCode = "";
-  if (lead.address) {
-    const match = lead.address.match(/^(.+?),\s*([^,]+),\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$/i);
-    if (match) {
-      addressLine1 = match[1].trim();
-      city = match[2].trim();
-      state = match[3].trim().toUpperCase();
-      postalCode = match[4].trim();
+  // An address supplied on the request beats the lead's own — this is the picker
+  // saying "actually, put it here".
+  const address = addressCompleteness(body) === "complete"
+    ? resolveLeadAddress({
+      address: null, addressLine1: body.addressLine1!, addressLine2: body.addressLine2 ?? null,
+      city: body.city!, state: body.state!, postalCode: body.postalCode!,
+    })
+    : resolveLeadAddress(lead);
+
+  const customerId = body.customerId ?? lead.customerId;
+  const propertyId = body.propertyId ?? lead.propertyId;
+
+  if (customerId) {
+    const exists = await prisma.customer.findUnique({ where: { id: customerId }, select: { id: true } });
+    if (!exists) { res.status(400).json({ error: "Linked account not found" }); return; }
+  } else if (!body.createNewAccount) {
+    // About to mint an account. Check first — this is the whole point.
+    const matches = await findCustomerMatches({ phone: lead.phone, email: lead.email, name: lead.name });
+    if (matches.length > 0) {
+      res.status(409).json({
+        error: "Possible duplicate account",
+        message:
+          "This lead's contact details match an account you already have. Link it to that " +
+          "account and choose an address, or confirm you want a new account.",
+        matches,
+      });
+      return;
     }
   }
 
-  // Map jobType string to visit mode
-  function deriveMode(jobType: string | null): string {
-    if (!jobType) return "service_diagnostic";
-    const jt = jobType.toLowerCase();
-    if (jt.includes("remodel") || jt.includes("renovation") || jt.includes("addition")) return "remodel";
-    if (jt.includes("new construction") || jt.includes("new build")) return "new_construction";
-    return "service_diagnostic";
+  if (propertyId) {
+    const property = await prisma.property.findUnique({
+      where: { id: propertyId }, select: { id: true, customerId: true },
+    });
+    if (!property) { res.status(400).json({ error: "Linked address not found" }); return; }
+    if (customerId && property.customerId !== customerId) {
+      res.status(400).json({ error: "That address belongs to a different account" });
+      return;
+    }
+  } else if (address.kind === "none") {
+    // Nothing is written. The lead stays unconverted, so it remains editable and
+    // deletable rather than becoming a permanent orphan.
+    res.status(400).json({
+      error: "This lead has no usable address",
+      message:
+        "Add a street address, city, state and ZIP before converting — a job has to belong " +
+        "to somewhere. Nothing was created.",
+      needs: "address",
+    });
+    return;
   }
 
   const result = await prisma.$transaction(async (tx) => {
-    // Reuse existing customer if lead is already linked (returning customer)
-    let customer: { id: string; name: string; email: string | null; phone: string | null };
-    if (lead.customerId) {
-      const existing = await tx.customer.findUnique({ where: { id: lead.customerId } });
-      if (existing) {
-        customer = existing;
-      } else {
-        customer = await tx.customer.create({ data: { name: lead.name, email: lead.email, phone: lead.phone } });
-      }
-    } else {
-      customer = await tx.customer.create({ data: { name: lead.name, email: lead.email, phone: lead.phone } });
-    }
+    const customer = customerId
+      ? (await tx.customer.findUniqueOrThrow({ where: { id: customerId } }))
+      : await tx.customer.create({ data: { name: lead.name, email: lead.email, phone: lead.phone } });
 
-    // Reuse existing property if lead is already linked
-    let property: { id: string } | null = null;
-    if (lead.propertyId) {
-      property = await tx.property.findUnique({ where: { id: lead.propertyId }, select: { id: true } });
-    }
-    if (!property && lead.address) {
-      property = await tx.property.create({
-        data: {
-          customerId: customer.id,
-          name: addressLine1,
-          addressLine1,
-          city,
-          state,
-          postalCode,
-        },
+    let property: { id: string } | null = propertyId
+      ? await tx.property.findUnique({ where: { id: propertyId }, select: { id: true } })
+      : null;
+
+    if (!property && address.kind !== "none") {
+      property = await createPropertyWithSnapshot(tx, {
+        customerId: customer.id,
+        name: body.propertyName ?? address.parts.addressLine1,
+        ...address.parts,
+        // Left null unless the office said otherwise, so jurisdictionResolver
+        // derives it from the ZIP — which now actually exists.
+        jurisdictionId: body.jurisdictionId ?? null,
       });
-      await tx.systemSnapshot.create({ data: { propertyId: property.id } });
     }
 
-    let visit: { id: string } | null = null;
-    if (property) {
-      visit = await tx.visit.create({
+    const visit = property
+      ? await tx.visit.create({
         data: {
           propertyId: property.id,
           customerId: customer.id,
-          mode: deriveMode(lead.jobType),
+          mode: deriveVisitMode(lead.jobType),
+          // Convert used to drop jobType, so a hand-typed "Panel upgrade"
+          // vanished at exactly the moment it became a job — and both the Jobs
+          // page and the funnel badge read visit.jobType.
+          jobType: lead.jobType,
           purpose: lead.notes ?? undefined,
         },
-      });
-    }
+      })
+      : null;
 
     const updatedLead = await tx.lead.update({
       where: { id: leadId },

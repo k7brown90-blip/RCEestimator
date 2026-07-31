@@ -1,12 +1,22 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { JobScheduler } from "../components/JobScheduler";
 import { Modal } from "../components/Modal";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
+import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
 import { shortDate } from "../lib/utils";
-import type { JobStatus, Lead, LeadLinkedVisit, LeadPipeline, LeadSource, LeadStatus } from "../lib/types";
+import {
+  LEAD_LOST_REASONS,
+  type CustomerMatch,
+  type JobStatus,
+  type Lead,
+  type LeadLinkedVisit,
+  type LeadPipeline,
+  type LeadSource,
+  type LeadStatus,
+} from "../lib/types";
 
 /**
  * The funnel, not the lead's own state. A lead sits here until it's booked;
@@ -39,11 +49,35 @@ const statusLabel: Record<LeadStatus, string> = {
   lost: "LOST",
 };
 
+// Every source that actually reaches this column. `savannah_text` and
+// `retention` were missing and rendered as unstyled badges.
 const sourceBadgeClass: Record<LeadSource, string> = {
+  manual: "bg-zinc-200 text-zinc-700",
   email: "bg-purple-100 text-purple-700",
   phone: "bg-teal-100 text-teal-700",
   web: "bg-indigo-100 text-indigo-700",
+  referral: "bg-amber-100 text-amber-800",
+  savannah_text: "bg-teal-100 text-teal-700",
+  retention: "bg-green-100 text-green-700",
 };
+
+/**
+ * The address to show, from whichever track has one.
+ *
+ * Manually entered leads fill the structured columns; webhook and voice-agent
+ * leads fill the single free-text line.
+ */
+function displayAddress(lead: Lead): string | null {
+  if (lead.addressLine1) {
+    return [
+      lead.addressLine1,
+      lead.addressLine2,
+      lead.city,
+      [lead.state, lead.postalCode].filter(Boolean).join(" "),
+    ].filter(Boolean).join(", ");
+  }
+  return lead.address ?? null;
+}
 
 /** What this lead is waiting on, derived from its linked visit. */
 function funnelState(lead: Lead): { label: string; className: string } | null {
@@ -67,22 +101,48 @@ export function LeadsPage() {
   const queryClient = useQueryClient();
   const [pipeline, setPipeline] = useState<LeadPipeline>("open");
   const [statusFilter, setStatusFilter] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "", address: "", jobType: "", notes: "" });
   const [schedulingLead, setSchedulingLead] = useState<Lead | null>(null);
+  const [losingLead, setLosingLead] = useState<Lead | null>(null);
+  const [lostReason, setLostReason] = useState("");
+  const [lostNotes, setLostNotes] = useState("");
+  /** The server's 409 answer when a convert would mint a duplicate account. */
+  const [duplicate, setDuplicate] = useState<{ lead: Lead; matches: CustomerMatch[] } | null>(null);
 
   const { data: leads = [], isLoading, error } = useQuery({
     queryKey: ["leads", { pipeline, statusFilter }],
     queryFn: () => api.leads({ pipeline, status: statusFilter || undefined }),
   });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["leads"] });
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["leads"] });
+    for (const key of ADDRESS_QUERY_KEYS) queryClient.invalidateQueries({ queryKey: [...key] });
+  };
+
+  /**
+   * Convert refuses with 409 when it would create an account that looks like one
+   * already on the books. That isn't an error to show — it's a question to ask,
+   * so it opens the picker instead.
+   */
+  const handleConvertError = (err: unknown, lead: Lead) => {
+    const matches = (err as { body?: { matches?: CustomerMatch[] } })?.body?.matches;
+    if (matches?.length) {
+      setDuplicate({ lead, matches });
+      return true;
+    }
+    return false;
+  };
 
   const convertMutation = useMutation({
-    mutationFn: (leadId: string) => api.convertLead(leadId),
+    mutationFn: ({ leadId, input }: { leadId: string; input?: Parameters<typeof api.convertLead>[1] }) =>
+      api.convertLead(leadId, input),
     onSuccess: (result) => {
       invalidate();
+      setDuplicate(null);
       if (result.visit?.id) navigate(`/visits/${result.visit.id}`);
+    },
+    onError: (err, variables) => {
+      const lead = leads.find((l) => l.id === variables.leadId);
+      if (lead) handleConvertError(err, lead);
     },
   });
 
@@ -93,6 +153,10 @@ export function LeadsPage() {
    */
   const convertAndSchedule = useMutation({
     mutationFn: (leadId: string) => api.convertLead(leadId),
+    onError: (err, leadId) => {
+      const lead = leads.find((l) => l.id === leadId);
+      if (lead) handleConvertError(err, lead);
+    },
     onSuccess: (result, leadId) => {
       invalidate();
       queryClient.invalidateQueries({ queryKey: ["calendar"] });
@@ -119,17 +183,24 @@ export function LeadsPage() {
     onSuccess: invalidate,
   });
 
+  /**
+   * Marking a lead lost without a reason left `GET /leads/loss-report` reporting
+   * on nothing. The reason is required; the customer's own words are optional but
+   * are the part worth having.
+   */
   const lostMutation = useMutation({
-    mutationFn: (leadId: string) => api.updateLead(leadId, { status: "lost" }),
-    onSuccess: invalidate,
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: ({ id, ...input }: { id: string; name?: string; email?: string; phone?: string; address?: string; jobType?: string; notes?: string }) =>
-      api.updateLead(id, input),
+    mutationFn: (input: { leadId: string; lostReason: string; lostNotes: string }) =>
+      api.updateLead(input.leadId, {
+        status: "lost",
+        leadStatus: "lost",
+        lostReason: input.lostReason as never,
+        lostNotes: input.lostNotes.trim() || null,
+      }),
     onSuccess: () => {
       invalidate();
-      setEditingId(null);
+      setLosingLead(null);
+      setLostReason("");
+      setLostNotes("");
     },
   });
 
@@ -137,23 +208,6 @@ export function LeadsPage() {
     mutationFn: (leadId: string) => api.deleteLead(leadId),
     onSuccess: invalidate,
   });
-
-  function startEdit(lead: Lead) {
-    setEditingId(lead.id);
-    setEditForm({
-      name: lead.name,
-      email: lead.email ?? "",
-      phone: lead.phone ?? "",
-      address: lead.address ?? "",
-      jobType: lead.jobType ?? "",
-      notes: lead.notes ?? "",
-    });
-  }
-
-  function saveEdit() {
-    if (!editingId) return;
-    updateMutation.mutate({ id: editingId, ...editForm });
-  }
 
   function handleSchedule(lead: Lead) {
     if (lead.linkedVisit) {
@@ -171,7 +225,11 @@ export function LeadsPage() {
 
   return (
     <div>
-      <PageHeader title="Leads" subtitle="Inbound inquiries from email, phone, and web" />
+      <PageHeader
+        title="Leads"
+        subtitle="Inbound inquiries, and anything you take down by hand"
+        actions={<Link to="/leads/new" className="btn btn-primary">+ New Lead</Link>}
+      />
 
       {/* Pipeline tabs */}
       <div className="mb-2 flex flex-wrap gap-2">
@@ -224,44 +282,10 @@ export function LeadsPage() {
       <section className="space-y-3">
         {leads.map((lead) => {
           const state = funnelState(lead);
-          const isEditing = editingId === lead.id;
 
           return (
             <div key={lead.id} className="card block p-4">
-              {isEditing ? (
-                <form onSubmit={(e) => { e.preventDefault(); saveEdit(); }} className="space-y-3">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="text-xs font-medium text-rce-soft">
-                      Name
-                      <input className="field mt-1 w-full" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required />
-                    </label>
-                    <label className="text-xs font-medium text-rce-soft">
-                      Email
-                      <input className="field mt-1 w-full" type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
-                    </label>
-                    <label className="text-xs font-medium text-rce-soft">
-                      Phone
-                      <input className="field mt-1 w-full" value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
-                    </label>
-                    <label className="text-xs font-medium text-rce-soft">
-                      Job Type
-                      <input className="field mt-1 w-full" value={editForm.jobType} onChange={(e) => setEditForm({ ...editForm, jobType: e.target.value })} />
-                    </label>
-                  </div>
-                  <label className="block text-xs font-medium text-rce-soft">
-                    Address
-                    <input className="field mt-1 w-full" value={editForm.address} onChange={(e) => setEditForm({ ...editForm, address: e.target.value })} />
-                  </label>
-                  <label className="block text-xs font-medium text-rce-soft">
-                    Notes
-                    <textarea className="field mt-1 w-full" rows={2} value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} />
-                  </label>
-                  <div className="flex justify-end gap-2">
-                    <button type="button" className="btn btn-secondary text-xs" onClick={() => setEditingId(null)}>Cancel</button>
-                    <button type="submit" className="btn btn-primary text-xs" disabled={updateMutation.isPending}>Save</button>
-                  </div>
-                </form>
-              ) : (
+              {(
                 <>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h2 className="text-lg font-semibold">{lead.name}</h2>
@@ -298,19 +322,30 @@ export function LeadsPage() {
                     <span>Received {shortDate(lead.createdAt)}</span>
                   </div>
 
-                  {(lead.address || lead.jobType) ? (
+                  {(displayAddress(lead) || lead.jobType) ? (
                     <div className="mt-2 flex flex-wrap gap-x-5 text-sm">
-                      {lead.address ? <p><span className="text-rce-soft">Address:</span> {lead.address}</p> : null}
+                      {displayAddress(lead) ? <p><span className="text-rce-soft">Address:</span> {displayAddress(lead)}</p> : null}
                       {lead.jobType ? <p><span className="text-rce-soft">Job Type:</span> {lead.jobType}</p> : null}
                     </div>
                   ) : null}
 
+                  {lead.customerId && (
+                    <p className="mt-1 text-xs text-rce-accent">Linked to an existing account</p>
+                  )}
+
                   {lead.notes ? <p className="mt-2 text-sm text-rce-muted">{lead.notes}</p> : null}
 
+                  {lead.status === "lost" && lead.lostReason && (
+                    <p className="mt-2 text-xs text-rce-muted">
+                      Lost — {lead.lostReason}
+                      {lead.lostNotes ? `: "${lead.lostNotes}"` : ""}
+                    </p>
+                  )}
+
                   <div className="mt-3 flex flex-wrap justify-end gap-2">
-                    <button type="button" className="btn btn-secondary text-xs" onClick={() => startEdit(lead)}>
+                    <Link to={`/leads/${lead.id}/edit`} className="btn btn-secondary text-xs">
                       Edit
-                    </button>
+                    </Link>
 
                     {lead.status === "new" && (
                       <button
@@ -351,7 +386,7 @@ export function LeadsPage() {
                         disabled={convertMutation.isPending}
                         onClick={() => {
                           if (window.confirm("Convert this lead into an account, property, and job?")) {
-                            convertMutation.mutate(lead.id);
+                            convertMutation.mutate({ leadId: lead.id });
                           }
                         }}
                       >
@@ -363,27 +398,28 @@ export function LeadsPage() {
                       <button
                         type="button"
                         className="btn btn-secondary text-xs"
-                        disabled={lostMutation.isPending}
-                        onClick={() => {
-                          if (window.confirm("Mark this lead as lost?")) lostMutation.mutate(lead.id);
-                        }}
+                        onClick={() => { setLosingLead(lead); setLostReason(""); setLostNotes(""); }}
                       >
                         Mark Lost
                       </button>
                     )}
 
-                    <button
-                      type="button"
-                      className="rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 transition hover:bg-red-100"
-                      disabled={deleteMutation.isPending}
-                      onClick={() => {
-                        if (window.confirm(`Delete lead "${lead.name}"? This cannot be undone.`)) {
-                          deleteMutation.mutate(lead.id);
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
+                    {/* A converted lead can't be deleted — the server 409s, and
+                        the button used to just do nothing when clicked. */}
+                    {lead.status !== "converted" && (
+                      <button
+                        type="button"
+                        className="rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 transition hover:bg-red-100"
+                        disabled={deleteMutation.isPending}
+                        onClick={() => {
+                          if (window.confirm(`Delete lead "${lead.name}"? This cannot be undone.`)) {
+                            deleteMutation.mutate(lead.id);
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -392,10 +428,14 @@ export function LeadsPage() {
         })}
       </section>
 
+      {deleteMutation.error && (
+        <p className="mt-3 text-sm text-red-600">{(deleteMutation.error as Error).message}</p>
+      )}
+
       {schedulingLead?.linkedVisit && (
         <Modal
           title={`Schedule ${schedulingLead.name}`}
-          subtitle={schedulingLead.address ?? undefined}
+          subtitle={displayAddress(schedulingLead) ?? undefined}
           onClose={() => setSchedulingLead(null)}
         >
           <JobScheduler
@@ -407,6 +447,113 @@ export function LeadsPage() {
             durationDays={schedulingLead.linkedVisit.estimatedDurationDays}
             onScheduled={() => setSchedulingLead(null)}
           />
+        </Modal>
+      )}
+
+      {/* Marking a lead lost with no reason left the loss report empty. */}
+      {losingLead && (
+        <Modal
+          title={`Mark ${losingLead.name} lost`}
+          subtitle="Why it didn't close — this is what the loss report reads."
+          onClose={() => setLosingLead(null)}
+        >
+          <form
+            className="space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              lostMutation.mutate({ leadId: losingLead.id, lostReason, lostNotes });
+            }}
+          >
+            <label className="block text-sm font-medium">
+              Reason
+              <select className="field mt-1" value={lostReason} onChange={(e) => setLostReason(e.target.value)} required>
+                <option value="">Pick one</option>
+                {LEAD_LOST_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </label>
+            <label className="block text-sm font-medium">
+              What they said <span className="text-rce-soft">(optional)</span>
+              <textarea className="field mt-1" rows={2} value={lostNotes} onChange={(e) => setLostNotes(e.target.value)} />
+              <span className="mt-1 block text-xs text-rce-soft">
+                Internal only — never shared with the customer.
+              </span>
+            </label>
+            {lostMutation.error && (
+              <p className="text-sm text-red-600">{(lostMutation.error as Error).message}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn btn-secondary text-xs" onClick={() => setLosingLead(null)}>Cancel</button>
+              <button type="submit" className="btn btn-primary text-xs" disabled={lostMutation.isPending}>
+                {lostMutation.isPending ? "Saving…" : "Mark Lost"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/*
+        The server refused to convert because it would have created an account
+        that looks like one already on the books. Not an error — a question.
+      */}
+      {duplicate && (
+        <Modal
+          title="This might already be a customer"
+          subtitle={`Converting ${duplicate.lead.name} would create a new account.`}
+          onClose={() => setDuplicate(null)}
+        >
+          <div className="space-y-3">
+            {duplicate.matches.map((match) => (
+              <div key={match.customerId} className="rounded border border-rce-border p-3">
+                <p className="text-sm font-medium">{match.name}</p>
+                <p className="text-xs text-rce-muted">
+                  {[match.phone, match.email].filter(Boolean).join(" · ")}
+                  {match.visitCount > 0 && ` · ${match.visitCount} job${match.visitCount === 1 ? "" : "s"}`}
+                </p>
+                <div className="mt-2 space-y-1">
+                  {match.properties.map((property) => (
+                    <button
+                      key={property.id}
+                      type="button"
+                      className="btn btn-secondary w-full text-left text-xs"
+                      disabled={convertMutation.isPending}
+                      onClick={() => convertMutation.mutate({
+                        leadId: duplicate.lead.id,
+                        input: { customerId: match.customerId, propertyId: property.id },
+                      })}
+                    >
+                      Use {property.name} — {property.addressLine1}, {property.city}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="btn btn-secondary w-full text-left text-xs"
+                    disabled={convertMutation.isPending}
+                    onClick={() => convertMutation.mutate({
+                      leadId: duplicate.lead.id,
+                      input: { customerId: match.customerId },
+                    })}
+                  >
+                    Use this account — add the lead's address to it
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            <button
+              type="button"
+              className="btn btn-primary w-full text-xs"
+              disabled={convertMutation.isPending}
+              onClick={() => convertMutation.mutate({
+                leadId: duplicate.lead.id,
+                input: { createNewAccount: true },
+              })}
+            >
+              Not the same customer — create a new account
+            </button>
+            {convertMutation.error && (
+              <p className="text-sm text-red-600">{(convertMutation.error as Error).message}</p>
+            )}
+          </div>
         </Modal>
       )}
     </div>
