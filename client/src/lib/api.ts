@@ -57,8 +57,32 @@ export class ApiError extends Error {
   body?: Record<string, unknown>;
 }
 
+const sessionToken = () =>
+  (typeof localStorage !== "undefined" ? localStorage.getItem("rce_token") : null);
+
+/**
+ * Fetch a binary resource that sits behind the session, as an object URL.
+ *
+ * A browser will not attach an Authorization header to `<img src>` or a plain
+ * link, so anything protected has to be fetched properly and handed to the DOM
+ * as a blob. Doing it any other way means putting the session token in the URL,
+ * where it ends up in server logs and browser history.
+ *
+ * The caller owns the returned URL and must revokeObjectURL it.
+ */
+export async function fetchProtectedObjectUrl(path: string): Promise<string> {
+  const token = sessionToken();
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    throw new ApiError(`Could not load ${path} (${response.status})`);
+  }
+  return URL.createObjectURL(await response.blob());
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = typeof localStorage !== "undefined" ? localStorage.getItem("rce_token") : null;
+  const token = sessionToken();
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {

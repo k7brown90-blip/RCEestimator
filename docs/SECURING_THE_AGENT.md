@@ -91,8 +91,16 @@ link". The tradeoff you've accepted is that a link, once out, works forever:
 there's no way to cancel one, and no record of who opened it. Worth revisiting if
 Health Records start going to people you don't know well; not worth doing now.
 
-**Login tokens in web addresses.** The CRM will accept a login token written into
-the address bar (`?token=…`) as well as sent the normal way. Addresses end up in
-server logs and browser history in a way that headers don't. Nothing appears to
-rely on it, so it can probably just be deleted — worth a look next time anyone is
-in `src/middleware/pinAuth.ts`.
+## Closed since
+
+**Login tokens in web addresses.** The CRM used to accept a login token written
+into the address bar as well as sent properly, which put it into server logs,
+browser history, and the Referer header of every navigation away from the page.
+Removed.
+
+The one thing that had needed it turned out to be a bug: inspection photo
+evidence was rendered as a plain image tag pointing at a protected address.
+Browsers don't attach credentials to image requests, so those photos were
+failing to load in production and working in development only because the login
+check is switched off there. The photos are now fetched properly and handed to
+the page as data, so nothing needs a token in a URL.

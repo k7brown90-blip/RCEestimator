@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { InspectionResultChip } from "./InspectionResultChip";
+import { ProtectedImage } from "./ProtectedImage";
 
 /**
  * Health Record panel for the visit workspace: assign the inspection to a
@@ -211,18 +212,12 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                           <p className="font-medium">Photo evidence ({inspectionDetail.photos!.length})</p>
                           <div className="mt-1 flex flex-wrap gap-2">
                             {inspectionDetail.photos!.map((photo) => (
-                              <a
+                              <ProtectedImage
                                 key={photo.id}
-                                href={`/api/health-record-admin/photos/${photo.id}`}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                <img
-                                  src={`/api/health-record-admin/photos/${photo.id}`}
-                                  alt="Inspection evidence"
-                                  className="h-16 w-16 rounded border border-rce-border object-cover"
-                                />
-                              </a>
+                                path={`/health-record-admin/photos/${photo.id}`}
+                                alt="Inspection evidence"
+                                className="h-16 w-16 rounded border border-rce-border object-cover"
+                              />
                             ))}
                           </div>
                         </div>

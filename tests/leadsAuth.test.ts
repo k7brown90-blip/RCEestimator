@@ -54,6 +54,13 @@ describe("GET /leads authentication", () => {
     await request(app).get("/api/leads").set("Authorization", `Bearer ${token}`).expect(401);
   });
 
+  it("will not take a session token from the query string", async () => {
+    // It used to, which put the token in server logs, browser history and the
+    // Referer header of every navigation away from the page.
+    const token = jwt.sign({ sub: "owner" }, JWT_SECRET, { expiresIn: "1h" });
+    await request(app).get(`/api/leads?token=${token}`).expect(401);
+  });
+
   it("keeps the manual-create route behind the same session", async () => {
     await request(app).post("/api/crm/leads").send({ name: "Unauthenticated" }).expect(401);
   });

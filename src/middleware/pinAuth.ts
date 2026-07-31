@@ -45,9 +45,12 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  const token =
-    req.headers.authorization?.replace("Bearer ", "") ??
-    (req.query["token"] as string | undefined);
+  // Header only. A session token used to be accepted from the query string as
+  // well, which put it into server logs, browser history and Referer headers on
+  // every navigation away. The only thing that needed it was an `<img src>`
+  // pointing at a protected endpoint — inspection photo evidence — and that now
+  // fetches its bytes properly (client/src/components/ProtectedImage.tsx).
+  const token = req.headers.authorization?.replace("Bearer ", "");
 
   if (!token) {
     res.status(401).json({ error: "Authentication required" });
