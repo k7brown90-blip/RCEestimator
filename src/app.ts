@@ -13,6 +13,7 @@ import { getDailySummary } from "./services/dailySummary";
 import { getTodaySchedule, getWeekSchedule, getMonthSchedule, getEventsInRange, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { webOptInConfirmation } from "./services/notifications";
+import { logSystemEvent } from "./services/systemEvents";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
 import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail } from "./services/confirmationEmail";
 import {
@@ -4090,7 +4091,29 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+// ─── FEEDBACK (authenticated CRM UI) ───────────────────────────────────────
+// The feedback box in the client. Reports land in SystemEvent (source =
+// "feedback") next to the correlated errors, where scripts/readSystemEvents.ts
+// — the coding agent's audit path — reads them. Registered after pinAuth, so a
+// session is required; the page/context fields come from the widget, not the
+// user.
+app.post("/feedback", asyncHandler(async (req, res) => {
+  const body = z.object({
+    message: z.string().trim().min(1).max(4000),
+    page: z.string().trim().max(300).optional(),
+    context: z.record(z.string(), z.unknown()).optional(),
+  }).parse(req.body);
+
+  logSystemEvent("info", "feedback", body.message, {
+    page: body.page,
+    ...body.context,
+    userAgent: req.headers["user-agent"],
+  });
+
+  res.status(201).json({ ok: true });
+}));
+
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const includeDetails = process.env.NODE_ENV !== "production";
 
   if (err instanceof z.ZodError) {
@@ -4115,6 +4138,12 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 
   const message = err instanceof Error ? err.message : "Unknown error";
   console.error("Unhandled error", err);
+  // Persist it — console.error scrolls away in Railway; SystemEvent rows are
+  // what scripts/readSystemEvents.ts audits when something "just doesn't work".
+  logSystemEvent("error", "express", message, {
+    route: `${req.method} ${req.path}`,
+    stack: err instanceof Error ? err.stack : undefined,
+  });
   res.status(500).json({
     error: "Internal server error",
     details: includeDetails ? message : undefined,

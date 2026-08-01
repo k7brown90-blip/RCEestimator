@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { PropsWithChildren } from "react";
 import { api } from "../lib/api";
+import { FeedbackWidget } from "./FeedbackWidget";
 
 // Ordered to follow the funnel: a lead becomes an appointment on the calendar,
 // then a job, and the account is the ledger all of it rolls up into.
@@ -83,6 +84,8 @@ export function AppShell({ children }: PropsWithChildren) {
           </NavLink>
         ))}
       </nav>
+
+      <FeedbackWidget />
     </div>
   );
 }

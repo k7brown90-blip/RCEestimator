@@ -133,6 +133,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  // ─── Feedback ────────────────────────────────────────────────────────
+  sendFeedback: (input: { message: string; page?: string }) =>
+    request<{ ok: boolean }>("/feedback", { method: "POST", body: JSON.stringify(input) }),
+
   jobs: (params?: { archived?: boolean }) => {
     const suffix = params?.archived === undefined ? "" : `?archived=${params.archived}`;
     return request<JobSummary[]>(`/jobs${suffix}`);

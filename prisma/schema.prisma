@@ -1000,6 +1000,30 @@ model AgentAuditLog {
   createdAt       DateTime @default(now())
 }
 
+// ─── System events ─────────────────────────────────────────────────────────
+//
+// Persistent, queryable error/event log. console.error scrolls away in Railway
+// and is invisible to the coding agent auditing the system; this table is what
+// scripts/readSystemEvents.ts reads (via `railway run`) when diagnosing
+// production. Also the sink for the CRM's feedback box (source = "feedback"),
+// so operator reports land next to the correlated errors, timestamped.
+//
+// Writes are fire-and-forget (services/systemEvents.ts) — logging must never
+// take down the operation being logged.
+model SystemEvent {
+  id          String   @id @default(cuid())
+  level       String   // "error" | "warn" | "info"
+  source      String   // "express" | "twilio" | "google_calendar" | "feedback" | "cron" | ...
+  message     String
+  route       String?  // HTTP method + path when the event came from a request
+  detailsJson String?  // stack trace, request context, feedback page/context
+  createdAt   DateTime @default(now())
+
+  @@index([level, createdAt])
+  @@index([source, createdAt])
+  @@index([createdAt])
+}
+
 model AgentIdempotency {
   id              String   @id @default(cuid())
   clientRequestId String

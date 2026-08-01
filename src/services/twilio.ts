@@ -6,6 +6,7 @@
  */
 
 import { prisma } from "../lib/prisma";
+import { logSystemEvent } from "./systemEvents";
 
 interface TwilioConfig {
   accountSid: string;
@@ -126,7 +127,13 @@ export async function sendSms(
 
   if (!res.ok) {
     const text = await res.text();
-    console.error("[Twilio] Failed to send SMS:", res.status, text);
+    // Persisted, not just consoled — SMS failures are silent by design at the
+    // call sites (fire-and-forget), which is exactly how a broken send path
+    // stays invisible for weeks. The event row is the tripwire.
+    logSystemEvent("error", "twilio", `SMS send failed (HTTP ${res.status}) to ${to}`, {
+      status: res.status,
+      response: text.slice(0, 2000),
+    });
     return null;
   }
 
