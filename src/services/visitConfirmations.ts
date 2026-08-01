@@ -21,6 +21,13 @@ const TZ = "America/Chicago";
 const BUSINESS_PHONE = "(731) 462-0443";
 
 function publicBaseUrl(): string {
+  // Customer-facing links (SMS + email confirm/manage URLs) prefer the branded
+  // domain: carriers score links on a brand's own domain better than shared
+  // infrastructure domains like *.up.railway.app, and some filter the latter.
+  // PUBLIC_BASE_URL (e.g. "https://go.redcedarelectricllc.com") is a CNAME to
+  // the same Railway service, so every route works identically through it.
+  const branded = process.env.PUBLIC_BASE_URL;
+  if (branded) return branded.replace(/\/+$/, "");
   const domain = process.env.RAILWAY_PUBLIC_DOMAIN;
   return domain ? `https://${domain}` : `http://localhost:${process.env.PORT ?? 4000}`;
 }
