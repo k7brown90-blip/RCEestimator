@@ -37,7 +37,12 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
     for (const key of SCHEDULE_QUERY_KEYS) queryClient.invalidateQueries({ queryKey: key });
   };
 
-  const { data: schedule } = useQuery<MonthSchedule>({
+  const {
+    data: schedule,
+    isPending: scheduleLoading,
+    isError: scheduleFailed,
+    refetch: refetchSchedule,
+  } = useQuery<MonthSchedule>({
     queryKey: ["schedule", "month", year, month],
     queryFn: () => api.monthSchedule(year, month),
     enabled: mode === "schedule" || mode === "reschedule",
@@ -211,7 +216,20 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
             <button onClick={nextMonth} className="rounded px-2 py-1 text-xs hover:bg-rce-surface">&rarr;</button>
           </div>
 
-          {/* Grid */}
+          {/* Grid — an empty month is always a failure, never a valid state, so
+              say what happened instead of rendering headers over nothing. */}
+          {scheduleFailed && (
+            <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              Couldn't load the calendar.{" "}
+              <button onClick={() => refetchSchedule()} className="font-medium underline">
+                Try again
+              </button>
+            </div>
+          )}
+          {!scheduleFailed && scheduleLoading && (
+            <p className="text-xs text-rce-muted animate-pulse">Loading calendar…</p>
+          )}
+          {!scheduleFailed && !scheduleLoading && (
           <div className="grid grid-cols-7 gap-px rounded border border-rce-border bg-rce-border overflow-hidden">
             {DAYS.map((d) => (
               <div key={d} className="bg-rce-surface py-1 text-center text-[10px] font-semibold text-rce-muted">{d}</div>
@@ -242,6 +260,7 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
               );
             })}
           </div>
+          )}
 
           {/* Time + reason */}
           <div className="flex items-end gap-3">

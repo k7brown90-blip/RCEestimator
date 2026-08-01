@@ -152,8 +152,6 @@ export async function getMonthSchedule(year: number, month: number): Promise<{
   month: number;
   days: Array<{ date: string; dayOfMonth: number; weekday: number; events: CalendarEvent[] }>;
 }> {
-  const calendar = getCalendarClient();
-
   // First and last day of the month in CT
   const firstDay = new Date(Date.UTC(year, month - 1, 1, 12)); // noon UTC to avoid boundary issues
   const rangeStart = startOfDayCT(firstDay);
@@ -161,15 +159,27 @@ export async function getMonthSchedule(year: number, month: number): Promise<{
   const lastDay = new Date(Date.UTC(year, month - 1, lastDayNum, 12));
   const rangeEnd = endOfDayCT(lastDay);
 
-  const response = await calendar.events.list({
-    calendarId: "primary",
-    timeMin: rangeStart.toISOString(),
-    timeMax: rangeEnd.toISOString(),
-    singleEvents: true,
-    orderBy: "startTime",
-  });
-
-  const events = (response.data.items ?? []).map(mapEvent);
+  // The day grid is pure date math; Google only supplies the event dots. If the
+  // calendar is unreachable the scheduler must still show days to click —
+  // booking re-checks availability server-side, so degraded dots can't cause a
+  // double-booking.
+  let events: CalendarEvent[] = [];
+  try {
+    const calendar = getCalendarClient();
+    const response = await calendar.events.list({
+      calendarId: "primary",
+      timeMin: rangeStart.toISOString(),
+      timeMax: rangeEnd.toISOString(),
+      singleEvents: true,
+      orderBy: "startTime",
+    });
+    events = (response.data.items ?? []).map(mapEvent);
+  } catch (err) {
+    console.error(
+      "[schedule] Month events unavailable — returning the grid without them:",
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   const days: Array<{ date: string; dayOfMonth: number; weekday: number; events: CalendarEvent[] }> = [];
   for (let d = 1; d <= lastDayNum; d++) {
