@@ -82,6 +82,17 @@ export function customerCancellation(job: JobData): string {
   return `Hi ${firstName(job.customerName)}, this is Red Cedar Electric. Your ${job.jobType} originally scheduled for ${formatDate(job.scheduledStart)} has been cancelled. Call us at ${BUSINESS_PHONE} to reschedule. Reply STOP to opt out.`;
 }
 
+/**
+ * Sent once, immediately, the first time a web lead checks the SMS consent
+ * checkbox and provides a phone number. This is the literal opt-in
+ * confirmation declared in the Twilio A2P campaign — the wording here must
+ * match what's registered there. Do not add variables or personalize it;
+ * carriers expect the opt-in confirmation to be a fixed, predictable message.
+ */
+export function webOptInConfirmation(): string {
+  return "Red Cedar Electric: You're confirmed to receive service and appointment texts from us. Msg frequency varies, up to 10 msgs/month. Msg & data rates may apply. Reply STOP to cancel, HELP for help. Terms: redcedarelectricllc.com/terms Privacy: redcedarelectricllc.com/privacy";
+}
+
 // ─── KYLE SMS TEMPLATES ─────────────────────────────────────────────────────────
 
 export function kyleNewBooking(visit: VisitData): string {

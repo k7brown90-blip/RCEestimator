@@ -43,7 +43,8 @@ vi.mock("googleapis", () => {
 });
 
 import { app } from "../src/app";
-import { sendSms } from "../src/services/twilio";
+import { sendSms, KYLE_PHONE } from "../src/services/twilio";
+import { webOptInConfirmation } from "../src/services/notifications";
 
 const WEBHOOK = process.env.WEBHOOK_SECRET!;
 
@@ -74,6 +75,19 @@ beforeEach(() => {
   fetchMock.mockClear();
 });
 
+/** Polls until `predicate` is true or `timeoutMs` elapses, then throws. */
+async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitUntil: timed out");
+    await new Promise((r) => setTimeout(r, 15));
+  }
+}
+
+function sentBodies(): URLSearchParams[] {
+  return fetchMock.mock.calls.map(([, init]) => new URLSearchParams(String((init as RequestInit).body ?? "")));
+}
+
 describe("POST /leads persists smsConsent", () => {
   it("records an explicit true", async () => {
     const res = await request(app)
@@ -103,6 +117,46 @@ describe("POST /leads persists smsConsent", () => {
     expect(res.status).toBe(201);
     const lead = await prisma.lead.findUniqueOrThrow({ where: { id: res.body.id } });
     expect(lead.smsConsent).toBeNull();
+  });
+});
+
+describe("web lead opt-in confirmation SMS", () => {
+  const WEB_OPT_IN_PHONE = "+16155559007";
+  const WEB_DECLINE_PHONE = "+16155559008";
+
+  it("sends the exact declared opt-in confirmation once, when a web lead consents", async () => {
+    const res = await request(app)
+      .post("/leads")
+      .set("webhook_secret", WEBHOOK)
+      .send({ name: "Consent Test Web Opt-In", phone: WEB_OPT_IN_PHONE, source: "web", smsConsent: true });
+    expect(res.status).toBe(201);
+
+    // Two fire-and-forget sends go out for a web lead: the Kyle notification
+    // (always) and the opt-in confirmation (consent === true). Wait for both
+    // by name so this test doesn't finish — and bleed a pending fetch call
+    // into the next test — before they land.
+    await waitUntil(() => sentBodies().some((p) => p.get("To") === KYLE_PHONE));
+    await waitUntil(() => sentBodies().some((p) => p.get("Body") === webOptInConfirmation()));
+
+    const optInCall = sentBodies().find((p) => p.get("Body") === webOptInConfirmation());
+    expect(optInCall).toBeDefined();
+    expect(optInCall!.get("To")).toBe(WEB_OPT_IN_PHONE);
+  });
+
+  it("does not send it when the web lead declines", async () => {
+    const res = await request(app)
+      .post("/leads")
+      .set("webhook_secret", WEBHOOK)
+      .send({ name: "Consent Test Web Decline", phone: WEB_DECLINE_PHONE, source: "web", smsConsent: false });
+    expect(res.status).toBe(201);
+
+    // The Kyle notification still fires for any web lead regardless of
+    // consent — wait for it as the completion signal for this request's
+    // fire-and-forget work, so nothing bleeds into the next test.
+    await waitUntil(() => sentBodies().some((p) => p.get("To") === KYLE_PHONE));
+
+    const optInCall = sentBodies().find((p) => p.get("Body") === webOptInConfirmation());
+    expect(optInCall).toBeUndefined();
   });
 });
 

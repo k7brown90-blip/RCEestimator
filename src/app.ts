@@ -12,6 +12,7 @@ import { getAvailability, bookAppointment, BookingConflictError } from "./servic
 import { getDailySummary } from "./services/dailySummary";
 import { getTodaySchedule, getWeekSchedule, getMonthSchedule, getEventsInRange, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
+import { webOptInConfirmation } from "./services/notifications";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
 import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail } from "./services/confirmationEmail";
 import {
@@ -549,6 +550,15 @@ app.post("/leads", asyncHandler(async (req, res) => {
   // SMS Kyle for web leads (fire-and-forget)
   if ((body.source === "web") && lead.phone) {
     sendSms(KYLE_PHONE, `New web lead — ${lead.name}, ${lead.jobType ?? "general"}, ${lead.phone}`).catch(() => {});
+  }
+
+  // One-time opt-in confirmation SMS — sent exactly once, the moment consent
+  // is granted, before any other customer-facing text. Wording is locked and
+  // must match what's declared to Twilio's A2P campaign; see
+  // services/notifications.ts webOptInConfirmation(). Goes through the normal
+  // sendSms() gate (not bypassed) since smsConsent is already true here.
+  if (body.source === "web" && lead.phone && lead.smsConsent === true) {
+    sendSms(lead.phone, webOptInConfirmation()).catch((err) => console.error("[leads] Opt-in confirmation SMS failed:", err));
   }
 
   // Instant auto-reply email for web-form leads (fire-and-forget)
