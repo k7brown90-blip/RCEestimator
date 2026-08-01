@@ -1,40 +1,42 @@
 /**
- * One-time helper: mint a new Google OAuth refresh token.
+ * One-time helper: mint a new Google OAuth refresh token and store it on
+ * Railway — without ever printing a secret.
  *
  * Needed when the OAuth client that issued the old refresh token has been
- * deleted (refresh tokens die with their client). Run this LOCALLY in your own
- * terminal — the refresh token it prints is a live credential; don't paste it
- * into chats or commit it anywhere. It goes into Railway env vars only.
+ * deleted (refresh tokens die with their client).
  *
  * Before running, in Google Cloud Console → APIs & Services → Credentials →
  * your OAuth client ("AI Scheduling Agent") → Authorized redirect URIs, add:
  *
  *     http://localhost:53682/callback
  *
- * Then run:
+ * Then run (from app/, with the Railway CLI linked to the service):
  *     npx tsx scripts/mintGoogleRefreshToken.ts
  *
- * It will prompt for the client ID and client secret (from that same
- * Credentials page), open the Google consent screen, and print the refresh
- * token when you approve. Sign in as the calendar/Gmail account
- * (k7brown90@gmail.com).
+ * You'll be prompted for the client ID (echoed — it's public) and the client
+ * secret (input hidden). A browser opens for consent — sign in as the
+ * calendar/Gmail account (k7brown90@gmail.com) and approve. The script then
+ * pushes GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN
+ * straight to Railway via `railway variables --set`. Nothing sensitive is
+ * written to the terminal, so the run can be supervised by anyone.
  *
  * Scopes requested:
  *   - https://www.googleapis.com/auth/calendar  (availability, booking, events)
  *   - https://mail.google.com/                  (Gmail SMTP XOAUTH2 — daily
  *     summary, confirmations, supplier emails)
  *
- * Afterwards, update Railway → RCEestimator → Variables:
- *   GOOGLE_CLIENT_ID     = the client ID you entered
- *   GOOGLE_CLIENT_SECRET = the client secret you entered
- *   GOOGLE_REFRESH_TOKEN = the token this script prints
- * Then verify with: railway run npx tsx scripts/checkGoogleCalendarConnection.ts
+ * Verify afterwards with:
+ *     railway run npx tsx scripts/checkGoogleCalendarConnection.ts
  */
 
 import http from "node:http";
 import readline from "node:readline/promises";
-import { exec } from "node:child_process";
+import { Writable } from "node:stream";
+import { execFile, exec } from "node:child_process";
+import { promisify } from "node:util";
 import { google } from "googleapis";
+
+const execFileAsync = promisify(execFile);
 
 const PORT = 53682;
 const REDIRECT_URI = `http://localhost:${PORT}/callback`;
@@ -43,11 +45,29 @@ const SCOPES = [
   "https://mail.google.com/",
 ];
 
+/** Prompt without echoing the typed characters (for secrets). */
+async function questionHidden(prompt: string): Promise<string> {
+  process.stdout.write(prompt);
+  const muted = new Writable({ write: (_c, _e, cb) => cb() });
+  const rl = readline.createInterface({ input: process.stdin, output: muted, terminal: true });
+  const answer = await rl.question("");
+  rl.close();
+  process.stdout.write("\n");
+  return answer;
+}
+
+async function setRailwayVariables(vars: Record<string, string>): Promise<void> {
+  const args = ["variables", ...Object.entries(vars).flatMap(([k, v]) => ["--set", `${k}=${v}`]), "--skip-deploys"];
+  await execFileAsync("railway", args, { shell: process.platform === "win32" });
+  // One redeploy at the end rather than three (one per variable).
+  await execFileAsync("railway", ["redeploy", "--yes"], { shell: process.platform === "win32" });
+}
+
 async function main() {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const clientId = (process.env.GOOGLE_CLIENT_ID ?? (await rl.question("Client ID: "))).trim();
-  const clientSecret = (process.env.GOOGLE_CLIENT_SECRET ?? (await rl.question("Client secret: "))).trim();
+  const clientId = (await rl.question("Client ID (from the AI Scheduling Agent credentials page): ")).trim();
   rl.close();
+  const clientSecret = (await questionHidden("Client secret (input hidden): ")).trim();
 
   if (!clientId || !clientSecret) {
     console.error("Both client ID and client secret are required.");
@@ -78,18 +98,29 @@ async function main() {
 
     try {
       const { tokens } = await auth.getToken(code);
+      if (!tokens.refresh_token) {
+        res.writeHead(500, { "Content-Type": "text/plain" }).end("No refresh token returned — see terminal.");
+        console.error("\n❌ Google returned no refresh token. Remove prior access at");
+        console.error("   https://myaccount.google.com/permissions and re-run.");
+        server.close();
+        process.exitCode = 1;
+        return;
+      }
+
+      console.log("\n✅ Token minted. Pushing the three GOOGLE_* variables to Railway...");
+      await setRailwayVariables({
+        GOOGLE_CLIENT_ID: clientId,
+        GOOGLE_CLIENT_SECRET: clientSecret,
+        GOOGLE_REFRESH_TOKEN: tokens.refresh_token,
+      });
+
       res.writeHead(200, { "Content-Type": "text/html" })
-        .end("<h2>Done — you can close this tab.</h2><p>The refresh token was printed in your terminal.</p>");
-      console.log("\n✅ Success. Set these on Railway (Variables tab):\n");
-      console.log(`GOOGLE_CLIENT_ID=${clientId}`);
-      console.log("GOOGLE_CLIENT_SECRET=<the secret you entered>");
-      console.log(`GOOGLE_REFRESH_TOKEN=${tokens.refresh_token ?? "(none returned — remove prior access at myaccount.google.com/permissions and re-run)"}`);
-      console.log("\nThen verify with:");
-      console.log("  railway run npx tsx scripts/checkGoogleCalendarConnection.ts");
-      if (!tokens.refresh_token) process.exitCode = 1;
+        .end("<h2>Done — you can close this tab.</h2><p>Credentials were pushed to Railway.</p>");
+      console.log("✅ Railway variables set and service redeploying.");
+      console.log("   Verify with: railway run npx tsx scripts/checkGoogleCalendarConnection.ts");
     } catch (e) {
-      res.writeHead(500, { "Content-Type": "text/plain" }).end("Token exchange failed — see terminal.");
-      console.error("\n❌ Token exchange failed:", e instanceof Error ? e.message : e);
+      res.writeHead(500, { "Content-Type": "text/plain" }).end("Failed — see terminal.");
+      console.error("\n❌ Failed:", e instanceof Error ? e.message : e);
       process.exitCode = 1;
     } finally {
       server.close();
