@@ -109,7 +109,8 @@ async function captureReceipts(
 
   if (captured > 0) {
     const ack = `Receipt${captured === 1 ? "" : "s"} logged: ${summaries.join("; ")}. ${noteText ? `Note: "${noteText}". ` : ""}Review & confirm in the CRM.`;
-    await sendSms(senderPhone, ack).catch(() => {});
+    // Reply to the sender's own MMS — Kyle or a tech, never a campaign message.
+    await sendSms(senderPhone, ack, { bypassConsentCheck: true }).catch(() => {});
   }
   return { captured, summaries };
 }
@@ -134,6 +135,35 @@ inboundSmsRouter.post("/sms/inbound", asyncHandler(async (req, res) => {
 
   if (!from10) {
     await log("unknown", null, "ignored");
+    respond();
+    return;
+  }
+
+  // ── Opt-out / opt-in keywords ──────────────────────────────────────
+  // Twilio already blocks delivery after STOP at the carrier level (and sends
+  // the mandated confirmation itself — no reply here). Recording it keeps our
+  // consent records true, which is what the send gate in services/twilio.ts
+  // reads and what A2P registration attests to. Applied to every Customer and
+  // Lead sharing the number — consent belongs to the person, not the row.
+  const optKeyword = /^(STOP|STOPALL|UNSUBSCRIBE|QUIT|END|REVOKE)$/i.test(text)
+    ? false
+    : /^(START|UNSTOP|YES\s+SUBSCRIBE)$/i.test(text)
+      ? true
+      : null;
+  if (optKeyword !== null && !isFromKyle(from)) {
+    // Match in JS on normalized digits — stored formats vary, so a SQL
+    // `contains` on digits would miss punctuated rows.
+    const [customers, leads] = await Promise.all([
+      prisma.customer.findMany({ where: { phone: { not: null } }, select: { id: true, phone: true } }),
+      prisma.lead.findMany({ where: { phone: { not: null } }, select: { id: true, phone: true } }),
+    ]);
+    const customerIds = customers.filter((c) => last10(c.phone!) === from10).map((c) => c.id);
+    const leadIds = leads.filter((l) => last10(l.phone!) === from10).map((l) => l.id);
+    await Promise.all([
+      customerIds.length > 0 ? prisma.customer.updateMany({ where: { id: { in: customerIds } }, data: { smsConsent: optKeyword } }) : null,
+      leadIds.length > 0 ? prisma.lead.updateMany({ where: { id: { in: leadIds } }, data: { smsConsent: optKeyword } }) : null,
+    ]);
+    await log(customerIds.length > 0 ? "customer" : "unknown", customerIds[0] ?? null, optKeyword ? "opt_in" : "opt_out");
     respond();
     return;
   }
@@ -175,7 +205,7 @@ inboundSmsRouter.post("/sms/inbound", asyncHandler(async (req, res) => {
         where: { id: assignment.visitId },
         data: { notes: assignment.visit.notes ? `${assignment.visit.notes}\n${note}` : note },
       });
-      await sendSms(from, `Noted on the ${assignment.visit.customer.name} job. — Red Cedar Electric`).catch(() => {});
+      await sendSms(from, `Noted on the ${assignment.visit.customer.name} job. — Red Cedar Electric`, { bypassConsentCheck: true }).catch(() => {});
       await sendSms(KYLE_PHONE, `TECH NOTE — ${tech.name} on ${assignment.visit.customer.name}: "${text}"`).catch(() => {});
       await log("technician", tech.id, "tech_note");
     } else {
@@ -208,7 +238,9 @@ inboundSmsRouter.post("/sms/inbound", asyncHandler(async (req, res) => {
           reschedule: `Got it — we'll call you shortly to arrange a new time. — Red Cedar Electric`,
           cancel: `Understood — we've flagged your cancellation request and will follow up to confirm. — Red Cedar Electric`,
         };
-        await sendSms(from, replies[outcome.action]).catch(() => {});
+        // Direct reply to a message they just sent — answering an inbound text
+        // is permitted even for a recipient whose broadcast consent is false.
+        await sendSms(from, replies[outcome.action], { bypassConsentCheck: true }).catch(() => {});
         await log("customer", customer.id, "confirmation_reply");
         respond();
         return;

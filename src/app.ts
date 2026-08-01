@@ -510,7 +510,7 @@ app.post("/leads", asyncHandler(async (req, res) => {
     return;
   }
 
-  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string; contactPreference?: string; leadStatus?: string; bestTimeToReach?: string; customerId?: string; propertyId?: string };
+  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string; contactPreference?: string; leadStatus?: string; bestTimeToReach?: string; customerId?: string; propertyId?: string; smsConsent?: boolean };
   if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
     res.status(400).json({ error: "name is required" });
     return;
@@ -535,6 +535,10 @@ app.post("/leads", asyncHandler(async (req, res) => {
       contactPreference: body.contactPreference?.trim() || null,
       leadStatus: body.leadStatus?.trim() || "new",
       bestTimeToReach: body.bestTimeToReach?.trim() || null,
+      // Only an explicit boolean is recorded — anything else stays null. Null
+      // is NOT the same as consent: the send gate in services/twilio.ts only
+      // allows sends to a known Lead/Customer when this is exactly `true`.
+      smsConsent: typeof body.smsConsent === "boolean" ? body.smsConsent : null,
       customerId: body.customerId?.trim() || null,
       propertyId: body.propertyId?.trim() || null,
     },
@@ -4026,7 +4030,7 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
   const result = await prisma.$transaction(async (tx) => {
     const customer = customerId
       ? (await tx.customer.findUniqueOrThrow({ where: { id: customerId } }))
-      : await tx.customer.create({ data: { name: lead.name, email: lead.email, phone: lead.phone } });
+      : await tx.customer.create({ data: { name: lead.name, email: lead.email, phone: lead.phone, smsConsent: lead.smsConsent } });
 
     let property: { id: string } | null = propertyId
       ? await tx.property.findUnique({ where: { id: propertyId }, select: { id: true } })

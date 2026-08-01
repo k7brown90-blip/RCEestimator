@@ -17,6 +17,12 @@ model Customer {
   name        String
   email       String?
   phone       String?
+  // Tri-state SMS consent, carried from the lead at conversion. true = opted in
+  // (web form checkbox), false = explicitly declined or texted STOP, null =
+  // never asked (phone leads, manual entries). sendSms() only sends to a known
+  // Customer/Lead when this is true — null and false are both "not opted in"
+  // (the website checkbox is the only opt-in channel) — see services/twilio.ts.
+  smsConsent  Boolean?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   properties  Property[]
@@ -865,6 +871,12 @@ model Lead {
   warrantyNote      String?
   // ── Follow-up & pipeline fields (Phase 1 data model) ──
   contactPreference String?   // "phone" | "email" | "either"
+  // Tri-state: true = checked the consent box on the website form, false =
+  // explicitly declined (box shown, left unchecked on a web lead), null = never
+  // asked (phone/email/manual leads). This is the record A2P registration
+  // attests to — the website checkbox is the only opt-in channel, so only
+  // `true` clears the send gate in services/twilio.ts; null does NOT.
+  smsConsent        Boolean?
   leadStatus        String    @default("new") // "new" | "booked" | "unresolved" | "planning" | "no_answer" | "lost" | "won"
   followUpDate      DateTime?
   followUpReason    String?   // "comparing_estimates" | "still_planning" | "consulting_partner" | "no_answer"
