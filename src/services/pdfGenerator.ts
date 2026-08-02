@@ -16,6 +16,16 @@ import {
   type CompanyProfile,
 } from "./companyProfile";
 import { findingCitations } from "./findingLedger";
+import {
+  groundingMethodLanguage,
+  energizedTerminationLanguage,
+  TORQUE_METHOD_LIMIT,
+  voltageDropLanguage,
+  methodConditionsLanguage,
+  samplingDisclosure,
+  BUS_CORROSION_HONEST_LIMIT,
+  reportDisclaimer,
+} from "./reportLanguage";
 
 const GENERATED_DIR = path.join(process.cwd(), "generated", "documents");
 const LOGO_PATH = path.join(process.cwd(), "public", "logo.png");
@@ -449,10 +459,133 @@ function rollupStatus(items: ReportItemRow[], itemIds: string[]): string {
  * Render a synced field inspection into the customer's document chain, so the
  * health report lives alongside contracts and proposals with one delivery path.
  */
+/**
+ * Protocol v2 report section — the structured capture plus the disclosures
+ * the protocol requires in EVERY report where they apply: the §3.3 energized-
+ * termination scope boundary, the grounding instrument's honest claim, rule-4
+ * out-of-condition readings, the §6 sampling basis, the §8.7 bus-corrosion
+ * honest limit, and the §11.3 disclaimer. Silent gaps are what get a record
+ * picked apart; volunteered boundaries are what make it defensible.
+ */
+async function addProtocolV2Section(
+  doc: PDFKit.PDFDocument,
+  inspectionId: string,
+  groundingTestMethod: string | null,
+  dateStr: string,
+): Promise<void> {
+  const [items, samplingRecords] = await Promise.all([
+    prisma.inspectionItem.findMany({
+      where: { inspectionId },
+      include: { measurements: true, busVisual: true, enclosure: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.samplingRecord.findMany({ where: { inspectionId } }),
+  ]);
+
+  const hasV2 = items.length > 0 || samplingRecords.length > 0;
+
+  if (hasV2) {
+    doc.fillColor(BRAND.cedar).fontSize(12).text("Component Assessment (measured)", { underline: true });
+    doc.fontSize(9);
+
+    // Group by enclosure for the walk-order the tech actually took.
+    const byEnclosure = new Map<string, typeof items>();
+    for (const item of items) {
+      const key = item.enclosure
+        ? `${item.enclosure.enclosureType.replace(/_/g, " ")}${item.enclosure.locationDescription ? ` — ${item.enclosure.locationDescription}` : ""}`
+        : "Unassigned";
+      byEnclosure.set(key, [...(byEnclosure.get(key) ?? []), item]);
+    }
+
+    const CLASS_COLOR: Record<string, string> = { fail: "#b91c1c", monitor: "#b45309", upgrade: "#0369a1", pass: BRAND.text };
+    for (const [enclosureLabel, rows] of byEnclosure) {
+      doc.fillColor(BRAND.text).fontSize(10).text(enclosureLabel);
+      doc.fontSize(9);
+      for (const item of rows.filter((r) => r.customerVisible)) {
+        const label = [item.componentType.replace(/_/g, " "), item.locationLabel, item.circuitNumber ? `ckt ${item.circuitNumber}` : null]
+          .filter(Boolean).join(" · ");
+        doc.fillColor(CLASS_COLOR[item.classification] ?? BRAND.text)
+          .text(`  ${label}: ${item.classification.toUpperCase()}${item.serviceSideEnergized ? " †" : ""}`);
+        doc.fillColor(BRAND.muted);
+        for (const m of item.measurements) {
+          const parts = [
+            `${m.measurementType.replace(/_/g, " ")} = ${m.measuredValue} ${m.unit}`,
+            m.loadAmperageAtReading != null ? `at ${m.loadAmperageAtReading} A load` : null,
+            m.comparativeReferenceItemId ? `vs ${m.comparativeReferenceItemId}` : null,
+            m.methodConditionsMet === false ? "[outside method conditions — indicative]" : null,
+          ].filter(Boolean).join(", ");
+          doc.text(`      ${parts}`);
+          if (m.measurementType === "voltage_drop_pct") {
+            doc.text(`      ${voltageDropLanguage(m.measuredValue)}`);
+          }
+        }
+        doc.fillColor(BRAND.text);
+      }
+      doc.moveDown(0.25);
+    }
+    doc.moveDown(0.5);
+  }
+
+  // ── Method limits & disclosures. Emitted whenever they apply; the §11.3
+  // disclaimer is unconditional on every report.
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Methods, Limits & Sampling", { underline: true });
+  doc.fillColor(BRAND.muted).fontSize(8);
+
+  const energized = items.filter((i) => i.serviceSideEnergized);
+  if (energized.length > 0) {
+    const labels = energized.map((i) =>
+      [i.componentType.replace(/_/g, " "), i.locationLabel].filter(Boolean).join(" "));
+    doc.text(`† ${energizedTerminationLanguage(labels)}`);
+    doc.moveDown(0.25);
+  }
+
+  const anyTorque = items.some((i) => i.measurements.some((m) => m.measurementType === "torque"));
+  if (anyTorque) {
+    doc.text(TORQUE_METHOD_LIMIT);
+    doc.moveDown(0.25);
+  }
+
+  const anyGrounding = items.some((i) => i.measurements.some((m) => m.measurementType === "grounding_resistance"));
+  if (anyGrounding || hasV2) {
+    doc.text(groundingMethodLanguage(groundingTestMethod));
+    doc.moveDown(0.25);
+  }
+
+  const outOfCondition = items.flatMap((i) => i.measurements).filter((m) => m.methodConditionsMet === false).length;
+  if (outOfCondition > 0) {
+    doc.text(methodConditionsLanguage(outOfCondition));
+    doc.moveDown(0.25);
+  }
+
+  if (items.some((i) => i.busVisual)) {
+    doc.text(BUS_CORROSION_HONEST_LIMIT);
+    doc.moveDown(0.25);
+  }
+
+  if (samplingRecords.length > 0) {
+    doc.fillColor(BRAND.text).fontSize(9).text("Sampling basis (disclosed):");
+    doc.fillColor(BRAND.muted).fontSize(8);
+    for (const s of samplingRecords) {
+      doc.text(samplingDisclosure({
+        category: s.category,
+        totalCount: s.totalCount,
+        testedCount: s.testedCount,
+        basis: s.basis,
+        expandedDueToFail: s.expandedDueToFail,
+        untestedLocations: s.untestedLocations,
+      }));
+    }
+    doc.moveDown(0.25);
+  }
+
+  doc.text(reportDisclaimer(dateStr));
+  doc.fillColor(BRAND.text);
+  doc.moveDown(0.5);
+}
+
 export async function generateHealthReport(
   inspectionId: string,
-): Promise<{ documentId: string; pdfPath: string }> {
-  const inspection = await prisma.healthInspection.findUnique({
+): Promise<{ documentId: string; pdfPath: string }> {  const inspection = await prisma.healthInspection.findUnique({
     where: { id: inspectionId },
     include: {
       customer: { select: { name: true } },
@@ -596,6 +729,10 @@ export async function generateHealthReport(
     `Contractor review: ${inspection.contractorReviewed ? `completed${inspection.reviewedBy ? ` by ${inspection.reviewedBy}` : ""}` : "pending"}.`,
   );
   doc.moveDown(0.5);
+
+  // ── Protocol v2 structured capture — enclosures, measurements, disclosures ──
+  await addProtocolV2Section(doc, inspection.id, inspection.groundingTestMethod, dateStr);
+
   if (isV1) {
     doc.fillColor(BRAND.muted).fontSize(8).text(
       "This score reflects severity, likelihood, and how hidden each issue is — weighted from national fire/shock data, not our opinion.",

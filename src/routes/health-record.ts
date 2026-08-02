@@ -27,6 +27,7 @@ import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianA
 import { recordInspectionLoadCalc } from "../services/capacityCheckStore";
 import { probeTechCalendar } from "../services/techCalendars";
 import { v2PayloadSchema, validateV2Payload, persistV2, V2IngestError } from "../services/protocolV2Ingest";
+import { COMPANY_GROUNDING_METHOD } from "../services/reportLanguage";
 import {
   declineFinding,
   findingCitations,
@@ -177,6 +178,13 @@ const inspectionPushSchema = z.object({
   naCount: z.number().int().nonnegative().default(0),
   criticalFindings: z.array(z.string()),
   contractorReviewed: z.boolean(),
+  /**
+   * §3.3: which grounding instrument produced this record's readings. Older
+   * PWA bundles omit it; the company instrument (EXTECH 3-point
+   * fall-of-potential kit) is the default because it is the only meter in the
+   * field kit — an explicit different value from a future bundle wins.
+   */
+  groundingTestMethod: z.enum(["fall_of_potential_3point", "clamp_on_loop", "bonding_continuity"]).optional(),
   items: z.array(z.unknown()),
   loadCalc: z.unknown().optional(),
   appVersion: z.string().optional(),
@@ -286,6 +294,7 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     belowStandardCount: body.belowStandardCount,
     naCount: body.naCount,
     criticalFindingsJson: JSON.stringify(body.criticalFindings),
+    groundingTestMethod: body.groundingTestMethod ?? COMPANY_GROUNDING_METHOD,
     contractorReviewed: body.contractorReviewed,
     itemsJson: JSON.stringify(body.items),
     loadCalcJson: body.loadCalc !== undefined ? JSON.stringify(body.loadCalc) : null,

@@ -394,6 +394,11 @@ model HealthInspection {
   belowStandardCount   Int        @default(0)
   naCount              Int        @default(0)
   criticalFindingsJson String // string[] of checklist item ids
+  // §3.3: the grounding claim depends on the instrument. Stored per inspection
+  // so the record keeps the honest wording it was made with, forever — company
+  // instrument today is the EXTECH 3-point fall-of-potential kit, but a record
+  // made with a different meter must not inherit stronger language.
+  groundingTestMethod  String?    // fall_of_potential_3point | clamp_on_loop | bonding_continuity
   contractorReviewed   Boolean    @default(false)
   reviewedAt           DateTime?
   reviewedBy           String?

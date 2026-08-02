@@ -333,4 +333,47 @@ describe("v2 ingest — classification pipeline and persistence", () => {
     expect(res.status).toBe(201);
     expect(res.body.data.v2).toBeNull();
   });
+
+  it("the health report renders the v2 section and the required disclosures", async () => {
+    const { generateHealthReport } = await import("../src/services/pdfGenerator");
+    const id = uuid();
+    const res = await push(
+      basePush(id, {
+        enclosures: [SERVICE_ENCLOSURE],
+        items: [
+          {
+            componentType: "lug",
+            locationKey: "service_main",
+            locationLabel: "main lug leg A",
+            classification: "pass",
+            measurements: [
+              {
+                measurementType: "thermal_delta_t",
+                measuredValue: 0.5,
+                unit: "C",
+                loadAmperageAtReading: 42,
+                comparativeReferenceItemId: "main lug leg B",
+                passed: true,
+              },
+            ],
+          },
+        ],
+        samplingRecords: [
+          { category: "receptacle", totalCount: 30, testedCount: 10, basis: "one per branch circuit" },
+        ],
+      }),
+    );
+    expect(res.status).toBe(201);
+
+    // Push defaulted the grounding method to the company instrument.
+    const stored = await prisma.healthInspection.findUniqueOrThrow({ where: { id } });
+    expect(stored.groundingTestMethod).toBe("fall_of_potential_3point");
+
+    // The PDF renders without throwing and lands in the document chain.
+    const report = await generateHealthReport(id);
+    expect(report.documentId).toBeTruthy();
+    const document = await prisma.document.findUniqueOrThrow({ where: { id: report.documentId } });
+    expect(document.type).toBe("health_report");
+    await prisma.document.delete({ where: { id: report.documentId } });
+  });
 });
