@@ -26,6 +26,7 @@ import { resolveJurisdictions } from "../services/jurisdictionResolver";
 import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
 import { recordInspectionLoadCalc } from "../services/capacityCheckStore";
 import { probeTechCalendar } from "../services/techCalendars";
+import { v2PayloadSchema, validateV2Payload, persistV2, V2IngestError } from "../services/protocolV2Ingest";
 import {
   declineFinding,
   findingCitations,
@@ -207,6 +208,14 @@ const inspectionPushSchema = z.object({
       }),
     )
     .optional(),
+  /**
+   * Protocol v2 structured capture (enclosures, items, measurements, GFCI
+   * coverage, sampling). Optional for the same reason `findings` is — the
+   * PWA is service-worker cached and older bundles must keep syncing. When
+   * present, the v2 hard rules run BEFORE anything persists: a violating
+   * payload is rejected whole (422) and stays in the offline queue.
+   */
+  v2: v2PayloadSchema.optional(),
 });
 
 /**
@@ -244,6 +253,22 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     return;
   }
 
+  // v2 hard rules run BEFORE anything is written — a violating inspection
+  // must not exist in any partial form (§12.3). The 422 carries the rule code
+  // so the PWA can tell the tech exactly what to fix.
+  let validatedV2: Awaited<ReturnType<typeof validateV2Payload>> | null = null;
+  if (body.v2) {
+    try {
+      validatedV2 = await validateV2Payload(visit.propertyId, body.v2);
+    } catch (err) {
+      if (err instanceof V2IngestError) {
+        res.status(422).json({ success: false, error: { code: err.code, message: err.message } });
+        return;
+      }
+      throw err;
+    }
+  }
+
   const data = {
     visitId: visit.id,
     propertyId: visit.propertyId,
@@ -272,6 +297,13 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     create: { id: body.inspectionId, ...data },
     update: data,
   });
+
+  // Structured v2 rows — already validated above; replace-on-repush inside a
+  // transaction so the offline queue can retry the whole inspection safely.
+  let v2Summary: { enclosures: number; items: number; measurements: number; monitorsTracked: number } | null = null;
+  if (validatedV2) {
+    v2Summary = await persistV2(inspection.id, visit.propertyId, validatedV2);
+  }
 
   // Close out the technician's assignment for this visit (if one exists).
   await prisma.visitAssignment.updateMany({
@@ -331,7 +363,7 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
 
   res.status(201).json({
     success: true,
-    data: { id: inspection.id, syncedAt: inspection.syncedAt.toISOString(), ledger },
+    data: { id: inspection.id, syncedAt: inspection.syncedAt.toISOString(), ledger, v2: v2Summary },
   });
 }));
 
@@ -841,6 +873,36 @@ healthRecordAdminRouter.get("/inspections/:id", asyncHandler(async (req, res) =>
     return;
   }
   res.json(inspection);
+}));
+
+/**
+ * Structured protocol-v2 capture for an inspection — enclosures, items with
+ * measurements and bus visuals, GFCI coverage by location, and the sampling
+ * disclosure. This is what the v2 report template reads.
+ */
+healthRecordAdminRouter.get("/inspections/:id/v2", asyncHandler(async (req, res) => {
+  const inspectionId = readParam(req, "id");
+  const inspection = await prisma.healthInspection.findUnique({
+    where: { id: inspectionId },
+    select: { id: true, propertyId: true },
+  });
+  if (!inspection) {
+    res.status(404).json({ error: "Inspection not found" });
+    return;
+  }
+
+  const [items, gfciCoverage, samplingRecords, enclosures] = await Promise.all([
+    prisma.inspectionItem.findMany({
+      where: { inspectionId },
+      include: { measurements: true, busVisual: true, enclosure: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.gfciCoverage.findMany({ where: { inspectionId }, orderBy: { locationDescriptor: "asc" } }),
+    prisma.samplingRecord.findMany({ where: { inspectionId } }),
+    prisma.enclosure.findMany({ where: { propertyId: inspection.propertyId, retiredAt: null } }),
+  ]);
+
+  res.json({ inspectionId, items, gfciCoverage, samplingRecords, enclosures });
 }));
 
 /** Photo evidence bytes for the CRM detail view. */
