@@ -47,6 +47,16 @@ model Property {
   // "derive it" — see services/jurisdictionResolver.ts, which falls back to the
   // ZIP-keyed territories setting, then a city map. The field PWA must never guess.
   jurisdictionId         String?
+  // ── Protocol v2 code-era resolution (§1.3) ──
+  // The AHJ's enforced NEC edition, set at intake. Null = resolve via
+  // jurisdictionResolver's edition mapping. NOTHING may hardcode an edition.
+  ahjCodeEdition         String?  // "2017" | "2020" | "2023"
+  // Drives the no-FAIL-against-later-code rule (v2 hard rule 5): no finding may
+  // be classified FAIL against a requirement introduced after this date, absent
+  // an explicitly retroactive requirement.
+  estimatedInstallYear   Int?
+  conductorMaterialService String? // copper | aluminum | copper_clad_aluminum | unknown
+  conductorMaterialBranch  String? // copper | aluminum | mixed | unknown
   createdAt              DateTime       @default(now())
   updatedAt              DateTime       @updatedAt
   customer               Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
@@ -56,6 +66,7 @@ model Property {
   healthInspections      HealthInspection[]
   findings               PropertyFinding[]
   documents              Document[]
+  enclosures             Enclosure[]
 
   // Prisma doesn't index relation scalars on Postgres, and every account read
   // fans out by customerId — the account summary, the customer list, and now
@@ -395,6 +406,10 @@ model HealthInspection {
   customer             Customer   @relation(fields: [customerId], references: [id], onDelete: Restrict)
   technician           Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
   photos               InspectionPhoto[]
+  // ── Protocol v2 structured capture ──
+  items                InspectionItem[]
+  gfciCoverage         GfciCoverage[]
+  samplingRecords      SamplingRecord[]
 
   @@index([customerId, inspectionDate])
   @@index([propertyId, inspectionDate])
@@ -413,6 +428,262 @@ model InspectionPhoto {
   inspection   HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
 
   @@index([inspectionId])
+}
+
+// ─── HEALTH ASSESSMENT PROTOCOL v2 (master protocol 2026-08-02) ────────────
+//
+// The v2 protocol turns the checklist inspection into an evidence-based,
+// function-tested record: enclosures as first-class rows, structured
+// measurements with companion-current validation, bus visual rubrics, GFCI
+// coverage resolved by LOCATION, disclosed sampling, and versioned reference
+// data. Everything here EXTENDS the existing HealthInspection — itemsJson
+// remains the v1 checklist payload; v2 rows hang off the same inspection id.
+//
+// Liability posture is structural, not stylistic:
+// - Reference data is append-only (rule 8): an inspection must reproduce the
+//   spec applied on its date forever. specVersion/supersededById, no updates.
+// - MONITOR recurrence lives in an INTERNAL-ONLY tracker pending counsel
+//   review (§1.5); customer visibility is a per-row toggle, never assumed.
+// - Torque may never be recorded for service-side energized lugs (§3.3);
+//   enforced in the measurement validator, not just the UI.
+
+// ── Reference data (versioned, append-only) ──
+
+model PanelManufacturer {
+  id     String       @id @default(cuid())
+  name   String       @unique
+  active Boolean      @default(true)
+  models PanelModel[]
+}
+
+model PanelModel {
+  id               String            @id @default(cuid())
+  manufacturerId   String
+  modelDesignation String
+  frameType        String?
+  // Zinsco, FPE Stab-Lok, fuse-era — maintained hazard list (Step 2)
+  isObsoleteLine   Boolean           @default(false)
+  hazardFlag       Boolean           @default(false)
+  notes            String?
+  manufacturer     PanelManufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  torqueSpecs      TorqueSpec[]
+
+  @@unique([manufacturerId, modelDesignation])
+}
+
+// Append-only (rule 8). A 2026 inspection must always reproduce the spec value
+// applied that day — revisions create a NEW row pointing back via supersededById.
+model TorqueSpec {
+  id                 String      @id @default(cuid())
+  panelModelId       String?     // null = generic fallback row
+  conductorSizeMin   String?     // AWG/kcmil text — "14 AWG", "250 kcmil"
+  conductorSizeMax   String?
+  breakerRatingMinA  Int?
+  breakerRatingMaxA  Int?
+  torqueValue        Float
+  torqueUnit         String      // in_lb | ft_lb
+  sourceCitation     String
+  // manufacturer_doc | cross_reference | field_reported — §7.1 requires every
+  // value to carry its confidence; nothing ships as verified until checked
+  // against a current official spec sheet.
+  sourceConfidence   String
+  verifiedSource     String?
+  verificationDate   DateTime?
+  specVersion        Int         @default(1)
+  supersededById     String?
+  createdAt          DateTime    @default(now())
+  panelModel         PanelModel? @relation(fields: [panelModelId], references: [id], onDelete: Restrict)
+
+  @@index([panelModelId])
+}
+
+// NETA MTS Table 100.18 framework (§7.2). Append-only like TorqueSpec.
+model ThermalThreshold {
+  id                String   @id @default(cuid())
+  method            String   // comparative | absolute
+  deltaTMinC        Float
+  deltaTMaxC        Float?   // null = open-ended upper band
+  classification    String   // MONITOR | FAIL | FAIL_IMMEDIATE
+  recommendedAction String
+  standardCitation  String
+  specVersion       Int      @default(1)
+  supersededById    String?
+  createdAt         DateTime @default(now())
+}
+
+// Drives the code-era resolver (§1.3, rule 5). is_retroactive is the only
+// path to a FAIL against a requirement newer than the install date.
+model CodeRequirement {
+  id                    String  @id @default(cuid())
+  necArticle            String
+  necEditionIntroduced  String  // "2017" | "2020" | "2023" | "pre2017"
+  requirementType       String  // gfci_location | afci_coverage | spd | tr_receptacle | emergency_disconnect | other
+  appliesTo             String  // free text: "dwelling unit service", "kitchen receptacles"...
+  isRetroactive         Boolean @default(false)
+  description           String
+
+  @@index([requirementType])
+}
+
+// ── Operational data ──
+
+// Panels AND disconnects, one model (§12.2). locationKey bridges to the
+// existing PropertyFinding.locationKey and ItemResult.locationId so v1
+// checklist rows and v2 enclosure rows describe the same physical thing.
+model Enclosure {
+  id                       String   @id @default(cuid())
+  propertyId               String
+  locationKey              String   // stable key shared with PropertyFinding/ItemResult
+  enclosureType            String   // service_equipment | main_disconnect | main_panel | subpanel | equipment_disconnect
+  disconnectSubtype        String?  // breakered | fused | non_fused_switch | pullout
+  equipmentServed          String?  // "HVAC condenser", "water heater"...
+  panelModelId             String?
+  locationDescription      String?
+  distanceFromMainFt       Float?   // drives the 50 ft SPD recommendation (Step 12)
+  labelTorqueValueObserved String?  // the panel's own printed label — overrides all defaults
+  labelLegible             Boolean?
+  busMaterial              String?  // aluminum_tin_plated | copper_silver_flash | unknown
+  // §3.3 settled policy: line side of a service main stays energized with the
+  // main open. Items on such an enclosure may NEVER carry a torque record —
+  // enforced by the measurement validator.
+  serviceSideEnergized     Boolean  @default(false)
+  retiredAt                DateTime? // replaced/removed — kept for history
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  property                 Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  items                    InspectionItem[]
+
+  @@unique([propertyId, locationKey])
+  @@index([propertyId])
+}
+
+// One assessed component at one enclosure in one inspection (§12.2).
+model InspectionItem {
+  id                 String   @id @default(cuid())
+  inspectionId       String
+  enclosureId        String?
+  componentType      String   // lug | breaker | bus_stab | bus_joint | bus_bar_section | neutral_bar | ground_bar | receptacle | switch | fixture | smoke_alarm | co_alarm | spd | service_entrance | weatherhead | mast | meter_base
+  locationLabel      String?  // "kitchen east wall", "leg A stab 4"
+  circuitNumber      String?
+  busLeg             String?  // A | B
+  stabPosition       Int?
+  // Four states (§1.4). UPGRADE is not a defect; MONITOR feeds no defect
+  // metrics and is internal-only pending counsel (customerVisible toggle).
+  classification     String   // pass | fail | monitor | upgrade
+  codeEditionApplied String?  // resolved edition this item was judged against
+  techNote           String?
+  customerVisible    Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  inspection         HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  enclosure          Enclosure?       @relation(fields: [enclosureId], references: [id], onDelete: SetNull)
+  measurements       Measurement[]
+  busVisual          BusVisualAssessment?
+
+  @@index([inspectionId])
+  @@index([enclosureId])
+}
+
+// Structured measurement with the v2 hard validation rules (§12.3) enforced in
+// services/measurementRules.ts before any row is written:
+//   1. thermal/stab readings require loadAmperageAtReading
+//   2. comparative readings require comparativeReferenceItemId
+//   3. classificationCeiling caps what a metric alone may claim
+//   4. methodConditionsMet=false forces disclosure language in the report
+model Measurement {
+  id                         String   @id @default(cuid())
+  inspectionItemId           String
+  measurementType            String   // voltage_unloaded | voltage_loaded | current | source_impedance | voltage_drop_pct | torque | thermal_delta_t | thermal_absolute | stab_thermal_delta_t | grounding_resistance | receptacle_tension | circuit_current_at_reading
+  measuredValue              Float
+  unit                       String
+  referenceValueApplied      Float?
+  referenceSourceId          String?  // TorqueSpec/ThermalThreshold row id — pins the exact spec version
+  referenceMethod            String?  // panel_label | manufacturer_doc | generic_fallback
+  comparativeReferenceItemId String?  // what it was compared against (rule 2)
+  comparativeLoadDeltaAmps   Float?
+  loadAmperageAtReading      Float?   // rule 1 companion
+  ambientAtReadingC          Float?
+  methodStandard             String?  // "NETA MTS 100.18", "NEC 210.19(A) IN4"...
+  methodConditionsMet        Boolean  @default(true)
+  classificationCeiling      String   @default("pass_fail") // pass_fail | monitor_max | informational_only
+  passed                     Boolean?
+  createdAt                  DateTime @default(now())
+  inspectionItem             InspectionItem @relation(fields: [inspectionItemId], references: [id], onDelete: Cascade)
+
+  @@index([inspectionItemId])
+}
+
+// Structured visual rubric for bus/stab assessment (§8.5) — required capture,
+// because "corrosion" without location and plating status is not a finding.
+model BusVisualAssessment {
+  id                String   @id @default(cuid())
+  inspectionItemId  String   @unique
+  corrosionLocation String   // stab_contact_patch | bar_flat_non_contact | bolted_joint | neutral_bar | ground_bar
+  corrosionProduct  String?  // white_powdery | green_blue | black_brown | red_rust
+  platingStatus     String   // intact | tarnished_intact | breached_localized | breached_at_contact | absent
+  materialLoss      String   // none | surface_film | light_pitting | deep_pitting | erosion_deformation
+  arcSignature      String   // none | spatter | rounded_melted_edges | material_transfer
+  adjacentPolymer   String   // unaffected | discolored | browned_embrittled | charred
+  heatTintMetal     String   // none | straw | blue_purple
+  createdAt         DateTime @default(now())
+  inspectionItem    InspectionItem @relation(fields: [inspectionItemId], references: [id], onDelete: Cascade)
+}
+
+// GFCI protection resolved by LOCATION, not device (§9.2). Protection may sit
+// at the panel or at an upstream device; what matters is whether the location
+// that requires it is protected, judged against the code era that applies.
+model GfciCoverage {
+  id                  String   @id @default(cuid())
+  inspectionId        String
+  locationDescriptor  String   // "kitchen counter east", "exterior rear"...
+  requiredAtInstall   Boolean
+  requiredCurrentCode Boolean
+  protectionSource    String   // none | device | upstream_device | panel_breaker
+  functionTestResult  String?  // pass | fail | not_tested
+  classification      String   // pass | fail | monitor | upgrade
+  createdAt           DateTime @default(now())
+  inspection          HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+
+  @@index([inspectionId])
+}
+
+// Disclosed sampling (§6). Undisclosed sampling is the indefensible kind; every
+// report states what was sampled, on what basis, and tested-vs-total. Rule 6:
+// a FAIL inside a sample expands that category to 100% before close.
+model SamplingRecord {
+  id                 String   @id @default(cuid())
+  inspectionId       String
+  category           String   // receptacle | torque | switch | fixture
+  totalCount         Int
+  testedCount        Int
+  basis              String   // "one per branch circuit + 25% minimum"...
+  expandedDueToFail  Boolean  @default(false)
+  untestedLocations  String?  // by room, for the report
+  createdAt          DateTime @default(now())
+  inspection         HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+
+  @@index([inspectionId])
+}
+
+// INTERNAL ONLY pending counsel review (§1.5). MONITOR recurrence is tracked
+// here — never surfaced in customer-facing flows. Customer acknowledgment is
+// captured by signature at time of visit, not as a persistent flag.
+model MonitorTracker {
+  id                        String    @id @default(cuid())
+  propertyId                String
+  inspectionItemId          String?
+  locationKey               String    @default("_default")
+  componentType             String
+  firstObservedInspectionId String
+  lastObservedInspectionId  String
+  occurrenceCount           Int       @default(1)
+  trendDirection            String?   // stable | worsening | improving
+  internalNotes             String?
+  followUpDueDate           DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  @@index([propertyId])
+  @@index([followUpDueDate])
 }
 
 model CustomerRequest {
