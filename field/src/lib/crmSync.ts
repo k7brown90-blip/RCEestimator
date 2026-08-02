@@ -16,6 +16,7 @@ import { summarizeFindings } from '../domain/findings'
 import { jurisdictions } from '../data/jurisdictions'
 import { buildLedgerFindings } from '../domain/ledgerFindings'
 import { buildReport } from '../domain/report'
+import { toPushV2 } from '../domain/v2Types'
 
 const BASE_URL_KEY = 'rce_crm_base_url'
 const TOKEN_KEY = 'rce_crm_tech_token'
@@ -205,6 +206,9 @@ export function buildPushPayload(inspection: Inspection, property: Property): ob
     contractorReviewed: inspection.contractorReviewed,
     items: inspection.items,
     loadCalc: inspection.loadCalc,
+    // Structured protocol-v2 capture — optional; the server validates the
+    // hard rules again on ingest and rejects the whole push on violation.
+    ...(inspection.v2 ? { v2: toPushV2(inspection.v2) } : {}),
     appVersion: 'phase-2',
   }
 }

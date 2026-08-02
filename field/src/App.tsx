@@ -16,10 +16,13 @@ import { JurisdictionScreen } from './ui/screens/JurisdictionScreen'
 import { OpenFindingsScreen } from './ui/screens/OpenFindingsScreen'
 import { ReportScreen } from './ui/screens/ReportScreen'
 import { ReviewScreen } from './ui/screens/ReviewScreen'
+import { V2CaptureScreen } from './ui/screens/V2CaptureScreen'
+import { emptyV2Capture, type V2Capture } from './domain/v2Types'
+import { checkCapture } from './domain/v2Rules'
 
 type Screen =
   | 'assignment' | 'jurisdiction' | 'checklist' | 'item' | 'review' | 'report'
-  | 'findings' | 'capacity'
+  | 'findings' | 'capacity' | 'v2capture'
 
 interface Session {
   inspectionId: string
@@ -27,6 +30,7 @@ interface Session {
   technician: string
   results: Record<string, ItemResult>
   loadCalc?: InspectionLoadCalc
+  v2?: V2Capture
 }
 
 function toInspection(
@@ -49,6 +53,7 @@ function toInspection(
     contractorReviewed,
     status,
     loadCalc: session.loadCalc,
+    v2: session.v2,
   }
   const summary = summarizeFindings(base, visibleItems)
   return { ...base, itemsAssessed: summary.itemsAssessed, criticalFindings: summary.criticalFindings }
@@ -159,6 +164,20 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     )
   }
 
+  if (screen === 'v2capture') {
+    return (
+      <V2CaptureScreen
+        capture={session.v2 ?? emptyV2Capture()}
+        onChange={(v2) => {
+          const next: Session = { ...session, v2 }
+          setSession(next)
+          void saveDraft(toInspection(next, 'draft', false, visibleItems))
+        }}
+        onBack={() => setScreen('checklist')}
+      />
+    )
+  }
+
   if (screen === 'item' && activeItemId) {
     const item = visibleItems.find((i) => i.id === activeItemId)
     if (item) {
@@ -195,6 +214,17 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
         summary={summarizeFindings(draft, visibleItems)}
         onBack={() => setScreen('checklist')}
         onComplete={(contractorReviewed) => {
+          // The server would 422 a v2 violation at sync time; catching it here
+          // keeps the inspection out of a stuck offline queue (§12.3 mirror).
+          const v2Violations = session.v2 ? checkCapture(session.v2) : []
+          if (v2Violations.length > 0) {
+            window.alert(
+              `Panel & component capture has ${v2Violations.length} issue(s) that would block sync:\n\n` +
+                v2Violations.map((v) => `• ${v.message}`).join('\n'),
+            )
+            setScreen('v2capture')
+            return
+          }
           const final = toInspection(session, 'complete', contractorReviewed, visibleItems)
           void saveDraft(final) // transitions the draft to its immutable completed version
           void queueInspectionSync(final, session.property) // auto-push to the CRM (queued offline)
@@ -225,7 +255,9 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
       results={session.results}
       knownFindingCount={findings.filter((f) => f.status !== 'declined').length}
       declinedFindingCount={findings.filter((f) => f.status === 'declined').length}
+      v2Summary={{ enclosures: session.v2?.enclosures.length ?? 0, items: session.v2?.items.length ?? 0 }}
       onOpenFindings={() => setScreen('findings')}
+      onOpenV2={() => setScreen('v2capture')}
       onOpenItem={(itemId) => {
         setActiveItemId(itemId)
         setScreen('item')

@@ -7,7 +7,10 @@ interface Props {
   /** Outstanding ledger rows at this address. */
   knownFindingCount?: number
   declinedFindingCount?: number
+  /** Component/measurement counts from the v2 structured capture. */
+  v2Summary?: { enclosures: number; items: number }
   onOpenFindings?: () => void
+  onOpenV2?: () => void
   onOpenItem: (itemId: string) => void
   onReview: () => void
 }
@@ -45,7 +48,7 @@ const GROUP_LABEL: Record<string, string> = {
 
 export function ChecklistScreen({
   items, results, knownFindingCount = 0, declinedFindingCount = 0,
-  onOpenFindings, onOpenItem, onReview,
+  v2Summary, onOpenFindings, onOpenV2, onOpenItem, onReview,
 }: Props) {
   const [showPhase2, setShowPhase2] = useState(false)
 
@@ -135,6 +138,26 @@ export function ChecklistScreen({
             </span>
           </span>
           <span className="shrink-0 text-xs text-amber-300">view →</span>
+        </button>
+      )}
+
+      {onOpenV2 && (
+        <button
+          type="button"
+          onClick={onOpenV2}
+          className="flex w-full items-center justify-between rounded-lg border border-sky-800 bg-sky-950/30 p-3 text-left"
+        >
+          <span>
+            <span className="block text-sm font-medium text-sky-200">
+              Panel &amp; component capture
+            </span>
+            <span className="block text-xs text-sky-300/70">
+              {v2Summary && (v2Summary.enclosures > 0 || v2Summary.items > 0)
+                ? `${v2Summary.enclosures} enclosure${v2Summary.enclosures === 1 ? '' : 's'} · ${v2Summary.items} component${v2Summary.items === 1 ? '' : 's'} recorded`
+                : 'Enclosures, thermal & torque readings, bus rubric, GFCI coverage, sampling.'}
+            </span>
+          </span>
+          <span className="shrink-0 text-xs text-sky-300">open →</span>
         </button>
       )}
 

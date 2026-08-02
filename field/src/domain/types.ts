@@ -284,4 +284,6 @@ export interface Inspection {
   contractorReviewed: boolean
   status: 'draft' | 'complete'
   loadCalc?: InspectionLoadCalc
+  /** Protocol v2 structured capture — enclosures, components, measurements. */
+  v2?: import('./v2Types').V2Capture
 }
