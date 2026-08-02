@@ -101,6 +101,14 @@ export interface V2Item {
   stabPosition?: number | null
   classification: V2Classification
   codeRequirementId?: string | null
+  /**
+   * §3.3 is per TERMINATION: true = this specific termination stays energized
+   * (main/line lugs) — thermal + visual only, no torque. Branch breakers in
+   * the same enclosure are load-side: switch off and torque normally. Null =
+   * default by component type (line-side types in an energized service
+   * enclosure are treated as energized).
+   */
+  serviceSideEnergized?: boolean | null
   techNote?: string | null
   customerVisible?: boolean
   measurements?: V2Measurement[]

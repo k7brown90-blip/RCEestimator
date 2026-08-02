@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { checkCapture, checkItem, checkMeasurement, measurementTypesFor } from './v2Rules'
+import { checkCapture, checkItem, checkMeasurement, isLineSideEnergized, measurementTypesFor } from './v2Rules'
 import { emptyV2Capture, type V2Enclosure, type V2Item } from './v2Types'
 
 const SERVICE: V2Enclosure = { locationKey: 'svc', enclosureType: 'service_equipment', serviceSideEnergized: true }
@@ -21,13 +21,37 @@ const item = (over: Partial<V2Item>): V2Item => ({
   ...over,
 })
 
-describe('measurement rules mirror', () => {
-  it('refuses torque on a service-side energized enclosure, allows it load-side', () => {
-    const torque = { measurementType: 'torque' as const, measuredValue: 250, unit: 'in_lb' }
-    expect(checkMeasurement(torque, SERVICE)?.rule).toBe('service_side_energized')
-    expect(checkMeasurement(torque, SUBPANEL)).toBeNull()
+describe('§3.3 is per termination, not per enclosure', () => {
+  it('defaults line-side component types to energized in a hot service enclosure', () => {
+    expect(isLineSideEnergized({ componentType: 'lug' }, SERVICE)).toBe(true)
+    expect(isLineSideEnergized({ componentType: 'service_entrance' }, SERVICE)).toBe(true)
   })
 
+  it('a branch breaker in the same energized enclosure is load-side — torqueable', () => {
+    expect(isLineSideEnergized({ componentType: 'breaker' }, SERVICE)).toBe(false)
+    expect(measurementTypesFor('breaker', false)).toContain('torque')
+  })
+
+  it("the tech's explicit flag wins in both directions", () => {
+    // Marked energized by hand — even in a de-energizable subpanel.
+    expect(isLineSideEnergized({ componentType: 'lug', serviceSideEnergized: true }, SUBPANEL)).toBe(true)
+    // Explicitly cleared — the qualified person says this one CAN be shut off.
+    expect(isLineSideEnergized({ componentType: 'lug', serviceSideEnergized: false }, SERVICE)).toBe(false)
+  })
+
+  it('torque is refused only while the termination is energized', () => {
+    const torque = { measurementType: 'torque' as const, measuredValue: 250, unit: 'in_lb' }
+    expect(checkMeasurement(torque, true)?.rule).toBe('service_side_energized')
+    expect(checkMeasurement(torque, false)).toBeNull()
+  })
+
+  it('never offers torque for an energized termination, always for a de-energized one', () => {
+    expect(measurementTypesFor('lug', true)).not.toContain('torque')
+    expect(measurementTypesFor('lug', false)).toContain('torque')
+  })
+})
+
+describe('measurement rules mirror', () => {
   it('requires companion current on thermal readings', () => {
     const thermal = {
       measurementType: 'stab_thermal_delta_t' as const,
@@ -35,8 +59,8 @@ describe('measurement rules mirror', () => {
       unit: 'C',
       comparativeReferenceItemId: 'neighbor',
     }
-    expect(checkMeasurement(thermal, SUBPANEL)?.rule).toBe('companion_current_required')
-    expect(checkMeasurement({ ...thermal, loadAmperageAtReading: 12 }, SUBPANEL)).toBeNull()
+    expect(checkMeasurement(thermal, false)?.rule).toBe('companion_current_required')
+    expect(checkMeasurement({ ...thermal, loadAmperageAtReading: 12 }, false)).toBeNull()
   })
 
   it('requires the comparative reference on delta-T readings', () => {
@@ -46,12 +70,7 @@ describe('measurement rules mirror', () => {
       unit: 'C',
       loadAmperageAtReading: 12,
     }
-    expect(checkMeasurement(thermal, SUBPANEL)?.rule).toBe('comparative_reference_required')
-  })
-
-  it('never offers torque for components on an energized service side', () => {
-    expect(measurementTypesFor('lug', SERVICE)).not.toContain('torque')
-    expect(measurementTypesFor('lug', SUBPANEL)).toContain('torque')
+    expect(checkMeasurement(thermal, false)?.rule).toBe('comparative_reference_required')
   })
 })
 

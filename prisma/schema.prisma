@@ -571,6 +571,12 @@ model InspectionItem {
   // metrics and is internal-only pending counsel (customerVisible toggle).
   classification     String   // pass | fail | monitor | upgrade
   codeEditionApplied String?  // resolved edition this item was judged against
+  // §3.3 applies PER TERMINATION, not per enclosure: the main lugs stay hot
+  // with the main open, but branch breakers in the same panel are load-side
+  // and can be de-energized and torqued. True here = this specific
+  // termination remains energized — thermal + visual only, no torque record,
+  // and the report prints the disclosed-scope-boundary language for it.
+  serviceSideEnergized Boolean @default(false)
   techNote           String?
   customerVisible    Boolean  @default(true)
   createdAt          DateTime @default(now())

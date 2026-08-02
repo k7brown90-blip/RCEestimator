@@ -15,7 +15,7 @@ import type {
   ComponentType, EnclosureType, V2BusVisual, V2Capture, V2Classification,
   V2Enclosure, V2GfciCoverage, V2Item, V2Measurement, V2SamplingRecord,
 } from '../../domain/v2Types'
-import { checkCapture, checkItem, checkMeasurement, measurementTypesFor } from '../../domain/v2Rules'
+import { checkCapture, checkItem, checkMeasurement, isLineSideEnergized, measurementTypesFor } from '../../domain/v2Rules'
 
 interface Props {
   capture: V2Capture
@@ -245,7 +245,9 @@ function EnclosureDetail({ enclosure, capture, onChange, onBack }: {
       </h2>
       {enclosure.serviceSideEnergized && (
         <p className="rounded-md border border-amber-700 bg-amber-950/50 p-2 text-xs text-amber-200">
-          Service side energized — main lugs get thermal + visual only; torque is not offered here (§3.3).
+          Line side energized — main/service lugs get thermal + visual only (§3.3). Branch breakers and
+          other load-side terminations can still be switched off and torqued: uncheck “stays energized”
+          on those components.
         </p>
       )}
 
@@ -327,6 +329,7 @@ function ItemCard({ item, enclosures, onChange, onRemove }: {
 }) {
   const [expanded, setExpanded] = useState(false)
   const enclosure = enclosures.find((e) => e.locationKey === item.locationKey)
+  const energized = isLineSideEnergized(item, enclosure)
   const itemViolations = checkItem(item, enclosures)
 
   return (
@@ -362,7 +365,26 @@ function ItemCard({ item, enclosures, onChange, onRemove }: {
             ))}
           </div>
 
-          <MeasurementEditor item={item} enclosure={enclosure} onChange={onChange} />
+          {/* §3.3 is per termination. Prechecked by the line-side heuristic for
+              lugs/service-entrance parts in an energized service enclosure;
+              a branch breaker defaults unchecked and torque stays available. */}
+          {enclosure?.serviceSideEnergized && (
+            <label className="flex items-center gap-2 rounded-md border border-slate-700 p-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={energized}
+                onChange={(e) => onChange({ ...item, serviceSideEnergized: e.target.checked })}
+              />
+              <span>
+                Stays energized — can't be de-energized for torque (§3.3)
+                <span className="block text-xs text-slate-500">
+                  {energized ? 'Thermal + visual only; no torque record.' : 'Load-side: switch off and torque normally.'}
+                </span>
+              </span>
+            </label>
+          )}
+
+          <MeasurementEditor item={item} energized={energized} onChange={onChange} />
 
           {isBusComponent(item.componentType) && (
             <BusVisualEditor
@@ -389,12 +411,12 @@ function ItemCard({ item, enclosures, onChange, onRemove }: {
   )
 }
 
-function MeasurementEditor({ item, enclosure, onChange }: {
+function MeasurementEditor({ item, energized, onChange }: {
   item: V2Item
-  enclosure: V2Enclosure | undefined
+  energized: boolean
   onChange: (next: V2Item) => void
 }) {
-  const available = measurementTypesFor(item.componentType, enclosure)
+  const available = measurementTypesFor(item.componentType, energized)
   const [type, setType] = useState(available[0] ?? 'thermal_delta_t')
   const [value, setValue] = useState('')
   const [loadAmps, setLoadAmps] = useState('')
@@ -414,7 +436,7 @@ function MeasurementEditor({ item, enclosure, onChange }: {
       setError('Enter the measured value.')
       return
     }
-    const violation = checkMeasurement(measurement, enclosure)
+    const violation = checkMeasurement(measurement, energized)
     if (violation) {
       setError(violation.message)
       return

@@ -113,8 +113,9 @@ describe("v2 ingest — hard-rule rejection (nothing persists)", () => {
     expect(await prisma.healthInspection.findUnique({ where: { id } })).toBeNull();
   });
 
-  it("§3.3: rejects torque recorded on the service-side energized enclosure", async () => {
-    const res = await push(
+  it("§3.3: rejects torque on a line-side lug, accepts it on a branch breaker in the same energized enclosure", async () => {
+    // The lug defaults to energized via the line-side heuristic → refused.
+    const lugRes = await push(
       basePush(uuid(), {
         enclosures: [SERVICE_ENCLOSURE],
         items: [
@@ -127,8 +128,46 @@ describe("v2 ingest — hard-rule rejection (nothing persists)", () => {
         ],
       }),
     );
-    expect(res.status).toBe(422);
-    expect(res.body.error.code).toBe("service_side_energized");
+    expect(lugRes.status).toBe(422);
+    expect(lugRes.body.error.code).toBe("service_side_energized");
+
+    // A branch breaker in the SAME enclosure is load-side — switched off and
+    // torqued normally. Blocking it was the bug this rule-scope fix corrects.
+    const breakerRes = await push(
+      basePush(uuid(), {
+        enclosures: [SERVICE_ENCLOSURE],
+        items: [
+          {
+            componentType: "breaker",
+            locationKey: "service_main",
+            circuitNumber: "12",
+            classification: "pass",
+            measurements: [{ measurementType: "torque", measuredValue: 20, unit: "in_lb" }],
+          },
+        ],
+      }),
+    );
+    expect(breakerRes.status).toBe(201);
+
+    // And the tech's explicit flag overrides the heuristic in both directions:
+    // a lug marked de-energizable takes a torque record.
+    const overrideRes = await push(
+      basePush(uuid(), {
+        enclosures: [SERVICE_ENCLOSURE],
+        items: [
+          {
+            componentType: "lug",
+            locationKey: "service_main",
+            classification: "pass",
+            serviceSideEnergized: false,
+            measurements: [{ measurementType: "torque", measuredValue: 250, unit: "in_lb" }],
+          },
+        ],
+      }),
+    );
+    expect(overrideRes.status).toBe(201);
+    const overrideItems = await prisma.inspectionItem.findMany({ where: { inspectionId: (overrideRes.body.data as { id: string }).id } });
+    expect(overrideItems[0].serviceSideEnergized).toBe(false);
   });
 
   it("rule 6: rejects close when a failed sample never expanded to 100%", async () => {

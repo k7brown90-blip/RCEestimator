@@ -85,9 +85,17 @@ const itemSchema = z.object({
   circuitNumber: z.string().nullable().optional(),
   busLeg: z.string().nullable().optional(),
   stabPosition: z.number().int().nullable().optional(),
+  // Four states (§1.4)
   classification: z.enum(["pass", "fail", "monitor", "upgrade"]),
   /** When the classification is code-referenced, hard rule 5 re-judges it server-side. */
   codeRequirementId: z.string().nullable().optional(),
+  /**
+   * §3.3 is per TERMINATION: main lugs stay hot with the main open, but a
+   * branch breaker in the same enclosure is load-side and torqueable. The
+   * tech's explicit flag wins; when omitted, line-side component types in an
+   * energized service enclosure default to true (see effectiveEnergized).
+   */
+  serviceSideEnergized: z.boolean().nullable().optional(),
   techNote: z.string().nullable().optional(),
   customerVisible: z.boolean().optional(),
   measurements: z.array(measurementSchema).optional(),
@@ -140,6 +148,25 @@ export interface ValidatedV2 {
   normalizedMeasurements: Map<number, ReturnType<typeof validateMeasurement>[]>;
   /** item index → final classification + audit note additions */
   finalClassifications: Map<number, { classification: string; noteAppend: string[] }>;
+  /** item index → resolved §3.3 flag (explicit or heuristic) — persisted on the row */
+  energizedFlags: Map<number, boolean>;
+}
+
+/**
+ * Component types that sit on the LINE side of a service enclosure — the ones
+ * §3.3's prohibition defaults to when the tech doesn't say otherwise. A branch
+ * breaker is deliberately NOT here: it is load-side and torqueable even inside
+ * an energized service enclosure.
+ */
+const LINE_SIDE_COMPONENT_TYPES = new Set(["lug", "service_entrance", "meter_base", "mast", "weatherhead"]);
+
+function effectiveEnergized(
+  item: { serviceSideEnergized?: boolean | null; componentType: string },
+  enclosureEnergized: boolean,
+): boolean {
+  // The tech's explicit call wins — they are the qualified person at the panel.
+  if (item.serviceSideEnergized != null) return item.serviceSideEnergized;
+  return enclosureEnergized && LINE_SIDE_COMPONENT_TYPES.has(item.componentType);
 }
 
 /**
@@ -173,11 +200,13 @@ export async function validateV2Payload(
   for (const e of payload.enclosures) energizedByKey.set(e.locationKey, e.serviceSideEnergized ?? false);
 
   const normalizedMeasurements = new Map<number, ReturnType<typeof validateMeasurement>[]>();
+  const energizedFlags = new Map<number, boolean>();
 
   payload.items.forEach((item, index) => {
-    const ctx = {
-      serviceSideEnergized: item.locationKey ? (energizedByKey.get(item.locationKey) ?? false) : false,
-    };
+    const enclosureEnergized = item.locationKey ? (energizedByKey.get(item.locationKey) ?? false) : false;
+    const energized = effectiveEnergized(item, enclosureEnergized);
+    energizedFlags.set(index, energized);
+    const ctx = { serviceSideEnergized: energized };
     const normalized: ReturnType<typeof validateMeasurement>[] = [];
     for (const m of item.measurements ?? []) {
       try {
@@ -252,7 +281,7 @@ export async function validateV2Payload(
     }
   }
 
-  return { payload, normalizedMeasurements, finalClassifications };
+  return { payload, normalizedMeasurements, finalClassifications, energizedFlags };
 }
 
 // ── Persist (transactional, replace-on-repush) ──────────────────────────────
@@ -262,7 +291,7 @@ export async function persistV2(
   propertyId: string,
   validated: ValidatedV2,
 ): Promise<{ enclosures: number; items: number; measurements: number; monitorsTracked: number }> {
-  const { payload, normalizedMeasurements, finalClassifications } = validated;
+  const { payload, normalizedMeasurements, finalClassifications, energizedFlags } = validated;
 
   let measurementCount = 0;
   let monitorsTracked = 0;
@@ -310,6 +339,7 @@ export async function persistV2(
           busLeg: item.busLeg ?? null,
           stabPosition: item.stabPosition ?? null,
           classification: final.classification,
+          serviceSideEnergized: energizedFlags.get(index) ?? false,
           techNote,
           customerVisible: item.customerVisible ?? true,
         },
