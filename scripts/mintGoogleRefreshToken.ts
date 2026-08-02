@@ -64,10 +64,19 @@ async function setRailwayVariables(vars: Record<string, string>): Promise<void> 
 }
 
 async function main() {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const clientId = (await rl.question("Client ID (from the AI Scheduling Agent credentials page): ")).trim();
-  rl.close();
-  const clientSecret = (await questionHidden("Client secret (input hidden): ")).trim();
+  // When run via `railway run`, the (already-updated) client credentials come
+  // from the Railway environment and nothing needs to be typed at all.
+  let clientId = (process.env.GOOGLE_CLIENT_ID ?? "").trim();
+  let clientSecret = (process.env.GOOGLE_CLIENT_SECRET ?? "").trim();
+
+  if (clientId && clientSecret) {
+    console.log(`Using GOOGLE_CLIENT_ID (${clientId.slice(0, 12)}...) and GOOGLE_CLIENT_SECRET from the environment.`);
+  } else {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    clientId = (await rl.question("Client ID (from the AI Scheduling Agent credentials page): ")).trim();
+    rl.close();
+    clientSecret = (await questionHidden("Client secret (input hidden): ")).trim();
+  }
 
   if (!clientId || !clientSecret) {
     console.error("Both client ID and client secret are required.");

@@ -3,6 +3,7 @@ import { google } from "googleapis";
 import { sendConfirmationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
 import { customerVisitConfirmation, customerDiagnosticConfirmation, kyleNewBooking, sendCustomerSms, sendKyleSms } from "./notifications";
 import { acquireSlotHolds, releaseSlotHolds, slotKeyCT, SlotContentionError } from "./slotHolds";
+import { companyCalendarIds } from "./techCalendars";
 
 const TZ = "America/Chicago";
 const BUSINESS_START = 8;  // 8 AM CT
@@ -10,8 +11,8 @@ const BUSINESS_END = 16;   // 4 PM CT
 const LOOKAHEAD_DAYS = 30;
 const SLOT_DURATION = 2;   // 2-hour appointment windows
 
-// Comma-separated list of additional calendar IDs to check for conflicts
-const EXTRA_CALENDAR_IDS = (process.env.EXTRA_CALENDAR_IDS ?? "").split(",").filter(Boolean);
+// Calendar set comes from services/techCalendars.ts (primary + EXTRA_CALENDAR_IDS
+// env + every active technician's Workspace calendar).
 
 interface SlotTime {
   start: string;
@@ -122,10 +123,10 @@ export async function getAvailability(startDate?: Date): Promise<AvailabilityRes
   const endParts = getCentralParts(new Date(windowStart.getTime() + LOOKAHEAD_DAYS * 86_400_000));
   const windowEnd = centralToUtc(endParts.year, endParts.month, endParts.day, 23, 59);
 
-  const calendarItems = [
-    { id: "primary" },
-    ...EXTRA_CALENDAR_IDS.map(id => ({ id: id.trim() })),
-  ];
+  // Union of the whole company calendar set — primary + env extras + every
+  // active technician's Workspace calendar. A slot any tech has claimed is
+  // busy for everyone; per-tech granularity lives in the CRM's tech picker.
+  const calendarItems = (await companyCalendarIds()).map((id) => ({ id }));
 
   const response = await calendar.freebusy.query({
     requestBody: {

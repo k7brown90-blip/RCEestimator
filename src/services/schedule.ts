@@ -4,6 +4,7 @@
  */
 
 import { google } from "googleapis";
+import { companyCalendarIds } from "./techCalendars";
 
 const TZ = "America/Chicago";
 
@@ -243,17 +244,25 @@ export async function createCalendarEvent(input: {
   location?: string;
   startTime: Date;
   endTime: Date;
+  /** Tech company emails — invited so the job lands on their own calendars. */
+  attendees?: string[];
 }): Promise<CalendarEvent> {
   const calendar = getCalendarClient();
 
   const response = await calendar.events.insert({
     calendarId: "primary",
+    // Without sendUpdates the invite sits silently in the tech's calendar —
+    // "all" makes Google email them the event like any normal invitation.
+    sendUpdates: input.attendees && input.attendees.length > 0 ? "all" : "none",
     requestBody: {
       summary: input.summary,
       description: input.description,
       location: input.location,
       start: { dateTime: input.startTime.toISOString(), timeZone: TZ },
       end: { dateTime: input.endTime.toISOString(), timeZone: TZ },
+      ...(input.attendees && input.attendees.length > 0
+        ? { attendees: input.attendees.map((email) => ({ email })) }
+        : {}),
     },
   });
 
@@ -393,25 +402,32 @@ export async function checkAvailabilityBlock(
     cursor = new Date(cursor.getTime() + 86_400_000);
   }
 
-  // Query freebusy for the full range
+  // Query freebusy for the full range — across the WHOLE company calendar set
+  // (primary + env extras + every active tech), so a day one tech has claimed
+  // is a conflict for company-wide block booking. This previously read only
+  // the primary calendar, which is how double-booking against a tech's own
+  // calendar was possible.
   const firstParts = getCTParts(workDays[0]);
   const rangeStart = ctToUtc(firstParts.year, firstParts.month, firstParts.day, 0);
   const lastParts = getCTParts(workDays[workDays.length - 1]);
   const rangeEnd = ctToUtc(lastParts.year, lastParts.month, lastParts.day, 23, 59);
 
+  const calendarIds = await companyCalendarIds();
   const response = await calendar.freebusy.query({
     requestBody: {
       timeMin: rangeStart.toISOString(),
       timeMax: rangeEnd.toISOString(),
       timeZone: TZ,
-      items: [{ id: "primary" }],
+      items: calendarIds.map((id) => ({ id })),
     },
   });
 
-  let busyPeriods = (response.data.calendars?.["primary"]?.busy ?? []).map((b) => ({
-    start: new Date(b.start!),
-    end: new Date(b.end!),
-  }));
+  let busyPeriods = Object.values(response.data.calendars ?? {})
+    .flatMap((cal) => ((cal as { busy?: Array<{ start?: string | null; end?: string | null }> }).busy ?? []))
+    .map((b) => ({
+      start: new Date(b.start!),
+      end: new Date(b.end!),
+    }));
 
   // If excluding a specific event (reschedule), filter its busy block
   if (excludeEventId) {

@@ -25,9 +25,7 @@ import type {
   ModifierDef,
   EstimateItem,
   SupportItem,
-  CapacityCheckRecord,
-  CapacityCheckResult,
-  DemandStudyOrder,
+  TechDayAvailability,
   FindingEvent,
   Lead,
   LeadWriteInput,
@@ -361,8 +359,17 @@ export const api = {
   crmCycleTime: (range?: { startDate?: string; endDate?: string }) =>
     request<CrmCycleTimeMetrics>(withDateRange("/crm/analytics/cycle-time", range)),
   // ─── Job Scheduling ──────────────────────────────────────────────────────
-  scheduleJob: (jobId: string, input: { startDate: string; startTime?: string }) =>
+  scheduleJob: (jobId: string, input: { startDate: string; startTime?: string; technicianId?: string }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/schedule`, { method: "POST", body: JSON.stringify(input) }),
+  // Per-tech busy blocks for one day — drives the scheduler's tech picker.
+  // calendarAccessible=false means Google can't read that tech's calendar
+  // (not shared), which the UI must show as a warning, never as "free".
+  techAvailability: (date: string, opts?: { start?: string; durationMinutes?: number }) => {
+    const query = new URLSearchParams({ date });
+    if (opts?.start) query.set("start", opts.start);
+    if (opts?.durationMinutes) query.set("durationMinutes", String(opts.durationMinutes));
+    return request<{ date: string; techs: TechDayAvailability[] }>(`/crm/schedule/tech-availability?${query.toString()}`);
+  },
   rescheduleJob: (jobId: string, input: { newStartDate: string; newStartTime?: string; reason: string }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/reschedule`, { method: "POST", body: JSON.stringify(input) }),
   cancelJob: (jobId: string, input: { reason: string }) =>
@@ -373,6 +380,8 @@ export const api = {
     request<Technician>("/health-record-admin/technicians", { method: "POST", body: JSON.stringify(input) }),
   updateTechnician: (technicianId: string, input: { name?: string; isActive?: boolean; rotateToken?: boolean; employeeNumber?: string | null }) =>
     request<Technician>(`/health-record-admin/technicians/${technicianId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  verifyTechCalendar: (technicianId: string) =>
+    request<{ accessible: boolean; email: string | null }>(`/health-record-admin/technicians/${technicianId}/verify-calendar`, { method: "POST" }),
   assignTechnician: (visitId: string, input: { technicianId: string; role?: "primary" | "helper" }) =>
     request<VisitAssignment>(`/health-record-admin/visits/${visitId}/assign`, { method: "POST", body: JSON.stringify(input) }),
   visitAssignments: (visitId: string) => request<VisitAssignment[]>(`/health-record-admin/visits/${visitId}/assignments`),
@@ -391,49 +400,9 @@ export const api = {
       `/health-record-admin/inspections/${inspectionId}/review`,
       { method: "POST", body: JSON.stringify(input) },
     ),
-  // ─── Article 220 capacity checks ──────────────────────────────────────────
-  // The server re-runs the calculation from the raw inputs; the client never
-  // supplies a verdict, because the 220.87 gate reads the stored one.
-  capacityChecks: (params: { propertyId?: string; visitId?: string }) => {
-    const query = new URLSearchParams();
-    if (params.propertyId) query.set("propertyId", params.propertyId);
-    if (params.visitId) query.set("visitId", params.visitId);
-    return request<CapacityCheckRecord[]>(`/capacity-checks?${query.toString()}`);
-  },
-  runCapacityCheck: (input: {
-    id: string;
-    visitId?: string | null;
-    propertyId: string;
-    serviceAmps: number;
-    floorAreaSqFt: number;
-    loads: Record<string, unknown>[];
-    newLoads: Record<string, unknown>[];
-  }) => request<CapacityCheckResult>("/capacity-checks", { method: "POST", body: JSON.stringify(input) }),
-  orderDemandStudy: (
-    checkId: string,
-    input: { customerDeclinedUpgrade: true; customerStatement: string; startDate: string },
-  ) =>
-    request<DemandStudyOrder>(`/capacity-checks/${checkId}/order-demand-study`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-  completeDemandStudy: (
-    checkId: string,
-    input: {
-      id: string;
-      measuredMaxDemandVA: number;
-      source: "utility_12mo" | "recorded_30day";
-      monthsOfData?: number;
-      recordedDays?: number;
-      intervalMinutes?: number;
-      windowStart?: string;
-      windowEnd?: string;
-    },
-  ) =>
-    request<Record<string, unknown>>(`/capacity-checks/${checkId}/complete-demand-study`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
+  // Article 220 capacity checks were removed from the CRM 2026-08-02 — load
+  // calculation is Health Report product surface (field PWA + demand-study
+  // endpoints under /health-record-admin/capacity-checks), not CRM.
   // ─── Finding ledger ───────────────────────────────────────────────────────
   ledgerFindings: (params: { propertyId?: string; customerId?: string; track?: string; status?: string; needsCloseout?: boolean }) => {
     const query = new URLSearchParams();
@@ -503,6 +472,8 @@ export interface Technician {
   role: string;
   accessToken: string;
   isActive: boolean;
+  /** Set by the Team page's "verify calendar" probe — Google can read their calendar. */
+  calendarShared: boolean;
   createdAt: string;
   _count?: { assignments: number; healthInspections: number };
 }

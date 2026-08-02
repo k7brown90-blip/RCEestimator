@@ -25,6 +25,7 @@ import { notifyTechnicianOfAssignment } from "../services/visitConfirmations";
 import { resolveJurisdictions } from "../services/jurisdictionResolver";
 import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
 import { recordInspectionLoadCalc } from "../services/capacityCheckStore";
+import { probeTechCalendar } from "../services/techCalendars";
 import {
   declineFinding,
   findingCitations,
@@ -710,10 +711,24 @@ healthRecordAdminRouter.patch("/technicians/:id", asyncHandler(async (req, res) 
     where: { id: readParam(req, "id") },
     data: {
       ...fields,
+      // Changing the email invalidates whatever access was verified for the
+      // old address — force a fresh probe.
+      ...(fields.email !== undefined ? { calendarShared: false } : {}),
       ...(rotateToken ? { accessToken: crypto.randomBytes(24).toString("base64url") } : {}),
     },
   });
   res.json(technician);
+}));
+
+/**
+ * Probe whether the tech's Google Calendar is readable by the app's account.
+ * Google's freebusy API silently omits unshared calendars, so this is the only
+ * way to distinguish "free all day" from "we can't see their calendar at all".
+ * Persists the result to Technician.calendarShared.
+ */
+healthRecordAdminRouter.post("/technicians/:id/verify-calendar", asyncHandler(async (req, res) => {
+  const outcome = await probeTechCalendar(readParam(req, "id"));
+  res.json(outcome);
 }));
 
 /** Assign a visit's inspection to a technician. */

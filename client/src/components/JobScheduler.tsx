@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { MonthSchedule } from "../lib/types";
+import type { MonthSchedule, TechDayAvailability } from "../lib/types";
 
 interface Props {
   jobId: string;
@@ -27,6 +27,7 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   // than the 7am crew start used for production work.
   const isEstimateVisit = status === "estimate";
   const [startTime, setStartTime] = useState(isEstimateVisit ? "09:00" : "07:00");
+  const [technicianId, setTechnicianId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"idle" | "schedule" | "reschedule" | "cancel">(
@@ -48,12 +49,23 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
     enabled: mode === "schedule" || mode === "reschedule",
   });
 
+  // Per-tech availability for the chosen date + time. Estimates block 2h + 1h
+  // travel; production is treated as the full day for conflict purposes.
+  const durationMinutes = isEstimateVisit ? 180 : 600;
+  const techQuery = useQuery<{ date: string; techs: TechDayAvailability[] }>({
+    queryKey: ["tech-availability", selectedDate, startTime, durationMinutes],
+    queryFn: () => api.techAvailability(selectedDate!, { start: startTime, durationMinutes }),
+    enabled: (mode === "schedule" || mode === "reschedule") && !!selectedDate,
+  });
+  const techs = techQuery.data?.techs ?? [];
+
   const scheduleMutation = useMutation({
-    mutationFn: () => api.scheduleJob(jobId, { startDate: selectedDate!, startTime }),
+    mutationFn: () => api.scheduleJob(jobId, { startDate: selectedDate!, startTime, technicianId: technicianId ?? undefined }),
     onSuccess: () => {
       invalidateAll();
       setMode("idle");
       setSelectedDate(null);
+      setTechnicianId(null);
       setError(null);
       onScheduled?.();
     },
@@ -286,6 +298,53 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
               </div>
             )}
           </div>
+
+          {/* Tech picker — who actually takes this appointment. Availability
+              comes from each tech's own Google Calendar for the chosen date. */}
+          {mode === "schedule" && selectedDate && (
+            <div>
+              <p className="mb-1 text-xs font-medium text-rce-muted">Assign technician</p>
+              {techQuery.isPending && <p className="text-xs text-rce-muted animate-pulse">Checking tech calendars…</p>}
+              {techQuery.isError && (
+                <p className="text-xs text-red-600">Couldn't read tech calendars — you can still book without an assignment.</p>
+              )}
+              {!techQuery.isPending && !techQuery.isError && techs.length === 0 && (
+                <p className="text-xs text-rce-muted">No technicians with calendar emails yet — add them in the Team tab.</p>
+              )}
+              <div className="space-y-1">
+                {techs.map((tech) => {
+                  const selected = technicianId === tech.technicianId;
+                  const busyLabel = tech.busy.length > 0
+                    ? tech.busy.map((b) => `${b.startLocal}–${b.endLocal}`).join(", ")
+                    : "free all day";
+                  return (
+                    <button
+                      key={tech.technicianId}
+                      type="button"
+                      onClick={() => setTechnicianId(selected ? null : tech.technicianId)}
+                      className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition ${
+                        selected ? "border-rce-accent bg-rce-accentBg/40" : "border-rce-border bg-white hover:border-rce-accent/50"
+                      }`}
+                    >
+                      <span className="font-medium">{tech.name}</span>
+                      {!tech.calendarAccessible ? (
+                        <span className="text-xs text-amber-600">calendar not shared — can't verify</span>
+                      ) : tech.freeAtRequested === false ? (
+                        <span className="text-xs text-red-600">busy: {busyLabel}</span>
+                      ) : (
+                        <span className="text-xs text-green-700">available · {busyLabel}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              {technicianId && techs.find((t) => t.technicianId === technicianId)?.freeAtRequested === false && (
+                <p className="mt-1 text-xs text-red-600">
+                  Heads up — this tech has a conflict at that time. Booking anyway will double-book them.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Confirm */}
           <div className="flex gap-2">

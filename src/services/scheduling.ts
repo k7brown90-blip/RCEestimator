@@ -120,6 +120,7 @@ export async function scheduleJob(
   jobId: string,
   startDateStr: string,
   startTime?: string | null,
+  technicianId?: string | null,
 ): Promise<ScheduleJobResult> {
   // Load the job
   const job = await prisma.visit.findUnique({
@@ -130,6 +131,14 @@ export async function scheduleJob(
   if (!SCHEDULABLE_STATUSES.includes(job.status as (typeof SCHEDULABLE_STATUSES)[number])) {
     throw new Error(`Job status is "${job.status}", expected one of ${SCHEDULABLE_STATUSES.join(", ")}`);
   }
+
+  // Resolve the assigned tech up front — their email goes on the calendar
+  // event as an attendee, so the booking lands on their own calendar and
+  // their availability reflects it immediately.
+  const technician = technicianId
+    ? await prisma.technician.findUnique({ where: { id: technicianId }, select: { id: true, email: true, name: true } })
+    : null;
+  if (technicianId && !technician) throw new Error("Technician not found");
 
   const kind = appointmentKindFor(job.status);
   const isEstimate = kind === "estimate";
@@ -186,11 +195,13 @@ export async function scheduleJob(
         `Customer: ${job.customer.name}`,
         `Phone: ${job.customer.phone ?? "N/A"}`,
         `Address: ${job.property.addressLine1}`,
+        ...(technician ? [`Technician: ${technician.name}`] : []),
         ...(isEstimate ? [`Includes ${travelBufferMinutes} min travel leeway after the visit.`] : []),
       ].join("\n"),
       location: `${job.property.addressLine1}, ${job.property.city}, ${job.property.state}`,
       startTime: scheduledStart,
       endTime: eventEnd,
+      attendees: technician?.email ? [technician.email] : undefined,
     });
   } finally {
     // The calendar event itself blocks the days from here on (or the booking
@@ -279,6 +290,16 @@ export async function scheduleJob(
     scheduledStart,
     jobType: job.jobType,
   }).catch((err) => console.error("[scheduleJob] Confirmation request failed:", err));
+
+  // Assign the selected tech (upsert — rebooking the same pair just refreshes it),
+  // then notify everyone assigned, including them.
+  if (technician) {
+    await prisma.visitAssignment.upsert({
+      where: { visitId_technicianId: { visitId: jobId, technicianId: technician.id } },
+      create: { visitId: jobId, technicianId: technician.id, role: "primary" },
+      update: { status: "assigned", completedAt: null },
+    });
+  }
   notifyAssignedTechs(jobId, "assigned").catch((err) => console.error("[scheduleJob] Tech notify failed:", err));
 
   return {

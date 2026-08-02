@@ -92,7 +92,7 @@ describe("POST /capacity-checks", () => {
     // Nearly 48 kVA of connected load, and it still calculates to 100 A, because
     // 220.83(A) stages everything past the first 8 kVA at 40%. Quoting a service
     // upgrade here would be selling something the code says isn't needed.
-    const res = await request(app).post("/capacity-checks").send(nearMiss()).expect(201);
+    const res = await request(app).post("/health-record-admin/capacity-checks").send(nearMiss()).expect(201);
     expect(res.body.method).toBe("220.83");
     expect(res.body.variant).toBe("A"); // an EVSE is not A/C or space heat
     expect(res.body.amps).toBe(100);
@@ -102,7 +102,7 @@ describe("POST /capacity-checks", () => {
   });
 
   it("switches to 220.83(B) and fails on new HVAC", async () => {
-    const res = await request(app).post("/capacity-checks").send(overloaded("cap-hp")).expect(201);
+    const res = await request(app).post("/health-record-admin/capacity-checks").send(overloaded("cap-hp")).expect(201);
     expect(res.body.variant).toBe("B");
     expect(res.body.fits).toBe(false);
     expect(res.body.nextStep).toBe("quote_service_upgrade");
@@ -110,14 +110,14 @@ describe("POST /capacity-checks", () => {
   });
 
   it("tells you to quote the addition when the service clears", async () => {
-    const res = await request(app).post("/capacity-checks").send(bigService("cap-big")).expect(201);
+    const res = await request(app).post("/health-record-admin/capacity-checks").send(bigService("cap-big")).expect(201);
     expect(res.body.fits).toBe(true);
     expect(res.body.nextStep).toBe("quote_addition");
   });
 
   it("is idempotent on the client UUID", async () => {
-    await request(app).post("/capacity-checks").send(nearMiss()).expect(201);
-    await request(app).post("/capacity-checks").send(nearMiss()).expect(201);
+    await request(app).post("/health-record-admin/capacity-checks").send(nearMiss()).expect(201);
+    await request(app).post("/health-record-admin/capacity-checks").send(nearMiss()).expect(201);
     const rows = await prisma.capacityCheck.findMany({ where: { propertyId } });
     expect(rows.length).toBe(1);
   });
@@ -126,7 +126,7 @@ describe("POST /capacity-checks", () => {
     // The gate below reads `fits` off this row. If a client could write it, a
     // client could unlock a priced study by claiming failure.
     await request(app)
-      .post("/capacity-checks")
+      .post("/health-record-admin/capacity-checks")
       .send({ ...bigService("cap-liar"), fits: false, calculatedAmps: 999 })
       .expect(201);
     const row = await prisma.capacityCheck.findUniqueOrThrow({ where: { id: "cap-liar" } });
@@ -136,7 +136,7 @@ describe("POST /capacity-checks", () => {
 
   it("404s on an unknown property", async () => {
     await request(app)
-      .post("/capacity-checks")
+      .post("/health-record-admin/capacity-checks")
       .send({ ...nearMiss("cap-nowhere"), propertyId: "does-not-exist" })
       .expect(404);
   });
@@ -296,7 +296,7 @@ describe("the A2 calculation joins the same history", () => {
       .expect(201);
     // A quote run against the same address, so both land in one history.
     await request(app)
-      .post("/capacity-checks")
+      .post("/health-record-admin/capacity-checks")
       .send({ ...nearMiss("cap-a2-standalone"), propertyId: a2PropertyId })
       .expect(201);
 
@@ -316,18 +316,18 @@ describe("POST /capacity-checks/:id/order-demand-study", () => {
   };
 
   it("refuses when the 220.83 check already cleared the service", async () => {
-    await request(app).post("/capacity-checks").send(bigService("cap-passes")).expect(201);
+    await request(app).post("/health-record-admin/capacity-checks").send(bigService("cap-passes")).expect(201);
     const res = await request(app)
-      .post("/capacity-checks/cap-passes/order-demand-study")
+      .post("/health-record-admin/capacity-checks/cap-passes/order-demand-study")
       .send(order)
       .expect(409);
     expect(res.body.error).toContain("Quote the addition");
   });
 
   it("refuses without the customer's explicit acknowledgement", async () => {
-    await request(app).post("/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
+    await request(app).post("/health-record-admin/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
     await request(app)
-      .post(`/capacity-checks/${CHECK_ID}/order-demand-study`)
+      .post(`/health-record-admin/capacity-checks/${CHECK_ID}/order-demand-study`)
       .send({ startDate: "2026-09-01", customerStatement: "sure" })
       .expect(422);
   });
@@ -335,9 +335,9 @@ describe("POST /capacity-checks/:id/order-demand-study", () => {
   it("creates two scheduled visits 31 days apart when the rule is satisfied", async () => {
     // Two trips is the honest shape of this service, and putting the delay on
     // the calendar is how everyone sees what it costs in time.
-    await request(app).post("/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
+    await request(app).post("/health-record-admin/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
     const res = await request(app)
-      .post(`/capacity-checks/${CHECK_ID}/order-demand-study`)
+      .post(`/health-record-admin/capacity-checks/${CHECK_ID}/order-demand-study`)
       .send(order)
       .expect(201);
 
@@ -357,9 +357,9 @@ describe("POST /capacity-checks/:id/order-demand-study", () => {
   });
 
   it("refuses to order the same study twice", async () => {
-    await request(app).post("/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
-    await request(app).post(`/capacity-checks/${CHECK_ID}/order-demand-study`).send(order).expect(201);
-    await request(app).post(`/capacity-checks/${CHECK_ID}/order-demand-study`).send(order).expect(409);
+    await request(app).post("/health-record-admin/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
+    await request(app).post(`/health-record-admin/capacity-checks/${CHECK_ID}/order-demand-study`).send(order).expect(201);
+    await request(app).post(`/health-record-admin/capacity-checks/${CHECK_ID}/order-demand-study`).send(order).expect(409);
   });
 });
 
@@ -371,8 +371,8 @@ describe("POST /capacity-checks/:id/complete-demand-study", () => {
   };
 
   async function orderedCheck() {
-    await request(app).post("/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
-    await request(app).post(`/capacity-checks/${CHECK_ID}/order-demand-study`).send(order).expect(201);
+    await request(app).post("/health-record-admin/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
+    await request(app).post(`/health-record-admin/capacity-checks/${CHECK_ID}/order-demand-study`).send(order).expect(201);
   }
 
   it("writes a new 220.87 record rather than editing the 220.83 one", async () => {
@@ -380,7 +380,7 @@ describe("POST /capacity-checks/:id/complete-demand-study", () => {
     // one with the other would erase what the customer was actually told.
     await orderedCheck();
     const res = await request(app)
-      .post(`/capacity-checks/${CHECK_ID}/complete-demand-study`)
+      .post(`/health-record-admin/capacity-checks/${CHECK_ID}/complete-demand-study`)
       .send({
         id: "cap-study-result",
         measuredMaxDemandVA: 9600,
@@ -413,7 +413,7 @@ describe("POST /capacity-checks/:id/complete-demand-study", () => {
   it("reports data that does not meet 220.87 rather than producing a number", async () => {
     await orderedCheck();
     const res = await request(app)
-      .post(`/capacity-checks/${CHECK_ID}/complete-demand-study`)
+      .post(`/health-record-admin/capacity-checks/${CHECK_ID}/complete-demand-study`)
       .send({
         id: "cap-study-short",
         measuredMaxDemandVA: 9600,
@@ -429,9 +429,9 @@ describe("POST /capacity-checks/:id/complete-demand-study", () => {
   });
 
   it("refuses when no study was ordered", async () => {
-    await request(app).post("/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
+    await request(app).post("/health-record-admin/capacity-checks").send(overloaded(CHECK_ID)).expect(201);
     await request(app)
-      .post(`/capacity-checks/${CHECK_ID}/complete-demand-study`)
+      .post(`/health-record-admin/capacity-checks/${CHECK_ID}/complete-demand-study`)
       .send({ id: "cap-orphan", measuredMaxDemandVA: 9600, source: "utility_12mo", monthsOfData: 12 })
       .expect(409);
   });

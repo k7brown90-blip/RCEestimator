@@ -5,15 +5,18 @@ import { InspectionResultChip } from "./InspectionResultChip";
 import { ProtectedImage } from "./ProtectedImage";
 
 /**
- * Health Record panel for the visit workspace: assign the inspection to a
- * technician and review inspections synced back from the field PWA.
+ * Health Record panel for the visit workspace — read-only from the CRM's side.
+ *
+ * The CRM is scheduling/management only: technician assignment happens in the
+ * scheduler (JobScheduler tech picker) when the appointment is booked, and the
+ * inspection itself — including its load calculation — is the Health Report
+ * product, owned by the field PWA. What the office needs here is to see synced
+ * results, mark the contractor review, and generate/send the report PDF.
  */
 export function HealthRecordPanel({ visitId }: { visitId: string }) {
   const queryClient = useQueryClient();
-  const [technicianId, setTechnicianId] = useState("");
   const [expandedInspectionId, setExpandedInspectionId] = useState<string | null>(null);
 
-  const { data: technicians } = useQuery({ queryKey: ["technicians"], queryFn: api.technicians });
   const { data: assignments } = useQuery({
     queryKey: ["visitAssignments", visitId],
     queryFn: () => api.visitAssignments(visitId),
@@ -28,19 +31,6 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
     queryKey: ["healthInspection", expandedInspectionId],
     queryFn: () => api.healthInspection(String(expandedInspectionId)),
     enabled: Boolean(expandedInspectionId),
-  });
-
-  const assignMutation = useMutation({
-    mutationFn: () => api.assignTechnician(visitId, { technicianId }),
-    onSuccess: () => {
-      setTechnicianId("");
-      void queryClient.invalidateQueries({ queryKey: ["visitAssignments", visitId] });
-    },
-  });
-
-  const removeMutation = useMutation({
-    mutationFn: (assignmentId: string) => api.removeAssignment(assignmentId),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["visitAssignments", visitId] }),
   });
 
   const reviewMutation = useMutation({
@@ -62,7 +52,6 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
     },
   });
 
-  const activeTechs = (technicians ?? []).filter((t) => t.isActive);
   const criticalOf = (json: string): string[] => {
     try {
       return JSON.parse(json) as string[];
@@ -71,18 +60,6 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
     }
   };
 
-  const loadCalcSummary = (() => {
-    if (!inspectionDetail?.loadCalcJson) return null;
-    try {
-      const parsed = JSON.parse(inspectionDetail.loadCalcJson) as {
-        result?: { governingAmps?: number; serviceAmps?: number; loadPct?: number; spareAmps?: number };
-      };
-      return parsed.result ?? null;
-    } catch {
-      return null;
-    }
-  })();
-
   return (
     <article className="card rounded-2xl border border-rce-border/70 p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -90,36 +67,9 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
         <span className="text-xs text-rce-muted">Field inspection PWA</span>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-end gap-2">
-        <label className="text-sm font-medium">
-          Assign technician
-          <select
-            className="field mt-1 min-w-56"
-            value={technicianId}
-            onChange={(e) => setTechnicianId(e.target.value)}
-          >
-            <option value="">Select technician…</option>
-            {activeTechs.map((tech) => (
-              <option key={tech.id} value={tech.id}>
-                {tech.name} ({tech.role})
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="button"
-          className="btn btn-primary text-xs"
-          disabled={!technicianId || assignMutation.isPending}
-          onClick={() => assignMutation.mutate()}
-        >
-          Assign inspection
-        </button>
-        {activeTechs.length === 0 && (
-          <span className="text-xs text-rce-muted">No technicians yet — add them in the Team tab.</span>
-        )}
-      </div>
-
-      {(assignments ?? []).length > 0 && (
+      {/* Read-only: assignment happens in the scheduler when the appointment
+          is booked. This just shows who's on it. */}
+      {(assignments ?? []).length > 0 ? (
         <ul className="mt-3 space-y-1">
           {(assignments ?? []).map((assignment) => (
             <li key={assignment.id} className="flex items-center justify-between rounded-lg border border-rce-border bg-white px-3 py-2 text-sm">
@@ -135,18 +85,13 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                   {assignment.completedAt ? ` · completed ${new Date(assignment.completedAt).toLocaleDateString()}` : ""}
                 </span>
               </span>
-              {assignment.status !== "completed" && (
-                <button
-                  type="button"
-                  className="text-xs font-medium text-red-600"
-                  onClick={() => removeMutation.mutate(assignment.id)}
-                >
-                  Remove
-                </button>
-              )}
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="mt-3 text-xs text-rce-muted">
+          No technician assigned yet — assign one when booking the appointment above.
+        </p>
       )}
 
       <div className="mt-4">
@@ -200,13 +145,8 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                           : "no"}{" "}
                         · Synced {new Date(inspectionDetail.syncedAt).toLocaleString()}
                       </p>
-                      {loadCalcSummary && (
-                        <p className="mt-1">
-                          Load calculation: {loadCalcSummary.governingAmps} A on a{" "}
-                          {loadCalcSummary.serviceAmps} A service — {loadCalcSummary.loadPct}% used,{" "}
-                          {loadCalcSummary.spareAmps} A spare (NEC 230.42 basis).
-                        </p>
-                      )}
+                      {/* Load calculation deliberately not shown — it belongs to
+                          the Health Report product, not the CRM. */}
                       {(inspectionDetail.photos ?? []).length > 0 && (
                         <div className="mt-2">
                           <p className="font-medium">Photo evidence ({inspectionDetail.photos!.length})</p>

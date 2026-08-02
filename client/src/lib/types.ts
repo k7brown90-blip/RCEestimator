@@ -727,6 +727,22 @@ export type DemandStudyOrder = {
   scheduled: { visitId: string; date: string; error?: string }[];
 };
 
+/**
+ * One technician's calendar picture for a single day — the scheduler's tech
+ * picker. `calendarAccessible: false` means Google omitted their calendar from
+ * the freebusy response (not shared with the app's account); the UI must show
+ * that as a warning, never as "free all day".
+ */
+export type TechDayAvailability = {
+  technicianId: string;
+  name: string;
+  email: string;
+  calendarAccessible: boolean;
+  busy: { start: string; end: string; startLocal: string; endLocal: string }[];
+  /** Server-computed: free at the requested start+duration. Null when no slot was requested or calendar unreadable. */
+  freeAtRequested: boolean | null;
+};
+
 /** Append-only history for one finding — the sequence is what defends anybody. */
 export type FindingEvent = {
   id: string;

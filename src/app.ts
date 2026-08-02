@@ -11,6 +11,7 @@ import { generateSupportItems } from "./services/supportItemTriggers";
 import { getAvailability, bookAppointment, BookingConflictError } from "./services/googleCalendar";
 import { getDailySummary } from "./services/dailySummary";
 import { getTodaySchedule, getWeekSchedule, getMonthSchedule, getEventsInRange, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
+import { techAvailabilityForDate, ctToUtc } from "./services/techCalendars";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { webOptInConfirmation } from "./services/notifications";
 import { logSystemEvent } from "./services/systemEvents";
@@ -1277,7 +1278,11 @@ app.use(pinAuthMiddleware);
 
 // ─── HEALTH RECORD ADMIN (CRM client — rides the PIN/JWT session) ─────────────
 app.use("/health-record-admin", healthRecordAdminRouter);
-app.use("/capacity-checks", capacityCheckAdminRouter);
+// Load calculation is Health Report product surface, not CRM. The old
+// top-level /capacity-checks mount (and the CRM visit-page panel that called
+// it) was removed 2026-08-02; the endpoints live on under the product's own
+// namespace for the demand-study flow and future Health Report office UI.
+app.use("/health-record-admin/capacity-checks", capacityCheckAdminRouter);
 
 // ─── COMPANY SETTINGS (key-value config store — PIN/JWT protected) ────────────
 const SETTING_KEYS = ["companyProfile", "operatingHours", "territories", "legal"] as const;
@@ -1489,10 +1494,11 @@ app.post("/crm/jobs/:jobId/schedule", asyncHandler(async (req, res) => {
   const body = z.object({
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
     startTime: z.string().optional(),
+    technicianId: z.string().optional(),
   }).parse(req.body);
 
   try {
-    const result = await scheduleJob(jobId, body.startDate, body.startTime);
+    const result = await scheduleJob(jobId, body.startDate, body.startTime, body.technicianId);
     res.json(result);
   } catch (err) {
     if (err instanceof ConflictError) {
@@ -1501,6 +1507,40 @@ app.post("/crm/jobs/:jobId/schedule", asyncHandler(async (req, res) => {
     }
     throw err;
   }
+}));
+
+// ─── TECH AVAILABILITY (JWT-protected — the CRM scheduler's tech picker) ──────
+// Per-tech busy blocks for one CT day. A calendar Google omits from the
+// freebusy response is reported calendarAccessible=false — never as "free".
+// Optional start (HH:MM CT) + durationMinutes compute freeAtRequested per
+// tech server-side, because the browser can't be trusted to do CT/DST math.
+app.get("/crm/schedule/tech-availability", asyncHandler(async (req, res) => {
+  const date = String(req.query.date ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ error: "date must be YYYY-MM-DD" });
+    return;
+  }
+  const startRaw = typeof req.query.start === "string" ? req.query.start : null;
+  const durationMinutes = Number(req.query.durationMinutes ?? 180);
+
+  const techs = await techAvailabilityForDate(date);
+
+  let slot: { start: Date; end: Date } | null = null;
+  if (startRaw && /^\d{2}:\d{2}$/.test(startRaw)) {
+    const [h, m] = startRaw.split(":").map(Number);
+    const start = ctToUtc(date, h, m);
+    slot = { start, end: new Date(start.getTime() + durationMinutes * 60_000) };
+  }
+
+  res.json({
+    date,
+    techs: techs.map((t) => ({
+      ...t,
+      freeAtRequested: slot && t.calendarAccessible
+        ? !t.busy.some((b) => new Date(b.start).getTime() < slot!.end.getTime() && new Date(b.end).getTime() > slot!.start.getTime())
+        : null,
+    })),
+  });
 }));
 
 app.post("/crm/jobs/:jobId/reschedule", asyncHandler(async (req, res) => {

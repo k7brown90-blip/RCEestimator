@@ -57,6 +57,20 @@ export function TeamPage() {
     },
   });
 
+  const verifyCalendarMutation = useMutation({
+    mutationFn: (technicianId: string) => api.verifyTechCalendar(technicianId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["technicians"] });
+      if (!result.accessible) {
+        window.alert(
+          result.email
+            ? `Google can't read ${result.email}'s calendar. Have them share it with the company scheduling account (Settings → Share with specific people → "See all event details").`
+            : "This team member has no email on file — add their company Google address first.",
+        );
+      }
+    },
+  });
+
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (name.trim()) createMutation.mutate();
@@ -85,6 +99,13 @@ export function TeamPage() {
           that technician’s access token to connect.
         </p>
 
+        <p className="mt-2 text-sm text-rce-muted">
+          The Google Calendar email is the tech's company Workspace address — scheduling reads
+          their calendar for availability and invites them to booked jobs. After adding a tech,
+          have them share their calendar with the company scheduling account, then hit
+          “Verify calendar” on their roster row.
+        </p>
+
         <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={submit}>
           <label className="text-sm font-medium">
             Name
@@ -108,8 +129,15 @@ export function TeamPage() {
             </select>
           </label>
           <label className="text-sm font-medium">
-            Email
-            <input className="field mt-1" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            Google Calendar email
+            <input
+              className="field mt-1"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="name@redcedarelectricllc.com"
+              required={role === "technician"}
+            />
           </label>
           <label className="text-sm font-medium">
             Phone
@@ -142,8 +170,25 @@ export function TeamPage() {
                     {tech.role} · {tech.isActive ? "active" : "deactivated"}
                     {tech._count ? ` · ${tech._count.healthInspections} inspections` : ""}
                   </span>
+                  {tech.email ? (
+                    tech.calendarShared ? (
+                      <span className="ml-2 rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-800">calendar linked</span>
+                    ) : (
+                      <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">calendar not verified</span>
+                    )
+                  ) : (
+                    <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">no calendar email</span>
+                  )}
                 </span>
                 <span className="flex gap-2">
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-rce-accent"
+                    disabled={verifyCalendarMutation.isPending}
+                    onClick={() => verifyCalendarMutation.mutate(tech.id)}
+                  >
+                    Verify calendar
+                  </button>
                   <button
                     type="button"
                     className="text-xs font-medium text-rce-accent"

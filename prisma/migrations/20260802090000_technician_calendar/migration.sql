@@ -1,0 +1,13 @@
+-- Tech Google Calendars become the scheduling availability source.
+--
+-- Techs get company Workspace emails at onboarding; Technician.email doubles
+-- as their Google Calendar ID. Availability reads (Savannah + CRM scheduler)
+-- union tech calendars with the primary, and the CRM's tech picker reads
+-- per-tech busy blocks before assignment.
+--
+-- calendarShared exists because Google's freebusy API silently OMITS any
+-- calendar the token can't read -- an unshared calendar is indistinguishable
+-- from a perfectly free one. The Team page probe sets this flag, and the
+-- availability endpoint reports unreachable calendars instead of pretending
+-- the tech is free.
+ALTER TABLE "Technician" ADD COLUMN IF NOT EXISTS "calendarShared" BOOLEAN NOT NULL DEFAULT false;
