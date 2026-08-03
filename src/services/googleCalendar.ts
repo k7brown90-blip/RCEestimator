@@ -26,8 +26,18 @@ interface DayAvailability {
   timezone: string;
 }
 
+/** One fixed scheduling block, in the shape Vapi's tools consume directly. */
+interface FixedBlockSlot {
+  date: string;      // YYYY-MM-DD
+  startTime: string; // "08:00" | "10:00" | "12:00" | "14:00"
+  endTime: string;   // "10:00" | "12:00" | "14:00" | "16:00"
+  label: string;
+}
+
 interface AvailabilityResponse {
   available_slots: DayAvailability[];
+  /** Fixed 8-10/10-12/12-2/2-4 CT blocks only — never an odd window like 3-5. */
+  slots: FixedBlockSlot[];
   current_time_central: string;
   current_date_central: string;
   /** Calendar IDs Google omitted or errored on — availability for these is UNKNOWN, not free. */
@@ -94,6 +104,26 @@ function formatTime(d: Date): string {
     minute: "2-digit",
   });
 }
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** "08:00"-style label for a business-hour integer, e.g. 14 -> "14:00". */
+function hourLabel(hour: number): string {
+  return `${pad2(hour)}:00`;
+}
+
+function ymd(year: number, month: number, day: number): string {
+  return `${year}-${pad2(month)}-${pad2(day)}`;
+}
+
+const BLOCK_LABELS: Record<number, string> = {
+  8: "Morning 8–10",
+  10: "Late morning 10–12",
+  12: "Midday 12–2",
+  14: "Afternoon 2–4",
+};
 
 // ── Google Calendar client ───────────────────────────────────────────────────
 
@@ -163,6 +193,7 @@ export async function getAvailability(startDate?: Date): Promise<AvailabilityRes
   busyPeriods.sort((a, b) => a.start.getTime() - b.start.getTime());
 
   const days: DayAvailability[] = [];
+  const flatSlots: FixedBlockSlot[] = [];
 
   // For each of the next 7 days, generate 2-hour appointment windows
   for (let offset = 0; offset < LOOKAHEAD_DAYS; offset++) {
@@ -207,6 +238,12 @@ export async function getAvailability(startDate?: Date): Promise<AvailabilityRes
           start: formatTime(slotStart),
           end: formatTime(slotEnd),
         });
+        flatSlots.push({
+          date: ymd(dayParts.year, dayParts.month, dayParts.day),
+          startTime: hourLabel(wStart),
+          endTime: hourLabel(wEnd),
+          label: BLOCK_LABELS[wStart] ?? `${hourLabel(wStart)}–${hourLabel(wEnd)}`,
+        });
       }
     }
 
@@ -221,6 +258,7 @@ export async function getAvailability(startDate?: Date): Promise<AvailabilityRes
 
   return {
     available_slots: days,
+    slots: flatSlots,
     current_time_central: formatTime(now),
     current_date_central: formatDate(now),
     unreachable_calendars: unreachableCalendars,

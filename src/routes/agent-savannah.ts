@@ -17,7 +17,7 @@ import {
   successResponse,
   errorResponse,
 } from "./agent-helpers";
-import { rescheduleJob, cancelJob, ConflictError } from "../services/scheduling";
+import { rescheduleJob, cancelJob, ConflictError, appointmentKindFor } from "../services/scheduling";
 import { checkAvailabilityBlock } from "../services/schedule";
 
 const TZ = "America/Chicago";
@@ -81,6 +81,11 @@ savannahRouter.post("/lookup-job", asyncHandler(async (req, res) => {
   }
 
   // Find jobs (visits) with status scheduled or in_progress, with future dates
+  const jobInclude = {
+    customer: { select: { name: true, phone: true, email: true } },
+    property: { select: { addressLine1: true, city: true, state: true, postalCode: true } },
+  } as const;
+
   const jobs = await prisma.visit.findMany({
     where: {
       status: { in: ["scheduled", "in_progress"] },
@@ -89,10 +94,7 @@ savannahRouter.post("/lookup-job", asyncHandler(async (req, res) => {
         ? customerConditions[0]
         : { OR: customerConditions }),
     },
-    include: {
-      customer: { select: { name: true, phone: true } },
-      property: { select: { addressLine1: true, city: true } },
-    },
+    include: jobInclude,
     orderBy: { scheduledStart: "asc" },
     take: 3,
   });
@@ -111,25 +113,35 @@ savannahRouter.post("/lookup-job", asyncHandler(async (req, res) => {
           customerId: { in: customers.map(c => c.id) },
           status: { in: ["scheduled", "in_progress"] },
         },
-        include: {
-          customer: { select: { name: true, phone: true } },
-          property: { select: { addressLine1: true, city: true } },
-        },
+        include: jobInclude,
         orderBy: { scheduledStart: "asc" },
         take: 3,
       });
     }
   }
 
+  // "single_window" (fixed 2-hour estimate visit) vs "multi_day" (production
+  // job spanning estimatedDurationDays working days) — derived from
+  // Visit.status via the same rule scheduling.ts uses, so this can't drift
+  // from what actually gets booked.
+  const visitType = (j: (typeof matches)[number]): "single_window" | "multi_day" =>
+    appointmentKindFor(j.status) === "estimate" || (j.estimatedDurationDays ?? 1) <= 1
+      ? "single_window"
+      : "multi_day";
+
   const matchData = matches.map((j) => ({
     job_id: j.id,
     customer_name: j.customer.name,
+    customer_email: j.customer.email ?? null,
     address: `${j.property.addressLine1}, ${j.property.city}`,
+    address_zip: j.property.postalCode ?? null,
     scheduled_start: j.scheduledStart?.toISOString() ?? null,
     scheduled_end: j.scheduledEnd?.toISOString() ?? null,
     duration_days: j.estimatedDurationDays ?? 1,
+    visit_type: visitType(j),
     job_type: j.jobType ?? "service",
     status: j.status,
+    notes: j.notes ?? null,
   }));
 
   const disambiguation = matchData.length > 1
@@ -168,8 +180,8 @@ savannahRouter.post("/job-schedule", asyncHandler(async (req, res) => {
   const job = await prisma.visit.findUnique({
     where: { id: body.job_id },
     include: {
-      customer: { select: { name: true, phone: true } },
-      property: { select: { addressLine1: true, city: true } },
+      customer: { select: { name: true, phone: true, email: true } },
+      property: { select: { addressLine1: true, city: true, state: true, postalCode: true } },
     },
   });
 
@@ -185,18 +197,23 @@ savannahRouter.post("/job-schedule", asyncHandler(async (req, res) => {
     timeZone: TZ, hour: "numeric", minute: "2-digit",
   });
 
+  const durationDays = job.estimatedDurationDays ?? 1;
   const data = {
     job_id: job.id,
     customer_name: job.customer.name,
     customer_phone: job.customer.phone,
+    customer_email: job.customer.email ?? null,
     address: `${job.property.addressLine1}, ${job.property.city}`,
+    address_zip: job.property.postalCode ?? null,
     job_type: job.jobType ?? "service",
     status: job.status,
     scheduled_start: job.scheduledStart?.toISOString() ?? null,
     scheduled_end: job.scheduledEnd?.toISOString() ?? null,
     scheduled_start_display: job.scheduledStart ? `${formatDate(job.scheduledStart)} at ${formatTime(job.scheduledStart)}` : null,
     scheduled_end_display: job.scheduledEnd ? formatDate(job.scheduledEnd) : null,
-    duration_days: job.estimatedDurationDays ?? 1,
+    duration_days: durationDays,
+    visit_type: appointmentKindFor(job.status) === "estimate" || durationDays <= 1 ? "single_window" : "multi_day",
+    notes: job.notes ?? null,
     google_event_id: job.googleEventId ?? null,
   };
 
