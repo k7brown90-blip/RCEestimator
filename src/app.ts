@@ -292,7 +292,11 @@ app.post("/calendar/availability", requireWebhookSecretWhenEnabled("POST /calend
 app.post("/calendar/book", requireWebhookSecretWhenEnabled("POST /calendar/book"), asyncHandler(async (req, res) => {
   const { date, startTime, customerName, description, address, email, phone } = req.body;
   if (!date || !startTime || !customerName || !description || !address) {
-    return res.status(400).json({ error: "Required: date, startTime, customerName, description, address" });
+    res.status(400).json({
+      error: "Required: date, startTime, customerName, description, address",
+      spoken_fallback: "I'm missing some details to book that — can you give me the customer's name, the address, and what the visit is for?",
+    });
+    return;
   }
   try {
     const result = await bookAppointment({ date, startTime, customerName, description, address, email, phone });
@@ -312,7 +316,18 @@ app.post("/calendar/book", requireWebhookSecretWhenEnabled("POST /calendar/book"
       });
       return;
     }
-    throw err;
+    // Every failure path from here on must still carry a spoken_fallback —
+    // the tool-use rule is "error key present -> speak spoken_fallback", and
+    // an unhandled error falling through to the generic 500 handler doesn't
+    // have one, which leaves the caller with dead air instead of an apology.
+    logSystemEvent("error", "calendar-book", err instanceof Error ? err.message : "Unknown booking error", {
+      route: "POST /calendar/book",
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    res.status(500).json({
+      error: "Booking failed unexpectedly",
+      spoken_fallback: "Something went wrong on my end booking that. Let me have Kyle's team confirm this appointment directly and call you back.",
+    });
   }
 }));
 
