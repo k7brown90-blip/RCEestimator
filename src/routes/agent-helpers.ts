@@ -47,6 +47,7 @@ export function logAgent(action: string, details: {
   responseStatus?: number;
   durationMs?: number;
   clientRequestId?: string;
+  callId?: string;
 }): void {
   prisma.agentAuditLog.create({
     data: {
@@ -60,8 +61,15 @@ export function logAgent(action: string, details: {
       responseStatus: details.responseStatus,
       durationMs: details.durationMs,
       clientRequestId: details.clientRequestId,
+      callId: details.callId,
     },
   }).catch((err) => console.error("[AgentAudit] log failed:", err));
+}
+
+/** Vapi's own call.id, when a tool is configured to send it (header x-vapi-call-id). */
+export function readVapiCallId(req: express.Request): string | undefined {
+  const raw = req.headers["x-vapi-call-id"];
+  return typeof raw === "string" && raw.length > 0 ? raw : undefined;
 }
 
 // ─── IDEMPOTENCY ────────────────────────────────────────────────────────────────

@@ -1286,7 +1286,13 @@ model AgentAuditLog {
   responseStatus  Int?
   durationMs      Int?
   clientRequestId String?
+  // Vapi's own call.id, threaded through from the tool request (header
+  // x-vapi-call-id) — lets /vapi/end-of-call-report check whether THIS call
+  // already got a disposition logged, independent of model behavior.
+  callId          String?
   createdAt       DateTime @default(now())
+
+  @@index([action, callId])
 }
 
 // ─── System events ─────────────────────────────────────────────────────────

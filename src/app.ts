@@ -15,6 +15,8 @@ import { techAvailabilityForDate, ctToUtc } from "./services/techCalendars";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { webOptInConfirmation } from "./services/notifications";
 import { logSystemEvent } from "./services/systemEvents";
+import { applyCallDisposition } from "./services/callDisposition";
+import { truncate } from "./routes/agent-helpers";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
 import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail } from "./services/confirmationEmail";
 import {
@@ -261,6 +263,89 @@ app.post("/vapi/assistant-config", (req, res) => {
   // Legacy / manual test callers still get the raw variableValues.
   res.json({ variableValues, assistantId: savannahAssistantId });
 });
+
+// ─── VAPI END-OF-CALL SAFETY NET (query-string secret — see below) ──────────
+//
+// Prompt rules can tell Savannah to call log_call_disposition, but a model
+// under multi-step pressure (apologize, re-check availability, re-offer slots)
+// can skip a tool call it was told to make. This is the backend backstop:
+// point the assistant's Server URL at this address with a `key` query param,
+// and when Vapi reports a call ended, check whether that call.id already got
+// a disposition logged. If not, log a generic fallback so a dropped call never
+// produces zero record — this cannot be skipped by model drift, since it runs
+// after the call regardless of what happened during it.
+//
+// Fail-closed like every other secret in this file: with VAPI_SERVER_SECRET
+// unset, the endpoint refuses everything rather than accepting unauthenticated
+// call data.
+app.post("/vapi/end-of-call-report", asyncHandler(async (req, res) => {
+  const configured = process.env.VAPI_SERVER_SECRET;
+  if (!configured || readQuery(req, "key") !== configured) {
+    res.status(401).json({ error: "Invalid or missing key" });
+    return;
+  }
+
+  const message = req.body?.message ?? req.body;
+  const messageType = message?.type as string | undefined;
+  if (messageType !== "end-of-call-report") {
+    res.status(200).json({ ok: true });
+    return;
+  }
+
+  const callId = message?.call?.id as string | undefined;
+  if (!callId) {
+    logSystemEvent("warn", "vapi-eocr", "end-of-call-report with no call.id — cannot check for a logged disposition");
+    res.status(200).json({ ok: true });
+    return;
+  }
+
+  const alreadyLogged = await prisma.agentAuditLog.findFirst({
+    where: { action: "call_disposition", callId },
+    select: { id: true },
+  });
+  if (alreadyLogged) {
+    res.status(200).json({ ok: true, alreadyLogged: true });
+    return;
+  }
+
+  const phone = (message?.call?.customer?.number ?? message?.customer?.number) as string | undefined;
+  const transcript = (message?.transcript ?? message?.artifact?.transcript) as string | undefined;
+  const summary = (message?.summary ?? message?.analysis?.summary) as string | undefined;
+  const notes = [
+    "Auto-logged: no disposition was recorded for this call.",
+    summary ? `Summary: ${summary}` : null,
+    transcript ? `Transcript: ${truncate(transcript, 4000)}` : null,
+  ].filter(Boolean).join("\n");
+
+  const { lead, created } = await applyCallDisposition({
+    phone,
+    callType: "auto_fallback",
+    leadStatus: "unresolved",
+    notes,
+  });
+
+  logSystemEvent("warn", "vapi-eocr", "Call ended with no disposition logged — auto-fallback applied", {
+    route: "POST /vapi/end-of-call-report",
+    callId,
+    leadId: lead.id,
+    leadCreated: created,
+  });
+  // Awaited, not fire-and-forget: a near-simultaneous retry of this same
+  // webhook must see this row before it decides whether to log again.
+  await prisma.agentAuditLog.create({
+    data: {
+      action: "call_disposition",
+      endpoint: "/vapi/end-of-call-report",
+      entityType: "lead",
+      entityId: lead.id,
+      payloadJson: JSON.stringify({ leadStatus: "unresolved", callType: "auto_fallback", created, auto: true }),
+      responseStatus: 200,
+      callId,
+    },
+  });
+
+  res.status(200).json({ ok: true, leadId: lead.id, leadCreated: created });
+}));
 
 // ─── CALENDAR AVAILABILITY (agent endpoint — see middleware/webhookSecret) ───
 // Free/busy windows only: when Kyle is working and how full he is. No names, no

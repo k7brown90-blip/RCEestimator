@@ -13,10 +13,11 @@ import {
   agentAuth,
   zodErrorMiddleware,
   successResponse,
-  normalizePhone,
+  readVapiCallId,
 } from "./agent-helpers";
 import { checkAvailabilityBlock } from "../services/schedule";
 import { getAvailability } from "../services/googleCalendar";
+import { applyCallDisposition } from "../services/callDisposition";
 import { prisma } from "../lib/prisma";
 import { sendSms } from "../services/twilio";
 import { sendDocumentEmail, humanizeDocType } from "../services/documentDelivery";
@@ -125,58 +126,25 @@ sharedAgentRouter.post("/call-disposition", asyncHandler(async (req, res) => {
   }).parse(req.body);
 
   const clientRequestId = body.disposition_event_id ?? (req.headers["x-client-request-id"] as string | undefined);
+  const callId = readVapiCallId(req);
 
   const cached = await checkIdempotency(clientRequestId, endpoint);
   if (cached) { res.json(cached); return; }
 
-  // Resolve the lead: explicit id → most recent lead by phone → create new.
-  let lead = body.lead_id
-    ? await prisma.lead.findUnique({ where: { id: body.lead_id } })
-    : null;
-  if (!lead && body.phone) {
-    const normalized = normalizePhone(body.phone);
-    lead = await prisma.lead.findFirst({
-      where: { phone: { in: [body.phone, normalized] } },
-      orderBy: { createdAt: "desc" },
-    });
-  }
+  const { lead, created } = await applyCallDisposition({
+    leadId: body.lead_id,
+    phone: body.phone,
+    name: body.name,
+    callType: body.call_type,
+    leadStatus: body.lead_status,
+    followUpDate: body.follow_up_date,
+    followUpReason: body.follow_up_reason,
+    lostReason: body.lost_reason,
+    bestTimeToReach: body.best_time_to_reach,
+    notes: body.notes,
+  });
 
-  const followUpDate = body.follow_up_date ? new Date(`${body.follow_up_date}T12:00:00Z`) : undefined;
-  const dispositionNote = `[Call ${new Date().toISOString().slice(0, 10)}] ${body.call_type}/${body.lead_status}${body.notes ? ` — ${body.notes}` : ""}`;
-
-  let created = false;
-  if (lead) {
-    lead = await prisma.lead.update({
-      where: { id: lead.id },
-      data: {
-        leadStatus: body.lead_status,
-        callType: body.call_type,
-        ...(followUpDate ? { followUpDate, followUpCount: { increment: 1 } } : {}),
-        ...(body.follow_up_reason ? { followUpReason: body.follow_up_reason } : {}),
-        ...(body.lost_reason ? { lostReason: body.lost_reason } : {}),
-        ...(body.best_time_to_reach ? { bestTimeToReach: body.best_time_to_reach } : {}),
-        notes: lead.notes ? `${lead.notes}\n${dispositionNote}` : dispositionNote,
-      },
-    });
-  } else {
-    created = true;
-    lead = await prisma.lead.create({
-      data: {
-        name: body.name ?? "Unknown caller",
-        phone: body.phone ? normalizePhone(body.phone) : null,
-        source: "phone",
-        leadStatus: body.lead_status,
-        callType: body.call_type,
-        followUpDate: followUpDate ?? null,
-        followUpReason: body.follow_up_reason ?? null,
-        lostReason: body.lost_reason ?? null,
-        bestTimeToReach: body.best_time_to_reach ?? null,
-        notes: dispositionNote,
-      },
-    });
-  }
-
-  const spoken = followUpDate
+  const spoken = body.follow_up_date
     ? `Got it — logged as ${body.lead_status} with a follow-up on ${body.follow_up_date}.`
     : `Got it — logged as ${body.lead_status}.`;
 
@@ -193,7 +161,7 @@ sharedAgentRouter.post("/call-disposition", asyncHandler(async (req, res) => {
   logAgent("call_disposition", {
     endpoint, entityType: "lead", entityId: lead.id,
     payload: { leadStatus: body.lead_status, callType: body.call_type, created },
-    responseStatus: 200, durationMs: Date.now() - start, clientRequestId,
+    responseStatus: 200, durationMs: Date.now() - start, clientRequestId, callId,
   });
   res.json(resp);
 }));
