@@ -53,6 +53,12 @@ const service = new EstimateService(prisma);
 
 export const app = express();
 
+// Railway (and most hosts) put a single reverse proxy in front of the app.
+// Without this, express-rate-limit can't tell real callers apart by IP — every
+// request behind the proxy looks the same, so a shared budget meant to be
+// per-caller instead becomes one global bucket every caller draws from.
+app.set("trust proxy", 1);
+
 // ─── SERVE THE HEALTH RECORD FIELD PWA (/field) ──────────────────────────────
 // Mounted BEFORE the CRM's SPA fallback below, which would otherwise swallow
 // every HTML navigation and hand back the CRM shell instead. The PWA is built
@@ -139,12 +145,16 @@ app.use((req: express.Request & { _isApi?: boolean }, _res, next) => {
 // Public, unauthenticated endpoints get a tight per-IP budget; everything else
 // under the API gets a generous safety net. Disabled under test.
 const skipLimiter = () => process.env.NODE_ENV === "test";
+// /vapi/end-of-call-report carries its own query-string secret (unlike its
+// /vapi siblings, which have no auth and rely on this limiter as their only
+// spam protection), so it gets its own generous budget below instead — skip
+// it here rather than let both limiters draw from the same request.
 const publicLimiter = rateLimit({
   windowMs: 60_000,
   limit: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: skipLimiter,
+  skip: (req) => skipLimiter() || req.originalUrl.startsWith("/vapi/end-of-call-report"),
 });
 const apiLimiter = rateLimit({
   windowMs: 60_000,
@@ -173,7 +183,22 @@ const bookingLimiter = rateLimit({
   legacyHeaders: false,
   skip: skipLimiter,
 });
+/**
+ * end-of-call-report is authenticated by its own query-string secret (see the
+ * route below), unlike its /vapi siblings (assistant-config, and everything
+ * else on the public prefixes) which have no auth and rely on IP rate limiting
+ * as their only spam protection. It doesn't need to share that tight 30/min
+ * budget — it needs to never block a legitimate Vapi retry after a call ends.
+ */
+const vapiWebhookLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipLimiter,
+});
 app.use(["/leads", "/customer/lookup", "/calendar/availability", "/vapi", "/auth/pin", "/confirm", "/sms/inbound"], publicLimiter);
+app.use("/vapi/end-of-call-report", vapiWebhookLimiter);
 app.use("/calendar/book", bookingLimiter);
 app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
   if (req._isApi) {
