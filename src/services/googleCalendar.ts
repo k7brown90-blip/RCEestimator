@@ -4,6 +4,7 @@ import { sendConfirmationEmail, sendKyleNotificationEmail } from "./confirmation
 import { customerVisitConfirmation, customerDiagnosticConfirmation, kyleNewBooking, sendCustomerSms, sendKyleSms } from "./notifications";
 import { acquireSlotHolds, releaseSlotHolds, slotKeyCT, SlotContentionError } from "./slotHolds";
 import { companyCalendarIds } from "./techCalendars";
+import { logSystemEvent } from "./systemEvents";
 
 const TZ = "America/Chicago";
 const BUSINESS_START = 8;  // 8 AM CT
@@ -29,6 +30,8 @@ interface AvailabilityResponse {
   available_slots: DayAvailability[];
   current_time_central: string;
   current_date_central: string;
+  /** Calendar IDs Google omitted or errored on — availability for these is UNKNOWN, not free. */
+  unreachable_calendars: string[];
 }
 
 // ── Timezone helpers (no external tz library) ────────────────────────────────
@@ -126,18 +129,31 @@ export async function getAvailability(startDate?: Date): Promise<AvailabilityRes
   // Union of the whole company calendar set — primary + env extras + every
   // active technician's Workspace calendar. A slot any tech has claimed is
   // busy for everyone; per-tech granularity lives in the CRM's tech picker.
-  const calendarItems = (await companyCalendarIds()).map((id) => ({ id }));
+  const calendarIds = await companyCalendarIds();
 
   const response = await calendar.freebusy.query({
     requestBody: {
       timeMin: windowStart.toISOString(),
       timeMax: windowEnd.toISOString(),
       timeZone: TZ,
-      items: calendarItems,
+      items: calendarIds.map((id) => ({ id })),
     },
   });
 
   const calendarsData = response.data.calendars ?? {};
+
+  // Google's freebusy OMITS calendars the token can't read instead of erroring,
+  // so an unshared tech calendar is indistinguishable from a perfectly free one.
+  const unreachableCalendars = calendarIds.filter((id) => {
+    const cal = calendarsData[id] as { errors?: unknown[] } | undefined;
+    return !cal || (Array.isArray(cal.errors) && cal.errors.length > 0);
+  });
+  if (unreachableCalendars.length > 0) {
+    logSystemEvent("warn", "googleCalendar", `freebusy could not read ${unreachableCalendars.length} calendar(s) — availability may be incomplete`, {
+      unreachableCalendars,
+    });
+  }
+
   const busyPeriods = Object.values(calendarsData)
     .flatMap(cal => ((cal as any).busy ?? []).map((b: any) => ({
       start: new Date(b.start!),
@@ -207,6 +223,7 @@ export async function getAvailability(startDate?: Date): Promise<AvailabilityRes
     available_slots: days,
     current_time_central: formatTime(now),
     current_date_central: formatDate(now),
+    unreachable_calendars: unreachableCalendars,
   };
 }
 
@@ -230,30 +247,58 @@ interface BookingResult {
   summary: string;
 }
 
-function parseAvailabilityDate(dateStr: string, timeStr: string): Date {
-  // Parse "Wednesday, April 16, 2026" + "10:00 AM"
-  // Remove weekday prefix: "April 16, 2026"
-  const withoutWeekday = dateStr.replace(/^\w+,\s*/, "");
+/** Bad date/time input from the caller's tool arguments — a 400, not a 500. */
+export class BookingInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BookingInputError";
+  }
+}
 
-  // Parse time: "10:00 AM" → hour 10, minute 0
-  const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-  if (!timeMatch) throw new Error(`Cannot parse time: "${timeStr}"`);
-  let hour = parseInt(timeMatch[1]);
-  const minute = parseInt(timeMatch[2]);
-  const ampm = timeMatch[3].toUpperCase();
-  if (ampm === "PM" && hour !== 12) hour += 12;
-  if (ampm === "AM" && hour === 12) hour = 0;
+function parseTimeString(timeStr: string): { hour: number; minute: number } {
+  const t = timeStr.trim();
 
-  // Parse date: "April 16, 2026"
+  // 12-hour: "10:00 AM", "1 PM", "1:30pm"
+  const ampm = t.match(/^(\d{1,2})(?::(\d{2}))?\s*([AaPp])\.?[Mm]\.?$/);
+  if (ampm) {
+    let hour = parseInt(ampm[1]);
+    const minute = ampm[2] ? parseInt(ampm[2]) : 0;
+    if (hour >= 1 && hour <= 12 && minute <= 59) {
+      const isPm = ampm[3].toLowerCase() === "p";
+      if (isPm && hour !== 12) hour += 12;
+      if (!isPm && hour === 12) hour = 0;
+      return { hour, minute };
+    }
+  }
+
+  // 24-hour: "13:00", "08:00" — the format Vapi's tool calls actually send.
+  const h24 = t.match(/^(\d{1,2}):(\d{2})$/);
+  if (h24) {
+    const hour = parseInt(h24[1]);
+    const minute = parseInt(h24[2]);
+    if (hour <= 23 && minute <= 59) return { hour, minute };
+  }
+
+  throw new BookingInputError(`Cannot parse time: "${timeStr}" (use "10:00 AM" or 24-hour "13:00")`);
+}
+
+export function parseAvailabilityDate(dateStr: string, timeStr: string): Date {
+  const { hour, minute } = parseTimeString(timeStr);
+
+  // ISO "2026-08-05" — parsed by hand so it can't shift a day across timezones.
+  const iso = dateStr.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) {
+    return centralToUtc(Number(iso[1]), Number(iso[2]), Number(iso[3]), hour, minute);
+  }
+
+  // "Wednesday, April 16, 2026" (availability response format) or "April 16, 2026"
+  const withoutWeekday = dateStr.replace(/^[A-Za-z]+,\s*/, "");
   const dateParsed = new Date(withoutWeekday);
   if (isNaN(dateParsed.getTime())) {
-    throw new Error(`Cannot parse date: "${dateStr}"`);
+    throw new BookingInputError(`Cannot parse date: "${dateStr}"`);
   }
-  const month = dateParsed.getMonth() + 1;
-  const day = dateParsed.getDate();
-  const year = dateParsed.getFullYear();
 
-  return centralToUtc(year, month, day, hour, minute);
+  return centralToUtc(dateParsed.getFullYear(), dateParsed.getMonth() + 1, dateParsed.getDate(), hour, minute);
 }
 
 export class BookingConflictError extends Error {
@@ -287,14 +332,18 @@ export async function bookAppointment(params: BookingParams): Promise<BookingRes
   const prefix = isDiagnostic ? "DIAG" : "EST";
   const summary = `${prefix}: ${params.customerName} — ${params.address.substring(0, 60)}`;
   try {
+    // Re-check the whole company calendar set, not just primary — the
+    // availability read promised the slot against every tech's calendar.
+    const recheckIds = await companyCalendarIds();
     const freebusy = await calendar.freebusy.query({
       requestBody: {
         timeMin: startUtc.toISOString(),
         timeMax: endUtc.toISOString(),
-        items: [{ id: "primary" }],
+        items: recheckIds.map((id) => ({ id })),
       },
     });
-    const busy = freebusy.data.calendars?.primary?.busy ?? [];
+    const busy = Object.values(freebusy.data.calendars ?? {})
+      .flatMap((cal) => (cal as { busy?: unknown[] }).busy ?? []);
     if (busy.length > 0) {
       throw new BookingConflictError("That time was just taken — please pick a different slot.");
     }

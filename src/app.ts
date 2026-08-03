@@ -8,7 +8,7 @@ import { prisma } from "./lib/prisma";
 import { EstimateService } from "./services/estimateService";
 import { resolveItemCable } from "./services/wiringMethodResolver";
 import { generateSupportItems } from "./services/supportItemTriggers";
-import { getAvailability, bookAppointment, BookingConflictError } from "./services/googleCalendar";
+import { getAvailability, bookAppointment, BookingConflictError, BookingInputError } from "./services/googleCalendar";
 import { getDailySummary } from "./services/dailySummary";
 import { getTodaySchedule, getWeekSchedule, getMonthSchedule, getEventsInRange, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
 import { techAvailabilityForDate, ctToUtc } from "./services/techCalendars";
@@ -302,6 +302,13 @@ app.post("/calendar/book", requireWebhookSecretWhenEnabled("POST /calendar/book"
       res.status(409).json({
         error: err.message,
         spoken_fallback: "That time just became unavailable. Let me check the openings again and offer you another slot.",
+      });
+      return;
+    }
+    if (err instanceof BookingInputError) {
+      res.status(400).json({
+        error: err.message,
+        spoken_fallback: "I want to make sure I book this correctly — could you confirm the exact day and time once more?",
       });
       return;
     }

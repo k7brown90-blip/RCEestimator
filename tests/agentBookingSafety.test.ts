@@ -199,6 +199,37 @@ describe("Vapi /calendar/book race protection", () => {
     await acquireSlotHolds(["2026-10-09"], "scheduler"); // day-block job hold
     await expect(acquireSlotHolds(["2026-10-09T10:00"], "vapi-booking")).resolves.toBeUndefined();
   });
+
+  it("accepts 24-hour times and ISO dates — the format Vapi actually sends", async () => {
+    const res = await request(app)
+      .post("/calendar/book")
+      .send({
+        date: "2026-10-13",
+        startTime: "13:00",
+        customerName: "T2 Vapi Format Caller",
+        description: "Estimate — service upgrade",
+        address: "4 Race Ct, Murfreesboro, TN",
+      })
+      .expect(200);
+    expect(res.body.eventId).toBe("gcal_mock_id");
+    // 1:00 PM CDT on 2026-10-13 = 18:00 UTC
+    expect(res.body.start).toBe("2026-10-13T18:00:00.000Z");
+  });
+
+  it("unparseable time returns 400 with a spoken fallback, not a 500", async () => {
+    const res = await request(app)
+      .post("/calendar/book")
+      .send({
+        date: "2026-10-14",
+        startTime: "one o'clock",
+        customerName: "T2 Bad Time Caller",
+        description: "Estimate",
+        address: "5 Race Ct, Murfreesboro, TN",
+      })
+      .expect(400);
+    expect(res.body.spoken_fallback).toContain("day and time");
+    expect(await prisma.slotHold.count()).toBe(0);
+  });
 });
 
 describe("call disposition endpoint", () => {

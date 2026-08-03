@@ -45,7 +45,9 @@ sharedAgentRouter.all("/check-availability", asyncHandler(async (req, res) => {
 
   const availability = await getAvailability(startDate);
 
-  const spoken = `I have availability for the next ${availability.available_slots.length} business days. Let me share the open slots.`;
+  const spoken = availability.unreachable_calendars.length > 0
+    ? `Heads up: ${availability.unreachable_calendars.length} team calendar(s) couldn't be read, so this availability may be incomplete — offer slots but note the schedule will be confirmed. Open slots cover ${availability.available_slots.length} business days.`
+    : `I have availability for the next ${availability.available_slots.length} business days. Let me share the open slots.`;
 
   const resp = successResponse(availability, spoken);
   await saveIdempotency(clientRequestId, endpoint, undefined, resp);
