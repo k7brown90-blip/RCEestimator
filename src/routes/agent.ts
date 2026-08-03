@@ -1288,6 +1288,7 @@ agentRouter.get("/openapi.json", (_req, res) => {
                     lost_reason: { type: "string", description: "price | timing | referral | trust | scope | other (only when lead_status=lost)" },
                     best_time_to_reach: { type: "string" },
                     notes: { type: "string", description: "One-line summary of the call outcome" },
+                    disposition_event_id: { type: "string", description: "Unique per disposition call within this conversation (e.g. include a timestamp) — a call may log a disposition more than once (mid-call on booking failure, then again at the true end), and this keeps each one from being deduplicated against the last." },
                   },
                   required: ["call_type", "lead_status"],
                 },

@@ -101,11 +101,7 @@ sharedAgentRouter.post("/availability-block", asyncHandler(async (req, res) => {
 
 sharedAgentRouter.post("/call-disposition", asyncHandler(async (req, res) => {
   const start = Date.now();
-  const clientRequestId = req.headers["x-client-request-id"] as string | undefined;
   const endpoint = "/calendar/call-disposition";
-
-  const cached = await checkIdempotency(clientRequestId, endpoint);
-  if (cached) { res.json(cached); return; }
 
   const body = z.object({
     lead_id: z.string().min(1).optional(),
@@ -118,9 +114,20 @@ sharedAgentRouter.post("/call-disposition", asyncHandler(async (req, res) => {
     lost_reason: z.string().optional(),
     best_time_to_reach: z.string().optional(),
     notes: z.string().optional(),
+    // A caller-supplied idempotency key that survives even when Vapi reuses
+    // the same x-client-request-id header for every tool call in a session —
+    // this endpoint is meant to be called more than once per call (a mid-call
+    // disposition on booking failure, then a final one), and each of those
+    // needs its own cache slot.
+    disposition_event_id: z.string().min(1).optional(),
   }).refine((b) => b.lead_id || b.phone || b.name, {
     message: "Provide lead_id, phone, or name so the disposition can be attached to a lead",
   }).parse(req.body);
+
+  const clientRequestId = body.disposition_event_id ?? (req.headers["x-client-request-id"] as string | undefined);
+
+  const cached = await checkIdempotency(clientRequestId, endpoint);
+  if (cached) { res.json(cached); return; }
 
   // Resolve the lead: explicit id → most recent lead by phone → create new.
   let lead = body.lead_id

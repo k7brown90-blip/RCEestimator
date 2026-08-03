@@ -302,4 +302,42 @@ describe("call disposition endpoint", () => {
       .send({ call_type: "new_job", lead_status: "booked" })
       .expect(422);
   });
+
+  it("disposition_event_id gives two dispositions in one call their own idempotency slot", async () => {
+    // Same x-client-request-id (as a real Vapi session might reuse per-call),
+    // but different disposition_event_id — both must actually persist,
+    // not just replay the first cached response.
+    const first = await request(app)
+      .post("/agent/calendar/call-disposition")
+      .set("Authorization", `Bearer ${TOKEN}`)
+      .set("x-client-request-id", "t2-session-fixed-id")
+      .send({
+        name: "T2 Two-Stage Caller",
+        call_type: "new_job",
+        lead_status: "unresolved",
+        notes: "Booking conflict on first attempt",
+        disposition_event_id: "t2-two-stage-1",
+      })
+      .expect(200);
+
+    const second = await request(app)
+      .post("/agent/calendar/call-disposition")
+      .set("Authorization", `Bearer ${TOKEN}`)
+      .set("x-client-request-id", "t2-session-fixed-id")
+      .send({
+        lead_id: first.body.data.lead_id,
+        call_type: "new_job",
+        lead_status: "booked",
+        notes: "Rebooked successfully",
+        disposition_event_id: "t2-two-stage-2",
+      })
+      .expect(200);
+
+    expect(second.body.data.lead_id).toBe(first.body.data.lead_id);
+    expect(second.body.data.lead_status).toBe("booked");
+    const lead = await prisma.lead.findUnique({ where: { id: first.body.data.lead_id } });
+    expect(lead?.leadStatus).toBe("booked");
+    expect(lead?.notes).toContain("Booking conflict on first attempt");
+    expect(lead?.notes).toContain("Rebooked successfully");
+  });
 });
