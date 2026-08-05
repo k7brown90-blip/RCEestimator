@@ -120,13 +120,23 @@ export function LeadsPage() {
 
   /**
    * Convert refuses with 409 when it would create an account that looks like one
-   * already on the books. That isn't an error to show — it's a question to ask,
-   * so it opens the picker instead.
+   * already on the books — that isn't an error to show, it's a question to ask,
+   * so it opens the picker instead. It refuses with 400 when the lead has no
+   * usable address — that one WAS silently swallowed (no matches to show, so
+   * nothing happened), leaving a lead that looked "stuck" with no visible next
+   * step. Surface that one directly instead of doing nothing.
    */
   const handleConvertError = (err: unknown, lead: Lead) => {
-    const matches = (err as { body?: { matches?: CustomerMatch[] } })?.body?.matches;
-    if (matches?.length) {
-      setDuplicate({ lead, matches });
+    const body = (err as { body?: { matches?: CustomerMatch[]; needs?: string; message?: string } })?.body;
+    if (body?.matches?.length) {
+      setDuplicate({ lead, matches: body.matches });
+      return true;
+    }
+    if (body?.needs === "address") {
+      window.alert(
+        body.message
+          ?? `${lead.name}'s lead has no usable address, so it can't be converted yet. Add a complete street address, city, state, and ZIP, then convert again.`,
+      );
       return true;
     }
     return false;
