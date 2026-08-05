@@ -1679,11 +1679,16 @@ app.post("/crm/jobs/:jobId/reschedule", asyncHandler(async (req, res) => {
   const jobId = (req as any).params.jobId;
   const body = z.object({
     newStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+    // The client always sends this and rescheduleJob() supports it; leaving it
+    // out of the schema (as it originally was) silently dropped the picked time
+    // and fell back to DEFAULT_JOB_START_TIME, so an estimate rescheduled to
+    // 10:00 AM came out at 7:00 AM and looked like it "didn't take".
+    newStartTime: z.string().regex(/^\d{2}:\d{2}$/, "Time must be HH:MM").optional(),
     reason: z.string().min(1),
   }).parse(req.body);
 
   try {
-    const result = await rescheduleJob(jobId, body.newStartDate, null, body.reason);
+    const result = await rescheduleJob(jobId, body.newStartDate, body.newStartTime ?? null, body.reason);
     res.json(result);
   } catch (err) {
     if (err instanceof ConflictError) {
@@ -1877,18 +1882,81 @@ const deleteCustomer = asyncHandler(async (req: express.Request, res: express.Re
   const customerId = readParam(req, "customerId");
   const customer = await prisma.customer.findUnique({
     where: { id: customerId },
-    include: { properties: { include: { visits: true } } },
+    include: {
+      properties: {
+        include: {
+          visits: {
+            select: {
+              id: true, status: true, scheduledStart: true, revenue: true,
+              _count: {
+                select: {
+                  estimates: true, materialOrders: true, visitPhotos: true,
+                  healthInspections: true, observations: true, findings: true,
+                  documents: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
   });
   if (!customer) {
     res.status(404).json({ error: "Customer not found" });
     return;
   }
-  const hasVisits = customer.properties.some((p) => p.visits.length > 0);
-  if (hasVisits) {
-    res.status(409).json({ error: "Cannot delete a customer with existing job history." });
+
+  // A stub visit from lead conversion is status="estimate", no scheduled time,
+  // no revenue, and no attached work records. Any of the below means real work
+  // did happen and the delete refusal is correct.
+  const visits = customer.properties.flatMap((p) => p.visits);
+  const realHistory: string[] = [];
+  for (const v of visits) {
+    if (v.status !== "estimate") realHistory.push(`a ${v.status} job`);
+    if (v.scheduledStart) realHistory.push("a scheduled appointment");
+    if (v.revenue && v.revenue > 0) realHistory.push("recorded revenue");
+    if (v._count.estimates > 0) realHistory.push(`${v._count.estimates} estimate(s)`);
+    if (v._count.materialOrders > 0) realHistory.push(`${v._count.materialOrders} material order(s)`);
+    if (v._count.visitPhotos > 0) realHistory.push("job-site photos");
+    if (v._count.healthInspections > 0) realHistory.push("a health inspection");
+    if (v._count.observations > 0 || v._count.findings > 0) realHistory.push("technician observations");
+    if (v._count.documents > 0) realHistory.push("job documents");
+  }
+  if (realHistory.length > 0) {
+    // De-dup + human-friendly summary so the user knows what to clear first
+    // instead of "there's job history" for an account that had one photo.
+    const unique = Array.from(new Set(realHistory)).slice(0, 4);
+    res.status(409).json({
+      error: "Cannot delete a customer with existing job history.",
+      message: `This account has ${unique.join(", ")}. Delete or archive that work first, then delete the account.`,
+      hasRealHistory: true,
+    });
     return;
   }
-  await prisma.customer.delete({ where: { id: customerId } });
+
+  // Truly empty: only lead-conversion stub visits (or nothing). Cascade delete
+  // in a transaction. Lead pointers get nulled so historical leads don't hold
+  // orphan references.
+  const visitIds = visits.map((v) => v.id);
+  const propertyIds = customer.properties.map((p) => p.id);
+  await prisma.$transaction(async (tx) => {
+    if (visitIds.length > 0) {
+      await tx.lead.updateMany({
+        where: { OR: [{ customerId }, { visitId: { in: visitIds } }] },
+        data: { customerId: null, propertyId: null, visitId: null, status: "new" },
+      });
+      await tx.visit.deleteMany({ where: { id: { in: visitIds } } });
+    } else {
+      await tx.lead.updateMany({
+        where: { customerId },
+        data: { customerId: null, propertyId: null, visitId: null, status: "new" },
+      });
+    }
+    if (propertyIds.length > 0) {
+      await tx.property.deleteMany({ where: { id: { in: propertyIds } } });
+    }
+    await tx.customer.delete({ where: { id: customerId } });
+  });
   res.status(204).send();
 });
 app.delete("/customers/:customerId", deleteCustomer);

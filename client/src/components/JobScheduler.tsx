@@ -17,16 +17,52 @@ interface Props {
 /** Everything a booking touches. Kept in one place so no call site forgets one. */
 const SCHEDULE_QUERY_KEYS = [["jobs"], ["visit"], ["leads"], ["calendar"], ["account"]];
 
+// Fixed 2-hour estimate blocks — same set Savannah's check_availability offers
+// so a slot picked in the CRM matches a slot picked over the phone. Kyle wants
+// exactly these four, no free-form times, no odd windows like 3-5.
+const ESTIMATE_BLOCKS = [
+  { start: "08:00", end: "10:00", label: "8–10 AM" },
+  { start: "10:00", end: "12:00", label: "10 AM–12 PM" },
+  { start: "12:00", end: "14:00", label: "12–2 PM" },
+  { start: "14:00", end: "16:00", label: "2–4 PM" },
+] as const;
+
+/** Business-hours start/end used to hide personal calendar events outside the workday. */
+const BIZ_START_MIN = 8 * 60;
+const BIZ_END_MIN = 16 * 60;
+
+/** Central-Time "8:00 AM" / "5:30 PM" -> minutes since midnight, or null if unparseable. */
+function ctLabelToMinutes(label: string): number | null {
+  const m = label.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return null;
+  let hour = parseInt(m[1], 10);
+  const minute = parseInt(m[2], 10);
+  const isPm = m[3].toUpperCase() === "PM";
+  if (isPm && hour !== 12) hour += 12;
+  if (!isPm && hour === 12) hour = 0;
+  return hour * 60 + minute;
+}
+
+/** Keep only busy blocks that overlap 8am–4pm CT — an unrelated 7pm event isn't a scheduling concern. */
+function busyDuringBusinessHours(busy: TechDayAvailability["busy"]): TechDayAvailability["busy"] {
+  return busy.filter((b) => {
+    const s = ctLabelToMinutes(b.startLocal);
+    const e = ctLabelToMinutes(b.endLocal);
+    if (s == null || e == null) return true;
+    return s < BIZ_END_MIN && e > BIZ_START_MIN;
+  });
+}
+
 export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, onScheduled, autoOpen }: Props) {
   const queryClient = useQueryClient();
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  // Estimates are customer-facing visits, so they default to mid-morning rather
-  // than the 7am crew start used for production work.
+  // Estimates default to the first fixed block; production still uses a 7am
+  // crew-start default because the durations aren't slot-shaped.
   const isEstimateVisit = status === "estimate";
-  const [startTime, setStartTime] = useState(isEstimateVisit ? "09:00" : "07:00");
+  const [startTime, setStartTime] = useState(isEstimateVisit ? "08:00" : "07:00");
   const [technicianId, setTechnicianId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -276,14 +312,38 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
 
           {/* Time + reason */}
           <div className="flex items-end gap-3">
-            <div>
-              <label className="block text-xs text-rce-muted mb-1">Start time</label>
-              <input
-                type="time"
-                className="field"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-              />
+            <div className="flex-1">
+              <label className="block text-xs text-rce-muted mb-1">
+                {isEstimateVisit ? "Start block" : "Start time"}
+              </label>
+              {isEstimateVisit ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {ESTIMATE_BLOCKS.map((b) => {
+                    const active = startTime === b.start;
+                    return (
+                      <button
+                        key={b.start}
+                        type="button"
+                        onClick={() => setStartTime(b.start)}
+                        className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
+                          active
+                            ? "border-rce-accent bg-rce-accent text-white"
+                            : "border-rce-border bg-white text-rce-fg hover:border-rce-accent/50"
+                        }`}
+                      >
+                        {b.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <input
+                  type="time"
+                  className="field"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                />
+              )}
             </div>
             {mode === "reschedule" && (
               <div className="flex-1">
@@ -314,8 +374,12 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
               <div className="space-y-1">
                 {techs.map((tech) => {
                   const selected = technicianId === tech.technicianId;
-                  const busyLabel = tech.busy.length > 0
-                    ? tech.busy.map((b) => `${b.startLocal}–${b.endLocal}`).join(", ")
+                  // Filter out purely personal, out-of-hours events (e.g. a
+                  // 7pm calendar block on the primary account) — they don't
+                  // affect scheduling and were confusing to see next to a name.
+                  const inHoursBusy = busyDuringBusinessHours(tech.busy);
+                  const busyLabel = inHoursBusy.length > 0
+                    ? inHoursBusy.map((b) => `${b.startLocal}–${b.endLocal}`).join(", ")
                     : "free all day";
                   return (
                     <button

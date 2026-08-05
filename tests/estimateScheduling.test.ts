@@ -216,6 +216,17 @@ describe("Scheduling an estimate visit", () => {
     expect(minutesBetween(new Date(res.body.scheduledStart), new Date(res.body.scheduledEnd)))
       .toBe(ESTIMATE_BLOCK_MINUTES);
 
+    // newStartTime was silently dropped from the zod schema for a while, so a
+    // rescheduled 13:00 came out at 07:00 (the DEFAULT_JOB_START_TIME) and Kyle
+    // reported it as "the reschedule didn't take". Pin the actual time.
+    const scheduledStart = new Date(res.body.scheduledStart);
+    const ctHour = Number(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Chicago", hour: "2-digit", hour12: false,
+      }).format(scheduledStart),
+    );
+    expect(ctHour).toBe(13);
+
     const moved = insertedEvents.at(-1)!;
     expect(minutesBetween(moved.start, moved.end)).toBe(
       ESTIMATE_BLOCK_MINUTES + ESTIMATE_TRAVEL_BUFFER_MINUTES,
