@@ -15,7 +15,7 @@
  *
  * You'll be prompted for the client ID (echoed — it's public) and the client
  * secret (input hidden). A browser opens for consent — sign in as the
- * calendar/Gmail account (k7brown90@gmail.com) and approve. The script then
+ * calendar/Gmail account (service@redcedarelectricllc.com) and approve. The script then
  * pushes GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN
  * straight to Railway via `railway variables --set`. Nothing sensitive is
  * written to the terminal, so the run can be supervised by anyone.
@@ -116,11 +116,13 @@ async function main() {
         return;
       }
 
-      console.log("\n✅ Token minted. Pushing the three GOOGLE_* variables to Railway...");
+      console.log("\n✅ Token minted. Pushing the GOOGLE_* variables and GMAIL_USER to Railway...");
       await setRailwayVariables({
         GOOGLE_CLIENT_ID: clientId,
         GOOGLE_CLIENT_SECRET: clientSecret,
         GOOGLE_REFRESH_TOKEN: tokens.refresh_token,
+        // Sender identity must match the account that authorized the token.
+        GMAIL_USER: "service@redcedarelectricllc.com",
       });
 
       res.writeHead(200, { "Content-Type": "text/html" })
@@ -137,10 +139,11 @@ async function main() {
   });
 
   server.listen(PORT, () => {
-    console.log("\nOpening Google consent screen (sign in as k7brown90@gmail.com)...");
+    console.log("\nOpening Google consent screen (sign in as service@redcedarelectricllc.com)...");
     console.log("If the browser doesn't open, visit this URL manually:\n");
     console.log(url + "\n");
-    exec(`start "" "${url.replace(/&/g, "^&")}"`); // Windows default-browser open
+    // Quoted URL needs no caret-escaping; escaping corrupts the query string.
+    exec(`start "" "${url}"`);
   });
 }
 
