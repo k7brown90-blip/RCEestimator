@@ -48,7 +48,7 @@ describe("GET /healthz", () => {
   });
 
   it("returns 200 with db=true when the DB responds", async () => {
-    const res = await request(app).get("/internal/healthz");
+    const res = await request(app).get("/healthz");
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.db).toBe(true);
@@ -57,7 +57,7 @@ describe("GET /healthz", () => {
 
   it("returns 503 and fires a critical alert when the DB throws", async () => {
     const spy = vi.spyOn(prisma, "$queryRaw").mockRejectedValueOnce(new Error("connection refused"));
-    const res = await request(app).get("/internal/healthz");
+    const res = await request(app).get("/healthz");
     expect(res.status).toBe(503);
     expect(res.body.ok).toBe(false);
     expect(res.body.db).toBe(false);
@@ -73,7 +73,7 @@ describe("GET /healthz", () => {
 
   it("never returns 200 when DB status is unknown", async () => {
     const spy = vi.spyOn(prisma, "$queryRaw").mockRejectedValueOnce(new Error("ETIMEDOUT"));
-    const res = await request(app).get("/internal/healthz");
+    const res = await request(app).get("/healthz");
     expect(res.status).not.toBe(200);
     spy.mockRestore();
   });

@@ -47,7 +47,7 @@ import { jerryRouter } from "./routes/agent-jerry";
 import { sharedAgentRouter } from "./routes/agent-shared";
 import { inboundSmsRouter } from "./routes/inboundSms";
 import { confirmPageRouter } from "./routes/confirmPage";
-import { internalRouter } from "./routes/internal-alerts";
+import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
 
 const service = new EstimateService(prisma);
@@ -250,8 +250,12 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-// Internal ops: /healthz (deep health for Railway), Railway crash webhook,
-// Twilio delivery-status callback. See routes/internal-alerts.ts for auth.
+// /healthz is the deep check Railway targets in railway.json's healthcheckPath.
+// It answers 200 only when the DB is reachable; 503 with a reason otherwise.
+app.get("/healthz", healthzHandler);
+
+// Internal ops: Railway crash webhook + Twilio delivery-status callback.
+// Auth lives in the router (URL-path token, constant-time compare).
 app.use("/internal", internalRouter);
 
 // ─── VAPI DYNAMIC VARIABLES (no auth — called at start of each inbound call) ──

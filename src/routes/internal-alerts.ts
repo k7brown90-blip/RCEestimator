@@ -32,10 +32,10 @@ async function pingDb(): Promise<{ ok: true } | { ok: false; reason: string }> {
   }
 }
 
-internalRouter.get("/healthz", async (_req, res) => {
+/** Mounted at `/healthz` (root, not under the router) so Railway's healthcheckPath hits it. */
+export async function healthzHandler(_req: express.Request, res: express.Response): Promise<void> {
   const db = await pingDb();
   if (!db.ok) {
-    // Route the failure the moment we see it; dedup collapses a burst.
     void sendAlert({
       severity: "critical",
       eventType: "healthz-db-unreachable",
@@ -47,7 +47,7 @@ internalRouter.get("/healthz", async (_req, res) => {
     return;
   }
   res.status(200).json({ ok: true, db: true, at: new Date().toISOString() });
-});
+}
 
 function tokenMatches(supplied: string | undefined, expected: string | undefined): boolean {
   if (!supplied || !expected || supplied.length !== expected.length) return false;
