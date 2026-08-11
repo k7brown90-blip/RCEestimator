@@ -33,6 +33,8 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
   // authenticated create path is POST /crm/leads.
   if (
     req.path === "/health" ||
+    req.path === "/healthz" ||
+    req.path.startsWith("/internal/") ||
     req.path === "/auth/pin" ||
     req.path.startsWith("/mcp") ||
     req.path.startsWith("/vapi/") ||

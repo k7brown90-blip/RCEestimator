@@ -84,8 +84,8 @@ async function isBlockedByConsent(to: string): Promise<boolean> {
 export async function sendSms(
   to: string,
   body: string,
-  opts?: { bypassConsentCheck?: boolean },
-): Promise<{ sid: string } | null> {
+  opts?: { bypassConsentCheck?: boolean; statusCallback?: string },
+): Promise<{ sid: string; status?: string } | null> {
   const config = getConfig();
   if (!config) {
     console.warn("[Twilio] Not configured — skipping SMS to", to);
@@ -115,6 +115,7 @@ export async function sendSms(
     From: config.phoneNumber,
     Body: body,
   });
+  if (opts?.statusCallback) params.append("StatusCallback", opts.statusCallback);
 
   const res = await fetch(url, {
     method: "POST",
@@ -137,8 +138,8 @@ export async function sendSms(
     return null;
   }
 
-  const data = await res.json() as { sid: string };
-  return { sid: data.sid };
+  const data = await res.json() as { sid: string; status?: string };
+  return { sid: data.sid, status: data.status };
 }
 
 /** Kyle's phone number — the only number that can dispatch via SMS */

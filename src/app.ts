@@ -47,6 +47,7 @@ import { jerryRouter } from "./routes/agent-jerry";
 import { sharedAgentRouter } from "./routes/agent-shared";
 import { inboundSmsRouter } from "./routes/inboundSms";
 import { confirmPageRouter } from "./routes/confirmPage";
+import { internalRouter } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
 
 const service = new EstimateService(prisma);
@@ -248,6 +249,10 @@ const readQuery = (req: express.Request, key: string): string | undefined => {
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
+
+// Internal ops: /healthz (deep health for Railway), Railway crash webhook,
+// Twilio delivery-status callback. See routes/internal-alerts.ts for auth.
+app.use("/internal", internalRouter);
 
 // ─── VAPI DYNAMIC VARIABLES (no auth — called at start of each inbound call) ──
 // Vapi hits this on every inbound call when the phone number's `server.url` is

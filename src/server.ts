@@ -6,6 +6,7 @@ import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { sendPendingSupplierEmails } from "./services/supplierEmail";
 import { generateInspectionRenewalLeads, generateUpgradeFollowUpLeads } from "./services/inspectionRetention";
 import { sendVisitReminders } from "./services/visitConfirmations";
+import { sendAlert } from "./services/alerting";
 
 const port = Number(process.env.PORT ?? 4000);
 
@@ -114,6 +115,30 @@ async function startServer(): Promise<void> {
 
   console.log("[Cron] Appointment reminder sweep scheduled for 8:00 AM CT daily");
 }
+
+// Best-effort fatal handler: get a shout out the door before the process dies.
+// Railway's platform webhook is the primary crash channel; this is the fallback
+// for the case where the process is dying too fast for Railway to notice or
+// Railway's webhook is not yet configured. Hard 5-second deadline so a stuck
+// SMS call cannot hold the exit forever.
+function fatalHandler(kind: "uncaughtException" | "unhandledRejection", err: unknown): void {
+  const summary = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  // eslint-disable-next-line no-console
+  console.error(`[fatal:${kind}]`, err);
+  const deadline = setTimeout(() => process.exit(1), 5000);
+  deadline.unref();
+  sendAlert({
+    severity: "critical",
+    eventType: `process.${kind}`,
+    service: process.env.RAILWAY_SERVICE_NAME ?? "RCEestimator",
+    reason: summary.slice(0, 240),
+    dedupeKey: `process.${kind}`,
+  })
+    .catch(() => undefined)
+    .finally(() => process.exit(1));
+}
+process.on("uncaughtException", (err) => fatalHandler("uncaughtException", err));
+process.on("unhandledRejection", (reason) => fatalHandler("unhandledRejection", reason));
 
 startServer().catch((error) => {
   // eslint-disable-next-line no-console
