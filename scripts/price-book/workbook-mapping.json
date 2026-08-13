@@ -1,0 +1,321 @@
+{
+  "_README": [
+    "SINGLE SOURCE OF WORKBOOK SHAPE KNOWLEDGE for the price-book -> estimator import.",
+    "",
+    "This file is the ONLY place that records which tabs, which columns and which Rate Config",
+    "cells the pipeline expects to find in price-book.xlsx. Both the Python extractor",
+    "(extract_workbook.py) and the TypeScript importer (importPriceBook.ts) read it. When a",
+    "scheduled price-book run flags 'IMPORT MAPPING IMPACT' (see projects/electrical-price-book.md",
+    "SS 'THE WORKBOOK NOW FEEDS SOFTWARE', duty 2), THIS FILE is what gets updated -- so a shape",
+    "change is one reviewable diff instead of a hunt through code.",
+    "",
+    "VALIDATION CONTRACT: every column listed below is matched by HEADER TEXT at its stated column",
+    "letter, after whitespace normalisation. A missing tab, a renamed header, or a header that has",
+    "moved to a different letter ABORTS the import naming exactly what was expected and what was",
+    "found. The importer never guesses a column by position and never partially imports.",
+    "",
+    "WHY HEADER TEXT AND NOT POSITION: the 2026-08-09 residential/commercial split proved that",
+    "shape changes in this workbook can repoint formulas WITHOUT producing an Excel error. A",
+    "position-only mapping would silently mis-map under exactly that failure.",
+    "",
+    "Workbook observed: price-book.xlsx, 2026-08-11, 310 atomics / 43 assemblies (31 residential,",
+    "12 commercial) / 8 suppliers / 90 supplier prices."
+  ],
+  "mappingVersion": "1.0.0",
+  "observedWorkbookDate": "2026-08-11",
+  "headerRow": 1,
+
+  "tabs": {
+    "atomics": {
+      "sheet": "Atomics",
+      "idColumn": "A",
+      "columns": {
+        "A": "Item ID",
+        "B": "Description",
+        "C": "Category",
+        "D": "Sector",
+        "E": "Unit",
+        "F": "Retail Cost ($)",
+        "G": "Retail Source",
+        "H": "Date Priced",
+        "I": "Trade Cost ($)",
+        "J": "Trade Cost Source",
+        "K": "Cost Basis Used",
+        "L": "Labor Normal",
+        "M": "Labor Difficult",
+        "N": "Labor Very Difficult",
+        "O": "Difficulty Curve",
+        "P": "NECA Unit Basis",
+        "Q": "NECA PDF Page Index",
+        "R": "Labor Status",
+        "S": "Notes",
+        "T": "Purchase Unit",
+        "U": "Purchase Pack Qty",
+        "V": "Purchase Price ($)",
+        "W": "Markup Tier (auto)",
+        "X": "Sell Price per Unit ($)",
+        "Y": "Row Type"
+      },
+      "headerPrefixOnly": {
+        "Z": "NEC Article"
+      }
+    },
+
+    "assembliesResidential": {
+      "sheet": "Assemblies-Residential",
+      "idColumn": "A",
+      "sector": "Residential",
+      "columns": {
+        "A": "Assembly ID",
+        "B": "Assembly Name",
+        "C": "Sector",
+        "D": "NEC Use Case / When Used",
+        "E": "Component Item IDs + Qty Formula",
+        "F": "Total Labor Normal",
+        "G": "Total Material Cost",
+        "H": "NEC 2017 Code Refs",
+        "I": "Notes/Assumptions (quantity math)",
+        "J": "Status",
+        "K": "Difficulty Setting",
+        "L": "Labor Hours (adjusted)",
+        "M": "Labor $",
+        "N": "Material Cost $",
+        "O": "Material Sell $",
+        "P": "Job Adder Hours",
+        "Q": "Job Adder $",
+        "R": "Permit Fee $",
+        "S": "TOTAL FLAT RATE $",
+        "T": "Pricing Flags",
+        "U": "Components Unpriced",
+        "V": "Components Total",
+        "W": "Material Complete?",
+        "X": "Total Job Hours",
+        "AE": "Job Type",
+        "AF": "Job Fixed Cost $",
+        "AG": "TOTAL w/ Fixed Cost $",
+        "AI": "Permit/Inspection Required?",
+        "AJ": "Utility Standby Required?",
+        "AK": "Ceiling Height Band",
+        "AL": "Height Access Adder (hr)",
+        "AM": "Sourcing Channel"
+      },
+      "headerPrefixOnly": {
+        "AN": "NEC Category",
+        "AO": "Field Difficulty",
+        "AP": "Prior Graded Hours"
+      }
+    },
+
+    "assembliesCommercial": {
+      "sheet": "Assemblies-Commercial",
+      "idColumn": "A",
+      "sector": "Light Commercial",
+      "sameColumnsAs": "assembliesResidential"
+    },
+
+    "suppliers": {
+      "sheet": "Suppliers",
+      "idColumn": "A",
+      "columns": {
+        "A": "Supplier ID",
+        "B": "Supplier Name",
+        "C": "Branch / Location",
+        "D": "Channel",
+        "E": "Account Class",
+        "F": "Quotable?",
+        "G": "Typical Lead Time",
+        "H": "Terms",
+        "I": "Date Added",
+        "J": "Notes"
+      }
+    },
+
+    "supplierPrices": {
+      "sheet": "Supplier Prices",
+      "columns": {
+        "A": "Item ID",
+        "B": "Supplier ID",
+        "C": "Price as Printed",
+        "D": "Priced UOM",
+        "E": "Pack Qty",
+        "F": "Unit Cost $ (calc)",
+        "G": "Date Priced",
+        "H": "Source",
+        "I": "Availability",
+        "J": "Account Class",
+        "K": "Quotable?",
+        "L": "Quotable Key",
+        "M": "Confidence",
+        "N": "Notes"
+      }
+    },
+
+    "necCategoryMap": {
+      "sheet": "NEC Category Map",
+      "idColumn": "A",
+      "columns": {
+        "A": "Article",
+        "B": "Title (2017 NEC)",
+        "C": "On Kyle 2026-08-09 list?",
+        "D": "Assembly scope rule for this category"
+      },
+      "headerPrefixOnly": {
+        "E": "Existing atomic categories mapped here",
+        "F": "Notes"
+      }
+    }
+  },
+
+  "rateConfig": {
+    "sheet": "Rate Config",
+    "labelColumn": "A",
+    "valueColumn": "B",
+    "_note": "Each key asserts the LABEL text at that row before the value is read. A moved label aborts the import -- reading B2 without checking A2 is how a re-laid-out sheet silently becomes a wrong labour rate.",
+    "cells": {
+      "billedLaborRate":        { "row": 2,   "label": "Billed Labor Rate" },
+      "inspectionCoordination": { "row": 4,   "label": "Inspection Coordination (rough-in + final, COMBINED)" },
+      "inspectionFolded":       { "row": 5,   "label": "(folded into Inspection Coordination above)" },
+      "utilityStandby":         { "row": 6,   "label": "Utility Standby (power cut / start-up)" },
+      "permitFee":              { "row": 7,   "label": "Permit Fee" },
+      "markupTier1":            { "row": 10,  "label": "Tier 1: cost under $1.00" },
+      "markupTier2":            { "row": 11,  "label": "Tier 2: $1.00 - $9.99" },
+      "markupTier3":            { "row": 12,  "label": "Tier 3: $10.00 - $49.99" },
+      "markupTier4":            { "row": 13,  "label": "Tier 4: $50.00 - $199.99" },
+      "markupTier5":            { "row": 14,  "label": "Tier 5: $200.00 and up" },
+      "benchmarkRate":          { "row": 27,  "label": "Mr. Electric target effective rate" },
+      "jobFixedCost":           { "row": 67,  "label": "Job fixed cost / trip charge" },
+      "activeSupplier":         { "row": 161, "label": "ACTIVE SUPPLIER (quote context)" }
+    }
+  },
+
+  "pricingRules": {
+    "_note": [
+      "Transcribed from the workbook's own formulas on 2026-08-11. The app must reproduce these",
+      "EXACTLY -- no rounding differences, no added logic. Each rule names the workbook cell it",
+      "was read from so a future reader can re-verify it against the source rather than trusting",
+      "this file."
+    ],
+    "supplierUnitCost": {
+      "source": "Supplier Prices!F",
+      "formula": "=IF(D=\"/c\", C/100, IF(D=\"/m\", C/1000, IF(E>0, C/E, C)))",
+      "meaning": "Price as Printed divided down to a per-unit cost; /c = per hundred, /m = per thousand, otherwise divide by Pack Qty."
+    },
+    "quotableKey": {
+      "source": "Supplier Prices!L",
+      "formula": "=IF(K=\"YES\", A&\"|\"&B, \"\")",
+      "meaning": "Blank on every non-quotable row. This blank is the STRUCTURAL quarantine -- a non-quotable price cannot be matched, so it cannot reach a quote."
+    },
+    "costBasisUsed": {
+      "source": "Atomics!K",
+      "formula": "=IFERROR(INDEX('Supplier Prices'!$F:$F, MATCH($A&\"|\"&'Rate Config'!$B$161, 'Supplier Prices'!$L:$L, 0)), \"\")",
+      "meaning": "Look up this atomic's unit cost at the ACTIVE SUPPLIER only. NO FALLBACK to another supplier. If the active supplier does not carry the item, the basis is BLANK and the assembly reads incomplete -- intentional, per Kyle 2026-08-08."
+    },
+    "markupTier": {
+      "source": "Atomics!W",
+      "formula": "=IF(N(K)=0,\"awaiting cost\",IF(K<1,\"T1\",IF(K<10,\"T2\",IF(K<50,\"T3\",IF(K<200,\"T4\",\"T5\")))))"
+    },
+    "sellPricePerUnit": {
+      "source": "Atomics!X",
+      "formula": "=IF(N(K)=0,\"\",K*IF(K<1,B10,IF(K<10,B11,IF(K<50,B12,IF(K<200,B13,B14)))))",
+      "meaning": "Cost basis multiplied by the markup tier for its own cost band. Blank cost basis => blank sell price, never zero."
+    },
+    "assemblyMaterialCost": {
+      "source": "Assemblies!N (and G, which mirrors it)",
+      "formula": "=SUM over components of qty * N(Atomics!K<row>)",
+      "meaning": "N() coerces a blank/text cost basis to 0. An unpriced component therefore contributes ZERO to the cost while the Components Unpriced counter flags it. The counter -- NOT the total -- is what says the number is incomplete."
+    },
+    "assemblyMaterialSell": {
+      "source": "Assemblies!O",
+      "formula": "=SUM over components of qty * N(Atomics!X<row>)"
+    },
+    "assemblyComponentsUnpriced": {
+      "source": "Assemblies!U",
+      "formula": "=SUM over components of IF(N(Atomics!K<row>)=0,1,0)"
+    },
+    "assemblyMaterialComplete": {
+      "source": "Assemblies!W",
+      "formula": "=IF(U=0,\"COMPLETE\",\"INCOMPLETE - \"&U&\" of \"&V&\" unpriced\")"
+    },
+    "assemblyLaborHoursAdjusted": {
+      "source": "Assemblies!L",
+      "formula": "=F",
+      "meaning": "Kyle 2026-08-11: difficulty is a FIELD OBSERVATION. Adjusted hours now equal Total Labor Normal; the prior graded formula is preserved in column AP and is NOT used."
+    },
+    "assemblyLaborDollars": {
+      "source": "Assemblies!M",
+      "formula": "=L * 'Rate Config'!$B$2"
+    },
+    "assemblyJobAdderHours": {
+      "source": "Assemblies!P",
+      "formula": "=IF(LEFT(AI,2)=\"NO\",0,B4+B5)+IF(LEFT(AJ,2)=\"NO\",0,B6)+N(AL)",
+      "meaning": "LEFT(...,2)=\"NO\" is the workbook's own test -- the cells read 'NO - MANUALLY ADDED BY USER WHEN REQUIRED'. Reproduce the two-character test exactly, do not re-interpret it as a boolean."
+    },
+    "assemblyJobAdderDollars": {
+      "source": "Assemblies!Q",
+      "formula": "=P * 'Rate Config'!$B$2"
+    },
+    "assemblyPermitFee": {
+      "source": "Assemblies!R",
+      "formula": "='Rate Config'!$B$7",
+      "meaning": "Rate Config B7 is currently BLANK. S adds it only via IF(ISNUMBER(R),R,0), so a blank permit fee contributes nothing rather than erroring."
+    },
+    "assemblyTotalFlatRate": {
+      "source": "Assemblies!S",
+      "formula": "=M + O + Q + IF(ISNUMBER(R),R,0)"
+    },
+    "assemblyTotalJobHours": {
+      "source": "Assemblies!X",
+      "formula": "=L + P"
+    },
+    "assemblyJobFixedCost": {
+      "source": "Assemblies!AF",
+      "formula": "='Rate Config'!$B$67"
+    },
+    "assemblyTotalWithFixedCost": {
+      "source": "Assemblies!AG",
+      "formula": "=S + AF"
+    }
+  },
+
+  "componentExtraction": {
+    "_note": [
+      "HOW THE COMPONENT LIST IS DERIVED, AND WHY IT IS NOT TAKEN FROM COLUMN E.",
+      "",
+      "Column E ('Component Item IDs + Qty Formula') is human prose. It also carries",
+      "'OUT OF THIS ROW - FIELD-MEASURED' and 'WALKTHROUGH-COUNTED' blocks listing atomics that are",
+      "deliberately NOT in the assembly. Parsing E would re-import the very components Kyle's",
+      "2026-08-09 sweep removed.",
+      "",
+      "The authoritative machine-readable component list is the MATERIAL COST FORMULA in column N,",
+      "which is what the workbook itself computes from: a sum of `<qty> * N(Atomics!K<row>)` terms.",
+      "Atomics are referenced BY ROW NUMBER, so the extractor resolves row -> Item ID against the",
+      "Atomics sheet in the same read.",
+      "",
+      "SHAPE HAZARD, RECORDED DELIBERATELY: because these are row references and not Item IDs, any",
+      "row insert or delete on the Atomics tab silently repoints every assembly beneath it with no",
+      "Excel error. The extractor therefore records both the row number and the resolved Item ID,",
+      "and the importer fails loudly if a referenced row is empty or out of range."
+    ],
+    "materialCostFormulaPattern": "(?P<qty>[0-9.]+)\\s*\\*\\s*N\\(Atomics!K(?P<row>[0-9]+)\\)",
+    "materialSellFormulaPattern": "(?P<qty>[0-9.]+)\\s*\\*\\s*N\\(Atomics!X(?P<row>[0-9]+)\\)",
+    "crossCheck": "The component set and quantities parsed from N must match those parsed from O exactly. A mismatch means cost and sell are reading different components -- the 2026-08-05 'frozen literal' defect class -- and aborts the import."
+  },
+
+  "knownStructuralFacts": {
+    "_note": "Facts about the workbook that the pipeline depends on and that a future run must not quietly change. Each is asserted at import time.",
+    "assemblyLaborIsFrozenLiteral": {
+      "observed": "2026-08-11: 0 of 43 assembly labour formulas (column F) reference the Atomics tab. Every one is literal arithmetic, e.g. '=4*0.25+4*0.05+(4/100)*30+(4/100)*10'.",
+      "consequence": "Assembly labour does NOT track atomic labour. Changing an atomic's Labor Normal moves nothing in any assembly. Material IS live-linked; labour is not.",
+      "pipelineBehaviour": "Import the workbook's labour total verbatim so parity holds, and report the atomic-derived comparison separately as a FINDING. The pipeline does not 'fix' this -- it is Kyle's number and his call.",
+      "assertAtImport": true
+    },
+    "labourTermsNotAttributable": {
+      "observed": "Labour formula term counts frequently differ from component counts (AS-013: 3 labour terms, 2 components; AS-021: 5 labour terms, 3 components).",
+      "consequence": "Individual labour terms CANNOT be attributed to specific atomics without guessing. The pipeline does not attempt it."
+    },
+    "noCachedFormulaValues": {
+      "observed": "2026-08-11: 3117 formula cells, 0 carrying a cached value. The workbook was last written by openpyxl, which does not calculate.",
+      "consequence": "The workbook's own computed totals cannot be read from the file. The extractor obtains them by recalculating a TEMPORARY COPY in Excel; the live file is only ever read."
+    }
+  }
+}

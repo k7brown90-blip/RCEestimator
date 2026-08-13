@@ -1344,3 +1344,282 @@ model ChatMessage {
   @@index([visitId, createdAt])
   @@index([sessionId, createdAt])
 }
+
+// ─── PRICE BOOK CATALOG (imported from price-book.xlsx) ─────────────────────
+//
+// Mirror of the estimating workbook Kyle's 02:00 and 03:03 scheduled tasks maintain.
+// THE WORKBOOK IS THE SOURCE OF TRUTH AND THIS MIRROR MUST NEVER LEAD IT — the import
+// is one-way and read-only against the file (scripts/price-book/).
+//
+// WHY THESE ARE NOT AtomicUnit / AssemblyTemplate / AssemblyTemplateComponent.
+// Reported rather than assumed, per the Phase 1 prompt's instruction to map to the
+// existing schema or say why it cannot carry the workbook's shape. Four blockers, any
+// one of which is sufficient:
+//
+//  1. DIFFICULTY. The workbook stores THREE labour values per atomic — Normal,
+//     Difficult, Very Difficult — read verbatim from the NECA manual. The existing
+//     model carries one `baseLaborHrs` and expresses difficulty as a GLOBAL
+//     ModifierDef multiplier (1.25 / 1.50). Those are not equivalent and the workbook
+//     proved it: an audit of 59 standard-curve rows found 20 whose published Difficult
+//     and Very Difficult values are NOT Normal x1.25 / x1.50, and N008's Kyle-set
+//     triple is 0.50 / 0.75 / 1.00, where a x1.25 multiplier would return 0.625 hr
+//     against three assemblies that hardcode 0.75. Importing into a multiplier model
+//     would fabricate labour values — the exact defect F-2026-08-11-02 caught.
+//
+//  2. SUPPLIER-RESOLVED COST. `AtomicUnit.baseMaterialCost` is a single Float with a
+//     default of 0. The workbook's cost is a lookup against a per-supplier price table
+//     gated on a quotability flag, with NO fallback, and its ABSENCE is meaningful
+//     ("the active supplier does not carry this"). A non-null Float defaulting to 0
+//     cannot represent "absent" — it reports free.
+//
+//  3. QUOTABILITY. Nothing in the existing model can express NOT QUOTABLE, so nothing
+//     stops a quarantined employer-account price reaching a customer number.
+//
+//  4. LIVE COLLISION. `scripts/seedAtomicUnits.ts` runs on every deploy (see the
+//     `start` script) and begins by setting isActive=false on EVERY AtomicUnit row
+//     before reactivating only the three CSV catalogs. Importing the workbook into
+//     that table would silently deactivate the entire price book on the next deploy.
+//
+// The existing atomic/assembly models are left untouched and keep serving the CSV
+// catalog they were built for.
+
+enum PriceBookQuotable {
+  YES
+  NO
+  NEVER // employer-account / quarantined — may never reach a customer price
+}
+
+// One row per import execution. The delta report on disk is the human artifact; this
+// is the queryable one, and it is what makes "when did this price change and which run
+// changed it" answerable without diffing markdown.
+model PriceBookImportRun {
+  id                String   @id @default(cuid())
+  startedAt         DateTime @default(now())
+  finishedAt        DateTime?
+  status            String   // running | success | failed
+  // SHA-256 of the workbook as read. Two runs with the same hash saw the same file.
+  workbookSha256    String
+  workbookPath      String
+  workbookMtime     DateTime?
+  mappingVersion    String
+  // Rate Config B2 as found. Kyle's standing ruling is $150/hr
+  // (decisions/2026-08-11-billed-rate-and-no-memberships.md). The cell is applied by
+  // the 02:00 task, not by this pipeline, so a mismatch marks the import PROVISIONAL
+  // rather than overriding the number — an agent may not set a number (who-sets-numbers).
+  billedLaborRate   Float?
+  provisional       Boolean  @default(false)
+  provisionalReason String?
+  activeSupplierId  String?
+  countsJson        String?  // created/updated/unchanged/missing per entity
+  parityRan         Boolean  @default(false)
+  parityPassed      Boolean?
+  parityJson        String?
+  deltaReportPath   String?
+  errorMessage      String?
+
+  @@index([startedAt])
+}
+
+model PriceBookSupplier {
+  id           String            @id // workbook Supplier ID, e.g. "HD"
+  name         String
+  branch       String?
+  channel      String? // "A" = same-day retail, "B" = supply-house will-call
+  accountClass String? // RCE-CASH | EMPLOYER-ACCT | NO-ACCOUNT
+  // Enum, not a string: the quarantine has to be structural. "NO — NEVER" in the
+  // workbook maps to NEVER and nothing in the pricing path will resolve against it.
+  quotable     PriceBookQuotable
+  quotableRaw  String? // the workbook's exact wording, kept for audit
+  leadTime     String?
+  terms        String?
+  notes        String?
+  firstSeenAt  DateTime          @default(now())
+  lastSeenAt   DateTime          @updatedAt
+  prices       PriceBookSupplierPrice[]
+}
+
+// One row per Item ID x Supplier, mirroring the workbook's normalised `Supplier Prices`
+// tab. `unitCost` is the workbook's own column F arithmetic: /c divides by 100, /m by
+// 1000, otherwise by Pack Qty.
+model PriceBookSupplierPrice {
+  id              String            @id @default(cuid())
+  itemId          String
+  supplierId      String
+  priceAsPrinted  Float?
+  pricedUom       String?
+  packQty         Float?
+  unitCost        Float? // null = no usable price. NEVER 0-for-absent.
+  datePriced      String?
+  source          String?
+  availability    String?
+  accountClass    String?
+  quotable        PriceBookQuotable
+  quotableRaw     String?
+  // The workbook's structural quarantine: `=IF(K="YES", A&"|"&B, "")`. Blank here means
+  // the cost lookup cannot match this row, so the price cannot reach a quote. Modelled
+  // as a nullable unique key so the same guarantee holds in the database.
+  quotableKey     String?           @unique
+  confidence      String?
+  notes           String?
+  workbookRow     Int?
+  lastSeenImportId String?
+  supplier        PriceBookSupplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, supplierId])
+  @@index([itemId])
+  @@index([quotableKey])
+}
+
+model PriceBookAtomic {
+  itemId             String  @id // "A016", "SD002" — the workbook's own stable ID
+  description        String?
+  category           String?
+  sector             String? // Residential | Light Commercial | Both
+  unit               String? // ea | ft | sq ft | hr
+  rowType            String? // MATERIAL + LABOR | LABOR ONLY | MATERIAL ONLY | ...
+
+  // Three published labour values, stored as three values. All nullable: a blank
+  // labour cell means NECA publishes no unit for this product (GB001, DF013), and
+  // that is a finding, not a zero.
+  laborNormal        Float?
+  laborDifficult     Float?
+  laborVeryDifficult Float?
+  difficultyCurve    String?
+  laborStatus        String?
+  necaUnitBasis      String?
+  necaPdfPage        String?
+
+  // Reference-only historical columns. The live cost is resolved from
+  // PriceBookSupplierPrice at the active supplier — these are NOT the quote basis.
+  retailCost         Float?
+  tradeCost          Float?
+  purchaseUnit       String?
+  purchasePackQty    Float?
+  purchasePrice      Float?
+
+  // ── Resolved at import against the active supplier, mirroring Atomics!K/W/X ──
+  // All nullable. A null costBasis is the workbook's blank: the active supplier does
+  // not carry this item, the assembly reads incomplete, and no fallback is permitted.
+  costBasisUsed      Float?
+  costBasisSupplier  String?
+  markupTier         String? // T1..T5 | "awaiting cost"
+  sellPricePerUnit   Float?
+
+  necArticle         String?
+  notes              String?
+  workbookRow        Int?    // provenance only — never used to resolve a component
+  firstSeenAt        DateTime @default(now())
+  lastSeenAt         DateTime @updatedAt
+  // Set when an import no longer finds this ID. Rows are retired, never deleted
+  // (write protocol rule 5: move, never delete).
+  retiredAt          DateTime?
+  components         PriceBookAssemblyComponent[]
+
+  @@index([category])
+  @@index([retiredAt])
+}
+
+model PriceBookAssembly {
+  assemblyId              String  @id // "AS-001"
+  name                    String?
+  sector                  String? // from the tab it was imported from
+  useCase                 String?
+  status                  String? // "Draft" | "SUPERSEDED ... DO NOT QUOTE"
+  // True when Status marks the row superseded. Precomputed so the quote path tests a
+  // boolean rather than re-parsing prose at estimate time.
+  superseded              Boolean @default(false)
+
+  // ── Labour ──
+  // FROZEN LITERAL, AND THE PIPELINE SAYS SO RATHER THAN HIDING IT. Verified
+  // 2026-08-11: 0 of 43 assembly labour formulas reference the Atomics tab; every one
+  // is literal arithmetic (e.g. "=4*0.25+4*0.05+(4/100)*30+(4/100)*10"). An atomic's
+  // labour change therefore does NOT propagate to any assembly. Material IS live-linked.
+  // The value is imported verbatim so the app matches the workbook; the divergence
+  // against an atomic-derived figure is reported as a finding, not silently corrected —
+  // it is Kyle's number to move.
+  totalLaborNormal        Float?
+  totalLaborFormula       String?
+  laborFormulaIsFrozen    Boolean @default(true)
+  difficultySetting       String?
+  fieldDifficulty         String? // NORMAL default — tech selects in the field
+
+  // ── Job-level inputs (drive the adder arithmetic) ──
+  permitRequiredRaw       String?
+  utilityStandbyRaw       String?
+  heightAccessAdderHours  Float?
+  ceilingHeightBand       String?
+  jobType                 String?
+  sourcingChannel         String?
+
+  // ── Workbook-computed snapshot, stored for the parity harness ──
+  // These are what Excel produced from the workbook's own formulas at import time.
+  // They are the ORACLE the app is checked against — never an input to app pricing.
+  wbLaborHoursAdjusted    Float?
+  wbLaborDollars          Float?
+  wbMaterialCost          Float?
+  wbMaterialSell          Float?
+  wbJobAdderHours         Float?
+  wbJobAdderDollars       Float?
+  wbPermitFee             Float?
+  wbTotalFlatRate         Float?
+  wbComponentsUnpriced    Int?
+  wbMaterialComplete      String?
+  wbTotalJobHours         Float?
+  wbJobFixedCost          Float?
+  wbTotalWithFixedCost    Float?
+
+  necCodeRefs             String?
+  necCategory             String?
+  pricingFlags            String?
+  notes                   String?
+  componentProse          String? // column E, human prose — NOT parsed for components
+  componentsTotalDeclared Int?
+  workbookRow             Int?
+  firstSeenAt             DateTime @default(now())
+  lastSeenAt              DateTime @updatedAt
+  retiredAt               DateTime?
+  components              PriceBookAssemblyComponent[]
+
+  @@index([sector])
+  @@index([superseded])
+  @@index([retiredAt])
+}
+
+// Derived from the assembly's MATERIAL COST FORMULA, not from the human prose in
+// column E — that column also lists the field-measured and walkthrough-counted items
+// deliberately removed from the assembly, and parsing it would re-import exactly what
+// Kyle's 2026-08-09 sweep took out.
+model PriceBookAssemblyComponent {
+  id         String @id @default(cuid())
+  assemblyId String
+  itemId     String
+  quantity   Float
+  // The Atomics row the workbook formula pointed at. Recorded because the workbook
+  // references atomics BY ROW NUMBER: an inserted or deleted row silently repoints
+  // every assembly below it with no Excel error. Provenance for that failure mode.
+  atomicRow  Int?
+  assembly   PriceBookAssembly @relation(fields: [assemblyId], references: [assemblyId], onDelete: Cascade)
+  atomic     PriceBookAtomic   @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
+
+  @@unique([assemblyId, itemId, atomicRow])
+  @@index([itemId])
+}
+
+// Rate Config as a key-value mirror. Kept keyed rather than flattened into columns so a
+// new policy cell is an import change, not a migration.
+model PriceBookRateConfig {
+  key         String   @id // billedLaborRate, markupTier1, activeSupplier, ...
+  label       String   // the workbook's own label text, asserted at import
+  workbookRow Int
+  numberValue Float?
+  textValue   String?
+  lastSeenAt  DateTime @updatedAt
+}
+
+model PriceBookNecCategory {
+  article    String   @id
+  title      String?
+  onKyleList String?
+  scopeRule  String?
+  lastSeenAt DateTime @updatedAt
+}
