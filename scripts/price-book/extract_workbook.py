@@ -187,6 +187,31 @@ def as_number(v):
         return None
 
 
+def parse_labor_unit_basis(raw):
+    """Resolve Atomics!AA to a NECA unit letter and its divisor.
+
+    The column holds a bare 'E' / 'C' / 'M' on most rows, and an annotated form where the
+    04:00 run cited its source, e.g.
+        'E  [NECA p.268 "Two Pole Circuit Breaker 100 Amp 0.94 1.18 1.41 E" — read verbatim]'
+    so the letter is matched as a FIRST TOKEN, not as the whole string.
+
+    Everything else — 'UNVERIFIED …', 'n/a …', blank — resolves to (None, None). That is the
+    column header's own instruction, quoted verbatim there: "the app must BLOCK, not default
+    to E." A wrong divisor here is a 100x labour error that would look like a plausible number,
+    which is precisely the failure CLAUDE.md calls the most dangerous thing to hand over.
+    """
+    if raw is None:
+        return None, None
+    token = str(raw).strip().split()
+    if not token:
+        return None, None
+    letter = token[0].strip().upper()
+    divisors = {"E": 1.0, "C": 100.0, "M": 1000.0}
+    if letter in divisors:
+        return letter, divisors[letter]
+    return None, None
+
+
 def extract_atomics(ws, spec):
     cols = spec["columns"]
     out, row_to_id = [], {}
@@ -196,7 +221,12 @@ def extract_atomics(ws, spec):
             continue
         item_id = str(item_id).strip()
         row_to_id[r] = item_id
+        basis_raw = cell_or_none(ws, r, "AA")
+        basis_letter, basis_divisor = parse_labor_unit_basis(basis_raw)
         out.append({
+            "laborUnitBasis": basis_letter,
+            "laborUnitDivisor": basis_divisor,
+            "laborUnitBasisRaw": str(basis_raw) if basis_raw is not None else None,
             "rowNumber": r,
             "itemId": item_id,
             "description": cell_or_none(ws, r, "B"),

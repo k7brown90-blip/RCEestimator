@@ -96,6 +96,8 @@ interface SnapAtomic {
   rowNumber: number; itemId: string; description: string | null; category: string | null;
   sector: string | null; unit: string | null; retailCost: number | null; tradeCost: number | null;
   laborNormal: number | null; laborDifficult: number | null; laborVeryDifficult: number | null;
+  // Atomics!AA, added by the 04:00 task 2026-08-13. null = UNVERIFIED, which blocks.
+  laborUnitBasis: string | null; laborUnitDivisor: number | null; laborUnitBasisRaw: string | null;
   difficultyCurve: string | null; necaUnitBasis: string | null; necaPdfPage: unknown;
   laborStatus: string | null; notes: string | null; purchaseUnit: string | null;
   purchasePackQty: number | null; purchasePrice: number | null; rowType: string | null;
@@ -432,6 +434,12 @@ async function main(): Promise<number> {
         laborNormal: a.laborNormal,
         laborDifficult: a.laborDifficult,
         laborVeryDifficult: a.laborVeryDifficult,
+        // NECA labour unit basis (Atomics!AA). Null when the workbook says UNVERIFIED — the
+        // estimating engine blocks the line rather than defaulting to E, per the column's own
+        // instruction. E vs C is a 100x labour error that still looks like a real number.
+        laborUnitBasis: a.laborUnitBasis ?? null,
+        laborUnitDivisor: a.laborUnitDivisor ?? null,
+        laborUnitBasisRaw: a.laborUnitBasisRaw ?? null,
         difficultyCurve: a.difficultyCurve,
         laborStatus: a.laborStatus,
         necaUnitBasis: a.necaUnitBasis,

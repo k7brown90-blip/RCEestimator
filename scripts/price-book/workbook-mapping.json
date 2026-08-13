@@ -21,9 +21,25 @@
     "Workbook observed: price-book.xlsx, 2026-08-11, 310 atomics / 43 assemblies (31 residential,",
     "12 commercial) / 8 suppliers / 90 supplier prices."
   ],
-  "mappingVersion": "1.0.0",
-  "observedWorkbookDate": "2026-08-11",
+  "mappingVersion": "1.1.0",
+  "observedWorkbookDate": "2026-08-13",
   "headerRow": 1,
+
+  "_CHANGELOG": [
+    "1.1.0 (2026-08-13) — IMPORT MAPPING IMPACT absorbed. The 04:00 task added Atomics column AA,",
+    "  'Labor Unit Basis (E / C / M)', a machine-readable discriminator the estimating engine needs.",
+    "  Before it existed, an atomic's Labor Normal of 6.2 could mean 6.2 hr each OR 6.2 hr per 100,",
+    "  and only the assembly formulas' hard-coded /100 and /1000 divisors carried the difference —",
+    "  which is why Phase 1 could reach parity without it (assembly labour is a frozen literal) and",
+    "  Phase 2 cannot (line labour must be computed from the atomic).",
+    "  Read as a PREFIX match: the column holds bare 'E'/'C'/'M' on most rows and an annotated form",
+    "  ('E  [NECA p.268 \"...\" — read verbatim 2026-08-13]') where the run cited its source. Anything",
+    "  that is not one of those three letters — 'UNVERIFIED …', 'n/a …', blank — is NOT a basis, and",
+    "  the column header's own instruction is followed exactly: BLOCK, never default to E.",
+    "  Two new tabs also appeared (Composition Rules, Price Verification Queue). Deliberately NOT",
+    "  mapped this version — Phase 2.0 scope excludes Composition Rules ingestion.",
+    "1.0.0 (2026-08-11) — initial."
+  ],
 
   "tabs": {
     "atomics": {
@@ -57,7 +73,22 @@
         "Y": "Row Type"
       },
       "headerPrefixOnly": {
-        "Z": "NEC Article"
+        "Z": "NEC Article",
+        "AA": "Labor Unit Basis"
+      },
+      "laborUnitBasis": {
+        "column": "AA",
+        "_note": [
+          "NECA MLU 2019-2020 p.10 'LABOR UNITS DEFINED', quoted in the column header verbatim:",
+          "E = one, or per each item · C = per hundred items or per hundred linear feet ·",
+          "M = per thousand items or per thousand linear feet.",
+          "HOURS FOR A LINE = qty x labour value / divisor.",
+          "The header also states: 'These calculations are not interchangeable' and 'UNVERIFIED means",
+          "the source text states no unit and NOTHING WAS GUESSED — the app must BLOCK, not default to E.'"
+        ],
+        "divisors": { "E": 1, "C": 100, "M": 1000 },
+        "matchMode": "first-token prefix; the value may carry a trailing source citation",
+        "blockingValues": ["UNVERIFIED", "n/a", ""]
       }
     },
 

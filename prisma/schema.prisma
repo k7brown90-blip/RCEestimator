@@ -1489,6 +1489,16 @@ model PriceBookAtomic {
   necaUnitBasis      String?
   necaPdfPage        String?
 
+  // ── NECA labour unit basis (Atomics!AA, added by the 04:00 task 2026-08-13) ──
+  // E = per each · C = per hundred · M = per thousand. HOURS = qty x labour / divisor.
+  // NULL means the workbook has NOT established a basis for this row ("UNVERIFIED"), and a
+  // null MUST block the line rather than default to E — the column header says so verbatim,
+  // and the difference between E and C is a 100x labour error that still looks plausible.
+  // laborUnitBasisRaw keeps the workbook's exact wording, including its source citation.
+  laborUnitBasis     String? // "E" | "C" | "M" | null
+  laborUnitDivisor   Float?  // 1 | 100 | 1000 | null
+  laborUnitBasisRaw  String?
+
   // Reference-only historical columns. The live cost is resolved from
   // PriceBookSupplierPrice at the active supplier — these are NOT the quote basis.
   retailCost         Float?
@@ -1514,6 +1524,7 @@ model PriceBookAtomic {
   // (write protocol rule 5: move, never delete).
   retiredAt          DateTime?
   components         PriceBookAssemblyComponent[]
+  draftLines         PriceBookDraftLine[]
 
   @@index([category])
   @@index([retiredAt])
@@ -1622,4 +1633,81 @@ model PriceBookNecCategory {
   onKyleList String?
   scopeRule  String?
   lastSeenAt DateTime @updatedAt
+}
+
+// ─── ATOMIC-FIRST CUSTOM ESTIMATES (Phase 2.0) ──────────────────────────────
+//
+// Kyle, 2026-08-12 (decisions/2026-08-12-atomic-first-custom-estimates.md):
+//   "estimating software that builds off of tech input that compares to the atomic units.
+//    This will allow for any job to be fully customized to what is actually needed rather
+//    than what is assumed."
+//
+// A draft estimate is a LIST OF LINES, each one a tech input against an atomic. There is no
+// assembly here on purpose — the assembly is a bundle of assumptions, and this is the model
+// that replaces assuming with asking.
+//
+// ADDITIVE ONLY. Nothing here touches Estimate / EstimateOption / EstimateItem /
+// EstimateAssembly — the existing job-history models are untouched and unreferenced.
+
+enum PriceBookDifficulty {
+  NORMAL         // default; Kyle 2026-08-11 — difficulty is a FIELD OBSERVATION
+  DIFFICULT
+  VERY_DIFFICULT
+}
+
+// Where the line's quantity came from. This is not decoration: it is what lets the engine
+// tell "the tech counted 4 receptacles" from "the tech measured 50 ft of EMT", and the
+// measured case is the one Kyle's cable rule governs.
+enum PriceBookQuantitySource {
+  COUNT             // discrete items the tech counted
+  MEASURED_LENGTH   // continuous-length product measured on site (Kyle: "Length is a field
+                    // measurement and needs to be calculated separately")
+  TERMINATION_COUNT // driven by how many terminations exist, not by run length
+  MANUAL            // tech overrode the quantity; requires a note
+}
+
+model PriceBookDraftEstimate {
+  id            String   @id @default(cuid())
+  title         String
+  // The supplier the tech picked in the field. Kyle 2026-08-08: "the tech in the field
+  // decides the best location to purchase from and builds the quote with that supplier
+  // selected." Cost resolves HERE and nowhere else — no fallback to another supplier.
+  supplierId    String
+  jobDescription String?
+  scenarioRef   String?  // e.g. "S-2026-08-11-G" when recomposing a recorded job
+  status        String   @default("draft") // draft | finalized
+  finalizedAt   DateTime?
+  // Snapshot of the rate this draft was computed against, and whether it was provisional.
+  // Stored so a draft priced at $201.34 cannot be silently reinterpreted at $150 later.
+  billedLaborRate   Float?
+  rateProvisional   Boolean @default(false)
+  provisionalReason String?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lines         PriceBookDraftLine[]
+
+  @@index([status, createdAt])
+}
+
+model PriceBookDraftLine {
+  id             String                  @id @default(cuid())
+  draftId        String
+  itemId         String
+  quantity       Float
+  quantitySource PriceBookQuantitySource
+  // Per LINE, never per estimate. Kyle 2026-08-11: "give the tech an option to check
+  // difficult or very difficult on the assembly or line item… This gets rid of the
+  // assumption." A blanket estimate-level difficulty is exactly what that ruling removed.
+  difficulty     PriceBookDifficulty     @default(NORMAL)
+  location       String?
+  note           String?
+  sortOrder      Int                     @default(0)
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  draft          PriceBookDraftEstimate  @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  atomic         PriceBookAtomic         @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
+
+  @@index([draftId])
+  @@index([itemId])
 }
