@@ -11,6 +11,9 @@ const nav = [
   { to: "/leads", label: "Leads", badgeQuery: true },
   { to: "/calendar", label: "Calendar" },
   { to: "/jobs", label: "Jobs" },
+  // The atomic-first intake screen (P012). Sits next to Jobs because that is where a
+  // walkthrough turns into an estimate.
+  { to: "/estimate-intake", label: "Estimate" },
   { to: "/accounts", label: "Accounts" },
   { to: "/team", label: "Team" },
   { to: "/settings", label: "Settings" },

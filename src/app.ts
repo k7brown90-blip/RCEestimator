@@ -30,6 +30,9 @@ import {
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import {
+  addLine,
+  createDraft,
+  removeLine,
   computeDraft,
   confirmProposedLine,
   finalizeDraft,
@@ -220,13 +223,35 @@ app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
 
 // ─── MCP ENDPOINT ────────────────────────────────────────────────────────────
 const mcpBearerToken = process.env.MCP_BEARER_TOKEN;
+
+/**
+ * FAIL-CLOSED (P012, closing P011 review follow-up 1).
+ *
+ * This used to call `next()` when MCP_BEARER_TOKEN was unset — an unauthenticated endpoint
+ * exposing the model's tool surface to anyone who could reach the public domain. Production was
+ * safe only because the variable happened to be set, which makes the protection a configuration
+ * fact rather than a code fact: clearing one Railway variable would have silently opened it.
+ *
+ * Now an unset token refuses everything with 503. The endpoint is *unconfigured*, not *open* —
+ * and 503 says exactly that, where 401 would imply "your credentials were wrong."
+ */
 const mcpAuth: express.RequestHandler = (req, res, next) => {
-  if (mcpBearerToken) {
-    const auth = req.headers.authorization;
-    if (!auth || auth !== `Bearer ${mcpBearerToken}`) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
+  if (!mcpBearerToken) {
+    // eslint-disable-next-line no-console
+    console.error(
+      "[mcp] REFUSED — MCP_BEARER_TOKEN is not set. The MCP endpoint exposes the AI's tool " +
+        "surface and will not serve unauthenticated traffic. Set the variable to enable it.",
+    );
+    res.status(503).json({
+      error: "MCP endpoint is not configured",
+      detail: "MCP_BEARER_TOKEN is unset; the endpoint refuses rather than serving unauthenticated.",
+    });
+    return;
+  }
+  const auth = req.headers.authorization;
+  if (!auth || auth !== `Bearer ${mcpBearerToken}`) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
   }
   next();
 };
@@ -1447,6 +1472,250 @@ app.use(pinAuthMiddleware);
 //
 // Kyle's architecture (projects/red-cedar-crm.md § TECH INTAKE): "The AI proposes, the tech
 // confirms, the engine prices." This file holds the middle third.
+
+// ─── PRICE BOOK CATALOG BROWSE + SEARCH (P012) ───────────────────────────────
+//
+// The intake screen's data source. Reads PriceBookAtomic — the live workbook catalog — and
+// never the legacy AtomicUnit table, which stays where it is for historical estimates only.
+
+// NEC card taxonomy. `PriceBookNecCategory` is the imported NEC Category Map; the counts tell
+// the UI which cards are worth showing, so an empty category renders as empty rather than as a
+// card that leads nowhere.
+app.get("/price-book/nec-categories", asyncHandler(async (_req, res) => {
+  const cats = await prisma.priceBookNecCategory.findMany({ orderBy: { article: "asc" } });
+  const grouped = await prisma.priceBookAtomic.groupBy({
+    by: ["necArticle"],
+    where: { retiredAt: null },
+    _count: { _all: true },
+  });
+  const counts = new Map<string, number>();
+  for (const g of grouped) {
+    // An atomic's NEC Article cell can carry several articles ("408, 240"), so one row feeds
+    // several cards. Splitting here keeps that knowledge in one place.
+    for (const part of String(g.necArticle ?? "").split(/[,;/]/)) {
+      const key = part.trim().split(/\s+/)[0];
+      if (key) counts.set(key, (counts.get(key) ?? 0) + g._count._all);
+    }
+  }
+  res.json({
+    categories: cats.map((c) => ({
+      article: c.article,
+      title: c.title,
+      scopeRule: c.scopeRule,
+      atomicCount: counts.get(c.article) ?? 0,
+    })),
+  });
+}));
+
+// Search + browse. `search` matches code or description; `article` filters to a NEC card.
+app.get("/price-book/atomics", asyncHandler(async (req, res) => {
+  const search = readQuery(req, "search")?.trim();
+  const article = readQuery(req, "article")?.trim();
+  const category = readQuery(req, "category")?.trim();
+  const limit = Math.min(Number(readQuery(req, "limit") ?? 50) || 50, 200);
+
+  const where: Record<string, unknown> = { retiredAt: null };
+  if (article) where["necArticle"] = { contains: article };
+  if (category) where["category"] = { contains: category, mode: "insensitive" };
+  if (search) {
+    where["OR"] = [
+      { itemId: { contains: search, mode: "insensitive" } },
+      { description: { contains: search, mode: "insensitive" } },
+    ];
+  }
+
+  const rows = await prisma.priceBookAtomic.findMany({
+    where, take: limit, orderBy: { itemId: "asc" },
+    select: {
+      itemId: true, description: true, category: true, unit: true, rowType: true,
+      laborNormal: true, laborDifficult: true, laborVeryDifficult: true,
+      laborUnitBasis: true, costBasisUsed: true, sellPricePerUnit: true, necArticle: true,
+    },
+  });
+
+  res.json({
+    atomics: rows.map((r) => ({
+      ...r,
+      // Shown as badges so a tech can see BEFORE adding a line that an item will land
+      // incomplete. Cheaper to see it here than at finalize.
+      hasLabourUnitBasis: r.laborUnitBasis !== null,
+      hasPriceAtActiveSupplier: r.costBasisUsed !== null,
+      isContinuousLength: (r.unit ?? "").toLowerCase() === "ft",
+    })),
+    count: rows.length,
+    truncated: rows.length === limit,
+  });
+}));
+
+// ─── DRAFTS (human path) ─────────────────────────────────────────────────────
+
+app.get("/price-book/drafts", asyncHandler(async (_req, res) => {
+  const drafts = await prisma.priceBookDraftEstimate.findMany({
+    orderBy: { updatedAt: "desc" }, take: 50,
+    include: { _count: { select: { lines: true, questions: true } } },
+  });
+  res.json({ drafts });
+}));
+
+app.post("/price-book/drafts", asyncHandler(async (req, res) => {
+  const body = z.object({
+    title: z.string().trim().min(1),
+    supplierId: z.string().trim().min(1).optional(),
+    jobDescription: z.string().nullable().optional(),
+  }).parse(req.body ?? {});
+  try {
+    // Supplier defaults to the workbook's ACTIVE SUPPLIER so the tech is not asked a question
+    // the book already answers; a picker can override it later.
+    const active = await prisma.priceBookRateConfig.findUnique({ where: { key: "activeSupplier" } });
+    const draft = await createDraft(prisma, {
+      title: body.title,
+      supplierId: body.supplierId ?? active?.textValue ?? "HD",
+      jobDescription: body.jobDescription ?? null,
+    });
+    res.status(201).json(draft);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+}));
+
+// Add a line the HUMAN chose — lands CONFIRMED, unlike an AI proposal.
+app.post("/price-book/drafts/:draftId/lines", asyncHandler(async (req, res) => {
+  const body = z.object({
+    itemId: z.string().trim().min(1),
+    quantity: z.number().positive(),
+    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]),
+    difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
+    location: z.string().nullable().optional(),
+    note: z.string().nullable().optional(),
+  }).parse(req.body ?? {});
+  try {
+    const line = await addLine(prisma, String(req.params.draftId), {
+      ...body,
+      location: body.location ?? null,
+      note: body.note ?? null,
+      confirmedBy: "human:crm-session",
+    });
+    res.status(201).json(line);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+}));
+
+app.delete("/price-book/lines/:lineId", asyncHandler(async (req, res) => {
+  try {
+    await removeLine(prisma, String(req.params.lineId));
+    res.status(204).send();
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+}));
+
+// Raise a question by hand — where an unresolved walkthrough row lands. A line the system
+// cannot match must become a visible question, never dropped text.
+app.post("/price-book/drafts/:draftId/questions", asyncHandler(async (req, res) => {
+  const body = z.object({
+    question: z.string().trim().min(1),
+    rawText: z.string().nullable().optional(),
+  }).parse(req.body ?? {});
+  const q = await prisma.priceBookDraftQuestion.create({
+    data: {
+      draftId: String(req.params.draftId),
+      question: body.question,
+      rawText: body.rawText ?? null,
+      raisedBy: "human:walkthrough-entry",
+    },
+  });
+  res.status(201).json(q);
+}));
+
+// ─── WALKTHROUGH MATERIAL LIST — resolve typed rows against the catalog ──────
+//
+// The tech types the list they built on the walkthrough. Resolution happens here, not in the
+// browser, so the matching rule lives in one place. NOTHING is auto-added: this returns
+// candidates and the tech commits them. An ambiguous row comes back ambiguous — silently
+// picking the top hit is the assumption the atomic-first ruling exists to remove.
+app.post("/price-book/resolve-walkthrough", asyncHandler(async (req, res) => {
+  const body = z.object({
+    rows: z.array(z.object({
+      raw: z.string().trim().min(1),
+      quantity: z.number().positive().optional(),
+    })).max(100),
+  }).parse(req.body ?? {});
+
+  const out = [];
+  for (const row of body.rows) {
+    const leadingQty = /^\s*(\d+(?:\.\d+)?)/.exec(row.raw);
+    const term = row.raw.replace(/^\s*\d+(\.\d+)?\s*(x|ea|each|ft|lf)?\s*/i, "").trim() || row.raw.trim();
+
+    // TOKEN-AND matching, not phrase matching.
+    //
+    // A tech writes "20A receptacle"; the catalog says "Duplex Receptacle, 20A 125V, NEMA
+    // 5-20R". A single `contains` on the whole phrase finds nothing, and reporting UNMATCHED
+    // for an item that is plainly in the book trains the operator to ignore the feature.
+    // So: every word must appear somewhere in the code or description, in any order.
+    //
+    // This WIDENS what matches; it does not guess. Multiple hits still come back AMBIGUOUS for
+    // the tech to choose between — the engine never picks one for them.
+    const tokens = term
+      .split(/[\s,]+/)
+      .map((t) => t.replace(/[^A-Za-z0-9/.-]/g, "").trim())
+      .filter((t) => t.length >= 2)
+      .slice(0, 6);
+
+    const SELECT = { itemId: true, description: true, unit: true, laborUnitBasis: true, costBasisUsed: true };
+    const byTokens = (tks: string[]) =>
+      prisma.priceBookAtomic.findMany({
+        where: {
+          retiredAt: null,
+          AND: tks.map((tk) => ({
+            OR: [
+              { itemId: { contains: tk, mode: "insensitive" as const } },
+              { description: { contains: tk, mode: "insensitive" as const } },
+            ],
+          })),
+        },
+        take: 6, orderBy: { itemId: "asc" },
+        select: SELECT,
+      });
+
+    let matches = tokens.length === 0 ? [] : await byTokens(tokens);
+
+    // FALLBACK on the most distinctive word.
+    //
+    // Field phrasing and catalog phrasing disagree in ways no token rule fixes: a tech writes
+    // "1-1/4 EMT", the book says "EMT Conduit, 1 1/4-inch". Requiring every token then finds
+    // nothing, and a bare UNMATCHED gives the tech nothing to work with.
+    //
+    // So when the full set misses, retry on the longest token alone — usually the noun that
+    // actually names the thing ("EMT", "receptacle", "box"). This produces CANDIDATES TO CHOOSE
+    // FROM, never an auto-selection: the result is still AMBIGUOUS and the tech still picks.
+    // Widening what is offered is safe; picking for them is not.
+    let usedFallback = false;
+    if (matches.length === 0 && tokens.length > 1) {
+      const longest = [...tokens].sort((a, b) => b.length - a.length)[0];
+      matches = await byTokens([longest]);
+      usedFallback = matches.length > 0;
+    }
+    out.push({
+      raw: row.raw,
+      parsedQuantity: row.quantity ?? (leadingQty ? Number(leadingQty[1]) : null),
+      searchTerm: term,
+      // A fallback hit is never reported as MATCHED even when it returns exactly one row —
+      // it matched on a single word, so the tech should look at it, not accept it.
+      status: matches.length === 0 ? "UNMATCHED" : (matches.length === 1 && !usedFallback) ? "MATCHED" : "AMBIGUOUS",
+      matchedOn: usedFallback ? "single-word fallback" : "all words",
+      candidates: matches.map((m) => ({
+        itemId: m.itemId,
+        description: m.description,
+        unit: m.unit,
+        isContinuousLength: (m.unit ?? "").toLowerCase() === "ft",
+        hasLabourUnitBasis: m.laborUnitBasis !== null,
+        hasPriceAtActiveSupplier: m.costBasisUsed !== null,
+      })),
+    });
+  }
+  res.json({ rows: out });
+}));
 
 app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
   const review = await getDraftReview(prisma, String(req.params.draftId));

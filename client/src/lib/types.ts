@@ -927,3 +927,144 @@ export type CrmOverview = {
   winLoss: CrmWinLossMetrics;
   cycleTime: CrmCycleTimeMetrics;
 };
+
+// ─── PRICE BOOK INTAKE (P012) ────────────────────────────────────────────────
+// Shapes returned by the /price-book endpoints. Every money field on ComputedEstimate is
+// produced by the pricing engine on the server; the UI displays them and never computes one.
+
+export type PbQuantitySource = "COUNT" | "MEASURED_LENGTH" | "TERMINATION_COUNT" | "MANUAL";
+export type PbDifficulty = "NORMAL" | "DIFFICULT" | "VERY_DIFFICULT";
+
+export interface PbNecCategory {
+  article: string;
+  title: string | null;
+  scopeRule: string | null;
+  atomicCount: number;
+}
+
+export interface PbAtomic {
+  itemId: string;
+  description: string | null;
+  category: string | null;
+  unit: string | null;
+  rowType: string | null;
+  laborNormal: number | null;
+  laborDifficult: number | null;
+  laborVeryDifficult: number | null;
+  laborUnitBasis: string | null;
+  costBasisUsed: number | null;
+  sellPricePerUnit: number | null;
+  necArticle: string | null;
+  hasLabourUnitBasis: boolean;
+  hasPriceAtActiveSupplier: boolean;
+  isContinuousLength: boolean;
+}
+
+export interface PbDraft {
+  id: string;
+  title: string;
+  supplierId: string;
+  status: string;
+  rateProvisional: boolean;
+  provisionalReason: string | null;
+  billedLaborRate: number | null;
+  updatedAt?: string;
+  _count?: { lines: number; questions: number };
+}
+
+export interface PbLine {
+  id: string;
+  itemId: string;
+  description: string | null;
+  quantity: number;
+  quantitySource: PbQuantitySource;
+  difficulty: PbDifficulty;
+  location: string | null;
+  proposedBy?: string | null;
+  reasoning?: string | null;
+  proposedAt?: string | null;
+  confirmedBy?: string | null;
+  confirmedAt?: string | null;
+  editedBeforeConfirm?: boolean;
+}
+
+export interface PbQuestion {
+  id: string;
+  question: string;
+  rawText: string | null;
+  raisedBy: string;
+  createdAt: string;
+}
+
+export interface PbReview {
+  draft: PbDraft;
+  proposedLines: PbLine[];
+  confirmedLines: PbLine[];
+  openQuestions: PbQuestion[];
+  counts: { proposed: number; confirmed: number; openQuestions: number };
+}
+
+export interface PbLineGap {
+  kind: string;
+  itemId: string;
+  message: string;
+  routesTo: string;
+}
+
+export interface PbComputedLine {
+  itemId: string;
+  description: string | null;
+  quantity: number;
+  quantitySource: PbQuantitySource;
+  difficulty: PbDifficulty;
+  unit: string | null;
+  laborUnitBasis: string | null;
+  laborHours: number | null;
+  laborDollars: number | null;
+  costBasis: number | null;
+  materialCost: number | null;
+  materialSell: number | null;
+  gaps: PbLineGap[];
+  complete: boolean;
+}
+
+export interface PbComputed {
+  supplierId: string;
+  billedLaborRate: number | null;
+  lines: PbComputedLine[];
+  laborHours: number;
+  laborDollars: number;
+  materialCost: number;
+  materialSell: number;
+  subtotal: number | null;
+  jobFixedCost: number | null;
+  total: number | null;
+  gaps: PbLineGap[];
+  incompleteLineCount: number;
+  totalLineCount: number;
+  completenessSummary: string;
+}
+
+export interface PbFinalizeResult {
+  finalized: boolean;
+  reasons?: string[];
+  warnings?: string[];
+  computed: PbComputed;
+}
+
+export interface PbWalkthroughRow {
+  raw: string;
+  parsedQuantity: number | null;
+  searchTerm: string;
+  status: "MATCHED" | "AMBIGUOUS" | "UNMATCHED";
+  /** "all words" | "single-word fallback" — a fallback hit is never auto-trusted. */
+  matchedOn?: string;
+  candidates: Array<{
+    itemId: string;
+    description: string | null;
+    unit: string | null;
+    isContinuousLength: boolean;
+    hasLabourUnitBasis: boolean;
+    hasPriceAtActiveSupplier: boolean;
+  }>;
+}

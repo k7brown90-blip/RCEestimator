@@ -31,6 +31,16 @@ import type {
   LeadWriteInput,
   PropertyFinding,
   WeekSchedule,
+  PbAtomic,
+  PbComputed,
+  PbDifficulty,
+  PbDraft,
+  PbFinalizeResult,
+  PbNecCategory,
+  PbQuantitySource,
+  PbQuestion,
+  PbReview,
+  PbWalkthroughRow,
 } from "./types";
 
 const API_BASE = "/api";
@@ -459,6 +469,86 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(value),
     }),
+
+  // ─── PRICE BOOK INTAKE (P012) ──────────────────────────────────────────────
+  // Every one of these hits the PIN-protected surface. The AI reaches none of them.
+
+  pbNecCategories: () => request<{ categories: PbNecCategory[] }>("/price-book/nec-categories"),
+
+  pbAtomics: (opts?: { search?: string; article?: string; category?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (opts?.search) q.set("search", opts.search);
+    if (opts?.article) q.set("article", opts.article);
+    if (opts?.category) q.set("category", opts.category);
+    if (opts?.limit) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return request<{ atomics: PbAtomic[]; count: number; truncated: boolean }>(
+      `/price-book/atomics${qs ? `?${qs}` : ""}`
+    );
+  },
+
+  pbDrafts: () => request<{ drafts: PbDraft[] }>("/price-book/drafts"),
+
+  pbCreateDraft: (input: { title: string; jobDescription?: string | null }) =>
+    request<PbDraft>("/price-book/drafts", { method: "POST", body: JSON.stringify(input) }),
+
+  pbReview: (draftId: string) => request<PbReview>(`/price-book/drafts/${draftId}/review`),
+
+  pbCompute: (draftId: string) =>
+    request<{ computed: PbComputed; rateProvisional: boolean; provisionalReason: string | null }>(
+      `/price-book/drafts/${draftId}/compute`
+    ),
+
+  // Human-added line. Lands CONFIRMED — this is the path an AI proposal can never take.
+  pbAddLine: (
+    draftId: string,
+    input: {
+      itemId: string;
+      quantity: number;
+      quantitySource: PbQuantitySource;
+      difficulty?: PbDifficulty;
+      location?: string | null;
+      note?: string | null;
+    }
+  ) => request(`/price-book/drafts/${draftId}/lines`, { method: "POST", body: JSON.stringify(input) }),
+
+  pbDeleteLine: (lineId: string) =>
+    request<void>(`/price-book/lines/${lineId}`, { method: "DELETE" }),
+
+  pbConfirmLine: (
+    lineId: string,
+    edits?: { quantity?: number; quantitySource?: PbQuantitySource; difficulty?: PbDifficulty; location?: string | null; note?: string | null }
+  ) => request(`/price-book/lines/${lineId}/confirm`, { method: "POST", body: JSON.stringify(edits ?? {}) }),
+
+  pbRejectLine: (lineId: string) =>
+    request<void>(`/price-book/lines/${lineId}/reject`, { method: "POST" }),
+
+  pbResolveQuestion: (questionId: string, resolutionNote: string) =>
+    request<{ ok: boolean; question: PbQuestion }>(`/price-book/questions/${questionId}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ resolutionNote }),
+    }),
+
+  pbAddQuestion: (draftId: string, question: string, rawText?: string | null) =>
+    request<PbQuestion>(`/price-book/drafts/${draftId}/questions`, {
+      method: "POST",
+      body: JSON.stringify({ question, rawText: rawText ?? null }),
+    }),
+
+  pbResolveWalkthrough: (rows: Array<{ raw: string; quantity?: number }>) =>
+    request<{ rows: PbWalkthroughRow[] }>("/price-book/resolve-walkthrough", {
+      method: "POST",
+      body: JSON.stringify({ rows }),
+    }),
+
+  // Finalize returns 409 with reasons when the engine refuses. `request` throws on non-2xx,
+  // so the caller catches and surfaces the reasons verbatim — the UI never re-words a refusal.
+  pbFinalize: (draftId: string, context: "customer" | "internal") =>
+    request<PbFinalizeResult>(`/price-book/drafts/${draftId}/finalize`, {
+      method: "POST",
+      body: JSON.stringify({ context }),
+    }),
+
 };
 
 // ─── Health Record types ─────────────────────────────────────────────────────
