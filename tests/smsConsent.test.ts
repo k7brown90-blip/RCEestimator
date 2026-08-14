@@ -18,7 +18,7 @@
  * it. Twilio env vars are set and global fetch is stubbed instead.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { prisma } from "../src/lib/prisma";
 
@@ -124,12 +124,36 @@ describe("web lead opt-in confirmation SMS", () => {
   const WEB_OPT_IN_PHONE = "+16155559007";
   const WEB_DECLINE_PHONE = "+16155559008";
 
-  it("sends the exact declared opt-in confirmation once, when a web lead consents", async () => {
-    // The manual-first gate (2026-08-11) suppresses this send in production by default.
-    // The A2P compliance assertion below — that the wording matches exactly what was
-    // declared to Twilio — must keep running regardless, so the workflow is explicitly
-    // enabled for this test. The suppressed case is asserted in the test after this one.
+  /**
+   * Two independent gates now stand between a web lead and a text: the manual-first
+   * customer-send gate (2026-08-11) and the Twilio gate (2026-08-13). Tests that exist to
+   * assert something OTHER than the gates — the A2P wording, the consent check — open both
+   * so the assertion they were written for keeps running on the live path.
+   */
+  function openBothGates(): void {
     process.env.AUTOMATED_CUSTOMER_SENDS_WEB_LEAD_AUTOREPLY = "on";
+    process.env.TWILIO_SENDS_CUSTOMER_LIFECYCLE = "on";
+    process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS = "on";
+  }
+
+  function closeBothGates(): void {
+    delete process.env.AUTOMATED_CUSTOMER_SENDS_WEB_LEAD_AUTOREPLY;
+    delete process.env.AUTOMATED_CUSTOMER_SENDS;
+    delete process.env.TWILIO_SENDS_CUSTOMER_LIFECYCLE;
+    delete process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS;
+    delete process.env.TWILIO_SENDS;
+  }
+
+  afterEach(() => {
+    closeBothGates();
+  });
+
+  it("sends the exact declared opt-in confirmation once, when a web lead consents", async () => {
+    // Both gates suppress this send in production by default. The A2P compliance assertion
+    // below — that the wording matches exactly what was declared to Twilio — must keep
+    // running regardless, so both are explicitly opened for this test. The suppressed case
+    // is asserted in the test after this one.
+    openBothGates();
     const res = await request(app)
       .post("/leads")
       .set("webhook_secret", WEBHOOK)
@@ -146,16 +170,15 @@ describe("web lead opt-in confirmation SMS", () => {
     const optInCall = sentBodies().find((p) => p.get("Body") === webOptInConfirmation());
     expect(optInCall).toBeDefined();
     expect(optInCall!.get("To")).toBe(WEB_OPT_IN_PHONE);
-    delete process.env.AUTOMATED_CUSTOMER_SENDS_WEB_LEAD_AUTOREPLY;
   });
 
-  it("MANUAL-FIRST GATE: sends nothing to a consenting web lead while the gate is off", async () => {
-    // Consent is TRUE here — so the only thing stopping this send is the gate. That is the
-    // whole point of the assertion: it fails the moment someone re-enables the workflow by
-    // accident. Kyle's notification must still arrive, because manual-first means he handles
-    // the lead himself and cannot do that if the system stops telling him it exists.
-    delete process.env.AUTOMATED_CUSTOMER_SENDS_WEB_LEAD_AUTOREPLY;
-    delete process.env.AUTOMATED_CUSTOMER_SENDS;
+  it("TWILIO GATE: a consenting web lead produces ZERO Twilio calls — not to the lead, not to Kyle", async () => {
+    // This replaces the P004-era assertion that Kyle still gets texted. Kyle's 2026-08-13
+    // clarification withdrew that exception: "I am not using twilio for texts." Consent is
+    // TRUE here and the lead is a web lead, so every send this route can make is armed —
+    // the gates are the only thing stopping them. It fails the moment either one is
+    // re-enabled by accident.
+    closeBothGates();
     const GATED_PHONE = "+16155559009";
 
     const res = await request(app)
@@ -164,15 +187,22 @@ describe("web lead opt-in confirmation SMS", () => {
       .send({ name: "Consent Test Web Gated", phone: GATED_PHONE, source: "web", smsConsent: true });
     expect(res.status).toBe(201);
 
-    await waitUntil(() => sentBodies().some((p) => p.get("To") === GATED_PHONE || p.get("To") === KYLE_PHONE));
+    // Nothing to wait FOR, so wait out the fire-and-forget window instead and prove the
+    // silence is real rather than a race we won.
+    await new Promise((r) => setTimeout(r, 300));
 
-    // No customer-facing send at all to that number.
     expect(sentBodies().find((p) => p.get("To") === GATED_PHONE)).toBeUndefined();
-    // Kyle still gets told a lead landed.
-    expect(sentBodies().some((p) => p.get("To") === KYLE_PHONE)).toBe(true);
+    expect(sentBodies().find((p) => p.get("To") === KYLE_PHONE)).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // The lead itself is untouched by the gate — it is in the CRM, which is now the channel.
+    const lead = await prisma.lead.findUniqueOrThrow({ where: { id: res.body.id } });
+    expect(lead.smsConsent).toBe(true);
   });
 
   it("does not send it when the web lead declines", async () => {
+    // Gates open, so the ONLY thing that can suppress the opt-in text here is the decline.
+    openBothGates();
     const res = await request(app)
       .post("/leads")
       .set("webhook_secret", WEBHOOK)

@@ -1,4 +1,18 @@
 /**
+ * Automation gates — the manual-first switches.
+ *
+ * TWO CLASSES LIVE HERE:
+ *
+ *   1. AUTOMATED_CUSTOMER_SENDS (P004, ruling 2026-08-11) — unattended sends to customers,
+ *      email and SMS alike.
+ *   2. TWILIO_SENDS (P013, clarification 2026-08-13) — every outbound Twilio text, whoever
+ *      the recipient is. See the second half of this file.
+ *
+ * They are independent and both must pass for a customer-facing text to leave the app: an
+ * automation flag coming back on must not drag Twilio back with it.
+ *
+ * ── CLASS 1 ────────────────────────────────────────────────────────────────────────────
+ *
  * Automated customer-send gate — the manual-first switch.
  *
  * Kyle's ruling, 2026-08-11 (decisions/2026-08-11-manual-first-automation-deferral.md):
@@ -112,11 +126,14 @@ export function logAutomationGateState(): void {
     );
   }
 
+  logTwilioGateState();
+
   // eslint-disable-next-line no-console
   console.log(
-    "[AutomationGate] NOT gated (internal / operator / human-initiated, deliberately still running): " +
-      "operator SMS to Kyle, crash alerting, technician notifications, supplier order emails, " +
-      "daily summary email to SUMMARY_EMAIL, inbound receipt acknowledgements.",
+    "[AutomationGate] NOT gated (deliberately still running): all EMAIL — supplier order emails, " +
+      "daily summary email to SUMMARY_EMAIL, branded customer confirmation/reminder emails, " +
+      "technician assignment emails, Kyle notification emails; and INBOUND Twilio webhooks " +
+      "(receiving is not sending — gating inbound is a separate decision nobody has made).",
   );
 }
 
@@ -126,3 +143,133 @@ export function workflowEnvVar(workflow: CustomerSendWorkflow): string {
 }
 
 export const MASTER_ENV_VAR = MASTER_ENV;
+
+/* ── CLASS 2 ──────────────────────────────────────────────────────────────────────────────
+ *
+ * Outbound Twilio gate — "no Twilio texts, period."
+ *
+ * Kyle, 2026-08-13 (decisions/2026-08-11-manual-first-automation-deferral.md § CLARIFICATION):
+ *
+ *   "I am not using twilio for texts, intake from Savannah AI Receptionist is a Vapi number and
+ *    we will rely only on the emails that are already set up. I do not want to spend time setting
+ *    up the twilio campaigns right now. I will make that specific request when I feel the system
+ *    is ready for it."
+ *
+ * P004 gated the customer-facing sends and deliberately left the operator, technician and agent
+ * legs running; the P004 review escalated that as a discrepancy with the ruling, and this is the
+ * answer: silence outbound Twilio entirely. Email and Kyle's own phone calls are the operational
+ * channels.
+ *
+ * SAME SHAPE AS CLASS 1, ON PURPOSE: callers gated, channel untouched. `sendSms()` still works;
+ * nothing about twilio.ts, the A2P registration, or the phone numbers changes. Every leg turns
+ * back on with one env var on the day Kyle makes "that specific request."
+ *
+ * INBOUND IS NOT GATED. Receiving a text is not sending one. The webhook at routes/inboundSms.ts
+ * still parses, logs and routes everything that arrives; only its *replies* are gated. Gating
+ * inbound is a separate decision nobody has made.
+ *
+ * WHY PER-LEG AND NOT ONE FLAG:
+ *
+ *   The ruling names one reactivation event, so four of these six legs will in fact come back
+ *   together. They are still separate flags because the other two have their own, already-written
+ *   return paths — operator alerting is rollup row 0.1, PARKED with its own prompt, and the
+ *   receipt-MMS leg is recorded as folding into the payments/job-costing build, which may not
+ *   land on Twilio at all. A single flag would force those two back on with the rest. The cost of
+ *   the extra flags is a longer boot log; the cost of one flag is a leg returning before anyone
+ *   decided it should.
+ */
+
+export type TwilioSendLeg =
+  /** Crash / health-check alert texts to the operator number (services/alerting.ts). */
+  | "operatorAlerts"
+  /** Kyle's own business notifications: new lead, doc signed, bookings, digests, forwards. */
+  | "operatorNotifications"
+  /** Assignment and job-note texts to technicians. */
+  | "technicianSends"
+  /** Acknowledgement replies to an inbound MMS receipt from Kyle or a tech. */
+  | "inboundAcks"
+  /** Texts triggered by a Savannah/Jerry agent tool call. */
+  | "agentSends"
+  /**
+   * Customer job-lifecycle texts — scheduled / rescheduled / cancelled, calendar-booking
+   * confirmations, reminders, opt-in and inbound auto-replies. Several of these are ALSO behind
+   * class 1; both gates must pass. The class-1 inventory in P004 missed the scheduling.ts and
+   * googleCalendar.ts sites entirely — see the P013 report.
+   */
+  | "customerLifecycleSms";
+
+const TWILIO_MASTER_ENV = "TWILIO_SENDS";
+
+const TWILIO_LEG_ENV: Record<TwilioSendLeg, string> = {
+  operatorAlerts: "TWILIO_SENDS_OPERATOR_ALERTS",
+  operatorNotifications: "TWILIO_SENDS_OPERATOR_NOTIFICATIONS",
+  technicianSends: "TWILIO_SENDS_TECHNICIAN",
+  inboundAcks: "TWILIO_SENDS_INBOUND_ACKS",
+  agentSends: "TWILIO_SENDS_AGENT",
+  customerLifecycleSms: "TWILIO_SENDS_CUSTOMER_LIFECYCLE",
+};
+
+const TWILIO_LEG_LABEL: Record<TwilioSendLeg, string> = {
+  operatorAlerts: "crash/health alert SMS to the operator number",
+  operatorNotifications: "Kyle's notification texts (new lead, signed doc, bookings, digests, forwards)",
+  technicianSends: "technician assignment + job-note texts",
+  inboundAcks: "receipt acknowledgement replies to Kyle/tech MMS",
+  agentSends: "Savannah/Jerry agent-triggered texts",
+  customerLifecycleSms: "customer job-lifecycle texts (scheduled/rescheduled/cancelled, reminders, auto-replies)",
+};
+
+/** True when this Twilio leg is permitted to send a text right now. Default-deny. */
+export function twilioSendEnabled(leg: TwilioSendLeg): boolean {
+  if (isOn(process.env[TWILIO_LEG_ENV[leg]])) return true;
+  return isOn(process.env[TWILIO_MASTER_ENV]);
+}
+
+/**
+ * Log a suppressed text. Same reasoning as logCustomerSendSkipped: a send that did not happen
+ * has to be as visible as one that did, or "disabled" reads identically to "broken".
+ */
+export function logTwilioSendSkipped(leg: TwilioSendLeg, detail?: string): void {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TwilioGate] SKIPPED ${leg} — ${TWILIO_LEG_LABEL[leg]} is DISABLED ` +
+      `(no-Twilio-texts ruling 2026-08-13). Re-enable with ${TWILIO_LEG_ENV[leg]}=on ` +
+      `or ${TWILIO_MASTER_ENV}=on.${detail ? ` ${detail}` : ""}`,
+  );
+}
+
+/** Boot-time state report for the Twilio class. Called from logAutomationGateState(). */
+export function logTwilioGateState(): void {
+  const masterOn = isOn(process.env[TWILIO_MASTER_ENV]);
+  const legs = Object.keys(TWILIO_LEG_ENV) as TwilioSendLeg[];
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TwilioGate] MASTER ${TWILIO_MASTER_ENV}=${process.env[TWILIO_MASTER_ENV] ?? "(unset)"} -> ` +
+      `${masterOn ? "ENABLED" : "DISABLED (default)"} — no-Twilio-texts ruling 2026-08-13`,
+  );
+
+  for (const leg of legs) {
+    const override = process.env[TWILIO_LEG_ENV[leg]];
+    const on = twilioSendEnabled(leg);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[TwilioGate]   ${on ? "ENABLED " : "DISABLED"} ${leg} — ${TWILIO_LEG_LABEL[leg]}` +
+        (override ? ` (${TWILIO_LEG_ENV[leg]}=${override})` : ""),
+    );
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(
+    "[TwilioGate] INBOUND Twilio (webhook receive, media fetch, opt-out recording) is NOT gated — " +
+      "receiving is not sending. Alerting after this gate: Railway's own email notifications plus " +
+      "the scheduled email read (ruling 2026-08-11 §3), and every alert is still persisted as a " +
+      "SystemEvent row and printed to the Railway log.",
+  );
+}
+
+/** Exposed for the report and for tests — the env var that re-enables a given Twilio leg. */
+export function twilioLegEnvVar(leg: TwilioSendLeg): string {
+  return TWILIO_LEG_ENV[leg];
+}
+
+export const TWILIO_MASTER_ENV_VAR = TWILIO_MASTER_ENV;

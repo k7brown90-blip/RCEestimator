@@ -4,6 +4,7 @@
  */
 
 import { sendSms, KYLE_PHONE } from "./twilio";
+import { twilioSendEnabled, logTwilioSendSkipped } from "./automationGate";
 
 const BUSINESS_PHONE = "(731) 462-0443";
 const TZ = "America/Chicago";
@@ -154,10 +155,31 @@ export function kyleQuestion(customer: CustomerData, question: string, context?:
 
 // ─── SMS SEND WRAPPERS ─────────────────────────────────────────────────────────
 
+/**
+ * GATED (no-Twilio-texts ruling 2026-08-13).
+ *
+ * These two wrappers are the choke point for the scheduling.ts and googleCalendar.ts job
+ * lifecycle texts — the send sites P004's inventory missed entirely, which is why they were
+ * still live after P004. Gating the wrapper rather than the eight call sites keeps the
+ * decision in one readable place, and a *future* caller inherits default-deny, which is the
+ * posture the ruling asks for.
+ *
+ * A gated call returns `null` — the exact value every caller already handles for "Twilio
+ * unavailable", so no call site changes behaviour beyond reporting the send as not made.
+ * Every one of these paths has an email counterpart that is untouched.
+ */
 export async function sendCustomerSms(phone: string, body: string): Promise<{ sid: string } | null> {
+  if (!twilioSendEnabled("customerLifecycleSms")) {
+    logTwilioSendSkipped("customerLifecycleSms", "Customer job-lifecycle SMS suppressed; the confirmation email path is unaffected.");
+    return null;
+  }
   return sendSms(phone, body);
 }
 
 export async function sendKyleSms(body: string): Promise<{ sid: string } | null> {
+  if (!twilioSendEnabled("operatorNotifications")) {
+    logTwilioSendSkipped("operatorNotifications", "Kyle notification SMS suppressed; the Kyle notification email is unaffected.");
+    return null;
+  }
   return sendSms(KYLE_PHONE, body);
 }

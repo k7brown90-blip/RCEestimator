@@ -20,6 +20,7 @@ import { getAvailability } from "../services/googleCalendar";
 import { applyCallDisposition } from "../services/callDisposition";
 import { prisma } from "../lib/prisma";
 import { sendSms } from "../services/twilio";
+import { twilioSendEnabled, logTwilioSendSkipped } from "../services/automationGate";
 import { sendDocumentEmail, humanizeDocType } from "../services/documentDelivery";
 import { generateHealthReport } from "../services/pdfGenerator";
 
@@ -412,7 +413,11 @@ sharedAgentRouter.post("/documents/send", asyncHandler(async (req, res) => {
   }
 
   let smsSent = false;
-  if (wantSms && recipientPhone) {
+  // GATED (no-Twilio-texts ruling 2026-08-13). The email leg above is untouched and is the one
+  // that actually carries the PDF — this SMS was only a "your document is ready" notification.
+  if (wantSms && recipientPhone && !twilioSendEnabled("agentSends")) {
+    logTwilioSendSkipped("agentSends", `${label} notification SMS to ${customerName} suppressed; the email leg is unaffected.`);
+  } else if (wantSms && recipientPhone) {
     // MMS with public URL is not wired up — SMS acts as a notification only.
     const emailNote = emailed
       ? ` It's on the way to ${recipientEmail}.`

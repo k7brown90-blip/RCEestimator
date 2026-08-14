@@ -178,6 +178,9 @@ describe("POST /agent/calendar/documents/send", () => {
   });
 
   it("sends an SMS notification and skips email when method is 'sms'", async () => {
+    // Agent-triggered texts are OFF in production (no-Twilio-texts ruling 2026-08-13); this
+    // test pins the routing, so the leg is opened. Gated behaviour is the test below.
+    process.env.TWILIO_SENDS_AGENT = "on";
     sendSmsMock.mockResolvedValue({ sid: "SM_mock" });
 
     const res = await request(app)
@@ -191,6 +194,25 @@ describe("POST /agent/calendar/documents/send", () => {
     expect(sendDocumentEmailMock).not.toHaveBeenCalled();
     expect(sendSmsMock).toHaveBeenCalledTimes(1);
     expect(sendSmsMock.mock.calls[0][0]).toBe("+16155551234");
+    delete process.env.TWILIO_SENDS_AGENT;
+  });
+
+  it("TWILIO GATE: method 'sms' sends nothing and reports the failure rather than faking it", async () => {
+    delete process.env.TWILIO_SENDS_AGENT;
+    delete process.env.TWILIO_SENDS;
+    sendSmsMock.mockResolvedValue({ sid: "SM_mock" });
+
+    const res = await request(app)
+      .post("/agent/calendar/documents/send")
+      .set("Authorization", `Bearer ${TOKEN}`)
+      .send({ kind: "document", id: documentId, method: "sms" });
+
+    expect(sendSmsMock).not.toHaveBeenCalled();
+    // A gated send takes the route's existing "nothing was delivered" path — the agent tells
+    // the caller it couldn't send and flags it for Kyle, rather than claiming a text went out.
+    expect(res.status).toBe(502);
+    expect(res.body.success).toBe(false);
+    expect(res.body.spoken_confirmation).toContain("couldn't send");
   });
 
   it("returns 404 when the referenced document does not exist", async () => {

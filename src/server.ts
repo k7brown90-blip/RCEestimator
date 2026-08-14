@@ -11,6 +11,8 @@ import {
   customerSendsEnabled,
   logAutomationGateState,
   logCustomerSendSkipped,
+  logTwilioSendSkipped,
+  twilioSendEnabled,
 } from "./services/automationGate";
 
 const port = Number(process.env.PORT ?? 4000);
@@ -50,21 +52,28 @@ async function startServer(): Promise<void> {
     }
 
     // 2. Kyle's SMS digest — tomorrow's schedule
-    console.log("[Cron] Sending Kyle tomorrow's schedule via SMS...");
-    try {
-      const tomorrow = await getNextDaySchedule();
-      if (tomorrow.events.length === 0) {
-        await sendSms(KYLE_PHONE, `Tomorrow — No jobs scheduled.\n\nRed Cedar Electric`);
-      } else {
-        const lines = tomorrow.events.map((e) => {
-          const loc = e.location ? ` — ${e.location}` : "";
-          return `${e.startLocal}–${e.endLocal}: ${e.summary}${loc}`;
-        });
-        const msg = `Tomorrow — Red Cedar Schedule:\n${lines.join("\n")}\n\n${tomorrow.events.length} job${tomorrow.events.length === 1 ? "" : "s"} total`;
-        await sendSms(KYLE_PHONE, msg);
+    //
+    // GATED (no-Twilio-texts ruling 2026-08-13). The Google Calendar read still happens and
+    // the daily summary email above still goes out; only the text is suppressed.
+    if (!twilioSendEnabled("operatorNotifications")) {
+      logTwilioSendSkipped("operatorNotifications", "6 PM schedule digest not texted; the daily summary email still sent.");
+    } else {
+      console.log("[Cron] Sending Kyle tomorrow's schedule via SMS...");
+      try {
+        const tomorrow = await getNextDaySchedule();
+        if (tomorrow.events.length === 0) {
+          await sendSms(KYLE_PHONE, `Tomorrow — No jobs scheduled.\n\nRed Cedar Electric`);
+        } else {
+          const lines = tomorrow.events.map((e) => {
+            const loc = e.location ? ` — ${e.location}` : "";
+            return `${e.startLocal}–${e.endLocal}: ${e.summary}${loc}`;
+          });
+          const msg = `Tomorrow — Red Cedar Schedule:\n${lines.join("\n")}\n\n${tomorrow.events.length} job${tomorrow.events.length === 1 ? "" : "s"} total`;
+          await sendSms(KYLE_PHONE, msg);
+        }
+      } catch (err) {
+        console.error("[Cron] Kyle SMS digest failed:", err);
       }
-    } catch (err) {
-      console.error("[Cron] Kyle SMS digest failed:", err);
     }
 
     // 3. Supplier material order emails
@@ -82,8 +91,14 @@ async function startServer(): Promise<void> {
     try {
       const result = await generateInspectionRenewalLeads();
       if (result.created > 0) {
+        // The leads are created either way — only the heads-up text is gated (2026-08-13).
+        // The rows land in the follow-up queue, which is where Kyle works them from anyway.
         console.log(`[Cron] Created ${result.created} inspection renewal lead(s).`);
-        await sendSms(KYLE_PHONE, `Retention: ${result.created} annual inspection renewal lead(s) created — check the follow-up queue.\n\nRed Cedar Electric`).catch((err) => console.error("[Cron] Retention SMS failed:", err));
+        if (twilioSendEnabled("operatorNotifications")) {
+          await sendSms(KYLE_PHONE, `Retention: ${result.created} annual inspection renewal lead(s) created — check the follow-up queue.\n\nRed Cedar Electric`).catch((err) => console.error("[Cron] Retention SMS failed:", err));
+        } else {
+          logTwilioSendSkipped("operatorNotifications", `${result.created} renewal lead(s) created and waiting in the follow-up queue.`);
+        }
       }
     } catch (err) {
       console.error("[Cron] Inspection retention sweep failed:", err);
@@ -97,7 +112,11 @@ async function startServer(): Promise<void> {
       const result = await generateUpgradeFollowUpLeads();
       if (result.created > 0) {
         console.log(`[Cron] Created ${result.created} planned-replacement lead(s).`);
-        await sendSms(KYLE_PHONE, `Upgrade track: ${result.created} planned replacement lead(s) created from documented end-of-life equipment.\n\nRed Cedar Electric`).catch((err) => console.error("[Cron] EOL SMS failed:", err));
+        if (twilioSendEnabled("operatorNotifications")) {
+          await sendSms(KYLE_PHONE, `Upgrade track: ${result.created} planned replacement lead(s) created from documented end-of-life equipment.\n\nRed Cedar Electric`).catch((err) => console.error("[Cron] EOL SMS failed:", err));
+        } else {
+          logTwilioSendSkipped("operatorNotifications", `${result.created} planned-replacement lead(s) created and waiting in the follow-up queue.`);
+        }
       }
     } catch (err) {
       console.error("[Cron] Equipment end-of-life sweep failed:", err);

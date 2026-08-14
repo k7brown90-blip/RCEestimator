@@ -13,6 +13,7 @@
 
 import { sendSms, KYLE_PHONE } from "./twilio";
 import { logSystemEvent } from "./systemEvents";
+import { twilioSendEnabled, logTwilioSendSkipped } from "./automationGate";
 
 export type AlertSeverity = "critical" | "warning";
 
@@ -72,6 +73,17 @@ function formatBody(event: AlertEvent): string {
 }
 
 export async function sendAlert(event: AlertEvent): Promise<AlertResult> {
+  // GATED (no-Twilio-texts ruling 2026-08-13). The alert is NOT lost: it is still written to
+  // SystemEvent and printed to the Railway log, and the ruled monitoring channel is Railway's
+  // own email notifications read by the scheduled email sweep (ruling 2026-08-11 §3) — email
+  // beats SMS as the alert channel by Kyle's own decision. Checked before the dedup window is
+  // stamped, so the first alert after a re-enable is not swallowed by a suppressed one.
+  if (!twilioSendEnabled("operatorAlerts")) {
+    logSystemEvent("warn", "alerting", `alert not texted — Twilio sends gated: ${event.eventType}`, { event });
+    logTwilioSendSkipped("operatorAlerts", `${event.severity}/${event.eventType} recorded as a SystemEvent instead.`);
+    return { delivered: false, reason: "twilio-sends-disabled" };
+  }
+
   const key = event.dedupeKey ?? event.eventType;
   const now = Date.now();
   const last = recent.get(key);

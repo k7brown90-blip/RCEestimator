@@ -2,6 +2,7 @@ import express from "express";
 import { z, ZodError } from "zod";
 import { prisma } from "../lib/prisma";
 import { sendSms, KYLE_PHONE } from "../services/twilio";
+import { twilioSendEnabled, logTwilioSendSkipped } from "../services/automationGate";
 import { findCustomerMatches } from "../services/customerMatch";
 import {
   asyncHandler,
@@ -752,7 +753,13 @@ agentRouter.post("/savannah/owner-question", asyncHandler(async (req, res) => {
   if (body.context) smsBody += `\n\n${body.context}`;
   smsBody += "\n\nReply directly to them.";
 
-  const smsResult = await sendSms(KYLE_PHONE, smsBody);
+  // GATED (no-Twilio-texts ruling 2026-08-13). A gated send returns null, which falls into the
+  // existing "SMS_FAILED" branch below — Savannah says she couldn't text Kyle and offers the
+  // fallback, which is true rather than a fabricated success. The Lead row above is already
+  // written, so the question itself is captured in the CRM either way.
+  const smsResult = twilioSendEnabled("agentSends")
+    ? await sendSms(KYLE_PHONE, smsBody)
+    : (logTwilioSendSkipped("agentSends", `Owner question from ${body.customer_name} captured as lead ${lead.id}; not texted.`), null);
 
   if (!smsResult) {
     res.status(502).json({
@@ -810,7 +817,11 @@ agentRouter.post("/savannah/send-confirmation", asyncHandler(async (req, res) =>
     smsBody = `Thanks for calling Red Cedar Electric! Kyle will reach out to you at (731) 462-0443.\n\nReply STOP to opt out of texts.`;
   }
 
-  const smsResult = await sendSms(phone, smsBody);
+  // GATED (2026-08-13) — same shape: null flows into the existing failure branch, whose spoken
+  // fallback already tells the caller to reach us on the business line.
+  const smsResult = twilioSendEnabled("agentSends")
+    ? await sendSms(phone, smsBody)
+    : (logTwilioSendSkipped("agentSends", `Call-back confirmation to ${body.customer_name} suppressed.`), null);
 
   if (!smsResult) {
     res.status(502).json({

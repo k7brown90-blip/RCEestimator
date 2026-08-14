@@ -396,6 +396,11 @@ describe("POST /agent/jerry/jobs/schedule", () => {
   });
 
   it("schedules a contracted job successfully", async () => {
+    // Both notification legs are OFF in production (no-Twilio-texts ruling 2026-08-13). This
+    // test pins the scheduling path, including that it reports notification outcomes honestly,
+    // so the legs are opened. The gated variant follows.
+    process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS = "on";
+    process.env.TWILIO_SENDS_CUSTOMER_LIFECYCLE = "on";
     const job = await prisma.visit.create({
       data: {
         customerId: testCustomer.id,
@@ -425,6 +430,46 @@ describe("POST /agent/jerry/jobs/schedule", () => {
     expect(res.body.data.kyle_notified).toBe(true);
 
     // Verify job was updated
+    const updated = await prisma.visit.findUnique({ where: { id: job.id } });
+    expect(updated?.status).toBe("scheduled");
+    expect(updated?.googleEventId).toBeTruthy();
+
+    delete process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS;
+    delete process.env.TWILIO_SENDS_CUSTOMER_LIFECYCLE;
+  });
+
+  it("TWILIO GATE: the job still books and lands on the calendar with every text suppressed", async () => {
+    // The point of the gate: it silences texts, it does not break the business operation.
+    delete process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS;
+    delete process.env.TWILIO_SENDS_CUSTOMER_LIFECYCLE;
+    delete process.env.TWILIO_SENDS;
+
+    const job = await prisma.visit.create({
+      data: {
+        customerId: testCustomer.id,
+        propertyId: testProperty.id,
+        mode: "estimate",
+        status: "contracted",
+        jobType: "Panel Upgrade",
+        estimatedDurationDays: 1,
+        contractedAt: new Date(),
+      },
+    });
+
+    process.env.GOOGLE_CLIENT_ID = "test_id";
+    process.env.GOOGLE_CLIENT_SECRET = "test_secret";
+    process.env.GOOGLE_REFRESH_TOKEN = "test_token";
+
+    const res = await request(app)
+      .post("/agent/jerry/jobs/schedule")
+      .set("Authorization", AUTH)
+      .send({ job_id: job.id, start_date: "2026-05-04" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    // No text went to Kyle, and the response says so rather than claiming otherwise.
+    expect(res.body.data.kyle_notified).toBe(false);
+
     const updated = await prisma.visit.findUnique({ where: { id: job.id } });
     expect(updated?.status).toBe("scheduled");
     expect(updated?.googleEventId).toBeTruthy();

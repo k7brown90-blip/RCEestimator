@@ -16,6 +16,7 @@ import crypto from "node:crypto";
 import { prisma } from "../lib/prisma";
 import { sendSms, KYLE_PHONE } from "./twilio";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
+import { twilioSendEnabled, logTwilioSendSkipped } from "./automationGate";
 
 const TZ = "America/Chicago";
 const BUSINESS_PHONE = "(731) 462-0443";
@@ -104,9 +105,15 @@ export async function sendVisitConfirmationRequest(c: VisitContact): Promise<{ e
     });
   }
 
+  // The SMS half is gated (no-Twilio-texts ruling 2026-08-13); the email half above is not.
+  // The whole function is additionally behind class 1 at its call sites in scheduling.ts.
   if (c.phone) {
-    const sms = `Hi ${firstName(c.customerName)}, this is Red Cedar Electric. Please confirm your appointment on ${dateStr} at ${timeStr}. Reply YES to confirm, RESCHEDULE for a new time, or NO to cancel. Details: ${url} Reply STOP to opt out.`;
-    result.sms = (await sendSms(c.phone, sms)) !== null;
+    if (twilioSendEnabled("customerLifecycleSms")) {
+      const sms = `Hi ${firstName(c.customerName)}, this is Red Cedar Electric. Please confirm your appointment on ${dateStr} at ${timeStr}. Reply YES to confirm, RESCHEDULE for a new time, or NO to cancel. Details: ${url} Reply STOP to opt out.`;
+      result.sms = (await sendSms(c.phone, sms)) !== null;
+    } else {
+      logTwilioSendSkipped("customerLifecycleSms", `Confirmation request SMS for visit ${c.visitId} suppressed; the email half is unaffected.`);
+    }
   }
 
   if (!c.email && !c.phone) {
@@ -165,7 +172,13 @@ export async function applyConfirmationAction(
       reschedule: `RESCHEDULE REQUEST: ${visit.customer.name} — currently ${when} — ${address}${visit.customer.phone ? ` — ${visit.customer.phone}` : ""}. Call to arrange a new time.`,
       cancel: `CANCEL REQUEST: ${visit.customer.name} — was ${when} — ${address}${visit.customer.phone ? ` — ${visit.customer.phone}` : ""}. Job NOT removed from calendar — review and cancel manually.`,
     };
-    sendSms(KYLE_PHONE, kyleMsg[action]).catch((err) => console.error("[VisitConfirmations] Kyle SMS failed:", err));
+    // GATED (2026-08-13). The visit row already carries confirmationStatus/confirmationChannel,
+    // so the customer's decision is durably recorded and visible in the CRM without the text.
+    if (twilioSendEnabled("operatorNotifications")) {
+      sendSms(KYLE_PHONE, kyleMsg[action]).catch((err) => console.error("[VisitConfirmations] Kyle SMS failed:", err));
+    } else {
+      logTwilioSendSkipped("operatorNotifications", `Visit ${visitId} marked ${target}; Kyle not texted — the status is on the visit row.`);
+    }
   }
 
   return { visitId, customerName: visit.customer.name, action, alreadyDone };
@@ -212,10 +225,14 @@ export async function sendVisitReminders(now = new Date()): Promise<number> {
       }).catch((err) => console.error("[VisitReminders] Email failed:", err));
     }
     if (visit.customer.phone) {
-      await sendSms(
-        visit.customer.phone,
-        `Hi ${firstName(visit.customer.name)}, reminder from Red Cedar Electric: we'll see you tomorrow, ${dateStr} at ${timeStr}. Reply RESCHEDULE if you need a new time. Reply STOP to opt out.`,
-      ).catch((err) => console.error("[VisitReminders] SMS failed:", err));
+      if (twilioSendEnabled("customerLifecycleSms")) {
+        await sendSms(
+          visit.customer.phone,
+          `Hi ${firstName(visit.customer.name)}, reminder from Red Cedar Electric: we'll see you tomorrow, ${dateStr} at ${timeStr}. Reply RESCHEDULE if you need a new time. Reply STOP to opt out.`,
+        ).catch((err) => console.error("[VisitReminders] SMS failed:", err));
+      } else {
+        logTwilioSendSkipped("customerLifecycleSms", `Reminder SMS for visit ${visit.id} suppressed; the reminder email is unaffected.`);
+      }
     }
 
     await prisma.visit.update({ where: { id: visit.id }, data: { reminderSentAt: new Date() } });
@@ -258,7 +275,11 @@ export async function notifyTechnicianOfAssignment(
     cancelled: "JOB CANCELLED",
   };
 
-  if (tech.phone) {
+  // GATED (2026-08-13). The technician EMAIL below is untouched and carries the same content,
+  // so an assigned tech is still notified — through the channel the ruling names.
+  if (tech.phone && !twilioSendEnabled("technicianSends")) {
+    logTwilioSendSkipped("technicianSends", `Assignment (${event}) for visit ${visitId} not texted to ${tech.name}${tech.email ? "; the assignment email still sent" : " — NO EMAIL ON FILE for this tech"}.`);
+  } else if (tech.phone) {
     const sms = [
       `${smsLead[event]} — Red Cedar Electric`,
       `${visit.customer.name} — ${address}`,

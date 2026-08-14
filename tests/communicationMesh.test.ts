@@ -192,6 +192,11 @@ describe("inbound SMS routing", () => {
   });
 
   it("forwards unknown-sender texts to Kyle", async () => {
+    // Forwarding is gated OFF in production (no-Twilio-texts ruling 2026-08-13). The routing
+    // logic this test pins — that an unrecognised number reaches Kyle rather than vanishing —
+    // only runs on the enabled path, so the leg is opened here. The gated behaviour is the
+    // test below it.
+    process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS = "on";
     sendSmsMock.mockClear();
     const res = await request(app)
       .post("/sms/inbound")
@@ -202,6 +207,27 @@ describe("inbound SMS routing", () => {
     expect(sendSmsMock).toHaveBeenCalledWith("+19706661626", expect.stringContaining("UNKNOWN SMS"));
     const logged = await prisma.inboundMessage.findFirst({ where: { fromPhone: "+15550009999" } });
     expect(logged!.matchType).toBe("unknown");
+    delete process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS;
+  });
+
+  it("TWILIO GATE: an unknown-sender text is still received and logged, but not forwarded", async () => {
+    // Inbound is deliberately NOT gated — receiving is not sending. The message must still be
+    // parsed and written to InboundMessage; only the outbound forward is suppressed.
+    delete process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS;
+    delete process.env.TWILIO_SENDS;
+    sendSmsMock.mockClear();
+
+    const res = await request(app)
+      .post("/sms/inbound")
+      .type("form")
+      .send({ From: "+15550008888", Body: "gated inbound test" });
+    expect(res.status).toBe(200);
+
+    expect(sendSmsMock).not.toHaveBeenCalled();
+    const logged = await prisma.inboundMessage.findFirst({ where: { fromPhone: "+15550008888" } });
+    expect(logged).not.toBeNull();
+    expect(logged!.matchType).toBe("unknown");
+    expect(logged!.body).toBe("gated inbound test");
   });
 });
 

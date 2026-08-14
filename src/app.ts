@@ -60,7 +60,12 @@ import { inboundSmsRouter } from "./routes/inboundSms";
 import { confirmPageRouter } from "./routes/confirmPage";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
-import { customerSendsEnabled, logCustomerSendSkipped } from "./services/automationGate";
+import {
+  customerSendsEnabled,
+  logCustomerSendSkipped,
+  logTwilioSendSkipped,
+  twilioSendEnabled,
+} from "./services/automationGate";
 
 const service = new EstimateService(prisma);
 
@@ -725,8 +730,16 @@ app.post("/leads", asyncHandler(async (req, res) => {
   res.status(201).json(lead);
 
   // SMS Kyle for web leads (fire-and-forget)
+  //
+  // GATED (no-Twilio-texts ruling 2026-08-13). P004 deliberately left this one running so Kyle
+  // would still know a lead landed; the 2026-08-13 clarification withdrew that exception. The
+  // Lead row is created regardless and shows up in the CRM lead queue — that is the channel now.
   if ((body.source === "web") && lead.phone) {
-    sendSms(KYLE_PHONE, `New web lead — ${lead.name}, ${lead.jobType ?? "general"}, ${lead.phone}`).catch(() => {});
+    if (twilioSendEnabled("operatorNotifications")) {
+      sendSms(KYLE_PHONE, `New web lead — ${lead.name}, ${lead.jobType ?? "general"}, ${lead.phone}`).catch(() => {});
+    } else {
+      logTwilioSendSkipped("operatorNotifications", `New web lead ${lead.id} is in the CRM lead queue.`);
+    }
   }
 
   // One-time opt-in confirmation SMS — sent exactly once, the moment consent
@@ -739,11 +752,16 @@ app.post("/leads", asyncHandler(async (req, res) => {
   // submission with no RCE human in the loop, which makes them unattended customer sends.
   // Kyle answers web leads himself while the company runs manual-first. The SMS-to-Kyle
   // above is NOT gated — he still needs to know a lead landed.
+  //
+  // DOUBLE-GATED since 2026-08-13: the class-1 flag coming back on must not resurrect a Twilio
+  // text on its own. Both gates have to pass for this to send.
   if (body.source === "web" && lead.phone && lead.smsConsent === true) {
-    if (customerSendsEnabled("webLeadAutoReply")) {
-      sendSms(lead.phone, webOptInConfirmation()).catch((err) => console.error("[leads] Opt-in confirmation SMS failed:", err));
-    } else {
+    if (!customerSendsEnabled("webLeadAutoReply")) {
       logCustomerSendSkipped("webLeadAutoReply", `Opt-in confirmation SMS to lead ${lead.id} suppressed.`);
+    } else if (!twilioSendEnabled("customerLifecycleSms")) {
+      logTwilioSendSkipped("customerLifecycleSms", `Opt-in confirmation SMS to lead ${lead.id} suppressed.`);
+    } else {
+      sendSms(lead.phone, webOptInConfirmation()).catch((err) => console.error("[leads] Opt-in confirmation SMS failed:", err));
     }
   }
 
@@ -1268,7 +1286,13 @@ app.post("/documents/:id/sign", asyncHandler(async (req, res) => {
   const addr = doc.job?.property
     ? [doc.job.property.addressLine1, doc.job.property.city].filter(Boolean).join(", ")
     : "";
-  sendSms(KYLE_PHONE, `${body.name.trim()} signed the ${doc.type.replace(/_/g, " ")} for ${addr}`).catch(() => {});
+  // GATED (no-Twilio-texts ruling 2026-08-13) — the signature itself is recorded on the Document
+  // row by markDocumentSigned() above, which is the durable record; only the text is suppressed.
+  if (twilioSendEnabled("operatorNotifications")) {
+    sendSms(KYLE_PHONE, `${body.name.trim()} signed the ${doc.type.replace(/_/g, " ")} for ${addr}`).catch(() => {});
+  } else {
+    logTwilioSendSkipped("operatorNotifications", `Document ${docId} signed and recorded; Kyle not texted.`);
+  }
 
   res.send(`
     <!DOCTYPE html>
@@ -1443,7 +1467,13 @@ app.post("/bookings/from-email", asyncHandler(async (req, res) => {
   // Notify Kyle
   const dateStr = startTime.toLocaleDateString("en-US", { timeZone: "America/Chicago", weekday: "short", month: "short", day: "numeric" });
   const timeStr = startTime.toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric", minute: "2-digit" });
-  sendSms(KYLE_PHONE, `Email booking: ${lead.name} — ${lead.jobType ?? "service"} — ${dateStr} ${timeStr}`).catch(() => {});
+  // GATED (no-Twilio-texts ruling 2026-08-13). The Google Calendar event is the booking record
+  // and it is already created above; the text was only a heads-up.
+  if (twilioSendEnabled("operatorNotifications")) {
+    sendSms(KYLE_PHONE, `Email booking: ${lead.name} — ${lead.jobType ?? "service"} — ${dateStr} ${timeStr}`).catch(() => {});
+  } else {
+    logTwilioSendSkipped("operatorNotifications", `Email booking for lead ${leadId} is on the calendar (event ${event.id}).`);
+  }
 
   res.json({ booked: true, eventId: event.id, leadId });
 }));
