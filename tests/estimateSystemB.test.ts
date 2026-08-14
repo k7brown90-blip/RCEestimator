@@ -67,19 +67,36 @@ async function bootstrapEstimateContext() {
 }
 
 describe("catalog reads (System B)", () => {
-  it("GET /atomic-units returns seeded LINE/RI/TRIM units", async () => {
-    const res = await request(app).get("/atomic-units").expect(200);
-    const codes = res.body.map((u: { code: string }) => u.code);
+  // These two used to read `GET /atomic-units`. P014 re-pointed that route to the imported price
+  // book, so the endpoint is no longer where the legacy seed can be observed — but what these
+  // tests actually guard is the SEED, not the route: that the CSV catalog these costing tests
+  // depend on is present, and that the retired NEC-era generation stayed retired. Both
+  // assertions are kept, moved onto the table they were always about.
+  // The route's new behaviour is pinned in catalogRepoint.test.ts.
+
+  it("the seeded LINE/RI/TRIM units are in the legacy catalog", async () => {
+    const codes = (
+      await prisma.atomicUnit.findMany({ where: { isActive: true }, select: { code: true } })
+    ).map((u) => u.code);
     expect(codes).toContain("LINE-002");
     expect(codes).toContain("TRIM-029");
   });
 
-  it("retired NEC-era codes are gone from the active catalog", async () => {
-    const res = await request(app).get("/atomic-units").expect(200);
-    const codes = new Set(res.body.map((u: { code: string }) => u.code));
+  it("retired NEC-era codes are gone from the active legacy catalog", async () => {
+    const codes = new Set(
+      (await prisma.atomicUnit.findMany({ where: { isActive: true }, select: { code: true } }))
+        .map((u) => u.code)
+    );
     for (const retired of ["DEV-001", "CIR-001", "GND-001", "EQP-001"]) {
       expect(codes.has(retired)).toBe(false);
     }
+  });
+
+  it("GET /atomic-units no longer serves the legacy catalog", async () => {
+    const res = await request(app).get("/atomic-units?limit=200").expect(200);
+    const ids = new Set(res.body.atomics.map((a: { itemId: string }) => a.itemId));
+    expect(ids.has("LINE-002")).toBe(false);
+    expect(ids.has("TRIM-029")).toBe(false);
   });
 });
 

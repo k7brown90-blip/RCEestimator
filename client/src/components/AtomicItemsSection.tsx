@@ -2,8 +2,10 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { EstimateItem, SupportItem } from "../lib/types";
-import { AddAtomicItemModal } from "./AddAtomicItemModal";
 import { money } from "../lib/utils";
+// AddAtomicItemModal is WITHDRAWN (P014 / transition map T1) and no longer imported. The file is
+// kept on disk; re-importing it here is the revert, and it is only correct once T5 gives the
+// legacy EstimateItem write path a home in the new catalog. See the note on the button below.
 
 const SUPPORT_TYPE_LABELS: Record<string, string> = {
   MOBILIZATION: "Mobilization / Travel",
@@ -23,8 +25,6 @@ type Props = {
 
 export function AtomicItemsSection({ estimateId, optionId, locked }: Props) {
   const queryClient = useQueryClient();
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [endpointSuggestion, setEndpointSuggestion] = useState<{ itemId: string; wiringMethod: string } | null>(null);
   const [overridingItemId, setOverridingItemId] = useState<string | null>(null);
   const [overrideNote, setOverrideNote] = useState("");
 
@@ -46,20 +46,10 @@ export function AtomicItemsSection({ estimateId, optionId, locked }: Props) {
     queryClient.invalidateQueries({ queryKey: ["estimate", estimateId] });
   };
 
-  const addItemMutation = useMutation({
-    mutationFn: (input: Parameters<typeof api.createItem>[2]) =>
-      api.createItem(estimateId, optionId, input),
-    onSuccess: (resp) => {
-      setShowAddModal(false);
-      refreshAll();
-      if (resp.suggestEndpoint && resp.resolvedWiringMethod) {
-        setEndpointSuggestion({
-          itemId: resp.item.id,
-          wiringMethod: resp.resolvedWiringMethod.method,
-        });
-      }
-    },
-  });
+  // The add-item mutation and the endpoint-suggestion prompt it triggered are withdrawn with the
+  // modal (P014 / T1) — nothing in this component creates an EstimateItem any more. `api.createItem`
+  // and the endpoint on the other end of it are untouched and still work; they simply have no
+  // caller here until T5 settles where a line row lives.
 
   const deleteItemMutation = useMutation({
     mutationFn: (itemId: string) => api.deleteItem(estimateId, optionId, itemId),
@@ -104,10 +94,19 @@ export function AtomicItemsSection({ estimateId, optionId, locked }: Props) {
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-lg font-semibold">Scope Items</h3>
         <div className="flex gap-2">
+          {/*
+            "+ Add Item" is WITHDRAWN as of P014 (transition map T1). It opened
+            AddAtomicItemModal, which browsed the catalog and posted a code to the legacy
+            EstimateItem write path. Every catalog read now serves the imported price book,
+            whose code space is disjoint, and moving that write path is T5 — out of scope and
+            waiting on Kyle's line-row-target ruling. Rather than leave a button that would
+            404 on every selection, it points at the screen that works.
+            Existing items below still render: EstimateItem and AtomicUnit are untouched.
+          */}
           {!locked && (
-            <button type="button" className="btn btn-primary" onClick={() => setShowAddModal(true)}>
-              + Add Item
-            </button>
+            <a href="/estimate-intake" className="btn btn-primary">
+              + Add Item (new estimator)
+            </a>
           )}
           {items.length > 0 && !locked && (
             <button
@@ -210,46 +209,15 @@ export function AtomicItemsSection({ estimateId, optionId, locked }: Props) {
         </div>
       )}
 
-      {/* ── Add Item Modal ─────────────────────────────────────────────────── */}
-      {showAddModal && (
-        <AddAtomicItemModal
-          onClose={() => setShowAddModal(false)}
-          onAdd={(input) => addItemMutation.mutate(input)}
-          isAdding={addItemMutation.isPending}
-        />
-      )}
+      {/* ── Add Item Modal — WITHDRAWN (P014 / T1); see the note on the button above ──
+          AddAtomicItemModal.tsx is kept on disk, not deleted. Re-rendering it here is the
+          one-line revert, and it only becomes correct once T5 gives it a write path. ── */}
 
-      {/* ── Endpoint Suggestion Modal ──────────────────────────────────────── */}
-      {endpointSuggestion && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-sm rounded-2xl border border-rce-border bg-white p-6 shadow-xl">
-            <h3 className="text-lg font-semibold">Add an Endpoint?</h3>
-            <p className="mt-2 text-sm text-rce-soft">
-              Circuit wiring method resolved: <strong className="text-rce-text">{endpointSuggestion.wiringMethod}</strong>.
-              Does this circuit terminate at a receptacle or device?
-            </p>
-            <div className="mt-4 flex gap-2">
-              <button
-                type="button"
-                className="btn btn-primary flex-1"
-                onClick={() => {
-                  setEndpointSuggestion(null);
-                  setShowAddModal(true);
-                }}
-              >
-                Yes — Add Endpoint
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary flex-1"
-                onClick={() => setEndpointSuggestion(null)}
-              >
-                No — Skip
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* ── Endpoint Suggestion Modal — WITHDRAWN with the add-item flow (P014 / T1) ──
+          It was raised only by the add-item mutation's response (`suggestEndpoint`), so with
+          that mutation gone it could never open again. A prompt that cannot fire is worse than
+          one that is absent. The server-side suggestion itself is untouched and still returned
+          by POST /estimates/:id/options/:optionId/items. ── */}
     </>
   );
 }

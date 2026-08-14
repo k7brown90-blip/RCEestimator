@@ -105,7 +105,21 @@ function createMcpServer(): McpServer {
 
   // ─── READ TOOLS ──────────────────────────────────────────────────────────────
 
-  server.registerTool(
+  // RETIRED BY P014 (T2), registered on `retired` so it is unreachable by the model.
+  //
+  // This tool read the legacy `AtomicUnit` table. `query_price_book_atomics` below reads the
+  // catalog the workbook feeds and the engine prices from, and the two code spaces are disjoint
+  // (`LINE-002` vs `A016`). While both were exposed, the model could search a stale list and
+  // propose a code `proposeLines()` can only turn into an open question — a wasted turn that
+  // looks to the tech like the AI failing to find a real item.
+  //
+  // It is retired rather than re-pointed because a re-pointed `query_atomic_units` would be a
+  // second name for `query_price_book_atomics`, and two identically-behaving catalog tools is a
+  // coin-flip for the model about which one is authoritative. One catalog, one tool.
+  //
+  // The legacy table, its rows and its `EstimateItem` relation are untouched — historical
+  // estimate lines still read it. Only the model's access is withdrawn.
+  retired.registerTool(
     "query_atomic_units",
     {
       description:
@@ -972,12 +986,12 @@ function createMcpServer(): McpServer {
     "query_price_book_atomics",
     {
       description:
-        "Search the CURRENT price book — the 300+ atomic units imported from Kyle's workbook. " +
-        "THIS is the catalog to propose from; query_atomic_units reads a stale legacy list kept " +
-        "for historical estimates only. Returns each atomic's code, description, unit, published " +
-        "NECA labour values for Normal/Difficult/Very Difficult, whether a labour unit basis is " +
-        "established, and whether it has a price at the active supplier. An atomic with no price " +
-        "or no labour basis can still be proposed — the gaps surface to the tech.",
+        "Search the catalog — the atomic units imported from Kyle's workbook. This is the ONLY " +
+        "catalog; it is what the pricing engine prices from and the only source of codes that " +
+        "propose_estimate_lines will accept. Returns each atomic's code, description, unit, " +
+        "published NECA labour values for Normal/Difficult/Very Difficult, whether a labour unit " +
+        "basis is established, and whether it has a price at the active supplier. An atomic with " +
+        "no price or no labour basis can still be proposed — the gaps surface to the tech.",
       inputSchema: {
         searchTerm: z.string().optional().describe("Free-text match against item code or description"),
         category: z.string().optional().describe("Filter by the workbook's Category column"),

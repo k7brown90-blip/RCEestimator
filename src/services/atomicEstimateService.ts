@@ -125,6 +125,145 @@ export async function loadCatalogAtSupplier(
   return resolveCatalogAtSupplier(engineAtomics, supplierPrices, supplierId, tiers);
 }
 
+// ─── Catalog browse — the ONE read path for "what is in the catalog" ────────────
+//
+// P014 (T1 + T2). Before this, three surfaces answered "what atomics exist?": the price-book
+// intake API, the legacy `GET /atomic-units` route, and the `query_atomic_units` MCP tool — and
+// the last two read the stale `AtomicUnit` table, so the catalog the AI proposed from was not the
+// catalog the engine prices from. They now all land here.
+//
+// This is a browse/search projection, deliberately NOT `loadCatalogAtSupplier()`. That function
+// resolves cost at one supplier and is the pricing path; this one answers "does this item exist
+// and what does the workbook publish for it" without pricing anything. Keeping them separate is
+// what stops a browse screen from quietly becoming a second pricing implementation.
+
+/** The published fields a browse surface may see. No computed dollar leaves this function. */
+const BROWSE_SELECT = {
+  itemId: true,
+  description: true,
+  category: true,
+  unit: true,
+  rowType: true,
+  laborNormal: true,
+  laborDifficult: true,
+  laborVeryDifficult: true,
+  laborUnitBasis: true,
+  costBasisUsed: true,
+  sellPricePerUnit: true,
+  necArticle: true,
+} as const;
+
+export interface BrowseAtomicsInput {
+  /** Free-text match against item code or description. */
+  search?: string | null;
+  /** NEC article card, e.g. "210". */
+  article?: string | null;
+  /** The workbook's Category column. */
+  category?: string | null;
+  limit?: number;
+}
+
+export interface BrowsedAtomic {
+  itemId: string;
+  description: string | null;
+  category: string | null;
+  unit: string | null;
+  rowType: string | null;
+  laborNormal: number | null;
+  laborDifficult: number | null;
+  laborVeryDifficult: number | null;
+  laborUnitBasis: string | null;
+  costBasisUsed: number | null;
+  sellPricePerUnit: number | null;
+  necArticle: string | null;
+  /**
+   * Badges, not judgements. A null labour basis or a missing supplier price does not hide the
+   * row — it is shown so a tech sees BEFORE adding a line that it will land incomplete.
+   */
+  hasLabourUnitBasis: boolean;
+  hasPriceAtActiveSupplier: boolean;
+  isContinuousLength: boolean;
+}
+
+function decorate(r: {
+  itemId: string; description: string | null; category: string | null; unit: string | null;
+  rowType: string | null; laborNormal: number | null; laborDifficult: number | null;
+  laborVeryDifficult: number | null; laborUnitBasis: string | null; costBasisUsed: number | null;
+  sellPricePerUnit: number | null; necArticle: string | null;
+}): BrowsedAtomic {
+  return {
+    ...r,
+    hasLabourUnitBasis: r.laborUnitBasis !== null,
+    hasPriceAtActiveSupplier: r.costBasisUsed !== null,
+    isContinuousLength: (r.unit ?? "").toLowerCase() === "ft",
+  };
+}
+
+/**
+ * Search/browse the live catalog. Retired rows are excluded — they are kept on disk (move,
+ * never delete) but a retired atomic is not proposable, so it is not browsable either.
+ */
+export async function browseAtomics(
+  prisma: PrismaClient,
+  input: BrowseAtomicsInput = {}
+): Promise<{ atomics: BrowsedAtomic[]; count: number; total: number; truncated: boolean }> {
+  const limit = Math.min(Math.max(Number(input.limit ?? 50) || 50, 1), 200);
+  const where: Record<string, unknown> = { retiredAt: null };
+  if (input.article) where["necArticle"] = { contains: input.article };
+  if (input.category) where["category"] = { contains: input.category, mode: "insensitive" };
+  if (input.search) {
+    where["OR"] = [
+      { itemId: { contains: input.search, mode: "insensitive" } },
+      { description: { contains: input.search, mode: "insensitive" } },
+    ];
+  }
+
+  // `count` is how many rows came back; `total` is how many matched. They differ whenever the
+  // page cap bites, and the catalog is larger than the cap — so without `total` a caller has no
+  // way to know how big the catalog actually is, and "how many items are in the book" is exactly
+  // the question a stale hard-coded number (the old "82-unit catalog" string) used to answer
+  // wrongly. Cheap query, and it makes the size observable instead of assumed.
+  const [rows, total] = await Promise.all([
+    prisma.priceBookAtomic.findMany({
+      where,
+      take: limit,
+      orderBy: { itemId: "asc" },
+      select: BROWSE_SELECT,
+    }),
+    prisma.priceBookAtomic.count({ where }),
+  ]);
+
+  return {
+    atomics: rows.map(decorate),
+    count: rows.length,
+    total,
+    truncated: total > rows.length,
+  };
+}
+
+/** Single-item lookup by the workbook's own ID (A016, SD002…). Null when absent or retired. */
+export async function findAtomicByCode(
+  prisma: PrismaClient,
+  itemId: string
+): Promise<BrowsedAtomic | null> {
+  const row = await prisma.priceBookAtomic.findFirst({
+    where: { itemId, retiredAt: null },
+    select: BROWSE_SELECT,
+  });
+  return row ? decorate(row) : null;
+}
+
+/**
+ * True for a code shaped like the LEGACY catalog's code space (LINE-002, TRIM-D01, RI-001).
+ *
+ * Used only to give a 404 a useful sentence. The two code spaces are disjoint — the workbook
+ * speaks A016/SD002 — and a caller still holding a legacy code has a stale integration, not a
+ * typo. Saying so beats "not found".
+ */
+export function looksLikeLegacyCode(code: string): boolean {
+  return /^[A-Z]{2,12}-[A-Z0-9]{1,4}$/.test(code.trim().toUpperCase());
+}
+
 // ─── Draft CRUD ─────────────────────────────────────────────────────────────────
 
 export interface CreateDraftInput {

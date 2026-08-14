@@ -1,30 +1,27 @@
+/**
+ * WITHDRAWN 2026-08-14 (P014 / transition map T1). Kept on disk, no longer rendered.
+ *
+ * This modal browses the catalog and hands a code to `POST /estimates/:id/options/:optionId/items`
+ * — the LEGACY write path, which looks the code up in the legacy `AtomicUnit` table and prices it
+ * with `ModifierDef` multipliers. P014 re-pointed every catalog READ to the imported price book,
+ * whose code space is disjoint (`A016`, not `LINE-002`). Its write leg belongs to T5, which is
+ * explicitly out of P014's scope and waits on Kyle's line-row-target ruling.
+ *
+ * The map's rule for exactly this situation is "Every consumer moves together or none." A
+ * consumer that cannot move is withdrawn rather than left pointing at a stale catalog or wired to
+ * an endpoint that would 404 on every selection. The working replacement is `/estimate-intake`
+ * (P012), which browses the same catalog and writes through the engine.
+ *
+ * The reads below are moved to the new shape so this file stays honest and type-checked, and the
+ * live dollar preview it used to draw is gone — the UI does not compute a dollar
+ * (decisions/2026-08-04-who-sets-numbers.md). To bring it back, T5 must first give it a write
+ * path; then re-import it in AtomicItemsSection.tsx where the pointer to /estimate-intake is.
+ */
+
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { AtomicUnit, ModifierDef } from "../lib/types";
-
-// Category display order and labels
-const CATEGORY_ORDER = [
-  "DEVICES",
-  "LUMINAIRES",
-  "CIRCUITING",
-  "PROTECTION",
-  "PANELS_SERVICE",
-  "GROUNDING",
-  "EQUIPMENT",
-  "SERVICE_DIAGNOSTIC",
-] as const;
-
-const CATEGORY_LABELS: Record<string, string> = {
-  DEVICES: "Devices",
-  LUMINAIRES: "Luminaires",
-  CIRCUITING: "Circuiting",
-  PROTECTION: "Protection",
-  PANELS_SERVICE: "Panels / Service",
-  GROUNDING: "Grounding",
-  EQUIPMENT: "Equipment",
-  SERVICE_DIAGNOSTIC: "Service / Diagnostic",
-};
+import type { PbAtomic, ModifierDef } from "../lib/types";
 
 const MODIFIER_TYPE_LABELS: Record<string, string> = {
   ACCESS: "Access",
@@ -58,7 +55,7 @@ type Props = {
 export function AddAtomicItemModal({ onClose, onAdd, isAdding }: Props) {
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
-  const [selectedUnit, setSelectedUnit] = useState<AtomicUnit | null>(null);
+  const [selectedUnit, setSelectedUnit] = useState<PbAtomic | null>(null);
 
   // Configure step
   const [quantity, setQuantity] = useState(1);
@@ -72,8 +69,8 @@ export function AddAtomicItemModal({ onClose, onAdd, isAdding }: Props) {
   const [error, setError] = useState("");
 
   const { data: units = [] } = useQuery({
-    queryKey: ["atomic-units", 1],
-    queryFn: () => api.atomicUnits({ tier: 1 }),
+    queryKey: ["atomic-units", "price-book"],
+    queryFn: () => api.atomicUnits({ limit: 200 }).then((r) => r.atomics),
   });
 
   const { data: modifierDefs = [] } = useQuery({
@@ -99,24 +96,37 @@ export function AddAtomicItemModal({ onClose, onAdd, isAdding }: Props) {
     }
     if (search.trim()) {
       const term = search.toLowerCase();
-      list = list.filter((u) => u.name.toLowerCase().includes(term) || u.code.toLowerCase().includes(term));
+      list = list.filter(
+        (u) =>
+          (u.description ?? "").toLowerCase().includes(term) ||
+          u.itemId.toLowerCase().includes(term)
+      );
     }
     return list;
   }, [units, activeCategory, search]);
 
-  // Group filtered units by category for display
+  // Group filtered units by the workbook's own Category column. The legacy fixed list
+  // (DEVICES / LUMINAIRES / …) does not exist in the price book, so the categories come from
+  // the data rather than from a constant that would silently hide anything unlisted.
   const grouped = useMemo(() => {
-    const map = new Map<string, AtomicUnit[]>();
+    const map = new Map<string, PbAtomic[]>();
     for (const u of filteredUnits) {
-      if (!map.has(u.category)) map.set(u.category, []);
-      map.get(u.category)!.push(u);
+      const key = u.category ?? "Uncategorised";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(u);
     }
     return map;
   }, [filteredUnits]);
 
-  const categoriesPresent = CATEGORY_ORDER.filter((c) => grouped.has(c));
+  const categoriesPresent = [...grouped.keys()].sort();
 
-  function selectUnit(unit: AtomicUnit) {
+  /** Every category the catalog actually contains — the tab strip, built from the data. */
+  const allCategories = useMemo(
+    () => [...new Set(units.map((u) => u.category ?? "Uncategorised"))].sort(),
+    [units]
+  );
+
+  function selectUnit(unit: PbAtomic) {
     setSelectedUnit(unit);
     setQuantity(1);
     setLocation("");
@@ -158,16 +168,16 @@ export function AddAtomicItemModal({ onClose, onAdd, isAdding }: Props) {
     if (!selectedUnit) return;
     setError("");
 
-    if (selectedUnit.requiresCableLength && (!cableLength || cableLength <= 0)) {
-      setError("Cable length is required for circuit items.");
+    if (selectedUnit.isContinuousLength && (!cableLength || cableLength <= 0)) {
+      setError("A measured length is required for continuous-length product.");
       return;
     }
 
     onAdd({
-      atomicUnitCode: selectedUnit.code,
+      atomicUnitCode: selectedUnit.itemId,
       quantity,
       location: location || undefined,
-      ...(selectedUnit.requiresCableLength
+      ...(selectedUnit.isContinuousLength
         ? {
             circuitVoltage,
             circuitAmperage,
@@ -212,14 +222,14 @@ export function AddAtomicItemModal({ onClose, onAdd, isAdding }: Props) {
             >
               All
             </button>
-            {CATEGORY_ORDER.map((cat) => (
+            {allCategories.map((cat) => (
               <button
                 key={cat}
                 type="button"
                 className={`rounded-full px-3 py-1 text-xs font-medium ${activeCategory === cat ? "bg-rce-primary text-white" : "bg-rce-border/60 text-rce-soft hover:bg-rce-border"}`}
                 onClick={() => { setActiveCategory(cat); setSearch(""); }}
               >
-                {CATEGORY_LABELS[cat]}
+                {cat}
               </button>
             ))}
           </div>
@@ -232,19 +242,24 @@ export function AddAtomicItemModal({ onClose, onAdd, isAdding }: Props) {
             {categoriesPresent.map((cat) => (
               <div key={cat}>
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-rce-soft">
-                  {CATEGORY_LABELS[cat]}
+                  {cat}
                 </p>
                 <div className="space-y-1">
                   {grouped.get(cat)!.map((unit) => (
                     <button
-                      key={unit.id}
+                      key={unit.itemId}
                       type="button"
                       className="flex w-full items-center justify-between rounded-lg border border-rce-border/60 bg-white p-3 text-left hover:border-rce-primary/50 hover:bg-rce-accentBg"
                       onClick={() => selectUnit(unit)}
                     >
                       <div>
-                        <p className="text-sm font-medium">{unit.name}</p>
-                        <p className="text-xs text-rce-soft">{unit.code} · {unit.baseLaborHrs} hr base labor</p>
+                        <p className="text-sm font-medium">{unit.description ?? unit.itemId}</p>
+                        <p className="text-xs text-rce-soft">
+                          {unit.itemId} · {unit.unit ?? "—"}
+                          {unit.laborNormal !== null ? ` · ${unit.laborNormal} labour (normal)` : " · no published labour"}
+                          {!unit.hasLabourUnitBasis && " · NO LABOUR BASIS"}
+                          {!unit.hasPriceAtActiveSupplier && " · NO SUPPLIER PRICE"}
+                        </p>
                       </div>
                       <span className="ml-3 shrink-0 text-xs text-rce-primary">Select →</span>
                     </button>
@@ -259,22 +274,17 @@ export function AddAtomicItemModal({ onClose, onAdd, isAdding }: Props) {
   }
 
   // ── Step 2: Configure ────────────────────────────────────────────────────
-  const isCircuit = selectedUnit.requiresCableLength;
+  const isCircuit = selectedUnit.isContinuousLength;
   const currentModifierMap: Record<string, string> = {};
   for (const m of selectedModifiers) currentModifierMap[m.modifierType] = m.modifierValue;
-
-  // Rough live labor preview
-  const laborMult = selectedModifiers.reduce((acc, m) => acc * m.laborMultiplier, 1);
-  const previewLaborCost = selectedUnit.baseLaborHrs * quantity * laborMult * selectedUnit.baseLaborRate;
-  const previewMaterialCost = selectedUnit.baseMaterialCost * quantity * 1.3;
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-16">
       <div className="w-full max-w-lg rounded-2xl border border-rce-border bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-rce-border px-5 py-4">
           <div>
-            <p className="text-xs text-rce-soft">{selectedUnit.code}</p>
-            <h2 className="text-lg font-semibold">{selectedUnit.name}</h2>
+            <p className="text-xs text-rce-soft">{selectedUnit.itemId}</p>
+            <h2 className="text-lg font-semibold">{selectedUnit.description ?? selectedUnit.itemId}</h2>
           </div>
           <div className="flex gap-2">
             <button type="button" className="btn btn-secondary" onClick={() => setSelectedUnit(null)}>
@@ -404,21 +414,19 @@ export function AddAtomicItemModal({ onClose, onAdd, isAdding }: Props) {
             </div>
           )}
 
-          {/* Live preview */}
+          {/* Published labour, as published. No dollar is computed here — the engine prices. */}
           <div className="rounded-lg border border-rce-border/60 bg-rce-accentBg/20 px-4 py-3 text-sm">
-            <div className="flex justify-between">
-              <span className="text-rce-soft">Est. Labor</span>
-              <span className="font-medium">${previewLaborCost.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-rce-soft">Est. Material (×1.30)</span>
-              <span className="font-medium">${previewMaterialCost.toFixed(2)}</span>
-            </div>
-            <div className="mt-1 flex justify-between border-t border-rce-border/60 pt-1">
-              <span className="font-semibold">Est. Item Total</span>
-              <span className="font-semibold">${(previewLaborCost + previewMaterialCost).toFixed(2)}</span>
-            </div>
-            {isCircuit && <p className="mt-1 text-xs text-rce-soft">Cable costs added after saving (wiring method resolved automatically).</p>}
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-rce-soft">
+              Published labour {selectedUnit.laborUnitBasis ? `(per ${selectedUnit.laborUnitBasis})` : ""}
+            </p>
+            <div className="flex justify-between"><span className="text-rce-soft">Normal</span><span className="font-medium">{selectedUnit.laborNormal ?? "—"}</span></div>
+            <div className="flex justify-between"><span className="text-rce-soft">Difficult</span><span className="font-medium">{selectedUnit.laborDifficult ?? "—"}</span></div>
+            <div className="flex justify-between"><span className="text-rce-soft">Very difficult</span><span className="font-medium">{selectedUnit.laborVeryDifficult ?? "—"}</span></div>
+            {!selectedUnit.hasLabourUnitBasis && (
+              <p className="mt-1 text-xs text-rce-danger">
+                No labour unit basis established for this item — the line will be incomplete until the workbook sets one.
+              </p>
+            )}
           </div>
 
           {error && <p className="text-sm text-rce-danger">{error}</p>}
@@ -429,7 +437,7 @@ export function AddAtomicItemModal({ onClose, onAdd, isAdding }: Props) {
             disabled={isAdding}
             onClick={handleSubmit}
           >
-            {isAdding ? "Adding…" : `Add ${selectedUnit.name}`}
+            {isAdding ? "Adding…" : `Add ${selectedUnit.description ?? selectedUnit.itemId}`}
           </button>
         </div>
       </div>

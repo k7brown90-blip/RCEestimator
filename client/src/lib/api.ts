@@ -21,7 +21,6 @@ import type {
   PropertyWriteInput,
   ScheduleJobResult,
   Visit,
-  AtomicUnit,
   ModifierDef,
   EstimateItem,
   SupportItem,
@@ -251,14 +250,23 @@ export const api = {
     return request<AssemblyTemplate[]>(`/assemblies${suffix}`);
   },
   // ─── Atomic Model ────────────────────────────────────────────────────────
-  atomicUnits: (params?: { category?: string; tier?: number }) => {
+  //
+  // Re-pointed by P014 (T1): `/atomic-units` now reads the imported price book, so these return
+  // `PbAtomic` — three published labour columns and a unit basis — not the legacy one-labour-
+  // number `AtomicUnit`. The `tier` filter is gone: the workbook publishes no visibility tier
+  // and the route now rejects the parameter rather than ignoring it.
+  atomicUnits: (params?: { category?: string; search?: string; article?: string; limit?: number }) => {
     const search = new URLSearchParams();
     if (params?.category) search.set("category", params.category);
-    if (params?.tier !== undefined) search.set("tier", String(params.tier));
+    if (params?.search) search.set("search", params.search);
+    if (params?.article) search.set("article", params.article);
+    if (params?.limit) search.set("limit", String(params.limit));
     const suffix = search.toString() ? `?${search.toString()}` : "";
-    return request<AtomicUnit[]>(`/atomic-units${suffix}`);
+    return request<{ atomics: PbAtomic[]; count: number; total: number; truncated: boolean }>(
+      `/atomic-units${suffix}`
+    );
   },
-  atomicUnit: (code: string) => request<AtomicUnit>(`/atomic-units/${code}`),
+  atomicUnit: (code: string) => request<PbAtomic>(`/atomic-units/${code}`),
   modifiers: (appliesTo?: "ITEM" | "ESTIMATE") => {
     const suffix = appliesTo ? `?appliesTo=${appliesTo}` : "";
     return request<ModifierDef[]>(`/modifiers${suffix}`);
@@ -482,7 +490,7 @@ export const api = {
     if (opts?.category) q.set("category", opts.category);
     if (opts?.limit) q.set("limit", String(opts.limit));
     const qs = q.toString();
-    return request<{ atomics: PbAtomic[]; count: number; truncated: boolean }>(
+    return request<{ atomics: PbAtomic[]; count: number; total: number; truncated: boolean }>(
       `/price-book/atomics${qs ? `?${qs}` : ""}`
     );
   },

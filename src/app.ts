@@ -31,12 +31,15 @@ import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import {
   addLine,
+  browseAtomics,
   createDraft,
   removeLine,
   computeDraft,
   confirmProposedLine,
   finalizeDraft,
+  findAtomicByCode,
   getDraftReview,
+  looksLikeLegacyCode,
   rejectProposedLine,
   resolveQuestion,
 } from "./services/atomicEstimateService";
@@ -1538,43 +1541,16 @@ app.get("/price-book/nec-categories", asyncHandler(async (_req, res) => {
 }));
 
 // Search + browse. `search` matches code or description; `article` filters to a NEC card.
+//
+// The query itself lives in atomicEstimateService.browseAtomics() as of P014, so this route and
+// `GET /atomic-units` cannot drift apart into two answers to the same question.
 app.get("/price-book/atomics", asyncHandler(async (req, res) => {
-  const search = readQuery(req, "search")?.trim();
-  const article = readQuery(req, "article")?.trim();
-  const category = readQuery(req, "category")?.trim();
-  const limit = Math.min(Number(readQuery(req, "limit") ?? 50) || 50, 200);
-
-  const where: Record<string, unknown> = { retiredAt: null };
-  if (article) where["necArticle"] = { contains: article };
-  if (category) where["category"] = { contains: category, mode: "insensitive" };
-  if (search) {
-    where["OR"] = [
-      { itemId: { contains: search, mode: "insensitive" } },
-      { description: { contains: search, mode: "insensitive" } },
-    ];
-  }
-
-  const rows = await prisma.priceBookAtomic.findMany({
-    where, take: limit, orderBy: { itemId: "asc" },
-    select: {
-      itemId: true, description: true, category: true, unit: true, rowType: true,
-      laborNormal: true, laborDifficult: true, laborVeryDifficult: true,
-      laborUnitBasis: true, costBasisUsed: true, sellPricePerUnit: true, necArticle: true,
-    },
-  });
-
-  res.json({
-    atomics: rows.map((r) => ({
-      ...r,
-      // Shown as badges so a tech can see BEFORE adding a line that an item will land
-      // incomplete. Cheaper to see it here than at finalize.
-      hasLabourUnitBasis: r.laborUnitBasis !== null,
-      hasPriceAtActiveSupplier: r.costBasisUsed !== null,
-      isContinuousLength: (r.unit ?? "").toLowerCase() === "ft",
-    })),
-    count: rows.length,
-    truncated: rows.length === limit,
-  });
+  res.json(await browseAtomics(prisma, {
+    search: readQuery(req, "search")?.trim(),
+    article: readQuery(req, "article")?.trim(),
+    category: readQuery(req, "category")?.trim(),
+    limit: Number(readQuery(req, "limit") ?? 50) || 50,
+  }));
 }));
 
 // ─── DRAFTS (human path) ─────────────────────────────────────────────────────
@@ -3445,35 +3421,69 @@ app.get("/estimates/:estimateId", asyncHandler(async (req, res) => {
   res.json(estimate);
 }));
 
-// ─── ATOMIC MODEL ROUTES (Phase M2) ─────────────────────────────────────────
+// ─── ATOMIC MODEL ROUTES (Phase M2 — re-pointed to the price book by P014) ──────
+//
+// T1 of the transition map. These two routes read `PriceBookAtomic` — the catalog the workbook
+// feeds and the engine prices from — and no longer read the legacy `AtomicUnit` table.
+//
+// WHY THE SHAPE CHANGED, rather than being preserved: the legacy row carried ONE labour number
+// (`baseLaborHrs` × a modifier multiplier). The published catalog carries THREE — Normal,
+// Difficult, Very Difficult — plus the unit basis (E/C/M) that says what those numbers are per.
+// There is no honest way to project three published values and a divisor onto one field, and
+// picking one silently is exactly the 100x labour error `laborUnitBasis` exists to prevent. So
+// the shape moved and every consumer moved with it, in one commit — the map's own instruction:
+// "Every consumer moves together or none."
+//
+// `AtomicUnit` itself is untouched: table, model, rows and the `EstimateItem` relation all stay
+// exactly as they were (move, never delete). Historical estimate lines still read it.
 
-// GET /atomic-units — list units, optionally filter by category and/or tier
+// GET /atomic-units — browse/search the live catalog. Same payload as /price-book/atomics.
 app.get("/atomic-units", asyncHandler(async (req, res) => {
-  const category = readQuery(req, "category");
-  const tierStr = readQuery(req, "tier");
-  const tier = tierStr ? parseInt(tierStr, 10) : undefined;
-
-  const where: Record<string, unknown> = { isActive: true };
-  if (category) where["category"] = category;
-  if (tier !== undefined && !isNaN(tier)) where["visibilityTier"] = tier;
-
-  const units = await prisma.atomicUnit.findMany({
-    where,
-    orderBy: [{ category: "asc" }, { sortOrder: "asc" }],
-  });
-
-  res.json(units);
-}));
-
-// GET /atomic-units/:code — single unit detail
-app.get("/atomic-units/:code", asyncHandler(async (req, res) => {
-  const code = readParam(req, "code");
-  const unit = await prisma.atomicUnit.findFirst({ where: { code, isActive: true } });
-  if (!unit) {
-    res.status(404).json({ error: "Atomic unit not found" });
+  // `tier` was the legacy `visibilityTier` (1=user-facing, 2=conditional, 3=system-only). The
+  // workbook publishes no such column, so there is nothing to filter on. Refusing beats
+  // answering: a caller that asked for tier 1 and silently got all 300+ rows would believe it
+  // had filtered.
+  const tier = readQuery(req, "tier");
+  if (tier !== undefined && tier !== "") {
+    res.status(400).json({
+      error: "The `tier` filter no longer exists",
+      detail:
+        "`tier` filtered the legacy AtomicUnit table's visibilityTier column. This route now " +
+        "reads the imported price book, which publishes no visibility tier. Filter by " +
+        "`category` or `article`, or drop the parameter.",
+    });
     return;
   }
-  res.json(unit);
+
+  res.json(await browseAtomics(prisma, {
+    search: readQuery(req, "search")?.trim(),
+    article: readQuery(req, "article")?.trim(),
+    category: readQuery(req, "category")?.trim(),
+    limit: Number(readQuery(req, "limit") ?? 50) || 50,
+  }));
+}));
+
+// GET /atomic-units/:code — single atomic by the workbook's own item ID (A016, SD002…)
+app.get("/atomic-units/:code", asyncHandler(async (req, res) => {
+  const code = readParam(req, "code");
+  const atomic = await findAtomicByCode(prisma, code);
+  if (!atomic) {
+    // A legacy-shaped code gets a sentence that names the cause. "Not found" would send the
+    // caller looking for a missing row when the real answer is that the code space moved.
+    res.status(404).json({
+      error: `Atomic '${code}' is not in the price book`,
+      ...(looksLikeLegacyCode(code)
+        ? {
+            detail:
+              `'${code}' is shaped like a legacy AtomicUnit code. This route reads the imported ` +
+              `price book, whose codes look like A016 / SD002. The legacy catalog is retained for ` +
+              `historical estimates and is no longer browsable here.`,
+          }
+        : {}),
+    });
+    return;
+  }
+  res.json(atomic);
 }));
 
 // GET /modifiers — all modifier definitions, optionally filter by appliesTo
