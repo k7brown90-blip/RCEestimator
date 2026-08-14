@@ -194,7 +194,9 @@ export function EstimateIntake({ visitId, propertyId }: Props) {
       <div className="mb-3 flex items-center gap-2">
         <span className="inline-block h-2.5 w-2.5 rounded-full bg-rce-success" />
         <h2 className="text-base font-semibold text-rce-text">AI Estimate Assistant</h2>
-        <span className="text-xs text-rce-muted">powered by GPT-5.1</span>
+        {/* Was "powered by GPT-5.1" — a hard-coded claim about a model choice Kyle
+            has not made (P010 §2). Replaced with what is actually true and stable. */}
+        <span className="text-xs text-rce-muted">suggests items — you confirm</span>
         <div className="ml-auto flex gap-2">
           <button
             type="button"
@@ -228,7 +230,11 @@ export function EstimateIntake({ visitId, propertyId }: Props) {
           <div className="flex h-full items-center justify-center text-sm text-rce-muted">
             <div className="max-w-xs text-center space-y-2">
               <p className="font-medium text-rce-text">Ready to estimate</p>
-              <p>Describe the work needed and I'll build the estimate using the 82-unit catalog.</p>
+              {/* Was "I'll build the estimate using the 82-unit catalog" — two false claims
+                  in one sentence (P010 §3): the assistant does not build the estimate, and 82
+                  was never the catalog size. No count is quoted here now, because a number
+                  hard-coded in a greeting is a number that goes stale the day it ships. */}
+              <p>Describe the work and I'll suggest items from the price book. Nothing is priced until you confirm it.</p>
             </div>
           </div>
         )}

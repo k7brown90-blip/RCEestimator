@@ -1655,6 +1655,16 @@ enum PriceBookDifficulty {
   VERY_DIFFICULT
 }
 
+// AI proposes / human confirms / engine prices — Kyle's control architecture, made structural.
+//
+// decisions/2026-08-04-who-sets-numbers.md: "The agent may compute, source, and recommend.
+// It may not set." A PROPOSED line is the AI's recommendation and it contributes NOTHING to any
+// total; only a human confirming it makes it a line the engine will price.
+enum PriceBookLineState {
+  PROPOSED
+  CONFIRMED
+}
+
 // Where the line's quantity came from. This is not decoration: it is what lets the engine
 // tell "the tech counted 4 receptacles" from "the tech measured 50 ft of EMT", and the
 // measured case is the one Kyle's cable rule governs.
@@ -1686,8 +1696,32 @@ model PriceBookDraftEstimate {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   lines         PriceBookDraftLine[]
+  questions     PriceBookDraftQuestion[]
 
   @@index([status, createdAt])
+}
+
+// What the AI could NOT match to an atomic.
+//
+// "Never make up a number" applied to scope: an item the model cannot place in the catalog
+// becomes a QUESTION FOR THE TECH, never a guessed atomic or a guessed quantity. These block
+// finalize until a human resolves them, so the failure mode of an unmatched item is a visible
+// unanswered question rather than a quietly short quote.
+model PriceBookDraftQuestion {
+  id             String    @id @default(cuid())
+  draftId        String
+  // The model's own words for what it could not place, e.g. "customer said 'that weird
+  // outdoor plug by the pool' — no atomic matches with confidence".
+  question       String
+  rawText        String?   // the tech/customer phrasing this came from
+  raisedBy       String    // "ai:gpt-5.1"
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  resolutionNote String?
+  createdAt      DateTime  @default(now())
+  draft          PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@index([draftId, resolvedAt])
 }
 
 model PriceBookDraftLine {
@@ -1703,11 +1737,32 @@ model PriceBookDraftLine {
   location       String?
   note           String?
   sortOrder      Int                     @default(0)
+
+  // ── Propose / confirm ──
+  //
+  // DEFAULT IS **PROPOSED**, DELIBERATELY. The two failure directions are not symmetric: a
+  // human line that accidentally defaults to PROPOSED shows up as an unconfirmed row the
+  // operator can see and click, while an AI line that accidentally defaults to CONFIRMED puts
+  // a number the model chose into a customer's price. Fail toward "no money moves".
+  // The human path (atomicEstimateService.addLine) sets CONFIRMED explicitly.
+  state          PriceBookLineState      @default(PROPOSED)
+  // "ai:gpt-5.1" for a model proposal; null when a human entered the line directly.
+  proposedBy     String?
+  // The model's stated reason for suggesting this line. Kept so a confirmation is informed.
+  proposalReasoning String?
+  proposedAt     DateTime?
+  // Who confirmed, and when. Set only by the PIN-authenticated human surface.
+  confirmedBy    String?
+  confirmedAt    DateTime?
+  // True when the human changed quantity/difficulty/source before confirming.
+  editedBeforeConfirm Boolean            @default(false)
+
   createdAt      DateTime                @default(now())
   updatedAt      DateTime                @updatedAt
   draft          PriceBookDraftEstimate  @relation(fields: [draftId], references: [id], onDelete: Cascade)
   atomic         PriceBookAtomic         @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
 
   @@index([draftId])
+  @@index([draftId, state])
   @@index([itemId])
 }

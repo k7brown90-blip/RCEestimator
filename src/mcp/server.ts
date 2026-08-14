@@ -9,8 +9,15 @@ import { EstimateService } from "../services/estimateService";
 import { resolveItemCable } from "../services/wiringMethodResolver";
 import { generateSupportItems } from "../services/supportItemTriggers";
 import { validateEstimate } from "../services/estimateValidator";
+import { proposeLines } from "../services/atomicEstimateService";
 
 const service = new EstimateService(prisma);
+
+/**
+ * Who a proposal is attributed to. Every PROPOSED row carries this, so a human reviewing a
+ * draft can always see which lines a person entered and which a model suggested.
+ */
+const MODEL_ACTOR = `ai:${process.env.AI_ESTIMATE_MODEL ?? "gpt-5.1"}`;
 
 /**
  * Run estimateValidator across every option of an estimate and return
@@ -77,6 +84,22 @@ async function collectValidationErrors(
 function createMcpServer(): McpServer {
   const server = new McpServer({
     name: "red-cedar-estimating",
+    version: "1.0.0",
+  });
+
+  // ─── RETIRED WRITE TOOLS — registered, never exposed (P011, 2026-08-13) ───────
+  //
+  // `retired` is a throwaway McpServer that is NEVER returned and NEVER connected to a
+  // transport. Tools registered on it are unreachable by the model while their code, schemas
+  // and behaviour stay intact and type-checked — "move, never delete", applied to an API
+  // surface. Re-exposing one is a single-word change (`retired.` -> `server.`), which is the
+  // point: the decision to hand the model a write tool should be one visible line in a diff.
+  //
+  // Why they are retired: decisions/2026-08-04-who-sets-numbers.md — "The agent may compute,
+  // source, and recommend. It may not set." Each of these let the model set something: an
+  // estimate, a line, a status, a markup, a modifier, or a customer-facing PDF.
+  const retired = new McpServer({
+    name: "red-cedar-estimating-retired",
     version: "1.0.0",
   });
 
@@ -271,7 +294,7 @@ function createMcpServer(): McpServer {
 
   // ─── WRITE TOOLS ─────────────────────────────────────────────────────────────
 
-  server.registerTool(
+  retired.registerTool(
     "create_estimate",
     {
       description:
@@ -308,7 +331,7 @@ function createMcpServer(): McpServer {
     }
   );
 
-  server.registerTool(
+  retired.registerTool(
     "add_estimate_items",
     {
       description:
@@ -328,17 +351,15 @@ function createMcpServer(): McpServer {
             exposure: z.enum(["concealed", "exposed"]).optional().describe("Wiring exposure"),
             cableLength: z.number().positive().optional().describe("Cable length in linear feet"),
             needsThreeWire: z.boolean().optional().describe("Whether circuit needs 3-wire (for 240V or multi-wire branch)"),
-            modifiers: z
-              .array(
-                z.object({
-                  modifierType: z.enum(["ACCESS", "HEIGHT", "CONDITION"]),
-                  modifierValue: z.string(),
-                  laborMultiplier: z.number(),
-                  materialMult: z.number(),
-                })
-              )
-              .optional()
-              .describe("Item-level modifiers (access difficulty, height, condition)"),
+            // REMOVED 2026-08-13 (P011). This carried `laborMultiplier` and `materialMult` as
+            // unbounded z.number(), and the write path below multiplied them straight into the
+            // customer's price with no lookup against ModifierDef and no bounds check — a model
+            // could put any figure it liked into a dollar amount, and the estimate validator
+            // could not see it because it compares SNAPSHOTS and the multipliers applied after
+            // the snapshot. decisions/2026-08-04-who-sets-numbers.md: "The agent may compute,
+            // source, and recommend. It may not set." No numeric multiplier is accepted here
+            // from any caller. Difficulty now travels as an ENUM selecting a published NECA
+            // column, via propose_estimate_lines.
           })
         ).describe("Array of items to add"),
       },
@@ -417,14 +438,13 @@ function createMcpServer(): McpServer {
             }
           }
 
-          // Compute modifier multipliers
-          const modifiers = item.modifiers ?? [];
-          let laborMult = 1.0;
-          let materialMult = 1.0;
-          for (const mod of modifiers) {
-            laborMult *= mod.laborMultiplier;
-            materialMult *= mod.materialMult;
-          }
+          // Multipliers are structurally unavailable (P011). Fixed at 1.0 — the only way to
+          // vary labour is now the atomic's own published Normal/Difficult/Very Difficult
+          // column, chosen by a human via the enum. There is no numeric path from a caller
+          // into a price.
+          const modifiers: Array<{ modifierType: string; modifierValue: string }> = [];
+          const laborMult = 1.0;
+          const materialMult = 1.0;
 
           const snapshotLaborHrs = unit.baseLaborHrs;
           const snapshotLaborRate = unit.baseLaborRate;
@@ -465,12 +485,15 @@ function createMcpServer(): McpServer {
               laborCost,
               materialCost,
               totalCost,
+              // `modifiers` is now permanently empty (P011) — no multiplier can enter here.
+              // The relation is kept so existing ItemModifier rows and the include below
+              // still resolve; move-never-delete.
               modifiers: {
                 create: modifiers.map((m) => ({
                   modifierType: m.modifierType,
                   modifierValue: m.modifierValue,
-                  laborMultiplier: m.laborMultiplier,
-                  materialMult: m.materialMult,
+                  laborMultiplier: 1.0,
+                  materialMult: 1.0,
                 })),
               },
             },
@@ -510,7 +533,7 @@ function createMcpServer(): McpServer {
     }
   );
 
-  server.registerTool(
+  retired.registerTool(
     "generate_support_items",
     {
       description:
@@ -636,7 +659,7 @@ function createMcpServer(): McpServer {
 
   // ─── NEW WRITE TOOLS ──────────────────────────────────────────────────────────
 
-  server.registerTool(
+  retired.registerTool(
     "delete_estimate_item",
     {
       description:
@@ -682,7 +705,7 @@ function createMcpServer(): McpServer {
     }
   );
 
-  server.registerTool(
+  retired.registerTool(
     "change_estimate_status",
     {
       description:
@@ -738,7 +761,7 @@ function createMcpServer(): McpServer {
     }
   );
 
-  server.registerTool(
+  retired.registerTool(
     "update_estimate_markup",
     {
       description:
@@ -782,7 +805,7 @@ function createMcpServer(): McpServer {
     }
   );
 
-  server.registerTool(
+  retired.registerTool(
     "add_option",
     {
       description:
@@ -817,7 +840,7 @@ function createMcpServer(): McpServer {
     }
   );
 
-  server.registerTool(
+  retired.registerTool(
     "set_estimate_modifiers",
     {
       description:
@@ -866,7 +889,7 @@ function createMcpServer(): McpServer {
     }
   );
 
-  server.registerTool(
+  retired.registerTool(
     "generate_proposal_pdf",
     {
       description:
@@ -914,7 +937,7 @@ function createMcpServer(): McpServer {
     }
   );
 
-  server.registerTool(
+  retired.registerTool(
     "delete_estimate",
     {
       description:
@@ -937,6 +960,137 @@ function createMcpServer(): McpServer {
       } catch (err) {
         return {
           content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ─── PRICE BOOK (NEW CATALOG) — READ ─────────────────────────────────────────
+
+  server.registerTool(
+    "query_price_book_atomics",
+    {
+      description:
+        "Search the CURRENT price book — the 300+ atomic units imported from Kyle's workbook. " +
+        "THIS is the catalog to propose from; query_atomic_units reads a stale legacy list kept " +
+        "for historical estimates only. Returns each atomic's code, description, unit, published " +
+        "NECA labour values for Normal/Difficult/Very Difficult, whether a labour unit basis is " +
+        "established, and whether it has a price at the active supplier. An atomic with no price " +
+        "or no labour basis can still be proposed — the gaps surface to the tech.",
+      inputSchema: {
+        searchTerm: z.string().optional().describe("Free-text match against item code or description"),
+        category: z.string().optional().describe("Filter by the workbook's Category column"),
+        limit: z.number().int().positive().max(100).optional().describe("Max rows (default 25)"),
+      },
+    },
+    async ({ searchTerm, category, limit }) => {
+      const where: Record<string, unknown> = { retiredAt: null };
+      if (category) where["category"] = { contains: category, mode: "insensitive" };
+      if (searchTerm) {
+        where["OR"] = [
+          { itemId: { contains: searchTerm, mode: "insensitive" } },
+          { description: { contains: searchTerm, mode: "insensitive" } },
+        ];
+      }
+      const rows = await prisma.priceBookAtomic.findMany({
+        where,
+        take: limit ?? 25,
+        orderBy: { itemId: "asc" },
+        select: {
+          itemId: true, description: true, category: true, unit: true, rowType: true,
+          laborNormal: true, laborDifficult: true, laborVeryDifficult: true,
+          laborUnitBasis: true, costBasisUsed: true,
+        },
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify(
+            rows.map((r) => ({
+              ...r,
+              hasLabourUnitBasis: r.laborUnitBasis !== null,
+              hasPriceAtActiveSupplier: r.costBasisUsed !== null,
+            })),
+            null, 2
+          ),
+        }],
+      };
+    }
+  );
+
+  // ─── THE MODEL'S ONLY WRITE TOOL ─────────────────────────────────────────────
+
+  server.registerTool(
+    "propose_estimate_lines",
+    {
+      description:
+        "PROPOSE estimate lines for a draft. This is your ONLY write capability and it prices " +
+        "NOTHING. Every line lands in a PROPOSED state that a human must confirm before it " +
+        "counts toward any total; the pricing engine ignores proposed lines entirely. " +
+        "Quantities you give are SUGGESTIONS the tech will correct against what they actually " +
+        "measured or counted. If you cannot confidently match something to an atomic, DO NOT " +
+        "guess a near-miss — put it in `unmatched` as a question for the tech. You cannot set " +
+        "a price, a multiplier, a markup, or a status, and you cannot generate a customer " +
+        "document; those are human actions performed elsewhere.",
+      inputSchema: {
+        draftId: z.string().describe("The draft estimate ID to propose against"),
+        lines: z.array(
+          z.object({
+            itemId: z.string().describe("Price book atomic code from query_price_book_atomics (e.g. A016, SD002)"),
+            quantity: z.number().positive().describe("SUGGESTED quantity — the tech confirms or corrects it"),
+            quantitySource: z
+              .enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"])
+              .describe("Where the quantity comes from. Continuous-length product (unit = ft) must be MEASURED_LENGTH"),
+            difficulty: z
+              .enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"])
+              .optional()
+              .describe("Selects which PUBLISHED NECA labour column applies. Not a multiplier — you cannot supply a number. Default NORMAL; only the tech's field observation justifies raising it"),
+            location: z.string().optional().describe("Where on the job, e.g. 'kitchen'"),
+            reasoning: z.string().min(1).describe("Why this line belongs. Required — a proposal without a reason is a guess"),
+          })
+        ).describe("Proposed lines"),
+        unmatched: z.array(
+          z.object({
+            question: z.string().min(1).describe("What you could not place, phrased as a question for the tech"),
+            rawText: z.string().optional().describe("The wording this came from"),
+          })
+        ).optional().describe("Items you could NOT match to an atomic. These become open questions and block finalize until a human resolves them"),
+      },
+    },
+    async ({ draftId, lines, unmatched }) => {
+      try {
+        const result = await proposeLines(
+          prisma,
+          draftId,
+          lines.map((l) => ({
+            itemId: l.itemId,
+            quantity: l.quantity,
+            quantitySource: l.quantitySource,
+            difficulty: l.difficulty,
+            location: l.location ?? null,
+            reasoning: l.reasoning,
+          })),
+          unmatched ?? [],
+          MODEL_ACTOR
+        );
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              ...result,
+              state: "PROPOSED",
+              pricedNow: false,
+              note:
+                "Nothing here has moved a total. A human must confirm each line in the CRM " +
+                "before the engine prices it, and must resolve every open question before the " +
+                "estimate can be finalized.",
+            }, null, 2),
+          }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Proposal failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         };
       }

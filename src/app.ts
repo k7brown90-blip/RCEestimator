@@ -29,6 +29,14 @@ import {
 } from "./services/crmAnalytics";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
+import {
+  computeDraft,
+  confirmProposedLine,
+  finalizeDraft,
+  getDraftReview,
+  rejectProposedLine,
+  resolveQuestion,
+} from "./services/atomicEstimateService";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
@@ -1430,6 +1438,99 @@ app.use("/health-record/capacity-checks", capacityCheckTechRouter);
 // ─── PIN AUTH ────────────────────────────────────────────────────────────────
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
 app.use(pinAuthMiddleware);
+
+// ─── AI PROPOSAL REVIEW (P011) — the human confirmation gate ─────────────────
+//
+// Registered AFTER pinAuthMiddleware, deliberately: these are the endpoints that turn an AI
+// suggestion into a number the engine will price, so they must be reachable only by an
+// authenticated human. The model reaches the MCP surface, which has no path to any of them.
+//
+// Kyle's architecture (projects/red-cedar-crm.md § TECH INTAKE): "The AI proposes, the tech
+// confirms, the engine prices." This file holds the middle third.
+
+app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
+  const review = await getDraftReview(prisma, String(req.params.draftId));
+  res.json({
+    draft: {
+      id: review.draft.id,
+      title: review.draft.title,
+      supplierId: review.draft.supplierId,
+      status: review.draft.status,
+      rateProvisional: review.draft.rateProvisional,
+      provisionalReason: review.draft.provisionalReason,
+    },
+    proposedLines: review.proposedLines.map((l) => ({
+      id: l.id, itemId: l.itemId, description: l.atomic?.description ?? null,
+      quantity: l.quantity, quantitySource: l.quantitySource, difficulty: l.difficulty,
+      location: l.location, proposedBy: l.proposedBy, reasoning: l.proposalReasoning,
+      proposedAt: l.proposedAt,
+    })),
+    confirmedLines: review.confirmedLines.map((l) => ({
+      id: l.id, itemId: l.itemId, description: l.atomic?.description ?? null,
+      quantity: l.quantity, quantitySource: l.quantitySource, difficulty: l.difficulty,
+      confirmedBy: l.confirmedBy, confirmedAt: l.confirmedAt,
+      editedBeforeConfirm: l.editedBeforeConfirm, proposedBy: l.proposedBy,
+    })),
+    openQuestions: review.openQuestions.map((q) => ({
+      id: q.id, question: q.question, rawText: q.rawText, raisedBy: q.raisedBy, createdAt: q.createdAt,
+    })),
+    counts: {
+      proposed: review.proposedLines.length,
+      confirmed: review.confirmedLines.length,
+      openQuestions: review.openQuestions.length,
+    },
+  });
+}));
+
+// Confirm one proposed line — edit-then-confirm supported. This is the act that makes a
+// model suggestion real.
+app.post("/price-book/lines/:lineId/confirm", asyncHandler(async (req, res) => {
+  const body = z.object({
+    quantity: z.number().positive().optional(),
+    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).optional(),
+    difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
+    location: z.string().nullable().optional(),
+    note: z.string().nullable().optional(),
+  }).parse(req.body ?? {});
+
+  try {
+    const line = await confirmProposedLine(prisma, String(req.params.lineId), "human:crm-session", body);
+    res.json({ ok: true, line });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+}));
+
+app.post("/price-book/lines/:lineId/reject", asyncHandler(async (req, res) => {
+  try {
+    await rejectProposedLine(prisma, String(req.params.lineId));
+    res.status(204).send();
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+}));
+
+app.post("/price-book/questions/:questionId/resolve", asyncHandler(async (req, res) => {
+  const body = z.object({ resolutionNote: z.string().trim().min(1) }).parse(req.body ?? {});
+  try {
+    const q = await resolveQuestion(prisma, String(req.params.questionId), "human:crm-session", body.resolutionNote);
+    res.json({ ok: true, question: q });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+}));
+
+// Compute / finalize. Both human-only; finalize refuses while anything is unconfirmed.
+app.get("/price-book/drafts/:draftId/compute", asyncHandler(async (req, res) => {
+  const { computed, rate } = await computeDraft(prisma, String(req.params.draftId));
+  res.json({ computed, rateProvisional: rate.provisional, provisionalReason: rate.provisionalReason });
+}));
+
+app.post("/price-book/drafts/:draftId/finalize", asyncHandler(async (req, res) => {
+  const context = (req.body?.context === "internal" ? "internal" : "customer") as "customer" | "internal";
+  const result = await finalizeDraft(prisma, String(req.params.draftId), context);
+  res.status(result.finalized ? 200 : 409).json(result);
+}));
 
 // ─── HEALTH RECORD ADMIN (CRM client — rides the PIN/JWT session) ─────────────
 app.use("/health-record-admin", healthRecordAdminRouter);

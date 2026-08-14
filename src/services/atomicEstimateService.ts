@@ -175,6 +175,8 @@ export interface AddLineInput {
   location?: string | null;
   note?: string | null;
   sortOrder?: number;
+  /** Who entered it. Defaults to "human:direct-entry"; the AI can never reach this function. */
+  confirmedBy?: string;
 }
 
 export async function addLine(prisma: PrismaClient, draftId: string, line: AddLineInput) {
@@ -207,6 +209,13 @@ export async function addLine(prisma: PrismaClient, draftId: string, line: AddLi
       location: line.location ?? null,
       note: line.note ?? null,
       sortOrder: line.sortOrder ?? 0,
+      // This is the HUMAN path — a person typed this line, so it is confirmed on creation.
+      // The schema default is PROPOSED; setting it here is what distinguishes an operator's
+      // line from the model's suggestion, and it is set explicitly rather than by default so
+      // the distinction survives a future change to that default.
+      state: "CONFIRMED",
+      confirmedBy: line.confirmedBy ?? "human:direct-entry",
+      confirmedAt: new Date(),
     },
   });
 }
@@ -244,6 +253,225 @@ export async function removeLine(prisma: PrismaClient, lineId: string) {
   return prisma.priceBookDraftLine.delete({ where: { id: lineId } });
 }
 
+// ─── AI PROPOSALS — the model's only write, and it writes nothing that prices ───────
+//
+// Kyle's control architecture (projects/red-cedar-crm.md § TECH INTAKE):
+//   "The AI proposes, the tech confirms, the engine prices."
+// Everything below enforces the first third. The model reaches `proposeLines` and nothing
+// else; confirmation is a separate function that only the PIN-authenticated HTTP surface
+// calls; pricing happens in the engine and reads CONFIRMED rows only.
+
+export interface ProposedLineInput {
+  /** A PriceBookAtomic code — the NEW catalog (A016, SD002…), not the legacy AtomicUnit. */
+  itemId: string;
+  /** A SUGGESTED quantity. It is not authoritative and prices nothing until confirmed. */
+  quantity: number;
+  quantitySource: QuantitySource;
+  difficulty?: Difficulty;
+  location?: string | null;
+  /** Why the model thinks this line belongs. Required — a proposal without a reason is a guess. */
+  reasoning: string;
+}
+
+export interface ProposeResult {
+  proposed: Array<{ id: string; itemId: string; quantity: number; description: string | null }>;
+  questions: Array<{ id: string; question: string }>;
+  rejected: Array<{ itemId: string; reason: string }>;
+}
+
+/**
+ * The model's single write path.
+ *
+ * Every line lands `PROPOSED` and contributes nothing to any total. Anything the model names
+ * that is not a real atomic does NOT become a line — it becomes an open question on the draft,
+ * because "never make up a number" applies to scope as much as to price: an unmatched item is a
+ * question for the tech, not a nearest-guess atomic.
+ */
+export async function proposeLines(
+  prisma: PrismaClient,
+  draftId: string,
+  lines: ProposedLineInput[],
+  unmatched: Array<{ question: string; rawText?: string | null }>,
+  proposedBy: string
+): Promise<ProposeResult> {
+  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId } });
+  if (!draft) throw new Error(`Draft ${draftId} not found.`);
+  if (draft.status !== "draft") {
+    throw new Error(`Draft ${draftId} is ${draft.status}; proposals are only accepted on an open draft.`);
+  }
+
+  const result: ProposeResult = { proposed: [], questions: [], rejected: [] };
+  let sortOrder = await prisma.priceBookDraftLine.count({ where: { draftId } });
+
+  for (const line of lines) {
+    // Unknown code → a question, never a nearest match. The model does not get to invent
+    // catalog rows, and a fuzzy "closest atomic" is exactly the assumption the atomic-first
+    // ruling removes.
+    const atomic = await prisma.priceBookAtomic.findFirst({
+      where: { itemId: line.itemId, retiredAt: null },
+    });
+    if (!atomic) {
+      const q = await prisma.priceBookDraftQuestion.create({
+        data: {
+          draftId,
+          question:
+            `Proposed item "${line.itemId}" is not in the price book. Reason given: ` +
+            `${line.reasoning}. A human needs to pick the right atomic or add one to the workbook.`,
+          rawText: line.reasoning,
+          raisedBy: proposedBy,
+        },
+      });
+      result.questions.push({ id: q.id, question: q.question });
+      result.rejected.push({ itemId: line.itemId, reason: "not in PriceBookAtomic" });
+      continue;
+    }
+
+    if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
+      result.rejected.push({ itemId: line.itemId, reason: `non-positive quantity ${line.quantity}` });
+      continue;
+    }
+    if (!(line.reasoning ?? "").trim()) {
+      result.rejected.push({ itemId: line.itemId, reason: "no reasoning supplied" });
+      continue;
+    }
+
+    const created = await prisma.priceBookDraftLine.create({
+      data: {
+        draftId,
+        itemId: atomic.itemId,
+        quantity: line.quantity,
+        quantitySource: line.quantitySource as PriceBookQuantitySource,
+        difficulty: (line.difficulty ?? "NORMAL") as PriceBookDifficulty,
+        location: line.location ?? null,
+        note: null,
+        sortOrder: sortOrder++,
+        state: "PROPOSED",
+        proposedBy,
+        proposalReasoning: line.reasoning,
+        proposedAt: new Date(),
+      },
+    });
+    result.proposed.push({
+      id: created.id,
+      itemId: created.itemId,
+      quantity: created.quantity,
+      description: atomic.description,
+    });
+  }
+
+  for (const u of unmatched) {
+    const q = await prisma.priceBookDraftQuestion.create({
+      data: {
+        draftId,
+        question: u.question,
+        rawText: u.rawText ?? null,
+        raisedBy: proposedBy,
+      },
+    });
+    result.questions.push({ id: q.id, question: q.question });
+  }
+
+  return result;
+}
+
+// ─── HUMAN CONFIRMATION — reachable only from the PIN-authenticated surface ─────────
+
+export interface ConfirmLineInput {
+  /** Edit-then-confirm: any of these overrides the model's suggestion before it counts. */
+  quantity?: number;
+  quantitySource?: QuantitySource;
+  difficulty?: Difficulty;
+  location?: string | null;
+  note?: string | null;
+}
+
+/**
+ * Turn a proposed line into a real one. This is the moment the model's suggestion becomes a
+ * number the engine will price, and it happens only here.
+ */
+export async function confirmProposedLine(
+  prisma: PrismaClient,
+  lineId: string,
+  confirmedBy: string,
+  edits?: ConfirmLineInput
+) {
+  const line = await prisma.priceBookDraftLine.findUnique({
+    where: { id: lineId },
+    include: { draft: true },
+  });
+  if (!line) throw new Error(`Line ${lineId} not found.`);
+  if (line.draft.status !== "draft") {
+    throw new Error(`Draft ${line.draftId} is ${line.draft.status}; its lines are not editable.`);
+  }
+  if (line.state === "CONFIRMED") {
+    throw new Error(`Line ${lineId} is already confirmed.`);
+  }
+  if (edits?.quantity !== undefined && (!Number.isFinite(edits.quantity) || edits.quantity <= 0)) {
+    throw new Error(`Quantity must be a positive number (got ${edits.quantity}).`);
+  }
+
+  const edited =
+    edits !== undefined &&
+    ((edits.quantity !== undefined && edits.quantity !== line.quantity) ||
+      (edits.quantitySource !== undefined && edits.quantitySource !== line.quantitySource) ||
+      (edits.difficulty !== undefined && edits.difficulty !== line.difficulty));
+
+  return prisma.priceBookDraftLine.update({
+    where: { id: lineId },
+    data: {
+      quantity: edits?.quantity ?? line.quantity,
+      quantitySource: (edits?.quantitySource ?? line.quantitySource) as PriceBookQuantitySource,
+      difficulty: (edits?.difficulty ?? line.difficulty) as PriceBookDifficulty,
+      location: edits?.location ?? line.location,
+      note: edits?.note ?? line.note,
+      state: "CONFIRMED",
+      confirmedBy,
+      confirmedAt: new Date(),
+      editedBeforeConfirm: edited,
+    },
+  });
+}
+
+/** Reject a proposal outright. Deletes the row — an unconfirmed suggestion is not a record. */
+export async function rejectProposedLine(prisma: PrismaClient, lineId: string) {
+  const line = await prisma.priceBookDraftLine.findUnique({ where: { id: lineId } });
+  if (!line) throw new Error(`Line ${lineId} not found.`);
+  if (line.state === "CONFIRMED") {
+    throw new Error(`Line ${lineId} is confirmed; use removeLine to delete a confirmed line.`);
+  }
+  return prisma.priceBookDraftLine.delete({ where: { id: lineId } });
+}
+
+export async function resolveQuestion(
+  prisma: PrismaClient,
+  questionId: string,
+  resolvedBy: string,
+  resolutionNote: string
+) {
+  return prisma.priceBookDraftQuestion.update({
+    where: { id: questionId },
+    data: { resolvedAt: new Date(), resolvedBy, resolutionNote },
+  });
+}
+
+/** Everything a human needs to review before confirming. */
+export async function getDraftReview(prisma: PrismaClient, draftId: string) {
+  const draft = await prisma.priceBookDraftEstimate.findUnique({
+    where: { id: draftId },
+    include: {
+      lines: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }], include: { atomic: true } },
+      questions: { orderBy: { createdAt: "asc" } },
+    },
+  });
+  if (!draft) throw new Error(`Draft ${draftId} not found.`);
+  return {
+    draft,
+    proposedLines: draft.lines.filter((l) => l.state === "PROPOSED"),
+    confirmedLines: draft.lines.filter((l) => l.state === "CONFIRMED"),
+    openQuestions: draft.questions.filter((q) => q.resolvedAt === null),
+  };
+}
+
 // ─── Compute / finalize ─────────────────────────────────────────────────────────
 
 export async function computeDraft(
@@ -259,7 +487,13 @@ export async function computeDraft(
   const rate = await loadRateContext(prisma);
   const atomics = await loadCatalogAtSupplier(prisma, draft.supplierId, rate.rc.markupTiers);
 
-  const inputs: DraftLineInput[] = draft.lines.map((l) => ({
+  // ── ONLY CONFIRMED LINES ARE PRICED. This is the load-bearing line of the whole
+  // propose-only architecture: a PROPOSED line is the model's recommendation and it moves
+  // no total anywhere until a human confirms it. Filtering here rather than in the engine
+  // means every caller of computeDraft gets the guarantee, including the parity harness and
+  // any future UI, without having to remember it.
+  const confirmed = draft.lines.filter((l) => l.state === "CONFIRMED");
+  const inputs: DraftLineInput[] = confirmed.map((l) => ({
     id: l.id,
     itemId: l.itemId,
     quantity: l.quantity,
@@ -282,11 +516,46 @@ export async function finalizeDraft(
   context: "customer" | "internal" = "customer"
 ): Promise<FinalizeResult> {
   const { computed, rate, atomics } = await computeDraft(prisma, draftId);
+
+  // ── Nothing finalizes while the model's work is still unreviewed ──
+  // A proposed line prices nothing, so without this check a draft full of unconfirmed
+  // suggestions would finalize as a smaller-but-valid-looking estimate. That is the quiet
+  // failure this gate exists to prevent: an estimate that is wrong by omission and looks
+  // complete. Same reasoning as the workbook's unpriced-component counter.
+  const unconfirmed = await prisma.priceBookDraftLine.count({
+    where: { draftId, state: "PROPOSED" },
+  });
+  const openQuestions = await prisma.priceBookDraftQuestion.count({
+    where: { draftId, resolvedAt: null },
+  });
+
   const result = finalizeEstimate(computed, atomics, {
     context,
     rateProvisional: rate.provisional,
     provisionalReason: rate.provisionalReason,
   });
+
+  if (unconfirmed > 0 || openQuestions > 0) {
+    const reasons: string[] = [];
+    if (unconfirmed > 0) {
+      reasons.push(
+        `${unconfirmed} AI-proposed line(s) are still unconfirmed. A proposal prices nothing — ` +
+          `confirm or reject each one before this estimate can be issued.`
+      );
+    }
+    if (openQuestions > 0) {
+      reasons.push(
+        `${openQuestions} open question(s) from the AI are unresolved. An item the model could ` +
+          `not match is a question for the tech, not an omission to quote around.`
+      );
+    }
+    return {
+      finalized: false,
+      reasons: [...reasons, ...(result.finalized ? [] : result.reasons)],
+      warnings: result.warnings,
+      computed,
+    };
+  }
 
   // Only a genuinely clean, customer-context finalize changes state. An internal computation
   // is a look, not a commitment.
