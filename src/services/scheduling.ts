@@ -10,6 +10,7 @@ import * as notify from "./notifications";
 import { sendRescheduleEmail, sendCancellationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
 import { acquireSlotHolds, releaseSlotHolds, workingDaysCT, SlotContentionError } from "./slotHolds";
 import { sendVisitConfirmationRequest, notifyTechnicianOfAssignment } from "./visitConfirmations";
+import { customerSendsEnabled, logCustomerSendSkipped } from "./automationGate";
 
 const TZ = "America/Chicago";
 const DEFAULT_START_TIME = process.env.DEFAULT_JOB_START_TIME ?? "07:00";
@@ -281,6 +282,16 @@ export async function scheduleJob(
   });
 
   // Dual-channel confirmation request + tech notifications (fire-and-forget)
+  //
+  // GATED (manual-first, 2026-08-11) — AND THIS ONE IS A JUDGMENT CALL, FLAGGED IN THE REPORT.
+  // A human triggers the booking, so the send is arguably "attended". It is gated anyway
+  // because manual-first means Kyle is the one talking to the customer, and an automatic
+  // "you're booked" text landing alongside his own call is the double-touch the ruling avoids.
+  // The booking itself, the calendar event and the tech notification are all UNAFFECTED —
+  // only the customer-facing confirmation is suppressed. One env var reverses this.
+  if (!customerSendsEnabled("bookingConfirmations")) {
+    logCustomerSendSkipped("bookingConfirmations", `Confirmation request for visit ${jobId} suppressed; booking and calendar event unaffected.`);
+  } else
   sendVisitConfirmationRequest({
     visitId: jobId,
     customerName: job.customer.name,
@@ -458,6 +469,16 @@ export async function rescheduleJob(
   });
 
   // Re-request confirmation for the new time + tech notifications (fire-and-forget)
+  //
+  // GATED (manual-first, 2026-08-11) — AND THIS ONE IS A JUDGMENT CALL, FLAGGED IN THE REPORT.
+  // A human triggers the booking, so the send is arguably "attended". It is gated anyway
+  // because manual-first means Kyle is the one talking to the customer, and an automatic
+  // "you're booked" text landing alongside his own call is the double-touch the ruling avoids.
+  // The booking itself, the calendar event and the tech notification are all UNAFFECTED —
+  // only the customer-facing confirmation is suppressed. One env var reverses this.
+  if (!customerSendsEnabled("bookingConfirmations")) {
+    logCustomerSendSkipped("bookingConfirmations", `Confirmation request for visit ${jobId} suppressed; booking and calendar event unaffected.`);
+  } else
   sendVisitConfirmationRequest({
     visitId: jobId,
     customerName: job.customer.name,

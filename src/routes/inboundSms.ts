@@ -19,6 +19,7 @@ import { sendSms, KYLE_PHONE, isFromKyle, fetchTwilioMedia } from "../services/t
 import { parseReceiptImage } from "../services/receiptVision";
 import { applyConfirmationAction, type ConfirmationAction } from "../services/visitConfirmations";
 import { findCustomerMatches, phoneDigits10 } from "../services/customerMatch";
+import { customerSendsEnabled, logCustomerSendSkipped } from "../services/automationGate";
 
 export const inboundSmsRouter = express.Router();
 
@@ -240,7 +241,17 @@ inboundSmsRouter.post("/sms/inbound", asyncHandler(async (req, res) => {
         };
         // Direct reply to a message they just sent — answering an inbound text
         // is permitted even for a recipient whose broadcast consent is false.
-        await sendSms(from, replies[outcome.action], { bypassConsentCheck: true }).catch(() => {});
+        //
+        // GATED (manual-first, 2026-08-11): consent is not the question here — automation is.
+        // The customer's action still lands in the CRM and Kyle is still forwarded the text
+        // below, so nothing is lost; he answers it himself rather than the system answering
+        // for him.
+        if (customerSendsEnabled("inboundAutoReply")) {
+          await sendSms(from, replies[outcome.action], { bypassConsentCheck: true }).catch(() => {});
+        } else {
+          logCustomerSendSkipped("inboundAutoReply", `Auto-reply to ${outcome.action} from customer ${customer.id} suppressed; Kyle still notified.`);
+          await sendSms(KYLE_PHONE, `CUSTOMER ${outcome.action.toUpperCase()} — ${customer.name} (${from}). Auto-reply is OFF; reply manually.`).catch(() => {});
+        }
         await log("customer", customer.id, "confirmation_reply");
         respond();
         return;

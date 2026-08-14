@@ -49,6 +49,7 @@ import { inboundSmsRouter } from "./routes/inboundSms";
 import { confirmPageRouter } from "./routes/confirmPage";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
+import { customerSendsEnabled, logCustomerSendSkipped } from "./services/automationGate";
 
 const service = new EstimateService(prisma);
 
@@ -700,13 +701,26 @@ app.post("/leads", asyncHandler(async (req, res) => {
   // must match what's declared to Twilio's A2P campaign; see
   // services/notifications.ts webOptInConfirmation(). Goes through the normal
   // sendSms() gate (not bypassed) since smsConsent is already true here.
+  //
+  // GATED (manual-first, 2026-08-11): both of these fire on the customer's own form
+  // submission with no RCE human in the loop, which makes them unattended customer sends.
+  // Kyle answers web leads himself while the company runs manual-first. The SMS-to-Kyle
+  // above is NOT gated — he still needs to know a lead landed.
   if (body.source === "web" && lead.phone && lead.smsConsent === true) {
-    sendSms(lead.phone, webOptInConfirmation()).catch((err) => console.error("[leads] Opt-in confirmation SMS failed:", err));
+    if (customerSendsEnabled("webLeadAutoReply")) {
+      sendSms(lead.phone, webOptInConfirmation()).catch((err) => console.error("[leads] Opt-in confirmation SMS failed:", err));
+    } else {
+      logCustomerSendSkipped("webLeadAutoReply", `Opt-in confirmation SMS to lead ${lead.id} suppressed.`);
+    }
   }
 
   // Instant auto-reply email for web-form leads (fire-and-forget)
   if (body.source === "web" && lead.email) {
-    sendWebLeadAutoReply({ name: lead.name, email: lead.email, jobType: lead.jobType }).catch((err) => console.error("[leads] Auto-reply email failed:", err));
+    if (customerSendsEnabled("webLeadAutoReply")) {
+      sendWebLeadAutoReply({ name: lead.name, email: lead.email, jobType: lead.jobType }).catch((err) => console.error("[leads] Auto-reply email failed:", err));
+    } else {
+      logCustomerSendSkipped("webLeadAutoReply", `Auto-reply email to lead ${lead.id} suppressed.`);
+    }
   }
 }));
 

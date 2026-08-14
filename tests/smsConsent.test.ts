@@ -125,6 +125,11 @@ describe("web lead opt-in confirmation SMS", () => {
   const WEB_DECLINE_PHONE = "+16155559008";
 
   it("sends the exact declared opt-in confirmation once, when a web lead consents", async () => {
+    // The manual-first gate (2026-08-11) suppresses this send in production by default.
+    // The A2P compliance assertion below — that the wording matches exactly what was
+    // declared to Twilio — must keep running regardless, so the workflow is explicitly
+    // enabled for this test. The suppressed case is asserted in the test after this one.
+    process.env.AUTOMATED_CUSTOMER_SENDS_WEB_LEAD_AUTOREPLY = "on";
     const res = await request(app)
       .post("/leads")
       .set("webhook_secret", WEBHOOK)
@@ -141,6 +146,30 @@ describe("web lead opt-in confirmation SMS", () => {
     const optInCall = sentBodies().find((p) => p.get("Body") === webOptInConfirmation());
     expect(optInCall).toBeDefined();
     expect(optInCall!.get("To")).toBe(WEB_OPT_IN_PHONE);
+    delete process.env.AUTOMATED_CUSTOMER_SENDS_WEB_LEAD_AUTOREPLY;
+  });
+
+  it("MANUAL-FIRST GATE: sends nothing to a consenting web lead while the gate is off", async () => {
+    // Consent is TRUE here — so the only thing stopping this send is the gate. That is the
+    // whole point of the assertion: it fails the moment someone re-enables the workflow by
+    // accident. Kyle's notification must still arrive, because manual-first means he handles
+    // the lead himself and cannot do that if the system stops telling him it exists.
+    delete process.env.AUTOMATED_CUSTOMER_SENDS_WEB_LEAD_AUTOREPLY;
+    delete process.env.AUTOMATED_CUSTOMER_SENDS;
+    const GATED_PHONE = "+16155559009";
+
+    const res = await request(app)
+      .post("/leads")
+      .set("webhook_secret", WEBHOOK)
+      .send({ name: "Consent Test Web Gated", phone: GATED_PHONE, source: "web", smsConsent: true });
+    expect(res.status).toBe(201);
+
+    await waitUntil(() => sentBodies().some((p) => p.get("To") === GATED_PHONE || p.get("To") === KYLE_PHONE));
+
+    // No customer-facing send at all to that number.
+    expect(sentBodies().find((p) => p.get("To") === GATED_PHONE)).toBeUndefined();
+    // Kyle still gets told a lead landed.
+    expect(sentBodies().some((p) => p.get("To") === KYLE_PHONE)).toBe(true);
   });
 
   it("does not send it when the web lead declines", async () => {

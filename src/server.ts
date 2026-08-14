@@ -7,6 +7,11 @@ import { sendPendingSupplierEmails } from "./services/supplierEmail";
 import { generateInspectionRenewalLeads, generateUpgradeFollowUpLeads } from "./services/inspectionRetention";
 import { sendVisitReminders } from "./services/visitConfirmations";
 import { sendAlert } from "./services/alerting";
+import {
+  customerSendsEnabled,
+  logAutomationGateState,
+  logCustomerSendSkipped,
+} from "./services/automationGate";
 
 const port = Number(process.env.PORT ?? 4000);
 
@@ -103,7 +108,16 @@ async function startServer(): Promise<void> {
 
   // 8:00 AM Central daily — 24-hour appointment reminders (email + SMS).
   // The 18–30h window inside sendVisitReminders catches next-day visits.
+  //
+  // The cron stays REGISTERED while the sends are gated, deliberately. An unregistered job
+  // is indistinguishable in the logs from a job that crashed on boot; a registered job that
+  // logs its own suppression every morning proves the gate is working and that the schedule
+  // survives re-enabling. "Disabled" has to be visible, not absent.
   cron.schedule("0 8 * * *", async () => {
+    if (!customerSendsEnabled("visitReminders")) {
+      logCustomerSendSkipped("visitReminders", "Sweep did not run; zero customers contacted.");
+      return;
+    }
     console.log("[Cron] Running visit reminder sweep...");
     try {
       const sent = await sendVisitReminders();
@@ -113,7 +127,13 @@ async function startServer(): Promise<void> {
     }
   }, { timezone: "America/Chicago" });
 
-  console.log("[Cron] Appointment reminder sweep scheduled for 8:00 AM CT daily");
+  console.log(
+    `[Cron] Appointment reminder sweep scheduled for 8:00 AM CT daily — sends ${
+      customerSendsEnabled("visitReminders") ? "ENABLED" : "DISABLED (registered, will skip)"
+    }`,
+  );
+
+  logAutomationGateState();
 }
 
 // Best-effort fatal handler: get a shout out the door before the process dies.
