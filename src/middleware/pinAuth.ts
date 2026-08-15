@@ -1,48 +1,38 @@
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { isPublicRoute } from "./publicRoutes";
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "rce-dev-secret-change-me";
 const SESSION_HOURS = 8;
 
+/**
+ * Session gate. DEFAULT-DENY as of P015 — see middleware/publicRoutes.ts for the why and the
+ * allowlist itself.
+ *
+ * Two things this used to do, and no longer does:
+ *
+ *   * It skipped any request that was not marked `_isApi`, and `_isApi` was set only for paths
+ *     beginning `/api`. Since every data route is mounted at its bare path, `GET /accounts`
+ *     answered in full with no session while `GET /api/accounts` returned 401. Authentication
+ *     must not depend on how a path is spelled.
+ *   * It carried its own inline list of exempt paths, which had drifted into a comment
+ *     explaining that the entries "no longer gate anything" because of where the middleware was
+ *     mounted. An allowlist that does not gate is worse than none: it reads like a decision.
+ *
+ * The middleware is now installed ahead of every route, and the only exemption is the allowlist.
+ */
 export function pinAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Skip auth entirely when PIN_HASH is not configured (dev/test mode)
+  // Dev/test only. `server.ts` refuses to boot in production without PIN_HASH, so this branch is
+  // unreachable in production by construction — the fail-open lives behind a fail-closed boot
+  // check rather than behind nothing. (If that boot check is ever loosened, this becomes the
+  // hole again; they are a pair.)
   if (!process.env.PIN_HASH) {
     next();
     return;
   }
 
-  // Skip non-API requests (static files, SPA routes) so login page loads
-  if (!(req as Request & { _isApi?: boolean })._isApi) {
-    next();
-    return;
-  }
-
-  // Skip auth for health, PIN login, MCP, and public Vapi/webhook endpoints.
-  //
-  // Every path here resolves BEFORE this middleware is installed (app.ts:1189),
-  // so these entries no longer gate anything — their remaining effect is to keep
-  // an unmatched sub-path under a mounted router returning 404 rather than 401.
-  //
-  // `/leads` used to be on this list and was different in kind: `GET /leads` is
-  // registered at app.ts:3371, AFTER this middleware, so the exemption made the
-  // entire lead list world-readable — every customer's name, phone, email and
-  // address, plus `lostNotes`, which the schema marks "internal only, never
-  // shared". The webhook `POST /leads` sits at app.ts:434 with its own
-  // webhook_secret check and never needed the exemption. Do not re-add it; the
-  // authenticated create path is POST /crm/leads.
-  if (
-    req.path === "/health" ||
-    req.path === "/healthz" ||
-    req.path.startsWith("/internal/") ||
-    req.path === "/auth/pin" ||
-    req.path.startsWith("/mcp") ||
-    req.path.startsWith("/vapi/") ||
-    req.path.startsWith("/agent") ||
-    req.path === "/customer/lookup" ||
-    req.path === "/calendar/availability" ||
-    req.path === "/calls/daily-summary"
-  ) {
+  if (isPublicRoute(req.method, req.path)) {
     next();
     return;
   }

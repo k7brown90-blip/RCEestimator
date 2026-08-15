@@ -153,7 +153,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// Strip /api prefix and mark as API request
+// Strip the /api prefix so both spellings resolve to the same route.
+//
+// `_isApi` survives for ONE purpose — choosing the rate-limit budget below. It is deliberately
+// NOT an authorization signal any more: it used to be the whole of one, and since every data
+// route is mounted at its bare path, that made `GET /accounts` public while `GET /api/accounts`
+// required a session (P014 report, STOP §1). Authorization is decided by middleware/publicRoutes.ts
+// against the stripped path, so the two spellings are now indistinguishable to the auth layer.
 app.use((req: express.Request & { _isApi?: boolean }, _res, next) => {
   if (req.path.startsWith("/api/") || req.path === "/api") {
     req._isApi = true;
@@ -228,6 +234,20 @@ app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
   }
   next();
 });
+
+// ─── SESSION GATE — DEFAULT-DENY, AHEAD OF EVERY ROUTE (P015) ────────────────
+//
+// Mounted HERE, not part-way down the file, and that position is the fix as much as the
+// allowlist is. It used to sit ~1300 lines below, which meant "is this route public?" was
+// answered by where in the file someone happened to write it: routes above the mount never
+// reached the gate at all. Two implicit allowlists (mount order, and the `/api` prefix) and
+// neither written down.
+//
+// Everything static resolves before this — the CRM shell, the field PWA, and the SPA HTML
+// fallback are all mounted above, so a browser navigation never reaches the gate and the login
+// page still loads for a signed-out user. What arrives here is a data request, and it needs a
+// session unless middleware/publicRoutes.ts says otherwise.
+app.use(pinAuthMiddleware);
 
 // ─── MCP ENDPOINT ────────────────────────────────────────────────────────────
 const mcpBearerToken = process.env.MCP_BEARER_TOKEN;
@@ -1487,15 +1507,16 @@ app.use("/agent/savannah", savannahRouter);
 app.use("/agent/jerry", jerryRouter);
 app.use("/agent/calendar", sharedAgentRouter);
 
-// ─── HEALTH RECORD PWA (per-technician bearer auth — before PIN middleware) ───
+// ─── HEALTH RECORD PWA (per-technician bearer auth, not the CRM session) ─────
 app.use("/health-record", healthRecordTechRouter);
 // Capacity checks run on ordinary service calls with no assessment in progress,
 // so this is its own router rather than a branch of the health record.
 app.use("/health-record/capacity-checks", capacityCheckTechRouter);
 
-// ─── PIN AUTH ────────────────────────────────────────────────────────────────
+// ─── PIN LOGIN ───────────────────────────────────────────────────────────────
+// The gate itself now runs far above (search "SESSION GATE"). Only the login route is left
+// here, and it is on the allowlist because it cannot require the session it hands out.
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
-app.use(pinAuthMiddleware);
 
 // ─── AI PROPOSAL REVIEW (P011) — the human confirmation gate ─────────────────
 //
