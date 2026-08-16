@@ -33,6 +33,8 @@
  * same path and get the same answer.
  */
 
+import { twilioInboundEnabled } from "../services/automationGate";
+
 /** HTTP methods an entry covers. `"*"` means every method. */
 type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE" | "*";
 
@@ -53,6 +55,15 @@ export interface PublicRoute {
     | "unguessable id in path";
   /** Why this is not behind the session. One line, for the next person deciding whether it still should be. */
   reason: string;
+  /**
+   * Optional predicate: the entry only grants public access while this returns true.
+   *
+   * Used for a surface that is *conditionally* in operation. A conditional entry is strictly
+   * safer than a permanent one — when the condition is false the route falls through to
+   * default-deny — but it does cost the static-table property, so it earns its place only when
+   * the alternative is a permanently-public route that is usually switched off.
+   */
+  when?: () => boolean;
 }
 
 export const PUBLIC_ROUTES: PublicRoute[] = [
@@ -175,7 +186,12 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
   // ── Customer-facing surfaces reached from a link we sent them ─────────────────────────────
   {
     methods: ["POST"], path: "/sms/inbound", credential: "none",
-    reason: "Twilio's inbound-message webhook. Twilio cannot send a session header. Signature validation is a known open TODO in services/twilio.ts — pre-existing, unchanged by P015, and the honest gap in this list.",
+    // CLOSED by default as of P017 rev 2 (Kyle's 2026-08-16 ruling). While the channel is shut
+    // this entry does not apply, so the route is not public at all — and the closure middleware
+    // ahead of the gate answers 410 before default-deny gets to answer 401. The entry survives so
+    // that re-opening the channel is one env var and not a code change.
+    when: () => twilioInboundEnabled("smsWebhook"),
+    reason: "Twilio's inbound-message webhook — public ONLY while TWILIO_INBOUND_SMS_WEBHOOK is on, which it is not. Twilio cannot send a session header, so the channel needs this entry when it is in use; when it is closed the route is refused with 410 and this entry is inert.",
   },
   {
     methods: ["GET", "POST"], path: "/confirm", prefix: true, credential: "unguessable id in path",
@@ -217,19 +233,31 @@ function matchesParamPath(path: string, declared: string): boolean {
  * Trailing slashes are normalized so `/accounts/` cannot slip past an exact-match entry — the
  * whole class of bug this file exists to close is "the same resource under a different spelling".
  */
-export function publicRouteFor(method: string, rawPath: string): PublicRoute | null {
+/**
+ * Does this entry's METHOD and PATH cover the request? Pure — ignores `when` entirely.
+ *
+ * Separated from `publicRouteFor` so a test can verify every entry's own declared path matches
+ * its own matcher (catching a typo that would silently grant nothing) without that check being
+ * defeated by a conditional entry that happens to be switched off.
+ */
+export function entryCovers(entry: PublicRoute, method: string, rawPath: string): boolean {
   const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, "") : rawPath;
   const m = method.toUpperCase();
+  if (!entry.methods.includes("*") && !entry.methods.includes(m as Method)) return false;
+  return entry.prefix
+    ? matchesPrefix(path, entry.path)
+    : entry.path.includes(":")
+      ? matchesParamPath(path, entry.path)
+      : path === entry.path;
+}
 
+export function publicRouteFor(method: string, rawPath: string): PublicRoute | null {
   for (const entry of PUBLIC_ROUTES) {
-    const methodOk = entry.methods.includes("*") || entry.methods.includes(m as Method);
-    if (!methodOk) continue;
-    const pathOk = entry.prefix
-      ? matchesPrefix(path, entry.path)
-      : entry.path.includes(":")
-        ? matchesParamPath(path, entry.path)
-        : path === entry.path;
-    if (pathOk) return entry;
+    if (!entryCovers(entry, method, rawPath)) continue;
+    // A conditional entry that is currently false grants nothing. Continue rather than return,
+    // so a later entry could still cover the path — and if none does, default-deny.
+    if (entry.when && !entry.when()) continue;
+    return entry;
   }
   return null;
 }

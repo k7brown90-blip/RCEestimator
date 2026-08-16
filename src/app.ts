@@ -30,6 +30,7 @@ import {
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { accessLogMiddleware } from "./middleware/accessLog";
+import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
 import {
   addLine,
   browseAtomics,
@@ -246,6 +247,14 @@ app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
 // The line carries no bodies, no query strings and no headers. See middleware/accessLog.ts for
 // the field allowlist and the rule it implements.
 app.use(accessLogMiddleware);
+
+// ─── TWILIO INBOUND CLOSURE (P017 rev 2) ─────────────────────────────────────
+//
+// Ahead of the session gate on purpose: with the channel closed, `/sms/inbound` is no longer on
+// the public allowlist, so the gate would answer 401 — safe, but it tells a caller their
+// credentials were wrong when the truth is the endpoint was withdrawn. 410 says the true thing.
+// Default-deny stays underneath as the backstop. See middleware/twilioInboundClosed.ts.
+app.use(twilioInboundClosureMiddleware);
 
 // ─── SESSION GATE — DEFAULT-DENY, AHEAD OF EVERY ROUTE (P015) ────────────────
 //

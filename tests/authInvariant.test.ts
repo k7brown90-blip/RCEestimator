@@ -22,7 +22,7 @@ import bcrypt from "bcryptjs";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { app } from "../src/app";
-import { isPublicRoute, PUBLIC_ROUTES, publicRouteFor } from "../src/middleware/publicRoutes";
+import { entryCovers, isPublicRoute, PUBLIC_ROUTES, publicRouteFor } from "../src/middleware/publicRoutes";
 
 const TEST_PIN = "135790";
 
@@ -224,10 +224,24 @@ describe("public surfaces still answer", () => {
   it("every allowlist entry resolves to itself", () => {
     // A typo'd entry silently protects nothing and grants nothing; this catches the case where
     // an entry's own declared path does not match under the matcher.
+    //
+    // Asserted with `entryCovers` (method + path only) rather than `publicRouteFor`, so a
+    // CONDITIONAL entry that is currently switched off — /sms/inbound is, since P017 rev 2 —
+    // is still checked for typos rather than excused by its own condition.
     for (const entry of PUBLIC_ROUTES) {
       const probe = concrete(entry.prefix ? `${entry.path}/x` : entry.path);
       const method = entry.methods[0] === "*" ? "GET" : entry.methods[0];
-      expect(publicRouteFor(method, probe), `${method} ${probe} should match its own entry`).not.toBeNull();
+      expect(entryCovers(entry, method, probe), `${method} ${probe} should match its own entry`).toBe(true);
     }
+  });
+
+  it("a conditional entry grants nothing while its condition is false", () => {
+    // /sms/inbound is declared public but closed by P017 rev 2, so the declaration is inert and
+    // the route is NOT reachable without a session. Both halves matter: the entry exists (so
+    // re-opening is one env var), and it currently grants nothing.
+    const entry = PUBLIC_ROUTES.find((e) => e.path === "/sms/inbound");
+    expect(entry, "the entry should still be declared").toBeDefined();
+    expect(entryCovers(entry!, "POST", "/sms/inbound")).toBe(true);
+    expect(publicRouteFor("POST", "/sms/inbound"), "but it must not grant access while closed").toBeNull();
   });
 });

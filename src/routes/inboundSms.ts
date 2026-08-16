@@ -144,10 +144,14 @@ async function captureReceipts(
   return { captured, summaries };
 }
 
-// SIGNATURE-GATED as of P017. Everything below this line runs only for a POST carrying a
-// signature the Twilio account could have produced. Before that, this route accepted writes —
-// receipt rows, technician job notes, customer confirmation actions — from anyone who knew the
-// URL. Inbound verification only: no send path is created and P013's gates are untouched.
+// CLOSED as of P017 rev 2 — this handler is unreachable while the channel is shut. The closure
+// runs app-wide, ahead of the session gate (middleware/twilioInboundClosed.ts), so a POST here
+// gets 410 and nothing below executes.
+//
+// The signature check stays as the second line of defence for the day the channel re-opens: it
+// was deployed in rev 1 and the P017 review's verdict was that it is "strictly better than the
+// open webhook it replaced — nothing here needs urgent reverting. It is simply not the end
+// state." Move, never delete. Inbound verification only — no send path, P013's gates untouched.
 inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"), asyncHandler(async (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const from = String(body.From ?? body.from ?? "");

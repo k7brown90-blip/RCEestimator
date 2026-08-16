@@ -16,6 +16,10 @@ delete process.env.OPENAI_API_KEY; // vision parse must degrade gracefully in te
 // P017: /sms/inbound verifies X-Twilio-Signature, so the webhook tests below sign with this
 // token. The twilio SERVICE is mocked; the signature middleware reads the env directly.
 process.env.TWILIO_AUTH_TOKEN = "mesh_test_token";
+// P017 rev 2 closed the inbound webhook by default (Kyle's 2026-08-16 ruling). These tests pin
+// inbound ROUTING, which only runs when the channel is open, so they open it explicitly. The
+// closed behaviour is pinned in securityFollowups.test.ts.
+process.env.TWILIO_INBOUND_SMS_WEBHOOK = "on";
 
 const sendSmsMock = vi.fn().mockResolvedValue({ sid: "SM_mock" });
 

@@ -41,8 +41,10 @@ export type AuthOutcome =
   | "unauthenticated"
   /** Protected route, credential presented and rejected (expired/forged/garbage). */
   | "bad-credentials"
-  /** A webhook whose signature did not verify (P017 §2). */
+  /** A webhook whose signature did not verify. */
   | "bad-signature"
+  /** A surface that has been withdrawn from operations — 410, refused unread (P017 rev 2). */
+  | "channel-disabled"
   /** The gate did not run — dev/test only, where PIN_HASH is unset. */
   | "gate-disabled";
 

@@ -25,6 +25,10 @@ import { prisma } from "../src/lib/prisma";
 process.env.WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "test-webhook-secret";
 process.env.TWILIO_ACCOUNT_SID = "AC_test";
 process.env.TWILIO_AUTH_TOKEN = "test_token";
+// P017 rev 2 closed the inbound webhook by default (Kyle's 2026-08-16 ruling). These tests pin
+// inbound ROUTING, which only runs when the channel is open, so they open it explicitly. The
+// closed behaviour is pinned in securityFollowups.test.ts.
+process.env.TWILIO_INBOUND_SMS_WEBHOOK = "on";
 process.env.TWILIO_PHONE_NUMBER = "+16150000000";
 
 vi.mock("googleapis", () => {

@@ -1,5 +1,5 @@
 /**
- * P017 — the two P015 follow-ups: the app's own access log, and Twilio signature validation.
+ * P017 rev 2 — the app's own access log, and the closure of the last Twilio surface.
  *
  * The bar for each is different.
  *
@@ -8,9 +8,13 @@
  * was built to protect is worse than no log. So these tests assert the SHAPE is closed: exactly
  * the allowlisted keys, and no body content, ever.
  *
- * For the SIGNATURE, the expensive failure is a forged webhook that writes. `/sms/inbound`
- * creates receipt rows, technician job notes and customer confirmation actions — so a rejection
- * must reject before any of that happens, not after.
+ * For the CLOSURE, the expensive failure is a webhook that still writes after Kyle ruled the
+ * channel out of operations. `/sms/inbound` creates receipt rows, technician job notes and
+ * customer confirmation actions — so a refusal must happen before any of that, and must be
+ * provably before it: every closure test asserts the row count did not move.
+ *
+ * The signature checks live on behind the closure as the second line of defence for the day the
+ * channel re-opens, so their tests open the channel explicitly.
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,6 +41,8 @@ import { app } from "../src/app";
 import { emitAccessLog, type AccessLogLine } from "../src/middleware/accessLog";
 import { computeTwilioSignature, requestUrlForSignature } from "../src/middleware/twilioSignature";
 import { postForgedTwilioWebhook, postSignedTwilioWebhook } from "./helpers/twilioWebhook";
+import { isPublicRoute } from "../src/middleware/publicRoutes";
+import { logTwilioInboundState, twilioInboundEnabled } from "../src/services/automationGate";
 
 const FORGED_PHONE = "+15550117777";
 
@@ -264,12 +270,16 @@ describe("twilio signature: the algorithm", () => {
   });
 });
 
-describe("twilio signature: /sms/inbound", () => {
+describe("twilio signature: the second line of defence, for a re-opened channel", () => {
+  // These assert what happens when the channel is OPEN. Closed is the describe block after this
+  // one, and closed is production's state.
   beforeEach(() => {
     process.env.TWILIO_AUTH_TOKEN = "p017_test_token";
+    process.env.TWILIO_INBOUND_SMS_WEBHOOK = "on";
   });
   afterEach(() => {
     process.env.TWILIO_AUTH_TOKEN = "p017_test_token";
+    delete process.env.TWILIO_INBOUND_SMS_WEBHOOK;
   });
 
   it("rejects a forged signature with 403 and processes nothing", async () => {
@@ -344,6 +354,103 @@ describe("twilio signature: /sms/inbound", () => {
     expect(line?.status).toBe(403);
     // The customer's message text must not reach the log.
     expect(JSON.stringify(lines)).not.toContain("forged");
+  });
+});
+
+// ─── TWILIO INBOUND CLOSURE — P017 rev 2, Scope — do 2/3/4 ───────────────────────────────────
+
+describe("the inbound Twilio channel is closed", () => {
+  const PROBE = "+15550119999";
+
+  beforeEach(() => {
+    delete process.env.TWILIO_INBOUND;
+    delete process.env.TWILIO_INBOUND_SMS_WEBHOOK;
+    delete process.env.TWILIO_INBOUND_STATUS_CALLBACK;
+  });
+  afterAll(async () => {
+    await prisma.inboundMessage.deleteMany({ where: { fromPhone: PROBE } });
+  });
+
+  it("closed by default — no env var required to be safe", () => {
+    expect(twilioInboundEnabled("smsWebhook")).toBe(false);
+    expect(twilioInboundEnabled("statusCallback")).toBe(false);
+  });
+
+  it("POST /sms/inbound returns 410 and writes nothing", async () => {
+    const before = await prisma.inboundMessage.count();
+
+    const res = await postSignedTwilioWebhook(app, "/sms/inbound", { From: PROBE, Body: "should not land" });
+
+    expect(res.status).toBe(410);
+    expect(String(res.body.error)).toContain("closed");
+    // Signed correctly and STILL refused — the closure is not a signature check.
+    expect(await prisma.inboundMessage.count()).toBe(before);
+    expect(await prisma.inboundMessage.findFirst({ where: { fromPhone: PROBE } })).toBeNull();
+  });
+
+  it("refuses unread — an unsigned, unparseable post is 410 too, not 403 or 400", async () => {
+    const res = await request(app).post("/sms/inbound").type("form").send({ From: PROBE, Body: "x" });
+    expect(res.status).toBe(410);
+  });
+
+  it("the delivery-status callback is closed the same way (the sweep's second surface)", async () => {
+    const res = await request(app)
+      .post("/internal/webhooks/twilio-status/any-token")
+      .type("form")
+      .send({ MessageSid: "SM1", MessageStatus: "delivered" });
+    expect(res.status).toBe(410);
+  });
+
+  it("logs the refusal as channel-disabled", async () => {
+    const lines = await captureLog(() =>
+      request(app).post("/sms/inbound").type("form").send({ From: PROBE, Body: "probe" })
+    );
+    const line = lines.find((l) => l.path === "/sms/inbound");
+    expect(line?.auth).toBe("channel-disabled");
+    expect(line?.status).toBe(410);
+    // The message body is a customer's text. It is refused unread and must not appear.
+    expect(JSON.stringify(lines)).not.toContain("probe");
+  });
+
+  it("drops off the public allowlist while closed, so default-deny is the backstop", () => {
+    expect(isPublicRoute("POST", "/sms/inbound")).toBe(false);
+    process.env.TWILIO_INBOUND_SMS_WEBHOOK = "on";
+    expect(isPublicRoute("POST", "/sms/inbound")).toBe(true);
+    delete process.env.TWILIO_INBOUND_SMS_WEBHOOK;
+  });
+
+  it("the env flag re-opens it — closed is a switch, not a demolition", async () => {
+    process.env.TWILIO_INBOUND_SMS_WEBHOOK = "on";
+    const res = await postSignedTwilioWebhook(app, "/sms/inbound", { From: PROBE, Body: "channel reopened" });
+    expect(res.status).toBe(200);
+    expect(await prisma.inboundMessage.findFirst({ where: { fromPhone: PROBE } })).not.toBeNull();
+    delete process.env.TWILIO_INBOUND_SMS_WEBHOOK;
+    await prisma.inboundMessage.deleteMany({ where: { fromPhone: PROBE } });
+  });
+
+  it("the master flag re-opens both surfaces", () => {
+    process.env.TWILIO_INBOUND = "on";
+    expect(twilioInboundEnabled("smsWebhook")).toBe(true);
+    expect(twilioInboundEnabled("statusCallback")).toBe(true);
+    delete process.env.TWILIO_INBOUND;
+  });
+
+  it("fails closed on a malformed flag value", () => {
+    for (const bad of ["", " ", "off", "no", "ON!", "yess", "open"]) {
+      process.env.TWILIO_INBOUND_SMS_WEBHOOK = bad;
+      expect(twilioInboundEnabled("smsWebhook"), `flag=${JSON.stringify(bad)}`).toBe(false);
+    }
+    delete process.env.TWILIO_INBOUND_SMS_WEBHOOK;
+  });
+
+  it("the boot report states both surfaces CLOSED", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    logTwilioInboundState();
+    const out = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+    spy.mockRestore();
+    expect(out).toContain("MASTER TWILIO_INBOUND=(unset) -> CLOSED (default)");
+    expect(out).toContain("CLOSED smsWebhook");
+    expect(out).toContain("CLOSED statusCallback");
   });
 });
 

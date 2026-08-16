@@ -164,9 +164,10 @@ export const MASTER_ENV_VAR = MASTER_ENV;
  * nothing about twilio.ts, the A2P registration, or the phone numbers changes. Every leg turns
  * back on with one env var on the day Kyle makes "that specific request."
  *
- * INBOUND IS NOT GATED. Receiving a text is not sending one. The webhook at routes/inboundSms.ts
- * still parses, logs and routes everything that arrives; only its *replies* are gated. Gating
- * inbound is a separate decision nobody has made.
+ * INBOUND WAS NOT GATED BY THIS CLASS, and as of 2026-08-16 it is gated by class 3 below.
+ * Receiving a text is not sending one, which is why P013 left the webhook listening — but Kyle's
+ * 08-16 ruling took the Twilio number out of operations entirely, so "nobody has decided about
+ * inbound" stopped being true. Class 3 closes it. This class still governs sends only.
  *
  * WHY PER-LEG AND NOT ONE FLAG:
  *
@@ -258,12 +259,13 @@ export function logTwilioGateState(): void {
     );
   }
 
+  logTwilioInboundState();
+
   // eslint-disable-next-line no-console
   console.log(
-    "[TwilioGate] INBOUND Twilio (webhook receive, media fetch, opt-out recording) is NOT gated — " +
-      "receiving is not sending. Alerting after this gate: Railway's own email notifications plus " +
-      "the scheduled email read (ruling 2026-08-11 §3), and every alert is still persisted as a " +
-      "SystemEvent row and printed to the Railway log.",
+    "[TwilioGate] Alerting after this gate: Railway's own email notifications plus the scheduled " +
+      "email read (ruling 2026-08-11 §3), and every alert is still persisted as a SystemEvent row " +
+      "and printed to the Railway log.",
   );
 }
 
@@ -273,3 +275,107 @@ export function twilioLegEnvVar(leg: TwilioSendLeg): string {
 }
 
 export const TWILIO_MASTER_ENV_VAR = TWILIO_MASTER_ENV;
+
+/* ── CLASS 3 ──────────────────────────────────────────────────────────────────────────────
+ *
+ * Inbound Twilio surfaces — the number stops listening.
+ *
+ * Kyle, 2026-08-16, verbatim: *"There will be NO automated texting ONLY emails like I already
+ * ordered. The Vapi agent will be intake and scheduling only. My personal number is what I will
+ * use to text clients."*
+ *
+ * P013 gated every SEND and deliberately left inbound alone, on the reasoning that receiving is
+ * not sending and that gating inbound was "a separate decision nobody has made". The 08-16 ruling
+ * is that decision. The Twilio number is not the business line — Savannah's Vapi number is, for
+ * intake and scheduling only — no client is directed to the Twilio number, and Kyle texts clients
+ * from his personal phone. **An open webhook on a channel with no product value is attack surface
+ * and nothing else**, and this one accepts writes: receipt rows, technician job notes, and
+ * customer confirmation actions that change a visit's status.
+ *
+ * CLOSED, NOT DELETED. Same shape as classes 1 and 2: default-deny, fail-closed parsing, one env
+ * var per surface, handler code untouched. The 08-13 clarification promises reversibility — "I
+ * will make that specific request when I feel the system is ready" — so the day that request
+ * comes, one variable re-opens the channel and the routing logic behind it is exactly as it was.
+ *
+ * A closed surface answers **410 Gone**, not 404 and not 401. 404 would say "no such endpoint",
+ * which is false and would send someone hunting for a deploy problem; 401 would say "your
+ * credentials were wrong", which invites a retry with better ones. 410 says the thing that is
+ * true: this used to be here, it was withdrawn deliberately, stop asking.
+ */
+
+export type TwilioInboundSurface =
+  /** POST /sms/inbound — Twilio's messaging webhook. Accepts writes. */
+  | "smsWebhook"
+  /** POST /internal/webhooks/twilio-status/:token — delivery-status callbacks. */
+  | "statusCallback";
+
+const TWILIO_INBOUND_MASTER_ENV = "TWILIO_INBOUND";
+
+const TWILIO_INBOUND_ENV: Record<TwilioInboundSurface, string> = {
+  smsWebhook: "TWILIO_INBOUND_SMS_WEBHOOK",
+  statusCallback: "TWILIO_INBOUND_STATUS_CALLBACK",
+};
+
+const TWILIO_INBOUND_LABEL: Record<TwilioInboundSurface, string> = {
+  smsWebhook: "inbound SMS/MMS webhook (receipts, tech notes, customer replies)",
+  statusCallback: "Twilio delivery-status callback",
+};
+
+/** The bare paths each surface listens on. Used by the closure middleware and by the report. */
+export const TWILIO_INBOUND_PATHS: Record<TwilioInboundSurface, RegExp> = {
+  smsWebhook: /^\/sms\/inbound\/?$/,
+  statusCallback: /^\/internal\/webhooks\/twilio-status(\/|$)/,
+};
+
+/** True when this inbound surface is permitted to accept traffic. Default-deny. */
+export function twilioInboundEnabled(surface: TwilioInboundSurface): boolean {
+  if (isOn(process.env[TWILIO_INBOUND_ENV[surface]])) return true;
+  return isOn(process.env[TWILIO_INBOUND_MASTER_ENV]);
+}
+
+/** Which surface, if any, a request path belongs to. */
+export function twilioInboundSurfaceFor(path: string): TwilioInboundSurface | null {
+  for (const [surface, pattern] of Object.entries(TWILIO_INBOUND_PATHS) as Array<[TwilioInboundSurface, RegExp]>) {
+    if (pattern.test(path)) return surface;
+  }
+  return null;
+}
+
+/**
+ * Log a refused hit. Posts to a dead webhook are exactly the traffic worth recording — nothing
+ * legitimate sends them, so every one is either a stale Twilio configuration or a probe.
+ * The body is never logged: it is a customer's message, and it is refused unread.
+ */
+export function logTwilioInboundClosed(surface: TwilioInboundSurface, detail?: string): void {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TwilioInbound] REFUSED ${surface} — ${TWILIO_INBOUND_LABEL[surface]} is CLOSED ` +
+      `(no-Twilio ruling 2026-08-16). Nothing was parsed or written. Re-open with ` +
+      `${TWILIO_INBOUND_ENV[surface]}=on or ${TWILIO_INBOUND_MASTER_ENV}=on.${detail ? ` ${detail}` : ""}`,
+  );
+}
+
+/** Boot-time state report for the inbound class. Called from logAutomationGateState(). */
+export function logTwilioInboundState(): void {
+  const masterOn = isOn(process.env[TWILIO_INBOUND_MASTER_ENV]);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TwilioInbound] MASTER ${TWILIO_INBOUND_MASTER_ENV}=${process.env[TWILIO_INBOUND_MASTER_ENV] ?? "(unset)"} -> ` +
+      `${masterOn ? "OPEN" : "CLOSED (default)"} — no-Twilio ruling 2026-08-16`,
+  );
+  for (const surface of Object.keys(TWILIO_INBOUND_ENV) as TwilioInboundSurface[]) {
+    const override = process.env[TWILIO_INBOUND_ENV[surface]];
+    // eslint-disable-next-line no-console
+    console.log(
+      `[TwilioInbound]   ${twilioInboundEnabled(surface) ? "OPEN  " : "CLOSED"} ${surface} — ` +
+        `${TWILIO_INBOUND_LABEL[surface]}${override ? ` (${TWILIO_INBOUND_ENV[surface]}=${override})` : ""}`,
+    );
+  }
+}
+
+/** Exposed for the report and for tests. */
+export function twilioInboundEnvVar(surface: TwilioInboundSurface): string {
+  return TWILIO_INBOUND_ENV[surface];
+}
+
+export const TWILIO_INBOUND_MASTER_ENV_VAR = TWILIO_INBOUND_MASTER_ENV;

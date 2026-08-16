@@ -89,12 +89,15 @@ internalRouter.post("/webhooks/railway/:token", express.json({ limit: "64kb" }),
 // Twilio delivery-status callback. Persists the terminal status so a report
 // can cite `delivered` rather than `queued`.
 //
-// SIGNATURE-GATED as of P017 (§2: "any other Twilio webhook route that exists"). It already had
-// the URL-path token; the signature is the second factor and the one Twilio actually vouches
-// for. Currently DORMANT in practice — statusCallback is only attached by the operator-alert
-// send, which P013 gated off — so this is hardening ahead of the day those gates reopen, not a
-// live path. Signature first, then the path token: a caller who cannot produce the signature
-// never reaches the comparison, and the two refusals stay distinguishable (403 vs 401).
+// CLOSED as of P017 rev 2 — the second of the two Twilio-facing surfaces the sweep found, shut
+// the same way as /sms/inbound and by the same middleware (it matches on this path prefix). A
+// POST here answers 410 and this handler never runs.
+//
+// It was already dormant in practice: statusCallback is only attached by the operator-alert send,
+// which P013 gated off, so no Twilio traffic has reached it since 2026-08-14.
+//
+// Two checks remain behind the closure for the day the channel re-opens — the signature Twilio
+// vouches for, then the URL-path token — and they stay distinguishable (403 vs 401).
 internalRouter.post(
   "/webhooks/twilio-status/:token",
   express.urlencoded({ extended: false, limit: "16kb" }),
