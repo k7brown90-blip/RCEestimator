@@ -25,6 +25,7 @@ import {
   logTwilioSendSkipped,
   twilioSendEnabled,
 } from "../services/automationGate";
+import { requireTwilioSignature } from "../middleware/twilioSignature";
 
 export const inboundSmsRouter = express.Router();
 
@@ -143,7 +144,11 @@ async function captureReceipts(
   return { captured, summaries };
 }
 
-inboundSmsRouter.post("/sms/inbound", asyncHandler(async (req, res) => {
+// SIGNATURE-GATED as of P017. Everything below this line runs only for a POST carrying a
+// signature the Twilio account could have produced. Before that, this route accepted writes —
+// receipt rows, technician job notes, customer confirmation actions — from anyone who knew the
+// URL. Inbound verification only: no send path is created and P013's gates are untouched.
+inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"), asyncHandler(async (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const from = String(body.From ?? body.from ?? "");
   const text = String(body.Body ?? body.body ?? "").trim();

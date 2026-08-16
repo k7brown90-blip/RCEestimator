@@ -29,6 +29,7 @@ import {
 } from "./services/crmAnalytics";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
+import { accessLogMiddleware } from "./middleware/accessLog";
 import {
   addLine,
   browseAtomics,
@@ -234,6 +235,17 @@ app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
   }
   next();
 });
+
+// ─── ACCESS LOG (P017) ───────────────────────────────────────────────────────
+//
+// Immediately before the gate, so it sees every request the gate will judge — including the ones
+// it refuses, which are the interesting ones. Static assets, the CRM shell and the field PWA
+// resolve above this and are deliberately not logged: they are files, not data access, and
+// logging them would bury the lines that matter under asset noise.
+//
+// The line carries no bodies, no query strings and no headers. See middleware/accessLog.ts for
+// the field allowlist and the rule it implements.
+app.use(accessLogMiddleware);
 
 // ─── SESSION GATE — DEFAULT-DENY, AHEAD OF EVERY ROUTE (P015) ────────────────
 //

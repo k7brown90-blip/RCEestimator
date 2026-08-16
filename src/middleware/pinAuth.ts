@@ -2,6 +2,19 @@ import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { isPublicRoute } from "./publicRoutes";
+import type { AuthOutcome, RequestAuthState } from "./accessLog";
+
+/**
+ * Record how the gate resolved, for the access log (P017). Auth decides the outcome; the log
+ * only reports it — which is why this is set here rather than inferred from a status code
+ * downstream, where a 401 from a route's own credential check would be indistinguishable from
+ * a 401 from the session gate.
+ */
+function mark(req: Request, outcome: AuthOutcome, actor: string | null = null): void {
+  const state = req as Request & RequestAuthState;
+  state._authOutcome = outcome;
+  state._authActor = actor;
+}
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "rce-dev-secret-change-me";
 const SESSION_HOURS = 8;
@@ -28,11 +41,13 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
   // check rather than behind nothing. (If that boot check is ever loosened, this becomes the
   // hole again; they are a pair.)
   if (!process.env.PIN_HASH) {
+    mark(req, "gate-disabled");
     next();
     return;
   }
 
   if (isPublicRoute(req.method, req.path)) {
+    mark(req, "public");
     next();
     return;
   }
@@ -45,14 +60,22 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
   const token = req.headers.authorization?.replace("Bearer ", "");
 
   if (!token) {
+    mark(req, "unauthenticated");
     res.status(401).json({ error: "Authentication required" });
     return;
   }
 
   try {
-    jwt.verify(token, JWT_SECRET);
+    const claims = jwt.verify(token, JWT_SECRET);
+    // `sub` is "owner" for the PIN session. It is an identity, never a credential — the token
+    // itself must not reach the log.
+    const actor = typeof claims === "object" && claims !== null && typeof claims.sub === "string"
+      ? claims.sub
+      : "unknown";
+    mark(req, "ok", actor);
     next();
   } catch {
+    mark(req, "bad-credentials");
     res.status(401).json({ error: "Invalid or expired session" });
   }
 }

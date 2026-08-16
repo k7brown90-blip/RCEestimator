@@ -43,6 +43,7 @@ vi.mock("googleapis", () => {
 });
 
 import { app } from "../src/app";
+import { postSignedTwilioWebhook } from "./helpers/twilioWebhook";
 import { sendSms, KYLE_PHONE } from "../src/services/twilio";
 import { webOptInConfirmation } from "../src/services/notifications";
 
@@ -277,7 +278,7 @@ describe("inbound STOP / START keywords", () => {
   });
 
   it("STOP flips every matching Customer and Lead to declined, regardless of stored format", async () => {
-    const res = await request(app).post("/sms/inbound").type("form").send({ From: STOP_PHONE, Body: "STOP" });
+    const res = await postSignedTwilioWebhook(app, "/sms/inbound", { From: STOP_PHONE, Body: "STOP" });
     expect(res.status).toBe(200);
 
     const customer = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
@@ -292,7 +293,7 @@ describe("inbound STOP / START keywords", () => {
   });
 
   it("START opts them back in", async () => {
-    const res = await request(app).post("/sms/inbound").type("form").send({ From: STOP_PHONE, Body: "START" });
+    const res = await postSignedTwilioWebhook(app, "/sms/inbound", { From: STOP_PHONE, Body: "START" });
     expect(res.status).toBe(200);
 
     const customer = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });

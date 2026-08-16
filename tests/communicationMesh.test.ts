@@ -13,6 +13,9 @@ process.env.GOOGLE_CLIENT_ID = "test_id";
 process.env.GOOGLE_CLIENT_SECRET = "test_secret";
 process.env.GOOGLE_REFRESH_TOKEN = "test_token";
 delete process.env.OPENAI_API_KEY; // vision parse must degrade gracefully in tests
+// P017: /sms/inbound verifies X-Twilio-Signature, so the webhook tests below sign with this
+// token. The twilio SERVICE is mocked; the signature middleware reads the env directly.
+process.env.TWILIO_AUTH_TOKEN = "mesh_test_token";
 
 const sendSmsMock = vi.fn().mockResolvedValue({ sid: "SM_mock" });
 
@@ -40,6 +43,7 @@ vi.mock("googleapis", () => {
 
 import { app } from "../src/app";
 import { parseConfirmationKeyword } from "../src/routes/inboundSms";
+import { postForgedTwilioWebhook, postSignedTwilioWebhook } from "./helpers/twilioWebhook";
 
 const CUSTOMER_PHONE = "+16155501234";
 const TECH_PHONE = "+16155505678";
@@ -158,10 +162,7 @@ describe("inbound SMS routing", () => {
   it("confirms the upcoming visit on a customer YES reply", async () => {
     await prisma.visit.update({ where: { id: visitId }, data: { confirmationStatus: "unconfirmed", confirmedAt: null } });
 
-    const res = await request(app)
-      .post("/sms/inbound")
-      .type("form")
-      .send({ From: CUSTOMER_PHONE, Body: "YES" });
+    const res = await postSignedTwilioWebhook(app, "/sms/inbound", { From: CUSTOMER_PHONE, Body: "YES" });
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("xml");
 
@@ -177,10 +178,7 @@ describe("inbound SMS routing", () => {
   });
 
   it("logs a tech text as a note on their active assignment", async () => {
-    const res = await request(app)
-      .post("/sms/inbound")
-      .type("form")
-      .send({ From: TECH_PHONE, Body: "Panel cover was rusted through, replaced hardware" });
+    const res = await postSignedTwilioWebhook(app, "/sms/inbound", { From: TECH_PHONE, Body: "Panel cover was rusted through, replaced hardware" });
     expect(res.status).toBe(200);
 
     const visit = await prisma.visit.findUniqueOrThrow({ where: { id: visitId } });
@@ -198,10 +196,7 @@ describe("inbound SMS routing", () => {
     // test below it.
     process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS = "on";
     sendSmsMock.mockClear();
-    const res = await request(app)
-      .post("/sms/inbound")
-      .type("form")
-      .send({ From: "+15550009999", Body: "hey is this the electrician" });
+    const res = await postSignedTwilioWebhook(app, "/sms/inbound", { From: "+15550009999", Body: "hey is this the electrician" });
     expect(res.status).toBe(200);
 
     expect(sendSmsMock).toHaveBeenCalledWith("+19706661626", expect.stringContaining("UNKNOWN SMS"));
@@ -217,10 +212,7 @@ describe("inbound SMS routing", () => {
     delete process.env.TWILIO_SENDS;
     sendSmsMock.mockClear();
 
-    const res = await request(app)
-      .post("/sms/inbound")
-      .type("form")
-      .send({ From: "+15550008888", Body: "gated inbound test" });
+    const res = await postSignedTwilioWebhook(app, "/sms/inbound", { From: "+15550008888", Body: "gated inbound test" });
     expect(res.status).toBe(200);
 
     expect(sendSmsMock).not.toHaveBeenCalled();

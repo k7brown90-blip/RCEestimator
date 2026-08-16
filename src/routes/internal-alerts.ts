@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import { prisma } from "../lib/prisma";
 import { sendAlert } from "../services/alerting";
 import { logSystemEvent } from "../services/systemEvents";
+import { requireTwilioSignature } from "../middleware/twilioSignature";
 
 export const internalRouter = express.Router();
 
@@ -87,11 +88,22 @@ internalRouter.post("/webhooks/railway/:token", express.json({ limit: "64kb" }),
 // ─── POST /internal/webhooks/twilio-status/:token ────────────────────────────
 // Twilio delivery-status callback. Persists the terminal status so a report
 // can cite `delivered` rather than `queued`.
+//
+// SIGNATURE-GATED as of P017 (§2: "any other Twilio webhook route that exists"). It already had
+// the URL-path token; the signature is the second factor and the one Twilio actually vouches
+// for. Currently DORMANT in practice — statusCallback is only attached by the operator-alert
+// send, which P013 gated off — so this is hardening ahead of the day those gates reopen, not a
+// live path. Signature first, then the path token: a caller who cannot produce the signature
+// never reaches the comparison, and the two refusals stay distinguishable (403 vs 401).
 internalRouter.post(
   "/webhooks/twilio-status/:token",
   express.urlencoded({ extended: false, limit: "16kb" }),
+  requireTwilioSignature("POST /internal/webhooks/twilio-status"),
   (req, res) => {
-    if (!tokenMatches(req.params.token, process.env.INTERNAL_WEBHOOK_TOKEN)) {
+    // Express widens a path param to `string | string[]` once a route carries extra middleware;
+    // take the first value rather than let a repeated segment reach a constant-time compare.
+    const supplied = Array.isArray(req.params.token) ? req.params.token[0] : req.params.token;
+    if (!tokenMatches(supplied, process.env.INTERNAL_WEBHOOK_TOKEN)) {
       res.status(401).json({ error: "unauthorized" });
       return;
     }
