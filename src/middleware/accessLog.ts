@@ -66,11 +66,23 @@ export interface RequestAuthState {
 }
 
 /**
- * Paths whose own text could carry personal data. Empty today — every identifier in this app is
- * a cuid — and it exists so the next person adding such a route has an obvious place to put the
- * redaction instead of inventing one at the call site.
+ * Paths whose own text must not be written down.
+ *
+ * The first entry was earned within a minute of the first deploy. `/internal/webhooks/*` carries
+ * `INTERNAL_WEBHOOK_TOKEN` as a path segment — the P015 review already had that token printing
+ * in plaintext in Railway's EDGE logs as follow-up 4, and this log promptly reproduced the same
+ * leak in the app's own output. A log built to answer security questions must not be the thing
+ * that answers them for an attacker.
+ *
+ * Personal data in a path is the other reason to add an entry here. Nothing qualifies today —
+ * every identifier in this app is a cuid, which is an ID reference and exactly what
+ * `decisions/2026-08-04-customer-data-handling.md` rule 4 asks for — so the next person adding a
+ * route with an email or a phone number in the path has an obvious place to put the redaction
+ * rather than inventing one at the call site.
  */
-const REDACT_PATH_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [];
+const REDACT_PATH_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+  { pattern: /^(\/internal\/webhooks\/[^/]+\/)[^/]+/, replacement: "$1<token>" },
+];
 
 function redactPath(path: string): string {
   let out = path;
@@ -105,22 +117,55 @@ export function emitAccessLog(line: AccessLogLine): void {
  * point where the status and the latency are both known, and it fires for refused requests too
  * (a 401 is the most interesting line in the file).
  */
+/**
+ * The caller's IP, as far as it can be known.
+ *
+ * `req.ip` was wrong here, and the first production run proved it: it reported Railway's own edge
+ * addresses (89.222.103.x, varying per request) rather than the caller, because `trust proxy` is
+ * set to 1 and Railway fronts the app with more hops than that. An access log whose IP field
+ * names the load balancer is decorative.
+ *
+ * The left-most `X-Forwarded-For` entry is the client, and it matches what Railway's own edge log
+ * records as `srcIp`. `trust proxy` is deliberately NOT widened to fix this — that setting also
+ * governs rate-limit bucketing, and making it `true` would let a caller choose their own bucket
+ * by sending a header.
+ *
+ * CAVEAT, and it belongs in the record rather than in a footnote: the left-most entry is
+ * client-supplied. Railway appends rather than replaces, so a caller can prepend a fake address.
+ * The value is good evidence of "which client", not proof of origin. For an incident, Railway's
+ * edge log is the corroborating source.
+ */
+function callerIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  const first = String(raw ?? "").split(",")[0].trim();
+  return first || req.ip || "unknown";
+}
+
 export function accessLogMiddleware(req: Request, res: Response, next: NextFunction): void {
   const startedAt = process.hrtime.bigint();
+
+  // CAPTURED HERE, NOT IN THE `finish` HANDLER. Express rewrites `req.url` when a request enters
+  // a mounted router, and `req.path` is derived from it — so by the time the response finishes,
+  // `/internal/webhooks/twilio-status/x` reads as `/webhooks/twilio-status/x`. The first
+  // production run logged exactly that, silently dropping the mount prefix on every router-served
+  // route. `req.originalUrl` is the other candidate and is wrong for a different reason: it still
+  // carries the `/api` prefix AND the query string, which must never be logged.
+  //
+  // `req.path` excludes the query string. That is not incidental: a query string can carry a
+  // search term, and a search term in this app can be a customer's name.
+  const pathAtEntry = redactPath(req.path);
 
   res.on("finish", () => {
     const state = req as Request & RequestAuthState;
     emitAccessLog({
       t: new Date().toISOString(),
       method: req.method,
-      // `req.path` excludes the query string. That is not incidental: a query string can carry
-      // a search term, and a search term in this app can be a customer's name.
-      path: redactPath(req.path),
+      path: pathAtEntry,
       status: res.statusCode,
       auth: state._authOutcome ?? "gate-disabled",
       actor: state._authActor ?? null,
-      // `trust proxy` is set, so this is the caller's IP rather than Railway's edge.
-      ip: req.ip ?? "unknown",
+      ip: callerIp(req),
       ms: Number((process.hrtime.bigint() - startedAt) / 1_000_000n),
     });
   });

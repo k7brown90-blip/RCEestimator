@@ -96,6 +96,33 @@ describe("access log: shape is closed", () => {
     expect(JSON.stringify(lines)).not.toContain("Cedar");
   });
 
+  it("redacts the internal webhook token out of the path", async () => {
+    // Found in production within a minute of the first P017 deploy: this log wrote
+    // INTERNAL_WEBHOOK_TOKEN in plaintext, reproducing P015 review follow-up 4 inside our own
+    // records. A log that leaks a secret is worse than no log.
+    const lines = await captureLog(() =>
+      request(app).post("/internal/webhooks/twilio-status/supersecrettokenvalue").type("form").send({})
+    );
+    const blob = JSON.stringify(lines);
+    expect(blob).not.toContain("supersecrettokenvalue");
+    expect(lines.some((l) => l.path === "/internal/webhooks/twilio-status/<token>")).toBe(true);
+  });
+
+  it("keeps the mount prefix — a router-served path is logged in full", async () => {
+    // Express rewrites req.url on entry to a mounted router; reading the path at response time
+    // logged `/webhooks/...` instead of `/internal/webhooks/...`. A forensic log that drops the
+    // mount prefix cannot distinguish two routes that differ only by mount.
+    const lines = await captureLog(() => request(app).get("/confirm/some-token"));
+    expect(lines.some((l) => l.path.startsWith("/confirm/"))).toBe(true);
+  });
+
+  it("logs the caller's IP, not the proxy's", async () => {
+    const lines = await captureLog(() =>
+      request(app).get("/healthz").set("X-Forwarded-For", "203.0.113.7, 10.0.0.1, 10.0.0.2")
+    );
+    expect(lines.find((l) => l.path === "/healthz")?.ip).toBe("203.0.113.7");
+  });
+
   it("records method, path, status and latency for a real request", async () => {
     const lines = await captureLog(() => request(app).get("/healthz"));
     const line = lines.find((l) => l.path === "/healthz");
