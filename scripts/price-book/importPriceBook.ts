@@ -31,6 +31,8 @@
  */
 
 import { PrismaClient, PriceBookQuotable } from "@prisma/client";
+// Extracted by P018 so it can be unit-tested — this file runs main() on import.
+import { parseQuotable } from "./quotable";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -149,24 +151,6 @@ interface Snapshot {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
-
-/**
- * The workbook writes quotability as free text: "YES", "NO", "NO — NEVER". Mapped onto
- * an enum so the quarantine is a database constraint rather than a convention. An
- * unrecognised value is a hard failure — guessing "probably yes" is how a quarantined
- * employer-account price reaches a customer.
- */
-function parseQuotable(raw: string | null, where: string): PriceBookQuotable {
-  const v = (raw ?? "").trim().toUpperCase();
-  if (v === "YES") return PriceBookQuotable.YES;
-  if (v === "NO") return PriceBookQuotable.NO;
-  if (v.startsWith("NO") && v.includes("NEVER")) return PriceBookQuotable.NEVER;
-  throw new Error(
-    `Unrecognised Quotable value ${JSON.stringify(raw)} at ${where}. ` +
-      `Expected "YES", "NO", or a "NO — NEVER" variant. Refusing to guess: an unreadable ` +
-      `quotable flag defaulting to YES is how a quarantined price reaches a customer.`
-  );
-}
 
 function num(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
@@ -309,296 +293,333 @@ async function main(): Promise<number> {
     necCategories: emptyDelta(),
   };
 
+  // Populated inside the transaction, read by parity after it commits.
+  let tiers: MarkupTiers = { tier1: 0, tier2: 0, tier3: 0, tier4: 0, tier5: 0 };
+  const atomicCost = new Map<string, { costBasis: number | null; sellPerUnit: number | null }>();
+
   try {
-    // ── 1. Suppliers ──
-    for (const s of snapshot.suppliers) {
-      const data = {
-        name: s.name ?? s.supplierId,
-        branch: s.branch,
-        channel: s.channel,
-        accountClass: s.accountClass,
-        quotable: parseQuotable(s.quotableRaw, `Suppliers!F for ${s.supplierId}`),
-        quotableRaw: s.quotableRaw,
-        leadTime: s.leadTime,
-        terms: s.terms,
-        notes: s.notes,
-      };
-      const existing = await prisma.priceBookSupplier.findUnique({ where: { id: s.supplierId } });
-      const diff = changedFields(existing as Record<string, unknown> | null, data);
-      if (!args.dryRun) {
-        await prisma.priceBookSupplier.upsert({
-          where: { id: s.supplierId },
-          create: { id: s.supplierId, ...data },
-          update: data,
-        });
-      }
-      if (!existing) deltas.suppliers.created.push(s.supplierId);
-      else if (diff.length) deltas.suppliers.updated.push(`${s.supplierId} (${diff.join(", ")})`);
-      else deltas.suppliers.unchanged.push(s.supplierId);
-    }
-
-    // ── 2. Supplier prices ──
+    // ── ALL-OR-NOTHING (P018) ────────────────────────────────────────────────────────────
     //
-    // FIRST ROW WINS, because that is what the workbook does. Cost resolves through
-    // MATCH(key, 'Supplier Prices'!$L:$L, 0), and MATCH returns the first match — so a
-    // duplicate Item ID x Supplier is priced by whichever row sits higher on the sheet,
-    // not by whichever is newer. A last-write-wins upsert would put a different number
-    // in the database than the one the workbook quotes, and parity would still pass as
-    // long as the in-memory resolver disagreed with the table in the same direction.
-    // That is precisely the kind of silent divergence this pipeline exists to stop.
-    const seenPriceKeys = new Set<string>();
-    const supplierPriceRows: SupplierPriceRow[] = [];
-    for (const p of snapshot.supplierPrices) {
-      const dedupeKey = `${p.itemId}|${p.supplierId}`;
-      if (seenPriceKeys.has(dedupeKey)) {
-        // Shadowed by an earlier row. Excel never reads it, so neither do we.
-        continue;
-      }
-      seenPriceKeys.add(dedupeKey);
-      const where = `Supplier Prices!K row ${p.rowNumber} (${p.itemId}|${p.supplierId})`;
-      const quotable = parseQuotable(p.quotableRaw, where);
-      // Recomputed here rather than read from the workbook so the app's own arithmetic
-      // is what parity tests. Workbook formula: Supplier Prices!F.
-      const unitCost = (() => {
-        if (p.priceAsPrinted === null) return null;
-        const uom = (p.pricedUom ?? "").trim();
-        if (uom === "/c") return p.priceAsPrinted / 100;
-        if (uom === "/m") return p.priceAsPrinted / 1000;
-        if (p.packQty !== null && p.packQty > 0) return p.priceAsPrinted / p.packQty;
-        return p.priceAsPrinted;
-      })();
-      const quotableKey = quotable === PriceBookQuotable.YES ? `${p.itemId}|${p.supplierId}` : null;
-
-      supplierPriceRows.push({
-        itemId: p.itemId,
-        supplierId: p.supplierId,
-        unitCost,
-        quotable: quotable as unknown as SupplierPriceRow["quotable"],
-        quotableKey,
-      });
-
-      const data = {
-        priceAsPrinted: p.priceAsPrinted,
-        pricedUom: p.pricedUom,
-        packQty: p.packQty,
-        unitCost,
-        datePriced: p.datePriced,
-        source: p.source,
-        availability: p.availability,
-        accountClass: p.accountClass,
-        quotable,
-        quotableRaw: p.quotableRaw,
-        quotableKey,
-        confidence: p.confidence,
-        notes: p.notes,
-        workbookRow: p.rowNumber,
-        lastSeenImportId: run?.id ?? null,
-      };
-      const key = { itemId_supplierId: { itemId: p.itemId, supplierId: p.supplierId } };
-      const existing = await prisma.priceBookSupplierPrice.findUnique({ where: key });
-      const diff = changedFields(existing as Record<string, unknown> | null, data);
-      if (!args.dryRun) {
-        await prisma.priceBookSupplierPrice.upsert({
-          where: key,
-          create: { itemId: p.itemId, supplierId: p.supplierId, ...data },
-          update: data,
-        });
-      }
-      const label = `${p.itemId}|${p.supplierId}`;
-      if (!existing) deltas.supplierPrices.created.push(label);
-      else if (diff.length) deltas.supplierPrices.updated.push(`${label} (${diff.join(", ")})`);
-      else deltas.supplierPrices.unchanged.push(label);
-    }
-
-    // ── 3. Atomics, with cost resolved at the active supplier ──
-    const tiers: MarkupTiers = {
-      tier1: rc.markupTier1?.number ?? 0,
-      tier2: rc.markupTier2?.number ?? 0,
-      tier3: rc.markupTier3?.number ?? 0,
-      tier4: rc.markupTier4?.number ?? 0,
-      tier5: rc.markupTier5?.number ?? 0,
-    };
-    const atomicCost = new Map<string, { costBasis: number | null; sellPerUnit: number | null }>();
-
-    for (const a of snapshot.atomics) {
-      const { costBasis, supplierId } = resolveCostBasis(a.itemId, activeSupplierId, supplierPriceRows);
-      const sell = sellPriceFor(costBasis, tiers);
-      atomicCost.set(a.itemId, { costBasis, sellPerUnit: sell });
-
-      const data = {
-        description: a.description,
-        category: a.category,
-        sector: a.sector,
-        unit: a.unit,
-        rowType: a.rowType,
-        laborNormal: a.laborNormal,
-        laborDifficult: a.laborDifficult,
-        laborVeryDifficult: a.laborVeryDifficult,
-        // NECA labour unit basis (Atomics!AA). Null when the workbook says UNVERIFIED — the
-        // estimating engine blocks the line rather than defaulting to E, per the column's own
-        // instruction. E vs C is a 100x labour error that still looks like a real number.
-        laborUnitBasis: a.laborUnitBasis ?? null,
-        laborUnitDivisor: a.laborUnitDivisor ?? null,
-        laborUnitBasisRaw: a.laborUnitBasisRaw ?? null,
-        difficultyCurve: a.difficultyCurve,
-        laborStatus: a.laborStatus,
-        necaUnitBasis: a.necaUnitBasis,
-        necaPdfPage: str(a.necaPdfPage),
-        retailCost: a.retailCost,
-        tradeCost: a.tradeCost,
-        purchaseUnit: a.purchaseUnit,
-        purchasePackQty: a.purchasePackQty,
-        purchasePrice: a.purchasePrice,
-        costBasisUsed: costBasis,
-        costBasisSupplier: supplierId,
-        markupTier: markupTierFor(costBasis),
-        sellPricePerUnit: sell,
-        necArticle: a.necArticle,
-        notes: a.notes,
-        workbookRow: a.rowNumber,
-        retiredAt: null,
-      };
-      const existing = await prisma.priceBookAtomic.findUnique({ where: { itemId: a.itemId } });
-      const diff = changedFields(existing as Record<string, unknown> | null, data);
-      if (!args.dryRun) {
-        await prisma.priceBookAtomic.upsert({
-          where: { itemId: a.itemId },
-          create: { itemId: a.itemId, ...data },
-          update: data,
-        });
-      }
-      if (!existing) deltas.atomics.created.push(a.itemId);
-      else if (diff.length) deltas.atomics.updated.push(`${a.itemId} (${diff.join(", ")})`);
-      else deltas.atomics.unchanged.push(a.itemId);
-    }
-
-    // ── 4. Assemblies + components ──
-    for (const asm of snapshot.assemblies) {
-      const wb = snapshot.workbookComputed?.assemblies?.[asm.assemblyId] ?? null;
-      const data = {
-        name: asm.name,
-        sector: asm.sectorColumn ?? asm.sectorTab,
-        useCase: asm.useCase,
-        status: asm.status,
-        superseded: isSuperseded(asm.status),
-        totalLaborNormal: num(wb?.totalLaborNormal),
-        totalLaborFormula: asm.totalLaborNormalFormula,
-        laborFormulaIsFrozen: !asm.laborFormulaReferencesAtomics,
-        difficultySetting: asm.difficultySetting,
-        fieldDifficulty: asm.fieldDifficulty,
-        permitRequiredRaw: asm.permitRequired,
-        utilityStandbyRaw: asm.utilityStandbyRequired,
-        heightAccessAdderHours: asm.heightAccessAdderHours,
-        ceilingHeightBand: asm.ceilingHeightBand,
-        jobType: asm.jobType,
-        sourcingChannel: asm.sourcingChannel,
-        wbLaborHoursAdjusted: num(wb?.laborHoursAdjusted),
-        wbLaborDollars: num(wb?.laborDollars),
-        wbMaterialCost: num(wb?.materialCost),
-        wbMaterialSell: num(wb?.materialSell),
-        wbJobAdderHours: num(wb?.jobAdderHours),
-        wbJobAdderDollars: num(wb?.jobAdderDollars),
-        wbPermitFee: num(wb?.permitFee),
-        wbTotalFlatRate: num(wb?.totalFlatRate),
-        wbComponentsUnpriced: num(wb?.componentsUnpriced) === null ? null : Math.round(num(wb?.componentsUnpriced)!),
-        wbMaterialComplete: str(wb?.materialComplete),
-        wbTotalJobHours: num(wb?.totalJobHours),
-        wbJobFixedCost: num(wb?.jobFixedCost),
-        wbTotalWithFixedCost: num(wb?.totalWithFixedCost),
-        necCodeRefs: asm.necCodeRefs,
-        necCategory: asm.necCategory,
-        pricingFlags: asm.pricingFlags,
-        notes: asm.notes,
-        componentProse: asm.componentProse,
-        componentsTotalDeclared:
-          asm.componentsTotalDeclared === null ? null : Math.round(asm.componentsTotalDeclared),
-        workbookRow: asm.rowNumber,
-        retiredAt: null,
-      };
-      const existing = await prisma.priceBookAssembly.findUnique({ where: { assemblyId: asm.assemblyId } });
-      const diff = changedFields(existing as Record<string, unknown> | null, data);
-      if (!args.dryRun) {
-        await prisma.priceBookAssembly.upsert({
-          where: { assemblyId: asm.assemblyId },
-          create: { assemblyId: asm.assemblyId, ...data },
-          update: data,
-        });
-        // Components are replaced wholesale: the workbook's material formula IS the
-        // component list, so a removed term must disappear here too. Anything else
-        // would keep re-adding what Kyle's 2026-08-09 sweep removed.
-        await prisma.priceBookAssemblyComponent.deleteMany({ where: { assemblyId: asm.assemblyId } });
-        for (const c of asm.components) {
-          await prisma.priceBookAssemblyComponent.create({
-            data: {
-              assemblyId: asm.assemblyId,
-              itemId: c.itemId,
-              quantity: c.quantity,
-              atomicRow: c.atomicRow,
-            },
+    // Sections 1-6 are one interactive transaction. Before this, a throw part-way through left
+    // whatever had already been written: on 2026-08-16 two failed production attempts left 6
+    // then 8 supplier rows plus a stray price row behind (P016 §4, §8). Harmless against an
+    // empty catalog; not harmless the day the same throw lands part-way through 323 atomics on
+    // a populated one, which would leave the app quoting from a book that is half old and half
+    // new with no marker but a `failed` run row.
+    //
+    // TRANSACTION, NOT STAGE-AND-SWAP. Stage-and-swap would need a parallel set of tables and a
+    // rename step — new schema, new failure modes, and a much larger diff — to buy the same
+    // guarantee at this row count (~600 upserts). Postgres handles that in one transaction
+    // comfortably. If the catalog grows by an order of magnitude, revisit.
+    //
+    // The `PriceBookImportRun` row is created BEFORE this block and updated AFTER it, both
+    // outside the transaction, so the history of a failed attempt survives the rollback. That
+    // is the one thing that must NOT be atomic with the data.
+    //
+    // Parity (section 7) stays outside too: it reads committed data, and a parity FAILURE is a
+    // reported result rather than a throw, so it must not roll back an otherwise-good import.
+    await prisma.$transaction(
+      async (tx) => {
+      // ── 1. Suppliers ──
+      for (const s of snapshot.suppliers) {
+        const data = {
+          name: s.name ?? s.supplierId,
+          branch: s.branch,
+          channel: s.channel,
+          accountClass: s.accountClass,
+          quotable: parseQuotable(s.quotableRaw, `Suppliers!F for ${s.supplierId}`),
+          quotableRaw: s.quotableRaw,
+          leadTime: s.leadTime,
+          terms: s.terms,
+          notes: s.notes,
+        };
+        const existing = await tx.priceBookSupplier.findUnique({ where: { id: s.supplierId } });
+        const diff = changedFields(existing as Record<string, unknown> | null, data);
+        if (!args.dryRun) {
+          await tx.priceBookSupplier.upsert({
+            where: { id: s.supplierId },
+            create: { id: s.supplierId, ...data },
+            update: data,
           });
         }
+        if (!existing) deltas.suppliers.created.push(s.supplierId);
+        else if (diff.length) deltas.suppliers.updated.push(`${s.supplierId} (${diff.join(", ")})`);
+        else deltas.suppliers.unchanged.push(s.supplierId);
       }
-      if (!existing) deltas.assemblies.created.push(asm.assemblyId);
-      else if (diff.length) deltas.assemblies.updated.push(`${asm.assemblyId} (${diff.join(", ")})`);
-      else deltas.assemblies.unchanged.push(asm.assemblyId);
-    }
 
-    // ── 5. Rate Config + NEC categories ──
-    for (const [key, cell] of Object.entries(rc)) {
-      const data = {
-        label: cell.label,
-        workbookRow: cell.row,
-        numberValue: cell.number,
-        textValue: cell.text,
-      };
-      const existing = await prisma.priceBookRateConfig.findUnique({ where: { key } });
-      const diff = changedFields(existing as Record<string, unknown> | null, data);
-      if (!args.dryRun) {
-        await prisma.priceBookRateConfig.upsert({ where: { key }, create: { key, ...data }, update: data });
-      }
-      if (!existing) deltas.rateConfig.created.push(key);
-      else if (diff.length) deltas.rateConfig.updated.push(`${key} (${diff.join(", ")})`);
-      else deltas.rateConfig.unchanged.push(key);
-    }
-
-    for (const n of snapshot.necCategories) {
-      const data = { title: n.title, onKyleList: n.onKyleList, scopeRule: n.scopeRule };
-      const existing = await prisma.priceBookNecCategory.findUnique({ where: { article: n.article } });
-      const diff = changedFields(existing as Record<string, unknown> | null, data);
-      if (!args.dryRun) {
-        await prisma.priceBookNecCategory.upsert({
-          where: { article: n.article },
-          create: { article: n.article, ...data },
-          update: data,
-        });
-      }
-      if (!existing) deltas.necCategories.created.push(n.article);
-      else if (diff.length) deltas.necCategories.updated.push(`${n.article} (${diff.join(", ")})`);
-      else deltas.necCategories.unchanged.push(n.article);
-    }
-
-    // ── 6. Retire what the workbook no longer carries. Never delete. ──
-    const seenAtomics = new Set(snapshot.atomics.map((a) => a.itemId));
-    const seenAssemblies = new Set(snapshot.assemblies.map((a) => a.assemblyId));
-    for (const row of await prisma.priceBookAtomic.findMany({ where: { retiredAt: null } })) {
-      if (!seenAtomics.has(row.itemId)) {
-        if (!args.dryRun) {
-          await prisma.priceBookAtomic.update({ where: { itemId: row.itemId }, data: { retiredAt: new Date() } });
+      // ── 2. Supplier prices ──
+      //
+      // FIRST ROW WINS, because that is what the workbook does. Cost resolves through
+      // MATCH(key, 'Supplier Prices'!$L:$L, 0), and MATCH returns the first match — so a
+      // duplicate Item ID x Supplier is priced by whichever row sits higher on the sheet,
+      // not by whichever is newer. A last-write-wins upsert would put a different number
+      // in the database than the one the workbook quotes, and parity would still pass as
+      // long as the in-memory resolver disagreed with the table in the same direction.
+      // That is precisely the kind of silent divergence this pipeline exists to stop.
+      const seenPriceKeys = new Set<string>();
+      const supplierPriceRows: SupplierPriceRow[] = [];
+      for (const p of snapshot.supplierPrices) {
+        const dedupeKey = `${p.itemId}|${p.supplierId}`;
+        if (seenPriceKeys.has(dedupeKey)) {
+          // Shadowed by an earlier row. Excel never reads it, so neither do we.
+          continue;
         }
-        deltas.atomics.retired.push(row.itemId);
-      }
-    }
-    for (const row of await prisma.priceBookAssembly.findMany({ where: { retiredAt: null } })) {
-      if (!seenAssemblies.has(row.assemblyId)) {
+        seenPriceKeys.add(dedupeKey);
+        const where = `Supplier Prices!K row ${p.rowNumber} (${p.itemId}|${p.supplierId})`;
+        const quotable = parseQuotable(p.quotableRaw, where);
+        // Recomputed here rather than read from the workbook so the app's own arithmetic
+        // is what parity tests. Workbook formula: Supplier Prices!F.
+        const unitCost = (() => {
+          if (p.priceAsPrinted === null) return null;
+          const uom = (p.pricedUom ?? "").trim();
+          if (uom === "/c") return p.priceAsPrinted / 100;
+          if (uom === "/m") return p.priceAsPrinted / 1000;
+          if (p.packQty !== null && p.packQty > 0) return p.priceAsPrinted / p.packQty;
+          return p.priceAsPrinted;
+        })();
+        const quotableKey = quotable === PriceBookQuotable.YES ? `${p.itemId}|${p.supplierId}` : null;
+
+        supplierPriceRows.push({
+          itemId: p.itemId,
+          supplierId: p.supplierId,
+          unitCost,
+          quotable: quotable as unknown as SupplierPriceRow["quotable"],
+          quotableKey,
+        });
+
+        const data = {
+          priceAsPrinted: p.priceAsPrinted,
+          pricedUom: p.pricedUom,
+          packQty: p.packQty,
+          unitCost,
+          datePriced: p.datePriced,
+          source: p.source,
+          availability: p.availability,
+          accountClass: p.accountClass,
+          quotable,
+          quotableRaw: p.quotableRaw,
+          quotableKey,
+          confidence: p.confidence,
+          notes: p.notes,
+          workbookRow: p.rowNumber,
+          lastSeenImportId: run?.id ?? null,
+        };
+        const key = { itemId_supplierId: { itemId: p.itemId, supplierId: p.supplierId } };
+        const existing = await tx.priceBookSupplierPrice.findUnique({ where: key });
+        const diff = changedFields(existing as Record<string, unknown> | null, data);
         if (!args.dryRun) {
-          await prisma.priceBookAssembly.update({
-            where: { assemblyId: row.assemblyId },
-            data: { retiredAt: new Date() },
+          await tx.priceBookSupplierPrice.upsert({
+            where: key,
+            create: { itemId: p.itemId, supplierId: p.supplierId, ...data },
+            update: data,
           });
         }
-        deltas.assemblies.retired.push(row.assemblyId);
+        const label = `${p.itemId}|${p.supplierId}`;
+        if (!existing) deltas.supplierPrices.created.push(label);
+        else if (diff.length) deltas.supplierPrices.updated.push(`${label} (${diff.join(", ")})`);
+        else deltas.supplierPrices.unchanged.push(label);
       }
-    }
+
+      // ── 3. Atomics, with cost resolved at the active supplier ──
+      // Assigned here, declared outside the transaction: section 7 (parity) runs after the
+      // commit and needs both, and recomputing them there would be a second source of truth
+      // for the resolved cost.
+      tiers = {
+        tier1: rc.markupTier1?.number ?? 0,
+        tier2: rc.markupTier2?.number ?? 0,
+        tier3: rc.markupTier3?.number ?? 0,
+        tier4: rc.markupTier4?.number ?? 0,
+        tier5: rc.markupTier5?.number ?? 0,
+      };
+
+      for (const a of snapshot.atomics) {
+        const { costBasis, supplierId } = resolveCostBasis(a.itemId, activeSupplierId, supplierPriceRows);
+        const sell = sellPriceFor(costBasis, tiers);
+        atomicCost.set(a.itemId, { costBasis, sellPerUnit: sell });
+
+        const data = {
+          description: a.description,
+          category: a.category,
+          sector: a.sector,
+          unit: a.unit,
+          rowType: a.rowType,
+          laborNormal: a.laborNormal,
+          laborDifficult: a.laborDifficult,
+          laborVeryDifficult: a.laborVeryDifficult,
+          // NECA labour unit basis (Atomics!AA). Null when the workbook says UNVERIFIED — the
+          // estimating engine blocks the line rather than defaulting to E, per the column's own
+          // instruction. E vs C is a 100x labour error that still looks like a real number.
+          laborUnitBasis: a.laborUnitBasis ?? null,
+          laborUnitDivisor: a.laborUnitDivisor ?? null,
+          laborUnitBasisRaw: a.laborUnitBasisRaw ?? null,
+          difficultyCurve: a.difficultyCurve,
+          laborStatus: a.laborStatus,
+          necaUnitBasis: a.necaUnitBasis,
+          necaPdfPage: str(a.necaPdfPage),
+          retailCost: a.retailCost,
+          tradeCost: a.tradeCost,
+          purchaseUnit: a.purchaseUnit,
+          purchasePackQty: a.purchasePackQty,
+          purchasePrice: a.purchasePrice,
+          costBasisUsed: costBasis,
+          costBasisSupplier: supplierId,
+          markupTier: markupTierFor(costBasis),
+          sellPricePerUnit: sell,
+          necArticle: a.necArticle,
+          notes: a.notes,
+          workbookRow: a.rowNumber,
+          retiredAt: null,
+        };
+        const existing = await tx.priceBookAtomic.findUnique({ where: { itemId: a.itemId } });
+        const diff = changedFields(existing as Record<string, unknown> | null, data);
+        if (!args.dryRun) {
+          await tx.priceBookAtomic.upsert({
+            where: { itemId: a.itemId },
+            create: { itemId: a.itemId, ...data },
+            update: data,
+          });
+        }
+        if (!existing) deltas.atomics.created.push(a.itemId);
+        else if (diff.length) deltas.atomics.updated.push(`${a.itemId} (${diff.join(", ")})`);
+        else deltas.atomics.unchanged.push(a.itemId);
+      }
+
+      // ── 4. Assemblies + components ──
+      for (const asm of snapshot.assemblies) {
+        const wb = snapshot.workbookComputed?.assemblies?.[asm.assemblyId] ?? null;
+        const data = {
+          name: asm.name,
+          sector: asm.sectorColumn ?? asm.sectorTab,
+          useCase: asm.useCase,
+          status: asm.status,
+          superseded: isSuperseded(asm.status),
+          totalLaborNormal: num(wb?.totalLaborNormal),
+          totalLaborFormula: asm.totalLaborNormalFormula,
+          laborFormulaIsFrozen: !asm.laborFormulaReferencesAtomics,
+          difficultySetting: asm.difficultySetting,
+          fieldDifficulty: asm.fieldDifficulty,
+          permitRequiredRaw: asm.permitRequired,
+          utilityStandbyRaw: asm.utilityStandbyRequired,
+          heightAccessAdderHours: asm.heightAccessAdderHours,
+          ceilingHeightBand: asm.ceilingHeightBand,
+          jobType: asm.jobType,
+          sourcingChannel: asm.sourcingChannel,
+          wbLaborHoursAdjusted: num(wb?.laborHoursAdjusted),
+          wbLaborDollars: num(wb?.laborDollars),
+          wbMaterialCost: num(wb?.materialCost),
+          wbMaterialSell: num(wb?.materialSell),
+          wbJobAdderHours: num(wb?.jobAdderHours),
+          wbJobAdderDollars: num(wb?.jobAdderDollars),
+          wbPermitFee: num(wb?.permitFee),
+          wbTotalFlatRate: num(wb?.totalFlatRate),
+          wbComponentsUnpriced: num(wb?.componentsUnpriced) === null ? null : Math.round(num(wb?.componentsUnpriced)!),
+          wbMaterialComplete: str(wb?.materialComplete),
+          wbTotalJobHours: num(wb?.totalJobHours),
+          wbJobFixedCost: num(wb?.jobFixedCost),
+          wbTotalWithFixedCost: num(wb?.totalWithFixedCost),
+          necCodeRefs: asm.necCodeRefs,
+          necCategory: asm.necCategory,
+          pricingFlags: asm.pricingFlags,
+          notes: asm.notes,
+          componentProse: asm.componentProse,
+          componentsTotalDeclared:
+            asm.componentsTotalDeclared === null ? null : Math.round(asm.componentsTotalDeclared),
+          workbookRow: asm.rowNumber,
+          retiredAt: null,
+        };
+        const existing = await tx.priceBookAssembly.findUnique({ where: { assemblyId: asm.assemblyId } });
+        const diff = changedFields(existing as Record<string, unknown> | null, data);
+        if (!args.dryRun) {
+          await tx.priceBookAssembly.upsert({
+            where: { assemblyId: asm.assemblyId },
+            create: { assemblyId: asm.assemblyId, ...data },
+            update: data,
+          });
+          // Components are replaced wholesale: the workbook's material formula IS the
+          // component list, so a removed term must disappear here too. Anything else
+          // would keep re-adding what Kyle's 2026-08-09 sweep removed.
+          await tx.priceBookAssemblyComponent.deleteMany({ where: { assemblyId: asm.assemblyId } });
+          for (const c of asm.components) {
+            await tx.priceBookAssemblyComponent.create({
+              data: {
+                assemblyId: asm.assemblyId,
+                itemId: c.itemId,
+                quantity: c.quantity,
+                atomicRow: c.atomicRow,
+              },
+            });
+          }
+        }
+        if (!existing) deltas.assemblies.created.push(asm.assemblyId);
+        else if (diff.length) deltas.assemblies.updated.push(`${asm.assemblyId} (${diff.join(", ")})`);
+        else deltas.assemblies.unchanged.push(asm.assemblyId);
+      }
+
+      // ── 5. Rate Config + NEC categories ──
+      for (const [key, cell] of Object.entries(rc)) {
+        const data = {
+          label: cell.label,
+          workbookRow: cell.row,
+          numberValue: cell.number,
+          textValue: cell.text,
+        };
+        const existing = await tx.priceBookRateConfig.findUnique({ where: { key } });
+        const diff = changedFields(existing as Record<string, unknown> | null, data);
+        if (!args.dryRun) {
+          await tx.priceBookRateConfig.upsert({ where: { key }, create: { key, ...data }, update: data });
+        }
+        if (!existing) deltas.rateConfig.created.push(key);
+        else if (diff.length) deltas.rateConfig.updated.push(`${key} (${diff.join(", ")})`);
+        else deltas.rateConfig.unchanged.push(key);
+      }
+
+      for (const n of snapshot.necCategories) {
+        const data = { title: n.title, onKyleList: n.onKyleList, scopeRule: n.scopeRule };
+        const existing = await tx.priceBookNecCategory.findUnique({ where: { article: n.article } });
+        const diff = changedFields(existing as Record<string, unknown> | null, data);
+        if (!args.dryRun) {
+          await tx.priceBookNecCategory.upsert({
+            where: { article: n.article },
+            create: { article: n.article, ...data },
+            update: data,
+          });
+        }
+        if (!existing) deltas.necCategories.created.push(n.article);
+        else if (diff.length) deltas.necCategories.updated.push(`${n.article} (${diff.join(", ")})`);
+        else deltas.necCategories.unchanged.push(n.article);
+      }
+
+      // ── 6. Retire what the workbook no longer carries. Never delete. ──
+      const seenAtomics = new Set(snapshot.atomics.map((a) => a.itemId));
+      const seenAssemblies = new Set(snapshot.assemblies.map((a) => a.assemblyId));
+      for (const row of await tx.priceBookAtomic.findMany({ where: { retiredAt: null } })) {
+        if (!seenAtomics.has(row.itemId)) {
+          if (!args.dryRun) {
+            await tx.priceBookAtomic.update({ where: { itemId: row.itemId }, data: { retiredAt: new Date() } });
+          }
+          deltas.atomics.retired.push(row.itemId);
+        }
+      }
+      for (const row of await tx.priceBookAssembly.findMany({ where: { retiredAt: null } })) {
+        if (!seenAssemblies.has(row.assemblyId)) {
+          if (!args.dryRun) {
+            await tx.priceBookAssembly.update({
+              where: { assemblyId: row.assemblyId },
+              data: { retiredAt: new Date() },
+            });
+          }
+          deltas.assemblies.retired.push(row.assemblyId);
+        }
+      }
+      },
+      {
+        // The write phase is ~600 upserts over a possibly-remote connection; the default 5s
+        // interactive-transaction budget is nowhere near it. Measured production write phase is
+        // well under a minute, so ten minutes is generous without being unbounded.
+        timeout: 600_000,
+        maxWait: 30_000,
+      },
+    );
 
     // ── 7. Parity ──
     let parityResult: ParityResult | null = null;
