@@ -21,10 +21,17 @@ type Props = {
   estimateId: string;
   optionId: string;
   locked: boolean;
+  /** The job this estimate belongs to, forwarded to the intake screen (P024, Option A). */
+  visitId?: string;
 };
 
-export function AtomicItemsSection({ estimateId, optionId, locked }: Props) {
+export function AtomicItemsSection({ estimateId, optionId, locked, visitId }: Props) {
   const queryClient = useQueryClient();
+  // Context-free when the caller does not know the job — the nav entry behaves that way too,
+  // and an unattached draft is the working default rather than an error.
+  const intakeHref = visitId
+    ? `/estimate-intake?visitId=${encodeURIComponent(visitId)}`
+    : "/estimate-intake";
   const [overridingItemId, setOverridingItemId] = useState<string | null>(null);
   const [overrideNote, setOverrideNote] = useState("");
 
@@ -103,8 +110,13 @@ export function AtomicItemsSection({ estimateId, optionId, locked }: Props) {
             404 on every selection, it points at the screen that works.
             Existing items below still render: EstimateItem and AtomicUnit are untouched.
           */}
+          {/*
+            Carries the visit id (P024, Option A). P020 found this link discarded all context — a
+            plain href, so a tech arriving from a job's estimate screen produced a draft that
+            referenced nothing. The id is all the intake page needs; it derives the customer.
+          */}
           {!locked && (
-            <a href="/estimate-intake" className="btn btn-primary">
+            <a href={intakeHref} className="btn btn-primary">
               + Add Item (new estimator)
             </a>
           )}

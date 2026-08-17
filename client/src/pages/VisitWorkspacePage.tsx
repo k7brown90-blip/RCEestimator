@@ -585,6 +585,7 @@ export function VisitWorkspacePage() {
                 <AtomicItemsSection
                   estimateId={String(estimateId)}
                   optionId={selectedOption.id}
+                  visitId={visitId}
                   locked={estimateLocked}
                 />
               </article>

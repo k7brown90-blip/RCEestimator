@@ -1602,7 +1602,13 @@ app.get("/price-book/atomics", asyncHandler(async (req, res) => {
 app.get("/price-book/drafts", asyncHandler(async (_req, res) => {
   const drafts = await prisma.priceBookDraftEstimate.findMany({
     orderBy: { updatedAt: "desc" }, take: 50,
-    include: { _count: { select: { lines: true, questions: true } } },
+    include: {
+      _count: { select: { lines: true, questions: true } },
+      // Names, not ids — the attachment line is for a human (P024).
+      customer: { select: { id: true, name: true } },
+      visit: { select: { id: true, purpose: true, jobType: true } },
+      lead: { select: { id: true, name: true } },
+    },
   });
   res.json({ drafts });
 }));
@@ -1612,6 +1618,11 @@ app.post("/price-book/drafts", asyncHandler(async (req, res) => {
     title: z.string().trim().min(1),
     supplierId: z.string().trim().min(1).optional(),
     jobDescription: z.string().nullable().optional(),
+    // Context (P024, Option A). All optional — a draft created with none of them is the
+    // working default, not a degraded case.
+    leadId: z.string().trim().min(1).nullable().optional(),
+    customerId: z.string().trim().min(1).nullable().optional(),
+    visitId: z.string().trim().min(1).nullable().optional(),
   }).parse(req.body ?? {});
   try {
     // Supplier defaults to the workbook's ACTIVE SUPPLIER so the tech is not asked a question
@@ -1621,6 +1632,9 @@ app.post("/price-book/drafts", asyncHandler(async (req, res) => {
       title: body.title,
       supplierId: body.supplierId ?? active?.textValue ?? "HD",
       jobDescription: body.jobDescription ?? null,
+      leadId: body.leadId ?? null,
+      customerId: body.customerId ?? null,
+      visitId: body.visitId ?? null,
     });
     res.status(201).json(draft);
   } catch (err) {

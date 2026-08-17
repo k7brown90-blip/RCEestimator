@@ -7,6 +7,7 @@ import type {
   PbAtomic,
   PbComputed,
   PbDifficulty,
+  PbDraft,
   PbLine,
   PbQuantitySource,
   PbWalkthroughRow,
@@ -88,6 +89,9 @@ export function PriceBookIntakePage() {
   };
 
   const { data: drafts } = useQuery({ queryKey: ["pb-drafts"], queryFn: api.pbDrafts });
+  // The draft list carries the attachment (customer/visit/lead names) — the review payload does
+  // not, so the header line reads it from here.
+  const activeDraft = drafts?.drafts.find((d) => d.id === draftId);
   const { data: cats } = useQuery({ queryKey: ["pb-cats"], queryFn: api.pbNecCategories });
 
   const { data: atomics, isFetching: searching } = useQuery({
@@ -109,7 +113,9 @@ export function PriceBookIntakePage() {
   });
 
   const createDraft = useMutation({
-    mutationFn: () => api.pbCreateDraft({ title: newTitle.trim() }),
+    // The visit id arrives as a query param from the legacy estimate page's link (P024,
+    // Option A). Absent = the nav entry = an unattached draft, which is the working default.
+    mutationFn: () => api.pbCreateDraft({ title: newTitle.trim(), visitId: params.get("visitId") }),
     onSuccess: (d) => {
       setDraftId(d.id);
       setNewTitle("");
@@ -161,6 +167,20 @@ export function PriceBookIntakePage() {
         {review?.draft.rateProvisional && (
           <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900">
             <strong>PROVISIONAL RATE.</strong> {review.draft.provisionalReason}
+          </p>
+        )}
+
+        {/*
+          WHICH JOB IS THIS? (P024, Option A / Scope — do 4.)
+
+          Before this a draft referenced nothing in the lead -> visit -> account chain, so a
+          priced draft had no owner and its title was the only record of what it was for.
+          "Unattached" is a legitimate state, not a warning — Kyle prices speculatively and
+          tests daily — so it is stated plainly rather than styled as an error.
+        */}
+        {draftId && review && (
+          <p className="mt-2 text-xs text-rce-soft">
+            {attachmentLabel(activeDraft) ?? "Unattached — not linked to a job or lead"}
           </p>
         )}
       </div>
@@ -865,6 +885,21 @@ function QuestionRow(props: { question: { id: string; question: string; raisedBy
       </div>
     </div>
   );
+}
+
+
+/**
+ * One line naming what a draft belongs to, or null when it belongs to nothing.
+ * Names, never ids — this is read by a person deciding whether they are in the right draft.
+ */
+function attachmentLabel(d: PbDraft | undefined): string | null {
+  if (!d) return null;
+  const who = d.customer?.name ?? d.lead?.name ?? null;
+  const what = d.visit?.purpose ?? d.visit?.jobType ?? null;
+  if (who && what) return `${who} — ${what}`;
+  if (who) return who;
+  if (what) return what;
+  return null;
 }
 
 // ─── Totals — displayed, never computed here ─────────────────────────────────

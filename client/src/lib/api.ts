@@ -512,7 +512,14 @@ export const api = {
 
   pbDrafts: () => request<{ drafts: PbDraft[] }>("/price-book/drafts"),
 
-  pbCreateDraft: (input: { title: string; jobDescription?: string | null }) =>
+  pbCreateDraft: (input: {
+    title: string;
+    jobDescription?: string | null;
+    /** Context (P024). Optional everywhere — an unattached draft is the working default. */
+    leadId?: string | null;
+    customerId?: string | null;
+    visitId?: string | null;
+  }) =>
     request<PbDraft>("/price-book/drafts", { method: "POST", body: JSON.stringify(input) }),
 
   pbReview: (draftId: string) => request<PbReview>(`/price-book/drafts/${draftId}/review`),

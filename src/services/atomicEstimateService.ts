@@ -272,6 +272,16 @@ export interface CreateDraftInput {
   jobDescription?: string | null;
   scenarioRef?: string | null;
   notes?: string | null;
+  /**
+   * Context (P024, Option A). All optional — the nav entry creates drafts with none of them and
+   * must keep working, because Kyle prices speculatively and tests daily.
+   *
+   * Passing `visitId` is enough: `customerId` is derived from it server-side, since
+   * `Visit.customerId` is required and therefore free to read.
+   */
+  leadId?: string | null;
+  customerId?: string | null;
+  visitId?: string | null;
 }
 
 export async function createDraft(prisma: PrismaClient, input: CreateDraftInput) {
@@ -291,6 +301,30 @@ export async function createDraft(prisma: PrismaClient, input: CreateDraftInput)
     );
   }
 
+  // CONTEXT RESOLUTION (P024, Option A).
+  //
+  // A visit knows its customer (`Visit.customerId` is required), so an entry point that knows the
+  // job does not also have to know the account — passing `visitId` is enough.
+  //
+  // A link that does not resolve is DROPPED, not fatal. The ids arrive in a URL from the legacy
+  // estimate page, and a stale or mistyped one must not stop a tech creating a draft: unattached
+  // is the working default, so a bad link degrades to it. Without this the foreign key rejects
+  // the whole insert, which is the opposite of "additive and reversible".
+  const visit = input.visitId
+    ? await prisma.visit.findUnique({ where: { id: input.visitId }, select: { id: true, customerId: true } })
+    : null;
+  const visitId = visit?.id ?? null;
+
+  let customerId = input.customerId ?? visit?.customerId ?? null;
+  if (customerId && !(await prisma.customer.findUnique({ where: { id: customerId }, select: { id: true } }))) {
+    customerId = null;
+  }
+
+  let leadId = input.leadId ?? null;
+  if (leadId && !(await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true } }))) {
+    leadId = null;
+  }
+
   const { rc, provisional, provisionalReason } = await loadRateContext(prisma);
   return prisma.priceBookDraftEstimate.create({
     data: {
@@ -299,6 +333,9 @@ export async function createDraft(prisma: PrismaClient, input: CreateDraftInput)
       jobDescription: input.jobDescription ?? null,
       scenarioRef: input.scenarioRef ?? null,
       notes: input.notes ?? null,
+      leadId,
+      customerId,
+      visitId,
       billedLaborRate: rc.billedLaborRate,
       rateProvisional: provisional,
       provisionalReason,

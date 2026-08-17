@@ -13,6 +13,7 @@ datasource db {
 }
 
 model Customer {
+  priceBookDrafts   PriceBookDraftEstimate[]
   id          String     @id @default(cuid())
   name        String
   email       String?
@@ -256,6 +257,7 @@ model SystemSnapshot {
 }
 
 model Visit {
+  priceBookDrafts   PriceBookDraftEstimate[]
   id                     String            @id @default(cuid())
   propertyId             String
   customerId             String
@@ -1130,6 +1132,7 @@ model JobType {
 }
 
 model Lead {
+  priceBookDrafts   PriceBookDraftEstimate[]
   id                String    @id @default(cuid())
   name              String
   email             String?
@@ -1679,6 +1682,31 @@ enum PriceBookQuantitySource {
 model PriceBookDraftEstimate {
   id            String   @id @default(cuid())
   title         String
+
+  // ── CONTEXT (P024, Option A of the P020 map) ──────────────────────────────────────────
+  //
+  // Kyle, 2026-08-16: "I will take your recommendation, A and B." A now, B at graduation.
+  //
+  // Before this a draft's only foreign key was supplierId — it referenced NOTHING in the
+  // lead -> visit -> estimate -> account chain, so a priced draft had no owner and the lead
+  // that produced the work stayed open forever. These three answer "which job was this?".
+  //
+  // ALL NULLABLE, ON PURPOSE, AND THAT IS THE DESIGN RATHER THAN A COMPROMISE:
+  //   * the nav entry stays context-free — Kyle prices speculatively and tests daily, and
+  //     Option C (job-context only) was rejected for exactly that reason;
+  //   * nothing is backfilled and nothing becomes required, so the change is reversible;
+  //   * the choice of WHICH anchor is authoritative (lead vs visit vs customer) is deferred —
+  //     all three are recorded when known, and Option B settles the question at graduation.
+  //
+  // onDelete: SetNull, not Cascade: deleting a job must not delete the estimate work done
+  // for it. The draft survives with a null link and says "unattached".
+  leadId        String?
+  customerId    String?
+  visitId       String?
+  lead          Lead?     @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  customer      Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  visit         Visit?    @relation(fields: [visitId], references: [id], onDelete: SetNull)
+
   // The supplier the tech picked in the field. Kyle 2026-08-08: "the tech in the field
   // decides the best location to purchase from and builds the quote with that supplier
   // selected." Cost resolves HERE and nowhere else — no fallback to another supplier.

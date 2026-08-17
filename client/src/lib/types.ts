@@ -965,6 +965,13 @@ export interface PbDraft {
   title: string;
   supplierId: string;
   status: string;
+  /** Context (P024, Option A). All nullable — an unattached draft is the working default. */
+  leadId?: string | null;
+  customerId?: string | null;
+  visitId?: string | null;
+  customer?: { id: string; name: string } | null;
+  visit?: { id: string; purpose: string | null; jobType: string | null } | null;
+  lead?: { id: string; name: string } | null;
   rateProvisional: boolean;
   provisionalReason: string | null;
   billedLaborRate: number | null;
