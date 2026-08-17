@@ -495,6 +495,21 @@ export const api = {
     );
   },
 
+  /**
+   * The primary intake path (P023): the model composes proposed lines against the real catalog.
+   * `path` is always present — "ai" or "basic" — because a tech must never wonder which brain
+   * produced what they are reading.
+   */
+  pbProposeFromWalkthrough: (draftId: string, text: string) =>
+    request<{
+      path: "ai" | "basic";
+      degradedReason?: string;
+      proposed: Array<{ id: string; itemId: string; quantity: number; description: string | null }>;
+      questions: Array<{ id: string; question: string }>;
+      rejected: Array<{ itemId: string; reason: string }>;
+      usage: { model: string; inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; elapsedMs: number } | null;
+    }>(`/price-book/drafts/${draftId}/propose`, { method: "POST", body: JSON.stringify({ text }) }),
+
   pbDrafts: () => request<{ drafts: PbDraft[] }>("/price-book/drafts"),
 
   pbCreateDraft: (input: { title: string; jobDescription?: string | null }) =>

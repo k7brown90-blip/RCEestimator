@@ -31,6 +31,7 @@ import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { accessLogMiddleware } from "./middleware/accessLog";
 import { singularize } from "./services/singularize";
+import { proposeFromWalkthrough, ProposerUnavailable } from "./services/aiProposer";
 import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
 import {
   addLine,
@@ -1683,6 +1684,52 @@ app.post("/price-book/drafts/:draftId/questions", asyncHandler(async (req, res) 
 // browser, so the matching rule lives in one place. NOTHING is auto-added: this returns
 // candidates and the tech commits them. An ambiguous row comes back ambiguous — silently
 // picking the top hit is the assumption the atomic-first ruling exists to remove.
+/**
+ * THE PRIMARY INTAKE PATH (P023 / F10).
+ *
+ * The walkthrough goes to the model, which composes proposed lines against the real catalog and
+ * turns anything it cannot place into a question. Results land through `proposeLines()`, so the
+ * propose-only contract is enforced by the same code the MCP tool uses — nothing here can confirm,
+ * price or finalize.
+ *
+ * DEGRADED PATH. If the model is unavailable for any reason — no key, an API error, unparseable
+ * output — this falls back to the token matcher and SAYS SO in the response. P019 found Kyle had
+ * been using the token matcher believing it was the intelligent one; a silent fallback would
+ * recreate exactly that. `path` is returned on every response and the UI renders it.
+ *
+ * Note the shapes differ on purpose: the AI path WRITES proposed lines to the draft, the basic
+ * path returns candidates for the tech to pick from. They are different products and the response
+ * says which one you got.
+ */
+app.post("/price-book/drafts/:draftId/propose", asyncHandler(async (req, res) => {
+  const draftId = readParam(req, "draftId");
+  const body = z.object({ text: z.string().trim().min(1).max(8000) }).parse(req.body ?? {});
+
+  try {
+    const outcome = await proposeFromWalkthrough(prisma, draftId, body.text);
+    res.json({
+      path: outcome.path,
+      proposed: outcome.result.proposed,
+      questions: outcome.result.questions,
+      rejected: outcome.result.rejected,
+      usage: outcome.usage,
+    });
+    return;
+  } catch (err) {
+    if (!(err instanceof ProposerUnavailable)) throw err;
+    // eslint-disable-next-line no-console
+    console.warn(`[aiProposer] degraded to the token matcher: ${err.message}`);
+    res.status(200).json({
+      path: "basic" as const,
+      degradedReason: err.message,
+      proposed: [],
+      questions: [],
+      rejected: [],
+      usage: null,
+    });
+  }
+}));
+
 app.post("/price-book/resolve-walkthrough", asyncHandler(async (req, res) => {
   const body = z.object({
     rows: z.array(z.object({

@@ -465,6 +465,41 @@ function WalkthroughTab(props: {
   const [text, setText] = useState("");
   const [rows, setRows] = useState<PbWalkthroughRow[] | null>(null);
 
+  const [lastPath, setLastPath] = useState<"ai" | "basic" | null>(null);
+  const [degraded, setDegraded] = useState<string | null>(null);
+  const [aiSummary, setAiSummary] = useState<{ proposed: number; questions: number; rejected: number } | null>(null);
+
+  /** The primary path: the model composes the draft, proposeLines() enforces the contract. */
+  const propose = useMutation({
+    mutationFn: () => api.pbProposeFromWalkthrough(draftId, text),
+    onSuccess: (r) => {
+      setLastPath(r.path);
+      setDegraded(r.degradedReason ?? null);
+      if (r.path === "ai") {
+        setRows(null);
+        setAiSummary({
+          proposed: r.proposed.length,
+          questions: r.questions.length,
+          rejected: r.rejected.length,
+        });
+        // Proposed lines and questions now exist on the draft — the review tab and the totals
+        // bar both need to see them.
+        onOpenItemsChange(r.questions.length);
+        onChanged();
+      } else {
+        // Degraded: fall through to the token matcher so the tech still gets candidates.
+        setAiSummary(null);
+        resolve.mutate();
+      }
+    },
+    onError: (err) => {
+      setLastPath("basic");
+      setDegraded((err as Error).message);
+      setAiSummary(null);
+      resolve.mutate();
+    },
+  });
+
   const resolve = useMutation({
     mutationFn: () =>
       api.pbResolveWalkthrough(
@@ -472,6 +507,7 @@ function WalkthroughTab(props: {
       ),
     onSuccess: (r) => {
       setRows(r.rows);
+      setLastPath((p) => p ?? "basic");
       onOpenItemsChange(r.rows.filter((row) => row.status !== "MATCHED").length);
     },
   });
@@ -488,14 +524,61 @@ function WalkthroughTab(props: {
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
-        <button className="btn btn-primary mt-2" disabled={!text.trim() || resolve.isPending} onClick={() => resolve.mutate()}>
-          {resolve.isPending ? "Matching…" : "Match against the price book"}
-        </button>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            className="btn btn-primary"
+            disabled={!text.trim() || propose.isPending || resolve.isPending}
+            onClick={() => propose.mutate()}
+          >
+            {propose.isPending ? "Building the draft…" : "Build the draft (AI)"}
+          </button>
+          <button
+            className="btn btn-secondary"
+            disabled={!text.trim() || propose.isPending || resolve.isPending}
+            onClick={() => resolve.mutate()}
+          >
+            {resolve.isPending ? "Matching…" : "Basic match only"}
+          </button>
+        </div>
+
+        {/*
+          WHICH BRAIN PRODUCED THIS (P023 / Scope — do 2).
+
+          P019 found Kyle had been using the token matcher believing it was the intelligent one.
+          A silent fallback would recreate exactly that, so the path is always named — and when
+          the AI path degraded, the reason is shown rather than swallowed.
+        */}
+        {lastPath && (
+          <div className="mt-2 text-xs">
+            {lastPath === "ai" ? (
+              <span className="rounded bg-emerald-50 px-2 py-1 text-emerald-800">
+                AI proposal — lines are proposed for your review, nothing is priced or confirmed
+              </span>
+            ) : (
+              <span className="rounded bg-amber-50 px-2 py-1 text-amber-900">
+                Basic match{degraded ? ` — AI unavailable: ${degraded}` : ""}
+              </span>
+            )}
+          </div>
+        )}
+
         <p className="mt-2 text-xs text-rce-muted">
           Nothing is added automatically. Every row comes back for you to commit — and anything the
           book can't match becomes a question rather than disappearing.
         </p>
       </div>
+
+      {aiSummary && (
+        <div className="card p-3 text-sm">
+          <p className="font-medium">
+            {aiSummary.proposed} line(s) proposed · {aiSummary.questions} question(s)
+            {aiSummary.rejected > 0 ? ` · ${aiSummary.rejected} refused` : ""}
+          </p>
+          <p className="mt-1 text-xs text-rce-muted">
+            Open the Review tab to accept, edit or drop each one. Nothing counts until you confirm it.
+          </p>
+        </div>
+      )}
 
       {rows?.map((row, i) => (
         <WalkthroughRow key={`${row.raw}-${i}`} row={row} draftId={draftId} onChanged={onChanged} />
