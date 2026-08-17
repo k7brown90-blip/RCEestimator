@@ -21,9 +21,18 @@ import { proposeLines } from "../src/services/atomicEstimateService";
 
 const SRC = (p: string) => readFileSync(path.join(__dirname, "..", p), "utf8");
 
-/** A workbook-shaped atomic and a legacy-shaped one, so "disjoint" is testable. */
-const PB_CODE = "A016";
-const PB_CODE_2 = "SD002";
+/**
+ * A workbook-shaped atomic and a legacy-shaped one, so "disjoint" is testable.
+ *
+ * These were `A016`/`SD002` — REAL catalog ids — which was safe only while the test database had
+ * no imported catalog. P021 imported it, and this file's cleanup then tried to delete a real
+ * A016 that `PriceBookAssemblyComponent` references under a RESTRICT foreign key. A test whose
+ * teardown can delete production-shaped data is a bug regardless of whether it fires; the ids are
+ * now unmistakably fixtures. The assertions are about the SHAPE of a price-book row (three labour
+ * columns, unit basis, gap badges), which a fixture carries exactly as a real row does.
+ */
+const PB_CODE = "P014_FIX_ATOMIC_A";
+const PB_CODE_2 = "P014_FIX_ATOMIC_B";
 const LEGACY_CODE = "LINE-002";
 
 let draftId: string | null = null;
@@ -92,7 +101,10 @@ afterAll(async () => {
 
 describe("GET /atomic-units — browse reads the price book", () => {
   it("returns price-book codes and never a legacy code", async () => {
-    const res = await request(app).get("/atomic-units?limit=200");
+    // Searched rather than paged: the test database now holds the full 323-row catalog (P021
+    // imported it for the matcher fixtures), so a fixture id sorting past `limit` would make
+    // this assertion depend on page position rather than on behaviour.
+    const res = await request(app).get(`/atomic-units?search=${PB_CODE}&limit=200`);
     expect(res.status).toBe(200);
     const ids: string[] = res.body.atomics.map((a: { itemId: string }) => a.itemId);
     expect(ids).toContain(PB_CODE);

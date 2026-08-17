@@ -30,6 +30,7 @@ import {
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { accessLogMiddleware } from "./middleware/accessLog";
+import { singularize } from "./services/singularize";
 import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
 import {
   addLine,
@@ -1711,47 +1712,57 @@ app.post("/price-book/resolve-walkthrough", asyncHandler(async (req, res) => {
       .slice(0, 6);
 
     const SELECT = { itemId: true, description: true, unit: true, laborUnitBasis: true, costBasisUsed: true };
+    // PLURALS (P021 / F1). The catalog is written in the singular — "Duplex Receptacle",
+    // "Toggle Switch" — and a tech writes what they'd say out loud. A `contains` on
+    // "receptacles" cannot match "Receptacle", so P019 §2c found the exact controlled pair:
+    // "toggle switch" returned R004+CD004 while "toggle switches" returned nothing. The plural
+    // also defeated the old retry, because the plural noun was itself the longest token.
+    //
+    // Each token is matched as ITSELF **OR** its singular rather than being replaced by the
+    // singular. Replacing could lose a match against a catalog entry that is genuinely plural
+    // ("Wire Nuts", "Fittings"); OR-ing can only ever widen, and widening is safe here because
+    // the resolver returns candidates and never selects.
     const byTokens = (tks: string[]) =>
       prisma.priceBookAtomic.findMany({
         where: {
           retiredAt: null,
-          AND: tks.map((tk) => ({
-            OR: [
-              { itemId: { contains: tk, mode: "insensitive" as const } },
-              { description: { contains: tk, mode: "insensitive" as const } },
-            ],
-          })),
+          AND: tks.map((tk) => {
+            const forms = [...new Set([tk, singularize(tk)])];
+            return {
+              OR: forms.flatMap((f) => [
+                { itemId: { contains: f, mode: "insensitive" as const } },
+                { description: { contains: f, mode: "insensitive" as const } },
+              ]),
+            };
+          }),
         },
         take: 6, orderBy: { itemId: "asc" },
         select: SELECT,
       });
 
-    let matches = tokens.length === 0 ? [] : await byTokens(tokens);
+    const matches = tokens.length === 0 ? [] : await byTokens(tokens);
 
-    // FALLBACK on the most distinctive word.
+    // THE LONGEST-TOKEN RETRY IS GONE (P021 / F2).
     //
-    // Field phrasing and catalog phrasing disagree in ways no token rule fixes: a tech writes
-    // "1-1/4 EMT", the book says "EMT Conduit, 1 1/4-inch". Requiring every token then finds
-    // nothing, and a bare UNMATCHED gives the tech nothing to work with.
+    // It used to retry on the single longest token when the all-token pass found nothing, on the
+    // premise that the longest word "is usually the noun that actually names the thing". P019 §2b
+    // showed the premise is false in the field: for "exterior sconce light" the longest token is
+    // "exterior" (8) — an adjective sitting inside a parenthetical — so the retry returned six
+    // load-center LABOR rows for a wall sconce. "egress sconce light" behaved the same way. It
+    // never once matched on the word that named the thing.
     //
-    // So when the full set misses, retry on the longest token alone — usually the noun that
-    // actually names the thing ("EMT", "receptacle", "box"). This produces CANDIDATES TO CHOOSE
-    // FROM, never an auto-selection: the result is still AMBIGUOUS and the tech still picks.
-    // Widening what is offered is safe; picking for them is not.
-    let usedFallback = false;
-    if (matches.length === 0 && tokens.length > 1) {
-      const longest = [...tokens].sort((a, b) => b.length - a.length)[0];
-      matches = await byTokens([longest]);
-      usedFallback = matches.length > 0;
-    }
+    // A wrong candidate costs more than a missing one: a nonsense list teaches the operator to
+    // stop reading the list, and that is unrecoverable. So pass 1 failing now means UNMATCHED,
+    // and the tech searches the catalog directly — which is what they did anyway.
     out.push({
       raw: row.raw,
       parsedQuantity: row.quantity ?? (leadingQty ? Number(leadingQty[1]) : null),
       searchTerm: term,
-      // A fallback hit is never reported as MATCHED even when it returns exactly one row —
-      // it matched on a single word, so the tech should look at it, not accept it.
-      status: matches.length === 0 ? "UNMATCHED" : (matches.length === 1 && !usedFallback) ? "MATCHED" : "AMBIGUOUS",
-      matchedOn: usedFallback ? "single-word fallback" : "all words",
+      status: matches.length === 0 ? "UNMATCHED" : matches.length === 1 ? "MATCHED" : "AMBIGUOUS",
+      // Retained in the response shape (the intake page reads it) but now constant: every match
+      // is an all-token match, because the single-word retry that produced the other value is
+      // gone.
+      matchedOn: "all words",
       candidates: matches.map((m) => ({
         itemId: m.itemId,
         description: m.description,
