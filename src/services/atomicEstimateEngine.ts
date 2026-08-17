@@ -406,10 +406,22 @@ export function computeEstimate(
     gaps,
     incompleteLineCount,
     totalLineCount: computed.length,
+    // COMPLETE REQUIRES SUBSTANCE (P022 / P019 §3).
+    //
+    // This used to read `incompleteLineCount === 0 ? "COMPLETE" : ...`, which an EMPTY draft
+    // satisfies — zero lines carry gaps because there are no lines. Kyle photographed
+    // `COMPLETE - 0 lines - $200.00` at 23:37Z on 2026-08-16, three minutes before his first
+    // line existed, and it was telling him the truth about gaps while implying the opposite
+    // about the estimate.
+    //
+    // Vacuous truth is the same failure shape as a silently wrong price: the reader acts on
+    // the summary, not on the predicate behind it. An empty draft is EMPTY, not complete.
     completenessSummary:
-      incompleteLineCount === 0
-        ? "COMPLETE"
-        : `INCOMPLETE - ${incompleteLineCount} of ${computed.length} lines carry gaps`,
+      computed.length === 0
+        ? "EMPTY - no lines yet"
+        : incompleteLineCount === 0
+          ? "COMPLETE"
+          : `INCOMPLETE - ${incompleteLineCount} of ${computed.length} lines carry gaps`,
   };
 }
 

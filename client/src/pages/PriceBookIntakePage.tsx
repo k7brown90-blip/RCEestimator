@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
@@ -77,6 +77,9 @@ export function PriceBookIntakePage() {
   const [search, setSearch] = useState("");
   const [article, setArticle] = useState<string | null>(null);
   const [picked, setPicked] = useState<PbAtomic | null>(null);
+  // Unresolved walkthrough rows, reported up from WalkthroughTab so the totals bar cannot
+  // read COMPLETE while any item is still UNMATCHED or AMBIGUOUS (P022).
+  const [openItems, setOpenItems] = useState(0);
   const [newTitle, setNewTitle] = useState("");
 
   const invalidate = () => {
@@ -194,14 +197,20 @@ export function PriceBookIntakePage() {
             />
           )}
 
-          {tab === "walkthrough" && <WalkthroughTab draftId={draftId} onChanged={invalidate} />}
+          {tab === "walkthrough" && (
+            <WalkthroughTab draftId={draftId} onChanged={invalidate} onOpenItemsChange={setOpenItems} />
+          )}
 
           {tab === "review" && (
             <ReviewTab draftId={draftId} review={review} computed={computed?.computed} onChanged={invalidate} />
           )}
 
           {/* ── Running totals. Straight from the engine, always visible. ── */}
-          <TotalsBar computed={computed?.computed} />
+          <TotalsBar
+            computed={computed?.computed}
+            openQuestions={review?.counts.openQuestions ?? 0}
+            openItems={openItems}
+          />
         </>
       )}
 
@@ -438,8 +447,21 @@ function AddLineSheet(props: { atomic: PbAtomic; draftId: string; onClose: () =>
 
 // ─── Walkthrough material list ───────────────────────────────────────────────
 
-function WalkthroughTab(props: { draftId: string; onChanged: () => void }) {
-  const { draftId, onChanged } = props;
+function WalkthroughTab(props: {
+  draftId: string;
+  onChanged: () => void;
+  /**
+   * Reports how many resolved rows are still UNMATCHED or AMBIGUOUS, so the totals bar can
+   * refuse to say COMPLETE while they are open (P022).
+   *
+   * LIMITATION, stated where it bites: this is session state. The resolver's verdicts are never
+   * persisted (P019 §3 / F8), so a page reload drops the count to zero and the bar reads
+   * COMPLETE again on a draft with unresolved items. Closing that needs the schema change F8
+   * calls for, which is not this task.
+   */
+  onOpenItemsChange: (n: number) => void;
+}) {
+  const { draftId, onChanged, onOpenItemsChange } = props;
   const [text, setText] = useState("");
   const [rows, setRows] = useState<PbWalkthroughRow[] | null>(null);
 
@@ -448,7 +470,10 @@ function WalkthroughTab(props: { draftId: string; onChanged: () => void }) {
       api.pbResolveWalkthrough(
         text.split("\n").map((l) => l.trim()).filter(Boolean).map((raw) => ({ raw }))
       ),
-    onSuccess: (r) => setRows(r.rows),
+    onSuccess: (r) => {
+      setRows(r.rows);
+      onOpenItemsChange(r.rows.filter((row) => row.status !== "MATCHED").length);
+    },
   });
 
   return (
@@ -564,6 +589,13 @@ function ReviewTab(props: {
 }) {
   const { draftId, review, computed, onChanged } = props;
   const [finalizeMsg, setFinalizeMsg] = useState<{ ok: boolean; reasons: string[]; warnings: string[] } | null>(null);
+  const finalizeMsgRef = useRef<HTMLDivElement | null>(null);
+
+  // The message can render off-screen on a phone; bring it to the operator rather than expecting
+  // a scroll hunt. `block: "center"` rather than "start" so the buttons stay visible with it.
+  useEffect(() => {
+    if (finalizeMsg) finalizeMsgRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [finalizeMsg]);
 
   const finalize = useMutation({
     mutationFn: (context: "customer" | "internal") => api.pbFinalize(draftId, context),
@@ -636,16 +668,20 @@ function ReviewTab(props: {
       </div>
 
       <div className="card p-3">
-        <div className="flex gap-2">
-          <button className="btn btn-secondary flex-1" disabled={finalize.isPending} onClick={() => finalize.mutate("internal")}>
-            Check (internal)
-          </button>
-          <button className="btn btn-primary flex-1" disabled={finalize.isPending} onClick={() => finalize.mutate("customer")}>
-            Finalize for customer
-          </button>
-        </div>
+        {/*
+          ABOVE the buttons, and scrolled to on arrival (P022 / P019 §5).
+
+          The engine's refusal messages were always correct and always rendered — underneath the
+          buttons, at the bottom of a long single-column page. On 2026-08-16 Kyle pressed Finalize
+          five times in fifty seconds, got five 409s each carrying two precise reasons, and filed
+          "I click finalize for the customer and nothing happens". A refusal the operator cannot
+          see is a refusal that did not happen.
+
+          Messages are rendered VERBATIM. P019 confirmed the wording is good, and the wording is
+          the part that tells the tech what to do.
+        */}
         {finalizeMsg && (
-          <div className="mt-2 space-y-1">
+          <div ref={finalizeMsgRef} className="mb-2 space-y-1">
             {finalizeMsg.ok && <p className="text-sm text-emerald-700">Finalized.</p>}
             {finalizeMsg.reasons.map((r, i) => (
               <p key={i} className="rounded bg-red-50 p-2 text-xs text-red-900">{r}</p>
@@ -655,6 +691,15 @@ function ReviewTab(props: {
             ))}
           </div>
         )}
+        <div className="flex gap-2">
+          <button className="btn btn-secondary flex-1" disabled={finalize.isPending} onClick={() => finalize.mutate("internal")}>
+            Check (internal)
+          </button>
+          <button className="btn btn-primary flex-1" disabled={finalize.isPending} onClick={() => finalize.mutate("customer")}>
+            Finalize for customer
+          </button>
+        </div>
+
       </div>
 
       <PhotoAttach draftId={draftId} />
@@ -741,9 +786,37 @@ function QuestionRow(props: { question: { id: string; question: string; raisedBy
 
 // ─── Totals — displayed, never computed here ─────────────────────────────────
 
-function TotalsBar(props: { computed: PbComputed | undefined }) {
+/**
+ * The status line may not claim more than the draft has earned (P022 / P019 §3).
+ *
+ * The engine now refuses to call an empty draft COMPLETE, but the engine cannot see the two
+ * other kinds of open work: questions raised against the draft, and walkthrough rows the matcher
+ * left UNMATCHED or AMBIGUOUS. Those live on this page. So the bar takes them as props and
+ * reports the strictest true statement, rather than the engine's line alone.
+ */
+function TotalsBar(props: {
+  computed: PbComputed | undefined;
+  openQuestions: number;
+  openItems: number;
+}) {
   const c = props.computed;
   if (!c) return null;
+
+  const open = props.openQuestions + props.openItems;
+  const earnedComplete = c.totalLineCount > 0 && c.incompleteLineCount === 0 && open === 0;
+
+  const openBits: string[] = [];
+  if (props.openItems > 0) openBits.push(`${props.openItems} item(s) unresolved`);
+  if (props.openQuestions > 0) openBits.push(`${props.openQuestions} question(s) open`);
+
+  const status = earnedComplete
+    ? "COMPLETE"
+    : [c.completenessSummary, ...openBits].join(" · ");
+
+  // A total assembled only from the fixed job fee, while work is still open, is a number a
+  // reader will take for a quote. Say what it is instead of letting it stand alone.
+  const feeOnly = c.totalLineCount === 0 && (c.total ?? 0) > 0;
+
   return (
     <div className="fixed inset-x-0 bottom-0 z-30 border-t bg-white/95 p-3 backdrop-blur">
       <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 text-sm">
@@ -751,8 +824,8 @@ function TotalsBar(props: { computed: PbComputed | undefined }) {
           <div className="text-xs text-rce-soft">
             {c.totalLineCount} line(s) · {hours(c.laborHours)} hr
           </div>
-          <div className={c.incompleteLineCount > 0 ? "text-xs text-amber-800" : "text-xs text-emerald-700"}>
-            {c.completenessSummary}
+          <div className={earnedComplete ? "text-xs text-emerald-700" : "text-xs text-amber-800"}>
+            {status}
           </div>
         </div>
         <div className="text-right">
@@ -760,6 +833,9 @@ function TotalsBar(props: { computed: PbComputed | undefined }) {
             labour {money(c.laborDollars)} · material {money(c.materialSell)}
           </div>
           <div className="text-lg font-semibold">{money(c.total)}</div>
+          {feeOnly && (
+            <div className="text-xs text-amber-800">fixed fee only — no lines priced</div>
+          )}
         </div>
       </div>
     </div>

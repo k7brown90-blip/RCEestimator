@@ -118,6 +118,53 @@ export async function getDailySummary(): Promise<DailySummaryResponse> {
   };
 }
 
+
+/**
+ * Operator feedback filed through the app, for the daily digest (P022 / P019 §6).
+ *
+ * `POST /feedback` writes a `SystemEvent` and returns 201. Nothing read that table. Three items
+ * sat unseen for two weeks — including "I click finalize for the customer and nothing happens",
+ * which was a real, diagnosable defect. Email is the operator channel by Kyle's 08-11/08-13/08-16
+ * rulings, so it rides the digest that already exists rather than growing a new mechanism.
+ *
+ * RECENT vs BACKLOG. "Recent" is the last 24 h — the digest's own cadence. "Backlog" is
+ * everything older, and it repeats every day **because there is no way to mark an item handled**:
+ * `SystemEvent` has no resolved flag and adding one is a schema change this task does not carry.
+ * That repetition is deliberate and visible rather than quietly dropped, and the email says so —
+ * but it is exactly the kind of thing that trains an operator to ignore a section, so a triage
+ * mechanism is flagged as the follow-up rather than left implicit.
+ */
+export interface DigestFeedback {
+  recent: Array<{ at: Date; message: string; page: string | null }>;
+  backlog: Array<{ at: Date; message: string; page: string | null }>;
+}
+
+export async function getFeedbackForDigest(now = new Date()): Promise<DigestFeedback> {
+  const cutoff = new Date(now.getTime() - 24 * 3600_000);
+  const rows = await prisma.systemEvent.findMany({
+    where: { source: "feedback" },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+
+  const shape = (r: { createdAt: Date; message: string; detailsJson: string | null }) => {
+    let page: string | null = null;
+    try {
+      // Only the page is read out of the details blob. The blob also holds a user agent, and
+      // nothing else from it belongs in an email.
+      page = (JSON.parse(r.detailsJson ?? "{}") as { page?: string }).page ?? null;
+    } catch {
+      page = null;
+    }
+    return { at: r.createdAt, message: r.message, page };
+  };
+
+  return {
+    recent: rows.filter((r) => r.createdAt >= cutoff).map(shape),
+    backlog: rows.filter((r) => r.createdAt < cutoff).map(shape),
+  };
+}
+
 export async function sendDailySummaryEmail(): Promise<void> {
   const toEmail = process.env.SUMMARY_EMAIL;
   const gmailUser = process.env.GMAIL_USER;
@@ -131,8 +178,14 @@ export async function sendDailySummaryEmail(): Promise<void> {
   }
 
   const data = await getDailySummary();
-  if (data.totalCalls === 0) {
-    console.log("[DailySummary] No calls today — skipping email.");
+  const feedback = await getFeedbackForDigest();
+
+  // The old gate skipped the whole email whenever there were no calls — which is most days while
+  // the phone agent is deferred. Attaching feedback to a digest that never sends would have been
+  // a fix in name only, so the gate now asks whether there is anything worth sending at all.
+  const hasFeedback = feedback.recent.length + feedback.backlog.length > 0;
+  if (data.totalCalls === 0 && !hasFeedback) {
+    console.log("[DailySummary] No calls and no feedback today — skipping email.");
     return;
   }
 
@@ -172,6 +225,32 @@ export async function sendDailySummaryEmail(): Promise<void> {
       </table>`;
   };
 
+  /** Feedback rows, rendered in the same visual language as the call sections. */
+  const feedbackSection = (
+    title: string,
+    items: DigestFeedback["recent"],
+    color: string,
+    note: string | null,
+  ) => {
+    if (items.length === 0) return "";
+    const esc = (t: string) =>
+      t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return `
+      <h2 style="color:${color};font-size:16px;margin:24px 0 8px;border-bottom:2px solid ${color};padding-bottom:4px;">${title} (${items.length})</h2>
+      ${note ? `<p style="margin:0 0 8px;font-size:12px;color:#777;">${note}</p>` : ""}
+      ${items
+        .map(
+          (f) => `
+        <div style="border-left:3px solid ${color};padding:8px 12px;margin-bottom:8px;background:#fafafa;">
+          <div style="font-size:13px;">${esc(f.message)}</div>
+          <div style="font-size:11px;color:#777;margin-top:4px;">
+            ${f.at.toLocaleString("en-US", { timeZone: "America/Chicago" })}${f.page ? ` · ${esc(f.page)}` : ""}
+          </div>
+        </div>`,
+        )
+        .join("")}`;
+  };
+
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:640px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0;">
@@ -201,6 +280,14 @@ export async function sendDailySummaryEmail(): Promise<void> {
         ${section("CANCELLATIONS", data.summary["cancellation"] ?? [], "#c62828")}
         ${section("ESTIMATE FOLLOWUPS", data.summary["estimate_followup"] ?? [], "#00695c")}
         ${section("OTHER CALLS", data.summary["other"] ?? [], "#555")}
+
+        ${feedbackSection("FEEDBACK FILED IN THE APP", feedback.recent, "#00695c", null)}
+        ${feedbackSection(
+          "OLDER FEEDBACK — STILL OPEN",
+          feedback.backlog,
+          "#8d6e63",
+          "Repeats daily: there is no way to mark an item handled yet.",
+        )}
 
         <div style="margin-top:24px;padding:12px 16px;background:#f5f5f5;border-radius:6px;font-size:13px;color:#666;">
           <p style="margin:0 0 4px;">Review Gmail drafts for pending customer replies.</p>
