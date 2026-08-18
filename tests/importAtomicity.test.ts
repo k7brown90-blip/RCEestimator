@@ -206,3 +206,61 @@ describe("the importer's own source keeps the run row outside the transaction", 
     expect(inTransaction).not.toContain("prisma.priceBook");
   });
 });
+
+/**
+ * A duplicated Item ID in Atomics must ABORT the import, not overwrite a product.
+ *
+ * `PriceBookAtomic.itemId` is the primary key and the upsert loop walks the sheet in order, so
+ * two rows sharing an ID do not collide loudly — the lower one silently wins and the catalog ends
+ * up holding the wrong product under the right ID. This is live in the workbook today: rows 51 and
+ * 326 both claim CD009 (a commercial receptacle and a 4-inch square box), and it is the named
+ * precondition on the held price-book import.
+ *
+ * Pinned by reading the importer's source rather than by running it, for the same reason the test
+ * above does: the guard has to sit BEFORE any write, and where it sits is the property.
+ */
+describe("the importer refuses a duplicated Item ID rather than substituting a product", () => {
+  it("checks for duplicates before the snapshot is returned, and exits non-zero", async () => {
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const src = readFileSync(
+      path.join(__dirname, "..", "scripts", "price-book", "importPriceBook.ts"),
+      "utf8",
+    );
+
+    expect(src).toContain("function assertNoDuplicateAtomicIds");
+    expect(src).toContain("DUPLICATE ITEM IDs IN Atomics");
+
+    // It must run inside runExtractor, before the snapshot reaches any caller — a guard placed
+    // after the upsert loop would report a substitution that had already happened.
+    const guardCall = src.indexOf("assertNoDuplicateAtomicIds(snapshot);");
+    const returnSnapshot = src.indexOf("return { snapshot, snapshotPath: outPath };");
+    expect(guardCall).toBeGreaterThan(0);
+    expect(guardCall).toBeLessThan(returnSnapshot);
+
+    // And the upsert loop must come later in the file than the guard.
+    expect(src.indexOf("for (const a of snapshot.atomics)")).toBeGreaterThan(guardCall);
+
+    // It aborts rather than warning. Exit 4 = extraction problems, which the sync loop treats
+    // as a hard failure.
+    const fn = src.slice(src.indexOf("function assertNoDuplicateAtomicIds"));
+    // The guard's own body, generously bounded — enough to cover it, short enough that a
+    // process.exit elsewhere in the file cannot satisfy this by accident.
+    expect(fn.slice(0, 2500)).toContain("process.exit(4)");
+  });
+
+  it("is not satisfied by the milder duplicate-supplier-price warning", async () => {
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const src = readFileSync(
+      path.join(__dirname, "..", "scripts", "price-book", "importPriceBook.ts"),
+      "utf8",
+    );
+    // Duplicate supplier prices are a stale price on the RIGHT product and only warn; a duplicate
+    // Item ID is the WRONG product and must abort. The two must not be conflated.
+    expect(src).toContain("DUPLICATE SUPPLIER PRICE ROWS");
+    const supplierWarn = src.indexOf("DUPLICATE SUPPLIER PRICE ROWS");
+    const idAbort = src.indexOf("DUPLICATE ITEM IDs IN Atomics");
+    expect(supplierWarn).not.toBe(idAbort);
+  });
+});

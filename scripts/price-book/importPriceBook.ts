@@ -230,7 +230,66 @@ function runExtractor(args: Args): { snapshot: Snapshot; snapshotPath: string } 
     console.error("FATAL: extraction reported problems; refusing to import a partial catalog.");
     process.exit(4);
   }
+  assertNoDuplicateAtomicIds(snapshot);
   return { snapshot, snapshotPath: outPath };
+}
+
+/**
+ * A duplicated Item ID in Atomics is a SILENT PRODUCT SUBSTITUTION, and it aborts the import.
+ *
+ * `PriceBookAtomic.itemId` is the primary key. The upsert loop below walks the sheet in order, so
+ * two rows sharing an ID do not collide loudly — the second one simply overwrites the first, and
+ * the catalog ends up holding whichever product happened to sit lower on the sheet, wearing the
+ * other one's ID.
+ *
+ * This is live today and is why the import is held. Workbook rows 51 and 326 both claim CD009:
+ *
+ *   row  51  Single Receptacle, 20A 125V, NEMA 5-20R, Commercial Grade   (labour 30/37.5/45, basis C)
+ *   row 326  Outlet Box, 4-inch Square, 2-1/8 in. DEEP, Welded Steel     (no labour, basis E)
+ *
+ * Production currently holds row 51. An unguarded import would replace the receptacle with a box
+ * — same ID, different product, no labour value, different unit basis — and nothing would say so.
+ * Any estimate later drawing CD009 would quote a box where a receptacle was meant.
+ *
+ * WHY ABORT RATHER THAN WARN. The file already warns about duplicate SUPPLIER PRICE rows, which
+ * are the milder version of this: a stale price on the right product. This is the wrong product.
+ * The workbook's own rule for the labour-unit column — "the app must BLOCK, not default" — is the
+ * same instinct, and the same reasoning applies harder here: a plausible-looking wrong row is
+ * exactly what the accuracy standard exists to stop. Refusing costs an import; not refusing costs
+ * a quote nobody can explain afterwards.
+ *
+ * Fixing it is a WORKBOOK decision (which product keeps CD009, and what the other is re-keyed to)
+ * and belongs to the price-book lane, not to this script.
+ */
+function assertNoDuplicateAtomicIds(snapshot: Snapshot): void {
+  const byId = new Map<string, SnapAtomic[]>();
+  for (const a of snapshot.atomics) {
+    const key = String(a.itemId ?? "").trim();
+    if (!key) continue;
+    const list = byId.get(key);
+    if (list) list.push(a);
+    else byId.set(key, [a]);
+  }
+
+  const collisions = [...byId.entries()].filter(([, rows]) => rows.length > 1);
+  if (collisions.length === 0) return;
+
+  console.error("");
+  console.error("⛔ FATAL: DUPLICATE ITEM IDs IN Atomics — refusing to import.");
+  console.error("");
+  console.error("   Item ID is the catalog's primary key. Importing would keep only the LAST row");
+  console.error("   for each of these and silently discard the other product.");
+  console.error("");
+  for (const [itemId, rows] of collisions) {
+    console.error(`   ${itemId} appears ${rows.length} times:`);
+    for (const r of rows) {
+      console.error(`     row ${String(r.rowNumber).padStart(4)}  ${String(r.description ?? "").slice(0, 80)}`);
+    }
+  }
+  console.error("");
+  console.error("   Fix in the workbook: decide which product keeps the ID and re-key the other.");
+  console.error("   Nothing was imported.");
+  process.exit(4);
 }
 
 // ─── Import ─────────────────────────────────────────────────────────────────────
