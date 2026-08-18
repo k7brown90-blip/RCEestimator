@@ -69,7 +69,7 @@ def main() -> int:
     wbv.close()
     wbf.close()
 
-    rows, sections, uncomputed = [], [], []
+    rows, sections, uncomputed, unpriced = [], [], [], []
     current = None
 
     for i, vr in enumerate(vrows[1:], start=2):  # row 1 is the header
@@ -82,7 +82,7 @@ def main() -> int:
         cells = [as_number(vr[c]) if len(vr) > c else None for c in NUMERIC_COLS]
 
         if all(c is None for c in cells):
-            # Guard: a section header that is really an item whose formulas have not computed.
+            # Guard 1: a row whose formulas have not been computed is not a section header.
             pending = [
                 f"row {i} {name!r} {label} holds a formula with no value"
                 for col, label in WATCH.items()
@@ -91,6 +91,22 @@ def main() -> int:
             if pending:
                 uncomputed.extend(pending)
                 continue
+
+            # Guard 2: AN UNPRICED ITEM IS NOT A SECTION.
+            #
+            # "a name with no numbers" was a fine rule until Kyle added a LIGHTNING PROTECTION
+            # section on 2026-08-18 with three product names under it and no prices yet. Those
+            # three read as section headers, silently inflating the section count and vanishing
+            # from the catalog — the worst outcome, because nothing said so.
+            #
+            # His section headers are short category labels and none of the 34 contains a comma;
+            # every product name does ("Ridge Mount Base, Copper, 12-inch Strap..."). So a comma
+            # means this is an item that has not been priced, and it gets REPORTED rather than
+            # quietly reclassified.
+            if "," in name:
+                unpriced.append({"row": i, "name": name, "section": current})
+                continue
+
             sections.append(name)
             current = name
             continue
@@ -112,7 +128,10 @@ def main() -> int:
             "sellFormulas": sell_formulas,
         })
 
-    json.dump({"rows": rows, "sections": sections, "uncomputed": uncomputed}, sys.stdout)
+    json.dump(
+        {"rows": rows, "sections": sections, "uncomputed": uncomputed, "unpriced": unpriced},
+        sys.stdout,
+    )
     return 0
 
 

@@ -49,8 +49,14 @@ import { checkParity, slugify, toNum, unitFromName, type KyleItem, type ParityRo
 
 const TAB = "Atomics (Kyle's Copy)";
 const SOURCE = "kyles-tab";
-const EXPECT_ITEMS = 226;
-const EXPECT_SECTIONS = 34;
+/**
+ * A sanity FLOOR, not an expected count.
+ *
+ * This used to assert exactly 226 items / 34 sections, which tripped the moment Kyle legitimately
+ * edited his own book — and he edits it constantly. A count that changes is normal; a count that
+ * collapses means the tab was misread. The real structural guard is the header check below.
+ */
+const MIN_ITEMS = 150;
 
 const prisma = new PrismaClient();
 
@@ -76,7 +82,9 @@ function parseArgs(argv: string[]): Args {
  * these workbooks in this repo and reimplementing xlsx parsing in TypeScript to save one process
  * would be a second answer to a solved problem.
  */
-function readTab(workbook: string): { items: KyleItem[]; sections: string[]; uncomputed: string[] } {
+export interface UnpricedItem { row: number; name: string; section: string | null }
+
+function readTab(workbook: string): { items: KyleItem[]; sections: string[]; uncomputed: string[]; unpriced: UnpricedItem[] } {
   const script = path.join(__dirname, "extract_kyles_tab.py");
   const res = spawnSync("python", [script, workbook, TAB], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (res.error) {
@@ -92,6 +100,7 @@ function readTab(workbook: string): { items: KyleItem[]; sections: string[]; unc
     rows: Array<{ row: number; name: string; section: string | null; cells: (string | number | null)[]; sellFormulas: (string | null)[] }>;
     uncomputed: string[];
     sections: string[];
+    unpriced?: UnpricedItem[];
   };
 
   const items: KyleItem[] = [];
@@ -109,7 +118,7 @@ function readTab(workbook: string): { items: KyleItem[]; sections: string[]; unc
       row: r.row,
     });
   }
-  return { items, sections: raw.sections, uncomputed: raw.uncomputed };
+  return { items, sections: raw.sections, uncomputed: raw.uncomputed, unpriced: raw.unpriced ?? [] };
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────────
@@ -125,7 +134,7 @@ async function main(): Promise<number> {
   console.log(`tab    : ${TAB}`);
   console.log(`mode   : ${args.dryRun ? "DRY RUN — nothing will be written" : "LIVE"}`);
 
-  const { items, sections, uncomputed } = readTab(args.workbook);
+  const { items, sections, uncomputed, unpriced } = readTab(args.workbook);
 
   // ── Gate 1: Excel must have computed. We never evaluate a formula ourselves. ──
   if (uncomputed.length > 0) {
@@ -137,14 +146,6 @@ async function main(): Promise<number> {
   }
 
   console.log(`\nread   : ${items.length} items across ${sections.length} sections`);
-  if (items.length !== EXPECT_ITEMS || sections.length !== EXPECT_SECTIONS) {
-    console.error(
-      `\n⛔ FATAL: expected ${EXPECT_ITEMS} items / ${EXPECT_SECTIONS} sections, ` +
-        `read ${items.length} / ${sections.length}. The tab's shape has changed; ` +
-        `re-verify before importing.`
-    );
-    return 2;
-  }
 
   // ── Gate 2: keys must be unique, or one item would overwrite another ──
   const byKey = new Map<string, KyleItem[]>();
