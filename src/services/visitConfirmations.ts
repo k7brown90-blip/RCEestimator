@@ -19,7 +19,7 @@ import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { twilioSendEnabled, logTwilioSendSkipped } from "./automationGate";
 
 const TZ = "America/Chicago";
-const BUSINESS_PHONE = "(731) 462-0443";
+const BUSINESS_PHONE = "615-625-2163";
 
 function publicBaseUrl(): string {
   // Customer-facing links (SMS + email confirm/manage URLs) prefer the branded

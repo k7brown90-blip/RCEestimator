@@ -6,7 +6,7 @@
 import { sendSms, KYLE_PHONE } from "./twilio";
 import { twilioSendEnabled, logTwilioSendSkipped } from "./automationGate";
 
-const BUSINESS_PHONE = "(731) 462-0443";
+const BUSINESS_PHONE = "615-625-2163";
 const TZ = "America/Chicago";
 
 // ─── TYPE DEFINITIONS ───────────────────────────────────────────────────────────

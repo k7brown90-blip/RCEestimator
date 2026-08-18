@@ -15,7 +15,7 @@ import { applyConfirmationAction, type ConfirmationAction } from "../services/vi
 export const confirmPageRouter = express.Router();
 
 const TZ = "America/Chicago";
-const BUSINESS_PHONE = "(731) 462-0443";
+const BUSINESS_PHONE = "615-625-2163";
 
 function page(title: string, inner: string): string {
   return `<!DOCTYPE html>

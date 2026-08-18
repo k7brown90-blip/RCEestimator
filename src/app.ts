@@ -70,7 +70,6 @@ import { confirmPageRouter } from "./routes/confirmPage";
 import { estimatePageRouter } from "./routes/estimatePage";
 import { graduateDraft, reviseEstimate, signEstimateInPerson } from "./services/issuedEstimateService";
 import { renderEstimatePage, renderUnavailable } from "./services/issuedEstimateRender";
-import { mintSigningToken, signingClaims, SIGNING_SESSION_MINUTES } from "./middleware/signingScope";
 import {
   createJobFromSignedEstimate,
   deleteTestAccount,
@@ -2178,48 +2177,6 @@ app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
 //
 // NO NEW PUBLIC ROUTES. All three below sit inside the operator session and are absent from
 // middleware/publicRoutes.ts. P027's tokenized /e/:token path stays email-only and is unchanged.
-
-/** Enter signing mode. Requires a FULL owner session; hands back the narrowed one. */
-app.post("/issued-estimates/:id/signing-mode", asyncHandler(async (req, res) => {
-  // A signing session must not be able to extend itself, or handing the phone over once would
-  // let the holder keep renewing. Only a full session opens signing mode.
-  if (signingClaims(req)) {
-    res.status(403).json({ error: "Already in signing mode. Enter the PIN to exit first." });
-    return;
-  }
-
-  const est = await prisma.issuedEstimate.findUnique({
-    where: { id: String(req.params.id) },
-    include: { supersededBy: { select: { id: true } } },
-  });
-  if (!est) {
-    res.status(404).json({ error: "Estimate not found." });
-    return;
-  }
-  if (est.supersededBy) {
-    res.status(409).json({ error: "This estimate has been superseded by a newer revision." });
-    return;
-  }
-  if (est.status === "void") {
-    res.status(409).json({ error: "This estimate is void." });
-    return;
-  }
-
-  const { token, expiresIn } = mintSigningToken(est.id);
-  await prisma.issuedEstimateEvent.create({
-    data: {
-      estimateId: est.id,
-      type: "signing_mode",
-      actor: "human:crm-session",
-      detail: `Device locked to this estimate for in-person review (${SIGNING_SESSION_MINUTES} min).`,
-    },
-  });
-  logSystemEvent("info", "issued-estimate", `Signing mode opened for ${est.number}`, {
-    estimateId: est.id,
-  });
-
-  res.json({ token, expiresIn, estimateId: est.id, number: est.number });
-}));
 
 /**
  * The estimate as the customer sees it — the SAME render P027 serves at /e/:token.

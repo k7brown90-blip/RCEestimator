@@ -812,9 +812,9 @@ agentRouter.post("/savannah/send-confirmation", asyncHandler(async (req, res) =>
 
   let smsBody: string;
   if (body.context) {
-    smsBody = `Thanks for calling Red Cedar Electric! Regarding your ${body.context} — Kyle will reach out to you at (731) 462-0443.\n\nReply STOP to opt out of texts.`;
+    smsBody = `Thanks for calling Red Cedar Electric! Regarding your ${body.context} — Kyle will reach out to you at 615-625-2163.\n\nReply STOP to opt out of texts.`;
   } else {
-    smsBody = `Thanks for calling Red Cedar Electric! Kyle will reach out to you at (731) 462-0443.\n\nReply STOP to opt out of texts.`;
+    smsBody = `Thanks for calling Red Cedar Electric! Kyle will reach out to you at 615-625-2163.\n\nReply STOP to opt out of texts.`;
   }
 
   // GATED (2026-08-13) — same shape: null flows into the existing failure branch, whose spoken
@@ -828,7 +828,7 @@ agentRouter.post("/savannah/send-confirmation", asyncHandler(async (req, res) =>
       error: {
         code: "SMS_FAILED",
         message: "Failed to send confirmation SMS to customer",
-        spoken_fallback: "I wasn't able to send that text right now. You can always reach us at 731-462-0443.",
+        spoken_fallback: "I wasn't able to send that text right now. You can always reach us at 615-625-2163.",
       },
     });
     return;

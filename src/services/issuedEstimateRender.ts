@@ -36,7 +36,7 @@ import { CONSENT_TEXT } from "./issuedEstimateService";
 
 const TZ = "America/Chicago";
 const BUSINESS_EMAIL = "service@redcedarelectricllc.com";
-const BUSINESS_PHONE = "(731) 462-0443";
+const BUSINESS_PHONE = "615-625-2163";
 
 export function escapeHtml(s: string): string {
   return s
@@ -101,8 +101,29 @@ function shell(title: string, inner: string): string {
   .foot{font-size:12px;color:#777;padding:18px 24px;border-top:1px solid #eee;}
   .err{background:#fdecea;border:1px solid #f5c6c2;color:#8c1d18;border-radius:6px;
        padding:12px 14px;margin-bottom:14px;font-size:14px;}
+  .printbar{padding:10px 24px;background:#f0f2f0;border-bottom:1px solid #e3e3e3;text-align:right;}
+  .printbar button{background:#1a5c2e;color:#fff;border:0;padding:9px 18px;border-radius:5px;
+       font-size:14px;cursor:pointer;}
+  /* PRINT / SAVE AS PDF. Kyle, 2026-08-18: "I need a print option just in case this keeps
+     failing." Email delivery has been unreliable; a quote he can print or save as a PDF and
+     hand over is the fallback that does not depend on it. Screen-only furniture is dropped so
+     the sheet prints as the estimate and nothing else. */
+  @media print {
+    body{background:#fff;}
+    .wrap{max-width:none;}
+    .printbar,.sign{display:none !important;}
+    .head{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  }
 </style></head>
-<body><div class="wrap">${inner}</div></body></html>`;
+<body><div class="wrap">${inner}</div>
+<script>
+  // Progressive enhancement only: without JS the page still reads and still prints from the
+  // browser's own menu.
+  document.querySelectorAll("[data-print]").forEach(function (b) {
+    b.addEventListener("click", function () { window.print(); });
+  });
+</script>
+</body></html>`;
 }
 
 function letterhead(subtitle: string): string {
@@ -229,6 +250,7 @@ export function renderEstimatePage(
   return shell(
     `Estimate ${est.number}`,
     `${letterhead("ESTIMATE")}
+     <div class="printbar"><button type="button" data-print>Print / Save as PDF</button></div>
      <div class="pad">
        <div class="meta">
          <div><strong>Estimate No.</strong>${escapeHtml(est.number)}${est.revision > 1 ? ` rev ${est.revision}` : ""}</div>

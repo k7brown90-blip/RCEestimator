@@ -125,7 +125,7 @@ export function SettingsPage() {
       >
         <div className="grid gap-3 md:grid-cols-2">
           <Field label="Company name" value={profile.companyName} onChange={(v) => setP({ companyName: v })} />
-          <Field label="Business phone" value={profile.phone} onChange={(v) => setP({ phone: v })} placeholder="(731) 462-0443" />
+          <Field label="Business phone" value={profile.phone} onChange={(v) => setP({ phone: v })} placeholder="615-625-2163" />
           <Field label="Business address" value={profile.address} onChange={(v) => setP({ address: v })} />
           <Field label="Business email" value={profile.email} onChange={(v) => setP({ email: v })} placeholder="service@redcedarelectricllc.com" />
           <Field label="License number" value={profile.licenseNumber} onChange={(v) => setP({ licenseNumber: v })} />

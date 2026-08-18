@@ -2,7 +2,6 @@ import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { isPublicRoute } from "./publicRoutes";
-import { signingClaims, signingSessionAllows } from "./signingScope";
 import type { AuthOutcome, RequestAuthState } from "./accessLog";
 
 /**
@@ -73,32 +72,6 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
     const actor = typeof claims === "object" && claims !== null && typeof claims.sub === "string"
       ? claims.sub
       : "unknown";
-
-    /*
-      SIGNING MODE (P028) — the customer is holding the operator's phone.
-
-      A signing session is a NARROWED session, not a screen. It reaches exactly one estimate's
-      customer view and that estimate's sign action, and nothing else in the application. This is
-      the check that makes the address bar useless to whoever is holding the device: the estimate
-      id is taken from the TOKEN, never from the URL, so typing a different id compares their
-      typed value against their own capability and fails.
-
-      403, not 401: the credential is valid and was understood. It simply does not reach here, and
-      saying so keeps a genuine expiry (401 -> log in) distinguishable from a scope refusal.
-    */
-    const signing = signingClaims(req);
-    if (signing) {
-      if (!signingSessionAllows(req.method, req.path, signing.est)) {
-        mark(req, "ok", "signing");
-        res.status(403).json({
-          error: "Signing mode is active. This device is locked to one estimate until the operator enters their PIN.",
-        });
-        return;
-      }
-      mark(req, "ok", "signing");
-      next();
-      return;
-    }
 
     mark(req, "ok", actor);
     next();

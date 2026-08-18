@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
-import { startSigningSession } from "../lib/signingSession";
 import type {
   PbAtomic,
   PbComputed,
@@ -1397,16 +1396,27 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   });
 
   /**
-   * Enter signing mode: swap this device's full session for one scoped to this estimate, then
-   * reload. The reload is deliberate — `App.tsx` reads the signing flag at mount, so a hard
-   * navigation guarantees no CRM state survives into the customer's hands.
+   * Hand the device to the customer. No lock, no token swap — Kyle removed that on 2026-08-18.
    */
-  const enterSigning = useMutation({
-    mutationFn: () => api.pbSigningModeStart(activeId as string),
+  const enterSigning = {
+    isPending: false,
+    mutate: () => {
+      window.location.assign(`/sign-in-person/${activeId}`);
+    },
+  };
+
+  /**
+   * Signed quote -> job. P029 built the service and the route; this is the button that was
+   * missing, which is why Kyle's signed Basement Remodel had nowhere to go and could not be
+   * scheduled.
+   */
+  const createJob = useMutation({
+    mutationFn: () => api.pbCreateJob(activeId as string),
     onSuccess: (r) => {
-      localStorage.setItem("rce_token", r.token);
-      startSigningSession(r.estimateId, r.number);
-      window.location.replace("/");
+      setNotice(null);
+      refresh();
+      // Straight to the job, because the next thing he wants is to schedule it.
+      window.location.assign(`/visits/${r.visitId}`);
     },
     onError: (err) => setReasons([(err as Error).message]),
   });
@@ -1482,18 +1492,42 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
             </div>
 
             {detail?.customerLink && (
-              <p className="mt-2 break-all text-[11px] text-rce-soft">
-                Customer link: <a className="underline" href={detail.customerLink} target="_blank" rel="noreferrer">{detail.customerLink}</a>
-              </p>
+              <>
+                <p className="mt-2 break-all text-[11px] text-rce-soft">
+                  Customer link: <a className="underline" href={detail.customerLink} target="_blank" rel="noreferrer">{detail.customerLink}</a>
+                </p>
+                {/* The fallback for when email will not go. Opens the customer's own page, which
+                    carries a Print / Save as PDF button. */}
+                <a
+                  className="btn btn-secondary mt-2 w-full"
+                  href={detail.customerLink}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open / print the estimate
+                </a>
+              </>
             )}
           </div>
 
           {est.signedAt ? (
-            <p className="rounded bg-emerald-50 p-2 text-xs text-emerald-900">
-              <strong>Signed by {est.signerName}</strong> on {new Date(est.signedAt).toLocaleString()}
-              {est.signedChannel === "in_person" ? " — signed in person" : est.signedChannel === "email" ? " — signed from the emailed link" : ""}.
-              This estimate is locked; a change needs a new revision, which voids the customer's link.
-            </p>
+            <>
+              <p className="rounded bg-emerald-50 p-2 text-xs text-emerald-900">
+                <strong>Signed by {est.signerName}</strong> on {new Date(est.signedAt).toLocaleString()}
+                {est.signedChannel === "in_person" ? " — signed in person" : est.signedChannel === "email" ? " — signed from the emailed link" : ""}.
+                This estimate is locked; a change needs a new revision, which voids the customer's link.
+              </p>
+              <button
+                className="btn btn-primary w-full py-3 text-base"
+                disabled={createJob.isPending}
+                onClick={() => createJob.mutate()}
+              >
+                {createJob.isPending ? "Creating job…" : "Create job & schedule"}
+              </button>
+              <p className="text-xs text-rce-muted">
+                Makes the job at this account and address, then opens it so you can schedule it.
+              </p>
+            </>
           ) : (
             <>
               {/*
@@ -1505,22 +1539,13 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                 className="btn btn-primary w-full py-3 text-base"
                 disabled={enterSigning.isPending}
                 onClick={() => {
-                  if (
-                    window.confirm(
-                      `Hand your device to the customer?
-
-The app will lock to estimate ${est.number} until you enter your PIN.`
-                    )
-                  ) {
-                    enterSigning.mutate();
-                  }
+                  enterSigning.mutate();
                 }}
               >
-                {enterSigning.isPending ? "Locking device…" : "Review & sign now"}
+                Review &amp; sign now
               </button>
               <p className="text-xs text-rce-muted">
-                Locks this device to this one estimate and hands it to the customer. Your PIN
-                brings the app back.
+                Opens the estimate for the customer to read and sign on this device.
               </p>
 
               <div className="pt-1">
