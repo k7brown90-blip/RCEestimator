@@ -31,7 +31,7 @@ import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { accessLogMiddleware } from "./middleware/accessLog";
 import { singularize } from "./services/singularize";
-import { nameTokens, rankCandidates, stripQuantity } from "./services/walkthroughMatch";
+import { nameTokens, rankWithDiagnostics, stripQuantity } from "./services/walkthroughMatch";
 import { proposeFromWalkthrough, ProposerUnavailable } from "./services/aiProposer";
 import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
 import {
@@ -144,10 +144,37 @@ const clientDist = path.join(__dirname, "..", "..", "client", "dist");
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
 
-  // SPA fallback: serve index.html for browser navigation requests (not API/file)
+  /*
+    SERVER-RENDERED PUBLIC PAGES ARE NOT SPA ROUTES.
+
+    Every customer-facing page in this app is HTML the SERVER builds — the estimate at
+    `/e/:token`, the appointment confirmation at `/confirm/:token`, the document signing page.
+    The customer has no session and no bundle; that is the whole design.
+
+    This fallback sat ABOVE those routers and matched on `Accept: text/html`, so a BROWSER asking
+    for /e/<token> got index.html and the React shell rendered nothing (it has no route for that
+    path), while `curl` — which sends a wildcard Accept header — got the real page. Kyle clicked a finalized
+    estimate and saw a blank screen; /confirm/:token had been failing the same way for every
+    customer who ever clicked an appointment link.
+
+    That is why it was invisible: every live verification of these routes was done with curl.
+
+    The prefixes below are the server-rendered surfaces. A fallback that runs before the routes it
+    is falling back for is not a fallback, and the durable fix is to move this to the end of the
+    chain — but naming the exclusions is the change that can be read and checked, so it is the one
+    made here.
+  */
+  const SERVER_RENDERED_PREFIXES = ["/e/", "/confirm/", "/sign/", "/documents/"];
+
   app.use((req, res, next) => {
     const accepts = req.headers.accept || "";
-    if (req.method === "GET" && accepts.includes("text/html") && !req.path.startsWith("/api")) {
+    const isServerRendered = SERVER_RENDERED_PREFIXES.some((prefix) => req.path.startsWith(prefix));
+    if (
+      req.method === "GET" &&
+      accepts.includes("text/html") &&
+      !req.path.startsWith("/api") &&
+      !isServerRendered
+    ) {
       res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.sendFile(path.join(clientDist, "index.html"));
       return;
@@ -1856,7 +1883,8 @@ app.post("/price-book/resolve-walkthrough", asyncHandler(async (req, res) => {
       select: SELECT,
     });
 
-    const matches = rankCandidates(pool, tokens).slice(0, 8);
+    const ranked = rankWithDiagnostics(pool, tokens);
+    const matches = ranked.candidates.slice(0, 8);
 
     out.push({
       raw: row.raw,
@@ -1865,6 +1893,9 @@ app.post("/price-book/resolve-walkthrough", asyncHandler(async (req, res) => {
       searchTerm: term,
       status: matches.length === 0 ? "UNMATCHED" : matches.length === 1 ? "MATCHED" : "AMBIGUOUS",
       matchedOn: "name",
+      // The tech's words that appear nowhere in the catalog. Reported so an UNMATCHED row can say
+      // WHICH word it did not know — "canless is not in your price book" beats silence.
+      unknownWords: ranked.unknownWords,
       candidates: matches.map((m) => ({
         itemId: m.itemId,
         description: m.description,

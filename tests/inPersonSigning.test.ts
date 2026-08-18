@@ -415,6 +415,7 @@ describe("both channels share one customer render", () => {
 
     expect(res.status).toBe(200);
     for (const re of HOUR_PATTERNS) expect(res.text).not.toMatch(re);
-    expect(res.text).toContain("Work subtotal");
+    // "Work subtotal" was removed on 2026-08-18 — Kyle: the customer gets scope plus ONE price.
+    expect(res.text).toContain("ESTIMATE TOTAL");
   });
 });

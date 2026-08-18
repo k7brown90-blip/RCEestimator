@@ -611,3 +611,46 @@ describe("a successful send stamps the record", () => {
     await prisma.customer.delete({ where: { id: noEmailAccount.id } });
   });
 });
+
+// ─── The customer sees scope and ONE price (P031, 2026-08-18) ──────────────────
+
+describe("the customer render shows no per-line prices", () => {
+  /*
+    Kyle, 2026-08-18: "the estimates are still giving line items pricing which it should not.
+    The customers should get a line item quote with only the total price."
+
+    A per-line price invites a line-by-line negotiation of a lump-sum quote and exposes the shape
+    of the build-up on what is meant to be a flat rate. The scope stays itemised; the money does
+    not.
+  */
+  it("lists the items and quantities but prices none of them", async () => {
+    const d = await quotableDraft("no-line-prices");
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
+    expect(g.ok).toBe(true);
+    if (!g.ok) return;
+
+    const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
+    const found = await getEstimateByToken(prisma, est!.token);
+    expect(found.ok).toBe(true);
+    if (!found.ok) return;
+    const html = renderEstimatePage(found.estimate);
+
+    // The scope is still there, itemised.
+    for (const line of found.estimate.lines) {
+      expect(html).toContain(line.description);
+    }
+    // The header no longer offers a Price column.
+    expect(html).not.toMatch(/<th[^>]*>\s*Price\s*<\/th>/i);
+
+    // No line's own money appears anywhere.
+    for (const line of found.estimate.lines) {
+      const lineMoney = `$${line.lineTotal.toFixed(2)}`;
+      if (Math.abs(line.lineTotal - found.estimate.total) < 0.005) continue; // a 1-line estimate
+      expect(html, `line price ${lineMoney} leaked onto the customer page`).not.toContain(lineMoney);
+    }
+
+    // And the one number that should be there, is.
+    expect(html).toContain("ESTIMATE TOTAL");
+    expect(html).toContain(`$${found.estimate.total.toFixed(2)}`);
+  });
+});

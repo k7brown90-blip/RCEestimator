@@ -114,44 +114,79 @@ export interface Scorable {
   description: string | null;
 }
 
+export interface RankResult<T> {
+  candidates: T[];
+  /** Words the tech wrote that appear NOWHERE in the catalog — the vocabulary gap, named. */
+  unknownWords: string[];
+}
+
 /**
  * Rank catalog rows against the tech's words, weighting RARE words heavily.
  *
  * This is P019's own F2 recommendation, finally implemented: *"ranked by how few rows it hits (a
- * rare word is distinctive; a common one is not)."* P021 removed the broken "longest token" retry
- * and left ranking for later; this is later.
+ * rare word is distinctive; a common one is not)."*
  *
- * Why rarity rather than a plain count of hits: "light" appears in dozens of Kyle's rows and tells
- * you almost nothing, while "troubleshoot" appears in one and tells you everything. Scoring both
- * as 1 lets a pile of generic rows outrank the single row that actually named the thing. So each
- * token is worth `1 / (rows containing it)` — a word matching one row is worth a full point, a
- * word matching forty is worth a fortieth.
+ * Why rarity rather than a plain count of hits: "light" appears in a handful of Kyle's rows and
+ * tells you almost nothing, while "troubleshoot" appears in one and tells you everything. Scoring
+ * both as 1 lets generic rows outrank the row that actually named the thing.
  *
- * Ties break toward the SHORTER description: a shorter row matching the same words is the more
- * specific answer.
+ * ── A MATCH ON A WORD THAT NARROWS NOTHING IS NOT A MATCH ──────────────────────────────────
  *
- * IT STILL NEVER SELECTS. Ranking decides what is offered and in what order; the tech taps the row
- * they meant. That property has survived every change to this matcher and is the reason widening
- * it is safe.
+ * Kyle typed **"15 canless lights"** and was offered a lighting BOX, a fan/light SWITCH, another
+ * BOX, and a 400 A service panel whose notes happen to end "…so this runs light". His catalog has
+ * no light fixtures at all, so the honest answer was "nothing", and instead the screen produced
+ * four confident buttons — the exact failure P019 recorded when a wall sconce returned six load
+ * centers: *a nonsense list teaches the operator to stop reading the list.*
+ *
+ * The tell is precise. "canless" — the word that would have narrowed it — matched NOTHING, and
+ * "lights" matched every row in the pool, so it discriminated nothing either. A candidate whose
+ * entire score comes from words that match everything, while a word the tech wrote matches
+ * nothing, is a guess wearing a match's clothes. Those are dropped, and the unknown word is
+ * reported so the answer can be "canless is not in your price book" rather than silence.
  */
 export function rankCandidates<T extends Scorable>(rows: T[], tokens: string[]): T[] {
-  if (tokens.length === 0) return [];
+  return rankWithDiagnostics(rows, tokens).candidates;
+}
+
+export function rankWithDiagnostics<T extends Scorable>(rows: T[], tokens: string[]): RankResult<T> {
+  if (tokens.length === 0) return { candidates: [], unknownWords: [] };
   const forms = tokens.map((t) => [...new Set([t.toLowerCase(), singularize(t.toLowerCase())])]);
   const hay = rows.map((row) => `${row.itemId} ${row.description ?? ""}`.toLowerCase());
 
   // How many rows each token reaches — its distinctiveness within this result pool.
   const reach = forms.map((variants) => hay.filter((h) => variants.some((v) => h.includes(v))).length);
+  const unknownWords = tokens.filter((_t, i) => reach[i] === 0);
+  // A token present in EVERY row of the pool separates nothing.
+  const discriminates = reach.map((r) => r > 0 && r < rows.length);
+  const anyDiscriminating = discriminates.some(Boolean);
 
   const scored = rows.map((row, i) => {
     let score = 0;
+    let discriminatingHit = false;
     forms.forEach((variants, t) => {
-      if (variants.some((v) => hay[i].includes(v))) score += 1 / Math.max(reach[t], 1);
+      if (variants.some((v) => hay[i].includes(v))) {
+        score += 1 / Math.max(reach[t], 1);
+        if (discriminates[t]) discriminatingHit = true;
+      }
     });
-    return { row, score, len: (row.description ?? row.itemId).length };
+    return { row, score, discriminatingHit, len: (row.description ?? row.itemId).length };
   });
 
-  return scored
-    .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score || a.len - b.len)
-    .map((s) => s.row);
+  /*
+    Drop the guesses. When the tech used a word the catalog has never heard of AND no candidate
+    was reached by a word that narrows the field, every "match" is riding on a word common to the
+    whole pool. Better to say nothing matched and name the missing word.
+  */
+  const keep =
+    unknownWords.length > 0 && !anyDiscriminating
+      ? []
+      : scored.filter((s) => s.score > 0 && (anyDiscriminating ? s.discriminatingHit || s.score > 0 : true));
+
+  return {
+    candidates: keep
+      .filter((s) => s.score > 0)
+      .sort((a, b) => b.score - a.score || a.len - b.len)
+      .map((s) => s.row),
+    unknownWords,
+  };
 }

@@ -779,8 +779,20 @@ function WalkthroughRow(props: { row: PbWalkthroughRow; draftId: string; onChang
 
         {row.candidates.length === 0 && (
           <p className="rounded bg-amber-50 p-2 text-xs text-amber-900">
-            Nothing in the price book matched this. Search for it on the{" "}
-            <strong>Browse &amp; search</strong> tab and add it from there.
+            {row.unknownWords && row.unknownWords.length > 0 ? (
+              <>
+                Nothing matched —{" "}
+                <strong>{row.unknownWords.map((w) => `“${w}”`).join(", ")}</strong>{" "}
+                {row.unknownWords.length === 1 ? "is not" : "are not"} in your price book. Add the
+                item to your book, or search the <strong>Browse &amp; search</strong> tab for what
+                you do carry.
+              </>
+            ) : (
+              <>
+                Nothing in the price book matched this. Search for it on the{" "}
+                <strong>Browse &amp; search</strong> tab and add it from there.
+              </>
+            )}
           </p>
         )}
       </div>

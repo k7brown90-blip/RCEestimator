@@ -167,12 +167,24 @@ export function renderEstimatePage(
     .filter(Boolean)
     .join("<br>");
 
+  /*
+    NO PER-LINE PRICES. Kyle, 2026-08-18:
+
+      "the estimates are still giving line items pricing which it should not. The customers
+       should get a line item quote with only the total price."
+
+    The customer sees WHAT is included and HOW MANY — the scope, itemised — and one price for the
+    job. A per-line price invites a line-by-line negotiation of a lump-sum quote, and it exposes
+    the shape of the build-up on a flat-rate estimate.
+
+    The line totals still exist on the row and still sum to the total; they are simply not
+    rendered here. Nothing about the arithmetic changed.
+  */
   const rows = est.lines
     .map(
       (l) => `<tr>
         <td>${escapeHtml(l.description)}</td>
         <td class="r">${qty(l.quantity)}</td>
-        <td class="r">${money(l.lineTotal)}</td>
       </tr>`
     )
     .join("");
@@ -232,15 +244,19 @@ export function renderEstimatePage(
 
        <h2>Estimate detail</h2>
        <table>
-         <thead><tr><th>Description</th><th class="r">Qty</th><th class="r">Price</th></tr></thead>
+         <thead><tr><th>Description</th><th class="r">Qty</th></tr></thead>
          <tbody>${rows}</tbody>
        </table>
 
        <div class="totals">
-         <div><span>Work subtotal &mdash; furnished and installed, flat rate</span><span>${money(est.workSubtotal)}</span></div>
-         <div><span>${tripLabel}</span><span>${money(est.tripCharge)}</span></div>
+         ${est.tripCharge > 0 || est.tripWaived
+           ? `<div><span>${tripLabel}</span><span>${money(est.tripCharge)}</span></div>`
+           : ""}
          <div class="grand"><span>ESTIMATE TOTAL</span><span>${money(est.total)}</span></div>
        </div>
+       <p style="font-size:12px;color:#777;margin:8px 4px 0;">
+         Furnished and installed, flat rate. The scope above is what the price covers.
+       </p>
 
        ${included}
 

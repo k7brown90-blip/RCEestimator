@@ -1071,6 +1071,8 @@ export interface PbFinalizeResult {
 }
 
 export interface PbWalkthroughRow {
+  /** Words the tech wrote that appear nowhere in the catalog (P031). */
+  unknownWords?: string[];
   raw: string;
   parsedQuantity: number | null;
   searchTerm: string;
