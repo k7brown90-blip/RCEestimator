@@ -19,6 +19,15 @@ const nav = [
   { to: "/settings", label: "Settings" },
 ];
 
+/** Tailwind needs literal class names, so the derived count maps through this. */
+const MOBILE_NAV_COLS: Record<number, string> = {
+  4: "grid-cols-4",
+  5: "grid-cols-5",
+  6: "grid-cols-6",
+  7: "grid-cols-7",
+  8: "grid-cols-8",
+};
+
 function NavItem({ to, label, badge }: { to: string; label: string; badge?: number }) {
   return (
     <NavLink
@@ -67,13 +76,29 @@ export function AppShell({ children }: PropsWithChildren) {
         </div>
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-rce-border bg-rce-surface p-2 md:hidden">
+      {/*
+        COLUMN COUNT IS DERIVED, NOT TYPED.
+
+        This was hard-coded `grid-cols-7` while `nav` held EIGHT entries, so the eighth wrapped
+        onto a second row and the labels crowded into each other. Kyle reported it on 2026-08-16
+        ("The words on the menu down at the bottom are overlapping too") and it survived because a
+        literal in the class string has no relationship to the array it is laying out.
+
+        Tailwind cannot see a computed class name, so the count maps through an explicit lookup —
+        which also means adding a ninth nav entry fails loudly here rather than silently
+        overlapping again.
+      */}
+      <nav
+        className={`fixed inset-x-0 bottom-0 z-30 grid ${
+          MOBILE_NAV_COLS[nav.length] ?? "grid-cols-4"
+        } gap-0.5 border-t border-rce-border bg-rce-surface p-2 md:hidden`}
+      >
         {nav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             className={({ isActive }) =>
-              `relative rounded-md px-2 py-2 text-center text-xs font-medium ${
+              `relative truncate rounded-md px-1 py-2 text-center text-[11px] font-medium leading-tight ${
                 isActive ? "bg-rce-accentBg text-rce-accentDark" : "text-rce-muted"
               }`
             }
