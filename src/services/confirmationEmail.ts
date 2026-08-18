@@ -6,6 +6,7 @@
  */
 
 import nodemailer from "nodemailer";
+import { logSystemEvent } from "./systemEvents";
 
 const BRANDED_FOOTER = `
   <p style="font-size:14px;color:#888;margin:16px 0 0;border-top:1px solid #eee;padding-top:12px;">
@@ -336,6 +337,15 @@ export async function sendBrandedEmail(input: {
   const mail = getTransporter();
   if (!mail) {
     console.warn("[BrandedEmail] Gmail not configured — skipping:", input.subject);
+    // Missing configuration is not a transport failure and must not be diagnosed as one. Names
+    // of the absent variables only — never their values.
+    const missing = ["GMAIL_USER", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"]
+      .filter((k) => !process.env[k]);
+    logSystemEvent("error", "email", `Not sent to ${input.to} — Gmail is not configured`, {
+      subject: input.subject,
+      missingEnvVars: missing,
+      likelyCause: "Set the missing variables on the service; nothing was attempted.",
+    });
     return false;
   }
 
@@ -357,8 +367,50 @@ export async function sendBrandedEmail(input: {
     return true;
   } catch (err) {
     console.error("[BrandedEmail] Failed:", err);
+    logEmailFailure(input.to, input.subject, err);
     return false;
   }
+}
+
+/**
+ * Write the TRANSPORT error down, not just the fact of failure.
+ *
+ * Kyle, 2026-08-18: *"I connot email it either."* Production held exactly two rows about it —
+ * `Estimate 2026-1013 send FAILED to …` and the same for 2026-1011 — with `estimateId` and
+ * `sentBy` and nothing else. The nodemailer error was caught here, printed to a console nobody
+ * was watching, and dropped, so the log could say a send failed but never why. Diagnosing it
+ * meant reproducing it, which meant sending a real customer another email.
+ *
+ * The distinction that matters is between a REVOKED CREDENTIAL and a rejected message, and it is
+ * carried in fields nodemailer already provides:
+ *
+ *   `invalid_grant`  the Google refresh token is expired or revoked — re-mint it with
+ *                    scripts/mintGoogleRefreshToken.ts. Nothing about the message is wrong.
+ *   `EAUTH` / 535    the OAuth client is wrong or the account lost access.
+ *   `EENVELOPE`      the recipient address was rejected. That one IS about the message.
+ *
+ * The recipient is recorded because "did it fail for everyone or for this address" is the first
+ * question; the message body never is.
+ */
+function logEmailFailure(to: string, subject: string, err: unknown): void {
+  const e = err as { message?: string; code?: string; responseCode?: number; response?: string };
+  const raw = `${e?.code ?? ""} ${e?.message ?? String(err)}`;
+  const cause = /invalid_grant/i.test(raw)
+    ? "Google refresh token expired or revoked — re-mint GOOGLE_REFRESH_TOKEN (scripts/mintGoogleRefreshToken.ts)."
+    : e?.code === "EAUTH" || e?.responseCode === 535
+      ? "Gmail rejected the credentials (EAUTH) — the OAuth client or the account changed."
+      : e?.code === "EENVELOPE"
+        ? "Gmail rejected the recipient address."
+        : null;
+
+  logSystemEvent("error", "email", `Send failed to ${to}: ${e?.message ?? String(err)}`, {
+    subject,
+    code: e?.code,
+    responseCode: e?.responseCode,
+    // The SMTP response often names the reason verbatim; it is capped because it can be long.
+    response: typeof e?.response === "string" ? e.response.slice(0, 1000) : undefined,
+    likelyCause: cause,
+  });
 }
 
 /** HTML-escape a string for safe interpolation into email templates. */

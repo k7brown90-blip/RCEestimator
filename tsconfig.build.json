@@ -12,6 +12,7 @@
     // a developer machine, so `railway run` cannot connect to it.
     "scripts/readSystemEvents.ts",
     "scripts/tailClientLog.ts",
+    "scripts/checkGoogleCalendarConnection.ts",
     "shared/**/*.ts"
   ],
   "exclude": ["tests/**", "shared/**/*.test.ts", "node_modules"]
