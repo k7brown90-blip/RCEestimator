@@ -572,7 +572,23 @@ export async function proposeLines(
         quantitySource: line.quantitySource as PriceBookQuantitySource,
         difficulty: (line.difficulty ?? "NORMAL") as PriceBookDifficulty,
         location: line.location ?? null,
-        note: null,
+        /*
+          A MANUAL QUANTITY NEEDS A REASON, AND THE MODEL ALREADY GAVE ONE.
+
+          The engine refuses a MANUAL quantity carrying no note, because a hand-set number with no
+          recorded reason is indistinguishable later from a typo. That guard was written for a
+          human typing into a box — but the model also picks MANUAL, for exactly the items where
+          it should (Kyle's Diagnostics line is priced per hour, and "2 hours" is a judgement, not
+          a count). With `note: null` those proposals could be confirmed and then never finalize:
+          the P030 verification run hit precisely this, on the diagnostics line, after the model
+          proposed it correctly.
+
+          The model's `reasoning` IS the reason the guard is asking for — it is required on every
+          proposal and it is already displayed next to the confirm button. Carrying it into the
+          note satisfies the guard with a real justification rather than a placeholder, and only
+          for MANUAL: every other source leaves the note empty for the tech to use.
+        */
+        note: line.quantitySource === "MANUAL" ? line.reasoning : null,
         sortOrder: sortOrder++,
         state: "PROPOSED",
         proposedBy,

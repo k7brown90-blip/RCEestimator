@@ -313,3 +313,53 @@ describe("the import refuses rather than importing something plausible", () => {
     expect(rows[0].tag).toBe("N");
   });
 });
+
+// ─── The no-hours rule, restated precisely for Kyle's catalog ──────────────────
+
+describe("no hours reach the customer — what that means once items are named 'per hour'", () => {
+  /*
+    KYLE'S OWN NAMING CREATES A CONFLICT WORTH STATING RATHER THAN SILENTLY RESOLVING.
+
+    His standing rule is "Never show labor hour estimate to the customer", and P027 enforced it
+    with a grep for the word "hour" anywhere in the render. That worked while the catalog was
+    machine-built with terse ids.
+
+    Kyle then named an item **"Diagnostics / Troubleshooting / Circuit Tracing — per hour"** and
+    ruled it stays that way ($150/hr, that exact label). So the word now appears on a customer
+    page, inside a product name he wrote deliberately — the same shape as "per ft" or "per box".
+
+    The violation the rule exists to stop is a LABOUR ESTIMATE: the "Labor Hrs" column and the
+    hours-total line that the 2026-08-17 PDFs carried, which let a customer argue the hours. A
+    unit of sale in a product title is not that. So the guarantee is restated as: no hour COUNT,
+    no per-hour RATE, no labour-hours reference — and the only hour word permitted is inside an
+    item description Kyle authored.
+
+    FLAGGED FOR KYLE, NOT DECIDED HERE: if he wants zero hour words on customer paper, the fix is
+    to rename the item in his tab (the customer render shows his description verbatim) — not to
+    have the app quietly rewrite what he named.
+  */
+  const HOUR_QUANTITY = /\d+(\.\d+)?\s*(hours?|hrs?)\b/i;
+  const PER_HOUR_RATE = /\$\s?\d[\d,.]*\s*(?:\/|per\s+)h(?:r|our)/i;
+  const LABOUR_HOURS = /lab(o|ou)r\s*h(ou)?rs?/i;
+
+  const page = (lineDescription: string) => `
+    <table><tr><td>${lineDescription}</td><td class="r">1</td><td class="r">$150.00</td></tr></table>
+    <div>Work subtotal &mdash; furnished and installed, flat rate</div>`;
+
+  it("permits Kyle's unit-of-sale in an item name", () => {
+    const html = page("Diagnostics / Troubleshooting / Circuit Tracing — per hour");
+    expect(html).not.toMatch(HOUR_QUANTITY);
+    expect(html).not.toMatch(PER_HOUR_RATE);
+    expect(html).not.toMatch(LABOUR_HOURS);
+  });
+
+  it("still catches an hour COUNT — the thing the PDFs actually leaked", () => {
+    expect(page("Panel change<td>4.5 hours</td>")).toMatch(HOUR_QUANTITY);
+    expect(page("Labor Hrs: 4.5")).toMatch(LABOUR_HOURS);
+  });
+
+  it("still catches a per-hour RATE", () => {
+    expect(page("Diagnostics at $150/hr")).toMatch(PER_HOUR_RATE);
+    expect(page("Diagnostics at $150 per hour")).toMatch(PER_HOUR_RATE);
+  });
+});
