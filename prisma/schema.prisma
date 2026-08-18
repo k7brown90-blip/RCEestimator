@@ -28,6 +28,12 @@ model Customer {
   updatedAt   DateTime   @updatedAt
   properties  Property[]
   visits      Visit[]
+  issuedEstimates IssuedEstimate[]
+  // Marks the internal price-book testing account (P029). Kyle, 2026-08-18: "Speculative
+  // pricing may exist only for testing the price book but should be a planned deletion."
+  // Rows under a test account are excluded from funnel counts and the Estimates chain view,
+  // and the whole account deletes in one action — on Kyle's word, never on a schedule.
+  isTestAccount Boolean  @default(false)
   healthInspections HealthInspection[]
 
   @@index([phone])
@@ -64,6 +70,7 @@ model Property {
   systemSnapshot         SystemSnapshot?
   visits                 Visit[]
   estimates              Estimate[]
+  issuedEstimates        IssuedEstimate[]
   healthInspections      HealthInspection[]
   findings               PropertyFinding[]
   documents              Document[]
@@ -1839,11 +1846,39 @@ model IssuedEstimate {
   supersedes     IssuedEstimate?  @relation("EstimateRevision", fields: [supersedesId], references: [id], onDelete: SetNull)
   supersededBy   IssuedEstimate?  @relation("EstimateRevision")
 
-  // ── Customer context, SNAPSHOT. Plain columns, deliberately not foreign keys: what was on
-  // the estimate when it was sent must not change because an account record was later edited.
-  customerId     String?
+  // ── THE ACCOUNT SPINE (P029). ────────────────────────────────────────────────────────
+  //
+  // Kyle, 2026-08-18: "All of it links to their account… if they have multiple addresses on
+  // file it needs to link to the address that we are working at."
+  //
+  // REQUIRED, and real foreign keys. Before this an issued estimate could be created with no
+  // owner at all — which is the P020 disjoint-graph defect reaching the one artifact a customer
+  // actually signs. Account-level linkage alone does not satisfy the ruling: an account with
+  // three properties needs to know WHICH ONE the work is at, so the address is required too.
+  //
+  // `account` is the `Customer` model — the server still calls it Customer, the client and Kyle
+  // both say "account", and they are the same row. `serviceAddress` is the existing `Property`
+  // model. Neither is a new entity; adding parallel `accountId`/`addressId` columns beside the
+  // ones that already mean this would create a second source of truth for the same fact.
+  //
+  // onDelete: Restrict on both — an account or an address with an issued estimate against it is
+  // not deletable. The estimate is a business record and it must keep naming who and where.
+  customerId       String
+  serviceAddressId String
+  account          Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  // Named `serviceProperty`, not `serviceAddress`: the string column of that name already
+  // exists a few lines below and is the FROZEN TEXT of the address as it read at issuance.
+  // They are a pair and both are load-bearing — the id is the live link the account page
+  // queries, the text is what the signed document says and must never move.
+  serviceProperty  Property @relation(fields: [serviceAddressId], references: [id], onDelete: Restrict)
+
+  // The lead this traces back to, and the visit the draft came from. Still nullable and still
+  // plain columns: they are provenance, not the spine.
   leadId         String?
   visitId        String?
+  // The job created when the customer signed (P029 scope 4). Plain column: the job points back
+  // through its own account and property, so a relation here would only duplicate that edge.
+  jobVisitId     String?
   customerName   String
   customerEmail  String?
   customerPhone  String?

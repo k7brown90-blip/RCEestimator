@@ -65,6 +65,18 @@ function round2(n: number): number {
 
 export interface GraduateInput {
   draftId: string;
+  /**
+   * THE SPINE (P029). Both required — an issued estimate cannot exist unattached.
+   *
+   * Kyle, 2026-08-18: "All of it links to their account… if they have multiple addresses on file
+   * it needs to link to the address that we are working at." Account-level linkage alone does
+   * not satisfy that, so the caller must name the address too. When the draft came from a visit
+   * the UI prefills both from it; when the account has several addresses the operator PICKS —
+   * this function never defaults to the first, because a silently-chosen address puts the wrong
+   * street on a signed document.
+   */
+  accountId: string;
+  serviceAddressId: string;
   title?: string | null;
   scopeText?: string | null;
   includedText?: string | null;
@@ -175,7 +187,9 @@ export async function graduateDraft(
     };
   }
 
-  const context = await loadCustomerContext(prisma, draft);
+  const context = await resolveSpine(prisma, input.accountId, input.serviceAddressId, draft);
+  if ("error" in context) return { ok: false, reasons: [context.error] };
+
   const number = await nextNumber(prisma);
   const token = newToken();
 
@@ -187,7 +201,8 @@ export async function graduateDraft(
         status: "draft",
         token,
         draftId: draft.id,
-        customerId: draft.customerId,
+        customerId: input.accountId,
+        serviceAddressId: input.serviceAddressId,
         leadId: draft.leadId,
         visitId: draft.visitId,
         customerName: context.customerName,
@@ -220,50 +235,66 @@ export async function graduateDraft(
 }
 
 /**
- * Who this estimate is for, resolved once and then frozen onto the row.
+ * Resolve the account and the address this estimate is for, then freeze what the document says.
  *
- * Prefers the customer record and falls back to the lead — P024 records all three anchors when
- * known and defers which is authoritative, so this reads them in the order that produces the
- * most complete customer-facing block.
+ * Two jobs in one place, deliberately:
+ *   1. VALIDATE the spine — the account exists, the address exists, and the address belongs to
+ *      that account. The third check is the one that matters: without it an operator (or a
+ *      malformed request) could put one customer's street on another customer's estimate, and
+ *      both ids would still be individually valid.
+ *   2. SNAPSHOT the text. Name, phone, email and the address as it reads today are copied onto
+ *      the row so the signed document cannot be moved by a later edit to the account record.
+ *
+ * Refuses rather than guesses. There is no "pick the first address" branch anywhere in here.
  */
-async function loadCustomerContext(
+async function resolveSpine(
   prisma: PrismaClient,
-  draft: { customerId: string | null; leadId: string | null; visitId: string | null }
-) {
-  let customerName = "Customer";
-  let customerEmail: string | null = null;
-  let customerPhone: string | null = null;
-  let serviceAddress: string | null = null;
+  accountId: string,
+  serviceAddressId: string,
+  draft: { leadId: string | null }
+): Promise<
+  | { error: string }
+  | {
+      customerName: string;
+      customerEmail: string | null;
+      customerPhone: string | null;
+      serviceAddress: string | null;
+    }
+> {
+  const account = await prisma.customer.findUnique({ where: { id: accountId } });
+  if (!account) return { error: `Account ${accountId} not found. An estimate must belong to an account.` };
 
-  if (draft.customerId) {
-    const c = await prisma.customer.findUnique({ where: { id: draft.customerId } });
-    if (c) {
-      customerName = c.name;
-      customerEmail = c.email;
-      customerPhone = c.phone;
+  const property = await prisma.property.findUnique({ where: { id: serviceAddressId } });
+  if (!property) {
+    return { error: `Service address ${serviceAddressId} not found. An estimate must name the address being worked.` };
+  }
+  if (property.customerId !== accountId) {
+    return {
+      error:
+        `That address belongs to a different account. An estimate must link to the address being ` +
+        `worked ON THIS account — quoting one customer's job against another customer's street is ` +
+        `the mistake this check exists to stop.`,
+    };
+  }
+
+  let customerEmail = account.email;
+  let customerPhone = account.phone;
+  // A lead can carry contact details the account record has not picked up yet; it never overrides
+  // what the account already knows.
+  if ((!customerEmail || !customerPhone) && draft.leadId) {
+    const lead = await prisma.lead.findUnique({ where: { id: draft.leadId } });
+    if (lead) {
+      customerEmail = customerEmail ?? lead.email;
+      customerPhone = customerPhone ?? lead.phone;
     }
   }
-  if (draft.leadId) {
-    const l = await prisma.lead.findUnique({ where: { id: draft.leadId } });
-    if (l) {
-      if (customerName === "Customer") customerName = l.name;
-      customerEmail = customerEmail ?? l.email;
-      customerPhone = customerPhone ?? l.phone;
-    }
-  }
-  if (draft.visitId) {
-    const v = await prisma.visit.findUnique({
-      where: { id: draft.visitId },
-      include: { property: true },
-    });
-    if (v?.property) {
-      serviceAddress =
-        [v.property.addressLine1, v.property.city, v.property.state, v.property.postalCode]
-          .filter(Boolean)
-          .join(", ") || null;
-    }
-  }
-  return { customerName, customerEmail, customerPhone, serviceAddress };
+
+  const serviceAddress =
+    [property.addressLine1, property.city, property.state, property.postalCode]
+      .filter(Boolean)
+      .join(", ") || null;
+
+  return { customerName: account.name, customerEmail, customerPhone, serviceAddress };
 }
 
 // ─── Reading ────────────────────────────────────────────────────────────────────
@@ -476,6 +507,10 @@ export async function reviseEstimate(
 
   const graduated = await graduateDraft(prisma, {
     draftId: prev.draftId,
+    // A revision stays on the same account and the same address. Changing either is not a
+    // revision of this estimate — it is a different estimate for a different job.
+    accountId: prev.customerId,
+    serviceAddressId: prev.serviceAddressId,
     title: prev.title,
     scopeText: prev.scopeText,
     includedText: prev.includedText,

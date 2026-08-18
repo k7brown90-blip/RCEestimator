@@ -1134,3 +1134,21 @@ export interface PbIssuedEstimate {
   lines?: PbIssuedLine[];
   events?: PbIssuedEvent[];
 }
+
+/** One row of the Estimates chain view (P029): account + address + status + job. */
+export interface PbChainRow {
+  id: string;
+  number: string;
+  revision: number;
+  status: "draft" | "sent" | "viewed" | "signed" | "void";
+  title: string;
+  total: number;
+  createdAt: string;
+  sentAt: string | null;
+  signedAt: string | null;
+  signedChannel: "in_person" | "email" | null;
+  account: { id: string; name: string; isTestAccount: boolean };
+  serviceAddress: { id: string; name: string; addressLine1: string; city: string; state: string } | null;
+  supersededBy: { id: string; revision: number } | null;
+  job: { id: string; status: string; scheduledStart: string | null } | null;
+}

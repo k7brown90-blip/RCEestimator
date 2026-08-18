@@ -70,6 +70,13 @@ import { estimatePageRouter } from "./routes/estimatePage";
 import { graduateDraft, reviseEstimate, signEstimateInPerson } from "./services/issuedEstimateService";
 import { renderEstimatePage, renderUnavailable } from "./services/issuedEstimateRender";
 import { mintSigningToken, signingClaims, SIGNING_SESSION_MINUTES } from "./middleware/signingScope";
+import {
+  createJobFromSignedEstimate,
+  deleteTestAccount,
+  ensureTestAccount,
+  findTestAccount,
+  EXCLUDE_TEST_ACCOUNT,
+} from "./services/accountSpine";
 import { sendEstimateEmail, estimateLink, notifyOwnerSigned } from "./services/issuedEstimateSend";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
@@ -1969,6 +1976,12 @@ app.post("/price-book/drafts/:draftId/finalize", asyncHandler(async (req, res) =
 
 app.post("/price-book/drafts/:draftId/issue", asyncHandler(async (req, res) => {
   const body = z.object({
+    // REQUIRED (P029). An issued estimate cannot be created unattached, and the address is not
+    // optional either: Kyle, 2026-08-18, "if they have multiple addresses on file it needs to
+    // link to the address that we are working at." The client prefills both from the draft's
+    // visit when there is one — derive, then CONFIRM. The server never picks for the operator.
+    accountId: z.string().trim().min(1),
+    serviceAddressId: z.string().trim().min(1),
     title: z.string().trim().nullable().optional(),
     scopeText: z.string().trim().nullable().optional(),
     includedText: z.string().trim().nullable().optional(),
@@ -1977,6 +1990,8 @@ app.post("/price-book/drafts/:draftId/issue", asyncHandler(async (req, res) => {
 
   const result = await graduateDraft(prisma, {
     draftId: String(req.params.draftId),
+    accountId: body.accountId,
+    serviceAddressId: body.serviceAddressId,
     title: body.title ?? null,
     scopeText: body.scopeText ?? null,
     includedText: body.includedText ?? null,
@@ -2010,6 +2025,59 @@ app.get("/issued-estimates", asyncHandler(async (req, res) => {
     },
   });
   res.json({ estimates: rows });
+}));
+
+// REGISTERED BEFORE `/issued-estimates/:id` ON PURPOSE. Express matches in order, so with
+// the parameterised route first, `GET /issued-estimates/chain` would bind `:id = "chain"`
+// and 404 looking for an estimate by that name.
+/**
+ * The Estimates tab: every issued estimate as a CHAIN row — account, address, status, job.
+ *
+ * Test-account rows are excluded. Kyle, 2026-08-18: speculative pricing is a price-book testing
+ * instrument and a planned deletion, so it must not mix into the numbers he reads.
+ */
+app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
+  const includeTest = readQuery(req, "includeTest") === "true";
+
+  const rows = await prisma.issuedEstimate.findMany({
+    where: includeTest ? {} : EXCLUDE_TEST_ACCOUNT,
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    include: {
+      account: { select: { id: true, name: true, isTestAccount: true } },
+      serviceProperty: { select: { id: true, name: true, addressLine1: true, city: true, state: true } },
+      supersededBy: { select: { id: true, revision: true } },
+    },
+  });
+
+  // The job side of the chain, resolved in one query rather than N.
+  const jobIds = rows.map((r) => r.jobVisitId).filter((v): v is string => Boolean(v));
+  const jobs = jobIds.length
+    ? await prisma.visit.findMany({
+        where: { id: { in: jobIds } },
+        select: { id: true, status: true, scheduledStart: true },
+      })
+    : [];
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+
+  res.json({
+    estimates: rows.map((r) => ({
+      id: r.id,
+      number: r.number,
+      revision: r.revision,
+      status: r.status,
+      title: r.title,
+      total: r.total,
+      createdAt: r.createdAt,
+      sentAt: r.sentAt,
+      signedAt: r.signedAt,
+      signedChannel: r.signedChannel,
+      account: r.account,
+      serviceAddress: r.serviceProperty,
+      supersededBy: r.supersededBy,
+      job: r.jobVisitId ? jobById.get(r.jobVisitId) ?? null : null,
+    })),
+  });
 }));
 
 app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
@@ -2170,6 +2238,111 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
   );
 
   res.json({ signed: true, estimateId: result.estimateId });
+}));
+
+// ─── THE ACCOUNT SPINE (P029) ────────────────────────────────────────────────
+//
+// Kyle, 2026-08-18: "All of it links to their account… if they have multiple addresses on file
+// it needs to link to the address that we are working at."
+
+/**
+ * Everything quoted for one account, per address — the account page's timeline.
+ *
+ * Read-only. Creation lives on the account and the visit, never here (the full-move ruling).
+ */
+app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
+  const accountId = String(req.params.accountId);
+  const addressId = readQuery(req, "serviceAddressId")?.trim();
+
+  const estimates = await prisma.issuedEstimate.findMany({
+    where: { customerId: accountId, ...(addressId ? { serviceAddressId: addressId } : {}) },
+    orderBy: { createdAt: "desc" },
+    include: {
+      serviceProperty: { select: { id: true, name: true, addressLine1: true, city: true } },
+      supersededBy: { select: { id: true, revision: true } },
+    },
+  });
+
+  res.json({ estimates });
+}));
+
+/** Signed quote → job, on the same account and address. One tap, idempotent. */
+app.post("/issued-estimates/:id/create-job", asyncHandler(async (req, res) => {
+  const result = await createJobFromSignedEstimate(prisma, String(req.params.id), {
+    actor: "human:crm-session",
+  });
+  if (!result.ok) {
+    res.status(400).json({ created: false, error: result.reason });
+    return;
+  }
+  res.status(result.created ? 201 : 200).json({ created: result.created, visitId: result.visitId });
+}));
+
+/**
+ * ATTACH-AND-CONTINUE (P029 scope 2).
+ *
+ * The full move removed the context-free entry point, which would have stranded the drafts that
+ * were created under it. This attaches one to an account and address so it can continue normally
+ * — migrated, not orphaned, and never by inventing a placeholder account.
+ */
+app.post("/price-book/drafts/:draftId/attach", asyncHandler(async (req, res) => {
+  const body = z.object({
+    accountId: z.string().trim().min(1),
+    serviceAddressId: z.string().trim().min(1),
+  }).parse(req.body ?? {});
+
+  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: String(req.params.draftId) } });
+  if (!draft) {
+    res.status(404).json({ error: "Draft not found." });
+    return;
+  }
+  if (draft.status !== "draft") {
+    res.status(409).json({ error: `This draft is ${draft.status} and is no longer editable.` });
+    return;
+  }
+
+  const property = await prisma.property.findUnique({ where: { id: body.serviceAddressId } });
+  if (!property || property.customerId !== body.accountId) {
+    res.status(400).json({ error: "That address does not belong to that account." });
+    return;
+  }
+
+  const updated = await prisma.priceBookDraftEstimate.update({
+    where: { id: draft.id },
+    data: { customerId: body.accountId },
+  });
+  res.json({ ok: true, draft: updated, serviceAddressId: body.serviceAddressId });
+}));
+
+// ─── The test account: a marked instrument with a delete button (P029) ────────
+
+app.get("/test-account", asyncHandler(async (_req, res) => {
+  const account = await findTestAccount(prisma);
+  if (!account) {
+    res.json({ exists: false });
+    return;
+  }
+  const [properties, estimates, drafts] = await Promise.all([
+    prisma.property.findMany({ where: { customerId: account.id }, select: { id: true, name: true, addressLine1: true } }),
+    prisma.issuedEstimate.count({ where: { customerId: account.id } }),
+    prisma.priceBookDraftEstimate.count({ where: { customerId: account.id } }),
+  ]);
+  res.json({ exists: true, account, properties, counts: { estimates, drafts } });
+}));
+
+app.post("/test-account", asyncHandler(async (_req, res) => {
+  const { account, property } = await ensureTestAccount(prisma);
+  res.status(201).json({ account, property });
+}));
+
+/**
+ * Delete the whole test account. Fires on Kyle's word only — there is no schedule, no trigger and
+ * no automatic call anywhere in this codebase. It refuses any account not marked `isTestAccount`,
+ * so the blast radius is exactly the one row that opted in.
+ */
+app.delete("/test-account", asyncHandler(async (_req, res) => {
+  const result = await deleteTestAccount(prisma);
+  res.json(result);
 }));
 
 // ─── HEALTH RECORD ADMIN (CRM client — rides the PIN/JWT session) ─────────────

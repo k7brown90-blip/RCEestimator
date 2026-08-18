@@ -47,7 +47,7 @@ async function issuedEstimate(title: string) {
   draftIds.push(d.id);
   await addLine(prisma, d.id, { itemId: GOOD_A, quantity: 1, quantitySource: "COUNT" });
   await addLine(prisma, d.id, { itemId: GOOD_B, quantity: 1, quantitySource: "COUNT" });
-  const g = await graduateDraft(prisma, { draftId: d.id });
+  const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
   if (!g.ok) throw new Error(`graduation failed: ${g.reasons.join("; ")}`);
   return g;
 }

@@ -41,6 +41,7 @@ import type {
   PbReview,
   PbWalkthroughRow,
   PbIssuedEstimate,
+  PbChainRow,
 } from "./types";
 
 const API_BASE = "/api";
@@ -611,7 +612,12 @@ export const api = {
   // ── Issued estimates (P027) ──
   // `pbIssue` returns 409 with the engine's verbatim refusal reasons when the draft is not
   // gap-free — the same contract as finalize, and the UI shows those reasons unedited.
-  pbIssue: (draftId: string, input: { title?: string | null; waiveTrip?: boolean }) =>
+  pbIssue: (
+    draftId: string,
+    // accountId + serviceAddressId are REQUIRED (P029). An estimate cannot be issued unattached,
+    // and the address is not optional when an account has several — the operator picks.
+    input: { accountId: string; serviceAddressId: string; title?: string | null; waiveTrip?: boolean }
+  ) =>
     request<{ issued: true; estimateId: string; number: string; revision: number }>(
       `/price-book/drafts/${draftId}/issue`,
       { method: "POST", body: JSON.stringify(input) }
@@ -659,6 +665,30 @@ export const api = {
     if (!res.ok) throw new ApiError("Invalid PIN");
     return (await res.json()) as { token: string; expiresIn: number };
   },
+
+  // ── The account spine (P029) ──
+  accountEstimates: (accountId: string, serviceAddressId?: string) =>
+    request<{ estimates: PbIssuedEstimate[] }>(
+      `/accounts/${accountId}/estimates${serviceAddressId ? `?serviceAddressId=${encodeURIComponent(serviceAddressId)}` : ""}`
+    ),
+
+  estimateChain: () => request<{ estimates: PbChainRow[] }>("/issued-estimates/chain"),
+
+  pbCreateJob: (id: string) =>
+    request<{ created: boolean; visitId: string }>(`/issued-estimates/${id}/create-job`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+
+  pbAttachDraft: (draftId: string, input: { accountId: string; serviceAddressId: string }) =>
+    request<{ ok: true }>(`/price-book/drafts/${draftId}/attach`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  testAccount: () => request<{ exists: boolean; account?: { id: string; name: string }; properties?: Array<{ id: string; name: string; addressLine1: string }>; counts?: { estimates: number; drafts: number } }>("/test-account"),
+  testAccountCreate: () => request<{ account: { id: string }; property: { id: string } }>("/test-account", { method: "POST", body: JSON.stringify({}) }),
+  testAccountDelete: () => request<{ deleted: boolean; counts: { estimates: number; drafts: number; visits: number; properties: number } }>("/test-account", { method: "DELETE" }),
 
   pbIssuedRevise: (id: string) =>
     request<{ revised: true; estimateId: string; number: string; revision: number }>(

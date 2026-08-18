@@ -66,6 +66,16 @@ export function PriceBookIntakePage() {
   // "open the estimate screen and find it".
   const [params, setParams] = useSearchParams();
   const draftId = params.get("draft");
+  /*
+    THE SPINE, CARRIED IN THE URL (P029).
+
+    An estimate belongs to an account, at an address. The account page opens this screen with
+    both already chosen; a draft that predates the ruling arrives with neither and gets the
+    attach picker below instead of a Create button. Keeping them in the URL means the screen is
+    still deep-linkable and a reload does not lose which job is being quoted.
+  */
+  const accountId = params.get("account");
+  const serviceAddressId = params.get("address");
   const tab = (params.get("tab") as Tab | null) ?? "browse";
   const setDraftId = (id: string | null) => {
     const next = new URLSearchParams(params);
@@ -117,7 +127,12 @@ export function PriceBookIntakePage() {
   const createDraft = useMutation({
     // The visit id arrives as a query param from the legacy estimate page's link (P024,
     // Option A). Absent = the nav entry = an unattached draft, which is the working default.
-    mutationFn: () => api.pbCreateDraft({ title: newTitle.trim(), visitId: params.get("visitId") }),
+    mutationFn: () =>
+      api.pbCreateDraft({
+        title: newTitle.trim(),
+        visitId: params.get("visitId"),
+        customerId: accountId,
+      }),
     onSuccess: (d) => {
       setDraftId(d.id);
       setNewTitle("");
@@ -224,7 +239,20 @@ export function PriceBookIntakePage() {
           )}
 
           {tab === "review" && (
-            <ReviewTab draftId={draftId} review={review} computed={computed?.computed} onChanged={invalidate} />
+            <ReviewTab
+              draftId={draftId}
+              review={review}
+              computed={computed?.computed}
+              onChanged={invalidate}
+              accountId={accountId}
+              serviceAddressId={serviceAddressId}
+              onAttached={(acc, addr) => {
+                const next = new URLSearchParams(params);
+                next.set("account", acc);
+                next.set("address", addr);
+                setParams(next, { replace: true });
+              }}
+            />
           )}
 
           {/* ── Running totals. Straight from the engine, always visible. ── */}
@@ -739,11 +767,15 @@ function WalkthroughRow(props: { row: PbWalkthroughRow; draftId: string; onChang
 
 function ReviewTab(props: {
   draftId: string;
+  /** The spine (P029). Null until the draft is attached to an account + address. */
+  accountId: string | null;
+  serviceAddressId: string | null;
+  onAttached: (accountId: string, serviceAddressId: string) => void;
   review: { proposedLines: PbLine[]; confirmedLines: PbLine[]; openQuestions: Array<{ id: string; question: string; raisedBy: string }>; counts: { proposed: number; confirmed: number; openQuestions: number } } | undefined;
   computed: PbComputed | undefined;
   onChanged: () => void;
 }) {
-  const { draftId, review, computed, onChanged } = props;
+  const { draftId, review, computed, onChanged, accountId, serviceAddressId, onAttached } = props;
   const [finalizeMsg, setFinalizeMsg] = useState<{ ok: boolean; reasons: string[]; warnings: string[] } | null>(null);
   const finalizeMsgRef = useRef<HTMLDivElement | null>(null);
 
@@ -840,7 +872,11 @@ function ReviewTab(props: {
 
       </div>
 
-      <IssueAndSendPanel draftId={draftId} />
+      {!(accountId && serviceAddressId) && (
+        <AttachDraftPanel draftId={draftId} onAttached={onAttached} />
+      )}
+
+      <IssueAndSendPanel draftId={draftId} accountId={accountId} serviceAddressId={serviceAddressId} />
 
       <PhotoAttach draftId={draftId} />
     </div>
@@ -1153,6 +1189,95 @@ function TotalsBar(props: {
 }
 
 /**
+ * ATTACH-AND-CONTINUE (P029).
+ *
+ * The full move made an account and an address mandatory. Drafts created before that ruling have
+ * neither, and the prompt is explicit that they are "migrated, not stranded" — so opening one
+ * asks which account and which address it belongs to, writes the link, and carries on. It never
+ * invents a placeholder account to satisfy the requirement.
+ */
+function AttachDraftPanel(props: {
+  draftId: string;
+  onAttached: (accountId: string, serviceAddressId: string) => void;
+}) {
+  const { draftId, onAttached } = props;
+  const [accountId, setAccountId] = useState("");
+  const [addressId, setAddressId] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const { data: accounts } = useQuery({ queryKey: ["accounts"], queryFn: api.accounts });
+  const { data: account } = useQuery({
+    queryKey: ["account", accountId],
+    queryFn: () => api.account(accountId),
+    enabled: Boolean(accountId),
+  });
+  const addresses = account?.properties ?? [];
+
+  const attach = useMutation({
+    mutationFn: () => api.pbAttachDraft(draftId, { accountId, serviceAddressId: addressId }),
+    onSuccess: () => onAttached(accountId, addressId),
+    onError: (err) => setError((err as Error).message),
+  });
+
+  return (
+    <div className="card border-l-4 border-amber-400 p-3">
+      <h3 className="text-sm font-semibold">Which job is this?</h3>
+      <p className="mt-1 text-xs text-rce-muted">
+        Estimates belong to an account, at the address being worked. This draft was started before
+        that was required — pick where it belongs and carry on.
+      </p>
+
+      <select
+        className="field mt-2 w-full"
+        value={accountId}
+        onChange={(e) => {
+          setAccountId(e.target.value);
+          setAddressId("");
+          setError(null);
+        }}
+      >
+        <option value="">Pick an account…</option>
+        {(accounts ?? []).map((a) => (
+          <option key={a.id} value={a.id}>{a.name}</option>
+        ))}
+      </select>
+
+      {accountId && (
+        <select
+          className="field mt-2 w-full"
+          value={addressId}
+          onChange={(e) => {
+            setAddressId(e.target.value);
+            setError(null);
+          }}
+        >
+          <option value="">Pick the address being worked…</option>
+          {addresses.map((p) => (
+            <option key={p.id} value={p.id}>{p.name} — {p.addressLine1}, {p.city}</option>
+          ))}
+        </select>
+      )}
+
+      {accountId && addresses.length === 0 && (
+        <p className="mt-2 text-xs text-amber-900">
+          That account has no addresses on file. Add one on the account page first.
+        </p>
+      )}
+
+      {error && <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{error}</p>}
+
+      <button
+        className="btn btn-primary mt-2 w-full"
+        disabled={!accountId || !addressId || attach.isPending}
+        onClick={() => attach.mutate()}
+      >
+        {attach.isPending ? "Attaching…" : "Attach and continue"}
+      </button>
+    </div>
+  );
+}
+
+/**
  * Issue the estimate to the customer — the last step of the intake screen (P027).
  *
  * This is where a priced draft stops being internal. Two explicit operator actions, never
@@ -1163,8 +1288,8 @@ function TotalsBar(props: {
  * customer. Nothing else in the app may call that endpoint — no cron, no trigger, no retry
  * queue — and `AUTOMATED_CUSTOMER_SENDS` is untouched by this lane.
  */
-function IssueAndSendPanel(props: { draftId: string }) {
-  const { draftId } = props;
+function IssueAndSendPanel(props: { draftId: string; accountId: string | null; serviceAddressId: string | null }) {
+  const { draftId, accountId, serviceAddressId } = props;
   const queryClient = useQueryClient();
   const [reasons, setReasons] = useState<string[]>([]);
   const [waiveTrip, setWaiveTrip] = useState(false);
@@ -1193,7 +1318,14 @@ function IssueAndSendPanel(props: { draftId: string }) {
   };
 
   const issue = useMutation({
-    mutationFn: () => api.pbIssue(draftId, { waiveTrip }),
+    mutationFn: () =>
+      api.pbIssue(draftId, {
+        // Non-null by the time this button renders — the panel shows the attach picker instead
+        // when either is missing, so an unattached estimate cannot be issued from here.
+        accountId: accountId as string,
+        serviceAddressId: serviceAddressId as string,
+        waiveTrip,
+      }),
     onSuccess: (r) => {
       setReasons([]);
       setNotice(`Created estimate ${r.number}. Nothing has been sent yet.`);
@@ -1270,7 +1402,14 @@ function IssueAndSendPanel(props: { draftId: string }) {
       )}
       {notice && <p className="mt-2 rounded bg-emerald-50 p-2 text-xs text-emerald-800">{notice}</p>}
 
-      {!est && (
+      {!est && !(accountId && serviceAddressId) && (
+        <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900">
+          This draft is not attached to an account yet. Attach it above — an estimate has to name
+          the customer and the address the work is at before it can be issued.
+        </p>
+      )}
+
+      {!est && accountId && serviceAddressId && (
         <>
           <label className="mt-2 flex items-center gap-2 text-xs text-rce-soft">
             <input type="checkbox" checked={waiveTrip} onChange={(e) => setWaiveTrip(e.target.checked)} />

@@ -11,9 +11,11 @@ const nav = [
   { to: "/leads", label: "Leads", badgeQuery: true },
   { to: "/calendar", label: "Calendar" },
   { to: "/jobs", label: "Jobs" },
-  // The atomic-first intake screen (P012). Sits next to Jobs because that is where a
-  // walkthrough turns into an estimate.
-  { to: "/estimate-intake", label: "Estimate" },
+  // The Estimates CHAIN VIEW (P029) — a record, not a workshop. `/estimate-intake` was here
+  // and is deliberately gone: Kyle, 2026-08-18, "The estimate flow needs to start from within
+  // the customers account not as a stand alone feature." Quoting begins on an account (or a
+  // visit); this entry is where you see what has been quoted and where it got to.
+  { to: "/estimates", label: "Estimates" },
   { to: "/accounts", label: "Accounts" },
   { to: "/team", label: "Team" },
   { to: "/settings", label: "Settings" },

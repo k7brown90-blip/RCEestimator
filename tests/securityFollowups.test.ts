@@ -38,7 +38,7 @@ vi.mock("googleapis", () => {
 });
 
 import { app } from "../src/app";
-import { emitAccessLog, type AccessLogLine } from "../src/middleware/accessLog";
+import { emitAccessLog, type AccessLogLine, redactPath } from "../src/middleware/accessLog";
 import { computeTwilioSignature, requestUrlForSignature } from "../src/middleware/twilioSignature";
 import { postForgedTwilioWebhook, postSignedTwilioWebhook } from "./helpers/twilioWebhook";
 import { isPublicRoute } from "../src/middleware/publicRoutes";
@@ -460,5 +460,41 @@ describe("no send path was created", () => {
     for (const leg of ["operatorAlerts", "operatorNotifications", "technicianSends", "inboundAcks", "agentSends", "customerLifecycleSms"] as const) {
       expect(twilioSendEnabled(leg), `${leg} must still default off`).toBe(false);
     }
+  });
+});
+
+/**
+ * P029 rider — customer capability tokens must not reach the access log.
+ *
+ * `/e/:token` is the estimate page and `/confirm/:token` the appointment page. In both, the path
+ * segment IS the credential: whoever holds it can read the estimate and SIGN it, or confirm and
+ * cancel an appointment. Logging it in plaintext puts a working signature capability into a
+ * stream that exists to be read later. Raised by the P027 report; same treatment the Railway
+ * webhook token already had.
+ */
+describe("access log redacts customer capability tokens", () => {
+  const TOKEN = "a".repeat(64);
+
+  it("redacts the estimate token but keeps the route visible", () => {
+    const out = redactPath(`/e/${TOKEN}`);
+    expect(out).toBe("/e/<token>");
+    expect(out).not.toContain(TOKEN);
+  });
+
+  it("redacts the estimate token on the sign path too", () => {
+    const out = redactPath(`/e/${TOKEN}/sign`);
+    expect(out).not.toContain(TOKEN);
+    expect(out).toContain("/e/<token>");
+  });
+
+  it("redacts the appointment confirmation token", () => {
+    const out = redactPath(`/confirm/${TOKEN}`);
+    expect(out).not.toContain(TOKEN);
+    expect(out).toContain("<token>");
+  });
+
+  it("leaves ordinary paths alone", () => {
+    expect(redactPath("/accounts")).toBe("/accounts");
+    expect(redactPath("/issued-estimates/abc123")).toBe("/issued-estimates/abc123");
   });
 });

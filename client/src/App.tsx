@@ -12,6 +12,7 @@ import { PropertyDetailPage } from "./pages/PropertyDetailPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TeamPage } from "./pages/TeamPage";
 import { PriceBookIntakePage } from "./pages/PriceBookIntakePage";
+import { EstimatesPage } from "./pages/EstimatesPage";
 import { VisitWorkspacePage } from "./pages/VisitWorkspacePage";
 import { SigningModePage } from "./pages/SigningModePage";
 import { isSigningModeActive } from "./lib/signingSession";
@@ -69,6 +70,9 @@ function App() {
                 <Route path="/customers/:customerId" element={<RedirectCustomerToAccount />} />
                 <Route path="/properties/:propertyId" element={<PropertyDetailPage />} />
                 <Route path="/visits/:visitId" element={<VisitWorkspacePage />} />
+                <Route path="/estimates" element={<EstimatesPage />} />
+                {/* Still routable — reached from an account or a visit, never from the nav.
+                    The full-move ruling removed the standalone ENTRY POINT, not the screen. */}
                 <Route path="/estimate-intake" element={<PriceBookIntakePage />} />
                 <Route path="/team" element={<TeamPage />} />
                 <Route path="/settings" element={<SettingsPage />} />

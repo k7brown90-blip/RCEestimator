@@ -419,6 +419,9 @@ export function AccountDetailPage() {
         </div>
       </section>
 
+      <StartWorkCard accountId={account.id} properties={properties} />
+      <AccountEstimates accountId={account.id} properties={properties} />
+
       {/* ── Jobs ────────────────────────────────────────────────────────── */}
       <JobSection title="Current jobs" jobs={activeJobs} emptyText="No jobs in flight." defaultOpen />
       <JobSection title="Past jobs" jobs={pastJobs} emptyText="No completed jobs yet." />
@@ -432,6 +435,201 @@ export function AccountDetailPage() {
 
       <HealthInspectionHistory summary={summary} />
     </div>
+  );
+}
+
+/**
+ * Where work starts. (P029)
+ *
+ * Kyle, 2026-08-18: *"Now we have an account established and if they call back we go to their
+ * account and schedule an appointment -> estimate -> signed quote -> job -> payment."*
+ *
+ * Before this the account page showed properties, jobs, findings and inspections — and had no way
+ * to begin any of it. The estimate flow lived on its own page with no connection to the customer,
+ * which is the thing Kyle filed three times.
+ *
+ * THE ADDRESS IS PICKED, NEVER ASSUMED. When the account has one property it is preselected
+ * because there is nothing to choose; with several, the operator chooses and the buttons stay
+ * disabled until they have. Silently defaulting to the first address is how the wrong street ends
+ * up on a signed document.
+ */
+function StartWorkCard({
+  accountId,
+  properties,
+}: {
+  accountId: string;
+  properties: AccountSummary["properties"];
+}) {
+  const navigate = useNavigate();
+  const [addressId, setAddressId] = useState(properties.length === 1 ? properties[0].id : "");
+  const [error, setError] = useState<string | null>(null);
+
+  const scheduleVisit = useMutation({
+    mutationFn: () =>
+      api.createVisit({
+        customerId: accountId,
+        propertyId: addressId,
+        mode: "onsite",
+        purpose: "Appointment",
+      }),
+    onSuccess: (visit) => navigate(`/visits/${visit.id}`),
+    onError: (err) => setError((err as Error).message),
+  });
+
+  const need = () => {
+    if (!addressId) {
+      setError("Pick the address you are working at first.");
+      return false;
+    }
+    setError(null);
+    return true;
+  };
+
+  if (properties.length === 0) {
+    return (
+      <section className="card mb-5 p-4">
+        <h2 className="text-lg font-semibold">Start work</h2>
+        <p className="mt-2 text-sm text-rce-muted">
+          Add an address to this account first — every appointment, estimate and job links to the
+          address it happens at.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card mb-5 p-4">
+      <h2 className="text-lg font-semibold">Start work</h2>
+      <p className="mt-1 text-xs text-rce-soft">
+        Appointment &rarr; estimate &rarr; signed quote &rarr; job. All of it links to this account,
+        at the address you pick.
+      </p>
+
+      {properties.length > 1 ? (
+        <label className="mt-3 block text-sm font-medium">
+          Address being worked
+          <select
+            className="field mt-1 w-full"
+            value={addressId}
+            onChange={(e) => {
+              setAddressId(e.target.value);
+              setError(null);
+            }}
+          >
+            <option value="">Pick an address…</option>
+            {properties.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} — {p.addressLine1}, {p.city}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p className="mt-3 text-sm text-rce-text">
+          {properties[0].name} — {properties[0].addressLine1}, {properties[0].city}
+        </p>
+      )}
+
+      {error && <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{error}</p>}
+
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <button
+          className="btn btn-primary flex-1"
+          disabled={scheduleVisit.isPending}
+          onClick={() => {
+            if (!need()) return;
+            scheduleVisit.mutate();
+          }}
+        >
+          {scheduleVisit.isPending ? "Creating…" : "Schedule a visit"}
+        </button>
+        <button
+          className="btn btn-primary flex-1"
+          onClick={() => {
+            if (!need()) return;
+            // The intake screen opens already bound to this account and address.
+            navigate(`/estimate-intake?account=${accountId}&address=${addressId}`);
+          }}
+        >
+          Start an estimate
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Everything quoted for this account — the estimate half of Kyle's funnel, per address.
+ *
+ * Filterable by address because an account with three properties has three separate histories,
+ * and "what have I quoted at this house" is the question being asked.
+ */
+function AccountEstimates({
+  accountId,
+  properties,
+}: {
+  accountId: string;
+  properties: AccountSummary["properties"];
+}) {
+  const [addressId, setAddressId] = useState("");
+  const { data } = useQuery({
+    queryKey: ["account-estimates", accountId, addressId],
+    queryFn: () => api.accountEstimates(accountId, addressId || undefined),
+  });
+  const rows = data?.estimates ?? [];
+
+  return (
+    <section className="card mb-5 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold">
+          Estimates <span className="text-sm font-normal text-rce-muted">({rows.length})</span>
+        </h2>
+        {properties.length > 1 && (
+          <select
+            className="field text-sm"
+            value={addressId}
+            onChange={(e) => setAddressId(e.target.value)}
+          >
+            <option value="">All addresses</option>
+            {properties.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.addressLine1}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {rows.length === 0 && (
+        <p className="mt-3 text-sm text-rce-muted">
+          Nothing quoted{addressId ? " at this address" : ""} yet.
+        </p>
+      )}
+
+      <div className="mt-3 space-y-2">
+        {rows.map((e) => (
+          <Link
+            key={e.id}
+            to={`/estimate-intake?estimate=${e.id}`}
+            className="block rounded-lg border border-rce-border/70 p-3 active:opacity-70"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-medium">{e.title}</p>
+                <p className="text-xs text-rce-soft">
+                  {e.number}
+                  {e.revision > 1 ? ` rev ${e.revision}` : ""} ·{" "}
+                  {/* The FROZEN text, not a live lookup — this is what the signed document says. */}
+                  {e.serviceAddress ?? "address missing"}
+                </p>
+                <p className="text-xs uppercase tracking-wide text-rce-muted">{e.status}</p>
+              </div>
+              <p className="shrink-0 font-semibold">${e.total.toFixed(2)}</p>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </section>
   );
 }
 

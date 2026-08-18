@@ -84,9 +84,26 @@ export interface RequestAuthState {
  */
 const REDACT_PATH_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /^(\/internal\/webhooks\/[^/]+\/)[^/]+/, replacement: "$1<token>" },
+
+  /*
+    CAPABILITY TOKENS IN CUSTOMER LINKS (P029 rider, raised by the P027 report).
+
+    `/e/:token` is the customer's estimate page and `/confirm/:token` is their appointment page.
+    In both, the path segment IS the credential — anyone holding it can read the estimate and
+    SIGN it, or confirm and cancel an appointment. Writing it to the access log put a working
+    signature capability into a stream that is kept precisely so it can be read later.
+
+    Same treatment the Railway webhook token already gets, and for the same reason: a log built
+    to answer security questions must not answer them for an attacker. Both entries keep the
+    route visible (`/e/<token>`), so the log still shows that a customer opened their estimate
+    and what the server said — the observability survives, the capability does not.
+  */
+  { pattern: /^(\/e\/)[^/]+/, replacement: "$1<token>" },
+  { pattern: /^(\/confirm\/)[^/]+/, replacement: "$1<token>" },
 ];
 
-function redactPath(path: string): string {
+/** Exported so the redaction can be tested directly — a leak here is silent otherwise. */
+export function redactPath(path: string): string {
   let out = path;
   for (const { pattern, replacement } of REDACT_PATH_PATTERNS) out = out.replace(pattern, replacement);
   return out;

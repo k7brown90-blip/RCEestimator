@@ -101,7 +101,7 @@ describe("graduation refuses a draft that is not gap-free", () => {
     draftIds.push(d.id);
     await addLine(prisma, d.id, { itemId: NO_LABOUR, quantity: 1, quantitySource: "COUNT" });
 
-    const result = await graduateDraft(prisma, { draftId: d.id });
+    const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -122,7 +122,7 @@ describe("graduation refuses a draft that is not gap-free", () => {
       },
     });
 
-    const result = await graduateDraft(prisma, { draftId: d.id });
+    const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -133,7 +133,7 @@ describe("graduation refuses a draft that is not gap-free", () => {
   it("refuses an empty draft", async () => {
     const d = await createDraft(prisma, { title: `${MARK} empty`, supplierId: "HD" });
     draftIds.push(d.id);
-    const result = await graduateDraft(prisma, { draftId: d.id });
+    const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(result.ok).toBe(false);
   });
 });
@@ -143,7 +143,7 @@ describe("graduation refuses a draft that is not gap-free", () => {
 describe("graduation freezes a customer-ready snapshot", () => {
   it("carries flat per-line prices, the trip line, and the customer context", async () => {
     const d = await quotableDraft("clean");
-    const result = await graduateDraft(prisma, { draftId: d.id, createdBy: "human:test" });
+    const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId, createdBy: "human:test" });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -185,7 +185,7 @@ describe("graduation freezes a customer-ready snapshot", () => {
 
   it("shows a waived trip as a $0.00 line rather than hiding it", async () => {
     const d = await quotableDraft("waived");
-    const result = await graduateDraft(prisma, { draftId: d.id, waiveTrip: true });
+    const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId, waiveTrip: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -221,7 +221,7 @@ describe("the customer render carries no hours, no rates, no hour arithmetic", (
 
   it("finds no hour reference anywhere in the rendered page", async () => {
     const d = await quotableDraft("nohours");
-    const result = await graduateDraft(prisma, { draftId: d.id, scopeText: "Install two bath fans and one load center." });
+    const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId, scopeText: "Install two bath fans and one load center." });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -246,7 +246,7 @@ describe("the customer render carries no hours, no rates, no hour arithmetic", (
 
   it("the signed page also carries no hours", async () => {
     const d = await quotableDraft("nohours-signed");
-    const result = await graduateDraft(prisma, { draftId: d.id });
+    const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const est = await prisma.issuedEstimate.findUnique({ where: { id: result.estimateId } });
@@ -263,7 +263,7 @@ describe("the customer render carries no hours, no rates, no hour arithmetic", (
   it("the model itself has nowhere to put an hour", async () => {
     // Structural, not editorial: if a future change adds an hours column this fails immediately.
     const d = await quotableDraft("nohours-schema");
-    const result = await graduateDraft(prisma, { draftId: d.id });
+    const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const est = await prisma.issuedEstimate.findUnique({
@@ -279,8 +279,8 @@ describe("the customer render carries no hours, no rates, no hour arithmetic", (
 
 describe("the token reaches exactly one estimate and nothing else", () => {
   it("resolves its own estimate and no other", async () => {
-    const a = await graduateDraft(prisma, { draftId: (await quotableDraft("tok-a")).id });
-    const b = await graduateDraft(prisma, { draftId: (await quotableDraft("tok-b")).id });
+    const a = await graduateDraft(prisma, { draftId: (await quotableDraft("tok-a")).id, accountId: customerId, serviceAddressId: propertyId });
+    const b = await graduateDraft(prisma, { draftId: (await quotableDraft("tok-b")).id, accountId: customerId, serviceAddressId: propertyId });
     expect(a.ok && b.ok).toBe(true);
     if (!a.ok || !b.ok) return;
 
@@ -308,7 +308,7 @@ describe("the token reaches exactly one estimate and nothing else", () => {
 
   it("serves the estimate over HTTP with no session, and records the first view", async () => {
     const d = await quotableDraft("http-view");
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
@@ -335,7 +335,7 @@ describe("the token reaches exactly one estimate and nothing else", () => {
 describe("signing", () => {
   it("records the signature with its audit trail and locks the estimate", async () => {
     const d = await quotableDraft("sign");
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
@@ -362,7 +362,7 @@ describe("signing", () => {
 
   it("refuses a second signature and keeps the first signer", async () => {
     const d = await quotableDraft("sign-twice");
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
@@ -383,7 +383,7 @@ describe("signing", () => {
 
   it("refuses an empty name rather than recording a blank signature", async () => {
     const d = await quotableDraft("sign-blank");
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
@@ -400,7 +400,7 @@ describe("signing", () => {
 describe("revisions", () => {
   it("supersedes without touching the signed record, and kills the old link", async () => {
     const d = await quotableDraft("revise");
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
 
@@ -449,7 +449,7 @@ describe("revisions", () => {
 
   it("refuses to revise an already-superseded estimate", async () => {
     const d = await quotableDraft("revise-twice");
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
     const first = await reviseEstimate(prisma, g.estimateId);
@@ -473,7 +473,7 @@ describe("the send path is operator-only", () => {
 
   it("refuses an unauthenticated send with 401 and sends nothing", async () => {
     const d = await quotableDraft("send-auth");
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
 
@@ -493,7 +493,7 @@ describe("the send path is operator-only", () => {
 
   it("refuses unauthenticated access to every other operator route on this feature", async () => {
     const d = await quotableDraft("send-auth-2");
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
 
@@ -511,7 +511,7 @@ describe("the send path is operator-only", () => {
 
   it("the customer page stays reachable without a session while the gate is on", async () => {
     const d = await quotableDraft("send-auth-3");
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
@@ -530,7 +530,7 @@ describe("a successful send stamps the record", () => {
     try {
       const { sendEstimateEmail } = await import("../src/services/issuedEstimateSend");
       const d = await quotableDraft("send-ok");
-      const g = await graduateDraft(prisma, { draftId: d.id });
+      const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
       expect(g.ok).toBe(true);
       if (!g.ok) return;
 
@@ -559,12 +559,40 @@ describe("a successful send stamps the record", () => {
     }
   });
 
-  it("refuses to send when there is no customer email rather than guessing one", async () => {
+  /*
+    P029 changed how this case ARISES without changing the property.
+
+    Before the account spine, an estimate could be issued with no customer at all, so "no email"
+    meant "no customer". Now every estimate names an account — so the way to have no address is an
+    ACCOUNT that has none, which is a real situation (a phone lead Kyle has not collected an email
+    from yet). The refusal must still fire, and it must still refuse rather than fall back to
+    sending the customer's estimate to Kyle.
+  */
+  it("refuses to send when the account has no email rather than guessing one", async () => {
     const { sendEstimateEmail } = await import("../src/services/issuedEstimateSend");
+
+    const noEmailAccount = await prisma.customer.create({
+      data: { name: `${MARK} No Email Account`, phone: "615-555-0000" },
+    });
+    const noEmailProperty = await prisma.property.create({
+      data: {
+        customerId: noEmailAccount.id,
+        name: "House",
+        addressLine1: "7 Silent Way",
+        city: "La Vergne",
+        state: "TN",
+        postalCode: "37086",
+      },
+    });
+
     const d = await createDraft(prisma, { title: `${MARK} no-email`, supplierId: "HD" });
     draftIds.push(d.id);
     await addLine(prisma, d.id, { itemId: GOOD_A, quantity: 1, quantitySource: "COUNT" });
-    const g = await graduateDraft(prisma, { draftId: d.id });
+    const g = await graduateDraft(prisma, {
+      draftId: d.id,
+      accountId: noEmailAccount.id,
+      serviceAddressId: noEmailProperty.id,
+    });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
 
@@ -574,5 +602,12 @@ describe("a successful send stamps the record", () => {
 
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
     expect(est!.sentAt).toBeNull();
+
+    // Teardown: this account is outside the suite's shared fixtures.
+    await prisma.issuedEstimateEvent.deleteMany({ where: { estimateId: g.estimateId } });
+    await prisma.issuedEstimateLine.deleteMany({ where: { estimateId: g.estimateId } });
+    await prisma.issuedEstimate.delete({ where: { id: g.estimateId } });
+    await prisma.property.delete({ where: { id: noEmailProperty.id } });
+    await prisma.customer.delete({ where: { id: noEmailAccount.id } });
   });
 });
