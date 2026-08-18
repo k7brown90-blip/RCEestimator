@@ -1525,6 +1525,36 @@ model PriceBookAtomic {
   markupTier         String? // T1..T5 | "awaiting cost"
   sellPricePerUnit   Float?
 
+  // ── KYLE'S TAB (P030). The catalog swap, 2026-08-18. ────────────────────────────────
+  //
+  // Kyle: "I want only my tab (Kyle's Copy) to be the source of truth." 226 items he built,
+  // named, priced and tier-checked by hand.
+  //
+  // WHY THESE LAND ON THE EXISTING MODEL RATHER THAN A NEW ONE. `PriceBookDraftLine.itemId` and
+  // `IssuedEstimateLine.itemId` are foreign keys to this table. A separate model would have meant
+  // migrating both — and would have broken the two legacy drafts' references, which the prompt
+  // requires be KEPT. Retiring in place preserves every existing edge; the old rows simply stop
+  // being browsable.
+  //
+  // `sell*` ARE THE AUTHORITATIVE CUSTOMER PRICES. Kyle's sheet computes
+  // `sell = labor x $150 + marked-up material` per difficulty and the import asserts it to the
+  // cent, per row, refusing on any mismatch. Nothing recomputes them here.
+  //
+  // The labour columns above still carry per-unit HOURS for these rows — already resolved, so no
+  // E/C/M basis exists or is needed (basis is written as E/divisor 1 so any hours-based reader
+  // stays correct). Hours and the material split are INTERNAL, for job costing. Kyle's standing
+  // rule — "Never show labor hour estimate to the customer" — is why the customer-facing models
+  // carry none of this.
+  source             String  @default("neca-workbook") // "kyles-tab" | "neca-workbook"
+  sellNormal         Float?
+  sellDifficult      Float?
+  sellVeryDifficult  Float?
+  companyCost        Float?  // internal: what it costs RCE
+  companyPrice       Float?  // internal: tier-marked-up material, before labour
+  // The unit is embedded in Kyle's item names ("- per ft", "- per box", "- per hour"); parsed out
+  // once at import so a quantity field can say what it is counting.
+  unitLabel          String?
+
   necArticle         String?
   notes              String?
   workbookRow        Int?    // provenance only — never used to resolve a component
@@ -1539,6 +1569,7 @@ model PriceBookAtomic {
 
   @@index([category])
   @@index([retiredAt])
+  @@index([source])
 }
 
 model PriceBookAssembly {
@@ -1925,6 +1956,11 @@ model IssuedEstimate {
   @@unique([number, revision])
   @@index([status, createdAt])
   @@index([draftId])
+  // Declared here as well as created in the P029 migration — the account page and the chain view
+  // both query by these, and an index that exists in the database but not the schema reads as
+  // drift the next diff will try to drop.
+  @@index([customerId])
+  @@index([serviceAddressId])
 }
 
 // One priced line as the customer sees it: a description, a quantity, and a flat price.

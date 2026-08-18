@@ -58,6 +58,38 @@ export interface EngineAtomic {
   costBasisUsed: number | null;
   sellPricePerUnit: number | null;
   necaUnitBasis: string | null;
+
+  // ── KYLE'S CATALOG (P030) ──────────────────────────────────────────────────────────────
+  // "kyles-tab" rows carry the authoritative CUSTOMER PRICE per difficulty, computed on his own
+  // sheet as labour x $150 + marked-up material and asserted to the cent at import. When these
+  // are present the line prices FLAT from them and the engine does not re-derive anything.
+  source?: string | null;
+  sellNormal?: number | null;
+  sellDifficult?: number | null;
+  sellVeryDifficult?: number | null;
+  /** Internal only — what the item costs RCE and its marked-up material, for job costing. */
+  companyCost?: number | null;
+  companyPrice?: number | null;
+}
+
+/** The flat customer price for one unit at this difficulty, or null when the row does not offer it. */
+export function flatSellFor(atomic: EngineAtomic, difficulty: Difficulty): number | null {
+  switch (difficulty) {
+    case "NORMAL": return atomic.sellNormal ?? null;
+    case "DIFFICULT": return atomic.sellDifficult ?? null;
+    case "VERY_DIFFICULT": return atomic.sellVeryDifficult ?? null;
+  }
+}
+
+/** True for a row priced from Kyle's sell columns rather than from NECA labour + supplier cost. */
+export function isFlatPriced(atomic: EngineAtomic): boolean {
+  return (
+    atomic.sellNormal !== null && atomic.sellNormal !== undefined
+  ) || (
+    atomic.sellDifficult !== null && atomic.sellDifficult !== undefined
+  ) || (
+    atomic.sellVeryDifficult !== null && atomic.sellVeryDifficult !== undefined
+  );
 }
 
 /** One tech input. */
@@ -79,7 +111,8 @@ export type LineGapKind =
   | "NO_LABOUR_UNIT_BASIS"
   | "ATOMIC_NOT_FOUND"
   | "MEASURED_LENGTH_MISSING"
-  | "MANUAL_QUANTITY_WITHOUT_NOTE";
+  | "MANUAL_QUANTITY_WITHOUT_NOTE"
+  | "NO_SELL_PRICE_AT_DIFFICULTY";
 
 export interface LineGap {
   kind: LineGapKind;
@@ -268,6 +301,10 @@ export function impliesConductors(atomic: EngineAtomic): boolean {
   return false;
 }
 
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
 // ─── Composition ────────────────────────────────────────────────────────────────
 
 export function computeEstimate(
@@ -319,6 +356,77 @@ export function computeEstimate(
     }
 
     // ── Labour ──
+    /*
+      KYLE'S CATALOG PRICES FLAT (P030).
+
+      His sheet already did the arithmetic this engine was built to do: every row carries a sell
+      price per difficulty, computed as labour x $150 + marked-up material and asserted to the cent
+      at import. So for these rows the engine READS the price rather than rebuilding it — the same
+      instinct as difficulty being read from a published column instead of scaled from Normal.
+
+      The labour hours and the material split are still computed and still stored, because job
+      costing needs them. They are INTERNAL. `laborDollars + materialSell` is defined here to sum
+      exactly to the flat sell, which is what lets the customer-facing collapse in
+      `issuedEstimateService` stay unchanged: it adds those two and gets Kyle's number.
+    */
+    if (isFlatPriced(atomic)) {
+      const unitSell = flatSellFor(atomic, input.difficulty);
+      if (unitSell === null) {
+        gaps.push({
+          kind: "NO_SELL_PRICE_AT_DIFFICULTY",
+          itemId: atomic.itemId,
+          message:
+            `${atomic.itemId} publishes no price at ${input.difficulty}. The tech's difficulty is a ` +
+            `field observation and the book has to answer it — this line cannot be quoted until the ` +
+            `column is filled in.`,
+          routesTo: "kyle",
+        });
+      }
+
+      const hours = laborHoursFor(atomic, input.quantity, input.difficulty);
+      const flat = unitSell === null ? null : round2(unitSell * input.quantity);
+      const labourDollars = hours === null || rc.billedLaborRate === null ? null : round2(hours * rc.billedLaborRate);
+      // Material is the remainder, so the two internal halves reconstruct Kyle's price exactly.
+      const material = flat === null ? null : round2(flat - (labourDollars ?? 0));
+
+      if (input.quantitySource === "MANUAL" && !(input.note ?? "").trim()) {
+        gaps.push({
+          kind: "MANUAL_QUANTITY_WITHOUT_NOTE",
+          itemId: atomic.itemId,
+          message:
+            `${atomic.itemId} uses a MANUAL quantity with no note. A hand-set quantity that ` +
+            `records no reason is indistinguishable later from a typo.`,
+          routesTo: "tech",
+        });
+      }
+
+      computed.push({
+        id: input.id,
+        itemId: atomic.itemId,
+        description: atomic.description,
+        quantity: input.quantity,
+        quantitySource: input.quantitySource,
+        difficulty: input.difficulty,
+        unit: atomic.unit,
+        location: input.location ?? null,
+        note: input.note ?? null,
+        laborUnitValue: laborValueFor(atomic, input.difficulty),
+        laborUnitBasis: atomic.laborUnitBasis,
+        laborUnitDivisor: atomic.laborUnitDivisor,
+        laborHours: hours,
+        laborDollars: labourDollars,
+        costBasis: atomic.costBasisUsed ?? null,
+        sellPerUnit: unitSell,
+        materialCost: atomic.costBasisUsed === null || atomic.costBasisUsed === undefined
+          ? null
+          : round2(input.quantity * atomic.costBasisUsed),
+        materialSell: material,
+        gaps,
+        complete: gaps.length === 0,
+      });
+      continue;
+    }
+
     const sells = rowTypeSells(atomic.rowType);
 
     const laborUnitValue = laborValueFor(atomic, input.difficulty);
@@ -521,6 +629,7 @@ export function finalizeEstimate(
     ATOMIC_NOT_FOUND: "Atomic not in the catalog",
     MEASURED_LENGTH_MISSING: "Continuous-length item without a measured length",
     MANUAL_QUANTITY_WITHOUT_NOTE: "Manual quantity with no note",
+    NO_SELL_PRICE_AT_DIFFICULTY: "No price published for the observed difficulty",
   };
   for (const [kind, list] of byKind) {
     const ids = Array.from(new Set(list.map((g) => g.itemId)));
@@ -639,6 +748,18 @@ export function resolveCatalogAtSupplier(
 ): Map<string, EngineAtomic> {
   const out = new Map<string, EngineAtomic>();
   for (const a of atomics) {
+    /*
+      KYLE'S ROWS DO NOT RESOLVE AT A SUPPLIER (P030).
+
+      His sheet already carries the cost and the marked-up price he chose, tier by tier, row by
+      row. Running them through the supplier lookup would find nothing (there are no Supplier
+      Prices rows for his keys), null the cost, and raise NO_PRICE_AT_SUPPLIER on all 226 items —
+      overwriting the numbers he set with the absence of numbers he never entered.
+    */
+    if (isFlatPriced(a)) {
+      out.set(a.itemId, a);
+      continue;
+    }
     const { costBasis } = resolveCostBasis(a.itemId, supplierId, supplierPrices);
     out.set(a.itemId, {
       ...a,

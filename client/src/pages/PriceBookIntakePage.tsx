@@ -104,11 +104,16 @@ export function PriceBookIntakePage() {
   // The draft list carries the attachment (customer/visit/lead names) — the review payload does
   // not, so the header line reads it from here.
   const activeDraft = drafts?.drafts.find((d) => d.id === draftId);
-  const { data: cats } = useQuery({ queryKey: ["pb-cats"], queryFn: api.pbNecCategories });
+  // Browse by KYLE'S SECTIONS (P030). His book is organised the way his walkthroughs talk —
+  // NM CABLE, OLD WORK BOXES, SERVICE & FEES — so the cards follow the book rather than asking
+  // him to think in NEC article numbers.
+  const { data: cats } = useQuery({ queryKey: ["pb-sections"], queryFn: api.pbSections });
 
   const { data: atomics, isFetching: searching } = useQuery({
     queryKey: ["pb-atomics", search, article],
-    queryFn: () => api.pbAtomics({ search: search || undefined, article: article ?? undefined, limit: 60 }),
+    // `article` now holds a SECTION name (P030), so it filters the category column — the NEC
+    // article filter it used to drive belonged to the retired machine catalog.
+    queryFn: () => api.pbAtomics({ search: search || undefined, category: article ?? undefined, limit: 60 }),
     enabled: Boolean(search.trim()) || Boolean(article),
   });
 
@@ -141,7 +146,7 @@ export function PriceBookIntakePage() {
   });
 
   const cards = useMemo(
-    () => (cats?.categories ?? []).filter((c) => c.atomicCount > 0),
+    () => (cats?.sections ?? []).filter((c) => c.itemCount > 0),
     [cats]
   );
 
@@ -286,7 +291,7 @@ function BrowseTab(props: {
   setSearch: (v: string) => void;
   article: string | null;
   setArticle: (v: string | null) => void;
-  cards: Array<{ article: string; title: string | null; atomicCount: number }>;
+  cards: Array<{ section: string; itemCount: number }>;
   atomics: PbAtomic[];
   searching: boolean;
   onPick: (a: PbAtomic) => void;
@@ -308,7 +313,7 @@ function BrowseTab(props: {
         />
         {article && (
           <button className="btn btn-secondary mt-2" onClick={() => setArticle(null)}>
-            ← All NEC categories
+            ← All sections
           </button>
         )}
       </div>
@@ -317,17 +322,16 @@ function BrowseTab(props: {
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
           {cards.map((c) => (
             <button
-              key={c.article}
+              key={c.section}
               className="card p-3 text-left active:opacity-70"
-              onClick={() => setArticle(c.article)}
+              onClick={() => setArticle(c.section)}
             >
-              <div className="text-lg font-semibold">{c.article}</div>
-              <div className="text-xs text-rce-muted">{c.title}</div>
-              <div className="mt-1 text-xs text-rce-soft">{c.atomicCount} item(s)</div>
+              <div className="text-sm font-semibold leading-tight">{c.section}</div>
+              <div className="mt-1 text-xs text-rce-soft">{c.itemCount} item(s)</div>
             </button>
           ))}
           {cards.length === 0 && (
-            <p className="text-sm text-rce-muted">No NEC categories carry atomics yet.</p>
+            <p className="text-sm text-rce-muted">The catalog is empty.</p>
           )}
         </div>
       )}

@@ -504,6 +504,9 @@ export const api = {
   // ─── PRICE BOOK INTAKE (P012) ──────────────────────────────────────────────
   // Every one of these hits the PIN-protected surface. The AI reaches none of them.
 
+  pbSections: () =>
+    request<{ sections: Array<{ section: string; itemCount: number }> }>("/price-book/sections"),
+
   pbNecCategories: () => request<{ categories: PbNecCategory[] }>("/price-book/nec-categories"),
 
   pbAtomics: (opts?: { search?: string; article?: string; category?: string; limit?: number }) => {

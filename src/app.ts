@@ -1575,6 +1575,30 @@ app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(re
 // NEC card taxonomy. `PriceBookNecCategory` is the imported NEC Category Map; the counts tell
 // the UI which cards are worth showing, so an empty category renders as empty rather than as a
 // card that leads nowhere.
+/**
+ * Browse cards, driven by Kyle's own 34 sections. (P030)
+ *
+ * The NEC-article cards below were built for the machine catalog, whose rows carried an NEC
+ * Article cell. Kyle's book is organised by HIS sections — NM CABLE, OLD WORK BOXES, SERVICE &
+ * FEES — which is the language his walkthroughs already use, so browse follows the book rather
+ * than asking him to think in article numbers.
+ *
+ * Counts come from the live catalog only, so a retired section disappears rather than rendering a
+ * card that leads nowhere.
+ */
+app.get("/price-book/sections", asyncHandler(async (_req, res) => {
+  const grouped = await prisma.priceBookAtomic.groupBy({
+    by: ["category"],
+    where: { retiredAt: null },
+    _count: { _all: true },
+  });
+  const sections = grouped
+    .filter((g) => g.category)
+    .map((g) => ({ section: g.category as string, itemCount: g._count._all }))
+    .sort((a, b) => a.section.localeCompare(b.section));
+  res.json({ sections });
+}));
+
 app.get("/price-book/nec-categories", asyncHandler(async (_req, res) => {
   const cats = await prisma.priceBookNecCategory.findMany({ orderBy: { article: "asc" } });
   const grouped = await prisma.priceBookAtomic.groupBy({

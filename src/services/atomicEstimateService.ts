@@ -103,6 +103,13 @@ export async function loadCatalogAtSupplier(
       laborUnitDivisor: true,
       laborUnitBasisRaw: true,
       necaUnitBasis: true,
+      // Kyle's catalog (P030): the authoritative customer prices per difficulty.
+      source: true,
+      sellNormal: true,
+      sellDifficult: true,
+      sellVeryDifficult: true,
+      companyCost: true,
+      companyPrice: true,
     },
   });
 
@@ -119,8 +126,10 @@ export async function loadCatalogAtSupplier(
 
   const engineAtomics: EngineAtomic[] = atomics.map((a) => ({
     ...a,
-    costBasisUsed: null,
-    sellPricePerUnit: null,
+    // Kyle's rows arrive already priced by his own sheet; everything else resolves at the
+    // supplier below.
+    costBasisUsed: a.companyCost ?? null,
+    sellPricePerUnit: a.companyPrice ?? null,
   }));
 
   return resolveCatalogAtSupplier(engineAtomics, supplierPrices, supplierId, tiers);
