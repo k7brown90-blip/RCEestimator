@@ -1528,6 +1528,7 @@ model PriceBookAtomic {
   retiredAt          DateTime?
   components         PriceBookAssemblyComponent[]
   draftLines         PriceBookDraftLine[]
+  issuedLines        IssuedEstimateLine[]
 
   @@index([category])
   @@index([retiredAt])
@@ -1725,6 +1726,7 @@ model PriceBookDraftEstimate {
   updatedAt     DateTime @updatedAt
   lines         PriceBookDraftLine[]
   questions     PriceBookDraftQuestion[]
+  issued        IssuedEstimate[]
 
   @@index([status, createdAt])
 }
@@ -1793,4 +1795,133 @@ model PriceBookDraftLine {
   @@index([draftId])
   @@index([draftId, state])
   @@index([itemId])
+}
+// ─── ISSUED ESTIMATES — the customer-facing artifact (P027) ──────────────────
+//
+// Kyle, 2026-08-17: "get the estimates working to the point where I can email the customer
+// and have them sign an estimate in the app."
+//
+// WHY A NEW MODEL RATHER THAN THE LEGACY `Estimate`. Three reasons, none cosmetic:
+//   1. `Estimate.visitId` and `.propertyId` are REQUIRED. A price-book draft may legitimately
+//      carry no job at all — P024 made all three context columns nullable on purpose, because
+//      Kyle prices speculatively every day. Graduating an unattached draft into a model that
+//      demands a visit would mean inventing one.
+//   2. The legacy row's numbers are live: option subtotals recompute from assemblies. What gets
+//      emailed and signed must be FROZEN. A signed artifact that can move is not a record.
+//   3. Its lifecycle is draft/locked around assemblies; this one is draft -> sent -> viewed ->
+//      signed with a customer token and a revision chain.
+// Legacy `Estimate`, `EstimateOption` and `EstimateItem` are untouched and still readable.
+//
+// T5 (the P010 transition map's open row) is closed HERE: `IssuedEstimateLine.itemId` points at
+// `PriceBookAtomic`, the current catalog, through its own foreign key. Kyle's reorganized units
+// swap in later as a data migration — the flow reads no atomic ID it did not get from the draft.
+model IssuedEstimate {
+  id             String   @id @default(cuid())
+  // House numbering, continuing the issued PDFs (…2026-1010). Shared across revisions of the
+  // same estimate; `revision` is what distinguishes them.
+  number         String
+  revision       Int      @default(1)
+  // draft | sent | viewed | signed | void
+  status         String   @default("draft")
+  // The customer's ONLY credential: 32 random bytes, hex. Not a cuid — cuids embed a counter
+  // and a timestamp, so one issued link would narrow the search space for the next.
+  token          String   @unique
+
+  // ── Provenance ──
+  // Restrict, not Cascade or SetNull: a draft that has been issued to a customer is not
+  // deletable. The issued estimate is the business record and it must keep pointing at what
+  // produced it.
+  draftId        String
+  draft          PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Restrict)
+
+  // ── Revision chain. Editing after send never mutates — it supersedes. ──
+  supersedesId   String?  @unique
+  supersedes     IssuedEstimate?  @relation("EstimateRevision", fields: [supersedesId], references: [id], onDelete: SetNull)
+  supersededBy   IssuedEstimate?  @relation("EstimateRevision")
+
+  // ── Customer context, SNAPSHOT. Plain columns, deliberately not foreign keys: what was on
+  // the estimate when it was sent must not change because an account record was later edited.
+  customerId     String?
+  leadId         String?
+  visitId        String?
+  customerName   String
+  customerEmail  String?
+  customerPhone  String?
+  serviceAddress String?
+
+  title          String
+  scopeText      String?
+  includedText   String?
+  validDays      Int      @default(30)
+
+  // ── Money, SNAPSHOT, flat. NO HOURS AND NO RATES ARE STORED ON THIS ROW.
+  // Kyle 2026-08-17: "Never show labor hour estimate to the customer." The hours exist in the
+  // draft and the workbook; what graduates is the flat price they produced. A column that does
+  // not exist cannot leak into a template.
+  workSubtotal   Float
+  tripCharge     Float    @default(0)
+  tripWaived     Boolean  @default(false)
+  total          Float
+
+  // ── Audit ──
+  createdAt      DateTime @default(now())
+  createdBy      String?
+  sentAt         DateTime?
+  sentBy         String?
+  sentTo         String?
+  firstViewedAt  DateTime?
+  signedAt       DateTime?
+  signerName     String?
+  signerIp       String?
+  signerUserAgent String?
+  consentText    String?
+  voidedAt       DateTime?
+  voidReason     String?
+
+  lines          IssuedEstimateLine[]
+  events         IssuedEstimateEvent[]
+
+  @@unique([number, revision])
+  @@index([status, createdAt])
+  @@index([draftId])
+}
+
+// One priced line as the customer sees it: a description, a quantity, and a flat price.
+//
+// Every display value is SNAPSHOT on this row. The `atomic` relation is provenance — it says
+// which catalog row produced the line — and the render never reads through it. That is what
+// makes a signed estimate reproducible byte-for-byte after the catalog moves underneath it.
+model IssuedEstimateLine {
+  id           String   @id @default(cuid())
+  estimateId   String
+  itemId       String
+  description  String
+  quantity     Float
+  // Flat sell price for ONE unit: the line's labour dollars and material sell, already combined.
+  unitPrice    Float
+  lineTotal    Float
+  sortOrder    Int      @default(0)
+
+  estimate     IssuedEstimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  atomic       PriceBookAtomic @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
+
+  @@index([estimateId])
+  @@index([itemId])
+}
+
+// Append-only audit trail. The columns on IssuedEstimate carry the CURRENT state; this carries
+// the sequence, including re-sends, which a single `sentAt` cannot represent.
+model IssuedEstimateEvent {
+  id           String   @id @default(cuid())
+  estimateId   String
+  // created | sent | viewed | signed | voided | superseded
+  type         String
+  at           DateTime @default(now())
+  // "human:crm-session" for an operator action, "customer" for a token action.
+  actor        String
+  detail       String?
+
+  estimate     IssuedEstimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+
+  @@index([estimateId, at])
 }

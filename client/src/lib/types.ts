@@ -958,6 +958,12 @@ export interface PbAtomic {
   hasLabourUnitBasis: boolean;
   hasPriceAtActiveSupplier: boolean;
   isContinuousLength: boolean;
+  /** False when all three published labour columns are blank — no hour at any difficulty. */
+  hasPublishedLabour: boolean;
+  /** False for a LABOR PRODUCT — "no price at supplier" is not a gap on one. */
+  sellsMaterial: boolean;
+  /** Sold by the hour: quantity IS hours (DG001 diagnostics). */
+  isHourlyProduct: boolean;
 }
 
 export interface PbDraft {
@@ -987,6 +993,9 @@ export interface PbLine {
   quantitySource: PbQuantitySource;
   difficulty: PbDifficulty;
   location: string | null;
+  note: string | null;
+  /** The atomic's unit — "hr" means quantity IS hours and the edit sheet says so. */
+  unit: string | null;
   proposedBy?: string | null;
   reasoning?: string | null;
   proposedAt?: string | null;
@@ -1019,6 +1028,8 @@ export interface PbLineGap {
 }
 
 export interface PbComputedLine {
+  /** The draft line id. Join on this, never on itemId — a draft may carry an atomic twice. */
+  id?: string;
   itemId: string;
   description: string | null;
   quantity: number;
@@ -1074,4 +1085,50 @@ export interface PbWalkthroughRow {
     hasLabourUnitBasis: boolean;
     hasPriceAtActiveSupplier: boolean;
   }>;
+}
+
+// ─── Issued estimates — the customer-facing artifact (P027) ──────────────────
+// NOTE: there is no hours field anywhere in these types, and that is deliberate.
+// Kyle 2026-08-17: "Never show labor hour estimate to the customer."
+
+export interface PbIssuedLine {
+  id: string;
+  itemId: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+  sortOrder: number;
+}
+
+export interface PbIssuedEvent {
+  id: string;
+  type: string;
+  at: string;
+  actor: string;
+  detail: string | null;
+}
+
+export interface PbIssuedEstimate {
+  id: string;
+  number: string;
+  revision: number;
+  status: "draft" | "sent" | "viewed" | "signed" | "void";
+  title: string;
+  customerName: string;
+  customerEmail: string | null;
+  serviceAddress?: string | null;
+  workSubtotal?: number;
+  tripCharge?: number;
+  tripWaived?: boolean;
+  total: number;
+  createdAt: string;
+  sentAt: string | null;
+  sentTo: string | null;
+  firstViewedAt: string | null;
+  signedAt: string | null;
+  signerName: string | null;
+  supersededBy?: { id: string; revision: number } | null;
+  lines?: PbIssuedLine[];
+  events?: PbIssuedEvent[];
 }

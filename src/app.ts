@@ -35,6 +35,7 @@ import { proposeFromWalkthrough, ProposerUnavailable } from "./services/aiPropos
 import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
 import {
   addLine,
+  editLine,
   browseAtomics,
   createDraft,
   removeLine,
@@ -65,6 +66,9 @@ import { jerryRouter } from "./routes/agent-jerry";
 import { sharedAgentRouter } from "./routes/agent-shared";
 import { inboundSmsRouter } from "./routes/inboundSms";
 import { confirmPageRouter } from "./routes/confirmPage";
+import { estimatePageRouter } from "./routes/estimatePage";
+import { graduateDraft, reviseEstimate } from "./services/issuedEstimateService";
+import { sendEstimateEmail, estimateLink } from "./services/issuedEstimateSend";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
 import {
@@ -1144,6 +1148,10 @@ app.use(inboundSmsRouter);
 // Public appointment confirmation page (token-authenticated).
 app.use(confirmPageRouter);
 
+// The customer's estimate page — read and sign, token-authenticated (P027).
+// Mounted at /e so the emailed link is short enough to survive being read aloud or retyped.
+app.use("/e", estimatePageRouter);
+
 // ─── LEAD FOLLOW-UP & LOSS TRACKING ─────────────────────────────────────────
 
 app.get("/leads/follow-ups-due", asyncHandler(async (req, res) => {
@@ -1665,6 +1673,26 @@ app.post("/price-book/drafts/:draftId/lines", asyncHandler(async (req, res) => {
   }
 }));
 
+// Edit a line already on the draft. Kyle, 2026-08-17: "I also have no way to edit or delete an
+// entry already submitted." `editLine` existed and was reachable by nothing; this is its HTTP
+// surface. Same field set as the confirm handler's edit shape, and the same finalized-draft
+// refusal — a line on an issued estimate is not edited in place.
+app.patch("/price-book/lines/:lineId", asyncHandler(async (req, res) => {
+  const body = z.object({
+    quantity: z.number().positive().optional(),
+    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).optional(),
+    difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
+    location: z.string().nullable().optional(),
+    note: z.string().nullable().optional(),
+  }).parse(req.body ?? {});
+  try {
+    const line = await editLine(prisma, String(req.params.lineId), body);
+    res.json({ ok: true, line });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+}));
+
 app.delete("/price-book/lines/:lineId", asyncHandler(async (req, res) => {
   try {
     await removeLine(prisma, String(req.params.lineId));
@@ -1851,12 +1879,17 @@ app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
     proposedLines: review.proposedLines.map((l) => ({
       id: l.id, itemId: l.itemId, description: l.atomic?.description ?? null,
       quantity: l.quantity, quantitySource: l.quantitySource, difficulty: l.difficulty,
-      location: l.location, proposedBy: l.proposedBy, reasoning: l.proposalReasoning,
+      location: l.location, note: l.note, unit: l.atomic?.unit ?? null,
+      proposedBy: l.proposedBy, reasoning: l.proposalReasoning,
       proposedAt: l.proposedAt,
     })),
+    // `location`, `note` and `unit` are here so the edit sheet can pre-fill from what is on the
+    // line rather than from blanks — an edit form that silently drops the note it did not know
+    // about is a data-loss bug wearing a UI (Kyle, 2026-08-17).
     confirmedLines: review.confirmedLines.map((l) => ({
       id: l.id, itemId: l.itemId, description: l.atomic?.description ?? null,
       quantity: l.quantity, quantitySource: l.quantitySource, difficulty: l.difficulty,
+      location: l.location, note: l.note, unit: l.atomic?.unit ?? null,
       confirmedBy: l.confirmedBy, confirmedAt: l.confirmedAt,
       editedBeforeConfirm: l.editedBeforeConfirm, proposedBy: l.proposedBy,
     })),
@@ -1919,6 +1952,112 @@ app.post("/price-book/drafts/:draftId/finalize", asyncHandler(async (req, res) =
   const context = (req.body?.context === "internal" ? "internal" : "customer") as "customer" | "internal";
   const result = await finalizeDraft(prisma, String(req.params.draftId), context);
   res.status(result.finalized ? 200 : 409).json(result);
+}));
+
+// ─── ISSUED ESTIMATES — operator surface (P027) ──────────────────────────────
+//
+// Every route below is PIN-gated by default (P015: nothing is public unless it is in
+// publicRoutes.ts, and only /e/:token and /e/:token/sign were added there). The customer's two
+// routes live in routes/estimatePage.ts and share none of this.
+//
+// THE SEND IS AN OPERATOR ACTION AND THESE ROUTES ARE THE ONLY PATH TO IT. `sendEstimateEmail`
+// has one caller — the handler below — behind a session and a client-side confirm. It is not
+// registered with automationGate's CustomerSendWorkflow union because that union enumerates
+// AUTOMATED sends; this is a human tapping Send. No cron, trigger or retry queue reaches it.
+
+app.post("/price-book/drafts/:draftId/issue", asyncHandler(async (req, res) => {
+  const body = z.object({
+    title: z.string().trim().nullable().optional(),
+    scopeText: z.string().trim().nullable().optional(),
+    includedText: z.string().trim().nullable().optional(),
+    waiveTrip: z.boolean().optional(),
+  }).parse(req.body ?? {});
+
+  const result = await graduateDraft(prisma, {
+    draftId: String(req.params.draftId),
+    title: body.title ?? null,
+    scopeText: body.scopeText ?? null,
+    includedText: body.includedText ?? null,
+    waiveTrip: body.waiveTrip ?? false,
+    createdBy: "human:crm-session",
+  });
+
+  // 409 with the engine's verbatim reasons, exactly like finalize — the wording is what tells
+  // the operator what to fix, and this screen never re-words a refusal.
+  if (!result.ok) {
+    res.status(409).json({ issued: false, reasons: result.reasons });
+    return;
+  }
+  res.status(201).json({ issued: true, ...result });
+}));
+
+app.get("/issued-estimates", asyncHandler(async (req, res) => {
+  // `?draftId=` scopes the list to one draft, which is what the intake screen's send panel needs.
+  // Without it the panel would have to guess which of Kyle's estimates belongs to the draft he is
+  // looking at, and guessing which estimate to email a customer is not a guess worth making.
+  const draftId = readQuery(req, "draftId")?.trim();
+  const rows = await prisma.issuedEstimate.findMany({
+    where: draftId ? { draftId } : {},
+    orderBy: { createdAt: "desc" },
+    take: 50,
+    select: {
+      id: true, number: true, revision: true, status: true, title: true,
+      customerName: true, customerEmail: true, total: true, createdAt: true,
+      sentAt: true, sentTo: true, firstViewedAt: true, signedAt: true, signerName: true,
+      supersededBy: { select: { id: true, revision: true } },
+    },
+  });
+  res.json({ estimates: rows });
+}));
+
+app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: String(req.params.id) },
+    include: {
+      lines: { orderBy: { sortOrder: "asc" } },
+      events: { orderBy: { at: "asc" } },
+      supersededBy: { select: { id: true, number: true, revision: true } },
+      supersedes: { select: { id: true, number: true, revision: true } },
+    },
+  });
+  if (!est) {
+    res.status(404).json({ error: "Estimate not found." });
+    return;
+  }
+  // The operator DOES get the link — it is how Kyle previews what the customer will see.
+  res.json({ estimate: est, customerLink: estimateLink(est.token) });
+}));
+
+app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
+  const body = z.object({
+    to: z.string().trim().email().nullable().optional(),
+    message: z.string().trim().max(2000).nullable().optional(),
+  }).parse(req.body ?? {});
+
+  const result = await sendEstimateEmail(prisma, String(req.params.id), {
+    sentBy: "human:crm-session",
+    toOverride: body.to ?? null,
+    message: body.message ?? null,
+  });
+
+  if (!result.ok) {
+    res.status(400).json({ sent: false, error: result.reason });
+    return;
+  }
+  res.json({ sent: true, to: result.to });
+}));
+
+app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
+  const body = z.object({ waiveTrip: z.boolean().optional() }).parse(req.body ?? {});
+  const result = await reviseEstimate(prisma, String(req.params.id), {
+    actor: "human:crm-session",
+    waiveTrip: body.waiveTrip,
+  });
+  if (!result.ok) {
+    res.status(409).json({ revised: false, reasons: result.reasons });
+    return;
+  }
+  res.status(201).json({ revised: true, ...result });
 }));
 
 // ─── HEALTH RECORD ADMIN (CRM client — rides the PIN/JWT session) ─────────────

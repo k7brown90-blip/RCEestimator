@@ -1,0 +1,183 @@
+/**
+ * The two emails in the send-and-sign loop. (P027)
+ *
+ *   1. `sendEstimateEmail`  — OPERATOR-TRIGGERED, to the customer, carrying the tokenized link.
+ *   2. `notifyOwnerSigned`  — INTERNAL, to SUMMARY_EMAIL, when a customer signs.
+ *
+ * ── WHY THIS IS NOT BEHIND `automationGate` ────────────────────────────────────────────────
+ *
+ * The 2026-08-11 manual-first deferral gates AUTOMATED customer sends: the 8 AM reminder cron,
+ * booking confirmations, the web-lead auto-reply, inbound auto-replies. All four share one
+ * property — they fire without a human deciding, in response to a clock or a webhook.
+ *
+ * Kyle's 2026-08-17 ruling orders something different: *"I can email the customer and have them
+ * sign an estimate in the app."* A send that happens because Kyle tapped Send, on one estimate he
+ * is looking at, after a confirm. That is not automation; it is the operator using the tool.
+ *
+ * So `sendEstimateEmail` is deliberately NOT a member of the `CustomerSendWorkflow` union and
+ * `AUTOMATED_CUSTOMER_SENDS` is neither read nor written by this file. The gate stays exactly as
+ * P013/P017 left it. What replaces the gate as the safety property is the CALLER: this function
+ * has exactly one, a PIN-authenticated route handler. Nothing scheduled, retried or webhook-driven
+ * may call it, and the negative test in `tests/issuedEstimate.test.ts` pins that the unauthenticated
+ * caller gets a 401 rather than a sent email.
+ *
+ * Every send is recorded on the row (sentAt / sentBy / sentTo), appended to the estimate's event
+ * log, and written to SystemEvent — so a send is as visible after the fact as a suppressed one.
+ *
+ * NO TWILIO. Nothing in this file touches SMS. The customer gets an email; Kyle gets an email.
+ */
+
+import type { PrismaClient } from "@prisma/client";
+import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
+import { logSystemEvent } from "./systemEvents";
+
+export type SendResult = { ok: true; to: string } | { ok: false; reason: string };
+
+/** Absolute base URL for customer links. Railway sets RAILWAY_PUBLIC_DOMAIN. */
+export function publicBaseUrl(): string {
+  const explicit = process.env.PUBLIC_BASE_URL?.trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+  const domain = process.env.RAILWAY_PUBLIC_DOMAIN?.trim();
+  if (domain) return `https://${domain.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
+  return "http://localhost:8080";
+}
+
+export function estimateLink(token: string): string {
+  return `${publicBaseUrl()}/e/${token}`;
+}
+
+/**
+ * Email one estimate to its customer. Operator action only.
+ *
+ * Refuses rather than guesses when there is no address — an estimate with no customer email is a
+ * data problem Kyle fixes on the account, not something to paper over by sending it to himself.
+ */
+export async function sendEstimateEmail(
+  prisma: PrismaClient,
+  estimateId: string,
+  opts: { sentBy: string; toOverride?: string | null; message?: string | null }
+): Promise<SendResult> {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    include: { supersededBy: { select: { id: true } } },
+  });
+  if (!est) return { ok: false, reason: "Estimate not found." };
+  if (est.supersededBy) {
+    return { ok: false, reason: "This estimate has been superseded by a newer revision. Send that one instead." };
+  }
+  if (est.status === "void") return { ok: false, reason: "This estimate is void." };
+  if (est.signedAt) return { ok: false, reason: "This estimate is already signed." };
+
+  const to = (opts.toOverride ?? est.customerEmail ?? "").trim();
+  if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
+    return {
+      ok: false,
+      reason:
+        "No valid customer email address on this estimate. Add one to the customer record, or " +
+        "supply an address when sending.",
+    };
+  }
+
+  const link = estimateLink(est.token);
+  const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
+  const note = (opts.message ?? "").trim();
+
+  // Flat total only. The email carries no line detail and — like the page — no hours.
+  const bodyHtml = `
+    <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
+    <p style="font-size:15px;">Your estimate for <strong>${escapeHtml(est.title)}</strong> is ready.
+    You can review it and accept it online using the private link below.</p>
+    ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
+    <p style="margin:24px 0;">
+      <a href="${escapeHtml(link)}"
+         style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
+                border-radius:6px;font-size:16px;font-weight:600;display:inline-block;">
+        View &amp; accept your estimate
+      </a>
+    </p>
+    <p style="font-size:13px;color:#666;">Estimate ${escapeHtml(est.number)}${est.revision > 1 ? ` (revision ${est.revision})` : ""}
+    &middot; Total ${`$${est.total.toFixed(2)}`} &middot; Valid ${est.validDays} days.</p>
+    <p style="font-size:13px;color:#666;">If the button does not work, copy this link into your browser:<br>
+    <span style="word-break:break-all;">${escapeHtml(link)}</span></p>
+    <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
+
+  const sent = await sendBrandedEmail({
+    to,
+    subject: `Your estimate from Red Cedar Electric — ${est.number}`,
+    headline: "Your estimate is ready",
+    bodyHtml,
+  });
+
+  if (!sent) {
+    logSystemEvent("error", "issued-estimate", `Estimate ${est.number} send FAILED to ${to}`, {
+      estimateId: est.id,
+      sentBy: opts.sentBy,
+    });
+    return { ok: false, reason: "The email could not be sent. Check the Gmail connection and try again." };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.issuedEstimate.update({
+      where: { id: est.id },
+      data: {
+        sentAt: new Date(),
+        sentBy: opts.sentBy,
+        sentTo: to,
+        // A re-send of an already-viewed estimate does not rewind it to "sent".
+        status: est.status === "draft" ? "sent" : est.status,
+      },
+    });
+    await tx.issuedEstimateEvent.create({
+      data: {
+        estimateId: est.id,
+        type: "sent",
+        actor: opts.sentBy,
+        detail: `Emailed to ${to} (rev ${est.revision})`,
+      },
+    });
+  });
+
+  logSystemEvent("info", "issued-estimate", `Estimate ${est.number} emailed to ${to}`, {
+    estimateId: est.id,
+    revision: est.revision,
+    sentBy: opts.sentBy,
+  });
+
+  return { ok: true, to };
+}
+
+/**
+ * Tell Kyle an estimate was signed. INTERNAL — this is not a customer send and the manual-first
+ * ruling does not reach it; it is the same lane as the daily digest.
+ */
+export async function notifyOwnerSigned(prisma: PrismaClient, estimateId: string): Promise<boolean> {
+  const est = await prisma.issuedEstimate.findUnique({ where: { id: estimateId } });
+  if (!est) return false;
+
+  const to = (process.env.SUMMARY_EMAIL ?? process.env.GMAIL_USER ?? "").trim();
+  if (!to) {
+    console.warn("[IssuedEstimate] SUMMARY_EMAIL not set — sign notification skipped.");
+    return false;
+  }
+
+  const bodyHtml = `
+    <p style="font-size:16px;"><strong>${escapeHtml(est.signerName ?? "The customer")}</strong>
+    signed estimate <strong>${escapeHtml(est.number)}</strong>${est.revision > 1 ? ` (rev ${est.revision})` : ""}.</p>
+    <table style="font-size:14px;border-collapse:collapse;">
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">Customer</td><td>${escapeHtml(est.customerName)}</td></tr>
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">Job</td><td>${escapeHtml(est.title)}</td></tr>
+      ${est.serviceAddress ? `<tr><td style="padding:3px 12px 3px 0;color:#666;">Address</td><td>${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">Total</td><td><strong>$${est.total.toFixed(2)}</strong></td></tr>
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">Signed at</td><td>${est.signedAt?.toISOString() ?? ""}</td></tr>
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">IP</td><td>${escapeHtml(est.signerIp ?? "unknown")}</td></tr>
+    </table>
+    <p style="font-size:14px;margin-top:18px;">The estimate is now locked. Any change needs a new
+    revision, which voids the customer's current link.</p>`;
+
+  return sendBrandedEmail({
+    to,
+    subject: `SIGNED — ${est.number} — ${est.customerName} — $${est.total.toFixed(2)}`,
+    headline: "Estimate signed",
+    bodyHtml,
+  });
+}

@@ -90,6 +90,16 @@ export interface LineGap {
 }
 
 export interface ComputedLine {
+  /**
+   * The draft line's own id, passed straight through from the input.
+   *
+   * Present so a caller can join a computed row back to the row it came from. Joining on
+   * `itemId` looks equivalent and is not: a draft may legitimately carry the same atomic twice
+   * (Kyle's 2026-08-16 draft has two N001 lines, 100 ft each), and an itemId join silently shows
+   * the first row's hours and dollars against both. Undefined only when the caller supplied no
+   * id — the engine is usable on bare inputs, as its tests do.
+   */
+  id?: string;
   itemId: string;
   description: string | null;
   quantity: number;
@@ -189,6 +199,38 @@ export function laborHoursFor(
   return (quantity * value) / atomic.laborUnitDivisor;
 }
 
+// ─── Row Type — what a row actually sells ───────────────────────────────────────
+
+/**
+ * Whether a catalog row buys material, sells labour, or both.
+ *
+ * `Row Type` is workbook PROSE, not an enum, and its vocabulary has grown past the two strings
+ * this engine used to test for. Production carries nine distinct values today, including
+ * `MATERIAL + LABOR (both values PENDING - see Labor Status and Notes)` and — the one that bit —
+ * **`LABOR PRODUCT`**, the ten standalone sellable services (DG001 diagnostics, PT001 panel
+ * tune-up, SD008 alarm test…).
+ *
+ * The old test was `rowType !== "LABOR ONLY"`. `"LABOR PRODUCT"` is a different string, so all ten
+ * were treated as material-bearing and every one of them raised NO_PRICE_AT_SUPPLIER — the engine
+ * asking Home Depot for the price of an hour of troubleshooting. Kyle hit it on DG001 on
+ * 2026-08-17 and it blocks finalize on a row that is working exactly as designed.
+ *
+ * So: read the two words that carry the meaning rather than matching the whole phrase. A row type
+ * the vocabulary has not met yet (`REFERENCE`, `DECLARATION`, blank) stays permissive and is
+ * checked for both — an unrecognised row landing on an estimate should raise gaps, not slip
+ * through unexamined.
+ */
+export function rowTypeSells(rowType: string | null | undefined): {
+  material: boolean;
+  labour: boolean;
+} {
+  const t = (rowType ?? "").toUpperCase();
+  const material = t.includes("MATERIAL");
+  const labour = t.includes("LABOR") || t.includes("LABOUR");
+  if (!material && !labour) return { material: true, labour: true };
+  return { material, labour };
+}
+
 // ─── Continuous-length detection ────────────────────────────────────────────────
 
 /**
@@ -242,6 +284,7 @@ export function computeEstimate(
 
     if (!atomic) {
       computed.push({
+        id: input.id,
         itemId: input.itemId,
         description: null,
         quantity: input.quantity,
@@ -276,10 +319,11 @@ export function computeEstimate(
     }
 
     // ── Labour ──
+    const sells = rowTypeSells(atomic.rowType);
+
     const laborUnitValue = laborValueFor(atomic, input.difficulty);
     if (laborUnitValue === null) {
-      const isLabourBearing = (atomic.rowType ?? "").toUpperCase() !== "MATERIAL ONLY";
-      if (isLabourBearing) {
+      if (sells.labour) {
         gaps.push({
           kind: "NO_LABOUR_VALUE",
           itemId: atomic.itemId,
@@ -312,8 +356,7 @@ export function computeEstimate(
     // ── Material ──
     const costBasis = atomic.costBasisUsed;
     const sellPerUnit = atomic.sellPricePerUnit;
-    const isMaterialBearing = (atomic.rowType ?? "").toUpperCase() !== "LABOR ONLY";
-    if (isMaterialBearing && (costBasis === null || costBasis === undefined)) {
+    if (sells.material && (costBasis === null || costBasis === undefined)) {
       gaps.push({
         kind: "NO_PRICE_AT_SUPPLIER",
         itemId: atomic.itemId,
@@ -354,6 +397,7 @@ export function computeEstimate(
       sellPerUnit === null || sellPerUnit === undefined ? null : input.quantity * sellPerUnit;
 
     computed.push({
+      id: input.id,
       itemId: atomic.itemId,
       description: atomic.description,
       quantity: input.quantity,

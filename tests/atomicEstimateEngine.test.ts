@@ -18,6 +18,7 @@ import {
   isContinuousLength,
   laborHoursFor,
   laborValueFor,
+  rowTypeSells,
   suggestCompanionLines,
   type DraftLineInput,
   type EngineAtomic,
@@ -174,6 +175,80 @@ describe("no price at the selected supplier", () => {
     const labourOnly = atomic({ itemId: "A018", rowType: "LABOR ONLY", laborNormal: 2.2, costBasisUsed: null });
     const est = computeEstimate([line({ itemId: "A018" })], new Map([["A018", labourOnly]]), RC, "HD");
     expect(est.gaps.some((g) => g.kind === "NO_PRICE_AT_SUPPLIER")).toBe(false);
+  });
+
+  /*
+    Kyle, 2026-08-17: DG001 (a diagnostic hour) would not finalize. Two separate causes, and this
+    is the one that was purely a bug: `Row Type` reads **LABOR PRODUCT** on all ten standalone
+    sellable services, the test was `!== "LABOR ONLY"`, and a different string meant the engine
+    demanded a Home Depot price for an hour of troubleshooting.
+  */
+  it("does not raise a price gap on a LABOR PRODUCT row", () => {
+    const diagnostic = atomic({
+      itemId: "DG001",
+      rowType: "LABOR PRODUCT",
+      unit: "hr",
+      laborNormal: 1,
+      costBasisUsed: null,
+      sellPricePerUnit: null,
+    });
+    const est = computeEstimate([line({ itemId: "DG001" })], new Map([["DG001", diagnostic]]), RC, "HD");
+    expect(est.gaps.some((g) => g.kind === "NO_PRICE_AT_SUPPLIER")).toBe(false);
+    // And it still prices the hour it does sell.
+    expect(est.laborHours).toBeCloseTo(1, 10);
+  });
+
+  it("still raises a price gap on the parenthesised MATERIAL + LABOR variants", () => {
+    const pending = atomic({
+      itemId: "GB001",
+      rowType: "MATERIAL + LABOR (both values PENDING - see Labor Status and Notes)",
+      laborNormal: 1,
+      costBasisUsed: null,
+    });
+    const est = computeEstimate([line({ itemId: "GB001" })], new Map([["GB001", pending]]), RC, "HD");
+    expect(est.gaps.some((g) => g.kind === "NO_PRICE_AT_SUPPLIER")).toBe(true);
+  });
+
+  it("classifies every Row Type the production catalog actually carries", () => {
+    // The nine distinct values in production on 2026-08-17, plus blank.
+    expect(rowTypeSells("MATERIAL + LABOR")).toEqual({ material: true, labour: true });
+    expect(rowTypeSells("LABOR ONLY")).toEqual({ material: false, labour: true });
+    expect(rowTypeSells("MATERIAL ONLY")).toEqual({ material: true, labour: false });
+    expect(rowTypeSells("LABOR PRODUCT")).toEqual({ material: false, labour: true });
+    expect(rowTypeSells("MATERIAL + LABOR (labour value PENDING KYLE - see Labor Status)"))
+      .toEqual({ material: true, labour: true });
+    // Unrecognised vocabulary stays permissive — checked for both, never silently skipped.
+    expect(rowTypeSells("REFERENCE ONLY")).toEqual({ material: true, labour: true });
+    expect(rowTypeSells("DECLARATION")).toEqual({ material: true, labour: true });
+    expect(rowTypeSells(null)).toEqual({ material: true, labour: true });
+  });
+});
+
+describe("computed lines carry their own line id", () => {
+  /*
+    The review screen joined computed rows to draft rows on `itemId`. A draft may legitimately
+    carry the same atomic twice — Kyle's 2026-08-16 draft has two N001 lines of 100 ft — and that
+    join rendered the first row's hours and dollars against both of them.
+  */
+  it("passes the input id through so duplicate itemIds stay distinguishable", () => {
+    const a = atomic({ itemId: "N001", laborNormal: 2, costBasisUsed: 1, sellPricePerUnit: 2 });
+    const est = computeEstimate(
+      [
+        { id: "line-1", itemId: "N001", quantity: 100, quantitySource: "COUNT", difficulty: "NORMAL" },
+        { id: "line-2", itemId: "N001", quantity: 5, quantitySource: "COUNT", difficulty: "NORMAL" },
+      ],
+      new Map([["N001", a]]),
+      RC,
+      "HD"
+    );
+    expect(est.lines.map((l) => l.id)).toEqual(["line-1", "line-2"]);
+    expect(est.lines[0].laborHours).not.toBe(est.lines[1].laborHours);
+  });
+
+  it("leaves id undefined when the caller supplied none", () => {
+    const a = atomic({ itemId: "R001", laborNormal: 1, costBasisUsed: 1, sellPricePerUnit: 2 });
+    const est = computeEstimate([line({ itemId: "R001" })], new Map([["R001", a]]), RC, "HD");
+    expect(est.lines[0].id).toBeUndefined();
   });
 });
 

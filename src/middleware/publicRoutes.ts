@@ -209,6 +209,21 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
     methods: ["GET"], path: "/documents/:id/pdf", credential: "unguessable id in path",
     reason: "Signed-document retrieval by cuid, linked from the signing flow and from emails. Same capability model — worth revisiting when documents carry per-recipient tokens.",
   },
+
+  // ── Issued estimates: the customer reads and signs (P027) ─────────────────────────────────
+  // The ONLY two routes P027 adds to this file. The token is 32 random bytes (256 bits), not a
+  // cuid — a cuid embeds a timestamp and a counter, so one issued link would narrow the search
+  // space for the next. It scopes to exactly one estimate (`findUnique({ where: { token } })`),
+  // and every failure — wrong, malformed, superseded, voided — renders the same 404 page, so a
+  // prober cannot tell them apart.
+  {
+    methods: ["GET"], path: "/e/:token", credential: "URL-path token",
+    reason: "The customer's estimate page. They arrive from an email we sent; they are not CRM users and cannot log in. Read-only.",
+  },
+  {
+    methods: ["POST"], path: "/e/:token/sign", credential: "URL-path token",
+    reason: "The signature submission from that page — the only write on this surface. Same token, same one-estimate scope; sign-once is enforced by a conditional update in issuedEstimateService.",
+  },
 ];
 
 /** Path-segment-aware prefix test: `/health-record` matches `/health-record/x`, never `/health-record-admin`. */

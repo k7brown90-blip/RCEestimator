@@ -14,6 +14,7 @@ import {
   computeEstimate,
   finalizeEstimate,
   resolveCatalogAtSupplier,
+  rowTypeSells,
   type ComputedEstimate,
   type Difficulty,
   type DraftLineInput,
@@ -183,6 +184,23 @@ export interface BrowsedAtomic {
   hasLabourUnitBasis: boolean;
   hasPriceAtActiveSupplier: boolean;
   isContinuousLength: boolean;
+  /**
+   * False when ALL THREE published labour columns are blank — the row can never produce an hour
+   * at any difficulty. Distinct from `hasLabourUnitBasis`, which is about a row that HAS hours
+   * and cannot scale them. Kyle added DG001 on 2026-08-17 and it showed no warning of any kind,
+   * because the only labour badge was guarded on `laborNormal !== null` and DG001's is null.
+   */
+  hasPublishedLabour: boolean;
+  /**
+   * Whether the row buys material at all. A `LABOR PRODUCT` (DG001 diagnostics, PT001 tune-up)
+   * does not, so "no price at supplier" is not a gap on it and must not be badged as one.
+   */
+  sellsMaterial: boolean;
+  /**
+   * Sold by the hour — quantity IS hours. Kyle 2026-08-17: "The diagnostics menu is dictated by
+   * hours not quantity and measured, terminations, counted does not apply."
+   */
+  isHourlyProduct: boolean;
 }
 
 function decorate(r: {
@@ -196,6 +214,10 @@ function decorate(r: {
     hasLabourUnitBasis: r.laborUnitBasis !== null,
     hasPriceAtActiveSupplier: r.costBasisUsed !== null,
     isContinuousLength: (r.unit ?? "").toLowerCase() === "ft",
+    hasPublishedLabour:
+      r.laborNormal !== null || r.laborDifficult !== null || r.laborVeryDifficult !== null,
+    sellsMaterial: rowTypeSells(r.rowType).material,
+    isHourlyProduct: (r.unit ?? "").trim().toLowerCase() === "hr",
   };
 }
 
@@ -425,7 +447,29 @@ export async function editLine(
   });
 }
 
+/**
+ * Remove a line from a draft.
+ *
+ * The finalized guard is the same one `addLine` and `editLine` carry, and it was missing here.
+ * That mattered the moment this got a caller: until 2026-08-17 nothing in the UI reached it, so
+ * a bare delete was harmless. Kyle then filed "I also have no way to edit or delete an entry
+ * already submitted" and the button that answers it goes straight through this function — at
+ * which point an unguarded delete would let someone remove a line out of an estimate that had
+ * already been issued to a customer, and the price would silently change underneath the quote.
+ * A finalized estimate is a record, not a working document.
+ */
 export async function removeLine(prisma: PrismaClient, lineId: string) {
+  const existing = await prisma.priceBookDraftLine.findUnique({
+    where: { id: lineId },
+    include: { draft: true },
+  });
+  if (!existing) throw new Error(`Line ${lineId} not found.`);
+  if (existing.draft.status !== "draft") {
+    throw new Error(
+      `Draft ${existing.draftId} is ${existing.draft.status}; its lines are not removable. A ` +
+        `finalized estimate is a record of what was quoted — reopen it or start a revision.`
+    );
+  }
   return prisma.priceBookDraftLine.delete({ where: { id: lineId } });
 }
 

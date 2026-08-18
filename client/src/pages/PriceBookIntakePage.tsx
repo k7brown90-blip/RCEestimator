@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import type {
   PbAtomic,
   PbComputed,
+  PbComputedLine,
   PbDifficulty,
   PbDraft,
   PbLine,
@@ -322,16 +323,24 @@ function BrowseTab(props: {
                   <div className="text-rce-soft">{a.unit}</div>
                 </div>
               </div>
-              {/* Gaps are shown BEFORE the line is added — cheaper here than at finalize. */}
+              {/* Gaps are shown BEFORE the line is added — cheaper here than at finalize.
+                  A LABOR PRODUCT buys nothing, so "no price at supplier" is not a gap on it and
+                  is not badged — the engine stopped raising it as one on 2026-08-17. */}
               <div className="mt-2 flex flex-wrap gap-1">
-                {!a.hasPriceAtActiveSupplier && (
+                {a.sellsMaterial && !a.hasPriceAtActiveSupplier && (
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-900">no price at supplier</span>
                 )}
-                {!a.hasLabourUnitBasis && a.laborNormal !== null && (
+                {!a.hasPublishedLabour && (
+                  <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] text-red-900">no labour hours</span>
+                )}
+                {!a.hasLabourUnitBasis && a.hasPublishedLabour && (
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-900">no labour unit basis</span>
                 )}
                 {a.isContinuousLength && (
                   <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] text-sky-900">measured length</span>
+                )}
+                {a.isHourlyProduct && (
+                  <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] text-sky-900">by the hour</span>
                 )}
               </div>
             </button>
@@ -350,6 +359,28 @@ function AddLineSheet(props: { atomic: PbAtomic; draftId: string; onClose: () =>
   // that length is a field measurement, enforced at the point of entry rather than as a warning
   // after the fact.
   const forced = atomic.isContinuousLength;
+  /*
+    HOURLY PRODUCT — the third input shape (Kyle, 2026-08-17, verbatim):
+
+      "The diagnostics menu is dictated by hours not quantity and measured, terminations,
+       counted does not apply. We will put diagnostic hours and difficulty only here...
+       The location and note is okay to stay here."
+
+    So for a row sold by the hour the quantity field IS hours and the source picker is GONE —
+    not relabelled, not disabled-but-visible. Three of its four options are meaningless against
+    an hour, and offering them is what pushed Kyle onto MANUAL (which then demanded a
+    justification note for the crime of billing one hour). His DG001 line landed
+    `qty 2 MANUAL` on 2026-08-17 for exactly that reason.
+
+    SEAM — what is stored. The line still records `COUNT`, because `PriceBookQuantitySource`
+    has no HOURS member and adding one touches the Prisma enum, four zod schemas, the MCP tool
+    contract and the AI proposer's function schema. Nothing branches on it here: the engine
+    reads quantitySource in exactly two places (the MANUAL-needs-a-note guard and the
+    continuous-length guard) and an hourly line trips neither. The display is unit-aware
+    instead, so no screen shows the word "Counted" against an hour. If the stored record itself
+    ever has to carry the distinction, HOURS as a real enum member is the fuller fix.
+  */
+  const hourly = atomic.isHourlyProduct;
   const [quantity, setQuantity] = useState("");
   const [source, setSource] = useState<PbQuantitySource>(forced ? "MEASURED_LENGTH" : "COUNT");
   const [difficulty, setDifficulty] = useState<PbDifficulty>("NORMAL");
@@ -381,38 +412,44 @@ function AddLineSheet(props: { atomic: PbAtomic; draftId: string; onClose: () =>
         </div>
 
         <label className="text-sm font-medium">
-          Quantity {atomic.unit ? `(${atomic.unit})` : ""}
+          {hourly ? "Hours" : `Quantity ${atomic.unit ? `(${atomic.unit})` : ""}`}
           <input
             className="field mt-1 w-full"
             inputMode="decimal"
             value={quantity}
             onChange={(e) => setQuantity(e.target.value)}
-            placeholder={forced ? "Measured length" : "How many"}
+            placeholder={hourly ? "How many hours" : forced ? "Measured length" : "How many"}
             autoFocus
           />
         </label>
 
-        <div className="mt-3">
-          <span className="mb-1 block text-xs font-medium text-rce-soft">Quantity source</span>
-          <div className="flex flex-wrap gap-1">
-            {QUANTITY_SOURCES.map((s) => (
-              <button
-                key={s.value}
-                disabled={forced && s.value !== "MEASURED_LENGTH"}
-                className={source === s.value ? "btn btn-primary" : "btn btn-secondary"}
-                onClick={() => setSource(s.value)}
-                title={s.hint}
-              >
-                {s.label}
-              </button>
-            ))}
+        {hourly ? (
+          <p className="mt-1 text-xs text-rce-muted">
+            Sold by the hour — hours and difficulty are the only inputs this needs.
+          </p>
+        ) : (
+          <div className="mt-3">
+            <span className="mb-1 block text-xs font-medium text-rce-soft">Quantity source</span>
+            <div className="flex flex-wrap gap-1">
+              {QUANTITY_SOURCES.map((s) => (
+                <button
+                  key={s.value}
+                  disabled={forced && s.value !== "MEASURED_LENGTH"}
+                  className={source === s.value ? "btn btn-primary" : "btn btn-secondary"}
+                  onClick={() => setSource(s.value)}
+                  title={s.hint}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            {forced && (
+              <p className="mt-1 text-xs text-rce-muted">
+                Sold by the {atomic.unit} — length is a field measurement, so this is locked to Measured.
+              </p>
+            )}
           </div>
-          {forced && (
-            <p className="mt-1 text-xs text-rce-muted">
-              Sold by the {atomic.unit} — length is a field measurement, so this is locked to Measured.
-            </p>
-          )}
-        </div>
+        )}
 
         <div className="mt-3">
           <span className="mb-1 block text-xs font-medium text-rce-soft">
@@ -434,8 +471,23 @@ function AddLineSheet(props: { atomic: PbAtomic; draftId: string; onClose: () =>
           <p className="mt-1 text-xs text-rce-soft">
             Published hours: N {atomic.laborNormal ?? "—"} · D {atomic.laborDifficult ?? "—"} · VD{" "}
             {atomic.laborVeryDifficult ?? "—"}
-            {!atomic.hasLabourUnitBasis && atomic.laborNormal !== null && " · no unit basis — labour will not compute"}
+            {!atomic.hasLabourUnitBasis && atomic.hasPublishedLabour && " · no unit basis — labour will not compute"}
           </p>
+          {/*
+            THE ROW WITH NO HOURS AT ALL — said out loud, in red, before the line is added.
+
+            Every labour warning on this screen used to be guarded on `laborNormal !== null`, so a
+            row whose three columns are ALL blank produced no warning anywhere: not on the browse
+            card, not here. Kyle added DG001 on 2026-08-17, saw three clean dashes, and found out
+            at finalize. "N — · D — · VD —" is only obvious once you already know it matters.
+          */}
+          {!atomic.hasPublishedLabour && (
+            <p className="mt-1 rounded bg-red-50 p-2 text-xs text-red-900">
+              <strong>No labour hours published for this item — at any difficulty.</strong> It will
+              add, but it will carry 0 hr and finalize will refuse it until the hours are set in the
+              workbook.
+            </p>
+          )}
         </div>
 
         <label className="mt-3 block text-sm font-medium">
@@ -739,35 +791,17 @@ function ReviewTab(props: {
       <div className="space-y-2">
         <h3 className="text-sm font-semibold">Confirmed lines — {review.counts.confirmed}</h3>
         {review.confirmedLines.length === 0 && <p className="text-sm text-rce-muted">Nothing confirmed yet.</p>}
-        {review.confirmedLines.map((l) => {
-          const c = computed?.lines.find((x) => x.itemId === l.itemId);
-          return (
-            <div key={l.id} className="card p-3">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="font-semibold">
-                    {l.itemId} <span className="text-rce-soft">× {l.quantity}</span>
-                  </div>
-                  <div className="text-xs text-rce-muted line-clamp-2">{l.description}</div>
-                  <div className="text-xs text-rce-soft">
-                    {l.quantitySource} · {l.difficulty}
-                    {l.proposedBy ? ` · from ${l.proposedBy}` : " · entered by hand"}
-                    {l.editedBeforeConfirm ? " · edited before confirm" : ""}
-                  </div>
-                </div>
-                <div className="shrink-0 text-right text-xs">
-                  <div>{hours(c?.laborHours)} hr</div>
-                  <div className="text-rce-soft">{money(c?.laborDollars)}</div>
-                </div>
-              </div>
-              {c?.gaps.map((g, i) => (
-                <p key={i} className="mt-1 rounded bg-amber-50 p-1.5 text-[11px] text-amber-900">
-                  {g.message}
-                </p>
-              ))}
-            </div>
-          );
-        })}
+        {review.confirmedLines.map((l) => (
+          // Joined on the LINE id, not the itemId. A draft may legitimately carry the same atomic
+          // twice — Kyle's 2026-08-16 draft has two N001 lines of 100 ft — and an itemId join
+          // rendered the first row's hours and dollars against both of them.
+          <ConfirmedLineRow
+            key={l.id}
+            line={l}
+            computed={computed?.lines.find((x) => x.id === l.id)}
+            onChanged={onChanged}
+          />
+        ))}
       </div>
 
       <div className="card p-3">
@@ -805,7 +839,164 @@ function ReviewTab(props: {
 
       </div>
 
+      <IssueAndSendPanel draftId={draftId} />
+
       <PhotoAttach draftId={draftId} />
+    </div>
+  );
+}
+
+/**
+ * A line the tech has committed — now editable and removable (Kyle, 2026-08-17: "I also have no
+ * way to edit or delete an entry already submitted").
+ *
+ * Both actions refuse server-side on a finalized draft, and the refusal is surfaced verbatim
+ * rather than swallowed: a button that silently does nothing is the defect this whole screen has
+ * been paying for.
+ */
+function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | undefined; onChanged: () => void }) {
+  const { line: l, computed: c, onChanged } = props;
+  const [editing, setEditing] = useState(false);
+  const [qty, setQty] = useState(String(l.quantity));
+  const [difficulty, setDifficulty] = useState<PbDifficulty>(l.difficulty);
+  const [location, setLocation] = useState(l.location ?? "");
+  const [note, setNote] = useState(l.note ?? "");
+  const [err, setErr] = useState<string | null>(null);
+
+  const hourly = (l.unit ?? "").trim().toLowerCase() === "hr";
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.pbEditLine(l.id, {
+        quantity: Number(qty),
+        difficulty,
+        location: location.trim() || null,
+        note: note.trim() || null,
+      }),
+    onSuccess: () => {
+      setEditing(false);
+      setErr(null);
+      onChanged();
+    },
+    onError: (e) => setErr((e as Error).message),
+  });
+
+  const remove = useMutation({
+    mutationFn: () => api.pbDeleteLine(l.id),
+    onSuccess: onChanged,
+    onError: (e) => setErr((e as Error).message),
+  });
+
+  return (
+    <div className="card p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-semibold">
+            {l.itemId}{" "}
+            <span className="text-rce-soft">
+              × {l.quantity}
+              {l.unit ? ` ${l.unit}` : ""}
+            </span>
+          </div>
+          <div className="text-xs text-rce-muted line-clamp-2">{l.description}</div>
+          <div className="text-xs text-rce-soft">
+            {/* An hourly line's quantity source carries no information — the quantity IS hours —
+                so it is not shown rather than displaying "COUNT" against an hour. */}
+            {hourly ? "by the hour" : l.quantitySource} · {l.difficulty}
+            {l.proposedBy ? ` · from ${l.proposedBy}` : " · entered by hand"}
+            {l.editedBeforeConfirm ? " · edited before confirm" : ""}
+          </div>
+          {l.location && <div className="text-xs text-rce-soft">{l.location}</div>}
+          {l.note && <div className="text-xs text-rce-soft italic">{l.note}</div>}
+        </div>
+        <div className="shrink-0 text-right text-xs">
+          <div>{hours(c?.laborHours)} hr</div>
+          <div className="text-rce-soft">{money(c?.laborDollars)}</div>
+        </div>
+      </div>
+
+      {c?.gaps.map((g, i) => (
+        <p key={i} className="mt-1 rounded bg-amber-50 p-1.5 text-[11px] text-amber-900">
+          {g.message}
+        </p>
+      ))}
+
+      {editing && (
+        <div className="mt-2 space-y-2 rounded-lg border border-rce-border p-2">
+          <label className="block text-xs">
+            {hourly ? "Hours" : "Quantity"}
+            <input
+              className="field mt-1 w-24"
+              inputMode="decimal"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+            />
+          </label>
+          <div className="flex flex-wrap gap-1">
+            {DIFFICULTIES.map((d) => (
+              <button
+                key={d.value}
+                className={difficulty === d.value ? "btn btn-primary" : "btn btn-secondary"}
+                onClick={() => setDifficulty(d.value)}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+          <label className="block text-xs">
+            Location
+            <input className="field mt-1 w-full" value={location} onChange={(e) => setLocation(e.target.value)} />
+          </label>
+          <label className="block text-xs">
+            Note
+            <input className="field mt-1 w-full" value={note} onChange={(e) => setNote(e.target.value)} />
+          </label>
+        </div>
+      )}
+
+      {err && <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{err}</p>}
+
+      <div className="mt-2 flex gap-2">
+        {editing ? (
+          <>
+            <button
+              className="btn btn-primary flex-1"
+              disabled={!(Number(qty) > 0) || save.isPending}
+              onClick={() => save.mutate()}
+            >
+              {save.isPending ? "Saving…" : "Save"}
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setEditing(false);
+                setErr(null);
+                setQty(String(l.quantity));
+                setDifficulty(l.difficulty);
+                setLocation(l.location ?? "");
+                setNote(l.note ?? "");
+              }}
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="btn btn-secondary" onClick={() => setEditing(true)}>
+              Edit
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={remove.isPending}
+              onClick={() => {
+                if (window.confirm(`Remove ${l.itemId} from this estimate?`)) remove.mutate();
+              }}
+            >
+              {remove.isPending ? "Removing…" : "Remove"}
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -956,6 +1147,216 @@ function TotalsBar(props: {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Issue the estimate to the customer — the last step of the intake screen (P027).
+ *
+ * This is where a priced draft stops being internal. Two explicit operator actions, never
+ * automatic: **Create customer estimate** freezes a snapshot, and **Send** emails it. Both
+ * refuse loudly rather than doing something approximate.
+ *
+ * The send is behind a confirm because it is the one control on this screen that reaches a
+ * customer. Nothing else in the app may call that endpoint — no cron, no trigger, no retry
+ * queue — and `AUTOMATED_CUSTOMER_SENDS` is untouched by this lane.
+ */
+function IssueAndSendPanel(props: { draftId: string }) {
+  const { draftId } = props;
+  const queryClient = useQueryClient();
+  const [reasons, setReasons] = useState<string[]>([]);
+  const [waiveTrip, setWaiveTrip] = useState(false);
+  const [sendTo, setSendTo] = useState("");
+  const [sendMsg, setSendMsg] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const { data: list } = useQuery({
+    queryKey: ["pb-issued", draftId],
+    queryFn: () => api.pbIssuedList(draftId),
+  });
+  // Newest first from the server, and a superseded revision is never the one to act on.
+  const mine = (list?.estimates ?? []).filter((e) => !e.supersededBy);
+
+  const activeId = selectedId ?? mine[0]?.id ?? null;
+  const { data: detail } = useQuery({
+    queryKey: ["pb-issued-detail", activeId],
+    queryFn: () => api.pbIssuedDetail(activeId as string),
+    enabled: Boolean(activeId),
+  });
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["pb-issued", draftId] });
+    void queryClient.invalidateQueries({ queryKey: ["pb-issued-detail", activeId] });
+  };
+
+  const issue = useMutation({
+    mutationFn: () => api.pbIssue(draftId, { waiveTrip }),
+    onSuccess: (r) => {
+      setReasons([]);
+      setNotice(`Created estimate ${r.number}. Nothing has been sent yet.`);
+      setSelectedId(r.estimateId);
+      refresh();
+    },
+    onError: (err) => {
+      // The 409 carries the engine's refusal reasons. Shown VERBATIM — the wording is what
+      // tells Kyle what to fix, and this screen never re-words a refusal.
+      const body = (err as unknown as { body?: { reasons?: string[] } }).body;
+      setNotice(null);
+      setReasons(body?.reasons ?? [(err as Error).message]);
+    },
+  });
+
+  const send = useMutation({
+    mutationFn: () =>
+      api.pbIssuedSend(activeId as string, {
+        to: sendTo.trim() || null,
+        message: sendMsg.trim() || null,
+      }),
+    onSuccess: (r) => {
+      setNotice(`Sent to ${r.to}.`);
+      setReasons([]);
+      setSendMsg("");
+      refresh();
+    },
+    onError: (err) => {
+      setNotice(null);
+      setReasons([(err as Error).message]);
+    },
+  });
+
+  const revise = useMutation({
+    mutationFn: () => api.pbIssuedRevise(activeId as string),
+    onSuccess: (r) => {
+      setNotice(`Created revision ${r.revision} of ${r.number}. The customer's old link no longer opens — send the new one.`);
+      setSelectedId(r.estimateId);
+      refresh();
+    },
+    onError: (err) => {
+      const body = (err as unknown as { body?: { reasons?: string[] } }).body;
+      setReasons(body?.reasons ?? [(err as Error).message]);
+    },
+  });
+
+  const est = detail?.estimate;
+
+  return (
+    <div className="card p-3">
+      <h3 className="text-sm font-semibold">Send to the customer</h3>
+
+      {reasons.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {reasons.map((r, i) => (
+            <p key={i} className="rounded bg-red-50 p-2 text-xs text-red-900">{r}</p>
+          ))}
+        </div>
+      )}
+      {notice && <p className="mt-2 rounded bg-emerald-50 p-2 text-xs text-emerald-800">{notice}</p>}
+
+      {!est && (
+        <>
+          <label className="mt-2 flex items-center gap-2 text-xs text-rce-soft">
+            <input type="checkbox" checked={waiveTrip} onChange={(e) => setWaiveTrip(e.target.checked)} />
+            Waive the trip charge (shows on the estimate as $0.00)
+          </label>
+          <button
+            className="btn btn-primary mt-2 w-full"
+            disabled={issue.isPending}
+            onClick={() => issue.mutate()}
+          >
+            {issue.isPending ? "Creating…" : "Create customer estimate"}
+          </button>
+          <p className="mt-1 text-xs text-rce-muted">
+            Freezes the prices as they are now. Nothing goes to the customer until you tap Send.
+          </p>
+        </>
+      )}
+
+      {est && (
+        <div className="mt-3 space-y-2">
+          <div className="rounded-lg border border-rce-border p-2">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="font-semibold">
+                  {est.number}{est.revision > 1 ? ` rev ${est.revision}` : ""}
+                </div>
+                <div className="text-xs text-rce-muted">{est.customerName}</div>
+              </div>
+              <div className="text-right">
+                <div className="font-semibold">${est.total.toFixed(2)}</div>
+                <div className="text-xs uppercase tracking-wide text-rce-soft">{est.status}</div>
+              </div>
+            </div>
+
+            {detail?.customerLink && (
+              <p className="mt-2 break-all text-[11px] text-rce-soft">
+                Customer link: <a className="underline" href={detail.customerLink} target="_blank" rel="noreferrer">{detail.customerLink}</a>
+              </p>
+            )}
+          </div>
+
+          {est.signedAt ? (
+            <p className="rounded bg-emerald-50 p-2 text-xs text-emerald-900">
+              <strong>Signed by {est.signerName}</strong> on {new Date(est.signedAt).toLocaleString()}.
+              This estimate is locked; a change needs a new revision, which voids the customer's link.
+            </p>
+          ) : (
+            <>
+              <input
+                className="field w-full"
+                placeholder={est.customerEmail ?? "Customer email"}
+                value={sendTo}
+                onChange={(e) => setSendTo(e.target.value)}
+              />
+              <input
+                className="field w-full"
+                placeholder="Optional note to include in the email"
+                value={sendMsg}
+                onChange={(e) => setSendMsg(e.target.value)}
+              />
+              <button
+                className="btn btn-primary w-full"
+                disabled={send.isPending}
+                onClick={() => {
+                  const to = sendTo.trim() || est.customerEmail || "";
+                  if (!to) {
+                    setReasons(["No customer email address. Type one above, or add it to the account."]);
+                    return;
+                  }
+                  if (window.confirm(`Email estimate ${est.number} to ${to}?`)) send.mutate();
+                }}
+              >
+                {send.isPending ? "Sending…" : est.sentAt ? "Send again" : "Send to customer"}
+              </button>
+            </>
+          )}
+
+          <button
+            className="btn btn-secondary w-full"
+            disabled={revise.isPending}
+            onClick={() => {
+              if (window.confirm("Create a new revision? The customer's current link will stop working.")) {
+                revise.mutate();
+              }
+            }}
+          >
+            {revise.isPending ? "Revising…" : "New revision from this draft"}
+          </button>
+
+          {(est.events ?? []).length > 0 && (
+            <div className="rounded-lg bg-rce-accentBg/30 p-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-rce-soft">Audit</p>
+              {(est.events ?? []).map((e) => (
+                <p key={e.id} className="text-[11px] text-rce-soft">
+                  {new Date(e.at).toLocaleString()} · <strong>{e.type}</strong> · {e.actor}
+                  {e.detail ? ` — ${e.detail}` : ""}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

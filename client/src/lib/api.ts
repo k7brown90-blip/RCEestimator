@@ -40,6 +40,7 @@ import type {
   PbQuestion,
   PbReview,
   PbWalkthroughRow,
+  PbIssuedEstimate,
 } from "./types";
 
 const API_BASE = "/api";
@@ -542,6 +543,13 @@ export const api = {
     }
   ) => request(`/price-book/drafts/${draftId}/lines`, { method: "POST", body: JSON.stringify(input) }),
 
+  // Edit / remove a line already on the draft (Kyle, 2026-08-17). Both refuse on a finalized
+  // draft server-side — a line on an issued estimate is a record, not a working document.
+  pbEditLine: (
+    lineId: string,
+    patch: { quantity?: number; quantitySource?: PbQuantitySource; difficulty?: PbDifficulty; location?: string | null; note?: string | null }
+  ) => request(`/price-book/lines/${lineId}`, { method: "PATCH", body: JSON.stringify(patch) }),
+
   pbDeleteLine: (lineId: string) =>
     request<void>(`/price-book/lines/${lineId}`, { method: "DELETE" }),
 
@@ -578,6 +586,36 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ context }),
     }),
+
+  // ── Issued estimates (P027) ──
+  // `pbIssue` returns 409 with the engine's verbatim refusal reasons when the draft is not
+  // gap-free — the same contract as finalize, and the UI shows those reasons unedited.
+  pbIssue: (draftId: string, input: { title?: string | null; waiveTrip?: boolean }) =>
+    request<{ issued: true; estimateId: string; number: string; revision: number }>(
+      `/price-book/drafts/${draftId}/issue`,
+      { method: "POST", body: JSON.stringify(input) }
+    ),
+
+  pbIssuedList: (draftId?: string) =>
+    request<{ estimates: PbIssuedEstimate[] }>(
+      draftId ? `/issued-estimates?draftId=${encodeURIComponent(draftId)}` : "/issued-estimates"
+    ),
+
+  pbIssuedDetail: (id: string) =>
+    request<{ estimate: PbIssuedEstimate; customerLink: string }>(`/issued-estimates/${id}`),
+
+  /** OPERATOR ACTION ONLY. Behind the PIN session and a confirm; never called automatically. */
+  pbIssuedSend: (id: string, input: { to?: string | null; message?: string | null }) =>
+    request<{ sent: true; to: string }>(`/issued-estimates/${id}/send`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  pbIssuedRevise: (id: string) =>
+    request<{ revised: true; estimateId: string; number: string; revision: number }>(
+      `/issued-estimates/${id}/revise`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
 
 };
 

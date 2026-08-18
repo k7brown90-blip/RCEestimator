@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
-import { AssemblyPicker } from "../components/AssemblyPicker";
 import { AtomicItemsSection } from "../components/AtomicItemsSection";
 import { ServiceDiagnosticFlow } from "../components/ServiceDiagnosticFlow";
 import { SpecificRequestFlow } from "../components/SpecificRequestFlow";
@@ -66,11 +65,9 @@ export function VisitWorkspacePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabKey>("estimate");
-  const [showPicker, setShowPicker] = useState(false);
   const [showWorkflowSelector, setShowWorkflowSelector] = useState(false);
   const [activeWorkflow, setActiveWorkflow] = useState<"none" | "service" | "specific_request" | "remodel" | "new_construction">("none");
   const [showMaterialList, setShowMaterialList] = useState(false);
-  const [isBuildingOptionScope, setIsBuildingOptionScope] = useState(false);
   const [editingVisit, setEditingVisit] = useState(false);
   const [visitEditForm, setVisitEditForm] = useState({ mode: "", purpose: "", jobType: "", notes: "" });
   const [signUrl, setSignUrl] = useState<string | null>(null);
@@ -108,18 +105,7 @@ export function VisitWorkspacePage() {
     }, 0);
   }, [selectedOption?.assemblies]);
 
-  useEffect(() => {
-    if (activeTab !== "estimate" && showPicker) {
-      setShowPicker(false);
-      setIsBuildingOptionScope(false);
-    }
-  }, [activeTab, showPicker]);
-
-  useEffect(() => {
-    if (!selectedOptionId && showPicker && !isBuildingOptionScope) {
-      setShowPicker(false);
-    }
-  }, [selectedOptionId, showPicker, isBuildingOptionScope]);
+  // The two effects that closed AssemblyPicker on tab/option changes went with it.
 
   useEffect(() => {
     setLatestCompanionSuggestions([]);
@@ -326,8 +312,48 @@ export function VisitWorkspacePage() {
   const latestDelivery = estimate?.proposalDeliveries?.[0] ?? null;
   const downloadUrl = latestDelivery ? `/api/proposals/${latestDelivery.id}/download` : null;
 
+  /**
+   * Build Option — create the option, then go to the screen that builds the estimate.
+   *
+   * WHAT WAS BROKEN (Kyle, 2026-08-16 "I can't build any options" and again 2026-08-17 "The build
+   * option is not taking me to the page to build the estimate"):
+   *
+   * `api.createOption` was only ever called from `AssemblyPicker.onSubmit`. The assembly system
+   * was removed and `AssemblyPicker` became a stub that returns `null`, so the picker never
+   * opened, `onSubmit` could never fire, and the option was never created. The button set two
+   * booleans and rendered nothing. Both of Kyle's estimates confirm it — `Modify Classroom
+   * Lighting` and the 2026-08-16 visit each have an estimate with ZERO options.
+   *
+   * It was also a dead end in both directions: the link to the new estimator lives inside
+   * `AtomicItemsSection`, which only renders once an option exists. No option, no link, no way
+   * through.
+   *
+   * So the option is created directly and we navigate to the estimator carrying the visit id
+   * (P024, Option A) — the draft arrives attached to the job instead of floating free.
+   */
+  const buildOptionMutation = useMutation({
+    mutationFn: async () => {
+      if (!estimateId) throw new Error("Estimate not found. Create an estimate first.");
+      return (await api.createOption(String(estimateId), {
+        optionLabel: optionLabel.trim(),
+        description: optionDescription.trim() || undefined,
+      })) as { id: string };
+    },
+    onSuccess: (created) => {
+      setManualOptionId(created.id);
+      setOptionDescription("");
+      setOptionBuildError("");
+      refreshVisit();
+      navigate(`/estimate-intake?visitId=${encodeURIComponent(visitId)}`);
+    },
+    onError: (error) => {
+      setOptionBuildError(error instanceof Error ? error.message : "Failed to build option");
+    },
+  });
+
   const startOptionBuild = () => {
     if (!estimateId) {
+      setOptionBuildError("Estimate not found. Refresh or create an estimate first.");
       return;
     }
 
@@ -337,8 +363,7 @@ export function VisitWorkspacePage() {
     }
 
     setOptionBuildError("");
-    setIsBuildingOptionScope(true);
-    setShowPicker(true);
+    buildOptionMutation.mutate();
   };
 
   return (
@@ -558,7 +583,9 @@ export function VisitWorkspacePage() {
                     <input className="field mt-1" value={optionDescription} onChange={(event) => setOptionDescription(event.target.value)} />
                   </label>
                   <div className="md:col-span-3">
-                    <button className="btn btn-secondary" type="submit" disabled={estimateLocked}>Build Option</button>
+                    <button className="btn btn-secondary" type="submit" disabled={estimateLocked || buildOptionMutation.isPending}>
+                      {buildOptionMutation.isPending ? "Building…" : "Build Option"}
+                    </button>
                   </div>
                   {optionBuildError ? <p className="md:col-span-3 text-xs text-rce-danger">{optionBuildError}</p> : null}
                 </form>
@@ -596,15 +623,9 @@ export function VisitWorkspacePage() {
                 <div className="mb-3 flex items-center justify-between">
                   <h3 className="text-lg font-semibold">Assemblies <span className="text-sm font-normal text-rce-soft">(legacy)</span></h3>
                   <div className="flex gap-2">
-                    {selectedOptionId && !estimateLocked && (
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={() => { setIsBuildingOptionScope(false); setShowPicker(true); }}
-                      >
-                        + Add Assembly
-                      </button>
-                    )}
+                    {/* "+ Add Assembly" removed with the picker it opened — it had been inert
+                        since the assembly system was withdrawn. Existing assemblies still render
+                        below; nothing new can be added through a component that returns null. */}
                     {(selectedOption?.assemblies?.length ?? 0) > 0 && (
                       <button
                         type="button"
@@ -1084,16 +1105,8 @@ export function VisitWorkspacePage() {
                   <p className="text-xs text-gray-600">Guided workflow for code-minimum scope calculation</p>
                 </button>
               )}
-              <button
-                onClick={() => {
-                  setShowWorkflowSelector(false);
-                  setShowPicker(true);
-                }}
-                className="w-full text-left px-4 py-3 border rounded-lg hover:bg-gray-50 transition"
-              >
-                <p className="font-semibold">🔍 Manual Assembly Picker</p>
-                <p className="text-xs text-gray-600">Search assemblies manually from the full catalog</p>
-              </button>
+              {/* "Manual Assembly Picker" removed — it opened AssemblyPicker, which has been a
+                  stub returning null since the assembly system was withdrawn. */}
             </div>
             <button
               onClick={() => setShowWorkflowSelector(false)}
@@ -1228,66 +1241,12 @@ export function VisitWorkspacePage() {
         <EstimateIntake visitId={visitId} propertyId={visit.propertyId ?? undefined} />
       ) : null}
 
-      <AssemblyPicker
-        open={showPicker && activeTab === "estimate" && activeWorkflow === "none"}
-        mode={visit.mode}
-        title={isBuildingOptionScope ? "Build Option Scope" : "Add Assembly"}
-        submitLabel={isBuildingOptionScope ? "Create Option" : "Add to Option"}
-        onClose={() => {
-          setShowPicker(false);
-          setIsBuildingOptionScope(false);
-        }}
-        onSubmit={async (input: { assemblyTemplateId: string; location?: string; quantity?: number; parameters?: Record<string, unknown>; notes?: string }) => {
-          if (isBuildingOptionScope) {
-            if (!estimateId) {
-              setOptionBuildError("Estimate not found. Refresh or create a new estimate first.");
-              refreshVisit();
-              throw new Error("Estimate not found");
-            }
-            try {
-              const createdOption = await api.createOption(String(estimateId), {
-                optionLabel: optionLabel.trim(),
-                description: optionDescription.trim() || undefined,
-              }) as { id: string };
-
-              const createdAssembly = await api.addAssembly(createdOption.id, {
-                assemblyTemplateId: input.assemblyTemplateId,
-                location: input.location,
-                quantity: input.quantity,
-                parameters: input.parameters,
-                assemblyNotes: input.notes,
-              });
-
-              setManualOptionId(createdOption.id);
-              setLatestCompanionSuggestions(createdAssembly.companionSuggestions ?? []);
-              setOptionLabel(`Option ${String.fromCharCode(65 + (estimate?.options.length ?? 0))}`);
-              setOptionDescription("");
-              setOptionBuildError("");
-              setIsBuildingOptionScope(false);
-              setShowWorkflowSelector(false);
-              refreshVisit();
-              return;
-            } catch (error) {
-              const message = error instanceof Error ? error.message : "Failed to build option";
-              if (message.toLowerCase().includes("estimate not found")) {
-                setOptionBuildError("Estimate no longer exists. Refresh and create/select an estimate before adding assemblies.");
-                setIsBuildingOptionScope(false);
-                refreshVisit();
-              }
-              throw error;
-            }
-          }
-
-          await addAssemblyMutation.mutateAsync({
-            assemblyTemplateId: input.assemblyTemplateId,
-            location: input.location,
-            quantity: input.quantity ?? 1,
-            parameters: input.parameters,
-            assemblyNotes: input.notes,
-          });
-          setShowWorkflowSelector(false);
-        }}
-      />
+      {/*
+        AssemblyPicker was rendered here and is GONE. It has been a stub returning `null` since the
+        assembly system was removed, so every control that opened it was inert — and the option
+        creation this page needs was trapped inside its `onSubmit`. That code now lives in
+        `buildOptionMutation` above, where it can actually run.
+      */}
     </div>
   );
 }
