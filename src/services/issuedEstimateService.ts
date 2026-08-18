@@ -334,6 +334,17 @@ export interface SignInput {
   userAgent?: string | null;
 }
 
+/**
+ * Which door the signature came through.
+ *
+ * "in_person" — the customer signed on the operator's device at the job (P028, Kyle's FIRST
+ * option). "email" — the customer opened the tokenized link (P027). The channel changes NOTHING
+ * about the signature's weight, the lock, the audit line, the status or the owner notification;
+ * it is recorded because "he signed it in my truck" and "he signed it from his kitchen" are
+ * different facts about the same agreement.
+ */
+export type SignChannel = "in_person" | "email";
+
 export type SignResult = { ok: true; estimateId: string } | { ok: false; reason: string };
 
 /**
@@ -356,34 +367,87 @@ export async function signEstimate(
   if (!found.ok) return { ok: false, reason: "This estimate link is no longer valid." };
   if (found.estimate.signedAt) return { ok: false, reason: "This estimate has already been signed." };
 
+  return applySignature(prisma, found.estimate.id, found.estimate.number, found.estimate.revision, name, input, "email");
+}
+
+/**
+ * Sign an estimate the customer is reading on the operator's own device. (P028)
+ *
+ * Reached only from a route inside a SIGNING-SCOPED session — see middleware/signingScope.ts —
+ * so there is no token here: the capability is the narrowed session itself, and it names this one
+ * estimate. Everything after the lookup is the SAME code path the email signature takes, which is
+ * the point: one signature model, one lock, one audit shape, two doors.
+ */
+export async function signEstimateInPerson(
+  prisma: PrismaClient,
+  estimateId: string,
+  input: SignInput
+): Promise<SignResult> {
+  const name = input.signerName.trim();
+  if (name.length < 2) return { ok: false, reason: "Please type your full name to sign." };
+
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    include: { supersededBy: { select: { id: true } } },
+  });
+  if (!est) return { ok: false, reason: "This estimate is no longer available." };
+  if (est.supersededBy) {
+    return { ok: false, reason: "This estimate has been replaced by a newer revision." };
+  }
+  if (est.status === "void") return { ok: false, reason: "This estimate is void." };
+  if (est.signedAt) return { ok: false, reason: "This estimate has already been signed." };
+
+  return applySignature(prisma, est.id, est.number, est.revision, name, input, "in_person");
+}
+
+/**
+ * The one place a signature is written, for both channels.
+ *
+ * Sign-once is enforced by a CONDITIONAL update rather than read-then-write: the update matches
+ * on `signedAt: null`, so two taps arriving together — or one tap on the phone racing one on the
+ * emailed link — produce one signature and one "already signed" answer. Never two, and never a
+ * first signer silently overwritten by a second.
+ */
+async function applySignature(
+  prisma: PrismaClient,
+  estimateId: string,
+  number: string,
+  revision: number,
+  name: string,
+  input: SignInput,
+  channel: SignChannel
+): Promise<SignResult> {
   const result = await prisma.issuedEstimate.updateMany({
-    where: { id: found.estimate.id, signedAt: null },
+    where: { id: estimateId, signedAt: null },
     data: {
       signedAt: new Date(),
       signerName: name,
       signerIp: input.ip ?? null,
       signerUserAgent: input.userAgent ?? null,
       consentText: CONSENT_TEXT,
+      signedChannel: channel,
       status: "signed",
     },
   });
   if (result.count === 0) return { ok: false, reason: "This estimate has already been signed." };
 
+  const where = channel === "in_person" ? "in person on the operator's device" : "from the emailed link";
   await prisma.issuedEstimateEvent.create({
     data: {
-      estimateId: found.estimate.id,
+      estimateId,
       type: "signed",
-      actor: "customer",
-      detail: `Signed by "${name}" (rev ${found.estimate.revision}) from ${input.ip ?? "unknown IP"}`,
+      actor: channel === "in_person" ? "customer:in-person" : "customer",
+      detail: `Signed by "${name}" ${where} (rev ${revision}) from ${input.ip ?? "unknown IP"}`,
     },
   });
-  logSystemEvent("info", "issued-estimate", `Estimate ${found.estimate.number} signed by ${name}`, {
-    estimateId: found.estimate.id,
-    revision: found.estimate.revision,
+  logSystemEvent("info", "issued-estimate", `Estimate ${number} signed by ${name} (${channel})`, {
+    estimateId,
+    revision,
+    channel,
     ip: input.ip ?? null,
   });
 
-  return { ok: true, estimateId: found.estimate.id };
+  return { ok: true, estimateId };
 }
 
 // ─── Revision ───────────────────────────────────────────────────────────────────

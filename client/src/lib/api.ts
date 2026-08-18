@@ -89,6 +89,27 @@ export async function fetchProtectedObjectUrl(path: string): Promise<string> {
   return URL.createObjectURL(await response.blob());
 }
 
+/**
+ * Fetch a server-rendered HTML document that sits behind the session. (P028)
+ *
+ * `request<T>` assumes JSON; the customer view is HTML on purpose — it is the SAME document the
+ * emailed link serves, and re-rendering it in React would create a second place for hours to
+ * leak into. So this returns the text as-is for the signing screen to display in a sandboxed
+ * iframe.
+ */
+async function requestHtml(path: string): Promise<string> {
+  const token = sessionToken();
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    throw Object.assign(new ApiError(`Could not load the estimate (${response.status})`), {
+      status: response.status,
+    });
+  }
+  return response.text();
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = sessionToken();
   const response = await fetch(`${API_BASE}${path}`, {
@@ -610,6 +631,34 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  // ── In-person signing mode (P028) ──
+  // No new PUBLIC routes: all three ride the operator session. `pbSigningModeStart` hands back a
+  // token scoped to ONE estimate; swapping it in is what locks the device.
+  pbSigningModeStart: (id: string) =>
+    request<{ token: string; expiresIn: number; estimateId: string; number: string }>(
+      `/issued-estimates/${id}/signing-mode`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+
+  pbCustomerView: (id: string) => requestHtml(`/issued-estimates/${id}/customer-view`),
+
+  pbSignInPerson: (id: string, signerName: string) =>
+    request<{ signed: true; estimateId: string }>(`/issued-estimates/${id}/sign-in-person`, {
+      method: "POST",
+      body: JSON.stringify({ signerName }),
+    }),
+
+  /** The PIN is the only thing that turns a signing scope back into a full session. */
+  pinLogin: async (pin: string) => {
+    const res = await fetch(`${API_BASE}/auth/pin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    });
+    if (!res.ok) throw new ApiError("Invalid PIN");
+    return (await res.json()) as { token: string; expiresIn: number };
+  },
 
   pbIssuedRevise: (id: string) =>
     request<{ revised: true; estimateId: string; number: string; revision: number }>(

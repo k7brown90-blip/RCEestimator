@@ -13,6 +13,8 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { TeamPage } from "./pages/TeamPage";
 import { PriceBookIntakePage } from "./pages/PriceBookIntakePage";
 import { VisitWorkspacePage } from "./pages/VisitWorkspacePage";
+import { SigningModePage } from "./pages/SigningModePage";
+import { isSigningModeActive } from "./lib/signingSession";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -30,6 +32,21 @@ function RedirectCustomerToAccount() {
 }
 
 function App() {
+  /*
+    SIGNING MODE SHORT-CIRCUIT (P028).
+
+    While the customer is holding the device, the router does not run at all: every path renders
+    the signing screen, so there is no navigation to hide and no route to reach by typing a URL.
+
+    This is the CONVENIENCE half of the lock. The half that matters is on the server — entering
+    signing mode swapped the session for a token scoped to one estimate, and every other endpoint
+    answers it 403 (middleware/signingScope.ts). Clearing this flag in devtools would produce a
+    CRM shell whose every request fails, not an unlocked CRM.
+  */
+  if (isSigningModeActive()) {
+    return <SigningModePage />;
+  }
+
   return (
     <Routes>
       <Route path="/login" element={<PinLoginPage />} />

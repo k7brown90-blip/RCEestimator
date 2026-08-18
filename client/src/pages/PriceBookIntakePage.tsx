@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
+import { startSigningSession } from "../lib/signingSession";
 import type {
   PbAtomic,
   PbComputed,
@@ -1226,6 +1227,21 @@ function IssueAndSendPanel(props: { draftId: string }) {
     },
   });
 
+  /**
+   * Enter signing mode: swap this device's full session for one scoped to this estimate, then
+   * reload. The reload is deliberate — `App.tsx` reads the signing flag at mount, so a hard
+   * navigation guarantees no CRM state survives into the customer's hands.
+   */
+  const enterSigning = useMutation({
+    mutationFn: () => api.pbSigningModeStart(activeId as string),
+    onSuccess: (r) => {
+      localStorage.setItem("rce_token", r.token);
+      startSigningSession(r.estimateId, r.number);
+      window.location.replace("/");
+    },
+    onError: (err) => setReasons([(err as Error).message]),
+  });
+
   const revise = useMutation({
     mutationFn: () => api.pbIssuedRevise(activeId as string),
     onSuccess: (r) => {
@@ -1298,37 +1314,68 @@ function IssueAndSendPanel(props: { draftId: string }) {
 
           {est.signedAt ? (
             <p className="rounded bg-emerald-50 p-2 text-xs text-emerald-900">
-              <strong>Signed by {est.signerName}</strong> on {new Date(est.signedAt).toLocaleString()}.
+              <strong>Signed by {est.signerName}</strong> on {new Date(est.signedAt).toLocaleString()}
+              {est.signedChannel === "in_person" ? " — signed in person" : est.signedChannel === "email" ? " — signed from the emailed link" : ""}.
               This estimate is locked; a change needs a new revision, which voids the customer's link.
             </p>
           ) : (
             <>
-              <input
-                className="field w-full"
-                placeholder={est.customerEmail ?? "Customer email"}
-                value={sendTo}
-                onChange={(e) => setSendTo(e.target.value)}
-              />
-              <input
-                className="field w-full"
-                placeholder="Optional note to include in the email"
-                value={sendMsg}
-                onChange={(e) => setSendMsg(e.target.value)}
-              />
+              {/*
+                ORDER IS THE RULING (P028). Kyle: "I want them to be able to view the quote in app
+                and sign there as the first option email is the second." In-person is the close;
+                email is for the customer who wants to think about it tonight.
+              */}
               <button
-                className="btn btn-primary w-full"
-                disabled={send.isPending}
+                className="btn btn-primary w-full py-3 text-base"
+                disabled={enterSigning.isPending}
                 onClick={() => {
-                  const to = sendTo.trim() || est.customerEmail || "";
-                  if (!to) {
-                    setReasons(["No customer email address. Type one above, or add it to the account."]);
-                    return;
+                  if (
+                    window.confirm(
+                      `Hand your device to the customer?
+
+The app will lock to estimate ${est.number} until you enter your PIN.`
+                    )
+                  ) {
+                    enterSigning.mutate();
                   }
-                  if (window.confirm(`Email estimate ${est.number} to ${to}?`)) send.mutate();
                 }}
               >
-                {send.isPending ? "Sending…" : est.sentAt ? "Send again" : "Send to customer"}
+                {enterSigning.isPending ? "Locking device…" : "Review & sign now"}
               </button>
+              <p className="text-xs text-rce-muted">
+                Locks this device to this one estimate and hands it to the customer. Your PIN
+                brings the app back.
+              </p>
+
+              <div className="pt-1">
+                <p className="mb-1 text-xs font-medium text-rce-soft">Or email it instead</p>
+                <input
+                  className="field w-full"
+                  placeholder={est.customerEmail ?? "Customer email"}
+                  value={sendTo}
+                  onChange={(e) => setSendTo(e.target.value)}
+                />
+                <input
+                  className="field mt-2 w-full"
+                  placeholder="Optional note to include in the email"
+                  value={sendMsg}
+                  onChange={(e) => setSendMsg(e.target.value)}
+                />
+                <button
+                  className="btn btn-secondary mt-2 w-full"
+                  disabled={send.isPending}
+                  onClick={() => {
+                    const to = sendTo.trim() || est.customerEmail || "";
+                    if (!to) {
+                      setReasons(["No customer email address. Type one above, or add it to the account."]);
+                      return;
+                    }
+                    if (window.confirm(`Email estimate ${est.number} to ${to}?`)) send.mutate();
+                  }}
+                >
+                  {send.isPending ? "Sending…" : est.sentAt ? "Email again" : "Email estimate"}
+                </button>
+              </div>
             </>
           )}
 

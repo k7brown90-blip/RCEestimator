@@ -67,8 +67,10 @@ import { sharedAgentRouter } from "./routes/agent-shared";
 import { inboundSmsRouter } from "./routes/inboundSms";
 import { confirmPageRouter } from "./routes/confirmPage";
 import { estimatePageRouter } from "./routes/estimatePage";
-import { graduateDraft, reviseEstimate } from "./services/issuedEstimateService";
-import { sendEstimateEmail, estimateLink } from "./services/issuedEstimateSend";
+import { graduateDraft, reviseEstimate, signEstimateInPerson } from "./services/issuedEstimateService";
+import { renderEstimatePage, renderUnavailable } from "./services/issuedEstimateRender";
+import { mintSigningToken, signingClaims, SIGNING_SESSION_MINUTES } from "./middleware/signingScope";
+import { sendEstimateEmail, estimateLink, notifyOwnerSigned } from "./services/issuedEstimateSend";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
 import {
@@ -2058,6 +2060,116 @@ app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
     return;
   }
   res.status(201).json({ revised: true, ...result });
+}));
+
+// ─── IN-PERSON SIGNING MODE (P028) ───────────────────────────────────────────
+//
+// Kyle's ruling: "I want them to be able to view the quote in app and sign there as the first
+// option email is the second." The customer is handed the operator's phone at the job.
+//
+// The lock is the SESSION, not the screen — see middleware/signingScope.ts. Entering signing mode
+// swaps the full owner session for a token scoped to one estimate; while it is in play, this app
+// answers exactly two routes and 403s everything else, including the same two routes for any
+// other estimate. Hiding navigation would leave every URL reachable from the address bar of the
+// device the customer is holding.
+//
+// NO NEW PUBLIC ROUTES. All three below sit inside the operator session and are absent from
+// middleware/publicRoutes.ts. P027's tokenized /e/:token path stays email-only and is unchanged.
+
+/** Enter signing mode. Requires a FULL owner session; hands back the narrowed one. */
+app.post("/issued-estimates/:id/signing-mode", asyncHandler(async (req, res) => {
+  // A signing session must not be able to extend itself, or handing the phone over once would
+  // let the holder keep renewing. Only a full session opens signing mode.
+  if (signingClaims(req)) {
+    res.status(403).json({ error: "Already in signing mode. Enter the PIN to exit first." });
+    return;
+  }
+
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: String(req.params.id) },
+    include: { supersededBy: { select: { id: true } } },
+  });
+  if (!est) {
+    res.status(404).json({ error: "Estimate not found." });
+    return;
+  }
+  if (est.supersededBy) {
+    res.status(409).json({ error: "This estimate has been superseded by a newer revision." });
+    return;
+  }
+  if (est.status === "void") {
+    res.status(409).json({ error: "This estimate is void." });
+    return;
+  }
+
+  const { token, expiresIn } = mintSigningToken(est.id);
+  await prisma.issuedEstimateEvent.create({
+    data: {
+      estimateId: est.id,
+      type: "signing_mode",
+      actor: "human:crm-session",
+      detail: `Device locked to this estimate for in-person review (${SIGNING_SESSION_MINUTES} min).`,
+    },
+  });
+  logSystemEvent("info", "issued-estimate", `Signing mode opened for ${est.number}`, {
+    estimateId: est.id,
+  });
+
+  res.json({ token, expiresIn, estimateId: est.id, number: est.number });
+}));
+
+/**
+ * The estimate as the customer sees it — the SAME render P027 serves at /e/:token.
+ *
+ * One render function, two doors. The no-hours grep covers both paths by covering it once.
+ * Reachable by a signing-scoped session (for the estimate it names) and by a full session (so
+ * Kyle can preview before handing the phone over).
+ */
+app.get("/issued-estimates/:id/customer-view", asyncHandler(async (req, res) => {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: String(req.params.id) },
+    include: {
+      lines: { orderBy: { sortOrder: "asc" } },
+      supersededBy: { select: { id: true, number: true, revision: true } },
+    },
+  });
+  if (!est) {
+    res.status(404).type("html").send(renderUnavailable());
+    return;
+  }
+  res.type("html").send(renderEstimatePage(est, { channel: "in_person" }));
+}));
+
+/**
+ * The customer signs, on the operator's device.
+ *
+ * Same signature record, same sign-once conditional update, same lock, same owner notification as
+ * the emailed path — only `signedChannel` differs.
+ */
+app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) => {
+  const body = z.object({ signerName: z.string().trim().min(1).max(200) }).parse(req.body ?? {});
+
+  const fwd = req.headers["x-forwarded-for"];
+  const ip = (Array.isArray(fwd) ? fwd[0] : fwd?.split(",")[0]) ?? req.socket.remoteAddress ?? "unknown";
+
+  const result = await signEstimateInPerson(prisma, String(req.params.id), {
+    signerName: body.signerName,
+    ip: ip.trim(),
+    userAgent: String(req.headers["user-agent"] ?? "").slice(0, 500),
+  });
+
+  if (!result.ok) {
+    res.status(400).json({ signed: false, error: result.reason });
+    return;
+  }
+
+  // Internal, and it must never be able to fail the customer's signature — which is already
+  // durably recorded by this point.
+  notifyOwnerSigned(prisma, result.estimateId).catch((err) =>
+    console.error("[IssuedEstimate] owner notification failed:", err)
+  );
+
+  res.json({ signed: true, estimateId: result.estimateId });
 }));
 
 // ─── HEALTH RECORD ADMIN (CRM client — rides the PIN/JWT session) ─────────────

@@ -1128,6 +1128,8 @@ export interface PbIssuedEstimate {
   firstViewedAt: string | null;
   signedAt: string | null;
   signerName: string | null;
+  /** "in_person" (P028) or "email" (P027); null on estimates issued before P028. */
+  signedChannel?: "in_person" | "email" | null;
   supersededBy?: { id: string; revision: number } | null;
   lines?: PbIssuedLine[];
   events?: PbIssuedEvent[];

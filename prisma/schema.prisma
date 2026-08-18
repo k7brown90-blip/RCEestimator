@@ -1875,6 +1875,12 @@ model IssuedEstimate {
   signerIp       String?
   signerUserAgent String?
   consentText    String?
+  // How the signature was collected: "in_person" (customer signed on the operator's device at
+  // the job — Kyle's FIRST option, P028) or "email" (customer opened the tokenized link, P027).
+  // Null on estimates issued before P028. Everything else about a signature — the lock, the
+  // audit line, the status, the owner notification — is identical between the two channels;
+  // this column records only which door it came through.
+  signedChannel  String?
   voidedAt       DateTime?
   voidReason     String?
 

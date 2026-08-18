@@ -134,9 +134,28 @@ export function renderUnavailable(): string {
  * `error` renders a refusal (a failed signature attempt) above the signing block without losing
  * the page — the customer must never be dropped onto a bare error and made to find the link again.
  */
+export interface RenderOpts {
+  error?: string | null;
+  /**
+   * Which door this render is being served through. (P028)
+   *
+   * The ESTIMATE is byte-identical either way — same letterhead, same lines, same flat prices,
+   * same totals, same payment block, same absence of hours. That is the whole point of there
+   * being one render function: the no-hours grep covers both paths by covering this one.
+   *
+   * All that changes is the sign affordance, and it changes because the two channels carry
+   * different credentials and cannot share a submit:
+   *   "email"     — a plain HTML form POSTing to the public /e/:token/sign route.
+   *   "in_person" — no form. The operator's React app is holding a signing-scoped session token
+   *                 that an HTML form cannot attach, so it renders the signature panel itself
+   *                 and calls the API. The document below it is this same document.
+   */
+  channel?: "email" | "in_person";
+}
+
 export function renderEstimatePage(
   est: IssuedEstimateWithLines,
-  opts: { error?: string | null } = {}
+  opts: RenderOpts = {}
 ): string {
   const issued = longDate(est.createdAt);
   const preparedFor = [
@@ -170,7 +189,12 @@ export function renderEstimatePage(
   // rather than omitting it, so the customer can see the concession was made.
   const tripLabel = est.tripWaived ? "Trip and job setup &mdash; waived" : "Trip and job setup";
 
-  const signBlock = est.signedAt
+  // In-person: the document ends at the totals; the React shell renders the signature panel.
+  const inPerson = opts.channel === "in_person";
+
+  const signBlock = inPerson && !est.signedAt
+    ? ""
+    : est.signedAt
     ? `<div class="signed">
          <h2 style="margin-top:0;">Accepted &amp; signed</h2>
          <p style="font-size:15px;margin:0;">Signed by <strong>${escapeHtml(est.signerName ?? "")}</strong>
