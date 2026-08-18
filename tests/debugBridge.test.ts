@@ -116,6 +116,56 @@ describe("the ingest route", () => {
   });
 });
 
+describe("pointing at something to change", () => {
+  /**
+   * Kyle: *"I need a way to show you specifically what needs changed."* The build stamps every
+   * host element with `data-rce-src`, the picker reads it off whatever he taps, and this pins the
+   * part that has to survive the wire: the FILE AND LINE, and the instruction attached to it. If
+   * the source location is lost in transit the feature is worth nothing — a change request with
+   * no location is the round trip it was built to remove.
+   */
+  it("carries the source location and the instruction through to the log", async () => {
+    await request(app).post("/debug/client-log").send(report({
+      message: "1 change request(s) from /estimate-intake",
+      entries: [{
+        id: 1,
+        at: "2026-08-18T21:05:00.000Z",
+        kind: "pick",
+        text: 'Move this above the total — on "Create job & schedule" [src/pages/PriceBookIntakePage.tsx:412]',
+        data: {
+          changeRequested: "Move this above the total",
+          source: "src/pages/PriceBookIntakePage.tsx:412",
+          element: "<button>",
+          text: "Create job & schedule",
+          classes: "btn btn-primary mt-3",
+          page: "/estimate-intake",
+        },
+      }],
+    }));
+
+    const details = JSON.parse(created.at(-1)!.detailsJson as string);
+    const pick = details.entries[0];
+    expect(pick.kind).toBe("pick");
+    expect(pick.data.source).toBe("src/pages/PriceBookIntakePage.tsx:412");
+    expect(pick.data.changeRequested).toBe("Move this above the total");
+    expect(pick.data.text).toBe("Create job & schedule");
+  });
+
+  it("still accepts a pick whose element carried no stamp", async () => {
+    // A library element, or a stale cached bundle. The request is still worth having; what must
+    // NOT happen is the client inventing a plausible-looking file and line.
+    const res = await request(app).post("/debug/client-log").send(report({
+      entries: [{
+        id: 1, at: "2026-08-18T21:05:00.000Z", kind: "pick",
+        text: "Make this bigger — on \"OK\" [unknown source]",
+        data: { changeRequested: "Make this bigger", source: null, element: "<button>" },
+      }],
+    }));
+    expect(res.status).toBe(201);
+    expect(JSON.parse(created.at(-1)!.detailsJson as string).entries[0].data.source).toBeNull();
+  });
+});
+
 describe("the session token never reaches the log", () => {
   it("scrubs a bearer token out of captured text", async () => {
     const { scrub } = await import("../client/src/lib/debugBus");

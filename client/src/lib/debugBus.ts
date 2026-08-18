@@ -52,7 +52,7 @@ const MAX_BODY_CHARS = 2000;
 const AUTO_SHIP_MAX_PER_MINUTE = 12;
 const AUTO_SHIP_DEBOUNCE_MS = 4000;
 
-export type DebugKind = "error" | "warn" | "log" | "network" | "note" | "nav";
+export type DebugKind = "error" | "warn" | "log" | "network" | "note" | "nav" | "pick";
 
 export interface DebugEntry {
   id: number;

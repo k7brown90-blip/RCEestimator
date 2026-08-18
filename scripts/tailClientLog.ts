@@ -51,6 +51,7 @@ interface Entry {
 }
 
 const COLOR: Record<string, string> = {
+  pick: "\x1b[95m",
   error: "\x1b[31m",
   warn: "\x1b[33m",
   network: "\x1b[36m",
@@ -91,8 +92,28 @@ function printReport(row: {
   if (details.userAgent) console.log(`\x1b[90m  ${details.userAgent}${RESET}`);
   console.log("─".repeat(96));
 
+  /*
+    CHANGE REQUESTS FIRST. When Kyle points at something, the file and line he pointed at is the
+    single most useful line in the whole report and it would otherwise sit buried among fifty
+    navigation and network lines. They are listed up front AND left in place in the transcript,
+    because where a request falls in the sequence is sometimes the point ("I pressed this, then
+    that happened").
+  */
+  const picks = (details.entries ?? []).filter((e) => e.kind === "pick");
+  if (picks.length > 0) {
+    console.log(`\x1b[95m  ${picks.length} CHANGE REQUEST(S):${RESET}`);
+    for (const p of picks) {
+      const d = (p.data ?? {}) as Record<string, unknown>;
+      console.log(`\x1b[95m    ${d.source ?? "(no source stamp)"}${RESET}`);
+      console.log(`      wants : ${d.changeRequested ?? "(no instruction given)"}`);
+      console.log(`      on    : ${d.element ?? "?"} "${d.text ?? ""}"`);
+      if (d.classes) console.log(`\x1b[90m      classes: ${d.classes}${RESET}`);
+    }
+    console.log("");
+  }
+
   const entries = (details.entries ?? []).filter(
-    (e) => !problemsOnly || e.kind === "error" || e.kind === "warn" || e.kind === "note",
+    (e) => !problemsOnly || e.kind === "error" || e.kind === "warn" || e.kind === "note" || e.kind === "pick",
   );
   if (entries.length === 0) {
     console.log("  (no console lines in this report)");
