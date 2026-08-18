@@ -4,6 +4,15 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["src/**/*.ts", "scripts/seedAtomicUnits.ts", "shared/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "scripts/seedAtomicUnits.ts",
+    // Read-only audit scripts, compiled so they can be run inside the container with
+    // `railway ssh` — the database is on the private network and is not reachable from
+    // a developer machine, so `railway run` cannot connect to it.
+    "scripts/readSystemEvents.ts",
+    "scripts/tailClientLog.ts",
+    "shared/**/*.ts"
+  ],
   "exclude": ["tests/**", "shared/**/*.test.ts", "node_modules"]
 }
