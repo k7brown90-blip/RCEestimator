@@ -668,8 +668,9 @@ function WalkthroughTab(props: {
         )}
 
         <p className="mt-2 text-xs text-rce-muted">
-          Nothing is added automatically. Every row comes back for you to commit — and anything the
-          book can't match becomes a question rather than disappearing.
+          Nothing is added automatically. Every row comes back with the matches from your book —
+          tap <strong>Add to quote</strong> on the one you meant. Quantities are set on the Review
+          tab.
         </p>
       </div>
 
@@ -692,32 +693,44 @@ function WalkthroughTab(props: {
   );
 }
 
+/**
+ * One line from the walkthrough, and the candidates it matched. (P031)
+ *
+ * Kyle, 2026-08-18, looking at a row that had matched his catalog and then offered him nothing
+ * but a question box:
+ *
+ *   *"You built this wrong. It shows a potential match then logs as a question. This makes no
+ *    sense. Instead of logging as a question it needs to be add to quote."*
+ *
+ * He was right, and the shape of the mistake matters: the screen displayed a correct match and
+ * then made the only available ACTION the one that throws it away. So:
+ *
+ *   * every candidate is an **Add to quote** button — one tap puts the line on the draft;
+ *   * the "log as a question" path is **gone from this screen entirely**;
+ *   * lines land at **quantity 1**, because quantity is Review's job now ("The quantity will be
+ *     handled during the review step"). Adding is about WHICH item; Review is about HOW MANY.
+ */
 function WalkthroughRow(props: { row: PbWalkthroughRow; draftId: string; onChanged: () => void }) {
   const { row, draftId, onChanged } = props;
-  const [done, setDone] = useState<string | null>(null);
+  const [added, setAdded] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   const addLine = useMutation({
     mutationFn: (c: PbWalkthroughRow["candidates"][number]) =>
       api.pbAddLine(draftId, {
         itemId: c.itemId,
-        quantity: row.parsedQuantity ?? 1,
+        // Quantity 1 on purpose — Kyle adjusts it in Review, where he can see the price move.
+        quantity: 1,
         quantitySource: c.isContinuousLength ? "MEASURED_LENGTH" : "COUNT",
         difficulty: "NORMAL",
-        note: `From walkthrough list: "${row.raw}"`,
+        note: `From walkthrough: "${row.raw}"`,
       }),
     onSuccess: (_d, c) => {
-      setDone(`Added ${c.itemId}`);
+      setAdded((prev) => [...prev, c.itemId]);
+      setError(null);
       onChanged();
     },
-  });
-
-  const addQuestion = useMutation({
-    mutationFn: () =>
-      api.pbAddQuestion(draftId, `Walkthrough item with no match in the price book: "${row.raw}"`, row.raw),
-    onSuccess: () => {
-      setDone("Logged as a question");
-      onChanged();
-    },
+    onError: (err) => setError((err as Error).message),
   });
 
   return (
@@ -726,8 +739,10 @@ function WalkthroughRow(props: { row: PbWalkthroughRow; draftId: string; onChang
         <div className="min-w-0">
           <div className="font-mono text-sm">{row.raw}</div>
           <div className="text-xs text-rce-soft">
-            qty {row.parsedQuantity ?? "—"} · matched on “{row.searchTerm}”
-            {row.matchedOn === "single-word fallback" && " · loose match — check carefully"}
+            matched on “{row.searchTerm}”
+            {row.parsedQuantity !== null && row.parsedQuantity !== undefined
+              ? ` · you wrote ${row.parsedQuantity} — set the quantity in Review`
+              : ""}
           </div>
         </div>
         <span
@@ -743,26 +758,32 @@ function WalkthroughRow(props: { row: PbWalkthroughRow; draftId: string; onChang
         </span>
       </div>
 
-      {done ? (
-        <p className="mt-2 text-sm text-emerald-700">{done}</p>
-      ) : (
-        <div className="mt-2 space-y-1">
-          {row.candidates.map((c) => (
+      {error && <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{error}</p>}
+
+      <div className="mt-2 space-y-1">
+        {row.candidates.map((c) => {
+          const isAdded = added.includes(c.itemId);
+          return (
             <button
               key={c.itemId}
-              className="btn btn-secondary w-full justify-start text-left"
-              disabled={addLine.isPending}
+              className={isAdded ? "btn btn-secondary w-full justify-start text-left opacity-60" : "btn btn-primary w-full justify-start text-left"}
+              disabled={isAdded || addLine.isPending}
               onClick={() => addLine.mutate(c)}
             >
-              <span className="font-semibold">{c.itemId}</span>
-              <span className="ml-2 truncate text-xs text-rce-muted">{c.description}</span>
+              {/* Kyle's own item name is the label — his catalog, his words. */}
+              <span className="truncate">{c.description ?? c.itemId}</span>
+              <span className="ml-2 shrink-0 text-xs">{isAdded ? "✓ added" : "+ Add to quote"}</span>
             </button>
-          ))}
-          <button className="btn btn-secondary w-full" disabled={addQuestion.isPending} onClick={() => addQuestion.mutate()}>
-            {row.status === "UNMATCHED" ? "Log as a question" : "None of these — log a question"}
-          </button>
-        </div>
-      )}
+          );
+        })}
+
+        {row.candidates.length === 0 && (
+          <p className="rounded bg-amber-50 p-2 text-xs text-amber-900">
+            Nothing in the price book matched this. Search for it on the{" "}
+            <strong>Browse &amp; search</strong> tab and add it from there.
+          </p>
+        )}
+      </div>
     </div>
   );
 }

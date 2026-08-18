@@ -31,6 +31,7 @@ import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { accessLogMiddleware } from "./middleware/accessLog";
 import { singularize } from "./services/singularize";
+import { nameTokens, rankCandidates, stripQuantity } from "./services/walkthroughMatch";
 import { proposeFromWalkthrough, ProposerUnavailable } from "./services/aiProposer";
 import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
 import {
@@ -1813,78 +1814,57 @@ app.post("/price-book/resolve-walkthrough", asyncHandler(async (req, res) => {
     })).max(100),
   }).parse(req.body ?? {});
 
+  const SELECT = { itemId: true, description: true, unit: true, laborUnitBasis: true, costBasisUsed: true };
+
   const out = [];
   for (const row of body.rows) {
-    const leadingQty = /^\s*(\d+(?:\.\d+)?)/.exec(row.raw);
-    const term = row.raw.replace(/^\s*\d+(\.\d+)?\s*(x|ea|each|ft|lf)?\s*/i, "").trim() || row.raw.trim();
+    /*
+      NAME ONLY, NO QUANTITY MATCHING (P031). Kyle, 2026-08-18:
 
-    // TOKEN-AND matching, not phrase matching.
-    //
-    // A tech writes "20A receptacle"; the catalog says "Duplex Receptacle, 20A 125V, NEMA
-    // 5-20R". A single `contains` on the whole phrase finds nothing, and reporting UNMATCHED
-    // for an item that is plainly in the book trains the operator to ignore the feature.
-    // So: every word must appear somewhere in the code or description, in any order.
-    //
-    // This WIDENS what matches; it does not guess. Multiple hits still come back AMBIGUOUS for
-    // the tech to choose between — the engine never picks one for them.
-    const tokens = term
-      .split(/[\s,]+/)
-      .map((t) => t.replace(/[^A-Za-z0-9/.-]/g, "").trim())
-      .filter((t) => t.length >= 2)
-      .slice(0, 6);
+        "I want it to match on the name only. No quantity matching at all. The quantity will be
+         handled during the review step."
 
-    const SELECT = { itemId: true, description: true, unit: true, laborUnitBasis: true, costBasisUsed: true };
-    // PLURALS (P021 / F1). The catalog is written in the singular — "Duplex Receptacle",
-    // "Toggle Switch" — and a tech writes what they'd say out loud. A `contains` on
-    // "receptacles" cannot match "Receptacle", so P019 §2c found the exact controlled pair:
-    // "toggle switch" returned R004+CD004 while "toggle switches" returned nothing. The plural
-    // also defeated the old retry, because the plural noun was itself the longest token.
-    //
-    // Each token is matched as ITSELF **OR** its singular rather than being replaced by the
-    // singular. Replacing could lose a match against a catalog entry that is genuinely plural
-    // ("Wire Nuts", "Fittings"); OR-ing can only ever widen, and widening is safe here because
-    // the resolver returns candidates and never selects.
-    const byTokens = (tks: string[]) =>
-      prisma.priceBookAtomic.findMany({
-        where: {
-          retiredAt: null,
-          AND: tks.map((tk) => {
-            const forms = [...new Set([tk, singularize(tk)])];
-            return {
-              OR: forms.flatMap((f) => [
-                { itemId: { contains: f, mode: "insensitive" as const } },
-                { description: { contains: f, mode: "insensitive" as const } },
-              ]),
-            };
-          }),
-        },
-        take: 6, orderBy: { itemId: "asc" },
-        select: SELECT,
-      });
+      He typed "NM-B 12/3 cable 100 feet" — an item plainly in his book — and got UNMATCHED,
+      because `100` and `feet` were matched as if they named the product. The quantity is now
+      stripped before matching and never consulted again; it is returned for display only.
+    */
+    const { term, quantity } = stripQuantity(row.raw);
+    const tokens = nameTokens(term);
 
-    const matches = tokens.length === 0 ? [] : await byTokens(tokens);
+    /*
+      FETCH WIDE, RANK NARROW.
 
-    // THE LONGEST-TOKEN RETRY IS GONE (P021 / F2).
-    //
-    // It used to retry on the single longest token when the all-token pass found nothing, on the
-    // premise that the longest word "is usually the noun that actually names the thing". P019 §2b
-    // showed the premise is false in the field: for "exterior sconce light" the longest token is
-    // "exterior" (8) — an adjective sitting inside a parenthetical — so the retry returned six
-    // load-center LABOR rows for a wall sconce. "egress sconce light" behaved the same way. It
-    // never once matched on the word that named the thing.
-    //
-    // A wrong candidate costs more than a missing one: a nonsense list teaches the operator to
-    // stop reading the list, and that is unrecoverable. So pass 1 failing now means UNMATCHED,
-    // and the tech searches the catalog directly — which is what they did anyway.
+      The old query AND-ed every token in SQL, so one word the catalog does not use — "romex",
+      where Kyle's book says "NM-B" — returned nothing at all. Now any token may bring a row in,
+      and `rankCandidates` orders by how many of the tech's words actually hit. One unfamiliar
+      word can no longer erase a good match.
+
+      Still candidates, never a selection: the tech taps the row they meant.
+    */
+    const pool = tokens.length === 0 ? [] : await prisma.priceBookAtomic.findMany({
+      where: {
+        retiredAt: null,
+        OR: tokens.flatMap((tk) => {
+          const forms = [...new Set([tk, singularize(tk)])];
+          return forms.flatMap((f) => [
+            { itemId: { contains: f, mode: "insensitive" as const } },
+            { description: { contains: f, mode: "insensitive" as const } },
+          ]);
+        }),
+      },
+      take: 200,
+      select: SELECT,
+    });
+
+    const matches = rankCandidates(pool, tokens).slice(0, 8);
+
     out.push({
       raw: row.raw,
-      parsedQuantity: row.quantity ?? (leadingQty ? Number(leadingQty[1]) : null),
+      // Display only. Kyle sets the real quantity in Review.
+      parsedQuantity: row.quantity ?? quantity,
       searchTerm: term,
       status: matches.length === 0 ? "UNMATCHED" : matches.length === 1 ? "MATCHED" : "AMBIGUOUS",
-      // Retained in the response shape (the intake page reads it) but now constant: every match
-      // is an all-token match, because the single-word retry that produced the other value is
-      // gone.
-      matchedOn: "all words",
+      matchedOn: "name",
       candidates: matches.map((m) => ({
         itemId: m.itemId,
         description: m.description,

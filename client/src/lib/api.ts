@@ -592,6 +592,17 @@ export const api = {
       body: JSON.stringify({ resolutionNote }),
     }),
 
+  /**
+   * Raise a question by hand.
+   *
+   * NO LONGER CALLED FROM THE WALKTHROUGH (P031). Kyle, 2026-08-18: "Get rid of the log as
+   * question completely" — a screen that showed a correct match and then offered only to file it
+   * as a question was making the wrong action the easy one. Walkthrough rows now add to the quote.
+   *
+   * Kept because the AI proposer still raises questions for scope it genuinely cannot place, and
+   * `QuestionRow` still resolves those. That is a different mechanism with its own ruling (P011:
+   * an item the model cannot place becomes a question, never a guessed atomic).
+   */
   pbAddQuestion: (draftId: string, question: string, rawText?: string | null) =>
     request<PbQuestion>(`/price-book/drafts/${draftId}/questions`, {
       method: "POST",

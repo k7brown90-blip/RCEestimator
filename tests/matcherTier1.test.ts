@@ -67,29 +67,53 @@ describe("F1 — plurals resolve to the singular catalog entry", () => {
   });
 });
 
-describe("F2 — the longest-token retry is gone", () => {
+/*
+  P021's ALL-TOKEN CONTRACT WAS SUPERSEDED BY KYLE ON 2026-08-18.
+
+  P021 replaced a broken "longest token" retry with a strict AND across every token, and pinned
+  "no all-token match -> UNMATCHED, not a guess". That was right at the time: the retry had been
+  offering six load-center rows for a wall sconce, and a nonsense list teaches an operator to stop
+  reading lists.
+
+  Then Kyle tested against his own book and hit the cost of the AND. He typed "NM-B 12/3 cable 100
+  feet" — an item plainly in his catalog — and got UNMATCHED, because `100` and `feet` were being
+  matched as if they named the product. His instruction:
+
+    "I want it to match on the name only. No quantity matching at all. The quantity will be
+     handled during the review step."
+
+  So the quantity is stripped before matching, and tokens are SCORED by rarity rather than
+  required — P019's own F2 recommendation, which P021 deferred. What survives unchanged is the
+  property that actually protected him: **the matcher offers candidates and never selects one.**
+
+  The load-center test below still holds and still matters — it is the concrete P019 §2b failure.
+*/
+describe("F2 — ranking replaced the retry, and the sconce failure stays fixed", () => {
   it('"exterior sconce light" never returns load-center rows again', async () => {
     const [row] = await resolve(["exterior sconce light"]);
     const loadCenters = ids(row).filter((id) => /^A0/.test(id));
     expect(loadCenters, `A0xx rows are the P019 §2b failure: ${ids(row).join(", ")}`).toEqual([]);
   });
 
-  it('"egress sconce light" no longer matches on "egress" alone', async () => {
-    const [row] = await resolve(["egress sconce light"]);
-    // EM007 came only from the single-word retry on "egress"; with the retry gone the
-    // all-token pass decides, and it must not invent a match.
-    if (row.status !== "UNMATCHED") {
-      expect(ids(row)).not.toContain("EM007");
+  it("rare words outrank common ones, so a distinctive match leads the list", async () => {
+    // "receptacle" is everywhere in the catalog; "duplex" narrows it to seven rows. Whatever the
+    // ordering among them, the top of the list must actually be duplex receptacles.
+    const [row] = await resolve(["duplex receptacle"]);
+    expect(row.candidates.length).toBeGreaterThan(0);
+    for (const c of row.candidates.slice(0, 3)) {
+      expect(c.description, `${c.itemId} led the list for "duplex receptacle"`).toMatch(/duplex/i);
     }
   });
 
-  it("every match is now an all-token match", async () => {
+  it("reports that it matched on the name", async () => {
     const rows = await resolve(["duplex receptacle", "ceiling fan", "circuit breaker"]);
-    for (const r of rows) expect(r.matchedOn).toBe("all words");
+    for (const r of rows) expect(r.matchedOn).toBe("name");
   });
 
-  it("a phrase with no all-token match is UNMATCHED, not a guess", async () => {
-    const [row] = await resolve(["zzqq widget flange"]);
+  it("a phrase matching nothing at all is still UNMATCHED — ranking never invents a row", async () => {
+    // Every word here appears in zero catalog rows. ("flange", used in the original version of
+    // this test, appears in one — so that phrase was legitimately matching.)
+    const [row] = await resolve(["zzqq qqzz xxyy"]);
     expect(row.status).toBe("UNMATCHED");
     expect(row.candidates).toEqual([]);
   });
@@ -101,9 +125,22 @@ describe("what Tier 1 must NOT change", () => {
     expect(row.parsedQuantity).toBe(12);
   });
 
-  it('"4 LED wafer lights" stays UNMATCHED — "wafer" is a vocabulary gap, not a plural one', async () => {
+  it('"4 LED wafer lights" now offers lighting rows rather than nothing', async () => {
+    /*
+      P021 pinned this as UNMATCHED, because under the AND contract one unknown word ("wafer",
+      which appears nowhere in the catalog) killed the line. Kyle's 2026-08-18 instruction changed
+      what should happen: he wants something he can add, and "led" and "lights" are real words that
+      do name lighting rows.
+
+      The vocabulary gap itself is unchanged and still real — his book says "Canless", the trade
+      says "wafer" — and it stays a workbook/synonym question. What changed is that the screen no
+      longer answers a near-miss with a dead end.
+    */
     const [row] = await resolve(["4 LED wafer lights"]);
-    expect(row.status).toBe("UNMATCHED");
+    expect(row.status).not.toBe("UNMATCHED");
+    expect(row.candidates.length).toBeGreaterThan(0);
+    // The quantity is read for display but plays no part in matching.
+    expect(row.parsedQuantity).toBe(4);
   });
 
   it("cable rows still resolve", async () => {
