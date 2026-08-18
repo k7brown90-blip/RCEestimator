@@ -24,7 +24,7 @@ import {
   type EngineAtomic,
 } from "../src/services/atomicEstimateEngine";
 import type { RateConfig } from "../src/services/priceBookPricing";
-import { checkParity, slugify, unitFromName, type KyleItem } from "../scripts/price-book/kylesTabMapping";
+import { checkParity, classifySellFormula, slugify, unitFromName, type KyleItem } from "../scripts/price-book/kylesTabMapping";
 
 const RC: RateConfig = {
   billedLaborRate: 150,
@@ -263,6 +263,8 @@ describe("the import refuses rather than importing something plausible", () => {
     laborNormal: null, laborDifficult: null, laborVeryDifficult: null,
     companyCost: null, companyPrice: null,
     sellNormal: null, sellDifficult: null, sellVeryDifficult: null,
+    // Default to the standard sheet formula; the multiplier row overrides it.
+    sellFormulas: ["=(B2*150)+F2", "=(C2*150)+F2", "=(D2*150)+F2"],
     ...over,
   });
 
@@ -361,5 +363,74 @@ describe("no hours reach the customer — what that means once items are named '
   it("still catches a per-hour RATE", () => {
     expect(page("Diagnostics at $150/hr")).toMatch(PER_HOUR_RATE);
     expect(page("Diagnostics at $150 per hour")).toMatch(PER_HOUR_RATE);
+  });
+});
+
+// ─── The diagnostics rewrite: a second, deliberate formula shape ───────────────
+
+describe("parity verifies against the formula the cell actually contains", () => {
+  /*
+    Kyle rewrote the Diagnostics row on 2026-08-18: "It will be a qty count still dictated by
+    difficulty. Each qty represents one hour."
+
+    His sheet expresses that with a DIFFERENT formula from every other row:
+
+      225 rows   =(B*150)+F    labour hours x rate, PLUS marked-up material
+        1 row    =B*F          labour is a MULTIPLIER, F is the hourly RATE ($150)
+
+    Asserting the first shape against the second computes 1 x 150 + 150 = $300 for a row whose
+    sheet says $150 — refusing a correct row over an assumption. So the shape is read per cell.
+  */
+  const diag = (over: Partial<KyleItem> = {}): KyleItem => ({
+    key: "diagnostics-troubleshooting-circuit-tracing",
+    name: "Diagnostics / Troubleshooting / Circuit Tracing",
+    section: "SERVICE & FEES", unitLabel: null, row: 285,
+    laborNormal: 1, laborDifficult: 1.5, laborVeryDifficult: 2,
+    companyCost: null, companyPrice: 150,
+    sellNormal: 150, sellDifficult: 225, sellVeryDifficult: 300,
+    sellFormulas: ["=B285*F285", "=C285*F285", "=D285*F285"],
+    ...over,
+  });
+
+  it("passes the multiplier row at all three difficulties", () => {
+    const { failures, rows } = checkParity([diag()]);
+    expect(failures).toEqual([]);
+    expect(rows.map((r) => r.shape)).toEqual([
+      "labour-times-rate", "labour-times-rate", "labour-times-rate",
+    ]);
+  });
+
+  it("would have FAILED it under the standard shape — the bug this prevents", () => {
+    const { failures } = checkParity([
+      diag({ sellFormulas: ["=(B285*150)+F285", "=(C285*150)+F285", "=(D285*150)+F285"] }),
+    ]);
+    // 1 x 150 + 150 = 300, against a sheet that says 150.
+    expect(failures.length).toBe(3);
+    expect(failures[0].expected).toBe(300);
+    expect(failures[0].sell).toBe(150);
+  });
+
+  it("still catches a multiplier row whose price has drifted", () => {
+    const { failures } = checkParity([diag({ sellNormal: 175 })]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].expected).toBe(150);
+  });
+
+  it("REFUSES a formula shape it does not recognise rather than guessing", () => {
+    const { failures } = checkParity([diag({ sellFormulas: ["=B285*F285*1.1", null, null] })]);
+    expect(failures.length).toBeGreaterThanOrEqual(1);
+    expect(failures[0].shape).toBe("unknown");
+  });
+
+  it("classifies both real shapes and rejects anything else", () => {
+    expect(classifySellFormula("=(B3*150)+F3")).toBe("labour-plus-material");
+    expect(classifySellFormula("=B285*F285")).toBe("labour-times-rate");
+    expect(classifySellFormula(null)).toBe("literal");
+    expect(classifySellFormula("=SUM(B3:F3)")).toBe("unknown");
+  });
+
+  it("the rewritten name carries no hour word — the P030 flag, answered by Kyle", () => {
+    expect(slugify(diag().name)).toBe("diagnostics-troubleshooting-circuit-tracing");
+    expect(diag().name).not.toMatch(/hours?/i);
   });
 });

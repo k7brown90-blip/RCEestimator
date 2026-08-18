@@ -89,7 +89,7 @@ function readTab(workbook: string): { items: KyleItem[]; sections: string[]; unc
   }
 
   const raw = JSON.parse(res.stdout) as {
-    rows: Array<{ row: number; name: string; section: string | null; cells: (string | number | null)[] }>;
+    rows: Array<{ row: number; name: string; section: string | null; cells: (string | number | null)[]; sellFormulas: (string | null)[] }>;
     uncomputed: string[];
     sections: string[];
   };
@@ -105,6 +105,7 @@ function readTab(workbook: string): { items: KyleItem[]; sections: string[]; unc
       laborNormal: c[0], laborDifficult: c[1], laborVeryDifficult: c[2],
       companyCost: c[3], companyPrice: c[4],
       sellNormal: c[5], sellDifficult: c[6], sellVeryDifficult: c[7],
+      sellFormulas: [r.sellFormulas?.[0] ?? null, r.sellFormulas?.[1] ?? null, r.sellFormulas?.[2] ?? null],
       row: r.row,
     });
   }
@@ -169,7 +170,7 @@ async function main(): Promise<number> {
     for (const f of failures.slice(0, 30)) {
       console.error(
         `   row ${String(f.row).padStart(4)} ${f.name.slice(0, 46).padEnd(48)} ${f.tag.padEnd(3)} ` +
-          `labour=${f.labor} material=${f.material} sell=${f.sell} expected=${f.expected}`
+          `shape=${f.shape} labour=${f.labor} material=${f.material} sell=${f.sell} expected=${f.expected}`
       );
     }
     return 5;

@@ -34,7 +34,34 @@ export interface KyleItem {
   sellNormal: number | null;
   sellDifficult: number | null;
   sellVeryDifficult: number | null;
+  /** The G/H/I formula text, so parity is asserted against the sheet rather than an assumption. */
+  sellFormulas: [string | null, string | null, string | null];
   row: number;
+}
+
+/**
+ * Which arithmetic a sell cell actually uses.
+ *
+ * Kyle's tab contains exactly two shapes, and they mean different things:
+ *
+ *   `=(B*150)+F`  — 225 rows. Labour hours x the $150 rate, PLUS marked-up material.
+ *                   `F` is the material price.
+ *   `=B*F`        — 1 row (Diagnostics). Labour is a MULTIPLIER and `F` is the hourly RATE:
+ *                   1 x $150, 1.5 x $150, 2 x $150. Kyle, 2026-08-18: "It will be a qty count
+ *                   still dictated by difficulty. Each qty represents one hour."
+ *
+ * Reading the shape per cell is the difference between verifying his sheet and verifying a guess
+ * about his sheet. An unrecognised shape is a FAILURE, not a fallback — a formula this code does
+ * not understand is exactly the case where it must not bless the number.
+ */
+export type SellFormulaShape = "labour-plus-material" | "labour-times-rate" | "literal" | "unknown";
+
+export function classifySellFormula(formula: string | null): SellFormulaShape {
+  if (formula === null) return "literal";
+  const f = formula.replace(/\s+/g, "");
+  if (/^=\([A-I]\d+\*150\)\+[A-I]\d+$/i.test(f)) return "labour-plus-material";
+  if (/^=[A-I]\d+\*[A-I]\d+$/i.test(f)) return "labour-times-rate";
+  return "unknown";
 }
 
 /**
@@ -94,7 +121,7 @@ export function unitFromName(name: string): string | null {
 
 // ─── The parity assertion ───────────────────────────────────────────────────────
 
-export interface ParityRow { key: string; name: string; row: number; tag: string; labor: number; material: number; sell: number; expected: number; ok: boolean }
+export interface ParityRow { key: string; name: string; row: number; tag: string; labor: number; material: number; sell: number; expected: number; ok: boolean; shape: SellFormulaShape }
 
 /**
  * `sell == round(labour x 150 + companyPrice, 2)` at every difficulty the row carries.
@@ -108,31 +135,47 @@ export interface ParityRow { key: string; name: string; row: number; tag: string
 export function checkParity(items: KyleItem[]): { rows: ParityRow[]; failures: ParityRow[] } {
   const rows: ParityRow[] = [];
   for (const it of items) {
-    const trios: Array<[number | null, number | null, string]> = [
-      [it.laborNormal, it.sellNormal, "N"],
-      [it.laborDifficult, it.sellDifficult, "D"],
-      [it.laborVeryDifficult, it.sellVeryDifficult, "VD"],
+    const trios: Array<[number | null, number | null, string | null, string]> = [
+      [it.laborNormal, it.sellNormal, it.sellFormulas?.[0] ?? null, "N"],
+      [it.laborDifficult, it.sellDifficult, it.sellFormulas?.[1] ?? null, "D"],
+      [it.laborVeryDifficult, it.sellVeryDifficult, it.sellFormulas?.[2] ?? null, "VD"],
     ];
-    for (const [labor, sell, tag] of trios) {
+    for (const [labor, sell, formula, tag] of trios) {
       if (labor === null && sell === null) continue; // difficulty not offered on this row
       const material = it.companyPrice ?? 0;
       const l = labor ?? 0;
-      /*
-        COMPARE UNROUNDED, TO THE CENT — do not round one side only.
+      const shape = classifySellFormula(formula);
 
-        Kyle's sheet stores the full float: "Decora Switch, 3-Way" carries sell 82.005, which is
-        exactly 0.4375 hr x $150 + $16.38. Rounding the expectation to 82.01 and comparing it to a
-        stored 82.005 manufactures a half-cent failure out of a row that is precisely right, and
-        would have stopped an import over the agent's own arithmetic rather than over Kyle's data.
-        The claim being asserted is "sell equals labour x rate + material to the cent", so both
-        sides stay unrounded and the tolerance is half a cent.
-      */
-      const raw = l * RATE + material;
-      const expected = Math.round(raw * 100) / 100;
-      const ok = sell !== null && Math.abs(raw - sell) <= 0.005;
-      rows.push({ key: it.key, name: it.name, row: it.row, tag, labor: l, material, sell: sell ?? NaN, expected, ok });
+      let raw: number | null;
+      switch (shape) {
+        case "labour-times-rate":
+          // Labour is the multiplier, companyPrice is the hourly rate.
+          raw = l * material;
+          break;
+        case "labour-plus-material":
+        case "literal":
+          /*
+            COMPARE UNROUNDED, TO THE CENT — do not round one side only.
+
+            Kyle's sheet stores the full float: "Decora Switch, 3-Way" carries sell 82.005, which
+            is exactly 0.4375 hr x $150 + $16.38. Rounding the expectation to 82.01 and comparing
+            it to a stored 82.005 manufactures a half-cent failure out of a row that is precisely
+            right, and would have stopped an import over the agent's own arithmetic rather than
+            over Kyle's data.
+          */
+          raw = l * RATE + material;
+          break;
+        default:
+          raw = null; // unknown shape -> cannot be verified -> fails below
+      }
+
+      const expected = raw === null ? NaN : Math.round(raw * 100) / 100;
+      const ok = raw !== null && sell !== null && Math.abs(raw - sell) <= 0.005;
+      rows.push({
+        key: it.key, name: it.name, row: it.row, tag,
+        labor: l, material, sell: sell ?? NaN, expected, ok, shape,
+      });
     }
   }
   return { rows, failures: rows.filter((r) => !r.ok) };
 }
-

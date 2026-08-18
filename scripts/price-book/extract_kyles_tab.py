@@ -101,7 +101,16 @@ def main() -> int:
             if v is None and isinstance(f, str) and f.startswith("="):
                 uncomputed.append(f"row {i} {name!r} {label} holds a formula with no value")
 
-        rows.append({"row": i, "name": name, "section": current, "cells": cells})
+        # The SELL formulas (G/H/I) travel with the row so parity can be asserted against the
+        # formula the cell actually contains rather than against an assumption about the sheet.
+        sell_formulas = [
+            fr[c] if len(fr) > c and isinstance(fr[c], str) and fr[c].startswith("=") else None
+            for c in (6, 7, 8)
+        ]
+        rows.append({
+            "row": i, "name": name, "section": current, "cells": cells,
+            "sellFormulas": sell_formulas,
+        })
 
     json.dump({"rows": rows, "sections": sections, "uncomputed": uncomputed}, sys.stdout)
     return 0
