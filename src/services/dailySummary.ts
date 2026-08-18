@@ -141,27 +141,42 @@ export interface DigestFeedback {
 
 export async function getFeedbackForDigest(now = new Date()): Promise<DigestFeedback> {
   const cutoff = new Date(now.getTime() - 24 * 3600_000);
+  /*
+    TWO sources, because the debug sidebar (P032) replaced the feedback widget and Kyle's typed
+    words now arrive on a `client` row alongside the console that explains them. Reading only
+    `feedback` would have quietly emptied this section the day the sidebar shipped — the same
+    silent-drop failure this digest was built to fix.
+
+    A `client` row only counts as feedback when it carries a NOTE. Most of them do not: an error
+    that shipped on its own is a diagnostic for me, not a message from Kyle, and putting those in
+    his morning email would bury the three lines he actually wrote.
+  */
   const rows = await prisma.systemEvent.findMany({
-    where: { source: "feedback" },
+    where: { source: { in: ["feedback", "client"] } },
     orderBy: { createdAt: "desc" },
-    take: 50,
+    take: 100,
   });
 
-  const shape = (r: { createdAt: Date; message: string; detailsJson: string | null }) => {
+  const shape = (r: { createdAt: Date; source: string; message: string; detailsJson: string | null }) => {
     let page: string | null = null;
+    let note: string | null = null;
     try {
-      // Only the page is read out of the details blob. The blob also holds a user agent, and
-      // nothing else from it belongs in an email.
-      page = (JSON.parse(r.detailsJson ?? "{}") as { page?: string }).page ?? null;
+      // Only the page and the note are read out of the details blob. It also holds a user agent
+      // and the whole console buffer, and none of that belongs in an email.
+      const d = JSON.parse(r.detailsJson ?? "{}") as { page?: string; note?: string };
+      page = d.page ?? null;
+      note = d.note ?? null;
     } catch {
       page = null;
     }
-    return { at: r.createdAt, message: r.message, page };
+    return { at: r.createdAt, message: note ?? r.message, page, isFeedback: r.source === "feedback" || Boolean(note) };
   };
 
+  const shaped = rows.map(shape).filter((r) => r.isFeedback);
+
   return {
-    recent: rows.filter((r) => r.createdAt >= cutoff).map(shape),
-    backlog: rows.filter((r) => r.createdAt < cutoff).map(shape),
+    recent: shaped.filter((r) => r.at >= cutoff).map(({ isFeedback: _i, ...rest }) => rest),
+    backlog: shaped.filter((r) => r.at < cutoff).map(({ isFeedback: _i, ...rest }) => rest),
   };
 }
 

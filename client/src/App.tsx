@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
+import { CrashBoundary } from "./components/CrashBoundary";
 import { AccountDetailPage } from "./pages/AccountDetailPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { CalendarPage } from "./pages/CalendarPage";
@@ -40,6 +41,7 @@ function App() {
         element={
           <RequireAuth>
             <AppShell>
+              <CrashBoundary>
               <Routes>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
@@ -64,6 +66,7 @@ function App() {
                 <Route path="/team" element={<TeamPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
+              </CrashBoundary>
             </AppShell>
           </RequireAuth>
         }

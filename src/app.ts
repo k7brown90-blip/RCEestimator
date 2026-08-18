@@ -5300,6 +5300,48 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
 // — the coding agent's audit path — reads them. Registered after pinAuth, so a
 // session is required; the page/context fields come from the widget, not the
 // user.
+// ─── CLIENT DEBUG LOG (authenticated CRM UI) ───────────────────────────────
+// The browser's console, shipped from the device. See client/src/lib/debugBus.ts for what is
+// captured and what is deliberately never captured.
+//
+// This is NOT in the public allowlist, so default-deny requires a session — which is the correct
+// gate: the buffer contains customer names and addresses by nature, and only the operator may
+// write to their own diagnostic log. It lands in SystemEvent (source = "client") so it reads
+// alongside the server errors it was almost certainly caused by, and so scripts/tailClientLog.ts
+// and scripts/readSystemEvents.ts both already know how to find it.
+app.post("/debug/client-log", asyncHandler(async (req, res) => {
+  const body = z.object({
+    sessionId: z.string().trim().max(40),
+    page: z.string().trim().max(300).optional(),
+    auto: z.boolean().optional(),
+    message: z.string().trim().min(1).max(500),
+    note: z.string().trim().max(4000).optional(),
+    userAgent: z.string().trim().max(400).optional(),
+    entries: z.array(z.object({
+      id: z.number(),
+      at: z.string().max(40),
+      kind: z.string().max(20),
+      text: z.string().max(4000),
+      data: z.record(z.string(), z.unknown()).optional(),
+    })).max(200),
+  }).parse(req.body);
+
+  // An auto-shipped batch is an ERROR that fired on its own; a hand-pressed send is a WARN at
+  // most, because it may well be Kyle capturing a console that is working fine. Levelling them
+  // the same would make `--level error` useless for finding real faults.
+  logSystemEvent(body.auto ? "error" : "info", "client", body.message, {
+    route: body.page ? `CLIENT ${body.page}` : undefined,
+    page: body.page,
+    sessionId: body.sessionId,
+    auto: body.auto ?? false,
+    note: body.note,
+    userAgent: body.userAgent,
+    entries: body.entries,
+  });
+
+  res.status(201).json({ ok: true });
+}));
+
 app.post("/feedback", asyncHandler(async (req, res) => {
   const body = z.object({
     message: z.string().trim().min(1).max(4000),
