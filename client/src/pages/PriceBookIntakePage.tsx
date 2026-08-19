@@ -155,21 +155,12 @@ export function PriceBookIntakePage() {
 
       {/* ── Draft selection. Every estimate starts blank (Kyle, 2026-08-12). ── */}
       <div className="card p-4">
-        <label className="mb-1 block text-xs font-medium text-rce-soft">Draft</label>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <select
-            className="field flex-1"
-            value={draftId ?? ""}
-            onChange={(e) => setDraftId(e.target.value || null)}
-          >
-            <option value="">Select a draft…</option>
-            {(drafts?.drafts ?? []).map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.title} — {d._count?.lines ?? 0} line(s)
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* The draft PICKER is gone (Kyle, 2026-08-19): "There should be no select a draft and
+            we should not be saving estimates as drafts at all. Each one will be different."
+
+            A list of half-finished estimates invites reusing yesterday's on today's customer.
+            An estimate is now reached only through the account and address it belongs to —
+            never chosen from a list. Starting a new one stays exactly where it was. */}
         <div className="mt-2 flex flex-col gap-2 sm:flex-row">
           <input
             className="field flex-1"

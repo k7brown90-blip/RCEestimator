@@ -83,6 +83,12 @@ body {
 }
 
 .btn {
+  /* A <button> centres its own label; an <a> does not — it stays inline, so with a 44px
+     min-height and no line-height the text sits against the top edge. Kyle pointed at
+     "Back to Account" on the property page, but every anchor styled as a button had it. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 44px;
   border-radius: 999px;
   border: 1px solid transparent;

@@ -471,7 +471,10 @@ function StartWorkCard({
       api.createVisit({
         customerId: accountId,
         propertyId: addressId,
-        mode: "onsite",
+        // "onsite" is not a mode the server has ever accepted, so this button returned
+        // 400 "Validation failed" every time it was pressed. The mode can be changed on
+        // the visit itself; this is the sensible default for a call-out.
+        mode: "service_diagnostic",
         purpose: "Appointment",
       }),
     onSuccess: (visit) => navigate(`/visits/${visit.id}`),

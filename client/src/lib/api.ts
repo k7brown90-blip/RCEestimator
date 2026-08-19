@@ -46,6 +46,16 @@ import type {
 
 const API_BASE = "/api";
 
+/**
+ * The visit modes the server will accept (`POST /visits`, zod enum in app.ts).
+ *
+ * Typed as a union rather than `string` because it was `string`: AccountDetailPage sent
+ * `mode: "onsite"`, the compiler was satisfied, and "Schedule a visit" answered 400 every
+ * time anyone pressed it. `tests/visitModes.test.ts` keeps this list equal to the server's.
+ */
+export const VISIT_MODES = ["new_construction", "remodel", "service_diagnostic", "maintenance"] as const;
+export type VisitMode = (typeof VISIT_MODES)[number];
+
 function withDateRange(path: string, range?: { startDate?: string; endDate?: string }) {
   const search = new URLSearchParams();
   if (range?.startDate) search.set("startDate", range.startDate);
@@ -203,7 +213,7 @@ export const api = {
   }) => request(`/properties/${propertyId}/snapshot`, { method: "PATCH", body: JSON.stringify(input) }),
   visits: () => request<Visit[]>("/visits"),
   visit: (visitId: string) => request<Visit>(`/visits/${visitId}`),
-  createVisit: (input: { propertyId: string; customerId: string; mode: string; purpose?: string; notes?: string }) => request<Visit>("/visits", { method: "POST", body: JSON.stringify(input) }),
+  createVisit: (input: { propertyId: string; customerId: string; mode: VisitMode; purpose?: string; notes?: string }) => request<Visit>("/visits", { method: "POST", body: JSON.stringify(input) }),
   updateVisit: (visitId: string, input: { mode?: string; purpose?: string; jobType?: string; notes?: string }) =>
     request<Visit>(`/visits/${visitId}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteVisit: (visitId: string) => request<void>(`/visits/${visitId}`, { method: "DELETE" }),

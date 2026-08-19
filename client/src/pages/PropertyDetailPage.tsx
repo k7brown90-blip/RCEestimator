@@ -4,10 +4,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
-import { api } from "../lib/api";
+import { api, type VisitMode } from "../lib/api";
 import { money, parseJsonArray, shortDate } from "../lib/utils";
 
-const MODES = [
+const MODES: Array<{ value: VisitMode; label: string }> = [
   { value: "service_diagnostic", label: "Service / Diagnostic" },
   { value: "remodel", label: "Remodel / Addition" },
   { value: "new_construction", label: "New Construction" },
@@ -20,7 +20,7 @@ export function PropertyDetailPage() {
   const queryClient = useQueryClient();
   const { data: property, isLoading } = useQuery({ queryKey: ["property", propertyId], queryFn: () => api.property(propertyId), enabled: Boolean(propertyId) });
 
-  const [mode, setMode] = useState("service_diagnostic");
+  const [mode, setMode] = useState<VisitMode>("service_diagnostic");
   const [purpose, setPurpose] = useState("");
 
   const deficiencyList = useMemo(() => parseJsonArray(property?.systemSnapshot?.deficienciesJson), [property?.systemSnapshot?.deficienciesJson]);
@@ -167,7 +167,7 @@ export function PropertyDetailPage() {
         <form className="grid gap-3 md:grid-cols-3" onSubmit={submitVisit}>
           <label className="text-sm font-medium">
             Mode
-            <select className="field mt-1" value={mode} onChange={(event) => setMode(event.target.value)}>
+            <select className="field mt-1" value={mode} onChange={(event) => setMode(event.target.value as VisitMode)}>
               {MODES.map((item) => (
                 <option key={item.value} value={item.value}>{item.label}</option>
               ))}
