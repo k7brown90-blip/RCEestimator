@@ -103,8 +103,22 @@ function collectUsages(): Usage[] {
           if (first && ts.isStringLiteral(first)) {
             found.push({
               key: keySignature(keyProp.initializer, src),
-              // Normalised so formatting differences don't read as different functions.
-              queryFn: fnProp.initializer.getText(src).replace(/\s+/g, " "),
+              /*
+                Normalised so formatting differences don't read as different functions.
+
+                TypeScript casts are stripped too. `api.pbCompute(draftId)` and
+                `api.pbCompute(draftId as string)` are the SAME call to the same endpoint
+                returning the same shape, and sharing a cache key between them is correct reuse
+                — a second screen showing the same estimate should read the cached response
+                rather than re-fetching it. Comparing the raw text reported that as a collision.
+
+                What this test exists to catch is two different RESPONSES under one key, which is
+                what crashed the account page. Two spellings of one response is not that.
+              */
+              queryFn: fnProp.initializer
+                .getText(src)
+                .replace(/\s+as\s+[A-Za-z_$][\w$<>[\]|.]*/g, "")
+                .replace(/\s+/g, " "),
               where: `${rel}:${src.getLineAndCharacterOfPosition(node.getStart(src)).line + 1}`,
             });
           }

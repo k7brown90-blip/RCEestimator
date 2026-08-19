@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
@@ -230,6 +230,12 @@ export function PriceBookIntakePage() {
               {activeOption === "C" && "recommended beyond A and B"}
             </span>
           </div>
+
+          {draftId && (
+            <Link className="btn btn-primary w-full" to={`/present/${draftId}?from=intake`}>
+              Present to the customer
+            </Link>
+          )}
 
           <div className="flex gap-1 overflow-x-auto">
             {([
