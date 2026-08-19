@@ -2689,9 +2689,55 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     getLaborRate(),
   ]);
 
+  /*
+    ── THE TRACKER HAS TO SEE THE ESTIMATES KYLE ACTUALLY WRITES ────────────────────────────────
+
+    Kyle, 2026-08-19: "There have been several test estimates that have been accepted and none are
+    linked to this tracker. Specifically the Review, Sent, and Accepted buttons."
+
+    They were not linked because this list read `visit.estimates` — the LEGACY `Estimate` model —
+    while every estimate he has written since P027 is an `IssuedEstimate`. The filters were not
+    broken; they were filtering a table he had stopped using. Nothing he did could ever have
+    appeared, which is why it read as "none are linked" rather than "some are missing".
+
+    An issued estimate reaches a job from either side: `visitId` is the visit it was BUILT from,
+    and `jobVisitId` is the job created when it was SIGNED. Both are matched, because a signed
+    estimate that produced a job should show against that job even though it was written before
+    the job existed.
+  */
+  const visitIds = visits.map((v) => v.id);
+  const issued = visitIds.length === 0 ? [] : await prisma.issuedEstimate.findMany({
+    where: {
+      voidedAt: null,
+      OR: [{ visitId: { in: visitIds } }, { jobVisitId: { in: visitIds } }],
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  /** Newest issued estimate per visit, keyed by whichever side links it. */
+  const issuedByVisit = new Map<string, typeof issued[number]>();
+  for (const est of issued) {
+    for (const key of [est.jobVisitId, est.visitId]) {
+      if (key && !issuedByVisit.has(key)) issuedByVisit.set(key, est);
+    }
+  }
+
+  /**
+   * Issued lifecycle -> the tracker's buttons.
+   *
+   * `viewed` maps to `sent` rather than to a button of its own: it means the customer opened the
+   * link, which is a fact about a SENT estimate, not a separate stage. Kyle asked for Review,
+   * Sent and Accepted; "review" has no counterpart here at all now that estimates are not saved
+   * until they are sent or presented, so that button matches only legacy rows and is flagged in
+   * the report rather than quietly repurposed.
+   */
+  const trackerStatus = (status: string): string =>
+    status === "signed" ? "accepted" : status === "viewed" ? "sent" : status;
+
   const jobs = visits.map((visit: typeof visits[number]) => {
     const latestEstimate = visit.estimates[0] ?? null;
     const { acceptedTotal, displayTotal } = estimateOptionTotal(latestEstimate?.options ?? []);
+    const latestIssued = issuedByVisit.get(visit.id) ?? null;
 
     return {
       visitId: visit.id,
@@ -2725,16 +2771,27 @@ app.get("/jobs", asyncHandler(async (req, res) => {
         id: visit.customer.id,
         name: visit.customer.name,
       },
-      estimate: latestEstimate
+      // The ISSUED estimate wins when there is one — it is the document that was actually sent
+      // and signed. The legacy row remains the fallback so older jobs keep reporting.
+      estimate: latestIssued
         ? {
-          id: latestEstimate.id,
-          title: latestEstimate.title,
-          status: latestEstimate.status,
-          revision: latestEstimate.revision,
-          totalCost: displayTotal,
-          hasAcceptance: Boolean(latestEstimate.acceptance),
+          id: latestIssued.id,
+          title: latestIssued.title,
+          status: trackerStatus(latestIssued.status),
+          revision: latestIssued.revision,
+          totalCost: latestIssued.total,
+          hasAcceptance: Boolean(latestIssued.signedAt),
         }
-        : null,
+        : latestEstimate
+          ? {
+            id: latestEstimate.id,
+            title: latestEstimate.title,
+            status: latestEstimate.status,
+            revision: latestEstimate.revision,
+            totalCost: displayTotal,
+            hasAcceptance: Boolean(latestEstimate.acceptance),
+          }
+          : null,
       costs: rollupJobCosts(visit, acceptedTotal, laborRate),
     };
   });

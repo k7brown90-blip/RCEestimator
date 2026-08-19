@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, type VisitMode } from "../lib/api";
@@ -47,7 +47,14 @@ export function JobsPage() {
   const [propertyId, setPropertyId] = useState("");
   const [mode, setMode] = useState<VisitMode>("service_diagnostic");
   const [purpose, setPurpose] = useState("");
-  const [estimateFilter, setEstimateFilter] = useState("");
+  /*
+    Both filters can arrive in the URL, because the property page links here for "Sold Work" and
+    that button has to actually show sold work AT THAT ADDRESS. A link that lands on an unfiltered
+    list is worse than no link — it looks like the address has sold work it does not have.
+  */
+  const [searchParams] = useSearchParams();
+  const [estimateFilter, setEstimateFilter] = useState(searchParams.get("estimate") ?? "");
+  const addressFilter = searchParams.get("address");
   const [sortNewestFirst, setSortNewestFirst] = useState(true);
 
   const archived = tab === "archived";
@@ -72,9 +79,10 @@ export function JobsPage() {
   });
 
   const visibleJobs = useMemo(() => {
+    const atAddress = addressFilter ? jobs.filter((j) => j.property.id === addressFilter) : jobs;
     const filtered = archived || !estimateFilter
-      ? jobs
-      : jobs.filter((job) => {
+      ? atAddress
+      : atAddress.filter((job) => {
         if (estimateFilter === "no_estimate") return !job.estimate;
         return job.estimate?.status === estimateFilter;
       });
@@ -85,7 +93,7 @@ export function JobsPage() {
       const diff = new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime();
       return sortNewestFirst ? diff : -diff;
     });
-  }, [jobs, archived, estimateFilter, sortNewestFirst]);
+  }, [jobs, archived, estimateFilter, addressFilter, sortNewestFirst]);
 
   function submitVisit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

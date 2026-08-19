@@ -183,6 +183,36 @@ export function PropertyDetailPage() {
         </form>
       </section>
 
+      {/* ── Estimate entry points (Kyle, 2026-08-19) ────────────────────────────────────────
+          "Between the Start New Visit Card and System Snapshot I want to have the 'Create New
+          Estimate', 'Previous Estimates' and 'Sold Work' buttons to select from."
+
+          All three carry the account AND the address, so an estimate started here is already on
+          the spine P029 built rather than asking again for something this page already knows. */}
+      <section className="card mb-5 p-4">
+        <h2 className="mb-3 text-lg font-semibold">Estimates for this address</h2>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Link
+            className="btn btn-primary flex-1"
+            to={`/estimate-intake?account=${property.customerId}&address=${property.id}`}
+          >
+            Create New Estimate
+          </Link>
+          <Link
+            className="btn btn-secondary flex-1"
+            to={`/accounts/${property.customerId}?address=${property.id}`}
+          >
+            Previous Estimates
+          </Link>
+          <Link
+            className="btn btn-secondary flex-1"
+            to={`/jobs?address=${property.id}&estimate=accepted`}
+          >
+            Sold Work
+          </Link>
+        </div>
+      </section>
+
       <section className="card mb-5 p-4">
         <h2 className="mb-3 text-lg font-semibold">System Snapshot</h2>
         <form className="grid gap-3 md:grid-cols-2" onSubmit={submitSnapshot}>
