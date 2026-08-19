@@ -93,6 +93,10 @@ export function isFlatPriced(atomic: EngineAtomic): boolean {
 }
 
 /** One tech input. */
+/** Which of Kyle's three options a line sits in. Defaults to A when a caller does not say. */
+export type EstimateOption = "A" | "B" | "C";
+export const ESTIMATE_OPTIONS: EstimateOption[] = ["A", "B", "C"];
+
 export interface DraftLineInput {
   id?: string;
   itemId: string;
@@ -101,6 +105,11 @@ export interface DraftLineInput {
   difficulty: Difficulty;
   location?: string | null;
   note?: string | null;
+  /**
+   * Option A, B or C. Optional so the engine stays usable on bare inputs, as its own tests do —
+   * an absent option means A, which is what every line was before options existed.
+   */
+  option?: EstimateOption;
 }
 
 // ─── Outputs ────────────────────────────────────────────────────────────────────
@@ -133,6 +142,8 @@ export interface ComputedLine {
    * id — the engine is usable on bare inputs, as its tests do.
    */
   id?: string;
+  /** Passed straight through, so a caller can group priced rows without a second lookup. */
+  option: EstimateOption;
   itemId: string;
   description: string | null;
   quantity: number;
@@ -322,6 +333,7 @@ export function computeEstimate(
     if (!atomic) {
       computed.push({
         id: input.id,
+        option: input.option ?? "A",
         itemId: input.itemId,
         description: null,
         quantity: input.quantity,
@@ -402,6 +414,7 @@ export function computeEstimate(
 
       computed.push({
         id: input.id,
+        option: input.option ?? "A",
         itemId: atomic.itemId,
         description: atomic.description,
         quantity: input.quantity,
@@ -506,6 +519,7 @@ export function computeEstimate(
 
     computed.push({
       id: input.id,
+      option: input.option ?? "A",
       itemId: atomic.itemId,
       description: atomic.description,
       quantity: input.quantity,
@@ -772,3 +786,96 @@ export function resolveCatalogAtSupplier(
 
 export { markupTierFor };
 export type { MarkupTiers, RateConfig, SupplierPriceRow, Quotable };
+
+// ─── Options A / B / C (2026-08-19) ─────────────────────────────────────────────
+
+export interface OptionSummary {
+  option: EstimateOption;
+  lineCount: number;
+  laborHours: number;
+  laborDollars: number;
+  materialSell: number;
+  /** labour + material for THIS option's lines. Excludes the trip charge — see below. */
+  subtotal: number | null;
+  /** True when every line in the option priced completely. */
+  complete: boolean;
+}
+
+/**
+ * Per-option subtotals, grouped from lines the engine has already priced.
+ *
+ * Kyle, 2026-08-19: *"Each option gives its total separately. Each option can be selected to give
+ * a combined total if they want to do one, two, or all three of the options."*
+ *
+ * ── THE TRIP CHARGE IS NOT IN HERE, AND THAT IS THE POINT ──────────────────────────────────────
+ *
+ * `jobFixedCost` is charged once for turning up. Folding it into each option's subtotal would
+ * mean a customer who takes all three options pays it three times for one visit — and because
+ * each option would still look individually correct, the error would only be visible in a total
+ * nobody checks by hand. It belongs to the JOB, and Kyle's ruling says any combination of options
+ * signed together *"count as a single job"*. So it is added once, by `combineOptions`, after the
+ * selection is known.
+ *
+ * This groups rather than re-prices: the numbers are the engine's own, so there is no second
+ * implementation of the money maths to drift from the first.
+ */
+export function summarizeOptions(computed: ComputedEstimate): OptionSummary[] {
+  return ESTIMATE_OPTIONS.map((option) => {
+    const lines = computed.lines.filter((l) => l.option === option);
+    const laborHours = lines.reduce((n, l) => n + (l.laborHours ?? 0), 0);
+    const laborDollars = lines.reduce((n, l) => n + (l.laborDollars ?? 0), 0);
+    const materialSell = lines.reduce((n, l) => n + (l.materialSell ?? 0), 0);
+    const complete = lines.length > 0 && lines.every((l) => l.complete);
+    return {
+      option,
+      lineCount: lines.length,
+      laborHours,
+      laborDollars,
+      materialSell,
+      // Null when the rate is unknown, matching the estimate-level rule: never a number we made up.
+      subtotal: computed.billedLaborRate === null ? null : laborDollars + materialSell,
+      complete,
+    };
+  });
+}
+
+export interface CombinedTotal {
+  selected: EstimateOption[];
+  subtotal: number | null;
+  jobFixedCost: number | null;
+  total: number | null;
+  /** False when any selected option has a line the engine could not price. */
+  complete: boolean;
+}
+
+/**
+ * What the customer pays for the options they ticked.
+ *
+ * The trip charge is added ONCE, however many options are selected, because the work happens on
+ * one visit and is one job. Selecting nothing yields a null total rather than a £0 one — an empty
+ * selection has no price, and showing zero would invite signing it.
+ */
+export function combineOptions(
+  computed: ComputedEstimate,
+  selected: EstimateOption[],
+): CombinedTotal {
+  const summaries = summarizeOptions(computed).filter((s) => selected.includes(s.option));
+  const withLines = summaries.filter((s) => s.lineCount > 0);
+
+  if (withLines.length === 0) {
+    return { selected, subtotal: null, jobFixedCost: computed.jobFixedCost, total: null, complete: false };
+  }
+
+  const anyUnpriced = withLines.some((s) => s.subtotal === null);
+  const subtotal = anyUnpriced ? null : withLines.reduce((n, s) => n + (s.subtotal ?? 0), 0);
+  const total =
+    subtotal === null || computed.jobFixedCost === null ? null : subtotal + computed.jobFixedCost;
+
+  return {
+    selected,
+    subtotal,
+    jobFixedCost: computed.jobFixedCost,
+    total,
+    complete: withLines.every((s) => s.complete),
+  };
+}

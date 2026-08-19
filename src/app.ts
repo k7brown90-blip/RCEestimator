@@ -34,6 +34,7 @@ import { singularize } from "./services/singularize";
 import { nameTokens, rankWithDiagnostics, stripQuantity } from "./services/walkthroughMatch";
 import { proposeFromWalkthrough, ProposerUnavailable } from "./services/aiProposer";
 import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
+import { summarizeOptions } from "./services/atomicEstimateEngine";
 import {
   addLine,
   editLine,
@@ -1719,6 +1720,9 @@ app.post("/price-book/drafts/:draftId/lines", asyncHandler(async (req, res) => {
     difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
     location: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
+    // Which of the three options this line belongs to. Absent means A — what every line was
+    // before there was anywhere else to put one.
+    option: z.enum(["A", "B", "C"]).optional(),
   }).parse(req.body ?? {});
   try {
     const line = await addLine(prisma, String(req.params.draftId), {
@@ -1988,7 +1992,15 @@ app.post("/price-book/questions/:questionId/resolve", asyncHandler(async (req, r
 // Compute / finalize. Both human-only; finalize refuses while anything is unconfirmed.
 app.get("/price-book/drafts/:draftId/compute", asyncHandler(async (req, res) => {
   const { computed, rate } = await computeDraft(prisma, String(req.params.draftId));
-  res.json({ computed, rateProvisional: rate.provisional, provisionalReason: rate.provisionalReason });
+  res.json({
+    computed,
+    // Per-option subtotals (Kyle 2026-08-19). Grouped from the engine's own numbers, never
+    // re-priced. The trip charge is deliberately absent from these — it is charged once for the
+    // job, not once per option; see summarizeOptions.
+    options: summarizeOptions(computed),
+    rateProvisional: rate.provisional,
+    provisionalReason: rate.provisionalReason,
+  });
 }));
 
 app.post("/price-book/drafts/:draftId/finalize", asyncHandler(async (req, res) => {

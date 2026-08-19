@@ -31,7 +31,8 @@ import type {
   PropertyFinding,
   WeekSchedule,
   PbAtomic,
-  PbComputed,
+  PbComputeResponse,
+  PbOption,
   PbDifficulty,
   PbDraft,
   PbFinalizeResult,
@@ -561,9 +562,7 @@ export const api = {
   pbReview: (draftId: string) => request<PbReview>(`/price-book/drafts/${draftId}/review`),
 
   pbCompute: (draftId: string) =>
-    request<{ computed: PbComputed; rateProvisional: boolean; provisionalReason: string | null }>(
-      `/price-book/drafts/${draftId}/compute`
-    ),
+    request<PbComputeResponse>(`/price-book/drafts/${draftId}/compute`),
 
   // Human-added line. Lands CONFIRMED — this is the path an AI proposal can never take.
   pbAddLine: (
@@ -575,6 +574,8 @@ export const api = {
       difficulty?: PbDifficulty;
       location?: string | null;
       note?: string | null;
+      /** Which option the line goes in. Absent means A. */
+      option?: PbOption;
     }
   ) => request(`/price-book/drafts/${draftId}/lines`, { method: "POST", body: JSON.stringify(input) }),
 

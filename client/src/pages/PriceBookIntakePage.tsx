@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import type {
   PbAtomic,
   PbComputed,
+  PbOptionSummary,
   PbComputedLine,
   PbDifficulty,
   PbDraft,
@@ -253,6 +254,7 @@ export function PriceBookIntakePage() {
           {/* ── Running totals. Straight from the engine, always visible. ── */}
           <TotalsBar
             computed={computed?.computed}
+            options={computed?.options}
             openQuestions={review?.counts.openQuestions ?? 0}
             openItems={openItems}
           />
@@ -1169,6 +1171,7 @@ function attachmentLabel(d: PbDraft | undefined): string | null {
  */
 function TotalsBar(props: {
   computed: PbComputed | undefined;
+  options?: PbOptionSummary[];
   openQuestions: number;
   openItems: number;
 }) {
@@ -1190,8 +1193,27 @@ function TotalsBar(props: {
   // reader will take for a quote. Say what it is instead of letting it stand alone.
   const feeOnly = c.totalLineCount === 0 && (c.total ?? 0) > 0;
 
+  // Only options that actually carry work. An empty option has no subtotal worth showing.
+  const usedOptions = (props.options ?? []).filter((o) => o.lineCount > 0);
+
   return (
     <div className="fixed inset-x-0 bottom-0 z-30 border-t bg-white/95 p-3 backdrop-blur">
+      {/* Per-option subtotals (Kyle, 2026-08-19). Shown only once a second option has lines in
+          it — a single row reading "Option A $x" beside a total of the same $x is noise. The trip
+          charge is not in these figures; it is charged once for the visit, which is why they do
+          not add up to the total below. */}
+      {usedOptions.length > 1 && (
+        <div className="mx-auto mb-2 flex max-w-3xl flex-wrap gap-x-4 gap-y-1 text-xs">
+          {usedOptions.map((o) => (
+            <span key={o.option} className="text-rce-soft">
+              <span className="font-semibold text-rce-text">Option {o.option}</span>{" "}
+              {o.lineCount} line(s) · {money(o.subtotal)}
+              {!o.complete && <span className="text-amber-800"> (incomplete)</span>}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 text-sm">
         <div>
           <div className="text-xs text-rce-soft">

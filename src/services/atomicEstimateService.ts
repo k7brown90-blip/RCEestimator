@@ -21,6 +21,7 @@ import {
   type EngineAtomic,
   type FinalizeResult,
   type QuantitySource,
+  type EstimateOption,
 } from "./atomicEstimateEngine";
 import type { MarkupTiers, RateConfig, SupplierPriceRow } from "./priceBookPricing";
 
@@ -746,6 +747,7 @@ export async function computeDraft(
     difficulty: l.difficulty as Difficulty,
     location: l.location,
     note: l.note,
+    option: l.option as EstimateOption,
   }));
 
   return {

@@ -1028,6 +1028,8 @@ export interface PbLineGap {
 }
 
 export interface PbComputedLine {
+  /** Passed through by the engine so rows can be grouped without a second lookup. */
+  option: PbOption;
   /** The draft line id. Join on this, never on itemId — a draft may carry an atomic twice. */
   id?: string;
   itemId: string;
@@ -1061,6 +1063,34 @@ export interface PbComputed {
   incompleteLineCount: number;
   totalLineCount: number;
   completenessSummary: string;
+}
+
+/** What `GET /price-book/drafts/:id/compute` returns. */
+export interface PbComputeResponse {
+  computed: PbComputed;
+  options: PbOptionSummary[];
+  rateProvisional?: boolean;
+  provisionalReason?: string | null;
+}
+
+/** Which of the three options a line belongs to (Kyle, 2026-08-19). */
+export type PbOption = "A" | "B" | "C";
+
+export interface PbOptionSummary {
+  option: PbOption;
+  lineCount: number;
+  laborHours: number;
+  laborDollars: number;
+  materialSell: number;
+  /**
+   * Labour + material for this option only.
+   *
+   * The trip charge is NOT in here. It is charged once for the visit, and any combination of
+   * options signed together is a single job — so adding it per option would charge a customer
+   * who takes all three three times over.
+   */
+  subtotal: number | null;
+  complete: boolean;
 }
 
 export interface PbFinalizeResult {

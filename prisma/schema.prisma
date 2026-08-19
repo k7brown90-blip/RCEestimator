@@ -1792,6 +1792,19 @@ model PriceBookDraftQuestion {
   @@index([draftId, resolvedAt])
 }
 
+/// Which of the three options a line belongs to. (2026-08-19)
+///
+/// Kyle: "Option A - The direct Quote for what the client called for. Option B - Code Violations
+/// or Hazards found during the Electrical assessment. Option C - Any recommendation beyond option
+/// A and B that the tech finds necessary to offer. Each option gives its total separately."
+///
+/// The labels stay literally "Option A/B/C" on the customer's page — his ruling, 2026-08-19.
+enum PriceBookOption {
+  A
+  B
+  C
+}
+
 model PriceBookDraftLine {
   id             String                  @id @default(cuid())
   draftId        String
@@ -1805,6 +1818,9 @@ model PriceBookDraftLine {
   location       String?
   note           String?
   sortOrder      Int                     @default(0)
+  // Defaults to A so every existing line becomes "what the client called for", which is what
+  // they all were before there was anywhere else to put them.
+  option         PriceBookOption         @default(A)
 
   // ── Propose / confirm ──
   //
@@ -1832,6 +1848,7 @@ model PriceBookDraftLine {
 
   @@index([draftId])
   @@index([draftId, state])
+  @@index([draftId, option])
   @@index([itemId])
 }
 // ─── ISSUED ESTIMATES — the customer-facing artifact (P027) ──────────────────
