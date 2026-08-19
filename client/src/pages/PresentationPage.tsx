@@ -27,6 +27,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
@@ -69,6 +70,56 @@ export function PresentationPage() {
   const total = data ? combinedTotal(options, effectiveSelected, data.computed.jobFixedCost) : null;
   const materials = data ? materialList(data.computed, effectiveSelected) : [];
   const hours = data ? labourHours(data.computed, effectiveSelected) : 0;
+
+  /*
+    ── FREEZING IS A CONSEQUENCE, NOT A BUTTON (Kyle, 2026-08-19) ─────────────────────────────
+
+    "Nothing should freeze the prices, once the estimate is emailed or signed we each should get
+     a PDF copy of the estimate and at that time only will that estimate get recorded and froze."
+
+    So there is no "finalize" action. Emailing issues the frozen estimate and then sends it;
+    signing issues it and then opens the signature screen. The freeze happens because something
+    happened, never because someone pressed a button whose purpose they had to guess.
+
+    ORDER MATTERS AND THE FAILURE IS ASYMMETRIC. The estimate is issued FIRST and sent second. If
+    the send then fails — an expired Gmail token, a bad address — the frozen record exists and can
+    be re-sent, which is recoverable. Sending first and freezing second would mean a customer
+    holding a quote that was never recorded, which is not.
+  */
+  const account = params.get("account");
+  const address = params.get("address");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string[]>([]);
+
+  const issueThen = useMutation({
+    mutationFn: async (next: "send" | "sign") => {
+      if (!account || !address) {
+        throw new Error("This estimate is not attached to an account and address yet.");
+      }
+      const issued = await api.pbIssue(draftId, { accountId: account, serviceAddressId: address });
+      if (next === "send") {
+        const sent = await api.pbIssuedSend(issued.estimateId, {});
+        return { next, estimateId: issued.estimateId, number: issued.number, to: sent.to };
+      }
+      return { next, estimateId: issued.estimateId, number: issued.number, to: null };
+    },
+    onMutate: (next) => {
+      setBusy(next);
+      setProblem([]);
+    },
+    onSuccess: (r) => {
+      setBusy(null);
+      if (r.next === "sign") navigate(`/sign-in-person/${r.estimateId}`);
+      else setProblem([`Estimate ${r.number} sent to ${r.to}.`]);
+    },
+    onError: (err) => {
+      setBusy(null);
+      // The engine's refusal reasons arrive on a 409 and are shown VERBATIM — the wording is
+      // what tells the operator which line is not ready.
+      const body = (err as { body?: { reasons?: string[] } }).body;
+      setProblem(body?.reasons?.length ? body.reasons : [(err as Error).message]);
+    },
+  });
 
   const toggle = (option: PbOption) => {
     const current = effectiveSelected;
@@ -208,11 +259,33 @@ export function PresentationPage() {
             <div className="text-2xl font-semibold">{money(total)}</div>
           </div>
         </div>
-        {params.get("from") === "intake" && (
-          <p className="mx-auto mt-1 max-w-3xl text-[11px] text-rce-soft">
-            Sending and signing come next — nothing here has been recorded yet.
-          </p>
+        {problem.length > 0 && (
+          <div className="mx-auto mt-2 max-w-3xl space-y-1">
+            {problem.map((r, i) => (
+              <p key={i} className="rounded bg-amber-50 p-2 text-xs text-amber-900">{r}</p>
+            ))}
+          </div>
         )}
+
+        <div className="mx-auto mt-2 flex max-w-3xl gap-2">
+          <button
+            className="btn btn-secondary flex-1"
+            disabled={busy !== null || options.length === 0}
+            onClick={() => issueThen.mutate("send")}
+          >
+            {busy === "send" ? "Sending…" : "Email to customer"}
+          </button>
+          <button
+            className="btn btn-primary flex-1"
+            disabled={busy !== null || options.length === 0}
+            onClick={() => issueThen.mutate("sign")}
+          >
+            {busy === "sign" ? "Preparing…" : "Sign now"}
+          </button>
+        </div>
+        <p className="mx-auto mt-1 max-w-3xl text-[11px] text-rce-soft">
+          Either action records the estimate and freezes its prices. Nothing is frozen before then.
+        </p>
       </div>
     </div>
   );

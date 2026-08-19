@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
@@ -232,7 +232,10 @@ export function PriceBookIntakePage() {
           </div>
 
           {draftId && (
-            <Link className="btn btn-primary w-full" to={`/present/${draftId}?from=intake`}>
+            <Link
+              className="btn btn-primary w-full"
+              to={`/present/${draftId}?from=intake${accountId ? `&account=${accountId}` : ""}${serviceAddressId ? `&address=${serviceAddressId}` : ""}`}
+            >
               Present to the customer
             </Link>
           )}
@@ -870,26 +873,15 @@ function ReviewTab(props: {
   onChanged: () => void;
 }) {
   const { draftId, review, computed, options, onChanged, accountId, serviceAddressId, onAttached } = props;
-  const [finalizeMsg, setFinalizeMsg] = useState<{ ok: boolean; reasons: string[]; warnings: string[] } | null>(null);
-  const finalizeMsgRef = useRef<HTMLDivElement | null>(null);
+  // finalizeMsg went with the Check / Finalize buttons — nothing sets it now, and a
+  // message box that can never fill is a place for a future reader to look for state
+  // that does not exist.
 
-  // The message can render off-screen on a phone; bring it to the operator rather than expecting
-  // a scroll hunt. `block: "center"` rather than "start" so the buttons stay visible with it.
-  useEffect(() => {
-    if (finalizeMsg) finalizeMsgRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [finalizeMsg]);
 
-  const finalize = useMutation({
-    mutationFn: (context: "customer" | "internal") => api.pbFinalize(draftId, context),
-    onSuccess: (r) => setFinalizeMsg({ ok: r.finalized, reasons: r.reasons ?? [], warnings: r.warnings ?? [] }),
-    onError: (err) => {
-      // A 409 carries the engine's refusal reasons in the body. They are displayed VERBATIM —
-      // the UI never re-words a refusal, because the wording is the part that tells the tech
-      // what to actually do.
-      const body = (err as unknown as { body?: { reasons?: string[]; warnings?: string[] } }).body;
-      setFinalizeMsg({ ok: false, reasons: body?.reasons ?? [(err as Error).message], warnings: body?.warnings ?? [] });
-    },
-  });
+  // The `finalize` mutation was removed with the Check / Finalize buttons (2026-08-19).
+  // The readiness check it called still exists on the server and still refuses an estimate
+  // with gaps — it now runs at the moment of issuing, where the refusal is about something
+  // the operator is actually trying to do rather than a button they were guessing at.
 
   if (!review) return <p className="text-sm text-rce-muted">Loading…</p>;
 
@@ -1009,25 +1001,15 @@ function ReviewTab(props: {
           Messages are rendered VERBATIM. P019 confirmed the wording is good, and the wording is
           the part that tells the tech what to do.
         */}
-        {finalizeMsg && (
-          <div ref={finalizeMsgRef} className="mb-2 space-y-1">
-            {finalizeMsg.ok && <p className="text-sm text-emerald-700">Finalized.</p>}
-            {finalizeMsg.reasons.map((r, i) => (
-              <p key={i} className="rounded bg-red-50 p-2 text-xs text-red-900">{r}</p>
-            ))}
-            {finalizeMsg.warnings.map((w, i) => (
-              <p key={i} className="rounded bg-amber-50 p-2 text-xs text-amber-900">{w}</p>
-            ))}
-          </div>
-        )}
-        <div className="flex gap-2">
-          <button className="btn btn-secondary flex-1" disabled={finalize.isPending} onClick={() => finalize.mutate("internal")}>
-            Check (internal)
-          </button>
-          <button className="btn btn-primary flex-1" disabled={finalize.isPending} onClick={() => finalize.mutate("customer")}>
-            Finalize for customer
-          </button>
-        </div>
+        {/* Check (internal) and Finalize for customer were here until 2026-08-19. Kyle:
+            "I have no idea what these buttons do but they are unnecessary. Nothing should freeze
+            the prices, once the estimate is emailed or signed... at that time only will that
+            estimate get recorded and froze."
+
+            Freezing is now a CONSEQUENCE of sending or signing rather than a button of its own,
+            so there is nothing to press here. The engine's readiness check still runs — it runs
+            at the moment of sending, where a refusal is about something the operator is actually
+            trying to do. */}
 
       </div>
 

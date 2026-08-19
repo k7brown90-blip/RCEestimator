@@ -141,20 +141,44 @@ describe("the digest send gate", () => {
   });
 });
 
-// ─── The intake page renders the refusal above the buttons (Scope — do 1) ────────────────────
+// ─── The refusal renders above the buttons (Scope — do 1) ────────────────────────────────────
 
-describe("the intake page puts the refusal where the tap happened", () => {
-  it("renders finalizeMsg before the button row and scrolls it into view", async () => {
+/**
+ * This used to assert against `finalizeMsg` and the "Finalize for customer" button on the intake
+ * page. Both were removed on 2026-08-19 — Kyle: *"I have no idea what these buttons do but they
+ * are unnecessary. Nothing should freeze the prices."*
+ *
+ * The PROPERTY they existed to protect did not go away with them. P019 and P022 both landed on
+ * the same finding: a refusal rendered below the button that caused it reads as nothing having
+ * happened, and the operator taps again. The act that can now be refused is sending or signing
+ * from the presentation screen, so the assertion moves there rather than being deleted with the
+ * feature it happened to be pointing at.
+ */
+describe("the presentation screen puts the refusal where the tap happened", () => {
+  it("renders the refusal above the send and sign buttons", async () => {
     const { readFileSync } = await import("node:fs");
     const path = await import("node:path");
     const src = readFileSync(
-      path.join(__dirname, "..", "client", "src", "pages", "PriceBookIntakePage.tsx"),
+      path.join(__dirname, "..", "client", "src", "pages", "PresentationPage.tsx"),
       "utf8",
     );
-    const msgAt = src.indexOf("{finalizeMsg && (");
-    const buttonsAt = src.indexOf('Finalize for customer');
-    expect(msgAt).toBeGreaterThan(0);
-    expect(msgAt, "the refusal must render ABOVE the button").toBeLessThan(buttonsAt);
-    expect(src).toContain("scrollIntoView");
+    const msgAt = src.indexOf("{problem.length > 0 && (");
+    const buttonsAt = src.indexOf('Email to customer');
+    expect(msgAt, "the refusal block was not found").toBeGreaterThan(0);
+    expect(buttonsAt, "the send button was not found").toBeGreaterThan(0);
+    expect(msgAt, "the refusal must render ABOVE the buttons").toBeLessThan(buttonsAt);
+  });
+
+  it("shows the engine's reasons verbatim rather than one summary line", async () => {
+    // The wording is the part that tells the tech which line is not ready. Collapsing several
+    // refusals into "could not finalize" is what P019 found had trained the operator to ignore it.
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const src = readFileSync(
+      path.join(__dirname, "..", "client", "src", "pages", "PresentationPage.tsx"),
+      "utf8",
+    );
+    expect(src).toContain("body?.reasons");
+    expect(src).toContain("problem.map(");
   });
 });
