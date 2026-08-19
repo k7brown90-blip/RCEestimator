@@ -583,7 +583,7 @@ export const api = {
   // draft server-side — a line on an issued estimate is a record, not a working document.
   pbEditLine: (
     lineId: string,
-    patch: { quantity?: number; quantitySource?: PbQuantitySource; difficulty?: PbDifficulty; location?: string | null; note?: string | null }
+    patch: { quantity?: number; quantitySource?: PbQuantitySource; difficulty?: PbDifficulty; location?: string | null; note?: string | null; option?: PbOption }
   ) => request(`/price-book/lines/${lineId}`, { method: "PATCH", body: JSON.stringify(patch) }),
 
   pbDeleteLine: (lineId: string) =>

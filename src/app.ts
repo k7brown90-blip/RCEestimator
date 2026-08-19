@@ -1748,6 +1748,9 @@ app.patch("/price-book/lines/:lineId", asyncHandler(async (req, res) => {
     difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
     location: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
+    // Moving a line to another option. Without this a line put in the wrong one could only be
+    // fixed by deleting and re-adding it.
+    option: z.enum(["A", "B", "C"]).optional(),
   }).parse(req.body ?? {});
   try {
     const line = await editLine(prisma, String(req.params.lineId), body);

@@ -9,7 +9,7 @@
  * `priceBookPricing` module. One arithmetic, verified once.
  */
 
-import { PrismaClient, type PriceBookDifficulty, type PriceBookQuantitySource } from "@prisma/client";
+import { PrismaClient, type PriceBookDifficulty, type PriceBookOption, type PriceBookQuantitySource } from "@prisma/client";
 import {
   computeEstimate,
   finalizeEstimate,
@@ -383,6 +383,8 @@ export interface AddLineInput {
   location?: string | null;
   note?: string | null;
   sortOrder?: number;
+  /** Which of the three options the line belongs to. Absent means A. */
+  option?: EstimateOption;
   /** Who entered it. Defaults to "human:direct-entry"; the AI can never reach this function. */
   confirmedBy?: string;
 }
@@ -414,6 +416,7 @@ export async function addLine(prisma: PrismaClient, draftId: string, line: AddLi
       quantity: line.quantity,
       quantitySource: line.quantitySource as PriceBookQuantitySource,
       difficulty: (line.difficulty ?? "NORMAL") as PriceBookDifficulty,
+      option: (line.option ?? "A") as PriceBookOption,
       location: line.location ?? null,
       note: line.note ?? null,
       sortOrder: line.sortOrder ?? 0,
@@ -453,6 +456,9 @@ export async function editLine(
       location: patch.location,
       note: patch.note,
       sortOrder: patch.sortOrder,
+      // Moving a line between options is an edit like any other. Without it, putting a line in
+      // the wrong option could only be undone by deleting and re-adding it.
+      option: patch.option as PriceBookOption | undefined,
     },
   });
 }

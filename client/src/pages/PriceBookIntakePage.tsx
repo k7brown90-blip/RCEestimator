@@ -11,6 +11,7 @@ import type {
   PbDifficulty,
   PbDraft,
   PbLine,
+  PbOption,
   PbQuantitySource,
   PbWalkthroughRow,
 } from "../lib/types";
@@ -65,6 +66,8 @@ export function PriceBookIntakePage() {
   // come back to the same estimate, and the office can be sent a link to one job rather than
   // "open the estimate screen and find it".
   const [params, setParams] = useSearchParams();
+  /** Which option new lines land in. Defaults to A — the direct quote for the call-out. */
+  const [activeOption, setActiveOption] = useState<PbOption>("A");
   const draftId = params.get("draft");
   /*
     THE SPINE, CARRIED IN THE URL (P029).
@@ -201,6 +204,33 @@ export function PriceBookIntakePage() {
       {draftId && (
         <>
           {/* ── Tabs ── */}
+          {/* ── Which option is being built (Kyle, 2026-08-19) ──────────────────────────────
+              Page-level rather than a field inside each add sheet. He builds A, then B, then C,
+              and asking on every single line would be a tap per item to answer a question whose
+              answer almost never changes between them. Everything added — browse, search, or
+              walkthrough — lands in whichever option is selected here. */}
+          <div className="card flex flex-wrap items-center gap-2 p-3">
+            <span className="text-xs font-medium text-rce-soft">Adding into</span>
+            {(["A", "B", "C"] as PbOption[]).map((o) => (
+              <button
+                key={o}
+                onClick={() => setActiveOption(o)}
+                className={
+                  activeOption === o
+                    ? "rounded-full bg-rce-accent px-3 py-1.5 text-sm font-semibold text-white"
+                    : "rounded-full border border-rce-border px-3 py-1.5 text-sm text-rce-soft"
+                }
+              >
+                Option {o}
+              </button>
+            ))}
+            <span className="text-xs text-rce-soft">
+              {activeOption === "A" && "what the client called for"}
+              {activeOption === "B" && "code violations & hazards found"}
+              {activeOption === "C" && "recommended beyond A and B"}
+            </span>
+          </div>
+
           <div className="flex gap-1 overflow-x-auto">
             {([
               ["browse", "Browse & search"],
@@ -231,7 +261,12 @@ export function PriceBookIntakePage() {
           )}
 
           {tab === "walkthrough" && (
-            <WalkthroughTab draftId={draftId} onChanged={invalidate} onOpenItemsChange={setOpenItems} />
+            <WalkthroughTab
+              draftId={draftId}
+              option={activeOption}
+              onChanged={invalidate}
+              onOpenItemsChange={setOpenItems}
+            />
           )}
 
           {tab === "review" && (
@@ -265,6 +300,7 @@ export function PriceBookIntakePage() {
         <AddLineSheet
           atomic={picked}
           draftId={draftId}
+          option={activeOption}
           onClose={() => setPicked(null)}
           onAdded={() => {
             setPicked(null);
@@ -378,8 +414,14 @@ function BrowseTab(props: {
 
 // ─── Add a line — the exact-inputs sheet ─────────────────────────────────────
 
-function AddLineSheet(props: { atomic: PbAtomic; draftId: string; onClose: () => void; onAdded: () => void }) {
-  const { atomic, draftId, onClose, onAdded } = props;
+function AddLineSheet(props: {
+  atomic: PbAtomic;
+  draftId: string;
+  option: PbOption;
+  onClose: () => void;
+  onAdded: () => void;
+}) {
+  const { atomic, draftId, option, onClose, onAdded } = props;
   // Continuous-length product is forced to MEASURED_LENGTH and cannot be changed — Kyle's rule
   // that length is a field measurement, enforced at the point of entry rather than as a warning
   // after the fact.
@@ -419,6 +461,7 @@ function AddLineSheet(props: { atomic: PbAtomic; draftId: string; onClose: () =>
         quantity: Number(quantity),
         quantitySource: source,
         difficulty,
+        option,
         location: location.trim() || null,
         note: note.trim() || null,
       }),
@@ -546,6 +589,8 @@ function AddLineSheet(props: { atomic: PbAtomic; draftId: string; onClose: () =>
 
 function WalkthroughTab(props: {
   draftId: string;
+  /** The option every line added from this screen lands in. */
+  option: PbOption;
   onChanged: () => void;
   /**
    * Reports how many resolved rows are still UNMATCHED or AMBIGUOUS, so the totals bar can
@@ -679,7 +724,13 @@ function WalkthroughTab(props: {
       )}
 
       {rows?.map((row, i) => (
-        <WalkthroughRow key={`${row.raw}-${i}`} row={row} draftId={draftId} onChanged={onChanged} />
+        <WalkthroughRow
+          key={`${row.raw}-${i}`}
+          row={row}
+          draftId={draftId}
+          option={props.option}
+          onChanged={onChanged}
+        />
       ))}
     </div>
   );
@@ -702,8 +753,13 @@ function WalkthroughTab(props: {
  *   * lines land at **quantity 1**, because quantity is Review's job now ("The quantity will be
  *     handled during the review step"). Adding is about WHICH item; Review is about HOW MANY.
  */
-function WalkthroughRow(props: { row: PbWalkthroughRow; draftId: string; onChanged: () => void }) {
-  const { row, draftId, onChanged } = props;
+function WalkthroughRow(props: {
+  row: PbWalkthroughRow;
+  draftId: string;
+  option: PbOption;
+  onChanged: () => void;
+}) {
+  const { row, draftId, option, onChanged } = props;
   const [added, setAdded] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -715,6 +771,7 @@ function WalkthroughRow(props: { row: PbWalkthroughRow; draftId: string; onChang
         quantity: 1,
         quantitySource: c.isContinuousLength ? "MEASURED_LENGTH" : "COUNT",
         difficulty: "NORMAL",
+        option,
         note: `From walkthrough: "${row.raw}"`,
       }),
     onSuccess: (_d, c) => {
@@ -925,6 +982,7 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
   const [editing, setEditing] = useState(false);
   const [qty, setQty] = useState(String(l.quantity));
   const [difficulty, setDifficulty] = useState<PbDifficulty>(l.difficulty);
+  const [option, setOption] = useState<PbOption>(c?.option ?? "A");
   const [location, setLocation] = useState(l.location ?? "");
   const [note, setNote] = useState(l.note ?? "");
   const [err, setErr] = useState<string | null>(null);
@@ -936,6 +994,8 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
       api.pbEditLine(l.id, {
         quantity: Number(qty),
         difficulty,
+        // A line put in the wrong option is fixed here rather than by deleting and re-adding it.
+        option,
         location: location.trim() || null,
         note: note.trim() || null,
       }),
@@ -968,7 +1028,7 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
           <div className="text-xs text-rce-soft">
             {/* An hourly line's quantity source carries no information — the quantity IS hours —
                 so it is not shown rather than displaying "COUNT" against an hour. */}
-            {hourly ? "by the hour" : l.quantitySource} · {l.difficulty}
+            Option {c?.option ?? "A"} · {hourly ? "by the hour" : l.quantitySource} · {l.difficulty}
             {l.proposedBy ? ` · from ${l.proposedBy}` : " · entered by hand"}
             {l.editedBeforeConfirm ? " · edited before confirm" : ""}
           </div>
@@ -998,6 +1058,20 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
               onChange={(e) => setQty(e.target.value)}
             />
           </label>
+          {/* Move a line to another option. Without this, putting one in the wrong option
+              could only be undone by deleting it and adding it again. */}
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-xs text-rce-soft">Option</span>
+            {(["A", "B", "C"] as PbOption[]).map((o) => (
+              <button
+                key={o}
+                className={option === o ? "btn btn-primary" : "btn btn-secondary"}
+                onClick={() => setOption(o)}
+              >
+                {o}
+              </button>
+            ))}
+          </div>
           <div className="flex flex-wrap gap-1">
             {DIFFICULTIES.map((d) => (
               <button
