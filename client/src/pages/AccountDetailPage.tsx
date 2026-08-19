@@ -135,7 +135,9 @@ export function AccountDetailPage() {
   const queryClient = useQueryClient();
 
   const { data: summary, isLoading, error } = useQuery({
-    queryKey: ["account", accountId],
+    // NOT ["account", id] — that key belongs to `api.account`, whose response has no `jobs`.
+    // See the note in lib/queryKeys.ts; sharing it crashed this page.
+    queryKey: ["account-summary", accountId],
     queryFn: () => api.accountSummary(accountId),
     enabled: Boolean(accountId),
   });
