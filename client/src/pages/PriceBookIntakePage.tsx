@@ -972,12 +972,18 @@ function ReviewTab(props: {
           );
         })}
 
-        {/* The trip charge sits outside every option because it is charged once for the visit,
-            so the sections above deliberately do not add up to this. */}
+        {/* A fixed job cost, when there is one, sits outside every option because it is charged
+            once for the visit — so the sections above would not add up to this.
+
+            There is no longer an automatic one. Kyle, 2026-08-19: "The $200 should not be
+            automatic. We can get rid of that and I will apply a trip charge when necessary." So
+            it is named only when it is non-zero; a permanent "+ fixed $0.00" would be noise
+            describing a charge that no longer exists. */}
         {computed && (
           <div className="flex items-baseline justify-between rounded-lg bg-rce-bg px-3 py-2 text-sm">
             <span className="text-rce-soft">
-              Options combined + trip {money(computed.jobFixedCost)}
+              Options combined
+              {(computed.jobFixedCost ?? 0) > 0 ? ` + fixed ${money(computed.jobFixedCost)}` : ""}
             </span>
             <span className="text-base font-semibold">{money(computed.total)}</span>
           </div>

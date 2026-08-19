@@ -132,3 +132,39 @@ describe("combining what the customer ticked", () => {
     expect(combined.total).toBe(300);
   });
 });
+
+describe("there is no automatic fixed charge", () => {
+  /**
+   * Kyle, 2026-08-19: *"The $200 should not be automatic. We can get rid of that and I will apply
+   * a trip charge when necessary."*
+   *
+   * `jobFixedCost` was $200 and was added to the total of every estimate, which is the defect he
+   * reported as *"the minimum charge is not being automatically applied"*. It is now 0 in
+   * production, and a Trip Charge line item in his price book is the deliberate replacement — one
+   * he adds when a call warrants it.
+   *
+   * ── WHY ZERO AND NOT NULL ──────────────────────────────────────────────────────────────────
+   *
+   * The engine reads a null fixed cost as UNKNOWN and nulls the whole total rather than guessing
+   * — the same never-invent-a-number rule that governs every other gap. Clearing the setting to
+   * null instead of zero would therefore not remove a charge; it would make every estimate
+   * unpriceable. These pin both halves so the distinction cannot be lost.
+   */
+  it("adds nothing to the total when the fixed cost is zero", () => {
+    const rate = { ...RATE, jobFixedCost: 0 } as unknown as RateConfig;
+    const c = computeEstimate([line("a1", "A")], atomics(), rate, "supplier");
+    expect(c.subtotal).toBe(100);
+    expect(c.total).toBe(100);
+    expect(combineOptions(c, ["A"]).total).toBe(100);
+  });
+
+  it("still refuses to price at all when the fixed cost is UNKNOWN", () => {
+    // Null is not "no charge" — it is "nobody has said". The total must stay null rather than
+    // quietly becoming the subtotal.
+    const rate = { ...RATE, jobFixedCost: null } as unknown as RateConfig;
+    const c = computeEstimate([line("a1", "A")], atomics(), rate, "supplier");
+    expect(c.subtotal).toBe(100);
+    expect(c.total).toBeNull();
+    expect(combineOptions(c, ["A"]).total).toBeNull();
+  });
+});
