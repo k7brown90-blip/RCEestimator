@@ -73,6 +73,7 @@ function printReport(row: {
     auto?: boolean;
     note?: string;
     userAgent?: string;
+    droppedContextLines?: number;
     entries?: Entry[];
   } = {};
   try {
@@ -90,6 +91,11 @@ function printReport(row: {
   console.log(`  ${row.message}`);
   if (details.note) console.log(`\x1b[32m  NOTE: ${details.note}${RESET}`);
   if (details.userAgent) console.log(`\x1b[90m  ${details.userAgent}${RESET}`);
+  if (details.droppedContextLines) {
+    console.log(
+      `[90m  (${details.droppedContextLines} context line(s) trimmed; picks and notes are never trimmed)${RESET}`,
+    );
+  }
   console.log("─".repeat(96));
 
   /*

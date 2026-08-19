@@ -46,6 +46,20 @@
  */
 
 const MAX_ENTRIES = 250;
+/** How many entries one report may carry. The server's own cap must not be lower. */
+const MAX_SHIPPED = 240;
+/**
+ * Kinds that are never discarded to make room.
+ *
+ * 2026-08-19: Kyle sent eleven change requests and NINE arrived. The buffer was trimmed to its
+ * newest 120 entries on the way out, and because a `pick` was trimmed on exactly the same terms
+ * as a routine `GET … → 200`, his two earliest requests — the deliberate, typed-out ones — were
+ * the first things thrown away. Twenty-six minutes of ordinary navigation outranked them.
+ *
+ * A pick or a note is a person choosing to say something. Context is a by-product. When room runs
+ * out, the by-product goes.
+ */
+const NEVER_DROP: DebugKind[] = ["pick", "note"];
 /** Bodies are evidence, not archives. Enough to see a validation error or a stack. */
 const MAX_BODY_CHARS = 2000;
 /** A render loop that logs on every frame must not turn into a write loop against the database. */
@@ -101,6 +115,21 @@ function emit(): void {
   for (const fn of listeners) fn(entries);
 }
 
+/**
+ * Reduce to `limit` entries while keeping every pick and note, and the most RECENT context.
+ *
+ * Chronological order is preserved, so the transcript still reads forwards even when the middle
+ * of it has been thinned.
+ */
+export function trimForReport(list: DebugEntry[], limit: number): DebugEntry[] {
+  if (list.length <= limit) return list;
+  const pinned = list.filter((e) => NEVER_DROP.includes(e.kind));
+  const context = list.filter((e) => !NEVER_DROP.includes(e.kind));
+  const room = Math.max(limit - pinned.length, 0);
+  const keep = new Set<DebugEntry>([...pinned, ...context.slice(-room)]);
+  return list.filter((e) => keep.has(e));
+}
+
 export function record(kind: DebugKind, text: string, data?: Record<string, unknown>): DebugEntry {
   const entry: DebugEntry = {
     id: ++seq,
@@ -109,8 +138,9 @@ export function record(kind: DebugKind, text: string, data?: Record<string, unkn
     text: text.slice(0, 4000),
     data,
   };
-  // Ring buffer: the newest 250. A page that has been open all day must not grow without bound.
-  entries = [...entries.slice(-(MAX_ENTRIES - 1)), entry];
+  // Ring buffer. A page open all day must not grow without bound — but picks and notes survive
+  // the trimming, or they would be lost before Send was ever pressed.
+  entries = trimForReport([...entries, entry], MAX_ENTRIES);
   emit();
   if (kind === "error" || kind === "warn") queueAutoShip(entry);
   return entry;
@@ -184,6 +214,7 @@ export interface ShipInput {
 export async function ship(input: ShipInput): Promise<boolean> {
   const token = typeof localStorage !== "undefined" ? localStorage.getItem("rce_token") : null;
   if (!token) return false;
+  const shipped = trimForReport(input.entries, MAX_SHIPPED);
   try {
     const res = await rawFetch("/api/debug/client-log", {
       method: "POST",
@@ -195,7 +226,8 @@ export async function ship(input: ShipInput): Promise<boolean> {
         message: input.message.slice(0, 500),
         note: input.note?.slice(0, 4000),
         userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
-        entries: input.entries.slice(-120),
+        entries: shipped,
+        droppedContextLines: input.entries.length - shipped.length,
       }),
     });
     return res.ok;

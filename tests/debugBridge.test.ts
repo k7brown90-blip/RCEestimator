@@ -166,6 +166,78 @@ describe("pointing at something to change", () => {
   });
 });
 
+describe("trimming never discards what a person deliberately said", () => {
+  /**
+   * 2026-08-19: Kyle pointed at eleven things and NINE arrived. The buffer was cut to its newest
+   * 120 entries on the way out, and a `pick` was trimmed on exactly the same terms as a routine
+   * `GET … → 200`, so his two earliest requests — the typed-out, deliberate ones — were the first
+   * things thrown away. Twenty-six minutes of ordinary navigation outranked them.
+   *
+   * Context is a by-product; a pick or a note is a person choosing to say something. When room
+   * runs out, the by-product goes.
+   */
+  it("keeps every pick even when context floods the buffer", async () => {
+    const { trimForReport } = await import("../client/src/lib/debugBus");
+
+    const noise = Array.from({ length: 400 }, (_, i) => ({
+      id: i, at: "2026-08-19T11:00:00.000Z", kind: "network" as const, text: `GET /x/${i} → 200`,
+    }));
+    // Two picks at the very START — the exact position that lost Kyle's.
+    const picks = [
+      { id: 900, at: "2026-08-19T11:00:00.000Z", kind: "pick" as const, text: "first request" },
+      { id: 901, at: "2026-08-19T11:00:01.000Z", kind: "pick" as const, text: "second request" },
+    ];
+
+    const trimmed = trimForReport([...picks, ...noise], 120);
+
+    expect(trimmed).toHaveLength(120);
+    expect(trimmed.filter((e) => e.kind === "pick")).toHaveLength(2);
+    expect(trimmed.map((e) => e.text)).toContain("first request");
+    expect(trimmed.map((e) => e.text)).toContain("second request");
+  });
+
+  it("keeps notes too, and drops the OLDEST context first", async () => {
+    const { trimForReport } = await import("../client/src/lib/debugBus");
+    const entries = [
+      { id: 1, at: "t", kind: "note" as const, text: "what I expected" },
+      ...Array.from({ length: 50 }, (_, i) => ({
+        id: 100 + i, at: "t", kind: "log" as const, text: `line ${i}`,
+      })),
+    ];
+
+    const trimmed = trimForReport(entries, 10);
+    expect(trimmed.map((e) => e.text)).toContain("what I expected");
+    // The survivors are the most recent context, not an arbitrary slice.
+    expect(trimmed.map((e) => e.text)).toContain("line 49");
+    expect(trimmed.map((e) => e.text)).not.toContain("line 0");
+  });
+
+  it("preserves chronological order after thinning the middle", async () => {
+    const { trimForReport } = await import("../client/src/lib/debugBus");
+    const entries = [
+      { id: 1, at: "t", kind: "pick" as const, text: "A" },
+      ...Array.from({ length: 20 }, (_, i) => ({ id: 10 + i, at: "t", kind: "log" as const, text: `n${i}` })),
+      { id: 99, at: "t", kind: "pick" as const, text: "Z" },
+    ];
+    const ids = trimForReport(entries, 5).map((e) => e.id);
+    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+    expect(ids[0]).toBe(1);
+    expect(ids.at(-1)).toBe(99);
+  });
+
+  it("the server accepts a full-size report rather than 400-ing the fix away", async () => {
+    // A server cap below the client's would silently undo all of the above.
+    const entries = Array.from({ length: 240 }, (_, i) => ({
+      id: i, at: "2026-08-19T11:00:00.000Z", kind: "network", text: "x",
+    }));
+    const res = await request(app)
+      .post("/debug/client-log")
+      .send(report({ entries, droppedContextLines: 12 }));
+    expect(res.status).toBe(201);
+    expect(JSON.parse(created.at(-1)!.detailsJson as string).droppedContextLines).toBe(12);
+  });
+});
+
 describe("the session token never reaches the log", () => {
   it("scrubs a bearer token out of captured text", async () => {
     const { scrub } = await import("../client/src/lib/debugBus");

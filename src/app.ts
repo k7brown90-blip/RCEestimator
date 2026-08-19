@@ -5323,7 +5323,10 @@ app.post("/debug/client-log", asyncHandler(async (req, res) => {
       kind: z.string().max(20),
       text: z.string().max(4000),
       data: z.record(z.string(), z.unknown()).optional(),
-    })).max(200),
+    // Must not be lower than the client's MAX_SHIPPED (240) — a stricter cap here would reject
+    // the very reports the client's pick-preserving trim was written to protect.
+    })).max(250),
+    droppedContextLines: z.number().int().min(0).optional(),
   }).parse(req.body);
 
   // An auto-shipped batch is an ERROR that fired on its own; a hand-pressed send is a WARN at
@@ -5336,6 +5339,7 @@ app.post("/debug/client-log", asyncHandler(async (req, res) => {
     auto: body.auto ?? false,
     note: body.note,
     userAgent: body.userAgent,
+    droppedContextLines: body.droppedContextLines,
     entries: body.entries,
   });
 
