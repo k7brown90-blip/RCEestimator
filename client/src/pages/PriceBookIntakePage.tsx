@@ -274,6 +274,7 @@ export function PriceBookIntakePage() {
               draftId={draftId}
               review={review}
               computed={computed?.computed}
+              options={computed?.options}
               onChanged={invalidate}
               accountId={accountId}
               serviceAddressId={serviceAddressId}
@@ -859,9 +860,10 @@ function ReviewTab(props: {
   onAttached: (accountId: string, serviceAddressId: string) => void;
   review: { proposedLines: PbLine[]; confirmedLines: PbLine[]; openQuestions: Array<{ id: string; question: string; raisedBy: string }>; counts: { proposed: number; confirmed: number; openQuestions: number } } | undefined;
   computed: PbComputed | undefined;
+  options: PbOptionSummary[] | undefined;
   onChanged: () => void;
 }) {
-  const { draftId, review, computed, onChanged, accountId, serviceAddressId, onAttached } = props;
+  const { draftId, review, computed, options, onChanged, accountId, serviceAddressId, onAttached } = props;
   const [finalizeMsg, setFinalizeMsg] = useState<{ ok: boolean; reasons: string[]; warnings: string[] } | null>(null);
   const finalizeMsgRef = useRef<HTMLDivElement | null>(null);
 
@@ -907,20 +909,79 @@ function ReviewTab(props: {
         </div>
       )}
 
-      <div className="space-y-2">
+      {/* ── THREE SECTIONS, NOT ONE LIST (Kyle, 2026-08-19) ────────────────────────────────
+          "Options are not separated. They are all added as one list instead of 3 were the totals
+          get added together."
+
+          The option column, the subtotals and the picker all shipped before this did, so the
+          work was being FILED correctly and still reading as a single undifferentiated list —
+          which is the only part he could see. Each option is now its own section with its own
+          lines and its own subtotal.
+
+          An option with no lines still shows, so it is obvious there is somewhere else to put
+          work; it just says so rather than pretending to be a heading over nothing. */}
+      <div className="space-y-4">
         <h3 className="text-sm font-semibold">Confirmed lines — {review.counts.confirmed}</h3>
         {review.confirmedLines.length === 0 && <p className="text-sm text-rce-muted">Nothing confirmed yet.</p>}
-        {review.confirmedLines.map((l) => (
+
+        {(["A", "B", "C"] as PbOption[]).map((opt) => {
           // Joined on the LINE id, not the itemId. A draft may legitimately carry the same atomic
           // twice — Kyle's 2026-08-16 draft has two N001 lines of 100 ft — and an itemId join
           // rendered the first row's hours and dollars against both of them.
-          <ConfirmedLineRow
-            key={l.id}
-            line={l}
-            computed={computed?.lines.find((x) => x.id === l.id)}
-            onChanged={onChanged}
-          />
-        ))}
+          const withComputed = review.confirmedLines.map((l) => ({
+            line: l,
+            computed: computed?.lines.find((x) => x.id === l.id),
+          }));
+          const mine = withComputed.filter((x) => (x.computed?.option ?? "A") === opt);
+          const summary = options?.find((o) => o.option === opt);
+          if (mine.length === 0 && review.confirmedLines.length === 0) return null;
+
+          return (
+            <section key={opt} className="rounded-lg border border-rce-border">
+              <header className="flex items-baseline justify-between gap-2 border-b border-rce-border bg-rce-bg px-3 py-2">
+                <div>
+                  <span className="text-sm font-semibold">Option {opt}</span>{" "}
+                  <span className="text-xs text-rce-soft">
+                    {opt === "A" && "what the client called for"}
+                    {opt === "B" && "code violations & hazards found"}
+                    {opt === "C" && "recommended beyond A and B"}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-semibold">{money(summary?.subtotal)}</div>
+                  <div className="text-[11px] text-rce-soft">{mine.length} line(s)</div>
+                </div>
+              </header>
+              <div className="space-y-2 p-2">
+                {mine.length === 0 ? (
+                  <p className="text-xs text-rce-muted">
+                    Nothing in this option yet. Pick "Option {opt}" above to add into it.
+                  </p>
+                ) : (
+                  mine.map((x) => (
+                    <ConfirmedLineRow
+                      key={x.line.id}
+                      line={x.line}
+                      computed={x.computed}
+                      onChanged={onChanged}
+                    />
+                  ))
+                )}
+              </div>
+            </section>
+          );
+        })}
+
+        {/* The trip charge sits outside every option because it is charged once for the visit,
+            so the sections above deliberately do not add up to this. */}
+        {computed && (
+          <div className="flex items-baseline justify-between rounded-lg bg-rce-bg px-3 py-2 text-sm">
+            <span className="text-rce-soft">
+              Options combined + trip {money(computed.jobFixedCost)}
+            </span>
+            <span className="text-base font-semibold">{money(computed.total)}</span>
+          </div>
+        )}
       </div>
 
       <div className="card p-3">
