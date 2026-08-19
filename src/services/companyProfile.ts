@@ -26,7 +26,7 @@ export interface CompanyProfile {
 
 export const DEFAULT_COMPANY_PROFILE: CompanyProfile = {
   legalName: "Red Cedar Electric LLC",
-  phone: "(615) 857-6389",
+  phone: "615-625-2163",
   email: "service@redcedarelectricllc.com",
   tagline: "Licensed & Insured · Serving Middle Tennessee",
   licenseNumber: null,

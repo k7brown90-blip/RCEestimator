@@ -1311,7 +1311,7 @@ app.get("/sign/:documentId", asyncHandler(async (req, res) => {
       <body style="font-family:sans-serif;max-width:560px;margin:40px auto;padding:0 20px;color:#333;">
         <h1 style="color:#1a5c2e;">Document Already Signed</h1>
         <p>This document was signed by <strong>${doc.signedByName}</strong> on ${doc.signedAt.toLocaleDateString("en-US", { timeZone: "America/Chicago" })}.</p>
-        <p>If you need a copy, please contact Red Cedar Electric at (615) 857-6389.</p>
+        <p>If you need a copy, please contact Red Cedar Electric at 615-625-2163.</p>
       </body></html>
     `);
     return;
@@ -1393,7 +1393,7 @@ app.post("/documents/:id/sign", asyncHandler(async (req, res) => {
       </div>
       <div style="padding:20px;text-align:center;">
         <p>Thank you, <strong>${body.name.trim()}</strong>. Your signature has been recorded.</p>
-        <p style="font-size:14px;color:#666;">A confirmation will be sent to your email. If you have any questions, call (615) 857-6389.</p>
+        <p style="font-size:14px;color:#666;">A confirmation will be sent to your email. If you have any questions, call 615-625-2163.</p>
       </div>
     </body></html>
   `);

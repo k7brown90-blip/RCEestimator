@@ -80,7 +80,7 @@ export async function sendConfirmationEmail(input: ConfirmationInput): Promise<b
         <ul style="font-size:14px;color:#555;margin:0 0 16px;padding-left:20px;">
           <li>Kyle will arrive within the scheduled window in a marked Red Cedar Electric vehicle.</li>
           <li>Please ensure access to the electrical panel and work area.</li>
-          <li>If you need to reschedule, reply to this email or call (615) 857-6389.</li>
+          <li>If you need to reschedule, reply to this email or call 615-625-2163.</li>
         </ul>
 
         ${BRANDED_FOOTER}
@@ -149,7 +149,7 @@ export async function sendRescheduleEmail(input: RescheduleInput): Promise<boole
           ${jobLine}
         </div>
 
-        <p style="font-size:14px;color:#555;">If you need to make further changes, reply to this email or call (615) 857-6389.</p>
+        <p style="font-size:14px;color:#555;">If you need to make further changes, reply to this email or call 615-625-2163.</p>
 
         ${BRANDED_FOOTER}
       </div>
@@ -207,7 +207,7 @@ export async function sendCancellationEmail(input: CancellationInput): Promise<b
           ${jobLine}
         </div>
 
-        <p style="font-size:15px;margin:0 0 16px;">To reschedule, reply to this email or call us at (615) 857-6389. We'd be happy to find a new time that works for you.</p>
+        <p style="font-size:15px;margin:0 0 16px;">To reschedule, reply to this email or call us at 615-625-2163. We'd be happy to find a new time that works for you.</p>
 
         ${BRANDED_FOOTER}
       </div>

@@ -1131,7 +1131,7 @@ export class EstimateService {
 
       doc.fillColor("#1e2d12").fontSize(18).text("Red Cedar Electric LLC", { align: "center" });
       doc.fillColor("#5a5838").fontSize(9).text("Licensed & Insured · Serving Middle Tennessee", { align: "center" });
-      doc.text("(615) 857-6389 · service@redcedarelectricllc.com", { align: "center" });
+      doc.text("615-625-2163 · service@redcedarelectricllc.com", { align: "center" });
       doc.moveDown(0.5);
       doc.moveTo(margin, doc.y).lineTo(pageWidth - margin, doc.y).lineWidth(1.5).stroke("#c49818");
       doc.moveDown(0.5);
