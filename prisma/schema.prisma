@@ -1996,6 +1996,23 @@ model IssuedEstimateLine {
   lineTotal    Float
   sortOrder    Int      @default(0)
 
+  // ── What the COMPANY copy needs, frozen with everything else (2026-08-19) ──
+  //
+  // Kyle: "the labor units and line item pricing will have to show for the company copy. The goal
+  // is to have a material list and labor unit assesment for the puprose of ordering and scheduling
+  // the job." None of that could be produced from this row before: it carried a combined unit
+  // price and nothing else, so a company document would have had to be rebuilt from the DRAFT —
+  // which can move, while an issued estimate must not. A record of what was sold has to contain
+  // what was sold.
+  //
+  // `option` matters just as much: without it the frozen estimate forgets which option each line
+  // belonged to, and an estimate presented as three options would come back as one flat list.
+  option       PriceBookOption @default(A)
+  /// Labour hours for this line, at its difficulty. Scheduling is planned against these.
+  laborHours   Float?
+  /// Material sell for this line. Null and 0 differ: 0 is customer-supplied, null is unknown.
+  materialSell Float?
+
   estimate     IssuedEstimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
   atomic       PriceBookAtomic @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
 

@@ -131,6 +131,11 @@ export async function graduateDraft(
     unitPrice: number;
     lineTotal: number;
     sortOrder: number;
+    // Frozen for the COMPANY copy — the material to order and the hours to schedule. Rebuilding
+    // these from the draft later would read a document that is allowed to change.
+    option: "A" | "B" | "C";
+    laborHours: number | null;
+    materialSell: number | null;
   }> = [];
   const refusals: string[] = [];
 
@@ -162,6 +167,11 @@ export async function graduateDraft(
       unitPrice: l.quantity > 0 ? round2(lineTotal / l.quantity) : lineTotal,
       lineTotal,
       sortOrder: i,
+      option: l.option,
+      // Carried through as-is, including null. A null labour figure means the engine had no
+      // hours for that row; recording 0 would claim the work takes no time.
+      laborHours: l.laborHours,
+      materialSell: l.materialSell,
     });
   });
 

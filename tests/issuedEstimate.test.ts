@@ -260,8 +260,29 @@ describe("the customer render carries no hours, no rates, no hour arithmetic", (
     expect(html).toContain("Accepted");
   });
 
-  it("the model itself has nowhere to put an hour", async () => {
-    // Structural, not editorial: if a future change adds an hours column this fails immediately.
+  /**
+   * ── THIS GUARANTEE MOVED ON 2026-08-19, AND THE MOVE WAS A REAL WEAKENING ───────────────────
+   *
+   * This used to assert that the frozen model had NOWHERE to put an hour — a structural promise
+   * that hours could not reach a customer because the data did not contain them. That was the
+   * strongest possible form and it is no longer available, because Kyle ruled that there are two
+   * documents, not one:
+   *
+   *   "the labor units and line item pricing will have to show for the company copy. The goal is
+   *    to have a material list and labor unit assesment for the puprose of ordering and
+   *    scheduling the job. The customer only needs the final price."
+   *
+   * A company copy needs hours, and it has to be derivable from the FROZEN estimate rather than
+   * from the draft — a draft can change, and a record of what was sold that disagrees with the
+   * document the customer holds is worse than no record. So the column exists now.
+   *
+   * The guarantee therefore shifts from "the data cannot contain hours" to "the CUSTOMER RENDER
+   * does not emit them", which is the weaker of the two and is worth saying plainly. What keeps
+   * it honest is that the render test above greps the real HTML for every hour pattern, and the
+   * pair below asserts the column is genuinely populated — so neither half can pass by being
+   * empty.
+   */
+  it("stores hours for the company copy, and still never renders them to the customer", async () => {
     const d = await quotableDraft("nohours-schema");
     const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(result.ok).toBe(true);
@@ -270,8 +291,27 @@ describe("the customer render carries no hours, no rates, no hour arithmetic", (
       where: { id: result.estimateId },
       include: { lines: true },
     });
-    const keys = [...Object.keys(est!), ...Object.keys(est!.lines[0])];
-    expect(keys.filter((k) => /hour|hrs/i.test(k))).toEqual([]);
+
+    // The company half: the hours are on the record, or the company document cannot be produced.
+    expect(Object.keys(est!.lines[0])).toContain("laborHours");
+
+    // The customer half, on the same estimate: the rendered page still contains no hour anywhere.
+    const found = await getEstimateByToken(prisma, est!.token);
+    expect(found.ok).toBe(true);
+    if (!found.ok) return;
+    const html = renderEstimatePage(found.estimate);
+    for (const [, re] of HOUR_PATTERNS) expect(html).not.toMatch(re);
+  });
+
+  it("keeps the top-level estimate free of hour fields", async () => {
+    // Only the LINE gained hours, because only the line has any. An hours total on the estimate
+    // itself would be one join away from a customer-facing summary line.
+    const d = await quotableDraft("nohours-top");
+    const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const est = await prisma.issuedEstimate.findUnique({ where: { id: result.estimateId } });
+    expect(Object.keys(est!).filter((k) => /hour|hrs/i.test(k))).toEqual([]);
   });
 });
 
