@@ -1,0 +1,4509 @@
+{
+  "meta": {
+    "workbook": "Kyles Manually edited price book..xlsx",
+    "sha256": "bff46e24077dcfb476798b302562b4d756f77c80bf43994b9ee1a40d4031788c",
+    "tab": "Atomics (Kyle's Copy)",
+    "generatedAt": "2026-08-19T12:05:58.783Z",
+    "itemCount": 222,
+    "sectionCount": 35,
+    "parityCells": 666,
+    "parityFailures": 0,
+    "uncomputedCells": 0
+  },
+  "items": [
+    {
+      "key": "diagnostics-troubleshooting-circuit-tracing",
+      "name": "Diagnostics / Troubleshooting / Circuit Tracing",
+      "section": "SERVICE & FEES",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1.5,
+      "laborVeryDifficult": 2,
+      "companyCost": null,
+      "companyPrice": 150,
+      "sellNormal": 150,
+      "sellDifficult": 225,
+      "sellVeryDifficult": 300,
+      "sellFormulas": [
+        "=B3*F3",
+        "=C3*F3",
+        "=D3*F3"
+      ],
+      "row": 3
+    },
+    {
+      "key": "permit-fee-flat-per-permit",
+      "name": "Permit Fee — flat, per permit",
+      "section": "SERVICE & FEES",
+      "unitLabel": null,
+      "laborNormal": 0,
+      "laborDifficult": 0,
+      "laborVeryDifficult": 0,
+      "companyCost": null,
+      "companyPrice": 200,
+      "sellNormal": 200,
+      "sellDifficult": 200,
+      "sellVeryDifficult": 200,
+      "sellFormulas": [
+        "=(B4*150)+F4",
+        "=(C4*150)+F4",
+        "=(D4*150)+F4"
+      ],
+      "row": 4
+    },
+    {
+      "key": "nm-b-14-2-w-grd",
+      "name": "NM-B 14/2 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.045,
+      "laborDifficult": 0.057499999999999996,
+      "laborVeryDifficult": 0.07,
+      "companyCost": 1.246,
+      "companyPrice": 4.361,
+      "sellNormal": 11.111,
+      "sellDifficult": 12.986,
+      "sellVeryDifficult": 14.861,
+      "sellFormulas": [
+        "=(B7*150)+F7",
+        "=(C7*150)+F7",
+        "=(D7*150)+F7"
+      ],
+      "row": 7
+    },
+    {
+      "key": "nm-b-14-3-w-grd",
+      "name": "NM-B 14/3 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.05,
+      "laborDifficult": 0.06375,
+      "laborVeryDifficult": 0.0775,
+      "companyCost": 1.4100000000000001,
+      "companyPrice": 4.9350000000000005,
+      "sellNormal": 12.435,
+      "sellDifficult": 14.4975,
+      "sellVeryDifficult": 16.560000000000002,
+      "sellFormulas": [
+        "=(B8*150)+F8",
+        "=(C8*150)+F8",
+        "=(D8*150)+F8"
+      ],
+      "row": 8
+    },
+    {
+      "key": "nm-b-12-2-w-grd",
+      "name": "NM-B 12/2 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.05,
+      "laborDifficult": 0.06375,
+      "laborVeryDifficult": 0.0775,
+      "companyCost": 1.466,
+      "companyPrice": 5.131,
+      "sellNormal": 12.631,
+      "sellDifficult": 14.6935,
+      "sellVeryDifficult": 16.756,
+      "sellFormulas": [
+        "=(B9*150)+F9",
+        "=(C9*150)+F9",
+        "=(D9*150)+F9"
+      ],
+      "row": 9
+    },
+    {
+      "key": "nm-b-12-3-w-grd",
+      "name": "NM-B 12/3 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.055,
+      "laborDifficult": 0.07,
+      "laborVeryDifficult": 0.08499999999999999,
+      "companyCost": 1.638,
+      "companyPrice": 5.733,
+      "sellNormal": 13.983,
+      "sellDifficult": 16.233,
+      "sellVeryDifficult": 18.482999999999997,
+      "sellFormulas": [
+        "=(B10*150)+F10",
+        "=(C10*150)+F10",
+        "=(D10*150)+F10"
+      ],
+      "row": 10
+    },
+    {
+      "key": "nm-b-10-2-w-grd",
+      "name": "NM-B 10/2 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.055,
+      "laborDifficult": 0.07,
+      "laborVeryDifficult": 0.08499999999999999,
+      "companyCost": 1.982,
+      "companyPrice": 6.937,
+      "sellNormal": 15.187000000000001,
+      "sellDifficult": 17.437,
+      "sellVeryDifficult": 19.686999999999998,
+      "sellFormulas": [
+        "=(B11*150)+F11",
+        "=(C11*150)+F11",
+        "=(D11*150)+F11"
+      ],
+      "row": 11
+    },
+    {
+      "key": "nm-b-10-3-w-grd",
+      "name": "NM-B 10/3 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.06,
+      "laborDifficult": 0.07625,
+      "laborVeryDifficult": 0.0925,
+      "companyCost": 2.35,
+      "companyPrice": 8.225,
+      "sellNormal": 17.225,
+      "sellDifficult": 19.6625,
+      "sellVeryDifficult": 22.1,
+      "sellFormulas": [
+        "=(B12*150)+F12",
+        "=(C12*150)+F12",
+        "=(D12*150)+F12"
+      ],
+      "row": 12
+    },
+    {
+      "key": "nm-b-8-2-w-grd",
+      "name": "NM-B 8/2 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.06,
+      "laborDifficult": 0.07625,
+      "laborVeryDifficult": 0.0925,
+      "companyCost": 3.05,
+      "companyPrice": 10.674999999999999,
+      "sellNormal": 19.674999999999997,
+      "sellDifficult": 22.112499999999997,
+      "sellVeryDifficult": 24.549999999999997,
+      "sellFormulas": [
+        "=(B13*150)+F13",
+        "=(C13*150)+F13",
+        "=(D13*150)+F13"
+      ],
+      "row": 13
+    },
+    {
+      "key": "nm-b-8-3-w-grd",
+      "name": "NM-B 8/3 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.065,
+      "laborDifficult": 0.0825,
+      "laborVeryDifficult": 0.1,
+      "companyCost": 3.73,
+      "companyPrice": 13.055,
+      "sellNormal": 22.805,
+      "sellDifficult": 25.43,
+      "sellVeryDifficult": 28.055,
+      "sellFormulas": [
+        "=(B14*150)+F14",
+        "=(C14*150)+F14",
+        "=(D14*150)+F14"
+      ],
+      "row": 14
+    },
+    {
+      "key": "nm-b-6-2-w-grd",
+      "name": "NM-B 6/2 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.065,
+      "laborDifficult": 0.0825,
+      "laborVeryDifficult": 0.1,
+      "companyCost": 3.64,
+      "companyPrice": 12.74,
+      "sellNormal": 22.490000000000002,
+      "sellDifficult": 25.115000000000002,
+      "sellVeryDifficult": 27.740000000000002,
+      "sellFormulas": [
+        "=(B15*150)+F15",
+        "=(C15*150)+F15",
+        "=(D15*150)+F15"
+      ],
+      "row": 15
+    },
+    {
+      "key": "nm-b-6-3-w-grd",
+      "name": "NM-B 6/3 w/Grd",
+      "section": "NM CABLE",
+      "unitLabel": null,
+      "laborNormal": 0.075,
+      "laborDifficult": 0.095,
+      "laborVeryDifficult": 0.11499999999999999,
+      "companyCost": 4.720000000000001,
+      "companyPrice": 16.520000000000003,
+      "sellNormal": 27.770000000000003,
+      "sellDifficult": 30.770000000000003,
+      "sellVeryDifficult": 33.77,
+      "sellFormulas": [
+        "=(B16*150)+F16",
+        "=(C16*150)+F16",
+        "=(D16*150)+F16"
+      ],
+      "row": 16
+    },
+    {
+      "key": "1-gang-nail-on-box-new-work",
+      "name": "1-Gang Nail-On Box, New Work",
+      "section": "NEW WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.25,
+      "laborDifficult": 0.3,
+      "laborVeryDifficult": 0.35,
+      "companyCost": 1.1,
+      "companyPrice": 3.8500000000000005,
+      "sellNormal": 41.35,
+      "sellDifficult": 48.85,
+      "sellVeryDifficult": 56.35,
+      "sellFormulas": [
+        "=(B18*150)+F18",
+        "=(C18*150)+F18",
+        "=(D18*150)+F18"
+      ],
+      "row": 18
+    },
+    {
+      "key": "2-gang-nail-on-box-new-work",
+      "name": "2-Gang Nail-On Box, New Work",
+      "section": "NEW WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.35,
+      "laborVeryDifficult": 0.39999999999999997,
+      "companyCost": 2.35,
+      "companyPrice": 8.225,
+      "sellNormal": 53.225,
+      "sellDifficult": 60.725,
+      "sellVeryDifficult": 68.225,
+      "sellFormulas": [
+        "=(B19*150)+F19",
+        "=(C19*150)+F19",
+        "=(D19*150)+F19"
+      ],
+      "row": 19
+    },
+    {
+      "key": "3-gang-nail-on-box-new-work",
+      "name": "3-Gang Nail-On Box, New Work",
+      "section": "NEW WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.35,
+      "laborDifficult": 0.4,
+      "laborVeryDifficult": 0.44999999999999996,
+      "companyCost": 5.56,
+      "companyPrice": 19.459999999999997,
+      "sellNormal": 71.96,
+      "sellDifficult": 79.46,
+      "sellVeryDifficult": 86.96,
+      "sellFormulas": [
+        "=(B20*150)+F20",
+        "=(C20*150)+F20",
+        "=(D20*150)+F20"
+      ],
+      "row": 20
+    },
+    {
+      "key": "4-gang-nail-on-box-new-work",
+      "name": "4-Gang Nail-On Box, New Work",
+      "section": "NEW WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.44999999999999996,
+      "laborVeryDifficult": 0.5,
+      "companyCost": 9.61,
+      "companyPrice": 33.635,
+      "sellNormal": 93.63499999999999,
+      "sellDifficult": 101.13499999999999,
+      "sellVeryDifficult": 108.63499999999999,
+      "sellFormulas": [
+        "=(B21*150)+F21",
+        "=(C21*150)+F21",
+        "=(D21*150)+F21"
+      ],
+      "row": 21
+    },
+    {
+      "key": "lighting-box-4-in-octagon",
+      "name": "Lighting Box, 4-in Octagon",
+      "section": "NEW WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.35,
+      "laborVeryDifficult": 0.4,
+      "companyCost": 2.21,
+      "companyPrice": 7.734999999999999,
+      "sellNormal": 52.735,
+      "sellDifficult": 60.235,
+      "sellVeryDifficult": 67.735,
+      "sellFormulas": [
+        "=(B22*150)+F22",
+        "=(C22*150)+F22",
+        "=(D22*150)+F22"
+      ],
+      "row": 22
+    },
+    {
+      "key": "fan-box-fan-rated",
+      "name": "Fan Box, Fan-Rated",
+      "section": "NEW WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.5,
+      "laborDifficult": 0.75,
+      "laborVeryDifficult": 1,
+      "companyCost": 19.65,
+      "companyPrice": 49.125,
+      "sellNormal": 124.125,
+      "sellDifficult": 161.625,
+      "sellVeryDifficult": 199.125,
+      "sellFormulas": [
+        "=(B23*150)+F23",
+        "=(C23*150)+F23",
+        "=(D23*150)+F23"
+      ],
+      "row": 23
+    },
+    {
+      "key": "1-gang-old-work-cut-in-box",
+      "name": "1-Gang Old-Work/Cut-In Box",
+      "section": "OLD WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.25,
+      "laborDifficult": 0.3,
+      "laborVeryDifficult": 0.35,
+      "companyCost": 6.98,
+      "companyPrice": 24.43,
+      "sellNormal": 61.93,
+      "sellDifficult": 69.43,
+      "sellVeryDifficult": 76.93,
+      "sellFormulas": [
+        "=(B25*150)+F25",
+        "=(C25*150)+F25",
+        "=(D25*150)+F25"
+      ],
+      "row": 25
+    },
+    {
+      "key": "2-gang-old-work-cut-in-box",
+      "name": "2-Gang Old-Work/Cut-In Box",
+      "section": "OLD WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.35,
+      "laborVeryDifficult": 0.39999999999999997,
+      "companyCost": 4.98,
+      "companyPrice": 17.43,
+      "sellNormal": 62.43,
+      "sellDifficult": 69.93,
+      "sellVeryDifficult": 77.42999999999999,
+      "sellFormulas": [
+        "=(B26*150)+F26",
+        "=(C26*150)+F26",
+        "=(D26*150)+F26"
+      ],
+      "row": 26
+    },
+    {
+      "key": "3-gang-old-work-cut-in-box",
+      "name": "3-Gang Old-Work/Cut-In Box",
+      "section": "OLD WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.35,
+      "laborDifficult": 0.4,
+      "laborVeryDifficult": 0.44999999999999996,
+      "companyCost": 7.98,
+      "companyPrice": 27.93,
+      "sellNormal": 80.43,
+      "sellDifficult": 87.93,
+      "sellVeryDifficult": 95.43,
+      "sellFormulas": [
+        "=(B27*150)+F27",
+        "=(C27*150)+F27",
+        "=(D27*150)+F27"
+      ],
+      "row": 27
+    },
+    {
+      "key": "4-gang-old-work-cut-in-box",
+      "name": "4-Gang Old-Work/Cut-In Box",
+      "section": "OLD WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.44999999999999996,
+      "laborVeryDifficult": 0.5,
+      "companyCost": 13.24,
+      "companyPrice": 33.1,
+      "sellNormal": 93.1,
+      "sellDifficult": 100.6,
+      "sellVeryDifficult": 108.1,
+      "sellFormulas": [
+        "=(B28*150)+F28",
+        "=(C28*150)+F28",
+        "=(D28*150)+F28"
+      ],
+      "row": 28
+    },
+    {
+      "key": "lighting-box-old-work-round",
+      "name": "Lighting Box, Old-Work Round",
+      "section": "OLD WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.35,
+      "laborVeryDifficult": 0.4,
+      "companyCost": 1.87,
+      "companyPrice": 6.545,
+      "sellNormal": 51.545,
+      "sellDifficult": 59.045,
+      "sellVeryDifficult": 66.545,
+      "sellFormulas": [
+        "=(B29*150)+F29",
+        "=(C29*150)+F29",
+        "=(D29*150)+F29"
+      ],
+      "row": 29
+    },
+    {
+      "key": "fan-box-old-new-work-rated",
+      "name": "Fan Box, Old/New Work Rated",
+      "section": "OLD WORK BOXES",
+      "unitLabel": null,
+      "laborNormal": 0.5,
+      "laborDifficult": 0.75,
+      "laborVeryDifficult": 1,
+      "companyCost": 19.65,
+      "companyPrice": 49.125,
+      "sellNormal": 124.125,
+      "sellDifficult": 161.625,
+      "sellVeryDifficult": 199.125,
+      "sellFormulas": [
+        "=(B30*150)+F30",
+        "=(C30*150)+F30",
+        "=(D30*150)+F30"
+      ],
+      "row": 30
+    },
+    {
+      "key": "toggle-switch-single-pole",
+      "name": "Toggle Switch, Single-Pole",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.2,
+      "laborDifficult": 0.25,
+      "laborVeryDifficult": 0.3,
+      "companyCost": 0.828,
+      "companyPrice": 4.14,
+      "sellNormal": 34.14,
+      "sellDifficult": 41.64,
+      "sellVeryDifficult": 49.14,
+      "sellFormulas": [
+        "=(B32*150)+F32",
+        "=(C32*150)+F32",
+        "=(D32*150)+F32"
+      ],
+      "row": 32
+    },
+    {
+      "key": "toggle-switch-3-way",
+      "name": "Toggle Switch, 3-Way",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.35,
+      "laborDifficult": 0.4375,
+      "laborVeryDifficult": 0.525,
+      "companyCost": 2.48,
+      "companyPrice": 8.68,
+      "sellNormal": 61.18,
+      "sellDifficult": 74.305,
+      "sellVeryDifficult": 87.43,
+      "sellFormulas": [
+        "=(B33*150)+F33",
+        "=(C33*150)+F33",
+        "=(D33*150)+F33"
+      ],
+      "row": 33
+    },
+    {
+      "key": "toggle-switch-4-way",
+      "name": "Toggle Switch, 4-Way",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 12.98,
+      "companyPrice": 32.45,
+      "sellNormal": 92.45,
+      "sellDifficult": 107.45,
+      "sellVeryDifficult": 122.45,
+      "sellFormulas": [
+        "=(B34*150)+F34",
+        "=(C34*150)+F34",
+        "=(D34*150)+F34"
+      ],
+      "row": 34
+    },
+    {
+      "key": "decora-switch-single-pole",
+      "name": "Decora Switch, Single-Pole",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.2,
+      "laborDifficult": 0.25,
+      "laborVeryDifficult": 0.3,
+      "companyCost": 2.68,
+      "companyPrice": 9.38,
+      "sellNormal": 39.38,
+      "sellDifficult": 46.88,
+      "sellVeryDifficult": 54.38,
+      "sellFormulas": [
+        "=(B35*150)+F35",
+        "=(C35*150)+F35",
+        "=(D35*150)+F35"
+      ],
+      "row": 35
+    },
+    {
+      "key": "decora-switch-3-way",
+      "name": "Decora Switch, 3-Way",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.35,
+      "laborDifficult": 0.4375,
+      "laborVeryDifficult": 0.525,
+      "companyCost": 4.68,
+      "companyPrice": 16.38,
+      "sellNormal": 68.88,
+      "sellDifficult": 82.005,
+      "sellVeryDifficult": 95.13,
+      "sellFormulas": [
+        "=(B36*150)+F36",
+        "=(C36*150)+F36",
+        "=(D36*150)+F36"
+      ],
+      "row": 36
+    },
+    {
+      "key": "decora-switch-4-way",
+      "name": "Decora Switch, 4-Way",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 16.98,
+      "companyPrice": 42.45,
+      "sellNormal": 102.45,
+      "sellDifficult": 117.45,
+      "sellVeryDifficult": 132.45,
+      "sellFormulas": [
+        "=(B37*150)+F37",
+        "=(C37*150)+F37",
+        "=(D37*150)+F37"
+      ],
+      "row": 37
+    },
+    {
+      "key": "lutron-caseta-switch",
+      "name": "Lutron Caseta Switch",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 64.95,
+      "companyPrice": 116.91000000000001,
+      "sellNormal": 176.91000000000003,
+      "sellDifficult": 191.91000000000003,
+      "sellVeryDifficult": 206.91000000000003,
+      "sellFormulas": [
+        "=(B38*150)+F38",
+        "=(C38*150)+F38",
+        "=(D38*150)+F38"
+      ],
+      "row": 38
+    },
+    {
+      "key": "lutron-maestro-switch",
+      "name": "Lutron Maestro Switch",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 39.32,
+      "companyPrice": 98.3,
+      "sellNormal": 158.3,
+      "sellDifficult": 173.3,
+      "sellVeryDifficult": 188.3,
+      "sellFormulas": [
+        "=(B39*150)+F39",
+        "=(C39*150)+F39",
+        "=(D39*150)+F39"
+      ],
+      "row": 39
+    },
+    {
+      "key": "lutron-pico-remote",
+      "name": "Lutron Pico Remote",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.2,
+      "laborDifficult": 0.25,
+      "laborVeryDifficult": 0.3,
+      "companyCost": 25.89,
+      "companyPrice": 64.725,
+      "sellNormal": 94.725,
+      "sellDifficult": 102.225,
+      "sellVeryDifficult": 109.725,
+      "sellFormulas": [
+        "=(B40*150)+F40",
+        "=(C40*150)+F40",
+        "=(D40*150)+F40"
+      ],
+      "row": 40
+    },
+    {
+      "key": "occupancy-sensor-switch",
+      "name": "Occupancy Sensor Switch",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.35,
+      "laborDifficult": 0.44,
+      "laborVeryDifficult": 0.53,
+      "companyCost": 35.33,
+      "companyPrice": 88.32499999999999,
+      "sellNormal": 140.825,
+      "sellDifficult": 154.325,
+      "sellVeryDifficult": 167.825,
+      "sellFormulas": [
+        "=(B41*150)+F41",
+        "=(C41*150)+F41",
+        "=(D41*150)+F41"
+      ],
+      "row": 41
+    },
+    {
+      "key": "timer-switch-in-wall-digital-countdown",
+      "name": "Timer Switch, In-Wall Digital Countdown",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 19,
+      "companyPrice": 47.5,
+      "sellNormal": 107.5,
+      "sellDifficult": 122.5,
+      "sellVeryDifficult": 137.5,
+      "sellFormulas": [
+        "=(B42*150)+F42",
+        "=(C42*150)+F42",
+        "=(D42*150)+F42"
+      ],
+      "row": 42
+    },
+    {
+      "key": "dimmer-switch-single-pole",
+      "name": "Dimmer Switch, Single-Pole",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 21.17,
+      "companyPrice": 52.925000000000004,
+      "sellNormal": 112.92500000000001,
+      "sellDifficult": 127.92500000000001,
+      "sellVeryDifficult": 142.925,
+      "sellFormulas": [
+        "=(B43*150)+F43",
+        "=(C43*150)+F43",
+        "=(D43*150)+F43"
+      ],
+      "row": 43
+    },
+    {
+      "key": "dimmer-switch-3-way",
+      "name": "Dimmer Switch, 3-Way",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.7,
+      "laborDifficult": 0.88,
+      "laborVeryDifficult": 1.05,
+      "companyCost": 21.17,
+      "companyPrice": 52.925000000000004,
+      "sellNormal": 157.925,
+      "sellDifficult": 184.925,
+      "sellVeryDifficult": 210.425,
+      "sellFormulas": [
+        "=(B44*150)+F44",
+        "=(C44*150)+F44",
+        "=(D44*150)+F44"
+      ],
+      "row": 44
+    },
+    {
+      "key": "fan-light-control-switch",
+      "name": "Fan/Light Control Switch",
+      "section": "SWITCHES",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 28.38,
+      "companyPrice": 70.95,
+      "sellNormal": 130.95,
+      "sellDifficult": 145.95,
+      "sellVeryDifficult": 160.95,
+      "sellFormulas": [
+        "=(B45*150)+F45",
+        "=(C45*150)+F45",
+        "=(D45*150)+F45"
+      ],
+      "row": 45
+    },
+    {
+      "key": "duplex-receptacle-tamper-resistant-15a",
+      "name": "Duplex Receptacle, Tamper-Resistant, 15A",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.25,
+      "laborDifficult": 0.3125,
+      "laborVeryDifficult": 0.375,
+      "companyCost": 1.68,
+      "companyPrice": 5.88,
+      "sellNormal": 43.38,
+      "sellDifficult": 52.755,
+      "sellVeryDifficult": 62.13,
+      "sellFormulas": [
+        "=(B47*150)+F47",
+        "=(C47*150)+F47",
+        "=(D47*150)+F47"
+      ],
+      "row": 47
+    },
+    {
+      "key": "duplex-receptacle-tamper-resistant-20a",
+      "name": "Duplex Receptacle, Tamper-Resistant, 20A",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.375,
+      "laborVeryDifficult": 0.45,
+      "companyCost": 4.28,
+      "companyPrice": 14.98,
+      "sellNormal": 59.980000000000004,
+      "sellDifficult": 71.23,
+      "sellVeryDifficult": 82.48,
+      "sellFormulas": [
+        "=(B48*150)+F48",
+        "=(C48*150)+F48",
+        "=(D48*150)+F48"
+      ],
+      "row": 48
+    },
+    {
+      "key": "duplex-receptacle-tamper-weather-resistant-15a",
+      "name": "Duplex Receptacle, Tamper/Weather-Resistant, 15A",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.25,
+      "laborDifficult": 0.3125,
+      "laborVeryDifficult": 0.375,
+      "companyCost": 4.98,
+      "companyPrice": 17.43,
+      "sellNormal": 54.93,
+      "sellDifficult": 64.305,
+      "sellVeryDifficult": 73.68,
+      "sellFormulas": [
+        "=(B49*150)+F49",
+        "=(C49*150)+F49",
+        "=(D49*150)+F49"
+      ],
+      "row": 49
+    },
+    {
+      "key": "duplex-receptacle-tamper-weather-resistant-20a",
+      "name": "Duplex Receptacle, Tamper/Weather-Resistant, 20A",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.375,
+      "laborVeryDifficult": 0.45,
+      "companyCost": 8.88,
+      "companyPrice": 31.080000000000002,
+      "sellNormal": 76.08,
+      "sellDifficult": 87.33,
+      "sellVeryDifficult": 98.58,
+      "sellFormulas": [
+        "=(B50*150)+F50",
+        "=(C50*150)+F50",
+        "=(D50*150)+F50"
+      ],
+      "row": 50
+    },
+    {
+      "key": "decora-receptacle-tamper-resistant-15a",
+      "name": "Decora Receptacle, Tamper-Resistant, 15A",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.25,
+      "laborDifficult": 0.3125,
+      "laborVeryDifficult": 0.375,
+      "companyCost": 3.68,
+      "companyPrice": 12.88,
+      "sellNormal": 50.38,
+      "sellDifficult": 59.755,
+      "sellVeryDifficult": 69.13,
+      "sellFormulas": [
+        "=(B51*150)+F51",
+        "=(C51*150)+F51",
+        "=(D51*150)+F51"
+      ],
+      "row": 51
+    },
+    {
+      "key": "decora-receptacle-tamper-resistant-20a",
+      "name": "Decora Receptacle, Tamper-Resistant, 20A",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.375,
+      "laborVeryDifficult": 0.45,
+      "companyCost": 6.75,
+      "companyPrice": 23.625,
+      "sellNormal": 68.625,
+      "sellDifficult": 79.875,
+      "sellVeryDifficult": 91.125,
+      "sellFormulas": [
+        "=(B52*150)+F52",
+        "=(C52*150)+F52",
+        "=(D52*150)+F52"
+      ],
+      "row": 52
+    },
+    {
+      "key": "decora-receptacle-tamper-weather-resistant-15a",
+      "name": "Decora Receptacle, Tamper/Weather-Resistant, 15A",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.25,
+      "laborDifficult": 0.3125,
+      "laborVeryDifficult": 0.375,
+      "companyCost": 6.48,
+      "companyPrice": 22.68,
+      "sellNormal": 60.18,
+      "sellDifficult": 69.555,
+      "sellVeryDifficult": 78.93,
+      "sellFormulas": [
+        "=(B53*150)+F53",
+        "=(C53*150)+F53",
+        "=(D53*150)+F53"
+      ],
+      "row": 53
+    },
+    {
+      "key": "decora-receptacle-tamper-weather-resistant-20a",
+      "name": "Decora Receptacle, Tamper/Weather-Resistant, 20A",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.375,
+      "laborVeryDifficult": 0.45,
+      "companyCost": 7.66,
+      "companyPrice": 26.810000000000002,
+      "sellNormal": 71.81,
+      "sellDifficult": 83.06,
+      "sellVeryDifficult": 94.31,
+      "sellFormulas": [
+        "=(B54*150)+F54",
+        "=(C54*150)+F54",
+        "=(D54*150)+F54"
+      ],
+      "row": 54
+    },
+    {
+      "key": "receptacle-30a-250v-nema-14-30r-dryer",
+      "name": "Receptacle, 30A 250V, NEMA 14-30R (Dryer)",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.45,
+      "laborDifficult": 0.5625,
+      "laborVeryDifficult": 0.675,
+      "companyCost": 10.98,
+      "companyPrice": 27.450000000000003,
+      "sellNormal": 94.95,
+      "sellDifficult": 111.825,
+      "sellVeryDifficult": 128.7,
+      "sellFormulas": [
+        "=(B55*150)+F55",
+        "=(C55*150)+F55",
+        "=(D55*150)+F55"
+      ],
+      "row": 55
+    },
+    {
+      "key": "receptacle-50a-250v-nema-14-50r-range",
+      "name": "Receptacle, 50A 250V, NEMA 14-50R (Range)",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.55,
+      "laborDifficult": 0.6875,
+      "laborVeryDifficult": 0.825,
+      "companyCost": 10.05,
+      "companyPrice": 25.125,
+      "sellNormal": 107.625,
+      "sellDifficult": 128.25,
+      "sellVeryDifficult": 148.875,
+      "sellFormulas": [
+        "=(B56*150)+F56",
+        "=(C56*150)+F56",
+        "=(D56*150)+F56"
+      ],
+      "row": 56
+    },
+    {
+      "key": "receptacle-50a-250v-nema-14-50r-ev-charging",
+      "name": "Receptacle, 50A 250V, NEMA 14-50R, EV Charging",
+      "section": "RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.55,
+      "laborDifficult": 0.6875,
+      "laborVeryDifficult": 0.825,
+      "companyCost": 67.34,
+      "companyPrice": 121.212,
+      "sellNormal": 203.712,
+      "sellDifficult": 224.337,
+      "sellVeryDifficult": 244.962,
+      "sellFormulas": [
+        "=(B57*150)+F57",
+        "=(C57*150)+F57",
+        "=(D57*150)+F57"
+      ],
+      "row": 57
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-14-awg",
+      "name": "THHN/THWN-2 Building Wire, #14 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.005,
+      "laborDifficult": 0.0062,
+      "laborVeryDifficult": 0.0075,
+      "companyCost": 0.64,
+      "companyPrice": 3.2,
+      "sellNormal": 3.95,
+      "sellDifficult": 4.13,
+      "sellVeryDifficult": 4.325,
+      "sellFormulas": [
+        "=(B59*150)+F59",
+        "=(C59*150)+F59",
+        "=(D59*150)+F59"
+      ],
+      "row": 59
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-12-awg",
+      "name": "THHN/THWN-2 Building Wire, #12 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.006,
+      "laborDifficult": 0.0075,
+      "laborVeryDifficult": 0.009,
+      "companyCost": 0.5,
+      "companyPrice": 2.5,
+      "sellNormal": 3.4,
+      "sellDifficult": 3.625,
+      "sellVeryDifficult": 3.8499999999999996,
+      "sellFormulas": [
+        "=(B60*150)+F60",
+        "=(C60*150)+F60",
+        "=(D60*150)+F60"
+      ],
+      "row": 60
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-10-awg",
+      "name": "THHN/THWN-2 Building Wire, #10 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.007,
+      "laborDifficult": 0.00875,
+      "laborVeryDifficult": 0.0105,
+      "companyCost": 0.63,
+      "companyPrice": 3.15,
+      "sellNormal": 4.2,
+      "sellDifficult": 4.4625,
+      "sellVeryDifficult": 4.725,
+      "sellFormulas": [
+        "=(B61*150)+F61",
+        "=(C61*150)+F61",
+        "=(D61*150)+F61"
+      ],
+      "row": 61
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-8-awg",
+      "name": "THHN/THWN-2 Building Wire, #8 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.009,
+      "laborDifficult": 0.01125,
+      "laborVeryDifficult": 0.0135,
+      "companyCost": 1.17,
+      "companyPrice": 4.095,
+      "sellNormal": 5.444999999999999,
+      "sellDifficult": 5.7825,
+      "sellVeryDifficult": 6.119999999999999,
+      "sellFormulas": [
+        "=(B62*150)+F62",
+        "=(C62*150)+F62",
+        "=(D62*150)+F62"
+      ],
+      "row": 62
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-6-awg",
+      "name": "THHN/THWN-2 Building Wire, #6 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.011,
+      "laborDifficult": 0.01375,
+      "laborVeryDifficult": 0.0165,
+      "companyCost": 1.83,
+      "companyPrice": 6.405,
+      "sellNormal": 8.055,
+      "sellDifficult": 8.467500000000001,
+      "sellVeryDifficult": 8.88,
+      "sellFormulas": [
+        "=(B63*150)+F63",
+        "=(C63*150)+F63",
+        "=(D63*150)+F63"
+      ],
+      "row": 63
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-4-awg",
+      "name": "THHN/THWN-2 Building Wire, #4 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.013,
+      "laborDifficult": 0.01625,
+      "laborVeryDifficult": 0.0195,
+      "companyCost": 2.47,
+      "companyPrice": 8.645000000000001,
+      "sellNormal": 10.595,
+      "sellDifficult": 11.082500000000001,
+      "sellVeryDifficult": 11.57,
+      "sellFormulas": [
+        "=(B64*150)+F64",
+        "=(C64*150)+F64",
+        "=(D64*150)+F64"
+      ],
+      "row": 64
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-3-awg",
+      "name": "THHN/THWN-2 Building Wire, #3 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.015,
+      "laborDifficult": 0.01875,
+      "laborVeryDifficult": 0.0225,
+      "companyCost": 2.58,
+      "companyPrice": 9.030000000000001,
+      "sellNormal": 11.280000000000001,
+      "sellDifficult": 11.842500000000001,
+      "sellVeryDifficult": 12.405000000000001,
+      "sellFormulas": [
+        "=(B65*150)+F65",
+        "=(C65*150)+F65",
+        "=(D65*150)+F65"
+      ],
+      "row": 65
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-2-awg",
+      "name": "THHN/THWN-2 Building Wire, #2 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.017,
+      "laborDifficult": 0.02125,
+      "laborVeryDifficult": 0.0255,
+      "companyCost": 3.68,
+      "companyPrice": 12.88,
+      "sellNormal": 15.430000000000001,
+      "sellDifficult": 16.067500000000003,
+      "sellVeryDifficult": 16.705000000000002,
+      "sellFormulas": [
+        "=(B66*150)+F66",
+        "=(C66*150)+F66",
+        "=(D66*150)+F66"
+      ],
+      "row": 66
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-1-awg",
+      "name": "THHN/THWN-2 Building Wire, #1 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.019,
+      "laborDifficult": 0.02375,
+      "laborVeryDifficult": 0.0285,
+      "companyCost": 4.72,
+      "companyPrice": 16.52,
+      "sellNormal": 19.37,
+      "sellDifficult": 20.0825,
+      "sellVeryDifficult": 20.795,
+      "sellFormulas": [
+        "=(B67*150)+F67",
+        "=(C67*150)+F67",
+        "=(D67*150)+F67"
+      ],
+      "row": 67
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-1-0-awg",
+      "name": "THHN/THWN-2 Building Wire, 1/0 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.022,
+      "laborDifficult": 0.0275,
+      "laborVeryDifficult": 0.033,
+      "companyCost": 5.33,
+      "companyPrice": 18.655,
+      "sellNormal": 21.955000000000002,
+      "sellDifficult": 22.78,
+      "sellVeryDifficult": 23.605,
+      "sellFormulas": [
+        "=(B68*150)+F68",
+        "=(C68*150)+F68",
+        "=(D68*150)+F68"
+      ],
+      "row": 68
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-2-0-awg",
+      "name": "THHN/THWN-2 Building Wire, 2/0 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.024,
+      "laborDifficult": 0.03,
+      "laborVeryDifficult": 0.036,
+      "companyCost": 5.98,
+      "companyPrice": 20.93,
+      "sellNormal": 24.53,
+      "sellDifficult": 25.43,
+      "sellVeryDifficult": 26.33,
+      "sellFormulas": [
+        "=(B69*150)+F69",
+        "=(C69*150)+F69",
+        "=(D69*150)+F69"
+      ],
+      "row": 69
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-3-0-awg",
+      "name": "THHN/THWN-2 Building Wire, 3/0 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.026,
+      "laborDifficult": 0.0325,
+      "laborVeryDifficult": 0.039,
+      "companyCost": 7.47,
+      "companyPrice": 26.145,
+      "sellNormal": 30.044999999999998,
+      "sellDifficult": 31.02,
+      "sellVeryDifficult": 31.994999999999997,
+      "sellFormulas": [
+        "=(B70*150)+F70",
+        "=(C70*150)+F70",
+        "=(D70*150)+F70"
+      ],
+      "row": 70
+    },
+    {
+      "key": "thhn-thwn-2-building-wire-4-0-awg",
+      "name": "THHN/THWN-2 Building Wire, 4/0 AWG",
+      "section": "THHN/THWN-2 COPPER WIRE",
+      "unitLabel": null,
+      "laborNormal": 0.029,
+      "laborDifficult": 0.0362,
+      "laborVeryDifficult": 0.0435,
+      "companyCost": 10.38,
+      "companyPrice": 25.950000000000003,
+      "sellNormal": 30.300000000000004,
+      "sellDifficult": 31.380000000000003,
+      "sellVeryDifficult": 32.475,
+      "sellFormulas": [
+        "=(B71*150)+F71",
+        "=(C71*150)+F71",
+        "=(D71*150)+F71"
+      ],
+      "row": 71
+    },
+    {
+      "key": "emt-conduit-1-2-inch",
+      "name": "EMT Conduit, 1/2-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.45,
+      "laborDifficult": 0.5599999999999999,
+      "laborVeryDifficult": 0.67,
+      "companyCost": 6.98,
+      "companyPrice": 24.43,
+      "sellNormal": 91.93,
+      "sellDifficult": 108.42999999999998,
+      "sellVeryDifficult": 124.93,
+      "sellFormulas": [
+        "=(B73*150)+F73",
+        "=(C73*150)+F73",
+        "=(D73*150)+F73"
+      ],
+      "row": 73
+    },
+    {
+      "key": "emt-conduit-3-4-inch",
+      "name": "EMT Conduit, 3/4-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.5,
+      "laborDifficult": 0.62,
+      "laborVeryDifficult": 0.75,
+      "companyCost": 11.75,
+      "companyPrice": 29.375,
+      "sellNormal": 104.375,
+      "sellDifficult": 122.375,
+      "sellVeryDifficult": 141.875,
+      "sellFormulas": [
+        "=(B74*150)+F74",
+        "=(C74*150)+F74",
+        "=(D74*150)+F74"
+      ],
+      "row": 74
+    },
+    {
+      "key": "emt-conduit-1-inch",
+      "name": "EMT Conduit, 1-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.55,
+      "laborDifficult": 0.6799999999999999,
+      "laborVeryDifficult": 0.82,
+      "companyCost": 20.58,
+      "companyPrice": 51.449999999999996,
+      "sellNormal": 133.95,
+      "sellDifficult": 153.45,
+      "sellVeryDifficult": 174.45,
+      "sellFormulas": [
+        "=(B75*150)+F75",
+        "=(C75*150)+F75",
+        "=(D75*150)+F75"
+      ],
+      "row": 75
+    },
+    {
+      "key": "emt-conduit-1-1-4-inch",
+      "name": "EMT Conduit, 1 1/4-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.62,
+      "laborDifficult": 0.78,
+      "laborVeryDifficult": 0.93,
+      "companyCost": 36.94,
+      "companyPrice": 92.35,
+      "sellNormal": 185.35,
+      "sellDifficult": 209.35,
+      "sellVeryDifficult": 231.85,
+      "sellFormulas": [
+        "=(B76*150)+F76",
+        "=(C76*150)+F76",
+        "=(D76*150)+F76"
+      ],
+      "row": 76
+    },
+    {
+      "key": "emt-conduit-1-1-2-inch",
+      "name": "EMT Conduit, 1 1/2-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.7,
+      "laborDifficult": 0.8699999999999999,
+      "laborVeryDifficult": 1.05,
+      "companyCost": 43.58,
+      "companyPrice": 108.94999999999999,
+      "sellNormal": 213.95,
+      "sellDifficult": 239.44999999999996,
+      "sellVeryDifficult": 266.45,
+      "sellFormulas": [
+        "=(B77*150)+F77",
+        "=(C77*150)+F77",
+        "=(D77*150)+F77"
+      ],
+      "row": 77
+    },
+    {
+      "key": "emt-conduit-2-inch",
+      "name": "EMT Conduit, 2-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.8,
+      "laborDifficult": 1,
+      "laborVeryDifficult": 1.2,
+      "companyCost": 51.61,
+      "companyPrice": 92.898,
+      "sellNormal": 212.898,
+      "sellDifficult": 242.898,
+      "sellVeryDifficult": 272.898,
+      "sellFormulas": [
+        "=(B78*150)+F78",
+        "=(C78*150)+F78",
+        "=(D78*150)+F78"
+      ],
+      "row": 78
+    },
+    {
+      "key": "emt-conduit-2-1-2-inch",
+      "name": "EMT Conduit, 2 1/2-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.95,
+      "laborDifficult": 1.1800000000000002,
+      "laborVeryDifficult": 1.42,
+      "companyCost": 55.9,
+      "companyPrice": 100.62,
+      "sellNormal": 243.12,
+      "sellDifficult": 277.62,
+      "sellVeryDifficult": 313.62,
+      "sellFormulas": [
+        "=(B79*150)+F79",
+        "=(C79*150)+F79",
+        "=(D79*150)+F79"
+      ],
+      "row": 79
+    },
+    {
+      "key": "emt-conduit-3-inch",
+      "name": "EMT Conduit, 3-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 1.1,
+      "laborDifficult": 1.3699999999999999,
+      "laborVeryDifficult": 1.65,
+      "companyCost": 68.6,
+      "companyPrice": 123.47999999999999,
+      "sellNormal": 288.48,
+      "sellDifficult": 328.97999999999996,
+      "sellVeryDifficult": 370.98,
+      "sellFormulas": [
+        "=(B80*150)+F80",
+        "=(C80*150)+F80",
+        "=(D80*150)+F80"
+      ],
+      "row": 80
+    },
+    {
+      "key": "emt-conduit-3-1-2-inch",
+      "name": "EMT Conduit, 3 1/2-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 1.3,
+      "laborDifficult": 1.6199999999999999,
+      "laborVeryDifficult": 1.95,
+      "companyCost": 94,
+      "companyPrice": 169.20000000000002,
+      "sellNormal": 364.20000000000005,
+      "sellDifficult": 412.2,
+      "sellVeryDifficult": 461.70000000000005,
+      "sellFormulas": [
+        "=(B81*150)+F81",
+        "=(C81*150)+F81",
+        "=(D81*150)+F81"
+      ],
+      "row": 81
+    },
+    {
+      "key": "emt-conduit-4-inch",
+      "name": "EMT Conduit, 4-inch",
+      "section": "EMT CONDUIT (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 1.6,
+      "laborDifficult": 2,
+      "laborVeryDifficult": 2.4,
+      "companyCost": 112.06,
+      "companyPrice": 201.708,
+      "sellNormal": 441.70799999999997,
+      "sellDifficult": 501.70799999999997,
+      "sellVeryDifficult": 561.708,
+      "sellFormulas": [
+        "=(B82*150)+F82",
+        "=(C82*150)+F82",
+        "=(D82*150)+F82"
+      ],
+      "row": 82
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-1-2-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 1/2-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.41,
+      "laborDifficult": 0.51,
+      "laborVeryDifficult": 0.615,
+      "companyCost": 5.68,
+      "companyPrice": 19.88,
+      "sellNormal": 81.38,
+      "sellDifficult": 96.38,
+      "sellVeryDifficult": 112.13,
+      "sellFormulas": [
+        "=(B84*150)+F84",
+        "=(C84*150)+F84",
+        "=(D84*150)+F84"
+      ],
+      "row": 84
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-3-4-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 3/4-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.45,
+      "laborDifficult": 0.5599999999999999,
+      "laborVeryDifficult": 0.675,
+      "companyCost": 7.58,
+      "companyPrice": 26.53,
+      "sellNormal": 94.03,
+      "sellDifficult": 110.52999999999999,
+      "sellVeryDifficult": 127.78,
+      "sellFormulas": [
+        "=(B85*150)+F85",
+        "=(C85*150)+F85",
+        "=(D85*150)+F85"
+      ],
+      "row": 85
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-1-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 1-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.525,
+      "laborDifficult": 0.65,
+      "laborVeryDifficult": 0.79,
+      "companyCost": 10.75,
+      "companyPrice": 26.875,
+      "sellNormal": 105.625,
+      "sellDifficult": 124.375,
+      "sellVeryDifficult": 145.375,
+      "sellFormulas": [
+        "=(B86*150)+F86",
+        "=(C86*150)+F86",
+        "=(D86*150)+F86"
+      ],
+      "row": 86
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-1-1-4-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 1 1/4-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.6,
+      "laborDifficult": 0.75,
+      "laborVeryDifficult": 0.9,
+      "companyCost": 15.31,
+      "companyPrice": 38.275,
+      "sellNormal": 128.275,
+      "sellDifficult": 150.775,
+      "sellVeryDifficult": 173.275,
+      "sellFormulas": [
+        "=(B87*150)+F87",
+        "=(C87*150)+F87",
+        "=(D87*150)+F87"
+      ],
+      "row": 87
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-1-1-2-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 1 1/2-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.7,
+      "laborDifficult": 0.875,
+      "laborVeryDifficult": 1.05,
+      "companyCost": 18.6,
+      "companyPrice": 46.5,
+      "sellNormal": 151.5,
+      "sellDifficult": 177.75,
+      "sellVeryDifficult": 204,
+      "sellFormulas": [
+        "=(B88*150)+F88",
+        "=(C88*150)+F88",
+        "=(D88*150)+F88"
+      ],
+      "row": 88
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-2-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 2-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.8,
+      "laborDifficult": 1,
+      "laborVeryDifficult": 1.2,
+      "companyCost": 23.71,
+      "companyPrice": 59.275000000000006,
+      "sellNormal": 179.275,
+      "sellDifficult": 209.275,
+      "sellVeryDifficult": 239.275,
+      "sellFormulas": [
+        "=(B89*150)+F89",
+        "=(C89*150)+F89",
+        "=(D89*150)+F89"
+      ],
+      "row": 89
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-2-1-2-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 2 1/2-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.9,
+      "laborDifficult": 1.125,
+      "laborVeryDifficult": 1.4060000000000001,
+      "companyCost": 35.44,
+      "companyPrice": 88.6,
+      "sellNormal": 223.6,
+      "sellDifficult": 257.35,
+      "sellVeryDifficult": 299.5,
+      "sellFormulas": [
+        "=(B90*150)+F90",
+        "=(C90*150)+F90",
+        "=(D90*150)+F90"
+      ],
+      "row": 90
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-3-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 3-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1.25,
+      "laborVeryDifficult": 1.5630000000000002,
+      "companyCost": 50.46,
+      "companyPrice": 90.828,
+      "sellNormal": 240.828,
+      "sellDifficult": 278.328,
+      "sellVeryDifficult": 325.278,
+      "sellFormulas": [
+        "=(B91*150)+F91",
+        "=(C91*150)+F91",
+        "=(D91*150)+F91"
+      ],
+      "row": 91
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-3-1-2-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 3 1/2-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 1.2,
+      "laborDifficult": 1.5,
+      "laborVeryDifficult": 1.875,
+      "companyCost": 25.6,
+      "companyPrice": 64,
+      "sellNormal": 244,
+      "sellDifficult": 289,
+      "sellVeryDifficult": 345.25,
+      "sellFormulas": [
+        "=(B92*150)+F92",
+        "=(C92*150)+F92",
+        "=(D92*150)+F92"
+      ],
+      "row": 92
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-40-4-inch",
+      "name": "PVC Rigid Conduit, Schedule 40, 4-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 1.4,
+      "laborDifficult": 1.75,
+      "laborVeryDifficult": 2.1879999999999997,
+      "companyCost": 64.44,
+      "companyPrice": 115.992,
+      "sellNormal": 325.992,
+      "sellDifficult": 378.492,
+      "sellVeryDifficult": 444.19199999999995,
+      "sellFormulas": [
+        "=(B93*150)+F93",
+        "=(C93*150)+F93",
+        "=(D93*150)+F93"
+      ],
+      "row": 93
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-80-1-2-inch",
+      "name": "PVC Rigid Conduit, Schedule 80, 1/2-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.49000000000000005,
+      "laborDifficult": 0.5900000000000001,
+      "laborVeryDifficult": 0.6900000000000001,
+      "companyCost": 4.9,
+      "companyPrice": 17.150000000000002,
+      "sellNormal": 90.65,
+      "sellDifficult": 105.65000000000002,
+      "sellVeryDifficult": 120.65000000000002,
+      "sellFormulas": [
+        "=(B95*150)+F95",
+        "=(C95*150)+F95",
+        "=(D95*150)+F95"
+      ],
+      "row": 95
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-80-3-4-inch",
+      "name": "PVC Rigid Conduit, Schedule 80, 3/4-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.54,
+      "laborDifficult": 0.64,
+      "laborVeryDifficult": 0.74,
+      "companyCost": 7.1,
+      "companyPrice": 24.849999999999998,
+      "sellNormal": 105.85,
+      "sellDifficult": 120.85,
+      "sellVeryDifficult": 135.85,
+      "sellFormulas": [
+        "=(B96*150)+F96",
+        "=(C96*150)+F96",
+        "=(D96*150)+F96"
+      ],
+      "row": 96
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-80-1-inch",
+      "name": "PVC Rigid Conduit, Schedule 80, 1-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.63,
+      "laborDifficult": 0.73,
+      "laborVeryDifficult": 0.8300000000000001,
+      "companyCost": 9.1,
+      "companyPrice": 31.849999999999998,
+      "sellNormal": 126.35,
+      "sellDifficult": 141.35,
+      "sellVeryDifficult": 156.35000000000002,
+      "sellFormulas": [
+        "=(B97*150)+F97",
+        "=(C97*150)+F97",
+        "=(D97*150)+F97"
+      ],
+      "row": 97
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-80-1-1-4-inch",
+      "name": "PVC Rigid Conduit, Schedule 80, 1 1/4-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.72,
+      "laborDifficult": 0.77,
+      "laborVeryDifficult": 0.9199999999999999,
+      "companyCost": 12,
+      "companyPrice": 30,
+      "sellNormal": 138,
+      "sellDifficult": 145.5,
+      "sellVeryDifficult": 168,
+      "sellFormulas": [
+        "=(B98*150)+F98",
+        "=(C98*150)+F98",
+        "=(D98*150)+F98"
+      ],
+      "row": 98
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-80-1-1-2-inch",
+      "name": "PVC Rigid Conduit, Schedule 80, 1 1/2-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.8400000000000001,
+      "laborDifficult": 0.96,
+      "laborVeryDifficult": 1.08,
+      "companyCost": 14.2,
+      "companyPrice": 35.5,
+      "sellNormal": 161.5,
+      "sellDifficult": 179.5,
+      "sellVeryDifficult": 197.5,
+      "sellFormulas": [
+        "=(B99*150)+F99",
+        "=(C99*150)+F99",
+        "=(D99*150)+F99"
+      ],
+      "row": 99
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-80-2-inch",
+      "name": "PVC Rigid Conduit, Schedule 80, 2-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 0.96,
+      "laborDifficult": 1.08,
+      "laborVeryDifficult": 1.28,
+      "companyCost": 35.43,
+      "companyPrice": 88.575,
+      "sellNormal": 232.575,
+      "sellDifficult": 250.575,
+      "sellVeryDifficult": 280.575,
+      "sellFormulas": [
+        "=(B100*150)+F100",
+        "=(C100*150)+F100",
+        "=(D100*150)+F100"
+      ],
+      "row": 100
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-80-2-1-2-inch",
+      "name": "PVC Rigid Conduit, Schedule 80, 2 1/2-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 1.08,
+      "laborDifficult": 1.2,
+      "laborVeryDifficult": 1.48,
+      "companyCost": 27.4,
+      "companyPrice": 68.5,
+      "sellNormal": 230.5,
+      "sellDifficult": 248.5,
+      "sellVeryDifficult": 290.5,
+      "sellFormulas": [
+        "=(B101*150)+F101",
+        "=(C101*150)+F101",
+        "=(D101*150)+F101"
+      ],
+      "row": 101
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-80-3-inch",
+      "name": "PVC Rigid Conduit, Schedule 80, 3-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 1.2,
+      "laborDifficult": 1.45,
+      "laborVeryDifficult": 1.65,
+      "companyCost": 33,
+      "companyPrice": 82.5,
+      "sellNormal": 262.5,
+      "sellDifficult": 300,
+      "sellVeryDifficult": 330,
+      "sellFormulas": [
+        "=(B102*150)+F102",
+        "=(C102*150)+F102",
+        "=(D102*150)+F102"
+      ],
+      "row": 102
+    },
+    {
+      "key": "pvc-rigid-conduit-schedule-80-4-inch",
+      "name": "PVC Rigid Conduit, Schedule 80, 4-inch",
+      "section": "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+      "unitLabel": null,
+      "laborNormal": 1.6800000000000002,
+      "laborDifficult": 2.0300000000000002,
+      "laborVeryDifficult": 2.468,
+      "companyCost": 50.5,
+      "companyPrice": 90.9,
+      "sellNormal": 342.90000000000003,
+      "sellDifficult": 395.4000000000001,
+      "sellVeryDifficult": 461.1,
+      "sellFormulas": [
+        "=(B103*150)+F103",
+        "=(C103*150)+F103",
+        "=(D103*150)+F103"
+      ],
+      "row": 103
+    },
+    {
+      "key": "liquidtight-flexible-steel-conduit-1-2-inch",
+      "name": "Liquidtight Flexible Steel Conduit, 1/2-inch",
+      "section": "LIQUIDTIGHT FLEXIBLE METAL CONDUIT - SEALTITE (per ft)",
+      "unitLabel": null,
+      "laborNormal": 0.04,
+      "laborDifficult": 0.05,
+      "laborVeryDifficult": 0.06,
+      "companyCost": 1.99,
+      "companyPrice": 6.965,
+      "sellNormal": 12.965,
+      "sellDifficult": 14.465,
+      "sellVeryDifficult": 15.965,
+      "sellFormulas": [
+        "=(B106*150)+F106",
+        "=(C106*150)+F106",
+        "=(D106*150)+F106"
+      ],
+      "row": 106
+    },
+    {
+      "key": "liquidtight-flexible-steel-conduit-3-4-inch",
+      "name": "Liquidtight Flexible Steel Conduit, 3/4-inch",
+      "section": "LIQUIDTIGHT FLEXIBLE METAL CONDUIT - SEALTITE (per ft)",
+      "unitLabel": null,
+      "laborNormal": 0.05,
+      "laborDifficult": 0.062,
+      "laborVeryDifficult": 0.075,
+      "companyCost": 1.69,
+      "companyPrice": 5.915,
+      "sellNormal": 13.415,
+      "sellDifficult": 15.215,
+      "sellVeryDifficult": 17.165,
+      "sellFormulas": [
+        "=(B107*150)+F107",
+        "=(C107*150)+F107",
+        "=(D107*150)+F107"
+      ],
+      "row": 107
+    },
+    {
+      "key": "liquidtight-flexible-steel-conduit-1-inch",
+      "name": "Liquidtight Flexible Steel Conduit, 1-inch",
+      "section": "LIQUIDTIGHT FLEXIBLE METAL CONDUIT - SEALTITE (per ft)",
+      "unitLabel": null,
+      "laborNormal": 0.075,
+      "laborDifficult": 0.09300000000000001,
+      "laborVeryDifficult": 0.11199999999999999,
+      "companyCost": 2.45,
+      "companyPrice": 8.575000000000001,
+      "sellNormal": 19.825000000000003,
+      "sellDifficult": 22.525000000000006,
+      "sellVeryDifficult": 25.375,
+      "sellFormulas": [
+        "=(B108*150)+F108",
+        "=(C108*150)+F108",
+        "=(D108*150)+F108"
+      ],
+      "row": 108
+    },
+    {
+      "key": "liquidtight-non-metallic-flexible-tubing-1-2-inch",
+      "name": "Liquidtight Non-Metallic Flexible Tubing, 1/2-inch",
+      "section": "LIQUIDTIGHT FLEXIBLE NONMETALLIC CONDUIT - LNT / PVC FLEX (per ft)",
+      "unitLabel": null,
+      "laborNormal": 0.04,
+      "laborDifficult": 0.05,
+      "laborVeryDifficult": 0.06,
+      "companyCost": 1.06,
+      "companyPrice": 3.71,
+      "sellNormal": 9.71,
+      "sellDifficult": 11.21,
+      "sellVeryDifficult": 12.71,
+      "sellFormulas": [
+        "=(B111*150)+F111",
+        "=(C111*150)+F111",
+        "=(D111*150)+F111"
+      ],
+      "row": 111
+    },
+    {
+      "key": "liquidtight-non-metallic-flexible-tubing-3-4-inch",
+      "name": "Liquidtight Non-Metallic Flexible Tubing, 3/4-inch",
+      "section": "LIQUIDTIGHT FLEXIBLE NONMETALLIC CONDUIT - LNT / PVC FLEX (per ft)",
+      "unitLabel": null,
+      "laborNormal": 0.05,
+      "laborDifficult": 0.0625,
+      "laborVeryDifficult": 0.075,
+      "companyCost": 1.37,
+      "companyPrice": 4.795,
+      "sellNormal": 12.295,
+      "sellDifficult": 14.17,
+      "sellVeryDifficult": 16.045,
+      "sellFormulas": [
+        "=(B112*150)+F112",
+        "=(C112*150)+F112",
+        "=(D112*150)+F112"
+      ],
+      "row": 112
+    },
+    {
+      "key": "liquidtight-non-metallic-flexible-tubing-1-inch",
+      "name": "Liquidtight Non-Metallic Flexible Tubing, 1-inch",
+      "section": "LIQUIDTIGHT FLEXIBLE NONMETALLIC CONDUIT - LNT / PVC FLEX (per ft)",
+      "unitLabel": null,
+      "laborNormal": 0.075,
+      "laborDifficult": 0.09380000000000001,
+      "laborVeryDifficult": 0.1125,
+      "companyCost": 0.95,
+      "companyPrice": 4.75,
+      "sellNormal": 16,
+      "sellDifficult": 18.82,
+      "sellVeryDifficult": 21.625,
+      "sellFormulas": [
+        "=(B113*150)+F113",
+        "=(C113*150)+F113",
+        "=(D113*150)+F113"
+      ],
+      "row": 113
+    },
+    {
+      "key": "flexible-steel-conduit-fsc-greenfield-1-2-inch",
+      "name": "Flexible Steel Conduit (FSC/Greenfield), 1/2-inch",
+      "section": "FLEXIBLE STEEL CONDUIT - FSC / GREENFIELD (per ft)",
+      "unitLabel": null,
+      "laborNormal": 0.04,
+      "laborDifficult": 0.05,
+      "laborVeryDifficult": 0.06,
+      "companyCost": 1.19,
+      "companyPrice": 4.165,
+      "sellNormal": 10.165,
+      "sellDifficult": 11.665,
+      "sellVeryDifficult": 13.165,
+      "sellFormulas": [
+        "=(B116*150)+F116",
+        "=(C116*150)+F116",
+        "=(D116*150)+F116"
+      ],
+      "row": 116
+    },
+    {
+      "key": "flexible-steel-conduit-fsc-greenfield-3-4-inch",
+      "name": "Flexible Steel Conduit (FSC/Greenfield), 3/4-inch",
+      "section": "FLEXIBLE STEEL CONDUIT - FSC / GREENFIELD (per ft)",
+      "unitLabel": null,
+      "laborNormal": 0.05,
+      "laborDifficult": 0.062,
+      "laborVeryDifficult": 0.075,
+      "companyCost": 1.44,
+      "companyPrice": 5.04,
+      "sellNormal": 12.54,
+      "sellDifficult": 14.34,
+      "sellVeryDifficult": 16.29,
+      "sellFormulas": [
+        "=(B117*150)+F117",
+        "=(C117*150)+F117",
+        "=(D117*150)+F117"
+      ],
+      "row": 117
+    },
+    {
+      "key": "flexible-steel-conduit-fsc-greenfield-1-inch",
+      "name": "Flexible Steel Conduit (FSC/Greenfield), 1-inch",
+      "section": "FLEXIBLE STEEL CONDUIT - FSC / GREENFIELD (per ft)",
+      "unitLabel": null,
+      "laborNormal": 0.075,
+      "laborDifficult": 0.09300000000000001,
+      "laborVeryDifficult": 0.11199999999999999,
+      "companyCost": 3.34,
+      "companyPrice": 11.69,
+      "sellNormal": 22.939999999999998,
+      "sellDifficult": 25.64,
+      "sellVeryDifficult": 28.489999999999995,
+      "sellFormulas": [
+        "=(B118*150)+F118",
+        "=(C118*150)+F118",
+        "=(D118*150)+F118"
+      ],
+      "row": 118
+    },
+    {
+      "key": "fsc-greenfield-to-box-connector-screw-in-1-2-inch",
+      "name": "FSC/Greenfield to Box Connector, Screw-In, 1/2-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.12,
+      "laborDifficult": 0.15,
+      "laborVeryDifficult": 0.18,
+      "companyCost": 1.09,
+      "companyPrice": 3.8150000000000004,
+      "sellNormal": 21.815,
+      "sellDifficult": 26.315,
+      "sellVeryDifficult": 30.815,
+      "sellFormulas": [
+        "=(B121*150)+F121",
+        "=(C121*150)+F121",
+        "=(D121*150)+F121"
+      ],
+      "row": 121
+    },
+    {
+      "key": "fsc-greenfield-to-box-connector-screw-in-3-4-inch",
+      "name": "FSC/Greenfield to Box Connector, Screw-In, 3/4-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.14,
+      "laborDifficult": 0.17,
+      "laborVeryDifficult": 0.21,
+      "companyCost": 2.26,
+      "companyPrice": 7.909999999999999,
+      "sellNormal": 28.910000000000004,
+      "sellDifficult": 33.410000000000004,
+      "sellVeryDifficult": 39.41,
+      "sellFormulas": [
+        "=(B122*150)+F122",
+        "=(C122*150)+F122",
+        "=(D122*150)+F122"
+      ],
+      "row": 122
+    },
+    {
+      "key": "fsc-greenfield-to-box-connector-screw-in-1-inch",
+      "name": "FSC/Greenfield to Box Connector, Screw-In, 1-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.17,
+      "laborDifficult": 0.21,
+      "laborVeryDifficult": 0.25,
+      "companyCost": 2.68,
+      "companyPrice": 9.38,
+      "sellNormal": 34.88,
+      "sellDifficult": 40.88,
+      "sellVeryDifficult": 46.88,
+      "sellFormulas": [
+        "=(B123*150)+F123",
+        "=(C123*150)+F123",
+        "=(D123*150)+F123"
+      ],
+      "row": 123
+    },
+    {
+      "key": "fsc-greenfield-to-emt-combination-coupling-1-2-inch",
+      "name": "FSC/Greenfield to EMT Combination Coupling, 1/2-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.12,
+      "laborDifficult": 0.15,
+      "laborVeryDifficult": 0.18,
+      "companyCost": 2.98,
+      "companyPrice": 10.43,
+      "sellNormal": 28.43,
+      "sellDifficult": 32.93,
+      "sellVeryDifficult": 37.43,
+      "sellFormulas": [
+        "=(B124*150)+F124",
+        "=(C124*150)+F124",
+        "=(D124*150)+F124"
+      ],
+      "row": 124
+    },
+    {
+      "key": "fsc-greenfield-to-emt-combination-coupling-3-4-inch",
+      "name": "FSC/Greenfield to EMT Combination Coupling, 3/4-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.15,
+      "laborDifficult": 0.18,
+      "laborVeryDifficult": 0.22,
+      "companyCost": 4.1,
+      "companyPrice": 14.349999999999998,
+      "sellNormal": 36.849999999999994,
+      "sellDifficult": 41.349999999999994,
+      "sellVeryDifficult": 47.349999999999994,
+      "sellFormulas": [
+        "=(B125*150)+F125",
+        "=(C125*150)+F125",
+        "=(D125*150)+F125"
+      ],
+      "row": 125
+    },
+    {
+      "key": "fsc-greenfield-to-emt-combination-coupling-1-inch",
+      "name": "FSC/Greenfield to EMT Combination Coupling, 1-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.2,
+      "laborDifficult": 0.25,
+      "laborVeryDifficult": 0.3,
+      "companyCost": 5.36,
+      "companyPrice": 18.76,
+      "sellNormal": 48.760000000000005,
+      "sellDifficult": 56.260000000000005,
+      "sellVeryDifficult": 63.760000000000005,
+      "sellFormulas": [
+        "=(B126*150)+F126",
+        "=(C126*150)+F126",
+        "=(D126*150)+F126"
+      ],
+      "row": 126
+    },
+    {
+      "key": "lfsc-sealtite-to-box-connector-straight-insulated-throat-1-2-inch",
+      "name": "LFSC/Sealtite to Box Connector, Straight, Insulated Throat, 1/2-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.15,
+      "laborDifficult": 0.18,
+      "laborVeryDifficult": 0.22,
+      "companyCost": 4.16,
+      "companyPrice": 14.56,
+      "sellNormal": 37.06,
+      "sellDifficult": 41.56,
+      "sellVeryDifficult": 47.56,
+      "sellFormulas": [
+        "=(B127*150)+F127",
+        "=(C127*150)+F127",
+        "=(D127*150)+F127"
+      ],
+      "row": 127
+    },
+    {
+      "key": "lfsc-sealtite-to-box-connector-straight-insulated-throat-3-4-inch",
+      "name": "LFSC/Sealtite to Box Connector, Straight, Insulated Throat, 3/4-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.18,
+      "laborDifficult": 0.22,
+      "laborVeryDifficult": 0.27,
+      "companyCost": 5.82,
+      "companyPrice": 20.37,
+      "sellNormal": 47.370000000000005,
+      "sellDifficult": 53.370000000000005,
+      "sellVeryDifficult": 60.870000000000005,
+      "sellFormulas": [
+        "=(B128*150)+F128",
+        "=(C128*150)+F128",
+        "=(D128*150)+F128"
+      ],
+      "row": 128
+    },
+    {
+      "key": "lfsc-sealtite-to-box-connector-straight-1-inch",
+      "name": "LFSC/Sealtite to Box Connector, Straight, 1-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.24,
+      "laborDifficult": 0.3,
+      "laborVeryDifficult": 0.36,
+      "companyCost": 7.18,
+      "companyPrice": 25.13,
+      "sellNormal": 61.129999999999995,
+      "sellDifficult": 70.13,
+      "sellVeryDifficult": 79.13,
+      "sellFormulas": [
+        "=(B129*150)+F129",
+        "=(C129*150)+F129",
+        "=(D129*150)+F129"
+      ],
+      "row": 129
+    },
+    {
+      "key": "lnt-lfnc-box-connector-straight-threaded-1-2-inch",
+      "name": "LNT/LFNC Box Connector, Straight Threaded, 1/2-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.12,
+      "laborDifficult": 0.15,
+      "laborVeryDifficult": 0.18,
+      "companyCost": 3.4,
+      "companyPrice": 11.9,
+      "sellNormal": 29.9,
+      "sellDifficult": 34.4,
+      "sellVeryDifficult": 38.9,
+      "sellFormulas": [
+        "=(B130*150)+F130",
+        "=(C130*150)+F130",
+        "=(D130*150)+F130"
+      ],
+      "row": 130
+    },
+    {
+      "key": "lnt-lfnc-box-connector-straight-threaded-3-4-inch",
+      "name": "LNT/LFNC Box Connector, Straight Threaded, 3/4-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.14,
+      "laborDifficult": 0.18,
+      "laborVeryDifficult": 0.21,
+      "companyCost": 3.65,
+      "companyPrice": 12.775,
+      "sellNormal": 33.775000000000006,
+      "sellDifficult": 39.775,
+      "sellVeryDifficult": 44.275,
+      "sellFormulas": [
+        "=(B131*150)+F131",
+        "=(C131*150)+F131",
+        "=(D131*150)+F131"
+      ],
+      "row": 131
+    },
+    {
+      "key": "lnt-lfnc-box-connector-straight-threaded-1-inch",
+      "name": "LNT/LFNC Box Connector, Straight Threaded, 1-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.16,
+      "laborDifficult": 0.2,
+      "laborVeryDifficult": 0.24,
+      "companyCost": 4.01,
+      "companyPrice": 14.035,
+      "sellNormal": 38.035,
+      "sellDifficult": 44.035,
+      "sellVeryDifficult": 50.035,
+      "sellFormulas": [
+        "=(B132*150)+F132",
+        "=(C132*150)+F132",
+        "=(D132*150)+F132"
+      ],
+      "row": 132
+    },
+    {
+      "key": "lnt-lfnc-box-connector-90-degree-threaded-elbow-1-2-inch",
+      "name": "LNT/LFNC Box Connector, 90-Degree Threaded Elbow, 1/2-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.15,
+      "laborDifficult": 0.19,
+      "laborVeryDifficult": 0.23,
+      "companyCost": 4.57,
+      "companyPrice": 15.995000000000001,
+      "sellNormal": 38.495000000000005,
+      "sellDifficult": 44.495000000000005,
+      "sellVeryDifficult": 50.495000000000005,
+      "sellFormulas": [
+        "=(B133*150)+F133",
+        "=(C133*150)+F133",
+        "=(D133*150)+F133"
+      ],
+      "row": 133
+    },
+    {
+      "key": "lnt-lfnc-box-connector-90-degree-threaded-elbow-3-4-inch",
+      "name": "LNT/LFNC Box Connector, 90-Degree Threaded Elbow, 3/4-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.17,
+      "laborDifficult": 0.21,
+      "laborVeryDifficult": 0.26,
+      "companyCost": 4.7,
+      "companyPrice": 16.45,
+      "sellNormal": 41.95,
+      "sellDifficult": 47.95,
+      "sellVeryDifficult": 55.45,
+      "sellFormulas": [
+        "=(B134*150)+F134",
+        "=(C134*150)+F134",
+        "=(D134*150)+F134"
+      ],
+      "row": 134
+    },
+    {
+      "key": "lnt-lfnc-box-connector-90-degree-threaded-elbow-1-inch",
+      "name": "LNT/LFNC Box Connector, 90-Degree Threaded Elbow, 1-inch",
+      "section": "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.2,
+      "laborDifficult": 0.25,
+      "laborVeryDifficult": 0.3,
+      "companyCost": 13.44,
+      "companyPrice": 33.6,
+      "sellNormal": 63.6,
+      "sellDifficult": 71.1,
+      "sellVeryDifficult": 78.6,
+      "sellFormulas": [
+        "=(B135*150)+F135",
+        "=(C135*150)+F135",
+        "=(D135*150)+F135"
+      ],
+      "row": 135
+    },
+    {
+      "key": "weatherproof-aluminum-box-1-gang-1-2-inch-three-hubs",
+      "name": "Weatherproof Aluminum Box, 1-Gang, 1/2-inch, Three Hubs",
+      "section": "WEATHERPROOF ALUMINUM BOXES - 1-GANG (per box)",
+      "unitLabel": null,
+      "laborNormal": 0.9,
+      "laborDifficult": 1.12,
+      "laborVeryDifficult": 1.35,
+      "companyCost": 5.95,
+      "companyPrice": 20.825,
+      "sellNormal": 155.825,
+      "sellDifficult": 188.82500000000002,
+      "sellVeryDifficult": 223.325,
+      "sellFormulas": [
+        "=(B138*150)+F138",
+        "=(C138*150)+F138",
+        "=(D138*150)+F138"
+      ],
+      "row": 138
+    },
+    {
+      "key": "weatherproof-aluminum-box-1-gang-1-2-inch-four-hubs",
+      "name": "Weatherproof Aluminum Box, 1-Gang, 1/2-inch, Four Hubs",
+      "section": "WEATHERPROOF ALUMINUM BOXES - 1-GANG (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.1,
+      "laborDifficult": 1.35,
+      "laborVeryDifficult": 1.65,
+      "companyCost": 7.35,
+      "companyPrice": 25.724999999999998,
+      "sellNormal": 190.725,
+      "sellDifficult": 228.225,
+      "sellVeryDifficult": 273.225,
+      "sellFormulas": [
+        "=(B139*150)+F139",
+        "=(C139*150)+F139",
+        "=(D139*150)+F139"
+      ],
+      "row": 139
+    },
+    {
+      "key": "weatherproof-aluminum-box-1-gang-3-4-inch-three-hubs",
+      "name": "Weatherproof Aluminum Box, 1-Gang, 3/4-inch, Three Hubs",
+      "section": "WEATHERPROOF ALUMINUM BOXES - 1-GANG (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.1,
+      "laborDifficult": 1.35,
+      "laborVeryDifficult": 1.65,
+      "companyCost": 8.98,
+      "companyPrice": 31.43,
+      "sellNormal": 196.43,
+      "sellDifficult": 233.93,
+      "sellVeryDifficult": 278.93,
+      "sellFormulas": [
+        "=(B140*150)+F140",
+        "=(C140*150)+F140",
+        "=(D140*150)+F140"
+      ],
+      "row": 140
+    },
+    {
+      "key": "weatherproof-aluminum-box-1-gang-3-4-inch-four-hubs",
+      "name": "Weatherproof Aluminum Box, 1-Gang, 3/4-inch, Four Hubs",
+      "section": "WEATHERPROOF ALUMINUM BOXES - 1-GANG (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.35,
+      "laborDifficult": 1.65,
+      "laborVeryDifficult": 2,
+      "companyCost": 9.98,
+      "companyPrice": 34.93,
+      "sellNormal": 237.43,
+      "sellDifficult": 282.43,
+      "sellVeryDifficult": 334.93,
+      "sellFormulas": [
+        "=(B141*150)+F141",
+        "=(C141*150)+F141",
+        "=(D141*150)+F141"
+      ],
+      "row": 141
+    },
+    {
+      "key": "pvc-conduit-body-type-lb-1-2-inch-two-hubs-w-cover-and-gasket",
+      "name": "PVC Conduit Body, Type LB, 1/2-inch, Two Hubs, w/ Cover and Gasket",
+      "section": "PVC CONDUIT BODIES (per body)",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 5.92,
+      "companyPrice": 20.72,
+      "sellNormal": 80.72,
+      "sellDifficult": 95.72,
+      "sellVeryDifficult": 110.72,
+      "sellFormulas": [
+        "=(B144*150)+F144",
+        "=(C144*150)+F144",
+        "=(D144*150)+F144"
+      ],
+      "row": 144
+    },
+    {
+      "key": "pvc-conduit-body-type-lb-3-4-inch-two-hubs-w-cover-and-gasket",
+      "name": "PVC Conduit Body, Type LB, 3/4-inch, Two Hubs, w/ Cover and Gasket",
+      "section": "PVC CONDUIT BODIES (per body)",
+      "unitLabel": null,
+      "laborNormal": 0.45,
+      "laborDifficult": 0.56,
+      "laborVeryDifficult": 0.67,
+      "companyCost": 6.43,
+      "companyPrice": 22.505,
+      "sellNormal": 90.005,
+      "sellDifficult": 106.50500000000001,
+      "sellVeryDifficult": 123.005,
+      "sellFormulas": [
+        "=(B145*150)+F145",
+        "=(C145*150)+F145",
+        "=(D145*150)+F145"
+      ],
+      "row": 145
+    },
+    {
+      "key": "pvc-conduit-body-type-lb-1-inch-two-hubs-w-cover-and-gasket",
+      "name": "PVC Conduit Body, Type LB, 1-inch, Two Hubs, w/ Cover and Gasket",
+      "section": "PVC CONDUIT BODIES (per body)",
+      "unitLabel": null,
+      "laborNormal": 0.5,
+      "laborDifficult": 0.62,
+      "laborVeryDifficult": 0.75,
+      "companyCost": 6.98,
+      "companyPrice": 24.43,
+      "sellNormal": 99.43,
+      "sellDifficult": 117.43,
+      "sellVeryDifficult": 136.93,
+      "sellFormulas": [
+        "=(B146*150)+F146",
+        "=(C146*150)+F146",
+        "=(D146*150)+F146"
+      ],
+      "row": 146
+    },
+    {
+      "key": "pvc-conduit-body-type-t-3-4-inch-three-hubs-w-cover-and-gasket",
+      "name": "PVC Conduit Body, Type T, 3/4-inch, Three Hubs, w/ Cover and Gasket",
+      "section": "PVC CONDUIT BODIES (per body)",
+      "unitLabel": null,
+      "laborNormal": 0.55,
+      "laborDifficult": 0.68,
+      "laborVeryDifficult": 0.82,
+      "companyCost": 6.75,
+      "companyPrice": 23.625,
+      "sellNormal": 106.125,
+      "sellDifficult": 125.62500000000001,
+      "sellVeryDifficult": 146.625,
+      "sellFormulas": [
+        "=(B147*150)+F147",
+        "=(C147*150)+F147",
+        "=(D147*150)+F147"
+      ],
+      "row": 147
+    },
+    {
+      "key": "pvc-junction-box-4-inch-x-4-inch-x-4-inch-gray-screw-cover",
+      "name": "PVC Junction Box, 4-inch x 4-inch x 4-inch, Gray Screw Cover",
+      "section": "PVC JUNCTION & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.37,
+      "laborVeryDifficult": 0.45,
+      "companyCost": 20.5,
+      "companyPrice": 51.25,
+      "sellNormal": 96.25,
+      "sellDifficult": 106.75,
+      "sellVeryDifficult": 118.75,
+      "sellFormulas": [
+        "=(B150*150)+F150",
+        "=(C150*150)+F150",
+        "=(D150*150)+F150"
+      ],
+      "row": 150
+    },
+    {
+      "key": "pvc-junction-box-6-inch-x-6-inch-x-4-inch-gray-screw-cover",
+      "name": "PVC Junction Box, 6-inch x 6-inch x 4-inch, Gray Screw Cover",
+      "section": "PVC JUNCTION & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 21.02,
+      "companyPrice": 52.55,
+      "sellNormal": 112.55,
+      "sellDifficult": 127.55,
+      "sellVeryDifficult": 142.55,
+      "sellFormulas": [
+        "=(B151*150)+F151",
+        "=(C151*150)+F151",
+        "=(D151*150)+F151"
+      ],
+      "row": 151
+    },
+    {
+      "key": "pvc-junction-box-8-inch-x-8-inch-x-4-inch-gray-screw-cover",
+      "name": "PVC Junction Box, 8-inch x 8-inch x 4-inch, Gray Screw Cover",
+      "section": "PVC JUNCTION & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 0.5,
+      "laborDifficult": 0.62,
+      "laborVeryDifficult": 0.75,
+      "companyCost": 48,
+      "companyPrice": 120,
+      "sellNormal": 195,
+      "sellDifficult": 213,
+      "sellVeryDifficult": 232.5,
+      "sellFormulas": [
+        "=(B152*150)+F152",
+        "=(C152*150)+F152",
+        "=(D152*150)+F152"
+      ],
+      "row": 152
+    },
+    {
+      "key": "nema-1-screw-cover-j-box-w-knockouts-6-inch-x-6-inch-x-4-inch",
+      "name": "NEMA 1 Screw Cover J-Box w/ Knockouts, 6-inch x 6-inch x 4-inch",
+      "section": "NEMA 1 SCREW COVER J-BOXES & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1.25,
+      "laborVeryDifficult": 1.5,
+      "companyCost": 25.24,
+      "companyPrice": 63.099999999999994,
+      "sellNormal": 213.1,
+      "sellDifficult": 250.6,
+      "sellVeryDifficult": 288.1,
+      "sellFormulas": [
+        "=(B155*150)+F155",
+        "=(C155*150)+F155",
+        "=(D155*150)+F155"
+      ],
+      "row": 155
+    },
+    {
+      "key": "nema-1-screw-cover-j-box-w-knockouts-8-inch-x-8-inch-x-4-inch",
+      "name": "NEMA 1 Screw Cover J-Box w/ Knockouts, 8-inch x 8-inch x 4-inch",
+      "section": "NEMA 1 SCREW COVER J-BOXES & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.1,
+      "laborDifficult": 1.35,
+      "laborVeryDifficult": 1.8,
+      "companyCost": 29.99,
+      "companyPrice": 74.975,
+      "sellNormal": 239.975,
+      "sellDifficult": 277.475,
+      "sellVeryDifficult": 344.975,
+      "sellFormulas": [
+        "=(B156*150)+F156",
+        "=(C156*150)+F156",
+        "=(D156*150)+F156"
+      ],
+      "row": 156
+    },
+    {
+      "key": "nema-1-screw-cover-j-box-w-knockouts-10-inch-x-10-inch-x-4-inch",
+      "name": "NEMA 1 Screw Cover J-Box w/ Knockouts, 10-inch x 10-inch x 4-inch",
+      "section": "NEMA 1 SCREW COVER J-BOXES & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.15,
+      "laborDifficult": 1.4,
+      "laborVeryDifficult": 1.9,
+      "companyCost": 44.34,
+      "companyPrice": 110.85000000000001,
+      "sellNormal": 283.35,
+      "sellDifficult": 320.85,
+      "sellVeryDifficult": 395.85,
+      "sellFormulas": [
+        "=(B157*150)+F157",
+        "=(C157*150)+F157",
+        "=(D157*150)+F157"
+      ],
+      "row": 157
+    },
+    {
+      "key": "nema-1-screw-cover-j-box-w-knockouts-12-inch-x-12-inch-x-4-inch",
+      "name": "NEMA 1 Screw Cover J-Box w/ Knockouts, 12-inch x 12-inch x 4-inch",
+      "section": "NEMA 1 SCREW COVER J-BOXES & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.25,
+      "laborDifficult": 1.6,
+      "laborVeryDifficult": 2.15,
+      "companyCost": 28.39,
+      "companyPrice": 70.975,
+      "sellNormal": 258.475,
+      "sellDifficult": 310.975,
+      "sellVeryDifficult": 393.475,
+      "sellFormulas": [
+        "=(B158*150)+F158",
+        "=(C158*150)+F158",
+        "=(D158*150)+F158"
+      ],
+      "row": 158
+    },
+    {
+      "key": "nema-3r-rain-tight-j-box-6-inch-x-6-inch-x-4-inch",
+      "name": "NEMA 3R Rain-Tight J-Box, 6-inch x 6-inch x 4-inch",
+      "section": "NEMA 3R RAIN-TIGHT J-BOXES & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1.25,
+      "laborVeryDifficult": 1.5,
+      "companyCost": 40.33,
+      "companyPrice": 100.82499999999999,
+      "sellNormal": 250.825,
+      "sellDifficult": 288.325,
+      "sellVeryDifficult": 325.825,
+      "sellFormulas": [
+        "=(B161*150)+F161",
+        "=(C161*150)+F161",
+        "=(D161*150)+F161"
+      ],
+      "row": 161
+    },
+    {
+      "key": "nema-3r-rain-tight-j-box-8-inch-x-6-inch-x-4-inch",
+      "name": "NEMA 3R Rain-Tight J-Box, 8-inch x 6-inch x 4-inch",
+      "section": "NEMA 3R RAIN-TIGHT J-BOXES & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.1,
+      "laborDifficult": 1.35,
+      "laborVeryDifficult": 1.8,
+      "companyCost": 71.3,
+      "companyPrice": 128.34,
+      "sellNormal": 293.34000000000003,
+      "sellDifficult": 330.84000000000003,
+      "sellVeryDifficult": 398.34000000000003,
+      "sellFormulas": [
+        "=(B162*150)+F162",
+        "=(C162*150)+F162",
+        "=(D162*150)+F162"
+      ],
+      "row": 162
+    },
+    {
+      "key": "nema-3r-rain-tight-j-box-8-inch-x-8-inch-x-4-inch",
+      "name": "NEMA 3R Rain-Tight J-Box, 8-inch x 8-inch x 4-inch",
+      "section": "NEMA 3R RAIN-TIGHT J-BOXES & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.1,
+      "laborDifficult": 1.35,
+      "laborVeryDifficult": 1.8,
+      "companyCost": 52.79,
+      "companyPrice": 95.022,
+      "sellNormal": 260.022,
+      "sellDifficult": 297.522,
+      "sellVeryDifficult": 365.022,
+      "sellFormulas": [
+        "=(B163*150)+F163",
+        "=(C163*150)+F163",
+        "=(D163*150)+F163"
+      ],
+      "row": 163
+    },
+    {
+      "key": "nema-3r-rain-tight-j-box-10-inch-x-10-inch-x-4-inch",
+      "name": "NEMA 3R Rain-Tight J-Box, 10-inch x 10-inch x 4-inch",
+      "section": "NEMA 3R RAIN-TIGHT J-BOXES & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.15,
+      "laborDifficult": 1.4,
+      "laborVeryDifficult": 1.9,
+      "companyCost": 68.65,
+      "companyPrice": 123.57000000000001,
+      "sellNormal": 296.07,
+      "sellDifficult": 333.57,
+      "sellVeryDifficult": 408.57,
+      "sellFormulas": [
+        "=(B164*150)+F164",
+        "=(C164*150)+F164",
+        "=(D164*150)+F164"
+      ],
+      "row": 164
+    },
+    {
+      "key": "nema-3r-rain-tight-j-box-12-inch-x-12-inch-x-4-inch",
+      "name": "NEMA 3R Rain-Tight J-Box, 12-inch x 12-inch x 4-inch",
+      "section": "NEMA 3R RAIN-TIGHT J-BOXES & PULL BOXES (per box)",
+      "unitLabel": null,
+      "laborNormal": 1.25,
+      "laborDifficult": 1.6,
+      "laborVeryDifficult": 2.15,
+      "companyCost": 76,
+      "companyPrice": 136.8,
+      "sellNormal": 324.3,
+      "sellDifficult": 376.8,
+      "sellVeryDifficult": 459.3,
+      "sellFormulas": [
+        "=(B165*150)+F165",
+        "=(C165*150)+F165",
+        "=(D165*150)+F165"
+      ],
+      "row": 165
+    },
+    {
+      "key": "pvc-handy-box-1-gang-12-cu-in",
+      "name": "PVC Handy Box, 1-Gang, 12 cu in",
+      "section": "PVC DEVICE BOXES & ACCESSORIES (per each)",
+      "unitLabel": null,
+      "laborNormal": 0.25,
+      "laborDifficult": 0.3,
+      "laborVeryDifficult": 0.35,
+      "companyCost": 1.84,
+      "companyPrice": 6.44,
+      "sellNormal": 43.94,
+      "sellDifficult": 51.44,
+      "sellVeryDifficult": 58.94,
+      "sellFormulas": [
+        "=(B168*150)+F168",
+        "=(C168*150)+F168",
+        "=(D168*150)+F168"
+      ],
+      "row": 168
+    },
+    {
+      "key": "pvc-box-extension-ring",
+      "name": "PVC Box Extension Ring",
+      "section": "PVC DEVICE BOXES & ACCESSORIES (per each)",
+      "unitLabel": null,
+      "laborNormal": 0.15,
+      "laborDifficult": 0.2,
+      "laborVeryDifficult": 0.25,
+      "companyCost": 3.72,
+      "companyPrice": 13.020000000000001,
+      "sellNormal": 35.52,
+      "sellDifficult": 43.02,
+      "sellVeryDifficult": 50.52,
+      "sellFormulas": [
+        "=(B169*150)+F169",
+        "=(C169*150)+F169",
+        "=(D169*150)+F169"
+      ],
+      "row": 169
+    },
+    {
+      "key": "pvc-plaster-ring-mud-ring-1-gang",
+      "name": "PVC Plaster Ring / Mud Ring, 1-Gang",
+      "section": "PVC DEVICE BOXES & ACCESSORIES (per each)",
+      "unitLabel": null,
+      "laborNormal": 0.15,
+      "laborDifficult": 0.2,
+      "laborVeryDifficult": 0.25,
+      "companyCost": 9.26,
+      "companyPrice": 32.41,
+      "sellNormal": 54.91,
+      "sellDifficult": 62.41,
+      "sellVeryDifficult": 69.91,
+      "sellFormulas": [
+        "=(B170*150)+F170",
+        "=(C170*150)+F170",
+        "=(D170*150)+F170"
+      ],
+      "row": 170
+    },
+    {
+      "key": "pvc-box-cover-blank-1-gang-handy-box",
+      "name": "PVC Box Cover, Blank, 1-Gang Handy Box",
+      "section": "PVC DEVICE BOXES & ACCESSORIES (per each)",
+      "unitLabel": null,
+      "laborNormal": 0.08,
+      "laborDifficult": 0.09,
+      "laborVeryDifficult": 0.1,
+      "companyCost": 1.35,
+      "companyPrice": 4.7250000000000005,
+      "sellNormal": 16.725,
+      "sellDifficult": 18.225,
+      "sellVeryDifficult": 19.725,
+      "sellFormulas": [
+        "=(B171*150)+F171",
+        "=(C171*150)+F171",
+        "=(D171*150)+F171"
+      ],
+      "row": 171
+    },
+    {
+      "key": "emt-set-screw-coupling-1-2-inch",
+      "name": "EMT Set Screw Coupling, 1/2-inch",
+      "section": "EMT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.04,
+      "laborDifficult": 0.05,
+      "laborVeryDifficult": 0.06,
+      "companyCost": 0.4,
+      "companyPrice": 2,
+      "sellNormal": 8,
+      "sellDifficult": 9.5,
+      "sellVeryDifficult": 11,
+      "sellFormulas": [
+        "=(B174*150)+F174",
+        "=(C174*150)+F174",
+        "=(D174*150)+F174"
+      ],
+      "row": 174
+    },
+    {
+      "key": "emt-set-screw-coupling-3-4-inch",
+      "name": "EMT Set Screw Coupling, 3/4-inch",
+      "section": "EMT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.05,
+      "laborDifficult": 0.06,
+      "laborVeryDifficult": 0.07,
+      "companyCost": 0.53,
+      "companyPrice": 2.6500000000000004,
+      "sellNormal": 10.15,
+      "sellDifficult": 11.65,
+      "sellVeryDifficult": 13.150000000000002,
+      "sellFormulas": [
+        "=(B175*150)+F175",
+        "=(C175*150)+F175",
+        "=(D175*150)+F175"
+      ],
+      "row": 175
+    },
+    {
+      "key": "emt-set-screw-box-connector-1-2-inch",
+      "name": "EMT Set Screw Box Connector, 1/2-inch",
+      "section": "EMT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.08,
+      "laborDifficult": 0.1,
+      "laborVeryDifficult": 0.12,
+      "companyCost": 0.38,
+      "companyPrice": 1.9,
+      "sellNormal": 13.9,
+      "sellDifficult": 16.9,
+      "sellVeryDifficult": 19.9,
+      "sellFormulas": [
+        "=(B176*150)+F176",
+        "=(C176*150)+F176",
+        "=(D176*150)+F176"
+      ],
+      "row": 176
+    },
+    {
+      "key": "emt-set-screw-box-connector-3-4-inch",
+      "name": "EMT Set Screw Box Connector, 3/4-inch",
+      "section": "EMT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.1,
+      "laborDifficult": 0.12,
+      "laborVeryDifficult": 0.15,
+      "companyCost": 0.6,
+      "companyPrice": 3,
+      "sellNormal": 18,
+      "sellDifficult": 21,
+      "sellVeryDifficult": 25.5,
+      "sellFormulas": [
+        "=(B177*150)+F177",
+        "=(C177*150)+F177",
+        "=(D177*150)+F177"
+      ],
+      "row": 177
+    },
+    {
+      "key": "emt-compression-coupling-raintight-1-2-inch",
+      "name": "EMT Compression Coupling, Raintight, 1/2-inch",
+      "section": "EMT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.12,
+      "laborDifficult": 0.15,
+      "laborVeryDifficult": 0.18,
+      "companyCost": 1,
+      "companyPrice": 3.5,
+      "sellNormal": 21.5,
+      "sellDifficult": 26,
+      "sellVeryDifficult": 30.5,
+      "sellFormulas": [
+        "=(B178*150)+F178",
+        "=(C178*150)+F178",
+        "=(D178*150)+F178"
+      ],
+      "row": 178
+    },
+    {
+      "key": "emt-compression-coupling-raintight-3-4-inch-per-fitting",
+      "name": "EMT Compression Coupling, Raintight, 3/4-inch — per fitting",
+      "section": "EMT FITTINGS (per fitting)",
+      "unitLabel": "per fitting",
+      "laborNormal": 0.14,
+      "laborDifficult": 0.17,
+      "laborVeryDifficult": 0.21,
+      "companyCost": 1.15,
+      "companyPrice": 4.0249999999999995,
+      "sellNormal": 25.025000000000002,
+      "sellDifficult": 29.525000000000002,
+      "sellVeryDifficult": 35.525,
+      "sellFormulas": [
+        "=(B179*150)+F179",
+        "=(C179*150)+F179",
+        "=(D179*150)+F179"
+      ],
+      "row": 179
+    },
+    {
+      "key": "emt-compression-box-connector-raintight-1-2-inch",
+      "name": "EMT Compression Box Connector, Raintight, 1/2-inch",
+      "section": "EMT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.25,
+      "laborDifficult": 0.31,
+      "laborVeryDifficult": 0.37,
+      "companyCost": 0.89,
+      "companyPrice": 4.45,
+      "sellNormal": 41.95,
+      "sellDifficult": 50.95,
+      "sellVeryDifficult": 59.95,
+      "sellFormulas": [
+        "=(B180*150)+F180",
+        "=(C180*150)+F180",
+        "=(D180*150)+F180"
+      ],
+      "row": 180
+    },
+    {
+      "key": "emt-compression-box-connector-raintight-3-4-inch",
+      "name": "EMT Compression Box Connector, Raintight, 3/4-inch",
+      "section": "EMT FITTINGS (per fitting)",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.37,
+      "laborVeryDifficult": 0.45,
+      "companyCost": 1.33,
+      "companyPrice": 4.655,
+      "sellNormal": 49.655,
+      "sellDifficult": 60.155,
+      "sellVeryDifficult": 72.155,
+      "sellFormulas": [
+        "=(B181*150)+F181",
+        "=(C181*150)+F181",
+        "=(D181*150)+F181"
+      ],
+      "row": 181
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-40-1-2-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 40, 1/2-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 40 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.2,
+      "laborDifficult": 0.25,
+      "laborVeryDifficult": 0.3,
+      "companyCost": 1.08,
+      "companyPrice": 3.7800000000000002,
+      "sellNormal": 33.78,
+      "sellDifficult": 41.28,
+      "sellVeryDifficult": 48.78,
+      "sellFormulas": [
+        "=(B184*150)+F184",
+        "=(C184*150)+F184",
+        "=(D184*150)+F184"
+      ],
+      "row": 184
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-40-3-4-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 40, 3/4-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 40 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.22,
+      "laborDifficult": 0.28,
+      "laborVeryDifficult": 0.33,
+      "companyCost": 1.82,
+      "companyPrice": 6.37,
+      "sellNormal": 39.37,
+      "sellDifficult": 48.370000000000005,
+      "sellVeryDifficult": 55.87,
+      "sellFormulas": [
+        "=(B185*150)+F185",
+        "=(C185*150)+F185",
+        "=(D185*150)+F185"
+      ],
+      "row": 185
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-40-1-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 40, 1-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 40 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.25,
+      "laborDifficult": 0.31,
+      "laborVeryDifficult": 0.38,
+      "companyCost": 1.98,
+      "companyPrice": 6.93,
+      "sellNormal": 44.43,
+      "sellDifficult": 53.43,
+      "sellVeryDifficult": 63.93,
+      "sellFormulas": [
+        "=(B186*150)+F186",
+        "=(C186*150)+F186",
+        "=(D186*150)+F186"
+      ],
+      "row": 186
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-40-1-1-4-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 40, 1 1/4-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 40 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.32,
+      "laborDifficult": 0.4,
+      "laborVeryDifficult": 0.48,
+      "companyCost": 3.72,
+      "companyPrice": 13.020000000000001,
+      "sellNormal": 61.02,
+      "sellDifficult": 73.02,
+      "sellVeryDifficult": 85.02,
+      "sellFormulas": [
+        "=(B187*150)+F187",
+        "=(C187*150)+F187",
+        "=(D187*150)+F187"
+      ],
+      "row": 187
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-40-2-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 40, 2-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 40 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.5,
+      "laborDifficult": 0.63,
+      "laborVeryDifficult": 0.75,
+      "companyCost": 6.68,
+      "companyPrice": 23.38,
+      "sellNormal": 98.38,
+      "sellDifficult": 117.88,
+      "sellVeryDifficult": 135.88,
+      "sellFormulas": [
+        "=(B188*150)+F188",
+        "=(C188*150)+F188",
+        "=(D188*150)+F188"
+      ],
+      "row": 188
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-80-1-2-inc",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 80, 1/2-inc",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 80 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.22,
+      "laborDifficult": 0.27,
+      "laborVeryDifficult": 0.32,
+      "companyCost": 3.12,
+      "companyPrice": 10.92,
+      "sellNormal": 43.92,
+      "sellDifficult": 51.42,
+      "sellVeryDifficult": 58.92,
+      "sellFormulas": [
+        "=(B191*150)+F191",
+        "=(C191*150)+F191",
+        "=(D191*150)+F191"
+      ],
+      "row": 191
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-80-1-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 80, 1-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 80 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.28,
+      "laborDifficult": 0.33,
+      "laborVeryDifficult": 0.38,
+      "companyCost": 6.7,
+      "companyPrice": 23.45,
+      "sellNormal": 65.45,
+      "sellDifficult": 72.95,
+      "sellVeryDifficult": 80.45,
+      "sellFormulas": [
+        "=(B192*150)+F192",
+        "=(C192*150)+F192",
+        "=(D192*150)+F192"
+      ],
+      "row": 192
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-80-1-1-4-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 80, 1 1/4-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 80 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.35,
+      "laborDifficult": 0.4,
+      "laborVeryDifficult": 0.45,
+      "companyCost": 9.62,
+      "companyPrice": 33.669999999999995,
+      "sellNormal": 86.16999999999999,
+      "sellDifficult": 93.66999999999999,
+      "sellVeryDifficult": 101.16999999999999,
+      "sellFormulas": [
+        "=(B193*150)+F193",
+        "=(C193*150)+F193",
+        "=(D193*150)+F193"
+      ],
+      "row": 193
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-80-1-1-2-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 80, 1 1/2-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 80 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.46,
+      "laborDifficult": 0.56,
+      "laborVeryDifficult": 0.66,
+      "companyCost": 8.38,
+      "companyPrice": 29.330000000000002,
+      "sellNormal": 98.33,
+      "sellDifficult": 113.33000000000001,
+      "sellVeryDifficult": 128.33,
+      "sellFormulas": [
+        "=(B194*150)+F194",
+        "=(C194*150)+F194",
+        "=(D194*150)+F194"
+      ],
+      "row": 194
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-80-2-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 80, 2-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 80 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.58,
+      "laborDifficult": 0.73,
+      "laborVeryDifficult": 0.88,
+      "companyCost": 13.98,
+      "companyPrice": 34.95,
+      "sellNormal": 121.95,
+      "sellDifficult": 144.45,
+      "sellVeryDifficult": 166.95,
+      "sellFormulas": [
+        "=(B195*150)+F195",
+        "=(C195*150)+F195",
+        "=(D195*150)+F195"
+      ],
+      "row": 195
+    },
+    {
+      "key": "pvc-factory-elbow-90-degree-schedule-80-3-inch",
+      "name": "PVC Factory Elbow, 90-Degree, Schedule 80, 3-inch",
+      "section": "PVC FACTORY ELBOWS - SCHEDULE 80 (per elbow)",
+      "unitLabel": null,
+      "laborNormal": 0.84,
+      "laborDifficult": 1.09,
+      "laborVeryDifficult": 1.34,
+      "companyCost": 44.6,
+      "companyPrice": 111.5,
+      "sellNormal": 237.5,
+      "sellDifficult": 275,
+      "sellVeryDifficult": 312.5,
+      "sellFormulas": [
+        "=(B196*150)+F196",
+        "=(C196*150)+F196",
+        "=(D196*150)+F196"
+      ],
+      "row": 196
+    },
+    {
+      "key": "nm-romex-cable-box-connector-3-8-inch",
+      "name": "NM/Romex Cable Box Connector, 3/8-inch",
+      "section": "CABLE BOX CONNECTORS (per connector)",
+      "unitLabel": null,
+      "laborNormal": 0.1,
+      "laborDifficult": 0.12,
+      "laborVeryDifficult": 0.15,
+      "companyCost": 0.19,
+      "companyPrice": 0.95,
+      "sellNormal": 15.95,
+      "sellDifficult": 18.95,
+      "sellVeryDifficult": 23.45,
+      "sellFormulas": [
+        "=(B199*150)+F199",
+        "=(C199*150)+F199",
+        "=(D199*150)+F199"
+      ],
+      "row": 199
+    },
+    {
+      "key": "nm-romex-cable-box-connector-1-2-inch",
+      "name": "NM/Romex Cable Box Connector, 1/2-inch",
+      "section": "CABLE BOX CONNECTORS (per connector)",
+      "unitLabel": null,
+      "laborNormal": 0.11,
+      "laborDifficult": 0.13,
+      "laborVeryDifficult": 0.16,
+      "companyCost": 0.28,
+      "companyPrice": 1.4000000000000001,
+      "sellNormal": 17.9,
+      "sellDifficult": 20.9,
+      "sellVeryDifficult": 25.4,
+      "sellFormulas": [
+        "=(B200*150)+F200",
+        "=(C200*150)+F200",
+        "=(D200*150)+F200"
+      ],
+      "row": 200
+    },
+    {
+      "key": "nm-romex-cable-box-connector-3-4-inch",
+      "name": "NM/Romex Cable Box Connector, 3/4-inch",
+      "section": "CABLE BOX CONNECTORS (per connector)",
+      "unitLabel": null,
+      "laborNormal": 0.13,
+      "laborDifficult": 0.17,
+      "laborVeryDifficult": 0.2,
+      "companyCost": 1.11,
+      "companyPrice": 3.8850000000000002,
+      "sellNormal": 23.385,
+      "sellDifficult": 29.385000000000005,
+      "sellVeryDifficult": 33.885,
+      "sellFormulas": [
+        "=(B201*150)+F201",
+        "=(C201*150)+F201",
+        "=(D201*150)+F201"
+      ],
+      "row": 201
+    },
+    {
+      "key": "nm-romex-cable-box-connector-1-inch",
+      "name": "NM/Romex Cable Box Connector, 1-inch",
+      "section": "CABLE BOX CONNECTORS (per connector)",
+      "unitLabel": null,
+      "laborNormal": 0.17,
+      "laborDifficult": 0.21,
+      "laborVeryDifficult": 0.25,
+      "companyCost": 2.42,
+      "companyPrice": 8.469999999999999,
+      "sellNormal": 33.97,
+      "sellDifficult": 39.97,
+      "sellVeryDifficult": 45.97,
+      "sellFormulas": [
+        "=(B202*150)+F202",
+        "=(C202*150)+F202",
+        "=(D202*150)+F202"
+      ],
+      "row": 202
+    },
+    {
+      "key": "mc-ac-armored-cable-box-connector-1-2-inch",
+      "name": "MC/AC Armored Cable Box Connector, 1/2-inch",
+      "section": "CABLE BOX CONNECTORS (per connector)",
+      "unitLabel": null,
+      "laborNormal": 0.18,
+      "laborDifficult": 0.22,
+      "laborVeryDifficult": 0.27,
+      "companyCost": 0.81,
+      "companyPrice": 4.050000000000001,
+      "sellNormal": 31.05,
+      "sellDifficult": 37.05,
+      "sellVeryDifficult": 44.55,
+      "sellFormulas": [
+        "=(B203*150)+F203",
+        "=(C203*150)+F203",
+        "=(D203*150)+F203"
+      ],
+      "row": 203
+    },
+    {
+      "key": "mc-ac-armored-cable-box-connector-3-4-inch",
+      "name": "MC/AC Armored Cable Box Connector, 3/4-inch",
+      "section": "CABLE BOX CONNECTORS (per connector)",
+      "unitLabel": null,
+      "laborNormal": 0.19,
+      "laborDifficult": 0.23,
+      "laborVeryDifficult": 0.28,
+      "companyCost": 0.92,
+      "companyPrice": 4.6000000000000005,
+      "sellNormal": 33.1,
+      "sellDifficult": 39.1,
+      "sellVeryDifficult": 46.60000000000001,
+      "sellFormulas": [
+        "=(B204*150)+F204",
+        "=(C204*150)+F204",
+        "=(D204*150)+F204"
+      ],
+      "row": 204
+    },
+    {
+      "key": "mc-ac-armored-cable-box-connector-1-inch",
+      "name": "MC/AC Armored Cable Box Connector, 1-inch",
+      "section": "CABLE BOX CONNECTORS (per connector)",
+      "unitLabel": null,
+      "laborNormal": 0.2,
+      "laborDifficult": 0.25,
+      "laborVeryDifficult": 0.3,
+      "companyCost": 2.47,
+      "companyPrice": 8.645000000000001,
+      "sellNormal": 38.645,
+      "sellDifficult": 46.145,
+      "sellVeryDifficult": 53.645,
+      "sellFormulas": [
+        "=(B205*150)+F205",
+        "=(C205*150)+F205",
+        "=(D205*150)+F205"
+      ],
+      "row": 205
+    },
+    {
+      "key": "service-entrance-cap-weatherhead-3-4-inch-per-cap",
+      "name": "Service Entrance Cap / Weatherhead, 3/4-inch — per cap",
+      "section": "ALUMINUM SERVICE ENTRANCE CAPS (per cap)",
+      "unitLabel": "per cap",
+      "laborNormal": 0.7,
+      "laborDifficult": 0.87,
+      "laborVeryDifficult": 1.05,
+      "companyCost": 8.2,
+      "companyPrice": 28.699999999999996,
+      "sellNormal": 133.7,
+      "sellDifficult": 159.2,
+      "sellVeryDifficult": 186.2,
+      "sellFormulas": [
+        "=(B208*150)+F208",
+        "=(C208*150)+F208",
+        "=(D208*150)+F208"
+      ],
+      "row": 208
+    },
+    {
+      "key": "service-entrance-cap-weatherhead-1-inch",
+      "name": "Service Entrance Cap / Weatherhead, 1-inch",
+      "section": "ALUMINUM SERVICE ENTRANCE CAPS (per cap)",
+      "unitLabel": null,
+      "laborNormal": 0.8,
+      "laborDifficult": 1,
+      "laborVeryDifficult": 1.2,
+      "companyCost": 10.39,
+      "companyPrice": 25.975,
+      "sellNormal": 145.975,
+      "sellDifficult": 175.975,
+      "sellVeryDifficult": 205.975,
+      "sellFormulas": [
+        "=(B209*150)+F209",
+        "=(C209*150)+F209",
+        "=(D209*150)+F209"
+      ],
+      "row": 209
+    },
+    {
+      "key": "service-entrance-cap-weatherhead-1-1-4-inch",
+      "name": "Service Entrance Cap / Weatherhead, 1 1/4-inch",
+      "section": "ALUMINUM SERVICE ENTRANCE CAPS (per cap)",
+      "unitLabel": null,
+      "laborNormal": 0.9,
+      "laborDifficult": 1.12,
+      "laborVeryDifficult": 1.35,
+      "companyCost": 11.6,
+      "companyPrice": 29,
+      "sellNormal": 164,
+      "sellDifficult": 197.00000000000003,
+      "sellVeryDifficult": 231.5,
+      "sellFormulas": [
+        "=(B210*150)+F210",
+        "=(C210*150)+F210",
+        "=(D210*150)+F210"
+      ],
+      "row": 210
+    },
+    {
+      "key": "service-entrance-cap-weatherhead-1-1-2-inch",
+      "name": "Service Entrance Cap / Weatherhead, 1 1/2-inch",
+      "section": "ALUMINUM SERVICE ENTRANCE CAPS (per cap)",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1.25,
+      "laborVeryDifficult": 1.5,
+      "companyCost": 15.96,
+      "companyPrice": 39.900000000000006,
+      "sellNormal": 189.9,
+      "sellDifficult": 227.4,
+      "sellVeryDifficult": 264.9,
+      "sellFormulas": [
+        "=(B211*150)+F211",
+        "=(C211*150)+F211",
+        "=(D211*150)+F211"
+      ],
+      "row": 211
+    },
+    {
+      "key": "service-entrance-cap-weatherhead-2-inch",
+      "name": "Service Entrance Cap / Weatherhead, 2-inch",
+      "section": "ALUMINUM SERVICE ENTRANCE CAPS (per cap)",
+      "unitLabel": null,
+      "laborNormal": 1.25,
+      "laborDifficult": 1.55,
+      "laborVeryDifficult": 1.85,
+      "companyCost": 18.98,
+      "companyPrice": 47.45,
+      "sellNormal": 234.95,
+      "sellDifficult": 279.95,
+      "sellVeryDifficult": 324.95,
+      "sellFormulas": [
+        "=(B212*150)+F212",
+        "=(C212*150)+F212",
+        "=(D212*150)+F212"
+      ],
+      "row": 212
+    },
+    {
+      "key": "insulated-grounding-bushing-w-lug-and-lock-ring-1-2-inch",
+      "name": "Insulated Grounding Bushing w/ Lug and lock ring, 1/2-inch",
+      "section": "GROUNDING BUSHINGS (per bushing)",
+      "unitLabel": null,
+      "laborNormal": 0.4,
+      "laborDifficult": 0.5,
+      "laborVeryDifficult": 0.6,
+      "companyCost": 7,
+      "companyPrice": 24.5,
+      "sellNormal": 84.5,
+      "sellDifficult": 99.5,
+      "sellVeryDifficult": 114.5,
+      "sellFormulas": [
+        "=(B215*150)+F215",
+        "=(C215*150)+F215",
+        "=(D215*150)+F215"
+      ],
+      "row": 215
+    },
+    {
+      "key": "insulated-grounding-bushing-w-lug-and-lock-ring-3-4-inch",
+      "name": "Insulated Grounding Bushing w/ Lug and lock ring, 3/4-inch",
+      "section": "GROUNDING BUSHINGS (per bushing)",
+      "unitLabel": null,
+      "laborNormal": 0.45,
+      "laborDifficult": 0.56,
+      "laborVeryDifficult": 0.67,
+      "companyCost": 7.99,
+      "companyPrice": 27.965,
+      "sellNormal": 95.465,
+      "sellDifficult": 111.96500000000002,
+      "sellVeryDifficult": 128.465,
+      "sellFormulas": [
+        "=(B216*150)+F216",
+        "=(C216*150)+F216",
+        "=(D216*150)+F216"
+      ],
+      "row": 216
+    },
+    {
+      "key": "insulated-grounding-bushing-w-lug-and-lock-ring-1-inch",
+      "name": "Insulated Grounding Bushing w/ Lug and lock ring, 1-inch",
+      "section": "GROUNDING BUSHINGS (per bushing)",
+      "unitLabel": null,
+      "laborNormal": 0.5,
+      "laborDifficult": 0.62,
+      "laborVeryDifficult": 0.75,
+      "companyCost": 9.76,
+      "companyPrice": 34.16,
+      "sellNormal": 109.16,
+      "sellDifficult": 127.16,
+      "sellVeryDifficult": 146.66,
+      "sellFormulas": [
+        "=(B217*150)+F217",
+        "=(C217*150)+F217",
+        "=(D217*150)+F217"
+      ],
+      "row": 217
+    },
+    {
+      "key": "insulated-grounding-bushing-w-lug-and-lock-nut-2-inch",
+      "name": "Insulated Grounding Bushing w/ Lug and lock nut, 2-inch",
+      "section": "GROUNDING BUSHINGS (per bushing)",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1.25,
+      "laborVeryDifficult": 1.5,
+      "companyCost": 16.61,
+      "companyPrice": 41.525,
+      "sellNormal": 191.525,
+      "sellDifficult": 229.025,
+      "sellVeryDifficult": 266.525,
+      "sellFormulas": [
+        "=(B218*150)+F218",
+        "=(C218*150)+F218",
+        "=(D218*150)+F218"
+      ],
+      "row": 218
+    },
+    {
+      "key": "insulated-multi-tap-connector-14-to-4-awg-3-port",
+      "name": "Insulated Multi-Tap Connector, #14 to #4 AWG, 3-Port",
+      "section": "INSULATED MULTI-TAP CONNECTORS (per connector)",
+      "unitLabel": null,
+      "laborNormal": 0.75,
+      "laborDifficult": 0.93,
+      "laborVeryDifficult": 1.14,
+      "companyCost": 27.23,
+      "companyPrice": 68.075,
+      "sellNormal": 180.575,
+      "sellDifficult": 207.575,
+      "sellVeryDifficult": 239.075,
+      "sellFormulas": [
+        "=(B221*150)+F221",
+        "=(C221*150)+F221",
+        "=(D221*150)+F221"
+      ],
+      "row": 221
+    },
+    {
+      "key": "insulated-multi-tap-connector-14-to-2-0-awg-2-port",
+      "name": "Insulated Multi-Tap Connector, #14 to 2/0 AWG, 2-Port",
+      "section": "INSULATED MULTI-TAP CONNECTORS (per connector)",
+      "unitLabel": null,
+      "laborNormal": 0.7,
+      "laborDifficult": 0.88,
+      "laborVeryDifficult": 1.06,
+      "companyCost": 33.6,
+      "companyPrice": 84,
+      "sellNormal": 189,
+      "sellDifficult": 216,
+      "sellVeryDifficult": 243,
+      "sellFormulas": [
+        "=(B222*150)+F222",
+        "=(C222*150)+F222",
+        "=(D222*150)+F222"
+      ],
+      "row": 222
+    },
+    {
+      "key": "ground-rod-5-8-inch-x-8-ft-copper-bonded-steel-with-clamp",
+      "name": "Ground Rod, 5/8-inch x 8-ft, Copper-Bonded Steel, with clamp",
+      "section": "GROUNDING & BONDING",
+      "unitLabel": null,
+      "laborNormal": 1.6,
+      "laborDifficult": 2,
+      "laborVeryDifficult": 2.5,
+      "companyCost": 33.36,
+      "companyPrice": 83.4,
+      "sellNormal": 323.4,
+      "sellDifficult": 383.4,
+      "sellVeryDifficult": 458.4,
+      "sellFormulas": [
+        "=(B225*150)+F225",
+        "=(C225*150)+F225",
+        "=(D225*150)+F225"
+      ],
+      "row": 225
+    },
+    {
+      "key": "ground-rod-1-2-inch-x-8-ft-copper-bonded-steel-with-clamp",
+      "name": "Ground Rod, 1/2-inch x 8-ft, Copper-Bonded Steel, with clamp",
+      "section": "GROUNDING & BONDING",
+      "unitLabel": null,
+      "laborNormal": 1.6,
+      "laborDifficult": 2,
+      "laborVeryDifficult": 2.5,
+      "companyCost": 30.040000000000003,
+      "companyPrice": 75.10000000000001,
+      "sellNormal": 315.1,
+      "sellDifficult": 375.1,
+      "sellVeryDifficult": 450.1,
+      "sellFormulas": [
+        "=(B226*150)+F226",
+        "=(C226*150)+F226",
+        "=(D226*150)+F226"
+      ],
+      "row": 226
+    },
+    {
+      "key": "ground-rod-clamp-5-8-inch",
+      "name": "Ground Rod Clamp, 5/8-inch",
+      "section": "GROUNDING & BONDING",
+      "unitLabel": null,
+      "laborNormal": 0.05,
+      "laborDifficult": 0.05,
+      "laborVeryDifficult": 0.05,
+      "companyCost": 3.8,
+      "companyPrice": 13.299999999999999,
+      "sellNormal": 20.799999999999997,
+      "sellDifficult": 20.799999999999997,
+      "sellVeryDifficult": 20.799999999999997,
+      "sellFormulas": [
+        "=(B227*150)+F227",
+        "=(C227*150)+F227",
+        "=(D227*150)+F227"
+      ],
+      "row": 227
+    },
+    {
+      "key": "ground-rod-clamp-1-2-inch-bronze",
+      "name": "Ground Rod Clamp, 1/2-inch, Bronze",
+      "section": "GROUNDING & BONDING",
+      "unitLabel": null,
+      "laborNormal": 0.05,
+      "laborDifficult": 0.05,
+      "laborVeryDifficult": 0.05,
+      "companyCost": 3.6,
+      "companyPrice": 12.6,
+      "sellNormal": 20.1,
+      "sellDifficult": 20.1,
+      "sellVeryDifficult": 20.1,
+      "sellFormulas": [
+        "=(B228*150)+F228",
+        "=(C228*150)+F228",
+        "=(D228*150)+F228"
+      ],
+      "row": 228
+    },
+    {
+      "key": "bare-solid-copper-grounding-electrode-conductor-6-awg",
+      "name": "Bare Solid Copper Grounding Electrode Conductor, #6 AWG",
+      "section": "GROUNDING & BONDING",
+      "unitLabel": null,
+      "laborNormal": 0.011,
+      "laborDifficult": 0.01375,
+      "laborVeryDifficult": 0.0165,
+      "companyCost": 1.63,
+      "companyPrice": 5.705,
+      "sellNormal": 7.355,
+      "sellDifficult": 7.7675,
+      "sellVeryDifficult": 8.18,
+      "sellFormulas": [
+        "=(B229*150)+F229",
+        "=(C229*150)+F229",
+        "=(D229*150)+F229"
+      ],
+      "row": 229
+    },
+    {
+      "key": "bare-solid-copper-grounding-electrode-conductor-4-awg",
+      "name": "Bare Solid Copper Grounding Electrode Conductor, #4 AWG",
+      "section": "GROUNDING & BONDING",
+      "unitLabel": null,
+      "laborNormal": 0.013,
+      "laborDifficult": 0.01625,
+      "laborVeryDifficult": 0.0195,
+      "companyCost": 2.37,
+      "companyPrice": 8.295,
+      "sellNormal": 10.245,
+      "sellDifficult": 10.7325,
+      "sellVeryDifficult": 11.219999999999999,
+      "sellFormulas": [
+        "=(B230*150)+F230",
+        "=(C230*150)+F230",
+        "=(D230*150)+F230"
+      ],
+      "row": 230
+    },
+    {
+      "key": "intersystem-bonding-termination",
+      "name": "Intersystem Bonding Termination",
+      "section": "GROUNDING & BONDING",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1,
+      "laborVeryDifficult": 1,
+      "companyCost": 29.53,
+      "companyPrice": 73.825,
+      "sellNormal": 223.825,
+      "sellDifficult": 223.825,
+      "sellVeryDifficult": 223.825,
+      "sellFormulas": [
+        "=(B231*150)+F231",
+        "=(C231*150)+F231",
+        "=(D231*150)+F231"
+      ],
+      "row": 231
+    },
+    {
+      "key": "spd-type-1-2-whole-home-80ka-external-enclosure",
+      "name": "SPD, Type 1/2, Whole-Home, 80kA, External Enclosure",
+      "section": "SURGE PROTECTIVE DEVICES (SPD)",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1.5,
+      "laborVeryDifficult": 2,
+      "companyCost": 142,
+      "companyPrice": 255.6,
+      "sellNormal": 405.6,
+      "sellDifficult": 480.6,
+      "sellVeryDifficult": 555.6,
+      "sellFormulas": [
+        "=(B234*150)+F234",
+        "=(C234*150)+F234",
+        "=(D234*150)+F234"
+      ],
+      "row": 234
+    },
+    {
+      "key": "spd-plug-on-breaker-style-square-d-homeline-only",
+      "name": "SPD, PLUG-ON / Breaker-Style, SQUARE D HOMELINE ONLY",
+      "section": "SURGE PROTECTIVE DEVICES (SPD)",
+      "unitLabel": null,
+      "laborNormal": 0.67,
+      "laborDifficult": 1.17,
+      "laborVeryDifficult": 1.67,
+      "companyCost": 103.88,
+      "companyPrice": 186.984,
+      "sellNormal": 287.48400000000004,
+      "sellDifficult": 362.48400000000004,
+      "sellVeryDifficult": 437.48400000000004,
+      "sellFormulas": [
+        "=(B235*150)+F235",
+        "=(C235*150)+F235",
+        "=(D235*150)+F235"
+      ],
+      "row": 235
+    },
+    {
+      "key": "spd-flush-mount-kit-interior-panel-add",
+      "name": "SPD Flush-Mount Kit, interior panel add",
+      "section": "SURGE PROTECTIVE DEVICES (SPD)",
+      "unitLabel": null,
+      "laborNormal": 0.75,
+      "laborDifficult": 1.25,
+      "laborVeryDifficult": 1.75,
+      "companyCost": 38.48,
+      "companyPrice": 96.19999999999999,
+      "sellNormal": 208.7,
+      "sellDifficult": 283.7,
+      "sellVeryDifficult": 358.7,
+      "sellFormulas": [
+        "=(B236*150)+F236",
+        "=(C236*150)+F236",
+        "=(D236*150)+F236"
+      ],
+      "row": 236
+    },
+    {
+      "key": "spd-plug-on-breaker-style-35ka-siemens-load-centers-only",
+      "name": "SPD, PLUG-ON / Breaker-Style, 35kA, SIEMENS LOAD CENTERS ONLY",
+      "section": "SURGE PROTECTIVE DEVICES (SPD)",
+      "unitLabel": null,
+      "laborNormal": 0.67,
+      "laborDifficult": 1.17,
+      "laborVeryDifficult": 1.67,
+      "companyCost": 86.63,
+      "companyPrice": 155.934,
+      "sellNormal": 256.43399999999997,
+      "sellDifficult": 331.43399999999997,
+      "sellVeryDifficult": 406.43399999999997,
+      "sellFormulas": [
+        "=(B237*150)+F237",
+        "=(C237*150)+F237",
+        "=(D237*150)+F237"
+      ],
+      "row": 237
+    },
+    {
+      "key": "spd-breaker-style-65ka-siemens-load-centers-only",
+      "name": "SPD, Breaker-Style, 65kA, SIEMENS LOAD CENTERS ONLY",
+      "section": "SURGE PROTECTIVE DEVICES (SPD)",
+      "unitLabel": null,
+      "laborNormal": 0.67,
+      "laborDifficult": 1.17,
+      "laborVeryDifficult": 1.67,
+      "companyCost": 216.06,
+      "companyPrice": 302.484,
+      "sellNormal": 402.984,
+      "sellDifficult": 477.984,
+      "sellVeryDifficult": 552.9839999999999,
+      "sellFormulas": [
+        "=(B238*150)+F238",
+        "=(C238*150)+F238",
+        "=(D238*150)+F238"
+      ],
+      "row": 238
+    },
+    {
+      "key": "spd-100ka-exetnal-residencial-grade",
+      "name": "SPD, 100kA, Exetnal Residencial Grade",
+      "section": "SURGE PROTECTIVE DEVICES (SPD)",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1.5,
+      "laborVeryDifficult": 2,
+      "companyCost": 181.4,
+      "companyPrice": 326.52000000000004,
+      "sellNormal": 476.52000000000004,
+      "sellDifficult": 551.52,
+      "sellVeryDifficult": 626.52,
+      "sellFormulas": [
+        "=(B239*150)+F239",
+        "=(C239*150)+F239",
+        "=(D239*150)+F239"
+      ],
+      "row": 239
+    },
+    {
+      "key": "spd-100ka-external-commercial-grade",
+      "name": "SPD, 100kA, External Commercial Grade",
+      "section": "SURGE PROTECTIVE DEVICES (SPD)",
+      "unitLabel": null,
+      "laborNormal": 1,
+      "laborDifficult": 1.5,
+      "laborVeryDifficult": 2,
+      "companyCost": 438.09,
+      "companyPrice": 613.3259999999999,
+      "sellNormal": 763.3259999999999,
+      "sellDifficult": 838.3259999999999,
+      "sellVeryDifficult": 913.3259999999999,
+      "sellFormulas": [
+        "=(B240*150)+F240",
+        "=(C240*150)+F240",
+        "=(D240*150)+F240"
+      ],
+      "row": 240
+    },
+    {
+      "key": "circuit-breaker-15a-single-pole",
+      "name": "Circuit Breaker, 15A, Single-Pole",
+      "section": "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.32,
+      "laborDifficult": 0.4,
+      "laborVeryDifficult": 0.48,
+      "companyCost": 7.51,
+      "companyPrice": 26.285,
+      "sellNormal": 74.285,
+      "sellDifficult": 86.285,
+      "sellVeryDifficult": 98.285,
+      "sellFormulas": [
+        "=(B243*150)+F243",
+        "=(C243*150)+F243",
+        "=(D243*150)+F243"
+      ],
+      "row": 243
+    },
+    {
+      "key": "circuit-breaker-20a-single-pole",
+      "name": "Circuit Breaker, 20A, Single-Pole",
+      "section": "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.34,
+      "laborDifficult": 0.43,
+      "laborVeryDifficult": 0.51,
+      "companyCost": 7.51,
+      "companyPrice": 26.285,
+      "sellNormal": 77.28500000000001,
+      "sellDifficult": 90.785,
+      "sellVeryDifficult": 102.785,
+      "sellFormulas": [
+        "=(B244*150)+F244",
+        "=(C244*150)+F244",
+        "=(D244*150)+F244"
+      ],
+      "row": 244
+    },
+    {
+      "key": "circuit-breaker-30a-single-pole",
+      "name": "Circuit Breaker, 30A, Single-Pole",
+      "section": "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.34,
+      "laborDifficult": 0.43,
+      "laborVeryDifficult": 0.51,
+      "companyCost": 7.51,
+      "companyPrice": 26.285,
+      "sellNormal": 77.28500000000001,
+      "sellDifficult": 90.785,
+      "sellVeryDifficult": 102.785,
+      "sellFormulas": [
+        "=(B245*150)+F245",
+        "=(C245*150)+F245",
+        "=(D245*150)+F245"
+      ],
+      "row": 245
+    },
+    {
+      "key": "circuit-breaker-20a-double-pole",
+      "name": "Circuit Breaker, 20A, Double-Pole",
+      "section": "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.52,
+      "laborDifficult": 0.65,
+      "laborVeryDifficult": 0.78,
+      "companyCost": 18.24,
+      "companyPrice": 45.599999999999994,
+      "sellNormal": 123.6,
+      "sellDifficult": 143.1,
+      "sellVeryDifficult": 162.6,
+      "sellFormulas": [
+        "=(B246*150)+F246",
+        "=(C246*150)+F246",
+        "=(D246*150)+F246"
+      ],
+      "row": 246
+    },
+    {
+      "key": "circuit-breaker-30a-double-pole",
+      "name": "Circuit Breaker, 30A, Double-Pole",
+      "section": "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.58,
+      "laborDifficult": 0.73,
+      "laborVeryDifficult": 0.87,
+      "companyCost": 18.24,
+      "companyPrice": 45.599999999999994,
+      "sellNormal": 132.6,
+      "sellDifficult": 155.1,
+      "sellVeryDifficult": 176.1,
+      "sellFormulas": [
+        "=(B247*150)+F247",
+        "=(C247*150)+F247",
+        "=(D247*150)+F247"
+      ],
+      "row": 247
+    },
+    {
+      "key": "circuit-breaker-40a-double-pole",
+      "name": "Circuit Breaker, 40A, Double-Pole",
+      "section": "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.61,
+      "laborDifficult": 0.76,
+      "laborVeryDifficult": 0.92,
+      "companyCost": 18.24,
+      "companyPrice": 45.599999999999994,
+      "sellNormal": 137.1,
+      "sellDifficult": 159.6,
+      "sellVeryDifficult": 183.6,
+      "sellFormulas": [
+        "=(B248*150)+F248",
+        "=(C248*150)+F248",
+        "=(D248*150)+F248"
+      ],
+      "row": 248
+    },
+    {
+      "key": "circuit-breaker-50a-double-pole",
+      "name": "Circuit Breaker, 50A, Double-Pole",
+      "section": "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.64,
+      "laborDifficult": 0.8,
+      "laborVeryDifficult": 0.96,
+      "companyCost": 18.24,
+      "companyPrice": 45.599999999999994,
+      "sellNormal": 141.6,
+      "sellDifficult": 165.6,
+      "sellVeryDifficult": 189.6,
+      "sellFormulas": [
+        "=(B249*150)+F249",
+        "=(C249*150)+F249",
+        "=(D249*150)+F249"
+      ],
+      "row": 249
+    },
+    {
+      "key": "circuit-breaker-60a-double-pole",
+      "name": "Circuit Breaker, 60A, Double-Pole",
+      "section": "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.72,
+      "laborDifficult": 0.9,
+      "laborVeryDifficult": 1.08,
+      "companyCost": 18.24,
+      "companyPrice": 45.599999999999994,
+      "sellNormal": 153.6,
+      "sellDifficult": 180.6,
+      "sellVeryDifficult": 207.6,
+      "sellFormulas": [
+        "=(B250*150)+F250",
+        "=(C250*150)+F250",
+        "=(D250*150)+F250"
+      ],
+      "row": 250
+    },
+    {
+      "key": "circuit-breaker-100a-double-pole",
+      "name": "Circuit Breaker, 100A, Double-Pole",
+      "section": "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.94,
+      "laborDifficult": 1.18,
+      "laborVeryDifficult": 1.41,
+      "companyCost": 86.68,
+      "companyPrice": 156.02400000000003,
+      "sellNormal": 297.024,
+      "sellDifficult": 333.024,
+      "sellVeryDifficult": 367.524,
+      "sellFormulas": [
+        "=(B251*150)+F251",
+        "=(C251*150)+F251",
+        "=(D251*150)+F251"
+      ],
+      "row": 251
+    },
+    {
+      "key": "combination-arc-fault-breaker-15a-1-pole",
+      "name": "Combination Arc-Fault Breaker, 15A, 1-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.47,
+      "laborDifficult": 0.65,
+      "laborVeryDifficult": 0.83,
+      "companyCost": 68.51,
+      "companyPrice": 123.31800000000001,
+      "sellNormal": 193.818,
+      "sellDifficult": 220.818,
+      "sellVeryDifficult": 247.818,
+      "sellFormulas": [
+        "=(B254*150)+F254",
+        "=(C254*150)+F254",
+        "=(D254*150)+F254"
+      ],
+      "row": 254
+    },
+    {
+      "key": "combination-arc-fault-breaker-20a-1-pole",
+      "name": "Combination Arc-Fault Breaker , 20A, 1-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.49,
+      "laborDifficult": 0.68,
+      "laborVeryDifficult": 0.86,
+      "companyCost": 69.53,
+      "companyPrice": 125.15400000000001,
+      "sellNormal": 198.654,
+      "sellDifficult": 227.15400000000002,
+      "sellVeryDifficult": 254.154,
+      "sellFormulas": [
+        "=(B255*150)+F255",
+        "=(C255*150)+F255",
+        "=(D255*150)+F255"
+      ],
+      "row": 255
+    },
+    {
+      "key": "combination-arc-fault-breaker-20a-2-pole",
+      "name": "Combination Arc-Fault Breaker, 20A, 2-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.67,
+      "laborDifficult": 0.9,
+      "laborVeryDifficult": 1.15,
+      "companyCost": 99.98,
+      "companyPrice": 179.964,
+      "sellNormal": 280.464,
+      "sellDifficult": 314.964,
+      "sellVeryDifficult": 352.464,
+      "sellFormulas": [
+        "=(B256*150)+F256",
+        "=(C256*150)+F256",
+        "=(D256*150)+F256"
+      ],
+      "row": 256
+    },
+    {
+      "key": "gfci-breaker-15a-1-pole",
+      "name": "GFCI Breaker, 15A, 1-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.47,
+      "laborDifficult": 0.65,
+      "laborVeryDifficult": 0.85,
+      "companyCost": 65.94,
+      "companyPrice": 118.692,
+      "sellNormal": 189.192,
+      "sellDifficult": 216.192,
+      "sellVeryDifficult": 246.192,
+      "sellFormulas": [
+        "=(B257*150)+F257",
+        "=(C257*150)+F257",
+        "=(D257*150)+F257"
+      ],
+      "row": 257
+    },
+    {
+      "key": "gfci-breaker-20a-1-pole",
+      "name": "GFCI Breaker, 20A, 1-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.49,
+      "laborDifficult": 0.68,
+      "laborVeryDifficult": 0.86,
+      "companyCost": 65.94,
+      "companyPrice": 118.692,
+      "sellNormal": 192.192,
+      "sellDifficult": 220.692,
+      "sellVeryDifficult": 247.692,
+      "sellFormulas": [
+        "=(B258*150)+F258",
+        "=(C258*150)+F258",
+        "=(D258*150)+F258"
+      ],
+      "row": 258
+    },
+    {
+      "key": "gfci-breaker-20a-2-pole",
+      "name": "GFCI Breaker, 20A, 2-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.67,
+      "laborDifficult": 0.9,
+      "laborVeryDifficult": 1.13,
+      "companyCost": 125,
+      "companyPrice": 225,
+      "sellNormal": 325.5,
+      "sellDifficult": 360,
+      "sellVeryDifficult": 394.5,
+      "sellFormulas": [
+        "=(B259*150)+F259",
+        "=(C259*150)+F259",
+        "=(D259*150)+F259"
+      ],
+      "row": 259
+    },
+    {
+      "key": "circuit-breaker-gfci-25a-2-pole",
+      "name": "Circuit Breaker, GFCI, 25A, 2-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.73,
+      "laborDifficult": 0.98,
+      "laborVeryDifficult": 1.22,
+      "companyCost": 182.68,
+      "companyPrice": 328.824,
+      "sellNormal": 438.324,
+      "sellDifficult": 475.824,
+      "sellVeryDifficult": 511.824,
+      "sellFormulas": [
+        "=(B260*150)+F260",
+        "=(C260*150)+F260",
+        "=(D260*150)+F260"
+      ],
+      "row": 260
+    },
+    {
+      "key": "circuit-breaker-gfci-30a-2-pole",
+      "name": "Circuit Breaker, GFCI, 30A, 2-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.73,
+      "laborDifficult": 0.98,
+      "laborVeryDifficult": 1.22,
+      "companyCost": 173.36,
+      "companyPrice": 312.04800000000006,
+      "sellNormal": 421.54800000000006,
+      "sellDifficult": 459.04800000000006,
+      "sellVeryDifficult": 495.04800000000006,
+      "sellFormulas": [
+        "=(B261*150)+F261",
+        "=(C261*150)+F261",
+        "=(D261*150)+F261"
+      ],
+      "row": 261
+    },
+    {
+      "key": "circuit-breaker-gfci-35a-2-pole",
+      "name": "Circuit Breaker, GFCI, 35A, 2-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.76,
+      "laborDifficult": 1.01,
+      "laborVeryDifficult": 1.27,
+      "companyCost": 184.52,
+      "companyPrice": 332.136,
+      "sellNormal": 446.136,
+      "sellDifficult": 483.636,
+      "sellVeryDifficult": 522.636,
+      "sellFormulas": [
+        "=(B262*150)+F262",
+        "=(C262*150)+F262",
+        "=(D262*150)+F262"
+      ],
+      "row": 262
+    },
+    {
+      "key": "circuit-breaker-gfci-40a-2-pole",
+      "name": "Circuit Breaker, GFCI, 40A, 2-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.76,
+      "laborDifficult": 1.01,
+      "laborVeryDifficult": 1.27,
+      "companyCost": 134.64,
+      "companyPrice": 242.35199999999998,
+      "sellNormal": 356.352,
+      "sellDifficult": 393.852,
+      "sellVeryDifficult": 432.852,
+      "sellFormulas": [
+        "=(B263*150)+F263",
+        "=(C263*150)+F263",
+        "=(D263*150)+F263"
+      ],
+      "row": 263
+    },
+    {
+      "key": "circuit-breaker-gfci-45a-2-pole",
+      "name": "Circuit Breaker, GFCI, 45A, 2-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.79,
+      "laborDifficult": 1.05,
+      "laborVeryDifficult": 1.31,
+      "companyCost": 155.32,
+      "companyPrice": 279.576,
+      "sellNormal": 398.076,
+      "sellDifficult": 437.076,
+      "sellVeryDifficult": 476.076,
+      "sellFormulas": [
+        "=(B264*150)+F264",
+        "=(C264*150)+F264",
+        "=(D264*150)+F264"
+      ],
+      "row": 264
+    },
+    {
+      "key": "gfci-breaker-50a-2-pole",
+      "name": "GFCI Breaker, 50A, 2-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.79,
+      "laborDifficult": 1.05,
+      "laborVeryDifficult": 1.31,
+      "companyCost": 173.36,
+      "companyPrice": 312.04800000000006,
+      "sellNormal": 430.54800000000006,
+      "sellDifficult": 469.54800000000006,
+      "sellVeryDifficult": 508.54800000000006,
+      "sellFormulas": [
+        "=(B265*150)+F265",
+        "=(C265*150)+F265",
+        "=(D265*150)+F265"
+      ],
+      "row": 265
+    },
+    {
+      "key": "dual-function-breaker-15a-1-pole",
+      "name": "Dual-Function Breaker, 15A, 1-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.47,
+      "laborDifficult": 0.65,
+      "laborVeryDifficult": 0.83,
+      "companyCost": 79.44,
+      "companyPrice": 142.992,
+      "sellNormal": 213.492,
+      "sellDifficult": 240.492,
+      "sellVeryDifficult": 267.49199999999996,
+      "sellFormulas": [
+        "=(B266*150)+F266",
+        "=(C266*150)+F266",
+        "=(D266*150)+F266"
+      ],
+      "row": 266
+    },
+    {
+      "key": "dual-function-breaker-20a-1-pole",
+      "name": "Dual-Function Breaker, 20A, 1-Pole",
+      "section": "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 0.49,
+      "laborDifficult": 0.68,
+      "laborVeryDifficult": 0.86,
+      "companyCost": 79.44,
+      "companyPrice": 142.992,
+      "sellNormal": 216.492,
+      "sellDifficult": 244.99200000000002,
+      "sellVeryDifficult": 271.99199999999996,
+      "sellFormulas": [
+        "=(B267*150)+F267",
+        "=(C267*150)+F267",
+        "=(D267*150)+F267"
+      ],
+      "row": 267
+    },
+    {
+      "key": "gfci-duplex-receptacle-15a-125v-self-test-tamper-resistant",
+      "name": "GFCI Duplex Receptacle, 15A 125V, Self-Test, Tamper-Resistant",
+      "section": "GFCI RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.3,
+      "laborDifficult": 0.375,
+      "laborVeryDifficult": 0.45,
+      "companyCost": 19.98,
+      "companyPrice": 49.95,
+      "sellNormal": 94.95,
+      "sellDifficult": 106.2,
+      "sellVeryDifficult": 117.45,
+      "sellFormulas": [
+        "=(B270*150)+F270",
+        "=(C270*150)+F270",
+        "=(D270*150)+F270"
+      ],
+      "row": 270
+    },
+    {
+      "key": "gfci-duplex-receptacle-20a-125v-self-test-tamper-resistant",
+      "name": "GFCI Duplex Receptacle, 20A 125V, Self-Test, Tamper-Resistant",
+      "section": "GFCI RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.35,
+      "laborDifficult": 0.4375,
+      "laborVeryDifficult": 0.525,
+      "companyCost": 26.48,
+      "companyPrice": 66.2,
+      "sellNormal": 118.7,
+      "sellDifficult": 131.825,
+      "sellVeryDifficult": 144.95,
+      "sellFormulas": [
+        "=(B271*150)+F271",
+        "=(C271*150)+F271",
+        "=(D271*150)+F271"
+      ],
+      "row": 271
+    },
+    {
+      "key": "gfci-duplex-receptacle-20a-125v-self-test-tamper-weather-resistant",
+      "name": "GFCI Duplex Receptacle, 20A 125V, Self-Test, Tamper/Weather-Resistant",
+      "section": "GFCI RECEPTACLES",
+      "unitLabel": null,
+      "laborNormal": 0.35,
+      "laborDifficult": 0.4375,
+      "laborVeryDifficult": 0.525,
+      "companyCost": 34.24,
+      "companyPrice": 85.60000000000001,
+      "sellNormal": 138.10000000000002,
+      "sellDifficult": 151.22500000000002,
+      "sellVeryDifficult": 164.35000000000002,
+      "sellFormulas": [
+        "=(B272*150)+F272",
+        "=(C272*150)+F272",
+        "=(D272*150)+F272"
+      ],
+      "row": 272
+    },
+    {
+      "key": "gfci-dead-front-blank-face-device-20a-per-device",
+      "name": "GFCI Dead-Front / Blank-Face Device, 20A — per device",
+      "section": "GFCI RECEPTACLES",
+      "unitLabel": "per device",
+      "laborNormal": 0.3,
+      "laborDifficult": 0.375,
+      "laborVeryDifficult": 0.45,
+      "companyCost": 26.99,
+      "companyPrice": 67.475,
+      "sellNormal": 112.475,
+      "sellDifficult": 123.725,
+      "sellVeryDifficult": 134.975,
+      "sellFormulas": [
+        "=(B273*150)+F273",
+        "=(C273*150)+F273",
+        "=(D273*150)+F273"
+      ],
+      "row": 273
+    },
+    {
+      "key": "ac-disconnect-60a-2-pole-non-fused-240v-outdoor",
+      "name": "AC Disconnect, 60A, 2-Pole, Non-Fused, 240V, Outdoor",
+      "section": "AC DISCONNECTS",
+      "unitLabel": null,
+      "laborNormal": 2.5,
+      "laborDifficult": 3.13,
+      "laborVeryDifficult": 3.75,
+      "companyCost": 26.7,
+      "companyPrice": 66.75,
+      "sellNormal": 441.75,
+      "sellDifficult": 536.25,
+      "sellVeryDifficult": 629.25,
+      "sellFormulas": [
+        "=(B276*150)+F276",
+        "=(C276*150)+F276",
+        "=(D276*150)+F276"
+      ],
+      "row": 276
+    },
+    {
+      "key": "load-center-100a-20-space-40-circuit-indoor-main-breaker",
+      "name": "Load Center, 100A, 20-Space/40-Circuit, Indoor Main Breaker",
+      "section": "LOAD CENTERS / PANELS (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 3.2,
+      "laborDifficult": 4,
+      "laborVeryDifficult": 4.8,
+      "companyCost": 108.39,
+      "companyPrice": 195.102,
+      "sellNormal": 675.102,
+      "sellDifficult": 795.102,
+      "sellVeryDifficult": 915.102,
+      "sellFormulas": [
+        "=(B279*150)+F279",
+        "=(C279*150)+F279",
+        "=(D279*150)+F279"
+      ],
+      "row": 279
+    },
+    {
+      "key": "load-center-200a-40-space-80-circuit-indoor-main-breaker",
+      "name": "Load Center, 200A, 40-Space/80-Circuit, Indoor Main Breaker",
+      "section": "LOAD CENTERS / PANELS (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 5.2,
+      "laborDifficult": 6.5,
+      "laborVeryDifficult": 7.8,
+      "companyCost": 268.21,
+      "companyPrice": 375.49399999999997,
+      "sellNormal": 1155.494,
+      "sellDifficult": 1350.494,
+      "sellVeryDifficult": 1545.494,
+      "sellFormulas": [
+        "=(B280*150)+F280",
+        "=(C280*150)+F280",
+        "=(D280*150)+F280"
+      ],
+      "row": 280
+    },
+    {
+      "key": "load-center-200a-20-space-40-circuit-outdoor-main-breaker",
+      "name": "Load Center, 200A, 20-Space/40-Circuit, OUTDOOR, Main Breaker",
+      "section": "LOAD CENTERS / PANELS (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 4,
+      "laborDifficult": 5,
+      "laborVeryDifficult": 6,
+      "companyCost": 283.51,
+      "companyPrice": 396.914,
+      "sellNormal": 996.914,
+      "sellDifficult": 1146.914,
+      "sellVeryDifficult": 1296.914,
+      "sellFormulas": [
+        "=(B281*150)+F281",
+        "=(C281*150)+F281",
+        "=(D281*150)+F281"
+      ],
+      "row": 281
+    },
+    {
+      "key": "service-equipment-400a-class-all-in-one",
+      "name": "Service Equipment, 400A Class All-In-One",
+      "section": "LOAD CENTERS / PANELS (Square D Homeline)",
+      "unitLabel": null,
+      "laborNormal": 8.6,
+      "laborDifficult": 10.75,
+      "laborVeryDifficult": 13.09,
+      "companyCost": 1269,
+      "companyPrice": 1776.6,
+      "sellNormal": 3066.6,
+      "sellDifficult": 3389.1,
+      "sellVeryDifficult": 3740.1,
+      "sellFormulas": [
+        "=(B282*150)+F282",
+        "=(C282*150)+F282",
+        "=(D282*150)+F282"
+      ],
+      "row": 282
+    }
+  ],
+  "sections": [
+    "SERVICE & FEES",
+    "NM CABLE",
+    "NEW WORK BOXES",
+    "OLD WORK BOXES",
+    "SWITCHES",
+    "RECEPTACLES",
+    "THHN/THWN-2 COPPER WIRE",
+    "EMT CONDUIT (per 10-ft stick)",
+    "PVC RIGID CONDUIT - SCHEDULE 40 (per 10-ft stick)",
+    "PVC RIGID CONDUIT - SCHEDULE 80 (per 10-ft stick)",
+    "LIQUIDTIGHT FLEXIBLE METAL CONDUIT - SEALTITE (per ft)",
+    "LIQUIDTIGHT FLEXIBLE NONMETALLIC CONDUIT - LNT / PVC FLEX (per ft)",
+    "FLEXIBLE STEEL CONDUIT - FSC / GREENFIELD (per ft)",
+    "FLEXIBLE CONDUIT FITTINGS (per fitting)",
+    "WEATHERPROOF ALUMINUM BOXES - 1-GANG (per box)",
+    "PVC CONDUIT BODIES (per body)",
+    "PVC JUNCTION & PULL BOXES (per box)",
+    "NEMA 1 SCREW COVER J-BOXES & PULL BOXES (per box)",
+    "NEMA 3R RAIN-TIGHT J-BOXES & PULL BOXES (per box)",
+    "PVC DEVICE BOXES & ACCESSORIES (per each)",
+    "EMT FITTINGS (per fitting)",
+    "PVC FACTORY ELBOWS - SCHEDULE 40 (per elbow)",
+    "PVC FACTORY ELBOWS - SCHEDULE 80 (per elbow)",
+    "CABLE BOX CONNECTORS (per connector)",
+    "ALUMINUM SERVICE ENTRANCE CAPS (per cap)",
+    "GROUNDING BUSHINGS (per bushing)",
+    "INSULATED MULTI-TAP CONNECTORS (per connector)",
+    "GROUNDING & BONDING",
+    "SURGE PROTECTIVE DEVICES (SPD)",
+    "CIRCUIT BREAKERS - STANDARD (Square D Homeline)",
+    "CIRCUIT BREAKERS - ARC FAULT / GFCI / DUAL FUNCTION (Square D Homeline)",
+    "GFCI RECEPTACLES",
+    "AC DISCONNECTS",
+    "LOAD CENTERS / PANELS (Square D Homeline)",
+    "LIGHTNING PROTECTION"
+  ],
+  "unpriced": [
+    {
+      "row": 285,
+      "name": "Ridge Mount Base, Copper, 12-inch Strap, 1/2-inch Terminal",
+      "section": "LIGHTNING PROTECTION"
+    },
+    {
+      "row": 286,
+      "name": "Air Terminal, Copper Class I, Tubular Threaded, 1/2-inch",
+      "section": "LIGHTNING PROTECTION"
+    },
+    {
+      "row": 287,
+      "name": "Lightning Conductor, Class I, #2 Solid Copper",
+      "section": "LIGHTNING PROTECTION"
+    }
+  ]
+}

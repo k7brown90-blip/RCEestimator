@@ -60,19 +60,71 @@ const MIN_ITEMS = 150;
 
 const prisma = new PrismaClient();
 
-interface Args { workbook: string; dryRun: boolean; report: string | null }
+interface Args {
+  workbook: string | null;
+  dryRun: boolean;
+  report: string | null;
+  emitJson: string | null;
+  fromJson: string | null;
+}
 
 function parseArgs(argv: string[]): Args {
   const get = (flag: string) => {
     const i = argv.indexOf(flag);
     return i >= 0 && i + 1 < argv.length ? argv[i + 1] : null;
   };
+  const fromJson = get("--from-json");
   const workbook = get("--workbook");
-  if (!workbook) {
+  if (!workbook && !fromJson) {
     console.error("FATAL: --workbook is required. This pipeline never guesses which file is the source.");
     process.exit(3);
   }
-  return { workbook, dryRun: argv.includes("--dry-run"), report: get("--report") };
+  return {
+    workbook,
+    dryRun: argv.includes("--dry-run"),
+    report: get("--report"),
+    emitJson: get("--emit-json"),
+    fromJson,
+  };
+}
+
+/**
+ * ── WHY THE IMPORT COMES APART IN THE MIDDLE ───────────────────────────────────────────────────
+ *
+ * The two halves of this script need to run in two different places, and until 2026-08-19 they
+ * could not:
+ *
+ *   * READING needs Kyle's workbook, which lives on his machine and never leaves it.
+ *   * WRITING needs the production database, which listens on `postgres.railway.internal` — a
+ *     private network address that resolves only inside the Railway container. `railway run`
+ *     injects the variable but cannot reach the host, and `railway ssh` reaches the host but has
+ *     no workbook and does not accept piped stdin.
+ *
+ * So `--emit-json` runs the three gates and writes a verified PAYLOAD; `--from-json` takes that
+ * payload and does the write, wherever it happens to be running.
+ *
+ * THE PAYLOAD IS NOT TRUSTED. `--from-json` re-runs the duplicate-key gate and RE-COMPUTES PARITY
+ * from the item rows themselves, rather than believing the "0 failures" recorded in the file. A
+ * hand-edited or truncated payload therefore fails the same way a bad workbook would. The only
+ * thing taken on trust is the one fact that cannot be rechecked without the file — that Excel had
+ * computed every formula — and that is recorded in `meta` so the report can say where it came
+ * from.
+ */
+interface Payload {
+  meta: {
+    workbook: string;
+    sha256: string;
+    tab: string;
+    generatedAt: string;
+    itemCount: number;
+    sectionCount: number;
+    parityCells: number;
+    parityFailures: number;
+    uncomputedCells: number;
+  };
+  items: KyleItem[];
+  sections: string[];
+  unpriced: UnpricedItem[];
 }
 
 // ─── Extraction ─────────────────────────────────────────────────────────────────
@@ -125,16 +177,46 @@ function readTab(workbook: string): { items: KyleItem[]; sections: string[]; unc
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
-  if (!fs.existsSync(args.workbook)) {
-    console.error(`FATAL: workbook not found: ${args.workbook}`);
-    return 3;
+
+  let items: KyleItem[];
+  let sections: string[];
+  let uncomputed: string[];
+  let unpriced: UnpricedItem[];
+
+  if (args.fromJson) {
+    if (!fs.existsSync(args.fromJson)) {
+      console.error(`FATAL: payload not found: ${args.fromJson}`);
+      return 3;
+    }
+    const payload = JSON.parse(fs.readFileSync(args.fromJson, "utf8")) as Payload;
+    console.log(`source : ${payload.meta.workbook}  (payload)`);
+    console.log(`sha256 : ${payload.meta.sha256}`);
+    console.log(`read at: ${payload.meta.generatedAt}`);
+    console.log(`tab    : ${payload.meta.tab}`);
+    console.log(`mode   : ${args.dryRun ? "DRY RUN — nothing will be written" : "LIVE"}`);
+    items = payload.items;
+    sections = payload.sections;
+    unpriced = payload.unpriced ?? [];
+    // Recorded, not rechecked — it is a fact about the workbook, which is not here.
+    uncomputed = payload.meta.uncomputedCells > 0
+      ? [`payload recorded ${payload.meta.uncomputedCells} uncomputed cell(s)`]
+      : [];
+    if (items.length !== payload.meta.itemCount) {
+      console.error(`
+⛔ FATAL: payload says ${payload.meta.itemCount} items but carries ${items.length}.`);
+      return 2;
+    }
+  } else {
+    const workbook = args.workbook as string;
+    if (!fs.existsSync(workbook)) {
+      console.error(`FATAL: workbook not found: ${workbook}`);
+      return 3;
+    }
+    console.log(`source : ${path.basename(workbook)}`);
+    console.log(`tab    : ${TAB}`);
+    console.log(`mode   : ${args.emitJson ? "EXTRACT ONLY — no database access" : args.dryRun ? "DRY RUN — nothing will be written" : "LIVE"}`);
+    ({ items, sections, uncomputed, unpriced } = readTab(workbook));
   }
-
-  console.log(`source : ${path.basename(args.workbook)}`);
-  console.log(`tab    : ${TAB}`);
-  console.log(`mode   : ${args.dryRun ? "DRY RUN — nothing will be written" : "LIVE"}`);
-
-  const { items, sections, uncomputed, unpriced } = readTab(args.workbook);
 
   // ── Gate 1: Excel must have computed. We never evaluate a formula ourselves. ──
   if (uncomputed.length > 0) {
@@ -146,6 +228,20 @@ async function main(): Promise<number> {
   }
 
   console.log(`\nread   : ${items.length} items across ${sections.length} sections`);
+
+  // -- Gate 0: the floor. --
+  //
+  // MIN_ITEMS was declared with a paragraph explaining its purpose and then never consulted, so
+  // the "sanity floor" that comment described did not exist. It matters now that a PAYLOAD can be
+  // the input: a truncated file, or a tab misread into a handful of rows, would sail through
+  // parity (nothing is wrong with the rows that survived) and retire the entire catalog on the
+  // strength of them.
+  if (items.length < MIN_ITEMS) {
+    console.error(`\n[FATAL] only ${items.length} items - below the floor of ${MIN_ITEMS}.`);
+    console.error("   A catalog this small means the source was misread or truncated, not that");
+    console.error("   Kyle deleted three quarters of his price book. Nothing was written.\n");
+    return 2;
+  }
 
   // ── Gate 2: keys must be unique, or one item would overwrite another ──
   const byKey = new Map<string, KyleItem[]>();
@@ -175,6 +271,37 @@ async function main(): Promise<number> {
       );
     }
     return 5;
+  }
+
+  // ── Extract-only: hand the verified rows on, and touch no database ──
+  //
+  // Everything above this line is the SAME code path the direct import runs — the gates are not
+  // skipped or weakened to produce a payload. What gets written out is what already passed them.
+  if (args.emitJson) {
+    const workbook = args.workbook as string;
+    const payload: Payload = {
+      meta: {
+        workbook: path.basename(workbook),
+        sha256: createHash("sha256").update(fs.readFileSync(workbook)).digest("hex"),
+        tab: TAB,
+        generatedAt: new Date().toISOString(),
+        itemCount: items.length,
+        sectionCount: sections.length,
+        parityCells: parity.length,
+        parityFailures: failures.length,
+        uncomputedCells: uncomputed.length,
+      },
+      items,
+      sections,
+      unpriced,
+    };
+    fs.writeFileSync(args.emitJson, JSON.stringify(payload, null, 2));
+    console.log(`
+EXTRACTED -> ${args.emitJson}`);
+    console.log(`   ${items.length} items, ${sections.length} sections, parity clean, keys unique.`);
+    console.log("   Run the write with:  --from-json <that file>");
+    printSummary(items, sections);
+    return 0;
   }
 
   // ── Write ──

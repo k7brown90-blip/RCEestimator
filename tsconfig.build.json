@@ -13,6 +13,10 @@
     "scripts/readSystemEvents.ts",
     "scripts/tailClientLog.ts",
     "scripts/checkGoogleCalendarConnection.ts",
+    // The price-book writer, so the import can run where the database is reachable.
+    // Extraction stays on Kyle's machine; only --from-json runs in here.
+    "scripts/price-book/importKylesTab.ts",
+    "scripts/price-book/kylesTabMapping.ts",
     "shared/**/*.ts"
   ],
   "exclude": ["tests/**", "shared/**/*.test.ts", "node_modules"]
