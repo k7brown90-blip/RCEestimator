@@ -1410,6 +1410,50 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
     return;
   }
 
+  /*
+    A signed-estimate copy has no file. It carries `issuedEstimateId` and is RENDERED from the
+    immutable estimate, so it keeps resolving after a deploy — unlike every document below this
+    branch, whose pdfUrl points into `generated/` and which Railway deletes on release.
+  */
+  if (doc.issuedEstimateId) {
+    const est = await prisma.issuedEstimate.findUnique({
+      where: { id: doc.issuedEstimateId },
+      include: { lines: { orderBy: { sortOrder: "asc" } } },
+    });
+    if (!est) {
+      res.status(404).json({ error: "The estimate this document refers to no longer exists" });
+      return;
+    }
+    const pdf = await renderEstimatePdf(
+      {
+        number: est.number,
+        revision: est.revision,
+        title: est.title,
+        customerName: est.customerName,
+        serviceAddress: est.serviceAddress,
+        scopeText: est.scopeText,
+        total: est.total,
+        tripCharge: est.tripCharge,
+        signedAt: est.signedAt,
+        signedByName: est.signerName,
+        createdAt: est.createdAt,
+        lines: est.lines.map((l) => ({
+          option: l.option,
+          description: l.description,
+          quantity: l.quantity,
+          lineTotal: l.lineTotal,
+          laborHours: l.laborHours,
+          materialSell: l.materialSell,
+        })),
+      },
+      "company",
+    );
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="signed-estimate-${est.number}.pdf"`);
+    res.send(pdf);
+    return;
+  }
+
   const fs = await import("node:fs");
   if (!fs.existsSync(doc.pdfUrl)) {
     res.status(404).json({ error: "PDF file not found" });

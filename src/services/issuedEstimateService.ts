@@ -35,6 +35,7 @@ import { randomBytes } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { computeDraft, finalizeDraft } from "./atomicEstimateService";
 import { rowTypeSells } from "./atomicEstimateEngine";
+import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { logSystemEvent } from "./systemEvents";
 
 /** House numbering continues the issued PDFs, the last of which was 2026-1010. */
@@ -488,7 +489,83 @@ async function applySignature(
     ip: input.ip ?? null,
   });
 
+  /*
+    ── FILING AND NOTIFYING, NEITHER OF WHICH MAY UNDO A SIGNATURE ─────────────────────────────
+
+    Kyle, 2026-08-20: "When they sign I should get a notification and a copy of the signed
+    agreement to their account too."
+
+    Both happen AFTER the signature is committed and neither is awaited into the result. A
+    customer has signed; that fact is recorded and must not be lost because an email failed or a
+    document row could not be written. The Gmail token expiring for two days is not a
+    hypothetical here — it already happened, and if a send had been in the signature's path every
+    signature during that window would have failed instead.
+
+    So: signature first, always. Everything else is best-effort and reports its own failure.
+  */
+  void fileAndNotifySignature(prisma, estimateId, number, name, channel);
+
   return { ok: true, estimateId };
+}
+
+/**
+ * File the signed agreement against the account and tell Kyle.
+ *
+ * Deliberately not exported and deliberately not awaited — see the note at its only call site.
+ * Every step is individually guarded, because a failure to notify must not prevent the filing and
+ * a failure to file must not prevent the notification.
+ */
+async function fileAndNotifySignature(
+  prisma: PrismaClient,
+  estimateId: string,
+  number: string,
+  signerName: string,
+  channel: SignChannel,
+): Promise<void> {
+  const est = await prisma.issuedEstimate.findUnique({ where: { id: estimateId } }).catch(() => null);
+  if (!est) return;
+
+  // The copy on the account. It carries no bytes: `issuedEstimateId` points at the immutable
+  // estimate and the PDF is rendered from it on request.
+  await prisma.document
+    .create({
+      data: {
+        type: "signed_estimate",
+        jobId: est.jobVisitId ?? est.visitId ?? null,
+        propertyId: est.serviceAddressId,
+        issuedEstimateId: est.id,
+        pdfUrl: `/api/issued-estimates/${est.id}/pdf?audience=company`,
+        signedAt: est.signedAt,
+        signedByName: signerName,
+      },
+    })
+    .catch((err: unknown) => {
+      logSystemEvent("error", "issued-estimate", `Could not file the signed copy for ${number}`, {
+        estimateId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
+  const to = process.env.SUMMARY_EMAIL ?? process.env.GMAIL_USER ?? null;
+  if (!to) return;
+
+  const total = `$${est.total.toFixed(2)}`;
+  const where = channel === "in_person" ? "in person" : "from the emailed link";
+  await sendBrandedEmail({
+    to,
+    subject: `SIGNED — estimate ${number}, ${total}`,
+    headline: "An estimate has been signed",
+    bodyHtml: `
+      <p style="font-size:16px;"><strong>${escapeHtml(signerName)}</strong> signed estimate
+      ${escapeHtml(number)} ${where}.</p>
+      <p style="font-size:15px;">Total <strong>${total}</strong>${
+        est.customerName ? ` &middot; ${escapeHtml(est.customerName)}` : ""
+      }${est.serviceAddress ? `<br>${escapeHtml(est.serviceAddress)}` : ""}</p>
+      <p style="font-size:14px;color:#666;">A copy has been filed on the account. It is ready to
+      schedule.</p>`,
+  }).catch(() => {
+    // sendBrandedEmail already writes the transport error to SystemEvent (source "email").
+  });
 }
 
 // ─── Revision ───────────────────────────────────────────────────────────────────

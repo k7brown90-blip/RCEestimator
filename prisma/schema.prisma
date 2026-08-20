@@ -1235,10 +1235,24 @@ model Document {
   signedByName String?
   sentAt       DateTime?
   createdAt    DateTime  @default(now())
+  // ── The signed estimate, filed on the account (Kyle, 2026-08-20) ──
+  //
+  // "When they sign I should get a notification and a copy of the signed agreement to their
+  //  account too."
+  //
+  // The bytes are NOT stored. `pdfUrl` on every other document type is a path into `generated/`,
+  // which Railway discards on each deploy — those documents stop resolving after the next
+  // release. A signed agreement is the last thing that should evaporate, so this one points at
+  // the immutable estimate and the PDF is rendered from it on request. Same document every time,
+  // and nothing to lose.
+  issuedEstimateId String?
+  issuedEstimate   IssuedEstimate? @relation(fields: [issuedEstimateId], references: [id], onDelete: Cascade)
+
   job          Visit?    @relation(fields: [jobId], references: [id], onDelete: Cascade)
   property     Property? @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 
   @@index([propertyId, type])
+  @@index([issuedEstimateId])
 }
 
 model MaterialOrder {
@@ -1978,6 +1992,9 @@ model IssuedEstimate {
   // drift the next diff will try to drop.
   @@index([customerId])
   @@index([serviceAddressId])
+
+  /// Copies filed against the account — the signed agreement (2026-08-20).
+  documents      Document[]
 }
 
 // One priced line as the customer sees it: a description, a quantity, and a flat price.
