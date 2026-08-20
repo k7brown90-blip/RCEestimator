@@ -234,3 +234,55 @@ describe("both audiences agree about the work", () => {
     }
   });
 });
+
+describe("the option names on the PDF", () => {
+  /*
+    Kyle, 2026-08-20: *"Show the option names on the pdf, that's necessary."*
+
+    It printed "Option A" / "Option B" / "Option C", which tells whoever is holding the paper
+    nothing about what is in them. The name IS the scope — "Exterior pathway lights" is what makes
+    the document usable for ordering and for talking the customer through what they bought.
+  */
+  const named = {
+    ...ESTIMATE,
+    options: [
+      { option: "A" as const, label: "What the client called for", note: "The diagnostic and the OC sensors.", subtotal: 467.83 },
+      { option: "B" as const, label: "Exterior pathway lights", note: null, subtotal: 842.86 },
+    ],
+  };
+
+  it("prints the name beside the letter, and the description under it", async () => {
+    const text = extractText(await renderEstimatePdf(named, "company", PROFILE));
+    expect(text).toContain("Option A");                          // the letter is still there
+    expect(text).toContain("What the client called for");        // and now so is the scope
+    expect(text).toContain("Exterior pathway lights");
+    expect(text).toContain("The diagnostic and the OC sensors.");
+  });
+
+  it("falls back to the bare letter for an estimate issued before names existed", async () => {
+    // Paired: the document must still print its work, not just avoid crashing.
+    const text = extractText(await renderEstimatePdf({ ...ESTIMATE, options: undefined }, "company", PROFILE));
+    expect(text).toContain("Option A");
+    expect(text).toContain("Ceiling Fan");
+  });
+
+  it("drops an option the customer declined once the estimate is signed", async () => {
+    const signed = {
+      ...named,
+      signedAt: new Date("2026-08-20T22:10:00Z"),
+      signedByName: "Adnan Mehmedovic",
+      selectedOptions: ["A" as const],
+    };
+    const text = extractText(await renderEstimatePdf(signed, "company", PROFILE));
+    // Took A, declined B. Their agreement is what they bought.
+    expect(text).toContain("What the client called for");
+    expect(text).not.toContain("Exterior pathway lights");
+  });
+
+  it("still shows every option while the estimate is unsigned", async () => {
+    // The mirror of the above: before signing, nothing has been declined, so nothing is hidden.
+    const text = extractText(await renderEstimatePdf(named, "company", PROFILE));
+    expect(text).toContain("What the client called for");
+    expect(text).toContain("Exterior pathway lights");
+  });
+});

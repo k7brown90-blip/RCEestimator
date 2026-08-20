@@ -19,7 +19,7 @@ export interface CompanyProfile {
   phone: string;
   email: string;
   tagline: string;
-  /** TN contractor licence number — printed on every attestation. */
+  /** TN electrician licence number — printed on every attestation. */
   licenseNumber: string | null;
   licenseState: string;
 }
@@ -64,7 +64,17 @@ export async function getCompanyProfile(): Promise<CompanyProfile> {
  * the person signing it should notice before the customer does.
  */
 export function licenseLine(profile: CompanyProfile): string {
+  /*
+    NOT "contractor licence" (2026-08-20).
+
+    Kyle: *"Contactor should not appear in any advertisement anywhere"*, and then the wording he
+    actually wants: *"Licensed Electrician #61828"*.
+
+    In Tennessee "contractor" is a licence classification rather than a synonym for tradesman, so
+    calling an electrician's licence a contractor licence is not loose phrasing — it misstates
+    which credential is being asserted, on a document that exists specifically to assert it.
+  */
   return profile.licenseNumber
-    ? `${profile.licenseState} contractor licence ${profile.licenseNumber}`
+    ? `${profile.licenseState} Licensed Electrician #${profile.licenseNumber}`
     : "Licence number not on file — set it in CRM Settings before issuing this document";
 }

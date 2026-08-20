@@ -155,9 +155,10 @@ function shell(title: string, inner: string): string {
  * In Tennessee "contractor" is a licence classification rather than a synonym for tradesman, and
  * advertising as one is regulated. So this is a compliance line, not a wording preference.
  *
- * The descriptor is REMOVED rather than swapped for "Licensed Electrician": I do not know which
- * licence he holds, and a credential is not something to guess at — the same rule as never making
- * up a number. If he wants words back here, they are his to give me.
+ * It read "... &middot; Licensed Electrical Contractor". Kyle gave the replacement himself on
+ * 2026-08-20: *"Licensed Electrician #61828 can take it's place."* — his wording and his licence
+ * number, which is the only way a credential should ever get onto a customer document. It was left
+ * blank in between rather than guessed at.
  *
  * Note the explanation lives out here in TypeScript and NOT in an HTML comment inside the markup
  * below. An HTML comment ships to the customer and is one "view source" from being read, so a note
@@ -171,7 +172,7 @@ function round2(n: number): number {
 function letterhead(subtitle: string): string {
   return `<div class="head">
     <h1>RED CEDAR ELECTRIC LLC</h1>
-    <p>La Vergne, Tennessee &middot; ${BUSINESS_EMAIL}</p>
+    <p>La Vergne, Tennessee &middot; ${BUSINESS_EMAIL} &middot; Licensed Electrician #61828</p>
     <p style="margin-top:8px;font-size:15px;font-weight:600;opacity:1;">${escapeHtml(subtitle)}</p>
   </div>`;
 }

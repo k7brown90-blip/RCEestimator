@@ -63,6 +63,24 @@ export interface PdfEstimate {
   signatureImage?: string | null;
   createdAt: Date;
   lines: PdfLine[];
+  /**
+   * The options as they were named and priced at issue (Kyle, 2026-08-20: "Show the option names
+   * on the pdf, that's necessary.").
+   *
+   * Optional, and the loop falls back to the bare letter when it is missing — an estimate issued
+   * before options were nameable has no rows here and must still print.
+   *
+   * `subtotal` is the frozen figure rather than a re-sum of the lines. They agree, but the frozen
+   * one is what the customer was shown and what they put their name to.
+   */
+  options?: Array<{
+    option: PriceBookOption;
+    label: string | null;
+    note: string | null;
+    subtotal: number;
+  }>;
+  /** What the customer actually bought. Empty or absent means the whole estimate. */
+  selectedOptions?: PriceBookOption[];
 }
 
 const OPTIONS: PriceBookOption[] = ["A", "B", "C"];
@@ -142,17 +160,43 @@ export async function renderEstimatePdf(
     doc.moveDown(0.8);
   }
 
-  // ── Options ──
+  /*
+    ── Options, BY NAME ──────────────────────────────────────────────────────────────────────────
+
+    Kyle, 2026-08-20: *"Show the option names on the pdf, that's necessary."*
+
+    This printed "Option A", "Option B", "Option C" — which tells whoever is holding the paper
+    nothing about what is in them. The name is the scope: "Exterior pathway lights" is what makes
+    this document usable for ordering and for talking to the customer about what they bought.
+
+    Once the customer has signed, the options they DECLINED are not printed at all. Their
+    agreement is what they bought; an option they said no to has no place on it.
+  */
+  const taken = new Set((estimate.selectedOptions ?? []) as string[]);
+  const declinedAreKnown = Boolean(estimate.signedAt) && taken.size > 0;
+
   for (const option of OPTIONS) {
     const lines = estimate.lines.filter((l) => l.option === option);
     if (lines.length === 0) continue;
+    if (declinedAreKnown && !taken.has(option)) continue;
 
-    const optionTotal = sum(lines.map((l) => l.lineTotal));
+    const meta = estimate.options?.find((o) => o.option === option);
+    // The frozen subtotal when there is one; otherwise re-summed, which is the only thing an
+    // estimate issued before options existed can offer.
+    const optionTotal = meta ? meta.subtotal : sum(lines.map((l) => l.lineTotal));
+    const heading = meta?.label ? `Option ${option} — ${meta.label}` : `Option ${option}`;
+
     doc.moveDown(0.4);
-    doc.fontSize(12).text(`Option ${option}`, { continued: true })
+    doc.fontSize(12).text(heading, { continued: true })
       .text(money(optionTotal), { align: "right" });
     doc.moveTo(50, doc.y + 2).lineTo(562, doc.y + 2).strokeColor("#ccc").stroke();
     doc.moveDown(0.5);
+
+    if (meta?.note) {
+      doc.fontSize(9).fillColor("#555").text(meta.note, { width: 500 });
+      doc.fillColor("#000");
+      doc.moveDown(0.3);
+    }
 
     for (const line of lines) {
       doc.fontSize(10).fillColor("#000")

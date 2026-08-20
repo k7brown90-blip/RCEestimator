@@ -1418,7 +1418,10 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
   if (doc.issuedEstimateId) {
     const est = await prisma.issuedEstimate.findUnique({
       where: { id: doc.issuedEstimateId },
-      include: { lines: { orderBy: { sortOrder: "asc" } } },
+      include: {
+        lines: { orderBy: { sortOrder: "asc" } },
+        options: { orderBy: { option: "asc" } },
+      },
     });
     if (!est) {
       res.status(404).json({ error: "The estimate this document refers to no longer exists" });
@@ -1436,6 +1439,10 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
         tripCharge: est.tripCharge,
         signedAt: est.signedAt,
         signedByName: est.signerName,
+        // The named options, so the PDF prints "Option B — Exterior pathway lights" rather than a
+        // bare letter, and drops what the customer declined once it is signed.
+        options: est.options,
+        selectedOptions: est.selectedOptions,
       signatureImage: est.signatureImage,
         createdAt: est.createdAt,
         lines: est.lines.map((l) => ({
@@ -2393,7 +2400,10 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
   const audience = req.query.audience === "company" ? "company" : "customer";
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: readParam(req, "id") },
-    include: { lines: { orderBy: { sortOrder: "asc" } } },
+    include: {
+      lines: { orderBy: { sortOrder: "asc" } },
+      options: { orderBy: { option: "asc" } },
+    },
   });
   if (!est) {
     res.status(404).json({ error: "Estimate not found" });
@@ -2414,6 +2424,10 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       signedByName: est.signerName,
       signatureImage: est.signatureImage,
       createdAt: est.createdAt,
+      // The named options, so the PDF prints "Option B — Exterior pathway lights" rather than a
+      // bare letter, and drops what the customer declined once it is signed.
+      options: est.options,
+      selectedOptions: est.selectedOptions,
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,

@@ -216,8 +216,11 @@ describe("the word Kyle will not advertise", () => {
       renderEstimatePage(estimate({ signedAt: new Date(), selectedOptions: ["A"] })),
       renderEstimatePage(estimate({ options: [] })),
     ]) {
-      // Paired, so this cannot pass on an empty render.
+      // Paired, so this cannot pass on an empty render — and the pairing is the licence line
+      // itself, which is what replaced the offending words. Kyle, 2026-08-20: "Licensed
+      // Electrician #61828 can take it's place."
       expect(html).toContain("RED CEDAR ELECTRIC LLC");
+      expect(html).toContain("Licensed Electrician #61828");
       expect(html).not.toMatch(/contractor/i);
     }
   });
