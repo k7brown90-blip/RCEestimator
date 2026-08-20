@@ -42,7 +42,10 @@ export interface PdfLine {
   quantity: number;
   lineTotal: number;
   laborHours: number | null;
+  /** Column F — what the customer is charged for material. */
   materialSell: number | null;
+  /** Column E — what it costs Red Cedar. Tracked for spending, never shown to a customer. */
+  materialCost: number | null;
 }
 
 export interface PdfEstimate {
@@ -64,7 +67,10 @@ export interface PdfEstimate {
 
 const OPTIONS: PriceBookOption[] = ["A", "B", "C"];
 
-function money(v: number): string {
+function money(v: number | null | undefined): string {
+  // Null-safe: a line issued before a column existed has no value for it, and a document that
+  // throws mid-render is worse than one that prints an em dash.
+  if (v === null || v === undefined) return "—";
   return `$${v.toFixed(2)}`;
 }
 
@@ -155,15 +161,38 @@ export async function renderEstimatePdf(
       // The whole audience split, in one branch. A customer line stops at description and
       // quantity — no line price, no hours (Kyle, 2026-08-19).
       if (audience === "company") {
+        /*
+          THE BREAKDOWN, IN KYLE'S OWN TERMS (2026-08-20):
+
+            "Column E = company cost. Column F = what we charge. The labor rate * difficulty
+             labor unit is labor cost... Column F + ($150*labor difficulty unit) = total price"
+
+          So the line reads: what it COSTS us, what we CHARGE for it, the labour, and the total.
+          Cost and charge are different numbers doing different jobs — the charge is the price,
+          the cost is what he tracks spending against — and collapsing them into one "material"
+          figure is what made this unreadable.
+        */
+        /*
+          Labour money is DERIVED from the frozen line: total minus what the material was charged
+          at. Kyle's rule is "$150 * labor difficulty unit", and multiplying the hours by a rate
+          read at print time would silently restate a signed document the day the rate changes.
+          The subtraction can only ever reproduce what was actually agreed.
+        */
+        const labourCost = line.lineTotal - (line.materialSell ?? 0);
         const bits = [
-          line.laborHours === null ? "hours not recorded" : `${line.laborHours.toFixed(2)} hr`,
+          line.materialCost === null || line.materialCost === 0
+            ? null
+            : `cost ${money(line.materialCost)}`,
           line.materialSell === null
             ? "material not recorded"
             : line.materialSell === 0
               ? "customer-supplied"
-              : `${money(line.materialSell)} material`,
-          money(line.lineTotal),
-        ];
+              : `charge ${money(line.materialSell)}`,
+          line.laborHours === null
+            ? `labour ${money(labourCost)} (hours not recorded)`
+            : `labour ${line.laborHours.toFixed(2)} hr = ${money(labourCost)}`,
+          `TOTAL ${money(line.lineTotal)}`,
+        ].filter(Boolean);
         doc.fontSize(8).fillColor("#666").text(`    ${bits.join("  ·  ")}`).fillColor("#000");
       }
       doc.moveDown(0.2);
@@ -206,11 +235,43 @@ export async function renderEstimatePdf(
       }
     }
 
+    /*
+      ── WHAT THE JOB COSTS AND HOW LONG IT TAKES ────────────────────────────────────────────
+
+      Kyle, 2026-08-20: "This is how it needs to be calculated and shown on the company copy with
+      the total labor hours calculated into total job length."
+
+      So the hours are not left as a number to convert in his head — they are turned into days at
+      an eight-hour day, which is the unit scheduling actually happens in.
+
+      Material COST (column E) is totalled separately from what is charged, because that is the
+      figure he tracks spending against. It is stated as a cost, never as a discount off the
+      charge, and it never appears on the customer's copy.
+    */
     const hours = sum(estimate.lines.map((l) => l.laborHours));
-    const anyMissing = estimate.lines.some((l) => l.laborHours === null);
-    doc.moveDown(0.6);
-    doc.fontSize(10).text(
-      `Labour to schedule: ${hours.toFixed(2)} hr${anyMissing ? " (some lines have no recorded hours)" : ""}`,
+    const anyMissingHours = estimate.lines.some((l) => l.laborHours === null);
+    const materialSpend = sum(estimate.lines.map((l) => l.materialCost));
+    const materialCharged = sum(estimate.lines.map((l) => l.materialSell));
+    // Same derivation as the lines: what was charged, minus the material. Never a rate applied
+    // after the fact to a document that has already been signed.
+    const labourCost = sum(estimate.lines.map((l) => l.lineTotal - (l.materialSell ?? 0)));
+    const effectiveRate = hours > 0 ? labourCost / hours : null;
+    const days = hours / 8;
+
+    doc.moveDown(0.8);
+    doc.fontSize(12).text("Job summary");
+    doc.moveDown(0.2);
+    doc.fontSize(10);
+    doc.text(`Material cost (what we spend):   ${money(materialSpend)}`);
+    doc.text(`Material charged:                ${money(materialCharged)}`);
+    doc.text(
+      `Labour: ${hours.toFixed(2)} hr` +
+        (effectiveRate === null ? "" : ` x ${money(effectiveRate)}/hr`) +
+        ` = ${money(labourCost)}` +
+        (anyMissingHours ? "  (some lines have no recorded hours)" : ""),
+    );
+    doc.text(
+      `Job length: ${hours.toFixed(2)} hr = ${days.toFixed(2)} day(s) at 8 hr/day`,
     );
   }
 

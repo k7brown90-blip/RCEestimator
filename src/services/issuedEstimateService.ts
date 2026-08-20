@@ -151,6 +151,7 @@ export async function graduateDraft(
     option: "A" | "B" | "C";
     laborHours: number | null;
     materialSell: number | null;
+    materialCost: number | null;
   }> = [];
   const refusals: string[] = [];
   /** Lines frozen at zero because the engine had no price for them. Never silently dropped. */
@@ -204,7 +205,11 @@ export async function graduateDraft(
       // Carried through as-is, including null. A null labour figure means the engine had no
       // hours for that row; recording 0 would claim the work takes no time.
       laborHours: l.laborHours,
+      // F — what the customer is charged for material.
       materialSell: l.materialSell,
+      // E — what it costs Red Cedar. Kyle tracks spending against this, so it is frozen with the
+      // rest rather than re-derived later from a catalog that will have moved on.
+      materialCost: l.materialCost,
     });
   });
 

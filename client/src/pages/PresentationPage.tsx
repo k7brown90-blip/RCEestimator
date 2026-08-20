@@ -34,7 +34,7 @@ import { api } from "../lib/api";
 import {
   buildOptions,
   combinedTotal,
-  labourHours,
+  companySummary,
   materialList,
   type Audience,
 } from "../lib/presentation";
@@ -69,7 +69,7 @@ export function PresentationPage() {
 
   const total = data ? combinedTotal(options, effectiveSelected, data.computed.jobFixedCost) : null;
   const materials = data ? materialList(data.computed, effectiveSelected) : [];
-  const hours = data ? labourHours(data.computed, effectiveSelected) : 0;
+  const summary = data ? companySummary(data.computed, effectiveSelected) : null;
 
   /*
     ── FREEZING IS A CONSEQUENCE, NOT A BUTTON (Kyle, 2026-08-19) ─────────────────────────────
@@ -212,12 +212,18 @@ export function PresentationPage() {
                     </span>
                   </span>
                   {/* Present only in the company view — absent from the customer's data entirely. */}
+                  {/* Kyle's breakdown, 2026-08-20: what it COSTS us, what we CHARGE, the
+                      labour, and the total. Cost and charge are different numbers doing
+                      different jobs and collapsing them made this unreadable. */}
                   {audience === "company" && (
                     <span className="shrink-0 text-right text-xs text-rce-soft">
-                      <span className="block">{(l.laborHours ?? 0).toFixed(2)} hr</span>
                       <span className="block">
-                        {money(l.laborDollars)}
-                        {l.materialSell ? ` + ${money(l.materialSell)} mat` : ""}
+                        {l.laborHours != null ? `${l.laborHours.toFixed(2)} hr` : "hr —"} ·{" "}
+                        {money(l.laborDollars)} labour
+                      </span>
+                      <span className="block">
+                        {l.materialCost ? `cost ${money(l.materialCost)} · ` : ""}
+                        {l.materialSell ? `charge ${money(l.materialSell)}` : "customer-supplied"}
                       </span>
                     </span>
                   )}
@@ -246,9 +252,23 @@ export function PresentationPage() {
               </li>
             ))}
           </ul>
-          <p className="mt-2 border-t border-rce-border pt-2 text-xs text-rce-soft">
-            Labour to schedule against: <strong>{hours.toFixed(2)} hr</strong>
-          </p>
+          {summary && (
+            <div className="mt-2 space-y-0.5 border-t border-rce-border pt-2 text-xs text-rce-soft">
+              <p>
+                Material cost (what we spend): <strong>{money(summary.materialCost)}</strong>
+              </p>
+              <p>
+                Material charged: <strong>{money(summary.materialCharged)}</strong>
+              </p>
+              <p>
+                Labour: <strong>{summary.hours.toFixed(2)} hr</strong> ={" "}
+                <strong>{money(summary.labourCost)}</strong>
+              </p>
+              <p>
+                Job length: <strong>{summary.days.toFixed(2)} day(s)</strong> at 8 hr/day
+              </p>
+            </div>
+          )}
         </section>
       )}
 

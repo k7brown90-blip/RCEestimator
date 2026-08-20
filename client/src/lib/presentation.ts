@@ -46,8 +46,10 @@ export interface PresentationLine {
   laborHours?: number | null;
   /** Company only. */
   laborDollars?: number | null;
-  /** Company only. */
+  /** Company only — column F, what the customer is charged. */
   materialSell?: number | null;
+  /** Company only — column E, what it costs Red Cedar. What Kyle tracks spending against. */
+  materialCost?: number | null;
 }
 
 export interface PresentationOption {
@@ -96,6 +98,7 @@ function presentLine(line: PbComputedLine, audience: Audience): PresentationLine
     laborHours: line.laborHours,
     laborDollars: line.laborDollars,
     materialSell: line.materialSell,
+    materialCost: line.materialCost,
   };
 }
 
@@ -154,4 +157,30 @@ export function labourHours(computed: PbComputed, selected: PbOption[]): number 
   return computed.lines
     .filter((l) => selected.includes(l.option))
     .reduce((n, l) => n + (l.laborHours ?? 0), 0);
+}
+
+/**
+ * What the selected work costs Red Cedar, and how long it takes.
+ *
+ * Kyle, 2026-08-20: *"Column E = company cost… In the estimate column E is what we see to track
+ * spending"* and *"the total labor hours calculated into total job length"*.
+ *
+ * Company view only. `materialCost` is absent from a customer line by construction, so calling
+ * this on customer data would silently total zero — which is why it takes the computed estimate
+ * rather than the presentation options.
+ */
+export function companySummary(computed: PbComputed, selected: PbOption[]) {
+  const lines = computed.lines.filter((l) => selected.includes(l.option));
+  const hours = lines.reduce((n, l) => n + (l.laborHours ?? 0), 0);
+  const materialCost = lines.reduce((n, l) => n + (l.materialCost ?? 0), 0);
+  const materialCharged = lines.reduce((n, l) => n + (l.materialSell ?? 0), 0);
+  const labourCost = lines.reduce((n, l) => n + (l.laborDollars ?? 0), 0);
+  return {
+    hours,
+    /** At an eight-hour day — the unit scheduling actually happens in. */
+    days: hours / 8,
+    materialCost,
+    materialCharged,
+    labourCost,
+  };
 }

@@ -2048,8 +2048,13 @@ model IssuedEstimateLine {
   option       PriceBookOption @default(A)
   /// Labour hours for this line, at its difficulty. Scheduling is planned against these.
   laborHours   Float?
-  /// Material sell for this line. Null and 0 differ: 0 is customer-supplied, null is unknown.
+  /// Material sell for this line — column F, what the customer is charged. Null and 0 differ:
+  /// 0 is customer-supplied, null is unknown.
   materialSell Float?
+  /// Material COST — column E, what it costs Red Cedar. Kyle, 2026-08-20: "In the estimate
+  /// column E is what we see to track spending." Frozen alongside the charge so the company copy
+  /// can show both and the margin on a signed job is a fact rather than a re-derivation.
+  materialCost Float?
 
   estimate     IssuedEstimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
   atomic       PriceBookAtomic @relation(fields: [itemId], references: [itemId], onDelete: Restrict)

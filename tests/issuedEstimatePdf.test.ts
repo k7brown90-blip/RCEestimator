@@ -56,6 +56,7 @@ const ESTIMATE: PdfEstimate = {
       lineTotal: 750,
       laborHours: 5,
       materialSell: 0,
+      materialCost: 0,
     },
     {
       option: "A",
@@ -63,7 +64,9 @@ const ESTIMATE: PdfEstimate = {
       quantity: 2,
       lineTotal: 100,
       laborHours: 1,
+      // Column E and column F: what it costs us, and what we charge.
       materialSell: 30,
+      materialCost: 8,
     },
     {
       option: "B",
@@ -72,6 +75,7 @@ const ESTIMATE: PdfEstimate = {
       lineTotal: 350,
       laborHours: 1.5,
       materialSell: 42.5,
+      materialCost: 12.14,
     },
   ],
 };
@@ -152,12 +156,47 @@ describe("the company's PDF", () => {
     expect(text).toContain("100.00");
   });
 
-  it("lists the material to order and the labour to schedule", async () => {
+  it("lists the material to order, and the job summary Kyle asked for", async () => {
+    /*
+      Kyle, 2026-08-20:
+
+        "Column E = company cost. Column F = what we charge... In the estimate column E is what we
+         see to track spending... This is how it needs to be calculated and shown on the company
+         copy with the total labor hours calculated into total job length."
+
+      So four things have to be on it: what the material COSTS us, what it is CHARGED at, the
+      labour, and the hours turned into days — not left as a number to convert in his head.
+    */
     const text = await textOf("company");
     expect(text).toContain("Material to order");
     expect(text).toContain("Ground Rod");
-    expect(text).toContain("Labour to schedule");
-    expect(text).toContain("7.50 hr"); // 5 + 1 + 1.5 across both options
+
+    expect(text).toContain("Material cost (what we spend)");
+    expect(text).toContain("20.14"); // 0 + 8.00 + 12.14, column E
+    expect(text).toContain("Material charged");
+    expect(text).toContain("72.50"); // 0 + 30.00 + 42.50, column F
+    expect(text).toContain("7.50 hr"); // 5 + 1 + 1.5
+    expect(text).toContain("Job length");
+    expect(text).toContain("0.94 day(s)"); // 7.5 / 8
+  });
+
+  it("breaks each line into cost, charge, labour and total", async () => {
+    // Cost and charge are different numbers doing different jobs. Collapsing them into one
+    // "material" figure is what made the old company copy unreadable.
+    const text = await textOf("company");
+    expect(text).toContain("cost $8.00");
+    expect(text).toContain("charge $30.00");
+    expect(text).toContain("labour 1.00 hr = $70.00");
+    expect(text).toContain("TOTAL $100.00");
+  });
+
+  it("never shows the COST on the customer's copy", async () => {
+    // What a job costs Red Cedar is the one figure that must never cross over.
+    const text = await textOf("customer");
+    expect(text).not.toContain("12.14");
+    expect(text).not.toContain("8.00");
+    expect(text).not.toContain("Material cost");
+    expect(text).not.toContain("Job length");
   });
 
   it("marks a zero-material line as customer-supplied rather than as free", async () => {
@@ -173,7 +212,7 @@ describe("the company's PDF", () => {
     // 0.00 would claim the work takes no time — on a document used for scheduling.
     const legacy: PdfEstimate = {
       ...ESTIMATE,
-      lines: [{ ...ESTIMATE.lines[0], laborHours: null, materialSell: null }],
+      lines: [{ ...ESTIMATE.lines[0], laborHours: null, materialSell: null, materialCost: null }],
     };
     const text = extractText(await renderEstimatePdf(legacy, "company", PROFILE));
     expect(text).toContain("hours not recorded");
