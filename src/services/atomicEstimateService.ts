@@ -88,10 +88,32 @@ export async function loadRateContext(prisma: PrismaClient): Promise<RateContext
 export async function loadCatalogAtSupplier(
   prisma: PrismaClient,
   supplierId: string,
-  tiers: MarkupTiers
+  tiers: MarkupTiers,
+  /**
+   * Item ids that are ON a draft already and must price whatever their status.
+   *
+   * ── RETIRE MEANS "DO NOT OFFER", NOT "DO NOT PRICE" (2026-08-20) ──────────────────────────
+   *
+   * This loader filtered `retiredAt: null` for every caller, which quietly made a retired atomic
+   * unpriceable. Kyle renamed 39 rows in his book on 2026-08-20 — `THHN/THWN-2 Building Wire,
+   * #14 AWG` became `THHN #14 AWG` and so on. Keys derive from names, so the old keys retired and
+   * new ones took their place, exactly as designed.
+   *
+   * His live EV Charger draft referenced two of the old keys. After the import those two lines
+   * reported ATOMIC_NOT_FOUND and priced at ZERO, and the draft fell from $1662.14 to $811.19 —
+   * silently, with the lines still listed on screen. That is the worst shape a pricing bug can
+   * take: work visibly present, contributing nothing.
+   *
+   * "Retire, never delete" was meant to keep exactly this from happening. Retirement removes an
+   * item from browse, from search and from what the AI may propose — all of which use different
+   * queries and stay filtered. It must not remove the price from a line somebody already added.
+   */
+  referencedItemIds: string[] = []
 ): Promise<Map<string, EngineAtomic>> {
   const atomics = await prisma.priceBookAtomic.findMany({
-    where: { retiredAt: null },
+    where: referencedItemIds.length > 0
+      ? { OR: [{ retiredAt: null }, { itemId: { in: referencedItemIds } }] }
+      : { retiredAt: null },
     select: {
       itemId: true,
       description: true,
@@ -775,7 +797,13 @@ export async function computeDraft(
   if (!draft) throw new Error(`Draft ${draftId} not found.`);
 
   const rate = await loadRateContext(prisma);
-  const atomics = await loadCatalogAtSupplier(prisma, draft.supplierId, rate.rc.markupTiers);
+  // The draft's own item ids come along, so a line added before a rename still prices.
+  const atomics = await loadCatalogAtSupplier(
+    prisma,
+    draft.supplierId,
+    rate.rc.markupTiers,
+    draft.lines.map((l) => l.itemId),
+  );
 
   // ── ONLY CONFIRMED LINES ARE PRICED. This is the load-bearing line of the whole
   // propose-only architecture: a PROPOSED line is the model's recommendation and it moves
