@@ -53,21 +53,26 @@ describe("a blocked finalize still explains itself", () => {
     }
   });
 
-  it("returns the engine's verbatim reasons for a gap-carrying draft", async () => {
-    // CF001 has neither a supplier price nor a labour unit basis — the exact shape of Kyle's
-    // sunroom draft, which produced five 409s.
+  it("names the gap-carrying item verbatim, as a warning rather than a refusal", async () => {
+    /*
+      CF001 has neither a supplier price nor a labour unit basis — the exact shape of Kyle's
+      sunroom draft, which once produced five 409s.
+
+      The finding is unchanged and so is the thing this test was written to protect: the ITEM IS
+      NAMED. A generic "cannot finalize" is what P022 found had made the refusal useless, and that
+      is still true of a warning — the wording is what tells the tech what to do.
+
+      What changed on 2026-08-20 is that it no longer blocks. Kyle: "Nothing should block me from
+      completing the estimate."
+    */
     const draft = await createDraft(prisma, { title: "P022 refusal fixture", supplierId: SUPPLIER });
     draftId = draft.id;
     await addLine(prisma, draft.id, { itemId: "CF001", quantity: 1, quantitySource: "COUNT" });
 
     const result = await finalizeDraft(prisma, draft.id, "customer");
-    expect(result.finalized).toBe(false);
-    // Narrow the union rather than cast — if the refusal branch ever loses `reasons`, this
-    // should stop compiling, which is the whole point of the union.
-    if (result.finalized) throw new Error("expected a refusal");
-    expect(result.reasons.length).toBeGreaterThan(0);
-    // Named items, not a generic "cannot finalize" — the wording is what tells the tech what to do.
-    expect(result.reasons.join(" ")).toContain("CF001");
+    expect(result.finalized, "a gap no longer blocks").toBe(true);
+    expect(result.warnings?.length ?? 0).toBeGreaterThan(0);
+    expect((result.warnings ?? []).join(" ")).toContain("CF001");
   });
 });
 

@@ -88,7 +88,20 @@ export interface GraduateInput {
 }
 
 export type GraduateResult =
-  | { ok: true; estimateId: string; number: string; revision: number }
+  | {
+      ok: true;
+      estimateId: string;
+      number: string;
+      revision: number;
+      /**
+       * Lines frozen at zero because the engine had no price for them (2026-08-20).
+       *
+       * Present only when it happened. The estimate is CHEAPER THAN THE WORK by whatever these
+       * were worth, and the operator has to be told before a customer sees the number — so this
+       * travels back with the success rather than being buried in a log.
+       */
+      unpriced?: string[];
+    }
   | { ok: false; reasons: string[] };
 
 async function nextNumber(prisma: PrismaClient): Promise<string> {
@@ -140,21 +153,36 @@ export async function graduateDraft(
     materialSell: number | null;
   }> = [];
   const refusals: string[] = [];
+  /** Lines frozen at zero because the engine had no price for them. Never silently dropped. */
+  const unpriced: string[] = [];
 
   computed.lines.forEach((l, i) => {
     const atomic = atomics.get(l.itemId);
     const sells = rowTypeSells(atomic?.rowType ?? null);
 
-    // "Never make up a number." A null on a component the row actually SELLS is a missing price,
-    // not a zero — and a gap-free draft should never produce one, so reaching this is a refusal
-    // rather than a default.
+    /*
+      ── A MISSING PRICE NO LONGER REFUSES, BUT IT IS NEVER INVENTED (Kyle, 2026-08-20) ────────
+
+      "These checks are becoming a preventative block. They need removed. Nothing should block me
+       from completing the estimate."
+
+      These three used to refuse graduation outright. They now let the estimate through, because
+      that is his instruction and because the gates upstream had been refusing correct work.
+
+      What has NOT changed is "never make up a number". A line the engine could not price is
+      frozen at zero and RECORDED as unpriced — it is not given a guessed price, and it is not
+      quietly dropped either. Dropping it would be the worst of the three options: the work
+      vanishes from the document and the total looks deliberate.
+
+      The cost is real and is stated where it lands: the estimate is CHEAPER THAN THE WORK by
+      whatever those lines were worth. `unpriced` is returned to the caller so the operator is
+      told before a customer sees a number.
+    */
     if (sells.labour && l.laborDollars === null) {
-      refusals.push(`${l.itemId} has no labour price and cannot be quoted flat.`);
-      return;
+      unpriced.push(`${l.itemId} — no labour price`);
     }
     if (sells.material && l.materialSell === null) {
-      refusals.push(`${l.itemId} has no material price and cannot be quoted flat.`);
-      return;
+      unpriced.push(`${l.itemId} — no material price`);
     }
 
     const lineTotal = round2((l.laborDollars ?? 0) + (l.materialSell ?? 0));
@@ -246,7 +274,22 @@ export async function graduateDraft(
     return est;
   });
 
-  return { ok: true, estimateId: created.id, number, revision: created.revision };
+  if (unpriced.length > 0) {
+    logSystemEvent(
+      "warn",
+      "issued-estimate",
+      `Estimate ${number} issued with ${unpriced.length} unpriced line(s) — the total is lower than the work`,
+      { estimateId: created.id, unpriced },
+    );
+  }
+
+  return {
+    ok: true,
+    estimateId: created.id,
+    number,
+    revision: created.revision,
+    unpriced: unpriced.length > 0 ? unpriced : undefined,
+  };
 }
 
 /**

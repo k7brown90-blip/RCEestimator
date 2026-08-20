@@ -643,7 +643,7 @@ export const api = {
     // and the address is not optional when an account has several — the operator picks.
     input: { accountId: string; serviceAddressId: string; title?: string | null; waiveTrip?: boolean }
   ) =>
-    request<{ issued: true; estimateId: string; number: string; revision: number }>(
+    request<{ issued: true; estimateId: string; number: string; revision: number; unpriced?: string[] }>(
       `/price-book/drafts/${draftId}/issue`,
       { method: "POST", body: JSON.stringify(input) }
     ),

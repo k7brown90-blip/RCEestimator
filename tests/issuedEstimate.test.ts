@@ -96,18 +96,42 @@ async function quotableDraft(title: string) {
 
 // ─── 1. Graduation refuses what finalize refuses ────────────────────────────────
 
-describe("graduation refuses a draft that is not gap-free", () => {
-  it("refuses a line whose labour is not published, and names it", async () => {
+describe("graduation names what it could not price, and no longer refuses", () => {
+  /**
+   * Kyle, 2026-08-20: *"These checks are becoming a preventative block. They need removed.
+   * Nothing should block me from completing the estimate."*
+   *
+   * An unpriced line used to refuse graduation outright. It now graduates, and the line is frozen
+   * at ZERO and reported as unpriced. Three options existed and only one is honest:
+   *
+   *   - invent a price          — breaks "never make up a number" outright
+   *   - drop the line silently  — the work vanishes and the total looks deliberate. Worst of the three.
+   *   - freeze at zero, and say — the total is short, and the operator is told by how much.
+   *
+   * The cost is real: the estimate is CHEAPER THAN THE WORK. That is why `unpriced` travels back
+   * with the success rather than sitting in a log, and why the presentation screen shows it before
+   * a customer ever sees a number.
+   */
+  it("graduates a line whose labour is not published, names it, and freezes it at zero", async () => {
     const d = await createDraft(prisma, { title: `${MARK} gap`, supplierId: "HD", visitId });
     draftIds.push(d.id);
     await addLine(prisma, d.id, { itemId: NO_LABOUR, quantity: 1, quantitySource: "COUNT" });
 
     const result = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reasons.join(" ")).toContain(NO_LABOUR);
-    expect(await prisma.issuedEstimate.count({ where: { draftId: d.id } })).toBe(0);
+    expect(result.ok, "an unpriced line no longer blocks").toBe(true);
+    if (!result.ok) return;
+    expect(result.unpriced?.join(" "), "the operator must be told which line").toContain(NO_LABOUR);
+
+    // The estimate exists, and the line is ON it rather than quietly dropped.
+    const est = await prisma.issuedEstimate.findUnique({
+      where: { id: result.estimateId },
+      include: { lines: true },
+    });
+    expect(est).not.toBeNull();
+    const frozen = est!.lines.find((l) => l.itemId === NO_LABOUR);
+    expect(frozen, "the unpriced line must still appear on the document").toBeDefined();
+    expect(frozen!.lineTotal, "and contribute nothing, rather than a guessed amount").toBe(0);
   });
 
   it("refuses while an AI proposal is still unconfirmed", async () => {

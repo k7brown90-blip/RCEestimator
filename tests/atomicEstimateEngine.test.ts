@@ -1,3 +1,17 @@
+/*
+  ── THESE ASSERT WARNINGS NOW, NOT REFUSALS (Kyle, 2026-08-20) ──────────────────────────────────
+
+  "These checks are becoming a preventative block. They need removed. Nothing should block me from
+   completing the estimate."
+
+  The conditions still have to be DETECTED — that is what these tests are for, and it is why they
+  were rewritten rather than deleted. What changed is the consequence: the engine now says so and
+  lets the estimate through, and the licensed electrician decides.
+
+  He is right that they had to go. The raceway rule had become unsatisfiable against his own
+  catalog and was refusing estimates that were correct, which is the failure mode that teaches an
+  operator to stop reading refusals altogether.
+*/
 /**
  * Tests for the atomic-first estimate engine (Phase 2.0).
  *
@@ -283,11 +297,11 @@ describe("measured-length guard — removing cable must not become a discount", 
     expect(isContinuousLength(emt)).toBe(false);
   });
 
-  it("REFUSES to finalize raceway with no conductor line", () => {
+  it("WARNS about raceway with no conductor line, and lets it through", () => {
     const est = computeEstimate([line({ itemId: "C004", quantity: 5 })], atomics, RC, "HD");
     const res = finalizeEstimate(est, atomics, { context: "internal" });
-    expect(res.finalized).toBe(false);
-    if (!res.finalized) expect(res.reasons.join(" ")).toContain("NO WIRE ON THIS ESTIMATE");
+    expect(res.finalized, "a missing conductor no longer blocks").toBe(true);
+    expect(res.warnings.join(" ")).toContain("NO WIRE ON THIS ESTIMATE");
   });
 
   it("names the missing WORK, not the mechanism that detected it", () => {
@@ -306,9 +320,7 @@ describe("measured-length guard — removing cable must not become a discount", 
     */
     const est = computeEstimate([line({ itemId: "C004", quantity: 5 })], atomics, RC, "HD");
     const res = finalizeEstimate(est, atomics, { context: "internal" });
-    expect(res.finalized).toBe(false);
-    if (res.finalized) return;
-    const text = res.reasons.join(" ");
+    const text = res.warnings.join(" ");
     expect(text).toContain("NO WIRE");
     expect(text).toMatch(/not about the quantity/i);
     // The old wording, which sent him hunting in the wrong place.
@@ -344,11 +356,13 @@ describe("finalize gate", () => {
   });
   const atomics = new Map([["A008", clean]]);
 
-  it("blocks a customer price at a provisional rate but computes internally", () => {
+  it("warns loudly at a provisional rate, on both surfaces", () => {
     const est = computeEstimate([line({ itemId: "A008" })], atomics, RC, "HD");
     const cust = finalizeEstimate(est, atomics, { context: "customer", rateProvisional: true });
-    expect(cust.finalized).toBe(false);
-    if (!cust.finalized) expect(cust.reasons.join(" ")).toContain("PROVISIONAL RATE");
+    // No longer blocks. A provisional rate is wrong on EVERY labour line at once, so it is said
+    // as loudly as a warning can be said — but Kyle decides.
+    expect(cust.finalized).toBe(true);
+    expect(cust.warnings.join(" ")).toContain("PROVISIONAL LABOUR RATE");
 
     const internal = finalizeEstimate(est, atomics, { context: "internal", rateProvisional: true });
     expect(internal.finalized).toBe(true);
@@ -363,17 +377,24 @@ describe("finalize gate", () => {
     expect(est.total).toBeCloseTo(0.94 * 201.34 + 156.02 + 200, 8);
   });
 
-  it("refuses an empty estimate", () => {
+  it("warns about an empty estimate rather than refusing it", () => {
     const est = computeEstimate([], new Map(), RC, "HD");
     const res = finalizeEstimate(est, new Map(), { context: "internal" });
-    expect(res.finalized).toBe(false);
+    expect(res.finalized).toBe(true);
+    expect(res.warnings.join(" ")).toContain("no lines");
   });
 
-  it("refuses an atomic that is not in the catalog rather than skipping it", () => {
+  it("still NOTICES an atomic that is not in the catalog, and says the total is short", () => {
+    // The detection is the part that matters and it is unchanged. What changed is that it warns
+    // instead of refusing — and the warning says the consequence in money, because a line the
+    // engine could not price contributes nothing and the estimate is cheaper than the work.
     const est = computeEstimate([line({ itemId: "SER-4C-1AL" })], new Map(), RC, "HD");
     expect(est.gaps.some((g) => g.kind === "ATOMIC_NOT_FOUND")).toBe(true);
     const res = finalizeEstimate(est, new Map(), { context: "internal" });
-    expect(res.finalized).toBe(false);
+    expect(res.finalized).toBe(true);
+    const text = res.warnings.join(" ");
+    expect(text).toContain("Atomic not in the catalog");
+    expect(text).toContain("lower than the work");
   });
 
   it("requires a note on a MANUAL quantity", () => {

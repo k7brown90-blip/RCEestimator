@@ -99,9 +99,9 @@ export function PresentationPage() {
       const issued = await api.pbIssue(draftId, { accountId: account, serviceAddressId: address });
       if (next === "send") {
         const sent = await api.pbIssuedSend(issued.estimateId, {});
-        return { next, estimateId: issued.estimateId, number: issued.number, to: sent.to };
+        return { next, estimateId: issued.estimateId, number: issued.number, to: sent.to, unpriced: issued.unpriced };
       }
-      return { next, estimateId: issued.estimateId, number: issued.number, to: null };
+      return { next, estimateId: issued.estimateId, number: issued.number, to: null, unpriced: issued.unpriced };
     },
     onMutate: (next) => {
       setBusy(next);
@@ -109,8 +109,16 @@ export function PresentationPage() {
     },
     onSuccess: (r) => {
       setBusy(null);
+      // An unpriced line means the total is LOWER THAN THE WORK. Nothing blocks any more
+      // (Kyle, 2026-08-20), so this is the last place it can be said before a customer signs.
+      if (r.unpriced?.length) {
+        setProblem([
+          `⚠ ${r.unpriced.length} line(s) had no price and were counted as $0, so this estimate ` +
+            `is CHEAPER THAN THE WORK: ${r.unpriced.join("; ")}.`,
+        ]);
+      }
       if (r.next === "sign") navigate(`/sign-in-person/${r.estimateId}`);
-      else setProblem([`Estimate ${r.number} sent to ${r.to}.`]);
+      else if (!r.unpriced?.length) setProblem([`Estimate ${r.number} sent to ${r.to}.`]);
     },
     onError: (err) => {
       setBusy(null);

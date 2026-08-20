@@ -312,6 +312,39 @@ export function impliesConductors(atomic: EngineAtomic): boolean {
   return false;
 }
 
+/**
+ * Is this atomic a CONDUCTOR — wire, cable, the thing pulled through the raceway?
+ *
+ * ── WHY THIS EXISTS, AND WHAT IT REPLACES ──────────────────────────────────────────────────────
+ *
+ * The raceway guard below used to ask "does the estimate contain a MEASURED_LENGTH line?" as its
+ * proxy for "are the conductors here?". That proxy worked when the catalog carried units: wire was
+ * `unit = "ft"`, `isContinuousLength` returned true, the entry screen forced the source to
+ * MEASURED_LENGTH, and the guard found it.
+ *
+ * Kyle's own catalog has **no unit column at all** — every atomic imports with `unit = null`. So
+ * from the day it went live (P030) `isContinuousLength` has been false for everything, wire has
+ * been entered as a COUNT, and the guard has been unable to see conductors that were plainly on
+ * the estimate. On 2026-08-20 it refused a job that already had 6 AWG and 10 AWG in it.
+ *
+ * A rule that cannot be satisfied is worse than no rule: it teaches the operator that the refusal
+ * is noise. So the guard now asks what a line IS rather than how it was counted.
+ *
+ * Matching is on the description because that is what his book actually carries. It is deliberately
+ * broad — a false POSITIVE here only means an estimate is allowed through that a stricter reading
+ * might have queried, while a false negative blocks real work, which is the failure that just
+ * happened.
+ */
+export function isConductor(atomic: EngineAtomic): boolean {
+  const hay = `${atomic.itemId} ${atomic.description ?? ""}`.toLowerCase();
+  if (/(thhn|thwn|xhhw|romex|conductor)/.test(hay)) return true;
+  // NM-B / MC / SE / UF cable, and anything sized in AWG or kcmil.
+  if (/(nm-b|mc cable|se cable|uf-b)/.test(hay)) return true;
+  if (/(awg|kcmil)/.test(hay)) return true;
+  if (/building wire/.test(hay)) return true;
+  return false;
+}
+
 function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
@@ -627,7 +660,7 @@ export function finalizeEstimate(
   const warnings: string[] = [];
 
   if (computed.totalLineCount === 0) {
-    reasons.push("The estimate has no lines.");
+    warnings.push("The estimate has no lines.");
   }
 
   // Group gaps so the refusal is readable rather than a wall of one-liners.
@@ -645,9 +678,37 @@ export function finalizeEstimate(
     MANUAL_QUANTITY_WITHOUT_NOTE: "Manual quantity with no note",
     NO_SELL_PRICE_AT_DIFFICULTY: "No price published for the observed difficulty",
   };
+  /*
+    ── THESE WARN. THEY NO LONGER REFUSE. (Kyle, 2026-08-20) ─────────────────────────────────
+
+    "These checks are becoming a preventative block. They need removed. Nothing should block me
+     from completing the estimate."
+
+    He is right, and the reason he is right is that these gates had been refusing WORK THAT WAS
+    CORRECT. The raceway rule looked for a MEASURED_LENGTH line as its proxy for "the conductors
+    are here", and that proxy became unsatisfiable the day his own catalog went live — his book
+    has no unit column, so nothing is ever flagged continuous-length and nothing is ever forced to
+    a measured source. On 2026-08-20 it refused an estimate that already had 6 AWG and 10 AWG on
+    it, and he could not get past it by doing anything right.
+
+    A gate that cannot be satisfied does not protect the work; it teaches the operator that
+    refusals are noise, and the next one — the one that matters — gets clicked through too.
+
+    So the findings survive and the block does not. Everything here is now a warning, shown
+    verbatim where the operator will read it, and the decision is his. He is the licensed
+    electrician; the software's job is to notice, not to forbid.
+
+    ONE THING THIS COSTS, STATED PLAINLY: a line the engine could not price contributes NOTHING to
+    the total. An estimate carrying one is genuinely too cheap, and now it can be issued. That is
+    why the unpriced-line warning is worded as money rather than as a data problem, and why the
+    presentation screen calls it out before a customer ever sees a number.
+  */
   for (const [kind, list] of byKind) {
     const ids = Array.from(new Set(list.map((g) => g.itemId)));
-    reasons.push(`${label[kind]} (${ids.length}): ${ids.join(", ")}`);
+    const money = kind === "MANUAL_QUANTITY_WITHOUT_NOTE" || kind === "MEASURED_LENGTH_MISSING"
+      ? ""
+      : " — these lines add NOTHING to the total, so this price is lower than the work.";
+    warnings.push(`${label[kind]} (${ids.length}): ${ids.join(", ")}${money}`);
   }
 
   // ── The measured-line guard (Kyle's cable rule, enforced at estimate level) ──
@@ -658,8 +719,20 @@ export function finalizeEstimate(
     const a = atomics.get(l.itemId);
     return a ? impliesConductors(a) : false;
   });
-  const hasMeasuredLine = computed.lines.some((l) => l.quantitySource === "MEASURED_LENGTH");
-  if (hasRaceway && !hasMeasuredLine) {
+  /*
+    ASKS WHAT THE LINE IS, NOT HOW IT WAS COUNTED.
+
+    This was `quantitySource === "MEASURED_LENGTH"`, which is a proxy that stopped working the day
+    Kyle's catalog went live: his book has no unit column, so every atomic imports with unit null,
+    `isContinuousLength` is false for everything, and nothing is ever forced to MEASURED_LENGTH.
+    The guard then refused estimates that plainly contained wire — including one on 2026-08-20
+    with 6 AWG and 10 AWG on it.
+  */
+  const hasConductor = computed.lines.some((l) => {
+    const a = atomics.get(l.itemId);
+    return a ? isConductor(a) : false;
+  });
+  if (hasRaceway && !hasConductor) {
     const racewayIds = computed.lines
       .filter((l) => {
         const a = atomics.get(l.itemId);
@@ -682,7 +755,7 @@ export function finalizeEstimate(
       A refusal is read by someone mid-job who wants to send a price. It has to name the missing
       work in the first six words.
     */
-    reasons.push(
+    warnings.push(
       `NO WIRE ON THIS ESTIMATE — it installs conduit or terminations ` +
         `(${Array.from(new Set(racewayIds)).join(", ")}) but has no conductor line. Conduit with ` +
         `nothing pulled through it is not a finished job, and quoting it reads as one. Add the ` +
@@ -693,8 +766,12 @@ export function finalizeEstimate(
   }
 
   if (opts.rateProvisional && opts.context === "customer") {
-    reasons.push(
-      `PROVISIONAL RATE — refusing to issue a customer price. ` +
+    // Also a warning now, and this is the one that deserves the most care: a provisional rate is
+    // wrong on EVERY labour line at once, not on one item. Kyle's instruction was unambiguous
+    // ("Nothing should block me from completing the estimate"), so it is said as loudly as a
+    // warning can be said and the call is his.
+    warnings.push(
+      `PROVISIONAL LABOUR RATE — every labour figure on this estimate is computed from it. ` +
         (opts.provisionalReason ??
           `Rate Config B2 does not match Kyle's ruled $150/hr ` +
             `(decisions/2026-08-11-billed-rate-and-no-memberships.md).`) +
