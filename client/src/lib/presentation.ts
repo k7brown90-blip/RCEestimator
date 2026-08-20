@@ -41,7 +41,15 @@ export interface PresentationLine {
   itemId: string;
   description: string;
   quantity: number;
-  unit: string | null;
+  /**
+   * COMPANY ONLY, like the money and the hours.
+   *
+   * Kyle, 2026-08-20: *"I do not want 'per foot' or 'each' in the customer facing pdf."* The unit
+   * is his — for ordering, for the entry screen, for scheduling. Absent from a customer line
+   * rather than merely unrendered, for the same reason the prices are: a field that is not in the
+   * object cannot be printed by a later edit that forgets the rule.
+   */
+  unit?: string | null;
   /** Company only. */
   laborHours?: number | null;
   /** Company only. */
@@ -90,11 +98,11 @@ function presentLine(line: PbComputedLine, audience: Audience): PresentationLine
     itemId: line.itemId,
     description: line.description ?? line.itemId,
     quantity: line.quantity,
-    unit: line.unit,
   };
   if (audience === "customer") return base;
   return {
     ...base,
+    unit: line.unit,
     laborHours: line.laborHours,
     laborDollars: line.laborDollars,
     materialSell: line.materialSell,

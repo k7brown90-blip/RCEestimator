@@ -208,7 +208,8 @@ export function PresentationPage() {
                     <span className="text-sm">{l.description}</span>
                     <span className="ml-2 text-xs text-rce-soft">
                       × {l.quantity}
-                      {l.unit ? ` ${l.unit}` : ""}
+                      {/* Unit is company-only — absent from a customer line by construction. */}
+                      {audience === "company" && l.unit ? ` ${l.unit}` : ""}
                     </span>
                   </span>
                   {/* Present only in the company view — absent from the customer's data entirely. */}

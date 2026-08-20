@@ -12,7 +12,7 @@ Exit codes: 0 ok · 2 tab missing / shape wrong · 3 workbook unreadable.
 
 Column layout (per the P030 mapping):
   A name · B/C/D labour Normal/Difficult/VeryDifficult · E company cost · F company price
-  G/H/I RCE sell Normal/Difficult/VeryDifficult
+  G/H/I RCE sell Normal/Difficult/VeryDifficult · J unit (what one quantity buys)
 A row with a name and no numbers anywhere in B–I is a SECTION HEADER.
 """
 
@@ -27,6 +27,10 @@ except ImportError:
 
 NAME = 0
 NUMERIC_COLS = [1, 2, 3, 4, 5, 6, 7, 8]  # B..I
+# J — the UNIT one quantity buys. Kyle, 2026-08-20: a column rather than words in the item name
+# or the section, because "I do not want 'per foot' or 'each' in the customer facing pdf" — the
+# unit is his, for ordering and for the entry screen, and it must never reach a customer document.
+UNIT = 9
 # The cells whose absence-with-a-formula means "Excel has not computed this yet".
 WATCH = {1: "LaborNormal", 5: "CompanyPrice", 6: "SellNormal", 7: "SellDifficult", 8: "SellVeryDifficult"}
 
@@ -80,6 +84,8 @@ def main() -> int:
             continue
 
         cells = [as_number(vr[c]) if len(vr) > c else None for c in NUMERIC_COLS]
+        raw_unit = vr[UNIT] if len(vr) > UNIT else None
+        unit = str(raw_unit).strip() if raw_unit not in (None, "") else None
 
         if all(c is None for c in cells):
             # Guard 1: a row whose formulas have not been computed is not a section header.
@@ -125,6 +131,7 @@ def main() -> int:
         ]
         rows.append({
             "row": i, "name": name, "section": current, "cells": cells,
+            "unit": unit,
             "sellFormulas": sell_formulas,
         })
 

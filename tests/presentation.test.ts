@@ -84,7 +84,6 @@ describe("the customer's view", () => {
     const first = options[0].lines[0];
     expect(first.description).toBe("Ceiling fan install");
     expect(first.quantity).toBe(2);
-    expect(first.unit).toBe("each");
   });
 
   it("carries NO money and NO hours on any line — absent, not hidden", () => {
@@ -93,6 +92,9 @@ describe("the customer's view", () => {
         expect(l).not.toHaveProperty("laborHours");
         expect(l).not.toHaveProperty("laborDollars");
         expect(l).not.toHaveProperty("materialSell");
+        expect(l).not.toHaveProperty("materialCost");
+        // Kyle, 2026-08-20: "I do not want 'per foot' or 'each' in the customer facing pdf."
+        expect(l).not.toHaveProperty("unit");
       }
     }
     // Asserted on the serialised form too: this object is handed to a React screen Kyle turns
@@ -120,6 +122,8 @@ describe("the company's view", () => {
     expect(first.laborHours).toBe(2);
     expect(first.laborDollars).toBe(300);
     expect(first.materialSell).toBe(50);
+    // The unit is his — for ordering, for the entry screen, for scheduling.
+    expect(first.unit).toBe("each");
   });
 
   it("agrees with the customer's view about the work itself", () => {

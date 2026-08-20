@@ -149,7 +149,7 @@ function readTab(workbook: string): { items: KyleItem[]; sections: string[]; unc
   }
 
   const raw = JSON.parse(res.stdout) as {
-    rows: Array<{ row: number; name: string; section: string | null; cells: (string | number | null)[]; sellFormulas: (string | null)[] }>;
+    rows: Array<{ row: number; name: string; section: string | null; cells: (string | number | null)[]; unit?: string | null; sellFormulas: (string | null)[] }>;
     uncomputed: string[];
     sections: string[];
     unpriced?: UnpricedItem[];
@@ -162,7 +162,24 @@ function readTab(workbook: string): { items: KyleItem[]; sections: string[]; unc
       key: slugify(r.name),
       name: r.name,
       section: r.section ?? "UNSECTIONED",
-      unitLabel: unitFromName(r.name),
+      /*
+        ── THE UNIT COMES FROM COLUMN J (Kyle, 2026-08-20) ─────────────────────────────────────
+
+        "I want the column in because I do not want 'per foot' or 'each' in the customer facing
+         pdf."
+
+        It used to be parsed out of the item NAME — "NM-B 12/3 w/Grd — per ft" — which put the
+        unit into the one string a customer reads. He stripped those suffixes from his names for
+        exactly that reason, and the parse has been returning null for almost every row ever
+        since, which is why `unit` has been null across the whole catalog and
+        `isContinuousLength` false for everything.
+
+        A column keeps the unit where it belongs: available for ordering, for the entry screen and
+        for the company copy, and structurally unable to reach a customer document.
+
+        The name parse stays as a fallback for the four rows that still carry a suffix.
+      */
+      unitLabel: (r.unit ?? "").trim() || unitFromName(r.name),
       laborNormal: c[0], laborDifficult: c[1], laborVeryDifficult: c[2],
       companyCost: c[3], companyPrice: c[4],
       sellNormal: c[5], sellDifficult: c[6], sellVeryDifficult: c[7],
