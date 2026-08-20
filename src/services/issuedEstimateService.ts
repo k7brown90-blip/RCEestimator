@@ -128,7 +128,13 @@ export async function graduateDraft(
   prisma: PrismaClient,
   input: GraduateInput
 ): Promise<GraduateResult> {
-  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: input.draftId } });
+  const draft = await prisma.priceBookDraftEstimate.findUnique({
+    where: { id: input.draftId },
+    // Kyle's names for the options come along for the ride — they are frozen onto the issued
+    // estimate below, so the document keeps the names it was presented under even if the draft
+    // is later renamed.
+    include: { optionMeta: true },
+  });
   if (!draft) return { ok: false, reasons: [`Draft ${input.draftId} not found.`] };
 
   // The same gate the Finalize button uses. A clean, customer-context finalize marks the draft.
@@ -215,6 +221,41 @@ export async function graduateDraft(
 
   if (refusals.length > 0) return { ok: false, reasons: refusals };
 
+  /*
+    ── THE OPTIONS THEMSELVES, NOT JUST THE LETTER ON EACH LINE (Kyle, 2026-08-20) ─────────────
+
+    "the options are not persisting into the pdf or allowing to pick and choose between them.
+     Only adding them all together."
+
+    Every frozen line already carried its option letter, so nothing was being LOST — but a letter
+    on a line is not an option. There was nowhere to say what an option is called, what it covers,
+    or what it costs by itself, so the issued document could only render one flat list and one
+    total, and the customer had nothing to choose between.
+
+    These rows are that missing thing. Built from the lines that were just frozen, so the option
+    subtotal and the lines always agree, and named from the draft so the customer sees the scope
+    rather than a bare letter.
+
+    The trip charge is deliberately NOT distributed across them: it is charged once for the visit,
+    however many options are taken, and dividing it up would make each option look more expensive
+    than it is and would double-charge anyone taking two.
+  */
+  const optionRows = (["A", "B", "C"] as const)
+    .map((option) => {
+      const inOption = lines.filter((l) => l.option === option);
+      const meta = draft.optionMeta.find((m) => m.option === option);
+      return {
+        option,
+        label: meta?.label?.trim() || null,
+        note: meta?.note?.trim() || null,
+        subtotal: round2(inOption.reduce((s, l) => s + l.lineTotal, 0)),
+        lineCount: inOption.length,
+      };
+    })
+    // An option with no work in it is not offered. An empty "Option C" on a customer's screen is
+    // an invitation to ask what is missing from it.
+    .filter((o) => o.lineCount > 0);
+
   const workSubtotal = round2(lines.reduce((s, l) => s + l.lineTotal, 0));
   const tripCharge = input.waiveTrip ? 0 : round2(rate.rc.jobFixedCost ?? 0);
   const total = round2(workSubtotal + tripCharge);
@@ -266,6 +307,7 @@ export async function graduateDraft(
         total,
         createdBy: input.createdBy ?? "human:crm-session",
         lines: { create: lines },
+        options: { create: optionRows },
       },
     });
     await tx.issuedEstimateEvent.create({
@@ -367,6 +409,7 @@ async function loadByToken(prisma: PrismaClient, token: string) {
     where: { token },
     include: {
       lines: { orderBy: { sortOrder: "asc" } },
+      options: { orderBy: { option: "asc" } },
       supersededBy: { select: { id: true, number: true, revision: true } },
     },
   });
@@ -431,6 +474,21 @@ export interface SignInput {
    * is searched for and addressed — but the drawing is what was actually made.
    */
   signatureImage?: string | null;
+  /**
+   * WHICH OPTIONS THE CUSTOMER IS BUYING (Kyle, 2026-08-20).
+   *
+   * "the options are not persisting into the pdf or allowing to pick and choose between them.
+   *  Only adding them all together."
+   *
+   * Undefined means the caller did not express a choice — an older client, or a signature made
+   * with JavaScript off — and is treated as "all of them", which is what the estimate quoted and
+   * what those clients actually displayed. It is NOT treated as "none".
+   *
+   * Whatever arrives is validated against the options the estimate really has before anything is
+   * recorded. This comes from a form on a public page, so it is an assertion by the customer, not
+   * a fact, until the server has checked it.
+   */
+  selectedOptions?: string[] | null;
   ip?: string | null;
   userAgent?: string | null;
 }
@@ -527,9 +585,39 @@ async function applySignature(
   const drawn = checkSignatureImage(input.signatureImage);
   if (!drawn.ok) return { ok: false, reason: drawn.reason };
 
+  /*
+    ── WHAT THEY ACTUALLY BOUGHT ────────────────────────────────────────────────────────────────
+
+    The tick boxes live on a public page, so what comes back is a claim to be checked rather than
+    a fact to be stored. Anything that is not a real option on THIS estimate is discarded — a
+    hand-edited form cannot add an option that was never offered or priced.
+
+    Silence means all of them. A customer signing from a client that never showed tick boxes saw
+    the full scope at the full price, and recording "none" for them would be a worse lie than the
+    flattening this change exists to fix.
+
+    An explicit empty choice is refused outright: signing for no work is not a sale, and a $0
+    agreement with a real signature on it is the sort of document nobody wants to explain later.
+  */
+  const offered = await prisma.issuedEstimateOption.findMany({
+    where: { estimateId },
+    select: { option: true },
+  });
+  const valid = new Set(offered.map((o) => o.option as string));
+  let bought: string[];
+  if (input.selectedOptions == null) {
+    bought = [...valid];
+  } else {
+    bought = input.selectedOptions.map((o) => o.trim().toUpperCase()).filter((o) => valid.has(o));
+    if (valid.size > 0 && bought.length === 0) {
+      return { ok: false, reason: "Please choose at least one option before accepting." };
+    }
+  }
+
   const result = await prisma.issuedEstimate.updateMany({
     where: { id: estimateId, signedAt: null },
     data: {
+      selectedOptions: bought as never,
       signedAt: new Date(),
       signatureImage: drawn.dataUrl,
       signerName: name,

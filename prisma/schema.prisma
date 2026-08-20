@@ -1794,6 +1794,9 @@ model PriceBookDraftEstimate {
   /// looks wrong.
   changeOrderForId String?
   changeOrderFor   IssuedEstimate? @relation("ChangeOrders", fields: [changeOrderForId], references: [id], onDelete: SetNull)
+
+  /// Kyle's names and short descriptions for each option, editable until issue (2026-08-20).
+  optionMeta    PriceBookDraftOption[]
 }
 
 // What the AI could NOT match to an atomic.
@@ -2016,6 +2019,73 @@ model IssuedEstimate {
 
   /// Drafts raised to change this estimate after it was signed.
   changeOrders   PriceBookDraftEstimate[] @relation("ChangeOrders")
+
+  /// The named options presented to the customer, frozen at issue (2026-08-20).
+  options        IssuedEstimateOption[]
+
+  /// WHICH OPTIONS THE CUSTOMER ACTUALLY BOUGHT.
+  ///
+  /// Kyle, 2026-08-20: "the options are not persisting into the pdf or allowing to pick and
+  /// choose between them. Only adding them all together."
+  ///
+  /// Empty means nothing has been chosen yet, which is the honest state of an unsigned estimate
+  /// and is NOT the same as "all of them". The customer ticks options, the total is computed from
+  /// the ticks, and what they ticked is recorded here when they sign — so the signed agreement
+  /// says what was bought rather than what was offered.
+  selectedOptions PriceBookOption[]
+}
+
+/// One option as it was presented to the customer — the thing they tick.
+///
+/// Frozen at issue like the lines are, and for the same reason: the price book moves, the draft
+/// can be edited, and a signed agreement has to keep saying what it said when it was signed.
+///
+/// `subtotal` is stored rather than re-summed from the lines. The lines are already frozen, so the
+/// two agree today — but storing it means a later change to how lines are grouped or priced cannot
+/// silently restate the number a customer put their name to.
+model IssuedEstimateOption {
+  id          String   @id @default(cuid())
+  estimateId  String
+  estimate    IssuedEstimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  option      PriceBookOption
+
+  /// What Kyle renamed it to at the review screen, e.g. "Exterior pathway lights".
+  ///
+  /// Kyle, 2026-08-20: "It would be nice to be able to rename the options at the review screen in
+  /// order to specify the scope of work to the job being quoted."
+  ///
+  /// Null means it was never renamed and the document falls back to the bare letter — the
+  /// fallback lives in the renderer rather than being baked into every row at issue time.
+  label       String?
+
+  /// The short description under the name. Sales context, customer-facing.
+  note        String?
+
+  /// What this option costs on its own. Excludes the trip charge, which is charged once across
+  /// the whole combination rather than once per option.
+  subtotal    Float
+  lineCount   Int      @default(0)
+
+  @@unique([estimateId, option])
+  @@index([estimateId])
+}
+
+/// Kyle's names for the options while the estimate is still a draft.
+///
+/// Separate from the frozen copy above: this one is editable right up until issue, and the issued
+/// row is the snapshot. A draft that is revised and re-issued carries its names forward without
+/// the old signed document changing.
+model PriceBookDraftOption {
+  id        String   @id @default(cuid())
+  draftId   String
+  draft     PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  option    PriceBookOption
+  label     String?
+  note      String?
+  updatedAt DateTime @updatedAt
+
+  @@unique([draftId, option])
+  @@index([draftId])
 }
 
 // One priced line as the customer sees it: a description, a quantity, and a flat price.

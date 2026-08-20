@@ -132,6 +132,21 @@ export function PriceBookIntakePage() {
     enabled: Boolean(draftId),
   });
 
+  /**
+   * Kyle's names for the options, edited right here on the review screen (2026-08-20).
+   *
+   * "This is the perfect spot to make the title of each option reflect the itemized list that it
+   *  represents."
+   *
+   * Its own query key rather than a field on pb-review: renaming an option must not invalidate the
+   * confirmed-line list and make the whole review flicker while he is typing into it.
+   */
+  const { data: optionMeta } = useQuery({
+    queryKey: ["pb-draft-options", draftId],
+    queryFn: () => api.pbDraftOptions(draftId as string),
+    enabled: Boolean(draftId),
+  });
+
   const createDraft = useMutation({
     // The visit id arrives as a query param from the legacy estimate page's link (P024,
     // Option A). Absent = the nav entry = an unattached draft, which is the working default.
@@ -952,14 +967,11 @@ function ReviewTab(props: {
           return (
             <section key={opt} className="rounded-lg border border-rce-border">
               <header className="flex items-baseline justify-between gap-2 border-b border-rce-border bg-rce-bg px-3 py-2">
-                <div>
-                  <span className="text-sm font-semibold">Option {opt}</span>{" "}
-                  <span className="text-xs text-rce-soft">
-                    {opt === "A" && "what the client called for"}
-                    {opt === "B" && "code violations & hazards found"}
-                    {opt === "C" && "recommended beyond A and B"}
-                  </span>
-                </div>
+                <OptionNaming
+                  draftId={draftId as string}
+                  option={opt}
+                  meta={optionMeta?.find((m) => m.option === opt) ?? null}
+                />
                 <div className="text-right">
                   <div className="text-sm font-semibold">{money(summary?.subtotal)}</div>
                   <div className="text-[11px] text-rce-soft">{mine.length} line(s)</div>
@@ -1818,6 +1830,102 @@ function PhotoAttach(props: { draftId: string }) {
         Upload for draft {props.draftId.slice(-6)} is not wired yet (P012 seam — attach-only, no
         model egress).
       </p>
+    </div>
+  );
+}
+
+/**
+ * Naming an option, on the review screen, where Kyle is standing when he knows what it is.
+ *
+ * Kyle, 2026-08-20, picked on this very header:
+ *
+ *   *"It would be nice to be able to rename the options at the review screen in order to specify
+ *    the scope of work to the job being quoted. This is the perfect spot to make the title of each
+ *    option reflect the itemized list that it represents. A Short description to add text in would
+ *    be nice too."*
+ *
+ * ── WHY IT SAVES ON BLUR AND NOT ON EVERY KEYSTROKE ────────────────────────────────────────────
+ *
+ * A PUT per character would put a write on the wire for every letter of "Exterior pathway lights"
+ * and race its own responses into the field he is still typing in. Blur is the moment he is
+ * finished with the field, and it is also what a Tab or a click elsewhere already means.
+ *
+ * ── AND WHY THE DEFAULT TEXT IS A PLACEHOLDER, NOT A VALUE ─────────────────────────────────────
+ *
+ * "what the client called for" and the other two are what these options have always meant, so they
+ * still guide him. But they are placeholders: prefilling them as real values would freeze that
+ * wording onto the customer's estimate for every option he never got round to renaming, and
+ * "code violations & hazards found" is not a heading to put in front of a customer.
+ */
+function OptionNaming(props: {
+  draftId: string;
+  option: PbOption;
+  meta: { option: PbOption; label: string | null; note: string | null } | null;
+}) {
+  const queryClient = useQueryClient();
+  const [label, setLabel] = useState(props.meta?.label ?? "");
+  const [note, setNote] = useState(props.meta?.note ?? "");
+
+  // The server is the truth when it arrives — but never while the field has focus, or a slow
+  // response would overwrite what he is in the middle of typing.
+  useEffect(() => {
+    if (document.activeElement?.tagName === "INPUT") return;
+    setLabel(props.meta?.label ?? "");
+    setNote(props.meta?.note ?? "");
+  }, [props.meta?.label, props.meta?.note]);
+
+  const save = useMutation({
+    mutationFn: (input: { label: string; note: string }) =>
+      api.pbSaveDraftOption(props.draftId, props.option, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pb-draft-options", props.draftId] });
+    },
+  });
+
+  const commit = () => {
+    const nextLabel = label.trim();
+    const nextNote = note.trim();
+    if (nextLabel === (props.meta?.label ?? "") && nextNote === (props.meta?.note ?? "")) return;
+    save.mutate({ label: nextLabel, note: nextNote });
+  };
+
+  const hint =
+    props.option === "A"
+      ? "what the client called for"
+      : props.option === "B"
+        ? "code violations & hazards found"
+        : "recommended beyond A and B";
+
+  return (
+    <div className="min-w-0 flex-1">
+      <div className="flex items-baseline gap-2">
+        <span className="text-xs font-semibold text-rce-soft">Option {props.option}</span>
+        <input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          onBlur={commit}
+          maxLength={120}
+          placeholder={hint}
+          aria-label={`Name for option ${props.option}`}
+          className="min-w-0 flex-1 border-0 border-b border-transparent bg-transparent px-0 py-0
+                     text-sm font-semibold outline-none hover:border-rce-border
+                     focus:border-rce-accent"
+        />
+      </div>
+      <input
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        onBlur={commit}
+        maxLength={400}
+        placeholder="Short description for the customer (optional)"
+        aria-label={`Description for option ${props.option}`}
+        className="mt-0.5 w-full border-0 border-b border-transparent bg-transparent px-0 py-0
+                   text-[11px] text-rce-muted outline-none hover:border-rce-border
+                   focus:border-rce-accent"
+      />
+      {save.isError && (
+        <p className="mt-0.5 text-[11px] text-red-600">Could not save that name. It is still here — try again.</p>
+      )}
     </div>
   );
 }

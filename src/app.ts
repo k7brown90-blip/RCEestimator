@@ -1758,6 +1758,62 @@ app.post("/price-book/drafts", asyncHandler(async (req, res) => {
   }
 }));
 
+/*
+  ── NAMING THE OPTIONS (Kyle, 2026-08-20) ──────────────────────────────────────────────────────
+
+  "It would be nice to be able to rename the options at the review screen in order to specify the
+   scope of work to the job being quoted. This is the perfect spot to make the title of each option
+   reflect the itemized list that it represents. A Short description to add text in would be nice
+   too."
+
+  The review screen is where he is standing when he knows what each option turned out to be, so it
+  is where the naming belongs. These names are frozen onto the issued estimate at graduation and
+  are what the customer reads on the tick boxes — "Exterior pathway lights" rather than "Option B".
+
+  Upsert rather than create: there is exactly one name per option per draft, and renaming is the
+  normal case rather than the exception.
+*/
+app.get("/price-book/drafts/:draftId/options", asyncHandler(async (req, res) => {
+  const meta = await prisma.priceBookDraftOption.findMany({
+    where: { draftId: String(req.params.draftId) },
+    orderBy: { option: "asc" },
+    select: { option: true, label: true, note: true },
+  });
+  res.json(meta);
+}));
+
+app.put("/price-book/drafts/:draftId/options/:option", asyncHandler(async (req, res) => {
+  const option = String(req.params.option).toUpperCase();
+  if (!["A", "B", "C"].includes(option)) {
+    res.status(400).json({ error: `Unknown option "${option}".` });
+    return;
+  }
+  const body = z.object({
+    // Empty string clears the name rather than storing "", so the document falls back to the bare
+    // letter instead of rendering a nameless heading.
+    label: z.string().trim().max(120).nullable().optional(),
+    note: z.string().trim().max(400).nullable().optional(),
+  }).parse(req.body ?? {});
+
+  const draftId = String(req.params.draftId);
+  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { id: true } });
+  if (!draft) {
+    res.status(404).json({ error: `Draft ${draftId} not found.` });
+    return;
+  }
+
+  const label = body.label?.trim() ? body.label.trim() : null;
+  const note = body.note?.trim() ? body.note.trim() : null;
+
+  const saved = await prisma.priceBookDraftOption.upsert({
+    where: { draftId_option: { draftId, option: option as "A" | "B" | "C" } },
+    create: { draftId, option: option as "A" | "B" | "C", label, note },
+    update: { label, note },
+    select: { option: true, label: true, note: true },
+  });
+  res.json(saved);
+}));
+
 // Add a line the HUMAN chose — lands CONFIRMED, unlike an AI proposal.
 app.post("/price-book/drafts/:draftId/lines", asyncHandler(async (req, res) => {
   const body = z.object({
@@ -2181,6 +2237,7 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
     where: { id: String(req.params.id) },
     include: {
       lines: { orderBy: { sortOrder: "asc" } },
+      options: { orderBy: { option: "asc" } },
       events: { orderBy: { at: "asc" } },
       supersededBy: { select: { id: true, number: true, revision: true } },
       supersedes: { select: { id: true, number: true, revision: true } },
@@ -2252,6 +2309,7 @@ app.get("/issued-estimates/:id/customer-view", asyncHandler(async (req, res) => 
     where: { id: String(req.params.id) },
     include: {
       lines: { orderBy: { sortOrder: "asc" } },
+      options: { orderBy: { option: "asc" } },
       supersededBy: { select: { id: true, number: true, revision: true } },
     },
   });
@@ -2382,6 +2440,9 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
     signerName: z.string().trim().min(1).max(200),
     // The drawn mark. Validated in applySignature, which is the single write path for both doors.
     signatureImage: z.string().max(400_000).optional(),
+    // Which options the customer took. Optional, and the service tells absent from empty: absent
+    // means the client never offered a choice, empty means everything was declined and is refused.
+    selectedOptions: z.array(z.string().trim().max(4)).max(3).optional(),
   }).parse(req.body ?? {});
 
   const fwd = req.headers["x-forwarded-for"];
@@ -2390,6 +2451,9 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
   const result = await signEstimateInPerson(prisma, String(req.params.id), {
     signerName: body.signerName,
     signatureImage: body.signatureImage ?? null,
+    // The customer ticks the options on Kyle's device in front of him, so this door carries the
+    // same choice the emailed link does. Null when the client did not send one — see SignInput.
+    selectedOptions: Array.isArray(body.selectedOptions) ? body.selectedOptions.map(String) : null,
     ip: ip.trim(),
     userAgent: String(req.headers["user-agent"] ?? "").slice(0, 500),
   });

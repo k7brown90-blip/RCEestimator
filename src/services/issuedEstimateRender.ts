@@ -84,6 +84,21 @@ function shell(title: string, inner: string): string {
   th.r,td.r{text-align:right;}
   td{padding:9px 4px;border-bottom:1px solid #eee;vertical-align:top;}
   .totals{margin-top:14px;font-size:14px;}
+  /* Option cards. Kyle, 2026-08-20: the customer has to be able to pick and choose. */
+  .opt{border:1px solid #d9d9d9;border-radius:6px;margin:0 0 14px;overflow:hidden;}
+  .opthead{display:flex;align-items:center;justify-content:space-between;gap:10px;
+           background:#f4f7f4;border-bottom:1px solid #d9d9d9;padding:9px 11px;}
+  .optlabel{display:flex;align-items:center;gap:9px;font-size:15px;cursor:pointer;margin:0;}
+  .optlabel input{width:18px;height:18px;accent-color:#1a5c2e;cursor:pointer;flex:none;}
+  .optprice{font-weight:700;font-size:15px;white-space:nowrap;}
+  .opt table{margin:0;}
+  .opt p{padding:0 11px;}
+  .pickhint{font-size:13px;color:#1a5c2e;margin:0 0 10px;font-weight:600;}
+  /* An option the customer has unticked stays readable but visibly not counted. */
+  .opt.off{opacity:.5;}
+  .opt.off .optprice{text-decoration:line-through;}
+  /* Print: the tick boxes mean nothing on paper, and a declined option should not print at all. */
+  @media print{ .optlabel input{display:none;} .opt.off{display:none;} .pickhint{display:none;} }
   .totals div{display:flex;justify-content:space-between;padding:5px 4px;}
   .totals .grand{border-top:2px solid #1a5c2e;margin-top:6px;padding-top:10px;
                  font-size:18px;font-weight:700;color:#1a5c2e;}
@@ -126,10 +141,37 @@ function shell(title: string, inner: string): string {
 </body></html>`;
 }
 
+/**
+ * The letterhead on the page a customer opens from their estimate link — and prints.
+ *
+ * ── NO LICENCE DESCRIPTOR HERE, DELIBERATELY (2026-08-20) ──────────────────────────────────────
+ *
+ * Kyle: *"The pdf should not say the word 'contractor'. Contactor should not appear in any
+ * advertisement anywhere."*
+ *
+ * This line read "... &middot; Licensed Electrical Contractor", which is what he was looking at
+ * when he flagged it — the customer estimate page is the PDF, via the browser's own print.
+ *
+ * In Tennessee "contractor" is a licence classification rather than a synonym for tradesman, and
+ * advertising as one is regulated. So this is a compliance line, not a wording preference.
+ *
+ * The descriptor is REMOVED rather than swapped for "Licensed Electrician": I do not know which
+ * licence he holds, and a credential is not something to guess at — the same rule as never making
+ * up a number. If he wants words back here, they are his to give me.
+ *
+ * Note the explanation lives out here in TypeScript and NOT in an HTML comment inside the markup
+ * below. An HTML comment ships to the customer and is one "view source" from being read, so a note
+ * explaining why the word was removed would have put the word straight back on the page.
+ */
+/** Money arithmetic, to the cent. The signed total is re-summed from the options taken. */
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
 function letterhead(subtitle: string): string {
   return `<div class="head">
     <h1>RED CEDAR ELECTRIC LLC</h1>
-    <p>La Vergne, Tennessee &middot; ${BUSINESS_EMAIL} &middot; Licensed Electrical Contractor</p>
+    <p>La Vergne, Tennessee &middot; ${BUSINESS_EMAIL}</p>
     <p style="margin-top:8px;font-size:15px;font-weight:600;opacity:1;">${escapeHtml(subtitle)}</p>
   </div>`;
 }
@@ -201,14 +243,93 @@ export function renderEstimatePage(
     The line totals still exist on the row and still sum to the total; they are simply not
     rendered here. Nothing about the arithmetic changed.
   */
-  const rows = est.lines
-    .map(
-      (l) => `<tr>
+  /*
+    ── THE OPTIONS, AS SOMETHING THE CUSTOMER CAN ACTUALLY CHOOSE BETWEEN ───────────────────────
+
+    Kyle, 2026-08-20: "the options are not persisting into the pdf or allowing to pick and choose
+    between them. Only adding them all together."
+
+    This used to be one flat `est.lines` table under one ESTIMATE TOTAL. Every line already knew
+    its option letter, so the grouping was always possible — it simply was not done, and the
+    customer was handed a single take-it-or-leave-it number for three separate pieces of work.
+
+    Now each option is its own card with its own price and its own tick box, and the total is the
+    sum of what is ticked.
+
+    ── WHY EVERYTHING STARTS TICKED ─────────────────────────────────────────────────────────────
+
+    The estimate quotes the full scope, so the first thing the customer sees is the full price —
+    the same number Kyle sent them and the same number he sees on his copy. Starting with nothing
+    ticked would show $0.00 on open, which reads as an error.
+
+    Unticking is the choice. What they leave ticked at the moment they sign is what gets recorded,
+    so declining Option B is a positive act by the customer rather than an assumption by us.
+
+    ── AND WHY A SINGLE-OPTION ESTIMATE HAS NO TICK BOXES ───────────────────────────────────────
+
+    Offering a choice of one is not a choice; it is a way to accidentally sign for nothing.
+  */
+  const estOptions = est.options ?? [];
+  const chosen = new Set((est.selectedOptions ?? []) as string[]);
+  const signedOff = Boolean(est.signedAt);
+
+  // Once signed, the document shows what was BOUGHT, not what was offered. An option the customer
+  // declined has no business appearing on their agreement.
+  const shownOptions = signedOff && chosen.size > 0 ? estOptions.filter((o) => chosen.has(o.option)) : estOptions;
+  const selectable = !signedOff && estOptions.length > 1;
+
+  const optionName = (o: { option: string; label: string | null }) =>
+    o.label ? `${escapeHtml(o.label)}` : `Option ${escapeHtml(o.option)}`;
+
+  const optionCards = shownOptions
+    .map((o) => {
+      const lines = est.lines
+        .filter((l) => l.option === o.option)
+        .map(
+          (l) => `<tr>
         <td>${escapeHtml(l.description)}</td>
         <td class="r">${qty(l.quantity)}</td>
       </tr>`
-    )
+        )
+        .join("");
+      const box = selectable
+        ? `<input type="checkbox" class="optpick" data-option="${escapeHtml(o.option)}"
+             data-subtotal="${o.subtotal}" checked aria-label="Include ${optionName(o)}">`
+        : "";
+      const note = o.note
+        ? `<p style="margin:2px 0 0;font-size:13px;color:#555;">${escapeHtml(o.note)}</p>`
+        : "";
+      return `<section class="opt" data-optcard="${escapeHtml(o.option)}">
+        <header class="opthead">
+          <label class="optlabel">${box}
+            <span><strong>${optionName(o)}</strong>
+              ${o.label ? `<span style="color:#777;font-size:12px;"> &middot; Option ${escapeHtml(o.option)}</span>` : ""}
+            </span>
+          </label>
+          <span class="optprice">${money(o.subtotal)}</span>
+        </header>
+        ${note}
+        <table>
+          <thead><tr><th>Description</th><th class="r">Qty</th></tr></thead>
+          <tbody>${lines}</tbody>
+        </table>
+      </section>`;
+    })
     .join("");
+
+  // The fallback matters: an estimate issued before options existed has no option rows, and must
+  // still render as the flat list it was issued as rather than as an empty page.
+  const detail =
+    estOptions.length > 0
+      ? optionCards
+      : `<table>
+         <thead><tr><th>Description</th><th class="r">Qty</th></tr></thead>
+         <tbody>${est.lines
+           .map(
+             (l) => `<tr><td>${escapeHtml(l.description)}</td><td class="r">${qty(l.quantity)}</td></tr>`
+           )
+           .join("")}</tbody>
+       </table>`;
 
   const scope = est.scopeText
     ? `<h2>Scope of Work</h2><p style="font-size:14px;">${escapeHtml(est.scopeText)}</p>`
@@ -247,6 +368,10 @@ export function renderEstimatePage(
          <h2 style="margin-top:0;">Accept this estimate</h2>
          ${opts.error ? `<div class="err">${escapeHtml(opts.error)}</div>` : ""}
          <form method="POST" action="/e/${escapeHtml(est.token)}/sign" id="signForm">
+           <!-- What they ticked, at the moment they signed. Filled by the script below and
+                re-validated on the server, which is what makes it true. -->
+           <input type="hidden" name="selectedOptions" id="selectedOptions"
+                  value="${estOptions.map((o) => escapeHtml(o.option)).join(",")}">
            <label for="signerName">Your full name</label>
            <input id="signerName" name="signerName" type="text" required autocomplete="name"
                   placeholder="Your full name">
@@ -332,6 +457,41 @@ export function renderEstimatePage(
          </script>
        </div>`;
 
+  /*
+    Live total. Progressive enhancement: with JS off, every option stays ticked and the estimate
+    reads exactly as it did before options existed — the full scope at the full price. The customer
+    can still sign, and the hidden field still carries every option, so nothing is lost, only the
+    ability to decline one on screen.
+  */
+  const pickerScript = selectable
+    ? `<script>
+         (function () {
+           var boxes = [].slice.call(document.querySelectorAll(".optpick"));
+           var out   = document.getElementById("selectedOptions");
+           var total = document.getElementById("grandTotal");
+           var trip  = ${est.tripCharge};
+           // Formats EXACTLY as the server's money() does — no thousands separator. They have to
+           // agree: the server paints the first total and this repaints it on the first tick, and
+           // a customer watching "$1610.69" become "$1,610.69" has been shown a glitch.
+           function money(n){ return "$" + n.toFixed(2); }
+           function sync() {
+             var sum = 0, picked = [];
+             boxes.forEach(function (b) {
+               var card = document.querySelector('[data-optcard="' + b.dataset.option + '"]');
+               if (b.checked) { sum += parseFloat(b.dataset.subtotal); picked.push(b.dataset.option);
+                                if (card) card.classList.remove("off"); }
+               else if (card) card.classList.add("off");
+             });
+             out.value = picked.join(",");
+             // The trip charge applies once, to the visit — and not at all if nothing is taken.
+             total.textContent = picked.length ? money(sum + trip) : money(0);
+           }
+           boxes.forEach(function (b) { b.addEventListener("change", sync); });
+           sync();
+         })();
+       </script>`
+    : "";
+
   return shell(
     `Estimate ${est.number}`,
     `${letterhead("ESTIMATE")}
@@ -350,16 +510,18 @@ export function renderEstimatePage(
        ${scope}
 
        <h2>Estimate detail</h2>
-       <table>
-         <thead><tr><th>Description</th><th class="r">Qty</th></tr></thead>
-         <tbody>${rows}</tbody>
-       </table>
+       ${selectable ? `<p class="pickhint">Tick the options you want. The total updates as you choose.</p>` : ""}
+       ${detail}
 
        <div class="totals">
          ${est.tripCharge > 0 || est.tripWaived
            ? `<div><span>${tripLabel}</span><span>${money(est.tripCharge)}</span></div>`
            : ""}
-         <div class="grand"><span>ESTIMATE TOTAL</span><span>${money(est.total)}</span></div>
+         <div class="grand"><span>ESTIMATE TOTAL</span><span id="grandTotal">${money(
+           signedOff && chosen.size > 0
+             ? round2(shownOptions.reduce((n, o) => n + o.subtotal, 0) + est.tripCharge)
+             : est.total
+         )}</span></div>
        </div>
        <p style="font-size:12px;color:#777;margin:8px 4px 0;">
          Furnished and installed, flat rate. The scope above is what the price covers.
@@ -374,6 +536,7 @@ export function renderEstimatePage(
        </div>
 
        ${signBlock}
+       ${pickerScript}
      </div>
      <div class="foot">
        This estimate is valid for ${est.validDays} days. Work performed to the 2017 National

@@ -561,6 +561,30 @@ export const api = {
 
   pbReview: (draftId: string) => request<PbReview>(`/price-book/drafts/${draftId}/review`),
 
+  /**
+   * Kyle's names for the three options (2026-08-20).
+   *
+   * "It would be nice to be able to rename the options at the review screen in order to specify
+   *  the scope of work to the job being quoted."
+   *
+   * These are what the customer reads on the tick boxes of the issued estimate — "Exterior pathway
+   * lights" instead of "Option B" — so they are frozen onto it at graduation.
+   */
+  pbDraftOptions: (draftId: string) =>
+    request<Array<{ option: PbOption; label: string | null; note: string | null }>>(
+      `/price-book/drafts/${draftId}/options`,
+    ),
+
+  pbSaveDraftOption: (
+    draftId: string,
+    option: PbOption,
+    input: { label?: string | null; note?: string | null },
+  ) =>
+    request<{ option: PbOption; label: string | null; note: string | null }>(
+      `/price-book/drafts/${draftId}/options/${option}`,
+      { method: "PUT", body: JSON.stringify(input) },
+    ),
+
   pbCompute: (draftId: string) =>
     request<PbComputeResponse>(`/price-book/drafts/${draftId}/compute`),
 

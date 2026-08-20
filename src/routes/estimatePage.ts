@@ -76,11 +76,28 @@ estimatePageRouter.post(
   "/:token/sign",
   asyncHandler(async (req, res) => {
     const token = readParam(req, "token");
-    const body = (req.body ?? {}) as { signerName?: string; signatureImage?: string };
+    const body = (req.body ?? {}) as {
+      signerName?: string;
+      signatureImage?: string;
+      selectedOptions?: string;
+    };
+
+    /*
+      The tick boxes arrive as one comma-joined field, because this is a plain HTML form post and
+      that survives a customer with JavaScript disabled better than repeated checkbox names do.
+
+      An ABSENT field and an EMPTY one mean different things and are kept apart here: absent means
+      the page never offered a choice (older document, no script), and the service reads that as
+      the whole estimate. Empty means the customer unticked everything, which the service refuses.
+    */
+    const raw = body.selectedOptions;
+    const selectedOptions =
+      typeof raw === "string" ? raw.split(",").map((o) => o.trim()).filter(Boolean) : null;
 
     const result = await signEstimate(prisma, token, {
       signerName: String(body.signerName ?? ""),
       signatureImage: typeof body.signatureImage === "string" ? body.signatureImage : null,
+      selectedOptions,
       ip: clientIp(req),
       userAgent: String(req.headers["user-agent"] ?? "").slice(0, 500),
     });
