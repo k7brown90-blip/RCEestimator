@@ -35,6 +35,7 @@ import { nameTokens, rankWithDiagnostics, stripQuantity } from "./services/walkt
 import { proposeFromWalkthrough, ProposerUnavailable } from "./services/aiProposer";
 import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
 import { summarizeOptions } from "./services/atomicEstimateEngine";
+import { renderEstimatePdf } from "./services/issuedEstimatePdf";
 import {
   addLine,
   editLine,
@@ -2221,6 +2222,61 @@ app.get("/issued-estimates/:id/customer-view", asyncHandler(async (req, res) => 
  * Same signature record, same sign-once conditional update, same lock, same owner notification as
  * the emailed path — only `signedChannel` differs.
  */
+/**
+ * The estimate as a PDF, for either audience.
+ *
+ * Generated on demand from the FROZEN record rather than stored. That is safe because an issued
+ * estimate is immutable — the same record renders the same document every time — and it avoids
+ * the defect the older document path carries: `pdfGenerator.ts` writes into `generated/`, which
+ * Railway discards on every deploy, so those PDFs stop resolving after the next release.
+ *
+ * `audience=company` is behind the same operator session as everything else here. The customer
+ * never reaches this route: their document is the token-scoped page in routes/estimatePage.ts.
+ */
+app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
+  const audience = req.query.audience === "company" ? "company" : "customer";
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: readParam(req, "id") },
+    include: { lines: { orderBy: { sortOrder: "asc" } } },
+  });
+  if (!est) {
+    res.status(404).json({ error: "Estimate not found" });
+    return;
+  }
+
+  const pdf = await renderEstimatePdf(
+    {
+      number: est.number,
+      revision: est.revision,
+      title: est.title,
+      customerName: est.customerName,
+      serviceAddress: est.serviceAddress,
+      scopeText: est.scopeText,
+      total: est.total,
+      tripCharge: est.tripCharge,
+      signedAt: est.signedAt,
+      signedByName: est.signerName,
+      createdAt: est.createdAt,
+      lines: est.lines.map((l) => ({
+        option: l.option,
+        description: l.description,
+        quantity: l.quantity,
+        lineTotal: l.lineTotal,
+        laborHours: l.laborHours,
+        materialSell: l.materialSell,
+      })),
+    },
+    audience,
+  );
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename="estimate-${est.number}${audience === "company" ? "-company" : ""}.pdf"`,
+  );
+  res.send(pdf);
+}));
+
 app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) => {
   const body = z.object({ signerName: z.string().trim().min(1).max(200) }).parse(req.body ?? {});
 
