@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
@@ -299,6 +299,7 @@ export function PriceBookIntakePage() {
               review={review}
               computed={computed?.computed}
               options={computed?.options}
+              optionMeta={optionMeta}
               onChanged={invalidate}
               accountId={accountId}
               serviceAddressId={serviceAddressId}
@@ -891,6 +892,9 @@ function WalkthroughRow(props: {
 
 // ─── Review: confirm / edit / reject ─────────────────────────────────────────
 
+/** Kyle's names for the options, as the API returns them (2026-08-20). */
+type PbOptionMeta = { option: PbOption; label: string | null; note: string | null };
+
 function ReviewTab(props: {
   draftId: string;
   /** The spine (P029). Null until the draft is attached to an account + address. */
@@ -900,9 +904,16 @@ function ReviewTab(props: {
   review: { proposedLines: PbLine[]; confirmedLines: PbLine[]; openQuestions: Array<{ id: string; question: string; raisedBy: string }>; counts: { proposed: number; confirmed: number; openQuestions: number } } | undefined;
   computed: PbComputed | undefined;
   options: PbOptionSummary[] | undefined;
+  /**
+   * Named options, from the parent's query.
+   *
+   * A PROP rather than its own query in here: the review screen already re-renders on every line
+   * change, and a second component owning the same query key would refetch the names on each one.
+   */
+  optionMeta: PbOptionMeta[] | undefined;
   onChanged: () => void;
 }) {
-  const { draftId, review, computed, options, onChanged, accountId, serviceAddressId, onAttached } = props;
+  const { draftId, review, computed, options, optionMeta, onChanged, accountId, serviceAddressId, onAttached } = props;
   // finalizeMsg went with the Check / Finalize buttons — nothing sets it now, and a
   // message box that can never fill is a place for a future reader to look for state
   // that does not exist.
@@ -1860,7 +1871,7 @@ function PhotoAttach(props: { draftId: string }) {
 function OptionNaming(props: {
   draftId: string;
   option: PbOption;
-  meta: { option: PbOption; label: string | null; note: string | null } | null;
+  meta: PbOptionMeta | null;
 }) {
   const queryClient = useQueryClient();
   const [label, setLabel] = useState(props.meta?.label ?? "");
