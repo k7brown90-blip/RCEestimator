@@ -824,3 +824,31 @@ export interface HealthInspectionDetail extends HealthInspectionSummary {
   reviewedBy?: string | null;
   photos?: Array<{ id: string; mimeType: string; sizeBytes: number; uploadedAt: string }>;
 }
+
+/**
+ * Open a session-protected PDF in a new tab.
+ *
+ * ── WHY A PLAIN LINK DOES NOT WORK ─────────────────────────────────────────────────────────────
+ *
+ * Every PDF on this app sits behind the operator session, and the session is a Bearer token in
+ * localStorage — a browser will not attach it to an `<a href>`. I shipped the signed-agreement
+ * links on the account page as plain anchors on 2026-08-20 and every one of them would have
+ * answered 401. It looks like a working link right up until it is pressed.
+ *
+ * So the bytes are fetched properly and handed to the tab as a blob. The tab is opened
+ * SYNCHRONOUSLY, before the await, because a `window.open` that happens after an async hop has
+ * lost the user gesture and gets blocked as a popup.
+ */
+export async function openProtectedPdf(path: string): Promise<void> {
+  const tab = window.open("", "_blank");
+  try {
+    const url = await fetchProtectedObjectUrl(path);
+    if (tab) tab.location.href = url;
+    else window.location.href = url;
+  } catch (err) {
+    tab?.close();
+    // Surfaced rather than swallowed — a button that silently does nothing is the defect this
+    // whole screen has been paying for.
+    alert(`Could not open the document: ${(err as Error).message}`);
+  }
+}

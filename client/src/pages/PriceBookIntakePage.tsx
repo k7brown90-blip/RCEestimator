@@ -1368,8 +1368,22 @@ function TotalsBar(props: {
           </div>
         </div>
         <div className="text-right">
+          {/* ── "material" MEANS THE CHARGE, AND HAD TO SAY SO ─────────────────────────────
+              Kyle, 2026-08-20, on seeing "labour $591.00 · material $1071.14":
+
+                "How is this getting added up because this is most definitely wrong. Material here
+                 is not this much."
+
+              The arithmetic was right. The LABEL was not. That figure is column F — what the
+              customer is charged after his own tiered markup — and he was reading it as what he
+              spends. On the draft he was looking at, the two were $349 and $138: the charge is
+              two and a half times the cost, exactly as his tier table says it should be.
+
+              Both are shown now, named. A number that invites the wrong reading is a defect even
+              when it is correct. */}
           <div className="text-xs text-rce-soft">
-            labour {money(c.laborDollars)} · material {money(c.materialSell)}
+            labour {money(c.laborDollars)} · material charged {money(c.materialSell)}
+            {c.materialCost > 0 ? ` (cost ${money(c.materialCost)})` : ""}
           </div>
           <div className="text-lg font-semibold">{money(c.total)}</div>
           {feeOnly && (

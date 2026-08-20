@@ -6,7 +6,7 @@ import { InspectionResultChip } from "../components/InspectionResultChip";
 import { FindingLedger } from "../components/FindingLedger";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
-import { api } from "../lib/api";
+import { api, openProtectedPdf } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
 import type { AccountJob, AccountSummary } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
@@ -437,12 +437,11 @@ export function AccountDetailPage() {
           </p>
           <div className="space-y-2">
             {summary.documents.map((d) => (
-              <a
+              <button
                 key={d.id}
-                href={`/api/documents/${d.id}/pdf`}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center justify-between gap-3 rounded-lg border border-rce-border/70 p-3 active:opacity-70"
+                type="button"
+                onClick={() => void openProtectedPdf(`/documents/${d.id}/pdf`)}
+                className="flex w-full items-center justify-between gap-3 rounded-lg border border-rce-border/70 p-3 text-left active:opacity-70"
               >
                 <span className="min-w-0">
                   <span className="block font-medium">
@@ -457,7 +456,7 @@ export function AccountDetailPage() {
                   </span>
                 </span>
                 <span className="shrink-0 text-xs text-rce-accent">Open PDF</span>
-              </a>
+              </button>
             ))}
           </div>
         </section>
@@ -649,12 +648,17 @@ function AccountEstimates({
         </p>
       )}
 
+      {/* Each row opens the DOCUMENT, not the builder. Kyle, 2026-08-20: "Clicking here goes to
+          estimate intake. These buttons should pull up the pdf that is generated." An issued
+          estimate is a record; the place to look at one is the page it prints as. The company
+          copy, because this is his side of the app. */}
       <div className="mt-3 space-y-2">
         {rows.map((e) => (
-          <Link
+          <button
             key={e.id}
-            to={`/estimate-intake?estimate=${e.id}`}
-            className="block rounded-lg border border-rce-border/70 p-3 active:opacity-70"
+            type="button"
+            onClick={() => void openProtectedPdf(`/issued-estimates/${e.id}/pdf?audience=company`)}
+            className="block w-full rounded-lg border border-rce-border/70 p-3 text-left active:opacity-70"
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
@@ -669,7 +673,7 @@ function AccountEstimates({
               </div>
               <p className="shrink-0 font-semibold">${e.total.toFixed(2)}</p>
             </div>
-          </Link>
+          </button>
         ))}
       </div>
     </section>
