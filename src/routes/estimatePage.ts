@@ -76,10 +76,11 @@ estimatePageRouter.post(
   "/:token/sign",
   asyncHandler(async (req, res) => {
     const token = readParam(req, "token");
-    const body = (req.body ?? {}) as { signerName?: string };
+    const body = (req.body ?? {}) as { signerName?: string; signatureImage?: string };
 
     const result = await signEstimate(prisma, token, {
       signerName: String(body.signerName ?? ""),
+      signatureImage: typeof body.signatureImage === "string" ? body.signatureImage : null,
       ip: clientIp(req),
       userAgent: String(req.headers["user-agent"] ?? "").slice(0, 500),
     });

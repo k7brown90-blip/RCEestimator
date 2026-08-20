@@ -32,6 +32,7 @@
 import PDFDocument from "pdfkit";
 import type { PriceBookOption } from "@prisma/client";
 import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
+import { signatureBuffer } from "./signatureImage";
 
 export type PdfAudience = "customer" | "company";
 
@@ -55,6 +56,8 @@ export interface PdfEstimate {
   tripCharge: number;
   signedAt: Date | null;
   signedByName: string | null;
+  /** The drawn mark, as a validated PNG data URL. Null for estimates signed before 2026-08-20. */
+  signatureImage?: string | null;
   createdAt: Date;
   lines: PdfLine[];
 }
@@ -217,6 +220,26 @@ export async function renderEstimatePdf(
     doc.fontSize(10).fillColor("#0a5c2e")
       .text(`Accepted by ${estimate.signedByName ?? "the customer"} on ${estimate.signedAt.toLocaleString("en-US")}`)
       .fillColor("#000");
+
+    /*
+      The drawn mark. Embedded from the stored data URL, which `signatureImage.ts` verified was a
+      PNG — by its magic bytes, not by what it claimed — before it was ever written.
+
+      Guarded anyway. A record signed before 2026-08-20 has no drawing, and a malformed one must
+      produce a document without a signature rather than no document at all: the PDF IS the record
+      of acceptance, and failing to render it because the picture is bad would lose the fact along
+      with the mark.
+    */
+    if (estimate.signatureImage) {
+      try {
+        doc.moveDown(0.4);
+        doc.image(signatureBuffer(estimate.signatureImage), { fit: [220, 80] });
+        doc.moveTo(50, doc.y + 2).lineTo(270, doc.y + 2).strokeColor("#999").stroke();
+      } catch {
+        doc.fontSize(8).fillColor("#a15c00")
+          .text("(the signature image could not be rendered)").fillColor("#000");
+      }
+    }
   }
 
   doc.end();

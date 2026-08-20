@@ -1436,6 +1436,7 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
         tripCharge: est.tripCharge,
         signedAt: est.signedAt,
         signedByName: est.signerName,
+      signatureImage: est.signatureImage,
         createdAt: est.createdAt,
         lines: est.lines.map((l) => ({
           option: l.option,
@@ -2300,6 +2301,7 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       tripCharge: est.tripCharge,
       signedAt: est.signedAt,
       signedByName: est.signerName,
+      signatureImage: est.signatureImage,
       createdAt: est.createdAt,
       lines: est.lines.map((l) => ({
         option: l.option,
@@ -2322,13 +2324,18 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
 }));
 
 app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) => {
-  const body = z.object({ signerName: z.string().trim().min(1).max(200) }).parse(req.body ?? {});
+  const body = z.object({
+    signerName: z.string().trim().min(1).max(200),
+    // The drawn mark. Validated in applySignature, which is the single write path for both doors.
+    signatureImage: z.string().max(400_000).optional(),
+  }).parse(req.body ?? {});
 
   const fwd = req.headers["x-forwarded-for"];
   const ip = (Array.isArray(fwd) ? fwd[0] : fwd?.split(",")[0]) ?? req.socket.remoteAddress ?? "unknown";
 
   const result = await signEstimateInPerson(prisma, String(req.params.id), {
     signerName: body.signerName,
+    signatureImage: body.signatureImage ?? null,
     ip: ip.trim(),
     userAgent: String(req.headers["user-agent"] ?? "").slice(0, 500),
   });

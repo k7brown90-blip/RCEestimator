@@ -11,6 +11,7 @@
  * in `signedChannel`, and both channels render from one customer document.
  */
 
+import { TEST_SIGNATURE } from "./helpers/signature";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import bcrypt from "bcryptjs";
@@ -105,6 +106,7 @@ describe("the in-person signature", () => {
     const g = await issuedEstimate("channel");
     const r = await signEstimateInPerson(prisma, g.estimateId, {
       signerName: "Test Signature",
+      signatureImage: TEST_SIGNATURE,
       ip: "10.0.0.9",
       userAgent: "test-agent",
     });
@@ -127,8 +129,8 @@ describe("the in-person signature", () => {
 
   it("signs once — a second attempt is refused and the first signer stands", async () => {
     const g = await issuedEstimate("once");
-    expect((await signEstimateInPerson(prisma, g.estimateId, { signerName: "First" })).ok).toBe(true);
-    const second = await signEstimateInPerson(prisma, g.estimateId, { signerName: "Second" });
+    expect((await signEstimateInPerson(prisma, g.estimateId, { signerName: "First", signatureImage: TEST_SIGNATURE })).ok).toBe(true);
+    const second = await signEstimateInPerson(prisma, g.estimateId, { signerName: "Second", signatureImage: TEST_SIGNATURE });
     expect(second.ok).toBe(false);
 
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
@@ -140,13 +142,13 @@ describe("the in-person signature", () => {
 
   it("an estimate signed in person cannot then be signed from the emailed link", async () => {
     const g = await issuedEstimate("cross-channel");
-    await signEstimateInPerson(prisma, g.estimateId, { signerName: "In Person" });
+    await signEstimateInPerson(prisma, g.estimateId, { signerName: "In Person", signatureImage: TEST_SIGNATURE });
 
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
     const res = await request(app)
       .post(`/e/${est!.token}/sign`)
       .type("form")
-      .send({ signerName: "Email Signer" });
+      .send({ signerName: "Email Signer", signatureImage: TEST_SIGNATURE });
 
     expect(res.status).toBe(400);
     const after = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
@@ -156,7 +158,7 @@ describe("the in-person signature", () => {
 
   it("refuses a blank name rather than recording an empty signature", async () => {
     const g = await issuedEstimate("blank");
-    const r = await signEstimateInPerson(prisma, g.estimateId, { signerName: " " });
+    const r = await signEstimateInPerson(prisma, g.estimateId, { signerName: " ", signatureImage: TEST_SIGNATURE });
     expect(r.ok).toBe(false);
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
     expect(est!.signedAt).toBeNull();

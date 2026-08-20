@@ -666,10 +666,10 @@ export const api = {
   // ── In-person signing (P028; device lock removed 2026-08-18 on Kyle's instruction) ──
   pbCustomerView: (id: string) => requestHtml(`/issued-estimates/${id}/customer-view`),
 
-  pbSignInPerson: (id: string, signerName: string) =>
+  pbSignInPerson: (id: string, signerName: string, signatureImage: string) =>
     request<{ signed: true; estimateId: string }>(`/issued-estimates/${id}/sign-in-person`, {
       method: "POST",
-      body: JSON.stringify({ signerName }),
+      body: JSON.stringify({ signerName, signatureImage }),
     }),
 
   // ── The account spine (P029) ──

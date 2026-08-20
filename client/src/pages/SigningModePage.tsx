@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
+import { SignaturePad } from "../components/SignaturePad";
 
 type Phase = "reviewing" | "signed";
 
@@ -40,6 +41,7 @@ export function SigningModePage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [signerName, setSignerName] = useState("");
   const [agreed, setAgreed] = useState(false);
+  const [signature, setSignature] = useState<string | null>(null);
   const [signError, setSignError] = useState<string | null>(null);
   const [signing, setSigning] = useState(false);
 
@@ -67,9 +69,13 @@ export function SigningModePage() {
       setSignError("Please tick the box to agree before signing.");
       return;
     }
+    if (!signature) {
+      setSignError("Please draw your signature in the box.");
+      return;
+    }
     setSigning(true);
     try {
-      await api.pbSignInPerson(estimateId, signerName.trim());
+      await api.pbSignInPerson(estimateId, signerName.trim(), signature);
       await load();
       setPhase("signed");
     } catch (err) {
@@ -117,6 +123,10 @@ export function SigningModePage() {
               placeholder="Your full name"
             />
           </label>
+          <div className="mt-3">
+            <SignaturePad onChange={setSignature} disabled={signing} />
+          </div>
+
           <label className="mt-3 flex items-start gap-2 text-xs text-rce-soft">
             <input
               type="checkbox"

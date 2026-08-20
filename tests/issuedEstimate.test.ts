@@ -14,6 +14,7 @@
  *   6. **Only an authenticated operator can send.**
  */
 
+import { TEST_SIGNATURE } from "./helpers/signature";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import bcrypt from "bcryptjs";
@@ -250,7 +251,7 @@ describe("the customer render carries no hours, no rates, no hour arithmetic", (
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const est = await prisma.issuedEstimate.findUnique({ where: { id: result.estimateId } });
-    await signEstimate(prisma, est!.token, { signerName: "Test Signature" });
+    await signEstimate(prisma, est!.token, { signerName: "Test Signature", signatureImage: TEST_SIGNATURE });
 
     const found = await getEstimateByToken(prisma, est!.token);
     expect(found.ok).toBe(true);
@@ -383,7 +384,7 @@ describe("signing", () => {
     const res = await request(app)
       .post(`/e/${est!.token}/sign`)
       .type("form")
-      .send({ signerName: "Test Signature" });
+      .send({ signerName: "Test Signature", signatureImage: TEST_SIGNATURE });
 
     expect(res.status).toBe(200);
     expect(res.text).toContain("Accepted");
@@ -407,8 +408,8 @@ describe("signing", () => {
     if (!g.ok) return;
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
 
-    const first = await signEstimate(prisma, est!.token, { signerName: "First Signer" });
-    const second = await signEstimate(prisma, est!.token, { signerName: "Second Signer" });
+    const first = await signEstimate(prisma, est!.token, { signerName: "First Signer", signatureImage: TEST_SIGNATURE });
+    const second = await signEstimate(prisma, est!.token, { signerName: "Second Signer", signatureImage: TEST_SIGNATURE });
 
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(false);
@@ -428,7 +429,7 @@ describe("signing", () => {
     if (!g.ok) return;
     const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
 
-    const r = await signEstimate(prisma, est!.token, { signerName: "  " });
+    const r = await signEstimate(prisma, est!.token, { signerName: "  ", signatureImage: TEST_SIGNATURE });
     expect(r.ok).toBe(false);
     const after = await prisma.issuedEstimate.findUnique({ where: { id: est!.id } });
     expect(after!.signedAt).toBeNull();
@@ -445,7 +446,7 @@ describe("revisions", () => {
     if (!g.ok) return;
 
     const issued = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
-    await signEstimate(prisma, issued!.token, { signerName: "Original Signer" });
+    await signEstimate(prisma, issued!.token, { signerName: "Original Signer", signatureImage: TEST_SIGNATURE });
 
     // Baseline is the SIGNED state — that is what must survive a later revision untouched.
     const before = await prisma.issuedEstimate.findUnique({

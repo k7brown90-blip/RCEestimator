@@ -10,6 +10,7 @@
  * picks an address on the operator's behalf.
  */
 
+import { TEST_SIGNATURE } from "./helpers/signature";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import { prisma } from "../src/lib/prisma";
@@ -193,7 +194,7 @@ describe("a signed quote becomes a job on the same account and address", () => {
     expect(g.ok).toBe(true);
     if (!g.ok) return;
 
-    await signEstimateInPerson(prisma, g.estimateId, { signerName: "Test Signature" });
+    await signEstimateInPerson(prisma, g.estimateId, { signerName: "Test Signature", signatureImage: TEST_SIGNATURE });
     const job = await createJobFromSignedEstimate(prisma, g.estimateId);
     expect(job.ok).toBe(true);
     if (!job.ok) return;
@@ -228,7 +229,7 @@ describe("a signed quote becomes a job on the same account and address", () => {
     const g = await graduateDraft(prisma, { draftId: d.id, accountId, serviceAddressId: addressA });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
-    await signEstimateInPerson(prisma, g.estimateId, { signerName: "Test Signature" });
+    await signEstimateInPerson(prisma, g.estimateId, { signerName: "Test Signature", signatureImage: TEST_SIGNATURE });
 
     const first = await createJobFromSignedEstimate(prisma, g.estimateId);
     const second = await createJobFromSignedEstimate(prisma, g.estimateId);
@@ -250,7 +251,7 @@ describe("context is fixed at issuance", () => {
     const g = await graduateDraft(prisma, { draftId: d.id, accountId, serviceAddressId: addressB });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
-    await signEstimateInPerson(prisma, g.estimateId, { signerName: "Original" });
+    await signEstimateInPerson(prisma, g.estimateId, { signerName: "Original", signatureImage: TEST_SIGNATURE });
 
     const before = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
 

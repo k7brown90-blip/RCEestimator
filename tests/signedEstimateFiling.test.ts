@@ -32,30 +32,30 @@ describe("the signature is committed before anything else is attempted", () => {
     const body = service.slice(signAt, service.indexOf("\n}", signAt));
 
     const updateAt = body.indexOf("issuedEstimate.updateMany");
-    const fileAt = body.indexOf("fileAndNotifySignature");
+    const fileAt = body.indexOf("fileSignedCopies");
     expect(updateAt).toBeGreaterThan(-1);
     expect(fileAt, "the filing call was not found").toBeGreaterThan(-1);
     expect(updateAt, "the signature must be written BEFORE the filing").toBeLessThan(fileAt);
 
     // `void` and not `await`: the caller's result must not wait on an email.
-    expect(body).toMatch(/void fileAndNotifySignature\(/);
-    expect(body).not.toMatch(/await fileAndNotifySignature\(/);
+    expect(body).toMatch(/void fileSignedCopies\(/);
+    expect(body).not.toMatch(/await fileSignedCopies\(/);
   });
 
   it("returns success on the line after the filing is fired", () => {
     const signAt = service.indexOf("async function applySignature");
     const body = service.slice(signAt, service.indexOf("\n}", signAt));
-    expect(body.indexOf("fileAndNotifySignature")).toBeLessThan(body.indexOf("return { ok: true"));
+    expect(body.indexOf("fileSignedCopies")).toBeLessThan(body.indexOf("return { ok: true"));
   });
 
-  it("guards the filing and the notification separately", () => {
-    // A failure to notify must not prevent the filing, and vice versa. One try around both would
-    // mean a dead Gmail token also losing the copy on the account.
-    const fnAt = service.indexOf("async function fileAndNotifySignature");
+  it("guards each filing separately", () => {
+    // One try around both creates would mean a failure on the first copy silently costing the
+    // second, and Kyle would have half a record with nothing saying so.
+    const fnAt = service.indexOf("async function fileSignedCopies");
     expect(fnAt).toBeGreaterThan(-1);
     const body = service.slice(fnAt, fnAt + 2600);
-    expect(body).toMatch(/document[\s\S]{0,400}\.catch\(/);
-    expect(body).toMatch(/sendBrandedEmail\([\s\S]{0,900}\}\)\.catch\(/);
+    // Each create is individually guarded, so failing to file one copy does not cost the other.
+    expect(body).toMatch(/document[\s\S]{0,500}\.catch\(/);
   });
 });
 
@@ -79,29 +79,50 @@ describe("the filed copy survives a deploy", () => {
     expect(handler).toContain("renderEstimatePdf");
   });
 
-  it("files the COMPANY copy — the one with the material and the hours", () => {
-    // Kyle's copy on the account is the one he orders and schedules from. Filing the customer
-    // view would give him a document he cannot work off.
-    const fnAt = service.indexOf("async function fileAndNotifySignature");
+  it("files BOTH copies — the customer's and Kyle's", () => {
+    // Kyle, 2026-08-20: "the signed copy needs to be saved to their account along side our copy."
+    // His is the one he orders and schedules from; theirs is what they agreed to.
+    const fnAt = service.indexOf("async function fileSignedCopies");
     const body = service.slice(fnAt, fnAt + 2600);
-    expect(body).toContain("audience=company");
-    expect(body).toContain('type: "signed_estimate"');
+    // Asserted on the PAIRS the loop iterates, not on "audience=customer" — the URL is built from
+    // a template, so that literal never appears in the source. An earlier version of this test
+    // looked for it and failed against correct code.
+    expect(body).toContain('["signed_estimate", "customer"]');
+    expect(body).toContain('["signed_estimate_company", "company"]');
+    expect(body).toContain("audience=${audience}");
   });
 });
 
-describe("the notification", () => {
-  it("goes to the operator, never to the customer", () => {
-    const fnAt = service.indexOf("async function fileAndNotifySignature");
-    const body = service.slice(fnAt, fnAt + 2600);
+describe("the notification, which already existed", () => {
+  /**
+   * I wrote a second owner notification before finding that `notifyOwnerSigned` had been in
+   * issuedEstimateSend.ts all along, called by BOTH sign routes, with more detail than mine. It
+   * would have sent Kyle two emails per signature.
+   *
+   * It looked missing because it had been silent for two days — the Gmail refresh token was dead,
+   * not the code. "Nothing arrived" is not evidence that nothing was sent, and that is worth a
+   * test rather than a memory.
+   */
+  const send = fs.readFileSync(path.join(APP, "src/services/issuedEstimateSend.ts"), "utf8");
+
+  it("lives in one place and names the operator, never the customer", () => {
+    expect(send).toContain("export async function notifyOwnerSigned");
+    const at = send.indexOf("export async function notifyOwnerSigned");
+    const body = send.slice(at, at + 1800);
     expect(body).toContain("SUMMARY_EMAIL");
     expect(body).not.toContain("est.customerEmail");
   });
 
-  it("says who signed, for how much, and which estimate", () => {
-    const fnAt = service.indexOf("async function fileAndNotifySignature");
-    const body = service.slice(fnAt, fnAt + 2600);
-    expect(body).toContain("SIGNED — estimate");
-    expect(body).toContain("signerName");
-    expect(body).toContain("est.total.toFixed(2)");
+  it("is called by both doors", () => {
+    // A rule enforced at one door is a rule that does not exist. Same for a notification.
+    expect(app).toContain("notifyOwnerSigned(prisma, result.estimateId)");
+    const page = fs.readFileSync(path.join(APP, "src/routes/estimatePage.ts"), "utf8");
+    expect(page).toContain("notifyOwnerSigned(prisma, result.estimateId)");
+  });
+
+  it("is not duplicated inside the filing", () => {
+    const fnAt = service.indexOf("async function fileSignedCopies");
+    const body = service.slice(fnAt, fnAt + 2000);
+    expect(body).not.toContain("sendBrandedEmail");
   });
 });

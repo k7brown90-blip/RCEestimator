@@ -1994,6 +1994,11 @@ model IssuedEstimate {
   @@index([serviceAddressId])
 
   /// Copies filed against the account — the signed agreement (2026-08-20).
+  /// The DRAWN signature, as a PNG data URL (Kyle, 2026-08-20: "I want the signiture to be
+  /// drawn not typed"). The typed name is kept alongside it — it is how the signature is
+  /// searched and addressed; the drawing is what was actually made.
+  signatureImage String?
+
   documents      Document[]
 }
 
