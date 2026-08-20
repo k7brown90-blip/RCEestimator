@@ -666,12 +666,29 @@ export function finalizeEstimate(
         return a ? impliesConductors(a) : false;
       })
       .map((l) => l.itemId);
+    /*
+      ── SAY WHAT IS MISSING, NOT WHAT THE RULE IS CALLED ─────────────────────────────────────
+
+      This refusal used to open "MEASURED LINES MISSING". Kyle hit it on 2026-08-20 with conduit
+      and fittings on the estimate and read it as a complaint about his QUANTITY:
+
+        "It did not allow me to proceed because it is not calculating my qty of 2 as 20 feet of
+         conduit."
+
+      It was not. The estimate had raceway and no WIRE, and the rule is named after the mechanism
+      it uses to detect that — a measured-length line — rather than after the thing that is
+      actually absent. He went looking for a units bug that did not exist.
+
+      A refusal is read by someone mid-job who wants to send a price. It has to name the missing
+      work in the first six words.
+    */
     reasons.push(
-      `MEASURED LINES MISSING — this estimate installs raceway or terminations ` +
-        `(${Array.from(new Set(racewayIds)).join(", ")}) and contains no measured-length line. ` +
-        `Kyle: "Length is a field measurement and needs to be calculated separately." An ` +
-        `estimate that buys conduit and no conductors reads as a finished price and is not one ` +
-        `(F-87, AS-006). Measure the run and add the conductor line, or record why none is needed.`
+      `NO WIRE ON THIS ESTIMATE — it installs conduit or terminations ` +
+        `(${Array.from(new Set(racewayIds)).join(", ")}) but has no conductor line. Conduit with ` +
+        `nothing pulled through it is not a finished job, and quoting it reads as one. Add the ` +
+        `wire — it is measured in the field, so its length is entered as a measurement, not a ` +
+        `count — or, if the run genuinely needs no conductors (a stub-out or a spare raceway), ` +
+        `add a line saying so. This is not about the quantity on your conduit line.`
     );
   }
 

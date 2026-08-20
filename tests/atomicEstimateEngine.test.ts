@@ -283,11 +283,36 @@ describe("measured-length guard — removing cable must not become a discount", 
     expect(isContinuousLength(emt)).toBe(false);
   });
 
-  it("REFUSES to finalize raceway with no measured-length line", () => {
+  it("REFUSES to finalize raceway with no conductor line", () => {
     const est = computeEstimate([line({ itemId: "C004", quantity: 5 })], atomics, RC, "HD");
     const res = finalizeEstimate(est, atomics, { context: "internal" });
     expect(res.finalized).toBe(false);
-    if (!res.finalized) expect(res.reasons.join(" ")).toContain("MEASURED LINES MISSING");
+    if (!res.finalized) expect(res.reasons.join(" ")).toContain("NO WIRE ON THIS ESTIMATE");
+  });
+
+  it("names the missing WORK, not the mechanism that detected it", () => {
+    /*
+      Kyle hit this refusal on 2026-08-20 and read it as a quantity bug:
+
+        "It did not allow me to proceed because it is not calculating my qty of 2 as 20 feet of
+         conduit."
+
+      It had nothing to do with his quantity. The estimate had conduit and no wire, and the
+      message opened "MEASURED LINES MISSING" — naming the mechanism the rule uses to notice,
+      rather than the thing that is absent. He went looking for a units bug that did not exist.
+
+      A refusal is read by someone mid-job who wants to send a price, so it has to name the
+      missing work immediately and rule out the wrong reading explicitly.
+    */
+    const est = computeEstimate([line({ itemId: "C004", quantity: 5 })], atomics, RC, "HD");
+    const res = finalizeEstimate(est, atomics, { context: "internal" });
+    expect(res.finalized).toBe(false);
+    if (res.finalized) return;
+    const text = res.reasons.join(" ");
+    expect(text).toContain("NO WIRE");
+    expect(text).toMatch(/not about the quantity/i);
+    // The old wording, which sent him hunting in the wrong place.
+    expect(text).not.toContain("MEASURED LINES MISSING");
   });
 
   it("allows it once a measured conductor line is present", () => {

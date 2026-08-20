@@ -580,6 +580,21 @@ function AddLineSheet(props: {
 
         {add.isError && <p className="mt-2 text-sm text-red-700">{(add.error as Error).message}</p>}
 
+        {/* ── SAY WHY THE BUTTON IS OFF ──────────────────────────────────────────────────
+            Kyle, 2026-08-20: "The add line button here is not working." It was working — it was
+            DISABLED, because no quantity had been typed, and a greyed-out button that explains
+            nothing is indistinguishable from one that is broken. He reported a bug, then entered
+            a quantity and added two lines successfully a minute later.
+
+            A disabled control has to say what would enable it. */}
+        {(!qtyValid || noteRequired) && (
+          <p className="mt-3 rounded bg-amber-50 p-2 text-xs text-amber-900">
+            {!qtyValid
+              ? `Enter ${hourly ? "the hours" : "a quantity"} above to add this line.`
+              : "A manual quantity needs a note saying why."}
+          </p>
+        )}
+
         <div className="mt-4 flex gap-2">
           <button className="btn btn-secondary flex-1" onClick={onClose}>Cancel</button>
           <button
@@ -587,7 +602,7 @@ function AddLineSheet(props: {
             disabled={!qtyValid || noteRequired || add.isPending}
             onClick={() => add.mutate()}
           >
-            Add line
+            {add.isPending ? "Adding…" : "Add line"}
           </button>
         </div>
       </div>
