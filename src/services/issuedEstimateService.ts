@@ -166,7 +166,10 @@ export async function graduateDraft(
       itemId: l.itemId,
       description: l.description ?? l.itemId,
       quantity: l.quantity,
-      unitPrice: l.quantity > 0 ? round2(lineTotal / l.quantity) : lineTotal,
+      // `!== 0`, not `> 0`. A change-order line may carry a NEGATIVE count to remove work, and
+      // the old test sent those down the divide-by-nothing branch — storing the whole line total
+      // as the unit price, so a "-2 fans" line would have read as one unit at the full amount.
+      unitPrice: l.quantity !== 0 ? round2(lineTotal / l.quantity) : lineTotal,
       lineTotal,
       sortOrder: i,
       option: l.option,

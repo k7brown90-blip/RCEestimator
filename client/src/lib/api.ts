@@ -666,6 +666,18 @@ export const api = {
   // ── In-person signing (P028; device lock removed 2026-08-18 on Kyle's instruction) ──
   pbCustomerView: (id: string) => requestHtml(`/issued-estimates/${id}/customer-view`),
 
+  /**
+   * Raise a change order against a SIGNED estimate (Kyle, 2026-08-19).
+   *
+   * Creates an EMPTY draft pointing at it — a change order describes the CHANGE, so pre-filling
+   * it with the original lines would invite signing the whole job twice.
+   */
+  pbChangeOrder: (estimateId: string) =>
+    request<{ draftId: string; changeOrderFor: string }>(
+      `/issued-estimates/${estimateId}/change-order`,
+      { method: "POST" },
+    ),
+
   pbSignInPerson: (id: string, signerName: string, signatureImage: string) =>
     request<{ signed: true; estimateId: string }>(`/issued-estimates/${id}/sign-in-person`, {
       method: "POST",

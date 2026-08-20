@@ -36,6 +36,21 @@ function issuedLineModel(): string {
   return schema.slice(at, schema.indexOf("}", at));
 }
 
+/**
+ * The frozen-line push, sliced to its actual end rather than to a fixed character count.
+ *
+ * The first version took the next 700 characters. Adding one explanatory comment inside the push
+ * moved the fields past that window and the test failed against correct code — a brittleness that
+ * punishes exactly the thing this codebase does most.
+ */
+function pushBlock(): string {
+  const at = service.indexOf("lines.push({");
+  expect(at, "the frozen-line push was not found").toBeGreaterThan(-1);
+  const end = service.indexOf("});", at);
+  expect(end, "the end of the push was not found").toBeGreaterThan(at);
+  return service.slice(at, end);
+}
+
 describe("the frozen line carries what the company copy needs", () => {
   const model = issuedLineModel();
 
@@ -64,9 +79,7 @@ describe("graduation actually populates them", () => {
   it("copies the option and both figures from the computed line", () => {
     // A column that exists and is never written is worse than no column: the company document
     // would render blanks and look like the work had no labour.
-    const at = service.indexOf("lines.push({");
-    expect(at, "the frozen-line push was not found").toBeGreaterThan(-1);
-    const block = service.slice(at, at + 700);
+    const block = pushBlock();
     expect(block).toContain("option: l.option");
     expect(block).toContain("laborHours: l.laborHours");
     expect(block).toContain("materialSell: l.materialSell");
@@ -75,8 +88,7 @@ describe("graduation actually populates them", () => {
   it("passes the values through rather than defaulting a missing one to zero", () => {
     // "Never make up a number." A null labour figure means the engine had none; writing 0 would
     // claim the work takes no time, and that claim would then be frozen into a signed record.
-    const at = service.indexOf("lines.push({");
-    const block = service.slice(at, at + 700);
+    const block = pushBlock();
     expect(block).not.toMatch(/laborHours:\s*l\.laborHours\s*\?\?\s*0/);
     expect(block).not.toMatch(/materialSell:\s*l\.materialSell\s*\?\?\s*0/);
   });

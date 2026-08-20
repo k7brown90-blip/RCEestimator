@@ -1781,6 +1781,19 @@ model PriceBookDraftEstimate {
   issued        IssuedEstimate[]
 
   @@index([status, createdAt])
+
+  /// ── CHANGE ORDER (Kyle, 2026-08-19) ──
+  ///
+  /// "Nothing will revise the already signed quote. If a change is deemed necessary... a change
+  ///  order is created. The same job ID only with additional sections that add the work or remove
+  ///  the work... This means we should be able to do a negative count on the line items."
+  ///
+  /// Set when this draft exists to change an estimate that has already been signed. It is the ONLY
+  /// condition under which a negative line quantity is accepted — on an ordinary estimate a
+  /// negative count is a typo, and quoting one would be a mistake nobody catches until the total
+  /// looks wrong.
+  changeOrderForId String?
+  changeOrderFor   IssuedEstimate? @relation("ChangeOrders", fields: [changeOrderForId], references: [id], onDelete: SetNull)
 }
 
 // What the AI could NOT match to an atomic.
@@ -2000,6 +2013,9 @@ model IssuedEstimate {
   signatureImage String?
 
   documents      Document[]
+
+  /// Drafts raised to change this estimate after it was signed.
+  changeOrders   PriceBookDraftEstimate[] @relation("ChangeOrders")
 }
 
 // One priced line as the customer sees it: a description, a quantity, and a flat price.

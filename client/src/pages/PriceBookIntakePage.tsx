@@ -1666,6 +1666,18 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
               >
                 {createJob.isPending ? "Creating job…" : "Create job & schedule"}
               </button>
+                <button
+                  className="btn btn-secondary w-full"
+                  onClick={() => {
+                    void api.pbChangeOrder(detail.estimate.id).then((r) => {
+                      // Straight into the empty change-order draft. Negative counts are accepted
+                      // there and nowhere else.
+                      window.location.href = `/estimate-intake?draft=${r.draftId}`;
+                    });
+                  }}
+                >
+                  Raise a change order
+                </button>
               <p className="text-xs text-rce-muted">
                 Makes the job at this account and address, then opens it so you can schedule it.
               </p>

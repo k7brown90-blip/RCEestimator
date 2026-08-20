@@ -395,11 +395,10 @@ export async function addLine(prisma: PrismaClient, draftId: string, line: AddLi
   if (draft.status !== "draft") {
     throw new Error(`Draft ${draftId} is ${draft.status}; finalized estimates are not edited in place.`);
   }
-  if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
-    throw new Error(
-      `Quantity for ${line.itemId} must be a positive number (got ${line.quantity}). A zero or ` +
-        `negative quantity is not a priced line.`
-    );
+  try {
+    assertQuantityAllowed(line.quantity, Boolean(draft.changeOrderForId));
+  } catch (err) {
+    throw new Error(`Quantity for ${line.itemId}: ${err instanceof Error ? err.message : String(err)}`);
   }
   const atomic = await prisma.priceBookAtomic.findUnique({ where: { itemId: line.itemId } });
   if (!atomic) {
@@ -431,6 +430,35 @@ export async function addLine(prisma: PrismaClient, draftId: string, line: AddLi
   });
 }
 
+/**
+ * A quantity is positive — unless this is a change order, where it may be negative.
+ *
+ * Kyle, 2026-08-19: *"additional sections that add the work or remove the work… This means we
+ * should be able to do a negative count on the line items."*
+ *
+ * Negative counts are allowed ONLY on a change order, and that restriction is the point. On an
+ * ordinary estimate a negative count is a typo, and nothing downstream would catch it: the line
+ * would price, the option would total, and the estimate would simply come out lower than it
+ * should — which is the kind of error that is only ever found by a customer.
+ *
+ * Zero is refused everywhere. A line that changes nothing is not a change; it is an unfinished
+ * thought, and it would print on a signed document saying nothing.
+ */
+export function assertQuantityAllowed(quantity: number, isChangeOrder: boolean): void {
+  if (!Number.isFinite(quantity)) {
+    throw new Error(`Quantity must be a number (got ${quantity}).`);
+  }
+  if (quantity === 0) {
+    throw new Error("Quantity cannot be zero — a line that changes nothing does not belong on a document.");
+  }
+  if (quantity < 0 && !isChangeOrder) {
+    throw new Error(
+      `Quantity must be positive (got ${quantity}). A negative count removes work and is only ` +
+        "allowed on a change order.",
+    );
+  }
+}
+
 export async function editLine(
   prisma: PrismaClient,
   lineId: string,
@@ -444,8 +472,8 @@ export async function editLine(
   if (existing.draft.status !== "draft") {
     throw new Error(`Draft ${existing.draftId} is ${existing.draft.status}; its lines are not editable.`);
   }
-  if (patch.quantity !== undefined && (!Number.isFinite(patch.quantity) || patch.quantity <= 0)) {
-    throw new Error(`Quantity must be a positive number (got ${patch.quantity}).`);
+  if (patch.quantity !== undefined) {
+    assertQuantityAllowed(patch.quantity, Boolean(existing.draft.changeOrderForId));
   }
   return prisma.priceBookDraftLine.update({
     where: { id: lineId },
@@ -562,6 +590,14 @@ export async function proposeLines(
       continue;
     }
 
+    /*
+      The AI may NEVER propose a negative quantity, change order or not.
+
+      Removing work is a decision about what a customer is no longer being charged for, and the
+      propose-only architecture exists so that a model's suggestion cannot move money without a
+      human. A proposed negative is the one shape where confirming out of habit reduces a total
+      rather than raising it — the direction nobody double-checks.
+    */
     if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
       result.rejected.push({ itemId: line.itemId, reason: `non-positive quantity ${line.quantity}` });
       continue;
@@ -658,8 +694,10 @@ export async function confirmProposedLine(
   if (line.state === "CONFIRMED") {
     throw new Error(`Line ${lineId} is already confirmed.`);
   }
-  if (edits?.quantity !== undefined && (!Number.isFinite(edits.quantity) || edits.quantity <= 0)) {
-    throw new Error(`Quantity must be a positive number (got ${edits.quantity}).`);
+  if (edits?.quantity !== undefined) {
+    // A human is confirming, so the change-order rule applies — unlike the proposal path above,
+    // where a negative is refused outright whatever the draft is.
+    assertQuantityAllowed(edits.quantity, Boolean(line.draft?.changeOrderForId));
   }
 
   const edited =

@@ -206,7 +206,7 @@ export function PropertyDetailPage() {
           </Link>
           <Link
             className="btn btn-secondary flex-1"
-            to={`/jobs?address=${property.id}&estimate=accepted`}
+            to={`/jobs?address=${property.id}&open=1`}
           >
             Sold Work
           </Link>

@@ -55,6 +55,16 @@ export function JobsPage() {
   const [searchParams] = useSearchParams();
   const [estimateFilter, setEstimateFilter] = useState(searchParams.get("estimate") ?? "");
   const addressFilter = searchParams.get("address");
+  /*
+    ── SOLD WORK MEANS OPEN WORK ORDERS (Kyle, R9, 2026-08-20) ─────────────────────────────────
+
+    "Sold work will have to lead to a page that shows the open work orders."
+
+    Sold work that has been finished and paid is history. Listing it beside work still to do
+    buries the part that needs action, which is the only part that button is for. `?open=1` keeps
+    the signed jobs that are not yet completed or cancelled.
+  */
+  const openWorkOrders = searchParams.get("open") === "1";
   const [sortNewestFirst, setSortNewestFirst] = useState(true);
 
   const archived = tab === "archived";
@@ -80,9 +90,18 @@ export function JobsPage() {
 
   const visibleJobs = useMemo(() => {
     const atAddress = addressFilter ? jobs.filter((j) => j.property.id === addressFilter) : jobs;
+    // Signed, and not yet finished. `hasAcceptance` is set the moment an estimate is signed.
+    const scoped = openWorkOrders
+      ? atAddress.filter(
+          (j) =>
+            Boolean(j.estimate?.hasAcceptance) &&
+            j.status !== "completed" &&
+            j.status !== "cancelled",
+        )
+      : atAddress;
     const filtered = archived || !estimateFilter
-      ? atAddress
-      : atAddress.filter((job) => {
+      ? scoped
+      : scoped.filter((job) => {
         if (estimateFilter === "no_estimate") return !job.estimate;
         return job.estimate?.status === estimateFilter;
       });
@@ -93,7 +112,7 @@ export function JobsPage() {
       const diff = new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime();
       return sortNewestFirst ? diff : -diff;
     });
-  }, [jobs, archived, estimateFilter, addressFilter, sortNewestFirst]);
+  }, [jobs, archived, estimateFilter, addressFilter, openWorkOrders, sortNewestFirst]);
 
   function submitVisit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -158,6 +177,13 @@ export function JobsPage() {
           </div>
         </form>
       ) : null}
+
+      {openWorkOrders && (
+        <p className="mb-4 rounded-lg bg-rce-accentBg p-3 text-sm text-rce-accentDark">
+          <strong>Open work orders</strong> — signed and not yet finished. Completed and cancelled
+          jobs are hidden.
+        </p>
+      )}
 
       {/* Secondary filter — estimate lifecycle only makes sense on live work */}
       {!archived && (

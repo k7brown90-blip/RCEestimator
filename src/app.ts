@@ -2278,6 +2278,58 @@ app.get("/issued-estimates/:id/customer-view", asyncHandler(async (req, res) => 
  * `audience=company` is behind the same operator session as everything else here. The customer
  * never reaches this route: their document is the token-scoped page in routes/estimatePage.ts.
  */
+/**
+ * Raise a change order against a SIGNED estimate.
+ *
+ * Kyle, 2026-08-19: *"Nothing will revise the already signed quote. If a change is deemed
+ * necessary by the electrician or the customer a change order is created. The same job ID only
+ * with additional sections that add the work or remove the work."*
+ *
+ * This creates an EMPTY draft pointing at the signed estimate — not a copy of it. A change order
+ * describes the CHANGE, so pre-filling it with the original lines would invite signing the whole
+ * job a second time. It inherits the account, the address and the job, so the change lands on the
+ * work it belongs to.
+ *
+ * The signed estimate is not touched. It is refused outright if it was never signed, because the
+ * thing to do with an unsigned estimate is edit it.
+ */
+app.post("/issued-estimates/:id/change-order", asyncHandler(async (req, res) => {
+  const est = await prisma.issuedEstimate.findUnique({ where: { id: readParam(req, "id") } });
+  if (!est) {
+    res.status(404).json({ error: "Estimate not found" });
+    return;
+  }
+  if (!est.signedAt) {
+    res.status(409).json({
+      error: "That estimate has not been signed. Change orders are for work already agreed — edit the estimate instead.",
+    });
+    return;
+  }
+
+  const draft = await prisma.priceBookDraftEstimate.create({
+    data: {
+      title: `Change order — ${est.number}`,
+      changeOrderForId: est.id,
+      // The draft's spine mirrors the estimate's: same account, same job. The address lives on
+      // the issued estimate rather than the draft, and graduation re-derives it there.
+      customerId: est.customerId,
+      visitId: est.jobVisitId ?? est.visitId,
+      // Same default the ordinary create-draft route uses: the configured active supplier,
+      // falling back to HD. A change order prices against today's supplier, not the one that was
+      // active when the original was signed — the material is bought now.
+      supplierId:
+        (await prisma.priceBookRateConfig.findUnique({ where: { key: "activeSupplier" } }))?.textValue ?? "HD",
+    },
+  });
+
+  logSystemEvent("info", "issued-estimate", `Change order raised against ${est.number}`, {
+    estimateId: est.id,
+    draftId: draft.id,
+  });
+
+  res.status(201).json({ draftId: draft.id, changeOrderFor: est.number });
+}));
+
 app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
   const audience = req.query.audience === "company" ? "company" : "customer";
   const est = await prisma.issuedEstimate.findUnique({
@@ -3339,6 +3391,17 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
     };
   });
 
+  // Every signed agreement filed against any of this account's addresses.
+  const signedDocuments = await prisma.document.findMany({
+    where: {
+      issuedEstimateId: { not: null },
+      propertyId: { in: account.properties.map((p) => p.id) },
+    },
+    include: { issuedEstimate: { select: { number: true } } },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+
   const jobsByProperty = new Map<string, typeof jobs>();
   for (const job of jobs) {
     const list = jobsByProperty.get(job.propertyId) ?? [];
@@ -3406,6 +3469,25 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       declinedByRelation: finding.declinedByRelation,
     })),
     jobs,
+    /*
+      SIGNED AGREEMENTS ON THE ACCOUNT (Kyle, 2026-08-20: "the signed copy needs to be saved to
+      their account along side our copy").
+
+      Gathered by ADDRESS, not by job. A signed estimate is filed with the job when it has one,
+      but an estimate signed before any job existed carries only the address — and that is the
+      common case, because signing is what CREATES the job. Listing them per-job would hide
+      exactly the ones Kyle has just signed.
+    */
+    documents: signedDocuments.map((d) => ({
+      id: d.id,
+      type: d.type,
+      audience: d.type.endsWith("_company") ? "company" : "customer",
+      estimateNumber: d.issuedEstimate?.number ?? null,
+      signedByName: d.signedByName,
+      signedAt: d.signedAt,
+      createdAt: d.createdAt,
+      propertyId: d.propertyId,
+    })),
     totals: {
       ...sumJobCosts(jobs.map((j) => j.costs)),
       activeJobCount: jobs.filter((j) => !j.archived).length,

@@ -425,6 +425,44 @@ export function AccountDetailPage() {
       <AccountEstimates accountId={account.id} properties={properties} />
 
       {/* ── Jobs ────────────────────────────────────────────────────────── */}
+      {/* ── Signed agreements (Kyle, 2026-08-20) ──────────────────────────────────────────
+          Both copies of every signed estimate. The customer's is what they agreed to; ours
+          carries the material to order and the hours to schedule against. Neither is a stored
+          file — each renders from the frozen estimate, so they still open after a deploy. */}
+      {summary.documents.length > 0 && (
+        <section className="card mb-5 p-4">
+          <h2 className="mb-1 text-lg font-semibold">Signed agreements</h2>
+          <p className="mb-3 text-xs text-rce-soft">
+            {summary.documents.length} document(s) on file.
+          </p>
+          <div className="space-y-2">
+            {summary.documents.map((d) => (
+              <a
+                key={d.id}
+                href={`/api/documents/${d.id}/pdf`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-between gap-3 rounded-lg border border-rce-border/70 p-3 active:opacity-70"
+              >
+                <span className="min-w-0">
+                  <span className="block font-medium">
+                    {d.estimateNumber ? `Estimate ${d.estimateNumber}` : "Estimate"}{" "}
+                    <span className="text-xs font-normal text-rce-soft">
+                      {d.audience === "company" ? "· our copy" : "· customer copy"}
+                    </span>
+                  </span>
+                  <span className="block text-xs text-rce-soft">
+                    {d.signedByName ? `Signed by ${d.signedByName}` : "Signed"}
+                    {d.signedAt ? ` · ${new Date(d.signedAt).toLocaleDateString()}` : ""}
+                  </span>
+                </span>
+                <span className="shrink-0 text-xs text-rce-accent">Open PDF</span>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
+
       <JobSection title="Current jobs" jobs={activeJobs} emptyText="No jobs in flight." defaultOpen />
       <JobSection title="Past jobs" jobs={pastJobs} emptyText="No completed jobs yet." />
 

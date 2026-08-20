@@ -839,6 +839,17 @@ export type AccountSummary = {
     completedJobCount: number;
     propertyCount: number;
   };
+  /** Signed agreements filed against any of this account's addresses (2026-08-20). */
+  documents: Array<{
+    id: string;
+    type: string;
+    audience: "customer" | "company";
+    estimateNumber: string | null;
+    signedByName: string | null;
+    signedAt: string | null;
+    createdAt: string;
+    propertyId: string | null;
+  }>;
   inspections: AccountInspectionSummary[];
   findings: PropertyFinding[];
 };
