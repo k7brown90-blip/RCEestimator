@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useStickyFooterSpace } from "../lib/useStickyFooterSpace";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
@@ -169,7 +170,7 @@ export function PriceBookIntakePage() {
   );
 
   return (
-    <div className="space-y-4 pb-24">
+    <div className="space-y-4">
       <PageHeader title="Estimate intake" subtitle="Browse, search, and confirm — the engine prices" />
 
       {/* ── Draft selection. Every estimate starts blank (Kyle, 2026-08-12). ── */}
@@ -1342,6 +1343,15 @@ function TotalsBar(props: {
   openQuestions: number;
   openItems: number;
 }) {
+  /*
+    Declared BEFORE the early return below, deliberately.
+
+    TotalsBar returns null while there is nothing computed yet, so a hook placed after that line
+    would run on some renders and not others — which is React error #310, the same crash this app
+    already carries on /visits/:id. Hooks first, then the bail-out.
+  */
+  const bar = useStickyFooterSpace();
+
   const c = props.computed;
   if (!c) return null;
 
@@ -1364,7 +1374,15 @@ function TotalsBar(props: {
   const usedOptions = (props.options ?? []).filter((o) => o.lineCount > 0);
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-30 border-t bg-white/95 p-3 backdrop-blur">
+    <>
+    {/* Holds the page open by exactly the bar's height, whatever it is this render. */}
+    <div aria-hidden style={{ height: bar.spacerHeight }} />
+    {/* bottom-20 clears the mobile nav, which is its own fixed bar at bottom-0. md:bottom-0
+        because that nav is md:hidden. */}
+    <div
+      ref={bar.ref}
+      className="fixed inset-x-0 bottom-20 z-30 border-t bg-white/95 p-3 backdrop-blur md:bottom-0"
+    >
       {/* Per-option subtotals (Kyle, 2026-08-19). Shown only once a second option has lines in
           it — a single row reading "Option A $x" beside a total of the same $x is noise. The trip
           charge is not in these figures; it is charged once for the visit, which is why they do
@@ -1415,6 +1433,7 @@ function TotalsBar(props: {
         </div>
       </div>
     </div>
+    </>
   );
 }
 

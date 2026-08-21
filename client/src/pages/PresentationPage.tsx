@@ -27,6 +27,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { useStickyFooterSpace } from "../lib/useStickyFooterSpace";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -136,13 +137,26 @@ export function PresentationPage() {
     );
   };
 
+  /*
+    ABOVE the guards below, and it matters.
+
+    Reserves exactly what the summary bar occupies — it grows with warnings and with the selection
+    text, so the old fixed padding class was wrong the moment either changed.
+
+    Placed here because the four early returns underneath mean a hook called after them would run
+    on some renders and not others: none on the loading render, one once the estimate arrives.
+    That is React error #310 and it would crash this screen every time an estimate finished
+    loading. I wrote it below the guards first and the build was perfectly happy with it.
+  */
+  const bar = useStickyFooterSpace();
+
   if (!draftId) return <p className="p-4 text-sm text-rce-muted">No estimate specified.</p>;
   if (isLoading) return <p className="p-4 text-sm text-rce-muted">Loading the estimate…</p>;
   if (error) return <p className="p-4 text-sm text-red-600">{(error as Error).message}</p>;
   if (!data) return <p className="p-4 text-sm text-rce-muted">Estimate not found.</p>;
 
   return (
-    <div className="pb-28">
+    <div>
       <div className="mb-4 flex items-center justify-between gap-2">
         <button className="btn btn-secondary" onClick={() => navigate(-1)}>
           Back
@@ -273,7 +287,15 @@ export function PresentationPage() {
         </section>
       )}
 
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t bg-white/95 p-3 backdrop-blur">
+      {/* Holds the page open by exactly the bar's height, whatever it is this render. */}
+      <div aria-hidden style={{ height: bar.spacerHeight }} />
+
+      {/* bottom-20 on a phone clears the mobile nav, which is its own fixed bar at bottom-0.
+          md:bottom-0 because the nav is md:hidden. */}
+      <div
+        ref={bar.ref}
+        className="fixed inset-x-0 bottom-20 z-30 border-t bg-white/95 p-3 backdrop-blur md:bottom-0"
+      >
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
           <div className="text-xs text-rce-soft">
             {effectiveSelected.length === 0

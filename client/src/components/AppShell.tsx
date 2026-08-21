@@ -74,7 +74,20 @@ export function AppShell({ children }: PropsWithChildren) {
 
       <main className="pb-20 md:pb-0">
         <div className="mx-auto w-full max-w-7xl p-4 md:p-6">
-          <div className="rounded-2xl border border-rce-border/80 bg-rce-surface/90 p-4 shadow-card backdrop-blur-sm md:p-5">{children}</div>
+          {/*
+            NO backdrop-blur HERE. Kyle, 2026-08-21: "I need the ui fixed. I can't see or present
+            any options."
+
+            This card wraps EVERY page, and it used to carry `backdrop-blur-sm`. An element with a
+            backdrop-filter becomes the containing block for its `position: fixed` descendants — so
+            the sticky summary bars on the presentation and intake screens anchored to the bottom of
+            THIS CARD instead of the viewport. On a phone that put the total bar directly over the
+            option list with the rest of the screen left empty, which is exactly what he screenshotted.
+
+            The blur was invisible anyway: the card sits at 90% opacity over a flat background, so
+            there was nothing behind it to blur. It cost him the ability to present options.
+          */}
+          <div className="rounded-2xl border border-rce-border/80 bg-rce-surface/90 p-4 shadow-card md:p-5">{children}</div>
         </div>
       </main>
 
