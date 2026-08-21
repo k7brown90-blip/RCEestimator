@@ -79,7 +79,7 @@ import {
   findTestAccount,
   EXCLUDE_TEST_ACCOUNT,
 } from "./services/accountSpine";
-import { sendEstimateEmail, estimateLink, notifyOwnerSigned } from "./services/issuedEstimateSend";
+import { sendEstimateEmail, sendInvoiceEmail, estimateLink, notifyOwnerSigned } from "./services/issuedEstimateSend";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
 import {
@@ -1427,6 +1427,8 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
       res.status(404).json({ error: "The estimate this document refers to no longer exists" });
       return;
     }
+    const signedAudience = doc.type.endsWith("_company") ? "company" : "customer";
+
     const pdf = await renderEstimatePdf(
       {
         number: est.number,
@@ -1455,10 +1457,29 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
         materialCost: l.materialCost,
         })),
       },
-      "company",
+      /*
+        ── THE AUDIENCE COMES FROM THE DOCUMENT, NOT FROM A CONSTANT ───────────────────────────
+
+        Kyle, 2026-08-21: "All signed agreements are company copies. No customer copy available."
+
+        This said `"company"`, hardcoded. Signing files TWO rows — signed_estimate for the
+        customer and signed_estimate_company for Kyle — and both of them rendered through here as
+        the company copy. So the customer's copy existed, was listed correctly on the account, and
+        opened showing line pricing and labour hours: the one thing that must never reach them.
+
+        Derived from the row's own type, the same way the account summary derives the label it
+        shows next to it (see the audience mapping on the summary endpoint). One source, so the
+        label and the document cannot disagree.
+      */
+      signedAudience,
     );
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="signed-estimate-${est.number}.pdf"`);
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${est.signedAt ? "invoice" : "estimate"}-${est.number}${
+        signedAudience === "company" ? "-company" : ""
+      }.pdf"`,
+    );
     res.send(pdf);
     return;
   }
@@ -2294,6 +2315,34 @@ app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
   const result = await sendEstimateEmail(prisma, String(req.params.id), {
     sentBy: "human:crm-session",
     toOverride: body.to ?? null,
+    message: body.message ?? null,
+  });
+
+  if (!result.ok) {
+    res.status(400).json({ sent: false, error: result.reason });
+    return;
+  }
+  res.json({ sent: true, to: result.to });
+}));
+
+/*
+  Email the SIGNED invoice, PDF attached.
+
+  Kyle, 2026-08-21: "I cannot email the invoice to the client."
+
+  Separate from the send route above rather than a flag on it. That one refuses once an estimate
+  is signed — correctly, since it exists to ask for a signature — and this one refuses anything
+  NOT signed. Two documents, two guards, no mode to get wrong.
+*/
+app.post("/issued-estimates/:id/send-invoice", asyncHandler(async (req, res) => {
+  const body = z.object({
+    toOverride: z.string().trim().email().nullable().optional(),
+    message: z.string().trim().max(2000).nullable().optional(),
+  }).parse(req.body ?? {});
+
+  const result = await sendInvoiceEmail(prisma, String(req.params.id), {
+    sentBy: "human:crm-session",
+    toOverride: body.toOverride ?? null,
     message: body.message ?? null,
   });
 
@@ -3504,7 +3553,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       issuedEstimateId: { not: null },
       propertyId: { in: account.properties.map((p) => p.id) },
     },
-    include: { issuedEstimate: { select: { number: true } } },
+    include: { issuedEstimate: { select: { number: true, customerEmail: true } } },
     orderBy: { createdAt: "desc" },
     take: 100,
   });
@@ -3590,6 +3639,10 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       type: d.type,
       audience: d.type.endsWith("_company") ? "company" : "customer",
       estimateNumber: d.issuedEstimate?.number ?? null,
+      // The invoice send targets the ESTIMATE, not the document row — the document is one of two
+      // renderings of it. Exposed so the account page can offer the send without a second lookup.
+      estimateId: d.issuedEstimateId,
+      customerEmail: d.issuedEstimate?.customerEmail ?? null,
       signedByName: d.signedByName,
       signedAt: d.signedAt,
       createdAt: d.createdAt,

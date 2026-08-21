@@ -71,7 +71,21 @@ describe("the filed copy survives a deploy", () => {
   it("renders that document from the estimate instead of reading the disk", () => {
     const at = app.indexOf('app.get("/documents/:id/pdf"');
     expect(at).toBeGreaterThan(-1);
-    const handler = app.slice(at, at + 2400);
+    /*
+      Sliced to where the handler actually ENDS, not to a fixed character count.
+
+      This read `at + 2400`. On 2026-08-21 a comment was added inside the handler explaining why
+      the PDF audience is derived from the document row, and that pushed the filesystem read past
+      the 2400th character — so indexOf returned -1 and the ordering assertion compared against
+      it, failing on a handler whose order had not changed at all.
+
+      The next top-level route is the real boundary. A window that moves when a comment is written
+      is a window that tests the comment.
+    */
+    // A newline followed by "app." is the start of the next top-level route. Built rather than
+    // written as an escape so the literal cannot be mangled by whatever writes this file.
+    const next = app.indexOf(`${String.fromCharCode(10)}app.`, at + 1);
+    const handler = app.slice(at, next > -1 ? next : undefined);
     const branchAt = handler.indexOf("doc.issuedEstimateId");
     const fsAt = handler.indexOf('await import("node:fs")');
     expect(branchAt, "the estimate branch was not found").toBeGreaterThan(-1);

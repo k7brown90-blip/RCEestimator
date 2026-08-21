@@ -714,6 +714,18 @@ export const api = {
       `/accounts/${accountId}/estimates${serviceAddressId ? `?serviceAddressId=${encodeURIComponent(serviceAddressId)}` : ""}`
     ),
 
+  /**
+   * Email the SIGNED invoice, PDF attached (2026-08-21).
+   *
+   * Kyle: "I cannot email the invoice to the client." Distinct from pbSendEstimate — that one
+   * refuses a signed estimate, this one refuses an unsigned one.
+   */
+  sendInvoice: (estimateId: string, input: { toOverride?: string | null; message?: string | null } = {}) =>
+    request<{ sent: true; to: string }>(`/issued-estimates/${estimateId}/send-invoice`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
   estimateChain: () => request<{ estimates: PbChainRow[] }>("/issued-estimates/chain"),
 
   pbCreateJob: (id: string) =>

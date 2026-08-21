@@ -845,6 +845,9 @@ export type AccountSummary = {
     type: string;
     audience: "customer" | "company";
     estimateNumber: string | null;
+    /** The estimate this renders. Emailing an invoice targets it, not this row. */
+    estimateId: string | null;
+    customerEmail: string | null;
     signedByName: string | null;
     signedAt: string | null;
     createdAt: string;

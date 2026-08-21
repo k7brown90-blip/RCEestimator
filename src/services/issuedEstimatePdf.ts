@@ -85,6 +85,11 @@ export interface PdfEstimate {
 
 const OPTIONS: PriceBookOption[] = ["A", "B", "C"];
 
+/** Money arithmetic to the cent — the billed total is re-summed from the options taken. */
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
 function money(v: number | null | undefined): string {
   // Null-safe: a line issued before a column existed has no value for it, and a document that
   // throws mid-render is worse than one that prints an em dash.
@@ -140,8 +145,23 @@ export async function renderEstimatePdf(
     .text(profile.tagline);
   doc.moveDown(0.8).fillColor("#000");
 
+  /*
+    ── A SIGNED DOCUMENT IS AN INVOICE ──────────────────────────────────────────────────────────
+
+    Kyle, 2026-08-21: *"The signed estimates need to be labeled invoices."*
+
+    Same document, same frozen numbers, same signature — what changes is what it IS. Before it is
+    signed it is an offer; after, it is what the customer owes. Calling both an "Estimate" leaves
+    him sending a customer a document that reads as a quote when he means it as a bill.
+
+    The number does not change with the name. Invoice 2026-1022 and estimate 2026-1022 are the
+    same agreement, which is what makes the chain auditable.
+  */
+  const isInvoice = Boolean(estimate.signedAt);
   doc.fontSize(14).text(
-    `Estimate ${estimate.number}${estimate.revision > 1 ? ` (revision ${estimate.revision})` : ""}`,
+    `${isInvoice ? "Invoice" : "Estimate"} ${estimate.number}${
+      estimate.revision > 1 ? ` (revision ${estimate.revision})` : ""
+    }`,
   );
   if (audience === "company") {
     doc.fontSize(9).fillColor("#a15c00").text("COMPANY COPY — not for the customer").fillColor("#000");
@@ -251,8 +271,33 @@ export async function renderEstimatePdf(
     doc.fontSize(10).text("Trip charge", { continued: true })
       .text(money(estimate.tripCharge), { align: "right" });
   }
-  doc.fontSize(13).text("ESTIMATE TOTAL", { continued: true })
-    .text(money(estimate.total), { align: "right" });
+  /*
+    ── THE TOTAL IS WHAT THEY BOUGHT ────────────────────────────────────────────────────────────
+
+    Kyle, 2026-08-21: *"if someone checks specific options rather than all that the final invoice
+    produced represents their actual selection and doesn't treat it as if they signed off on all
+    of the options."*
+
+    This printed `estimate.total` — the whole quoted amount, every option included. The line list
+    above already drops what the customer declined, so a customer who took Option A out of three
+    would have received a document showing one option and charging for all three. Wrong in the
+    worse direction: it bills for work the page does not even show.
+
+    Re-summed from the options actually taken, plus the trip charge once. Falls back to the frozen
+    total when nothing was declined, or when the estimate predates options entirely — those two
+    figures are the same number and the frozen one is the one the customer saw.
+  */
+  const billed =
+    declinedAreKnown && estimate.options
+      ? round2(
+          estimate.options
+            .filter((o) => taken.has(o.option))
+            .reduce((n, o) => n + o.subtotal, 0) + estimate.tripCharge,
+        )
+      : estimate.total;
+
+  doc.fontSize(13).text(isInvoice ? "INVOICE TOTAL" : "ESTIMATE TOTAL", { continued: true })
+    .text(money(billed), { align: "right" });
 
   // ── The company's working sheet ──
   if (audience === "company") {
@@ -265,6 +310,9 @@ export async function renderEstimatePdf(
 
     const materials = new Map<string, { description: string; quantity: number }>();
     for (const line of estimate.lines) {
+      // Declined options have nothing to order. Listing them would send Kyle to the supply house
+      // for parts the customer did not buy.
+      if (declinedAreKnown && !taken.has(line.option)) continue;
       if (!line.materialSell) continue;
       const row = materials.get(line.description);
       if (row) row.quantity += line.quantity;

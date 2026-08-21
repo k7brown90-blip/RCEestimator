@@ -333,6 +333,16 @@ export async function sendBrandedEmail(input: {
   subject: string;
   headline: string;
   bodyHtml: string;
+  /**
+   * Files to attach. Added 2026-08-21 for the signed invoice.
+   *
+   * Kyle: *"The signed estimates need to be labeled invoices and they need to be emailed."* An
+   * invoice that arrives as a link to a page is a link the customer has to still have when they
+   * go to pay it. A PDF is the thing they file, forward to a spouse, or hand to a bookkeeper.
+   *
+   * Optional, so every existing caller is unchanged — nodemailer ignores an undefined value here.
+   */
+  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 }): Promise<boolean> {
   const mail = getTransporter();
   if (!mail) {
@@ -362,7 +372,13 @@ export async function sendBrandedEmail(input: {
     </div>`;
 
   try {
-    await mail.transporter.sendMail({ from: mail.from, to: input.to, subject: input.subject, html });
+    await mail.transporter.sendMail({
+      from: mail.from,
+      to: input.to,
+      subject: input.subject,
+      html,
+      attachments: input.attachments,
+    });
     console.log(`[BrandedEmail] Sent "${input.subject}" to ${input.to}`);
     return true;
   } catch (err) {

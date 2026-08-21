@@ -30,6 +30,10 @@
 import type { PrismaClient } from "@prisma/client";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { logSystemEvent } from "./systemEvents";
+// The invoice send renders the customer's PDF itself rather than reading a stored file — same
+// reason the filed copies are rendered on demand: nothing to drift, nothing lost to a deploy.
+import { renderEstimatePdf } from "./issuedEstimatePdf";
+import { getCompanyProfile } from "./companyProfile";
 
 export type SendResult = { ok: true; to: string } | { ok: false; reason: string };
 
@@ -52,6 +56,150 @@ export function estimateLink(token: string): string {
  * Refuses rather than guesses when there is no address — an estimate with no customer email is a
  * data problem Kyle fixes on the account, not something to paper over by sending it to himself.
  */
+/**
+ * Email the SIGNED invoice to the customer, with the PDF attached.
+ *
+ * Kyle, 2026-08-21: *"The signed estimates need to be labeled invoices and they need to be
+ * emailed."* And from the picker on the account page: *"I cannot email the invoice to the
+ * client."*
+ *
+ * ── WHY THIS IS NOT sendEstimateEmail WITH A FLAG ──────────────────────────────────────────────
+ *
+ * That function refuses outright once an estimate is signed, and it should: it exists to send an
+ * offer and ask for a signature, and re-sending that after the fact invites a customer to sign a
+ * thing they already signed. This is the opposite document with the opposite guard — it refuses
+ * anything NOT signed.
+ *
+ * ── THE PDF IS THE CUSTOMER'S COPY, RENDERED HERE ──────────────────────────────────────────────
+ *
+ * Rendered at send time from the frozen estimate rather than pulled from a stored file, for the
+ * same reason the filed copies are: nothing to drift, nothing to lose to a deploy that wipes
+ * `generated/`. Explicitly the "customer" audience — this is the one document that must never
+ * carry line pricing or labour hours, and the bug that prompted this work was a hardcoded
+ * "company" on the route that served it.
+ *
+ * It bills what they BOUGHT. renderEstimatePdf re-sums from `selectedOptions`, so a customer who
+ * took one option out of three is invoiced for one.
+ */
+export async function sendInvoiceEmail(
+  prisma: PrismaClient,
+  estimateId: string,
+  opts: { sentBy: string; toOverride?: string | null; message?: string | null }
+): Promise<SendResult> {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    include: {
+      lines: { orderBy: { sortOrder: "asc" } },
+      options: { orderBy: { option: "asc" } },
+    },
+  });
+  if (!est) return { ok: false, reason: "Estimate not found." };
+  if (!est.signedAt) {
+    return { ok: false, reason: "This estimate has not been signed yet, so there is no invoice to send." };
+  }
+
+  const to = (opts.toOverride ?? est.customerEmail ?? "").trim();
+  if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
+    return {
+      ok: false,
+      reason:
+        "No valid customer email address on this estimate. Add one to the customer record, or " +
+        "supply an address when sending.",
+    };
+  }
+
+  const profile = await getCompanyProfile();
+  const pdf = await renderEstimatePdf(
+    {
+      number: est.number,
+      revision: est.revision,
+      title: est.title,
+      customerName: est.customerName,
+      serviceAddress: est.serviceAddress,
+      scopeText: est.scopeText,
+      total: est.total,
+      tripCharge: est.tripCharge,
+      signedAt: est.signedAt,
+      signedByName: est.signerName,
+      signatureImage: est.signatureImage,
+      createdAt: est.createdAt,
+      options: est.options,
+      selectedOptions: est.selectedOptions,
+      lines: est.lines.map((l) => ({
+        option: l.option,
+        description: l.description,
+        quantity: l.quantity,
+        lineTotal: l.lineTotal,
+        laborHours: l.laborHours,
+        materialSell: l.materialSell,
+        materialCost: l.materialCost,
+      })),
+    },
+    "customer",
+    profile,
+  );
+
+  // What they actually owe — the same arithmetic the PDF prints, so the email and its attachment
+  // cannot quote different numbers.
+  const taken = new Set((est.selectedOptions ?? []) as string[]);
+  const billed =
+    taken.size > 0 && est.options.length > 0
+      ? Math.round(
+          (est.options.filter((o) => taken.has(o.option)).reduce((n, o) => n + o.subtotal, 0) +
+            est.tripCharge) * 100,
+        ) / 100
+      : est.total;
+
+  const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
+  const note = (opts.message ?? "").trim();
+  const bodyHtml = `
+    <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
+    <p style="font-size:15px;">Thank you for approving <strong>${escapeHtml(est.title)}</strong>.
+    Your signed invoice is attached.</p>
+    ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
+    <p style="font-size:15px;">Invoice <strong>${escapeHtml(est.number)}</strong>${
+      est.revision > 1 ? ` (revision ${est.revision})` : ""
+    } &middot; Total <strong>${`$${billed.toFixed(2)}`}</strong></p>
+    <p style="font-size:14px;color:#555;">We accept ACH bank transfer (no fee) or credit / debit card
+    (a 3% processing fee is added to card payments).</p>
+    <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
+
+  const sent = await sendBrandedEmail({
+    to,
+    subject: `Your invoice from Red Cedar Electric — ${est.number}`,
+    headline: "Your invoice",
+    bodyHtml,
+    attachments: [
+      { filename: `invoice-${est.number}.pdf`, content: pdf, contentType: "application/pdf" },
+    ],
+  });
+
+  if (!sent) {
+    logSystemEvent("error", "issued-estimate", `Invoice ${est.number} send FAILED to ${to}`, {
+      estimateId: est.id,
+      sentBy: opts.sentBy,
+    });
+    return { ok: false, reason: "The email could not be sent. Check the Gmail connection and try again." };
+  }
+
+  // The estimate's own sent* fields belong to the ESTIMATE send and are left alone — overwriting
+  // them would erase when the offer went out. The invoice send is recorded as its own event.
+  await prisma.issuedEstimateEvent.create({
+    data: {
+      estimateId: est.id,
+      type: "invoice_sent",
+      actor: opts.sentBy,
+      detail: `Invoice emailed to ${to} (rev ${est.revision}, ${`$${billed.toFixed(2)}`})`,
+    },
+  });
+
+  logSystemEvent("info", "issued-estimate", `Invoice ${est.number} emailed to ${to}`, {
+    estimateId: est.id,
+    sentBy: opts.sentBy,
+  });
+  return { ok: true, to };
+}
+
 export async function sendEstimateEmail(
   prisma: PrismaClient,
   estimateId: string,

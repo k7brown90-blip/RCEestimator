@@ -286,3 +286,80 @@ describe("the option names on the PDF", () => {
     expect(text).toContain("Exterior pathway lights");
   });
 });
+
+describe("a signed document is an invoice, for what they actually bought", () => {
+  /*
+    Kyle, 2026-08-21: *"The signed estimates need to be labeled invoices"* and *"if someone checks
+    specific options rather than all that the final invoice produced represents their actual
+    selection and doesn't treat it as if they signed off on all of the options."*
+
+    The second one was the dangerous half. The line list already dropped declined options, but the
+    total still printed `estimate.total` — the whole quoted amount. A customer who took one option
+    out of three would have been handed a document showing one option and billing for three.
+  */
+  const OPTIONS = [
+    { option: "A" as const, label: "Fans", note: null, subtotal: 850 },
+    { option: "B" as const, label: "Bonding", note: null, subtotal: 350 },
+  ];
+
+  it("says Estimate, and quotes everything, before it is signed", async () => {
+    const text = extractText(await renderEstimatePdf({ ...ESTIMATE, options: OPTIONS }, "customer", PROFILE));
+    expect(text).toContain("Estimate 2026-1099");
+    expect(text).toContain("ESTIMATE TOTAL");
+    expect(text).toContain("$1350.00");
+    expect(text).not.toContain("INVOICE");
+  });
+
+  it("says Invoice once it is signed", async () => {
+    const signed = {
+      ...ESTIMATE, options: OPTIONS,
+      signedAt: new Date("2026-08-21T10:00:00Z"), signedByName: "A Customer",
+      selectedOptions: ["A" as const, "B" as const],
+    };
+    const text = extractText(await renderEstimatePdf(signed, "customer", PROFILE));
+    expect(text).toContain("Invoice 2026-1099");
+    expect(text).toContain("INVOICE TOTAL");
+    // Took everything, so the number is unchanged.
+    expect(text).toContain("$1350.00");
+  });
+
+  it("bills ONLY the option they took, not the whole quote", async () => {
+    const signed = {
+      ...ESTIMATE, options: OPTIONS,
+      signedAt: new Date("2026-08-21T10:00:00Z"), signedByName: "A Customer",
+      selectedOptions: ["A" as const],   // declined B ($350)
+    };
+    const text = extractText(await renderEstimatePdf(signed, "customer", PROFILE));
+
+    // A ($850) + the trip charge ($150), charged once.
+    expect(text).toContain("$1000.00");
+    // The bug this pins: the full quote must not appear anywhere on the document.
+    expect(text).not.toContain("$1350.00");
+    // Paired — the work they DID buy is still on it, so this cannot pass on an empty render.
+    expect(text).toContain("Ceiling Fan, Install and Balance, 48-inch");
+    expect(text).not.toContain("Ground Rod, driven");
+  });
+
+  it("does not send Kyle shopping for a declined option's material", async () => {
+    const signed = {
+      ...ESTIMATE, options: OPTIONS,
+      signedAt: new Date("2026-08-21T10:00:00Z"), signedByName: "A Customer",
+      selectedOptions: ["A" as const],
+    };
+    const text = extractText(await renderEstimatePdf(signed, "company", PROFILE));
+    // Paired: the ordering list is present and holds option A's material...
+    expect(text).toContain("Material to order");
+    expect(text).toContain("Fan Box, Fan-Rated");
+    // ...and not the ground rod, which the customer declined.
+    expect(text).not.toContain("Ground Rod, driven");
+  });
+
+  it("still prints an estimate that predates options at its frozen total", async () => {
+    // No option rows at all. The fallback has to keep working — every estimate already in a
+    // customer's hands looks like this.
+    const legacy = { ...ESTIMATE, options: undefined, signedAt: new Date(), selectedOptions: [] };
+    const text = extractText(await renderEstimatePdf(legacy, "customer", PROFILE));
+    expect(text).toContain("$1350.00");
+    expect(text).toContain("Ceiling Fan, Install and Balance, 48-inch");
+  });
+});

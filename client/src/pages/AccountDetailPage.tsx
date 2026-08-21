@@ -431,32 +431,16 @@ export function AccountDetailPage() {
           file — each renders from the frozen estimate, so they still open after a deploy. */}
       {summary.documents.length > 0 && (
         <section className="card mb-5 p-4">
-          <h2 className="mb-1 text-lg font-semibold">Signed agreements</h2>
+          {/* Kyle, 2026-08-21: "The signed estimates need to be labeled invoices." Once signed
+              it is no longer an offer — it is what the customer owes, and the document says so
+              too. Same number either way, which is what keeps the chain auditable. */}
+          <h2 className="mb-1 text-lg font-semibold">Invoices</h2>
           <p className="mb-3 text-xs text-rce-soft">
-            {summary.documents.length} document(s) on file.
+            {summary.documents.length} document(s) on file — signed work.
           </p>
           <div className="space-y-2">
             {summary.documents.map((d) => (
-              <button
-                key={d.id}
-                type="button"
-                onClick={() => void openProtectedPdf(`/documents/${d.id}/pdf`)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg border border-rce-border/70 p-3 text-left active:opacity-70"
-              >
-                <span className="min-w-0">
-                  <span className="block font-medium">
-                    {d.estimateNumber ? `Estimate ${d.estimateNumber}` : "Estimate"}{" "}
-                    <span className="text-xs font-normal text-rce-soft">
-                      {d.audience === "company" ? "· our copy" : "· customer copy"}
-                    </span>
-                  </span>
-                  <span className="block text-xs text-rce-soft">
-                    {d.signedByName ? `Signed by ${d.signedByName}` : "Signed"}
-                    {d.signedAt ? ` · ${new Date(d.signedAt).toLocaleDateString()}` : ""}
-                  </span>
-                </span>
-                <span className="shrink-0 text-xs text-rce-accent">Open PDF</span>
-              </button>
+              <InvoiceRow key={d.id} doc={d} />
             ))}
           </div>
         </section>
@@ -952,5 +936,76 @@ function HealthInspectionHistory({ summary }: { summary: AccountSummary }) {
         ))}
       </ul>
     </section>
+  );
+}
+
+
+/**
+ * One filed invoice copy — open it, and if it is the customer's, send it.
+ *
+ * Kyle, 2026-08-21: *"All signed agreements are company copies. No customer copy available and I
+ * cannot email the invoice to the client."*
+ *
+ * The send is offered on the CUSTOMER copy only. Both rows point at the same estimate, so a button
+ * on each would be two buttons doing one thing — and the one that reads "our copy" is the last
+ * place to put a control that emails a customer.
+ */
+function InvoiceRow({ doc: d }: { doc: AccountSummary["documents"][number] }) {
+  const [sent, setSent] = useState<string | null>(null);
+
+  const send = useMutation({
+    mutationFn: () => api.sendInvoice(d.estimateId as string),
+    onSuccess: (r) => setSent(r.to),
+  });
+
+  const canSend = d.audience === "customer" && Boolean(d.estimateId);
+
+  return (
+    <div className="rounded-lg border border-rce-border/70 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="font-medium">
+            {d.estimateNumber ? `Invoice ${d.estimateNumber}` : "Invoice"}{" "}
+            <span className="text-xs font-normal text-rce-soft">
+              {d.audience === "company" ? "· our copy" : "· customer copy"}
+            </span>
+          </p>
+          <p className="text-xs text-rce-soft">
+            {d.signedByName ? `Signed by ${d.signedByName}` : "Signed"}
+            {d.signedAt ? ` · ${new Date(d.signedAt).toLocaleDateString()}` : ""}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          onClick={() => void openProtectedPdf(`/documents/${d.id}/pdf`)}
+          className="btn-secondary flex-1 text-sm"
+        >
+          Open PDF
+        </button>
+        {canSend && (
+          <button
+            type="button"
+            onClick={() => send.mutate()}
+            disabled={send.isPending}
+            className="btn-primary flex-1 text-sm disabled:opacity-60"
+          >
+            {send.isPending ? "Sending…" : "Email invoice"}
+          </button>
+        )}
+      </div>
+
+      {sent && <p className="mt-2 text-xs text-green-700">Invoice emailed to {sent}.</p>}
+      {send.isError && (
+        <p className="mt-2 text-xs text-red-600">{(send.error as Error).message}</p>
+      )}
+      {canSend && !d.customerEmail && !sent && (
+        <p className="mt-2 text-xs text-rce-soft">
+          No email on this estimate — add one to the customer record first.
+        </p>
+      )}
+    </div>
   );
 }

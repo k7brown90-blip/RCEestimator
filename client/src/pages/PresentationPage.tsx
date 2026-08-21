@@ -215,7 +215,24 @@ export function PresentationPage() {
               <div className="text-right text-lg font-semibold">{money(o.total)}</div>
             </header>
 
-            <ul className="divide-y divide-rce-border/60">
+            {/*
+              ── EACH OPTION SCROLLS ON ITS OWN (Kyle, 2026-08-21) ──────────────────────────────
+
+              "The options menu needs to scroll individually."
+
+              These lists grew unbounded, so one option with twenty lines pushed the other two off
+              the bottom of the phone. Presenting three options means being able to see that there
+              ARE three — the headers carry the name and the price, and those are what the customer
+              is choosing between.
+
+              Capped and scrollable, so the headers stay put and the detail moves inside its card.
+              A short option is unaffected: max-height only bites when the content exceeds it.
+
+              overscroll-contain stops a flick inside a list from scrolling the whole page once it
+              hits the end — on a phone that is the difference between reading an option and losing
+              your place in the estimate.
+            */}
+            <ul className="max-h-64 divide-y divide-rce-border/60 overflow-y-auto overscroll-contain">
               {o.lines.map((l, i) => (
                 <li key={`${l.itemId}-${i}`} className="flex items-baseline justify-between gap-3 p-3">
                   <span className="min-w-0">
