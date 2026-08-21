@@ -363,3 +363,40 @@ describe("a signed document is an invoice, for what they actually bought", () =>
     expect(text).toContain("Ceiling Fan, Install and Balance, 48-inch");
   });
 });
+
+describe("the job summary describes the job he is actually doing", () => {
+  /*
+    Kyle's signed 2026-1021 reported "Labour: 9.73 hr" and "Job length: 1.22 day(s)" on a job the
+    customer had cut down to one option. This block is what he schedules and buys against, so a
+    figure covering declined work books days he does not need and budgets money he will not spend.
+  */
+  const OPTIONS = [
+    { option: "A" as const, label: "Fans", note: null, subtotal: 850 },
+    { option: "B" as const, label: "Bonding", note: null, subtotal: 350 },
+  ];
+  const signedA = {
+    ...ESTIMATE, options: OPTIONS,
+    signedAt: new Date("2026-08-21T10:00:00Z"), signedByName: "A Customer",
+    selectedOptions: ["A" as const],
+  };
+
+  it("counts only the hours of the options taken", async () => {
+    const text = extractText(await renderEstimatePdf(signedA, "company", PROFILE));
+    // Option A is 5 hr + 1 hr. Option B's 1.5 hr was declined and must not be scheduled.
+    expect(text).toContain("6.00 hr");
+    expect(text).not.toContain("7.50 hr");
+  });
+
+  it("counts only the money of the options taken", async () => {
+    const text = extractText(await renderEstimatePdf(signedA, "company", PROFILE));
+    // Material cost: A is 0 + 8. B's 12.14 was declined.
+    expect(text).toContain("$8.00");
+    expect(text).not.toContain("$20.14");
+  });
+
+  it("still summarises the whole job when nothing was declined", async () => {
+    // Paired against the above: the scoping must not fire on an unsigned or fully-taken estimate.
+    const text = extractText(await renderEstimatePdf({ ...ESTIMATE, options: OPTIONS }, "company", PROFILE));
+    expect(text).toContain("7.50 hr");
+  });
+});

@@ -340,13 +340,27 @@ export async function renderEstimatePdf(
       figure he tracks spending against. It is stated as a cost, never as a discount off the
       charge, and it never appears on the customer's copy.
     */
-    const hours = sum(estimate.lines.map((l) => l.laborHours));
-    const anyMissingHours = estimate.lines.some((l) => l.laborHours === null);
-    const materialSpend = sum(estimate.lines.map((l) => l.materialCost));
-    const materialCharged = sum(estimate.lines.map((l) => l.materialSell));
+    /*
+      ── THE SUMMARY DESCRIBES THE JOB HE IS ACTUALLY DOING ───────────────────────────────────
+
+      These summed `estimate.lines` — every option, including ones the customer declined. On
+      2026-1021 that reported 9.73 hr and $1459.50 of labour for a job the customer had cut down
+      to Option A. This is the block Kyle schedules against and tracks spending against, so a
+      figure covering work nobody bought is worse here than on the total: it books days he does
+      not need and budgets money he will not spend.
+
+      Same scope as the material list above and the billed total below — one selection, applied
+      everywhere it changes an answer.
+    */
+    const jobLines = estimate.lines.filter((l) => !declinedAreKnown || taken.has(l.option));
+
+    const hours = sum(jobLines.map((l) => l.laborHours));
+    const anyMissingHours = jobLines.some((l) => l.laborHours === null);
+    const materialSpend = sum(jobLines.map((l) => l.materialCost));
+    const materialCharged = sum(jobLines.map((l) => l.materialSell));
     // Same derivation as the lines: what was charged, minus the material. Never a rate applied
     // after the fact to a document that has already been signed.
-    const labourCost = sum(estimate.lines.map((l) => l.lineTotal - (l.materialSell ?? 0)));
+    const labourCost = sum(jobLines.map((l) => l.lineTotal - (l.materialSell ?? 0)));
     const effectiveRate = hours > 0 ? labourCost / hours : null;
     const days = hours / 8;
 
