@@ -719,3 +719,75 @@ describe("the customer render shows no per-line prices", () => {
     expect(html).toContain(`$${found.estimate.total.toFixed(2)}`);
   });
 });
+
+// ─── Re-issuing an edited draft ─────────────────────────────────────────────────
+
+describe("issuing a draft that already has a live estimate", () => {
+  /*
+    Kyle, 2026-08-20, on the estimator: it "is filled with redundancies and duplicate paths", and
+    in the same session he asked for an Edit button that reopens an unfinished estimate in the
+    builder to "finalize and send to the customer".
+
+    Those collide. Before this, editing a draft and pressing Issue again minted a BRAND NEW
+    estimate number for the same job: the account grew a second row, the first stayed live with
+    its own working customer link, and nothing recorded that they were the same quote. The Edit
+    button puts that one tap away, so the guard had to land with it.
+  */
+  it("revises the existing one instead of minting a second estimate", async () => {
+    const d = await quotableDraft("reissue");
+
+    const first = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+
+    const second = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+
+    // Same house number, one revision up — not a new number.
+    expect(second.body.number).toBe(first.body.number);
+    expect(second.body.revision).toBe(first.body.revision + 1);
+
+    // And exactly one of them is still live. The presence half: both rows exist, so this is not
+    // passing because the query found nothing.
+    const all = await prisma.issuedEstimate.findMany({
+      where: { draftId: d.id },
+      include: { supersededBy: { select: { id: true } } },
+    });
+    expect(all).toHaveLength(2);
+    expect(all.filter((e) => e.supersededBy === null)).toHaveLength(1);
+  });
+
+  it("kills the superseded link so a customer cannot sign the version Kyle replaced", async () => {
+    const d = await quotableDraft("reissue-token");
+
+    const first = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+    const old = await prisma.issuedEstimate.findUnique({ where: { id: first.body.estimateId } });
+
+    await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+
+    /*
+      The dead link 404s rather than rendering a read-only page — which is a stronger answer than
+      the one I first wrote this test expecting. A superseded estimate is not a document to look
+      at, it is a price that no longer stands, and the customer gets the unavailable page.
+
+      Paired against the live token below, so this cannot pass because /e/ is simply broken.
+      */
+    const dead = await request(app).get(`/e/${old!.token}`);
+    expect(dead.status).toBe(404);
+
+    const current = await prisma.issuedEstimate.findFirst({
+      where: { draftId: d.id, supersededBy: null },
+    });
+    const alive = await request(app).get(`/e/${current!.token}`);
+    expect(alive.status).toBe(200);
+  });
+});

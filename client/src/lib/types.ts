@@ -1154,6 +1154,19 @@ export interface PbIssuedEvent {
 
 export interface PbIssuedEstimate {
   id: string;
+  /**
+   * The draft this was issued FROM — how the Edit button gets back into the builder.
+   *
+   * Kyle, 2026-08-20: "There should be a view button that does exactly what clicking on the
+   * estimate does now and an edit button that loads this into the estimate builder to finalize
+   * and send to the customer."
+   *
+   * The account endpoint has always returned it; only the type never named it.
+   */
+  draftId: string;
+  /** The spine (P029). Both are needed to reopen the builder in the right account context. */
+  customerId: string;
+  serviceAddressId: string;
   number: string;
   revision: number;
   status: "draft" | "sent" | "viewed" | "signed" | "void";

@@ -2147,16 +2147,43 @@ app.post("/price-book/drafts/:draftId/issue", asyncHandler(async (req, res) => {
     waiveTrip: z.boolean().optional(),
   }).parse(req.body ?? {});
 
-  const result = await graduateDraft(prisma, {
-    draftId: String(req.params.draftId),
-    accountId: body.accountId,
-    serviceAddressId: body.serviceAddressId,
-    title: body.title ?? null,
-    scopeText: body.scopeText ?? null,
-    includedText: body.includedText ?? null,
-    waiveTrip: body.waiveTrip ?? false,
-    createdBy: "human:crm-session",
+  const draftId = String(req.params.draftId);
+
+  /*
+    ── ISSUING A DRAFT THAT IS ALREADY ISSUED IS A REVISION, NOT A SECOND ESTIMATE ───────────────
+
+    Kyle, 2026-08-20: the estimator "is filled with redundancies and duplicate paths", and he
+    asked for an Edit button that reopens an unfinished estimate in the builder.
+
+    Those two things collide here. Without this branch, editing a draft and pressing Issue again
+    minted a BRAND NEW estimate number for the same job — so the account grew a second row, the
+    first one stayed live with its own working customer link, and nothing recorded that they were
+    the same quote. The Edit button would have put that one tap away.
+
+    A draft has one live estimate at a time. Re-issuing it supersedes what was there: same house
+    number, revision up, the old link dead so a customer cannot sign a version Kyle has replaced.
+
+    The guard lives HERE and not in graduateDraft because reviseEstimate calls graduateDraft — a
+    check inside it would recurse forever.
+  */
+  const live = await prisma.issuedEstimate.findFirst({
+    where: { draftId, supersededBy: null, status: { not: "void" } },
+    orderBy: { revision: "desc" },
+    select: { id: true, number: true, revision: true },
   });
+
+  const result = live
+    ? await reviseEstimate(prisma, live.id, { actor: "human:crm-session", waiveTrip: body.waiveTrip })
+    : await graduateDraft(prisma, {
+        draftId,
+        accountId: body.accountId,
+        serviceAddressId: body.serviceAddressId,
+        title: body.title ?? null,
+        scopeText: body.scopeText ?? null,
+        includedText: body.includedText ?? null,
+        waiveTrip: body.waiveTrip ?? false,
+        createdBy: "human:crm-session",
+      });
 
   // 409 with the engine's verbatim reasons, exactly like finalize — the wording is what tells
   // the operator what to fix, and this screen never re-words a refusal.

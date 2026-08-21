@@ -613,6 +613,7 @@ function AccountEstimates({
   accountId: string;
   properties: AccountSummary["properties"];
 }) {
+  const navigate = useNavigate();
   const [addressId, setAddressId] = useState("");
   const { data } = useQuery({
     queryKey: ["account-estimates", accountId, addressId],
@@ -648,33 +649,83 @@ function AccountEstimates({
         </p>
       )}
 
-      {/* Each row opens the DOCUMENT, not the builder. Kyle, 2026-08-20: "Clicking here goes to
-          estimate intake. These buttons should pull up the pdf that is generated." An issued
-          estimate is a record; the place to look at one is the page it prints as. The company
-          copy, because this is his side of the app. */}
+      {/*
+        ── VIEW AND EDIT, NOT ONE OR THE OTHER (Kyle, 2026-08-20) ────────────────────────────────
+
+        "Now we can add an edit button for estimates that are unfinished. There should be a view
+         button that does exactly what clicking on the estimate does now and an edit button that
+         loads this into the estimate builder to finalize and send to the customer."
+
+        View is the old behaviour, unchanged: the company PDF, because an issued estimate is a
+        record and the place to look at one is the page it prints as.
+
+        Edit reopens the DRAFT this was issued from, in the builder, on the review tab — where he
+        left off.
+
+        ── WHY THE ROW IS NO LONGER ITSELF A BUTTON ──────────────────────────────────────────────
+
+        It was, and a button inside a button is invalid HTML that browsers resolve by dropping one
+        of them. The row is a plain container now and View carries what the row used to do.
+
+        ── AND WHY EDIT ONLY APPEARS ON A DRAFT ──────────────────────────────────────────────────
+
+        Kyle said "unfinished", and draft is the only status that means it: nothing has gone to the
+        customer yet, so reopening the builder changes a document nobody has seen.
+
+        Once it is sent, viewed, or signed, the customer is holding a number. Editing the draft
+        underneath it would silently change what they were quoted, so those need a REVISION or a
+        change order — a different path with its own paper trail, which this button deliberately
+        does not pretend to be.
+      */}
       <div className="mt-3 space-y-2">
-        {rows.map((e) => (
-          <button
-            key={e.id}
-            type="button"
-            onClick={() => void openProtectedPdf(`/issued-estimates/${e.id}/pdf?audience=company`)}
-            className="block w-full rounded-lg border border-rce-border/70 p-3 text-left active:opacity-70"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <p className="font-medium">{e.title}</p>
-                <p className="text-xs text-rce-soft">
-                  {e.number}
-                  {e.revision > 1 ? ` rev ${e.revision}` : ""} ·{" "}
-                  {/* The FROZEN text, not a live lookup — this is what the signed document says. */}
-                  {e.serviceAddress ?? "address missing"}
-                </p>
-                <p className="text-xs uppercase tracking-wide text-rce-muted">{e.status}</p>
+        {rows.map((e) => {
+          const unfinished = e.status === "draft";
+          return (
+            <div
+              key={e.id}
+              className="rounded-lg border border-rce-border/70 p-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-medium">{e.title}</p>
+                  <p className="text-xs text-rce-soft">
+                    {e.number}
+                    {e.revision > 1 ? ` rev ${e.revision}` : ""} ·{" "}
+                    {/* The FROZEN text, not a live lookup — this is what the signed document says. */}
+                    {e.serviceAddress ?? "address missing"}
+                  </p>
+                  <p className="text-xs uppercase tracking-wide text-rce-muted">{e.status}</p>
+                </div>
+                <p className="shrink-0 font-semibold">${e.total.toFixed(2)}</p>
               </div>
-              <p className="shrink-0 font-semibold">${e.total.toFixed(2)}</p>
+
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void openProtectedPdf(`/issued-estimates/${e.id}/pdf?audience=company`)}
+                  className="btn-secondary flex-1 text-sm"
+                >
+                  View
+                </button>
+                {unfinished && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      navigate(
+                        `/estimate-intake?account=${encodeURIComponent(e.customerId)}` +
+                          `&address=${encodeURIComponent(e.serviceAddressId)}` +
+                          `&draft=${encodeURIComponent(e.draftId)}&tab=review`,
+                      )
+                    }
+                    className="btn-primary flex-1 text-sm"
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
             </div>
-          </button>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
