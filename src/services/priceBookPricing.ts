@@ -29,6 +29,8 @@
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
+import type { JobBandConfig } from "./materialMarkupCap";
+
 export type Quotable = "YES" | "NO" | "NEVER";
 
 export interface MarkupTiers {
@@ -51,6 +53,17 @@ export interface RateConfig {
   /** B67 */ jobFixedCost: number | null;
   /** B161 */ activeSupplier: string | null;
   markupTiers: MarkupTiers;
+  /**
+   * The JOB-LEVEL ceilings for gates 2 and 3 — Rate Config rows 179-185 (2026-08-22).
+   *
+   * Distinct from markupTiers above, which key off the price of ONE ITEM. These key off the
+   * material cost of a whole job, and Kyle tunes them because they are now a sales lever:
+   * combining options reaches a deeper band, and the discount that creates is what sells the
+   * extra work.
+   *
+   * Null on a workbook that predates the rows, and the code's own schedule stands.
+   */
+  jobBands: JobBandConfig | null;
 }
 
 export interface SupplierPriceRow {

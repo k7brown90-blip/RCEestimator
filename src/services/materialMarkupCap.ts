@@ -80,11 +80,44 @@ export const JOB_MATERIAL_BANDS: MarkupBand[] = [
   { upTo: null, ceiling: 1.25, label: "$3,000+" },
 ];
 
-export function bandFor(materialCost: number): MarkupBand {
-  return (
-    JOB_MATERIAL_BANDS.find((b) => b.upTo === null || materialCost < b.upTo) ??
-    JOB_MATERIAL_BANDS[JOB_MATERIAL_BANDS.length - 1]
-  );
+/**
+ * Build the schedule from Rate Config, falling back to the constant above.
+ *
+ * Kyle, 2026-08-22 — the bands became a sales lever, so they belong beside the per-item tiers in
+ * his workbook rather than in a deploy. Rows 179-185 of the Rate Config sheet.
+ *
+ * PARTIAL CONFIGURATION IS REFUSED, not merged. A sheet carrying three of the four ceilings would
+ * silently price the fourth band from code while Kyle believed he had set it — so either the whole
+ * schedule is present and it governs, or none of it is and the constant governs. Half a schedule
+ * is the one outcome that produces a number nobody chose.
+ */
+export function bandsFrom(cfg: JobBandConfig | null | undefined): MarkupBand[] {
+  if (!cfg) return JOB_MATERIAL_BANDS;
+  const ok = (v: number | null): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+  const { b1, b2, b3, b4, max1, max2, max3 } = cfg;
+  // Narrowed one at a time rather than through a boolean, so the compiler proves what the comment
+  // claims instead of being told to trust it.
+  if (!ok(b1) || !ok(b2) || !ok(b3) || !ok(b4)) return JOB_MATERIAL_BANDS;
+  if (!ok(max1) || !ok(max2) || !ok(max3)) return JOB_MATERIAL_BANDS;
+  // Bounds must ascend, or "under $250" could sit above "$1,000-2,999" and bandFor would return
+  // whichever came first in the array — a schedule that reads sensibly and prices wrongly.
+  if (!(max1 < max2 && max2 < max3)) return JOB_MATERIAL_BANDS;
+  return [
+    { upTo: max1, ceiling: b1, label: `under $${max1.toLocaleString()}` },
+    { upTo: max2, ceiling: b2, label: `$${max1.toLocaleString()}–${(max2 - 1).toLocaleString()}` },
+    { upTo: max3, ceiling: b3, label: `$${max2.toLocaleString()}–${(max3 - 1).toLocaleString()}` },
+    { upTo: null, ceiling: b4, label: `$${max3.toLocaleString()}+` },
+  ];
+}
+
+/** The seven numbers Rate Config supplies, when it supplies them. */
+export interface JobBandConfig {
+  b1: number | null; b2: number | null; b3: number | null; b4: number | null;
+  max1: number | null; max2: number | null; max3: number | null;
+}
+
+export function bandFor(materialCost: number, bands: MarkupBand[] = JOB_MATERIAL_BANDS): MarkupBand {
+  return bands.find((b) => b.upTo === null || materialCost < b.upTo) ?? bands[bands.length - 1];
 }
 
 /** What the check did to one option, so the company copy can show its working. */
@@ -112,8 +145,12 @@ function round2(n: number): number {
  * Returns `applied: false` and an unchanged sell when there is nothing to do — no material, no
  * cost recorded, or a blended markup already under the ceiling.
  */
-export function capMaterial(materialCost: number, materialSell: number): MaterialCapResult {
-  const band = bandFor(materialCost);
+export function capMaterial(
+  materialCost: number,
+  materialSell: number,
+  bands: MarkupBand[] = JOB_MATERIAL_BANDS,
+): MaterialCapResult {
+  const band = bandFor(materialCost, bands);
   const base: MaterialCapResult = {
     materialCost: round2(materialCost),
     uncappedSell: round2(materialSell),
@@ -178,6 +215,7 @@ export function capMaterial(materialCost: number, materialSell: number): Materia
 export function selectionCap(
   lines: Array<{ option: string; materialCost: number | null; materialSell: number | null }>,
   taken: ReadonlySet<string>,
+  bands: MarkupBand[] = JOB_MATERIAL_BANDS,
 ): MaterialCapResult {
   let cost = 0;
   let sell = 0;
@@ -186,7 +224,7 @@ export function selectionCap(
     cost += l.materialCost ?? 0;
     sell += l.materialSell ?? 0;
   }
-  return capMaterial(cost, sell);
+  return capMaterial(cost, sell, bands);
 }
 
 /** Canonical key for a combination — "A+B", options sorted so every caller agrees. */
@@ -203,12 +241,13 @@ export function comboKey(options: Iterable<string>): string {
  */
 export function allSelectionCaps(
   lines: Array<{ option: string; materialCost: number | null; materialSell: number | null }>,
+  bands: MarkupBand[] = JOB_MATERIAL_BANDS,
 ): Record<string, MaterialCapResult> {
   const offered = [...new Set(lines.map((l) => l.option))].sort();
   const out: Record<string, MaterialCapResult> = {};
   for (let mask = 1; mask < 1 << offered.length; mask++) {
     const taken = new Set(offered.filter((_, i) => mask & (1 << i)));
-    out[comboKey(taken)] = selectionCap(lines, taken);
+    out[comboKey(taken)] = selectionCap(lines, taken, bands);
   }
   return out;
 }

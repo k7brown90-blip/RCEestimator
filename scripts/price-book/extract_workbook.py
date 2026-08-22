@@ -151,12 +151,22 @@ def validate_rate_config(wb, mapping, drifts):
     lcol = column_index_from_string(spec["labelColumn"])
     for key, cell in spec["cells"].items():
         found = ws.cell(cell["row"], lcol).value
-        if norm(found) != norm(cell["label"]):
-            drifts.add(
-                f"{sheet}!{spec['labelColumn']}{cell['row']} (label for {key})",
-                cell["label"],
-                found,
-            )
+        if norm(found) == norm(cell["label"]):
+            continue
+        # An OPTIONAL cell is allowed to be absent — an EMPTY label row means the workbook simply
+        # predates it, and the code carries its own default. Kyle, 2026-08-22: the job-level
+        # material ceilings were mapped before the rows existed in his sheet, and an import that
+        # aborted on their absence would have blocked every price-book push in the meantime.
+        #
+        # A WRONG label is still drift. Absence is "not configured"; different text at that row
+        # means the sheet moved under the mapping, which is exactly what this check exists to catch.
+        if cell.get("optional") and found is None:
+            continue
+        drifts.add(
+            f"{sheet}!{spec['labelColumn']}{cell['row']} (label for {key})",
+            cell["label"],
+            found,
+        )
     return ws
 
 

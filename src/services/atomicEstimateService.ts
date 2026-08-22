@@ -75,6 +75,20 @@ export async function loadRateContext(prisma: PrismaClient): Promise<RateContext
       jobFixedCost: n("jobFixedCost"),
       activeSupplier: t("activeSupplier"),
       markupTiers: tiers,
+      /*
+        The job-level ceilings, if the workbook carries them (2026-08-22). Read exactly like the
+        per-item tiers — absent reads null, and bandsFrom() then stands the code's schedule up
+        rather than pricing a band nobody set.
+      */
+      jobBands: {
+        b1: n("jobBand1Ceiling"),
+        b2: n("jobBand2Ceiling"),
+        b3: n("jobBand3Ceiling"),
+        b4: n("jobBand4Ceiling"),
+        max1: n("jobBand1Max"),
+        max2: n("jobBand2Max"),
+        max3: n("jobBand3Max"),
+      },
     },
     provisional,
     provisionalReason,

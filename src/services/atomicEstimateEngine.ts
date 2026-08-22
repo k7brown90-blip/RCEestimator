@@ -36,7 +36,7 @@ import {
   type SupplierPriceRow,
 } from "./priceBookPricing";
 // The second, job-level check on material markup — see that file for why it exists.
-import { allSelectionCaps, capMaterial, type MaterialCapResult } from "./materialMarkupCap";
+import { allSelectionCaps, bandsFrom, capMaterial, type MaterialCapResult } from "./materialMarkupCap";
 
 // ─── Inputs ─────────────────────────────────────────────────────────────────────
 
@@ -618,6 +618,9 @@ export function computeEstimate(
     from `computed.lines`. A cap applied downstream would leave the lines saying one thing and the
     total saying another, and Kyle reads the lines.
   */
+  // Kyle's schedule from Rate Config when his workbook carries it, the code's otherwise.
+  const bands = bandsFrom(rc.jobBands);
+
   const materialCaps: Record<string, MaterialCapResult> = {};
   for (const option of ESTIMATE_OPTIONS) {
     const inOption = computed.filter((l) => l.option === option);
@@ -625,7 +628,7 @@ export function computeEstimate(
 
     const cost = inOption.reduce((n, l) => n + (l.materialCost ?? 0), 0);
     const sell = inOption.reduce((n, l) => n + (l.materialSell ?? 0), 0);
-    const cap = capMaterial(cost, sell);
+    const cap = capMaterial(cost, sell, bands);
     materialCaps[option] = cap;
     if (!cap.applied) continue;
 
@@ -657,6 +660,7 @@ export function computeEstimate(
   // Gate 3 runs on the lines AS GATE 2 LEFT THEM — the discount is what combining adds on top.
   const combinationDiscounts = allSelectionCaps(
     computed.map((l) => ({ option: l.option, materialCost: l.materialCost, materialSell: l.materialSell })),
+    bands,
   );
 
   // Sums cover only what could be computed. A line with a gap contributes NOTHING rather

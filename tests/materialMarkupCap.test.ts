@@ -17,7 +17,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { allSelectionCaps, bandFor, capMaterial, comboKey, JOB_MATERIAL_BANDS, selectionCap } from "../src/services/materialMarkupCap";
+import { allSelectionCaps, bandFor, bandsFrom, capMaterial, comboKey, JOB_MATERIAL_BANDS, selectionCap } from "../src/services/materialMarkupCap";
 
 describe("which band a job lands in", () => {
   it("reads the ladder off the JOB's material cost, not one item's price", () => {
@@ -200,5 +200,63 @@ describe("the third gate — the combined selection as one job", () => {
     ]);
     expect(Object.keys(all).sort()).toEqual(["A", "A+B", "A+B+C", "A+C", "B", "B+C", "C"]);
     expect(comboKey(["C", "A"])).toBe("A+C"); // order the caller uses cannot mint a second key
+  });
+});
+
+describe("the schedule Kyle sets in Rate Config", () => {
+  /*
+    Kyle, 2026-08-22: the bands became a sales lever, so they moved out of code and into Rate
+    Config rows 179-185 next to the per-item tiers. What matters here is the failure modes — a
+    half-filled sheet, or bounds entered out of order, must never produce a price nobody chose.
+  */
+  const full = { b1: 4, b2: 3, b3: 2, b4: 1.1, max1: 500, max2: 2000, max3: 8000 };
+
+  it("uses his numbers when the sheet carries all seven", () => {
+    const bands = bandsFrom(full);
+    expect(bandFor(100, bands).ceiling).toBe(4);
+    expect(bandFor(500, bands).ceiling).toBe(3);
+    expect(bandFor(2000, bands).ceiling).toBe(2);
+    expect(bandFor(9000, bands).ceiling).toBe(1.1);
+  });
+
+  it("prices with his ceiling, not the code's", () => {
+    // $1,000 of material at 5x. Code default would cap to 1.5x; his sheet says 3x at that size.
+    expect(capMaterial(1000, 5000).cappedSell).toBe(1500);
+    expect(capMaterial(1000, 5000, bandsFrom(full)).cappedSell).toBe(3000);
+  });
+
+  it("REFUSES a half-filled schedule rather than merging it", () => {
+    // The dangerous middle: three ceilings set, the fourth blank. Merging would price band 4 from
+    // code while Kyle believed he had set it — a number nobody chose. All or nothing.
+    const partial = { ...full, b4: null };
+    expect(bandsFrom(partial)).toBe(JOB_MATERIAL_BANDS);
+    expect(bandsFrom({ ...full, max2: null })).toBe(JOB_MATERIAL_BANDS);
+  });
+
+  it("refuses bounds that do not ascend", () => {
+    // 2000 / 500 / 8000 reads sensibly cell by cell and prices wrongly: bandFor returns whichever
+    // matches first, so "under $2,000" would swallow the band beneath it.
+    expect(bandsFrom({ ...full, max1: 2000, max2: 500 })).toBe(JOB_MATERIAL_BANDS);
+  });
+
+  it("refuses zero and negative ceilings", () => {
+    // A blanked cell reading 0 would price all material at zero — free material, silently.
+    expect(bandsFrom({ ...full, b2: 0 })).toBe(JOB_MATERIAL_BANDS);
+    expect(bandsFrom({ ...full, b3: -1 })).toBe(JOB_MATERIAL_BANDS);
+  });
+
+  it("stands the code's schedule up when the workbook predates the rows", () => {
+    expect(bandsFrom(null)).toBe(JOB_MATERIAL_BANDS);
+    expect(bandsFrom({ b1: null, b2: null, b3: null, b4: null, max1: null, max2: null, max3: null }))
+      .toBe(JOB_MATERIAL_BANDS);
+  });
+
+  it("labels his bands from his own numbers", () => {
+    // The label is printed on the company copy, so it has to describe HIS schedule, not the
+    // constant's — "$500–1,999" rather than a hardcoded "$250–999".
+    const bands = bandsFrom(full);
+    expect(bands[0].label).toBe("under $500");
+    expect(bands[1].label).toBe("$500–1,999");
+    expect(bands[3].label).toBe("$8,000+");
   });
 });

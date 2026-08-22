@@ -38,7 +38,7 @@ import { rowTypeSells } from "./atomicEstimateEngine";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { checkSignatureImage } from "./signatureImage";
 import { logSystemEvent } from "./systemEvents";
-import { selectionCap } from "./materialMarkupCap";
+import { bandsFrom, selectionCap, type MarkupBand } from "./materialMarkupCap";
 
 /** House numbering continues the issued PDFs, the last of which was 2026-1010. */
 const NUMBER_FLOOR = 1010;
@@ -325,6 +325,10 @@ export async function graduateDraft(
             ? JSON.stringify(computed.materialCaps)
             : null,
         validDays: computed.materialCost >= 3000 ? 14 : 30,
+        // The band schedule in force right now, frozen with the prices it produced. Without this
+        // a retune in Rate Config would restate the combination discounts on an estimate already
+        // in a customer's hands.
+        jobBandsJson: JSON.stringify(bandsFrom(rate.rc.jobBands)),
         lines: { create: lines },
         options: { create: optionRows },
       },
@@ -648,7 +652,18 @@ async function applySignature(
     where: { estimateId },
     select: { option: true, materialCost: true, materialSell: true },
   });
-  const comboCap = selectionCap(frozenLines, new Set(bought));
+  /*
+    Priced with the schedule frozen AT ISSUE, not whatever Rate Config says today. The customer is
+    signing the document they were shown; a band Kyle retuned in between is not part of it.
+  */
+  const issuedWith = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { jobBandsJson: true },
+  });
+  const frozenBands = issuedWith?.jobBandsJson
+    ? (JSON.parse(issuedWith.jobBandsJson) as MarkupBand[])
+    : undefined;
+  const comboCap = selectionCap(frozenLines, new Set(bought), frozenBands);
 
   const result = await prisma.issuedEstimate.updateMany({
     where: { id: estimateId, signedAt: null },

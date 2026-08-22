@@ -292,3 +292,47 @@ describe("the multi-option discount, on the customer's page", () => {
     expect(signed).not.toContain("$2200.00");
   });
 });
+
+describe("the band schedule frozen at issue", () => {
+  /*
+    Kyle, 2026-08-22: the bands live in Rate Config now, so he can retune them. This is what stops
+    a retune from restating a price already quoted — the customer page prices combinations with
+    the schedule stored on the estimate, not with whatever the workbook says today.
+  */
+  const twoOptions = () =>
+    estimate({
+      tripCharge: 0,
+      total: 3400,
+      lines: [
+        { ...line("A", "Wire the addition", 1700), materialCost: 600, materialSell: 1500 },
+        { ...line("B", "Panel work", 1700), materialCost: 600, materialSell: 1500 },
+      ],
+      options: [option("A", 1700, 1, "Wiring", null), option("B", 1700, 1, "Panel", null)],
+    });
+
+  it("prices combinations with the STORED schedule, not the current one", () => {
+    // Stored schedule is deliberately generous: 2.5x at every size. $1,200 cost x 2.5 = $3,000,
+    // which is exactly what the lines already charge — so the discount is nothing.
+    const generous = [
+      { upTo: 1000, ceiling: 2.5, label: "under $1,000" },
+      { upTo: 5000, ceiling: 2.5, label: "$1,000–4,999" },
+      { upTo: 20000, ceiling: 2.5, label: "$5,000–19,999" },
+      { upTo: null, ceiling: 2.5, label: "$20,000+" },
+    ];
+    const html = renderEstimatePage(
+      estimate({ ...twoOptions(), jobBandsJson: JSON.stringify(generous) }) as never,
+    );
+    // Under today's code schedule this combination saves $1,200. Under the stored one it saves
+    // nothing — so a visible saving here would prove the page ignored the freeze.
+    expect(html).toContain('id="comboSaving"');
+    expect(html).toContain('style="display:none;"');
+    expect(html).not.toContain("$2200.00");
+  });
+
+  it("falls back to the code schedule when the estimate predates the freeze", () => {
+    // Paired with the above: null must still price, and must give the code's answer.
+    const html = renderEstimatePage(estimate({ ...twoOptions(), jobBandsJson: null }) as never);
+    expect(html).toContain("Multi-option material discount");
+    expect(html).toContain("$2200.00");
+  });
+});

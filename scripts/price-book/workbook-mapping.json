@@ -24,23 +24,21 @@
   "mappingVersion": "1.1.0",
   "observedWorkbookDate": "2026-08-13",
   "headerRow": 1,
-
   "_CHANGELOG": [
-    "1.1.0 (2026-08-13) — IMPORT MAPPING IMPACT absorbed. The 04:00 task added Atomics column AA,",
+    "1.1.0 (2026-08-13) â€” IMPORT MAPPING IMPACT absorbed. The 04:00 task added Atomics column AA,",
     "  'Labor Unit Basis (E / C / M)', a machine-readable discriminator the estimating engine needs.",
     "  Before it existed, an atomic's Labor Normal of 6.2 could mean 6.2 hr each OR 6.2 hr per 100,",
-    "  and only the assembly formulas' hard-coded /100 and /1000 divisors carried the difference —",
+    "  and only the assembly formulas' hard-coded /100 and /1000 divisors carried the difference â€”",
     "  which is why Phase 1 could reach parity without it (assembly labour is a frozen literal) and",
     "  Phase 2 cannot (line labour must be computed from the atomic).",
     "  Read as a PREFIX match: the column holds bare 'E'/'C'/'M' on most rows and an annotated form",
-    "  ('E  [NECA p.268 \"...\" — read verbatim 2026-08-13]') where the run cited its source. Anything",
-    "  that is not one of those three letters — 'UNVERIFIED …', 'n/a …', blank — is NOT a basis, and",
+    "  ('E  [NECA p.268 \"...\" â€” read verbatim 2026-08-13]') where the run cited its source. Anything",
+    "  that is not one of those three letters â€” 'UNVERIFIED â€¦', 'n/a â€¦', blank â€” is NOT a basis, and",
     "  the column header's own instruction is followed exactly: BLOCK, never default to E.",
     "  Two new tabs also appeared (Composition Rules, Price Verification Queue). Deliberately NOT",
-    "  mapped this version — Phase 2.0 scope excludes Composition Rules ingestion.",
-    "1.0.0 (2026-08-11) — initial."
+    "  mapped this version â€” Phase 2.0 scope excludes Composition Rules ingestion.",
+    "1.0.0 (2026-08-11) â€” initial."
   ],
-
   "tabs": {
     "atomics": {
       "sheet": "Atomics",
@@ -80,18 +78,25 @@
         "column": "AA",
         "_note": [
           "NECA MLU 2019-2020 p.10 'LABOR UNITS DEFINED', quoted in the column header verbatim:",
-          "E = one, or per each item · C = per hundred items or per hundred linear feet ·",
+          "E = one, or per each item Â· C = per hundred items or per hundred linear feet Â·",
           "M = per thousand items or per thousand linear feet.",
           "HOURS FOR A LINE = qty x labour value / divisor.",
           "The header also states: 'These calculations are not interchangeable' and 'UNVERIFIED means",
-          "the source text states no unit and NOTHING WAS GUESSED — the app must BLOCK, not default to E.'"
+          "the source text states no unit and NOTHING WAS GUESSED â€” the app must BLOCK, not default to E.'"
         ],
-        "divisors": { "E": 1, "C": 100, "M": 1000 },
+        "divisors": {
+          "E": 1,
+          "C": 100,
+          "M": 1000
+        },
         "matchMode": "first-token prefix; the value may carry a trailing source citation",
-        "blockingValues": ["UNVERIFIED", "n/a", ""]
+        "blockingValues": [
+          "UNVERIFIED",
+          "n/a",
+          ""
+        ]
       }
     },
-
     "assembliesResidential": {
       "sheet": "Assemblies-Residential",
       "idColumn": "A",
@@ -136,14 +141,12 @@
         "AP": "Prior Graded Hours"
       }
     },
-
     "assembliesCommercial": {
       "sheet": "Assemblies-Commercial",
       "idColumn": "A",
       "sector": "Light Commercial",
       "sameColumnsAs": "assembliesResidential"
     },
-
     "suppliers": {
       "sheet": "Suppliers",
       "idColumn": "A",
@@ -160,7 +163,6 @@
         "J": "Notes"
       }
     },
-
     "supplierPrices": {
       "sheet": "Supplier Prices",
       "columns": {
@@ -180,7 +182,6 @@
         "N": "Notes"
       }
     },
-
     "necCategoryMap": {
       "sheet": "NEC Category Map",
       "idColumn": "A",
@@ -196,29 +197,102 @@
       }
     }
   },
-
   "rateConfig": {
     "sheet": "Rate Config",
     "labelColumn": "A",
     "valueColumn": "B",
     "_note": "Each key asserts the LABEL text at that row before the value is read. A moved label aborts the import -- reading B2 without checking A2 is how a re-laid-out sheet silently becomes a wrong labour rate.",
     "cells": {
-      "billedLaborRate":        { "row": 2,   "label": "Billed Labor Rate" },
-      "inspectionCoordination": { "row": 4,   "label": "Inspection Coordination (rough-in + final, COMBINED)" },
-      "inspectionFolded":       { "row": 5,   "label": "(folded into Inspection Coordination above)" },
-      "utilityStandby":         { "row": 6,   "label": "Utility Standby (power cut / start-up)" },
-      "permitFee":              { "row": 7,   "label": "Permit Fee" },
-      "markupTier1":            { "row": 10,  "label": "Tier 1: cost under $1.00" },
-      "markupTier2":            { "row": 11,  "label": "Tier 2: $1.00 - $9.99" },
-      "markupTier3":            { "row": 12,  "label": "Tier 3: $10.00 - $49.99" },
-      "markupTier4":            { "row": 13,  "label": "Tier 4: $50.00 - $199.99" },
-      "markupTier5":            { "row": 14,  "label": "Tier 5: $200.00 and up" },
-      "benchmarkRate":          { "row": 27,  "label": "Mr. Electric target effective rate" },
-      "jobFixedCost":           { "row": 67,  "label": "Job fixed cost / trip charge" },
-      "activeSupplier":         { "row": 161, "label": "ACTIVE SUPPLIER (quote context)" }
-    }
+      "billedLaborRate": {
+        "row": 2,
+        "label": "Billed Labor Rate"
+      },
+      "inspectionCoordination": {
+        "row": 4,
+        "label": "Inspection Coordination (rough-in + final, COMBINED)"
+      },
+      "inspectionFolded": {
+        "row": 5,
+        "label": "(folded into Inspection Coordination above)"
+      },
+      "utilityStandby": {
+        "row": 6,
+        "label": "Utility Standby (power cut / start-up)"
+      },
+      "permitFee": {
+        "row": 7,
+        "label": "Permit Fee"
+      },
+      "markupTier1": {
+        "row": 10,
+        "label": "Tier 1: cost under $1.00"
+      },
+      "markupTier2": {
+        "row": 11,
+        "label": "Tier 2: $1.00 - $9.99"
+      },
+      "markupTier3": {
+        "row": 12,
+        "label": "Tier 3: $10.00 - $49.99"
+      },
+      "markupTier4": {
+        "row": 13,
+        "label": "Tier 4: $50.00 - $199.99"
+      },
+      "markupTier5": {
+        "row": 14,
+        "label": "Tier 5: $200.00 and up"
+      },
+      "benchmarkRate": {
+        "row": 27,
+        "label": "Mr. Electric target effective rate"
+      },
+      "jobFixedCost": {
+        "row": 67,
+        "label": "Job fixed cost / trip charge"
+      },
+      "activeSupplier": {
+        "row": 161,
+        "label": "ACTIVE SUPPLIER (quote context)"
+      },
+      "jobBand1Ceiling": {
+        "row": 179,
+        "label": "Job band 1: material cost under $250 - ceiling",
+        "optional": true
+      },
+      "jobBand2Ceiling": {
+        "row": 180,
+        "label": "Job band 2: material cost $250 - $999 - ceiling",
+        "optional": true
+      },
+      "jobBand3Ceiling": {
+        "row": 181,
+        "label": "Job band 3: material cost $1,000 - $2,999 - ceiling",
+        "optional": true
+      },
+      "jobBand4Ceiling": {
+        "row": 182,
+        "label": "Job band 4: material cost $3,000 and up - ceiling",
+        "optional": true
+      },
+      "jobBand1Max": {
+        "row": 183,
+        "label": "Job band 1 upper bound (exclusive)",
+        "optional": true
+      },
+      "jobBand2Max": {
+        "row": 184,
+        "label": "Job band 2 upper bound (exclusive)",
+        "optional": true
+      },
+      "jobBand3Max": {
+        "row": 185,
+        "label": "Job band 3 upper bound (exclusive)",
+        "optional": true
+      }
+    },
+    "_jobBandsNote": "Gates 2 and 3 (2026-08-22). Appended at rows 179-185 rather than inserted beside the per-item tiers at 10-14: this sheet is dense and an insert would shift jobFixedCost (67) and activeSupplier (161) out from under their mappings. OPTIONAL by design -- when a row is absent the code's own schedule stands, so an older workbook still imports."
   },
-
   "pricingRules": {
     "_note": [
       "Transcribed from the workbook's own formulas on 2026-08-11. The app must reproduce these",
@@ -307,7 +381,6 @@
       "formula": "=S + AF"
     }
   },
-
   "componentExtraction": {
     "_note": [
       "HOW THE COMPONENT LIST IS DERIVED, AND WHY IT IS NOT TAKEN FROM COLUMN E.",
@@ -331,7 +404,6 @@
     "materialSellFormulaPattern": "(?P<qty>[0-9.]+)\\s*\\*\\s*N\\(Atomics!X(?P<row>[0-9]+)\\)",
     "crossCheck": "The component set and quantities parsed from N must match those parsed from O exactly. A mismatch means cost and sell are reading different components -- the 2026-08-05 'frozen literal' defect class -- and aborts the import."
   },
-
   "knownStructuralFacts": {
     "_note": "Facts about the workbook that the pipeline depends on and that a future run must not quietly change. Each is asserted at import time.",
     "assemblyLaborIsFrozenLiteral": {

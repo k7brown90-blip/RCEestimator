@@ -2037,6 +2037,15 @@ model IssuedEstimate {
   /// a signed price. Null on estimates signed before the gate existed.
   comboCapJson String?
 
+  /// The job-level band SCHEDULE in force when this was issued, as JSON (2026-08-22).
+  ///
+  /// Frozen for the same reason the prices are. Kyle tunes these bands in Rate Config now, and
+  /// without this an already-issued estimate would recompute its combination discounts against
+  /// whatever schedule was current — so retuning the bands would silently restate a price he had
+  /// already quoted, on a page a customer may be looking at. Null on estimates issued before the
+  /// schedule was configurable; the code's own default stands for those.
+  jobBandsJson String?
+
   /// WHICH OPTIONS THE CUSTOMER ACTUALLY BOUGHT.
   ///
   /// Kyle, 2026-08-20: "the options are not persisting into the pdf or allowing to pick and

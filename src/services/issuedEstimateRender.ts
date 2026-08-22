@@ -290,8 +290,17 @@ export function renderEstimatePage(
   */
   const comboTable: Record<string, { total: number; saving: number }> = {};
   if (estOptions.length > 0) {
+    /*
+      Priced with the schedule frozen at issue (jobBandsJson), not whatever Rate Config holds now.
+      Kyle tunes these bands in his workbook; without this, retuning them would change the combo
+      prices on a page a customer may already have open, after he had quoted them.
+    */
+    const frozenBands = est.jobBandsJson
+      ? (JSON.parse(est.jobBandsJson) as Parameters<typeof allSelectionCaps>[1])
+      : undefined;
     const caps = allSelectionCaps(
       est.lines.map((l) => ({ option: l.option, materialCost: l.materialCost, materialSell: l.materialSell })),
+      frozenBands,
     );
     for (const [key, cap] of Object.entries(caps)) {
       const subtotals = estOptions
