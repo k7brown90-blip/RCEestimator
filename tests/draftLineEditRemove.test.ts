@@ -75,7 +75,14 @@ describe("PATCH /price-book/lines/:lineId", () => {
     expect(after!.quantity).toBe(1);
   });
 
-  it("refuses to edit a line on a FINALIZED draft", async () => {
+  it("REOPENS a finalized draft on edit when nothing from it is signed", async () => {
+    /*
+      This test used to assert the refusal — until Kyle hit it from the Edit button on
+      2026-08-22: "I still cannot edit this draft." The rule moved: the frozen record is the
+      ISSUED estimate now, not the draft, so an unsigned draft reopens and re-issuing supersedes.
+      The refusal lives at the signature; see "stays shut once a signature exists" in
+      issuedEstimate.test.ts.
+    */
     const d = await newDraft("patch-finalized");
     const line = await addLine(prisma, d.id, { itemId: "R001", quantity: 3, quantitySource: "COUNT" });
     await prisma.priceBookDraftEstimate.update({
@@ -85,10 +92,11 @@ describe("PATCH /price-book/lines/:lineId", () => {
 
     const res = await request(app).patch(`/price-book/lines/${line.id}`).send({ quantity: 99 });
 
-    expect(res.status).toBe(400);
-    expect(String(res.body.error)).toContain("not editable");
+    expect(res.status).toBe(200);
     const after = await prisma.priceBookDraftLine.findUnique({ where: { id: line.id } });
-    expect(after!.quantity).toBe(3);
+    expect(after!.quantity).toBe(99);
+    const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: d.id } });
+    expect(draft!.status).toBe("draft"); // reopened, honestly — re-issue will re-finalize
   });
 });
 
@@ -103,7 +111,7 @@ describe("DELETE /price-book/lines/:lineId", () => {
     expect(await prisma.priceBookDraftLine.findUnique({ where: { id: line.id } })).toBeNull();
   });
 
-  it("refuses to remove a line from a FINALIZED draft, and leaves it in place", async () => {
+  it("reopens on remove too — same rule, same wall at the signature", async () => {
     const d = await newDraft("delete-finalized");
     const line = await addLine(prisma, d.id, { itemId: "R001", quantity: 4, quantitySource: "COUNT" });
     await prisma.priceBookDraftEstimate.update({
@@ -113,10 +121,10 @@ describe("DELETE /price-book/lines/:lineId", () => {
 
     const res = await request(app).delete(`/price-book/lines/${line.id}`);
 
-    expect(res.status).toBe(400);
-    expect(String(res.body.error)).toContain("not removable");
-    // The line is still there — the refusal is real, not cosmetic.
-    expect(await prisma.priceBookDraftLine.findUnique({ where: { id: line.id } })).not.toBeNull();
+    expect(res.status).toBe(204);
+    expect(await prisma.priceBookDraftLine.findUnique({ where: { id: line.id } })).toBeNull();
+    const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: d.id } });
+    expect(draft!.status).toBe("draft");
   });
 
   it("reports a missing line rather than succeeding silently", async () => {

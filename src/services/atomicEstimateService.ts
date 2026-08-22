@@ -24,6 +24,7 @@ import {
   type EstimateOption,
 } from "./atomicEstimateEngine";
 import type { MarkupTiers, RateConfig, SupplierPriceRow } from "./priceBookPricing";
+import { logSystemEvent } from "./systemEvents";
 
 /** Kyle's ruled company-wide billed rate. decisions/2026-08-11-billed-rate-and-no-memberships.md */
 export const RULED_BILLED_RATE = 150;
@@ -437,12 +438,63 @@ export interface AddLineInput {
   confirmedBy?: string;
 }
 
+/**
+ * A finalized draft REOPENS for editing — unless something from it has been signed (2026-08-22).
+ *
+ * Kyle, from the field: *"I still cannot edit this draft."* The Edit button on an unsigned
+ * estimate reopens the builder, and the builder's every mutation then refused him with
+ * "finalized estimates are not edited in place."
+ *
+ * That guard predates the revision flow and was load-bearing then: the frozen record WAS the
+ * draft, so an edit rewrote history. It is not any more. The issued estimate froze its own lines,
+ * options and prices at graduation and reads nothing from the draft afterwards — and re-issuing
+ * an edited draft SUPERSEDES the old estimate (same number, revision up, old link dead) rather
+ * than minting a duplicate. Editing an unsigned draft is now exactly the workflow, not a threat
+ * to the record.
+ *
+ * The line that still cannot be crossed: A SIGNATURE. Once any estimate from this draft carries a
+ * customer's name, the draft stays shut and the answer is a change order — reshaping a draft
+ * under a signed agreement is how "what did they sign?" stops having one answer.
+ *
+ * Reopening flips the status back to "draft"; the next issue re-runs finalize and re-earns
+ * "finalized" honestly.
+ */
+async function reopenForEditIfUnsigned(
+  prisma: PrismaClient,
+  draftId: string,
+  action: string,
+): Promise<void> {
+  const draft = await prisma.priceBookDraftEstimate.findUnique({
+    where: { id: draftId },
+    select: { status: true },
+  });
+  if (!draft) throw new Error(`Draft ${draftId} not found.`);
+  if (draft.status === "draft") return;
+
+  const signed = await prisma.issuedEstimate.findFirst({
+    where: { draftId, signedAt: { not: null } },
+    select: { number: true, revision: true },
+  });
+  if (signed) {
+    throw new Error(
+      `Estimate ${signed.number} from this draft is SIGNED. A signed agreement is never edited — ` +
+        `raise a change order instead.`
+    );
+  }
+
+  await prisma.priceBookDraftEstimate.update({
+    where: { id: draftId },
+    data: { status: "draft", finalizedAt: null },
+  });
+  logSystemEvent("info", "price-book", `Draft ${draftId} reopened for editing (${action}) — nothing signed`, {
+    draftId,
+  });
+}
+
 export async function addLine(prisma: PrismaClient, draftId: string, line: AddLineInput) {
+  await reopenForEditIfUnsigned(prisma, draftId, "add line");
   const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId } });
   if (!draft) throw new Error(`Draft ${draftId} not found.`);
-  if (draft.status !== "draft") {
-    throw new Error(`Draft ${draftId} is ${draft.status}; finalized estimates are not edited in place.`);
-  }
   try {
     assertQuantityAllowed(line.quantity, Boolean(draft.changeOrderForId));
   } catch (err) {
@@ -517,9 +569,7 @@ export async function editLine(
     include: { draft: true },
   });
   if (!existing) throw new Error(`Line ${lineId} not found.`);
-  if (existing.draft.status !== "draft") {
-    throw new Error(`Draft ${existing.draftId} is ${existing.draft.status}; its lines are not editable.`);
-  }
+  await reopenForEditIfUnsigned(prisma, existing.draftId, "edit line");
   if (patch.quantity !== undefined) {
     assertQuantityAllowed(patch.quantity, Boolean(existing.draft.changeOrderForId));
   }
@@ -556,12 +606,7 @@ export async function removeLine(prisma: PrismaClient, lineId: string) {
     include: { draft: true },
   });
   if (!existing) throw new Error(`Line ${lineId} not found.`);
-  if (existing.draft.status !== "draft") {
-    throw new Error(
-      `Draft ${existing.draftId} is ${existing.draft.status}; its lines are not removable. A ` +
-        `finalized estimate is a record of what was quoted — reopen it or start a revision.`
-    );
-  }
+  await reopenForEditIfUnsigned(prisma, existing.draftId, "remove line");
   return prisma.priceBookDraftLine.delete({ where: { id: lineId } });
 }
 
@@ -608,9 +653,7 @@ export async function proposeLines(
 ): Promise<ProposeResult> {
   const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId } });
   if (!draft) throw new Error(`Draft ${draftId} not found.`);
-  if (draft.status !== "draft") {
-    throw new Error(`Draft ${draftId} is ${draft.status}; proposals are only accepted on an open draft.`);
-  }
+  await reopenForEditIfUnsigned(prisma, draftId, "AI proposal");
 
   const result: ProposeResult = { proposed: [], questions: [], rejected: [] };
   let sortOrder = await prisma.priceBookDraftLine.count({ where: { draftId } });
@@ -736,9 +779,7 @@ export async function confirmProposedLine(
     include: { draft: true },
   });
   if (!line) throw new Error(`Line ${lineId} not found.`);
-  if (line.draft.status !== "draft") {
-    throw new Error(`Draft ${line.draftId} is ${line.draft.status}; its lines are not editable.`);
-  }
+  await reopenForEditIfUnsigned(prisma, line.draftId, "confirm line");
   if (line.state === "CONFIRMED") {
     throw new Error(`Line ${lineId} is already confirmed.`);
   }

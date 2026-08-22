@@ -910,3 +910,61 @@ describe("photos and the discount, end to end", () => {
     expect(frozen.amount).toBeGreaterThan(0);
   });
 });
+
+describe("editing a draft after issue — Kyle's exact flow", () => {
+  /*
+    Kyle, 2026-08-22, from the field: "I still cannot edit this draft." — the Edit button opened
+    the builder onto a draft that graduation had marked finalized, and every mutation refused with
+    "finalized estimates are not edited in place."
+
+    The rule now: UNSIGNED means editable — the draft reopens and re-issuing supersedes the old
+    estimate. A SIGNATURE is the wall: after one, the draft stays shut and the answer is a change
+    order.
+  */
+  it("reopens a finalized draft when nothing from it is signed", async () => {
+    const d = await quotableDraft("reopen-edit");
+    await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+
+    const finalized = await prisma.priceBookDraftEstimate.findUnique({ where: { id: d.id } });
+    expect(finalized!.status).toBe("finalized"); // the state Kyle hit
+
+    // The exact call the builder makes, and the one that refused him.
+    const added = await request(app)
+      .post(`/price-book/drafts/${d.id}/lines`)
+      .send({ itemId: GOOD_A, quantity: 1, quantitySource: "COUNT" })
+      .expect(201);
+    expect(added.body.id).toBeTruthy();
+
+    const reopened = await prisma.priceBookDraftEstimate.findUnique({ where: { id: d.id } });
+    expect(reopened!.status).toBe("draft");
+
+    // And the edited draft re-issues as a REVISION, not a duplicate.
+    const second = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+    expect(second.body.revision).toBe(2);
+  });
+
+  it("stays shut once a signature exists", async () => {
+    const d = await quotableDraft("reopen-signed");
+    const issued = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+    await request(app)
+      .post(`/issued-estimates/${issued.body.estimateId}/sign-in-person`)
+      .send({ signerName: "A Customer", signatureImage: TEST_SIGNATURE, selectedOptions: ["A"] })
+      .expect(200);
+
+    const refused = await request(app)
+      .post(`/price-book/drafts/${d.id}/lines`)
+      .send({ itemId: GOOD_A, quantity: 1, quantitySource: "COUNT" })
+      .expect(400);
+    expect(refused.body.error).toMatch(/SIGNED/);
+    expect(refused.body.error).toMatch(/change order/);
+  });
+});
