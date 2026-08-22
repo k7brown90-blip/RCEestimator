@@ -33,6 +33,7 @@
 
 import type { IssuedEstimateWithLines } from "./issuedEstimateService";
 import { allSelectionCaps, comboKey } from "./materialMarkupCap";
+import { asDiscountType, discountFor, discountLabel } from "./discounts";
 import { CONSENT_TEXT } from "./issuedEstimateService";
 
 const TZ = "America/Chicago";
@@ -288,7 +289,8 @@ export function renderEstimatePage(
     Unsigned, the live figure comes from this table as they tick. Signed, the stored comboCapJson
     is the only authority — the bands live in code, and a signed price must not move with them.
   */
-  const comboTable: Record<string, { total: number; saving: number }> = {};
+  const comboTable: Record<string, { total: number; saving: number; discount: number }> = {};
+  const programme = asDiscountType(est.discountType);
   if (estOptions.length > 0) {
     /*
       Priced with the schedule frozen at issue (jobBandsJson), not whatever Rate Config holds now.
@@ -306,17 +308,28 @@ export function renderEstimatePage(
       const subtotals = estOptions
         .filter((o) => key.split("+").includes(o.option))
         .reduce((n, o) => n + o.subtotal, 0);
+      // The programme discount rides every combination: 5% of what THIS selection pays, capped.
+      const base = subtotals + est.tripCharge - cap.reduction;
+      const disc = discountFor(programme, base);
       comboTable[key] = {
-        total: round2(subtotals + est.tripCharge - cap.reduction),
+        total: round2(base - (disc?.amount ?? 0)),
         saving: cap.reduction,
+        discount: disc?.amount ?? 0,
       };
     }
   }
   const signedCombo: { reduction: number } | null = est.comboCapJson
     ? (JSON.parse(est.comboCapJson) as { reduction: number })
     : null;
+  // Signed, the STORED amount is the only truth — the rate and cap live in code, and a signed
+  // price does not move with them.
+  const signedDiscount: { amount: number } | null = est.discountJson
+    ? (JSON.parse(est.discountJson) as { amount: number })
+    : null;
+  const liveAllKey = comboKey(estOptions.map((o) => o.option));
   const chosen = new Set((est.selectedOptions ?? []) as string[]);
   const signedOff = Boolean(est.signedAt);
+  const discountShown = signedOff ? signedDiscount?.amount ?? 0 : comboTable[liveAllKey]?.discount ?? 0;
 
   // Once signed, the document shows what was BOUGHT, not what was offered. An option the customer
   // declined has no business appearing on their agreement.
@@ -543,6 +556,13 @@ export function renderEstimatePage(
                savingRow.style.display = saving > 0 ? "" : "none";
                if (savingAmt) savingAmt.innerHTML = "&minus;" + money(saving);
              }
+             var disc = combo ? combo.discount : 0;
+             var discRow = document.getElementById("progDiscount");
+             var discAmt = document.getElementById("progDiscountAmt");
+             if (discRow) {
+               discRow.style.display = disc > 0 ? "" : "none";
+               if (discAmt) discAmt.innerHTML = "&minus;" + money(disc);
+             }
            }
            boxes.forEach(function (b) { b.addEventListener("change", sync); });
            sync();
@@ -581,15 +601,19 @@ export function renderEstimatePage(
          }><span>Multi-option material discount</span><span id="comboSavingAmt">&minus;${money(
            signedOff ? signedCombo?.reduction ?? 0 : comboTable[comboKey(estOptions.map((o) => o.option))]?.saving ?? 0
          )}</span></div>
+         <div id="progDiscount" class="saving" ${discountShown > 0 ? "" : 'style="display:none;"'}>
+           <span>${programme ? escapeHtml(discountLabel(programme)) : "Discount"}</span>
+           <span id="progDiscountAmt">&minus;${money(discountShown)}</span>
+         </div>
          <div class="grand"><span>ESTIMATE TOTAL</span><span id="grandTotal">${money(
            signedOff && chosen.size > 0
              ? round2(
                  shownOptions.reduce((n, o) => n + o.subtotal, 0) + est.tripCharge -
-                   (signedCombo?.reduction ?? 0),
+                   (signedCombo?.reduction ?? 0) - (signedDiscount?.amount ?? 0),
                )
              : estOptions.length > 0
-               ? comboTable[comboKey(estOptions.map((o) => o.option))]?.total ?? est.total
-               : est.total
+               ? comboTable[liveAllKey]?.total ?? est.total
+               : round2(est.total - (discountShown ?? 0))
          )}</span></div>
        </div>
        <p style="font-size:12px;color:#777;margin:8px 4px 0;">

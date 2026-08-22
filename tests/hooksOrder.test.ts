@@ -18,7 +18,9 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 describe("no hook is ever called conditionally", () => {
-  it("rules-of-hooks is clean across the whole client", async () => {
+  // 60s: this lints ~80 files through eslint's API, and under the full suite's parallel load it
+  // can exceed the 5s default — which failed it as a timeout, not as a finding (2026-08-22).
+  it("rules-of-hooks is clean across the whole client", { timeout: 60_000 }, async () => {
     const clientDir = path.resolve(__dirname, "../client");
     const req = createRequire(path.join(clientDir, "package.json"));
     const { ESLint } = req("eslint");

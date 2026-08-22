@@ -1797,6 +1797,13 @@ model PriceBookDraftEstimate {
 
   /// Kyle's names and short descriptions for each option, editable until issue (2026-08-20).
   optionMeta    PriceBookDraftOption[]
+
+  /// "military" | "senior" | null (2026-08-22). Kyle: "military discount at 5%, senior citizen
+  /// discount at 5%". One per estimate, never stacked — a customer is not 10% off for being both.
+  discountType  String?
+
+  /// Walkthrough photos (2026-08-22). Cascade: photos of a deleted draft mean nothing.
+  photos        DraftPhoto[]
 }
 
 // What the AI could NOT match to an atomic.
@@ -2037,6 +2044,15 @@ model IssuedEstimate {
   /// a signed price. Null on estimates signed before the gate existed.
   comboCapJson String?
 
+  /// The discount programme this estimate carries — "military" | "senior" | null (2026-08-22).
+  discountType String?
+
+  /// The discount as APPLIED, frozen at signature: {type, rate, cap, base, amount}. Frozen then
+  /// and not at issue because the amount is 5% of what the customer SELECTS, capped at $250 —
+  /// Kyle: "Off of the whole job but gets capped at $250" — and the selection does not exist
+  /// until they sign. Unsigned surfaces recompute it live from the frozen lines.
+  discountJson String?
+
   /// The job-level band SCHEDULE in force when this was issued, as JSON (2026-08-22).
   ///
   /// Frozen for the same reason the prices are. Kyle tunes these bands in Rate Config now, and
@@ -2098,6 +2114,30 @@ model IssuedEstimateOption {
 /// Separate from the frozen copy above: this one is editable right up until issue, and the issued
 /// row is the snapshot. A draft that is revised and re-issued carries its names forward without
 /// the old signed document changing.
+/// A walkthrough photo, attached to a draft (2026-08-22).
+///
+/// Kyle: "there is no capability to take photos right now."
+///
+/// BYTES LIVE IN THE DATABASE, deliberately. Railway wipes the filesystem on every deploy — the
+/// same reason signed copies render from the estimate instead of reading generated/. A photo that
+/// survives until the next release is a photo that was never really stored. Client downscales
+/// before upload; the server enforces the cap so the table cannot be filled by accident.
+///
+/// NOT sent to any AI. P012 seam: attach-only, no model egress — that is a separate decision
+/// Kyle has not made.
+model DraftPhoto {
+  id        String   @id @default(cuid())
+  draftId   String
+  draft     PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  mime      String
+  bytes     Bytes
+  size      Int
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([draftId])
+}
+
 model PriceBookDraftOption {
   id        String   @id @default(cuid())
   draftId   String

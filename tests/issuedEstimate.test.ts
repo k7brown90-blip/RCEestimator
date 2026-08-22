@@ -845,3 +845,68 @@ describe("the third gate's freeze at signature", () => {
     expect(cap.reduction).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe("photos and the discount, end to end", () => {
+  // A 1x1 PNG — the smallest honest image.
+  const PNG_1PX =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+  it("stores, lists, serves and deletes a walkthrough photo", async () => {
+    const d = await quotableDraft("photos");
+    const up = await request(app)
+      .post(`/price-book/drafts/${d.id}/photos`)
+      .send({ dataUrl: PNG_1PX })
+      .expect(201);
+    expect(up.body.mime).toBe("image/png");
+
+    const list = await request(app).get(`/price-book/drafts/${d.id}/photos`).expect(200);
+    expect(list.body.photos).toHaveLength(1);
+    // Metadata only — the bytes must not ride the list.
+    expect(JSON.stringify(list.body)).not.toContain("iVBOR");
+
+    const img = await request(app).get(`/draft-photos/${up.body.id}`).expect(200);
+    expect(img.headers["content-type"]).toBe("image/png");
+    expect(img.body.length).toBeGreaterThan(20);
+
+    await request(app).delete(`/draft-photos/${up.body.id}`).expect(200);
+    const after = await request(app).get(`/price-book/drafts/${d.id}/photos`).expect(200);
+    expect(after.body.photos).toHaveLength(0);
+  });
+
+  it("refuses bytes that are not an image", async () => {
+    const d = await quotableDraft("photos-bad");
+    await request(app)
+      .post(`/price-book/drafts/${d.id}/photos`)
+      .send({ dataUrl: "data:application/pdf;base64,JVBERi0=" })
+      .expect(400);
+  });
+
+  it("freezes the programme discount at signature, from the frozen figures", async () => {
+    const d = await quotableDraft("discount-freeze");
+    await request(app)
+      .put(`/price-book/drafts/${d.id}/discount`)
+      .send({ type: "military" })
+      .expect(200);
+
+    const issued = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+
+    const est = await prisma.issuedEstimate.findUnique({ where: { id: issued.body.estimateId } });
+    expect(est!.discountType).toBe("military"); // rode over from the draft
+    expect(est!.discountJson).toBeNull(); // no amount until a selection exists
+
+    await request(app)
+      .post(`/issued-estimates/${issued.body.estimateId}/sign-in-person`)
+      .send({ signerName: "A Customer", signatureImage: TEST_SIGNATURE, selectedOptions: ["A"] })
+      .expect(200);
+
+    const signed = await prisma.issuedEstimate.findUnique({ where: { id: issued.body.estimateId } });
+    const frozen = JSON.parse(signed!.discountJson!) as { type: string; amount: number; base: number };
+    expect(frozen.type).toBe("military");
+    // 5% of the bought base, to the cent — recomputed here independently.
+    expect(frozen.amount).toBeCloseTo(Math.min(Math.round(frozen.base * 5) / 100, 250), 2);
+    expect(frozen.amount).toBeGreaterThan(0);
+  });
+});

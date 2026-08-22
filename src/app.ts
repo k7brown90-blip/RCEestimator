@@ -80,6 +80,7 @@ import {
   EXCLUDE_TEST_ACCOUNT,
 } from "./services/accountSpine";
 import { sendEstimateEmail, sendInvoiceEmail, estimateLink, notifyOwnerSigned } from "./services/issuedEstimateSend";
+import { asDiscountType, discountLabel, DISCOUNT_CAP, DISCOUNT_RATE } from "./services/discounts";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
 import {
@@ -1448,6 +1449,8 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
       // The frozen working of the job-level material check, for the company copy (2026-08-21).
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
+      discountType: est.discountType,
+      discount: est.discountJson ? JSON.parse(est.discountJson) : null,
       signatureImage: est.signatureImage,
         createdAt: est.createdAt,
         lines: est.lines.map((l) => ({
@@ -1804,6 +1807,100 @@ app.post("/price-book/drafts", asyncHandler(async (req, res) => {
   Upsert rather than create: there is exactly one name per option per draft, and renaming is the
   normal case rather than the exception.
 */
+/*
+  ── THE DISCOUNT PROGRAMME ON A DRAFT (Kyle, 2026-08-22) ───────────────────────────────────────
+
+  "military discount at 5%, senior citizen discount at 5%" — "Off of the whole job but gets
+  capped at $250." One programme per estimate; setting a new one replaces the old, null clears.
+  The AMOUNT is never stored on the draft — it is 5% of what the customer eventually selects, so
+  it does not exist yet. Surfaces compute it live; the signature freezes it.
+*/
+app.put("/price-book/drafts/:draftId/discount", asyncHandler(async (req, res) => {
+  const body = z.object({ type: z.enum(["military", "senior"]).nullable() }).parse(req.body ?? {});
+  const draftId = String(req.params.draftId);
+  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { id: true } });
+  if (!draft) {
+    res.status(404).json({ error: `Draft ${draftId} not found.` });
+    return;
+  }
+  const saved = await prisma.priceBookDraftEstimate.update({
+    where: { id: draftId },
+    data: { discountType: body.type },
+    select: { discountType: true },
+  });
+  res.json(saved);
+}));
+
+/*
+  ── WALKTHROUGH PHOTOS (Kyle, 2026-08-22) ──────────────────────────────────────────────────────
+
+  "there is no capability to take photos right now."
+
+  Bytes live in Postgres because Railway wipes the filesystem on deploy — a photo in generated/
+  survives until the next release and no longer. The client downscales before upload; the 4MB cap
+  here is the backstop, not the plan. JPEG/PNG/WebP only: a photo endpoint that accepts any bytes
+  is a file host.
+
+  NO AI EGRESS. Attach-only, per the P012 seam — sending customer photos to a model is a separate
+  decision Kyle has not made, and no code path here reaches one.
+*/
+const PHOTO_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const PHOTO_MAX_BYTES = 4 * 1024 * 1024;
+
+app.post("/price-book/drafts/:draftId/photos", asyncHandler(async (req, res) => {
+  const body = z.object({
+    dataUrl: z.string().max(8 * 1024 * 1024),
+    note: z.string().trim().max(300).nullable().optional(),
+  }).parse(req.body ?? {});
+  const draftId = String(req.params.draftId);
+  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { id: true } });
+  if (!draft) {
+    res.status(404).json({ error: `Draft ${draftId} not found.` });
+    return;
+  }
+  const m = /^data:([a-z0-9/+.-]+);base64,(.+)$/i.exec(body.dataUrl);
+  if (!m || !PHOTO_MIMES.has(m[1].toLowerCase())) {
+    res.status(400).json({ error: "Photos must be JPEG, PNG or WebP." });
+    return;
+  }
+  const bytes = Buffer.from(m[2], "base64");
+  if (bytes.length === 0 || bytes.length > PHOTO_MAX_BYTES) {
+    res.status(400).json({ error: `Photo must be under ${PHOTO_MAX_BYTES / 1024 / 1024}MB.` });
+    return;
+  }
+  const photo = await prisma.draftPhoto.create({
+    data: { draftId, mime: m[1].toLowerCase(), bytes, size: bytes.length, note: body.note ?? null },
+    select: { id: true, mime: true, size: true, note: true, createdAt: true },
+  });
+  res.status(201).json(photo);
+}));
+
+app.get("/price-book/drafts/:draftId/photos", asyncHandler(async (req, res) => {
+  // Metadata only — a list endpoint that returns megabytes of bytea is a self-inflicted outage.
+  const photos = await prisma.draftPhoto.findMany({
+    where: { draftId: String(req.params.draftId) },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, mime: true, size: true, note: true, createdAt: true },
+  });
+  res.json({ photos });
+}));
+
+app.get("/draft-photos/:id", asyncHandler(async (req, res) => {
+  const photo = await prisma.draftPhoto.findUnique({ where: { id: String(req.params.id) } });
+  if (!photo) {
+    res.status(404).json({ error: "Photo not found." });
+    return;
+  }
+  res.setHeader("Content-Type", photo.mime);
+  res.setHeader("Cache-Control", "private, max-age=3600");
+  res.send(Buffer.from(photo.bytes));
+}));
+
+app.delete("/draft-photos/:id", asyncHandler(async (req, res) => {
+  await prisma.draftPhoto.delete({ where: { id: String(req.params.id) } }).catch(() => null);
+  res.json({ deleted: true });
+}));
+
 app.get("/price-book/drafts/:draftId/options", asyncHandler(async (req, res) => {
   const meta = await prisma.priceBookDraftOption.findMany({
     where: { draftId: String(req.params.draftId) },
@@ -2129,8 +2226,18 @@ app.post("/price-book/questions/:questionId/resolve", asyncHandler(async (req, r
 // Compute / finalize. Both human-only; finalize refuses while anything is unconfirmed.
 app.get("/price-book/drafts/:draftId/compute", asyncHandler(async (req, res) => {
   const { computed, rate } = await computeDraft(prisma, String(req.params.draftId));
+  const draftRow = await prisma.priceBookDraftEstimate.findUnique({
+    where: { id: String(req.params.draftId) },
+    select: { discountType: true },
+  });
   res.json({
     computed,
+    // The discount programme + its terms, so the presentation screen can show the amount for the
+    // live selection without hardcoding the rate (2026-08-22). The amount itself is per-selection
+    // and computed where the selection lives.
+    discount: asDiscountType(draftRow?.discountType)
+      ? { type: draftRow!.discountType, rate: DISCOUNT_RATE, cap: DISCOUNT_CAP }
+      : null,
     // Per-option subtotals (Kyle 2026-08-19). Grouped from the engine's own numbers, never
     // re-priced. The trip charge is deliberately absent from these — it is charged once for the
     // job, not once per option; see summarizeOptions.
@@ -2557,6 +2664,8 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       // The frozen working of the job-level material check, for the company copy (2026-08-21).
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
+      discountType: est.discountType,
+      discount: est.discountJson ? JSON.parse(est.discountJson) : null,
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,
@@ -2659,7 +2768,8 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
       const combo = e.comboCapJson
         ? (JSON.parse(e.comboCapJson) as { applied: boolean; reduction: number })
         : null;
-      billedTotal = Math.round((subtotals + e.tripCharge - (combo?.applied ? combo.reduction : 0)) * 100) / 100;
+      const disc = e.discountJson ? ((JSON.parse(e.discountJson) as { amount: number }).amount ?? 0) : 0;
+      billedTotal = Math.round((subtotals + e.tripCharge - (combo?.applied ? combo.reduction : 0) - disc) * 100) / 100;
     }
     return { ...e, billedTotal };
   });

@@ -78,7 +78,18 @@ export function PresentationPage() {
   const combo = data?.computed.combinationDiscounts?.[comboSel];
   const comboSaving = combo?.applied ? combo.reduction : 0;
   const preDiscount = data ? combinedTotal(options, effectiveSelected, data.computed.jobFixedCost) : null;
-  const total = preDiscount === null ? null : Math.round((preDiscount - comboSaving) * 100) / 100;
+  const afterCombo = preDiscount === null ? null : Math.round((preDiscount - comboSaving) * 100) / 100;
+  /*
+    The programme discount (Kyle, 2026-08-22): 5% of what this selection pays, capped at $250.
+    Terms come from the server with the compute — the rate is not hardcoded here, so a change to
+    the programme changes this screen without a second edit.
+  */
+  const prog = data?.discount ?? null;
+  const progAmount =
+    prog && afterCombo !== null && afterCombo > 0
+      ? Math.min(Math.round(afterCombo * prog.rate * 100) / 100, prog.cap)
+      : 0;
+  const total = afterCombo === null ? null : Math.round((afterCombo - progAmount) * 100) / 100;
   const materials = data ? materialList(data.computed, effectiveSelected) : [];
   const summary = data ? companySummary(data.computed, effectiveSelected) : null;
 
@@ -336,6 +347,11 @@ export function PresentationPage() {
             {comboSaving > 0 && (
               <div className="text-xs font-semibold text-green-700">
                 multi-option discount −{money(comboSaving)}
+              </div>
+            )}
+            {progAmount > 0 && (
+              <div className="text-xs font-semibold text-green-700">
+                {prog!.type === "military" ? "military" : "senior"} discount −{money(progAmount)}
               </div>
             )}
             <div className="text-xs text-rce-soft">Total</div>

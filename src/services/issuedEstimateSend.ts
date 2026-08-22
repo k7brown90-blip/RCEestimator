@@ -128,6 +128,8 @@ export async function sendInvoiceEmail(
       // The frozen working of the job-level material check, for the company copy (2026-08-21).
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
+      discountType: est.discountType,
+      discount: est.discountJson ? JSON.parse(est.discountJson) : null,
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,
@@ -152,13 +154,16 @@ export async function sendInvoiceEmail(
         ? (JSON.parse(est.comboCapJson) as { reduction: number }).reduction
         : 0)
     : 0;
+  const progAmount = est.discountJson
+    ? ((JSON.parse(est.discountJson) as { amount: number }).amount ?? 0)
+    : 0;
   const billed =
     taken.size > 0 && est.options.length > 0
       ? Math.round(
           (est.options.filter((o) => taken.has(o.option)).reduce((n, o) => n + o.subtotal, 0) +
-            est.tripCharge - comboReduction) * 100,
+            est.tripCharge - comboReduction - progAmount) * 100,
         ) / 100
-      : Math.round((est.total - comboReduction) * 100) / 100;
+      : Math.round((est.total - comboReduction - progAmount) * 100) / 100;
 
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
   const note = (opts.message ?? "").trim();

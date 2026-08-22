@@ -491,3 +491,60 @@ describe("the multi-option discount, on the invoice", () => {
     expect(text).not.toContain("Multi-option material discount");
   });
 });
+
+describe("the programme discount, on the document", () => {
+  /*
+    Kyle, 2026-08-22: military/senior 5%, whole job, capped $250. Signed documents read the
+    FROZEN amount only; unsigned quote the live 5% so paper and screen agree.
+  */
+  const OPTIONS = [
+    { option: "A" as const, label: "Fans", note: null, subtotal: 850 },
+    { option: "B" as const, label: "Bonding", note: null, subtotal: 350 },
+  ];
+
+  it("quotes the live 5% on an unsigned estimate", async () => {
+    const text = extractText(await renderEstimatePdf(
+      { ...ESTIMATE, options: OPTIONS, discountType: "military" }, "customer", PROFILE));
+    // 5% of $1,350 = $67.50.
+    expect(text).toContain("Military discount (5%)");
+    expect(text).toContain("-$67.50");
+    expect(text).toContain("$1282.50");
+  });
+
+  it("bills the FROZEN amount once signed, not a recompute", async () => {
+    const signed = {
+      ...ESTIMATE, options: OPTIONS,
+      signedAt: new Date("2026-08-22T10:00:00Z"), signedByName: "A Customer",
+      selectedOptions: ["A" as const, "B" as const],
+      discountType: "senior",
+      // Deliberately different from what a live 5% would give (67.50): if the document shows
+      // 67.50 it recomputed, and a rate change could restate a signed price.
+      discount: { amount: 60, base: 1350 },
+    };
+    const text = extractText(await renderEstimatePdf(signed, "customer", PROFILE));
+    expect(text).toContain("Senior discount (5%)");
+    expect(text).toContain("-$60.00");
+    expect(text).toContain("$1290.00");
+    expect(text).not.toContain("$67.50");
+  });
+
+  it("stacks after the combination discount, not before", async () => {
+    const signed = {
+      ...ESTIMATE, options: OPTIONS,
+      signedAt: new Date("2026-08-22T10:00:00Z"), signedByName: "A Customer",
+      selectedOptions: ["A" as const, "B" as const],
+      comboCap: { reduction: 150, ceiling: 1.5, bandLabel: "$1,000–2,999", applied: true },
+      discountType: "military",
+      discount: { amount: 60, base: 1200 },
+    };
+    const text = extractText(await renderEstimatePdf(signed, "customer", PROFILE));
+    // 1350 − 150 combo − 60 programme.
+    expect(text).toContain("$1140.00");
+  });
+
+  it("shows nothing when no programme applies", async () => {
+    const text = extractText(await renderEstimatePdf({ ...ESTIMATE, options: OPTIONS }, "customer", PROFILE));
+    expect(text).not.toMatch(/Military discount|Senior discount/);
+    expect(text).toContain("$1350.00");
+  });
+});

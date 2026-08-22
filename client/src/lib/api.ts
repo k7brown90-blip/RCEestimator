@@ -570,6 +570,26 @@ export const api = {
    * These are what the customer reads on the tick boxes of the issued estimate — "Exterior pathway
    * lights" instead of "Option B" — so they are frozen onto it at graduation.
    */
+  /** The discount programme on a draft — "military" | "senior" | null (2026-08-22). */
+  pbSetDiscount: (draftId: string, type: "military" | "senior" | null) =>
+    request<{ discountType: string | null }>(`/price-book/drafts/${draftId}/discount`, {
+      method: "PUT",
+      body: JSON.stringify({ type }),
+    }),
+
+  /** Walkthrough photos (2026-08-22). Bytes live in the DB; nothing goes to any AI. */
+  pbUploadPhoto: (draftId: string, dataUrl: string, note?: string | null) =>
+    request<{ id: string; mime: string; size: number }>(`/price-book/drafts/${draftId}/photos`, {
+      method: "POST",
+      body: JSON.stringify({ dataUrl, note: note ?? null }),
+    }),
+  pbPhotos: (draftId: string) =>
+    request<{ photos: Array<{ id: string; mime: string; size: number; note: string | null; createdAt: string }> }>(
+      `/price-book/drafts/${draftId}/photos`,
+    ),
+  pbDeletePhoto: (photoId: string) =>
+    request<{ deleted: true }>(`/draft-photos/${photoId}`, { method: "DELETE" }),
+
   pbDraftOptions: (draftId: string) =>
     request<Array<{ option: PbOption; label: string | null; note: string | null }>>(
       `/price-book/drafts/${draftId}/options`,

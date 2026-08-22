@@ -39,6 +39,7 @@ import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { checkSignatureImage } from "./signatureImage";
 import { logSystemEvent } from "./systemEvents";
 import { bandsFrom, selectionCap, type MarkupBand } from "./materialMarkupCap";
+import { asDiscountType, discountFor } from "./discounts";
 
 /** House numbering continues the issued PDFs, the last of which was 2026-1010. */
 const NUMBER_FLOOR = 1010;
@@ -320,6 +321,8 @@ export async function graduateDraft(
           eat that. Fourteen days is the pairing Kyle accepted with the tighter top band: the
           protection is a shorter promise, not a fatter margin.
         */
+        // The discount programme rides from the draft; the AMOUNT waits for the signature.
+        discountType: asDiscountType(draft.discountType),
         materialCapsJson:
           Object.keys(computed.materialCaps ?? {}).length > 0
             ? JSON.stringify(computed.materialCaps)
@@ -658,18 +661,37 @@ async function applySignature(
   */
   const issuedWith = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
-    select: { jobBandsJson: true },
+    select: {
+      jobBandsJson: true,
+      discountType: true,
+      tripCharge: true,
+      options: { select: { option: true, subtotal: true } },
+    },
   });
   const frozenBands = issuedWith?.jobBandsJson
     ? (JSON.parse(issuedWith.jobBandsJson) as MarkupBand[])
     : undefined;
   const comboCap = selectionCap(frozenLines, new Set(bought), frozenBands);
 
+  /*
+    The programme discount, frozen with the same pen (2026-08-22). 5% of what they are actually
+    paying — bought options + trip − combination discount — capped at $250. Computed here and
+    nowhere else at signing time, from the same frozen figures every rendering surface reads.
+  */
+  const boughtSubtotals = (issuedWith?.options ?? [])
+    .filter((o) => bought.includes(o.option))
+    .reduce((n, o) => n + o.subtotal, 0);
+  const discount = discountFor(
+    asDiscountType(issuedWith?.discountType),
+    boughtSubtotals + (issuedWith?.tripCharge ?? 0) - (comboCap.applied ? comboCap.reduction : 0),
+  );
+
   const result = await prisma.issuedEstimate.updateMany({
     where: { id: estimateId, signedAt: null },
     data: {
       selectedOptions: bought as never,
       comboCapJson: JSON.stringify(comboCap),
+      discountJson: discount ? JSON.stringify(discount) : null,
       signedAt: new Date(),
       signatureImage: drawn.dataUrl,
       signerName: name,

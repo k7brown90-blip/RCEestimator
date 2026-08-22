@@ -3,7 +3,7 @@ import { useStickyFooterSpace } from "../lib/useStickyFooterSpace";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
-import { api } from "../lib/api";
+import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type {
   PbAtomic,
   PbComputed,
@@ -1600,6 +1600,24 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  /*
+    The discount programme (Kyle, 2026-08-22): "military discount at 5%, senior citizen discount
+    at 5%" — "Off of the whole job but gets capped at $250." Set here because this is where the
+    estimate becomes a document; one programme per estimate, tap again to clear. The AMOUNT is
+    5% of whatever the customer selects, so it appears on their page and freezes at signature —
+    there is no number to show here yet, only the programme.
+  */
+  const { data: computeData } = useQuery({
+    queryKey: ["pb-compute", draftId],
+    queryFn: () => api.pbCompute(draftId),
+    enabled: Boolean(draftId),
+  });
+  const programme = computeData?.discount?.type ?? null;
+  const setDiscount = useMutation({
+    mutationFn: (type: "military" | "senior" | null) => api.pbSetDiscount(draftId, type),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["pb-compute", draftId] }),
+  });
+
   const { data: list } = useQuery({
     queryKey: ["pb-issued", draftId],
     queryFn: () => api.pbIssuedList(draftId),
@@ -1724,6 +1742,21 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
 
       {!est && accountId && serviceAddressId && (
         <>
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-xs text-rce-soft">Discount</span>
+            {([["military", "Military 5%"], ["senior", "Senior 5%"]] as const).map(([val, label]) => (
+              <button
+                key={val}
+                type="button"
+                disabled={setDiscount.isPending}
+                onClick={() => setDiscount.mutate(programme === val ? null : val)}
+                className={programme === val ? "btn btn-primary" : "btn btn-secondary"}
+              >
+                {label}
+              </button>
+            ))}
+            {programme && <span className="text-xs text-green-700">capped at $250 · shows on the customer's page</span>}
+          </div>
           {/* The waive-trip checkbox is GONE (Kyle, 2026-08-22): "this is not doing anything
               there is no trip charge that is even applied. we can get rid of it." He is right:
               production Rate Config carries jobFixedCost = 0, so the checkbox waived a charge
@@ -1902,20 +1935,118 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
  * fails. When Kyle rules on the egress question, the upload lands here and the model still does
  * not receive the bytes unless he separately says so.
  */
+/**
+ * Walkthrough photos — real now (Kyle, 2026-08-22: "there is no capability to take photos
+ * right now").
+ *
+ * The <input capture="environment"> opens the phone's rear camera directly; the gallery still
+ * works through the same control. Every image is DOWNSCALED ON THE PHONE (max 1600px, JPEG .82)
+ * before upload — a 12MP photo is ~6MB of bytes the database does not need for "which breaker
+ * fed the disposal", and the server's 4MB cap is the backstop, not the plan.
+ *
+ * Thumbnails fetch through the authed blob path — a bare <img src> carries no Authorization
+ * header, the same lesson the PDF buttons paid for.
+ *
+ * STILL NO AI EGRESS. Photos attach to the draft and go nowhere else (P012 seam).
+ */
 function PhotoAttach(props: { draftId: string }) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+
+  const { data } = useQuery({
+    queryKey: ["pb-photos", props.draftId],
+    queryFn: () => api.pbPhotos(props.draftId),
+  });
+  const photos = data?.photos ?? [];
+  const photoIds = photos.map((p) => p.id).join(",");
+
+  useEffect(() => {
+    let dead = false;
+    for (const ph of photos) {
+      if (thumbs[ph.id]) continue;
+      void fetchProtectedObjectUrl(`/draft-photos/${ph.id}`)
+        .then((url) => { if (!dead) setThumbs((t) => ({ ...t, [ph.id]: url })); })
+        .catch(() => {});
+    }
+    return () => { dead = true; };
+    // Keyed on the id list: re-running on `thumbs` itself would loop forever.
+  }, [photoIds]);
+
+  const remove = useMutation({
+    mutationFn: (id: string) => api.pbDeletePhoto(id),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["pb-photos", props.draftId] }),
+  });
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    if (files.length === 0) return;
+    setBusy(true); setErr("");
+    try {
+      for (const file of files) {
+        const dataUrl = await downscale(file);
+        await api.pbUploadPhoto(props.draftId, dataUrl);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["pb-photos", props.draftId] });
+    } catch (ex) {
+      setErr((ex as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="card p-3">
-      <h3 className="text-sm font-semibold">Photos</h3>
-      <p className="mt-1 text-xs text-rce-muted">
-        Walkthrough photos attach to the job record. They are <strong>not</strong> sent to the AI —
-        sending customer photos to a third-party model is a separate decision Kyle has not made.
-      </p>
-      <p className="mt-2 text-xs text-rce-soft">
-        Upload for draft {props.draftId.slice(-6)} is not wired yet (P012 seam — attach-only, no
-        model egress).
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">Photos {photos.length > 0 ? `(${photos.length})` : ""}</h3>
+        <label className="btn btn-secondary cursor-pointer text-sm">
+          {busy ? "Uploading…" : "+ Add photo"}
+          <input
+            type="file" accept="image/*" capture="environment" multiple hidden
+            onChange={(e) => void onPick(e)} disabled={busy}
+          />
+        </label>
+      </div>
+      {err && <p className="mt-1 text-xs text-red-600">{err}</p>}
+      {photos.length === 0 && !busy && (
+        <p className="mt-1 text-xs text-rce-muted">
+          Walkthrough photos attach to this draft. They are never sent to the AI.
+        </p>
+      )}
+      {photos.length > 0 && (
+        <div className="mt-2 grid grid-cols-3 gap-2">
+          {photos.map((ph) => (
+            <div key={ph.id} className="relative">
+              {thumbs[ph.id]
+                ? <img src={thumbs[ph.id]} alt="walkthrough" className="h-24 w-full rounded object-cover" />
+                : <div className="h-24 w-full animate-pulse rounded bg-rce-border/40" />}
+              <button
+                type="button"
+                onClick={() => remove.mutate(ph.id)}
+                className="absolute right-1 top-1 rounded bg-black/60 px-1.5 text-xs text-white"
+                aria-label="Delete photo"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
+}
+
+/** Shrink on the phone before upload: longest edge 1600px, JPEG. */
+async function downscale(file: File): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.82);
 }
 
 /**

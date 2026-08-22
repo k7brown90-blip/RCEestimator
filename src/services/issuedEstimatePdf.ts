@@ -33,6 +33,7 @@ import PDFDocument from "pdfkit";
 import type { PriceBookOption } from "@prisma/client";
 import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 import { signatureBuffer } from "./signatureImage";
+import { asDiscountType, discountFor, discountLabel } from "./discounts";
 
 export type PdfAudience = "customer" | "company";
 
@@ -96,6 +97,9 @@ export interface PdfEstimate {
    * the working. Null before the gate existed or before anything is signed.
    */
   comboCap?: { reduction: number; ceiling: number; bandLabel: string; applied: boolean } | null;
+  /** The programme in force ("military"|"senior") and — once signed — the frozen amount. */
+  discountType?: string | null;
+  discount?: { amount: number; base: number } | null;
 }
 
 const OPTIONS: PriceBookOption[] = ["A", "B", "C"];
@@ -308,7 +312,12 @@ export async function renderEstimatePdf(
     the invoice, the signed page, and the emailed copy cannot disagree about it.
   */
   const comboReduction = estimate.comboCap?.applied ? estimate.comboCap.reduction : 0;
-  const billed =
+  /*
+    The programme discount (2026-08-22). Signed: the FROZEN amount only. Unsigned: computed live
+    from the same base the customer page uses — full offering, capped at $250 — so the paper and
+    the screen quote the same figure.
+  */
+  const preDiscount =
     declinedAreKnown && estimate.options
       ? round2(
           estimate.options
@@ -316,11 +325,22 @@ export async function renderEstimatePdf(
             .reduce((n, o) => n + o.subtotal, 0) + estimate.tripCharge - comboReduction,
         )
       : round2(estimate.total - comboReduction);
+  const progAmount = estimate.signedAt
+    ? estimate.discount?.amount ?? 0
+    : discountFor(asDiscountType(estimate.discountType), preDiscount)?.amount ?? 0;
+  const billed = round2(preDiscount - progAmount);
 
   if (comboReduction > 0) {
     doc.fontSize(10).fillColor("#1a5c2e")
       .text("Multi-option material discount", { continued: true })
       .text(`-${money(comboReduction)}`, { align: "right" });
+    doc.fillColor("#000");
+  }
+  if (progAmount > 0) {
+    const label = asDiscountType(estimate.discountType);
+    doc.fontSize(10).fillColor("#1a5c2e")
+      .text(label ? discountLabel(label) : "Discount", { continued: true })
+      .text(`-${money(progAmount)}`, { align: "right" });
     doc.fillColor("#000");
   }
   doc.fontSize(13).text(isInvoice ? "INVOICE TOTAL" : "ESTIMATE TOTAL", { continued: true })
