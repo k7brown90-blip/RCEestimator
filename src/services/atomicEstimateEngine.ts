@@ -36,7 +36,7 @@ import {
   type SupplierPriceRow,
 } from "./priceBookPricing";
 // The second, job-level check on material markup — see that file for why it exists.
-import { capMaterial, type MaterialCapResult } from "./materialMarkupCap";
+import { allSelectionCaps, capMaterial, type MaterialCapResult } from "./materialMarkupCap";
 
 // ─── Inputs ─────────────────────────────────────────────────────────────────────
 
@@ -193,6 +193,20 @@ export interface ComputedEstimate {
    * adjustment he cannot see is one he cannot defend to a customer who asks.
    */
   materialCaps: Record<string, MaterialCapResult>;
+
+  /**
+   * THE THIRD GATE, precomputed for every combination the customer could tick (2026-08-22).
+   *
+   * Kyle: "the savings add up and help push the sale of more work simply by lowing the cost of
+   * material. I win because I lose nothing on labor and can get the material all same day."
+   *
+   * Keyed "A", "A+B", "A+B+C"… (comboKey order). Each entry prices that selection's combined
+   * material as ONE job through the same bands — run on the post-gate-2 figures, so a single
+   * option never earns a further cut and the discount exists only where combining reaches a
+   * deeper band. Seven entries at most; shipping finished results is what lets a customer-facing
+   * surface show "choose both and save $X" without ever holding a cost figure.
+   */
+  combinationDiscounts: Record<string, MaterialCapResult>;
 
   subtotal: number | null;
   jobFixedCost: number | null;
@@ -640,6 +654,11 @@ export function computeEstimate(
     }
   }
 
+  // Gate 3 runs on the lines AS GATE 2 LEFT THEM — the discount is what combining adds on top.
+  const combinationDiscounts = allSelectionCaps(
+    computed.map((l) => ({ option: l.option, materialCost: l.materialCost, materialSell: l.materialSell })),
+  );
+
   // Sums cover only what could be computed. A line with a gap contributes NOTHING rather
   // than zero — and the completeness counters, not the total, are what say the number is
   // partial. This is the same discipline Phase 1 enforces at assembly level (F-82: a flag
@@ -666,6 +685,7 @@ export function computeEstimate(
     materialSell,
     /** What the job-level material check did, per option. Empty when it changed nothing. */
     materialCaps,
+    combinationDiscounts,
     subtotal,
     jobFixedCost,
     total,

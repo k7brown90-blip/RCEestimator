@@ -2030,6 +2030,13 @@ model IssuedEstimate {
   /// issued before the check existed — absent, not "no cap", which is a claim.
   materialCapsJson String?
 
+  /// THE THIRD GATE's result for the options the customer actually took, frozen at SIGNATURE
+  /// (2026-08-22) — not at issue, because the discount depends on a selection that does not exist
+  /// until they tick. Unsigned renders recompute it live from the frozen lines; the moment a name
+  /// goes on the document this is written, so a later edit to the bands in code can never restate
+  /// a signed price. Null on estimates signed before the gate existed.
+  comboCapJson String?
+
   /// WHICH OPTIONS THE CUSTOMER ACTUALLY BOUGHT.
   ///
   /// Kyle, 2026-08-20: "the options are not persisting into the pdf or allowing to pick and

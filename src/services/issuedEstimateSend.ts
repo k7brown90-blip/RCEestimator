@@ -127,6 +127,7 @@ export async function sendInvoiceEmail(
       selectedOptions: est.selectedOptions,
       // The frozen working of the job-level material check, for the company copy (2026-08-21).
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
+      comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,
@@ -144,13 +145,20 @@ export async function sendInvoiceEmail(
   // What they actually owe — the same arithmetic the PDF prints, so the email and its attachment
   // cannot quote different numbers.
   const taken = new Set((est.selectedOptions ?? []) as string[]);
+  // The third gate's frozen reduction (2026-08-22) — the email body and the attached PDF must
+  // state the same number, and both read the same stored figure.
+  const comboReduction = est.comboCapJson
+    ? ((JSON.parse(est.comboCapJson) as { applied: boolean; reduction: number }).applied
+        ? (JSON.parse(est.comboCapJson) as { reduction: number }).reduction
+        : 0)
+    : 0;
   const billed =
     taken.size > 0 && est.options.length > 0
       ? Math.round(
           (est.options.filter((o) => taken.has(o.option)).reduce((n, o) => n + o.subtotal, 0) +
-            est.tripCharge) * 100,
+            est.tripCharge - comboReduction) * 100,
         ) / 100
-      : est.total;
+      : Math.round((est.total - comboReduction) * 100) / 100;
 
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
   const note = (opts.message ?? "").trim();

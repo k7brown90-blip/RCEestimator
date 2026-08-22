@@ -17,7 +17,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { bandFor, capMaterial, JOB_MATERIAL_BANDS } from "../src/services/materialMarkupCap";
+import { allSelectionCaps, bandFor, capMaterial, comboKey, JOB_MATERIAL_BANDS, selectionCap } from "../src/services/materialMarkupCap";
 
 describe("which band a job lands in", () => {
   it("reads the ladder off the JOB's material cost, not one item's price", () => {
@@ -131,5 +131,74 @@ describe("the properties that make it safe", () => {
     expect(r.ceiling).toBe(3.5);
     expect(r.bandLabel).toBe("under $250");
     expect(r.blended).toBeCloseTo(2, 5);
+  });
+});
+
+describe("the third gate — the combined selection as one job", () => {
+  /*
+    Kyle, 2026-08-22: *"If the customer chooses one, two, or three options the savings add up and
+    help push the sale of more work simply by lowing the cost of material. I win because I lose
+    nothing on labor and can get the material all same day."*
+
+    The lever only works if these hold: a single option NEVER gets a further cut (its sell already
+    meets its own band), and the discount appears exactly when combining reaches a deeper band.
+  */
+
+  // Two options, each $600 cost sold at its own band ceiling ($250–999 → 2.5x = $1,500).
+  const lines = [
+    { option: "A", materialCost: 600, materialSell: 1500 },
+    { option: "B", materialCost: 600, materialSell: 1500 },
+  ];
+
+  it("gives a single option nothing further — gate 2 already priced it", () => {
+    const r = selectionCap(lines, new Set(["A"]));
+    expect(r.applied).toBe(false);
+    expect(r.reduction).toBe(0);
+  });
+
+  it("discounts the combination that crosses into a deeper band", () => {
+    // Together: $1,200 cost → $1,000–2,999 band → 1.5x ceiling = $1,800 against $3,000 charged.
+    const r = selectionCap(lines, new Set(["A", "B"]));
+    expect(r.applied).toBe(true);
+    expect(r.ceiling).toBe(1.5);
+    expect(r.cappedSell).toBe(1800);
+    expect(r.reduction).toBe(1200);
+  });
+
+  it("never charges a combination more than the sum of its parts", () => {
+    // The property that makes it safe to advertise: adding an option can only lower the blended
+    // rate, never raise the bill above the parts. Swept, not spot-checked.
+    for (const [cA, cB] of [[50, 900], [200, 200], [999, 2500], [10, 5000], [300, 750]]) {
+      const ls = [
+        { option: "A", materialCost: cA, materialSell: capMaterial(cA, cA * 5).cappedSell },
+        { option: "B", materialCost: cB, materialSell: capMaterial(cB, cB * 5).cappedSell },
+      ];
+      const parts = ls[0].materialSell + ls[1].materialSell;
+      const both = selectionCap(ls, new Set(["A", "B"]));
+      expect(both.cappedSell, `A=${cA} B=${cB}`).toBeLessThanOrEqual(parts + 0.001);
+    }
+  });
+
+  it("prices Kyle's live Home Additions draft the way he saw it", () => {
+    // From production on 2026-08-22: A $39.31 cost charged $137.59, B $502.91 charged $1,257.28
+    // (post-gate-2). Combined $542.22 in the $250–999 band → 2.5x = $1,355.55 vs $1,394.87.
+    const draft = [
+      { option: "A", materialCost: 39.31, materialSell: 137.59 },
+      { option: "B", materialCost: 502.91, materialSell: 1257.28 },
+    ];
+    const r = selectionCap(draft, new Set(["A", "B"]));
+    expect(r.applied).toBe(true);
+    expect(r.cappedSell).toBeCloseTo(1355.55, 2);
+    expect(r.reduction).toBeCloseTo(39.32, 2);
+  });
+
+  it("enumerates every combination once, under a canonical key", () => {
+    const all = allSelectionCaps([
+      { option: "A", materialCost: 100, materialSell: 300 },
+      { option: "B", materialCost: 100, materialSell: 300 },
+      { option: "C", materialCost: 100, materialSell: 300 },
+    ]);
+    expect(Object.keys(all).sort()).toEqual(["A", "A+B", "A+B+C", "A+C", "B", "B+C", "C"]);
+    expect(comboKey(["C", "A"])).toBe("A+C"); // order the caller uses cannot mint a second key
   });
 });

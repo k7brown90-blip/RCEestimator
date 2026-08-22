@@ -68,7 +68,17 @@ export function PresentationPage() {
   // customer declines, rather than building the sale up from nothing.
   const effectiveSelected = selected.length > 0 ? selected : options.map((o) => o.option);
 
-  const total = data ? combinedTotal(options, effectiveSelected, data.computed.jobFixedCost) : null;
+  /*
+    The third gate, live while Kyle sells (2026-08-22): "the savings add up and help push the sale
+    of more work simply by lowing the cost of material." The engine priced every combination
+    server-side; this looks the current selection up and shows the saving beside the total, so
+    "take both and the material gets cheaper" is a number on screen, not a promise.
+  */
+  const comboSel = [...effectiveSelected].sort().join("+");
+  const combo = data?.computed.combinationDiscounts?.[comboSel];
+  const comboSaving = combo?.applied ? combo.reduction : 0;
+  const preDiscount = data ? combinedTotal(options, effectiveSelected, data.computed.jobFixedCost) : null;
+  const total = preDiscount === null ? null : Math.round((preDiscount - comboSaving) * 100) / 100;
   const materials = data ? materialList(data.computed, effectiveSelected) : [];
   const summary = data ? companySummary(data.computed, effectiveSelected) : null;
 
@@ -323,6 +333,11 @@ export function PresentationPage() {
               : ""}
           </div>
           <div className="text-right">
+            {comboSaving > 0 && (
+              <div className="text-xs font-semibold text-green-700">
+                multi-option discount −{money(comboSaving)}
+              </div>
+            )}
             <div className="text-xs text-rce-soft">Total</div>
             <div className="text-2xl font-semibold">{money(total)}</div>
           </div>

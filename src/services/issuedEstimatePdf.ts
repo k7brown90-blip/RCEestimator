@@ -89,6 +89,13 @@ export interface PdfEstimate {
     string,
     { uncappedSell: number; cappedSell: number; ceiling: number; bandLabel: string; reduction: number; applied: boolean }
   > | null;
+  /**
+   * THE THIRD GATE's result for the options actually taken, frozen at signature (2026-08-22).
+   * Kyle: "the final check against the total combined options... treat them as a single job."
+   * Printed on BOTH copies — the customer's because it explains their price, the company's with
+   * the working. Null before the gate existed or before anything is signed.
+   */
+  comboCap?: { reduction: number; ceiling: number; bandLabel: string; applied: boolean } | null;
 }
 
 const OPTIONS: PriceBookOption[] = ["A", "B", "C"];
@@ -295,15 +302,27 @@ export async function renderEstimatePdf(
     total when nothing was declined, or when the estimate predates options entirely — those two
     figures are the same number and the frozen one is the one the customer saw.
   */
+  /*
+    The third gate's frozen reduction comes off the billed figure (2026-08-22). It was computed
+    from the same frozen lines this document prints, at the moment of signing, and stored — so
+    the invoice, the signed page, and the emailed copy cannot disagree about it.
+  */
+  const comboReduction = estimate.comboCap?.applied ? estimate.comboCap.reduction : 0;
   const billed =
     declinedAreKnown && estimate.options
       ? round2(
           estimate.options
             .filter((o) => taken.has(o.option))
-            .reduce((n, o) => n + o.subtotal, 0) + estimate.tripCharge,
+            .reduce((n, o) => n + o.subtotal, 0) + estimate.tripCharge - comboReduction,
         )
-      : estimate.total;
+      : round2(estimate.total - comboReduction);
 
+  if (comboReduction > 0) {
+    doc.fontSize(10).fillColor("#1a5c2e")
+      .text("Multi-option material discount", { continued: true })
+      .text(`-${money(comboReduction)}`, { align: "right" });
+    doc.fillColor("#000");
+  }
   doc.fontSize(13).text(isInvoice ? "INVOICE TOTAL" : "ESTIMATE TOTAL", { continued: true })
     .text(money(billed), { align: "right" });
 
@@ -315,6 +334,16 @@ export async function renderEstimatePdf(
       cost so it stays within a reasonable range." When the ceiling bit, the company copy says by
       how much — the customer's copy just carries the resulting price.
     */
+    if (estimate.comboCap?.applied) {
+      doc.moveDown(0.6);
+      doc.fontSize(9).fillColor("#1a5c2e")
+        .text(
+          `Combined selection priced as one job: ${estimate.comboCap.ceiling}x ceiling ` +
+            `(${estimate.comboCap.bandLabel}) — ${money(estimate.comboCap.reduction)} off in combination. ` +
+            `Labour untouched; one supply run.`,
+        )
+        .fillColor("#000");
+    }
     const capsApplied = Object.entries(estimate.materialCaps ?? {}).filter(([, c]) => c.applied);
     if (capsApplied.length > 0) {
       doc.moveDown(0.8);

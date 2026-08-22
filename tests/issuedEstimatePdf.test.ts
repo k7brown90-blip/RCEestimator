@@ -440,3 +440,54 @@ describe("the material check's working, on the company copy", () => {
     expect(text).not.toMatch(/capped/i);
   });
 });
+
+describe("the multi-option discount, on the invoice", () => {
+  /*
+    Kyle, 2026-08-22: the third gate. The frozen comboCap is the only figure the PDF may use — it
+    was written at signing, and the invoice, the signed page and the emailed copy all read it.
+  */
+  const OPTIONS = [
+    { option: "A" as const, label: "Fans", note: null, subtotal: 850 },
+    { option: "B" as const, label: "Bonding", note: null, subtotal: 350 },
+  ];
+  const signedBoth = {
+    ...ESTIMATE,
+    options: OPTIONS,
+    signedAt: new Date("2026-08-22T10:00:00Z"),
+    signedByName: "A Customer",
+    selectedOptions: ["A" as const, "B" as const],
+    comboCap: { reduction: 150, ceiling: 1.5, bandLabel: "$1,000–2,999", applied: true },
+  };
+
+  it("takes the frozen discount off the billed figure and says so", async () => {
+    const text = extractText(await renderEstimatePdf(signedBoth, "customer", PROFILE));
+    // 850 + 350 + 150 trip − 150 discount.
+    expect(text).toContain("Multi-option material discount");
+    expect(text).toContain("-$150.00");
+    expect(text).toContain("$1200.00");
+    expect(text).not.toContain("$1350.00");
+  });
+
+  it("prints the working on the company copy only", async () => {
+    const company = extractText(await renderEstimatePdf(signedBoth, "company", PROFILE));
+    expect(company).toContain("Combined selection priced as one job");
+    expect(company).toContain("Labour untouched");
+    const customer = extractText(await renderEstimatePdf(signedBoth, "customer", PROFILE));
+    expect(customer).not.toContain("priced as one job");
+  });
+
+  it("bills the plain figure when the gate did not apply", async () => {
+    const noDiscount = { ...signedBoth, comboCap: { reduction: 0, ceiling: 2.5, bandLabel: "$250–999", applied: false } };
+    const text = extractText(await renderEstimatePdf(noDiscount, "customer", PROFILE));
+    expect(text).toContain("$1350.00");
+    expect(text).not.toContain("Multi-option material discount");
+  });
+
+  it("renders an invoice signed before the gate existed", async () => {
+    // comboCapJson is null on every pre-gate signature; the parse hands the PDF null.
+    const legacy = { ...signedBoth, comboCap: null };
+    const text = extractText(await renderEstimatePdf(legacy, "customer", PROFILE));
+    expect(text).toContain("$1350.00");
+    expect(text).not.toContain("Multi-option material discount");
+  });
+});

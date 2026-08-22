@@ -815,3 +815,33 @@ describe("the material check's freeze, on an ordinary small job", () => {
     }
   });
 });
+
+describe("the third gate's freeze at signature", () => {
+  it("writes the combined-selection record the moment a name goes on the document", async () => {
+    /*
+      Kyle, 2026-08-22. The discount is recomputed live while unsigned; at signing it must be
+      WRITTEN, because the bands live in code and an edit to them must never restate a signed
+      price. Stored whether or not it applied — "checked, nothing owed" is a fact worth keeping,
+      unlike backfilling documents from before the gate existed.
+    */
+    const d = await quotableDraft("combo-freeze");
+    const issued = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+
+    const before = await prisma.issuedEstimate.findUnique({ where: { id: issued.body.estimateId } });
+    expect(before!.comboCapJson).toBeNull();
+
+    await request(app)
+      .post(`/issued-estimates/${issued.body.estimateId}/sign-in-person`)
+      .send({ signerName: "A Customer", signatureImage: TEST_SIGNATURE, selectedOptions: ["A"] })
+      .expect(200);
+
+    const after = await prisma.issuedEstimate.findUnique({ where: { id: issued.body.estimateId } });
+    expect(after!.comboCapJson).not.toBeNull();
+    const cap = JSON.parse(after!.comboCapJson!) as { applied: boolean; reduction: number };
+    expect(typeof cap.applied).toBe("boolean");
+    expect(cap.reduction).toBeGreaterThanOrEqual(0);
+  });
+});

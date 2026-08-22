@@ -542,3 +542,47 @@ describe("what the job ceiling does to the 5x tier", () => {
     expect(est.materialSell).toBeCloseTo(105, 2);                // 30 x 3.5
   });
 });
+
+describe("the third gate, through the engine", () => {
+  /*
+    Kyle, 2026-08-22: "Let's add the final check against the total combined options and treat them
+    as a single job." The engine prices every combination so the presentation screen can show the
+    saving live — this pins that the map ships and that it reads the POST-gate-2 lines.
+  */
+  const partA = atomic({ itemId: "PA", laborNormal: 1, costBasisUsed: 30, sellPricePerUnit: 75 });
+  const partB = atomic({ itemId: "PB", laborNormal: 1, costBasisUsed: 30, sellPricePerUnit: 75 });
+
+  it("ships a priced entry for every combination the customer could tick", () => {
+    // Each option: $600 cost at 2.5x tier = $1,500 sell, exactly its own band ceiling (gate 2
+    // silent). Together: $1,200 cost → 1.5x band → the discount exists only in combination.
+    const est = computeEstimate(
+      [
+        line({ itemId: "PA", quantity: 20, option: "A" }),
+        line({ itemId: "PB", quantity: 20, option: "B" }),
+      ],
+      new Map([["PA", partA], ["PB", partB]]),
+      RC,
+      "HD",
+    );
+    expect(Object.keys(est.combinationDiscounts).sort()).toEqual(["A", "A+B", "B"]);
+    expect(est.combinationDiscounts.A.applied).toBe(false);
+    expect(est.combinationDiscounts.B.applied).toBe(false);
+    const both = est.combinationDiscounts["A+B"];
+    expect(both.applied).toBe(true);
+    expect(both.cappedSell).toBeCloseTo(1800, 2);
+    expect(both.reduction).toBeCloseTo(1200, 2);
+  });
+
+  it("reads the lines AS GATE 2 LEFT THEM, not the raw tier prices", () => {
+    // One big option that gate 2 already capped. The single-option "combination" must then show
+    // nothing further — if this ever reports a reduction, gate 3 is double-counting gate 2.
+    const est = computeEstimate(
+      [line({ itemId: "PA", quantity: 40, option: "A" })], // $1,200 cost, tiers want $3,000
+      new Map([["PA", partA]]),
+      RC,
+      "HD",
+    );
+    expect(est.materialCaps.A.applied).toBe(true); // gate 2 took it to 1.5x = $1,800
+    expect(est.combinationDiscounts.A.applied).toBe(false); // gate 3 has nothing left to say
+  });
+});

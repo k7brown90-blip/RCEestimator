@@ -38,6 +38,7 @@ import { rowTypeSells } from "./atomicEstimateEngine";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { checkSignatureImage } from "./signatureImage";
 import { logSystemEvent } from "./systemEvents";
+import { selectionCap } from "./materialMarkupCap";
 
 /** House numbering continues the issued PDFs, the last of which was 2026-1010. */
 const NUMBER_FLOOR = 1010;
@@ -632,10 +633,28 @@ async function applySignature(
     }
   }
 
+  /*
+    ── THE THIRD GATE, WRITTEN DOWN AT THE MOMENT OF SIGNING (2026-08-22) ──────────────────────
+
+    Kyle: "Let's add the final check against the total combined options and treat them as a
+    single job."
+
+    The combined-selection discount was computed live on every unsigned render. Now the selection
+    is final, so the result is frozen alongside it — the bands live in code, and an edit to them
+    must never restate a price a customer signed. Computed from the FROZEN lines of the options
+    bought, the same figures every other document surface reads.
+  */
+  const frozenLines = await prisma.issuedEstimateLine.findMany({
+    where: { estimateId },
+    select: { option: true, materialCost: true, materialSell: true },
+  });
+  const comboCap = selectionCap(frozenLines, new Set(bought));
+
   const result = await prisma.issuedEstimate.updateMany({
     where: { id: estimateId, signedAt: null },
     data: {
       selectedOptions: bought as never,
+      comboCapJson: JSON.stringify(comboCap),
       signedAt: new Date(),
       signatureImage: drawn.dataUrl,
       signerName: name,

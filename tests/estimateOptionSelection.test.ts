@@ -225,3 +225,70 @@ describe("the word Kyle will not advertise", () => {
     }
   });
 });
+
+describe("the multi-option discount, on the customer's page", () => {
+  /*
+    Kyle, 2026-08-22: *"the savings add up and help push the sale of more work simply by lowing
+    the cost of material."* The page must SHOW the saving — an invisible incentive sells nothing —
+    while never carrying the cost figures that produce it.
+  */
+
+  // Two options, each at its own band ceiling; together they cross into 1.5x territory.
+  const discountable = () =>
+    estimate({
+      tripCharge: 0,
+      tripWaived: false,
+      total: 3400,
+      lines: [
+        { ...line("A", "Wire the addition", 1700), materialCost: 600, materialSell: 1500 },
+        { ...line("B", "Panel work", 1700), materialCost: 600, materialSell: 1500 },
+      ],
+      options: [
+        option("A", 1700, 1, "Wiring", null),
+        option("B", 1700, 1, "Panel", null),
+      ],
+    });
+
+  it("ships finished combination prices, never a cost figure", () => {
+    const html = renderEstimatePage(discountable());
+    // The combo table is in the page for the live total…
+    expect(html).toContain('"A+B"');
+    expect(html).toContain("2200"); // 3400 − 1200 in combination
+    // …and the number that must never appear is the company's cost.
+    expect(html).not.toContain("600.0");
+    expect(html).not.toMatch(/materialCost/);
+  });
+
+  it("opens at the discounted all-options price with the saving named", () => {
+    const html = renderEstimatePage(discountable());
+    expect(html).toContain("Multi-option material discount");
+    expect(html).toContain("$2200.00");
+    expect(html).toContain("$1200.00");
+  });
+
+  it("shows no saving row when combining earns nothing", () => {
+    // The original fixture blends at 2x, under every ceiling it can reach — the row would be a
+    // false promise, and it is hidden server-side, not just zeroed.
+    const html = renderEstimatePage(estimate());
+    expect(html).toContain('id="comboSaving"');
+    expect(html).toContain('style="display:none;"');
+  });
+
+  it("uses the STORED discount once signed — never a live recompute", () => {
+    const signed = renderEstimatePage(
+      discountable() && {
+        ...discountable(),
+        signedAt: new Date("2026-08-22T10:00:00Z"),
+        signerName: "A Customer",
+        selectedOptions: ["A", "B"],
+        // Frozen at signature with a figure deliberately DIFFERENT from what a live recompute
+        // would give (1200). If the page shows 1100, it read the stored record; 1200 means it
+        // recomputed, and a band edit could restate a signed price.
+        comboCapJson: JSON.stringify({ reduction: 1100, ceiling: 1.5, bandLabel: "$1,000–2,999", applied: true }),
+      },
+    );
+    expect(signed).toContain("$1100.00");
+    expect(signed).toContain("$2300.00"); // 3400 − 1100
+    expect(signed).not.toContain("$2200.00");
+  });
+});

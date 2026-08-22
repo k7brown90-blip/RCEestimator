@@ -32,6 +32,7 @@
  */
 
 import type { IssuedEstimateWithLines } from "./issuedEstimateService";
+import { allSelectionCaps, comboKey } from "./materialMarkupCap";
 import { CONSENT_TEXT } from "./issuedEstimateService";
 
 const TZ = "America/Chicago";
@@ -84,6 +85,7 @@ function shell(title: string, inner: string): string {
   th.r,td.r{text-align:right;}
   td{padding:9px 4px;border-bottom:1px solid #eee;vertical-align:top;}
   .totals{margin-top:14px;font-size:14px;}
+  .saving{color:#1a5c2e;font-weight:600;}
   /* Option cards. Kyle, 2026-08-20: the customer has to be able to pick and choose. */
   .opt{border:1px solid #d9d9d9;border-radius:6px;margin:0 0 14px;overflow:hidden;}
   .opthead{display:flex;align-items:center;justify-content:space-between;gap:10px;
@@ -271,6 +273,39 @@ export function renderEstimatePage(
     Offering a choice of one is not a choice; it is a way to accidentally sign for nothing.
   */
   const estOptions = est.options ?? [];
+
+  /*
+    ── THE THIRD GATE, ON THE PAGE THAT SELLS IT (Kyle, 2026-08-22) ────────────────────────────
+
+    "If the customer chooses one, two, or three options the savings add up and help push the sale
+     of more work simply by lowing the cost of material."
+
+    Every combination the customer could tick is priced HERE, server-side, from the frozen lines —
+    and the page is handed only the finished totals and the saving for each combination. The
+    material costs that produce those numbers never leave the server: this is a customer-facing
+    page, and cost is company data.
+
+    Unsigned, the live figure comes from this table as they tick. Signed, the stored comboCapJson
+    is the only authority — the bands live in code, and a signed price must not move with them.
+  */
+  const comboTable: Record<string, { total: number; saving: number }> = {};
+  if (estOptions.length > 0) {
+    const caps = allSelectionCaps(
+      est.lines.map((l) => ({ option: l.option, materialCost: l.materialCost, materialSell: l.materialSell })),
+    );
+    for (const [key, cap] of Object.entries(caps)) {
+      const subtotals = estOptions
+        .filter((o) => key.split("+").includes(o.option))
+        .reduce((n, o) => n + o.subtotal, 0);
+      comboTable[key] = {
+        total: round2(subtotals + est.tripCharge - cap.reduction),
+        saving: cap.reduction,
+      };
+    }
+  }
+  const signedCombo: { reduction: number } | null = est.comboCapJson
+    ? (JSON.parse(est.comboCapJson) as { reduction: number })
+    : null;
   const chosen = new Set((est.selectedOptions ?? []) as string[]);
   const signedOff = Boolean(est.signedAt);
 
@@ -470,6 +505,11 @@ export function renderEstimatePage(
            var boxes = [].slice.call(document.querySelectorAll(".optpick"));
            var out   = document.getElementById("selectedOptions");
            var total = document.getElementById("grandTotal");
+           var savingRow = document.getElementById("comboSaving");
+           var savingAmt = document.getElementById("comboSavingAmt");
+           // Finished prices per combination, priced on the server. No cost figures live in this
+           // page — combining options can only ever lower the number, and the table is the proof.
+           var combos = ${JSON.stringify(comboTable)};
            var trip  = ${est.tripCharge};
            // Formats EXACTLY as the server's money() does — no thousands separator. They have to
            // agree: the server paints the first total and this repaints it on the first tick, and
@@ -484,8 +524,16 @@ export function renderEstimatePage(
                else if (card) card.classList.add("off");
              });
              out.value = picked.join(",");
+             var combo = combos[picked.slice().sort().join("+")];
              // The trip charge applies once, to the visit — and not at all if nothing is taken.
-             total.textContent = picked.length ? money(sum + trip) : money(0);
+             // The combination table already carries the trip and the multi-option discount; the
+             // summed fallback covers only a combination the server somehow did not price.
+             total.textContent = picked.length ? money(combo ? combo.total : sum + trip) : money(0);
+             var saving = combo ? combo.saving : 0;
+             if (savingRow) {
+               savingRow.style.display = saving > 0 ? "" : "none";
+               if (savingAmt) savingAmt.innerHTML = "&minus;" + money(saving);
+             }
            }
            boxes.forEach(function (b) { b.addEventListener("change", sync); });
            sync();
@@ -518,10 +566,21 @@ export function renderEstimatePage(
          ${est.tripCharge > 0 || est.tripWaived
            ? `<div><span>${tripLabel}</span><span>${money(est.tripCharge)}</span></div>`
            : ""}
+         <div id="comboSaving" class="saving" ${
+           (signedOff ? (signedCombo?.reduction ?? 0) : comboTable[comboKey(estOptions.map((o) => o.option))]?.saving ?? 0) > 0
+             ? "" : 'style="display:none;"'
+         }><span>Multi-option material discount</span><span id="comboSavingAmt">&minus;${money(
+           signedOff ? signedCombo?.reduction ?? 0 : comboTable[comboKey(estOptions.map((o) => o.option))]?.saving ?? 0
+         )}</span></div>
          <div class="grand"><span>ESTIMATE TOTAL</span><span id="grandTotal">${money(
            signedOff && chosen.size > 0
-             ? round2(shownOptions.reduce((n, o) => n + o.subtotal, 0) + est.tripCharge)
-             : est.total
+             ? round2(
+                 shownOptions.reduce((n, o) => n + o.subtotal, 0) + est.tripCharge -
+                   (signedCombo?.reduction ?? 0),
+               )
+             : estOptions.length > 0
+               ? comboTable[comboKey(estOptions.map((o) => o.option))]?.total ?? est.total
+               : est.total
          )}</span></div>
        </div>
        <p style="font-size:12px;color:#777;margin:8px 4px 0;">

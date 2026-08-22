@@ -1447,6 +1447,7 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
         selectedOptions: est.selectedOptions,
       // The frozen working of the job-level material check, for the company copy (2026-08-21).
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
+      comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
       signatureImage: est.signatureImage,
         createdAt: est.createdAt,
         lines: est.lines.map((l) => ({
@@ -2508,6 +2509,7 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       selectedOptions: est.selectedOptions,
       // The frozen working of the job-level material check, for the company copy (2026-08-21).
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
+      comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,

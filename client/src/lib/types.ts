@@ -1087,6 +1087,17 @@ export interface PbComputed {
     reduction: number;
     applied: boolean;
   }>;
+  /**
+   * The third gate (2026-08-22): every combination the customer could tick, priced as one job.
+   * Keyed "A", "A+B", "A+B+C". `reduction` is the multi-option saving for that selection —
+   * the sales lever the presentation screen shows while Kyle is standing in front of them.
+   */
+  combinationDiscounts?: Record<string, {
+    reduction: number;
+    ceiling: number;
+    bandLabel: string;
+    applied: boolean;
+  }>;
   subtotal: number | null;
   jobFixedCost: number | null;
   total: number | null;

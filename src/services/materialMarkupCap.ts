@@ -142,3 +142,73 @@ export function capMaterial(materialCost: number, materialSell: number): Materia
     applied: true,
   };
 }
+
+/**
+ * THE THIRD GATE — the combined selection, priced as one job (Kyle, 2026-08-22).
+ *
+ *   *"If the customer chooses one, two, or three options the savings add up and help push the
+ *    sale of more work simply by lowing the cost of material. I win because I lose nothing on
+ *    labor and can get the material all same day. Let's add the final check against the total
+ *    combined options and treat them as a single job."*
+ *
+ * ── WHY THIS IS A SALES LEVER AND NOT JUST ANOTHER CAP ─────────────────────────────────────────
+ *
+ * Gate 2 capped each option alone. But the bands are keyed to material volume, and volume is
+ * exactly what combining options creates: two options each carrying $400 of material sit in the
+ * $250–999 band alone, and in the $1,000–2,999 band together. The customer who takes both gets
+ * the deeper band's ceiling on the whole lot — a discount that EXISTS ONLY IN COMBINATION, which
+ * is what makes it an incentive rather than a markdown. Kyle's economics hold because labour is
+ * never touched and one supply-house trip serves the whole job.
+ *
+ * ── WHY IT RUNS ON THE POST-GATE-2 FIGURES ─────────────────────────────────────────────────────
+ *
+ * The input sell is each option's ALREADY-CAPPED material charge. A single-option selection
+ * therefore never gets a further cut — its sell already meets its own band's ceiling, and its
+ * combined band IS its own band. The third gate only speaks when the combination lands somewhere
+ * deeper than the parts did. capMaterial's own "only ever caps" property carries over untouched.
+ *
+ * ── FROZEN AT SIGNATURE, COMPUTED LIVE BEFORE IT ───────────────────────────────────────────────
+ *
+ * Unsigned, the discount is recomputed from the frozen lines on every render — deterministic,
+ * because the lines are frozen. At signing it is written down (comboCapJson), because the bands
+ * live in code and an edit to them must never restate a price a customer put their name to.
+ */
+
+/** The lines' material figures for one selection, combined. */
+export function selectionCap(
+  lines: Array<{ option: string; materialCost: number | null; materialSell: number | null }>,
+  taken: ReadonlySet<string>,
+): MaterialCapResult {
+  let cost = 0;
+  let sell = 0;
+  for (const l of lines) {
+    if (!taken.has(l.option)) continue;
+    cost += l.materialCost ?? 0;
+    sell += l.materialSell ?? 0;
+  }
+  return capMaterial(cost, sell);
+}
+
+/** Canonical key for a combination — "A+B", options sorted so every caller agrees. */
+export function comboKey(options: Iterable<string>): string {
+  return [...options].sort().join("+");
+}
+
+/**
+ * Every non-empty combination of the offered options, each priced as a single job.
+ *
+ * At most three options exist, so at most seven combinations — cheap to enumerate, and shipping
+ * the finished totals is what lets the customer's page update as they tick WITHOUT ever being
+ * handed a cost figure. The page sees only what each combination would come to.
+ */
+export function allSelectionCaps(
+  lines: Array<{ option: string; materialCost: number | null; materialSell: number | null }>,
+): Record<string, MaterialCapResult> {
+  const offered = [...new Set(lines.map((l) => l.option))].sort();
+  const out: Record<string, MaterialCapResult> = {};
+  for (let mask = 1; mask < 1 << offered.length; mask++) {
+    const taken = new Set(offered.filter((_, i) => mask & (1 << i)));
+    out[comboKey(taken)] = selectionCap(lines, taken);
+  }
+  return out;
+}
