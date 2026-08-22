@@ -302,16 +302,6 @@ export function VisitWorkspacePage() {
     },
   });
 
-  if (isLoading || !visit) {
-    return <p className="text-sm text-rce-muted">Loading visit...</p>;
-  }
-
-  const estimateLocked = estimate?.status === "accepted";
-  const acceptedWithoutOptions = (estimate?.status === "accepted") && ((estimate?.options.length ?? 0) === 0);
-  const status = estimate?.status;
-  const latestDelivery = estimate?.proposalDeliveries?.[0] ?? null;
-  const downloadUrl = latestDelivery ? `/api/proposals/${latestDelivery.id}/download` : null;
-
   /**
    * Build Option — create the option, then go to the screen that builds the estimate.
    *
@@ -350,6 +340,26 @@ export function VisitWorkspacePage() {
       setOptionBuildError(error instanceof Error ? error.message : "Failed to build option");
     },
   });
+
+  /*
+    ── EVERY HOOK ABOVE THIS LINE (2026-08-22) ─────────────────────────────────────────────────
+
+    This guard is why /visits/:id crashed with React #310 for a week, and how it dragged /jobs
+    down with it: buildOptionMutation used to sit BELOW it. While the visit loaded, zero of its
+    hooks ran; the moment data arrived the hook appeared — a changing hook count, which React
+    answers by unmounting the tree. The rules-of-hooks lint that found it now runs as a test, so
+    the next one fails a build instead of a customer visit.
+  */
+  if (isLoading || !visit) {
+    return <p className="text-sm text-rce-muted">Loading visit...</p>;
+  }
+
+  const estimateLocked = estimate?.status === "accepted";
+  const acceptedWithoutOptions = (estimate?.status === "accepted") && ((estimate?.options.length ?? 0) === 0);
+  const status = estimate?.status;
+  const latestDelivery = estimate?.proposalDeliveries?.[0] ?? null;
+  const downloadUrl = latestDelivery ? `/api/proposals/${latestDelivery.id}/download` : null;
+
 
   const startOptionBuild = () => {
     if (!estimateId) {
