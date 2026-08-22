@@ -2356,6 +2356,53 @@ app.post("/issued-estimates/:id/send-invoice", asyncHandler(async (req, res) => 
   res.json({ sent: true, to: result.to });
 }));
 
+/*
+  ── TRUE DELETE, UNSIGNED ONLY (Kyle, 2026-08-22) ──────────────────────────────────────────────
+
+  "These estimates were made during a past test and he scheduled for Monday morning, I need a way
+   to delete the duplicates." Asked delete-or-void, he chose: "True delete for unsigned."
+
+  The guard is absolute: a SIGNED estimate carries a customer's name and drawn signature, and
+  those rows are never deleted from this system — void is the only exit for them. An unsigned
+  estimate is an offer nobody accepted; test duplicates of it are clutter, not history.
+
+  Lines, options and events go with it in one transaction. The customer link dies because the row
+  it resolves to is gone.
+*/
+app.delete("/issued-estimates/:id", asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id },
+    select: { signedAt: true, number: true, revision: true, supersededBy: { select: { id: true } } },
+  });
+  if (!est) {
+    res.status(404).json({ deleted: false, error: "Estimate not found." });
+    return;
+  }
+  if (est.signedAt) {
+    res.status(409).json({
+      deleted: false,
+      error: "This estimate is signed. Signed estimates are never deleted — void it instead.",
+    });
+    return;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.issuedEstimateEvent.deleteMany({ where: { estimateId: id } });
+    await tx.issuedEstimateLine.deleteMany({ where: { estimateId: id } });
+    await tx.issuedEstimateOption.deleteMany({ where: { estimateId: id } });
+    // Unlink a revision chain before deleting — the self-FK blocks the delete otherwise.
+    await tx.issuedEstimate.updateMany({ where: { supersedesId: id }, data: { supersedesId: null } });
+    await tx.issuedEstimate.delete({ where: { id } });
+  });
+
+  logSystemEvent("info", "issued-estimate", `Deleted unsigned estimate ${est.number} rev ${est.revision}`, {
+    estimateId: id,
+    actor: "human:crm-session",
+  });
+  res.json({ deleted: true });
+}));
+
 app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
   const body = z.object({ waiveTrip: z.boolean().optional() }).parse(req.body ?? {});
   const result = await reviseEstimate(prisma, String(req.params.id), {
@@ -2588,10 +2635,36 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
     include: {
       serviceProperty: { select: { id: true, name: true, addressLine1: true, city: true } },
       supersededBy: { select: { id: true, revision: true } },
+      options: { select: { option: true, subtotal: true } },
     },
   });
 
-  res.json({ estimates });
+  /*
+    ── THE ROW SHOWS WHAT THE DOCUMENT BILLS (Kyle, 2026-08-22) ────────────────────────────────
+
+    "This invoice total is not matching the document total."
+
+    His signed 2026-1021: the customer took Option A of three, so the invoice bills $467.83 — and
+    this list said $1610.69, because `total` is the QUOTE frozen at issue, before anyone chose.
+    Both numbers are true; only one belongs on a row labelled SIGNED. Same arithmetic as the PDF:
+    the taken options' subtotals, plus the trip, minus the frozen combination discount.
+  */
+  const rows = estimates.map((e) => {
+    let billedTotal = e.total;
+    if (e.signedAt && e.selectedOptions.length > 0 && e.options.length > 0) {
+      const taken = new Set(e.selectedOptions as string[]);
+      const subtotals = e.options
+        .filter((o) => taken.has(o.option))
+        .reduce((n, o) => n + o.subtotal, 0);
+      const combo = e.comboCapJson
+        ? (JSON.parse(e.comboCapJson) as { applied: boolean; reduction: number })
+        : null;
+      billedTotal = Math.round((subtotals + e.tripCharge - (combo?.applied ? combo.reduction : 0)) * 100) / 100;
+    }
+    return { ...e, billedTotal };
+  });
+
+  res.json({ estimates: rows });
 }));
 
 /** Signed quote → job, on the same account and address. One tap, idempotent. */

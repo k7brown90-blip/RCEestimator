@@ -22,9 +22,16 @@ import {
  * The funnel, not the lead's own state. A lead sits here until it's booked;
  * once it has an appointment it belongs to the Calendar.
  */
+/*
+  NO "Scheduled" TAB (Kyle, 2026-08-22): "When someone is scheduled it should move them to the
+  jobs page and take them out of the leads page."
+
+  The server's "open" pipeline already dropped scheduled leads; this tab was a second home for
+  them inside Leads, so a booked customer appeared to still be a lead. Scheduling a visit creates
+  the job, and the Jobs page is where booked work lives — one place per stage of the funnel.
+*/
 const PIPELINE_TABS: Array<{ value: LeadPipeline; label: string; blurb: string }> = [
   { value: "open", label: "Open", blurb: "Not yet contacted or scheduled — this is your work queue." },
-  { value: "scheduled", label: "Scheduled", blurb: "Booked. Managed on the Calendar." },
   { value: "closed", label: "Closed", blurb: "Lost, or the job is finished." },
 ];
 

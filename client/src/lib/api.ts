@@ -726,6 +726,11 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
+  /** True delete of an ISSUED estimate, unsigned only — the server refuses a signed one outright
+      (2026-08-22). Named apart from `deleteEstimate` above, which belongs to the legacy system. */
+  deleteIssuedEstimate: (estimateId: string) =>
+    request<{ deleted: true }>(`/issued-estimates/${estimateId}`, { method: "DELETE" }),
+
   estimateChain: () => request<{ estimates: PbChainRow[] }>("/issued-estimates/chain"),
 
   pbCreateJob: (id: string) =>

@@ -971,6 +971,8 @@ export interface PbAtomic {
   necArticle: string | null;
   hasLabourUnitBasis: boolean;
   hasPriceAtActiveSupplier: boolean;
+  /** Priced from Kyle's own sell columns — no supplier price needed (2026-08-22). */
+  isFlatPriced?: boolean;
   isContinuousLength: boolean;
   /** False when all three published labour columns are blank — no hour at any difficulty. */
   hasPublishedLabour: boolean;
@@ -1205,6 +1207,9 @@ export interface PbIssuedEstimate {
   customerName: string;
   customerEmail: string | null;
   serviceAddress?: string | null;
+  /** What the signed document actually bills — taken options + trip − combo discount (2026-08-22).
+      Equals `total` until signing narrows the selection. */
+  billedTotal?: number;
   workSubtotal?: number;
   tripCharge?: number;
   tripWaived?: boolean;

@@ -598,7 +598,18 @@ function AccountEstimates({
   properties: AccountSummary["properties"];
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [addressId, setAddressId] = useState("");
+  /*
+    Delete, for the unsigned only (Kyle, 2026-08-22): "These estimates were made during a past
+    test... I need a way to delete the duplicates." He chose true delete over void for unsigned;
+    the server refuses a signed one regardless of what this UI does, so the guard here is
+    convenience, not the protection.
+  */
+  const deleteEstimate = useMutation({
+    mutationFn: (id: string) => api.deleteIssuedEstimate(id),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["account-estimates", accountId] }),
+  });
   const { data } = useQuery({
     queryKey: ["account-estimates", accountId, addressId],
     queryFn: () => api.accountEstimates(accountId, addressId || undefined),
@@ -680,7 +691,8 @@ function AccountEstimates({
                   </p>
                   <p className="text-xs uppercase tracking-wide text-rce-muted">{e.status}</p>
                 </div>
-                <p className="shrink-0 font-semibold">${e.total.toFixed(2)}</p>
+                {/* The billed figure once signed — the row and the document must agree (2026-08-22). */}
+                <p className="shrink-0 font-semibold">${(e.billedTotal ?? e.total).toFixed(2)}</p>
               </div>
 
               <div className="mt-2 flex gap-2">
@@ -704,6 +716,22 @@ function AccountEstimates({
                     className="btn-primary flex-1 text-sm"
                   >
                     Edit
+                  </button>
+                )}
+                {!e.signedAt && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // window.confirm rather than a custom dialog: deletion is rare, final, and
+                      // a native blocking prompt is the hardest thing on this page to fat-finger.
+                      if (window.confirm(`Delete estimate ${e.number}? This cannot be undone.`)) {
+                        deleteEstimate.mutate(e.id);
+                      }
+                    }}
+                    disabled={deleteEstimate.isPending}
+                    className="rounded-lg border border-red-300 px-3 text-sm text-red-700 active:opacity-70 disabled:opacity-50"
+                  >
+                    Delete
                   </button>
                 )}
               </div>

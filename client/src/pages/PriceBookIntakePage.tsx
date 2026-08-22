@@ -415,7 +415,9 @@ function BrowseTab(props: {
                   A LABOR PRODUCT buys nothing, so "no price at supplier" is not a gap on it and
                   is not badged — the engine stopped raising it as one on 2026-08-17. */}
               <div className="mt-2 flex flex-wrap gap-1">
-                {a.sellsMaterial && !a.hasPriceAtActiveSupplier && (
+                {/* Not on a flat-priced row: the permit fee buys nothing from a supplier and
+                    prices at Kyle's own $200 — the badge told him it would not price (2026-08-22). */}
+                {a.sellsMaterial && !a.hasPriceAtActiveSupplier && !a.isFlatPriced && (
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-900">no price at supplier</span>
                 )}
                 {!a.hasPublishedLabour && (
@@ -1131,7 +1133,11 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
         </div>
         <div className="shrink-0 text-right text-xs">
           <div>{hours(c?.laborHours)} hr</div>
-          <div className="text-rce-soft">{money(c?.laborDollars)}</div>
+          {/* The LINE total, not labour alone (Kyle, 2026-08-22: "no price calculated at all" —
+              on a $200 material-only permit line that showed $0.00 because only labour printed). */}
+          <div className="font-semibold">
+            {money(c ? (c.laborDollars ?? 0) + (c.materialSell ?? 0) : null)}
+          </div>
         </div>
       </div>
 
@@ -1351,6 +1357,17 @@ function TotalsBar(props: {
     already carries on /visits/:id. Hooks first, then the bail-out.
   */
   const bar = useStickyFooterSpace();
+  /*
+    Collapsed by default (Kyle, 2026-08-22): "The bottom total price bar is blocking the screen
+    and I can't see options that I need to pick. I need the screen to adjust to the margins so the
+    white options bar and the line item picker are not competing for space."
+
+    The bar had grown to four stacked rows — option subtotals, line counts, labour/material, caps —
+    and every row it gained was a row the picker lost. Collapsed it is ONE line: count, status,
+    total, and a chevron. The full breakdown is one tap away, and the spacer already resizes to
+    whichever state it is in.
+  */
+  const [expanded, setExpanded] = useState(false);
 
   const c = props.computed;
   if (!c) return null;
@@ -1387,7 +1404,7 @@ function TotalsBar(props: {
           it — a single row reading "Option A $x" beside a total of the same $x is noise. The trip
           charge is not in these figures; it is charged once for the visit, which is why they do
           not add up to the total below. */}
-      {usedOptions.length > 1 && (
+      {expanded && usedOptions.length > 1 && (
         <div className="mx-auto mb-2 flex max-w-3xl flex-wrap gap-x-4 gap-y-1 text-xs">
           {usedOptions.map((o) => (
             <span key={o.option} className="text-rce-soft">
@@ -1409,6 +1426,8 @@ function TotalsBar(props: {
           </div>
         </div>
         <div className="text-right">
+          {expanded && (
+          <>
           {/* ── "material" MEANS THE CHARGE, AND HAD TO SAY SO ─────────────────────────────
               Kyle, 2026-08-20, on seeing "labour $591.00 · material $1071.14":
 
@@ -1445,7 +1464,20 @@ function TotalsBar(props: {
                 {money(cap.uncappedSell)} → {money(cap.cappedSell)}, {money(cap.reduction)} off
               </div>
             ))}
-          <div className="text-lg font-semibold">{money(c.total)}</div>
+          </>
+          )}
+          <div className="flex items-center justify-end gap-2">
+            <div className="text-lg font-semibold">{money(c.total)}</div>
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              aria-expanded={expanded}
+              aria-label={expanded ? "Collapse totals detail" : "Expand totals detail"}
+              className="rounded border border-rce-border px-2 py-0.5 text-xs text-rce-soft"
+            >
+              {expanded ? "▾ less" : "▴ detail"}
+            </button>
+          </div>
           {feeOnly && (
             <div className="text-xs text-amber-800">fixed fee only — no lines priced</div>
           )}
@@ -1560,7 +1592,9 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   const { draftId, accountId, serviceAddressId } = props;
   const queryClient = useQueryClient();
   const [reasons, setReasons] = useState<string[]>([]);
-  const [waiveTrip, setWaiveTrip] = useState(false);
+  // No setter: the waive-trip control was removed 2026-08-22 (no trip charge is configured).
+  // The state survives so the issue call keeps its explicit false rather than an implicit one.
+  const [waiveTrip] = useState(false);
   const [sendTo, setSendTo] = useState("");
   const [sendMsg, setSendMsg] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
@@ -1690,10 +1724,11 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
 
       {!est && accountId && serviceAddressId && (
         <>
-          <label className="mt-2 flex items-center gap-2 text-xs text-rce-soft">
-            <input type="checkbox" checked={waiveTrip} onChange={(e) => setWaiveTrip(e.target.checked)} />
-            Waive the trip charge (shows on the estimate as $0.00)
-          </label>
+          {/* The waive-trip checkbox is GONE (Kyle, 2026-08-22): "this is not doing anything
+              there is no trip charge that is even applied. we can get rid of it." He is right:
+              production Rate Config carries jobFixedCost = 0, so the checkbox waived a charge
+              that was never levied. The engine still honours the config cell if he ever sets it —
+              what is removed is a control that did nothing. waiveTrip stays false. */}
           <button
             className="btn btn-primary mt-2 w-full"
             disabled={issue.isPending}

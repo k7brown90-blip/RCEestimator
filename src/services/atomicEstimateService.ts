@@ -197,6 +197,8 @@ const BROWSE_SELECT = {
   laborUnitBasis: true,
   costBasisUsed: true,
   sellPricePerUnit: true,
+  // Kyle's own flat charge (P030). A row carrying it needs no supplier price — see isFlatPriced.
+  sellNormal: true,
   necArticle: true,
 } as const;
 
@@ -229,6 +231,15 @@ export interface BrowsedAtomic {
    */
   hasLabourUnitBasis: boolean;
   hasPriceAtActiveSupplier: boolean;
+  /**
+   * Priced from Kyle's own sell columns rather than supplier cost x tier (2026-08-22).
+   *
+   * Kyle, on the permit fee: "It's flagging no price but it should just be priced at $200." The
+   * engine priced it at $200 all along — the flat-price branch has handled it since P030. The
+   * BADGE was wrong: "no price at supplier" is a statement about an item that buys nothing from
+   * a supplier, and it read as "this will not price".
+   */
+  isFlatPriced: boolean;
   isContinuousLength: boolean;
   /**
    * False when ALL THREE published labour columns are blank — the row can never produce an hour
@@ -253,12 +264,13 @@ function decorate(r: {
   itemId: string; description: string | null; category: string | null; unit: string | null;
   rowType: string | null; laborNormal: number | null; laborDifficult: number | null;
   laborVeryDifficult: number | null; laborUnitBasis: string | null; costBasisUsed: number | null;
-  sellPricePerUnit: number | null; necArticle: string | null;
+  sellPricePerUnit: number | null; sellNormal: number | null; necArticle: string | null;
 }): BrowsedAtomic {
   return {
     ...r,
     hasLabourUnitBasis: r.laborUnitBasis !== null,
     hasPriceAtActiveSupplier: r.costBasisUsed !== null,
+    isFlatPriced: r.sellNormal !== null,
     isContinuousLength: (r.unit ?? "").toLowerCase() === "ft",
     hasPublishedLabour:
       r.laborNormal !== null || r.laborDifficult !== null || r.laborVeryDifficult !== null,
