@@ -690,6 +690,27 @@ function AccountEstimates({
                     {e.serviceAddress ?? "address missing"}
                   </p>
                   <p className="text-xs uppercase tracking-wide text-rce-muted">{e.status}</p>
+                {/*
+                  Kyle, 2026-08-22: "Is there any way to know if our emails have been read?"
+                  For an estimate the honest signal already exists — the customer either opened
+                  the page with the price on it or they did not — and it was recorded without
+                  being shown. Now it is shown. A view within ~2 minutes of the send is flagged:
+                  corporate mail scanners prefetch links, and that "view" is usually a machine.
+                */}
+                {e.sentAt && !e.signedAt && (
+                  e.firstViewedAt ? (
+                    <p className="text-xs font-semibold text-green-700">
+                      Viewed {new Date(e.firstViewedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                      {new Date(e.firstViewedAt).getTime() - new Date(e.sentAt).getTime() < 120_000
+                        ? " · seconds after sending — possibly a mail scanner"
+                        : ""}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-amber-800">
+                      Sent {new Date(e.sentAt).toLocaleDateString([], { month: "short", day: "numeric" })} — not opened yet
+                    </p>
+                  )
+                )}
                 </div>
                 {/* The billed figure once signed — the row and the document must agree (2026-08-22). */}
                 <p className="shrink-0 font-semibold">${(e.billedTotal ?? e.total).toFixed(2)}</p>

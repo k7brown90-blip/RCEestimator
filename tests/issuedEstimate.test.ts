@@ -968,3 +968,34 @@ describe("editing a draft after issue — Kyle's exact flow", () => {
     expect(refused.body.error).toMatch(/change order/);
   });
 });
+
+describe("the first-view signal", () => {
+  it("records exactly one first view and notifies Kyle once", async () => {
+    /*
+      Kyle, 2026-08-22: "Is there any way to know if our emails have been read?" The estimate
+      link is the honest signal. First view flips sent → viewed, stamps the moment, and emails
+      him — ONCE. A customer refreshing the page five times is one look, not five interruptions.
+    */
+    const d = await quotableDraft("first-view");
+    const issued = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+    const est = await prisma.issuedEstimate.findUnique({ where: { id: issued.body.estimateId } });
+
+    await request(app).get(`/e/${est!.token}`).expect(200);
+    const once = await prisma.issuedEstimate.findUnique({ where: { id: est!.id } });
+    expect(once!.firstViewedAt).not.toBeNull();
+
+    // A second open must not move the stamp — the FIRST look is the fact being recorded.
+    await new Promise((r) => setTimeout(r, 20));
+    await request(app).get(`/e/${est!.token}`).expect(200);
+    const twice = await prisma.issuedEstimate.findUnique({ where: { id: est!.id } });
+    expect(twice!.firstViewedAt!.getTime()).toBe(once!.firstViewedAt!.getTime());
+
+    // And exactly one "viewed" event exists — the notification shares this trigger, so one event
+    // is what proves one email.
+    const events = await prisma.issuedEstimateEvent.findMany({ where: { estimateId: est!.id, type: "viewed" } });
+    expect(events).toHaveLength(1);
+  });
+});

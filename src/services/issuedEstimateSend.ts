@@ -313,6 +313,60 @@ export async function sendEstimateEmail(
  * Tell Kyle an estimate was signed. INTERNAL — this is not a customer send and the manual-first
  * ruling does not reach it; it is the same lane as the daily digest.
  */
+/**
+ * Tell Kyle the FIRST time a customer opens their estimate (2026-08-22).
+ *
+ * Kyle asked whether he can know if his emails were read. The honest answer: an email-open pixel
+ * lies in both directions (Apple auto-loads images; other clients block them). What cannot lie is
+ * the estimate link itself — the customer either opened the page with the price on it or they did
+ * not. This fires on that moment, because it is the actionable one: they are holding his number
+ * RIGHT NOW, and a call within the hour beats one three days later.
+ *
+ * Internal only, to SUMMARY_EMAIL — same rules as the signature notification above it, and like
+ * it, deliberately NOT behind automationGate: nothing here emails a customer.
+ *
+ * ONE CAVEAT THE EMAIL STATES OUT LOUD: corporate mail scanners prefetch links. A "view" seconds
+ * after the send is probably a machine, and the email says so rather than letting Kyle sprint for
+ * the phone over a bot.
+ */
+export async function notifyOwnerViewed(prisma: PrismaClient, estimateId: string): Promise<boolean> {
+  const est = await prisma.issuedEstimate.findUnique({ where: { id: estimateId } });
+  if (!est || !est.firstViewedAt) return false;
+
+  const to = (process.env.SUMMARY_EMAIL ?? process.env.GMAIL_USER ?? "").trim();
+  if (!to) {
+    console.warn("[IssuedEstimate] SUMMARY_EMAIL not set — view notification skipped.");
+    return false;
+  }
+
+  const secondsAfterSend =
+    est.sentAt ? Math.round((est.firstViewedAt.getTime() - est.sentAt.getTime()) / 1000) : null;
+  const scannerNote =
+    secondsAfterSend !== null && secondsAfterSend < 120
+      ? `<p style="font-size:13px;color:#a15c00;">Opened ${secondsAfterSend}s after sending — this is
+         often a mail scanner rather than the customer. Treat with salt.</p>`
+      : "";
+
+  const bodyHtml = `
+    <p style="font-size:16px;"><strong>${escapeHtml(est.customerName)}</strong> just opened estimate
+    <strong>${escapeHtml(est.number)}</strong> for the first time.</p>
+    <table style="font-size:14px;border-collapse:collapse;">
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">Job</td><td>${escapeHtml(est.title)}</td></tr>
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">Total</td><td><strong>$${est.total.toFixed(2)}</strong></td></tr>
+      ${est.customerPhone ? `<tr><td style="padding:3px 12px 3px 0;color:#666;">Phone</td><td>${escapeHtml(est.customerPhone)}</td></tr>` : ""}
+    </table>
+    ${scannerNote}
+    <p style="font-size:14px;margin-top:14px;">They are looking at your price right now — this is
+    the moment a call lands best.</p>`;
+
+  return sendBrandedEmail({
+    to,
+    subject: `VIEWED — ${est.number} — ${est.customerName} — $${est.total.toFixed(2)}`,
+    headline: "Estimate opened",
+    bodyHtml,
+  });
+}
+
 export async function notifyOwnerSigned(prisma: PrismaClient, estimateId: string): Promise<boolean> {
   const est = await prisma.issuedEstimate.findUnique({ where: { id: estimateId } });
   if (!est) return false;

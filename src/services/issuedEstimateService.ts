@@ -40,6 +40,7 @@ import { checkSignatureImage } from "./signatureImage";
 import { logSystemEvent } from "./systemEvents";
 import { bandsFrom, selectionCap, type MarkupBand } from "./materialMarkupCap";
 import { asDiscountType, discountFor } from "./discounts";
+import { notifyOwnerViewed } from "./issuedEstimateSend";
 
 /** House numbering continues the issued PDFs, the last of which was 2026-1010. */
 const NUMBER_FLOOR = 1010;
@@ -487,6 +488,13 @@ export async function recordFirstView(prisma: PrismaClient, estimateId: string):
       data: { estimateId, type: "viewed", actor: "customer" },
     });
   });
+
+  /*
+    Kyle's heads-up, AFTER the record is durable and fire-and-forget (2026-08-22): the customer is
+    looking at the price right now, which is when a call lands best. A notification failure must
+    never fail the customer's page load — same rule as the signature notification.
+  */
+  void notifyOwnerViewed(prisma, estimateId).catch(() => {});
 }
 
 // ─── Signing ────────────────────────────────────────────────────────────────────
