@@ -2023,6 +2023,13 @@ model IssuedEstimate {
   /// The named options presented to the customer, frozen at issue (2026-08-20).
   options        IssuedEstimateOption[]
 
+  /// What the job-level material check did at issue, as JSON keyed by option (2026-08-21).
+  ///
+  /// Frozen with the prices it explains, for the same reason the prices are frozen: the company
+  /// copy prints it, and a signed document must keep saying what it said. Null on estimates
+  /// issued before the check existed — absent, not "no cap", which is a claim.
+  materialCapsJson String?
+
   /// WHICH OPTIONS THE CUSTOMER ACTUALLY BOUGHT.
   ///
   /// Kyle, 2026-08-20: "the options are not persisting into the pdf or allowing to pick and

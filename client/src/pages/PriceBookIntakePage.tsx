@@ -1426,6 +1426,25 @@ function TotalsBar(props: {
             labour {money(c.laborDollars)} · material charged {money(c.materialSell)}
             {c.materialCost > 0 ? ` (cost ${money(c.materialCost)})` : ""}
           </div>
+          {/*
+            ── THE JOB-LEVEL MATERIAL CHECK, SHOWN (Kyle, 2026-08-21) ──────────────────────────
+
+            He asked for a second check on material markup keyed to the size of the job, and it
+            reduces what a customer is charged. A reduction he cannot see is one he cannot explain
+            when a customer asks why this job's material is priced differently to the last one — so
+            it reports what the tiers wanted, the ceiling that governed, and what it cost him.
+
+            Only rendered when it actually bit. Most jobs sit under their ceiling and this is silent
+            because there is nothing to say.
+          */}
+          {Object.entries(c.materialCaps ?? {})
+            .filter(([, cap]) => cap.applied)
+            .map(([option, cap]) => (
+              <div key={option} className="text-xs text-amber-800">
+                Option {option}: material capped at {cap.ceiling}× ({cap.bandLabel}) —{" "}
+                {money(cap.uncappedSell)} → {money(cap.cappedSell)}, {money(cap.reduction)} off
+              </div>
+            ))}
           <div className="text-lg font-semibold">{money(c.total)}</div>
           {feeOnly && (
             <div className="text-xs text-amber-800">fixed fee only — no lines priced</div>

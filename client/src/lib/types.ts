@@ -1069,7 +1069,24 @@ export interface PbComputed {
   laborHours: number;
   laborDollars: number;
   materialCost: number;
+  /** AFTER the job-level material check. What the customer is charged. */
   materialSell: number;
+  /**
+   * What the job-level material check did, per option (2026-08-21).
+   *
+   * Shown on the totals bar so an adjustment Kyle can be asked about by a customer is never one he
+   * has to discover from the arithmetic.
+   */
+  materialCaps?: Record<string, {
+    materialCost: number;
+    uncappedSell: number;
+    blended: number;
+    ceiling: number;
+    bandLabel: string;
+    cappedSell: number;
+    reduction: number;
+    applied: boolean;
+  }>;
   subtotal: number | null;
   jobFixedCost: number | null;
   total: number | null;

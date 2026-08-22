@@ -416,3 +416,129 @@ describe("composition rules seam", () => {
     expect(seam.reason).toContain("not implemented");
   });
 });
+
+describe("the job-level material check, through the engine", () => {
+  /*
+    Kyle, 2026-08-21: "introduce a second check that looks at total material cost and apply it to
+    the same tiered system we have."
+
+    The unit tests in materialMarkupCap.test.ts prove the arithmetic. THIS proves it is actually
+    wired: that computeEstimate applies it to the lines, that the lines still sum to the total, and
+    that labour is untouched.
+
+    Without this, every existing engine test would still pass — none of their fixtures carry enough
+    material to reach a ceiling — and the check could sit in the codebase never once running.
+  */
+
+  /** A cheap part in volume: the exact shape that drove the blended markup to 3.39x. */
+  const bulk = atomic({
+    itemId: "BULK",
+    unit: "ft",
+    laborNormal: 1,
+    costBasisUsed: 0.3,
+    // Under $1 a unit, so the per-item ladder charges 5x — regardless of buying 2,000 feet.
+    sellPricePerUnit: 1.5,
+  });
+
+  it("fires on bulk cheap material, which the per-item ladder cannot see", () => {
+    const est = computeEstimate(
+      [line({ itemId: "BULK", quantity: 2000 })],
+      new Map([["BULK", bulk]]),
+      RC,
+      "HD",
+    );
+
+    // $600 of cost. The ladder wanted $3,000 — five times — on a job in the $250–999 band.
+    expect(est.materialCost).toBeCloseTo(600, 2);
+    const cap = est.materialCaps.A;
+    expect(cap.applied).toBe(true);
+    expect(cap.uncappedSell).toBeCloseTo(3000, 2);
+    expect(cap.ceiling).toBe(2.5);
+    expect(est.materialSell).toBeCloseTo(1500, 2);
+    expect(cap.reduction).toBeCloseTo(1500, 2);
+  });
+
+  it("scales the LINES, so they still sum to the total", () => {
+    // The drift this guards: a capped total with uncapped lines under it. Graduation's own
+    // reconcile check refuses an estimate whose lines and total disagree, so this would not just
+    // look wrong — it would block Kyle from issuing at all.
+    const est = computeEstimate(
+      [
+        line({ itemId: "BULK", quantity: 2000 }),
+        line({ itemId: "BULK", id: "second", quantity: 500 }),
+      ],
+      new Map([["BULK", bulk]]),
+      RC,
+      "HD",
+    );
+    const summed = est.lines.reduce((n, l) => n + (l.materialSell ?? 0), 0);
+    expect(summed).toBeCloseTo(est.materialSell, 2);
+    expect(summed).toBeCloseTo(est.materialCaps.A.cappedSell, 2);
+  });
+
+  it("does not touch labour", () => {
+    const est = computeEstimate(
+      [line({ itemId: "BULK", quantity: 2000 })],
+      new Map([["BULK", bulk]]),
+      RC,
+      "HD",
+    );
+    // 2,000 units at 1 hr each on an E basis, at the configured rate. The cap has no business here.
+    expect(est.laborHours).toBeCloseTo(2000, 2);
+    expect(est.laborDollars).toBeCloseTo(2000 * RC.billedLaborRate!, 2);
+  });
+
+  it("prices each option as its own job", () => {
+    /*
+      Deliberate: a customer unticking option B on the presentation screen must not silently
+      re-price option A. Here A is small enough to sit under its ceiling while B is not, and A must
+      come through untouched.
+    */
+    const modest = atomic({ itemId: "M", laborNormal: 1, costBasisUsed: 10, sellPricePerUnit: 25 });
+    const est = computeEstimate(
+      [
+        line({ itemId: "M", quantity: 2, option: "A" }),                 // $20 cost at 2.5x — under its ceiling
+        line({ itemId: "BULK", id: "b", quantity: 2000, option: "B" }),  // $600 cost at 5x — over its ceiling
+      ],
+      new Map([["M", modest], ["BULK", bulk]]),
+      RC,
+      "HD",
+    );
+    expect(est.materialCaps.A.applied).toBe(false);
+    expect(est.materialCaps.B.applied).toBe(true);
+    const aLine = est.lines.find((l) => l.option === "A")!;
+    expect(aLine.materialSell).toBeCloseTo(50, 2);   // 2 x 25, exactly as the ladder priced it
+  });
+
+  it("leaves a small job entirely alone", () => {
+    // The dormancy property, at the engine level. Four of Kyle's six real estimates behave this way.
+    const modest = atomic({ itemId: "M", laborNormal: 1, costBasisUsed: 10, sellPricePerUnit: 25 });
+    const est = computeEstimate([line({ itemId: "M", quantity: 2 })], new Map([["M", modest]]), RC, "HD");
+    expect(est.materialCaps.A.applied).toBe(false);
+    expect(est.materialSell).toBeCloseTo(50, 2); // 2 x 25, untouched
+  });
+});
+
+describe("what the job ceiling does to the 5x tier", () => {
+  /*
+    Found by a test of mine that asserted the wrong thing, which is the only reason it is written
+    down here.
+
+    The per-item ladder charges 5x for material under $1 a unit. The job-level ceiling for a job
+    with under $250 of material is 3.5x. So a small job made ENTIRELY of sub-dollar parts is capped
+    from 5x to 3.5x — the 5x tier can no longer reach a customer as a blended rate, only as one
+    line's contribution among others.
+
+    That follows directly from the schedule Kyle chose on 2026-08-21, and it is the same mechanism
+    that pulls his 4.53x estimate into line. It is recorded because it is easy to mistake for a bug
+    later: the workbook says 5x and the invoice will not.
+  */
+  const pennies = atomic({ itemId: "P", laborNormal: 1, costBasisUsed: 0.3, sellPricePerUnit: 1.5 });
+
+  it("caps a small all-cheap-parts job at 3.5x, not 5x", () => {
+    const est = computeEstimate([line({ itemId: "P", quantity: 100 })], new Map([["P", pennies]]), RC, "HD");
+    expect(est.materialCost).toBeCloseTo(30, 2);
+    expect(est.materialCaps.A.uncappedSell).toBeCloseTo(150, 2); // what 5x wanted
+    expect(est.materialSell).toBeCloseTo(105, 2);                // 30 x 3.5
+  });
+});

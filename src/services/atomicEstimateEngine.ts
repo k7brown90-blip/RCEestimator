@@ -35,6 +35,8 @@ import {
   type RateConfig,
   type SupplierPriceRow,
 } from "./priceBookPricing";
+// The second, job-level check on material markup — see that file for why it exists.
+import { capMaterial, type MaterialCapResult } from "./materialMarkupCap";
 
 // ─── Inputs ─────────────────────────────────────────────────────────────────────
 
@@ -179,7 +181,19 @@ export interface ComputedEstimate {
   laborHours: number;
   laborDollars: number;
   materialCost: number;
+  /** AFTER the job-level check below. This is what the customer is charged for material. */
   materialSell: number;
+
+  /**
+   * What the job-level material check did, keyed by option (2026-08-21).
+   *
+   * Present for every option that has lines, whether or not the ceiling was reached — `applied`
+   * says which. Recorded rather than merely acted on because Kyle has to be able to see cost,
+   * what the per-item tiers produced, the ceiling that governed, and what it cost him. A markup
+   * adjustment he cannot see is one he cannot defend to a customer who asks.
+   */
+  materialCaps: Record<string, MaterialCapResult>;
+
   subtotal: number | null;
   jobFixedCost: number | null;
   total: number | null;
@@ -575,6 +589,57 @@ export function computeEstimate(
     });
   }
 
+  /*
+    ── THE JOB-LEVEL MATERIAL CHECK (Kyle, 2026-08-21) ──────────────────────────────────────────
+
+    "I think we keep the main tiers but introduce a second check that looks at total material cost
+     and apply it to the same tiered system we have."
+
+    The per-item ladder above has already priced every line. This reads the RESULT of that per
+    option and, if the blended markup exceeds what a job of that size should carry, scales the
+    material lines down until it does. See materialMarkupCap.ts for why the per-item ladder is
+    correct and where it stops being correct.
+
+    Applied here rather than at the option summary or in the PDF because every one of those reads
+    from `computed.lines`. A cap applied downstream would leave the lines saying one thing and the
+    total saying another, and Kyle reads the lines.
+  */
+  const materialCaps: Record<string, MaterialCapResult> = {};
+  for (const option of ESTIMATE_OPTIONS) {
+    const inOption = computed.filter((l) => l.option === option);
+    if (inOption.length === 0) continue;
+
+    const cost = inOption.reduce((n, l) => n + (l.materialCost ?? 0), 0);
+    const sell = inOption.reduce((n, l) => n + (l.materialSell ?? 0), 0);
+    const cap = capMaterial(cost, sell);
+    materialCaps[option] = cap;
+    if (!cap.applied) continue;
+
+    /*
+      Scaled proportionally so every line keeps its share. The alternative — taking the whole
+      reduction off one line — would show a customer a part priced below what the next identical
+      part on the same estimate costs.
+
+      The residual from rounding is put on the LARGEST material line, so the lines sum to the
+      capped figure exactly. Cents that do not reconcile are the failure this codebase keeps
+      closing; the integrity check at graduation would refuse the estimate over them.
+    */
+    const factor = cap.cappedSell / cap.uncappedSell;
+    let running = 0;
+    let largest: (typeof computed)[number] | null = null;
+    for (const line of inOption) {
+      if (line.materialSell === null) continue;
+      const next = Math.round(line.materialSell * factor * 100) / 100;
+      line.materialSell = next;
+      running += next;
+      if (largest === null || next > (largest.materialSell ?? 0)) largest = line;
+    }
+    const residual = Math.round((cap.cappedSell - running) * 100) / 100;
+    if (residual !== 0 && largest !== null && largest.materialSell !== null) {
+      largest.materialSell = Math.round((largest.materialSell + residual) * 100) / 100;
+    }
+  }
+
   // Sums cover only what could be computed. A line with a gap contributes NOTHING rather
   // than zero — and the completeness counters, not the total, are what say the number is
   // partial. This is the same discipline Phase 1 enforces at assembly level (F-82: a flag
@@ -599,6 +664,8 @@ export function computeEstimate(
     laborDollars,
     materialCost,
     materialSell,
+    /** What the job-level material check did, per option. Empty when it changed nothing. */
+    materialCaps,
     subtotal,
     jobFixedCost,
     total,

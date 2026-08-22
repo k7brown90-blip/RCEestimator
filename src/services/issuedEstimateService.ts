@@ -306,6 +306,24 @@ export async function graduateDraft(
         tripWaived: Boolean(input.waiveTrip),
         total,
         createdBy: input.createdBy ?? "human:crm-session",
+        /*
+          ── THE MATERIAL CHECK'S WORKING, AND THE SHORTER CLOCK (2026-08-21) ────────────────────
+
+          The frozen lines above already carry the CAPPED material charge — the engine applied the
+          job-level check before this function ever saw them. What is stored here is the check's
+          working (cost, what the tiers wanted, the ceiling, the reduction) so the company copy can
+          print it. An adjustment Kyle cannot see is one he cannot defend to a customer who asks.
+
+          validDays: a material-heavy quote holds a supplier-priced bill of goods at a 1.25x
+          ceiling — roughly 25 points of cover. Thirty days is long enough for copper or gear to
+          eat that. Fourteen days is the pairing Kyle accepted with the tighter top band: the
+          protection is a shorter promise, not a fatter margin.
+        */
+        materialCapsJson:
+          Object.keys(computed.materialCaps ?? {}).length > 0
+            ? JSON.stringify(computed.materialCaps)
+            : null,
+        validDays: computed.materialCost >= 3000 ? 14 : 30,
         lines: { create: lines },
         options: { create: optionRows },
       },

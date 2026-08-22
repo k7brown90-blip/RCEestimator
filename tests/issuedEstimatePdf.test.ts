@@ -400,3 +400,43 @@ describe("the job summary describes the job he is actually doing", () => {
     expect(text).toContain("7.50 hr");
   });
 });
+
+describe("the material check's working, on the company copy", () => {
+  /*
+    Kyle, 2026-08-21: the job-level check reduces what a customer is charged, silently by design.
+    The company copy is where the silence ends — it prints what the tiers wanted, the ceiling that
+    governed, and what it cost. The customer's copy shows the resulting price and none of the
+    machinery.
+  */
+  const CAPPED = {
+    ...ESTIMATE,
+    materialCaps: {
+      A: { uncappedSell: 1656.05, cappedSell: 1355.55, ceiling: 2.5, bandLabel: "$250–999", reduction: 300.5, applied: true },
+      B: { uncappedSell: 100, cappedSell: 100, ceiling: 3.5, bandLabel: "under $250", reduction: 0, applied: false },
+    },
+  };
+
+  it("prints the cap on the company copy — only where it actually bit", async () => {
+    const text = extractText(await renderEstimatePdf(CAPPED, "company", PROFILE));
+    expect(text).toContain("material capped at 2.5x");
+    expect(text).toContain("$300.50 off the per-item tiers");
+    // Option B sat under its ceiling; a "capped" line for it would be a false confession.
+    expect(text).not.toContain("3.5x");
+  });
+
+  it("never shows the machinery to the customer", async () => {
+    const text = extractText(await renderEstimatePdf(CAPPED, "customer", PROFILE));
+    // Paired presence: the document rendered.
+    expect(text).toContain("2026-1099");
+    // Not /ceiling/i — this estimate installs a Ceiling Fan, and the first version of this
+    // assertion failed on the fan. The cap's own words are what must not appear.
+    expect(text).not.toMatch(/capped|per-item tiers|\$300\.50 off/i);
+  });
+
+  it("renders an estimate frozen before the check existed", async () => {
+    // materialCapsJson is null on every pre-cap estimate; the parse hands the PDF null.
+    const text = extractText(await renderEstimatePdf({ ...ESTIMATE, materialCaps: null }, "company", PROFILE));
+    expect(text).toContain("Job summary");
+    expect(text).not.toMatch(/capped/i);
+  });
+});

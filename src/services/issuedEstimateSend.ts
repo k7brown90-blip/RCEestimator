@@ -125,6 +125,8 @@ export async function sendInvoiceEmail(
       createdAt: est.createdAt,
       options: est.options,
       selectedOptions: est.selectedOptions,
+      // The frozen working of the job-level material check, for the company copy (2026-08-21).
+      materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,

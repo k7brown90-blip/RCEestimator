@@ -81,6 +81,14 @@ export interface PdfEstimate {
   }>;
   /** What the customer actually bought. Empty or absent means the whole estimate. */
   selectedOptions?: PriceBookOption[];
+  /**
+   * The job-level material check's working, frozen at issue (2026-08-21). Company copy only —
+   * the customer sees the resulting price, never the machinery that produced it.
+   */
+  materialCaps?: Record<
+    string,
+    { uncappedSell: number; cappedSell: number; ceiling: number; bandLabel: string; reduction: number; applied: boolean }
+  > | null;
 }
 
 const OPTIONS: PriceBookOption[] = ["A", "B", "C"];
@@ -301,6 +309,24 @@ export async function renderEstimatePdf(
 
   // ── The company's working sheet ──
   if (audience === "company") {
+    /*
+      The material check's working, printed where the numbers it changed are read (2026-08-21).
+      Kyle: "We have to plan the best way for the material mark ups work against total material
+      cost so it stays within a reasonable range." When the ceiling bit, the company copy says by
+      how much — the customer's copy just carries the resulting price.
+    */
+    const capsApplied = Object.entries(estimate.materialCaps ?? {}).filter(([, c]) => c.applied);
+    if (capsApplied.length > 0) {
+      doc.moveDown(0.8);
+      doc.fontSize(9).fillColor("#a15c00");
+      for (const [opt, c] of capsApplied) {
+        doc.text(
+          `Option ${opt}: material capped at ${c.ceiling}x (${c.bandLabel}) — ` +
+            `${money(c.uncappedSell)} -> ${money(c.cappedSell)}, ${money(c.reduction)} off the per-item tiers.`,
+        );
+      }
+      doc.fillColor("#000");
+    }
     doc.moveDown(1.2);
     doc.fontSize(12).text("Material to order");
     doc.fontSize(8).fillColor("#666")

@@ -1445,6 +1445,8 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
         // bare letter, and drops what the customer declined once it is signed.
         options: est.options,
         selectedOptions: est.selectedOptions,
+      // The frozen working of the job-level material check, for the company copy (2026-08-21).
+      materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       signatureImage: est.signatureImage,
         createdAt: est.createdAt,
         lines: est.lines.map((l) => ({
@@ -2504,6 +2506,8 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       // bare letter, and drops what the customer declined once it is signed.
       options: est.options,
       selectedOptions: est.selectedOptions,
+      // The frozen working of the job-level material check, for the company copy (2026-08-21).
+      materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,

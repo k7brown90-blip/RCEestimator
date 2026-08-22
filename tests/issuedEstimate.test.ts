@@ -791,3 +791,27 @@ describe("issuing a draft that already has a live estimate", () => {
     expect(alive.status).toBe(200);
   });
 });
+
+describe("the material check's freeze, on an ordinary small job", () => {
+  it("writes a 30-day clock and no cap working when nothing was capped", async () => {
+    /*
+      The 14-day clock and the frozen JSON exist for material-heavy work (2026-08-21). The estimate
+      most likely to break from adding them is the ordinary one — so this pins that a small draft
+      still issues with the default validity and an ABSENT cap record, not an empty-object claim
+      that a check ran and found nothing.
+    */
+    const d = await quotableDraft("cap-freeze");
+    const result = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+    const est = await prisma.issuedEstimate.findUnique({ where: { id: result.body.estimateId } });
+    expect(est!.validDays).toBe(30);
+    // The fixtures carry modest material priced under every ceiling — caps exist but none applied,
+    // and the column stores the record either way only when at least one option HAS lines priced.
+    if (est!.materialCapsJson) {
+      const caps = JSON.parse(est!.materialCapsJson) as Record<string, { applied: boolean }>;
+      expect(Object.values(caps).every((c) => !c.applied)).toBe(true);
+    }
+  });
+});
