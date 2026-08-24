@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { capacityCheck220_83, resolveVA, type LoadCalcInput, type LoadItem } from '../../domain/loadcalc'
-import { FUTURE_PICKS, HVAC_PICK_TYPES, QUICK_PICKS, newLoadItem } from '../../data/loadPicks'
+import { FUTURE_PICKS, HVAC_PICK_TYPES, QUICK_PICK_CATEGORIES, newLoadItem, type PickCategory } from '../../data/loadPicks'
 import { submitCapacityCheck } from '../../lib/crmSync'
 import type { CrmAssignment } from '../../domain/types'
 
@@ -116,8 +116,8 @@ export function CapacityCheckScreen({ assignment, onBack }: Props) {
       {/* 2. What's already there */}
       <LoadSection
         heading="2 · What's already there"
-        blurb="Fastened appliances, ranges, dryers, water heaters, HVAC. Small-appliance and laundry circuits are counted automatically."
-        picks={QUICK_PICKS}
+        blurb="Walk the house room by room — kitchen through garage. Small-appliance and laundry circuits are counted automatically."
+        categories={QUICK_PICK_CATEGORIES}
         items={existing}
         onAdd={(pick) => setExisting((list) => [...list, newLoadItem(pick)])}
         onRemove={(id) => setExisting((list) => list.filter((item) => item.id !== id))}
@@ -130,7 +130,7 @@ export function CapacityCheckScreen({ assignment, onBack }: Props) {
       <LoadSection
         heading="3 · What's being added"
         blurb="The load the customer is asking about."
-        picks={FUTURE_PICKS}
+        categories={[{ category: '', picks: FUTURE_PICKS }]}
         items={added}
         onAdd={(pick) => setAdded((list) => [...list, newLoadItem(pick)])}
         onRemove={(id) => setAdded((list) => list.filter((item) => item.id !== id))}
@@ -218,11 +218,12 @@ export function CapacityCheckScreen({ assignment, onBack }: Props) {
 }
 
 function LoadSection({
-  heading, blurb, picks, items, onAdd, onRemove, onConfirmPlate,
+  heading, blurb, categories, items, onAdd, onRemove, onConfirmPlate,
 }: {
   heading: string
   blurb: string
-  picks: { label: string; item: Omit<LoadItem, 'id'> }[]
+  /** Room-by-room groups; an empty category name renders its picks without a heading. */
+  categories: PickCategory[]
   items: LoadItem[]
   onAdd: (pick: Omit<LoadItem, 'id'>) => void
   onRemove: (id: string) => void
@@ -233,16 +234,27 @@ function LoadSection({
       <h2 className="text-sm font-medium text-sky-300">{heading}</h2>
       <p className="text-xs text-slate-500">{blurb}</p>
 
-      <div className="flex flex-wrap gap-2">
-        {picks.map((pick) => (
-          <button
-            key={pick.label}
-            type="button"
-            onClick={() => onAdd(pick.item)}
-            className="rounded border border-slate-600 px-2 py-1.5 text-xs text-slate-200"
-          >
-            + {pick.label}
-          </button>
+      <div className="space-y-2">
+        {categories.map((cat) => (
+          <div key={cat.category || 'ungrouped'}>
+            {cat.category && (
+              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                {cat.category}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {cat.picks.map((pick) => (
+                <button
+                  key={pick.label}
+                  type="button"
+                  onClick={() => onAdd(pick.item)}
+                  className="rounded border border-slate-600 px-2 py-1.5 text-xs text-slate-200"
+                >
+                  + {pick.label}
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
 

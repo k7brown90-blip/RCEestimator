@@ -8,7 +8,7 @@ import {
   type LoadItem,
   type LoadType,
 } from '../../domain/loadcalc'
-import { ALL_TYPES, FUTURE_PICKS, QUICK_PICKS, newLoadItem } from '../../data/loadPicks'
+import { ALL_TYPES, FUTURE_PICKS, QUICK_PICK_CATEGORIES, newLoadItem } from '../../data/loadPicks'
 import type { InspectionLoadCalc } from '../../domain/types'
 
 interface Props {
@@ -219,24 +219,39 @@ export function LoadCalcPanel({ initial, onApply }: Props) {
       </p>
 
       <div>
-        <h3 className="mb-1 text-xs font-medium text-slate-300">Add loads (tap; values editable)</h3>
-        <div className="flex flex-wrap gap-1.5">
-          {QUICK_PICKS.map((pick) => (
-            <button
-              key={pick.label}
-              type="button"
-              onClick={() => setLoads((l) => [...l, newItem(pick.item)])}
-              className="rounded-full border border-slate-600 bg-slate-800 px-2.5 py-1 text-xs text-slate-200"
-            >
-              + {pick.label}
-            </button>
+        <h3 className="mb-1 text-xs font-medium text-slate-300">
+          Add loads — walk the house room by room (tap; values editable)
+        </h3>
+        {/* Grouped the way a house is walked (Kyle, 2026-08-24: "anything that
+            can be found at a residence or home garage"). What the code already
+            covers without a line item — washers, countertop plug-ins, ordinary
+            receptacles — is deliberately absent; adding it would double-count. */}
+        <div className="space-y-2">
+          {QUICK_PICK_CATEGORIES.map((cat) => (
+            <div key={cat.category}>
+              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                {cat.category}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {cat.picks.map((pick) => (
+                  <button
+                    key={pick.label}
+                    type="button"
+                    onClick={() => setLoads((l) => [...l, newItem(pick.item)])}
+                    className="rounded-full border border-slate-600 bg-slate-800 px-2.5 py-1 text-xs text-slate-200"
+                  >
+                    + {pick.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
           <button
             type="button"
             onClick={() => setShowFullInventory((s) => !s)}
             className="rounded-full border border-sky-700 bg-sky-900/50 px-2.5 py-1 text-xs text-sky-200"
           >
-            {showFullInventory ? 'Hide full inventory' : 'Full inventory…'}
+            {showFullInventory ? 'Hide full inventory' : 'Anything else — full inventory…'}
           </button>
         </div>
         {showFullInventory && (
