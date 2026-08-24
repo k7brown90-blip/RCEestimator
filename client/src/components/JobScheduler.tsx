@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { MonthSchedule, TechDayAvailability } from "../lib/types";
+import type { MonthSchedule, ScheduleJobResult, TechDayAvailability } from "../lib/types";
 
 interface Props {
   jobId: string;
@@ -9,7 +9,9 @@ interface Props {
   scheduledStart?: string | null;
   scheduledEnd?: string | null;
   durationDays?: number | null;
-  onScheduled?: () => void;
+  /** Carries the booking result on a fresh schedule (so the caller can say whether the
+      customer's confirmation went out); undefined on reschedule/cancel. */
+  onScheduled?: (result?: ScheduleJobResult) => void;
   /** Open straight into the date picker — used when launched from Leads or Calendar. */
   autoOpen?: boolean;
 }
@@ -97,13 +99,13 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
 
   const scheduleMutation = useMutation({
     mutationFn: () => api.scheduleJob(jobId, { startDate: selectedDate!, startTime, technicianId: technicianId ?? undefined }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       invalidateAll();
       setMode("idle");
       setSelectedDate(null);
       setTechnicianId(null);
       setError(null);
-      onScheduled?.();
+      onScheduled?.(result);
     },
     onError: (err: Error) => setError(err.message),
   });

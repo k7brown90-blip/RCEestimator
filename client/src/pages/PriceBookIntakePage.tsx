@@ -1699,8 +1699,9 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
     onSuccess: (r) => {
       setNotice(null);
       refresh();
-      // Straight to the job, because the next thing he wants is to schedule it.
-      window.location.assign(`/visits/${r.visitId}`);
+      // Straight to the calendar with the scheduler open — the same landing the in-person
+      // signing flow uses (Kyle, 2026-08-24), so scheduling has one home, not two.
+      window.location.assign(`/calendar?schedule=${r.visitId}`);
     },
     onError: (err) => setReasons([(err as Error).message]),
   });

@@ -2721,7 +2721,23 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
     console.error("[IssuedEstimate] owner notification failed:", err)
   );
 
-  res.json({ signed: true, estimateId: result.estimateId });
+  // The signed quote becomes a job right here (Kyle, 2026-08-24: "It gets signed and there is
+  // no scheduling proceedings. It should immediately go to the calendar view to schedule.").
+  // In-person door ONLY — an emailed signature lands while Kyle is elsewhere, and he kept that
+  // door manual (his ruling, same date). Idempotent, and never able to fail the signature:
+  // if job creation breaks, the client just falls back to the old Done button.
+  let jobVisitId: string | null = null;
+  try {
+    const job = await createJobFromSignedEstimate(prisma, result.estimateId, {
+      actor: "system:sign-in-person",
+    });
+    if (job.ok) jobVisitId = job.visitId;
+    else console.error("[IssuedEstimate] job creation after in-person sign refused:", job.reason);
+  } catch (err) {
+    console.error("[IssuedEstimate] job creation after in-person sign failed:", err);
+  }
+
+  res.json({ signed: true, estimateId: result.estimateId, jobVisitId });
 }));
 
 // ─── THE ACCOUNT SPINE (P029) ────────────────────────────────────────────────

@@ -504,6 +504,12 @@ export const api = {
       `/health-record-admin/inspections/${inspectionId}/report`,
       { method: "POST", body: JSON.stringify({}) },
     ),
+  /** Email the report to the customer — logged as a delivery; refuses an unreviewed critical report. */
+  emailHealthReport: (inspectionId: string, to?: string) =>
+    request<{ sent: true; sentTo: string; documentId: string }>(
+      `/health-record-admin/inspections/${inspectionId}/email`,
+      { method: "POST", body: JSON.stringify(to ? { to } : {}) },
+    ),
   // ─── Company settings ───────────────────────────────────────────────────
   companySettings: () => request<CompanySettings>("/crm/settings"),
   saveCompanySetting: (key: string, value: unknown) =>
@@ -723,10 +729,16 @@ export const api = {
     ),
 
   pbSignInPerson: (id: string, signerName: string, signatureImage: string) =>
-    request<{ signed: true; estimateId: string }>(`/issued-estimates/${id}/sign-in-person`, {
-      method: "POST",
-      body: JSON.stringify({ signerName, signatureImage }),
-    }),
+    // jobVisitId: the job auto-created from the signed quote, so the signed screen can go
+    // straight to the calendar to schedule it. Null when creation was refused or failed —
+    // the signature itself is already durable either way.
+    request<{ signed: true; estimateId: string; jobVisitId: string | null }>(
+      `/issued-estimates/${id}/sign-in-person`,
+      {
+        method: "POST",
+        body: JSON.stringify({ signerName, signatureImage }),
+      },
+    ),
 
   // ── The account spine (P029) ──
   accountEstimates: (accountId: string, serviceAddressId?: string) =>
@@ -873,8 +885,15 @@ export interface HealthInspectionSummary {
   naCount: number;
   criticalFindingsJson: string;
   contractorReviewed: boolean;
+  reviewedBy?: string | null;
   syncedAt: string;
   technician?: { id: string; name: string; employeeNumber?: string | null } | null;
+  // ── Account Health Records section (2026-08-24) ──
+  acknowledgedAt?: string | null;
+  customerSignerName?: string | null;
+  ackSkippedReason?: string | null;
+  property?: { id: string; addressLine1: string; city: string; state: string } | null;
+  deliveries?: Array<{ id: string; sentTo: string; sentBy: string; sentAt: string }>;
 }
 
 export interface HealthInspectionDetail extends HealthInspectionSummary {

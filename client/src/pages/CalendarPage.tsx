@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { JobScheduler } from "../components/JobScheduler";
 import { Modal } from "../components/Modal";
 import { PageHeader } from "../components/PageHeader";
@@ -9,6 +9,7 @@ import type {
   AvailabilityResponse,
   CalendarAppointment,
   CalendarSchedule,
+  ScheduleJobResult,
   UnscheduledJob,
 } from "../lib/types";
 import { money } from "../lib/utils";
@@ -53,6 +54,11 @@ export function CalendarPage() {
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [rescheduling, setRescheduling] = useState<CalendarAppointment | UnscheduledJob | null>(null);
+  // What the booking just did — so "did the customer get a confirmation?" is answered on
+  // screen instead of being invisible (Kyle, 2026-08-24: "Scheduling should also send a
+  // confirmation to the customer").
+  const [lastBooking, setLastBooking] = useState<ScheduleJobResult | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const rangeStart = `${year}-${pad(month)}-01`;
@@ -67,6 +73,19 @@ export function CalendarPage() {
     queryKey: ["schedule", "availability"],
     queryFn: () => api.calendarAvailability(),
   });
+
+  // Arrived from the signed screen with ?schedule=<jobId>: open the scheduler for that job
+  // straight away. The param is consumed once — clearing it keeps back/refresh from
+  // reopening a modal the user already dismissed.
+  useEffect(() => {
+    const scheduleId = searchParams.get("schedule");
+    if (!scheduleId || !schedule) return;
+    const job =
+      schedule.unscheduled.find((j) => j.visitId === scheduleId) ??
+      schedule.appointments.find((a) => a.visitId === scheduleId);
+    if (job) setRescheduling(job);
+    setSearchParams({}, { replace: true });
+  }, [searchParams, schedule, setSearchParams]);
 
   /** Appointments and unlinked Google events bucketed by Central calendar day. */
   const byDay = useMemo(() => {
@@ -128,6 +147,18 @@ export function CalendarPage() {
       </div>
 
       {error ? <p className="text-sm text-red-500">Error loading calendar: {error.message}</p> : null}
+
+      {lastBooking && (
+        <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+          <strong>Scheduled.</strong>{" "}
+          {lastBooking.customerNotified
+            ? "A confirmation went to the customer."
+            : "No confirmation went out — the customer has no email or phone on file."}
+          <button className="ml-2 text-xs underline" onClick={() => setLastBooking(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
         <div className="space-y-4">
@@ -344,7 +375,10 @@ export function CalendarPage() {
             scheduledStart={"scheduledStart" in rescheduling ? rescheduling.scheduledStart : null}
             scheduledEnd={"scheduledEnd" in rescheduling ? rescheduling.scheduledEnd : null}
             durationDays={rescheduling.estimatedDurationDays}
-            onScheduled={() => setRescheduling(null)}
+            onScheduled={(result) => {
+              setRescheduling(null);
+              setLastBooking(result ?? null);
+            }}
           />
         </Modal>
       )}

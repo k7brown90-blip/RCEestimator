@@ -44,6 +44,9 @@ export function SigningModePage() {
   const [signature, setSignature] = useState<string | null>(null);
   const [signError, setSignError] = useState<string | null>(null);
   const [signing, setSigning] = useState(false);
+  // The job auto-created from the signed quote. Signing flows straight into scheduling
+  // (Kyle, 2026-08-24) — null only if the server couldn't create it, which falls back to Done.
+  const [jobVisitId, setJobVisitId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!estimateId) return;
@@ -75,7 +78,8 @@ export function SigningModePage() {
     }
     setSigning(true);
     try {
-      await api.pbSignInPerson(estimateId, signerName.trim(), signature);
+      const result = await api.pbSignInPerson(estimateId, signerName.trim(), signature);
+      setJobVisitId(result.jobVisitId ?? null);
       await load();
       setPhase("signed");
     } catch (err) {
@@ -159,9 +163,27 @@ export function SigningModePage() {
             <strong>Thank you.</strong> Your signature has been recorded and a copy has gone to
             Red Cedar Electric.
           </p>
-          <button className="btn btn-primary mt-3 w-full py-3" onClick={() => navigate(-1)}>
-            Done
-          </button>
+          {/* Signed → schedule, in one motion. The job already exists (created server-side at
+              signature), so the primary action lands on the calendar with the scheduler open
+              for it. Kyle's ruling, 2026-08-24: "It should immediately go to the calendar view
+              to schedule." */}
+          {jobVisitId ? (
+            <>
+              <button
+                className="btn btn-primary mt-3 w-full py-3"
+                onClick={() => navigate(`/calendar?schedule=${jobVisitId}`)}
+              >
+                Schedule this job
+              </button>
+              <button className="btn btn-secondary mt-2 w-full py-2" onClick={() => navigate(-1)}>
+                Close without scheduling
+              </button>
+            </>
+          ) : (
+            <button className="btn btn-primary mt-3 w-full py-3" onClick={() => navigate(-1)}>
+              Done
+            </button>
+          )}
         </div>
       )}
     </div>
