@@ -6,7 +6,8 @@ import { fetchPropertyFindings, queueInspectionSync } from './lib/crmSync'
 import { buildReport } from './domain/report'
 import { summarizeFindings } from './domain/findings'
 import type {
-  ChecklistItemDef, CrmAssignment, Inspection, InspectionLoadCalc, ItemResult, Property,
+  ChecklistItemDef, CrmAssignment, CustomerAcknowledgment, Inspection, InspectionLoadCalc,
+  ItemResult, Property, SectionNote,
 } from './domain/types'
 import { AssignmentScreen } from './ui/screens/AssignmentScreen'
 import { CapacityCheckScreen } from './ui/screens/CapacityCheckScreen'
@@ -31,6 +32,8 @@ interface Session {
   results: Record<string, ItemResult>
   loadCalc?: InspectionLoadCalc
   v2?: V2Capture
+  /** Per-section notes, keyed by group (2026-08-24). */
+  sectionNotes?: Record<string, SectionNote>
 }
 
 function toInspection(
@@ -38,8 +41,10 @@ function toInspection(
   status: 'draft' | 'complete',
   contractorReviewed = false,
   visibleItems: ChecklistItemDef[] = [],
+  ack?: { acknowledgment?: CustomerAcknowledgment; ackSkippedReason?: string },
 ): Inspection {
   const items = Object.values(session.results)
+  const sectionNotes = Object.values(session.sectionNotes ?? {}).filter((n) => n.note.trim())
   const base: Inspection = {
     id: session.inspectionId,
     propertyId: session.property.id,
@@ -54,6 +59,9 @@ function toInspection(
     status,
     loadCalc: session.loadCalc,
     v2: session.v2,
+    ...(sectionNotes.length > 0 ? { sectionNotes } : {}),
+    ...(ack?.acknowledgment ? { acknowledgment: ack.acknowledgment } : {}),
+    ...(ack?.ackSkippedReason ? { ackSkippedReason: ack.ackSkippedReason } : {}),
   }
   const summary = summarizeFindings(base, visibleItems)
   return { ...base, itemsAssessed: summary.itemsAssessed, criticalFindings: summary.criticalFindings }
@@ -213,7 +221,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
         results={session.results}
         summary={summarizeFindings(draft, visibleItems)}
         onBack={() => setScreen('checklist')}
-        onComplete={(contractorReviewed) => {
+        onComplete={(contractorReviewed, ack) => {
           // The server would 422 a v2 violation at sync time; catching it here
           // keeps the inspection out of a stuck offline queue (§12.3 mirror).
           const v2Violations = session.v2 ? checkCapture(session.v2) : []
@@ -225,7 +233,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
             setScreen('v2capture')
             return
           }
-          const final = toInspection(session, 'complete', contractorReviewed, visibleItems)
+          const final = toInspection(session, 'complete', contractorReviewed, visibleItems, ack)
           void saveDraft(final) // transitions the draft to its immutable completed version
           void queueInspectionSync(final, session.property) // auto-push to the CRM (queued offline)
           setCompleted(final)
@@ -256,6 +264,15 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
       knownFindingCount={findings.filter((f) => f.status !== 'declined').length}
       declinedFindingCount={findings.filter((f) => f.status === 'declined').length}
       v2Summary={{ enclosures: session.v2?.enclosures.length ?? 0, items: session.v2?.items.length ?? 0 }}
+      sectionNotes={session.sectionNotes}
+      onSectionNote={(group, note, includeOnReport) => {
+        const next: Session = {
+          ...session,
+          sectionNotes: { ...session.sectionNotes, [group]: { group, note, includeOnReport } },
+        }
+        setSession(next)
+        void saveDraft(toInspection(next, 'draft', false, visibleItems))
+      }}
       onOpenFindings={() => setScreen('findings')}
       onOpenV2={() => setScreen('v2capture')}
       onOpenItem={(itemId) => {

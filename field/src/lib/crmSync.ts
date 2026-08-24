@@ -209,6 +209,11 @@ export function buildPushPayload(inspection: Inspection, property: Property): ob
     // Structured protocol-v2 capture — optional; the server validates the
     // hard rules again on ingest and rejects the whole push on violation.
     ...(inspection.v2 ? { v2: toPushV2(inspection.v2) } : {}),
+    // Per-section notes + on-site acknowledgment (2026-08-24). Optional on the
+    // server for old bundles; this bundle always sends what it captured.
+    ...(inspection.sectionNotes?.length ? { sectionNotes: inspection.sectionNotes } : {}),
+    ...(inspection.acknowledgment ? { acknowledgment: inspection.acknowledgment } : {}),
+    ...(inspection.ackSkippedReason ? { ackSkippedReason: inspection.ackSkippedReason } : {}),
     appVersion: 'phase-2',
   }
 }
@@ -440,6 +445,22 @@ export async function flushFindingActions(): Promise<{ pushed: number; remaining
 
 export function pendingFindingActionCount(): Promise<number> {
   return db.findingActionQueue.count()
+}
+
+// ─── Report delivery ────────────────────────────────────────────────────────
+
+/**
+ * Email the finished report to the customer, from the field (2026-08-24).
+ *
+ * Deliberately NOT queued offline: the server renders and sends the customer's
+ * PDF, refuses an unreviewed critical report, and logs the delivery — none of
+ * which should happen silently hours later from a retry queue. No signal means
+ * the tech sees the failure and the office sends it from the CRM instead.
+ */
+export async function emailReportToCustomer(
+  inspectionId: string,
+): Promise<{ sentTo: string; documentId: string }> {
+  return crmRequest(`/inspections/${inspectionId}/email`, { method: 'POST', body: '{}' })
 }
 
 // ─── Capacity checks ────────────────────────────────────────────────────────

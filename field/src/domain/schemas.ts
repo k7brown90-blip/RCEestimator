@@ -308,4 +308,23 @@ export const inspectionSchema = z.object({
   contractorReviewed: z.boolean(),
   status: z.enum(['draft', 'complete']),
   loadCalc: inspectionLoadCalcSchema.optional(),
+  // Per-section notes + on-site acknowledgment (2026-08-24). All optional so
+  // every record made before them still parses.
+  sectionNotes: z
+    .array(
+      z.object({
+        group: z.string().min(1),
+        note: z.string(),
+        includeOnReport: z.boolean(),
+      }),
+    )
+    .optional(),
+  acknowledgment: z
+    .object({
+      signerName: z.string().min(1),
+      signatureImage: z.string().min(1),
+      acknowledgedAt: z.string().min(1),
+    })
+    .optional(),
+  ackSkippedReason: z.string().optional(),
 })

@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { NOT_ASSESSED, ROLLUP_LABEL, type ReportItem, type ReportModel, type RollupStatusValue } from '../../domain/report'
 import { REPORT_LIMITATIONS } from '../../data/reportLimitations'
+import { emailReportToCustomer, pendingSyncCount } from '../../lib/crmSync'
 import type { Inspection, Property } from '../../domain/types'
 
 interface Props {
@@ -30,6 +32,28 @@ const statusText: Record<RollupStatusValue, string> = {
 export function ReportScreen({ report, inspection, property, onNewInspection }: Props) {
   const { summary, sections } = report
   const hasCritical = summary.criticalFindings.length > 0
+  const [emailState, setEmailState] = useState<
+    { phase: 'idle' } | { phase: 'sending' } | { phase: 'sent'; to: string } | { phase: 'failed'; error: string }
+  >({ phase: 'idle' })
+
+  /**
+   * Email the customer's PDF from the field (2026-08-24). The server renders
+   * the official document, enforces the critical-review gate, and logs the
+   * delivery — but it can only do that once this inspection has actually
+   * synced, so an unsynced record is surfaced as exactly that.
+   */
+  const sendEmail = async () => {
+    setEmailState({ phase: 'sending' })
+    try {
+      if ((await pendingSyncCount()) > 0) {
+        throw new Error('This record has not synced to the office yet — get signal, then try again.')
+      }
+      const result = await emailReportToCustomer(inspection.id)
+      setEmailState({ phase: 'sent', to: result.sentTo })
+    } catch (error) {
+      setEmailState({ phase: 'failed', error: error instanceof Error ? error.message : String(error) })
+    }
+  }
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 p-6 print:bg-white print:text-black">
@@ -50,6 +74,24 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
         </button>
       </div>
 
+      <div className="space-y-1 print:hidden">
+        <button
+          type="button"
+          disabled={emailState.phase === 'sending' || emailState.phase === 'sent'}
+          onClick={() => void sendEmail()}
+          className="w-full rounded-lg border border-sky-600 bg-sky-950/40 p-3 text-sm font-medium text-sky-200 disabled:opacity-60"
+        >
+          {emailState.phase === 'sending'
+            ? 'Sending…'
+            : emailState.phase === 'sent'
+              ? `✓ Report emailed to ${emailState.to}`
+              : "Email the report to the customer"}
+        </button>
+        {emailState.phase === 'failed' && (
+          <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{emailState.error}</p>
+        )}
+      </div>
+
       <header className="space-y-1 border-b border-slate-700 pb-4 print:border-black">
         <p className="text-xs uppercase tracking-[0.2em] text-sky-300 print:text-black">
           Red Cedar Electric — Electrical Health Record
@@ -58,9 +100,11 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
         <p className="text-sm text-slate-400 print:text-black">
           Assessed {inspection.date.slice(0, 10)} by {inspection.technician}
         </p>
-        {/* Not yet a customer deliverable — Phase 1 is still being proven out. */}
+        {/* This on-screen view is the technician's working copy. What the
+            customer receives is the office-rendered PDF, sent by the button
+            above or from the CRM — both log the delivery. */}
         <p className="mt-2 inline-block rounded border border-amber-500 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-amber-300 print:text-black">
-          Internal record — not for customer delivery
+          Technician copy — the customer's document is the emailed PDF
         </p>
       </header>
 

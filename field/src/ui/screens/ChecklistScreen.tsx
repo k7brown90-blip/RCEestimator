@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { ChecklistItemDef, ItemResult, ResultState } from '../../domain/types'
+import type { ChecklistItemDef, ItemResult, ResultState, SectionNote } from '../../domain/types'
 
 interface Props {
   items: ChecklistItemDef[]
@@ -9,6 +9,9 @@ interface Props {
   declinedFindingCount?: number
   /** Component/measurement counts from the v2 structured capture. */
   v2Summary?: { enclosures: number; items: number }
+  /** Per-section notes, keyed by group (2026-08-24 — matches the paper form's notes line). */
+  sectionNotes?: Record<string, SectionNote>
+  onSectionNote?: (group: string, note: string, includeOnReport: boolean) => void
   onOpenFindings?: () => void
   onOpenV2?: () => void
   onOpenItem: (itemId: string) => void
@@ -48,9 +51,60 @@ const GROUP_LABEL: Record<string, string> = {
 
 export function ChecklistScreen({
   items, results, knownFindingCount = 0, declinedFindingCount = 0,
-  v2Summary, onOpenFindings, onOpenV2, onOpenItem, onReview,
+  v2Summary, sectionNotes = {}, onSectionNote, onOpenFindings, onOpenV2, onOpenItem, onReview,
 }: Props) {
   const [showPhase2, setShowPhase2] = useState(false)
+  const [openNoteGroup, setOpenNoteGroup] = useState<string | null>(null)
+
+  /**
+   * The section-note affordance under each group heading — the digital twin of
+   * the notes line each section carries on the paper field record. Internal by
+   * default; the toggle is what promotes a note onto the customer's report.
+   */
+  const renderSectionNote = (group: string) => {
+    if (!onSectionNote) return null
+    const existing = sectionNotes[group]
+    const open = openNoteGroup === group
+    if (!open) {
+      return (
+        <button
+          type="button"
+          onClick={() => setOpenNoteGroup(group)}
+          className="w-full rounded-lg border border-slate-700/60 bg-slate-900/40 p-2 text-left text-xs text-slate-400"
+        >
+          {existing?.note
+            ? <>📝 {existing.note.length > 80 ? `${existing.note.slice(0, 80)}…` : existing.note}
+                {existing.includeOnReport && <span className="ml-1 text-sky-300">· on report</span>}</>
+            : '+ Section note'}
+        </button>
+      )
+    }
+    return (
+      <div className="space-y-2 rounded-lg border border-slate-600 bg-slate-900/60 p-2">
+        <textarea
+          autoFocus
+          rows={3}
+          defaultValue={existing?.note ?? ''}
+          placeholder="What you saw in this section — internal unless promoted below."
+          className="w-full rounded border border-slate-600 bg-slate-800 p-2 text-sm text-white placeholder:text-slate-500"
+          onBlur={(e) => onSectionNote(group, e.target.value, existing?.includeOnReport ?? false)}
+        />
+        <div className="flex items-center justify-between">
+          <label className="flex items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              checked={existing?.includeOnReport ?? false}
+              onChange={(e) => onSectionNote(group, existing?.note ?? '', e.target.checked)}
+            />
+            Include on the customer's report
+          </label>
+          <button type="button" className="text-xs text-sky-300" onClick={() => setOpenNoteGroup(null)}>
+            done
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   const phase1 = items.filter((item) => item.phase === 1)
   const phase2 = items.filter((item) => item.phase === 2)
@@ -167,6 +221,7 @@ export function ChecklistScreen({
             {GROUP_LABEL[group] ?? group}
           </h2>
           {phase1.filter((item) => item.group === group).map(renderItem)}
+          {renderSectionNote(group)}
         </section>
       ))}
 
@@ -196,6 +251,7 @@ export function ChecklistScreen({
                     {GROUP_LABEL[group] ?? group}
                   </h3>
                   {phase2.filter((item) => item.group === group).map(renderItem)}
+                  {renderSectionNote(group)}
                 </div>
               ))}
             </div>

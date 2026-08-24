@@ -271,6 +271,31 @@ export interface InspectionLoadCalc {
 /** Which pass of the inspection this record covers. */
 export type InspectionScope = 'full' | 'phase1'
 
+/**
+ * A technician's note on one checklist section (group), matching the notes line
+ * per section on the paper field record. Internal by default — `includeOnReport`
+ * is the promotion toggle, and only a promoted note reaches the customer's
+ * document. (Kyle, 2026-08-24.)
+ */
+export interface SectionNote {
+  group: string
+  note: string
+  includeOnReport: boolean
+}
+
+/**
+ * The on-site customer acknowledgment — the digital version of the paper form's
+ * signature box. Findings were reviewed with the customer; they signed on the
+ * technician's device. Declined items are separate records (finding
+ * declinations), not part of this signature.
+ */
+export interface CustomerAcknowledgment {
+  signerName: string
+  /** data-URL PNG drawn on the signature pad. */
+  signatureImage: string
+  acknowledgedAt: string
+}
+
 export interface Inspection {
   id: string
   propertyId: string
@@ -286,4 +311,9 @@ export interface Inspection {
   loadCalc?: InspectionLoadCalc
   /** Protocol v2 structured capture — enclosures, components, measurements. */
   v2?: import('./v2Types').V2Capture
+  /** Per-section notes; absent on records made before 2026-08-24. */
+  sectionNotes?: SectionNote[]
+  /** Signed on site, or `ackSkippedReason` says why not — absence of both just means an old record. */
+  acknowledgment?: CustomerAcknowledgment
+  ackSkippedReason?: string
 }

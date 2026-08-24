@@ -1,12 +1,22 @@
 import { useState } from 'react'
 import { checklist } from '../../data/checklist'
 import type { FindingsSummary } from '../../domain/findings'
-import type { ItemResult, ResultState } from '../../domain/types'
+import type { CustomerAcknowledgment, ItemResult, ResultState } from '../../domain/types'
+import { SignaturePad } from '../components/SignaturePad'
 
 interface Props {
   results: Record<string, ItemResult>
   summary: FindingsSummary
-  onComplete: (contractorReviewed: boolean) => void
+  /**
+   * Completion carries the on-site acknowledgment (2026-08-24): either the
+   * customer's drawn signature or an explicit skip reason. The button below
+   * refuses to complete with neither — absence must be deliberate, because the
+   * record only protects anyone if review-with-the-customer can be proven.
+   */
+  onComplete: (
+    contractorReviewed: boolean,
+    ack: { acknowledgment?: CustomerAcknowledgment; ackSkippedReason?: string },
+  ) => void
   onBack: () => void
 }
 
@@ -20,7 +30,14 @@ const findingLabel: Record<ResultState, string> = {
 
 export function ReviewScreen({ results, summary, onComplete, onBack }: Props) {
   const [contractorReviewed, setContractorReviewed] = useState(false)
+  const [signerName, setSignerName] = useState('')
+  const [signature, setSignature] = useState<string | null>(null)
+  const [skipSignature, setSkipSignature] = useState(false)
+  const [skipReason, setSkipReason] = useState('')
   const hasCritical = summary.criticalFindings.length > 0
+  const ackReady = skipSignature
+    ? skipReason.trim().length > 0
+    : signerName.trim().length >= 2 && Boolean(signature)
   const titleOf = (id: string) => checklist.find((item) => item.id === id)?.title ?? id
 
   const findings = Object.values(results).filter(
@@ -109,13 +126,72 @@ export function ReviewScreen({ results, summary, onComplete, onBack }: Props) {
         </label>
       )}
 
+      {/* ── Customer acknowledgment (2026-08-24) — the paper form's signature
+          box, captured digitally. Review the findings above WITH the customer,
+          then hand them the phone. Declined items are their own records (log a
+          declination on the finding), not part of this signature. ── */}
+      <section className="space-y-3 rounded-xl border border-slate-600 bg-slate-800/60 p-4">
+        <h2 className="text-sm font-semibold text-white">Customer acknowledgment</h2>
+        <p className="text-xs text-slate-400">
+          Review the findings above with the customer, then have them sign. Anything they
+          decline gets logged as a declination on that finding — a refusal recorded is a
+          different thing from a recommendation never made.
+        </p>
+
+        {!skipSignature && (
+          <>
+            <label className="block text-sm text-slate-200">
+              Customer's full name
+              <input
+                className="mt-1 w-full rounded border border-slate-600 bg-slate-900 p-2 text-white placeholder:text-slate-500"
+                value={signerName}
+                onChange={(e) => setSignerName(e.target.value)}
+                placeholder="Their name, typed by them"
+                autoComplete="off"
+              />
+            </label>
+            <SignaturePad onChange={setSignature} />
+          </>
+        )}
+
+        <label className="flex items-start gap-2 text-xs text-slate-300">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={skipSignature}
+            onChange={(e) => setSkipSignature(e.target.checked)}
+          />
+          <span>Customer can't sign right now — record why instead.</span>
+        </label>
+        {skipSignature && (
+          <input
+            className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
+            value={skipReason}
+            onChange={(e) => setSkipReason(e.target.value)}
+            placeholder='e.g. "customer not on site", "declined to sign"'
+          />
+        )}
+      </section>
+
       <button
         type="button"
-        disabled={hasCritical && !contractorReviewed}
-        onClick={() => onComplete(contractorReviewed)}
+        disabled={(hasCritical && !contractorReviewed) || !ackReady}
+        onClick={() =>
+          onComplete(contractorReviewed, skipSignature
+            ? { ackSkippedReason: skipReason.trim() }
+            : {
+                acknowledgment: {
+                  signerName: signerName.trim(),
+                  signatureImage: signature!,
+                  acknowledgedAt: new Date().toISOString(),
+                },
+              })
+        }
         className="w-full rounded-lg bg-sky-600 p-3 font-medium text-white disabled:bg-slate-700 disabled:text-slate-400"
       >
-        Complete the record &amp; generate the report
+        {ackReady
+          ? 'Complete the record & generate the report'
+          : 'Capture the customer signature (or record why not) to complete'}
       </button>
     </div>
   )

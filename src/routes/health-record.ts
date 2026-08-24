@@ -22,6 +22,7 @@ import {
   generateUpgradeRecord,
 } from "../services/pdfGenerator";
 import { notifyTechnicianOfAssignment } from "../services/visitConfirmations";
+import { sendHealthReportEmail } from "../services/healthReportEmail";
 import { resolveJurisdictions } from "../services/jurisdictionResolver";
 import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
 import { recordInspectionLoadCalc } from "../services/capacityCheckStore";
@@ -189,6 +190,34 @@ const inspectionPushSchema = z.object({
   loadCalc: z.unknown().optional(),
   appVersion: z.string().optional(),
   /**
+   * Per-section technician notes (Kyle, 2026-08-24). Optional for the same
+   * service-worker-cache reason as `findings` — old bundles must keep syncing.
+   * `includeOnReport` is the promotion toggle: internal by default, and only a
+   * promoted note ever reaches the customer's document.
+   */
+  sectionNotes: z
+    .array(
+      z.object({
+        group: z.string().min(1).max(100),
+        note: z.string().trim().min(1).max(4000),
+        includeOnReport: z.boolean().default(false),
+      }),
+    )
+    .optional(),
+  /**
+   * On-site customer acknowledgment — the digital version of the paper form's
+   * signature box. Either the signature arrives or skippedReason says why not;
+   * both absent just means an older PWA bundle.
+   */
+  acknowledgment: z
+    .object({
+      signerName: z.string().trim().min(1).max(200),
+      signatureImage: z.string().max(400_000), // data-URL PNG, same cap as estimate signing
+      acknowledgedAt: z.string().min(1),
+    })
+    .optional(),
+  ackSkippedReason: z.string().trim().min(1).max(500).optional(),
+  /**
    * Self-describing findings for the ledger — the title and citations travel
    * with the push because the server has no copy of the checklist.
    *
@@ -298,6 +327,11 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     contractorReviewed: body.contractorReviewed,
     itemsJson: JSON.stringify(body.items),
     loadCalcJson: body.loadCalc !== undefined ? JSON.stringify(body.loadCalc) : null,
+    sectionNotesJson: body.sectionNotes !== undefined ? JSON.stringify(body.sectionNotes) : null,
+    customerSignerName: body.acknowledgment?.signerName ?? null,
+    customerSignatureImage: body.acknowledgment?.signatureImage ?? null,
+    acknowledgedAt: body.acknowledgment ? new Date(body.acknowledgment.acknowledgedAt) : null,
+    ackSkippedReason: body.acknowledgment ? null : body.ackSkippedReason ?? null,
     appVersion: body.appVersion ?? null,
   };
 
@@ -417,6 +451,45 @@ healthRecordTechRouter.put(
     res.status(201).json({ success: true, data: { id: photoId, sizeBytes: body.length } });
   }),
 );
+
+/**
+ * POST /health-record/inspections/:id/email — the assigned technician emails
+ * the finished report to the customer from the field (Kyle, 2026-08-24: the
+ * tech can send from the PWA). Same gate and same delivery log as the CRM
+ * door — sendHealthReportEmail refuses an unreviewed critical report either
+ * way. A tech can only send a record they made or one on a visit they were
+ * assigned to; the address is always the account's, never typed in the field.
+ */
+healthRecordTechRouter.post("/inspections/:id/email", asyncHandler(async (req: TechRequest, res) => {
+  const inspectionId = readParam(req, "id");
+  const inspection = await prisma.healthInspection.findUnique({
+    where: { id: inspectionId },
+    select: { id: true, visitId: true, technicianId: true },
+  });
+  if (!inspection) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Inspection not found" } });
+    return;
+  }
+  const isTheirs =
+    inspection.technicianId === req.technician!.id ||
+    Boolean(await prisma.visitAssignment.findFirst({
+      where: { visitId: inspection.visitId, technicianId: req.technician!.id },
+      select: { id: true },
+    }));
+  if (!isTheirs) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This inspection is not on one of your visits" } });
+    return;
+  }
+
+  const result = await sendHealthReportEmail(inspectionId, {
+    sentBy: `tech:${req.technician!.id}`,
+  });
+  if (!result.sent) {
+    res.status(409).json({ success: false, error: { code: "not_sent", message: result.reason } });
+    return;
+  }
+  res.json({ success: true, data: { sentTo: result.sentTo, documentId: result.documentId } });
+}));
 
 /**
  * PUT /health-record/visits/:visitId/photos/:photoId — job-site photo upload
@@ -836,8 +909,20 @@ const inspectionSummary = {
   naCount: true,
   criticalFindingsJson: true,
   contractorReviewed: true,
+  reviewedBy: true,
   syncedAt: true,
   technician: { select: { id: true, name: true, employeeNumber: true } },
+  // ── For the account page's Health Records section (Kyle, 2026-08-24) ──
+  // Which address the record is for, whether the customer acknowledged it on
+  // site, and every time the report was actually emailed (delivery proof).
+  acknowledgedAt: true,
+  customerSignerName: true,
+  ackSkippedReason: true,
+  property: { select: { id: true, addressLine1: true, city: true, state: true } },
+  deliveries: {
+    orderBy: { sentAt: "desc" as const },
+    select: { id: true, sentTo: true, sentBy: true, sentAt: true },
+  },
 } as const;
 
 /** Inspection history for a customer (newest first) — the retention record. */
@@ -969,6 +1054,31 @@ healthRecordAdminRouter.post("/inspections/:id/report", asyncHandler(async (req,
   const result = await generateHealthReport(id);
   res.status(201).json(result);
 }));
+
+/**
+ * POST /health-record-admin/inspections/:id/email — email the report to the
+ * customer from the CRM. Body may carry `to` to override the account address
+ * (the tech door can't — only the office overrides). Renders fresh, refuses an
+ * unreviewed critical report, and logs the delivery.
+ */
+healthRecordAdminRouter.post("/inspections/:id/email", asyncHandler(async (req, res) => {
+  const body = z.object({ to: z.string().email().optional() }).parse(req.body ?? {});
+  const result = await sendHealthReportEmail(readParam(req, "id"), {
+    to: body.to ?? null,
+    sentBy: "owner:crm",
+  });
+  if (!result.sent) {
+    res.status(409).json({ sent: false, error: result.reason });
+    return;
+  }
+  res.json({ sent: true, sentTo: result.sentTo, documentId: result.documentId });
+}));
+
+// The account page's Health Records feed rides the EXISTING
+// GET /customers/:customerId/inspections route above — its shared
+// inspectionSummary select was extended (property address, acknowledgment,
+// deliveries) rather than adding a second route at the same path, which
+// Express would never reach.
 
 // ─── FINDING LEDGER (owner) ────────────────────────────────────────────────────
 

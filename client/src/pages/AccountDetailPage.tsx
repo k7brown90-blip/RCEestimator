@@ -456,7 +456,7 @@ export function AccountDetailPage() {
         )}
       />
 
-      <HealthInspectionHistory summary={summary} />
+      <HealthInspectionHistory accountId={account.id} customerEmail={account.email} />
     </div>
   );
 }
@@ -940,49 +940,129 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: "
   );
 }
 
-function HealthInspectionHistory({ summary }: { summary: AccountSummary }) {
-  const { inspections, properties } = summary;
-  if (inspections.length === 0) return null;
+/**
+ * The account's dedicated Health Records space (Kyle, 2026-08-24: "This health
+ * record needs submitted and saved to their account so there needs to be a
+ * dedicated space to view and even email the document from the app.").
+ *
+ * Every inspection across the account's addresses, with the two actions that
+ * matter — open the report PDF, and email it to the customer — plus the status
+ * trail: contractor review, the on-site customer acknowledgment, and every
+ * delivery that actually went out. Reads the enriched
+ * /customers/:id/inspections feed rather than the account summary, because
+ * acknowledgment and delivery proof live there.
+ */
+function HealthInspectionHistory({ accountId, customerEmail }: { accountId: string; customerEmail?: string | null }) {
+  const queryClient = useQueryClient();
+  const { data: inspections } = useQuery({
+    queryKey: ["accountHealthRecords", accountId],
+    queryFn: () => api.customerInspections(accountId),
+  });
+  const [emailError, setEmailError] = useState<string | null>(null);
 
-  const propertyLabel = (propertyId: string) =>
-    properties.find((p) => p.id === propertyId)?.addressLine1 ?? "Unknown address";
+  const viewReport = useMutation({
+    mutationFn: (inspectionId: string) => api.generateHealthReport(inspectionId),
+    onSuccess: (r) => void openProtectedPdf(`/documents/${r.documentId}/pdf`),
+  });
+  const emailReport = useMutation({
+    mutationFn: (inspectionId: string) => api.emailHealthReport(inspectionId),
+    onSuccess: () => {
+      setEmailError(null);
+      void queryClient.invalidateQueries({ queryKey: ["accountHealthRecords", accountId] });
+    },
+    onError: (err) => setEmailError((err as Error).message),
+  });
+
+  if (!inspections || inspections.length === 0) return null;
+
+  const criticalsOf = (json: string): string[] => {
+    try { return JSON.parse(json) as string[]; } catch { return []; }
+  };
 
   return (
     <section className="card mt-5 p-4">
-      <h2 className="text-lg font-semibold">Electrical health record history</h2>
+      <h2 className="text-lg font-semibold">Electrical Health Records</h2>
       <p className="text-xs text-rce-muted">
-        Inspections recorded from the field app, per address — the account's retention record.
+        Assessments recorded from the field app, per address. View the report, or email it to the
+        customer — every send is logged with when and where it went.
       </p>
+      {emailError && <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{emailError}</p>}
       <ul className="mt-3 space-y-2">
-        {inspections.map((inspection) => (
-          <li key={inspection.id} className="rounded-lg border border-rce-border p-3 text-sm">
-            <Link to={`/visits/${inspection.visitId}`} className="flex flex-wrap items-center justify-between gap-2">
-              <span>
-                <span className="mr-2">
-                  <InspectionResultChip
-                    criticalCount={inspection.criticalFindings.length}
-                    failCount={inspection.failCount}
-                    monitorCount={inspection.monitorCount}
-                    schemaVersion={inspection.schemaVersion}
-                    score={inspection.score}
-                  />
-                </span>
-                {shortDate(inspection.inspectionDate)} · {propertyLabel(inspection.propertyId)} ·{" "}
-                {inspection.itemsAssessed} items
-                {inspection.scope === "phase1" && " (Phase 1)"}
-                {inspection.criticalFindings.length > 0 && (
-                  <span className="ml-2 font-semibold text-red-600">
-                    ⚠ {inspection.criticalFindings.join(", ")}
+        {inspections.map((inspection) => {
+          const criticals = criticalsOf(inspection.criticalFindingsJson);
+          const needsReview = criticals.length > 0 && !inspection.contractorReviewed;
+          return (
+            <li key={inspection.id} className="rounded-lg border border-rce-border p-3 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  <span className="mr-2">
+                    <InspectionResultChip
+                      criticalCount={criticals.length}
+                      failCount={inspection.failCount}
+                      monitorCount={inspection.monitorCount}
+                      schemaVersion={inspection.schemaVersion}
+                      score={inspection.score}
+                    />
                   </span>
-                )}
-                {!inspection.contractorReviewed && inspection.criticalFindings.length > 0 && (
-                  <span className="ml-2 rounded bg-amber-100 px-1 text-xs text-amber-800">awaiting review</span>
-                )}
-              </span>
-              <span className="text-xs text-rce-muted">open visit →</span>
-            </Link>
-          </li>
-        ))}
+                  {shortDate(inspection.inspectionDate)} ·{" "}
+                  {inspection.property
+                    ? `${inspection.property.addressLine1}, ${inspection.property.city}`
+                    : "Unknown address"}{" "}
+                  · {inspection.itemsAssessed} items
+                  {inspection.scope === "phase1" && " (Phase 1)"}
+                  {inspection.technician && ` · ${inspection.technician.name}`}
+                  {criticals.length > 0 && (
+                    <span className="ml-2 font-semibold text-red-600">⚠ {criticals.join(", ")}</span>
+                  )}
+                  {needsReview && (
+                    <span className="ml-2 rounded bg-amber-100 px-1 text-xs text-amber-800">awaiting review</span>
+                  )}
+                </span>
+                <Link to={`/visits/${inspection.visitId}`} className="text-xs text-rce-muted hover:text-rce-accent">
+                  open visit →
+                </Link>
+              </div>
+
+              <p className="mt-1 text-xs text-rce-soft">
+                {inspection.acknowledgedAt
+                  ? `Reviewed with ${inspection.customerSignerName ?? "the customer"} on site — signed.`
+                  : inspection.ackSkippedReason
+                    ? `On-site signature skipped: ${inspection.ackSkippedReason}.`
+                    : "No on-site acknowledgment on this record."}
+                {inspection.contractorReviewed &&
+                  ` Contractor review: ${inspection.reviewedBy ?? "completed"}.`}
+              </p>
+
+              {(inspection.deliveries ?? []).length > 0 && (
+                <p className="mt-1 text-xs text-rce-success">
+                  {(inspection.deliveries ?? []).map((d) =>
+                    `Emailed to ${d.sentTo} ${shortDate(d.sentAt)}${d.sentBy.startsWith("tech:") ? " (from the field)" : ""}`,
+                  ).join(" · ")}
+                </p>
+              )}
+
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  className="btn btn-secondary text-xs"
+                  disabled={viewReport.isPending}
+                  onClick={() => viewReport.mutate(inspection.id)}
+                >
+                  {viewReport.isPending ? "Rendering…" : "View report"}
+                </button>
+                <button
+                  className="btn btn-primary text-xs"
+                  disabled={emailReport.isPending || needsReview}
+                  title={needsReview ? "Critical finding — contractor review required before this can be emailed" : undefined}
+                  onClick={() => emailReport.mutate(inspection.id)}
+                >
+                  {emailReport.isPending
+                    ? "Sending…"
+                    : `Email to customer${customerEmail ? ` (${customerEmail})` : ""}`}
+                </button>
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

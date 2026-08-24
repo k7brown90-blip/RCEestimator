@@ -52,6 +52,15 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
     },
   });
 
+  // Email the report to the customer (2026-08-24). The server refuses an
+  // unreviewed critical report and logs every send as a delivery.
+  const [emailResult, setEmailResult] = useState<string | null>(null);
+  const emailMutation = useMutation({
+    mutationFn: (inspectionId: string) => api.emailHealthReport(inspectionId),
+    onSuccess: (r) => setEmailResult(`Sent to ${r.sentTo}.`),
+    onError: (err) => setEmailResult((err as Error).message),
+  });
+
   const criticalOf = (json: string): string[] => {
     try {
       return JSON.parse(json) as string[];
@@ -180,6 +189,23 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                       >
                         {reportMutation.isPending ? "Generating…" : "Generate PDF report"}
                       </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary ml-2 mt-2 text-xs"
+                        disabled={
+                          emailMutation.isPending ||
+                          (criticals.length > 0 && !inspectionDetail.contractorReviewed)
+                        }
+                        title={
+                          criticals.length > 0 && !inspectionDetail.contractorReviewed
+                            ? "Critical finding — contractor review required before this can be emailed"
+                            : undefined
+                        }
+                        onClick={() => emailMutation.mutate(inspection.id)}
+                      >
+                        {emailMutation.isPending ? "Sending…" : "Email report to customer"}
+                      </button>
+                      {emailResult && <p className="mt-1 text-xs">{emailResult}</p>}
                     </div>
                   )}
                 </li>

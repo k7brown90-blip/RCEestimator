@@ -413,6 +413,20 @@ model HealthInspection {
   reviewedBy           String?
   itemsJson            String // full ItemResult[] from the PWA
   loadCalcJson         String? // { input, result } NEC Art. 220 record
+  // ── Per-section technician notes (Kyle, 2026-08-24) ──
+  // [{ group, note, includeOnReport }]. Internal by default; a note reaches the
+  // customer's report only when the technician promoted it with the toggle.
+  sectionNotesJson     String?
+  // ── On-site customer acknowledgment (Kyle, 2026-08-24) ──
+  // The digital version of the paper form's signature box: findings were reviewed
+  // with the customer, drawn signature captured on the technician's device.
+  // Either a signature exists or ackSkippedReason says why not — absence is
+  // always deliberate, never an oversight, because the record only protects
+  // anyone if delivery and review can be proven later.
+  customerSignerName     String?
+  customerSignatureImage String? // data-URL PNG from the PWA's signature pad
+  acknowledgedAt         DateTime?
+  ackSkippedReason       String?
   appVersion           String?
   syncedAt             DateTime   @default(now())
   visit                Visit      @relation(fields: [visitId], references: [id], onDelete: Restrict)
@@ -420,6 +434,7 @@ model HealthInspection {
   customer             Customer   @relation(fields: [customerId], references: [id], onDelete: Restrict)
   technician           Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
   photos               InspectionPhoto[]
+  deliveries           HealthReportDelivery[]
   // ── Protocol v2 structured capture ──
   items                InspectionItem[]
   gfciCoverage         GfciCoverage[]
@@ -427,6 +442,22 @@ model HealthInspection {
 
   @@index([customerId, inspectionDate])
   @@index([propertyId, inspectionDate])
+}
+
+// One row per health-report email actually sent — when, to what address, by whom.
+// This is the delivery proof the whole product's liability posture rests on:
+// a report that exists but was never demonstrably received is Kyle's word
+// against the customer's, in exactly the scenario the record exists for.
+model HealthReportDelivery {
+  id           String   @id @default(cuid())
+  inspectionId String
+  documentId   String
+  sentTo       String
+  sentBy       String   // "owner:crm" | "tech:<technicianId>"
+  sentAt       DateTime @default(now())
+  inspection   HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+
+  @@index([inspectionId, sentAt])
 }
 
 // Photo evidence uploaded from the field PWA. Stored in Postgres (bytea) so the

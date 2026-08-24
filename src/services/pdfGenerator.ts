@@ -413,6 +413,22 @@ const RESULT_LABEL: Record<string, string> = {
   NA: "Not applicable (logged)",
 };
 
+/** Group labels for section notes, mirroring field/src/ui/screens/ChecklistScreen.tsx. */
+const SECTION_GROUP_LABEL: Record<string, string> = {
+  "service-entrance": "Service entrance & supply",
+  "main-disconnect": "Main disconnect & working space",
+  "bonding-grounding": "Bonding & grounding",
+  "panel-condition": "Panel condition & overcurrent",
+  "panel-measurements": "Panel measurements",
+  surge: "Surge protection",
+  "equipment-disconnects": "Equipment disconnects",
+  "subpanel-bonding": "Subpanel bonding",
+  "branch-protection": "Branch-circuit protection",
+  devices: "Devices, receptacles & lighting",
+  "life-safety": "Life safety",
+  "metro-amendments": "Metro amendments",
+};
+
 /** Section roll-ups, mirroring field/src/domain/report.ts. */
 const ROLLUP_GROUPS: { label: string; itemIds: string[] }[] = [
   { label: "Service Entrance", itemIds: ["A1", "A2", "A3", "B1", "B2"] },
@@ -724,11 +740,63 @@ export async function generateHealthReport(
     }
   }
 
+  // ── Promoted section notes (Kyle, 2026-08-24) ──
+  // Internal notes stay internal; only rows the technician toggled
+  // "includeOnReport" reach this document.
+  const sectionNotes = (() => {
+    try {
+      const rows = inspection.sectionNotesJson
+        ? (JSON.parse(inspection.sectionNotesJson) as Array<{ group: string; note: string; includeOnReport?: boolean }>)
+        : [];
+      return rows.filter((row) => row.includeOnReport && row.note?.trim());
+    } catch {
+      return [];
+    }
+  })();
+  if (sectionNotes.length > 0) {
+    doc.fillColor(BRAND.cedar).fontSize(12).text("Technician Notes by Section", { underline: true });
+    doc.fontSize(9);
+    for (const row of sectionNotes) {
+      doc.fillColor(BRAND.text).text(`${SECTION_GROUP_LABEL[row.group] ?? row.group}: ${row.note.trim()}`);
+    }
+    doc.moveDown(0.5);
+  }
+
   doc.fillColor(BRAND.muted).fontSize(8).text(
     `Photo evidence on file: ${inspection.photos.length} image(s). ` +
     `Contractor review: ${inspection.contractorReviewed ? `completed${inspection.reviewedBy ? ` by ${inspection.reviewedBy}` : ""}` : "pending"}.`,
   );
   doc.moveDown(0.5);
+
+  // ── Customer acknowledgment (Kyle, 2026-08-24) ──
+  // The digital counterpart of the paper form's signature box. Declined items
+  // are their own documents (finding declinations); this block proves the
+  // findings were reviewed with the customer on site.
+  if (inspection.acknowledgedAt && inspection.customerSignerName) {
+    const ackDate = inspection.acknowledgedAt.toLocaleDateString("en-US", { timeZone: "America/Chicago" });
+    doc.fillColor(BRAND.cedar).fontSize(12).text("Customer Acknowledgment", { underline: true });
+    doc.fillColor(BRAND.text).fontSize(9).text(
+      `The findings above — including any item needing correction or monitoring — were reviewed ` +
+      `with ${inspection.customerSignerName} on site on ${ackDate}.`,
+    );
+    if (inspection.customerSignatureImage?.startsWith("data:image/png;base64,")) {
+      try {
+        const png = Buffer.from(inspection.customerSignatureImage.split(",")[1], "base64");
+        doc.image(png, { fit: [180, 60] });
+      } catch {
+        doc.fillColor(BRAND.muted).text("(signature image could not be rendered)");
+      }
+    }
+    doc.fillColor(BRAND.muted).fontSize(8).text(`Signed: ${inspection.customerSignerName} · ${ackDate}`);
+    doc.fillColor(BRAND.text);
+    doc.moveDown(0.5);
+  } else if (inspection.ackSkippedReason) {
+    doc.fillColor(BRAND.muted).fontSize(8).text(
+      `On-site acknowledgment not signed — ${inspection.ackSkippedReason}.`,
+    );
+    doc.fillColor(BRAND.text);
+    doc.moveDown(0.5);
+  }
 
   // ── Protocol v2 structured capture — enclosures, measurements, disclosures ──
   await addProtocolV2Section(doc, inspection.id, inspection.groundingTestMethod, dateStr);
