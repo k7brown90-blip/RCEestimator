@@ -279,9 +279,10 @@ export async function createInvoiceCheckoutSession(
       // Face amount — what the invoice is credited. The fee stays a fee.
       baseAmount: String(amount),
     },
-    // Gated: enabling automatic tax without an ACTIVE registration collects
-    // nothing while appearing on. Kyle registers TN in the Dashboard first.
-    ...(process.env.STRIPE_AUTOMATIC_TAX === "1" ? { automatic_tax: { enabled: true } } : {}),
+    // NO SALES TAX — Kyle, 2026-08-25: "I don't charge sales tax, its a
+    // service business." The TN contractor posture: tax is paid on materials
+    // at purchase; the customer's invoice carries none. The automatic_tax
+    // gate that used to sit here is deliberately gone, not just off.
     integration_identifier: `rce-invoice-${randomSuffix()}`,
     success_url: `${origin}/e/${full!.token}?paid=1`,
     cancel_url: `${origin}/e/${full!.token}`,
@@ -321,6 +322,13 @@ export async function handleStripeWebhook(
     // Face amount only — the 3% card fee is a fee, never credit against the bill.
     const base = Number(session.metadata?.baseAmount);
     const amount = Number.isFinite(base) && base > 0 ? base : (session.amount_total ?? 0) / 100;
+    // Receipt goes out only on the FIRST paid recording — Stripe retries and
+    // duplicate events must not re-email the customer.
+    const existed = await prisma.payment.findUnique({
+      where: { stripeSessionId: session.id },
+      select: { id: true, status: true },
+    });
+    const firstPaidRecording = !existed || existed.status !== "paid";
     await prisma.payment.upsert({
       where: { stripeSessionId: session.id },
       create: {
@@ -344,6 +352,16 @@ export async function handleStripeWebhook(
       `Payment received: $${amount.toFixed(2)}`,
       `Invoice ${session.metadata?.estimateNumber ?? "?"} was paid online via Stripe.\nAmount: $${amount.toFixed(2)}\nSession: ${session.id}`,
     ).catch(() => {});
+    // The customer's receipt (Kyle, 2026-08-25: "final receipts to email that
+    // show something is paid"). Fire-and-forget — the payment is already durable.
+    if (firstPaidRecording) {
+      const row = await prisma.payment.findUnique({ where: { stripeSessionId: session.id }, select: { id: true } });
+      if (row) {
+        const { sendPaymentReceiptEmail } = await import("./paymentReceipts");
+        sendPaymentReceiptEmail(prisma, row.id).catch((err) =>
+          console.error("[stripe] receipt email failed:", err));
+      }
+    }
   };
 
   switch (event.type) {

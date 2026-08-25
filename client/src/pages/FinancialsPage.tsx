@@ -239,7 +239,7 @@ export function FinancialsPage() {
             <li>{stripeStatus.webhookSecretSet ? "✅" : "⬜"} Webhook receiving payments</li>
             <li>{stripeStatus.keyMode === "live" ? "✅" : "⬜"} Live keys installed — create a <b>restricted</b> key (rk_) in the Dashboard, plus a live webhook endpoint, and swap both on Railway</li>
             <li>{stripeStatus.restrictedKey ? "✅" : "⬜"} Using a restricted key (least privilege){!stripeStatus.restrictedKey && " — currently a full secret key"}</li>
-            <li>{stripeStatus.automaticTax ? "✅" : "⬜"} Sales tax — register Tennessee in Dashboard → Tax (head office + registration), then flip it on here; until then no tax is collected</li>
+            <li>✅ Sales tax — not applicable: service business, no sales tax charged (your ruling, 8/25). Materials tax is paid at purchase and lands in receipts.</li>
             <li>✅ 3% card fee — real and disclosed: the pay page offers bank transfer at face value or card +3%</li>
           </ul>
         </section>

@@ -101,7 +101,6 @@ export interface StripeStatus {
   keyMode: "live" | "test" | "none";
   restrictedKey: boolean;
   webhookSecretSet: boolean;
-  automaticTax: boolean;
 }
 
 export interface CompanyBillRow {

@@ -131,6 +131,13 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
       paidAt: body.paidAt ? new Date(body.paidAt) : new Date(),
     },
   });
+  // A recorded cash/check tied to an invoice emails the customer their receipt
+  // too (Kyle, 2026-08-25) — same document either way the money arrived.
+  if (payment.estimateId) {
+    const { sendPaymentReceiptEmail } = await import("../services/paymentReceipts");
+    sendPaymentReceiptEmail(prisma, payment.id).catch((err) =>
+      console.error("[financials] receipt email failed:", err));
+  }
   res.status(201).json(payment);
 }));
 
@@ -459,7 +466,6 @@ financialsRouter.get("/stripe-status", asyncHandler(async (_req, res) => {
     keyMode: key.startsWith("sk_live") || key.startsWith("rk_live") ? "live" : key ? "test" : "none",
     restrictedKey: key.startsWith("rk_"),
     webhookSecretSet: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
-    automaticTax: process.env.STRIPE_AUTOMATIC_TAX === "1",
   });
 }));
 
