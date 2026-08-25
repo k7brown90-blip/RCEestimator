@@ -26,7 +26,7 @@
  *
  * WHAT IS DELIBERATELY NOT ON THIS PAGE: the ACH account and routing numbers that the emailed
  * PDFs carry. Payment TERMS are here because the prompt asks for them and the customer needs to
- * know a card costs 3% more; the account credentials are not, because this is a long-lived URL
+ * know non-card payment saves 3%; the account credentials are not, because this is a long-lived URL
  * whose only protection is a token that will be forwarded around in email. Payment processing is
  * explicitly out of scope for P027, so nothing on this page needs them. Flagged for Kyle.
  */
@@ -444,8 +444,7 @@ export function renderEstimatePage(
                             padding:12px 24px;border-radius:6px;font-size:16px;font-weight:600;">
                     Pay your deposit — $${opts.deposit.due.toFixed(2)}
                   </a>
-                  <p style="font-size:12px;color:#555;margin:8px 0 0;">Bank transfer has no fee; cards
-                  add a 3% processing fee. Deposits are non-refundable up to $300 if the job is cancelled.</p>
+                  <p style="font-size:12px;color:#555;margin:8px 0 0;">Save 3% by paying with bank transfer, cash, check, or Zelle. Deposits are non-refundable up to $300 if the job is cancelled.</p>
                 </div>
                 <p style="font-size:13px;color:#555;margin:10px 0 0;">Questions? Call ${BUSINESS_PHONE}.</p>`
              : opts.deposit?.paidInFull
@@ -664,8 +663,7 @@ export function renderEstimatePage(
        ${included}
 
        <div class="box">
-         <strong>Payment.</strong> We accept ACH bank transfer (no fee) or credit / debit card
-         (a 3% processing fee is added to card payments). Payment details are provided with your
+         <strong>Payment.</strong> Cards are welcome at the invoice amount — or save 3% by paying with bank transfer, cash, check, or Zelle. Payment details are provided with your
          invoice when the work is complete.
        </div>
 

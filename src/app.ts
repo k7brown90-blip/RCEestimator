@@ -1232,9 +1232,11 @@ app.use("/e", estimatePageRouter);
  * unsigned, void, and already-paid invoices.
  */
 /**
- * The chooser (Phase 5): bank transfer at face value, or card with the 3%
- * processing fee the invoice email has always promised — now real, and
- * disclosed here AND on the Stripe line item before any card is entered.
+ * The chooser — reframed on Kyle's ruling (2026-08-25): the invoice total IS
+ * the card price; non-card payment earns a 3% DISCOUNT. "To be legal it
+ * cannot be seen as a punishment for using a card but that does not mean
+ * there can't be a reward for other forms of payment." The page leads with
+ * the reward, never a fee.
  */
 app.get("/pay/:token", asyncHandler(async (req, res) => {
   const token = readParam(req, "token");
@@ -1257,13 +1259,15 @@ app.get("/pay/:token", asyncHandler(async (req, res) => {
   res.send(page(`
     <p style="font-size:15px;">${payType === "deposit" ? "Deposit (1/3)" : "Payment"} on invoice
     <b>${chargeable.number}</b> — ${chargeable.title}</p>
+    <p style="font-size:14px;">Amount due: <b>$${chargeable.amount.toFixed(2)}</b></p>
     <a style="${btn}background:#1a5c2e;color:#fff;" href="/pay/${token}/checkout?method=bank${typeParam}">
-      Bank transfer — $${chargeable.amount.toFixed(2)}<br><span style="font-size:12px;font-weight:400;">no fee</span>
+      Bank transfer — $${chargeable.discounted.toFixed(2)}<br>
+      <span style="font-size:12px;font-weight:400;">save 3% ($${chargeable.discount.toFixed(2)}) — our thank-you for paying by bank, cash, check, or Zelle</span>
     </a>
     <a style="${btn}background:#fff;color:#1a5c2e;border:2px solid #1a5c2e;" href="/pay/${token}/checkout?method=card${typeParam}">
-      Credit / debit card — $${(chargeable.amount + chargeable.cardFee).toFixed(2)}<br>
-      <span style="font-size:12px;font-weight:400;">includes the 3% card processing fee ($${chargeable.cardFee.toFixed(2)})</span>
+      Credit / debit card — $${chargeable.amount.toFixed(2)}
     </a>
+    <p style="color:#666;font-size:12px;">Paying by cash, check, or Zelle instead? The same 3% comes off — just let us know.</p>
     ${payType === "deposit" ? `<p style="color:#666;font-size:12px;">Deposits are non-refundable up to $300 if the job is cancelled.</p>` : ""}
   `));
 }));

@@ -86,16 +86,20 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 export const DEPOSIT_NONREFUNDABLE_CAP = 300;
 
 /**
- * The card surcharge (Phase 5). The invoice email has promised "ACH bank
- * transfer (no fee) or credit / debit card (a 3% processing fee)" since
- * 2026-08-21 — the online flow now honors it: the pay link opens a chooser,
- * bank transfer charges the face amount, card adds 3% as its own line item.
- * The fee line is metadata-separated so the webhook credits only the face
- * amount against the invoice — the fee is a fee, not a payment toward work.
- * Disclosed on the chooser AND the Stripe line item (TN permits surcharging
- * with disclosure at or below cost of acceptance).
+ * The NON-CARD DISCOUNT (reframed on Kyle's ruling, 2026-08-25): "the
+ * additional 3% is charged regardless, checks, cash, zelle, save 3%. To be
+ * legal it cannot be seen as a punishment for using a card but that does not
+ * mean there can't be a reward for other forms of payment."
+ *
+ * So: the INVOICE TOTAL IS THE CARD PRICE. A card pays it in full, no fee
+ * line, nothing added. Every other method — bank transfer, cash, check,
+ * Zelle — earns a 3% DISCOUNT off what's due, recorded as its own visible
+ * Payment row (method "discount") so the invoice still closes to exactly
+ * zero and the books show real money and reward separately. A discount rows
+ * counts toward the balance and the deposit gate, but never toward
+ * "collected" in the financials — it isn't money, it's a thank-you.
  */
-export const CARD_FEE_PCT = 0.03;
+export const NONCARD_DISCOUNT_PCT = 0.03;
 
 export function depositDueOf(billedTotal: number): number {
   return round2(billedTotal / 3);
@@ -181,7 +185,9 @@ export async function chargeableAmount(
   estimateToken: string,
   payType: "balance" | "deposit",
 ): Promise<
-  | { ok: true; estimateId: string; number: string; title: string; amount: number; cardFee: number }
+  // amount = the invoice (card) price due. discount/discounted = the 3%
+  // non-card reward and the resulting bank/cash/check/Zelle price.
+  | { ok: true; estimateId: string; number: string; title: string; amount: number; discount: number; discounted: number }
   | { ok: false; reason: string }
 > {
   const est = await prisma.issuedEstimate.findUnique({
@@ -201,13 +207,16 @@ export async function chargeableAmount(
     ? round2(Math.min(summary.depositDue - summary.depositPaid, summary.balance))
     : summary.balance;
   if (!(amount > 0)) return { ok: false, reason: "Nothing is due on this invoice." };
+  const discounted = round2(amount * (1 - NONCARD_DISCOUNT_PCT));
   return {
     ok: true,
     estimateId: est.id,
     number: summary.number,
     title: est.title,
     amount,
-    cardFee: round2(amount * CARD_FEE_PCT),
+    // Exact complement, so payment + discount always sums to precisely the due.
+    discount: round2(amount - discounted),
+    discounted,
   };
 }
 
@@ -225,10 +234,12 @@ export async function createInvoiceCheckoutSession(
 
   const chargeable = await chargeableAmount(prisma, estimateToken, payType);
   if (!chargeable.ok) return chargeable;
-  const { amount } = chargeable;
 
   const full = await prisma.issuedEstimate.findUnique({ where: { id: chargeable.estimateId } });
-  const cardFee = method === "card" ? chargeable.cardFee : 0;
+  // Card pays the invoice price. Bank pays the discounted price, and the 3%
+  // reward becomes its own recorded discount row via webhook metadata.
+  const charged = method === "bank" ? chargeable.discounted : chargeable.amount;
+  const discountApplied = method === "bank" ? chargeable.discount : 0;
 
   const session = await stripe().checkout.sessions.create({
     mode: "payment",
@@ -237,31 +248,22 @@ export async function createInvoiceCheckoutSession(
         quantity: 1,
         price_data: {
           currency: "usd",
-          unit_amount: Math.round(amount * 100),
+          unit_amount: Math.round(charged * 100),
           product_data: {
             name: payType === "deposit"
               ? `Deposit (1/3) — Invoice ${chargeable.number}: ${full!.title}`
               : `Invoice ${chargeable.number} — ${full!.title}`,
             // The non-refundable term is DISCLOSED where the card is entered —
             // a kept deposit the customer never saw coming is a chargeback.
-            description: payType === "deposit"
-              ? `${full!.serviceAddress ?? ""} — Deposits are non-refundable up to $${DEPOSIT_NONREFUNDABLE_CAP} if the job is cancelled.`.trim()
-              : full!.serviceAddress ?? undefined,
+            description: [
+              discountApplied > 0 ? `3% non-card discount applied (−$${discountApplied.toFixed(2)}).` : null,
+              payType === "deposit"
+                ? `${full!.serviceAddress ?? ""} — Deposits are non-refundable up to $${DEPOSIT_NONREFUNDABLE_CAP} if the job is cancelled.`.trim()
+                : full!.serviceAddress ?? null,
+            ].filter(Boolean).join(" ") || undefined,
           },
         },
       },
-      // The fee is its own line so the receipt says exactly what it was, and
-      // the webhook can credit only the face amount against the invoice.
-      ...(cardFee > 0
-        ? [{
-          quantity: 1,
-          price_data: {
-            currency: "usd",
-            unit_amount: Math.round(cardFee * 100),
-            product_data: { name: "Card processing fee (3%)" },
-          },
-        }]
-        : []),
     ],
     customer_email: full!.customerEmail ?? undefined,
     // Method steering via EXCLUSION, per Stripe's own guidance — never
@@ -277,8 +279,10 @@ export async function createInvoiceCheckoutSession(
       customerId: full!.customerId,
       visitId: full!.jobVisitId ?? "",
       kind: payType === "deposit" ? "deposit" : "final",
-      // Face amount — what the invoice is credited. The fee stays a fee.
-      baseAmount: String(amount),
+      // The money actually moving. The discount rides separately so the
+      // webhook can record both and the invoice closes to exactly zero.
+      baseAmount: String(charged),
+      discountAmount: String(discountApplied),
     },
     // NO SALES TAX — Kyle, 2026-08-25: "I don't charge sales tax, its a
     // service business." The TN contractor posture: tax is paid on materials
@@ -320,7 +324,7 @@ export async function handleStripeWebhook(
     // record only when the money is actually in flight or landed.
     if (session.payment_status === "unpaid") return;
     const estimateId = session.metadata?.estimateId ?? null;
-    // Face amount only — the 3% card fee is a fee, never credit against the bill.
+    // The money that actually moved (the discount rides as its own row below).
     const base = Number(session.metadata?.baseAmount);
     const amount = Number.isFinite(base) && base > 0 ? base : (session.amount_total ?? 0) / 100;
     // Receipt goes out only on the FIRST paid recording — Stripe retries and
@@ -353,6 +357,26 @@ export async function handleStripeWebhook(
       `Payment received: $${amount.toFixed(2)}`,
       `Invoice ${session.metadata?.estimateNumber ?? "?"} was paid online via Stripe.\nAmount: $${amount.toFixed(2)}\nSession: ${session.id}`,
     ).catch(() => {});
+    // The 3% non-card reward (Kyle's ruling): a bank payment carries its
+    // discount as its own row, so the balance closes to zero and the books
+    // show money and reward separately. First recording only.
+    const discountAmt = Number(session.metadata?.discountAmount);
+    if (firstPaidRecording && Number.isFinite(discountAmt) && discountAmt > 0) {
+      await prisma.payment.create({
+        data: {
+          estimateId,
+          customerId: session.metadata?.customerId || null,
+          visitId: session.metadata?.visitId || null,
+          amount: discountAmt,
+          method: "discount",
+          kind: session.metadata?.kind === "deposit" ? "deposit" : "final",
+          status: "paid",
+          paidAt: new Date(),
+          note: `3% non-card discount (bank transfer, session ${session.id})`,
+        },
+      });
+    }
+
     // The customer's receipt (Kyle, 2026-08-25: "final receipts to email that
     // show something is paid"). Fire-and-forget — the payment is already durable.
     if (firstPaidRecording) {

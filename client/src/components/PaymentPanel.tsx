@@ -29,6 +29,10 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
   const [amount, setAmount] = useState("");
   // Methods the system can't detect (Kyle, 2026-08-25): cash, check, Zelle.
   const [method, setMethod] = useState<"cash" | "check" | "zelle">("check");
+  // The 3% non-card reward (Kyle's ruling): on by default — every non-card
+  // payment earns it. The companion discount row closes the gap to zero.
+  const [applyDiscount, setApplyDiscount] = useState(true);
+  const discountFor = (amt: number) => Math.round(amt * (3 / 97) * 100) / 100;
   const [error, setError] = useState<string | null>(null);
 
   const record = useMutation({
@@ -38,6 +42,7 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         method,
         kind: recording ?? "other",
         estimateId: info?.estimateId,
+        nonCardDiscount: applyDiscount ? discountFor(Number(amount)) : undefined,
       }),
     onSuccess: () => {
       setRecording(null); setAmount(""); setError(null);
@@ -110,15 +115,15 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
           <>
             <button
               className="btn btn-secondary text-sm"
-              onClick={() => { setRecording("deposit"); setAmount(depositRemaining.toFixed(2)); }}
+              onClick={() => { setRecording("deposit"); setAmount((Math.round(depositRemaining * 97) / 100).toFixed(2)); }}
             >
-              Record deposit (cash/check/Zelle)
+              Record deposit (cash/check/Zelle — saves 3%)
             </button>
             <button
               className="btn btn-secondary text-sm"
-              onClick={() => { setRecording("final"); setAmount(info.balance.toFixed(2)); }}
+              onClick={() => { setRecording("final"); setAmount((Math.round(info.balance * 97) / 100).toFixed(2)); }}
             >
-              Record payment (cash/check/Zelle)
+              Record payment (cash/check/Zelle — saves 3%)
             </button>
           </>
         )}
@@ -150,6 +155,15 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
             {record.isPending ? "Recording…" : "Record"}
           </button>
           <button className="btn text-sm" onClick={() => { setRecording(null); setError(null); }}>Cancel</button>
+          <label className="flex w-full items-center gap-2 text-xs text-rce-muted">
+            <input type="checkbox" checked={applyDiscount} onChange={(e) => setApplyDiscount(e.target.checked)} />
+            Apply the 3% non-card discount
+            {applyDiscount && Number(amount) > 0 && (
+              <span className="text-rce-success">
+                — {`$${discountFor(Number(amount)).toFixed(2)}`} credited as discount, settling {`$${(Number(amount) + discountFor(Number(amount))).toFixed(2)}`} of the invoice
+              </span>
+            )}
+          </label>
         </div>
       )}
       {error && <p className="mt-2 text-xs text-red-700">{error}</p>}

@@ -30,6 +30,15 @@ const METHOD_LABEL: Record<string, string> = {
   other: "paid",
 };
 
+/** The 3% non-card reward, as a line the customer can see on their receipt. */
+function discountRows(summary: { payments: { method: string; kind: string; amount: number }[] }): string {
+  const discounts = summary.payments.filter((p) => p.method === "discount");
+  if (discounts.length === 0) return "";
+  const total = discounts.reduce((s, d) => s + d.amount, 0);
+  return `<tr><td style="padding:4px 0;color:#1a5c2e;">3% non-card discount</td>
+    <td style="text-align:right;color:#1a5c2e;font-weight:600;">&minus;$${total.toFixed(2)}</td></tr>`;
+}
+
 /**
  * The deposit request (Kyle, 2026-08-25): the moment an estimate is signed —
  * either door — the customer gets "next step: your ⅓ deposit" with the pay
@@ -73,7 +82,7 @@ export async function sendDepositRequestEmail(
           Pay your deposit — $${due.toFixed(2)}
         </a>
       </p>
-      <p style="font-size:13px;color:#666;">Bank transfer has no fee; cards add a 3% processing fee.
+      <p style="font-size:13px;color:#666;">Save 3% by paying with bank transfer, cash, check, or Zelle — cards are welcome at the full amount.
       Deposits are non-refundable up to $300 if the job is cancelled. The balance is due at completion.</p>
       <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
   });
@@ -115,7 +124,8 @@ export async function sendPaymentReceiptEmail(
       <tr><td style="padding:4px 0;color:#666;">${KIND_LABEL[payment.kind] ?? "Payment"}</td>
         <td style="text-align:right;font-weight:600;">$${payment.amount.toFixed(2)} ${METHOD_LABEL[payment.method] ?? "paid"} on ${dateStr}</td></tr>
       <tr><td style="padding:4px 0;color:#666;">Invoice total</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
-      <tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>
+      ${discountRows(summary)}
+      <tr><td style="padding:4px 0;color:#666;">Paid + discounts to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>
       <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">${paidInFull ? "Balance" : "Remaining balance"}</td>
         <td style="text-align:right;font-weight:700;">${paidInFull ? "PAID IN FULL" : `$${summary.balance.toFixed(2)}`}</td></tr>
     </table>
