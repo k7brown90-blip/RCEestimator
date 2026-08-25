@@ -26,8 +26,63 @@ const METHOD_LABEL: Record<string, string> = {
   stripe: "paid online",
   cash: "paid in cash",
   check: "paid by check",
+  zelle: "paid via Zelle",
   other: "paid",
 };
+
+/**
+ * The deposit request (Kyle, 2026-08-25): the moment an estimate is signed —
+ * either door — the customer gets "next step: your ⅓ deposit" with the pay
+ * link, because a job can't be scheduled until the deposit is in and a
+ * customer who signed from their kitchen table has no other way to hear that.
+ * Skips itself when the deposit (or everything) is already paid — an
+ * in-person customer who tapped the QR before Kyle left doesn't get nagged.
+ */
+export async function sendDepositRequestEmail(
+  prisma: PrismaClient,
+  estimateId: string,
+  payBaseUrl: string,
+): Promise<void> {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { number: true, title: true, token: true, customerName: true, customerEmail: true, signedAt: true },
+  });
+  if (!est?.customerEmail || !est.signedAt) return;
+
+  const summary = await paymentSummary(prisma, estimateId, payBaseUrl);
+  if (!summary || summary.depositSatisfied || summary.paidInFull) return;
+
+  const due = Math.round((summary.depositDue - summary.depositPaid) * 100) / 100;
+  const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
+  const payUrl = `${payBaseUrl}/pay/${est.token}?type=deposit`;
+
+  const sent = await sendBrandedEmail({
+    to: est.customerEmail,
+    subject: `Next step — your deposit for ${est.title} ($${due.toFixed(2)})`,
+    headline: "Thank you — one step to get you scheduled",
+    bodyHtml: `
+      <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
+      <p style="font-size:15px;">Thank you for approving <strong>${escapeHtml(est.title)}</strong>
+      (invoice ${escapeHtml(est.number)}). To reserve your spot on the schedule, a deposit of
+      <strong>$${due.toFixed(2)}</strong> — one third of the total — is due up front. We can't book
+      the work until it's in.</p>
+      <p style="margin:24px 0;">
+        <a href="${escapeHtml(payUrl)}"
+           style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
+                  border-radius:6px;font-size:16px;font-weight:600;display:inline-block;">
+          Pay your deposit — $${due.toFixed(2)}
+        </a>
+      </p>
+      <p style="font-size:13px;color:#666;">Bank transfer has no fee; cards add a 3% processing fee.
+      Deposits are non-refundable up to $300 if the job is cancelled. The balance is due at completion.</p>
+      <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
+  });
+  if (sent) {
+    logSystemEvent("info", "stripe", `Deposit request emailed to ${est.customerEmail} — $${due.toFixed(2)} on ${est.number}`, {
+      estimateId,
+    });
+  }
+}
 
 export async function sendPaymentReceiptEmail(
   prisma: PrismaClient,

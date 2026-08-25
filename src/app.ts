@@ -2853,6 +2853,23 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
     console.error("[IssuedEstimate] job creation after in-person sign failed:", err);
   }
 
+  // The deposit request in writing (Kyle, 2026-08-25). In person the deposit
+  // is usually collected on the spot by QR, so this waits ten minutes and
+  // sends only if it still isn't in — the customer who says "I'll pay
+  // tonight" leaves with the link, the one who scanned the QR is never
+  // nagged. (A server restart in the window drops the courtesy email; the
+  // signed page itself still carries the same pay button.)
+  {
+    const estimateIdForDeposit = result.estimateId;
+    setTimeout(() => {
+      void (async () => {
+        const { sendDepositRequestEmail } = await import("./services/paymentReceipts");
+        const { publicBaseUrl } = await import("./services/issuedEstimateSend");
+        await sendDepositRequestEmail(prisma, estimateIdForDeposit, publicBaseUrl());
+      })().catch((err) => console.error("[IssuedEstimate] deposit request email failed:", err));
+    }, 10 * 60_000);
+  }
+
   res.json({ signed: true, estimateId: result.estimateId, jobVisitId });
 }));
 

@@ -109,7 +109,10 @@ financialsRouter.get("/payments", asyncHandler(async (req, res) => {
 financialsRouter.post("/payments", asyncHandler(async (req, res) => {
   const body = z.object({
     amount: z.number().positive(),
-    method: z.enum(["cash", "check", "other"]),
+    // Methods the system can't detect (Kyle, 2026-08-25: "when they write a
+    // check or do another form of payment that the system can't detect like
+    // cash or zelle"). Stripe rows only ever arrive via the webhook.
+    method: z.enum(["cash", "check", "zelle", "other"]),
     // deposit satisfies the scheduling gate (Kyle, 2026-08-25).
     kind: z.enum(["deposit", "final", "other"]).default("other"),
     customerId: z.string().optional(),

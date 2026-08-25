@@ -218,6 +218,12 @@ export interface RenderOpts {
    *                 and calls the API. The document below it is this same document.
    */
   channel?: "email" | "in_person";
+  /**
+   * The deposit ask on the signed page (Kyle, 2026-08-25: ⅓ deposit required
+   * before scheduling). Null/absent = not signed yet, or nothing due. The page
+   * a customer revisits after signing is the natural place the deposit lives.
+   */
+  deposit?: { due: number; satisfied: boolean; paidInFull: boolean; payUrl: string } | null;
 }
 
 export function renderEstimatePage(
@@ -419,8 +425,31 @@ export function renderEstimatePage(
                      style="display:block;margin:10px 0 0;max-width:280px;height:auto;border-bottom:1px solid #999;padding-bottom:4px;">`
              : ""
          }
-         <p style="font-size:13px;color:#555;margin:10px 0 0;">Thank you. We will be in touch to
-         schedule the work. Questions? Call ${BUSINESS_PHONE}.</p>
+         ${
+           opts.deposit && !opts.deposit.satisfied
+             ? `<div style="margin-top:16px;padding:14px;border:2px solid #1a5c2e;border-radius:8px;background:#f4f8f4;">
+                  <p style="font-size:15px;margin:0 0 8px;"><strong>Next step — your deposit:</strong>
+                  $${opts.deposit.due.toFixed(2)} (one third of the total) reserves your spot on the
+                  schedule. We can't book the work until it's in.</p>
+                  <a href="${escapeHtml(opts.deposit.payUrl)}"
+                     style="display:inline-block;background:#1a5c2e;color:#fff;text-decoration:none;
+                            padding:12px 24px;border-radius:6px;font-size:16px;font-weight:600;">
+                    Pay your deposit — $${opts.deposit.due.toFixed(2)}
+                  </a>
+                  <p style="font-size:12px;color:#555;margin:8px 0 0;">Bank transfer has no fee; cards
+                  add a 3% processing fee. Deposits are non-refundable up to $300 if the job is cancelled.</p>
+                </div>
+                <p style="font-size:13px;color:#555;margin:10px 0 0;">Questions? Call ${BUSINESS_PHONE}.</p>`
+             : opts.deposit?.paidInFull
+             ? `<p style="font-size:14px;color:#1a5c2e;font-weight:600;margin:10px 0 0;">✓ Paid in full — thank you.</p>
+                <p style="font-size:13px;color:#555;margin:6px 0 0;">Questions? Call ${BUSINESS_PHONE}.</p>`
+             : opts.deposit
+             ? `<p style="font-size:14px;color:#1a5c2e;font-weight:600;margin:10px 0 0;">✓ Deposit received — we'll be in touch to schedule the work.</p>
+                <p style="font-size:13px;color:#555;margin:6px 0 0;">The balance is due at completion.
+                Questions? Call ${BUSINESS_PHONE}.</p>`
+             : `<p style="font-size:13px;color:#555;margin:10px 0 0;">Thank you. We will be in touch to
+                schedule the work. Questions? Call ${BUSINESS_PHONE}.</p>`
+         }
        </div>`
     : `<div class="sign">
          <h2 style="margin-top:0;">Accept this estimate</h2>

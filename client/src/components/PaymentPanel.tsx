@@ -27,7 +27,8 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
   const [showQr, setShowQr] = useState<"deposit" | "balance" | null>(null);
   const [recording, setRecording] = useState<"deposit" | "final" | null>(null);
   const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState<"cash" | "check">("check");
+  // Methods the system can't detect (Kyle, 2026-08-25): cash, check, Zelle.
+  const [method, setMethod] = useState<"cash" | "check" | "zelle">("check");
   const [error, setError] = useState<string | null>(null);
 
   const record = useMutation({
@@ -111,13 +112,13 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
               className="btn btn-secondary text-sm"
               onClick={() => { setRecording("deposit"); setAmount(depositRemaining.toFixed(2)); }}
             >
-              Record cash/check deposit
+              Record deposit (cash/check/Zelle)
             </button>
             <button
               className="btn btn-secondary text-sm"
               onClick={() => { setRecording("final"); setAmount(info.balance.toFixed(2)); }}
             >
-              Record cash/check payment
+              Record payment (cash/check/Zelle)
             </button>
           </>
         )}
@@ -136,9 +137,10 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-rce-border p-3">
           <span className="text-sm font-medium">{recording === "deposit" ? "Deposit" : "Payment"} received:</span>
           <input className="field w-28" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
-          <select className="field" value={method} onChange={(e) => setMethod(e.target.value as "cash" | "check")}>
+          <select className="field" value={method} onChange={(e) => setMethod(e.target.value as "cash" | "check" | "zelle")}>
             <option value="check">check</option>
             <option value="cash">cash</option>
+            <option value="zelle">Zelle</option>
           </select>
           <button
             className="btn btn-primary text-sm"

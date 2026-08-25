@@ -341,7 +341,7 @@ function BillsCard({ bills, onChange }: { bills: import("../lib/api").CompanyBil
 
 function PaymentsCard({ payments, onChange }: { payments: import("../lib/api").PaymentRow[]; onChange: () => void }) {
   const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState<"cash" | "check" | "other">("check");
+  const [method, setMethod] = useState<"cash" | "check" | "zelle" | "other">("check");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -379,6 +379,7 @@ function PaymentsCard({ payments, onChange }: { payments: import("../lib/api").P
         <select className="field" value={method} onChange={(e) => setMethod(e.target.value as typeof method)}>
           <option value="check">check</option>
           <option value="cash">cash</option>
+          <option value="zelle">Zelle</option>
           <option value="other">other</option>
         </select>
         <input className="field flex-1" placeholder="Note (invoice #, customer)" value={note} onChange={(e) => setNote(e.target.value)} />

@@ -34,7 +34,9 @@ import {
   signEstimate,
 } from "../services/issuedEstimateService";
 import { renderEstimatePage, renderUnavailable } from "../services/issuedEstimateRender";
-import { notifyOwnerSigned } from "../services/issuedEstimateSend";
+import { notifyOwnerSigned, publicBaseUrl } from "../services/issuedEstimateSend";
+import { paymentSummary } from "../services/stripePayments";
+import { sendDepositRequestEmail } from "../services/paymentReceipts";
 
 export const estimatePageRouter = express.Router();
 
@@ -68,9 +70,25 @@ estimatePageRouter.get(
     // Re-read so the rendered page reflects the view we just recorded.
     const fresh = await getEstimateByToken(prisma, token);
     const estimate = fresh.ok ? fresh.estimate : found.estimate;
-    res.type("html").send(renderEstimatePage(estimate));
+    res.type("html").send(renderEstimatePage(estimate, { deposit: await depositState(estimate) }));
   })
 );
+
+/**
+ * The deposit ask for a signed estimate's page (Kyle, 2026-08-25). Null when
+ * unsigned — the page then carries the signing block, not a payment one.
+ */
+async function depositState(estimate: { id: string; signedAt: Date | null; token: string }) {
+  if (!estimate.signedAt) return null;
+  const summary = await paymentSummary(prisma, estimate.id, publicBaseUrl());
+  if (!summary) return null;
+  return {
+    due: Math.round((summary.depositDue - summary.depositPaid) * 100) / 100,
+    satisfied: summary.depositSatisfied,
+    paidInFull: summary.paidInFull,
+    payUrl: `${publicBaseUrl()}/pay/${estimate.token}?type=deposit`,
+  };
+}
 
 estimatePageRouter.post(
   "/:token/sign",
@@ -120,12 +138,19 @@ estimatePageRouter.post(
     notifyOwnerSigned(prisma, result.estimateId).catch((err) =>
       console.error("[EstimatePage] owner notification failed:", err)
     );
+    // The deposit request (Kyle, 2026-08-25): a customer signing from home has
+    // no other way to hear the deposit gate exists. Fire-and-forget.
+    sendDepositRequestEmail(prisma, result.estimateId, publicBaseUrl()).catch((err) =>
+      console.error("[EstimatePage] deposit request email failed:", err)
+    );
 
     const signed = await getEstimateByToken(prisma, token);
     if (!signed.ok) {
       res.status(404).type("html").send(renderUnavailable());
       return;
     }
-    res.type("html").send(renderEstimatePage(signed.estimate));
+    // The re-rendered page carries the deposit ask too, so it's on screen the
+    // second after they sign — not only in their inbox.
+    res.type("html").send(renderEstimatePage(signed.estimate, { deposit: await depositState(signed.estimate) }));
   })
 );
