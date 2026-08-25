@@ -15,6 +15,12 @@ interface Props {
   onOpenFindings?: () => void
   onOpenV2?: () => void
   onOpenItem: (itemId: string) => void
+  /**
+   * Tap-to-grade straight on the row (Kyle, 2026-08-24: "resemble a simple
+   * check list… speed and flexibility"). null clears the mark. Detail capture
+   * (measurements, photos, per-item notes) stays one tap away via the item id.
+   */
+  onQuickResult: (itemId: string, result: ResultState | null) => void
   onReview: () => void
 }
 
@@ -51,7 +57,8 @@ const GROUP_LABEL: Record<string, string> = {
 
 export function ChecklistScreen({
   items, results, knownFindingCount = 0, declinedFindingCount = 0,
-  v2Summary, sectionNotes = {}, onSectionNote, onOpenFindings, onOpenV2, onOpenItem, onReview,
+  v2Summary, sectionNotes = {}, onSectionNote, onOpenFindings, onOpenV2, onOpenItem,
+  onQuickResult, onReview,
 }: Props) {
   const [showPhase2, setShowPhase2] = useState(false)
   const [openNoteGroup, setOpenNoteGroup] = useState<string | null>(null)
@@ -110,48 +117,64 @@ export function ChecklistScreen({
   const phase2 = items.filter((item) => item.phase === 2)
 
   const phase1Done = phase1.filter((item) => results[item.id]).length
-  const phase1Complete = phase1Done === phase1.length
-
-  /** Items whose readings this one is measured against must come first. */
-  const blockedBy = (item: ChecklistItemDef): string | null => {
-    const missing = (item.dependsOn ?? []).find((id) => !results[id])
-    return missing ?? null
-  }
+  const anyAssessed = Object.keys(results).length > 0
 
   const groupsOf = (list: ChecklistItemDef[]) => [...new Set(list.map((item) => item.group))]
 
+  /**
+   * The paper form's row, digitized (Kyle, 2026-08-24: "resemble a simple check
+   * list with the pass, monitor, fail, below standard, and n/a options"). One
+   * tap grades the item; tapping the same grade again clears it. The full item
+   * card — measurements, photos, per-item notes — is behind the "detail" link
+   * for what the technician deems necessary, never in the way of the walk.
+   * A grade set here on an item the card already detailed keeps that detail.
+   */
+  const GRADE_ORDER: ResultState[] = ['PASS', 'MONITOR', 'FAIL', 'BELOW_STANDARD', 'NA']
+  const gradeShort: Record<ResultState, string> = {
+    PASS: 'P', MONITOR: 'M', FAIL: 'F', BELOW_STANDARD: 'B', NA: 'N',
+  }
+
   const renderItem = (item: ChecklistItemDef) => {
     const result = results[item.id]
-    const blocker = blockedBy(item)
+    const hasDetail = Boolean(
+      result && (Object.keys(result.measured).length > 0 || result.photoIds.length > 0 || result.note || result.resolutionNote),
+    )
 
     return (
-      <button
-        key={item.id}
-        type="button"
-        disabled={Boolean(blocker)}
-        onClick={() => onOpenItem(item.id)}
-        className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-800/60 p-3 text-left disabled:opacity-50"
-      >
-        <span className="min-w-0">
-          <span className="block font-medium text-white">
+      <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/60 p-3">
+        <div className="flex items-start justify-between gap-2">
+          <span className="min-w-0 text-sm font-medium text-white">
             {item.id}. {item.title}
           </span>
-          {blocker && (
-            <span className="block text-xs text-amber-300">
-              Record {blocker} first — its readings are the reference for this one.
-            </span>
-          )}
-        </span>
-        {result ? (
-          <span className={`shrink-0 rounded px-2 py-1 text-xs font-semibold ${resultBadge[result.result]}`}>
-            {resultLabel[result.result]}
-          </span>
-        ) : (
-          <span className="shrink-0 rounded border border-slate-600 px-2 py-1 text-xs text-slate-400">
-            open
-          </span>
-        )}
-      </button>
+          <button
+            type="button"
+            onClick={() => onOpenItem(item.id)}
+            className="shrink-0 text-xs text-sky-300"
+          >
+            {hasDetail ? 'detail ✓' : 'detail'}
+          </button>
+        </div>
+        <div className="mt-2 flex gap-1.5">
+          {GRADE_ORDER.map((grade) => {
+            const active = result?.result === grade
+            return (
+              <button
+                key={grade}
+                type="button"
+                onClick={() => onQuickResult(item.id, active ? null : grade)}
+                title={resultLabel[grade]}
+                className={`h-9 flex-1 rounded font-semibold ${
+                  active
+                    ? resultBadge[grade]
+                    : 'border border-slate-600 bg-slate-900/60 text-slate-400'
+                }`}
+              >
+                {gradeShort[grade]}
+              </button>
+            )
+          })}
+        </div>
+      </div>
     )
   }
 
@@ -259,15 +282,18 @@ export function ChecklistScreen({
         </section>
       )}
 
+      {/* No all-items gate (Kyle, 2026-08-24): the technician assesses "what he
+          has time for or what he deems necessary." Anything unmarked is reported
+          as not assessed in this pass — the report already says so. */}
       <button
         type="button"
-        disabled={!phase1Complete}
+        disabled={!anyAssessed}
         onClick={onReview}
         className="fixed inset-x-0 bottom-0 mx-auto w-full max-w-xl bg-sky-600 p-4 font-medium text-white disabled:bg-slate-700 disabled:text-slate-400"
       >
-        {phase1Complete
-          ? 'Review findings'
-          : `Assess all Phase 1 items to continue (${phase1Done}/${phase1.length})`}
+        {anyAssessed
+          ? `Review findings (${phase1Done}/${phase1.length} Phase 1 assessed)`
+          : 'Mark at least one item to continue'}
       </button>
     </div>
   )

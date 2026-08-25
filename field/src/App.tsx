@@ -279,6 +279,22 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
         setActiveItemId(itemId)
         setScreen('item')
       }}
+      onQuickResult={(itemId, grade) => {
+        // Tap-to-grade (Kyle, 2026-08-24). A grade over an item the card already
+        // detailed changes only the verdict — measurements and photos survive.
+        const results = { ...session.results }
+        if (grade === null) {
+          delete results[itemId]
+        } else {
+          const existing = results[itemId]
+          results[itemId] = existing
+            ? { ...existing, result: grade }
+            : { itemId, result: grade, measured: {}, photoIds: [] }
+        }
+        const next: Session = { ...session, results }
+        setSession(next)
+        void saveDraft(toInspection(next, 'draft', false, visibleItems))
+      }}
       onReview={() => setScreen('review')}
     />
   )
