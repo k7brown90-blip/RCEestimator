@@ -99,6 +99,17 @@ export interface CompanyBillRow {
   createdAt: string;
 }
 
+export interface NextStepJob {
+  visitId: string;
+  customerId: string;
+  customerName: string;
+  propertyId: string;
+  address: string;
+  jobType: string | null;
+  purpose: string | null;
+  completedAt: string | null;
+}
+
 export interface PaymentInfo {
   estimateId: string;
   number: string;
@@ -632,6 +643,14 @@ export const api = {
     }
     return (await response.json()) as { id: string; amount: number };
   },
+
+  // ─── The Needs-next-step queue (Phase 4) ───────────────────────────────────
+  needsNextStep: () => request<NextStepJob[]>("/jobs/needs-next-step"),
+  dispositionJob: (jobId: string, action: "archive" | "book-followup") =>
+    request<{ done: true; followupVisitId: string | null }>(`/jobs/${jobId}/next-step`, {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    }),
 
   // ─── Payments & deposits (2026-08-25) ──────────────────────────────────────
   jobPaymentInfo: (jobId: string) => request<PaymentInfo | null>(`/jobs/${jobId}/payment-info`),

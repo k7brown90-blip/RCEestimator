@@ -308,6 +308,12 @@ model Visit {
   // Estimate → job → job complete → stored and tracked"). The labor-tracking
   // timestamp; clock in/out is a later phase and hangs off this same visit.
   completedAt            DateTime?
+  // ── The handoff (Phase 4). Kyle: "admin then schedules an estimate or
+  // install once that job is closed out." A completed job with nextStep null
+  // sits in the office's Needs-next-step queue until someone dispositions it:
+  // archived | followup_booked. Null on everything not yet completed.
+  nextStep               String?
+  nextStepAt             DateTime?
   // ── Customer appointment confirmation (dual-channel email + SMS) ──
   confirmationStatus     String            @default("unconfirmed") // unconfirmed | confirmed | reschedule_requested | cancel_requested
   confirmationToken      String?           @unique // public token for the /confirm/:token page

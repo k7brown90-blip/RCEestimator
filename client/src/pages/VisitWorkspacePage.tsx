@@ -114,7 +114,6 @@ export function VisitWorkspacePage() {
   }, [selectedOptionId]);
 
 
-  const [estimateTitle, setEstimateTitle] = useState("Service Estimate");
   const [optionLabel, setOptionLabel] = useState("Option A");
   const [optionDescription, setOptionDescription] = useState("");
   const [optionBuildError, setOptionBuildError] = useState("");
@@ -202,13 +201,8 @@ export function VisitWorkspacePage() {
     setEditingVisit(true);
   }
 
-  const createEstimateMutation = useMutation({
-    mutationFn: () => {
-      if (!visit?.propertyId) throw new Error("Visit property not found");
-      return api.createEstimate({ visitId, propertyId: visit.propertyId, title: estimateTitle });
-    },
-    onSuccess: refreshVisit,
-  });
+  // createEstimateMutation removed with the legacy builder (Phase 4) — new
+  // quoting starts in the price book.
 
   const updateOptionMutation = useMutation({ mutationFn: (input: { optionId: string; optionLabel?: string; description?: string | null }) => api.updateOption(input.optionId, { optionLabel: input.optionLabel, description: input.description }), onSuccess: () => { setEditingOptionId(null); refreshVisit(); } });
   const deleteOptionMutation = useMutation({ mutationFn: (optionId: string) => api.deleteOption(optionId), onSuccess: refreshVisit });
@@ -472,16 +466,26 @@ export function VisitWorkspacePage() {
           <FindingLedgerPanel propertyId={visit.propertyId} />
           {/* CapacityCheckPanel removed 2026-08-02 — load calculation is Health
               Report product surface, not CRM. */}
+          {/* ── LEGACY BUILDER RETIRED (Phase 4, 2026-08-25) ────────────────
+              Two estimate systems coexisted and every estimate Kyle actually
+              writes is a price-book one — this form fed the dead table. New
+              quoting starts in the price book; visits that already carry a
+              legacy estimate keep their editing UI below, for the record. */}
           {!estimate ? (
             <article className="card rounded-2xl border border-rce-border/70 p-5">
-              <h2 className="text-lg font-semibold">Create Estimate</h2>
-              <form className="mt-3 flex flex-wrap items-end gap-3" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); createEstimateMutation.mutate(); }}>
-                <label className="text-sm font-medium">
-                  Estimate Title
-                  <input className="field mt-1 min-w-72" value={estimateTitle} onChange={(event) => setEstimateTitle(event.target.value)} required />
-                </label>
-                <button className="btn btn-primary" type="submit" disabled={createEstimateMutation.isPending}>Create Estimate</button>
-              </form>
+              <h2 className="text-lg font-semibold">Quote this work</h2>
+              <p className="mt-1 text-sm text-rce-muted">
+                Estimates are built in the price book, tied to this account and address.
+              </p>
+              <button
+                className="btn btn-primary mt-3"
+                type="button"
+                onClick={() =>
+                  navigate(`/estimate-intake?account=${visit.customerId}&address=${visit.propertyId}`)
+                }
+              >
+                Open the estimate builder
+              </button>
             </article>
           ) : (
             <>

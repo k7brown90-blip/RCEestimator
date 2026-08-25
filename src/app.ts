@@ -3503,6 +3503,79 @@ app.delete("/accounts/:id/contacts/:contactId", asyncHandler(async (req, res) =>
 // no invoice sent — but nothing blocks. completedAt is the labor timestamp;
 // clock in/out is a later phase.
 
+/**
+ * The Needs-next-step queue (Phase 4). Kyle: "admin then schedules an estimate
+ * or install once that job is closed out." Completed jobs nobody has
+ * dispositioned yet — each waits for archive or a booked follow-up.
+ */
+app.get("/jobs/needs-next-step", asyncHandler(async (_req, res) => {
+  const visits = await prisma.visit.findMany({
+    where: { status: "completed", nextStep: null },
+    include: {
+      customer: { select: { id: true, name: true } },
+      property: { select: { id: true, addressLine1: true, city: true } },
+    },
+    orderBy: { completedAt: "desc" },
+    take: 50,
+  });
+  res.json(visits.map((v) => ({
+    visitId: v.id,
+    customerId: v.customer.id,
+    customerName: v.customer.name,
+    propertyId: v.property.id,
+    address: `${v.property.addressLine1}, ${v.property.city}`,
+    jobType: v.jobType,
+    purpose: v.purpose,
+    completedAt: v.completedAt,
+  })));
+}));
+
+/**
+ * Disposition one queue entry. "archive" closes the loop; "book-followup"
+ * opens the next one — a consultation visit on the same account and address,
+ * handed straight to the calendar (the client navigates to the scheduler).
+ */
+app.post("/jobs/:jobId/next-step", asyncHandler(async (req, res) => {
+  const body = z.object({ action: z.enum(["archive", "book-followup"]) }).parse(req.body);
+  const jobId = readParam(req, "jobId");
+  const visit = await prisma.visit.findUnique({
+    where: { id: jobId },
+    select: { id: true, status: true, customerId: true, propertyId: true },
+  });
+  if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
+  if (visit.status !== "completed") {
+    res.status(409).json({ error: "Only a completed job takes a next-step disposition." });
+    return;
+  }
+
+  if (body.action === "archive") {
+    await prisma.visit.update({
+      where: { id: jobId },
+      data: { nextStep: "archived", nextStepAt: new Date() },
+    });
+    res.json({ done: true, followupVisitId: null });
+    return;
+  }
+
+  const followup = await prisma.$transaction(async (tx) => {
+    const created = await tx.visit.create({
+      data: {
+        customerId: visit.customerId,
+        propertyId: visit.propertyId,
+        mode: "service_diagnostic",
+        purpose: "Follow-up — from completed job",
+        status: "estimate",
+      },
+    });
+    await tx.visit.update({
+      where: { id: jobId },
+      data: { nextStep: "followup_booked", nextStepAt: new Date() },
+    });
+    return created;
+  });
+  res.json({ done: true, followupVisitId: followup.id });
+}));
+
 app.post("/jobs/:jobId/complete", asyncHandler(async (req, res) => {
   const jobId = readParam(req, "jobId");
   const visit = await prisma.visit.findUnique({
@@ -3545,7 +3618,10 @@ app.post("/jobs/:jobId/reopen", asyncHandler(async (req, res) => {
   const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { status: true } });
   if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
   if (visit.status !== "completed") { res.status(409).json({ error: "Only a completed job can be reopened." }); return; }
-  await prisma.visit.update({ where: { id: jobId }, data: { status: "in_progress", completedAt: null } });
+  await prisma.visit.update({
+    where: { id: jobId },
+    data: { status: "in_progress", completedAt: null, nextStep: null, nextStepAt: null },
+  });
   res.json({ reopened: true });
 }));
 

@@ -215,6 +215,10 @@ export function JobsPage() {
         </p>
       )}
 
+      {/* The handoff catches here (Phase 4): a job closed in the field waits
+          for the office to schedule what's next or call it done. */}
+      {!archived && <NeedsNextStep />}
+
       {/* Secondary filter — estimate lifecycle only makes sense on live work */}
       {!archived && (
         <div className="mb-5 flex flex-wrap gap-2">
@@ -300,6 +304,71 @@ export function JobsPage() {
         )}
       </section>
     </div>
+  );
+}
+
+/**
+ * Needs next step — completed jobs waiting on the office (Phase 4). Kyle:
+ * "admin then schedules an estimate or install once that job is closed out."
+ * Archive closes the loop; Book follow-up opens the next visit and lands on
+ * the calendar with the scheduler already open for it.
+ */
+function NeedsNextStep() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { data: queue } = useQuery({
+    queryKey: ["needsNextStep"],
+    queryFn: () => api.needsNextStep(),
+    refetchInterval: 60_000,
+  });
+  const disposition = useMutation({
+    mutationFn: ({ jobId, action }: { jobId: string; action: "archive" | "book-followup" }) =>
+      api.dispositionJob(jobId, action),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["needsNextStep"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      if (result.followupVisitId) navigate(`/calendar?schedule=${result.followupVisitId}`);
+    },
+  });
+
+  if (!queue || queue.length === 0) return null;
+  return (
+    <section className="mb-5 rounded-lg border border-amber-300 bg-amber-50 p-4">
+      <h2 className="text-sm font-semibold text-amber-900">
+        Needs next step — {queue.length} closed job{queue.length === 1 ? "" : "s"} waiting on you
+      </h2>
+      <div className="mt-2 space-y-2">
+        {queue.map((job) => (
+          <div key={job.visitId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-white p-3">
+            <div className="min-w-0">
+              <Link to={`/visits/${job.visitId}`} className="text-sm font-medium hover:text-rce-accent">
+                {job.customerName} — {job.jobType ?? job.purpose ?? "job"}
+              </Link>
+              <p className="text-xs text-rce-muted">
+                {job.address}
+                {job.completedAt && ` · closed ${new Date(job.completedAt).toLocaleDateString()}`}
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <button
+                className="btn btn-primary text-xs"
+                disabled={disposition.isPending}
+                onClick={() => disposition.mutate({ jobId: job.visitId, action: "book-followup" })}
+              >
+                Book follow-up →
+              </button>
+              <button
+                className="btn btn-secondary text-xs"
+                disabled={disposition.isPending}
+                onClick={() => disposition.mutate({ jobId: job.visitId, action: "archive" })}
+              >
+                All done — archive
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
