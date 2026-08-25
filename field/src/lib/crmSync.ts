@@ -447,6 +447,125 @@ export function pendingFindingActionCount(): Promise<number> {
   return db.findingActionQueue.count()
 }
 
+// ─── The job site (Phase 2, 2026-08-25) ──────────────────────────────────────
+
+export interface JobBrief {
+  visitId: string
+  status: string
+  jobType: string | null
+  purpose: string | null
+  notes: string | null
+  scheduledStart: string | null
+  scheduledEnd: string | null
+  completedAt: string | null
+  customerName: string
+  customerPhone: string | null
+  address: string
+  estimate: {
+    number: string
+    title: string
+    scopeText: string | null
+    lines: { description: string; quantity: number; option: string }[]
+  } | null
+}
+
+/** What the tech needs on site — scope from the signed estimate, no hours. */
+export async function fetchJobBrief(visitId: string): Promise<JobBrief> {
+  return crmRequest(`/visits/${visitId}/job-brief`)
+}
+
+/** The driveway close-out. Warnings, never walls; the office is notified. */
+export async function completeVisitFromField(visitId: string): Promise<{ completed: true; warnings: string[] }> {
+  return crmRequest(`/visits/${visitId}/complete`, { method: 'POST', body: '{}' })
+}
+
+/** A job-site photo, uploaded now (needs signal — the caller shows the failure). */
+export async function uploadJobPhoto(visitId: string, blob: Blob, caption?: string): Promise<void> {
+  const settings = getCrmSettings()
+  if (!settings) throw new Error('CRM not configured')
+  const photoId = crypto.randomUUID()
+  const response = await fetch(
+    `${settings.baseUrl}/api/health-record/visits/${visitId}/photos/${photoId}`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': blob.type || 'image/jpeg',
+        Authorization: `Bearer ${settings.token}`,
+        ...(caption ? { 'x-photo-caption': encodeURIComponent(caption) } : {}),
+      },
+      body: blob,
+    },
+  )
+  if (!response.ok) throw new Error(`Photo upload failed (${response.status})`)
+}
+
+/**
+ * A receipt from the field. Values typed by the tech ride the query string;
+ * a photo without values goes through the office's Vision parse and lands in
+ * pending review either way.
+ */
+export async function uploadReceiptFromField(input: {
+  visitId: string
+  blob: Blob
+  amount?: number
+  vendor?: string
+  category?: 'materials' | 'gas' | 'maintenance' | 'overhead'
+}): Promise<{ id: string; amount: number; status: string }> {
+  const settings = getCrmSettings()
+  if (!settings) throw new Error('CRM not configured')
+  const receiptId = crypto.randomUUID().replaceAll('-', '')
+  const query = new URLSearchParams({ jobId: input.visitId })
+  if (input.amount) query.set('amount', String(input.amount))
+  if (input.vendor) query.set('vendor', input.vendor)
+  if (input.category) query.set('category', input.category)
+  const response = await fetch(
+    `${settings.baseUrl}/api/health-record/receipts/${receiptId}?${query.toString()}`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': input.blob.type || 'image/jpeg',
+        Authorization: `Bearer ${settings.token}`,
+      },
+      body: input.blob,
+    },
+  )
+  const body = (await response.json().catch(() => null)) as
+    | { success?: boolean; data?: { id: string; amount: number; status: string }; error?: { message?: string } }
+    | null
+  if (!response.ok || body?.success === false) {
+    throw new Error(body?.error?.message ?? `Receipt upload failed (${response.status})`)
+  }
+  return body!.data!
+}
+
+/**
+ * The local Property for an assignment — reused if this job was opened before,
+ * so a resumed inspection keeps its draft and photos. Shared by the Today list
+ * and the job-site screen so they can never build it two different ways.
+ */
+export async function propertyForAssignment(
+  assignment: CrmAssignment,
+): Promise<Property> {
+  const existing = (await db.properties.toArray()).find((p) => p.crm?.visitId === assignment.visitId)
+  if (existing) return existing
+  const property: Property = {
+    id: crypto.randomUUID(),
+    address: assignment.address.formatted,
+    jurisdictionId: assignment.jurisdictionId,
+    jurisdictionSource: assignment.jurisdictionSource,
+    createdAt: new Date().toISOString(),
+    crm: {
+      visitId: assignment.visitId,
+      propertyId: assignment.propertyId,
+      customerId: assignment.customerId,
+      customerName: assignment.customerName,
+    },
+  }
+  const { saveProperty } = await import('../db/database')
+  await saveProperty(property)
+  return property
+}
+
 // ─── Payment collection (2026-08-25) ─────────────────────────────────────────
 
 export interface VisitPaymentInfo {

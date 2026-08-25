@@ -1,154 +1,73 @@
 import { useEffect, useState } from 'react'
-import { db, saveProperty } from '../../db/database'
 import {
   cachedMe,
   clearCrmSettings,
   defaultBaseUrl,
   fetchMe,
-  fetchVisitPaymentInfo,
   getCrmSettings,
   pendingSyncCount,
   saveCrmSettings,
   syncAssignments,
   type CrmTechnician,
-  type VisitPaymentInfo,
 } from '../../lib/crmSync'
-import type { CrmAssignment, Property } from '../../domain/types'
+import type { CrmAssignment } from '../../domain/types'
 
-/**
- * Collect payment in the driveway (Kyle, 2026-08-25: "no way of charging a
- * card on either the admin side or field tech side"). The customer scans the
- * QR or takes the shared link and pays on their own phone through Stripe
- * Checkout — the tech never touches a card number and can't change an amount.
- * Needs signal, deliberately: payment status has to be live to be trusted.
- */
-function CollectPayment({ visitId }: { visitId: string }) {
-  const [open, setOpen] = useState(false)
-  const [info, setInfo] = useState<VisitPaymentInfo | null | 'none'>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  const load = async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await fetchVisitPaymentInfo(visitId)
-      setInfo(result ?? 'none')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => { setOpen(true); void load() }}
-        className="mt-1 w-full rounded-lg border border-emerald-800 bg-emerald-950/40 p-2 text-xs text-emerald-200"
-      >
-        💳 Collect payment
-      </button>
-    )
-  }
-
-  return (
-    <div className="mt-1 space-y-2 rounded-lg border border-emerald-800 bg-emerald-950/30 p-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-emerald-200">Collect payment</span>
-        <span className="flex gap-3">
-          <button type="button" className="text-xs text-sky-300 underline" onClick={() => void load()}>
-            {loading ? 'checking…' : 'refresh'}
-          </button>
-          <button type="button" className="text-xs text-slate-400 underline" onClick={() => setOpen(false)}>
-            close
-          </button>
-        </span>
-      </div>
-      {error && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{error}</p>}
-      {info === 'none' && (
-        <p className="text-xs text-slate-400">No signed estimate on this visit yet — nothing to collect.</p>
-      )}
-      {info && info !== 'none' && (
-        <>
-          <p className="text-xs text-slate-300">
-            Invoice {info.number} · total ${info.billedTotal.toFixed(2)}
-            {info.totalPaid > 0 && ` · paid $${info.totalPaid.toFixed(2)}`}
-          </p>
-          {info.paidInFull ? (
-            <p className="rounded bg-emerald-900/60 p-2 text-sm font-medium text-emerald-200">
-              ✓ Paid in full — nothing to collect.
-            </p>
-          ) : (
-            <>
-              {!info.depositSatisfied && (
-                <div className="rounded-lg bg-white p-2 text-center">
-                  <p className="mb-1 text-xs font-medium text-slate-800">
-                    Deposit due: ${(info.depositDue - info.depositPaid).toFixed(2)} — customer scans:
-                  </p>
-                  <img src={info.depositQrUrl} alt="Deposit payment QR" className="mx-auto h-44 w-44" />
-                </div>
-              )}
-              {info.depositSatisfied && (
-                <div className="rounded-lg bg-white p-2 text-center">
-                  <p className="mb-1 text-xs font-medium text-slate-800">
-                    Balance due: ${info.balance.toFixed(2)} — customer scans:
-                  </p>
-                  <img src={info.qrUrl} alt="Payment QR" className="mx-auto h-44 w-44" />
-                </div>
-              )}
-              <div className="flex gap-2">
-                <a
-                  href={info.depositSatisfied ? info.payUrl : info.depositPayUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex-1 rounded-lg bg-sky-600 p-2 text-center text-xs font-medium text-white"
-                >
-                  Open pay page
-                </a>
-                {typeof navigator.share === 'function' && (
-                  <button
-                    type="button"
-                    className="flex-1 rounded-lg border border-slate-600 p-2 text-xs text-slate-200"
-                    onClick={() =>
-                      void navigator.share({
-                        title: 'Red Cedar Electric — pay online',
-                        url: info.depositSatisfied ? info.payUrl : info.depositPayUrl,
-                      }).catch(() => {})
-                    }
-                  >
-                    Share link
-                  </button>
-                )}
-              </div>
-              <p className="text-[10px] text-slate-500">
-                Tap refresh after they pay — the paid mark comes from the office record, live.
-              </p>
-            </>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
+/** Production job or estimate visit — the card dresses as what it is (Phase 2). */
+const JOB_STATUSES = new Set(['contracted', 'scheduled', 'in_progress'])
 
 interface Props {
-  onStart: (property: Property, technician: string) => void
-  /**
-   * Open the 220.83 capacity check for this job without starting an assessment
-   * — the common case is an ordinary service call and a question at the door.
-   */
-  onCapacityCheck?: (assignment: CrmAssignment) => void
+  /** Tapping a card opens the job site — the day's verbs live there, not here. */
+  onOpenVisit: (assignment: CrmAssignment) => void
   /** A token was just consumed from the enrollment QR's URL fragment. */
   justEnrolled?: boolean
 }
+
 
 function formatScheduled(iso: string | null): string {
   if (!iso) return 'Not scheduled'
   return new Date(iso).toLocaleString(undefined, {
     weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   })
+}
+
+/** One visit on the day's list — who, where, when, and WHAT KIND it is. */
+function VisitCard({ assignment, onOpen }: { assignment: CrmAssignment; onOpen: (a: CrmAssignment) => void }) {
+  const isJob = JOB_STATUSES.has(assignment.visitStatus)
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(assignment)}
+      className="block w-full rounded-lg border border-sky-900 bg-slate-800 p-3 text-left text-white"
+    >
+      <span className="flex items-center justify-between gap-2">
+        <span className="font-medium">{assignment.customerName}</span>
+        <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+          isJob ? 'bg-amber-600 text-amber-50' : 'bg-sky-700 text-sky-100'
+        }`}>
+          {isJob ? 'Job' : 'Estimate'}
+        </span>
+      </span>
+      <span className="block text-sm text-slate-300">{assignment.address.line1}</span>
+      <span className="block text-xs text-slate-400">
+        {assignment.address.city}, {assignment.address.state} {assignment.address.postalCode}
+      </span>
+      <span className="mt-1 block text-xs text-sky-300">
+        {formatScheduled(assignment.scheduledStart)}
+        {assignment.jobType ? ` · ${assignment.jobType}` : ''}
+      </span>
+      {(assignment.openFindingCount ?? 0) > 0 && (
+        <span className="mt-1 block text-xs text-amber-300">
+          {assignment.openFindingCount} open finding
+          {assignment.openFindingCount === 1 ? '' : 's'} on record here
+          {(assignment.declinedFindingCount ?? 0) > 0 &&
+            ` · ${assignment.declinedFindingCount} already declined`}
+        </span>
+      )}
+      {assignment.jurisdictionSource === 'default' && (
+        <span className="mt-1 block text-xs text-amber-300">⚠ Jurisdiction not set by the office</span>
+      )}
+    </button>
+  )
 }
 
 function relativeTime(iso: string): string {
@@ -160,7 +79,7 @@ function relativeTime(iso: string): string {
   return `${Math.round(hours / 24)} d ago`
 }
 
-export function AssignmentScreen({ onStart, onCapacityCheck, justEnrolled }: Props) {
+export function AssignmentScreen({ onOpenVisit, justEnrolled }: Props) {
   const [configured, setConfigured] = useState(getCrmSettings() !== null)
   const [technician, setTechnician] = useState<CrmTechnician | null>(null)
   const [assignments, setAssignments] = useState<CrmAssignment[]>([])
@@ -214,36 +133,24 @@ export function AssignmentScreen({ onStart, onCapacityCheck, justEnrolled }: Pro
     setLoading(false)
   }
 
-  async function startAssignment(assignment: CrmAssignment) {
-    // Reuse the local property if this job was opened before, so a resumed
-    // inspection keeps its existing draft and photos.
-    const existing = (await db.properties.toArray()).find((p) => p.crm?.visitId === assignment.visitId)
-    if (existing) {
-      onStart(existing, technician?.name ?? 'Unknown technician')
-      return
-    }
-    const property: Property = {
-      id: crypto.randomUUID(),
-      address: assignment.address.formatted,
-      jurisdictionId: assignment.jurisdictionId,
-      jurisdictionSource: assignment.jurisdictionSource,
-      createdAt: new Date().toISOString(),
-      crm: {
-        visitId: assignment.visitId,
-        propertyId: assignment.propertyId,
-        customerId: assignment.customerId,
-        customerName: assignment.customerName,
-      },
-    }
-    await saveProperty(property)
-    onStart(property, technician?.name ?? 'Unknown technician')
+  // Today first, by clock; everything else after. The tech's question at 7 AM
+  // is "where am I going" — the list answers in that order.
+  const todayKey = new Date().toDateString()
+  const isToday = (a: CrmAssignment) =>
+    a.scheduledStart != null && new Date(a.scheduledStart).toDateString() === todayKey
+  const byClock = (a: CrmAssignment, b: CrmAssignment) => {
+    const at = a.scheduledStart ? new Date(a.scheduledStart).getTime() : Infinity
+    const bt = b.scheduledStart ? new Date(b.scheduledStart).getTime() : Infinity
+    return at - bt
   }
+  const todays = assignments.filter(isToday).sort(byClock)
+  const later = assignments.filter((a) => !isToday(a)).sort(byClock)
 
   return (
     <div className="mx-auto max-w-xl space-y-5 p-6">
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-[0.2em] text-sky-300">Red Cedar Electric</p>
-        <h1 className="text-2xl font-semibold text-white">Electrical Health Record</h1>
+        <h1 className="text-2xl font-semibold text-white">RCE Field</h1>
         {technician && <p className="text-sm text-slate-400">Signed in as {technician.name}</p>}
       </header>
 
@@ -293,7 +200,7 @@ export function AssignmentScreen({ onStart, onCapacityCheck, justEnrolled }: Pro
         <>
           <section className="space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-slate-300">Your scheduled jobs</h2>
+              <h2 className="text-sm font-medium text-slate-300">Today</h2>
               <button
                 type="button"
                 onClick={() => void load()}
@@ -313,58 +220,27 @@ export function AssignmentScreen({ onStart, onCapacityCheck, justEnrolled }: Pro
 
             {status && <p className="text-xs text-slate-400">{status}</p>}
 
-            {assignments.map((assignment) => (
-              <div key={assignment.assignmentId}>
-              <button
-                type="button"
-                onClick={() => void startAssignment(assignment)}
-                className="block w-full rounded-lg border border-sky-900 bg-slate-800 p-3 text-left text-white"
-              >
-                <span className="font-medium">{assignment.customerName}</span>
-                <span className="block text-sm text-slate-300">{assignment.address.line1}</span>
-                <span className="block text-xs text-slate-400">
-                  {assignment.address.city}, {assignment.address.state} {assignment.address.postalCode}
-                </span>
-                <span className="mt-1 block text-xs text-sky-300">
-                  {formatScheduled(assignment.scheduledStart)}
-                  {assignment.jobType ? ` · ${assignment.jobType}` : ''}
-                </span>
-                {assignment.lastInspectionDate && (
-                  <span className="block text-xs text-slate-500">
-                    Last assessed {new Date(assignment.lastInspectionDate).toLocaleDateString()}
-                  </span>
-                )}
-                {(assignment.openFindingCount ?? 0) > 0 && (
-                  <span className="mt-1 block text-xs text-amber-300">
-                    {assignment.openFindingCount} open finding
-                    {assignment.openFindingCount === 1 ? '' : 's'} on record here
-                    {(assignment.declinedFindingCount ?? 0) > 0 &&
-                      ` · ${assignment.declinedFindingCount} already declined`}
-                  </span>
-                )}
-                {assignment.jurisdictionSource === 'default' && (
-                  <span className="mt-1 block text-xs text-amber-300">
-                    ⚠ Jurisdiction not set by the office
-                  </span>
-                )}
-              </button>
-              {onCapacityCheck && (
-                <button
-                  type="button"
-                  onClick={() => onCapacityCheck(assignment)}
-                  className="mt-1 w-full rounded-lg border border-slate-700 p-2 text-xs text-slate-300"
-                >
-                  Adding load here? Run the 220.83 capacity check
-                </button>
-              )}
-              <CollectPayment visitId={assignment.visitId} />
-              </div>
+            {todays.map((assignment) => (
+              <VisitCard key={assignment.assignmentId} assignment={assignment} onOpen={onOpenVisit} />
             ))}
+            {!loading && todays.length === 0 && (
+              <p className="rounded-lg border border-slate-700 bg-slate-800/60 p-3 text-sm text-slate-400">
+                Nothing on today's schedule.
+              </p>
+            )}
+
+            {later.length > 0 && (
+              <>
+                <h2 className="pt-2 text-sm font-medium text-slate-300">Coming up</h2>
+                {later.map((assignment) => (
+                  <VisitCard key={assignment.assignmentId} assignment={assignment} onOpen={onOpenVisit} />
+                ))}
+              </>
+            )}
 
             {!loading && assignments.length === 0 && (
               <p className="rounded-lg border border-slate-700 bg-slate-800/60 p-4 text-sm text-slate-400">
-                No jobs assigned to you right now. Records are opened from a scheduled
-                job — ask the office to assign you one.
+                No visits assigned to you right now — ask the office to assign you one.
               </p>
             )}
           </section>

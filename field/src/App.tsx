@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { checklist } from './data/checklist'
 import { jurisdictions } from './data/jurisdictions'
 import { saveDraft, type FindingRecord } from './db/database'
-import { fetchPropertyFindings, queueInspectionSync } from './lib/crmSync'
+import { cachedMe, fetchPropertyFindings, propertyForAssignment, queueInspectionSync } from './lib/crmSync'
 import { buildReport } from './domain/report'
 import { summarizeFindings } from './domain/findings'
 import type {
@@ -18,11 +18,12 @@ import { OpenFindingsScreen } from './ui/screens/OpenFindingsScreen'
 import { ReportScreen } from './ui/screens/ReportScreen'
 import { ReviewScreen } from './ui/screens/ReviewScreen'
 import { V2CaptureScreen } from './ui/screens/V2CaptureScreen'
+import { JobSiteScreen } from './ui/screens/JobSiteScreen'
 import { emptyV2Capture, type V2Capture } from './domain/v2Types'
 import { checkCapture } from './domain/v2Rules'
 
 type Screen =
-  | 'assignment' | 'jurisdiction' | 'checklist' | 'item' | 'review' | 'report'
+  | 'assignment' | 'jobsite' | 'jurisdiction' | 'checklist' | 'item' | 'review' | 'report'
   | 'findings' | 'capacity' | 'v2capture'
 
 interface Session {
@@ -74,6 +75,8 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
   const [completed, setCompleted] = useState<Inspection | null>(null)
   const [findings, setFindings] = useState<FindingRecord[]>([])
   const [capacityAssignment, setCapacityAssignment] = useState<CrmAssignment | null>(null)
+  /** The visit whose job site is open (Phase 2). */
+  const [activeAssignment, setActiveAssignment] = useState<CrmAssignment | null>(null)
 
   // Pull the ledger once when a job starts, so every item card can show what was
   // already documented here without another round trip on a phone.
@@ -122,7 +125,36 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     return (
       <CapacityCheckScreen
         assignment={capacityAssignment ?? undefined}
-        onBack={() => setScreen(session ? 'checklist' : 'assignment')}
+        onBack={() => setScreen(activeAssignment ? 'jobsite' : session ? 'checklist' : 'assignment')}
+      />
+    )
+  }
+
+  // The job site (Phase 2): the day's verbs for one visit. Also before the
+  // session guard — most of a job day never opens an assessment.
+  if (screen === 'jobsite' && activeAssignment) {
+    return (
+      <JobSiteScreen
+        assignment={activeAssignment}
+        onBack={() => { setActiveAssignment(null); setScreen('assignment') }}
+        onCapacityCheck={() => {
+          setCapacityAssignment(activeAssignment)
+          setScreen('capacity')
+        }}
+        onRunAssessment={() => {
+          void (async () => {
+            const property = await propertyForAssignment(activeAssignment)
+            const me = await cachedMe()
+            setSession({
+              inspectionId: crypto.randomUUID(),
+              property,
+              technician: me?.name ?? 'Unknown technician',
+              results: {},
+            })
+            setCompleted(null)
+            setScreen('jurisdiction')
+          })()
+        }}
       />
     )
   }
@@ -131,19 +163,9 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     return (
       <AssignmentScreen
         justEnrolled={justEnrolled}
-        onCapacityCheck={(assignment) => {
-          setCapacityAssignment(assignment)
-          setScreen('capacity')
-        }}
-        onStart={(property, technician) => {
-          setSession({
-            inspectionId: crypto.randomUUID(),
-            property,
-            technician,
-            results: {},
-          })
-          setCompleted(null)
-          setScreen('jurisdiction')
+        onOpenVisit={(assignment) => {
+          setActiveAssignment(assignment)
+          setScreen('jobsite')
         }}
       />
     )

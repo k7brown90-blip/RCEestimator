@@ -440,17 +440,47 @@ export function ItemCardScreen({
         <h2 className="text-sm font-medium text-slate-300">
           Photos {photoIds.length > 0 && `(${photoIds.length} attached)`}
         </h2>
-        <input
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className="w-full text-sm text-slate-300"
-          onChange={(e) => {
-            const file = e.target.files?.[0]
-            if (file) void capturePhoto(file)
-            e.target.value = ''
-          }}
-        />
+        {/* Camera AND gallery (Kyle, 2026-08-25: "needs access to the phones
+            photo gallery for upload along with the take photo option"). Two
+            inputs on purpose: `capture` forces the camera open and locks the
+            gallery out, so each door gets its own input. */}
+        <div className="flex gap-2">
+          <input
+            id={`photo-camera-${item.id}`}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) void capturePhoto(file)
+              e.target.value = ''
+            }}
+          />
+          <input
+            id={`photo-gallery-${item.id}`}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) void capturePhoto(file)
+              e.target.value = ''
+            }}
+          />
+          <label
+            htmlFor={`photo-camera-${item.id}`}
+            className="flex-1 cursor-pointer rounded-lg border border-slate-600 p-2 text-center text-sm text-slate-200"
+          >
+            📷 Take photo
+          </label>
+          <label
+            htmlFor={`photo-gallery-${item.id}`}
+            className="flex-1 cursor-pointer rounded-lg border border-slate-600 p-2 text-center text-sm text-slate-200"
+          >
+            🖼 From gallery
+          </label>
+        </div>
       </section>
 
       {result === 'FAIL' && (

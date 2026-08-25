@@ -24,6 +24,8 @@ import {
 import { notifyTechnicianOfAssignment } from "../services/visitConfirmations";
 import { sendHealthReportEmail } from "../services/healthReportEmail";
 import { paymentSummary } from "../services/stripePayments";
+import { logSystemEvent } from "../services/systemEvents";
+import { sendKyleNotificationEmail } from "../services/confirmationEmail";
 import { resolveJurisdictions } from "../services/jurisdictionResolver";
 import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
 import { recordInspectionLoadCalc } from "../services/capacityCheckStore";
@@ -541,6 +543,147 @@ healthRecordTechRouter.get("/visits/:visitId/payment-info", asyncHandler(async (
       }
       : null,
   });
+}));
+
+/**
+ * GET /health-record/visits/:visitId/job-brief — what the tech needs on site
+ * (Phase 2, Kyle 2026-08-25: the field app is "specific to getting the job
+ * done"). The scope comes from the signed estimate's own lines — descriptions
+ * and quantities, the options the customer took, NO labor hours (his standing
+ * rule: hours never leave the office).
+ */
+healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    include: {
+      customer: { select: { name: true, phone: true } },
+      property: { select: { addressLine1: true, city: true, state: true } },
+    },
+  });
+  if (!visit) { res.status(404).json({ success: false, error: { code: "not_found", message: "Visit not found" } }); return; }
+
+  const est = await prisma.issuedEstimate.findFirst({
+    where: {
+      signedAt: { not: null },
+      status: { not: "void" },
+      OR: [{ jobVisitId: visitId }, { visitId }],
+    },
+    orderBy: { createdAt: "desc" },
+    include: { lines: { orderBy: { sortOrder: "asc" } } },
+  });
+
+  const taken = new Set(est?.selectedOptions ?? []);
+  res.json({
+    success: true,
+    data: {
+      visitId: visit.id,
+      status: visit.status,
+      jobType: visit.jobType,
+      purpose: visit.purpose,
+      notes: visit.notes,
+      scheduledStart: visit.scheduledStart?.toISOString() ?? null,
+      scheduledEnd: visit.scheduledEnd?.toISOString() ?? null,
+      completedAt: visit.completedAt?.toISOString() ?? null,
+      customerName: visit.customer.name,
+      customerPhone: visit.customer.phone,
+      address: `${visit.property.addressLine1}, ${visit.property.city}, ${visit.property.state}`,
+      estimate: est
+        ? {
+          number: est.number,
+          title: est.title,
+          scopeText: est.scopeText,
+          // Taken options only, when a choice was made — the tech works what was bought.
+          lines: est.lines
+            .filter((l) => taken.size === 0 || taken.has(l.option))
+            .map((l) => ({ description: l.description, quantity: l.quantity, option: l.option })),
+        }
+        : null,
+    },
+  });
+}));
+
+/**
+ * POST /health-record/visits/:visitId/complete — the driveway close-out
+ * (Phase 2). No gate, warnings only (Kyle: "We do not want to lock ourselves
+ * out of closing a job"). The office is notified — closing is what tells the
+ * admin side to schedule whatever comes next.
+ */
+healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    include: {
+      materialOrders: { select: { id: true } },
+      customer: { select: { name: true } },
+      property: { select: { addressLine1: true, city: true } },
+    },
+  });
+  if (!visit) { res.status(404).json({ success: false, error: { code: "not_found", message: "Visit not found" } }); return; }
+  if (visit.status === "cancelled") {
+    res.status(409).json({ success: false, error: { code: "conflict", message: "This job was cancelled." } });
+    return;
+  }
+  if (visit.status === "estimate") {
+    res.status(409).json({
+      success: false,
+      error: { code: "conflict", message: "This is an estimate visit — it wraps up by submitting the assessment, not by closing a job." },
+    });
+    return;
+  }
+
+  const receipts = await prisma.receipt.count({ where: { jobId: visitId } });
+  const warnings: string[] = [];
+  if (visit.materialOrders.length > 0 && receipts === 0) {
+    warnings.push(`${visit.materialOrders.length} purchase order(s) and no receipts on this job yet.`);
+  }
+
+  await prisma.visit.update({
+    where: { id: visitId },
+    data: { status: "completed", completedAt: new Date() },
+  });
+  await prisma.visitAssignment.updateMany({
+    where: { visitId, technicianId: req.technician!.id, status: { not: "completed" } },
+    data: { status: "completed", completedAt: new Date() },
+  });
+
+  const label = `${visit.customer.name} — ${visit.property.addressLine1}, ${visit.property.city}`;
+  logSystemEvent("info", "jobs", `Job closed from the field: ${label}`, {
+    visitId,
+    technician: req.technician!.name,
+    warnings,
+  });
+  // The handoff (Kyle: "admin then schedules an estimate or install once that
+  // job is closed out") — the office hears about it the moment it happens.
+  sendKyleNotificationEmail(
+    `Job closed from the field: ${visit.customer.name}`,
+    [
+      `${label}`,
+      `Closed by: ${req.technician!.name}`,
+      `Job: ${visit.jobType ?? visit.purpose ?? "service work"}`,
+      ...(warnings.length > 0 ? ["", "Heads up:", ...warnings.map((w) => `- ${w}`)] : []),
+      "",
+      "Schedule the next step (install / follow-up estimate) from the CRM.",
+    ].join("\n"),
+  ).catch(() => {});
+
+  res.json({ success: true, data: { completed: true, warnings } });
 }));
 
 /**

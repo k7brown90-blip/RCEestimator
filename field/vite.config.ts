@@ -25,8 +25,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
       manifest: {
-        name: 'Red Cedar Health Record',
-        short_name: 'RCE Health',
+        name: 'RCE Field',
+        short_name: 'RCE Field',
         description: 'Offline-first electrical health record inspection PWA',
         theme_color: '#07131f',
         background_color: '#07131f',
