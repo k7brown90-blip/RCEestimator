@@ -233,6 +233,10 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
     reason: "QR image of the pay link, scanned off the tech's or office's screen. Same token; encodes nothing the link itself doesn't.",
   },
   {
+    methods: ["GET"], path: "/pay/:token/checkout", credential: "URL-path token",
+    reason: "The chooser's second leg — mints the Stripe session for the chosen rail (bank at face value, card +3%) and redirects. Same token, same guards in stripePayments.",
+  },
+  {
     methods: ["POST"], path: "/stripe/webhook", credential: "query-string secret",
     reason: "Stripe event delivery. Authenticated by the Stripe-Signature header verified against STRIPE_WEBHOOK_SECRET over the raw body — mounted before the JSON parser in app.ts for exactly that reason.",
   },

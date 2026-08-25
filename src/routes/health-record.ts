@@ -582,9 +582,19 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
   });
 
   const taken = new Set(est?.selectedOptions ?? []);
+  // The clock (Phase 5): total minutes banked plus the open punch, if any.
+  const [openEntry, closedSum] = await Promise.all([
+    prisma.timeEntry.findFirst({
+      where: { visitId, technicianId: req.technician!.id, endedAt: null },
+      orderBy: { startedAt: "desc" },
+    }),
+    prisma.timeEntry.aggregate({ where: { visitId, endedAt: { not: null } }, _sum: { minutes: true } }),
+  ]);
   res.json({
     success: true,
     data: {
+      laborMinutes: Math.round(closedSum._sum.minutes ?? 0),
+      clockedInAt: openEntry?.startedAt.toISOString() ?? null,
       visitId: visit.id,
       status: visit.status,
       jobType: visit.jobType,
@@ -609,6 +619,57 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
         : null,
     },
   });
+}));
+
+/**
+ * The time clock (Phase 5). Kyle: "we need to have a time stamp for labor
+ * tracking with a clock in button too." One open punch per tech per visit;
+ * clock-out closes it and rolls the visit's total into Visit.laborHours —
+ * which is exactly what job profitability's labor line reads.
+ */
+healthRecordTechRouter.post("/visits/:visitId/clock-in", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const open = await prisma.timeEntry.findFirst({
+    where: { visitId, technicianId: req.technician!.id, endedAt: null },
+  });
+  if (open) {
+    res.status(409).json({ success: false, error: { code: "conflict", message: `Already clocked in since ${open.startedAt.toISOString()}` } });
+    return;
+  }
+  const entry = await prisma.timeEntry.create({
+    data: { visitId, technicianId: req.technician!.id },
+  });
+  res.status(201).json({ success: true, data: { clockedInAt: entry.startedAt.toISOString() } });
+}));
+
+healthRecordTechRouter.post("/visits/:visitId/clock-out", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const open = await prisma.timeEntry.findFirst({
+    where: { visitId, technicianId: req.technician!.id, endedAt: null },
+    orderBy: { startedAt: "desc" },
+  });
+  if (!open) {
+    res.status(409).json({ success: false, error: { code: "conflict", message: "Not clocked in on this visit." } });
+    return;
+  }
+  const endedAt = new Date();
+  const minutes = Math.max(1, Math.round((endedAt.getTime() - open.startedAt.getTime()) / 60_000));
+  await prisma.timeEntry.update({ where: { id: open.id }, data: { endedAt, minutes } });
+  const total = await prisma.timeEntry.aggregate({
+    where: { visitId, endedAt: { not: null } },
+    _sum: { minutes: true },
+  });
+  const laborHours = Math.round(((total._sum.minutes ?? 0) / 60) * 100) / 100;
+  await prisma.visit.update({ where: { id: visitId }, data: { laborHours } });
+  res.json({ success: true, data: { minutes, laborMinutes: Math.round(total._sum.minutes ?? 0), laborHours } });
 }));
 
 /**

@@ -54,7 +54,7 @@ import {
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
-import { createInvoiceCheckoutSession, handleStripeWebhook, paymentSummary, stripeConfigured } from "./services/stripePayments";
+import { chargeableAmount, createInvoiceCheckoutSession, handleStripeWebhook, paymentSummary, stripeConfigured } from "./services/stripePayments";
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
@@ -1231,11 +1231,49 @@ app.use("/e", estimatePageRouter);
  * don't. Each click mints a fresh session and redirects; the service refuses
  * unsigned, void, and already-paid invoices.
  */
+/**
+ * The chooser (Phase 5): bank transfer at face value, or card with the 3%
+ * processing fee the invoice email has always promised — now real, and
+ * disclosed here AND on the Stripe line item before any card is entered.
+ */
 app.get("/pay/:token", asyncHandler(async (req, res) => {
-  const origin = `${req.protocol}://${req.get("host")}`;
-  // ?type=deposit charges the ⅓ down; default is the remaining balance.
+  const token = readParam(req, "token");
   const payType = readQuery(req, "type") === "deposit" ? "deposit" as const : "balance" as const;
-  const result = await createInvoiceCheckoutSession(prisma, readParam(req, "token"), origin, payType);
+  const chargeable = await chargeableAmount(prisma, token, payType);
+  const page = (body: string) => `<!doctype html><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <body style="font-family:sans-serif;max-width:440px;margin:48px auto;padding:0 16px;text-align:center;">
+    <h2 style="color:#1a5c2e;margin-bottom:4px;">Red Cedar Electric</h2>
+    <p style="color:#666;font-size:13px;margin-top:0;">"We don't guess. We measure."</p>
+    ${body}
+    <p style="color:#666;font-size:13px;">Questions? Call us at 615-625-2163.</p></body>`;
+
+  if (!chargeable.ok) {
+    res.status(400).send(page(`<p>${chargeable.reason}</p>`));
+    return;
+  }
+  const typeParam = payType === "deposit" ? "&type=deposit" : "";
+  const btn = "display:block;margin:10px 0;padding:16px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:600;";
+  res.send(page(`
+    <p style="font-size:15px;">${payType === "deposit" ? "Deposit (1/3)" : "Payment"} on invoice
+    <b>${chargeable.number}</b> — ${chargeable.title}</p>
+    <a style="${btn}background:#1a5c2e;color:#fff;" href="/pay/${token}/checkout?method=bank${typeParam}">
+      Bank transfer — $${chargeable.amount.toFixed(2)}<br><span style="font-size:12px;font-weight:400;">no fee</span>
+    </a>
+    <a style="${btn}background:#fff;color:#1a5c2e;border:2px solid #1a5c2e;" href="/pay/${token}/checkout?method=card${typeParam}">
+      Credit / debit card — $${(chargeable.amount + chargeable.cardFee).toFixed(2)}<br>
+      <span style="font-size:12px;font-weight:400;">includes the 3% card processing fee ($${chargeable.cardFee.toFixed(2)})</span>
+    </a>
+    ${payType === "deposit" ? `<p style="color:#666;font-size:12px;">Deposits are non-refundable up to $300 if the job is cancelled.</p>` : ""}
+  `));
+}));
+
+/** Mint the session for the chosen rail and hand off to Stripe. */
+app.get("/pay/:token/checkout", asyncHandler(async (req, res) => {
+  const origin = `${req.protocol}://${req.get("host")}`;
+  const payType = readQuery(req, "type") === "deposit" ? "deposit" as const : "balance" as const;
+  const method = readQuery(req, "method") === "bank" ? "bank" as const : "card" as const;
+  const result = await createInvoiceCheckoutSession(prisma, readParam(req, "token"), origin, payType, method);
   if (!result.ok) {
     res.status(400).send(`<!doctype html><meta charset="utf-8">
       <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center;">

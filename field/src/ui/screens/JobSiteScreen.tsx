@@ -13,6 +13,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import {
+  clockIn,
+  clockOut,
   completeVisitFromField,
   fetchJobBrief,
   uploadJobPhoto,
@@ -84,6 +86,44 @@ export function JobSiteScreen({
     return () => { cancelled = true }
   }, [assignment.visitId])
 
+  // ── The clock (Phase 5): "a time stamp for labor tracking with a clock in
+  // button." One open punch; banked minutes feed job profitability's labor. ──
+  const [clockedInAt, setClockedInAt] = useState<string | null>(null)
+  const [laborMinutes, setLaborMinutes] = useState(0)
+  const [clockBusy, setClockBusy] = useState(false)
+  const [clockError, setClockError] = useState<string | null>(null)
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    if (!brief) return
+    setClockedInAt(brief.clockedInAt)
+    setLaborMinutes(brief.laborMinutes)
+  }, [brief])
+  useEffect(() => {
+    if (!clockedInAt) return
+    const timer = setInterval(() => forceTick((n) => n + 1), 30_000)
+    return () => clearInterval(timer)
+  }, [clockedInAt])
+  const punch = async () => {
+    setClockBusy(true)
+    setClockError(null)
+    try {
+      if (clockedInAt) {
+        const result = await clockOut(assignment.visitId)
+        setClockedInAt(null)
+        setLaborMinutes(result.laborMinutes)
+      } else {
+        const result = await clockIn(assignment.visitId)
+        setClockedInAt(result.clockedInAt)
+      }
+    } catch (err) {
+      setClockError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setClockBusy(false)
+    }
+  }
+  const elapsedMin = clockedInAt ? Math.max(0, Math.round((Date.now() - new Date(clockedInAt).getTime()) / 60_000)) : 0
+  const fmtHm = (min: number) => `${Math.floor(min / 60)}h ${min % 60}m`
+
   // ── Photos ──
   const [photoCaption, setPhotoCaption] = useState('')
   const [photoStatus, setPhotoStatus] = useState<string | null>(null)
@@ -142,6 +182,12 @@ export function JobSiteScreen({
     setClosing(true)
     setCloseError(null)
     try {
+      // Leaving means the work stopped — an open punch closes with the job.
+      if (clockedInAt) {
+        const punchResult = await clockOut(assignment.visitId)
+        setClockedInAt(null)
+        setLaborMinutes(punchResult.laborMinutes)
+      }
       const result = await completeVisitFromField(assignment.visitId)
       setClosed({ warnings: result.warnings })
     } catch (err) {
@@ -176,6 +222,33 @@ export function JobSiteScreen({
       </header>
 
       {briefError && <p className="rounded-lg bg-red-950/60 p-2 text-xs text-red-200">{briefError}</p>}
+
+      {/* ── The clock ── */}
+      {brief && (
+        <section className={`flex items-center justify-between gap-3 rounded-xl border p-3 ${
+          clockedInAt ? 'border-emerald-700 bg-emerald-950/40' : 'border-slate-700 bg-slate-800/60'
+        }`}>
+          <div>
+            <p className="text-sm font-medium text-white">
+              {clockedInAt ? `On the clock — ${fmtHm(elapsedMin)}` : 'Off the clock'}
+            </p>
+            <p className="text-xs text-slate-400">
+              {laborMinutes > 0 ? `${fmtHm(laborMinutes)} banked on this job` : 'No time banked yet'}
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={clockBusy}
+            onClick={() => void punch()}
+            className={`shrink-0 rounded-lg px-4 py-3 text-sm font-semibold text-white disabled:opacity-40 ${
+              clockedInAt ? 'bg-red-700' : 'bg-emerald-700'
+            }`}
+          >
+            {clockBusy ? '…' : clockedInAt ? 'Clock out' : 'Clock in'}
+          </button>
+        </section>
+      )}
+      {clockError && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{clockError}</p>}
 
       {/* ── The scope — what was bought, never hours ── */}
       {brief?.estimate && (

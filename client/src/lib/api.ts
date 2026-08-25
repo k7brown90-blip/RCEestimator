@@ -83,7 +83,25 @@ export interface JobProfitRow {
   completedAt: string | null;
   quoted: number | null;
   materialSpend: number;
+  laborHours: number;
+  laborCost: number;
   marginBeforeLabor: number | null;
+  margin: number | null;
+}
+
+export interface ReceiptInsights {
+  year: number;
+  receiptsParsed: number;
+  topItems: { name: string; receipts: number; totalQty: number; avgUnitCost: number | null; vendors: string[] }[];
+  priceDrift: { receiptItem: string; bookItem: string; supplier: string; bookCost: number; receiptAvgCost: number; driftPct: number }[];
+}
+
+export interface StripeStatus {
+  configured: boolean;
+  keyMode: "live" | "test" | "none";
+  restrictedKey: boolean;
+  webhookSecretSet: boolean;
+  automaticTax: boolean;
 }
 
 export interface CompanyBillRow {
@@ -659,6 +677,8 @@ export const api = {
 
   // ─── Financials (2026-08-25) ───────────────────────────────────────────────
   financialsSummary: (year: number) => request<FinancialsSummary>(`/financials/summary?year=${year}`),
+  receiptInsights: (year: number) => request<ReceiptInsights>(`/financials/receipt-insights?year=${year}`),
+  stripeStatus: () => request<StripeStatus>("/financials/stripe-status"),
   jobProfitability: (year: number) => request<JobProfitRow[]>(`/financials/job-profitability?year=${year}`),
   companyBills: () => request<CompanyBillRow[]>("/financials/bills"),
   createCompanyBill: (input: Omit<CompanyBillRow, "id" | "createdAt">) =>

@@ -85,6 +85,18 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
  */
 export const DEPOSIT_NONREFUNDABLE_CAP = 300;
 
+/**
+ * The card surcharge (Phase 5). The invoice email has promised "ACH bank
+ * transfer (no fee) or credit / debit card (a 3% processing fee)" since
+ * 2026-08-21 — the online flow now honors it: the pay link opens a chooser,
+ * bank transfer charges the face amount, card adds 3% as its own line item.
+ * The fee line is metadata-separated so the webhook credits only the face
+ * amount against the invoice — the fee is a fee, not a payment toward work.
+ * Disclosed on the chooser AND the Stripe line item (TN permits surcharging
+ * with disclosure at or below cost of acceptance).
+ */
+export const CARD_FEE_PCT = 0.03;
+
 export function depositDueOf(billedTotal: number): number {
   return round2(billedTotal / 3);
 }
@@ -163,6 +175,42 @@ export async function paymentSummary(
  * Mint a Checkout Session for a SIGNED estimate's billed total.
  * Returns the session URL to redirect the customer to.
  */
+/** What's chargeable right now on this token, for the chooser page. */
+export async function chargeableAmount(
+  prisma: PrismaClient,
+  estimateToken: string,
+  payType: "balance" | "deposit",
+): Promise<
+  | { ok: true; estimateId: string; number: string; title: string; amount: number; cardFee: number }
+  | { ok: false; reason: string }
+> {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { token: estimateToken },
+    select: { id: true, signedAt: true, status: true, title: true },
+  });
+  if (!est) return { ok: false, reason: "Invoice not found." };
+  if (!est.signedAt) return { ok: false, reason: "This estimate has not been signed yet." };
+  if (est.status === "void") return { ok: false, reason: "This invoice is void." };
+
+  const summary = (await paymentSummary(prisma, est.id, "https://unused.invalid"))!;
+  if (summary.paidInFull) return { ok: false, reason: "This invoice has already been paid — thank you!" };
+  if (payType === "deposit" && summary.depositSatisfied) {
+    return { ok: false, reason: "The deposit on this job has already been paid — thank you!" };
+  }
+  const amount = payType === "deposit"
+    ? round2(Math.min(summary.depositDue - summary.depositPaid, summary.balance))
+    : summary.balance;
+  if (!(amount > 0)) return { ok: false, reason: "Nothing is due on this invoice." };
+  return {
+    ok: true,
+    estimateId: est.id,
+    number: summary.number,
+    title: est.title,
+    amount,
+    cardFee: round2(amount * CARD_FEE_PCT),
+  };
+}
+
 export async function createInvoiceCheckoutSession(
   prisma: PrismaClient,
   estimateToken: string,
@@ -170,29 +218,18 @@ export async function createInvoiceCheckoutSession(
   // "deposit" charges the ⅓ down (less any deposit already paid); "balance"
   // charges what remains after every paid row. (Kyle, 2026-08-25.)
   payType: "balance" | "deposit" = "balance",
+  // bank = ACH only, no fee; card = card only, +3% as its own line item.
+  method: "bank" | "card" = "card",
 ): Promise<{ ok: true; url: string } | { ok: false; reason: string }> {
   if (!stripeConfigured()) return { ok: false, reason: "Online payment is not configured." };
 
-  const est = await prisma.issuedEstimate.findUnique({
-    where: { token: estimateToken },
-    select: { id: true, signedAt: true, status: true },
-  });
-  if (!est) return { ok: false, reason: "Invoice not found." };
-  if (!est.signedAt) return { ok: false, reason: "This estimate has not been signed yet." };
-  if (est.status === "void") return { ok: false, reason: "This invoice is void." };
+  const chargeable = await chargeableAmount(prisma, estimateToken, payType);
+  if (!chargeable.ok) return chargeable;
+  const { amount } = chargeable;
 
-  const summary = (await paymentSummary(prisma, est.id, origin))!;
-  if (summary.paidInFull) return { ok: false, reason: "This invoice has already been paid — thank you!" };
-  if (payType === "deposit" && summary.depositSatisfied) {
-    return { ok: false, reason: "The deposit on this job has already been paid — thank you!" };
-  }
+  const full = await prisma.issuedEstimate.findUnique({ where: { id: chargeable.estimateId } });
+  const cardFee = method === "card" ? chargeable.cardFee : 0;
 
-  const amount = payType === "deposit"
-    ? round2(Math.min(summary.depositDue - summary.depositPaid, summary.balance))
-    : summary.balance;
-  if (!(amount > 0)) return { ok: false, reason: "Nothing is due on this invoice." };
-
-  const full = await prisma.issuedEstimate.findUnique({ where: { id: est.id } });
   const session = await stripe().checkout.sessions.create({
     mode: "payment",
     line_items: [
@@ -203,8 +240,8 @@ export async function createInvoiceCheckoutSession(
           unit_amount: Math.round(amount * 100),
           product_data: {
             name: payType === "deposit"
-              ? `Deposit (1/3) — Invoice ${summary.number}: ${full!.title}`
-              : `Invoice ${summary.number} — ${full!.title}`,
+              ? `Deposit (1/3) — Invoice ${chargeable.number}: ${full!.title}`
+              : `Invoice ${chargeable.number} — ${full!.title}`,
             // The non-refundable term is DISCLOSED where the card is entered —
             // a kept deposit the customer never saw coming is a chargeback.
             description: payType === "deposit"
@@ -213,10 +250,35 @@ export async function createInvoiceCheckoutSession(
           },
         },
       },
+      // The fee is its own line so the receipt says exactly what it was, and
+      // the webhook can credit only the face amount against the invoice.
+      ...(cardFee > 0
+        ? [{
+          quantity: 1,
+          price_data: {
+            currency: "usd",
+            unit_amount: Math.round(cardFee * 100),
+            product_data: { name: "Card processing fee (3%)" },
+          },
+        }]
+        : []),
     ],
     customer_email: full!.customerEmail ?? undefined,
+    // Method steering via EXCLUSION, per Stripe's own guidance — never
+    // payment_method_types. Bank hides card; card hides the bank rails.
+    excluded_payment_method_types: (method === "bank"
+      ? ["card", "link"]
+      : ["us_bank_account"]) as Stripe.Checkout.SessionCreateParams.ExcludedPaymentMethodType[],
     // Fulfillment keys off these in the webhook — never trust the success page.
-    metadata: { estimateId: summary.estimateId, estimateNumber: summary.number, customerId: full!.customerId, visitId: full!.jobVisitId ?? "", kind: payType === "deposit" ? "deposit" : "final" },
+    metadata: {
+      estimateId: chargeable.estimateId,
+      estimateNumber: chargeable.number,
+      customerId: full!.customerId,
+      visitId: full!.jobVisitId ?? "",
+      kind: payType === "deposit" ? "deposit" : "final",
+      // Face amount — what the invoice is credited. The fee stays a fee.
+      baseAmount: String(amount),
+    },
     // Gated: enabling automatic tax without an ACTIVE registration collects
     // nothing while appearing on. Kyle registers TN in the Dashboard first.
     ...(process.env.STRIPE_AUTOMATIC_TAX === "1" ? { automatic_tax: { enabled: true } } : {}),
@@ -256,7 +318,9 @@ export async function handleStripeWebhook(
     // record only when the money is actually in flight or landed.
     if (session.payment_status === "unpaid") return;
     const estimateId = session.metadata?.estimateId ?? null;
-    const amount = (session.amount_total ?? 0) / 100;
+    // Face amount only — the 3% card fee is a fee, never credit against the bill.
+    const base = Number(session.metadata?.baseAmount);
+    const amount = Number.isFinite(base) && base > 0 ? base : (session.amount_total ?? 0) / 100;
     await prisma.payment.upsert({
       where: { stripeSessionId: session.id },
       create: {

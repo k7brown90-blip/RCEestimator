@@ -450,6 +450,10 @@ export function pendingFindingActionCount(): Promise<number> {
 // ─── The job site (Phase 2, 2026-08-25) ──────────────────────────────────────
 
 export interface JobBrief {
+  /** Minutes already banked on the clock (closed punches). */
+  laborMinutes: number
+  /** Open punch start, or null when off the clock. */
+  clockedInAt: string | null
   visitId: string
   status: string
   jobType: string | null
@@ -477,6 +481,14 @@ export async function fetchJobBrief(visitId: string): Promise<JobBrief> {
 /** The driveway close-out. Warnings, never walls; the office is notified. */
 export async function completeVisitFromField(visitId: string): Promise<{ completed: true; warnings: string[] }> {
   return crmRequest(`/visits/${visitId}/complete`, { method: 'POST', body: '{}' })
+}
+
+/** The time clock (Phase 5). One open punch per visit; needs signal on purpose. */
+export async function clockIn(visitId: string): Promise<{ clockedInAt: string }> {
+  return crmRequest(`/visits/${visitId}/clock-in`, { method: 'POST', body: '{}' })
+}
+export async function clockOut(visitId: string): Promise<{ minutes: number; laborMinutes: number; laborHours: number }> {
+  return crmRequest(`/visits/${visitId}/clock-out`, { method: 'POST', body: '{}' })
 }
 
 /** A job-site photo, uploaded now (needs signal — the caller shows the failure). */

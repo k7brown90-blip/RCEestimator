@@ -23,6 +23,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { billedTotalOf, stripeConfigured } from "../services/stripePayments";
+import { getLaborRate } from "../services/jobCosting";
 
 export const financialsRouter = express.Router();
 
@@ -307,6 +308,7 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
     }),
   ]);
 
+  const laborRate = await getLaborRate();
   const spendByJob = new Map(receipts.map((r) => [r.jobId, r._sum.amount ?? 0]));
   const estimateByJob = new Map<string, number>();
   for (const est of estimates) {
@@ -326,6 +328,10 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
   res.json(visits.map((visit) => {
     const quoted = estimateByJob.get(visit.id) ?? null;
     const materialSpend = round2(spendByJob.get(visit.id) ?? 0);
+    // Real labor now (Phase 5): the time clock rolls punches into
+    // Visit.laborHours; the rate is the company labor rate.
+    const laborHours = visit.laborHours ?? 0;
+    const laborCost = round2(laborHours * laborRate);
     return {
       visitId: visit.id,
       customer: visit.customer.name,
@@ -335,11 +341,126 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       completedAt: visit.completedAt,
       quoted,
       materialSpend,
-      // Labor hours are a later phase (Kyle, 2026-08-25) — margin here is
-      // quoted minus materials only, and the client labels it that way.
+      laborHours,
+      laborCost,
       marginBeforeLabor: quoted !== null ? round2(quoted - materialSpend) : null,
+      margin: quoted !== null ? round2(quoted - materialSpend - laborCost) : null,
     };
   }));
+}));
+
+// ── Receipt insights (Phase 5): "update the price book and flag most used
+// items." The engine RECOMMENDS, never sets (decisions/2026-08-04): this
+// reads the Vision-parsed line items off confirmed receipts and reports the
+// most-purchased items and where receipt unit costs drift from the price
+// book's stored supplier costs. Kyle changes the book; this shows him where.
+financialsRouter.get("/receipt-insights", asyncHandler(async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  const receipts = await prisma.receipt.findMany({
+    where: {
+      status: "confirmed",
+      lineItems: { not: null },
+      receivedAt: { gte: new Date(`${year}-01-01`), lt: new Date(`${year + 1}-01-01`) },
+    },
+    select: { lineItems: true, vendor: true },
+  });
+
+  interface Seen { name: string; count: number; totalQty: number; unitCosts: number[]; vendors: Set<string> }
+  const items = new Map<string, Seen>();
+  for (const receipt of receipts) {
+    let rows: { name?: string; qty?: number; unitCost?: number }[] = [];
+    try { rows = JSON.parse(receipt.lineItems!); } catch { continue; }
+    for (const row of rows) {
+      if (!row.name) continue;
+      const key = row.name.trim().toLowerCase();
+      const seen = items.get(key) ?? { name: row.name.trim(), count: 0, totalQty: 0, unitCosts: [], vendors: new Set<string>() };
+      seen.count += 1;
+      seen.totalQty += row.qty ?? 1;
+      if (typeof row.unitCost === "number" && row.unitCost > 0) seen.unitCosts.push(row.unitCost);
+      if (receipt.vendor) seen.vendors.add(receipt.vendor);
+      items.set(key, seen);
+    }
+  }
+
+  const top = [...items.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 25);
+
+  // Price-drift check: receipt items whose name matches a price-book atomic's
+  // description, compared against that item's stored supplier cost.
+  // Contains-match both directions — "12-2 Romex 250ft" should find "Romex 12-2".
+  const [atomics, supplierPrices] = await Promise.all([
+    prisma.priceBookAtomic.findMany({
+      where: { description: { not: null } },
+      select: { itemId: true, description: true },
+      take: 3000,
+    }),
+    prisma.priceBookSupplierPrice.findMany({
+      where: { unitCost: { not: null } },
+      select: { itemId: true, unitCost: true, supplier: { select: { name: true } } },
+      take: 5000,
+    }),
+  ]);
+  const priceByItem = new Map<string, { unitCost: number; supplier: string }>();
+  for (const p of supplierPrices) {
+    if (!priceByItem.has(p.itemId)) priceByItem.set(p.itemId, { unitCost: p.unitCost!, supplier: p.supplier.name });
+  }
+
+  const drift: {
+    receiptItem: string; bookItem: string; supplier: string;
+    bookCost: number; receiptAvgCost: number; driftPct: number;
+  }[] = [];
+  for (const item of top) {
+    if (item.unitCosts.length === 0) continue;
+    const avg = item.unitCosts.reduce((s, c) => s + c, 0) / item.unitCosts.length;
+    const norm = item.name.toLowerCase();
+    const match = atomics.find((a) => {
+      const bookNorm = a.description!.toLowerCase();
+      return bookNorm.includes(norm) || norm.includes(bookNorm);
+    });
+    const price = match ? priceByItem.get(match.itemId) : undefined;
+    if (match && price && price.unitCost > 0) {
+      const pct = Math.round(((avg - price.unitCost) / price.unitCost) * 1000) / 10;
+      if (Math.abs(pct) >= 5) {
+        drift.push({
+          receiptItem: item.name,
+          bookItem: match.description!,
+          supplier: price.supplier,
+          bookCost: price.unitCost,
+          receiptAvgCost: Math.round(avg * 100) / 100,
+          driftPct: pct,
+        });
+      }
+    }
+  }
+
+  res.json({
+    year,
+    receiptsParsed: receipts.length,
+    topItems: top.map((t) => ({
+      name: t.name,
+      receipts: t.count,
+      totalQty: Math.round(t.totalQty * 100) / 100,
+      avgUnitCost: t.unitCosts.length > 0
+        ? Math.round((t.unitCosts.reduce((s, c) => s + c, 0) / t.unitCosts.length) * 100) / 100
+        : null,
+      vendors: [...t.vendors],
+    })),
+    priceDrift: drift.sort((a, b) => Math.abs(b.driftPct) - Math.abs(a.driftPct)),
+  });
+}));
+
+// ── Go-live status (Phase 5): what stands between test dollars and real ones.
+// The Dashboard steps are Kyle's to click; this reports what the server can see.
+financialsRouter.get("/stripe-status", asyncHandler(async (_req, res) => {
+  const key = process.env.STRIPE_SECRET_KEY ?? "";
+  res.json({
+    configured: Boolean(key),
+    keyMode: key.startsWith("sk_live") || key.startsWith("rk_live") ? "live" : key ? "test" : "none",
+    restrictedKey: key.startsWith("rk_"),
+    webhookSecretSet: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
+    automaticTax: process.env.STRIPE_AUTOMATIC_TAX === "1",
+  });
 }));
 
 // ── Report 4: tax-year CSV export ───────────────────────────────────────────

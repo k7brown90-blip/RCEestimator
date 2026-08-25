@@ -32,6 +32,11 @@ export function FinancialsPage() {
     queryFn: () => api.jobProfitability(year),
   });
   const { data: bills } = useQuery({ queryKey: ["companyBills"], queryFn: () => api.companyBills() });
+  const { data: insights } = useQuery({
+    queryKey: ["receiptInsights", year],
+    queryFn: () => api.receiptInsights(year),
+  });
+  const { data: stripeStatus } = useQuery({ queryKey: ["stripeStatus"], queryFn: () => api.stripeStatus() });
   const { data: payments } = useQuery({
     queryKey: ["payments", year],
     queryFn: () => api.paymentsList(year),
@@ -141,12 +146,12 @@ export function FinancialsPage() {
         </ul>
       </section>
 
-      {/* ── Report 3: job profitability ── */}
+      {/* ── Report 3: job profitability — real labor now (Phase 5) ── */}
       <section className="card p-4">
         <h2 className="text-lg font-semibold">Job profitability</h2>
         <p className="mb-2 text-xs text-rce-muted">
-          Completed jobs: quoted vs material spend. Margin here is before labor — hours tracking is a
-          coming phase.
+          Completed jobs: quoted vs materials vs clocked labor. Hours come from the field app's
+          time clock.
         </p>
         {(profitability ?? []).length === 0 && (
           <p className="text-sm text-rce-muted">No completed jobs in {year} yet — margins appear as jobs close.</p>
@@ -158,18 +163,87 @@ export function FinancialsPage() {
                 <Link to={`/visits/${j.visitId}`} className="font-medium hover:text-rce-accent">
                   {j.customer} — {j.jobType ?? "job"}
                 </Link>
-                <span className={`font-semibold tabular-nums ${j.marginBeforeLabor !== null && j.marginBeforeLabor < 0 ? "text-red-600" : ""}`}>
-                  {j.marginBeforeLabor !== null ? money(j.marginBeforeLabor) : "—"}
+                <span className={`font-semibold tabular-nums ${j.margin !== null && j.margin < 0 ? "text-red-600" : ""}`}>
+                  {j.margin !== null ? money(j.margin) : "—"}
                 </span>
               </div>
               <p className="text-xs text-rce-muted">
                 {j.address} · quoted {j.quoted !== null ? money(j.quoted) : "—"} · materials {money(j.materialSpend)}
+                {" · labor "}{j.laborHours > 0 ? `${j.laborHours}h (${money(j.laborCost)})` : "not clocked"}
                 {j.completedAt && ` · closed ${new Date(j.completedAt).toLocaleDateString()}`}
               </p>
             </li>
           ))}
         </ul>
       </section>
+
+      {/* ── Receipt insights (Phase 5): the price book learns — by showing, never setting ── */}
+      <section className="card p-4">
+        <h2 className="text-lg font-semibold">What the receipts say</h2>
+        <p className="mb-2 text-xs text-rce-muted">
+          Read from {insights?.receiptsParsed ?? 0} itemized receipt(s) in {year}. Most-purchased
+          items, and where street prices have drifted from the price book — the book only changes
+          when you change it.
+        </p>
+        {(insights?.topItems ?? []).length === 0 ? (
+          <p className="text-sm text-rce-muted">
+            No itemized receipts yet — as receipts with line items come in (photo uploads are
+            auto-read), the most-used materials surface here.
+          </p>
+        ) : (
+          <>
+            <h3 className="text-sm font-semibold text-rce-soft">Most-purchased items</h3>
+            <ul className="mt-1 space-y-1">
+              {(insights?.topItems ?? []).slice(0, 10).map((item) => (
+                <li key={item.name} className="flex items-center justify-between rounded-lg border border-rce-border px-3 py-1.5 text-sm">
+                  <span>{item.name} <span className="text-xs text-rce-muted">×{item.totalQty} across {item.receipts} receipt(s)</span></span>
+                  <span className="text-xs tabular-nums text-rce-muted">
+                    {item.avgUnitCost !== null ? `avg ${money(item.avgUnitCost)}/unit` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        {(insights?.priceDrift ?? []).length > 0 && (
+          <>
+            <h3 className="mt-3 text-sm font-semibold text-amber-800">Price drift vs the book (≥5%)</h3>
+            <ul className="mt-1 space-y-1">
+              {(insights?.priceDrift ?? []).map((d) => (
+                <li key={`${d.receiptItem}-${d.bookItem}`} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm">
+                  <span className="font-medium">{d.bookItem}</span>{" "}
+                  <span className={`font-semibold tabular-nums ${d.driftPct > 0 ? "text-red-700" : "text-green-700"}`}>
+                    {d.driftPct > 0 ? "+" : ""}{d.driftPct}%
+                  </span>
+                  <p className="text-xs text-rce-muted">
+                    Book ({d.supplier}): {money(d.bookCost)} · receipts avg: {money(d.receiptAvgCost)} — update the workbook if the street price stuck.
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </section>
+
+      {/* ── Go-live checklist (Phase 5) ── */}
+      {stripeStatus && (
+        <section className="card p-4">
+          <h2 className="text-lg font-semibold">Stripe go-live</h2>
+          <p className="mb-2 text-xs text-rce-muted">
+            {stripeStatus.keyMode === "live"
+              ? "Live mode — real cards, real money."
+              : "Test mode — no real money moves. The steps below are yours to click in the Stripe Dashboard; the app picks the changes up from its settings."}
+          </p>
+          <ul className="space-y-1 text-sm">
+            <li>{stripeStatus.configured ? "✅" : "⬜"} Stripe connected ({stripeStatus.keyMode} mode)</li>
+            <li>{stripeStatus.webhookSecretSet ? "✅" : "⬜"} Webhook receiving payments</li>
+            <li>{stripeStatus.keyMode === "live" ? "✅" : "⬜"} Live keys installed — create a <b>restricted</b> key (rk_) in the Dashboard, plus a live webhook endpoint, and swap both on Railway</li>
+            <li>{stripeStatus.restrictedKey ? "✅" : "⬜"} Using a restricted key (least privilege){!stripeStatus.restrictedKey && " — currently a full secret key"}</li>
+            <li>{stripeStatus.automaticTax ? "✅" : "⬜"} Sales tax — register Tennessee in Dashboard → Tax (head office + registration), then flip it on here; until then no tax is collected</li>
+            <li>✅ 3% card fee — real and disclosed: the pay page offers bank transfer at face value or card +3%</li>
+          </ul>
+        </section>
+      )}
 
       {/* ── Company bills ── */}
       <BillsCard bills={bills ?? []} onChange={() => {

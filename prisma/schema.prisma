@@ -340,9 +340,27 @@ model Visit {
   assignments            VisitAssignment[]
   healthInspections      HealthInspection[]
   visitPhotos            VisitPhoto[]
+  timeEntries            TimeEntry[]
 
   @@index([customerId, visitDate])
   @@index([status, scheduledStart])
+}
+
+// The time clock (Phase 5, Kyle 2026-08-25: "we need to have a time stamp for
+// labor tracking with a clock in button too"). One row per punch; clock-out
+// closes the open row and rolls the sum into Visit.laborHours, which is what
+// job profitability's labor line reads.
+model TimeEntry {
+  id           String    @id @default(cuid())
+  visitId      String
+  technicianId String?
+  startedAt    DateTime  @default(now())
+  endedAt      DateTime?
+  minutes      Float?
+  visit        Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+
+  @@index([visitId])
+  @@index([technicianId, endedAt])
 }
 
 // ─── Health Record (field inspection PWA) integration ──────────────────────
