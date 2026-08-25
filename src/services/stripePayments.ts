@@ -265,9 +265,10 @@ export async function createInvoiceCheckoutSession(
     ],
     customer_email: full!.customerEmail ?? undefined,
     // Method steering via EXCLUSION, per Stripe's own guidance — never
-    // payment_method_types. Bank hides card; card hides the bank rails.
+    // payment_method_types. Bank hides card; card hides the bank rail.
+    // ("link" is not an excludable type — live Stripe rejected it on go-live day.)
     excluded_payment_method_types: (method === "bank"
-      ? ["card", "link"]
+      ? ["card"]
       : ["us_bank_account"]) as Stripe.Checkout.SessionCreateParams.ExcludedPaymentMethodType[],
     // Fulfillment keys off these in the webhook — never trust the success page.
     metadata: {
