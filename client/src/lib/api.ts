@@ -47,6 +47,85 @@ import type {
 
 const API_BASE = "/api";
 
+// ─── Contacts, job lifecycle & financials (2026-08-25) ────────────────────────
+
+export interface CustomerContact {
+  id: string;
+  customerId: string;
+  label: string;
+  email: string | null;
+  phone: string | null;
+  createdAt: string;
+}
+
+export interface PurchaseOrderRow {
+  id: string;
+  supplier: string;
+  sentAt: string | null;
+  createdAt: string;
+  items: { name: string; qty: number; unit?: string; partNumber?: string }[];
+}
+
+export interface FinancialsSummary {
+  year: number;
+  stripeConfigured: boolean;
+  months: { month: number; invoiced: number; collected: number; expenses: number; net: number }[];
+  totals: { invoiced: number; collected: number; expenses: number; net: number };
+  expensesByCategory: { category: string; monthly: number[]; total: number }[];
+}
+
+export interface JobProfitRow {
+  visitId: string;
+  customer: string;
+  customerId: string;
+  address: string;
+  jobType: string | null;
+  completedAt: string | null;
+  quoted: number | null;
+  materialSpend: number;
+  marginBeforeLabor: number | null;
+}
+
+export interface CompanyBillRow {
+  id: string;
+  name: string;
+  category: string;
+  amount: number;
+  cadence: "one_time" | "weekly" | "monthly" | "quarterly" | "annual";
+  billDate?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  notes?: string | null;
+  createdAt: string;
+}
+
+export interface PaymentInfo {
+  estimateId: string;
+  number: string;
+  billedTotal: number;
+  depositDue: number;
+  depositPaid: number;
+  totalPaid: number;
+  balance: number;
+  depositSatisfied: boolean;
+  paidInFull: boolean;
+  payUrl: string;
+  depositPayUrl: string;
+  stripeConfigured: boolean;
+  payments: { id: string; amount: number; method: string; kind: string; status: string; paidAt: string | null }[];
+}
+
+export interface PaymentRow {
+  id: string;
+  amount: number;
+  method: string;
+  status: string;
+  note: string | null;
+  paidAt: string | null;
+  createdAt: string;
+  customer?: { id: string; name: string } | null;
+}
+
 /**
  * The visit modes the server will accept (`POST /visits`, zod enum in app.ts).
  *
@@ -510,6 +589,65 @@ export const api = {
       `/health-record-admin/inspections/${inspectionId}/email`,
       { method: "POST", body: JSON.stringify(to ? { to } : {}) },
     ),
+
+  // ─── Account contacts (2026-08-25) ─────────────────────────────────────────
+  accountContacts: (accountId: string) =>
+    request<CustomerContact[]>(`/accounts/${accountId}/contacts`),
+  addAccountContact: (accountId: string, input: { label: string; email?: string | null; phone?: string | null }) =>
+    request<CustomerContact>(`/accounts/${accountId}/contacts`, { method: "POST", body: JSON.stringify(input) }),
+  deleteAccountContact: (accountId: string, contactId: string) =>
+    request<void>(`/accounts/${accountId}/contacts/${contactId}`, { method: "DELETE" }),
+
+  // ─── Job lifecycle (2026-08-25) ────────────────────────────────────────────
+  completeJob: (jobId: string) =>
+    request<{ completed: true; completedAt: string; warnings: string[] }>(`/jobs/${jobId}/complete`, {
+      method: "POST", body: JSON.stringify({}),
+    }),
+  reopenJob: (jobId: string) =>
+    request<{ reopened: true }>(`/jobs/${jobId}/reopen`, { method: "POST", body: JSON.stringify({}) }),
+  jobPurchaseOrders: (jobId: string) =>
+    request<PurchaseOrderRow[]>(`/jobs/${jobId}/purchase-orders`),
+  createPurchaseOrder: (jobId: string, input: { supplier: string; items: { name: string; qty: number; unit?: string; partNumber?: string }[] }) =>
+    request<{ id: string }>(`/jobs/${jobId}/purchase-orders`, { method: "POST", body: JSON.stringify(input) }),
+  deletePurchaseOrder: (jobId: string, orderId: string) =>
+    request<void>(`/jobs/${jobId}/purchase-orders/${orderId}`, { method: "DELETE" }),
+  /** Receipt from the office — typed values, optional photo. */
+  uploadJobReceipt: async (jobId: string, input: { amount: number; vendor?: string; category?: string; image?: File | null }) => {
+    const receiptId = crypto.randomUUID().replaceAll("-", "");
+    const query = new URLSearchParams({ amount: String(input.amount) });
+    if (input.vendor) query.set("vendor", input.vendor);
+    if (input.category) query.set("category", input.category);
+    const token = localStorage.getItem("rce_token");
+    const response = await fetch(`/api/jobs/${jobId}/receipts/${receiptId}?${query.toString()}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": input.image?.type || "image/jpeg",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: input.image ?? new Blob([]),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error((body as { error?: string } | null)?.error ?? `Receipt upload failed (${response.status})`);
+    }
+    return (await response.json()) as { id: string; amount: number };
+  },
+
+  // ─── Payments & deposits (2026-08-25) ──────────────────────────────────────
+  jobPaymentInfo: (jobId: string) => request<PaymentInfo | null>(`/jobs/${jobId}/payment-info`),
+  estimatePaymentInfo: (estimateId: string) =>
+    request<PaymentInfo | null>(`/issued-estimates/${estimateId}/payment-info`),
+
+  // ─── Financials (2026-08-25) ───────────────────────────────────────────────
+  financialsSummary: (year: number) => request<FinancialsSummary>(`/financials/summary?year=${year}`),
+  jobProfitability: (year: number) => request<JobProfitRow[]>(`/financials/job-profitability?year=${year}`),
+  companyBills: () => request<CompanyBillRow[]>("/financials/bills"),
+  createCompanyBill: (input: Omit<CompanyBillRow, "id" | "createdAt">) =>
+    request<CompanyBillRow>("/financials/bills", { method: "POST", body: JSON.stringify(input) }),
+  deleteCompanyBill: (id: string) => request<void>(`/financials/bills/${id}`, { method: "DELETE" }),
+  paymentsList: (year: number) => request<PaymentRow[]>(`/financials/payments?year=${year}`),
+  recordPayment: (input: { amount: number; method: "cash" | "check" | "other"; kind?: "deposit" | "final" | "other"; customerId?: string; estimateId?: string; note?: string }) =>
+    request<PaymentRow>("/financials/payments", { method: "POST", body: JSON.stringify(input) }),
   // ─── Company settings ───────────────────────────────────────────────────
   companySettings: () => request<CompanySettings>("/crm/settings"),
   saveCompanySetting: (key: string, value: unknown) =>

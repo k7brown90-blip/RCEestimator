@@ -17,6 +17,8 @@ const nav = [
   // visit); this entry is where you see what has been quoted and where it got to.
   { to: "/estimates", label: "Estimates" },
   { to: "/accounts", label: "Accounts" },
+  // Money — bills, revenue, and the accounting reports (Kyle, 2026-08-25).
+  { to: "/financials", label: "Financials" },
   { to: "/team", label: "Team" },
   { to: "/settings", label: "Settings" },
 ];
@@ -28,6 +30,7 @@ const MOBILE_NAV_COLS: Record<number, string> = {
   6: "grid-cols-6",
   7: "grid-cols-7",
   8: "grid-cols-8",
+  9: "grid-cols-9",
 };
 
 function NavItem({ to, label, badge }: { to: string; label: string; badge?: number }) {

@@ -59,7 +59,9 @@ export type JobSummary = {
   customer: {
     id: string;
     name: string;
+    phone?: string | null;
   };
+  completedAt?: string | null;
   estimate: {
     id: string;
     title: string;

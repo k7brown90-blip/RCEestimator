@@ -145,6 +145,38 @@ export async function scheduleJob(
   const isEstimate = kind === "estimate";
   const travelBufferMinutes = isEstimate ? ESTIMATE_TRAVEL_BUFFER_MINUTES : 0;
 
+  // ── THE DEPOSIT GATE (Kyle, 2026-08-25) ────────────────────────────────────
+  // "We need to implement a 1/3 deposit on every job. Deposit required before
+  // it can be scheduled. This is different from estimates."
+  // Production work only — estimate appointments book freely. Money at or past
+  // ⅓ of the billed total (card via the deposit link, or cash/check recorded
+  // by hand) opens the gate. A job with no signed estimate has no total to
+  // take a third of, so it is not gated — the signature is the moment the
+  // deposit starts existing.
+  if (!isEstimate) {
+    const est = await prisma.issuedEstimate.findFirst({
+      where: {
+        signedAt: { not: null },
+        status: { not: "void" },
+        OR: [{ jobVisitId: jobId }, { visitId: jobId }],
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+    if (est) {
+      const { paymentSummary } = await import("./stripePayments");
+      const summary = await paymentSummary(prisma, est.id, "https://unused.invalid");
+      if (summary && !summary.depositSatisfied) {
+        throw new ConflictError(
+          `Deposit required before scheduling: $${(summary.depositDue - summary.depositPaid).toFixed(2)} of the ` +
+          `$${summary.depositDue.toFixed(2)} deposit (1/3 of $${summary.billedTotal.toFixed(2)}) is still unpaid. ` +
+          `Take the deposit — card via the Take payment panel, or record the cash/check — then schedule.`,
+          [],
+        );
+      }
+    }
+  }
+
   // An estimate is a fixed 2-hour block regardless of the job's day estimate —
   // durationDays only describes the work, not the visit that prices it.
   const durationDays = isEstimate ? 1 : (job.estimatedDurationDays ?? 1);

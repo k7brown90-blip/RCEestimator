@@ -35,7 +35,29 @@ model Customer {
   // and the whole account deletes in one action — on Kyle's word, never on a schedule.
   isTestAccount Boolean  @default(false)
   healthInspections HealthInspection[]
+  contacts    CustomerContact[]
+  payments    Payment[]
 
+  @@index([phone])
+}
+
+// Additional labeled emails/phones on an account (Kyle, 2026-08-25: "the
+// ability to store multiple email addresses and phone numbers, to resend
+// estimates and select a specific email to resend it to"). The Customer row's
+// own email/phone stay the PRIMARY — these are the spouse's cell, the work
+// email, the property manager. Send pickers list primary + these; inbound SMS
+// matching searches these numbers too, so a text from the spouse still lands
+// on the account.
+model CustomerContact {
+  id         String   @id @default(cuid())
+  customerId String
+  label      String   // "Spouse — cell", "Work email", "Property manager"
+  email      String?
+  phone      String?
+  createdAt  DateTime @default(now())
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
   @@index([phone])
 }
 
@@ -282,6 +304,10 @@ model Visit {
   scheduledEnd           DateTime?
   googleEventId          String?
   contractedAt           DateTime?
+  // When the job was closed out (Kyle, 2026-08-25: "Lead → appointment →
+  // Estimate → job → job complete → stored and tracked"). The labor-tracking
+  // timestamp; clock in/out is a later phase and hangs off this same visit.
+  completedAt            DateTime?
   // ── Customer appointment confirmation (dual-channel email + SMS) ──
   confirmationStatus     String            @default("unconfirmed") // unconfirmed | confirmed | reschedule_requested | cancel_requested
   confirmationToken      String?           @unique // public token for the /confirm/:token page
@@ -1230,6 +1256,57 @@ model Lead {
 }
 
 // ─── PHASE 1 DATA MODEL — NEW MODELS ────────────────────────────────────────
+
+// ─── Financials (Kyle, 2026-08-25) ───────────────────────────────────────────
+//
+// "A new tab dedicated to financial tracking of each job that will produce
+// necessary accounting reports for the company, I will enter all company bills
+// and rolling costs and revenue in here."
+//
+// Company bills are the RECURRING side of expenses (insurance, phone, software,
+// truck payment); one-off spends stay on Receipt, which already carries the
+// materials/gas/maintenance/overhead categories. Reports read both.
+
+model CompanyBill {
+  id         String    @id @default(cuid())
+  name       String    // "General liability insurance", "Truck payment"
+  category   String    @default("overhead") // overhead | insurance | vehicle | software | marketing | other
+  amount     Float
+  // one_time bills hit their billDate's month once; recurring bills hit every
+  // period from startDate until endDate (or forever while endDate is null).
+  cadence    String    // one_time | weekly | monthly | quarterly | annual
+  billDate   DateTime? // one_time: the month it lands in
+  startDate  DateTime? // recurring: first period
+  endDate    DateTime? // recurring: null = still active
+  notes      String?
+  createdAt  DateTime  @default(now())
+}
+
+// Money actually received. Stripe payments arrive via webhook; cash and checks
+// are recorded by hand. Revenue reports show invoiced (signed estimates) and
+// collected (these rows) side by side — accrual and cash views of the same jobs.
+model Payment {
+  id              String    @id @default(cuid())
+  customerId      String?
+  estimateId      String?   // IssuedEstimate id — plain column, provenance
+  visitId         String?
+  amount          Float
+  method          String    // stripe | cash | check | other
+  // What the money was FOR (Kyle, 2026-08-25: "a 1/3 deposit on every job.
+  // Deposit required before it can be scheduled"). deposit | final | other.
+  // The scheduling gate reads paid deposit rows; the final pay link charges
+  // the balance net of everything already paid.
+  kind            String    @default("other")
+  status          String    @default("paid") // pending | paid | failed | refunded
+  stripeSessionId String?   @unique
+  note            String?
+  paidAt          DateTime?
+  createdAt       DateTime  @default(now())
+  customer        Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([paidAt])
+  @@index([estimateId])
+}
 
 model Receipt {
   id           String   @id @default(cuid())

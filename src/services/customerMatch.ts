@@ -168,6 +168,24 @@ export async function findCustomerMatches(query: MatchQuery): Promise<CustomerMa
       candidates.filter((row) => phoneDigits10(row.phone) === digits10),
       "phone",
     );
+
+    // Additional contacts (2026-08-25): the spouse's cell on the account must
+    // match the account — a text from that number is the same household.
+    const contactHits = await prisma.customerContact.findMany({
+      where: { phone: { contains: digits10.slice(-4) } },
+      take: PHONE_CANDIDATE_LIMIT,
+      select: { customerId: true, phone: true },
+    });
+    const contactCustomerIds = [
+      ...new Set(contactHits.filter((c) => phoneDigits10(c.phone) === digits10).map((c) => c.customerId)),
+    ];
+    if (contactCustomerIds.length > 0) {
+      const rows = await prisma.customer.findMany({
+        where: { id: { in: contactCustomerIds } },
+        select: SELECT,
+      });
+      add(rows, "phone");
+    }
   }
 
   if (email) {

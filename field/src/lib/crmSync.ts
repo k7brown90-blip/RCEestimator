@@ -447,6 +447,33 @@ export function pendingFindingActionCount(): Promise<number> {
   return db.findingActionQueue.count()
 }
 
+// ─── Payment collection (2026-08-25) ─────────────────────────────────────────
+
+export interface VisitPaymentInfo {
+  number: string
+  billedTotal: number
+  depositDue: number
+  depositPaid: number
+  totalPaid: number
+  balance: number
+  depositSatisfied: boolean
+  paidInFull: boolean
+  payUrl: string
+  depositPayUrl: string
+  qrUrl: string
+  depositQrUrl: string
+}
+
+/**
+ * Where the money stands on an assigned visit — null when nothing signed yet.
+ * The tech shows the QR or shares the link; the customer pays on their own
+ * phone. Amounts are computed server-side off the signed estimate; nothing on
+ * this device can change them.
+ */
+export async function fetchVisitPaymentInfo(visitId: string): Promise<VisitPaymentInfo | null> {
+  return crmRequest(`/visits/${visitId}/payment-info`)
+}
+
 // ─── Report delivery ────────────────────────────────────────────────────────
 
 /**

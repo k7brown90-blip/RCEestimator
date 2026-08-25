@@ -13,6 +13,7 @@ import { PropertyDetailPage } from "./pages/PropertyDetailPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TeamPage } from "./pages/TeamPage";
 import { PriceBookIntakePage } from "./pages/PriceBookIntakePage";
+import { FinancialsPage } from "./pages/FinancialsPage";
 import { PresentationPage } from "./pages/PresentationPage";
 import { EstimatesPage } from "./pages/EstimatesPage";
 import { VisitWorkspacePage } from "./pages/VisitWorkspacePage";
@@ -69,6 +70,7 @@ function App() {
                     No device lock — Kyle vetoed it 2026-08-18. */}
                 <Route path="/sign-in-person/:estimateId" element={<SigningModePage />} />
                 <Route path="/team" element={<TeamPage />} />
+                <Route path="/financials" element={<FinancialsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
               </CrashBoundary>

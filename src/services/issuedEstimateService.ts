@@ -107,15 +107,25 @@ export type GraduateResult =
     }
   | { ok: false; reasons: string[] };
 
+/**
+ * Next house number. HARDENED 2026-08-25: this used to take the single
+ * lexicographically-highest row and parse it — so one row with a number outside
+ * the house format ("TEST-PAY-1" sorted above every "2026-…", parsed to NaN,
+ * fell back to the floor) collided with an existing number and 500'd every
+ * issue until the row was renamed. Broke production during Kyle's Stripe test.
+ * Now only rows IN the house format are considered, and the numeric max is
+ * taken across them — a foreign number can exist without being load-bearing.
+ */
 async function nextNumber(prisma: PrismaClient): Promise<string> {
   const rows = await prisma.issuedEstimate.findMany({
+    where: { number: { startsWith: `${NUMBER_YEAR}-` } },
     select: { number: true },
-    orderBy: { number: "desc" },
-    take: 1,
   });
-  const parsed = rows.length > 0 ? Number(rows[0].number.split("-")[1]) : NaN;
-  const highest = Number.isFinite(parsed) ? parsed : NUMBER_FLOOR;
-  return `${NUMBER_YEAR}-${Math.max(highest, NUMBER_FLOOR) + 1}`;
+  const highest = rows.reduce((max, row) => {
+    const parsed = Number(row.number.split("-")[1]);
+    return Number.isFinite(parsed) && parsed > max ? parsed : max;
+  }, NUMBER_FLOOR);
+  return `${NUMBER_YEAR}-${highest + 1}`;
 }
 
 /**

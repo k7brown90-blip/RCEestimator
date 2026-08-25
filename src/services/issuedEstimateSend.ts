@@ -34,6 +34,7 @@ import { logSystemEvent } from "./systemEvents";
 // reason the filed copies are rendered on demand: nothing to drift, nothing lost to a deploy.
 import { renderEstimatePdf } from "./issuedEstimatePdf";
 import { getCompanyProfile } from "./companyProfile";
+import { stripeConfigured } from "./stripePayments";
 
 export type SendResult = { ok: true; to: string } | { ok: false; reason: string };
 
@@ -167,6 +168,10 @@ export async function sendInvoiceEmail(
 
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
   const note = (opts.message ?? "").trim();
+  // Pay online (Stripe, 2026-08-25): the link is OUR durable /pay route, which
+  // mints a fresh Checkout session per click — a raw session URL would expire
+  // in a day. Only rendered while Stripe is configured on the service.
+  const payUrl = stripeConfigured() ? `${publicBaseUrl()}/pay/${est.token}` : null;
   const bodyHtml = `
     <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
     <p style="font-size:15px;">Thank you for approving <strong>${escapeHtml(est.title)}</strong>.
@@ -175,6 +180,14 @@ export async function sendInvoiceEmail(
     <p style="font-size:15px;">Invoice <strong>${escapeHtml(est.number)}</strong>${
       est.revision > 1 ? ` (revision ${est.revision})` : ""
     } &middot; Total <strong>${`$${billed.toFixed(2)}`}</strong></p>
+    ${payUrl ? `
+    <p style="margin:24px 0;">
+      <a href="${escapeHtml(payUrl)}"
+         style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
+                border-radius:6px;font-size:16px;font-weight:600;display:inline-block;">
+        Pay online
+      </a>
+    </p>` : ""}
     <p style="font-size:14px;color:#555;">We accept ACH bank transfer (no fee) or credit / debit card
     (a 3% processing fee is added to card payments).</p>
     <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;

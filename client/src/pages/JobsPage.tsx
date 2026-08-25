@@ -66,6 +66,9 @@ export function JobsPage() {
   */
   const openWorkOrders = searchParams.get("open") === "1";
   const [sortNewestFirst, setSortNewestFirst] = useState(true);
+  // Completed-jobs search (Kyle, 2026-08-25): "organized by account with a
+  // search feature that can search by customer address, phone number, or name."
+  const [search, setSearch] = useState("");
 
   const archived = tab === "archived";
   const { data: jobs = [], isLoading, error } = useQuery({
@@ -107,12 +110,39 @@ export function JobsPage() {
       });
 
     if (!archived) return filtered;
+    // Search: name, address, or phone — digits compared as digits so
+    // "(615) 555-0101" and "6155550101" both find the account.
+    const q = search.trim().toLowerCase();
+    const qDigits = q.replace(/\D/g, "");
+    const searched = q
+      ? filtered.filter((j) => {
+          const address = `${j.property.addressLine1} ${j.property.city}`.toLowerCase();
+          const phoneDigits = (j.customer.phone ?? "").replace(/\D/g, "");
+          return (
+            j.customer.name.toLowerCase().includes(q) ||
+            address.includes(q) ||
+            (qDigits.length >= 4 && phoneDigits.includes(qDigits))
+          );
+        })
+      : filtered;
     // Archived is a ledger, so let the owner flip the ordering.
-    return [...filtered].sort((a, b) => {
+    return [...searched].sort((a, b) => {
       const diff = new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime();
       return sortNewestFirst ? diff : -diff;
     });
-  }, [jobs, archived, estimateFilter, addressFilter, openWorkOrders, sortNewestFirst]);
+  }, [jobs, archived, estimateFilter, addressFilter, openWorkOrders, sortNewestFirst, search]);
+
+  /** Completed jobs grouped by account, preserving the sort inside each group. */
+  const archivedGroups = useMemo(() => {
+    if (!archived) return [];
+    const groups = new Map<string, { name: string; jobs: typeof visibleJobs }>();
+    for (const job of visibleJobs) {
+      const g = groups.get(job.customer.id) ?? { name: job.customer.name, jobs: [] };
+      g.jobs.push(job);
+      groups.set(job.customer.id, g);
+    }
+    return [...groups.entries()].map(([id, g]) => ({ customerId: id, ...g }));
+  }, [archived, visibleJobs]);
 
   function submitVisit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -206,7 +236,13 @@ export function JobsPage() {
       )}
 
       {archived && (
-        <div className="mb-5">
+        <div className="mb-5 flex flex-wrap items-center gap-3">
+          <input
+            className="field w-72"
+            placeholder="Search by name, address, or phone…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
           <button
             type="button"
             className="text-sm font-medium text-rce-accent"
@@ -221,18 +257,42 @@ export function JobsPage() {
       {error ? <p className="text-sm text-red-500">Error loading jobs: {error.message}</p> : null}
 
       <section className="space-y-3">
-        {visibleJobs.map((job) => (
-          <JobCard
-            key={job.visitId}
-            job={job}
-            onDeleteEstimate={(estimateId) => deleteEstimate.mutate(estimateId)}
-            deleting={deleteEstimate.isPending}
-          />
-        ))}
+        {/* Completed work is a per-account ledger; active work stays a flat list. */}
+        {archived
+          ? archivedGroups.map((group) => (
+              <div key={group.customerId}>
+                <Link
+                  to={`/accounts/${group.customerId}`}
+                  className="mb-1 block text-sm font-semibold text-rce-soft hover:text-rce-accent"
+                >
+                  {group.name} · {group.jobs.length} job{group.jobs.length === 1 ? "" : "s"} →
+                </Link>
+                <div className="space-y-2">
+                  {group.jobs.map((job) => (
+                    <JobCard
+                      key={job.visitId}
+                      job={job}
+                      onDeleteEstimate={(estimateId) => deleteEstimate.mutate(estimateId)}
+                      deleting={deleteEstimate.isPending}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))
+          : visibleJobs.map((job) => (
+              <JobCard
+                key={job.visitId}
+                job={job}
+                onDeleteEstimate={(estimateId) => deleteEstimate.mutate(estimateId)}
+                deleting={deleteEstimate.isPending}
+              />
+            ))}
         {!isLoading && visibleJobs.length === 0 && (
           <p className="text-sm text-rce-muted">
             {archived
-              ? "No completed or cancelled jobs."
+              ? search
+                ? "Nothing matches that search."
+                : "No completed or cancelled jobs."
               : estimateFilter
                 ? "No active jobs match that estimate status."
                 : "No active jobs. Start a visit to open one."}

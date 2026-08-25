@@ -23,6 +23,7 @@ import {
 } from "../services/pdfGenerator";
 import { notifyTechnicianOfAssignment } from "../services/visitConfirmations";
 import { sendHealthReportEmail } from "../services/healthReportEmail";
+import { paymentSummary } from "../services/stripePayments";
 import { resolveJurisdictions } from "../services/jurisdictionResolver";
 import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
 import { recordInspectionLoadCalc } from "../services/capacityCheckStore";
@@ -489,6 +490,57 @@ healthRecordTechRouter.post("/inspections/:id/email", asyncHandler(async (req: T
     return;
   }
   res.json({ success: true, data: { sentTo: result.sentTo, documentId: result.documentId } });
+}));
+
+/**
+ * GET /health-record/visits/:visitId/payment-info — where the money stands on
+ * the tech's assigned visit (Kyle, 2026-08-25: "no way of charging a card on
+ * either the admin side or field tech side"). The tech shows the QR / opens
+ * the link; the customer pays on their own phone through Stripe Checkout. The
+ * tech can never type a card number or change an amount — the link and its
+ * amounts are computed server-side off the signed estimate.
+ */
+healthRecordTechRouter.get("/visits/:visitId/payment-info", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const est = await prisma.issuedEstimate.findFirst({
+    where: {
+      signedAt: { not: null },
+      status: { not: "void" },
+      OR: [{ jobVisitId: visitId }, { visitId }],
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!est) { res.json({ success: true, data: null }); return; }
+  const origin = `${req.protocol}://${req.get("host")}`;
+  const summary = await paymentSummary(prisma, est.id, origin);
+  res.json({
+    success: true,
+    data: summary
+      ? {
+        number: summary.number,
+        billedTotal: summary.billedTotal,
+        depositDue: summary.depositDue,
+        depositPaid: summary.depositPaid,
+        totalPaid: summary.totalPaid,
+        balance: summary.balance,
+        depositSatisfied: summary.depositSatisfied,
+        paidInFull: summary.paidInFull,
+        payUrl: summary.payUrl,
+        depositPayUrl: summary.depositPayUrl,
+        qrUrl: `${summary.payUrl}/qr.svg`,
+        depositQrUrl: `${summary.payUrl}/qr.svg?type=deposit`,
+      }
+      : null,
+  });
 }));
 
 /**

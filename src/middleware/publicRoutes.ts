@@ -224,6 +224,18 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
     methods: ["POST"], path: "/e/:token/sign", credential: "URL-path token",
     reason: "The signature submission from that page — the only write on this surface. Same token, same one-estimate scope; sign-once is enforced by a conditional update in issuedEstimateService.",
   },
+  {
+    methods: ["GET"], path: "/pay/:token", credential: "URL-path token",
+    reason: "The customer's pay-online link from the invoice email. Same estimate token as /e; mints a fresh Stripe Checkout session and redirects — signed, unpaid estimates only, enforced in stripePayments.",
+  },
+  {
+    methods: ["GET"], path: "/pay/:token/qr.svg", credential: "URL-path token",
+    reason: "QR image of the pay link, scanned off the tech's or office's screen. Same token; encodes nothing the link itself doesn't.",
+  },
+  {
+    methods: ["POST"], path: "/stripe/webhook", credential: "query-string secret",
+    reason: "Stripe event delivery. Authenticated by the Stripe-Signature header verified against STRIPE_WEBHOOK_SECRET over the raw body — mounted before the JSON parser in app.ts for exactly that reason.",
+  },
 ];
 
 /** Path-segment-aware prefix test: `/health-record` matches `/health-record/x`, never `/health-record-admin`. */

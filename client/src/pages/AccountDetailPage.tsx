@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { InspectionResultChip } from "../components/InspectionResultChip";
 import { FindingLedger } from "../components/FindingLedger";
+import { SendToPicker } from "../components/SendToPicker";
+import { PaymentPanel } from "../components/PaymentPanel";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, openProtectedPdf } from "../lib/api";
@@ -421,6 +423,7 @@ export function AccountDetailPage() {
         </div>
       </section>
 
+      <ContactsCard accountId={account.id} />
       <StartWorkCard accountId={account.id} properties={properties} />
       <AccountEstimates accountId={account.id} properties={properties} />
 
@@ -440,7 +443,7 @@ export function AccountDetailPage() {
           </p>
           <div className="space-y-2">
             {summary.documents.map((d) => (
-              <InvoiceRow key={d.id} doc={d} />
+              <InvoiceRow key={d.id} doc={d} accountId={account.id} />
             ))}
           </div>
         </section>
@@ -502,6 +505,20 @@ function StartWorkCard({
     onError: (err) => setError((err as Error).message),
   });
 
+  // Consultation: an estimate-request call-in. Same Visit machinery, no price
+  // book — straight to the calendar with the scheduler open for it.
+  const bookConsultation = useMutation({
+    mutationFn: () =>
+      api.createVisit({
+        customerId: accountId,
+        propertyId: addressId,
+        mode: "service_diagnostic",
+        purpose: "Consultation — estimate visit",
+      }),
+    onSuccess: (visit) => navigate(`/calendar?schedule=${visit.id}`),
+    onError: (err) => setError((err as Error).message),
+  });
+
   const need = () => {
     if (!addressId) {
       setError("Pick the address you are working at first.");
@@ -559,15 +576,30 @@ function StartWorkCard({
       {error && <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{error}</p>}
 
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        {/* Consultation (Kyle, 2026-08-25): "a 'consultation' that is scheduled
+            that is not part of the price book but only used to schedule those
+            who call in and request a visit to do an estimate." Creates the
+            visit and lands straight on the calendar with the picker open —
+            the price book is never involved. */}
         <button
           className="btn btn-primary flex-1"
+          disabled={bookConsultation.isPending}
+          onClick={() => {
+            if (!need()) return;
+            bookConsultation.mutate();
+          }}
+        >
+          {bookConsultation.isPending ? "Creating…" : "Book consultation"}
+        </button>
+        <button
+          className="btn btn-secondary flex-1"
           disabled={scheduleVisit.isPending}
           onClick={() => {
             if (!need()) return;
             scheduleVisit.mutate();
           }}
         >
-          {scheduleVisit.isPending ? "Creating…" : "Schedule a visit"}
+          {scheduleVisit.isPending ? "Creating…" : "Open a visit"}
         </button>
         <button
           className="btn btn-primary flex-1"
@@ -756,10 +788,124 @@ function AccountEstimates({
                   </button>
                 )}
               </div>
+
+              {/* Resend to a chosen address (Kyle, 2026-08-25). Unsigned and already
+                  sent once — the same customer link goes out again, to the primary,
+                  a stored contact, or a typed one-off. */}
+              {e.sentAt && !e.signedAt && e.status !== "void" && (
+                <ResendControl estimateId={e.id} accountId={accountId} />
+              )}
             </div>
           );
         })}
       </div>
+    </section>
+  );
+}
+
+/** Inline resend with the send-to picker. */
+function ResendControl({ estimateId, accountId }: { estimateId: string; accountId: string }) {
+  const [open, setOpen] = useState(false);
+  const [to, setTo] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const resend = useMutation({
+    mutationFn: () => api.pbIssuedSend(estimateId, { to }),
+    onSuccess: (r) => setResult(`Re-sent to ${r.to}.`),
+    onError: (err) => setResult((err as Error).message),
+  });
+
+  if (!open) {
+    return (
+      <button type="button" className="mt-2 text-xs text-rce-accent underline" onClick={() => setOpen(true)}>
+        Resend estimate…
+      </button>
+    );
+  }
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <SendToPicker accountId={accountId} onChange={setTo} />
+      <button
+        type="button"
+        className="btn btn-primary text-xs"
+        disabled={resend.isPending}
+        onClick={() => resend.mutate()}
+      >
+        {resend.isPending ? "Sending…" : "Resend"}
+      </button>
+      {result && <span className="text-xs text-rce-muted">{result}</span>}
+    </div>
+  );
+}
+
+/**
+ * The account's contact book (Kyle, 2026-08-25): labeled additional emails and
+ * phone numbers. Primary stays on the account itself; these feed every send
+ * picker, and a text from any stored number matches this account.
+ */
+function ContactsCard({ accountId }: { accountId: string }) {
+  const queryClient = useQueryClient();
+  const { data: contacts } = useQuery({
+    queryKey: ["accountContacts", accountId],
+    queryFn: () => api.accountContacts(accountId),
+  });
+  const [label, setLabel] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: ["accountContacts", accountId] });
+  const add = useMutation({
+    mutationFn: () =>
+      api.addAccountContact(accountId, {
+        label: label.trim(),
+        email: email.trim() || null,
+        phone: phone.trim() || null,
+      }),
+    onSuccess: () => { setLabel(""); setEmail(""); setPhone(""); setError(null); refresh(); },
+    onError: (err) => setError((err as Error).message),
+  });
+
+  return (
+    <section className="card mb-5 p-4">
+      <h2 className="text-lg font-semibold">Additional contacts</h2>
+      <p className="text-xs text-rce-muted">
+        Spouse's cell, work email, property manager — they appear in every "send to" picker, and a
+        text from any number here matches this account.
+      </p>
+      <ul className="mt-3 space-y-1">
+        {(contacts ?? []).map((c) => (
+          <li key={c.id} className="flex items-center justify-between rounded-lg border border-rce-border px-3 py-2 text-sm">
+            <span>
+              <span className="font-medium">{c.label}</span>
+              <span className="ml-2 text-xs text-rce-muted">
+                {[c.email, c.phone].filter(Boolean).join(" · ")}
+              </span>
+            </span>
+            <button
+              className="text-xs text-red-600 underline"
+              onClick={() => void api.deleteAccountContact(accountId, c.id).then(refresh)}
+            >
+              remove
+            </button>
+          </li>
+        ))}
+        {(contacts ?? []).length === 0 && (
+          <li className="text-sm text-rce-muted">No additional contacts yet.</li>
+        )}
+      </ul>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <input className="field w-40" placeholder="Label (Spouse — cell)" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <input className="field w-52" type="email" placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <input className="field w-36" placeholder="Phone (optional)" value={phone} onChange={(e) => setPhone(e.target.value)} />
+        <button
+          className="btn btn-primary text-sm"
+          disabled={!label.trim() || (!email.trim() && !phone.trim()) || add.isPending}
+          onClick={() => add.mutate()}
+        >
+          Add contact
+        </button>
+      </div>
+      {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
     </section>
   );
 }
@@ -1079,11 +1225,14 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
  * on each would be two buttons doing one thing — and the one that reads "our copy" is the last
  * place to put a control that emails a customer.
  */
-function InvoiceRow({ doc: d }: { doc: AccountSummary["documents"][number] }) {
+function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][number]; accountId: string }) {
   const [sent, setSent] = useState<string | null>(null);
+  // Which address (Kyle, 2026-08-25) — null lets the server default to primary.
+  const [toOverride, setToOverride] = useState<string | null>(null);
+  const [showPay, setShowPay] = useState(false);
 
   const send = useMutation({
-    mutationFn: () => api.sendInvoice(d.estimateId as string),
+    mutationFn: () => api.sendInvoice(d.estimateId as string, { toOverride }),
     onSuccess: (r) => setSent(r.to),
   });
 
@@ -1106,7 +1255,7 @@ function InvoiceRow({ doc: d }: { doc: AccountSummary["documents"][number] }) {
         </div>
       </div>
 
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => void openProtectedPdf(`/documents/${d.id}/pdf`)}
@@ -1115,20 +1264,37 @@ function InvoiceRow({ doc: d }: { doc: AccountSummary["documents"][number] }) {
           Open PDF
         </button>
         {canSend && (
-          <button
-            type="button"
-            onClick={() => send.mutate()}
-            disabled={send.isPending}
-            className="btn-primary flex-1 text-sm disabled:opacity-60"
-          >
-            {send.isPending ? "Sending…" : "Email invoice"}
-          </button>
+          <>
+            <SendToPicker accountId={accountId} primaryEmail={d.customerEmail} onChange={setToOverride} />
+            <button
+              type="button"
+              onClick={() => send.mutate()}
+              disabled={send.isPending}
+              className="btn-primary flex-1 text-sm disabled:opacity-60"
+            >
+              {send.isPending ? "Sending…" : "Email invoice"}
+            </button>
+          </>
         )}
       </div>
 
       {sent && <p className="mt-2 text-xs text-green-700">Invoice emailed to {sent}.</p>}
       {send.isError && (
         <p className="mt-2 text-xs text-red-600">{(send.error as Error).message}</p>
+      )}
+
+      {/* Charge the card / record the check, right off the invoice (2026-08-25). */}
+      {canSend && (
+        <div className="mt-2">
+          <button type="button" className="text-xs text-rce-accent underline" onClick={() => setShowPay((s) => !s)}>
+            {showPay ? "Hide payment" : "Take payment…"}
+          </button>
+          {showPay && d.estimateId && (
+            <div className="mt-2">
+              <PaymentPanel estimateId={d.estimateId} />
+            </div>
+          )}
+        </div>
       )}
       {canSend && !d.customerEmail && !sent && (
         <p className="mt-2 text-xs text-rce-soft">

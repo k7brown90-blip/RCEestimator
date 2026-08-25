@@ -54,6 +54,9 @@ import {
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
+import { createInvoiceCheckoutSession, handleStripeWebhook, paymentSummary, stripeConfigured } from "./services/stripePayments";
+import QRCode from "qrcode";
+import { financialsRouter } from "./routes/financials";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import {
   scheduleJob, rescheduleJob, cancelJob, ConflictError,
@@ -166,7 +169,7 @@ if (fs.existsSync(clientDist)) {
     chain — but naming the exclusions is the change that can be read and checked, so it is the one
     made here.
   */
-  const SERVER_RENDERED_PREFIXES = ["/e/", "/confirm/", "/sign/", "/documents/"];
+  const SERVER_RENDERED_PREFIXES = ["/e/", "/confirm/", "/sign/", "/documents/", "/pay/"];
 
   app.use((req, res, next) => {
     const accepts = req.headers.accept || "";
@@ -185,6 +188,46 @@ if (fs.existsSync(clientDist)) {
   });
 }
 
+// Stripe webhook — mounted BEFORE the JSON parser on purpose: signature
+// verification runs over the RAW bytes, and express.json would consume them.
+// Public-route entry in middleware/publicRoutes.ts; the Stripe-Signature
+// header is the credential.
+// Strip the /api prefix so both spellings resolve to the same route.
+//
+// MOVED ABOVE THE BODY PARSERS (2026-08-25): the Stripe webhook below needs the
+// raw bytes, so it must mount before express.json — and the auth invariant
+// requires both spellings of every route to behave identically, which means the
+// strip has to run before the webhook. Nothing in between depends on the
+// prefix; `_isApi` still only picks the rate-limit budget.
+app.use((req: express.Request & { _isApi?: boolean }, _res, next) => {
+  if (req.path.startsWith("/api/") || req.path === "/api") {
+    req._isApi = true;
+    req.url = req.url.replace(/^\/api/, "") || "/";
+  }
+  next();
+});
+
+// Plain handler (asyncHandler is declared further down this file): a webhook
+// failure must answer Stripe itself — a 500 here just means a retry.
+app.post("/stripe/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  void (async () => {
+    const signature = req.headers["stripe-signature"];
+    if (typeof signature !== "string") {
+      res.status(400).json({ error: "Missing Stripe-Signature header" });
+      return;
+    }
+    const result = await handleStripeWebhook(prisma, req.body as Buffer, signature);
+    if (!result.received) {
+      res.status(400).json({ error: result.reason });
+      return;
+    }
+    res.json({ received: true });
+  })().catch((err) => {
+    console.error("[stripe/webhook]", err);
+    if (!res.headersSent) res.status(500).json({ error: "webhook handling failed" });
+  });
+});
+
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
 
@@ -200,20 +243,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// Strip the /api prefix so both spellings resolve to the same route.
-//
-// `_isApi` survives for ONE purpose — choosing the rate-limit budget below. It is deliberately
-// NOT an authorization signal any more: it used to be the whole of one, and since every data
-// route is mounted at its bare path, that made `GET /accounts` public while `GET /api/accounts`
-// required a session (P014 report, STOP §1). Authorization is decided by middleware/publicRoutes.ts
-// against the stripped path, so the two spellings are now indistinguishable to the auth layer.
-app.use((req: express.Request & { _isApi?: boolean }, _res, next) => {
-  if (req.path.startsWith("/api/") || req.path === "/api") {
-    req._isApi = true;
-    req.url = req.url.replace(/^\/api/, "") || "/";
-  }
-  next();
-});
+// The /api-prefix strip used to live here; it moved above the body parsers on
+// 2026-08-25 so the Stripe webhook (raw body, both spellings) sits after it.
+// `_isApi` still exists for ONE purpose — choosing the rate-limit budget below.
+// It is deliberately NOT an authorization signal: authorization is decided by
+// middleware/publicRoutes.ts against the stripped path (P014/P015).
 
 // ─── RATE LIMITING ───────────────────────────────────────────────────────────
 // Public, unauthenticated endpoints get a tight per-IP budget; everything else
@@ -1191,6 +1225,49 @@ app.use(confirmPageRouter);
 // Mounted at /e so the emailed link is short enough to survive being read aloud or retyped.
 app.use("/e", estimatePageRouter);
 
+/**
+ * The customer's pay-online link (Kyle, 2026-08-25 — Stripe). The invoice email
+ * carries THIS url, never a raw Checkout URL: sessions expire in a day, emails
+ * don't. Each click mints a fresh session and redirects; the service refuses
+ * unsigned, void, and already-paid invoices.
+ */
+app.get("/pay/:token", asyncHandler(async (req, res) => {
+  const origin = `${req.protocol}://${req.get("host")}`;
+  // ?type=deposit charges the ⅓ down; default is the remaining balance.
+  const payType = readQuery(req, "type") === "deposit" ? "deposit" as const : "balance" as const;
+  const result = await createInvoiceCheckoutSession(prisma, readParam(req, "token"), origin, payType);
+  if (!result.ok) {
+    res.status(400).send(`<!doctype html><meta charset="utf-8">
+      <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center;">
+      <h2 style="color:#1a5c2e;">Red Cedar Electric</h2>
+      <p>${result.reason}</p>
+      <p style="color:#666;font-size:14px;">Questions? Call us at 615-625-2163.</p></body>`);
+    return;
+  }
+  res.redirect(303, result.url);
+}));
+
+/**
+ * QR code for the pay link — what the tech's phone shows the customer in the
+ * driveway, and what the office screen shows across the counter. Same token
+ * credential as /pay itself; the QR encodes nothing the link doesn't.
+ */
+app.get("/pay/:token/qr.svg", asyncHandler(async (req, res) => {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { token: readParam(req, "token") },
+    select: { token: true },
+  });
+  if (!est) { res.status(404).send("Not found"); return; }
+  const origin = `${req.protocol}://${req.get("host")}`;
+  const type = readQuery(req, "type") === "deposit" ? "?type=deposit" : "";
+  const svg = await QRCode.toString(`${origin}/pay/${est.token}${type}`, {
+    type: "svg", margin: 1, width: 280,
+  });
+  res.setHeader("Content-Type", "image/svg+xml");
+  res.setHeader("Cache-Control", "private, max-age=3600");
+  res.send(svg);
+}));
+
 // ─── LEAD FOLLOW-UP & LOSS TRACKING ─────────────────────────────────────────
 
 app.get("/leads/follow-ups-due", asyncHandler(async (req, res) => {
@@ -1658,6 +1735,7 @@ app.use("/agent/calendar", sharedAgentRouter);
 
 // ─── HEALTH RECORD PWA (per-technician bearer auth, not the CRM session) ─────
 app.use("/health-record", healthRecordTechRouter);
+app.use("/financials", financialsRouter);
 // Capacity checks run on ordinary service calls with no assessment in progress,
 // so this is its own router rather than a branch of the health record.
 app.use("/health-record/capacity-checks", capacityCheckTechRouter);
@@ -2793,6 +2871,37 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
   res.json({ estimates: rows });
 }));
 
+/**
+ * Where the money on this estimate stands — deposit due, what's paid, the
+ * balance, and both pay links. The admin "Take payment" panel reads this.
+ * (Kyle, 2026-08-25: "I don't see anywhere to even charge a deposit on the
+ * admin side.")
+ */
+app.get("/issued-estimates/:id/payment-info", asyncHandler(async (req, res) => {
+  const origin = `${req.protocol}://${req.get("host")}`;
+  const summary = await paymentSummary(prisma, String(req.params.id), origin);
+  if (!summary) { res.status(404).json({ error: "Estimate not found" }); return; }
+  res.json({ ...summary, stripeConfigured: stripeConfigured() });
+}));
+
+/** Same summary, addressed by the JOB — what the visit workspace shows. */
+app.get("/jobs/:jobId/payment-info", asyncHandler(async (req, res) => {
+  const jobId = readParam(req, "jobId");
+  const est = await prisma.issuedEstimate.findFirst({
+    where: {
+      signedAt: { not: null },
+      status: { not: "void" },
+      OR: [{ jobVisitId: jobId }, { visitId: jobId }],
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!est) { res.json(null); return; }
+  const origin = `${req.protocol}://${req.get("host")}`;
+  const summary = await paymentSummary(prisma, est.id, origin);
+  res.json(summary ? { ...summary, stripeConfigured: stripeConfigured() } : null);
+}));
+
 /** Signed quote → job, on the same account and address. One tap, idempotent. */
 app.post("/issued-estimates/:id/create-job", asyncHandler(async (req, res) => {
   const result = await createJobFromSignedEstimate(prisma, String(req.params.id), {
@@ -3290,7 +3399,11 @@ app.get("/jobs", asyncHandler(async (req, res) => {
       customer: {
         id: visit.customer.id,
         name: visit.customer.name,
+        // For the completed-jobs search (Kyle, 2026-08-25: "search by customer
+        // address, phone number, or name").
+        phone: visit.customer.phone,
       },
+      completedAt: visit.completedAt,
       // The ISSUED estimate wins when there is one — it is the document that was actually sent
       // and signed. The legacy row remains the fallback so older jobs keep reporting.
       estimate: latestIssued
@@ -3339,6 +3452,187 @@ const listCustomers = asyncHandler(async (_req: express.Request, res: express.Re
   res.json(customers);
 });
 app.get("/customers", listCustomers);
+// ─── ACCOUNT CONTACTS (Kyle, 2026-08-25) ─────────────────────────────────────
+//
+// "The ability to store multiple email addresses and phone numbers, to resend
+// estimates and select a specific email to resend it to." The Customer row's
+// own email/phone stay primary; these are the spouse's cell, the work email.
+// Send pickers list primary + these, and inbound SMS matches these numbers too.
+
+app.get("/accounts/:id/contacts", asyncHandler(async (req, res) => {
+  const contacts = await prisma.customerContact.findMany({
+    where: { customerId: readParam(req, "id") },
+    orderBy: { createdAt: "asc" },
+  });
+  res.json(contacts);
+}));
+
+app.post("/accounts/:id/contacts", asyncHandler(async (req, res) => {
+  const body = z.object({
+    label: z.string().trim().min(1).max(100),
+    email: z.string().trim().email().nullable().optional(),
+    phone: z.string().trim().min(7).max(20).nullable().optional(),
+  }).parse(req.body);
+  if (!body.email && !body.phone) {
+    res.status(400).json({ error: "A contact needs an email or a phone number (or both)." });
+    return;
+  }
+  const contact = await prisma.customerContact.create({
+    data: {
+      customerId: readParam(req, "id"),
+      label: body.label,
+      email: body.email ?? null,
+      phone: body.phone ?? null,
+    },
+  });
+  res.status(201).json(contact);
+}));
+
+app.delete("/accounts/:id/contacts/:contactId", asyncHandler(async (req, res) => {
+  await prisma.customerContact.deleteMany({
+    where: { id: readParam(req, "contactId"), customerId: readParam(req, "id") },
+  });
+  res.status(204).end();
+}));
+
+// ─── JOB COMPLETION (Kyle, 2026-08-25) ───────────────────────────────────────
+//
+// "Lead → appointment → Estimate → job → job complete → stored and tracked."
+// NO GATE, his ruling: "We do not want to lock ourselves out of closing a job,
+// some might be labor only." The response carries warnings — unreceipted POs,
+// no invoice sent — but nothing blocks. completedAt is the labor timestamp;
+// clock in/out is a later phase.
+
+app.post("/jobs/:jobId/complete", asyncHandler(async (req, res) => {
+  const jobId = readParam(req, "jobId");
+  const visit = await prisma.visit.findUnique({
+    where: { id: jobId },
+    include: { materialOrders: true },
+  });
+  if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
+  if (visit.status === "cancelled") { res.status(409).json({ error: "This job was cancelled." }); return; }
+
+  const [receipts, invoiceEvents] = await Promise.all([
+    prisma.receipt.findMany({ where: { jobId }, select: { id: true } }),
+    prisma.issuedEstimateEvent.findMany({
+      where: { type: "invoice_sent", estimate: { OR: [{ jobVisitId: jobId }, { visitId: jobId }] } },
+      select: { id: true },
+    }),
+  ]);
+
+  const warnings: string[] = [];
+  if (visit.materialOrders.length > 0 && receipts.length === 0) {
+    warnings.push(`${visit.materialOrders.length} purchase order(s) on this job and no receipts uploaded yet.`);
+  }
+  if (invoiceEvents.length === 0) {
+    warnings.push("No invoice has been emailed for this job.");
+  }
+
+  const updated = await prisma.visit.update({
+    where: { id: jobId },
+    data: { status: "completed", completedAt: new Date() },
+  });
+  logSystemEvent("info", "jobs", `Job completed — ${visit.jobType ?? visit.purpose ?? jobId}`, {
+    visitId: jobId,
+    warnings,
+  });
+  res.json({ completed: true, completedAt: updated.completedAt, warnings });
+}));
+
+/** Undo — a job closed by mistake reopens to in_progress, keeping its history. */
+app.post("/jobs/:jobId/reopen", asyncHandler(async (req, res) => {
+  const jobId = readParam(req, "jobId");
+  const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { status: true } });
+  if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
+  if (visit.status !== "completed") { res.status(409).json({ error: "Only a completed job can be reopened." }); return; }
+  await prisma.visit.update({ where: { id: jobId }, data: { status: "in_progress", completedAt: null } });
+  res.json({ reopened: true });
+}));
+
+// ─── PURCHASE ORDERS ON THE JOB (Kyle, 2026-08-25) ──────────────────────────
+//
+// "Creating a P.O. is now necessary and should be on this screen. Part Orders
+// will track actual job spending." The MaterialOrder model already existed and
+// already rolls into the account's job costs — this is the door onto it.
+
+app.get("/jobs/:jobId/purchase-orders", asyncHandler(async (req, res) => {
+  const orders = await prisma.materialOrder.findMany({
+    where: { jobId: readParam(req, "jobId") },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json(orders.map((o) => ({
+    id: o.id, supplier: o.supplier, sentAt: o.sentAt, createdAt: o.createdAt,
+    items: (() => { try { return JSON.parse(o.items); } catch { return []; } })(),
+  })));
+}));
+
+app.post("/jobs/:jobId/purchase-orders", asyncHandler(async (req, res) => {
+  const body = z.object({
+    supplier: z.string().trim().min(1).max(200),
+    items: z.array(z.object({
+      name: z.string().trim().min(1).max(300),
+      qty: z.number().positive(),
+      unit: z.string().trim().max(20).optional(),
+      partNumber: z.string().trim().max(100).optional(),
+    })).min(1),
+  }).parse(req.body);
+  const jobId = readParam(req, "jobId");
+  const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { id: true } });
+  if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
+  const order = await prisma.materialOrder.create({
+    data: { jobId, supplier: body.supplier, items: JSON.stringify(body.items) },
+  });
+  res.status(201).json(order);
+}));
+
+app.delete("/jobs/:jobId/purchase-orders/:orderId", asyncHandler(async (req, res) => {
+  await prisma.materialOrder.deleteMany({
+    where: { id: readParam(req, "orderId"), jobId: readParam(req, "jobId") },
+  });
+  res.status(204).end();
+}));
+
+/**
+ * Receipt upload from the CRM (Kyle, 2026-08-25: "I will upload receipts which
+ * will be required"). Same storage as the tech PWA's captures — bytes in
+ * Postgres, category, vendor, amount — but entered by the office, so the values
+ * are typed rather than Vision-extracted and land confirmed.
+ */
+app.put(
+  "/jobs/:jobId/receipts/:receiptId",
+  express.raw({ type: "image/*", limit: "15mb" }),
+  asyncHandler(async (req, res) => {
+    const jobId = readParam(req, "jobId");
+    const receiptId = readParam(req, "receiptId");
+    const query = z.object({
+      vendor: z.string().trim().max(200).optional(),
+      amount: z.coerce.number().positive(),
+      category: z.enum(["materials", "gas", "maintenance", "overhead"]).default("materials"),
+    }).parse(req.query);
+
+    const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { id: true } });
+    if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
+
+    const body = req.body as Buffer;
+    const hasImage = Buffer.isBuffer(body) && body.length > 0;
+    const data = {
+      jobId,
+      vendor: query.vendor ?? null,
+      amount: query.amount,
+      category: query.category,
+      source: "manual",
+      status: "confirmed",
+      ...(hasImage ? { imageData: body, imageMime: req.headers["content-type"] ?? "image/jpeg" } : {}),
+    };
+    await prisma.receipt.upsert({
+      where: { id: receiptId },
+      create: { id: receiptId, ...data },
+      update: data,
+    });
+    res.status(201).json({ id: receiptId, amount: query.amount });
+  }),
+);
+
 app.get("/accounts", listCustomers);
 
 const getCustomer = asyncHandler(async (req: express.Request, res: express.Response) => {

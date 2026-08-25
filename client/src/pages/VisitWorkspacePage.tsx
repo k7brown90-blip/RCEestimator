@@ -23,6 +23,8 @@ import { money, shortDate } from "../lib/utils";
 import { EstimateIntake } from "../components/EstimateIntake";
 import { JobScheduler } from "../components/JobScheduler";
 import { HealthRecordPanel } from "../components/HealthRecordPanel";
+import { JobCloseoutPanel } from "../components/JobCloseoutPanel";
+import { PaymentPanel } from "../components/PaymentPanel";
 import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
 
 type TabKey = "estimate" | "proposal" | "ai";
@@ -455,6 +457,17 @@ export function VisitWorkspacePage() {
             durationDays={visit.estimatedDurationDays}
             onScheduled={refreshVisit}
           />
+          {/* Money renders itself only when a signed estimate exists — the
+              panel returns null otherwise, so an unquoted visit shows nothing
+              (reactive flow, Kyle 2026-08-25). */}
+          <PaymentPanel jobId={visitId} />
+          {/* Close-out is JOB furniture. An estimate-stage visit has no job to
+              close, no POs to raise, no receipts to file — showing the panel
+              there was "buttons placed with no reference" (Kyle, 2026-08-25).
+              It appears once the visit is contracted work. */}
+          {["contracted", "scheduled", "in_progress", "completed"].includes(visit.status ?? "") && (
+            <JobCloseoutPanel visitId={visitId} status={visit.status ?? "estimate"} />
+          )}
           <HealthRecordPanel visitId={visitId} />
           <FindingLedgerPanel propertyId={visit.propertyId} />
           {/* CapacityCheckPanel removed 2026-08-02 — load calculation is Health
