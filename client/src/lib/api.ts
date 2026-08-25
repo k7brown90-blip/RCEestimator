@@ -904,17 +904,33 @@ export const api = {
       { method: "POST" },
     ),
 
-  pbSignInPerson: (id: string, signerName: string, signatureImage: string) =>
+  pbSignInPerson: (id: string, signerName: string, signatureImage: string, selectedOptions?: string[]) =>
     // jobVisitId: the job auto-created from the signed quote, so the signed screen can go
     // straight to the calendar to schedule it. Null when creation was refused or failed —
     // the signature itself is already durable either way.
+    // selectedOptions: what was ticked on the presentation screen — required to be exactly
+    // one on a one-or-the-other estimate (server-enforced).
     request<{ signed: true; estimateId: string; jobVisitId: string | null }>(
       `/issued-estimates/${id}/sign-in-person`,
       {
         method: "POST",
-        body: JSON.stringify({ signerName, signatureImage }),
+        body: JSON.stringify({ signerName, signatureImage, ...(selectedOptions ? { selectedOptions } : {}) }),
       },
     ),
+
+  // ── Option mode + copy (Kyle, 2026-08-25) ──
+  pbOptionsMode: (draftId: string) =>
+    request<{ exclusiveOptions: boolean }>(`/price-book/drafts/${draftId}/options-mode`),
+  pbSetOptionsMode: (draftId: string, exclusive: boolean) =>
+    request<{ exclusiveOptions: boolean }>(`/price-book/drafts/${draftId}/options-mode`, {
+      method: "PUT",
+      body: JSON.stringify({ exclusive }),
+    }),
+  pbCopyOption: (draftId: string, from: "A" | "B" | "C", to: "A" | "B" | "C") =>
+    request<{ copied: number; from: string; to: string }>(`/price-book/drafts/${draftId}/options/copy`, {
+      method: "POST",
+      body: JSON.stringify({ from, to }),
+    }),
 
   // ── The account spine (P029) ──
   accountEstimates: (accountId: string, serviceAddressId?: string) =>

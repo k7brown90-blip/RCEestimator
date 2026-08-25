@@ -1898,6 +1898,11 @@ model PriceBookDraftEstimate {
   supplierId    String
   jobDescription String?
   scenarioRef   String?  // e.g. "S-2026-08-11-G" when recomposing a recorded job
+  // ── Option mode (Kyle, 2026-08-25) ──
+  // false = all-that-apply (the default: options ADD — A + B + C).
+  // true  = one-or-the-other ("a 10 foot option, a 20 foot option and a 30 foot
+  // option… they cannot be additive") — the customer picks exactly ONE.
+  exclusiveOptions Boolean @default(false)
   status        String   @default("draft") // draft | finalized
   finalizedAt   DateTime?
   // Snapshot of the rate this draft was computed against, and whether it was provisional.
@@ -2178,6 +2183,11 @@ model IssuedEstimate {
 
   /// The discount programme this estimate carries — "military" | "senior" | null (2026-08-22).
   discountType String?
+
+  /// Option mode, frozen from the draft at issuance (Kyle, 2026-08-25).
+  /// false = options ADD (all that apply). true = one-or-the-other — the
+  /// customer signs for exactly ONE option, enforced at signature.
+  exclusiveOptions Boolean @default(false)
 
   /// The discount as APPLIED, frozen at signature: {type, rate, cap, base, amount}. Frozen then
   /// and not at issue because the amount is 5% of what the customer SELECTS, capped at $250 —

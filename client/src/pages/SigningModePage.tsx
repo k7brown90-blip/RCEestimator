@@ -27,7 +27,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { SignaturePad } from "../components/SignaturePad";
 
@@ -36,6 +36,10 @@ type Phase = "reviewing" | "signed";
 export function SigningModePage() {
   const { estimateId = "" } = useParams();
   const navigate = useNavigate();
+  // What was ticked on the presentation screen (Kyle, 2026-08-25). On a
+  // one-or-the-other estimate the server requires exactly one.
+  const location = useLocation();
+  const selectedOptions = (location.state as { selectedOptions?: string[] } | null)?.selectedOptions;
   const [phase, setPhase] = useState<Phase>("reviewing");
   const [html, setHtml] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -78,7 +82,7 @@ export function SigningModePage() {
     }
     setSigning(true);
     try {
-      const result = await api.pbSignInPerson(estimateId, signerName.trim(), signature);
+      const result = await api.pbSignInPerson(estimateId, signerName.trim(), signature, selectedOptions);
       setJobVisitId(result.jobVisitId ?? null);
       await load();
       setPhase("signed");

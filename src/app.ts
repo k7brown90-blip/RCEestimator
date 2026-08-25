@@ -1948,6 +1948,78 @@ app.put("/price-book/drafts/:draftId/discount", asyncHandler(async (req, res) =>
 }));
 
 /*
+  ── OPTION MODE (Kyle, 2026-08-25) ─────────────────────────────────────────────────────────────
+
+  "A single EV Charger estimate, give 3 options on length from panel… Since these are to help
+   decide the location and not 3 different EV Chargers they cannot be additive. A check box would
+   be nice… I want to be able to choose either or options or the all that apply options."
+
+  Per draft, frozen onto the issued estimate at graduation. Exclusive = the customer's page shows
+  radio buttons and the signature refuses anything but exactly one option.
+*/
+app.put("/price-book/drafts/:draftId/options-mode", asyncHandler(async (req, res) => {
+  const body = z.object({ exclusive: z.boolean() }).parse(req.body ?? {});
+  const draftId = String(req.params.draftId);
+  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { id: true } });
+  if (!draft) { res.status(404).json({ error: `Draft ${draftId} not found.` }); return; }
+  const saved = await prisma.priceBookDraftEstimate.update({
+    where: { id: draftId },
+    data: { exclusiveOptions: body.exclusive },
+    select: { exclusiveOptions: true },
+  });
+  res.json(saved);
+}));
+
+/*
+  ── COPY AN OPTION'S LINES (Kyle, 2026-08-25) ──────────────────────────────────────────────────
+
+  "It would be nice to be able to copy an option to another so I could build on it" — build the
+  10-foot run once in A, copy to B and C, change one length each. Lines are duplicated with their
+  quantity, difficulty, location, note and confirm state intact; APPENDS to the target, never
+  replaces what's already there.
+*/
+app.post("/price-book/drafts/:draftId/options/copy", asyncHandler(async (req, res) => {
+  const body = z.object({
+    from: z.enum(["A", "B", "C"]),
+    to: z.enum(["A", "B", "C"]),
+  }).parse(req.body ?? {});
+  if (body.from === body.to) {
+    res.status(400).json({ error: "Source and target options are the same." });
+    return;
+  }
+  const draftId = String(req.params.draftId);
+  const lines = await prisma.priceBookDraftLine.findMany({
+    where: { draftId, option: body.from },
+    orderBy: { sortOrder: "asc" },
+  });
+  if (lines.length === 0) {
+    res.status(400).json({ error: `Option ${body.from} has no lines to copy.` });
+    return;
+  }
+  await prisma.priceBookDraftLine.createMany({
+    data: lines.map((l) => ({
+      draftId,
+      itemId: l.itemId,
+      quantity: l.quantity,
+      quantitySource: l.quantitySource,
+      difficulty: l.difficulty,
+      location: l.location,
+      note: l.note,
+      sortOrder: l.sortOrder,
+      option: body.to,
+      state: l.state,
+      proposedBy: l.proposedBy,
+      proposalReasoning: l.proposalReasoning,
+      proposedAt: l.proposedAt,
+      confirmedBy: l.confirmedBy,
+      confirmedAt: l.confirmedAt,
+      editedBeforeConfirm: l.editedBeforeConfirm,
+    })),
+  });
+  res.status(201).json({ copied: lines.length, from: body.from, to: body.to });
+}));
+
+/*
   ── WALKTHROUGH PHOTOS (Kyle, 2026-08-22) ──────────────────────────────────────────────────────
 
   "there is no capability to take photos right now."
@@ -2024,6 +2096,16 @@ app.get("/price-book/drafts/:draftId/options", asyncHandler(async (req, res) => 
     select: { option: true, label: true, note: true },
   });
   res.json(meta);
+}));
+
+/** The draft's option mode — additive (default) or one-or-the-other. */
+app.get("/price-book/drafts/:draftId/options-mode", asyncHandler(async (req, res) => {
+  const draft = await prisma.priceBookDraftEstimate.findUnique({
+    where: { id: String(req.params.draftId) },
+    select: { exclusiveOptions: true },
+  });
+  if (!draft) { res.status(404).json({ error: "Draft not found." }); return; }
+  res.json(draft);
 }));
 
 app.put("/price-book/drafts/:draftId/options/:option", asyncHandler(async (req, res) => {

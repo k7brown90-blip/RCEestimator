@@ -64,9 +64,21 @@ export function PresentationPage() {
     [data, audience],
   );
 
+  // One-or-the-other mode (Kyle, 2026-08-25): options are alternatives, not
+  // add-ons — ticking one unticks the rest, and exactly one goes to signature.
+  const { data: optionsMode } = useQuery({
+    queryKey: ["pbOptionsMode", draftId],
+    queryFn: () => api.pbOptionsMode(draftId),
+    enabled: Boolean(draftId),
+  });
+  const exclusive = Boolean(optionsMode?.exclusiveOptions) && options.length > 1;
+
   // Everything with work in it starts ticked. Kyle presents the whole thing and un-ticks what the
-  // customer declines, rather than building the sale up from nothing.
-  const effectiveSelected = selected.length > 0 ? selected : options.map((o) => o.option);
+  // customer declines, rather than building the sale up from nothing. In exclusive mode the
+  // default is the FIRST option — presenting three alternatives as all-selected would be a lie.
+  const effectiveSelected = exclusive
+    ? (selected.length > 0 ? selected.slice(0, 1) : options.slice(0, 1).map((o) => o.option))
+    : selected.length > 0 ? selected : options.map((o) => o.option);
 
   /*
     The third gate, live while Kyle sells (2026-08-22): "the savings add up and help push the sale
@@ -139,7 +151,9 @@ export function PresentationPage() {
             `is CHEAPER THAN THE WORK: ${r.unpriced.join("; ")}.`,
         ]);
       }
-      if (r.next === "sign") navigate(`/sign-in-person/${r.estimateId}`);
+      // The selection rides to the signing screen — on a one-or-the-other
+      // estimate the server refuses anything but exactly one.
+      if (r.next === "sign") navigate(`/sign-in-person/${r.estimateId}`, { state: { selectedOptions: effectiveSelected } });
       else if (!r.unpriced?.length) setProblem([`Estimate ${r.number} sent to ${r.to}.`]);
     },
     onError: (err) => {
@@ -152,6 +166,12 @@ export function PresentationPage() {
   });
 
   const toggle = (option: PbOption) => {
+    if (exclusive) {
+      // Radio behavior: picking one IS the act; unticking the only choice would
+      // present a $0 sale, so a tap on the selected option is a no-op.
+      setSelected([option]);
+      return;
+    }
     const current = effectiveSelected;
     setSelected(
       current.includes(option) ? current.filter((o) => o !== option) : [...current, option],
@@ -211,6 +231,11 @@ export function PresentationPage() {
         </p>
       )}
 
+      {exclusive && (
+        <p className="mb-2 rounded-lg bg-rce-accentBg p-2 text-sm font-medium text-rce-accentDark">
+          One-or-the-other estimate — the customer picks exactly ONE option below.
+        </p>
+      )}
       {options.map((o) => {
         const ticked = effectiveSelected.includes(o.option);
         return (
@@ -221,7 +246,8 @@ export function PresentationPage() {
             <header className="flex items-start justify-between gap-3 border-b border-rce-border p-3">
               <label className="flex items-start gap-3">
                 <input
-                  type="checkbox"
+                  type={exclusive ? "radio" : "checkbox"}
+                  name={exclusive ? "present-optchoice" : undefined}
                   className="mt-1 h-5 w-5"
                   checked={ticked}
                   onChange={() => toggle(o.option)}

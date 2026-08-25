@@ -334,6 +334,9 @@ export async function graduateDraft(
         */
         // The discount programme rides from the draft; the AMOUNT waits for the signature.
         discountType: asDiscountType(draft.discountType),
+        // Option mode rides from the draft too (Kyle, 2026-08-25): exclusive
+        // means the customer signs for exactly ONE option.
+        exclusiveOptions: draft.exclusiveOptions,
         materialCapsJson:
           Object.keys(computed.materialCaps ?? {}).length > 0
             ? JSON.stringify(computed.materialCaps)
@@ -656,6 +659,25 @@ async function applySignature(
     if (valid.size > 0 && bought.length === 0) {
       return { ok: false, reason: "Please choose at least one option before accepting." };
     }
+  }
+
+  /*
+    ── ONE-OR-THE-OTHER OPTIONS (Kyle, 2026-08-25) ─────────────────────────────────────────────
+
+    "Since these are to help decide the location and not 3 different EV Chargers they cannot be
+     additive." An exclusive estimate signs for exactly ONE option — signing for two lengths of
+    the same wire run is not a sale, it is a mistake, and the guard lives here at the write so no
+    client (page script, hand-edited form, in-person app) can produce it.
+  */
+  const modeRow = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { exclusiveOptions: true },
+  });
+  if (modeRow?.exclusiveOptions && valid.size > 1 && bought.length !== 1) {
+    return {
+      ok: false,
+      reason: "This estimate offers one-or-the-other options — please choose exactly one before accepting.",
+    };
   }
 
   /*

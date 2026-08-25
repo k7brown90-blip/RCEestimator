@@ -247,6 +247,8 @@ export function PriceBookIntakePage() {
             </span>
           </div>
 
+          <OptionModeAndCopy draftId={draftId} />
+
           {draftId && (
             <Link
               className="btn btn-primary w-full"
@@ -340,6 +342,81 @@ export function PriceBookIntakePage() {
 }
 
 // ─── Browse + search ─────────────────────────────────────────────────────────
+
+/**
+ * Option mode + copy (Kyle, 2026-08-25).
+ *
+ * MODE — "I want to be able to choose either or options or the all that apply
+ * options." The checkbox flips this draft between additive (default: A+B+C
+ * sum) and one-or-the-other (the EV-charger-length case: three runs, one
+ * charger — the customer picks exactly one, radio buttons on their page,
+ * enforced again at signature).
+ *
+ * COPY — "copy an option to another so I could build on it": duplicates every
+ * line from one option into another (appends, never replaces), so the 10-ft
+ * run is built once and B/C start as copies to tweak.
+ */
+function OptionModeAndCopy({ draftId }: { draftId: string }) {
+  const queryClient = useQueryClient();
+  const { data: mode } = useQuery({
+    queryKey: ["pbOptionsMode", draftId],
+    queryFn: () => api.pbOptionsMode(draftId),
+  });
+  const [copyFrom, setCopyFrom] = useState<"A" | "B" | "C">("A");
+  const [copyTo, setCopyTo] = useState<"A" | "B" | "C">("B");
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const setMode = useMutation({
+    mutationFn: (exclusive: boolean) => api.pbSetOptionsMode(draftId, exclusive),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["pbOptionsMode", draftId] }),
+    onError: (err) => setNotice((err as Error).message),
+  });
+  const copy = useMutation({
+    mutationFn: () => api.pbCopyOption(draftId, copyFrom, copyTo),
+    onSuccess: (r) => {
+      setNotice(`Copied ${r.copied} line(s) from Option ${r.from} into Option ${r.to}.`);
+      void queryClient.invalidateQueries();
+    },
+    onError: (err) => setNotice((err as Error).message),
+  });
+
+  return (
+    <div className="card flex flex-wrap items-center gap-3 p-3">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={mode?.exclusiveOptions ?? false}
+          disabled={setMode.isPending}
+          onChange={(e) => setMode.mutate(e.target.checked)}
+        />
+        <span>
+          <span className="font-medium">One-or-the-other options</span>
+          <span className="ml-1 text-xs text-rce-soft">
+            — customer picks exactly ONE (e.g. three lengths, one charger). Unchecked: options add together.
+          </span>
+        </span>
+      </label>
+      <span className="ml-auto flex items-center gap-1 text-xs text-rce-soft">
+        Copy
+        <select className="field text-xs" value={copyFrom} onChange={(e) => setCopyFrom(e.target.value as "A" | "B" | "C")}>
+          {["A", "B", "C"].map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+        →
+        <select className="field text-xs" value={copyTo} onChange={(e) => setCopyTo(e.target.value as "A" | "B" | "C")}>
+          {["A", "B", "C"].map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <button
+          className="btn btn-secondary text-xs"
+          disabled={copy.isPending || copyFrom === copyTo}
+          onClick={() => copy.mutate()}
+        >
+          {copy.isPending ? "Copying…" : "Copy lines"}
+        </button>
+      </span>
+      {notice && <p className="w-full text-xs text-rce-muted">{notice}</p>}
+    </div>
+  );
+}
 
 function BrowseTab(props: {
   search: string;

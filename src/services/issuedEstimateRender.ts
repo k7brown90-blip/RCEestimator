@@ -341,6 +341,10 @@ export function renderEstimatePage(
   // declined has no business appearing on their agreement.
   const shownOptions = signedOff && chosen.size > 0 ? estOptions.filter((o) => chosen.has(o.option)) : estOptions;
   const selectable = !signedOff && estOptions.length > 1;
+  // One-or-the-other (Kyle, 2026-08-25): radio buttons, exactly one choice,
+  // Option A pre-selected so the page opens showing a real price.
+  const exclusive = Boolean(est.exclusiveOptions) && selectable;
+  const firstOption = shownOptions[0]?.option ?? null;
 
   const optionName = (o: { option: string; label: string | null }) =>
     o.label ? `${escapeHtml(o.label)}` : `Option ${escapeHtml(o.option)}`;
@@ -357,8 +361,12 @@ export function renderEstimatePage(
         )
         .join("");
       const box = selectable
-        ? `<input type="checkbox" class="optpick" data-option="${escapeHtml(o.option)}"
-             data-subtotal="${o.subtotal}" checked aria-label="Include ${optionName(o)}">`
+        ? exclusive
+          ? `<input type="radio" name="optchoice" class="optpick" data-option="${escapeHtml(o.option)}"
+               data-subtotal="${o.subtotal}" ${o.option === firstOption ? "checked" : ""}
+               aria-label="Choose ${optionName(o)}">`
+          : `<input type="checkbox" class="optpick" data-option="${escapeHtml(o.option)}"
+               data-subtotal="${o.subtotal}" checked aria-label="Include ${optionName(o)}">`
         : "";
       const note = o.note
         ? `<p style="margin:2px 0 0;font-size:13px;color:#555;">${escapeHtml(o.note)}</p>`
@@ -458,7 +466,7 @@ export function renderEstimatePage(
            <!-- What they ticked, at the moment they signed. Filled by the script below and
                 re-validated on the server, which is what makes it true. -->
            <input type="hidden" name="selectedOptions" id="selectedOptions"
-                  value="${estOptions.map((o) => escapeHtml(o.option)).join(",")}">
+                  value="${exclusive ? escapeHtml(firstOption ?? "") : estOptions.map((o) => escapeHtml(o.option)).join(",")}">
            <label for="signerName">Your full name</label>
            <input id="signerName" name="signerName" type="text" required autocomplete="name"
                   placeholder="Your full name">
@@ -617,7 +625,11 @@ export function renderEstimatePage(
        ${scope}
 
        <h2>Estimate detail</h2>
-       ${selectable ? `<p class="pickhint">Tick the options you want. The total updates as you choose.</p>` : ""}
+       ${selectable
+         ? exclusive
+           ? `<p class="pickhint"><strong>Choose ONE</strong> of the options below — they are alternatives, not add-ons. The total updates as you choose.</p>`
+           : `<p class="pickhint">Tick the options you want. The total updates as you choose.</p>`
+         : ""}
        ${detail}
 
        <div class="totals">
