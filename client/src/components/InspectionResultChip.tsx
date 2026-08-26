@@ -3,7 +3,7 @@ interface Props {
   failCount: number;
   monitorCount: number;
   /** v1 records predate the counts and carry a headline score instead. */
-  schemaVersion?: "v1" | "v2";
+  schemaVersion?: "v1" | "v2" | "v3";
   score?: number | null;
 }
 

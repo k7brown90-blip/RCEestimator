@@ -44,6 +44,38 @@ export const MERGED_ITEM_IDS: Record<string, string> = {
 export const RETIRED_ITEM_TITLES: Record<string, string> = {
   C2: 'Ground-rod resistance (measured)',
   C3: 'Grounding electrode conductor (GEC) — size & connection',
+  // 2026-08-26 consolidation (Kyle: "I want this consolidated… a lot of
+  // duplicate information that is disorganized"): the entire A1…I1 walk was
+  // folded into nine rows. These titles keep pre-consolidation records legible.
+  A1: 'Service drop / lateral clearances & condition',
+  A2: 'Service rating vs. calculated load',
+  A3: 'Meter base (external condition) & main disconnect',
+  B1: 'Service disconnect — location, marking, rating',
+  B2: 'Panel working space & dedicated space',
+  C1: 'Grounding electrode system — electrodes, resistance & GEC',
+  C4: 'Main bonding jumper & EGC-bar bonding at the service',
+  C5: 'Neutral-ground separation at subpanels',
+  C6: 'Metal water pipe & gas pipe bonding',
+  C7: 'Intersystem bonding termination (ISBT)',
+  D1: 'Connection integrity (torque + thermal)',
+  D2: 'Breaker-to-conductor sizing',
+  D3: 'Breaker compatibility & panel condition',
+  D4: 'Panel circuit directory (verified schedule)',
+  D5: 'Aluminum branch-circuit wiring',
+  D6: 'Service / main termination voltages (control reading)',
+  D7: 'Branch-circuit voltage at the OCPD',
+  E1: 'GFCI protection (shock)',
+  E2: 'AFCI protection (arc-fault fire)',
+  E3: 'Surge protection (SPD)',
+  F1: 'Receptacle placement & condition',
+  F2: 'Egress / Security lighting',
+  F3: 'Box fill, cable support & protection',
+  G1: 'Water heater disconnect',
+  G2: 'HVAC / heating disconnect',
+  G3: 'Load balance (measured, fixed/dedicated circuits)',
+  H1: 'Smoke & CO alarms',
+  H2: 'Panel condition & remaining life',
+  I1: 'Metro-specific amendments (Nashville only)',
 }
 
 /**

@@ -25,14 +25,10 @@ import type {
 export const NOT_ASSESSED = 'NOT_ASSESSED' as const
 export type RollupStatusValue = ResultState | typeof NOT_ASSESSED
 
-// Five glance roll-ups, grouped by where the work actually happens on site.
-export const rollupGroups: { id: string; label: string; itemIds: string[] }[] = [
-  { id: 'service-entrance', label: 'Service Entrance', itemIds: ['A1', 'A2', 'A3', 'B1', 'B2'] },
-  { id: 'grounding-bonding', label: 'Grounding & Bonding', itemIds: ['C1', 'C4', 'C5', 'C6', 'C7'] },
-  { id: 'panel-overcurrent', label: 'Panel & Overcurrent', itemIds: ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'H2'] },
-  { id: 'branch-protection', label: 'Branch Protection', itemIds: ['E1', 'E2', 'E3', 'F1', 'F2', 'F3'] },
-  { id: 'disconnects-safety', label: 'Disconnects & Safety', itemIds: ['G1', 'G2', 'G3', 'H1', 'I1'] },
-]
+// Since the 2026-08-26 consolidation the glance IS the walk: one roll-up per
+// row (sub-panel instances included), in checklist order. "Should the customer
+// report's At a glance mirror these same rows?" — Kyle: "Yes — same rows
+// everywhere."
 
 const severityOrder: ResultState[] = ['NA', 'PASS', 'BELOW_STANDARD', 'MONITOR', 'FAIL']
 
@@ -237,7 +233,9 @@ export function buildReport(
   const summary = summarizeFindings(normalized, visibleItems)
   const resultById = new Map(normalizedItems.map((item) => [item.itemId, item]))
 
-  const defById = new Map(checklist.map((def) => [def.id, def]))
+  // visibleItems first so sub-panel instance defs (`SUB:<slug>`) resolve; the
+  // static checklist backstops items assessed under a def no longer visible.
+  const defById = new Map([...checklist, ...visibleItems].map((def) => [def.id, def]))
   const items: ReportItem[] = []
 
   // Render every item's readings once, then expose them all under `ITEM.field`
@@ -269,8 +267,10 @@ export function buildReport(
     })
   }
 
-  // Checklist order, so the appendix reads the way the inspection was walked.
-  const order = new Map(checklist.map((def, index) => [def.id, index]))
+  // Walk order, so the appendix reads the way the inspection was walked —
+  // visibleItems carries the sub-panel instances in their on-screen positions.
+  const walkOrder = visibleItems.length > 0 ? visibleItems : checklist
+  const order = new Map(walkOrder.map((def, index) => [def.id, index]))
   items.sort((a, b) => (order.get(a.def.id) ?? 999) - (order.get(b.def.id) ?? 999))
 
   const sections: ReportSections = {
@@ -281,19 +281,13 @@ export function buildReport(
     na: items.filter((i) => i.result.result === 'NA'),
   }
 
-  const rollups: RollupStatus[] = rollupGroups.map((group) => {
-    // Only count items that are actually part of this inspection's scope.
-    const inScope = group.itemIds.filter((id) => visibleItems.some((def) => def.id === id))
-    const assessed = inScope
-      .map((id) => resultById.get(id))
-      .filter((r): r is ItemResult => r !== undefined)
-
+  // One roll-up per row: the glance mirrors the walk exactly.
+  const rollups: RollupStatus[] = walkOrder.map((def) => {
+    const assessed = resultById.get(def.id)
     return {
-      id: group.id,
-      label: group.label,
-      status: assessed.length === 0
-        ? NOT_ASSESSED
-        : worstResult(assessed.map((r) => r.result)),
+      id: def.id,
+      label: def.title,
+      status: assessed === undefined ? NOT_ASSESSED : assessed.result,
     }
   })
 

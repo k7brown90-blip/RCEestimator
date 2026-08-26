@@ -172,7 +172,9 @@ const inspectionPushSchema = z.object({
   jurisdictionId: z.string().min(1),
   inspectionDate: z.string().min(1),
   score: z.number().int().nullable().optional(), // v1 only
-  schemaVersion: z.enum(["v1", "v2"]).default("v1"),
+  // v3 = the consolidated nine-row walk (2026-08-26); the PDF renders the
+  // glance per row instead of per fixed section group.
+  schemaVersion: z.enum(["v1", "v2", "v3"]).default("v1"),
   scope: z.enum(["full", "phase1"]).default("full"),
   itemsAssessed: z.number().int().nonnegative(),
   failCount: z.number().int().nonnegative().default(0),

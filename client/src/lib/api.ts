@@ -1067,7 +1067,7 @@ export interface HealthInspectionSummary {
   inspectionDate: string;
   /** v1 only — the retired 0-100 headline. Null on findings-led v2 records. */
   score: number | null;
-  schemaVersion: "v1" | "v2";
+  schemaVersion: "v1" | "v2" | "v3";
   scope: "full" | "phase1";
   itemsAssessed: number;
   failCount: number;

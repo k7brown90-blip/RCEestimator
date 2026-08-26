@@ -19,7 +19,7 @@ const profile2023: JurisdictionProfile = {
   label: 'Franklin',
   necEdition: '2023',
   surgeRequired: true,
-  citationOverrides: { E1: ['210.8(A) as expanded in the 2023 NEC'] },
+  citationOverrides: { WIRE: ['210.8(A) as expanded in the 2023 NEC'] },
 }
 
 const item = (partial: Partial<ItemResult> & { itemId: string }): ItemResult => ({
@@ -59,38 +59,38 @@ describe('trackFor', () => {
 describe('buildLedgerFindings', () => {
   it('ledgers only what needs following up', () => {
     const findings = findingsFor([
-      item({ itemId: 'C4', result: 'FAIL', resolutionNote: 'Bar-to-bar conductor' }),
-      item({ itemId: 'H2', result: 'MONITOR' }),
-      item({ itemId: 'C7', result: 'BELOW_STANDARD' }),
-      item({ itemId: 'C6', result: 'PASS' }),
-      item({ itemId: 'D5', result: 'NA' }),
+      item({ itemId: 'GES', result: 'FAIL', resolutionNote: 'Bar-to-bar conductor' }),
+      item({ itemId: 'HVAC', result: 'MONITOR' }),
+      item({ itemId: 'SPD', result: 'BELOW_STANDARD' }),
+      item({ itemId: 'METER', result: 'PASS' }),
+      item({ itemId: 'SUB', result: 'NA' }),
     ])
-    expect(findings.map((f) => f.itemId).sort()).toEqual(['C4', 'C7', 'H2'])
+    expect(findings.map((f) => f.itemId).sort()).toEqual(['GES', 'HVAC', 'SPD'])
   })
 
   it('never sends PASS as a finding', () => {
     // A later PASS is evidence the office weighs, not a finding. Shipping it as
     // one would invite something downstream to treat it as a cure.
-    expect(findingsFor([item({ itemId: 'C4', result: 'PASS' })])).toEqual([])
+    expect(findingsFor([item({ itemId: 'GES', result: 'PASS' })])).toEqual([])
   })
 
   it('carries the title and citations, because the server has no checklist', () => {
-    const [finding] = findingsFor([item({ itemId: 'C4', result: 'FAIL' })])
-    expect(finding.title).toContain('Main bonding jumper')
+    const [finding] = findingsFor([item({ itemId: 'GES', result: 'FAIL' })])
+    expect(finding.title).toBe('Grounding Electrode System')
     expect(finding.citations.length).toBeGreaterThan(0)
-    expect(finding.section).toContain('Grounding')
+    expect(finding.section).toBe('Assessment')
   })
 
   it("snapshots the jurisdiction's citation override, not the checklist default", () => {
     // A finding documented under the 2023 scope must recite the 2023 scope
     // forever, whatever the county adopts next.
-    const [finding] = findingsFor([item({ itemId: 'E1', result: 'FAIL' })], profile2023)
+    const [finding] = findingsFor([item({ itemId: 'WIRE', result: 'FAIL' })], profile2023)
     expect(finding.citations).toEqual(['210.8(A) as expanded in the 2023 NEC'])
   })
 
   it('marks a banner-listed FAIL critical and an ordinary one not', () => {
-    const [critical] = findingsFor([item({ itemId: 'C4', result: 'FAIL' })])
-    const [ordinary] = findingsFor([item({ itemId: 'D4', result: 'FAIL' })])
+    const [critical] = findingsFor([item({ itemId: 'GES', result: 'FAIL' })])
+    const [ordinary] = findingsFor([item({ itemId: 'WH', result: 'FAIL' })])
     expect(critical.critical).toBe(true)
     expect(ordinary.critical).toBe(false)
   })
@@ -98,20 +98,20 @@ describe('buildLedgerFindings', () => {
   it('carries the rendered finding text, with the readings already merged in', () => {
     const [finding] = findingsFor([
       item({
-        itemId: 'H2',
+        itemId: 'METER',
         result: 'MONITOR',
-        measured: { install_year: 1994, make_model: 'Square D QO', condition: 'surface_rust' },
-        computed: { age: 32 },
+        measured: { mast_cond: 'secure', weatherhead: 'degraded', meter_ext_cond: 'rust_minor' },
       }),
     ])
-    expect(finding.findingText).toContain('1994')
-    expect(finding.findingText).toContain('32')
     // Option values render as prose, never as their stored token.
     expect(finding.findingText).toContain('showing surface rust')
-    expect(finding.findingText).not.toContain('surface_rust')
+    expect(finding.findingText).toContain('weatherhead degraded')
+    expect(finding.findingText).not.toContain('rust_minor')
   })
 
-  it('dates end of life on the upgrade track from the equipment year', () => {
+  it('dates end of life from a legacy record that carried an equipment year', () => {
+    // The EOL rules are keyed to the retired H2 panel-age item; a pre-2026-08-26
+    // record with a dated panel still produces a scheduling year.
     const [finding] = findingsFor([
       item({ itemId: 'H2', result: 'MONITOR', measured: { install_year: 1994 } }),
     ])
@@ -129,24 +129,25 @@ describe('buildLedgerFindings', () => {
 
   it('gives an unlocated finding the server-side default key', () => {
     // Postgres treats NULLs as distinct in a unique index, so a blank key would
-    // silently duplicate every Phase 1 row.
-    const [finding] = findingsFor([item({ itemId: 'C4', result: 'FAIL' })])
+    // silently duplicate every unlocated row.
+    const [finding] = findingsFor([item({ itemId: 'GES', result: 'FAIL' })])
     expect(finding.locationKey).toBe('_default')
     expect(finding.locationId).toBeUndefined()
   })
 
   it('keeps the location when one was recorded', () => {
     const [finding] = findingsFor([
-      item({ itemId: 'D2', result: 'FAIL', locationId: 'sub-garage' }),
+      item({ itemId: 'SUB:garage', result: 'FAIL', locationId: 'Garage' }),
     ])
-    expect(finding.locationKey).toBe('sub-garage')
-    expect(finding.locationId).toBe('sub-garage')
+    expect(finding.locationKey).toBe('Garage')
+    expect(finding.locationId).toBe('Garage')
+    expect(finding.critical).toBe(true) // instances inherit SUB's banner listing
   })
 
   it('carries the resolution and photo evidence a FAIL is required to have', () => {
     const [finding] = findingsFor([
       item({
-        itemId: 'C4',
+        itemId: 'GES',
         result: 'FAIL',
         resolutionNote: 'Install #6 Cu bar to bar.',
         photoIds: ['photo-1', 'photo-2'],

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { checklist } from './data/checklist'
+import { checklist, subPanelInstanceDef, subPanelSlug } from './data/checklist'
 import { jurisdictions } from './data/jurisdictions'
 import { saveDraft, type FindingRecord } from './db/database'
 import { cachedMe, fetchPropertyFindings, propertyForAssignment, queueInspectionSync } from './lib/crmSync'
@@ -35,6 +35,11 @@ interface Session {
   v2?: V2Capture
   /** Per-section notes, keyed by group (2026-08-24). */
   sectionNotes?: Record<string, SectionNote>
+  /**
+   * Location labels of added sub-panels ("Garage", "Barn"), in the order added.
+   * Each becomes a full Interior Panel / Sub-Panel row (Kyle, 2026-08-26).
+   */
+  subPanels?: string[]
 }
 
 function toInspection(
@@ -66,6 +71,17 @@ function toInspection(
   }
   const summary = summarizeFindings(base, visibleItems)
   return { ...base, itemsAssessed: summary.itemsAssessed, criticalFindings: summary.criticalFindings }
+}
+
+/**
+ * Stamp a sub-panel instance result with its location label, so the office and
+ * the customer report can say "Sub-panel — Garage" without the checklist def.
+ */
+function locateResult(result: ItemResult, subPanels: string[] | undefined): ItemResult {
+  if (!result.itemId.startsWith('SUB:')) return result
+  const slug = result.itemId.slice('SUB:'.length)
+  const label = (subPanels ?? []).find((name) => subPanelSlug(name) === slug)
+  return label ? { ...result, locationId: label } : result
 }
 
 function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
@@ -111,13 +127,19 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     [session],
   )
 
-  const visibleItems = useMemo(
-    () =>
-      checklist.filter(
-        (item) => item.id[0] !== 'I' || (profile?.metroAmendments ?? false),
-      ),
-    [profile],
-  )
+  // The nine consolidated rows, with one extra Interior Panel / Sub-Panel row
+  // per added location, inserted right after the base SUB row.
+  const subPanels = session?.subPanels
+  const visibleItems = useMemo(() => {
+    const extras = (subPanels ?? []).map(subPanelInstanceDef)
+    if (extras.length === 0) return checklist
+    const items: ChecklistItemDef[] = []
+    for (const item of checklist) {
+      items.push(item)
+      if (item.id === 'SUB') items.push(...extras)
+    }
+    return items
+  }, [subPanels])
 
   // Before the !session guard on purpose: the capacity check is what a
   // technician runs on an ordinary service call, with no assessment open.
@@ -219,12 +241,13 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
           // technician never types the same measurement twice.
           otherResults={session.results}
           openFinding={findingByItem.get(item.id)}
-          existingLoadCalc={item.id === 'A2' ? session.loadCalc : undefined}
+          existingLoadCalc={item.id === 'LOAD' ? session.loadCalc : undefined}
           onBack={() => setScreen('checklist')}
           onSave={(result, loadCalc) => {
+            const withLocation = locateResult(result, session.subPanels)
             const next: Session = {
               ...session,
-              results: { ...session.results, [result.itemId]: result },
+              results: { ...session.results, [withLocation.itemId]: withLocation },
               loadCalc: loadCalc ?? session.loadCalc,
             }
             setSession(next)
@@ -297,6 +320,16 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
       }}
       onOpenFindings={() => setScreen('findings')}
       onOpenV2={() => setScreen('v2capture')}
+      onAddSubPanel={(label) => {
+        const trimmed = label.trim()
+        if (!trimmed) return
+        // Same slug twice would collide on one results key — silently keep the first.
+        const existing = session.subPanels ?? []
+        if (existing.some((name) => subPanelSlug(name) === subPanelSlug(trimmed))) return
+        const next: Session = { ...session, subPanels: [...existing, trimmed] }
+        setSession(next)
+        void saveDraft(toInspection(next, 'draft', false, visibleItems))
+      }}
       onOpenItem={(itemId) => {
         setActiveItemId(itemId)
         setScreen('item')
@@ -311,7 +344,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
           const existing = results[itemId]
           results[itemId] = existing
             ? { ...existing, result: grade }
-            : { itemId, result: grade, measured: {}, photoIds: [] }
+            : locateResult({ itemId, result: grade, measured: {}, photoIds: [] }, session.subPanels)
         }
         const next: Session = { ...session, results }
         setSession(next)

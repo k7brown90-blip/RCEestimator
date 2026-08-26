@@ -41,10 +41,14 @@ export interface FindingsSummary {
 export function isCriticalFinding(item: ItemResult, config: FindingsConfig = defaultConfig): boolean {
   if (item.result !== 'FAIL') return false
 
-  const conditional = config.conditionalBannerItems[item.itemId]
+  // Sub-panel instances carry ids like `SUB:garage`; they banner exactly as
+  // their base item does.
+  const baseId = item.itemId.split(':')[0]
+
+  const conditional = config.conditionalBannerItems[baseId]
   if (conditional) return item.gradedState === conditional.gradedState
 
-  return config.bannerItemIds.includes(item.itemId)
+  return config.bannerItemIds.includes(baseId)
 }
 
 export function summarizeFindings(

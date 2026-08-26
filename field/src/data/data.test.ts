@@ -16,9 +16,10 @@ describe('checklist data integrity', () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 
-  it('covers sections A through I', () => {
-    const prefixes = new Set(checklist.map((item) => item.id[0]))
-    expect([...prefixes].sort()).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'])
+  it('keeps every row in the single Assessment section', () => {
+    for (const item of checklist) {
+      expect(item.section).toBe('Assessment')
+    }
   })
 
   it('bannerListed flags match the explicit banner list', () => {
@@ -45,21 +46,16 @@ describe('checklist data integrity', () => {
     }
   })
 
-  it('marks exactly E1, E2, E3, H1 as life-safety class (Scoring Design Step 1c)', () => {
+  it('marks exactly WIRE as life-safety class — it absorbed GFCI/AFCI and the alarms', () => {
     const lifeSafety = checklist.filter((item) => item.lifeSafetyClass).map((item) => item.id)
-    expect(lifeSafety.sort()).toEqual(['E1', 'E2', 'E3', 'H1'])
+    expect(lifeSafety.sort()).toEqual(['WIRE'])
   })
 
-  it('allows N/A only where the Blueprint permits it', () => {
-    // C5 no subpanels · C6 no gas piping · D5 all-copper · D4 and D7 a strictly
-    // disconnect-only enclosure, which has neither a directory nor branch breakers.
+  it('allows N/A only where the site can genuinely lack the equipment', () => {
+    // SUB no sub-panel · SPD none installed and none required · HVAC/WH
+    // all-gas or absent equipment. LOAD/METER/MAIN/GES/WIRE exist everywhere.
     const naItems = checklist.filter((item) => item.naAllowed).map((item) => item.id)
-    expect(naItems.sort()).toEqual(['C5', 'C6', 'D4', 'D5', 'D7'])
-  })
-
-  it('D1 carries the three graded states', () => {
-    const d1 = checklist.find((item) => item.id === 'D1')
-    expect(d1?.graded).toEqual(['severe', 'moderate', 'minor'])
+    expect(naItems.sort()).toEqual(['HVAC', 'SPD', 'SUB', 'WH'])
   })
 
   it('keeps {placeholders} referenced by whatWeFound resolvable from input fields', () => {

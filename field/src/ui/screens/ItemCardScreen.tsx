@@ -269,7 +269,7 @@ export function ItemCardScreen({
         ← Checklist
       </button>
       <h1 className="text-lg font-semibold text-white">
-        {item.id}. {item.title}
+        {item.title}
       </h1>
 
       <section className="space-y-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4 text-sm text-slate-200">

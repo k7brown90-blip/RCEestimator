@@ -25,42 +25,37 @@ function inspection(items: ItemResult[]): Inspection {
 
 describe('isCriticalFinding', () => {
   it('fires on a FAIL of a banner-listed item', () => {
-    expect(isCriticalFinding(item({ itemId: 'C4', result: 'FAIL' }))).toBe(true)
-    expect(isCriticalFinding(item({ itemId: 'E1', result: 'FAIL' }))).toBe(true)
+    expect(isCriticalFinding(item({ itemId: 'GES', result: 'FAIL' }))).toBe(true)
+    expect(isCriticalFinding(item({ itemId: 'WIRE', result: 'FAIL' }))).toBe(true)
   })
 
   it('does not fire on a banner-listed item that only needs monitoring', () => {
     // The banner blocks delivery — a MONITOR is not a stop-work.
-    expect(isCriticalFinding(item({ itemId: 'C4', result: 'MONITOR' }))).toBe(false)
-    expect(isCriticalFinding(item({ itemId: 'C4', result: 'BELOW_STANDARD' }))).toBe(false)
-    expect(isCriticalFinding(item({ itemId: 'C4', result: 'PASS' }))).toBe(false)
+    expect(isCriticalFinding(item({ itemId: 'GES', result: 'MONITOR' }))).toBe(false)
+    expect(isCriticalFinding(item({ itemId: 'GES', result: 'BELOW_STANDARD' }))).toBe(false)
+    expect(isCriticalFinding(item({ itemId: 'GES', result: 'PASS' }))).toBe(false)
   })
 
   it('does not fire on a FAIL of an item that is not banner-listed', () => {
-    expect(isCriticalFinding(item({ itemId: 'D4', result: 'FAIL' }))).toBe(false)
+    expect(isCriticalFinding(item({ itemId: 'WH', result: 'FAIL' }))).toBe(false)
   })
 
-  it('fires on D1 only at the severe grade', () => {
-    // A loose lug is a real finding; a glowing connection is a stop-work.
-    expect(isCriticalFinding(item({ itemId: 'D1', result: 'FAIL', gradedState: 'severe' }))).toBe(true)
-    expect(isCriticalFinding(item({ itemId: 'D1', result: 'FAIL', gradedState: 'moderate' }))).toBe(false)
-    expect(isCriticalFinding(item({ itemId: 'D1', result: 'FAIL', gradedState: 'minor' }))).toBe(false)
-  })
-
-  it('does not fire on a graded item with no grade chosen', () => {
-    expect(isCriticalFinding(item({ itemId: 'D1', result: 'FAIL' }))).toBe(false)
+  it('treats a sub-panel instance exactly like its base item', () => {
+    // `SUB:garage` inherits SUB's banner listing (2026-08-26 consolidation).
+    expect(isCriticalFinding(item({ itemId: 'SUB:garage', result: 'FAIL' }))).toBe(true)
+    expect(isCriticalFinding(item({ itemId: 'SUB:garage', result: 'MONITOR' }))).toBe(false)
   })
 })
 
 describe('summarizeFindings', () => {
   it('counts each result state', () => {
     const summary = summarizeFindings(inspection([
-      item({ itemId: 'C4', result: 'FAIL' }),
-      item({ itemId: 'C6', result: 'FAIL' }),
-      item({ itemId: 'F1', result: 'MONITOR' }),
-      item({ itemId: 'E3', result: 'BELOW_STANDARD' }),
-      item({ itemId: 'H1', result: 'PASS' }),
-      item({ itemId: 'C5', result: 'NA' }),
+      item({ itemId: 'GES', result: 'FAIL' }),
+      item({ itemId: 'MAIN', result: 'FAIL' }),
+      item({ itemId: 'HVAC', result: 'MONITOR' }),
+      item({ itemId: 'SPD', result: 'BELOW_STANDARD' }),
+      item({ itemId: 'WIRE', result: 'PASS' }),
+      item({ itemId: 'SUB', result: 'NA' }),
     ]))
 
     expect(summary.failCount).toBe(2)
@@ -73,32 +68,32 @@ describe('summarizeFindings', () => {
 
   it('collects every critical finding, not just the first', () => {
     const summary = summarizeFindings(inspection([
-      item({ itemId: 'C4', result: 'FAIL' }),
-      item({ itemId: 'E1', result: 'FAIL' }),
-      item({ itemId: 'D4', result: 'FAIL' }),
+      item({ itemId: 'GES', result: 'FAIL' }),
+      item({ itemId: 'WIRE', result: 'FAIL' }),
+      item({ itemId: 'WH', result: 'FAIL' }),
     ]))
-    expect(summary.criticalFindings.sort()).toEqual(['C4', 'E1'])
+    expect(summary.criticalFindings.sort()).toEqual(['GES', 'WIRE'])
   })
 
   it('counts N/A as assessed — the technician looked and logged it', () => {
-    const summary = summarizeFindings(inspection([item({ itemId: 'C5', result: 'NA' })]))
+    const summary = summarizeFindings(inspection([item({ itemId: 'SUB', result: 'NA' })]))
     expect(summary.itemsAssessed).toBe(1)
     expect(summary.naCount).toBe(1)
   })
 
   it('distinguishes never-opened items from N/A', () => {
-    const visible = checklist.filter((def) => ['C4', 'C5', 'C6'].includes(def.id))
+    const visible = checklist.filter((def) => ['GES', 'SUB', 'SPD'].includes(def.id))
     const summary = summarizeFindings(
-      inspection([item({ itemId: 'C5', result: 'NA' })]),
+      inspection([item({ itemId: 'SUB', result: 'NA' })]),
       visible,
     )
     expect(summary.naCount).toBe(1)
-    expect(summary.notAssessedCount).toBe(2) // C4 and C6 never opened
+    expect(summary.notAssessedCount).toBe(2) // GES and SPD never opened
   })
 
   it('reports zero not-assessed when the visible list is fully covered', () => {
-    const visible = checklist.filter((def) => def.id === 'C4')
-    const summary = summarizeFindings(inspection([item({ itemId: 'C4' })]), visible)
+    const visible = checklist.filter((def) => def.id === 'GES')
+    const summary = summarizeFindings(inspection([item({ itemId: 'GES' })]), visible)
     expect(summary.notAssessedCount).toBe(0)
   })
 

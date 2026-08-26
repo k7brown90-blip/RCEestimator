@@ -413,7 +413,7 @@ const RESULT_LABEL: Record<string, string> = {
   NA: "Not applicable (logged)",
 };
 
-import { itemName, itemPlain } from "../../shared/checklistText";
+import { V3_ROW_ORDER, baseItemId, itemName, itemPlain } from "../../shared/checklistText";
 
 /** Group labels for section notes, mirroring field/src/ui/screens/ChecklistScreen.tsx. */
 const SECTION_GROUP_LABEL: Record<string, string> = {
@@ -462,6 +462,19 @@ interface ReportItemRow {
   note?: string;
   resolutionNote?: string;
   photoIds: string[];
+  /** Sub-panel instance rows carry their location label ("Garage"). */
+  locationId?: string;
+}
+
+/**
+ * The customer-facing name for one assessed row. A sub-panel instance
+ * ("SUB:garage") names itself by where it is; everything else comes from the
+ * homeowner dictionary.
+ */
+function rowName(row: ReportItemRow): string {
+  return row.locationId
+    ? `${itemName(baseItemId(row.itemId))} — ${row.locationId}`
+    : itemName(row.itemId);
 }
 
 function rollupStatus(items: ReportItemRow[], itemIds: string[]): string {
@@ -664,10 +677,35 @@ export async function generateHealthReport(
     // Section status, the way the report opens.
     doc.fillColor(BRAND.cedar).fontSize(12).text("At a glance", { underline: true });
     doc.fontSize(10);
-    for (const group of ROLLUP_GROUPS) {
-      const status = rollupStatus(items, group.itemIds);
-      doc.fillColor(status === "FAIL" ? "#b91c1c" : BRAND.text)
-        .text(`${group.label}: ${ROLLUP_LABEL[status] ?? status}`);
+    if (inspection.schemaVersion === "v3") {
+      // v3: the glance IS the walk (Kyle, 2026-08-26: "same rows everywhere").
+      // One line per row in his order, sub-panel instances right after SUB;
+      // N/A rows are omitted like everywhere else on the customer document.
+      const rowsById = new Map(items.map((row) => [row.itemId, row]));
+      const glanceIds: string[] = [];
+      for (const id of V3_ROW_ORDER) {
+        glanceIds.push(id);
+        if (id === "SUB") {
+          glanceIds.push(...items
+            .filter((row) => row.itemId.startsWith("SUB:"))
+            .map((row) => row.itemId)
+            .sort());
+        }
+      }
+      for (const id of glanceIds) {
+        const row = rowsById.get(id);
+        const status = row ? normalizeResult(row.result) : "NOT_ASSESSED";
+        if (status === "NA") continue;
+        const name = row ? rowName(row) : itemName(id);
+        doc.fillColor(status === "FAIL" ? "#b91c1c" : BRAND.text)
+          .text(`${name}: ${ROLLUP_LABEL[status] ?? status}`);
+      }
+    } else {
+      for (const group of ROLLUP_GROUPS) {
+        const status = rollupStatus(items, group.itemIds);
+        doc.fillColor(status === "FAIL" ? "#b91c1c" : BRAND.text)
+          .text(`${group.label}: ${ROLLUP_LABEL[status] ?? status}`);
+      }
     }
     doc.fillColor(BRAND.text);
     doc.moveDown(0.5);
@@ -681,7 +719,10 @@ export async function generateHealthReport(
         ? `CRITICAL FINDINGS: ${criticals.join(", ")} — headline score capped at 69 until resolved.`
         // No ⚠ glyph: PDFKit's standard fonts are WinAnsi-only and print it
         // as "&". The red type carries the urgency on its own.
-        : `${criticals.length} urgent safety item${criticals.length > 1 ? "s" : ""} found — review ${criticals.length > 1 ? "these" : "this"} first: ${criticals.map((id) => itemName(id)).join("; ")}.`,
+        : `${criticals.length} urgent safety item${criticals.length > 1 ? "s" : ""} found — review ${criticals.length > 1 ? "these" : "this"} first: ${criticals.map((id) => {
+            const row = items.find((r) => r.itemId === id);
+            return row ? rowName(row) : itemName(id);
+          }).join("; ")}.`,
     );
     doc.fillColor(BRAND.text);
     doc.moveDown(0.5);
@@ -728,7 +769,7 @@ export async function generateHealthReport(
       for (const item of rows) {
         const critical = criticals.includes(item.itemId);
         doc.fontSize(10).fillColor(color).text(
-          `${itemName(item.itemId)}${critical ? "  —  URGENT SAFETY ITEM" : ""}`,
+          `${rowName(item)}${critical ? "  —  URGENT SAFETY ITEM" : ""}`,
         );
         doc.fontSize(9).fillColor(BRAND.text);
         const plain = itemPlain(item.itemId);
@@ -752,7 +793,7 @@ export async function generateHealthReport(
           doc.fillColor(BRAND.muted).text(`    ${item.photoIds.length} photo(s) on file`);
           doc.fillColor(BRAND.text);
         }
-        doc.fillColor(BRAND.muted).fontSize(7).text(`    (checklist item ${item.itemId})`);
+        doc.fillColor(BRAND.muted).fontSize(7).text(`    (checklist item ${baseItemId(item.itemId)})`);
         doc.fillColor(BRAND.text);
         doc.moveDown(0.3);
       }
@@ -767,7 +808,7 @@ export async function generateHealthReport(
     if (passed.length > 0) {
       doc.fillColor(BRAND.cedar).fontSize(12).text(`What checked out fine (${passed.length})`, { underline: true });
       doc.fillColor(BRAND.text).fontSize(9).text(
-        passed.map((item) => itemName(item.itemId)).join("  ·  "),
+        passed.map((item) => rowName(item)).join("  ·  "),
       );
       doc.moveDown(0.5);
     }

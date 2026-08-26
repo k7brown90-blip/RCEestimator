@@ -16,7 +16,52 @@ export interface ItemText {
   plain: string;
 }
 
+/**
+ * The consolidated v3 walk (Kyle, 2026-08-26: "organized like this exactly"),
+ * in his order. The customer's "At a glance" mirrors these rows one-for-one.
+ * Sub-panel instances (`SUB:<slug>`) resolve through their base id.
+ */
+export const V3_ROW_ORDER = ['LOAD', 'METER', 'MAIN', 'SUB', 'GES', 'SPD', 'HVAC', 'WH', 'WIRE'] as const;
+
 export const CHECKLIST_TEXT: Record<string, ItemText> = {
+  // ── v3 consolidated rows (2026-08-26) ──
+  LOAD: {
+    name: "Calculated load",
+    plain: "The starting point of every assessment: a code-based calculation of everything the home runs, measured against the size of the electrical service feeding it.",
+  },
+  METER: {
+    name: "Meter & service mast",
+    plain: "The equipment bringing power from the utility into your home — checked outside for rust, corrosion, heat marks, and secure mounting.",
+  },
+  MAIN: {
+    name: "Main panel & main disconnect",
+    plain: "The heart of the electrical system: the panel's condition, whether every breaker matches the wire it protects, the tightness of its connections, and the disconnect that can shut off the whole house.",
+  },
+  SUB: {
+    name: "Interior panel / sub-panel",
+    plain: "Any secondary panel gets the same examination as the main — plus a check that neutral and ground are kept properly separated there.",
+  },
+  GES: {
+    name: "Grounding electrode system",
+    plain: "The system that gives electricity a safe path into the earth — ground rods, bonding connections, water and gas pipe bonds, and the point where TV and internet lines tie in. The backbone of shock protection for the whole home.",
+  },
+  SPD: {
+    name: "Surge protection",
+    plain: "A device at the panel that protects your appliances and electronics from power surges and nearby lightning.",
+  },
+  HVAC: {
+    name: "A/C & heating disconnects",
+    plain: "The safety switches at your heating and cooling equipment — checked for rust, corrosion, overheating, and the right size breaker and wire.",
+  },
+  WH: {
+    name: "Water heater",
+    plain: "Whether the water heater can be safely shut off for service, and whether its wiring is protected from physical damage.",
+  },
+  WIRE: {
+    name: "General wiring & safety devices",
+    plain: "The everyday devices the family touches: shock-protection (GFCI) and fire-protection (AFCI) devices actually tested, worn or damaged outlets, missing cover plates, smoke and CO alarms, and any aluminum wiring.",
+  },
+  // ── pre-consolidation (v2) items, kept so historical reports still read ──
   A1: {
     name: "Overhead service wires & mast",
     plain: "The wires bringing power from the street to your home, and the pipe and anchors that hold them — checked for damage, sag, and safe clearance.",
@@ -138,11 +183,16 @@ export const CHECKLIST_TEXT: Record<string, ItemText> = {
   },
 };
 
+/** `SUB:garage` → `SUB`; plain ids pass through. */
+export function baseItemId(id: string): string {
+  return id.split(":")[0];
+}
+
 /** Homeowner name for an item id; falls back to the id so nothing renders blank. */
 export function itemName(id: string): string {
-  return CHECKLIST_TEXT[id]?.name ?? id;
+  return (CHECKLIST_TEXT[id] ?? CHECKLIST_TEXT[baseItemId(id)])?.name ?? id;
 }
 
 export function itemPlain(id: string): string | null {
-  return CHECKLIST_TEXT[id]?.plain ?? null;
+  return (CHECKLIST_TEXT[id] ?? CHECKLIST_TEXT[baseItemId(id)])?.plain ?? null;
 }

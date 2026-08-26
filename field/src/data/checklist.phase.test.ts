@@ -3,54 +3,37 @@ import { checklist } from './checklist'
 import type { ChecklistItemDef, InputFieldDef } from '../domain/types'
 
 /**
- * The phase split is a field-procedure decision, not an implementation detail.
+ * The walk is a field-procedure decision, not an implementation detail.
  *
- * Phase 1 is everything reachable in one pass at the service: the tech stands in
- * one place, opens one enclosure, and does not go inside. Moving an item across
- * that line changes what a technician can finish in a visit and what a Phase 1
- * record is allowed to claim — so the sets are asserted literally. A failure here
- * means someone changed the procedure, which is fine; it just has to be on purpose.
+ * Since the 2026-08-26 consolidation (Kyle: "I need the check to be organized
+ * like this exactly") the whole assessment is one pass in his stated order —
+ * so the row set AND the order are asserted literally. A failure here means
+ * someone changed the procedure, which is fine; it just has to be on purpose.
  */
 
-const PHASE_1 = [
-  'A1', 'A2', 'A3',
-  'B1', 'B2',
-  'C1', 'C4', 'C6', 'C7',
-  'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7',
-  'E3',
-  'G2', 'G3',
-  'H2',
-]
-
-const PHASE_2 = ['C5', 'E1', 'E2', 'F1', 'F2', 'F3', 'G1', 'H1', 'I1']
-
-const idsInPhase = (phase: 1 | 2) =>
-  checklist.filter((item) => item.phase === phase).map((item) => item.id).sort()
+const WALK_ORDER = ['LOAD', 'METER', 'MAIN', 'SUB', 'GES', 'SPD', 'HVAC', 'WH', 'WIRE']
 
 /** Every field an item can carry a reading in, table columns included. */
 const allFields = (item: ChecklistItemDef): InputFieldDef[] =>
   item.inputFields.flatMap((field) => [field, ...(field.columns ?? [])])
 
-describe('inspection phases', () => {
-  it('assigns Phase 1 to exactly the service-and-exterior pass', () => {
-    expect(idsInPhase(1)).toEqual([...PHASE_1].sort())
+describe('the consolidated walk', () => {
+  it("is exactly Kyle's nine rows, in his order", () => {
+    expect(checklist.map((item) => item.id)).toEqual(WALK_ORDER)
   })
 
-  it('assigns Phase 2 to exactly the interior pass', () => {
-    expect(idsInPhase(2)).toEqual([...PHASE_2].sort())
+  it('starts with the calculated load — "The start with every customer"', () => {
+    expect(checklist[0].id).toBe('LOAD')
   })
 
-  it('assigns every item to one phase or the other', () => {
-    expect(PHASE_1.length + PHASE_2.length).toBe(checklist.length)
-  })
-
-  it('never lets a Phase 1 item apply only to interior locations', () => {
-    for (const item of checklist.filter((i) => i.phase === 1)) {
-      expect(
-        item.appliesTo.some((kind) => kind === 'service_exterior' || kind === 'panel'),
-        `${item.id} is Phase 1 but applies only to ${item.appliesTo.join(', ')}`,
-      ).toBe(true)
+  it('puts every row in the single pass', () => {
+    for (const item of checklist) {
+      expect(item.phase, `${item.id} is not phase 1`).toBe(1)
     }
+  })
+
+  it('keeps only the sub-panel row repeatable', () => {
+    expect(checklist.filter((item) => item.repeatable).map((item) => item.id)).toEqual(['SUB'])
   })
 })
 

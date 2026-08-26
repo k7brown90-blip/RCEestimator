@@ -194,7 +194,9 @@ export function buildPushPayload(inspection: Inspection, property: Property): ob
     visitId: property.crm.visitId,
     jurisdictionId: inspection.jurisdictionId,
     inspectionDate: inspection.date,
-    schemaVersion: 'v2',
+    // v3 = the consolidated nine-row walk (2026-08-26); the PDF renders the
+    // glance per row instead of per fixed section group.
+    schemaVersion: 'v3',
     scope: inspection.scope,
     itemsAssessed: summary.itemsAssessed,
     failCount: summary.failCount,

@@ -9,12 +9,14 @@ interface Props {
   declinedFindingCount?: number
   /** Component/measurement counts from the v2 structured capture. */
   v2Summary?: { enclosures: number; items: number }
-  /** Per-section notes, keyed by group (2026-08-24 — matches the paper form's notes line). */
+  /** Per-row notes, keyed by group (2026-08-24 — matches the paper form's notes line). */
   sectionNotes?: Record<string, SectionNote>
   onSectionNote?: (group: string, note: string, includeOnReport: boolean) => void
   onOpenFindings?: () => void
   onOpenV2?: () => void
   onOpenItem: (itemId: string) => void
+  /** "Add Sub-Panel Option available if there are more that one sub panel." (Kyle, 2026-08-26) */
+  onAddSubPanel?: (label: string) => void
   /**
    * Tap-to-grade straight on the row (Kyle, 2026-08-24: "resemble a simple
    * check list… speed and flexibility"). null clears the mark. Detail capture
@@ -40,33 +42,25 @@ const resultLabel: Record<ResultState, string> = {
   NA: 'N/A',
 }
 
-const GROUP_LABEL: Record<string, string> = {
-  'service-entrance': 'Service entrance & supply',
-  'main-disconnect': 'Main disconnect & working space',
-  'bonding-grounding': 'Bonding & grounding',
-  'panel-condition': 'Panel condition & overcurrent',
-  'panel-measurements': 'Panel measurements',
-  surge: 'Surge protection',
-  'equipment-disconnects': 'Equipment disconnects',
-  'subpanel-bonding': 'Subpanel bonding',
-  'branch-protection': 'Branch-circuit protection',
-  devices: 'Devices, receptacles & lighting',
-  'life-safety': 'Life safety',
-  'metro-amendments': 'Metro amendments',
-}
-
+/**
+ * The consolidated walk (Kyle, 2026-08-26: "organized like this exactly").
+ * One flat, numbered list in his order — no section headers, no phases. Each
+ * row carries its own notes line, and the sub-panel row grows an "add" control.
+ */
 export function ChecklistScreen({
   items, results, knownFindingCount = 0, declinedFindingCount = 0,
   v2Summary, sectionNotes = {}, onSectionNote, onOpenFindings, onOpenV2, onOpenItem,
-  onQuickResult, onReview,
+  onAddSubPanel, onQuickResult, onReview,
 }: Props) {
-  const [showPhase2, setShowPhase2] = useState(false)
   const [openNoteGroup, setOpenNoteGroup] = useState<string | null>(null)
+  const [addingSubPanel, setAddingSubPanel] = useState(false)
+  const [subPanelLabel, setSubPanelLabel] = useState('')
 
   /**
-   * The section-note affordance under each group heading — the digital twin of
-   * the notes line each section carries on the paper field record. Internal by
-   * default; the toggle is what promotes a note onto the customer's report.
+   * The notes line under a row — the digital twin of the notes line each
+   * section carries on the paper field record. Internal by default; the toggle
+   * is what promotes a note onto the customer's report. Sub-panel instances
+   * share the SUB group, so their note covers the sub-panels as a set.
    */
   const renderSectionNote = (group: string) => {
     if (!onSectionNote) return null
@@ -82,7 +76,7 @@ export function ChecklistScreen({
           {existing?.note
             ? <>📝 {existing.note.length > 80 ? `${existing.note.slice(0, 80)}…` : existing.note}
                 {existing.includeOnReport && <span className="ml-1 text-sky-300">· on report</span>}</>
-            : '+ Section note'}
+            : '+ Notes'}
         </button>
       )
     }
@@ -92,7 +86,7 @@ export function ChecklistScreen({
           autoFocus
           rows={3}
           defaultValue={existing?.note ?? ''}
-          placeholder="What you saw in this section — internal unless promoted below."
+          placeholder="What you saw here — internal unless promoted below."
           className="w-full rounded border border-slate-600 bg-slate-800 p-2 text-sm text-white placeholder:text-slate-500"
           onBlur={(e) => onSectionNote(group, e.target.value, existing?.includeOnReport ?? false)}
         />
@@ -113,88 +107,120 @@ export function ChecklistScreen({
     )
   }
 
-  const phase1 = items.filter((item) => item.phase === 1)
-  const phase2 = items.filter((item) => item.phase === 2)
+  const assessedCount = items.filter((item) => results[item.id]).length
+  const anyAssessed = assessedCount > 0
 
-  const phase1Done = phase1.filter((item) => results[item.id]).length
-  const anyAssessed = Object.keys(results).length > 0
-
-  const groupsOf = (list: ChecklistItemDef[]) => [...new Set(list.map((item) => item.group))]
-
-  /**
-   * The paper form's row, digitized (Kyle, 2026-08-24: "resemble a simple check
-   * list with the pass, monitor, fail, below standard, and n/a options"). One
-   * tap grades the item; tapping the same grade again clears it. The full item
-   * card — measurements, photos, per-item notes — is behind the "detail" link
-   * for what the technician deems necessary, never in the way of the walk.
-   * A grade set here on an item the card already detailed keeps that detail.
-   */
   const GRADE_ORDER: ResultState[] = ['PASS', 'MONITOR', 'FAIL', 'BELOW_STANDARD', 'NA']
   const gradeShort: Record<ResultState, string> = {
     PASS: 'P', MONITOR: 'M', FAIL: 'F', BELOW_STANDARD: 'B', NA: 'N',
   }
 
-  const renderItem = (item: ChecklistItemDef) => {
+  const renderItem = (item: ChecklistItemDef, index: number, showNote: boolean) => {
     const result = results[item.id]
     const hasDetail = Boolean(
       result && (Object.keys(result.measured).length > 0 || result.photoIds.length > 0 || result.note || result.resolutionNote),
     )
 
     return (
-      <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/60 p-3">
-        <div className="flex items-start justify-between gap-2">
-          <span className="min-w-0 text-sm font-medium text-white">
-            {item.id}. {item.title}
-          </span>
-          <button
-            type="button"
-            onClick={() => onOpenItem(item.id)}
-            className="shrink-0 text-xs text-sky-300"
-          >
-            {hasDetail ? 'detail ✓' : 'detail'}
-          </button>
+      <div key={item.id} className="space-y-2">
+        <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-3">
+          <div className="flex items-start justify-between gap-2">
+            <span className="min-w-0 text-sm font-medium text-white">
+              {index + 1}. {item.title}
+            </span>
+            <button
+              type="button"
+              onClick={() => onOpenItem(item.id)}
+              className="shrink-0 text-xs text-sky-300"
+            >
+              {hasDetail ? 'detail ✓' : 'detail'}
+            </button>
+          </div>
+          <div className="mt-2 flex gap-1.5">
+            {GRADE_ORDER.map((grade) => {
+              const active = result?.result === grade
+              return (
+                <button
+                  key={grade}
+                  type="button"
+                  onClick={() => onQuickResult(item.id, active ? null : grade)}
+                  title={resultLabel[grade]}
+                  className={`h-9 flex-1 rounded font-semibold ${
+                    active
+                      ? resultBadge[grade]
+                      : 'border border-slate-600 bg-slate-900/60 text-slate-400'
+                  }`}
+                >
+                  {gradeShort[grade]}
+                </button>
+              )
+            })}
+          </div>
         </div>
-        <div className="mt-2 flex gap-1.5">
-          {GRADE_ORDER.map((grade) => {
-            const active = result?.result === grade
-            return (
-              <button
-                key={grade}
-                type="button"
-                onClick={() => onQuickResult(item.id, active ? null : grade)}
-                title={resultLabel[grade]}
-                className={`h-9 flex-1 rounded font-semibold ${
-                  active
-                    ? resultBadge[grade]
-                    : 'border border-slate-600 bg-slate-900/60 text-slate-400'
-                }`}
-              >
-                {gradeShort[grade]}
-              </button>
-            )
-          })}
-        </div>
+        {showNote && renderSectionNote(item.group)}
       </div>
     )
   }
 
+  /** The "+ Add sub-panel" control, rendered after the last sub-panel row. */
+  const renderAddSubPanel = () => {
+    if (!onAddSubPanel) return null
+    if (!addingSubPanel) {
+      return (
+        <button
+          type="button"
+          onClick={() => setAddingSubPanel(true)}
+          className="w-full rounded-lg border border-dashed border-sky-700 bg-sky-950/20 p-2.5 text-sm text-sky-300"
+        >
+          + Add sub-panel
+        </button>
+      )
+    }
+    const submit = () => {
+      const label = subPanelLabel.trim()
+      if (label) onAddSubPanel(label)
+      setSubPanelLabel('')
+      setAddingSubPanel(false)
+    }
+    return (
+      <div className="flex gap-2 rounded-lg border border-sky-800 bg-sky-950/30 p-2">
+        <input
+          autoFocus
+          value={subPanelLabel}
+          onChange={(e) => setSubPanelLabel(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
+          placeholder="Where is it? (Garage, Barn…)"
+          className="min-w-0 flex-1 rounded border border-slate-600 bg-slate-800 p-2 text-sm text-white placeholder:text-slate-500"
+        />
+        <button type="button" onClick={submit} className="shrink-0 rounded bg-sky-600 px-3 text-sm font-medium text-white">
+          Add
+        </button>
+      </div>
+    )
+  }
+
+  // The add control belongs right under the last Interior Panel / Sub-Panel row.
+  const lastSubIndex = items.reduce(
+    (last, item, index) => (item.id === 'SUB' || item.id.startsWith('SUB:') ? index : last),
+    -1,
+  )
+
   return (
     <div className="mx-auto max-w-xl space-y-6 p-6 pb-24">
       <header className="space-y-2">
-        <h1 className="text-xl font-semibold text-white">Phase 1 — service &amp; exterior</h1>
+        <h1 className="text-xl font-semibold text-white">Electrical assessment</h1>
         <p className="text-xs text-slate-400">
-          Everything assessed at the service: the mast, meter, main disconnect, grounding
-          electrodes, water and gas bonds, the panel at this location, and the HVAC disconnect.
-          One pass, one position.
+          The walk in order: calculated load first with every customer, then the
+          service, panels, grounding, and the equipment that keeps the home safe.
         </p>
         <div className="h-2 overflow-hidden rounded bg-slate-700">
           <div
             className="h-full bg-sky-500 transition-all"
-            style={{ width: `${phase1.length === 0 ? 0 : (phase1Done / phase1.length) * 100}%` }}
+            style={{ width: `${items.length === 0 ? 0 : (assessedCount / items.length) * 100}%` }}
           />
         </div>
         <p className="text-sm text-slate-400">
-          {phase1Done} of {phase1.length} Phase 1 items assessed
+          {assessedCount} of {items.length} assessed
         </p>
       </header>
 
@@ -238,49 +264,19 @@ export function ChecklistScreen({
         </button>
       )}
 
-      {groupsOf(phase1).map((group) => (
-        <section key={group} className="space-y-2">
-          <h2 className="text-sm font-medium uppercase tracking-wide text-slate-400">
-            {GROUP_LABEL[group] ?? group}
-          </h2>
-          {phase1.filter((item) => item.group === group).map(renderItem)}
-          {renderSectionNote(group)}
-        </section>
-      ))}
-
-      {phase2.length > 0 && (
-        <section className="space-y-2 rounded-xl border border-slate-700 bg-slate-900/40 p-3">
-          <button
-            type="button"
-            onClick={() => setShowPhase2((open) => !open)}
-            className="flex w-full items-center justify-between text-left"
-          >
-            <span>
-              <span className="block text-sm font-medium text-slate-300">
-                Phase 2 — interior ({phase2.length} items)
-              </span>
-              <span className="block text-xs text-slate-500">
-                Subpanels, GFCI/AFCI, devices, alarms. Not required in this pass.
-              </span>
-            </span>
-            <span className="text-xs text-sky-300">{showPhase2 ? 'hide' : 'show'}</span>
-          </button>
-
-          {showPhase2 && (
-            <div className="space-y-4 pt-2">
-              {groupsOf(phase2).map((group) => (
-                <div key={group} className="space-y-2">
-                  <h3 className="text-xs uppercase tracking-wide text-slate-500">
-                    {GROUP_LABEL[group] ?? group}
-                  </h3>
-                  {phase2.filter((item) => item.group === group).map(renderItem)}
-                  {renderSectionNote(group)}
-                </div>
-              ))}
+      <div className="space-y-3">
+        {items.map((item, index) => {
+          // Sub-panel instances share the SUB note group — one notes line for
+          // the set, under the last of them, next to the add control.
+          const lastOfGroup = !items.some((other, otherIndex) => otherIndex > index && other.group === item.group)
+          return (
+            <div key={item.id} className="space-y-3">
+              {renderItem(item, index, lastOfGroup)}
+              {index === lastSubIndex && renderAddSubPanel()}
             </div>
-          )}
-        </section>
-      )}
+          )
+        })}
+      </div>
 
       {/* No all-items gate (Kyle, 2026-08-24): the technician assesses "what he
           has time for or what he deems necessary." Anything unmarked is reported
@@ -292,7 +288,7 @@ export function ChecklistScreen({
         className="fixed inset-x-0 bottom-0 mx-auto w-full max-w-xl bg-sky-600 p-4 font-medium text-white disabled:bg-slate-700 disabled:text-slate-400"
       >
         {anyAssessed
-          ? `Review findings (${phase1Done}/${phase1.length} Phase 1 assessed)`
+          ? `Review findings (${assessedCount}/${items.length} assessed)`
           : 'Mark at least one item to continue'}
       </button>
     </div>

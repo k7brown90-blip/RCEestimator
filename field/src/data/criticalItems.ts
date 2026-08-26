@@ -6,26 +6,23 @@ import type { GradedState } from '../domain/types'
  *
  * Maintained as an EXPLICIT list rather than derived from a severity number, so
  * that tuning a weight can never silently drop a life-safety item out of the
- * banner. (The S×L×C weight table this used to sit alongside is gone — it existed
- * only to produce the 0-100 score, which was retired. The banner concept and the
- * contractor-review gate are the parts worth keeping.)
+ * banner.
+ *
+ * 2026-08-26 consolidation: the old per-check ids (A3, C1, C4, C5, C6, D2, D3,
+ * E1, H1) folded into these rows. Sub-panel instances (`SUB:<slug>`) inherit
+ * SUB's listing — isCriticalFinding normalizes the instance id to its base.
  */
 export const bannerListedItemIds: readonly string[] = [
-  'C1', // grounding electrode system — absorbed the old C2 (rod resistance) and C3 (GEC)
-  'C4', // MBJ / EGC-bar bonding error
-  'C5', // neutral-ground bond error at a subpanel
-  'C6', // water/gas pipe bonding
-  'D2', // oversized breaker / defeated overcurrent protection
-  'D3', // hazard or delisted panel
-  'H1', // no working smoke/CO alarms
-  'E1', // GFCI absent in a required wet location
-  'A3', // supply-side damage
+  'METER', // supply-side damage — nothing upstream of it can clear a fault
+  'MAIN', // hazard panel / defeated overcurrent protection / overheating lugs
+  'SUB', // neutral-ground bond error, hazard panel — instances included
+  'GES', // the fault-clearing backbone: bonding, GEC, EGC, ISBT
+  'WIRE', // dead GFCI in a wet area, no working smoke/CO alarms
 ]
 
 /**
- * Items that only banner at a particular grade. D1 (connection integrity) fails
- * at three severities; only a severe thermal/torque finding is a stop-work.
+ * Items that only banner at a particular grade. Empty since the 2026-08-26
+ * consolidation (the old D1-severe rule rode along into MAIN, which banners on
+ * any FAIL) — kept so the mechanism survives for a future graded item.
  */
-export const conditionalBannerItems: Record<string, { gradedState: GradedState }> = {
-  D1: { gradedState: 'severe' },
-}
+export const conditionalBannerItems: Record<string, { gradedState: GradedState }> = {}

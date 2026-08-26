@@ -196,6 +196,51 @@ describe("health record CRM integration", () => {
     await prisma.finding.deleteMany({ where: { findingText: { contains: "hr-test-inspection-v2" } } });
   });
 
+  it("accepts a v3 consolidated-walk push, sub-panel instance rows included", async () => {
+    const res = await request(app)
+      .post("/health-record/inspections")
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({
+        ...inspectionPayload(),
+        inspectionId: "hr-test-inspection-v3",
+        score: undefined,
+        schemaVersion: "v3",
+        scope: "full",
+        criticalFindings: ["SUB:garage"],
+        failCount: 1,
+        monitorCount: 0,
+        passCount: 7,
+        belowStandardCount: 0,
+        naCount: 0,
+        items: [
+          { itemId: "MAIN", result: "PASS", measured: {}, photoIds: [] },
+          {
+            itemId: "SUB:garage",
+            result: "FAIL",
+            locationId: "Garage",
+            measured: { neutral_ground: "bonded_error" },
+            photoIds: [],
+            resolutionNote: "Separate neutrals and grounds; remove bonding screw.",
+          },
+        ],
+      })
+      .expect(201);
+    expect(res.body.data.id).toBe("hr-test-inspection-v3");
+
+    const stored = await prisma.healthInspection.findUnique({
+      where: { id: "hr-test-inspection-v3" },
+    });
+    expect(stored?.schemaVersion).toBe("v3");
+    // The instance row keeps its location label — the PDF names it
+    // "Interior panel / sub-panel — Garage" from exactly this field.
+    const items = JSON.parse(stored!.itemsJson) as { itemId: string; locationId?: string }[];
+    expect(items.find((row) => row.itemId === "SUB:garage")?.locationId).toBe("Garage");
+    expect(JSON.parse(stored!.criticalFindingsJson)).toEqual(["SUB:garage"]);
+
+    await prisma.healthInspection.delete({ where: { id: "hr-test-inspection-v3" } });
+    await prisma.finding.deleteMany({ where: { findingText: { contains: "hr-test-inspection-v3" } } });
+  });
+
   it("still accepts a v1 payload from a phone running a stale service worker", async () => {
     // Rejecting the old shape would silently lose inspections already queued on
     // a technician's device.
