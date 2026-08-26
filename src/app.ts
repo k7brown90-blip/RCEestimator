@@ -54,7 +54,7 @@ import {
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
-import { chargeableAmount, createInvoiceCheckoutSession, handleStripeWebhook, paymentSummary, stripeConfigured } from "./services/stripePayments";
+import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, handleStripeWebhook, paymentSummary, stripeConfigured } from "./services/stripePayments";
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
@@ -3481,7 +3481,61 @@ app.get("/jobs", asyncHandler(async (req, res) => {
       voidedAt: null,
       OR: [{ visitId: { in: visitIds } }, { jobVisitId: { in: visitIds } }],
     },
+    include: { options: true },
     orderBy: { createdAt: "desc" },
+  });
+
+  /*
+    ── JOBS ARE SIGNED WORK WITH THE DEPOSIT IN HAND ────────────────────────────────────────────
+    Kyle, 2026-08-26: "Jobs are only for estimates that have been signed and the deposit paid,
+    ready to schedule and already scheduled organization." Consultation and estimate visits live
+    on the account page and the calendar; until a signature AND the ⅓ deposit exist, nothing
+    belongs on this tab. A signed estimate awaiting its deposit stays visible in the Estimates
+    tracker as "accepted" and graduates here when the deposit clears.
+
+    Qualification is by the JOB side of the estimate link (jobVisitId) — the same signed estimate
+    also points at the consultation it was written from, and listing that origin visit here would
+    put a duplicate "empty" card right back. Estimates signed before auto-job creation existed
+    have no jobVisitId and qualify their origin visit instead. Legacy Estimate rows with a signed
+    acceptance predate the deposit system entirely and count as satisfied — history stays.
+  */
+  const signedQualifies = new Map<string, typeof issued[number]>();
+  for (const est of issued) {
+    if (!est.signedAt) continue;
+    const key = est.jobVisitId ?? est.visitId;
+    if (key && !signedQualifies.has(key)) signedQualifies.set(key, est);
+  }
+  const signedEstIds = [...new Set([...signedQualifies.values()].map((e) => e.id))];
+  const paidRows = signedEstIds.length === 0 ? [] : await prisma.payment.findMany({
+    where: { estimateId: { in: signedEstIds }, status: "paid" },
+    select: { estimateId: true, amount: true },
+  });
+  const paidByEstimate = new Map<string, number>();
+  for (const row of paidRows) {
+    if (!row.estimateId) continue; // nullable in the schema; the `in` filter already excludes null
+    paidByEstimate.set(row.estimateId, (paidByEstimate.get(row.estimateId) ?? 0) + row.amount);
+  }
+  const depositSatisfiedFor = (est: typeof issued[number]): boolean => {
+    const billed = billedTotalOf({
+      total: est.total,
+      tripCharge: est.tripCharge,
+      selectedOptions: est.selectedOptions,
+      comboCapJson: est.comboCapJson,
+      discountJson: est.discountJson,
+      optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+    });
+    // Mirrors paymentSummary: any money at or past the deposit satisfies the gate.
+    return (paidByEstimate.get(est.id) ?? 0) >= depositDueOf(billed) - 0.01;
+  };
+  const isArchivedStatus = (status: string) => (ARCHIVED_JOB_STATUSES as readonly string[]).includes(status);
+  const jobVisits = visits.filter((visit) => {
+    const signedIssued = signedQualifies.get(visit.id);
+    if (signedIssued) {
+      // Archived jobs are history — a completed job is never hidden over a
+      // deposit technicality; the active list holds the full rule.
+      return isArchivedStatus(visit.status) || depositSatisfiedFor(signedIssued);
+    }
+    return visit.estimates.some((est) => est.acceptance !== null);
   });
 
   /** Newest issued estimate per visit, keyed by whichever side links it. */
@@ -3504,7 +3558,7 @@ app.get("/jobs", asyncHandler(async (req, res) => {
   const trackerStatus = (status: string): string =>
     status === "signed" ? "accepted" : status === "viewed" ? "sent" : status;
 
-  const jobs = visits.map((visit: typeof visits[number]) => {
+  const jobs = jobVisits.map((visit: typeof visits[number]) => {
     const latestEstimate = visit.estimates[0] ?? null;
     const { acceptedTotal, displayTotal } = estimateOptionTotal(latestEstimate?.options ?? []);
     const latestIssued = issuedByVisit.get(visit.id) ?? null;

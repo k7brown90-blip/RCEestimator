@@ -39,6 +39,28 @@ vi.mock("googleapis", () => {
 
 import { app } from "../src/app";
 
+/**
+ * GET /jobs lists signed work only (Kyle, 2026-08-26: "Jobs are only for
+ * estimates that have been signed and the deposit paid"). These fixtures sign
+ * their visits through the legacy acceptance path, which predates the deposit
+ * system and therefore satisfies the gate — the shortest route to "this visit
+ * is a real job" without minting a PriceBookDraftEstimate chain.
+ */
+async function signVisit(visitId: string, propertyId: string) {
+  const estimate = await prisma.estimate.create({
+    data: { visitId, propertyId, title: "Signed fixture", status: "accepted" },
+  });
+  await prisma.proposalAcceptance.create({
+    data: { estimateId: estimate.id, estimateRevision: 1, optionId: "opt-1", status: "accepted" },
+  });
+}
+
+async function cleanSignedFixtures() {
+  await prisma.proposalAcceptance.deleteMany();
+  await prisma.estimateOption.deleteMany();
+  await prisma.estimate.deleteMany();
+}
+
 const noCosts = {
   estimatedCost: null,
   actualMaterialCost: null,
@@ -158,6 +180,7 @@ describe("GET /jobs and GET /accounts/:id/summary agree about money", () => {
 
   beforeEach(async () => {
     await prisma.receipt.deleteMany();
+    await cleanSignedFixtures();
     await prisma.visit.deleteMany();
     await prisma.property.deleteMany();
     await prisma.customer.deleteMany();
@@ -190,10 +213,12 @@ describe("GET /jobs and GET /accounts/:id/summary agree about money", () => {
       },
     });
     visitId = visit.id;
+    await signVisit(visit.id, property.id);
   });
 
   afterAll(async () => {
     await prisma.receipt.deleteMany();
+    await cleanSignedFixtures();
     await prisma.visit.deleteMany();
     await prisma.property.deleteMany();
     await prisma.customer.deleteMany();
@@ -247,6 +272,7 @@ describe("GET /jobs ?archived", () => {
   let customerId: string;
 
   beforeEach(async () => {
+    await cleanSignedFixtures();
     await prisma.visit.deleteMany();
     await prisma.property.deleteMany();
     await prisma.customer.deleteMany();
@@ -260,21 +286,38 @@ describe("GET /jobs ?archived", () => {
       },
     });
     for (const status of ["estimate", "contracted", "scheduled", "in_progress", "completed", "cancelled"]) {
-      await prisma.visit.create({
+      const visit = await prisma.visit.create({
         data: { customerId, propertyId: property.id, mode: "remodel", status },
       });
+      await signVisit(visit.id, property.id);
     }
+    // The empty job (Kyle, 2026-08-26): a booked consultation with no signed
+    // work. It must never appear on the Jobs tab under any filter.
+    await prisma.visit.create({
+      data: { customerId, propertyId: property.id, mode: "onsite", status: "estimate", purpose: "Consultation" },
+    });
   });
 
   afterAll(async () => {
+    await cleanSignedFixtures();
     await prisma.visit.deleteMany();
     await prisma.property.deleteMany();
     await prisma.customer.deleteMany();
   });
 
-  it("returns everything when the filter is absent, so existing callers are unaffected", async () => {
+  it("returns every SIGNED job when the filter is absent — never the unsigned consultation", async () => {
     const res = await request(app).get("/jobs");
     expect(res.body).toHaveLength(6);
+    expect(res.body.some((j: { purpose: string | null }) => j.purpose === "Consultation")).toBe(false);
+  });
+
+  it("excludes unsigned visits from every filter view", async () => {
+    // Kyle, 2026-08-26: "Jobs are only for estimates that have been signed and
+    // the deposit paid." Consultations live on the account page and calendar.
+    for (const qs of ["", "?archived=true", "?archived=false"]) {
+      const res = await request(app).get(`/jobs${qs}`);
+      expect(res.body.some((j: { purpose: string | null }) => j.purpose === "Consultation")).toBe(false);
+    }
   });
 
   it("archived=true returns only completed and cancelled", async () => {

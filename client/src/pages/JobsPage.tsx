@@ -299,7 +299,7 @@ export function JobsPage() {
                 : "No completed or cancelled jobs."
               : estimateFilter
                 ? "No active jobs match that estimate status."
-                : "No active jobs. Start a visit to open one."}
+                : "No active jobs. A job appears here once its estimate is signed and the deposit is paid."}
           </p>
         )}
       </section>
