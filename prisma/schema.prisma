@@ -375,6 +375,11 @@ model Technician {
   phone          String?
   employeeNumber String?  @unique // internal payroll/identification ID — used by voice agent to authenticate field staff
   role           String   @default("technician") // technician | supervisor | admin
+  // Kyle, 2026-08-25: "This has been reviewed and a whole inspection was done,
+  // that was the review." When the inspecting tech holds the license, the
+  // contractor-review requirement is satisfied by the inspection itself — no
+  // false "pending" state. The gate stays armed for techs without this flag.
+  licenseHolder  Boolean  @default(false)
   accessToken    String   @unique // bearer token used by the field PWA
   isActive       Boolean  @default(true)
   // Set by the "verify calendar access" probe on the Team page. Google's

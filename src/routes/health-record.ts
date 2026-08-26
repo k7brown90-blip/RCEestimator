@@ -327,7 +327,13 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     naCount: body.naCount,
     criticalFindingsJson: JSON.stringify(body.criticalFindings),
     groundingTestMethod: body.groundingTestMethod ?? COMPANY_GROUNDING_METHOD,
-    contractorReviewed: body.contractorReviewed,
+    // The license holder's inspection IS the review (Kyle, 2026-08-25) — his
+    // own records never sit in a false "pending" state. A tech without the
+    // flag still needs the explicit review before a critical report ships.
+    contractorReviewed: body.contractorReviewed || req.technician!.licenseHolder,
+    ...(!body.contractorReviewed && req.technician!.licenseHolder
+      ? { reviewedAt: new Date(), reviewedBy: req.technician!.name }
+      : {}),
     itemsJson: JSON.stringify(body.items),
     loadCalcJson: body.loadCalc !== undefined ? JSON.stringify(body.loadCalc) : null,
     sectionNotesJson: body.sectionNotes !== undefined ? JSON.stringify(body.sectionNotes) : null,

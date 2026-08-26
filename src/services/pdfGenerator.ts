@@ -413,6 +413,8 @@ const RESULT_LABEL: Record<string, string> = {
   NA: "Not applicable (logged)",
 };
 
+import { itemName, itemPlain } from "../../shared/checklistText";
+
 /** Group labels for section notes, mirroring field/src/ui/screens/ChecklistScreen.tsx. */
 const SECTION_GROUP_LABEL: Record<string, string> = {
   "service-entrance": "Service entrance & supply",
@@ -440,13 +442,15 @@ const ROLLUP_GROUPS: { label: string; itemIds: string[] }[] = [
 
 const SEVERITY_ORDER = ["NA", "PASS", "BELOW_STANDARD", "MONITOR", "FAIL"];
 
+// Homeowner verbs (Kyle, 2026-08-25: "easily understood by people that have
+// zero experience or knowledge of electrical").
 const ROLLUP_LABEL: Record<string, string> = {
-  PASS: "PASS",
-  MONITOR: "MONITOR",
-  FAIL: "NEEDS CORRECTION",
-  BELOW_STANDARD: "BELOW STANDARD",
-  NA: "NOT APPLICABLE",
-  NOT_ASSESSED: "NOT ASSESSED",
+  PASS: "Good",
+  MONITOR: "Worth watching",
+  FAIL: "Needs attention",
+  BELOW_STANDARD: "Meets code — below our standard",
+  NA: "Not applicable",
+  NOT_ASSESSED: "Not assessed this visit",
 };
 
 const normalizeResult = (raw: string): string => (raw === "ACTION" ? "FAIL" : raw);
@@ -652,12 +656,13 @@ export async function generateHealthReport(
       doc.moveDown(0.25);
     }
     doc.fillColor(BRAND.cedar).fontSize(14).text(
-      `${inspection.failCount} need correction · ${inspection.monitorCount} to monitor · ${inspection.passCount} pass`,
+      `${inspection.failCount} need${inspection.failCount === 1 ? "s" : ""} attention · ` +
+      `${inspection.monitorCount} worth watching · ${inspection.passCount} checked out fine`,
     );
     doc.moveDown(0.5);
 
     // Section status, the way the report opens.
-    doc.fillColor(BRAND.cedar).fontSize(12).text("Section Status", { underline: true });
+    doc.fillColor(BRAND.cedar).fontSize(12).text("At a glance", { underline: true });
     doc.fontSize(10);
     for (const group of ROLLUP_GROUPS) {
       const status = rollupStatus(items, group.itemIds);
@@ -669,20 +674,33 @@ export async function generateHealthReport(
   }
 
   if (criticals.length > 0) {
+    // Names, never codes (Kyle, 2026-08-25: "The D3 and A3 identifiers won't
+    // be understood by the customer"). "Urgent safety item" is his word choice.
     doc.fillColor("#b91c1c").fontSize(12).text(
-      `CRITICAL FINDING${criticals.length > 1 ? "S" : ""}: ${criticals.join(", ")}` +
-      (isV1 ? " — headline score capped at 69 until resolved." : " — contractor review required before delivery."),
+      isV1
+        ? `CRITICAL FINDINGS: ${criticals.join(", ")} — headline score capped at 69 until resolved.`
+        : `⚠ ${criticals.length} urgent safety item${criticals.length > 1 ? "s" : ""} found — review ${criticals.length > 1 ? "these" : "this"} first: ${criticals.map((id) => itemName(id)).join("; ")}.`,
     );
     doc.fillColor(BRAND.text);
     doc.moveDown(0.5);
   }
 
   if (loadCalc?.governingAmps !== undefined) {
-    doc.fillColor(BRAND.cedar).fontSize(12).text("Electrical Capacity (NEC Article 220)", { underline: true });
+    doc.fillColor(BRAND.cedar).fontSize(12).text("Does your service have enough capacity?", { underline: true });
+    const pct = loadCalc.loadPct ?? 0;
+    const headroom = pct <= 60
+      ? "comfortable room for future additions like an EV charger or a hot tub"
+      : pct <= 80
+        ? "some room left for additions — larger ones are worth a capacity check first"
+        : "little room left — plan a capacity check before adding any major equipment";
     doc.fillColor(BRAND.text).fontSize(10).text(
-      `Calculated load ${loadCalc.governingAmps} A on a ${loadCalc.serviceAmps} A service — ` +
-      `${loadCalc.loadPct}% used, ${loadCalc.spareAmps} A spare (code basis 230.42; method: ${loadCalc.methodUsed ?? "optional"}).`,
+      `Your home's calculated demand is ${loadCalc.governingAmps} amps on a ${loadCalc.serviceAmps}-amp service — ` +
+      `about ${loadCalc.loadPct}% of capacity, with ${headroom}.`,
     );
+    doc.fillColor(BRAND.muted).fontSize(8).text(
+      `Calculated per NEC Article 220 (${loadCalc.methodUsed ?? "optional"} method); capacity basis NEC 230.42.`,
+    );
+    doc.fillColor(BRAND.text);
     doc.moveDown();
   }
 
@@ -696,48 +714,56 @@ export async function generateHealthReport(
     }
     doc.moveDown();
   } else {
-    // Action items first, with their resolutions — the part that gets acted on.
+    // Findings in the homeowner's language (Kyle, 2026-08-25). Every item
+    // speaks by NAME with its what-this-is sentence; the checklist code
+    // survives only as small print so the record still cross-references.
     const byResult = (state: string) =>
       items.filter((item) => normalizeResult(item.result) === state);
 
     const renderGroup = (title: string, rows: ReportItemRow[], color: string, withResolution = false) => {
       if (rows.length === 0) return;
       doc.fillColor(BRAND.cedar).fontSize(12).text(`${title} (${rows.length})`, { underline: true });
-      doc.fontSize(9);
       for (const item of rows) {
-        const grade = item.gradedState ? ` (${item.gradedState})` : "";
-        const critical = criticals.includes(item.itemId) ? "  ⚠ CRITICAL" : "";
-        doc.fillColor(color).text(`${item.itemId}${grade}${critical}`);
-        doc.fillColor(BRAND.text);
-        if (item.note) doc.text(`    Found: ${item.note}`);
-        if (withResolution && item.resolutionNote) doc.text(`    Resolution: ${item.resolutionNote}`);
+        const critical = criticals.includes(item.itemId);
+        doc.fontSize(10).fillColor(color).text(
+          `${itemName(item.itemId)}${critical ? "  —  ⚠ URGENT SAFETY ITEM" : ""}`,
+        );
+        doc.fontSize(9).fillColor(BRAND.text);
+        const plain = itemPlain(item.itemId);
+        if (plain) {
+          doc.fillColor(BRAND.muted).text(`    What this is: ${plain}`);
+          doc.fillColor(BRAND.text);
+        }
+        if (item.note) doc.text(`    What we found: ${item.note}`);
+        if (withResolution && item.resolutionNote) doc.text(`    What fixes it: ${item.resolutionNote}`);
         if (item.photoIds.length > 0) {
           doc.fillColor(BRAND.muted).text(`    ${item.photoIds.length} photo(s) on file`);
           doc.fillColor(BRAND.text);
         }
+        doc.fillColor(BRAND.muted).fontSize(7).text(`    (checklist item ${item.itemId})`);
+        doc.fillColor(BRAND.text);
+        doc.moveDown(0.3);
       }
-      doc.moveDown(0.5);
+      doc.moveDown(0.3);
     };
 
-    renderGroup("Needs Correction", byResult("FAIL"), "#b91c1c", true);
-    renderGroup("Worth Monitoring", byResult("MONITOR"), "#b45309");
-    renderGroup("Below Red Cedar Standard", byResult("BELOW_STANDARD"), BRAND.text);
+    renderGroup("Needs attention", byResult("FAIL"), "#b91c1c", true);
+    renderGroup("Worth watching", byResult("MONITOR"), "#b45309", true);
+    renderGroup("Meets code — below our standard", byResult("BELOW_STANDARD"), BRAND.text, true);
 
     const passed = byResult("PASS");
     if (passed.length > 0) {
-      doc.fillColor(BRAND.cedar).fontSize(12).text(`Passed (${passed.length})`, { underline: true });
-      doc.fillColor(BRAND.text).fontSize(9).text(passed.map((item) => item.itemId).join(", "));
+      doc.fillColor(BRAND.cedar).fontSize(12).text(`What checked out fine (${passed.length})`, { underline: true });
+      doc.fillColor(BRAND.text).fontSize(9).text(
+        passed.map((item) => itemName(item.itemId)).join("  ·  "),
+      );
       doc.moveDown(0.5);
     }
 
-    const na = byResult("NA");
-    if (na.length > 0) {
-      doc.fillColor(BRAND.muted).fontSize(9).text(
-        `Not applicable: ${na.map((item) => item.itemId).join(", ")}`,
-      );
-      doc.fillColor(BRAND.text);
-      doc.moveDown(0.5);
-    }
+    // Items marked not-applicable are OMITTED from the customer's document
+    // (Kyle's ruling, 2026-08-25). The internal record keeps them; the
+    // Scope & Limitations page already states that only listed items were
+    // assessed.
   }
 
   // ── Promoted section notes (Kyle, 2026-08-24) ──
@@ -762,9 +788,18 @@ export async function generateHealthReport(
     doc.moveDown(0.5);
   }
 
+  // Credentials, not workflow (Kyle, 2026-08-25: "The contractor review
+  // notation is false. This has been reviewed and a whole inspection was
+  // done, that was the review."). The customer reads WHO stands behind the
+  // document; the review gate stays internal machinery.
+  const techName = inspection.technician?.name ?? "Red Cedar Electric";
+  const reviewerLine =
+    inspection.contractorReviewed && inspection.reviewedBy && inspection.reviewedBy !== techName
+      ? `Assessed on site by ${techName}; reviewed by ${inspection.reviewedBy}, licensed electrical contractor.`
+      : `Assessed and reviewed on site by ${techName}, licensed electrical contractor.`;
   doc.fillColor(BRAND.muted).fontSize(8).text(
-    `Photo evidence on file: ${inspection.photos.length} image(s). ` +
-    `Contractor review: ${inspection.contractorReviewed ? `completed${inspection.reviewedBy ? ` by ${inspection.reviewedBy}` : ""}` : "pending"}.`,
+    `${reviewerLine} Red Cedar Electric LLC — License #61828. ` +
+    `Photo evidence on file: ${inspection.photos.length} image(s).`,
   );
   doc.moveDown(0.5);
 

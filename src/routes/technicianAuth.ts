@@ -12,7 +12,7 @@ import { ZodError } from "zod";
 import { prisma } from "../lib/prisma";
 
 export interface TechRequest extends express.Request {
-  technician?: { id: string; name: string; role: string; employeeNumber: string | null };
+  technician?: { id: string; name: string; role: string; employeeNumber: string | null; licenseHolder: boolean };
 }
 
 export const technicianAuth: express.RequestHandler = (req: TechRequest, res, next) => {
@@ -32,6 +32,7 @@ export const technicianAuth: express.RequestHandler = (req: TechRequest, res, ne
       name: technician.name,
       role: technician.role,
       employeeNumber: technician.employeeNumber,
+      licenseHolder: technician.licenseHolder,
     };
     next();
   })().catch(next);
