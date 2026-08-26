@@ -679,7 +679,9 @@ export async function generateHealthReport(
     doc.fillColor("#b91c1c").fontSize(12).text(
       isV1
         ? `CRITICAL FINDINGS: ${criticals.join(", ")} — headline score capped at 69 until resolved.`
-        : `⚠ ${criticals.length} urgent safety item${criticals.length > 1 ? "s" : ""} found — review ${criticals.length > 1 ? "these" : "this"} first: ${criticals.map((id) => itemName(id)).join("; ")}.`,
+        // No ⚠ glyph: PDFKit's standard fonts are WinAnsi-only and print it
+        // as "&". The red type carries the urgency on its own.
+        : `${criticals.length} urgent safety item${criticals.length > 1 ? "s" : ""} found — review ${criticals.length > 1 ? "these" : "this"} first: ${criticals.map((id) => itemName(id)).join("; ")}.`,
     );
     doc.fillColor(BRAND.text);
     doc.moveDown(0.5);
@@ -709,7 +711,7 @@ export async function generateHealthReport(
     doc.fillColor(BRAND.text).fontSize(9);
     for (const item of items) {
       const grade = item.gradedState ? ` (${item.gradedState})` : "";
-      const critical = criticals.includes(item.itemId) ? "  ⚠ CRITICAL" : "";
+      const critical = criticals.includes(item.itemId) ? "  CRITICAL" : "";
       doc.text(`${item.itemId}: ${RESULT_LABEL[item.result] ?? item.result}${grade}${critical}${item.note ? ` — ${item.note}` : ""}`);
     }
     doc.moveDown();
@@ -726,7 +728,7 @@ export async function generateHealthReport(
       for (const item of rows) {
         const critical = criticals.includes(item.itemId);
         doc.fontSize(10).fillColor(color).text(
-          `${itemName(item.itemId)}${critical ? "  —  ⚠ URGENT SAFETY ITEM" : ""}`,
+          `${itemName(item.itemId)}${critical ? "  —  URGENT SAFETY ITEM" : ""}`,
         );
         doc.fontSize(9).fillColor(BRAND.text);
         const plain = itemPlain(item.itemId);
@@ -734,8 +736,18 @@ export async function generateHealthReport(
           doc.fillColor(BRAND.muted).text(`    What this is: ${plain}`);
           doc.fillColor(BRAND.text);
         }
-        if (item.note) doc.text(`    What we found: ${item.note}`);
-        if (withResolution && item.resolutionNote) doc.text(`    What fixes it: ${item.resolutionNote}`);
+        // The field checklist has separate "note" and "resolution" boxes, but
+        // a tech often writes finding + fix as one sentence in whichever box
+        // is handy. Split labels are only honest when BOTH boxes were used;
+        // a lone entry gets a label that covers either reading.
+        if (item.note && withResolution && item.resolutionNote) {
+          doc.text(`    What we found: ${item.note}`);
+          doc.text(`    What fixes it: ${item.resolutionNote}`);
+        } else if (item.note) {
+          doc.text(`    What we found: ${item.note}`);
+        } else if (withResolution && item.resolutionNote) {
+          doc.text(`    What we found & what fixes it: ${item.resolutionNote}`);
+        }
         if (item.photoIds.length > 0) {
           doc.fillColor(BRAND.muted).text(`    ${item.photoIds.length} photo(s) on file`);
           doc.fillColor(BRAND.text);
