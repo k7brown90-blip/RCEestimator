@@ -15,6 +15,7 @@ import type {
   CustomerMatch,
   Estimate,
   EstimateAssembly,
+  InvoiceSummary,
   JobSummary,
   MonthSchedule,
   Property,
@@ -289,6 +290,9 @@ export const api = {
     const suffix = params?.archived === undefined ? "" : `?archived=${params.archived}`;
     return request<JobSummary[]>(`/jobs${suffix}`);
   },
+
+  // The Invoices tab (Kyle, 2026-08-26) — every signed estimate with its money rolled up.
+  invoices: () => request<InvoiceSummary[]>("/invoices"),
 
   // ─── Accounts ─────────────────────────────────────────────────────────────
   // The server exposes these under both /accounts and /customers (same handlers,

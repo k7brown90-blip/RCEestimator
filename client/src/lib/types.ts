@@ -803,6 +803,34 @@ export type AccountJob = {
   } | null;
 };
 
+/**
+ * One row of the Invoices tab (Kyle, 2026-08-26: "tracks the invoices sent and
+ * what ones are paid"). An invoice is a signed issued estimate; the money
+ * mirrors paymentSummary — totalPaid includes 3% non-card discount rows,
+ * `collected` is real money only.
+ */
+export type InvoiceSummary = {
+  id: string;
+  number: string;
+  revision: number;
+  title: string;
+  customer: { id: string; name: string };
+  serviceAddress: string;
+  signedAt: string;
+  signedChannel: "in_person" | "email" | null;
+  sentAt: string | null;
+  sentTo: string | null;
+  billedTotal: number;
+  depositDue: number;
+  totalPaid: number;
+  discountTotal: number;
+  collected: number;
+  balance: number;
+  lastPaidAt: string | null;
+  paymentStatus: "unpaid" | "partial" | "deposit_paid" | "paid";
+  payToken: string;
+};
+
 export type AccountInspectionSummary = {
   id: string;
   visitId: string;

@@ -3627,6 +3627,92 @@ app.get("/jobs", asyncHandler(async (req, res) => {
   res.json(jobs);
 }));
 
+// ─── INVOICES ────────────────────────────────────────────────────────────────
+//
+// Kyle, 2026-08-26: "I need an invoices tab that tracks the invoices sent and
+// what ones are paid." An invoice IS a signed issued estimate (his 2026-08-21
+// ruling: "The signed estimates need to be labeled invoices") — so this list is
+// every signed, unvoided estimate with its money rolled up the same way
+// paymentSummary does it: totalPaid includes the 3% non-card discount rows
+// (they close balances), `collected` is real money only.
+app.get("/invoices", asyncHandler(async (_req, res) => {
+  const estimates = await prisma.issuedEstimate.findMany({
+    // Test-account rows are excluded like the estimate chain — practice
+    // invoices must not mix into the money Kyle reads off this page.
+    where: { signedAt: { not: null }, voidedAt: null, ...EXCLUDE_TEST_ACCOUNT },
+    include: {
+      options: true,
+      account: { select: { id: true, name: true } },
+      serviceProperty: { select: { addressLine1: true, city: true } },
+    },
+    orderBy: { signedAt: "desc" },
+  });
+
+  const paidRows = estimates.length === 0 ? [] : await prisma.payment.findMany({
+    where: { estimateId: { in: estimates.map((e) => e.id) }, status: "paid" },
+    select: { estimateId: true, amount: true, method: true, paidAt: true },
+  });
+  const paymentsByEstimate = new Map<string, typeof paidRows>();
+  for (const row of paidRows) {
+    if (!row.estimateId) continue;
+    const list = paymentsByEstimate.get(row.estimateId) ?? [];
+    list.push(row);
+    paymentsByEstimate.set(row.estimateId, list);
+  }
+
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  res.json(estimates.map((est) => {
+    const billedTotal = billedTotalOf({
+      total: est.total,
+      tripCharge: est.tripCharge,
+      selectedOptions: est.selectedOptions,
+      comboCapJson: est.comboCapJson,
+      discountJson: est.discountJson,
+      optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+    });
+    const rows = paymentsByEstimate.get(est.id) ?? [];
+    const totalPaid = round2(rows.reduce((s, r) => s + r.amount, 0));
+    const discountTotal = round2(rows.filter((r) => r.method === "discount").reduce((s, r) => s + r.amount, 0));
+    const lastPaidAt = rows.reduce<Date | null>(
+      (latest, r) => (r.paidAt && (!latest || r.paidAt > latest) ? r.paidAt : latest), null,
+    );
+    const depositDue = depositDueOf(billedTotal);
+    const paidInFull = totalPaid >= billedTotal - 0.01;
+    const paymentStatus = paidInFull
+      ? "paid"
+      : totalPaid >= depositDue - 0.01
+        ? "deposit_paid"
+        : totalPaid > 0.009
+          ? "partial"
+          : "unpaid";
+
+    return {
+      id: est.id,
+      number: est.number,
+      revision: est.revision,
+      title: est.title,
+      customer: est.account,
+      // The frozen text is what the signed document says; the live property
+      // backstops estimates issued before the freeze existed.
+      serviceAddress: est.serviceAddress
+        ?? [est.serviceProperty.addressLine1, est.serviceProperty.city].filter(Boolean).join(", "),
+      signedAt: est.signedAt,
+      signedChannel: est.signedChannel,
+      sentAt: est.sentAt,
+      sentTo: est.sentTo,
+      billedTotal,
+      depositDue,
+      totalPaid,
+      discountTotal,
+      collected: round2(totalPaid - discountTotal),
+      balance: round2(billedTotal - totalPaid),
+      lastPaidAt,
+      paymentStatus,
+      payToken: est.token,
+    };
+  }));
+}));
+
 // ─── ACCOUNTS (a.k.a. customers) ─────────────────────────────────────────────
 //
 // "Account" is the CRM-facing name: one account, many properties. The Prisma
