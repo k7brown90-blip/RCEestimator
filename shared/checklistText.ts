@@ -26,8 +26,11 @@ export const CHECKLIST_TEXT: Record<string, ItemText> = {
     plain: "Whether the electrical service feeding the home is big enough for everything the home runs, with a code-based load calculation.",
   },
   A3: {
-    name: "Meter base & main disconnect",
-    plain: "The equipment where power enters your home. Corrosion or damage here affects every circuit in the house.",
+    // Kyle, 2026-08-26: "I need main disconnect separated from meter base and
+    // added to the electric panel/breaker fit section." Customer-facing split
+    // only — the field checklist item A3 still covers both physically.
+    name: "Meter base",
+    plain: "The equipment where power from the utility enters your home. Corrosion or damage here affects every circuit in the house.",
   },
   B1: {
     name: "Main shut-off — location & labeling",
@@ -66,8 +69,8 @@ export const CHECKLIST_TEXT: Record<string, ItemText> = {
     plain: "Each breaker checked against the size of the wire it protects. An oversized breaker lets a wire overheat before it ever trips.",
   },
   D3: {
-    name: "Electrical panel condition & breaker fit",
-    plain: "The panel itself and whether its breakers belong in it — including known-hazard panel brands and signs of damage or corrosion inside.",
+    name: "Electrical panel, main disconnect & breaker fit",
+    plain: "The panel, the main disconnect that can shut off the whole house, and whether the breakers belong in the panel — including known-hazard panel brands and signs of damage or corrosion inside.",
   },
   D4: {
     name: "Circuit labeling",
