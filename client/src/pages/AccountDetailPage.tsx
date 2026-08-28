@@ -1111,6 +1111,12 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
     mutationFn: (inspectionId: string) => api.generateHealthReport(inspectionId),
     onSuccess: (r) => void openProtectedPdf(`/documents/${r.documentId}/pdf`),
   });
+  // P031 (Kyle, 2026-08-28): the generator sizing report, rendered on demand
+  // like the health report — a stored file would die on the next deploy.
+  const viewGeneratorReport = useMutation({
+    mutationFn: (inspectionId: string) => api.generateGeneratorReport(inspectionId),
+    onSuccess: (r) => void openProtectedPdf(`/documents/${r.documentId}/pdf`),
+  });
   const emailReport = useMutation({
     mutationFn: (inspectionId: string) => api.emailHealthReport(inspectionId),
     onSuccess: () => {
@@ -1158,6 +1164,9 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                   · {inspection.itemsAssessed} items
                   {inspection.scope === "phase1" && " (Phase 1)"}
                   {inspection.technician && ` · ${inspection.technician.name}`}
+                  {/* Says the Article 220 calc is on this record — it renders
+                      inside "View report" and unlocks the generator sizing. */}
+                  {inspection.hasLoadCalc && " · load calc on file"}
                   {criticals.length > 0 && (
                     <span className="ml-2 font-semibold text-red-600">⚠ {criticals.join(", ")}</span>
                   )}
@@ -1196,6 +1205,16 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                 >
                   {viewReport.isPending ? "Rendering…" : "View report"}
                 </button>
+                {/* Unlocked by the A2 load calc — without one there is nothing to size from. */}
+                {inspection.hasLoadCalc && (
+                  <button
+                    className="btn btn-secondary text-xs"
+                    disabled={viewGeneratorReport.isPending}
+                    onClick={() => viewGeneratorReport.mutate(inspection.id)}
+                  >
+                    {viewGeneratorReport.isPending ? "Rendering…" : "Generator sizing report"}
+                  </button>
+                )}
                 <button
                   className="btn btn-primary text-xs"
                   disabled={emailReport.isPending || needsReview}
