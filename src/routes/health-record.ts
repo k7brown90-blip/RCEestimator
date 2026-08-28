@@ -18,6 +18,7 @@ import { generateInspectionRenewalLeads } from "../services/inspectionRetention"
 import {
   generateCureCertificate,
   generateFindingDeclination,
+  generateGeneratorReport,
   generateHealthReport,
   generateUpgradeRecord,
 } from "../services/pdfGenerator";
@@ -1182,12 +1183,25 @@ const inspectionSummary = {
   acknowledgedAt: true,
   customerSignerName: true,
   ackSkippedReason: true,
+  // Swapped for a `hasLoadCalc` boolean by summarizeInspections before any
+  // response — the generator-sizing button unlocks on it (Kyle, 2026-08-28).
+  loadCalcJson: true,
   property: { select: { id: true, addressLine1: true, city: true, state: true } },
   deliveries: {
     orderBy: { sentAt: "desc" as const },
     select: { id: true, sentTo: true, sentBy: true, sentAt: true },
   },
 } as const;
+
+/**
+ * The summary rows carry `hasLoadCalc`, not the calculation itself — the CRM
+ * lists only need to know whether the generator-sizing button unlocks (Kyle,
+ * 2026-08-28), and shipping every list row a 10 KB JSON blob to answer a
+ * boolean would be waste.
+ */
+const summarizeInspections = (
+  rows: Array<{ loadCalcJson: string | null } & Record<string, unknown>>,
+) => rows.map(({ loadCalcJson, ...rest }) => ({ ...rest, hasLoadCalc: loadCalcJson != null }));
 
 /** Inspection history for a customer (newest first) — the retention record. */
 healthRecordAdminRouter.get("/customers/:customerId/inspections", asyncHandler(async (req, res) => {
@@ -1196,7 +1210,7 @@ healthRecordAdminRouter.get("/customers/:customerId/inspections", asyncHandler(a
     select: inspectionSummary,
     orderBy: { inspectionDate: "desc" },
   });
-  res.json(inspections);
+  res.json(summarizeInspections(inspections));
 }));
 
 healthRecordAdminRouter.get("/properties/:propertyId/inspections", asyncHandler(async (req, res) => {
@@ -1205,7 +1219,7 @@ healthRecordAdminRouter.get("/properties/:propertyId/inspections", asyncHandler(
     select: inspectionSummary,
     orderBy: { inspectionDate: "desc" },
   });
-  res.json(inspections);
+  res.json(summarizeInspections(inspections));
 }));
 
 healthRecordAdminRouter.get("/visits/:visitId/inspections", asyncHandler(async (req, res) => {
@@ -1214,7 +1228,7 @@ healthRecordAdminRouter.get("/visits/:visitId/inspections", asyncHandler(async (
     select: inspectionSummary,
     orderBy: { inspectionDate: "desc" },
   });
-  res.json(inspections);
+  res.json(summarizeInspections(inspections));
 }));
 
 /** Full inspection payload (items + load calc) for the detail view. */
@@ -1316,6 +1330,30 @@ healthRecordAdminRouter.post("/inspections/:id/report", asyncHandler(async (req,
     return;
   }
   const result = await generateHealthReport(id);
+  res.status(201).json(result);
+}));
+
+/**
+ * POST /health-record-admin/inspections/:id/generator-report — the P031
+ * generator sizing document off this inspection's load calculation (Kyle,
+ * 2026-08-28: "a button... that becomes available after the load calcs are
+ * done"). Refuses plainly when no calculation is stored.
+ */
+healthRecordAdminRouter.post("/inspections/:id/generator-report", asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const inspection = await prisma.healthInspection.findUnique({
+    where: { id },
+    select: { id: true, loadCalcJson: true },
+  });
+  if (!inspection) {
+    res.status(404).json({ error: "Inspection not found" });
+    return;
+  }
+  if (!inspection.loadCalcJson) {
+    res.status(409).json({ error: "This inspection has no load calculation — run the A2 load calc first." });
+    return;
+  }
+  const result = await generateGeneratorReport(id);
   res.status(201).json(result);
 }));
 

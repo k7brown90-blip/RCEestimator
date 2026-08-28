@@ -417,6 +417,13 @@ import { V3_ROW_ORDER, baseItemId, itemName, itemPlain } from "../../shared/chec
 import { checklist } from "../../shared/checklist/checklist";
 import type { ChecklistItemDef } from "../../shared/checklist/types";
 import sharp from "sharp";
+import { recommendGenerator } from "../../shared/loadcalc/generator";
+import type { GeneratorFuel, GeneratorRecommendation } from "../../shared/loadcalc/generator";
+import { LIQUID_COOLED_TEXT } from "../../shared/loadcalc/generatorData";
+import type {
+  LoadCalcInput as GenLoadCalcInput,
+  LoadCalcResult as GenLoadCalcResult,
+} from "../../shared/loadcalc/loadcalc";
 
 /** Checklist defs by id — the same narratives the field app shows on site. */
 const CHECKLIST_DEFS = new Map<string, ChecklistItemDef>(checklist.map((def) => [def.id, def]));
@@ -1087,6 +1094,157 @@ export async function generateHealthReport(
     },
   });
 
+  return { documentId: docId, pdfPath };
+}
+
+// ─── GENERATOR SIZING REPORT (P031, Kyle 2026-08-28) ────────────────────────
+
+/**
+ * Standalone generator sizing document off an inspection's load calculation.
+ *
+ * Uses the recommendation the technician stored with the A2 calc when one
+ * exists — that is the frozen fact. When the tech never opened the generator
+ * panel, the shared engine computes one here with stated defaults (natural
+ * gas, Middle-TN altitude derate, no soft-start) — same engine, same data
+ * module, and the document says which path produced it.
+ */
+export async function generateGeneratorReport(
+  inspectionId: string,
+): Promise<{ documentId: string; pdfPath: string }> {
+  const inspection = await prisma.healthInspection.findUnique({
+    where: { id: inspectionId },
+    include: {
+      customer: { select: { name: true } },
+      property: { select: { addressLine1: true, city: true, state: true, postalCode: true } },
+      technician: { select: { name: true } },
+    },
+  });
+  if (!inspection) throw new Error(`Inspection ${inspectionId} not found`);
+  if (!inspection.loadCalcJson) {
+    throw new Error("This inspection has no load calculation — run the A2 load calc first.");
+  }
+
+  const stored = JSON.parse(inspection.loadCalcJson) as {
+    input: GenLoadCalcInput;
+    result: GenLoadCalcResult;
+    generator?: {
+      recommendation: GeneratorRecommendation;
+      fuel: GeneratorFuel;
+      softStart: boolean;
+      altitudeSteps?: number;
+    };
+  };
+  const fromField = stored.generator !== undefined;
+  const rec: GeneratorRecommendation = fromField
+    ? stored.generator!.recommendation
+    : recommendGenerator({
+        calcInput: stored.input,
+        calcResult: stored.result,
+        fuel: "NG",
+        softStart: false,
+      });
+  const fuelName = rec.fuel === "NG" ? "natural gas" : "propane (LP)";
+
+  const docId = uuidv4();
+  const doc = new PDFDocument({ margin: 36 });
+  addHeader(doc, "Generator Sizing Recommendation");
+
+  const dateStr = inspection.inspectionDate.toLocaleDateString("en-US", { timeZone: "America/Chicago" });
+  doc.fontSize(11).fillColor(BRAND.text);
+  doc.text(`Customer: ${inspection.customer.name}`);
+  doc.text(`Property: ${inspection.property.addressLine1}, ${inspection.property.city}, ${inspection.property.state} ${inspection.property.postalCode}`);
+  doc.text(
+    `Based on the NEC Article 220 load calculation of ${dateStr}` +
+    `${inspection.technician ? ` by ${inspection.technician.name}` : ""}: ` +
+    `${stored.result.governingAmps} A calculated on a ${stored.input.serviceAmps} A service.`,
+  );
+  doc.fillColor(BRAND.muted).fontSize(9).text(
+    `Sized on ${fuelName}, site derate ×${rec.siteDerateFactor}` +
+    (fromField
+      ? " — selections made on site by the technician."
+      : " — computed from the stored calculation with default fuel and site settings; confirm fuel before quoting."),
+  );
+  doc.fillColor(BRAND.text);
+  doc.moveDown();
+
+  const modelLine = (s: { model: { classLabel: string; generatorModel: string; switchPackage: string } | null; liquidCooled: boolean; siteDeratedKW: number | null }): string =>
+    s.liquidCooled
+      ? LIQUID_COOLED_TEXT
+      : s.model
+        ? `Generac Guardian ${s.model.classLabel} kW — generator ${s.model.generatorModel}, switch package ${s.model.switchPackage}` +
+          (s.siteDeratedKW !== null ? ` (${s.siteDeratedKW} kW at this site)` : "")
+        : "—";
+
+  if (rec.flags.length > 0) {
+    for (const flag of rec.flags) {
+      doc.fillColor(flag.severity === "hard" ? "#b91c1c" : "#b45309").fontSize(10)
+        .text(`${flag.severity === "hard" ? "FLAG" : "CHECK"}: ${flag.message}`);
+    }
+    doc.fillColor(BRAND.text);
+    doc.moveDown(0.5);
+  }
+
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Whole-home options", { underline: true });
+  doc.fontSize(9);
+  for (const scheme of rec.wholeHome) {
+    doc.fillColor(BRAND.text).fontSize(10).text(scheme.title);
+    doc.fontSize(9).fillColor(BRAND.muted);
+    doc.text(`    ${scheme.necBasis} · ${scheme.requiredKW !== null ? `${scheme.requiredKW} kW required (${scheme.requiredAmps} A)` : "no code-minimum size"} · basis: ${scheme.loadBasis}`);
+    doc.fillColor(BRAND.text).text(`    Recommended: ${modelLine(scheme)}`);
+    if (scheme.shedLoads && scheme.shedLoads.length > 0) {
+      doc.fillColor(BRAND.muted).text(`    Shed devices on: ${scheme.shedLoads.join("; ")}`);
+    }
+    for (const note of scheme.notes) doc.fillColor(BRAND.muted).text(`    ${note}`);
+    doc.fillColor(BRAND.text);
+    doc.moveDown(0.3);
+  }
+  doc.moveDown(0.3);
+
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Essential loads (partial home)", { underline: true });
+  doc.fontSize(9);
+  if (rec.partial === null) {
+    doc.fillColor("#b45309").text(
+      "Suppressed by a hard flag above — offer whole-home with load management, or liquid-cooled equipment.",
+    );
+    doc.fillColor(BRAND.text);
+  } else {
+    doc.fillColor(BRAND.text).fontSize(10)
+      .text(`${rec.partial.requiredKW} kW calculated (${rec.partial.requiredAmps} A) — ${modelLine(rec.partial)}`);
+    doc.fontSize(9).text("Covered:");
+    for (const line of rec.partial.covered) {
+      doc.fillColor(BRAND.muted).text(`    ${line.label} — ${(line.va / 1000).toFixed(2)} kVA (${line.rule})`);
+    }
+    doc.fillColor(BRAND.text).text("Not covered:");
+    for (const line of rec.partial.notCovered) doc.fillColor(BRAND.muted).text(`    ${line}`);
+    if (rec.partial.excludedWithReason.length > 0) {
+      doc.fillColor(BRAND.text).text("Excluded:");
+      for (const line of rec.partial.excludedWithReason) doc.fillColor(BRAND.muted).text(`    ${line}`);
+    }
+    doc.fillColor(BRAND.text);
+  }
+  doc.moveDown(0.5);
+
+  if (rec.surge.status !== "none") {
+    doc.fillColor(BRAND.muted).fontSize(9).text(rec.surge.message);
+  }
+  for (const line of rec.scopeLines) {
+    doc.fillColor(BRAND.muted).fontSize(9).text(line);
+  }
+  doc.moveDown(0.5);
+  doc.fillColor(BRAND.muted).fontSize(8).text(rec.disclaimer);
+  doc.text(`Product data: ${rec.dataRevision}.`);
+  doc.fillColor(BRAND.text);
+
+  const pdfPath = await savePdf(doc, `generator-sizing-${docId}.pdf`);
+  await prisma.document.create({
+    data: {
+      id: docId,
+      jobId: inspection.visitId,
+      propertyId: inspection.propertyId,
+      type: "generator_sizing",
+      pdfUrl: pdfPath,
+    },
+  });
   return { documentId: docId, pdfPath };
 }
 

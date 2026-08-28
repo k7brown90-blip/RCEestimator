@@ -52,6 +52,14 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
     },
   });
 
+  // P031 generator sizing report — same open-the-PDF flow as the health report.
+  const generatorReportMutation = useMutation({
+    mutationFn: (inspectionId: string) => api.generateGeneratorReport(inspectionId),
+    onSuccess: (result) => {
+      window.open(`/api/documents/${result.documentId}/pdf`, "_blank");
+    },
+  });
+
   // Email the report to the customer (2026-08-24). The server refuses an
   // unreviewed critical report and logs every send as a delivery.
   const [emailResult, setEmailResult] = useState<string | null>(null);
@@ -189,6 +197,19 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                       >
                         {reportMutation.isPending ? "Generating…" : "Generate PDF report"}
                       </button>
+                      {/* P031 (Kyle, 2026-08-28): the generator sizing report
+                          unlocks once the A2 load calc is on the record —
+                          without one there is nothing to size from. */}
+                      {inspection.hasLoadCalc && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary ml-2 mt-2 text-xs"
+                          disabled={generatorReportMutation.isPending}
+                          onClick={() => generatorReportMutation.mutate(inspection.id)}
+                        >
+                          {generatorReportMutation.isPending ? "Generating…" : "Generator sizing report"}
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="btn btn-primary ml-2 mt-2 text-xs"

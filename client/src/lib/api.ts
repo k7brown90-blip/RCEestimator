@@ -664,6 +664,12 @@ export const api = {
       `/health-record-admin/inspections/${inspectionId}/report`,
       { method: "POST", body: JSON.stringify({}) },
     ),
+  /** P031 generator sizing document — available once the inspection carries a load calc. */
+  generateGeneratorReport: (inspectionId: string) =>
+    request<{ documentId: string; pdfPath: string }>(
+      `/health-record-admin/inspections/${inspectionId}/generator-report`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
   /** Email the report to the customer — logged as a delivery; refuses an unreviewed critical report. */
   emailHealthReport: (inspectionId: string, to?: string) =>
     request<{ sent: true; sentTo: string; documentId: string }>(
@@ -1146,6 +1152,8 @@ export interface HealthInspectionSummary {
   ackSkippedReason?: string | null;
   property?: { id: string; addressLine1: string; city: string; state: string } | null;
   deliveries?: Array<{ id: string; sentTo: string; sentBy: string; sentAt: string }>;
+  /** True when the A2 load calc is on the record — unlocks the generator sizing report. */
+  hasLoadCalc?: boolean;
 }
 
 export interface HealthInspectionDetail extends HealthInspectionSummary {
