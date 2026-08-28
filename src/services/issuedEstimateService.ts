@@ -88,6 +88,15 @@ export interface GraduateInput {
   /** Kyle waives the trip on plenty of jobs; the PDFs show it as a $0.00 LINE, never a hidden one. */
   waiveTrip?: boolean;
   createdBy?: string;
+  /**
+   * P031: attach the generator sizing one-pager. The operator checks this while
+   * issuing (the human approval in the propose-only chain); the recommendation
+   * itself comes from the field assessment's capacity check at this address.
+   * Refuses with a plain reason when none is on file — never a silent no-op.
+   */
+  includeGenerator?: boolean;
+  /** Revision path only: carry the previous estimate's snapshot forward verbatim. */
+  generatorJson?: string | null;
 }
 
 export type GraduateResult =
@@ -292,6 +301,28 @@ export async function graduateDraft(
   const context = await resolveSpine(prisma, input.accountId, input.serviceAddressId, draft);
   if ("error" in context) return { ok: false, reasons: [context.error] };
 
+  // ── P031: the generator one-pager, snapshot at issuance ──
+  // Revision passes the previous snapshot through verbatim; a fresh issue with
+  // includeGenerator looks up the newest recommendation at THIS address. No
+  // recommendation on file is a stated refusal, not a silently thinner document.
+  let generatorJson: string | null = input.generatorJson ?? null;
+  if (generatorJson === null && input.includeGenerator) {
+    const check = await prisma.capacityCheck.findFirst({
+      where: { propertyId: input.serviceAddressId, generatorJson: { not: null } },
+      orderBy: { createdAt: "desc" },
+      select: { generatorJson: true },
+    });
+    if (!check?.generatorJson) {
+      return {
+        ok: false,
+        reasons: [
+          "No generator sizing recommendation is on file for this address — run one from the load calculation in the field app first, or uncheck the attachment.",
+        ],
+      };
+    }
+    generatorJson = check.generatorJson;
+  }
+
   const number = await nextNumber(prisma);
   const token = newToken();
 
@@ -314,6 +345,7 @@ export async function graduateDraft(
         title: (input.title ?? "").trim() || draft.title,
         scopeText: input.scopeText ?? draft.jobDescription ?? null,
         includedText: input.includedText ?? null,
+        generatorJson,
         workSubtotal,
         tripCharge,
         tripWaived: Boolean(input.waiveTrip),
@@ -859,6 +891,9 @@ export async function reviseEstimate(
     title: prev.title,
     scopeText: prev.scopeText,
     includedText: prev.includedText,
+    // A revision keeps what the previous document carried — including the
+    // generator one-pager the customer already saw (P031).
+    generatorJson: prev.generatorJson,
     waiveTrip: opts.waiveTrip ?? prev.tripWaived,
     createdBy: opts.actor ?? "human:crm-session",
   });

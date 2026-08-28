@@ -284,7 +284,7 @@ export function ItemCardScreen({
         <p className="text-xs text-slate-400">{item.citations.join(' · ')}</p>
       </section>
 
-      {item.id === 'A2' && (
+      {item.id === 'LOAD' && (
         <LoadCalcPanel
           initial={loadCalc}
           onApply={(record) => {

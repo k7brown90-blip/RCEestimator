@@ -414,6 +414,101 @@ const RESULT_LABEL: Record<string, string> = {
 };
 
 import { V3_ROW_ORDER, baseItemId, itemName, itemPlain } from "../../shared/checklistText";
+import { checklist } from "../../shared/checklist/checklist";
+import type { ChecklistItemDef } from "../../shared/checklist/types";
+import sharp from "sharp";
+
+/** Checklist defs by id — the same narratives the field app shows on site. */
+const CHECKLIST_DEFS = new Map<string, ChecklistItemDef>(checklist.map((def) => [def.id, def]));
+
+type MeasuredValue = string | number | boolean | string[] | Array<Record<string, string | number | boolean>>;
+
+/**
+ * One measured value as the sentence fragment the report speaks in — the
+ * field's `reportLabel` where one exists, the raw reading otherwise.
+ */
+function measuredPhrase(def: ChecklistItemDef | undefined, fieldId: string, value: MeasuredValue): string {
+  const field = def?.inputFields.find((f) => f.id === fieldId);
+  const labelFor = (v: string | number | boolean): string => {
+    const opt = field?.options?.find((o) => o.value === v);
+    if (opt) return opt.reportLabel ?? opt.label.toLowerCase();
+    if (typeof v === "boolean") return v ? "yes" : "no";
+    return `${v}${field?.unit ? ` ${field.unit}` : ""}`;
+  };
+  if (Array.isArray(value)) {
+    const scalars = value.filter((v): v is string => typeof v === "string");
+    return scalars.length > 0 ? scalars.map(labelFor).join(", ") : String(value.length);
+  }
+  return labelFor(value);
+}
+
+/**
+ * The item's whatWeFound narrative with the technician's readings substituted
+ * in — the same sentence the assessment shows on site. Null when nothing was
+ * measured, so an unmeasured item doesn't print a sentence of "not recorded".
+ */
+function filledNarrative(
+  itemId: string,
+  measured: Record<string, MeasuredValue> | undefined,
+  computed: Record<string, number> | undefined,
+): string | null {
+  const def = CHECKLIST_DEFS.get(baseItemId(itemId));
+  if (!def) return null;
+  const template = def.reasoning.whatWeFound;
+  let anyFilled = false;
+  const text = template.replace(/\{([a-z0-9_]+)\}/gi, (_m, fieldId: string) => {
+    const value = measured?.[fieldId] ?? computed?.[fieldId];
+    if (value === undefined || value === null || value === "") return "not recorded";
+    anyFilled = true;
+    return measuredPhrase(def, fieldId, value as MeasuredValue);
+  });
+  return anyFilled ? text : null;
+}
+
+/** Downscaled JPEG ready for embedding, with its pixel dimensions. */
+interface PreparedPhoto {
+  buf: Buffer;
+  width: number;
+  height: number;
+}
+
+async function preparePhoto(data: Buffer | Uint8Array): Promise<PreparedPhoto | null> {
+  try {
+    const { data: buf, info } = await sharp(Buffer.from(data))
+      .rotate() // respect EXIF orientation — phone photos lie on their side without it
+      .resize({ width: 1000, height: 1000, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 70 })
+      .toBuffer({ resolveWithObject: true });
+    return { buf, width: info.width, height: info.height };
+  } catch {
+    return null; // a corrupt upload must not sink the report
+  }
+}
+
+/**
+ * Draw photos two-up, breaking pages so an image never straddles the footer.
+ */
+function drawPhotos(doc: PDFKit.PDFDocument, photos: PreparedPhoto[]): void {
+  const margin = 36;
+  const gutter = 12;
+  const cellW = (doc.page.width - margin * 2 - gutter) / 2;
+  const maxH = 200;
+  for (let i = 0; i < photos.length; i += 2) {
+    const row = photos.slice(i, i + 2);
+    const dims = row.map((p) => {
+      const scale = Math.min(cellW / p.width, maxH / p.height, 1);
+      return { w: p.width * scale, h: p.height * scale };
+    });
+    const rowH = Math.max(...dims.map((d) => d.h));
+    if (doc.y + rowH > doc.page.height - 72) doc.addPage();
+    const y = doc.y;
+    row.forEach((p, j) => {
+      doc.image(p.buf, margin + j * (cellW + gutter), y, { width: dims[j].w, height: dims[j].h });
+    });
+    doc.y = y + rowH + 6;
+    doc.x = margin;
+  }
+}
 
 /** Group labels for section notes, mirroring field/src/ui/screens/ChecklistScreen.tsx. */
 const SECTION_GROUP_LABEL: Record<string, string> = {
@@ -464,6 +559,9 @@ interface ReportItemRow {
   photoIds: string[];
   /** Sub-panel instance rows carry their location label ("Garage"). */
   locationId?: string;
+  /** Structured readings from the field walk — the narrative substitutes these. */
+  measured?: Record<string, MeasuredValue>;
+  computed?: Record<string, number>;
 }
 
 /**
@@ -624,16 +722,33 @@ export async function generateHealthReport(
       customer: { select: { name: true } },
       property: { select: { addressLine1: true, city: true, state: true, postalCode: true } },
       technician: { select: { name: true, employeeNumber: true } },
-      photos: { select: { id: true } },
+      photos: { select: { id: true, mimeType: true, data: true } },
     },
   });
   if (!inspection) throw new Error(`Inspection ${inspectionId} not found`);
 
   const items = parseJsonArray<ReportItemRow>(inspection.itemsJson);
+
+  // Photo evidence, downscaled once and embedded where each photo was taken.
+  // "This report is bland and contains no photos from the sections check"
+  // (Kyle, 2026-08-28) — the images ARE the record; a count line wasn't one.
+  const photoById = new Map<string, PreparedPhoto>();
+  for (const photo of inspection.photos) {
+    const prepared = await preparePhoto(photo.data);
+    if (prepared) photoById.set(photo.id, prepared);
+  }
+  const photosFor = (row: ReportItemRow): PreparedPhoto[] =>
+    row.photoIds.map((id) => photoById.get(id)).filter((p): p is PreparedPhoto => Boolean(p));
   const criticals = parseJsonStringArray(inspection.criticalFindingsJson);
   const loadCalc = inspection.loadCalcJson
     ? (JSON.parse(inspection.loadCalcJson) as {
-        result?: { governingAmps?: number; serviceAmps?: number; loadPct?: number; spareAmps?: number; methodUsed?: string };
+        result?: {
+          governingAmps?: number;
+          serviceAmps?: number;
+          loadPct?: number;
+          spareAmps?: number;
+          methodUsed?: string;
+        };
       }).result ?? null
     : null;
 
@@ -730,15 +845,19 @@ export async function generateHealthReport(
 
   if (loadCalc?.governingAmps !== undefined) {
     doc.fillColor(BRAND.cedar).fontSize(12).text("Does your service have enough capacity?", { underline: true });
+    // This section IS the capacity check — it must never tell the reader to go
+    // get one (Kyle, 2026-08-28: "This is a literal capacity check. Why would
+    // we say to do another."). Each tier states what THIS calculation supports.
     const pct = loadCalc.loadPct ?? 0;
+    const spare = loadCalc.spareAmps !== undefined ? `${loadCalc.spareAmps} amps of spare capacity` : "spare capacity";
     const headroom = pct <= 60
-      ? "comfortable room for future additions like an EV charger or a hot tub"
+      ? `${spare} — comfortable room for future additions like an EV charger or a hot tub`
       : pct <= 80
-        ? "some room left for additions — larger ones are worth a capacity check first"
-        : "little room left — plan a capacity check before adding any major equipment";
+        ? `${spare} for future additions`
+        : `only ${spare} — a major new load would call for a service upgrade`;
     doc.fillColor(BRAND.text).fontSize(10).text(
       `Your home's calculated demand is ${loadCalc.governingAmps} amps on a ${loadCalc.serviceAmps}-amp service — ` +
-      `about ${loadCalc.loadPct}% of capacity, with ${headroom}.`,
+      `about ${loadCalc.loadPct}% of capacity, leaving ${headroom}.`,
     );
     doc.fillColor(BRAND.muted).fontSize(8).text(
       `Calculated per NEC Article 220 (${loadCalc.methodUsed ?? "optional"} method); capacity basis NEC 230.42.`,
@@ -763,40 +882,62 @@ export async function generateHealthReport(
     const byResult = (state: string) =>
       items.filter((item) => normalizeResult(item.result) === state);
 
+    // Each row reads like the assessment did on site: what we checked, what we
+    // found (the field's own narrative with the readings substituted in), the
+    // technician's notes, why it matters, the code basis — and the photos taken
+    // at that item, embedded, not counted (Kyle, 2026-08-28: "We need the
+    // report to be detailed to resemble the assessment and it is an official
+    // document where the notes and observations are noted.").
+    const renderItem = (item: ReportItemRow, color: string, withResolution: boolean, withWhyItMatters: boolean) => {
+      const def = CHECKLIST_DEFS.get(baseItemId(item.itemId));
+      const critical = criticals.includes(item.itemId);
+      doc.fontSize(10).fillColor(color).text(
+        `${rowName(item)}${critical ? "  —  URGENT SAFETY ITEM" : ""}`,
+      );
+      doc.fontSize(9).fillColor(BRAND.text);
+      const plain = itemPlain(item.itemId);
+      if (plain) {
+        doc.fillColor(BRAND.muted).text(`    What this is: ${plain}`);
+        doc.fillColor(BRAND.text);
+      }
+      if (def) {
+        doc.fillColor(BRAND.muted).text(`    What we checked: ${def.reasoning.whatWeCheck}`);
+        doc.fillColor(BRAND.text);
+      }
+      const narrative = filledNarrative(item.itemId, item.measured, item.computed);
+      if (narrative) doc.text(`    What we found: ${narrative}`);
+      // The field checklist has separate "note" and "resolution" boxes, but
+      // a tech often writes finding + fix as one sentence in whichever box
+      // is handy. Split labels are only honest when BOTH boxes were used;
+      // a lone entry gets a label that covers either reading.
+      if (item.note && withResolution && item.resolutionNote) {
+        doc.text(`    Technician's observation: ${item.note}`);
+        doc.text(`    What fixes it: ${item.resolutionNote}`);
+      } else if (item.note) {
+        doc.text(`    Technician's observation: ${item.note}`);
+      } else if (withResolution && item.resolutionNote) {
+        doc.text(`    What we found & what fixes it: ${item.resolutionNote}`);
+      }
+      if (withWhyItMatters && def) {
+        doc.fillColor(BRAND.muted).text(`    Why it matters: ${def.reasoning.whyItMatters}`);
+        doc.fillColor(BRAND.text);
+      }
+      doc.fillColor(BRAND.muted).fontSize(7).text(
+        `    (checklist item ${baseItemId(item.itemId)}${def?.citations.length ? ` · ${def.citations.join(", ")}` : ""})`,
+      );
+      doc.fillColor(BRAND.text).fontSize(9);
+      const itemPhotos = photosFor(item);
+      if (itemPhotos.length > 0) {
+        doc.moveDown(0.2);
+        drawPhotos(doc, itemPhotos);
+      }
+      doc.moveDown(0.3);
+    };
+
     const renderGroup = (title: string, rows: ReportItemRow[], color: string, withResolution = false) => {
       if (rows.length === 0) return;
       doc.fillColor(BRAND.cedar).fontSize(12).text(`${title} (${rows.length})`, { underline: true });
-      for (const item of rows) {
-        const critical = criticals.includes(item.itemId);
-        doc.fontSize(10).fillColor(color).text(
-          `${rowName(item)}${critical ? "  —  URGENT SAFETY ITEM" : ""}`,
-        );
-        doc.fontSize(9).fillColor(BRAND.text);
-        const plain = itemPlain(item.itemId);
-        if (plain) {
-          doc.fillColor(BRAND.muted).text(`    What this is: ${plain}`);
-          doc.fillColor(BRAND.text);
-        }
-        // The field checklist has separate "note" and "resolution" boxes, but
-        // a tech often writes finding + fix as one sentence in whichever box
-        // is handy. Split labels are only honest when BOTH boxes were used;
-        // a lone entry gets a label that covers either reading.
-        if (item.note && withResolution && item.resolutionNote) {
-          doc.text(`    What we found: ${item.note}`);
-          doc.text(`    What fixes it: ${item.resolutionNote}`);
-        } else if (item.note) {
-          doc.text(`    What we found: ${item.note}`);
-        } else if (withResolution && item.resolutionNote) {
-          doc.text(`    What we found & what fixes it: ${item.resolutionNote}`);
-        }
-        if (item.photoIds.length > 0) {
-          doc.fillColor(BRAND.muted).text(`    ${item.photoIds.length} photo(s) on file`);
-          doc.fillColor(BRAND.text);
-        }
-        doc.fillColor(BRAND.muted).fontSize(7).text(`    (checklist item ${baseItemId(item.itemId)})`);
-        doc.fillColor(BRAND.text);
-        doc.moveDown(0.3);
-      }
+      for (const item of rows) renderItem(item, color, withResolution, true);
       doc.moveDown(0.3);
     };
 
@@ -807,9 +948,20 @@ export async function generateHealthReport(
     const passed = byResult("PASS");
     if (passed.length > 0) {
       doc.fillColor(BRAND.cedar).fontSize(12).text(`What checked out fine (${passed.length})`, { underline: true });
-      doc.fillColor(BRAND.text).fontSize(9).text(
-        passed.map((item) => rowName(item)).join("  ·  "),
+      // A passed item that carries readings, notes, or photos still gets its
+      // full entry — "checked out fine" is a finding too, and the evidence
+      // belongs with it. Only bare passes collapse to the compact line.
+      const detailed = passed.filter(
+        (item) => photosFor(item).length > 0 || item.note ||
+          filledNarrative(item.itemId, item.measured, item.computed),
       );
+      const bare = passed.filter((item) => !detailed.includes(item));
+      for (const item of detailed) renderItem(item, BRAND.text, false, false);
+      if (bare.length > 0) {
+        doc.fillColor(BRAND.text).fontSize(9).text(
+          bare.map((item) => rowName(item)).join("  ·  "),
+        );
+      }
       doc.moveDown(0.5);
     }
 
@@ -838,6 +990,20 @@ export async function generateHealthReport(
     for (const row of sectionNotes) {
       doc.fillColor(BRAND.text).text(`${SECTION_GROUP_LABEL[row.group] ?? row.group}: ${row.note.trim()}`);
     }
+    doc.moveDown(0.5);
+  }
+
+  // Photos taken during the walk that weren't attached to a specific item still
+  // belong on the record — an official document doesn't hold evidence back.
+  const referencedPhotoIds = new Set(items.flatMap((item) => item.photoIds ?? []));
+  const unattached = inspection.photos
+    .filter((photo) => !referencedPhotoIds.has(photo.id))
+    .map((photo) => photoById.get(photo.id))
+    .filter((p): p is PreparedPhoto => Boolean(p));
+  if (unattached.length > 0) {
+    doc.fillColor(BRAND.cedar).fontSize(12).text("Additional Photo Documentation", { underline: true });
+    doc.moveDown(0.2);
+    drawPhotos(doc, unattached);
     doc.moveDown(0.5);
   }
 

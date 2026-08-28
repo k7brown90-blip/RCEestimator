@@ -242,6 +242,10 @@ model CapacityCheck {
   studyInstallVisitId String?
   studyRemovalVisitId String?
   studyOrderedAt      DateTime?
+  // P031 generator sizing recommendation produced alongside this calculation
+  // ({recommendation, fuel, softStart, includeInEstimate}). Nullable — most
+  // calculations never ask the generator question.
+  generatorJson  String?
   createdAt      DateTime @default(now())
 
   @@index([propertyId, createdAt])
@@ -2114,6 +2118,10 @@ model IssuedEstimate {
   title          String
   scopeText      String?
   includedText   String?
+  // P031: the generator sizing one-pager, SNAPSHOT at issuance like every other
+  // customer-facing fact on this row. Set only when a human chose to attach it
+  // while issuing (propose-only posture) — null renders nothing.
+  generatorJson  String?
   validDays      Int      @default(30)
 
   // ── Money, SNAPSHOT, flat. NO HOURS AND NO RATES ARE STORED ON THIS ROW.

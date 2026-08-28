@@ -10,6 +10,8 @@ import {
 } from '../../domain/loadcalc'
 import { ALL_TYPES, FUTURE_PICKS, QUICK_PICK_CATEGORIES, newLoadItem } from '../../data/loadPicks'
 import type { InspectionLoadCalc } from '../../domain/types'
+import type { GeneratorFuel } from '../../domain/generator'
+import { GeneratorPanel, generatorSelection } from './GeneratorPanel'
 
 interface Props {
   initial?: InspectionLoadCalc
@@ -151,6 +153,13 @@ export function LoadCalcPanel({ initial, onApply }: Props) {
   const [loads, setLoads] = useState<LoadItem[]>(initial?.input.loads ?? [])
   const [futureLoads, setFutureLoads] = useState<LoadItem[]>(initial?.input.futureLoads ?? [])
   const [showFullInventory, setShowFullInventory] = useState(false)
+  // ── P031 generator sizing — collapsed until the tech opens it ──
+  const [generatorOpen, setGeneratorOpen] = useState(initial?.generator !== undefined)
+  const [generatorFuel, setGeneratorFuel] = useState<GeneratorFuel>(initial?.generator?.fuel ?? 'NG')
+  const [generatorSoftStart, setGeneratorSoftStart] = useState(initial?.generator?.softStart ?? false)
+  // DEFAULT one 1,000-ft altitude step for Middle TN, tech-overridable (P031 amendment).
+  const [generatorAltitude, setGeneratorAltitude] = useState(initial?.generator?.altitudeSteps ?? 1)
+  const [generatorInclude, setGeneratorInclude] = useState(initial?.generator?.includeInEstimate ?? false)
 
   const input: LoadCalcInput = useMemo(
     () => ({
@@ -391,9 +400,44 @@ export function LoadCalcPanel({ initial, onApply }: Props) {
         )}
       </div>
 
+      {/* ── P031: generator sizing off this calculation, on request ── */}
       <button
         type="button"
-        onClick={() => onApply({ input, result })}
+        onClick={() => setGeneratorOpen((s) => !s)}
+        className="rounded-full border border-slate-600 bg-slate-800 px-2.5 py-1 text-xs text-slate-200"
+      >
+        {generatorOpen ? 'Hide generator sizing' : 'Generator sizing recommendation…'}
+      </button>
+      {generatorOpen && (
+        <GeneratorPanel
+          input={input}
+          result={result}
+          fuel={generatorFuel}
+          softStart={generatorSoftStart}
+          altitudeSteps={generatorAltitude}
+          includeInEstimate={generatorInclude}
+          onFuel={setGeneratorFuel}
+          onSoftStart={setGeneratorSoftStart}
+          onAltitudeSteps={setGeneratorAltitude}
+          onIncludeInEstimate={setGeneratorInclude}
+        />
+      )}
+
+      <button
+        type="button"
+        onClick={() =>
+          onApply({
+            input,
+            result,
+            ...(generatorOpen
+              ? {
+                  generator: generatorSelection(
+                    input, result, generatorFuel, generatorSoftStart, generatorAltitude, generatorInclude,
+                  ),
+                }
+              : {}),
+          })
+        }
         className="w-full rounded-lg bg-sky-700 p-2.5 text-sm font-medium text-white"
       >
         Apply to A2 (stores calculation with the record)

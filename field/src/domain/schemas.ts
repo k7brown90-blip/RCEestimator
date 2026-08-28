@@ -205,6 +205,11 @@ export const loadItemSchema = z.object({
   motorGenerator: z.boolean().optional(),
   onLaundryCircuit: z.boolean().optional(),
   nameplateRead: z.boolean().optional(),
+  // ── Generator-sizing facts (P031) — optional, Article 220 math untouched ──
+  fuel: z.enum(['electric', 'gas', 'propane']).optional(),
+  lockedRotorAmps: z.number().positive().optional(),
+  tons: z.number().positive().optional(),
+  applianceKind: z.enum(['refrigerator', 'microwave']).optional(),
 })
 
 export const calcMethodSchema = z.enum([
@@ -267,6 +272,18 @@ export const loadCalcResultSchema = z.object({
 export const inspectionLoadCalcSchema = z.object({
   input: loadCalcInputSchema,
   result: loadCalcResultSchema,
+  // P031 generator sizing recommendation, engine-produced. Validated loosely on
+  // purpose: the payload is written only by shared/loadcalc/generator.ts, and a
+  // stricter mirror here would be a second copy of that contract to drift.
+  generator: z
+    .object({
+      recommendation: z.unknown(),
+      fuel: z.enum(['NG', 'LP']),
+      softStart: z.boolean(),
+      altitudeSteps: z.number().nonnegative(),
+      includeInEstimate: z.boolean(),
+    })
+    .optional(),
 })
 
 const measuredScalarSchema = z.union([z.string(), z.number(), z.boolean()])

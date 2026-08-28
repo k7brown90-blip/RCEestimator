@@ -37,6 +37,25 @@ export interface LoadItem {
   motorGenerator?: boolean // arc welders: Table 630.11(A) has separate motor-generator column
   onLaundryCircuit?: boolean // dryer: laundry 1500 VA covers it — no separate line (count-once)
   nameplateRead?: boolean // true = read off the plate; anything else = assumed
+  // ── Generator-sizing facts (P031). Optional so every stored calc still parses;
+  // none of these change the Article 220 math. ──
+  /**
+   * What fires the appliance. Article 220 only ever sees electric loads, but the
+   * generator engine must know that a gas furnace backs up as a blower and a gas
+   * range backs up as nothing. Absent = electric (it's in an electric inventory).
+   */
+  fuel?: 'electric' | 'gas' | 'propane'
+  /** Condenser locked-rotor amps, off the plate — drives the surge check. */
+  lockedRotorAmps?: number
+  /** Condenser tonnage when the plate's LRA wasn't captured — LRA is estimated. */
+  tons?: number
+  /**
+   * Marks the two fixed appliances Kyle's partial tier names explicitly. A
+   * refrigerator rides the small-appliance circuits in Article 220 (220.52) and
+   * so has no line item of its own — this tag is how the generator engine finds
+   * one when the technician entered it anyway.
+   */
+  applianceKind?: 'refrigerator' | 'microwave'
 }
 
 export type CalcMethod =

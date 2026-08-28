@@ -411,6 +411,80 @@ export function renderEstimatePage(
     ? `<div class="box"><strong>Included / Not Included.</strong> ${escapeHtml(est.includedText)}</div>`
     : "";
 
+  /*
+    ── P031: the generator sizing one-pager ─────────────────────────────────────
+    Renders ONLY when a human attached the recommendation at issuance
+    (generatorJson set) — propose-only end to end. Plain language, two tiers,
+    explicit Covered / Not covered lists, and the preliminary disclaimer on the
+    page. No prices and no internal package refs here: the price book resolves
+    those on the company side, and this is a customer document.
+  */
+  const generatorSection = (() => {
+    if (!est.generatorJson) return "";
+    try {
+      interface StoredModel { classLabel: string; generatorModel: string }
+      const stored = JSON.parse(est.generatorJson) as {
+        recommendation: {
+          wholeHome: Array<{
+            scheme: string; title: string; necBasis: string; requiredKW: number | null;
+            model: StoredModel | null; liquidCooled: boolean; shedLoads?: string[]; notes: string[];
+          }>;
+          partial: {
+            requiredKW: number; model: StoredModel | null; liquidCooled: boolean;
+            covered: Array<{ label: string; va: number }>;
+            notCovered: string[];
+            excludedWithReason: string[];
+          } | null;
+          disclaimer: string;
+        };
+        fuel: "NG" | "LP";
+      };
+      const rec = stored.recommendation;
+      const fuelName = stored.fuel === "NG" ? "natural gas" : "propane";
+      const tierText = (model: StoredModel | null, liquidCooled: boolean) =>
+        liquidCooled
+          ? "a liquid-cooled unit, selected with you"
+          : model !== null
+            ? `a ${model.classLabel.split("/")[0]} kW Generac Guardian standby generator (model ${model.generatorModel})`
+            : "sized with you";
+      const wholeRows = rec.wholeHome
+        .map((s) => `<tr>
+            <td><strong>${escapeHtml(s.title)}</strong>
+              ${s.shedLoads && s.shedLoads.length > 0
+                ? `<br><span style="font-size:12px;color:#555;">Managed (paused under generator power as needed): ${escapeHtml(s.shedLoads.join("; "))}</span>`
+                : ""}
+            </td>
+            <td class="r">${escapeHtml(tierText(s.model, s.liquidCooled))}</td>
+          </tr>`)
+        .join("");
+      const partialBlock = rec.partial
+        ? `<h3 style="margin:14px 0 4px;font-size:15px;">Essential-loads option</h3>
+           <p style="font-size:13px;margin:0 0 6px;">Keeps the essentials running on ${escapeHtml(tierText(rec.partial.model, rec.partial.liquidCooled))}.</p>
+           <p style="font-size:13px;margin:0;"><strong>Covered:</strong> ${rec.partial.covered.map((c) => escapeHtml(c.label)).join("; ")}.</p>
+           <p style="font-size:13px;margin:4px 0 0;"><strong>Not covered:</strong> ${rec.partial.notCovered.map(escapeHtml).join("; ")}.</p>
+           ${rec.partial.excludedWithReason.length > 0
+             ? `<p style="font-size:12px;color:#555;margin:4px 0 0;">${rec.partial.excludedWithReason.map(escapeHtml).join(" ")}</p>`
+             : ""}`
+        : "";
+      return `<div class="box" style="page-break-inside:avoid;">
+          <h2 style="margin-top:0;">Backup generator options for this home</h2>
+          <p style="font-size:13px;margin:0 0 8px;">
+            Sized from the load calculation we performed at your home, on ${escapeHtml(fuelName)}.
+          </p>
+          <table>
+            <thead><tr><th>Whole-home option</th><th class="r">Recommended size</th></tr></thead>
+            <tbody>${wholeRows}</tbody>
+          </table>
+          ${partialBlock}
+          <p style="font-size:12px;color:#555;margin:10px 0 0;">${escapeHtml(rec.disclaimer)}</p>
+        </div>`;
+    } catch {
+      // A malformed snapshot must not take down the estimate page — the
+      // document renders without the section rather than not at all.
+      return "";
+    }
+  })();
+
   // The trip line is SHOWN even at zero. Kyle's PDFs present a waived trip as an explicit $0.00
   // rather than omitting it, so the customer can see the concession was made.
   const tripLabel = est.tripWaived ? "Trip and job setup &mdash; waived" : "Trip and job setup";
@@ -661,6 +735,8 @@ export function renderEstimatePage(
        </p>
 
        ${included}
+
+       ${generatorSection}
 
        <div class="box">
          <strong>Payment.</strong> Cards are welcome at the invoice amount — or save 3% by paying with bank transfer, cash, check, or Zelle. Payment details are provided with your

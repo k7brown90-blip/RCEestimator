@@ -46,7 +46,10 @@ export const QUICK_PICK_CATEGORIES: PickCategory[] = [
       { label: 'Induction cooktop 7.2 kW', item: { type: 'cooktop', label: 'Induction cooktop', nameplateKW: 7.2, volts: 240 } },
       { label: 'Dishwasher 1.2 kW', item: { type: 'fixedAppliance', label: 'Dishwasher', nameplateKW: 1.2, volts: 120 } },
       { label: 'Disposal 0.9 kW', item: { type: 'fixedAppliance', label: 'Disposal', nameplateKW: 0.9, volts: 120 } },
-      { label: 'Microwave 1.5 kW', item: { type: 'fixedAppliance', label: 'Built-in microwave', nameplateKW: 1.5, volts: 120 } },
+      // applianceKind tags the item for P031's essential-loads tier; the kitchen
+      // refrigerator has NO pick on purpose — it rides the small-appliance
+      // circuits (220.52) and the generator engine carries an editable default.
+      { label: 'Microwave 1.5 kW', item: { type: 'fixedAppliance', label: 'Built-in microwave', nameplateKW: 1.5, volts: 120, applianceKind: 'microwave' } },
       { label: 'Trash compactor 0.9 kW', item: { type: 'fixedAppliance', label: 'Trash compactor', nameplateKW: 0.9, volts: 120 } },
       { label: 'Instant-hot dispenser 0.75 kW', item: { type: 'fixedAppliance', label: 'Instant-hot water dispenser', nameplateKW: 0.75, volts: 120 } },
       { label: 'Warming drawer 0.5 kW', item: { type: 'fixedAppliance', label: 'Warming drawer', nameplateKW: 0.5, volts: 120 } },

@@ -23,6 +23,8 @@ import {
 interface StoredLoadCalc {
   input?: Partial<LoadCalcInput>;
   result?: unknown;
+  /** P031 generator sizing recommendation, when the technician produced one. */
+  generator?: unknown;
 }
 
 function isUsable(raw: unknown): raw is StoredLoadCalc & { input: LoadCalcInput } {
@@ -96,6 +98,11 @@ export async function recordInspectionLoadCalc(input: {
       inputJson: JSON.stringify({ input: calcInput, newLoads }),
       resultJson: JSON.stringify(result),
       sourceInspectionId: input.inspectionId,
+      // P031: the generator recommendation rides the same row so the account
+      // shows one calculation history — and so issuing an estimate can find it.
+      generatorJson: input.loadCalc.generator !== undefined
+        ? JSON.stringify(input.loadCalc.generator)
+        : null,
     };
 
     await prisma.capacityCheck.upsert({

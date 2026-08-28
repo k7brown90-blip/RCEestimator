@@ -2478,6 +2478,8 @@ app.post("/price-book/drafts/:draftId/issue", asyncHandler(async (req, res) => {
     scopeText: z.string().trim().nullable().optional(),
     includedText: z.string().trim().nullable().optional(),
     waiveTrip: z.boolean().optional(),
+    // P031: operator's explicit choice to attach the generator one-pager.
+    includeGenerator: z.boolean().optional(),
   }).parse(req.body ?? {});
 
   const draftId = String(req.params.draftId);
@@ -2515,6 +2517,9 @@ app.post("/price-book/drafts/:draftId/issue", asyncHandler(async (req, res) => {
         scopeText: body.scopeText ?? null,
         includedText: body.includedText ?? null,
         waiveTrip: body.waiveTrip ?? false,
+        // P031: operator chose to attach the generator one-pager (the human
+        // approval; the field tech's include flag proposed it).
+        includeGenerator: body.includeGenerator ?? false,
         createdBy: "human:crm-session",
       });
 

@@ -1672,6 +1672,11 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   // No setter: the waive-trip control was removed 2026-08-22 (no trip charge is configured).
   // The state survives so the issue call keeps its explicit false rather than an implicit one.
   const [waiveTrip] = useState(false);
+  // P031: attach the generator sizing one-pager from this address's field
+  // assessment. Off by default — attaching is the operator's explicit act (the
+  // human approval on the field tech's proposal), and the issue call refuses
+  // with a plain reason when nothing is on file.
+  const [includeGenerator, setIncludeGenerator] = useState(false);
   const [sendTo, setSendTo] = useState("");
   const [sendMsg, setSendMsg] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
@@ -1722,6 +1727,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
         accountId: accountId as string,
         serviceAddressId: serviceAddressId as string,
         waiveTrip,
+        includeGenerator,
       }),
     onSuccess: (r) => {
       setReasons([]);
@@ -1840,6 +1846,15 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
               production Rate Config carries jobFixedCost = 0, so the checkbox waived a charge
               that was never levied. The engine still honours the config cell if he ever sets it —
               what is removed is a control that did nothing. waiveTrip stays false. */}
+          {/* P031: the generator one-pager rides the estimate only on this explicit tick. */}
+          <label className="mt-2 flex items-center gap-2 text-xs text-rce-soft">
+            <input
+              type="checkbox"
+              checked={includeGenerator}
+              onChange={(e) => setIncludeGenerator(e.target.checked)}
+            />
+            Attach generator sizing recommendation (from this address's field assessment)
+          </label>
           <button
             className="btn btn-primary mt-2 w-full"
             disabled={issue.isPending}

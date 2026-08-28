@@ -871,7 +871,14 @@ export const api = {
     draftId: string,
     // accountId + serviceAddressId are REQUIRED (P029). An estimate cannot be issued unattached,
     // and the address is not optional when an account has several — the operator picks.
-    input: { accountId: string; serviceAddressId: string; title?: string | null; waiveTrip?: boolean }
+    input: {
+      accountId: string;
+      serviceAddressId: string;
+      title?: string | null;
+      waiveTrip?: boolean;
+      /** P031: attach the generator sizing one-pager from this address's field assessment. */
+      includeGenerator?: boolean;
+    }
   ) =>
     request<{ issued: true; estimateId: string; number: string; revision: number; unpriced?: string[] }>(
       `/price-book/drafts/${draftId}/issue`,
