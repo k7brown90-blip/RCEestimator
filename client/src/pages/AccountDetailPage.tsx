@@ -6,6 +6,7 @@ import { InspectionResultChip } from "../components/InspectionResultChip";
 import { FindingLedger } from "../components/FindingLedger";
 import { SendToPicker } from "../components/SendToPicker";
 import { PaymentPanel } from "../components/PaymentPanel";
+import { PhotoAttachPicker } from "../components/PhotoGalleryPanel";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, openProtectedPdf } from "../lib/api";
@@ -1230,9 +1231,15 @@ function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][nu
   // Which address (Kyle, 2026-08-25) — null lets the server default to primary.
   const [toOverride, setToOverride] = useState<string | null>(null);
   const [showPay, setShowPay] = useState(false);
+  // Photo gallery (2026-08-28): before/after photos ticked to ride the invoice.
+  const [photoIds, setPhotoIds] = useState<string[]>([]);
+  const [showPhotos, setShowPhotos] = useState(false);
 
   const send = useMutation({
-    mutationFn: () => api.sendInvoice(d.estimateId as string, { toOverride }),
+    mutationFn: () => api.sendInvoice(d.estimateId as string, {
+      toOverride,
+      photoIds: photoIds.length > 0 ? photoIds : undefined,
+    }),
     onSuccess: (r) => setSent(r.to),
   });
 
@@ -1277,6 +1284,19 @@ function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][nu
           </>
         )}
       </div>
+
+      {/* Photo gallery (2026-08-28): attach before/after job photos to the
+          invoice email — per send, ticked by the operator, never assumed. */}
+      {canSend && d.propertyId && (
+        <div className="mt-2">
+          <button type="button" className="text-xs text-rce-accent underline" onClick={() => setShowPhotos((s) => !s)}>
+            {showPhotos ? "Hide photos" : `Attach job photos…${photoIds.length ? ` (${photoIds.length})` : ""}`}
+          </button>
+          {showPhotos && (
+            <PhotoAttachPicker propertyId={d.propertyId} selected={photoIds} onChange={setPhotoIds} />
+          )}
+        </div>
+      )}
 
       {sent && <p className="mt-2 text-xs text-green-700">Invoice emailed to {sent}.</p>}
       {send.isError && (

@@ -35,8 +35,52 @@ import { logSystemEvent } from "./systemEvents";
 import { renderEstimatePdf } from "./issuedEstimatePdf";
 import { getCompanyProfile } from "./companyProfile";
 import { stripeConfigured } from "./stripePayments";
+import sharp from "sharp";
 
 export type SendResult = { ok: true; to: string } | { ok: false; reason: string };
+
+/**
+ * Job photos chosen by the operator to ride an estimate or invoice email
+ * (photo gallery, Kyle 2026-08-28). Guarded twice:
+ *  - a photo only attaches if it was taken at THIS estimate's service address —
+ *    a wrong id cannot leak another customer's job onto this email;
+ *  - each image is downscaled for email and the count is capped, so a send
+ *    can't balloon past what mail providers accept.
+ */
+const MAX_EMAIL_PHOTOS = 10;
+
+async function photoAttachments(
+  prisma: PrismaClient,
+  photoIds: string[],
+  serviceAddressId: string,
+): Promise<{ attachments: Array<{ filename: string; content: Buffer; contentType: string }>; refused: string[] }> {
+  const ids = [...new Set(photoIds)].slice(0, MAX_EMAIL_PHOTOS);
+  const photos = await prisma.visitPhoto.findMany({
+    where: { id: { in: ids }, visit: { propertyId: serviceAddressId } },
+    select: { id: true, data: true, caption: true },
+  });
+  const found = new Set(photos.map((p) => p.id));
+  const refused = ids.filter((id) => !found.has(id));
+  const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = [];
+  for (const [i, photo] of photos.entries()) {
+    try {
+      const content = await sharp(Buffer.from(photo.data))
+        .rotate()
+        .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      const label = (photo.caption ?? "").trim().replace(/[^a-z0-9 _-]/gi, "").slice(0, 40);
+      attachments.push({
+        filename: `photo-${i + 1}${label ? `-${label.replace(/\s+/g, "-")}` : ""}.jpg`,
+        content,
+        contentType: "image/jpeg",
+      });
+    } catch {
+      refused.push(photo.id); // a corrupt image must not sink the send
+    }
+  }
+  return { attachments, refused };
+}
 
 /** Absolute base URL for customer links. Railway sets RAILWAY_PUBLIC_DOMAIN. */
 export function publicBaseUrl(): string {
@@ -85,7 +129,7 @@ export function estimateLink(token: string): string {
 export async function sendInvoiceEmail(
   prisma: PrismaClient,
   estimateId: string,
-  opts: { sentBy: string; toOverride?: string | null; message?: string | null }
+  opts: { sentBy: string; toOverride?: string | null; message?: string | null; photoIds?: string[] }
 ): Promise<SendResult> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
@@ -191,6 +235,12 @@ export async function sendInvoiceEmail(
     <p style="font-size:14px;color:#555;">Pay by bank transfer, cash, check, or Zelle and save 3% off your total. Card payments are welcome at the full invoice amount.</p>
     <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
 
+  // Job photos the operator chose to include — before/after shots belong on
+  // the invoice for completed work (photo gallery, Kyle 2026-08-28).
+  const photos = opts.photoIds && opts.photoIds.length > 0
+    ? await photoAttachments(prisma, opts.photoIds, est.serviceAddressId)
+    : { attachments: [], refused: [] };
+
   const sent = await sendBrandedEmail({
     to,
     subject: `Your invoice from Red Cedar Electric — ${est.number}`,
@@ -198,6 +248,7 @@ export async function sendInvoiceEmail(
     bodyHtml,
     attachments: [
       { filename: `invoice-${est.number}.pdf`, content: pdf, contentType: "application/pdf" },
+      ...photos.attachments,
     ],
   });
 
@@ -230,7 +281,7 @@ export async function sendInvoiceEmail(
 export async function sendEstimateEmail(
   prisma: PrismaClient,
   estimateId: string,
-  opts: { sentBy: string; toOverride?: string | null; message?: string | null }
+  opts: { sentBy: string; toOverride?: string | null; message?: string | null; photoIds?: string[] }
 ): Promise<SendResult> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
@@ -276,11 +327,18 @@ export async function sendEstimateEmail(
     <span style="word-break:break-all;">${escapeHtml(link)}</span></p>
     <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
 
+  // Job photos the operator chose to include (photo gallery, Kyle 2026-08-28) —
+  // assessment shots that show the customer what the estimate is talking about.
+  const photos = opts.photoIds && opts.photoIds.length > 0
+    ? await photoAttachments(prisma, opts.photoIds, est.serviceAddressId)
+    : { attachments: [], refused: [] };
+
   const sent = await sendBrandedEmail({
     to,
     subject: `Your estimate from Red Cedar Electric — ${est.number}`,
     headline: "Your estimate is ready",
     bodyHtml,
+    ...(photos.attachments.length > 0 ? { attachments: photos.attachments } : {}),
   });
 
   if (!sent) {

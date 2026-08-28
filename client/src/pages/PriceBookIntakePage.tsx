@@ -4,6 +4,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
+import { downscale } from "../lib/images";
+import { PhotoAttachPicker } from "../components/PhotoGalleryPanel";
 import type {
   PbAtomic,
   PbComputed,
@@ -1679,6 +1681,8 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   const [includeGenerator, setIncludeGenerator] = useState(false);
   const [sendTo, setSendTo] = useState("");
   const [sendMsg, setSendMsg] = useState("");
+  // Photo gallery (2026-08-28): job photos ticked to ride the estimate email.
+  const [sendPhotoIds, setSendPhotoIds] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -1749,6 +1753,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
       api.pbIssuedSend(activeId as string, {
         to: sendTo.trim() || null,
         message: sendMsg.trim() || null,
+        photoIds: sendPhotoIds.length > 0 ? sendPhotoIds : undefined,
       }),
     onSuccess: (r) => {
       setNotice(`Sent to ${r.to}.`);
@@ -1967,6 +1972,15 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                   value={sendMsg}
                   onChange={(e) => setSendMsg(e.target.value)}
                 />
+                {/* Photo gallery (2026-08-28): assessment/job photos can ride
+                    the estimate email — ticked here, per send, never assumed. */}
+                {serviceAddressId && (
+                  <PhotoAttachPicker
+                    propertyId={serviceAddressId}
+                    selected={sendPhotoIds}
+                    onChange={setSendPhotoIds}
+                  />
+                )}
                 <button
                   className="btn btn-secondary mt-2 w-full"
                   disabled={send.isPending}
@@ -1976,7 +1990,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                       setReasons(["No customer email address. Type one above, or add it to the account."]);
                       return;
                     }
-                    if (window.confirm(`Email estimate ${est.number} to ${to}?`)) send.mutate();
+                    if (window.confirm(`Email estimate ${est.number} to ${to}${sendPhotoIds.length ? ` with ${sendPhotoIds.length} photo(s)` : ""}?`)) send.mutate();
                   }}
                 >
                   {send.isPending ? "Sending…" : est.sentAt ? "Email again" : "Email estimate"}
@@ -2132,15 +2146,8 @@ function PhotoAttach(props: { draftId: string }) {
 }
 
 /** Shrink on the phone before upload: longest edge 1600px, JPEG. */
-async function downscale(file: File): Promise<string> {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.82);
-}
+// downscale moved to lib/images.ts (2026-08-28) — the photo gallery uses the
+// same resize, and two copies would drift.
 
 /**
  * Naming an option, on the review screen, where Kyle is standing when he knows what it is.

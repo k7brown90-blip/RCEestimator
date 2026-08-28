@@ -1,183 +1,61 @@
-import { useEffect, useMemo, useState } from "react";
-import type { FormEvent } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
-import { AtomicItemsSection } from "../components/AtomicItemsSection";
-import { ServiceDiagnosticFlow } from "../components/ServiceDiagnosticFlow";
-import { SpecificRequestFlow } from "../components/SpecificRequestFlow";
-import { RemodFlow } from "../components/RemodFlow";
-import { NewConstructionFlow } from "../components/NewConstructionFlow";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
-import type { CompanionSuggestion, EstimateStatus } from "../lib/types";
-import {
-  getEnumOptions,
-  getEstimatorParameterDefinitions,
-  getInitialParameterFormValues,
-  serializeParameterPayload,
-  validateParameterForm,
-  type ParameterFormValues,
-} from "../lib/assemblyParameters";
 import { money, shortDate } from "../lib/utils";
-import { EstimateIntake } from "../components/EstimateIntake";
 import { JobScheduler } from "../components/JobScheduler";
 import { HealthRecordPanel } from "../components/HealthRecordPanel";
 import { JobCloseoutPanel } from "../components/JobCloseoutPanel";
 import { PaymentPanel } from "../components/PaymentPanel";
 import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
+import { PhotoGalleryPanel } from "../components/PhotoGalleryPanel";
 
-type TabKey = "estimate" | "proposal" | "ai";
-
-const TABS: Array<{ key: TabKey; label: string }> = [
-  { key: "estimate", label: "Estimate" },
-  { key: "proposal", label: "Proposal" },
-  { key: "ai", label: "AI Estimate" },
-];
-
-const STATUS_ACTIONS: Record<EstimateStatus, Array<{ status: EstimateStatus; label: string }>> = {
-  draft: [
-    { status: "review", label: "Mark Ready for Review" },
-  ],
-  review: [
-    { status: "draft", label: "Back to Draft" },
-    { status: "sent", label: "Send to Customer" },
-  ],
-  sent: [
-    { status: "revised", label: "Revise" },
-    { status: "expired", label: "Mark Expired" },
-  ],
-  accepted: [],
-  declined: [{ status: "revised", label: "Mark Revised" }],
-  expired: [{ status: "revised", label: "Mark Revised" }],
-  revised: [{ status: "draft", label: "Return to Draft" }],
-};
-
-const CHANGE_ORDER_TYPES = [
-  "customer_request",
-  "hidden_condition",
-  "utility_requirement",
-  "ahj_requirement",
-  "damage_discovered",
-  "scope_revision",
-];
-
+/**
+ * The visit workspace, after the 2026-08-28 cleanout.
+ *
+ * Kyle: "This is an old section in the CRM I want it replaced with a photo
+ * gallery where photos taken on the job can be added."
+ *
+ * The Estimate/Proposal/AI Estimate tab strip and everything that lived under
+ * it — the legacy option/assembly builder, the proposal preview and send, the
+ * permit/inspection forms, the workflow modals — are GONE. All of that fed the
+ * retired estimate system; every estimate Kyle actually writes is a price-book
+ * one, and the price book has its own send-and-sign flow (P027/P028).
+ *
+ * What remains is the working job furniture (scheduler, payment, close-out,
+ * health record, finding ledger), the "Quote this work" door into the price
+ * book, and the photo gallery that replaced the tabs. A visit that still
+ * carries a legacy estimate shows a read-only record card — the data stays;
+ * only the dead controls went.
+ */
 export function VisitWorkspacePage() {
   const { visitId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<TabKey>("estimate");
-  const [showWorkflowSelector, setShowWorkflowSelector] = useState(false);
-  const [activeWorkflow, setActiveWorkflow] = useState<"none" | "service" | "specific_request" | "remodel" | "new_construction">("none");
-  const [showMaterialList, setShowMaterialList] = useState(false);
   const [editingVisit, setEditingVisit] = useState(false);
   const [visitEditForm, setVisitEditForm] = useState({ mode: "", purpose: "", jobType: "", notes: "" });
-  const [signUrl, setSignUrl] = useState<string | null>(null);
-  const [workOrderDocId, setWorkOrderDocId] = useState<string | null>(null);
-  const [materialListDocId, setMaterialListDocId] = useState<string | null>(null);
 
-  const { data: visit, isLoading } = useQuery({ queryKey: ["visit", visitId], queryFn: () => api.visit(visitId), enabled: Boolean(visitId) });
+  const { data: visit, isLoading } = useQuery({
+    queryKey: ["visit", visitId],
+    queryFn: () => api.visit(visitId),
+    enabled: Boolean(visitId),
+  });
   const estimateId = visit?.estimates?.[0]?.id;
-  const { data: estimate } = useQuery({ queryKey: ["estimate", estimateId], queryFn: () => api.estimate(String(estimateId)), enabled: Boolean(estimateId) });
-  const [manualOptionId, setManualOptionId] = useState<string>("");
-
-  const selectedOptionId = useMemo(() => {
-    if (!estimate?.options?.length) return "";
-    if (manualOptionId && estimate.options.some((option) => option.id === manualOptionId)) {
-      return manualOptionId;
-    }
-    return estimate.options[0].id;
-  }, [estimate?.options, manualOptionId]);
-
-  const selectedOption = useMemo(() => estimate?.options.find((option) => option.id === selectedOptionId) ?? null, [estimate?.options, selectedOptionId]);
-
-  const { data: materialListData, isLoading: materialListLoading } = useQuery({
-    queryKey: ["materialList", selectedOptionId],
-    queryFn: () => api.materialList(selectedOptionId),
-    enabled: showMaterialList && Boolean(selectedOptionId),
+  const { data: estimate } = useQuery({
+    queryKey: ["estimate", estimateId],
+    queryFn: () => api.estimate(String(estimateId)),
+    enabled: Boolean(estimateId),
   });
 
-  const totalLaborHours = useMemo(() => {
-    if (!selectedOption?.assemblies) return 0;
-    return selectedOption.assemblies.reduce((acc, assembly) => {
-      const hours = (assembly.components ?? [])
-        .filter((c) => c.componentType === "labor")
-        .reduce((sum, c) => sum + c.laborHours * c.quantity, 0);
-      return acc + hours;
-    }, 0);
-  }, [selectedOption?.assemblies]);
-
-  // The two effects that closed AssemblyPicker on tab/option changes went with it.
-
-  useEffect(() => {
-    setLatestCompanionSuggestions([]);
-  }, [selectedOptionId]);
-
-
-  const [optionLabel, setOptionLabel] = useState("Option A");
-  const [optionDescription, setOptionDescription] = useState("");
-  const [optionBuildError, setOptionBuildError] = useState("");
-  const [editingOptionId, setEditingOptionId] = useState<string | null>(null);
-  const [editingOptionLabel, setEditingOptionLabel] = useState("");
-  const [editingOptionDescription, setEditingOptionDescription] = useState("");
-
-  const [editingAssemblyId, setEditingAssemblyId] = useState<string | null>(null);
-  const [editingAssemblyLocation, setEditingAssemblyLocation] = useState("");
-  const [editingAssemblyQuantity, setEditingAssemblyQuantity] = useState(1);
-  const [editingAssemblyParameters, setEditingAssemblyParameters] = useState<ParameterFormValues>({});
-  const [editingAssemblyParamErrors, setEditingAssemblyParamErrors] = useState<Record<string, string>>({});
-  const [latestCompanionSuggestions, setLatestCompanionSuggestions] = useState<CompanionSuggestion[]>([]);
-
-  const [materialMarkupPct, setMaterialMarkupPct] = useState(estimate?.materialMarkupPct ?? 0);
-  const [laborMarkupPct, setLaborMarkupPct] = useState(estimate?.laborMarkupPct ?? 0);
-
-
-  const [permitType, setPermitType] = useState(estimate?.permitStatus?.permitType ?? "electrical");
-  const [permitStatus, setPermitStatus] = useState(estimate?.permitStatus?.status ?? "not_required");
-  const [permitRequired, setPermitRequired] = useState(Boolean(estimate?.permitStatus?.required));
-  const [permitCost, setPermitCost] = useState<number>(estimate?.permitStatus?.cost ?? 0);
-
-  const [inspectionType, setInspectionType] = useState("final");
-  const [inspectionStatus, setInspectionStatus] = useState("not_scheduled");
-  const [inspectionNotes, setInspectionNotes] = useState("");
-
-  const [signatureName] = useState("");
-  const [signatureEmail] = useState("");
-  const [acceptOptionId, setAcceptOptionId] = useState("");
-
-  const [changeOrderTitle, setChangeOrderTitle] = useState("");
-  const [changeOrderReasonType, setChangeOrderReasonType] = useState("customer_request");
-  const [changeOrderReason, setChangeOrderReason] = useState("");
-  const [deltaLabor, setDeltaLabor] = useState(0);
-  const [deltaMaterial, setDeltaMaterial] = useState(0);
-
-  useEffect(() => {
-    if (estimate?.options?.length) {
-      const accepted = estimate.options.find((option) => option.accepted) ?? estimate.options[0];
-      setAcceptOptionId(accepted.id);
-    }
-  }, [estimate?.options]);
-
-  useEffect(() => {
-    setPermitType(estimate?.permitStatus?.permitType ?? "electrical");
-    setPermitStatus(estimate?.permitStatus?.status ?? "not_required");
-    setPermitRequired(Boolean(estimate?.permitStatus?.required));
-    setPermitCost(estimate?.permitStatus?.cost ?? 0);
-  }, [estimate?.permitStatus]);
-
-  useEffect(() => {
-    setMaterialMarkupPct(estimate?.materialMarkupPct ?? 0);
-    setLaborMarkupPct(estimate?.laborMarkupPct ?? 0);
-  }, [estimate?.materialMarkupPct, estimate?.laborMarkupPct]);
-
   const refreshVisit = () => {
-    queryClient.invalidateQueries({ queryKey: ["visit", visitId] });
+    void queryClient.invalidateQueries({ queryKey: ["visit", visitId] });
     if (estimateId) {
-      queryClient.invalidateQueries({ queryKey: ["estimate", estimateId] });
+      void queryClient.invalidateQueries({ queryKey: ["estimate", estimateId] });
     }
-    queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    void queryClient.invalidateQueries({ queryKey: ["jobs"] });
   };
-
 
   const updateVisitMutation = useMutation({
     mutationFn: () => api.updateVisit(visitId, visitEditForm),
@@ -188,7 +66,12 @@ export function VisitWorkspacePage() {
     onSuccess: () => navigate("/"),
   });
 
+  if (isLoading || !visit) {
+    return <p className="text-sm text-rce-muted">Loading visit...</p>;
+  }
+
   const hasAcceptedEstimate = estimate?.status === "accepted";
+  const status = estimate?.status;
 
   function startEditVisit() {
     if (!visit) return;
@@ -201,177 +84,6 @@ export function VisitWorkspacePage() {
     setEditingVisit(true);
   }
 
-  // createEstimateMutation removed with the legacy builder (Phase 4) — new
-  // quoting starts in the price book.
-
-  const updateOptionMutation = useMutation({ mutationFn: (input: { optionId: string; optionLabel?: string; description?: string | null }) => api.updateOption(input.optionId, { optionLabel: input.optionLabel, description: input.description }), onSuccess: () => { setEditingOptionId(null); refreshVisit(); } });
-  const deleteOptionMutation = useMutation({ mutationFn: (optionId: string) => api.deleteOption(optionId), onSuccess: refreshVisit });
-  const addAssemblyMutation = useMutation({
-    mutationFn: (input: { assemblyTemplateId: string; location?: string; quantity: number; assemblyNotes?: string; parameters?: Record<string, unknown> }) => {
-      if (!selectedOptionId) {
-        throw new Error("Select an option before adding assemblies.");
-      }
-
-      return api.addAssembly(selectedOptionId, {
-        assemblyTemplateId: input.assemblyTemplateId,
-        location: input.location,
-        quantity: input.quantity,
-        parameters: input.parameters,
-        assemblyNotes: input.assemblyNotes,
-      });
-    },
-    onSuccess: (createdAssembly) => {
-      setLatestCompanionSuggestions(createdAssembly.companionSuggestions ?? []);
-      refreshVisit();
-    },
-  });
-  const updateAssemblyMutation = useMutation({
-    mutationFn: (input: { assemblyId: string; location?: string; quantity?: number; parameters?: Record<string, unknown> }) =>
-      api.updateAssembly(input.assemblyId, { location: input.location, quantity: input.quantity, parameters: input.parameters }),
-    onSuccess: (updatedAssembly) => {
-      setEditingAssemblyId(null);
-      setEditingAssemblyParameters({});
-      setEditingAssemblyParamErrors({});
-      setLatestCompanionSuggestions(updatedAssembly.companionSuggestions ?? []);
-      refreshVisit();
-    },
-  });
-  const deleteAssemblyMutation = useMutation({
-    mutationFn: (assemblyId: string) => api.deleteAssembly(assemblyId),
-    onSuccess: () => {
-      setLatestCompanionSuggestions([]);
-      refreshVisit();
-    },
-  });
-
-  const changeStatusMutation = useMutation({ mutationFn: (status: EstimateStatus) => api.changeEstimateStatus(String(estimateId), status), onSuccess: refreshVisit });
-    const markupMutation = useMutation({ mutationFn: () => api.updateEstimateMarkup(String(estimateId), { materialMarkupPct, laborMarkupPct }), onSuccess: refreshVisit });
-  const permitMutation = useMutation({ mutationFn: () => api.upsertPermitStatus(String(estimateId), { required: permitRequired, permitType, status: permitStatus, cost: permitCost }), onSuccess: refreshVisit });
-  const inspectionMutation = useMutation({ mutationFn: () => api.upsertInspectionStatus(String(estimateId), { inspectionType, status: inspectionStatus, notes: inspectionNotes || undefined }), onSuccess: refreshVisit });
-
-  const generateProposalMutation = useMutation({ mutationFn: () => api.generateProposal(String(estimateId)), onSuccess: refreshVisit });
-  const sendProposalMutation = useMutation({ mutationFn: () => api.sendProposal(String(estimateId)), onSuccess: (data) => { setSignUrl(data.signUrl); refreshVisit(); } });
-  const generateWorkOrderMutation = useMutation({ mutationFn: () => api.generateWorkOrder(String(estimateId)), onSuccess: (data) => { setWorkOrderDocId(data.documentId); } });
-  const generateMaterialListDocMutation = useMutation({ mutationFn: () => api.generateMaterialListDoc(String(estimateId)), onSuccess: (data) => { setMaterialListDocId(data.documentId); } });
-  const deleteEstimateMutation = useMutation({
-    mutationFn: () => api.deleteEstimate(String(estimateId)),
-    onSuccess: () => {
-      refreshVisit();
-      window.location.assign("/jobs");
-    },
-  });
-
-  const acceptMutation = useMutation({
-    mutationFn: async (status: "accepted" | "declined") => {
-      const optionId = acceptOptionId || estimate?.options[0]?.id;
-      if (!optionId) throw new Error("No option selected");
-      if (status === "declined") {
-        return api.acceptProposal(String(estimateId), { optionId, status: "declined" });
-      }
-      const signature = await api.recordSignature(String(estimateId), {
-        signerName: signatureName,
-        signerEmail: signatureEmail || undefined,
-        signatureData: `sig:${Date.now()}:${signatureName}`,
-        consentText: "I authorize Red Cedar Electric to proceed with the selected option as priced above.",
-      });
-      return api.acceptProposal(String(estimateId), { optionId, signatureId: signature.id, status: "accepted" });
-    },
-    onSuccess: refreshVisit,
-  });
-
-  const changeOrderMutation = useMutation({
-    mutationFn: () =>
-      api.createChangeOrder(String(estimateId), {
-        parentOptionId: acceptOptionId,
-        title: changeOrderTitle,
-        reasonType: changeOrderReasonType,
-        reason: changeOrderReason || undefined,
-        deltaLabor,
-        deltaMaterial,
-      }),
-    onSuccess: () => {
-      setChangeOrderTitle("");
-      setChangeOrderReason("");
-      setDeltaLabor(0);
-      setDeltaMaterial(0);
-      refreshVisit();
-    },
-  });
-
-  /**
-   * Build Option — create the option, then go to the screen that builds the estimate.
-   *
-   * WHAT WAS BROKEN (Kyle, 2026-08-16 "I can't build any options" and again 2026-08-17 "The build
-   * option is not taking me to the page to build the estimate"):
-   *
-   * `api.createOption` was only ever called from `AssemblyPicker.onSubmit`. The assembly system
-   * was removed and `AssemblyPicker` became a stub that returns `null`, so the picker never
-   * opened, `onSubmit` could never fire, and the option was never created. The button set two
-   * booleans and rendered nothing. Both of Kyle's estimates confirm it — `Modify Classroom
-   * Lighting` and the 2026-08-16 visit each have an estimate with ZERO options.
-   *
-   * It was also a dead end in both directions: the link to the new estimator lives inside
-   * `AtomicItemsSection`, which only renders once an option exists. No option, no link, no way
-   * through.
-   *
-   * So the option is created directly and we navigate to the estimator carrying the visit id
-   * (P024, Option A) — the draft arrives attached to the job instead of floating free.
-   */
-  const buildOptionMutation = useMutation({
-    mutationFn: async () => {
-      if (!estimateId) throw new Error("Estimate not found. Create an estimate first.");
-      return (await api.createOption(String(estimateId), {
-        optionLabel: optionLabel.trim(),
-        description: optionDescription.trim() || undefined,
-      })) as { id: string };
-    },
-    onSuccess: (created) => {
-      setManualOptionId(created.id);
-      setOptionDescription("");
-      setOptionBuildError("");
-      refreshVisit();
-      navigate(`/estimate-intake?visitId=${encodeURIComponent(visitId)}`);
-    },
-    onError: (error) => {
-      setOptionBuildError(error instanceof Error ? error.message : "Failed to build option");
-    },
-  });
-
-  /*
-    ── EVERY HOOK ABOVE THIS LINE (2026-08-22) ─────────────────────────────────────────────────
-
-    This guard is why /visits/:id crashed with React #310 for a week, and how it dragged /jobs
-    down with it: buildOptionMutation used to sit BELOW it. While the visit loaded, zero of its
-    hooks ran; the moment data arrived the hook appeared — a changing hook count, which React
-    answers by unmounting the tree. The rules-of-hooks lint that found it now runs as a test, so
-    the next one fails a build instead of a customer visit.
-  */
-  if (isLoading || !visit) {
-    return <p className="text-sm text-rce-muted">Loading visit...</p>;
-  }
-
-  const estimateLocked = estimate?.status === "accepted";
-  const acceptedWithoutOptions = (estimate?.status === "accepted") && ((estimate?.options.length ?? 0) === 0);
-  const status = estimate?.status;
-  const latestDelivery = estimate?.proposalDeliveries?.[0] ?? null;
-  const downloadUrl = latestDelivery ? `/api/proposals/${latestDelivery.id}/download` : null;
-
-
-  const startOptionBuild = () => {
-    if (!estimateId) {
-      setOptionBuildError("Estimate not found. Refresh or create an estimate first.");
-      return;
-    }
-
-    if (!optionLabel.trim()) {
-      setOptionBuildError("Option label is required before selecting scope.");
-      return;
-    }
-
-    setOptionBuildError("");
-    buildOptionMutation.mutate();
-  };
-
   return (
     <div className="relative">
       <PageHeader
@@ -379,7 +91,7 @@ export function VisitWorkspacePage() {
         subtitle={`${shortDate(visit.visitDate)} | ${visit.mode.replaceAll("_", " ")} | ${visit.customer?.name ?? ""}`}
         actions={
           <div className="flex items-center gap-2">
-            {status ? <StatusBadge status={status} /> : <span className="text-xs text-rce-soft">No estimate</span>}
+            {status ? <StatusBadge status={status} /> : null}
             {!hasAcceptedEstimate && (
               <>
                 <button type="button" className="rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100" onClick={startEditVisit}>Edit</button>
@@ -423,857 +135,82 @@ export function VisitWorkspacePage() {
         </form>
       )}
 
-      <div className="mb-5 flex flex-wrap gap-2 rounded-2xl border border-rce-border/70 bg-rce-surface/85 p-2 shadow-card backdrop-blur-sm">
-        {TABS.map((tab) => (
+      <section className="space-y-5 pb-10">
+        <JobScheduler
+          jobId={visitId}
+          status={visit.status ?? "estimate"}
+          scheduledStart={visit.scheduledStart}
+          scheduledEnd={visit.scheduledEnd}
+          durationDays={visit.estimatedDurationDays}
+          onScheduled={refreshVisit}
+        />
+        {/* Money renders itself only when a signed estimate exists — the
+            panel returns null otherwise, so an unquoted visit shows nothing
+            (reactive flow, Kyle 2026-08-25). */}
+        <PaymentPanel jobId={visitId} />
+        {/* Close-out is JOB furniture. An estimate-stage visit has no job to
+            close, no POs to raise, no receipts to file — showing the panel
+            there was "buttons placed with no reference" (Kyle, 2026-08-25).
+            It appears once the visit is contracted work. */}
+        {["contracted", "scheduled", "in_progress", "completed"].includes(visit.status ?? "") && (
+          <JobCloseoutPanel visitId={visitId} status={visit.status ?? "estimate"} />
+        )}
+
+        {/* ── The photo gallery that replaced the legacy tabs (2026-08-28) ── */}
+        <PhotoGalleryPanel visitId={visitId} propertyId={visit.propertyId} />
+
+        <HealthRecordPanel visitId={visitId} />
+        <FindingLedgerPanel propertyId={visit.propertyId} />
+
+        <article className="card rounded-2xl border border-rce-border/70 p-5">
+          <h2 className="text-lg font-semibold">Quote this work</h2>
+          <p className="mt-1 text-sm text-rce-muted">
+            Estimates are built in the price book, tied to this account and address.
+          </p>
           <button
-            key={tab.key}
+            className="btn btn-primary mt-3"
             type="button"
-            className={`min-h-11 rounded-xl border px-4 text-sm font-semibold transition ${
-              activeTab === tab.key
-                ? "border-rce-accent bg-rce-accent text-white shadow-sm"
-                : "border-rce-border bg-white text-rce-muted hover:border-rce-accent/50 hover:bg-rce-accentBg/40 hover:text-rce-text"
-            }`}
-            onClick={() => setActiveTab(tab.key)}
-            disabled={tab.key === "proposal" && !estimate}
+            onClick={() =>
+              navigate(`/estimate-intake?account=${visit.customerId}&address=${visit.propertyId}`)
+            }
           >
-            {tab.label}
+            Open the estimate builder
           </button>
-        ))}
-      </div>
+        </article>
 
-      {activeTab === "estimate" ? (
-        <section className="space-y-5 pb-24">
-          <JobScheduler
-            jobId={visitId}
-            status={visit.status ?? "estimate"}
-            scheduledStart={visit.scheduledStart}
-            scheduledEnd={visit.scheduledEnd}
-            durationDays={visit.estimatedDurationDays}
-            onScheduled={refreshVisit}
-          />
-          {/* Money renders itself only when a signed estimate exists — the
-              panel returns null otherwise, so an unquoted visit shows nothing
-              (reactive flow, Kyle 2026-08-25). */}
-          <PaymentPanel jobId={visitId} />
-          {/* Close-out is JOB furniture. An estimate-stage visit has no job to
-              close, no POs to raise, no receipts to file — showing the panel
-              there was "buttons placed with no reference" (Kyle, 2026-08-25).
-              It appears once the visit is contracted work. */}
-          {["contracted", "scheduled", "in_progress", "completed"].includes(visit.status ?? "") && (
-            <JobCloseoutPanel visitId={visitId} status={visit.status ?? "estimate"} />
-          )}
-          <HealthRecordPanel visitId={visitId} />
-          <FindingLedgerPanel propertyId={visit.propertyId} />
-          {/* CapacityCheckPanel removed 2026-08-02 — load calculation is Health
-              Report product surface, not CRM. */}
-          {/* ── LEGACY BUILDER RETIRED (Phase 4, 2026-08-25) ────────────────
-              Two estimate systems coexisted and every estimate Kyle actually
-              writes is a price-book one — this form fed the dead table. New
-              quoting starts in the price book; visits that already carry a
-              legacy estimate keep their editing UI below, for the record. */}
-          {!estimate ? (
-            <article className="card rounded-2xl border border-rce-border/70 p-5">
-              <h2 className="text-lg font-semibold">Quote this work</h2>
-              <p className="mt-1 text-sm text-rce-muted">
-                Estimates are built in the price book, tied to this account and address.
-              </p>
-              <button
-                className="btn btn-primary mt-3"
-                type="button"
-                onClick={() =>
-                  navigate(`/estimate-intake?account=${visit.customerId}&address=${visit.propertyId}`)
-                }
-              >
-                Open the estimate builder
-              </button>
-            </article>
-          ) : (
-            <>
-              <article className="card overflow-hidden rounded-2xl border border-rce-border/70 p-0">
-                <div className="border-b border-rce-border bg-[linear-gradient(120deg,rgba(254,243,199,0.6),rgba(255,255,255,0.95))] px-5 py-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <h2 className="text-lg font-semibold tracking-tight">{estimate.title}</h2>
-                    <StatusBadge status={estimate.status} />
-                  </div>
-                  <p className="mt-1 text-sm text-rce-muted">Revision {estimate.revision}</p>
-                  {estimateLocked ? <p className="mt-1 text-xs text-rce-warning">Estimate is locked after acceptance. Use change orders for scope changes.</p> : null}
-                  {acceptedWithoutOptions ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <p className="text-xs text-rce-danger">This accepted estimate has no options/assemblies and cannot be changed by change order.</p>
-                      <button
-                        className="btn btn-danger"
-                        type="button"
-                        disabled={deleteEstimateMutation.isPending}
-                        onClick={() => {
-                          if (window.confirm("Delete this invalid accepted estimate? This cannot be undone.")) {
-                            deleteEstimateMutation.mutate();
-                          }
-                        }}
-                      >
-                        Delete Invalid Estimate
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="p-5">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold uppercase tracking-wide text-rce-soft">Options</h3>
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {estimate.options.map((option) => (
-                    <button key={option.id} className={`btn ${selectedOptionId === option.id ? "btn-primary" : "btn-secondary"}`} type="button" onClick={() => setManualOptionId(option.id)}>
-                      {option.optionLabel} - {money(option.totalCost)}
-                    </button>
-                  ))}
-                </div>
-                {!selectedOption ? <p className="mt-2 text-xs text-rce-soft">Select an option above or create a new one to begin adding assemblies.</p> : null}
-
-                {selectedOption ? (
-                  <div className="mt-4 rounded-lg border border-rce-border p-3">
-                    {editingOptionId === selectedOption.id ? (
-                      <form
-                        className="grid gap-3 md:grid-cols-2"
-                        onSubmit={(event: FormEvent<HTMLFormElement>) => {
-                          event.preventDefault();
-                          updateOptionMutation.mutate({
-                            optionId: selectedOption.id,
-                            optionLabel: editingOptionLabel,
-                            description: editingOptionDescription || null,
-                          });
-                        }}
-                      >
-                        <label className="text-sm font-medium">
-                          Option Label
-                          <input className="field mt-1" value={editingOptionLabel} onChange={(event) => setEditingOptionLabel(event.target.value)} required />
-                        </label>
-                        <label className="text-sm font-medium">
-                          Description
-                          <input className="field mt-1" value={editingOptionDescription} onChange={(event) => setEditingOptionDescription(event.target.value)} />
-                        </label>
-                        <div className="md:col-span-2 flex gap-2">
-                          <button className="btn btn-secondary" type="submit" disabled={updateOptionMutation.isPending}>Save Option</button>
-                          <button className="btn btn-secondary" type="button" onClick={() => setEditingOptionId(null)}>Cancel</button>
-                        </div>
-                      </form>
-                    ) : (
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-medium">Selected: {selectedOption.optionLabel}</p>
-                          <p className="text-xs text-rce-soft">{selectedOption.description || "No description"}</p>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            className="btn btn-secondary"
-                            type="button"
-                            disabled={estimateLocked}
-                            onClick={() => {
-                              setEditingOptionId(selectedOption.id);
-                              setEditingOptionLabel(selectedOption.optionLabel);
-                              setEditingOptionDescription(selectedOption.description || "");
-                            }}
-                          >
-                            Edit Option
-                          </button>
-                          <button
-                            className={`btn btn-secondary ${estimateLocked ? "cursor-not-allowed opacity-60" : ""}`}
-                            type="button"
-                            disabled={estimateLocked}
-                            onClick={() => {
-                              if (window.confirm(`Delete ${selectedOption.optionLabel}?`)) {
-                                deleteOptionMutation.mutate(selectedOption.id);
-                              }
-                            }}
-                          >
-                            Delete Option
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-
-                <form
-                  className="mt-4 grid gap-3 md:grid-cols-3"
-                  onSubmit={(event: FormEvent<HTMLFormElement>) => {
-                    event.preventDefault();
-                    startOptionBuild();
-                  }}
-                >
-                  <label className="text-sm font-medium">
-                    Option Label
-                    <input className="field mt-1" value={optionLabel} onChange={(event) => setOptionLabel(event.target.value)} required />
-                  </label>
-                  <label className="text-sm font-medium md:col-span-2">
-                    Description
-                    <input className="field mt-1" value={optionDescription} onChange={(event) => setOptionDescription(event.target.value)} />
-                  </label>
-                  <div className="md:col-span-3">
-                    <button className="btn btn-secondary" type="submit" disabled={estimateLocked || buildOptionMutation.isPending}>
-                      {buildOptionMutation.isPending ? "Building…" : "Build Option"}
-                    </button>
-                  </div>
-                  {optionBuildError ? <p className="md:col-span-3 text-xs text-rce-danger">{optionBuildError}</p> : null}
-                </form>
-                </div>
-              </article>
-
-              {estimate.options.length > 1 ? (
-                <article className="card p-4">
-                  <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-rce-soft">Compare Options</h3>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {estimate.options.map((option) => (
-                      <div key={option.id} className="rounded-lg border border-rce-border p-3">
-                        <p className="font-semibold">{option.optionLabel}</p>
-                        <p className="text-sm text-rce-muted">Labor {money(option.subtotalLabor)} | Material {money(option.subtotalMaterial)}</p>
-                        <p className="mt-1 font-semibold">Total {money(option.totalCost)}</p>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-              ) : null}
-
-              {selectedOption ? (
-              <article className="card rounded-2xl border border-rce-primary/30 p-5">
-                <AtomicItemsSection
-                  estimateId={String(estimateId)}
-                  optionId={selectedOption.id}
-                  visitId={visitId}
-                  locked={estimateLocked}
-                />
-              </article>
-              ) : null}
-
-              {selectedOption ? (
-              <article className="card rounded-2xl border border-rce-border/70 p-5">
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-lg font-semibold">Assemblies <span className="text-sm font-normal text-rce-soft">(legacy)</span></h3>
-                  <div className="flex gap-2">
-                    {/* "+ Add Assembly" removed with the picker it opened — it had been inert
-                        since the assembly system was withdrawn. Existing assemblies still render
-                        below; nothing new can be added through a component that returns null. */}
-                    {(selectedOption?.assemblies?.length ?? 0) > 0 && (
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={() => setShowMaterialList(true)}
-                      >
-                        Material List
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <p className="mb-3 text-xs text-rce-soft">Select an option tab above to view its assemblies, or build a new option to add scope.</p>
-                {latestCompanionSuggestions.length > 0 ? (
-                  <div className="mb-4 rounded-xl border border-rce-warning/30 bg-rce-accentBg p-3">
-                    <p className="text-sm font-semibold text-rce-warning">Companion scope suggestions</p>
-                    <p className="mt-1 text-xs text-rce-soft">Based on your most recent assembly change.</p>
-                    <div className="mt-3 space-y-2">
-                      {latestCompanionSuggestions.map((suggestion) => (
-                        <div key={suggestion.templateId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rce-border/70 bg-white p-2">
-                          <div>
-                            <p className="text-sm font-medium">#{suggestion.assemblyNumber} {suggestion.name}</p>
-                            <p className="text-xs text-rce-soft">{suggestion.reason}</p>
-                          </div>
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            disabled={estimateLocked || addAssemblyMutation.isPending}
-                            onClick={() => {
-                              addAssemblyMutation.mutate({
-                                assemblyTemplateId: suggestion.templateId,
-                                quantity: 1,
-                              });
-                            }}
-                          >
-                            Add Suggested
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                <div className="space-y-3">
-                  {selectedOption?.assemblies?.map((assembly) => (
-                    <div key={assembly.id} className="rounded-xl border border-rce-border/80 bg-white p-3 shadow-sm">
-                      {editingAssemblyId === assembly.id ? (
-                        <form
-                          className="space-y-2"
-                          onSubmit={(event: FormEvent<HTMLFormElement>) => {
-                            event.preventDefault();
-                            const paramDefs = assembly.assemblyTemplate?.parameterDefinitions;
-                            const formErrors = validateParameterForm(paramDefs, editingAssemblyParameters);
-                            if (Object.values(formErrors).some(Boolean)) {
-                              setEditingAssemblyParamErrors(formErrors);
-                              return;
-                            }
-                            updateAssemblyMutation.mutate({
-                              assemblyId: assembly.id,
-                              location: editingAssemblyLocation || undefined,
-                              quantity: editingAssemblyQuantity,
-                              parameters: serializeParameterPayload(paramDefs, editingAssemblyParameters),
-                            });
-                          }}
-                        >
-                          <p className="font-medium">{assembly.assemblyTemplate?.name || assembly.assemblyTemplateId}</p>
-                          <label className="text-xs text-rce-soft">
-                            Location
-                            <input className="field mt-1" value={editingAssemblyLocation} onChange={(event) => setEditingAssemblyLocation(event.target.value)} />
-                          </label>
-                          <label className="text-xs text-rce-soft">
-                            Quantity
-                            <input type="number" min={1} className="field mt-1" value={editingAssemblyQuantity} onChange={(event) => setEditingAssemblyQuantity(Math.max(1, Number(event.target.value) || 1))} />
-                          </label>
-                          {getEstimatorParameterDefinitions(assembly.assemblyTemplate?.parameterDefinitions).map((definition) => {
-                            const currentValue = editingAssemblyParameters[definition.key];
-                            const error = editingAssemblyParamErrors[definition.key];
-                            const enumOptions = getEnumOptions(definition);
-                            return (
-                              <label key={definition.key} className="block text-xs text-rce-soft">
-                                {definition.label}{definition.required ? " *" : ""}
-                                {definition.valueType === "enum" ? (
-                                  <select className="field mt-1" value={typeof currentValue === "string" ? currentValue : ""} onChange={(event) => { setEditingAssemblyParameters((prev) => ({ ...prev, [definition.key]: event.target.value })); setEditingAssemblyParamErrors((prev) => ({ ...prev, [definition.key]: "" })); }}>
-                                    <option value="">Select...</option>
-                                    {enumOptions.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-                                  </select>
-                                ) : definition.valueType === "boolean" ? (
-                                  <div className="mt-1 flex items-center gap-2">
-                                    <input type="checkbox" checked={Boolean(currentValue)} onChange={(event) => setEditingAssemblyParameters((prev) => ({ ...prev, [definition.key]: event.target.checked }))} />
-                                    <span>Enabled</span>
-                                  </div>
-                                ) : (
-                                  <input type={definition.valueType === "string" ? "text" : "number"} step={definition.valueType === "integer" ? 1 : "any"} min={definition.minValue ?? undefined} max={definition.maxValue ?? undefined} className="field mt-1" value={typeof currentValue === "string" ? currentValue : ""} onChange={(event) => { setEditingAssemblyParameters((prev) => ({ ...prev, [definition.key]: event.target.value })); setEditingAssemblyParamErrors((prev) => ({ ...prev, [definition.key]: "" })); }} />
-                                )}
-                                {definition.helpText || definition.unit ? <p className="mt-0.5 text-xs text-rce-soft">{[definition.helpText, definition.unit ? `Unit: ${definition.unit}` : ""].filter(Boolean).join(" | ")}</p> : null}
-                                {error ? <p className="mt-0.5 text-xs text-rce-danger">{error}</p> : null}
-                              </label>
-                            );
-                          })}
-                          <div className="flex gap-2">
-                            <button className="btn btn-secondary" type="submit" disabled={updateAssemblyMutation.isPending}>Save</button>
-                            <button className="btn btn-secondary" type="button" onClick={() => { setEditingAssemblyId(null); setEditingAssemblyParameters({}); setEditingAssemblyParamErrors({}); }}>Cancel</button>
-                          </div>
-                        </form>
-                      ) : (
-                        <>
-                          <div className="flex items-center justify-between">
-                            <p className="font-medium">{assembly.assemblyTemplate?.name || assembly.assemblyTemplateId}</p>
-                            <p className="mono text-sm font-semibold">{money(assembly.totalCost)}</p>
-                          </div>
-                          <p className="text-xs text-rce-muted">Qty {assembly.quantity} | {assembly.location || "No location"}</p>
-                          <div className="mt-2 flex gap-2">
-                            <button
-                              type="button"
-                              className="btn btn-secondary"
-                              disabled={estimateLocked}
-                              onClick={() => {
-                                setEditingAssemblyId(assembly.id);
-                                setEditingAssemblyLocation(assembly.location || "");
-                                setEditingAssemblyQuantity(assembly.quantity);
-                                const paramDefs = assembly.assemblyTemplate?.parameterDefinitions;
-                                const initial = getInitialParameterFormValues(paramDefs);
-                                const existing = assembly.parameters as Record<string, string | boolean | number> | undefined;
-                                if (existing) {
-                                  for (const key of Object.keys(initial)) {
-                                    if (existing[key] !== undefined) {
-                                      const raw = existing[key];
-                                      initial[key] = typeof raw === "boolean" ? raw : String(raw);
-                                    }
-                                  }
-                                }
-                                setEditingAssemblyParameters(initial);
-                                setEditingAssemblyParamErrors({});
-                              }}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-secondary"
-                              disabled={estimateLocked}
-                              onClick={() => {
-                                if (window.confirm("Delete this assembly?")) {
-                                  deleteAssemblyMutation.mutate(assembly.id);
-                                }
-                              }}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                {estimateId && !estimateLocked ? (
-                  <form
-                    className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-rce-border/60 bg-rce-surface p-3"
-                    onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); markupMutation.mutate(); }}
-                  >
-                    <label className="text-xs text-rce-soft">
-                      Labor Markup %
-                      <input
-                        type="number"
-                        min={0}
-                        max={200}
-                        step={1}
-                        className="field mt-1 w-24"
-                        value={laborMarkupPct}
-                        onChange={(event) => setLaborMarkupPct(Number(event.target.value) || 0)}
-                      />
-                    </label>
-                    <label className="text-xs text-rce-soft">
-                      Material Markup %
-                      <input
-                        type="number"
-                        min={0}
-                        max={200}
-                        step={1}
-                        className="field mt-1 w-24"
-                        value={materialMarkupPct}
-                        onChange={(event) => setMaterialMarkupPct(Number(event.target.value) || 0)}
-                      />
-                    </label>
-                    <button className="btn btn-secondary" type="submit" disabled={markupMutation.isPending}>Apply Markup</button>
-                  </form>
-                ) : null}
-                <div className="mt-4 rounded-lg bg-rce-accentBg p-3 text-sm text-rce-warning">
-                  Labor {money(selectedOption?.subtotalLabor)} | Material {money(selectedOption?.subtotalMaterial)}
-                  {(selectedOption?.subtotalOther ?? 0) > 0 ? ` | Other ${money(selectedOption?.subtotalOther)}` : ""}
-                  {" | "}<span className="font-bold">Total {money(selectedOption?.totalCost)}</span>
-                </div>
-                {totalLaborHours > 0 ? (
-                  <p className="mt-1 text-xs text-rce-soft">{totalLaborHours.toFixed(2)} estimated labor hours</p>
-                ) : null}
-              </article>
-              ) : null}
-
-              <article className="card p-4">
-                <h3 className="mb-3 text-lg font-semibold">Permit and Inspection</h3>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <form className="space-y-2" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); permitMutation.mutate(); }}>
-                    <p className="text-sm font-medium">Permit Status</p>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input type="checkbox" checked={permitRequired} onChange={(event) => setPermitRequired(event.target.checked)} /> Permit required
-                    </label>
-                    <input className="field" value={permitType} onChange={(event) => setPermitType(event.target.value)} placeholder="Permit type" />
-                    <select className="field" value={permitStatus} onChange={(event) => setPermitStatus(event.target.value)}>
-                      <option value="not_required">Not required</option>
-                      <option value="not_filed">Not filed</option>
-                      <option value="filed">Filed</option>
-                      <option value="issued">Issued</option>
-                      <option value="expired">Expired</option>
-                    </select>
-                    <input type="number" min={0} className="field" value={permitCost} onChange={(event) => setPermitCost(Number(event.target.value) || 0)} placeholder="Cost" />
-                    <button className="btn btn-secondary" type="submit" disabled={permitMutation.isPending}>Save Permit</button>
-                  </form>
-
-                  <form className="space-y-2" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); inspectionMutation.mutate(); }}>
-                    <p className="text-sm font-medium">Inspection Status</p>
-                    <select className="field" value={inspectionType} onChange={(event) => setInspectionType(event.target.value)}>
-                      <option value="rough_in">Rough In</option>
-                      <option value="underground">Underground</option>
-                      <option value="final">Final</option>
-                      <option value="re_inspection">Re Inspection</option>
-                      <option value="service_release">Service Release</option>
-                      <option value="temporary_power">Temporary Power</option>
-                    </select>
-                    <select className="field" value={inspectionStatus} onChange={(event) => setInspectionStatus(event.target.value)}>
-                      <option value="not_scheduled">Not Scheduled</option>
-                      <option value="scheduled">Scheduled</option>
-                      <option value="passed">Passed</option>
-                      <option value="failed">Failed</option>
-                      <option value="corrections_required">Corrections Required</option>
-                    </select>
-                    <textarea className="field min-h-24" value={inspectionNotes} onChange={(event) => setInspectionNotes(event.target.value)} placeholder="Notes" />
-                    <button className="btn btn-secondary" type="submit" disabled={inspectionMutation.isPending}>Save Inspection</button>
-                  </form>
-                </div>
-              </article>
-
-              <div className="fixed bottom-14 left-0 right-0 border-t border-rce-border bg-white p-3 md:bottom-0 md:left-[220px]">
-                <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm text-rce-muted">Status: {estimate.status.toUpperCase()} | Rev {estimate.revision}</div>
-                  <div className="flex flex-wrap gap-2">
-                    {STATUS_ACTIONS[estimate.status].map((action) => (
-                      <button key={action.status} className="btn btn-secondary" type="button" onClick={() => changeStatusMutation.mutate(action.status)} disabled={changeStatusMutation.isPending}>
-                        {action.label}
-                      </button>
-                    ))}
-                    {estimate.status === "draft" ? (
-                      <button
-                        className="btn btn-danger"
-                        type="button"
-                        disabled={deleteEstimateMutation.isPending}
-                        onClick={() => {
-                          if (window.confirm("Delete this draft estimate? This cannot be undone.")) {
-                            deleteEstimateMutation.mutate();
-                          }
-                        }}
-                      >
-                        Delete Draft
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-        </section>
-      ) : null}
-
-      {activeTab === "proposal" ? (
-        <section className="space-y-4">
-          {!estimate ? (
-            <div className="card p-4 text-sm text-rce-muted">Create an estimate first before proposal actions.</div>
-          ) : (
-            <>
-              <article className="card p-4">
-                <h2 className="mb-2 text-lg font-semibold">Proposal Preview</h2>
-                <p className="text-sm text-rce-muted">{visit.customer?.name} | {visit.property?.addressLine1}</p>
-                <div className="mt-3 space-y-3">
-                  {estimate.options.map((option) => (
-                    <div key={option.id} className="rounded-lg border border-rce-border p-3">
-                      <div className="flex items-center justify-between">
-                        <p className="font-semibold">{option.optionLabel}</p>
-                        <p className="mono font-semibold">{money(option.totalCost)}</p>
-                      </div>
-                      <div className="mt-2 space-y-1 text-sm text-rce-muted">
-                        {option.assemblies?.map((assembly) => (
-                          <p key={assembly.id}>- {assembly.assemblyTemplate?.name || assembly.assemblyTemplateId} ({money(assembly.totalCost)})</p>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 rounded-lg border border-rce-border bg-rce-bg p-3 text-sm text-rce-muted">
-                  NEC 2017 reference note: This estimate is prepared for pricing purposes only and is not a code compliance determination.
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button className="btn btn-secondary" type="button" onClick={() => generateProposalMutation.mutate()} disabled={generateProposalMutation.isPending}>Generate PDF</button>
-                  {downloadUrl ? (
-                    <a className="btn btn-secondary inline-flex items-center" href={downloadUrl}>
-                      Download PDF
-                    </a>
-                  ) : null}
-                  {estimate.status === "review" ? (
-                    <button
-                      className="btn btn-primary"
-                      type="button"
-                      disabled={estimate.proposalDeliveries.length === 0 || sendProposalMutation.isPending}
-                      onClick={() => {
-                        if (window.confirm("This will email the proposal to the customer with a link to review and sign. Continue?")) {
-                          sendProposalMutation.mutate();
-                        }
-                      }}
-                    >
-                      {sendProposalMutation.isPending ? "Sending..." : "Send to Customer"}
-                    </button>
-                  ) : null}
-                </div>
-                {estimate.proposalDeliveries[0] ? <p className="mt-2 text-xs text-rce-soft">Last generated: {shortDate(estimate.proposalDeliveries[0].deliveredAt)} | {estimate.proposalDeliveries[0].method}</p> : null}
-              </article>
-
-              {estimate.status === "sent" ? (
-                <article className="card p-4">
-                  <h3 className="mb-3 text-lg font-semibold">Customer Signature</h3>
-                  {signUrl ? (
-                    <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-                      <p className="text-sm font-medium text-blue-800">Proposal sent to customer. Sign page:</p>
-                      <a href={signUrl} target="_blank" rel="noopener noreferrer" className="mt-1 block text-sm text-blue-600 underline break-all">{signUrl}</a>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-rce-muted">Waiting for customer to sign via the link sent in their email.</p>
-                  )}
-                  <div className="mt-4 flex gap-2">
-                    <button className="btn btn-danger" type="button" onClick={() => acceptMutation.mutate("declined")} disabled={acceptMutation.isPending}>Mark Declined</button>
-                  </div>
-                </article>
-              ) : null}
-
-              {estimate.status === "accepted" ? (
-                <>
-                <article className="card p-4">
-                  <h3 className="mb-3 text-lg font-semibold">Work Order &amp; Material List</h3>
-                  <div className="flex flex-wrap gap-3">
-                    <button className="btn btn-primary" type="button" disabled={generateWorkOrderMutation.isPending} onClick={() => generateWorkOrderMutation.mutate()}>
-                      {generateWorkOrderMutation.isPending ? "Generating..." : "Generate Work Order"}
-                    </button>
-                    <button className="btn btn-primary" type="button" disabled={generateMaterialListDocMutation.isPending} onClick={() => generateMaterialListDocMutation.mutate()}>
-                      {generateMaterialListDocMutation.isPending ? "Generating..." : "Generate Material List"}
-                    </button>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-3">
-                    {workOrderDocId && <a className="btn btn-secondary inline-flex items-center" href={`/api/documents/${workOrderDocId}/pdf`} target="_blank" rel="noopener noreferrer">Download Work Order</a>}
-                    {materialListDocId && <a className="btn btn-secondary inline-flex items-center" href={`/api/documents/${materialListDocId}/pdf`} target="_blank" rel="noopener noreferrer">Download Material List</a>}
-                  </div>
-                </article>
-
-                <article className="card p-4">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-lg font-semibold">Create Change Order</h3>
-                    <a
-                      className="btn btn-secondary inline-flex items-center"
-                      href={downloadUrl ?? "#"}
-                      onClick={(event) => {
-                        if (!downloadUrl) {
-                          event.preventDefault();
-                        }
-                      }}
-                    >
-                      Download Signed Proposal
-                    </a>
-                  </div>
-                  {estimate.options.length === 0 ? (
-                    <div className="rounded-lg border border-rce-danger/30 bg-red-50 p-3 text-sm text-rce-danger">
-                      No accepted option is available, so a change order cannot be created for this estimate.
-                    </div>
-                  ) : (
-                    <form
-                      className="grid gap-3 md:grid-cols-2"
-                      onSubmit={(event: FormEvent<HTMLFormElement>) => {
-                        event.preventDefault();
-                        changeOrderMutation.mutate();
-                      }}
-                    >
-                      <label className="text-sm font-medium md:col-span-2">
-                        Title
-                        <input className="field mt-1" value={changeOrderTitle} onChange={(event) => setChangeOrderTitle(event.target.value)} required />
-                      </label>
-                      <label className="text-sm font-medium">
-                        Reason Type
-                        <select className="field mt-1" value={changeOrderReasonType} onChange={(event) => setChangeOrderReasonType(event.target.value)}>
-                          {CHANGE_ORDER_TYPES.map((value) => (
-                            <option key={value} value={value}>{value}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="text-sm font-medium">
-                        Parent Option
-                        <select className="field mt-1" value={acceptOptionId} onChange={(event) => setAcceptOptionId(event.target.value)}>
-                          {estimate.options.map((option) => (
-                            <option key={option.id} value={option.id}>{option.optionLabel}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="text-sm font-medium md:col-span-2">
-                        Notes
-                        <textarea className="field mt-1 min-h-24" value={changeOrderReason} onChange={(event) => setChangeOrderReason(event.target.value)} />
-                      </label>
-                      <label className="text-sm font-medium">
-                        Delta Labor
-                        <input type="number" className="field mt-1" value={deltaLabor} onChange={(event) => setDeltaLabor(Number(event.target.value) || 0)} />
-                      </label>
-                      <label className="text-sm font-medium">
-                        Delta Material
-                        <input type="number" className="field mt-1" value={deltaMaterial} onChange={(event) => setDeltaMaterial(Number(event.target.value) || 0)} />
-                      </label>
-                      <div className="md:col-span-2">
-                        <button className="btn btn-secondary" type="submit" disabled={changeOrderMutation.isPending}>Create Change Order</button>
-                      </div>
-                    </form>
-                  )}
-                  <div className="mt-3 space-y-2">
-                    {estimate.changeOrders.map((changeOrder) => (
-                      <div key={changeOrder.id} className="rounded-lg border border-rce-border p-3 text-sm">
-                        <p className="font-medium">CO #{changeOrder.sequenceNumber} - {changeOrder.title}</p>
-                        <p className="text-rce-muted">{changeOrder.reasonType || "n/a"} | {money(changeOrder.deltaTotal)}</p>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-                </>
-              ) : null}
-            </>
-          )}
-        </section>
-      ) : null}
-
-      {/* Workflow Selector Modal */}
-      {showWorkflowSelector && selectedOptionId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-2xl rounded-lg bg-white p-6 shadow-lg">
-            <h2 className="mb-4 text-xl font-bold">How would you like to add assemblies?</h2>
-            <div className="space-y-3 mb-6">
-              {visit?.mode === "service_diagnostic" && (
-                <button
-                  onClick={() => setActiveWorkflow("service")}
-                  className="w-full text-left px-4 py-3 border rounded-lg hover:bg-blue-50 transition"
-                >
-                  <p className="font-semibold">🔧 Service Diagnostic Workflow</p>
-                  <p className="text-xs text-gray-600">Guided workflow for service calls and troubleshooting</p>
-                </button>
-              )}
-              {visit?.mode === "specific_request" && (
-                <button
-                  onClick={() => setActiveWorkflow("specific_request")}
-                  className="w-full text-left px-4 py-3 border rounded-lg hover:bg-amber-50 transition"
-                >
-                  <p className="font-semibold">💡 Specific Request Workflow</p>
-                  <p className="text-xs text-gray-600">Guided workflow for appliance and equipment requests</p>
-                </button>
-              )}
-              {visit?.mode === "remodel" && (
-                <button
-                  onClick={() => setActiveWorkflow("remodel")}
-                  className="w-full text-left px-4 py-3 border rounded-lg hover:bg-orange-50 transition"
-                >
-                  <p className="font-semibold">🔨 Remodel Workflow</p>
-                  <p className="text-xs text-gray-600">Guided workflow for remodel projects, room-by-room scope</p>
-                </button>
-              )}
-              {visit?.mode === "new_construction" && (
-                <button
-                  onClick={() => setActiveWorkflow("new_construction")}
-                  className="w-full text-left px-4 py-3 border rounded-lg hover:bg-green-50 transition"
-                >
-                  <p className="font-semibold">🏗️ New Construction Workflow</p>
-                  <p className="text-xs text-gray-600">Guided workflow for code-minimum scope calculation</p>
-                </button>
-              )}
-              {/* "Manual Assembly Picker" removed — it opened AssemblyPicker, which has been a
-                  stub returning null since the assembly system was withdrawn. */}
+        {/* A visit that still carries a legacy estimate keeps its record
+            visible — read-only. The builder that made it is retired. */}
+        {estimate && (
+          <article className="card rounded-2xl border border-rce-border/70 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold">{estimate.title} <span className="text-sm font-normal text-rce-soft">(legacy estimate — record only)</span></h2>
+              <StatusBadge status={estimate.status} />
             </div>
-            <button
-              onClick={() => setShowWorkflowSelector(false)}
-              className="px-4 py-2 bg-gray-300 text-gray-700 rounded"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Workflow Flow Components */}
-      {activeWorkflow === "service" && selectedOptionId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto">
-          <div className="w-full max-w-2xl m-4 bg-white rounded-lg shadow-lg">
-            <ServiceDiagnosticFlow
-              optionId={selectedOptionId}
-              onComplete={() => {
-                setActiveWorkflow("none");
-                setShowWorkflowSelector(false);
-              }}
-              onCancel={() => {
-                setActiveWorkflow("none");
-                setShowWorkflowSelector(true);
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {activeWorkflow === "specific_request" && selectedOptionId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto">
-          <div className="w-full max-w-2xl m-4 bg-white rounded-lg shadow-lg">
-            <SpecificRequestFlow
-              optionId={selectedOptionId}
-              onComplete={() => {
-                setActiveWorkflow("none");
-                setShowWorkflowSelector(false);
-              }}
-              onCancel={() => {
-                setActiveWorkflow("none");
-                setShowWorkflowSelector(true);
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {activeWorkflow === "remodel" && selectedOptionId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto">
-          <div className="w-full max-w-2xl m-4 bg-white rounded-lg shadow-lg">
-            <RemodFlow
-              optionId={selectedOptionId}
-              onComplete={() => {
-                setActiveWorkflow("none");
-                setShowWorkflowSelector(false);
-              }}
-              onCancel={() => {
-                setActiveWorkflow("none");
-                setShowWorkflowSelector(true);
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {activeWorkflow === "new_construction" && selectedOptionId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto">
-          <div className="w-full max-w-2xl m-4 bg-white rounded-lg shadow-lg">
-            <NewConstructionFlow
-              optionId={selectedOptionId}
-              onComplete={() => {
-                setActiveWorkflow("none");
-                setShowWorkflowSelector(false);
-              }}
-              onCancel={() => {
-                setActiveWorkflow("none");
-                setShowWorkflowSelector(true);
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Material List Modal */}
-      {showMaterialList && selectedOptionId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="flex w-full max-w-2xl flex-col rounded-lg bg-white shadow-lg" style={{ maxHeight: "90vh" }}>
-            <div className="flex items-center justify-between border-b border-rce-border p-5">
-              <div>
-                <h2 className="text-xl font-bold">Material List</h2>
-                <p className="text-sm text-rce-soft">{materialListData?.optionLabel ?? "..."}</p>
+            <p className="mt-1 text-sm text-rce-muted">Revision {estimate.revision}</p>
+            {estimate.options.length > 0 && (
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                {estimate.options.map((option) => (
+                  <div key={option.id} className="rounded-lg border border-rce-border p-3">
+                    <p className="font-semibold">{option.optionLabel}{option.accepted ? " · accepted" : ""}</p>
+                    <p className="text-sm text-rce-muted">Labor {money(option.subtotalLabor)} | Material {money(option.subtotalMaterial)}</p>
+                    <p className="mt-1 font-semibold">Total {money(option.totalCost)}</p>
+                  </div>
+                ))}
               </div>
-              <div className="flex gap-2">
-                <button className="btn btn-secondary" type="button" onClick={() => window.print()}>Print</button>
-                <button className="btn btn-secondary" type="button" onClick={() => setShowMaterialList(false)}>Close</button>
+            )}
+            {estimate.changeOrders.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {estimate.changeOrders.map((changeOrder) => (
+                  <div key={changeOrder.id} className="rounded-lg border border-rce-border p-3 text-sm">
+                    <p className="font-medium">CO #{changeOrder.sequenceNumber} - {changeOrder.title}</p>
+                    <p className="text-rce-muted">{changeOrder.reasonType || "n/a"} | {money(changeOrder.deltaTotal)}</p>
+                  </div>
+                ))}
               </div>
-            </div>
-            <div className="overflow-y-auto p-5">
-              {materialListLoading ? (
-                <p className="text-sm text-rce-soft">Loading materials...</p>
-              ) : (materialListData?.items.length ?? 0) === 0 ? (
-                <p className="text-sm text-rce-soft">No materials found for this option.</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-rce-border text-left text-xs font-semibold text-rce-muted">
-                      <th className="pb-2 pr-4">Code</th>
-                      <th className="pb-2 pr-4">Description</th>
-                      <th className="pb-2 pr-4 text-right">Qty</th>
-                      <th className="pb-2">Unit</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {materialListData?.items.map((item) => (
-                      <tr key={item.code} className="border-b border-rce-border/50">
-                        <td className="py-2 pr-4 font-mono text-xs text-rce-soft">{item.code}</td>
-                        <td className="py-2 pr-4 font-medium">{item.description}</td>
-                        <td className="py-2 pr-4 text-right font-semibold">{item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(1)}</td>
-                        <td className="py-2 text-rce-soft">{item.unit}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === "ai" ? (
-        <EstimateIntake visitId={visitId} propertyId={visit.propertyId ?? undefined} />
-      ) : null}
-
-      {/*
-        AssemblyPicker was rendered here and is GONE. It has been a stub returning `null` since the
-        assembly system was removed, so every control that opened it was inert — and the option
-        creation this page needs was trapped inside its `onSubmit`. That code now lives in
-        `buildOptionMutation` above, where it can actually run.
-      */}
+            )}
+          </article>
+        )}
+      </section>
     </div>
   );
 }

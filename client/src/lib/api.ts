@@ -48,6 +48,38 @@ import type {
 
 const API_BASE = "/api";
 
+// ─── Job photo gallery (2026-08-28) ───────────────────────────────────────────
+
+export type PhotoTag = "before" | "after" | "assessment" | "reference";
+
+export interface VisitPhotoMeta {
+  id: string;
+  mimeType: string;
+  sizeBytes: number;
+  caption: string | null;
+  tag: PhotoTag | null;
+  uploadedAt: string;
+  technician?: { id: string; name: string } | null;
+}
+
+export interface PropertyPhotos {
+  jobPhotos: Array<VisitPhotoMeta & {
+    visitId: string;
+    visitDate: string;
+    purpose: string | null;
+    jobType: string | null;
+  }>;
+  assessmentPhotos: Array<{
+    id: string;
+    mimeType: string;
+    sizeBytes: number;
+    uploadedAt: string;
+    inspectionId: string;
+    inspectionDate: string;
+    visitId: string | null;
+  }>;
+}
+
 // ─── Contacts, job lifecycle & financials (2026-08-25) ────────────────────────
 
 export interface CustomerContact {
@@ -550,6 +582,23 @@ export const api = {
   visitAssignments: (visitId: string) => request<VisitAssignment[]>(`/health-record-admin/visits/${visitId}/assignments`),
   removeAssignment: (assignmentId: string) =>
     request<void>(`/health-record-admin/assignments/${assignmentId}`, { method: "DELETE" }),
+  // ─── Job photo gallery (2026-08-28) ───────────────────────────────────────
+  visitPhotos: (visitId: string) =>
+    request<VisitPhotoMeta[]>(`/health-record-admin/visits/${visitId}/photos`),
+  uploadVisitPhoto: (visitId: string, input: { dataUrl: string; caption?: string | null; tag?: PhotoTag | null }) =>
+    request<VisitPhotoMeta>(`/health-record-admin/visits/${visitId}/photos`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateVisitPhoto: (photoId: string, input: { caption?: string | null; tag?: PhotoTag | null }) =>
+    request<{ id: string; caption: string | null; tag: PhotoTag | null }>(
+      `/health-record-admin/visit-photos/${photoId}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ),
+  deleteVisitPhoto: (photoId: string) =>
+    request<{ deleted: true }>(`/health-record-admin/visit-photos/${photoId}`, { method: "DELETE" }),
+  propertyPhotos: (propertyId: string) =>
+    request<PropertyPhotos>(`/health-record-admin/properties/${propertyId}/photos`),
   customerInspections: (customerId: string) =>
     request<HealthInspectionSummary[]>(`/health-record-admin/customers/${customerId}/inspections`),
   propertyInspections: (propertyId: string) =>
@@ -894,7 +943,7 @@ export const api = {
     request<{ estimate: PbIssuedEstimate; customerLink: string }>(`/issued-estimates/${id}`),
 
   /** OPERATOR ACTION ONLY. Behind the PIN session and a confirm; never called automatically. */
-  pbIssuedSend: (id: string, input: { to?: string | null; message?: string | null }) =>
+  pbIssuedSend: (id: string, input: { to?: string | null; message?: string | null; photoIds?: string[] }) =>
     request<{ sent: true; to: string }>(`/issued-estimates/${id}/send`, {
       method: "POST",
       body: JSON.stringify(input),
@@ -955,7 +1004,7 @@ export const api = {
    * Kyle: "I cannot email the invoice to the client." Distinct from pbSendEstimate — that one
    * refuses a signed estimate, this one refuses an unsigned one.
    */
-  sendInvoice: (estimateId: string, input: { toOverride?: string | null; message?: string | null } = {}) =>
+  sendInvoice: (estimateId: string, input: { toOverride?: string | null; message?: string | null; photoIds?: string[] } = {}) =>
     request<{ sent: true; to: string }>(`/issued-estimates/${estimateId}/send-invoice`, {
       method: "POST",
       body: JSON.stringify(input),

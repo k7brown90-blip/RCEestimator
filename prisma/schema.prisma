@@ -1416,6 +1416,9 @@ model VisitPhoto {
   mimeType     String
   sizeBytes    Int
   caption      String?
+  // Gallery category (Kyle, 2026-08-28): before | after | assessment | reference.
+  // Nullable — photos from before the gallery simply have no tag.
+  tag          String?
   data         Bytes
   uploadedAt   DateTime    @default(now())
   visit        Visit       @relation(fields: [visitId], references: [id], onDelete: Cascade)

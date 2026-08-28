@@ -1556,19 +1556,135 @@ healthRecordAdminRouter.post("/findings/declination-letter", asyncHandler(async 
   }
 }));
 
-// ─── JOB-SITE PHOTOS (CRM views) ────────────────────────────────────────────────
+// ─── JOB-SITE PHOTOS (CRM views + gallery, Kyle 2026-08-28) ────────────────────
+// The photo gallery replaced the legacy estimate tabs on the visit page:
+// before/after job photos, assessment photos, and the historical record at an
+// address — and photos can ride the estimate and invoice emails.
+
+const PHOTO_TAGS = ["before", "after", "assessment", "reference"] as const;
 
 healthRecordAdminRouter.get("/visits/:visitId/photos", asyncHandler(async (req, res) => {
   const photos = await prisma.visitPhoto.findMany({
     where: { visitId: readParam(req, "visitId") },
-    select: { id: true, mimeType: true, sizeBytes: true, caption: true, uploadedAt: true, technician: { select: { id: true, name: true } } },
+    select: { id: true, mimeType: true, sizeBytes: true, caption: true, tag: true, uploadedAt: true, technician: { select: { id: true, name: true } } },
     orderBy: { uploadedAt: "asc" },
   });
   res.json(photos);
 }));
 
+// Upload from the CRM. Same dataUrl convention as the price-book walkthrough
+// photos; bytes live in the DB and go nowhere else.
+healthRecordAdminRouter.post("/visits/:visitId/photos", asyncHandler(async (req, res) => {
+  const body = z.object({
+    dataUrl: z.string().min(1),
+    caption: z.string().trim().max(500).nullable().optional(),
+    tag: z.enum(PHOTO_TAGS).nullable().optional(),
+  }).parse(req.body ?? {});
+  const visitId = readParam(req, "visitId");
+  const visit = await prisma.visit.findUnique({ where: { id: visitId }, select: { id: true } });
+  if (!visit) {
+    res.status(404).json({ error: "Visit not found" });
+    return;
+  }
+  const match = /^data:(image\/[a-z+.-]+);base64,(.+)$/i.exec(body.dataUrl);
+  if (!match) {
+    res.status(400).json({ error: "Expected a base64 image data URL." });
+    return;
+  }
+  const data = Buffer.from(match[2], "base64");
+  if (data.length > 10 * 1024 * 1024) {
+    res.status(413).json({ error: "Photo exceeds the 10 MB limit." });
+    return;
+  }
+  const photo = await prisma.visitPhoto.create({
+    data: {
+      id: crypto.randomUUID(),
+      visitId,
+      technicianId: null, // CRM upload — not a field sync
+      mimeType: match[1],
+      sizeBytes: data.length,
+      caption: body.caption ?? null,
+      tag: body.tag ?? null,
+      data,
+    },
+    select: { id: true, mimeType: true, sizeBytes: true, caption: true, tag: true, uploadedAt: true },
+  });
+  res.status(201).json(photo);
+}));
+
+healthRecordAdminRouter.patch("/visit-photos/:photoId", asyncHandler(async (req, res) => {
+  const body = z.object({
+    caption: z.string().trim().max(500).nullable().optional(),
+    tag: z.enum(PHOTO_TAGS).nullable().optional(),
+  }).parse(req.body ?? {});
+  const photo = await prisma.visitPhoto.update({
+    where: { id: readParam(req, "photoId") },
+    data: {
+      ...(body.caption !== undefined ? { caption: body.caption } : {}),
+      ...(body.tag !== undefined ? { tag: body.tag } : {}),
+    },
+    select: { id: true, caption: true, tag: true },
+  });
+  res.json(photo);
+}));
+
+healthRecordAdminRouter.delete("/visit-photos/:photoId", asyncHandler(async (req, res) => {
+  await prisma.visitPhoto.delete({ where: { id: readParam(req, "photoId") } });
+  res.json({ deleted: true });
+}));
+
 healthRecordAdminRouter.get("/visit-photos/:photoId", asyncHandler(async (req, res) => {
   const photo = await prisma.visitPhoto.findUnique({ where: { id: readParam(req, "photoId") } });
+  if (!photo) {
+    res.status(404).json({ error: "Photo not found" });
+    return;
+  }
+  res.setHeader("Content-Type", photo.mimeType);
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  res.send(Buffer.from(photo.data));
+}));
+
+/**
+ * Every photo ever taken at an address — job photos across all visits plus the
+ * assessment photos on its Health Records. The historical reference Kyle asked
+ * for: metadata only; bytes come one at a time through the byte routes.
+ */
+healthRecordAdminRouter.get("/properties/:propertyId/photos", asyncHandler(async (req, res) => {
+  const propertyId = readParam(req, "propertyId");
+  const [visitPhotos, inspectionPhotos] = await Promise.all([
+    prisma.visitPhoto.findMany({
+      where: { visit: { propertyId } },
+      select: {
+        id: true, mimeType: true, sizeBytes: true, caption: true, tag: true, uploadedAt: true,
+        visit: { select: { id: true, visitDate: true, purpose: true, jobType: true } },
+      },
+      orderBy: { uploadedAt: "desc" },
+    }),
+    prisma.inspectionPhoto.findMany({
+      where: { inspection: { propertyId } },
+      select: {
+        id: true, mimeType: true, sizeBytes: true, uploadedAt: true,
+        inspection: { select: { id: true, inspectionDate: true, visitId: true } },
+      },
+      orderBy: { uploadedAt: "desc" },
+    }),
+  ]);
+  res.json({
+    jobPhotos: visitPhotos.map((p) => ({
+      id: p.id, mimeType: p.mimeType, sizeBytes: p.sizeBytes, caption: p.caption, tag: p.tag,
+      uploadedAt: p.uploadedAt, visitId: p.visit.id, visitDate: p.visit.visitDate,
+      purpose: p.visit.purpose, jobType: p.visit.jobType,
+    })),
+    assessmentPhotos: inspectionPhotos.map((p) => ({
+      id: p.id, mimeType: p.mimeType, sizeBytes: p.sizeBytes, uploadedAt: p.uploadedAt,
+      inspectionId: p.inspection.id, inspectionDate: p.inspection.inspectionDate,
+      visitId: p.inspection.visitId,
+    })),
+  });
+}));
+
+healthRecordAdminRouter.get("/inspection-photos/:photoId", asyncHandler(async (req, res) => {
+  const photo = await prisma.inspectionPhoto.findUnique({ where: { id: readParam(req, "photoId") } });
   if (!photo) {
     res.status(404).json({ error: "Photo not found" });
     return;

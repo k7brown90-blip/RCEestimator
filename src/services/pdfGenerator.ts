@@ -433,7 +433,9 @@ function measuredPhrase(def: ChecklistItemDef | undefined, fieldId: string, valu
     const opt = field?.options?.find((o) => o.value === v);
     if (opt) return opt.reportLabel ?? opt.label.toLowerCase();
     if (typeof v === "boolean") return v ? "yes" : "no";
-    return `${v}${field?.unit ? ` ${field.unit}` : ""}`;
+    // NO unit suffix — the whatWeFound templates already carry their units
+    // ("{service_amps} A service"), and appending one printed "200 A A".
+    return `${v}`;
   };
   if (Array.isArray(value)) {
     const scalars = value.filter((v): v is string => typeof v === "string");
@@ -751,6 +753,16 @@ export async function generateHealthReport(
         };
       }).result ?? null
     : null;
+
+  // The LOAD row's {calc_load} placeholder lives on the stored calculation,
+  // not in the item's own readings — substitute the real number so the
+  // narrative doesn't print "not recorded" beside a filled capacity section.
+  if (loadCalc?.governingAmps !== undefined) {
+    const loadRow = items.find((row) => baseItemId(row.itemId) === "LOAD");
+    if (loadRow) {
+      loadRow.measured = { calc_load: loadCalc.governingAmps, ...(loadRow.measured ?? {}) };
+    }
+  }
 
   const docId = uuidv4();
   const doc = new PDFDocument({ margin: 36 });

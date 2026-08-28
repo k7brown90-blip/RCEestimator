@@ -2627,12 +2627,16 @@ app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
   const body = z.object({
     to: z.string().trim().email().nullable().optional(),
     message: z.string().trim().max(2000).nullable().optional(),
+    // Photo gallery (2026-08-28): job photos chosen to ride the email. The
+    // service refuses any photo not taken at this estimate's address.
+    photoIds: z.array(z.string().min(1)).max(10).optional(),
   }).parse(req.body ?? {});
 
   const result = await sendEstimateEmail(prisma, String(req.params.id), {
     sentBy: "human:crm-session",
     toOverride: body.to ?? null,
     message: body.message ?? null,
+    photoIds: body.photoIds,
   });
 
   if (!result.ok) {
@@ -2655,12 +2659,15 @@ app.post("/issued-estimates/:id/send-invoice", asyncHandler(async (req, res) => 
   const body = z.object({
     toOverride: z.string().trim().email().nullable().optional(),
     message: z.string().trim().max(2000).nullable().optional(),
+    // Photo gallery (2026-08-28): before/after photos on the completed work.
+    photoIds: z.array(z.string().min(1)).max(10).optional(),
   }).parse(req.body ?? {});
 
   const result = await sendInvoiceEmail(prisma, String(req.params.id), {
     sentBy: "human:crm-session",
     toOverride: body.toOverride ?? null,
     message: body.message ?? null,
+    photoIds: body.photoIds,
   });
 
   if (!result.ok) {
