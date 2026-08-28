@@ -1191,9 +1191,8 @@ export async function generateGeneratorReport(
     doc.fontSize(9).fillColor(BRAND.muted);
     doc.text(`    ${scheme.necBasis} · ${scheme.requiredKW !== null ? `${scheme.requiredKW} kW required (${scheme.requiredAmps} A)` : "no code-minimum size"} · basis: ${scheme.loadBasis}`);
     doc.fillColor(BRAND.text).text(`    Recommended: ${modelLine(scheme)}`);
-    if (scheme.shedLoads && scheme.shedLoads.length > 0) {
-      doc.fillColor(BRAND.muted).text(`    Shed devices on: ${scheme.shedLoads.join("; ")}`);
-    }
+    // The engine's notes already name the shed loads ("Assumes shed devices
+    // on: …") — printing scheme.shedLoads too doubled the list on the page.
     for (const note of scheme.notes) doc.fillColor(BRAND.muted).text(`    ${note}`);
     doc.fillColor(BRAND.text);
     doc.moveDown(0.3);
