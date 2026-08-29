@@ -66,13 +66,12 @@ export const LIQUID_COOLED_TEXT =
 export const PARTIAL_COLLAPSE_RATIO = 0.85
 
 /**
- * Emitted whenever a heat-strip kit is assumed shed: the smart switch's native
- * management slots are for A/C COMPRESSOR loads, and a resistance kit is not
- * one — it budgets an SMM here, and the install must confirm the kit is
- * actually sheddable at that control point (Kyle's review, 2026-08-29).
+ * Emitted when a shed heat pump carries a strip kit: the shed system is built
+ * for A/C units (Kyle, 2026-08-29), so the compressor sheds and the strips
+ * stay in the base load the generator must carry.
  */
-export const HEAT_KIT_SHED_VERIFY =
-  'Heat-strip kit shed via a Smart Management Module — verify the unit\'s kit can be shed at that control point before quoting.'
+export const STRIPS_STAY_IN_BASE_NOTE =
+  'Heat-strip kit stays in the managed base load — the shed system manages A/C compressor loads; resistance heat is never assumed sheddable, so heat keeps running.'
 
 // ── Load-management hardware caps (amendment rule 2, Generac published) ─────
 
@@ -121,9 +120,16 @@ export const FUEL_SUPPLY_SCOPE_LINE =
 /**
  * DEFAULT shed-candidate list for the load-management scheme (702.4(B)(2)(b)):
  * the big deferrable 240 V loads. Editable data; the output names what it shed.
+ *
+ * NO HEATING TYPES (Kyle, 2026-08-29: "The load shed system is built
+ * specifically for A/C units"). A/C compressor loads ride the smart switch's
+ * native management; water heater / cooking / dryer / EVSE ride SMMs per the
+ * P031 amendment. Resistance heat is NEVER assumed sheddable — a shed heat
+ * pump sheds its COMPRESSOR only, and its strip kit stays in the managed base
+ * load the generator carries (which is also what keeps the house warm).
  */
 export const SHED_CANDIDATE_TYPES: readonly string[] = [
-  'cooling', 'heatPump', 'spaceHeat', // AC / heat strips
+  'cooling', 'heatPump', // compressor loads — native smart-switch management
   'waterHeaterTank', 'waterHeaterTankless',
   'range', 'oven', 'cooktop',
   'dryer',

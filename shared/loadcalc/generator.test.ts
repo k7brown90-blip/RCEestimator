@@ -297,25 +297,31 @@ describe('whole-home schemes', () => {
       'Heat pump', 'Second A/C', 'Range', 'Dryer', 'Water heater', 'EV charger (40 A)',
     ])
     expect(managed.notes.join(' ')).toContain('Assumes shed devices on')
-    // One SMM per non-A/C shed load PLUS one for the heat pump's strip kit —
-    // the smart switch's native slots manage compressors, not resistance kits
-    // (Kyle's review, 2026-08-29).
-    expect(managed.priceBookRefs.filter((r) => r.includes('SMM')).length).toBe(5)
-    expect(managed.notes.join(' ')).toContain('verify the unit')
-    // Managed load (lighting/SA/laundry only here) sizes well below full load.
+    // One SMM per non-A/C shed load (range, dryer, WH, EVSE). The heat pump's
+    // strip kit gets NO shed hardware — "the load shed system is built
+    // specifically for A/C units" (Kyle, 2026-08-29): the compressor sheds,
+    // the strips stay in the base load and the unit is sized to carry them.
+    expect(managed.priceBookRefs.filter((r) => r.includes('SMM')).length).toBe(4)
+    expect(managed.notes.join(' ')).toContain('stays in the managed base load')
+    // Base = lighting/SA/laundry + the carried 7 kW strips at 65% → ~15.6 kW,
+    // sized to the 16/16 class, NOT the 14 kW unit a strip-shedding assumption
+    // would have picked.
+    expect(managed.requiredKW).toBeCloseTo(15.6, 1)
+    expect(managed.model?.generatorModel).toBe('7035/36/37')
     const full = rec.wholeHome[0]
     expect(managed.requiredKW!).toBeLessThan(full.requiredKW!)
   })
 
-  it('warns when the largest shed load exceeds the managed headroom, naming the step-up (Kyle review, 2026-08-29)', () => {
-    // Managed base ~11.04 kW on the 14 kW unit leaves ~3 kW headroom; the shed
-    // heat pump needs 11.92 kW — legal per 702.4(B)(2)(b), but heat would
-    // rarely or never run. The note says so and names the size that carries it.
+  it('warns when the largest shed load exceeds the managed headroom (Kyle review, 2026-08-29)', () => {
+    // ~0.4 kW headroom on the 16 kW unit; the largest SHED load is the range
+    // (12 kW — the heat pump counts compressor-only, its strips being carried).
+    // Legal per 702.4(B)(2)(b); the note says it plainly and prices the truth:
+    // base + range on LP is past air-cooled.
     const managed = recommend(allElectric).wholeHome[1]
     const note = managed.notes.join(' ')
     expect(note).toContain('rarely or never')
-    expect(note).toContain('Heat pump')
-    expect(note).toContain('7209') // 24/21 carries 11.04 base + 11.92 heat pump on LP
+    expect(note).toContain('Range')
+    expect(note).toContain('liquid-cooled')
   })
 
   it('collapses the essential tier when it saves nothing vs whole home (Kyle review, 2026-08-29)', () => {

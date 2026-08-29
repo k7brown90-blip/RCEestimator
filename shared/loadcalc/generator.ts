@@ -40,7 +40,6 @@ import {
   GENERAC_GUARDIAN_MODELS,
   GENERAC_SURGE_PUBLISHED,
   GENERATOR_DISCLAIMER,
-  HEAT_KIT_SHED_VERIFY,
   LRA_PER_TON_ESTIMATE,
   MICROWAVE_DEFAULT_VA,
   PARTIAL_COLLAPSE_RATIO,
@@ -52,6 +51,7 @@ import {
   SMM_MAX_MODULES,
   SMM_MODULES,
   SOFT_START_LRA_FACTOR,
+  STRIPS_STAY_IN_BASE_NOTE,
   STRIP_HEAT_THRESHOLD_KW,
   SURGE_VERIFY_FLAG_TEXT,
   TEMP_DERATE_PER_10F_ABOVE_60,
@@ -373,10 +373,14 @@ interface ShedPlan {
   shed: LoadItem[]
   /** Shed candidates that did NOT fit the hardware — they stay in the managed load. */
   overflow: LoadItem[]
-  /** Smart Management Modules assumed: one per non-A/C shed load, plus one per shed heat-strip kit. */
+  /** Smart Management Modules assumed, one per non-A/C shed load. */
   smmCount: number
-  /** How many of those SMMs are budgeted for heat-strip kits (needs field verification). */
-  stripKitSmmCount: number
+  /**
+   * Strip kits on shed heat pumps, carried as spaceHeat in the managed load —
+   * "the load shed system is built specifically for A/C units" (Kyle,
+   * 2026-08-29): the compressor sheds, the resistance kit never does.
+   */
+  carriedStrips: LoadItem[]
 }
 
 function planShedding(loads: LoadItem[]): ShedPlan {
@@ -384,20 +388,27 @@ function planShedding(loads: LoadItem[]): ShedPlan {
   const acLoads = candidates.filter((l) => l.type === 'cooling' || l.type === 'heatPump')
   const others = candidates.filter((l) => l.type !== 'cooling' && l.type !== 'heatPump')
   // The 200A smart switch natively manages up to 4 A/C COMPRESSOR loads;
-  // everything else needs an SMM, and there are at most 8 of those. A shed
-  // heat pump's resistance kit is NOT a compressor — its shedding budgets an
-  // SMM of its own, flagged for field verification (Kyle's review 2026-08-29).
+  // the amendment's non-A/C list (WH, cooking, dryer, EVSE) rides SMMs, at
+  // most 8. Never assume more.
   const shedAC = acLoads.slice(0, SMART_SWITCH_AC_SLOTS)
-  const stripKitSmmCount = shedAC.filter(
-    (l) => l.type === 'heatPump' && (l.heatPump?.supplementalVA ?? 0) > 0,
-  ).length
-  const smmForOthers = Math.max(0, SMM_MAX_MODULES - stripKitSmmCount)
-  const shedOther = others.slice(0, smmForOthers)
+  const shedOther = others.slice(0, SMM_MAX_MODULES)
+  // A shed heat pump sheds its compressor; its strip kit stays a live load.
+  const carriedStrips: LoadItem[] = shedAC
+    .filter((l) => l.type === 'heatPump' && (l.heatPump?.supplementalVA ?? 0) > 0)
+    .map((l) => ({
+      id: `${l.id}-strips-carried`,
+      type: 'spaceHeat',
+      label: `${l.label} — strip kit (stays in base load)`,
+      nameplateVA: l.heatPump!.supplementalVA,
+      volts: 240,
+      separatelyControlledUnits: 1,
+      nameplateRead: l.nameplateRead,
+    }))
   return {
     shed: [...shedAC, ...shedOther],
-    overflow: [...acLoads.slice(SMART_SWITCH_AC_SLOTS), ...others.slice(smmForOthers)],
-    smmCount: shedOther.length + stripKitSmmCount,
-    stripKitSmmCount,
+    overflow: [...acLoads.slice(SMART_SWITCH_AC_SLOTS), ...others.slice(SMM_MAX_MODULES)],
+    smmCount: shedOther.length,
+    carriedStrips,
   }
 }
 
@@ -516,12 +527,15 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   // Scheme 2: ATS + load management — 702.4(B)(2)(b). The managed load is the
   // same Article 220 engine run on the inventory minus the shed loads — no
   // second load model. Shedding respects Generac hardware caps: 4 native A/C
-  // slots on the 200A smart switch, 8 further 240 V loads via SMMs.
+  // compressor slots on the 200A smart switch, 8 further 240 V loads via SMMs.
+  // Strip kits on shed heat pumps stay IN the managed load (Kyle, 2026-08-29:
+  // the shed system is built for A/C units) — so heat runs, and the unit is
+  // sized to carry it.
   const shedPlan = planShedding(calcInput.loads)
   const shedIds = new Set(shedPlan.shed.map((l) => l.id))
   const managedResult: LoadCalcResult = calculateLoad({
     ...calcInput,
-    loads: calcInput.loads.filter((l) => !shedIds.has(l.id)),
+    loads: [...calcInput.loads.filter((l) => !shedIds.has(l.id)), ...shedPlan.carriedStrips],
     futureLoads: [],
   })
   const managedKW = kwOf(managedResult.governingAmps * 240)
@@ -537,8 +551,8 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       `(200A smart switch manages up to ${SMART_SWITCH_AC_SLOTS} A/C compressor loads natively; up to ${SMM_MAX_MODULES} SMMs).`,
     )
   }
-  if (shedPlan.stripKitSmmCount > 0) {
-    managedNotes.push(HEAT_KIT_SHED_VERIFY)
+  if (shedPlan.carriedStrips.length > 0) {
+    managedNotes.push(STRIPS_STAY_IN_BASE_NOTE)
   }
   if (shedPlan.overflow.length > 0) {
     managedNotes.push(
@@ -552,8 +566,10 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   if (shedPlan.shed.length > 0 && managedSizing.siteDeratedKW !== null) {
     const largestShed = shedPlan.shed.reduce(
       (best, l) => {
+        // A shed heat pump sheds its COMPRESSOR only — the strips are carried
+        // in the base load, so they don't count as a shed load here.
         const kw = kwOf(l.type === 'heatPump' && l.heatPump
-          ? l.heatPump.compressorVA + l.heatPump.supplementalVA
+          ? l.heatPump.compressorVA
           : resolveVA(l))
         return kw > best.kw ? { label: l.label, kw } : best
       },
