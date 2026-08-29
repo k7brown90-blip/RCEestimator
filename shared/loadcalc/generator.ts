@@ -40,8 +40,10 @@ import {
   GENERAC_GUARDIAN_MODELS,
   GENERAC_SURGE_PUBLISHED,
   GENERATOR_DISCLAIMER,
+  HEAT_KIT_SHED_VERIFY,
   LRA_PER_TON_ESTIMATE,
   MICROWAVE_DEFAULT_VA,
+  PARTIAL_COLLAPSE_RATIO,
   PRICE_BOOK_SLOTS,
   REFRIGERATOR_DEFAULT_VA,
   SHED_CANDIDATE_TYPES,
@@ -161,12 +163,17 @@ export interface GeneratorRecommendation {
 const kwOf = (va: number) => Math.round((va / 1000) * 100) / 100
 const round2 = (n: number) => Math.round(n * 100) / 100
 
-/** Site derate factor per Generac published figures (amendment rule 3). */
+/**
+ * Site derate factor per Generac published figures (amendment rule 3).
+ * Three decimals, NOT two: one altitude step is −3.5 %, and rounding the
+ * factor itself turned 0.965 into 0.97 — an untraceable 3 % that survived
+ * into a customer document until Kyle's review caught it (2026-08-29).
+ */
 export function siteDerateFactor(site?: SiteConditions): number {
   const altSteps = site?.altitudeSteps ?? DEFAULT_ALTITUDE_STEPS
   const tempSteps = site?.ambientF !== undefined ? Math.max(0, (site.ambientF - 60) / 10) : 0
   const factor = 1 - altSteps * ALTITUDE_DERATE_PER_1000FT - tempSteps * TEMP_DERATE_PER_10F_ABOVE_60
-  return Math.max(0, round2(factor))
+  return Math.max(0, Math.round(factor * 1000) / 1000)
 }
 
 const fuelKW = (model: GeneracModel, fuel: GeneratorFuel) =>
@@ -366,22 +373,31 @@ interface ShedPlan {
   shed: LoadItem[]
   /** Shed candidates that did NOT fit the hardware — they stay in the managed load. */
   overflow: LoadItem[]
-  /** Smart Management Modules assumed, one per non-AC shed load. */
+  /** Smart Management Modules assumed: one per non-A/C shed load, plus one per shed heat-strip kit. */
   smmCount: number
+  /** How many of those SMMs are budgeted for heat-strip kits (needs field verification). */
+  stripKitSmmCount: number
 }
 
 function planShedding(loads: LoadItem[]): ShedPlan {
   const candidates = loads.filter((l) => SHED_CANDIDATE_TYPES.includes(l.type))
   const acLoads = candidates.filter((l) => l.type === 'cooling' || l.type === 'heatPump')
   const others = candidates.filter((l) => l.type !== 'cooling' && l.type !== 'heatPump')
-  // The 200A smart switch natively manages up to 4 A/C loads; everything else
-  // needs an SMM, and there are at most 8 of those. Never assume more.
+  // The 200A smart switch natively manages up to 4 A/C COMPRESSOR loads;
+  // everything else needs an SMM, and there are at most 8 of those. A shed
+  // heat pump's resistance kit is NOT a compressor — its shedding budgets an
+  // SMM of its own, flagged for field verification (Kyle's review 2026-08-29).
   const shedAC = acLoads.slice(0, SMART_SWITCH_AC_SLOTS)
-  const shedOther = others.slice(0, SMM_MAX_MODULES)
+  const stripKitSmmCount = shedAC.filter(
+    (l) => l.type === 'heatPump' && (l.heatPump?.supplementalVA ?? 0) > 0,
+  ).length
+  const smmForOthers = Math.max(0, SMM_MAX_MODULES - stripKitSmmCount)
+  const shedOther = others.slice(0, smmForOthers)
   return {
     shed: [...shedAC, ...shedOther],
-    overflow: [...acLoads.slice(SMART_SWITCH_AC_SLOTS), ...others.slice(SMM_MAX_MODULES)],
-    smmCount: shedOther.length,
+    overflow: [...acLoads.slice(SMART_SWITCH_AC_SLOTS), ...others.slice(smmForOthers)],
+    smmCount: shedOther.length + stripKitSmmCount,
+    stripKitSmmCount,
   }
 }
 
@@ -443,7 +459,28 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   const partialAmps = roundAmps(partialBuild.totalVA / 240)
   const partialKW = kwOf(partialBuild.totalVA)
   const partialSizing = sizeToModel(partialKW, fuel, derate)
-  const partial: PartialTierResult | null = stripsOverThreshold
+
+  // Guardrail (Kyle's review, 2026-08-29): on an all-electric house the
+  // "essentials" ARE the house, and the essentials tier — summed at full value
+  // — can exceed the demand-factored 220.82 whole-home number. Printing both
+  // reads as "part of my house costs more than all of it," so at ≥ the
+  // collapse ratio the tier is suppressed with the reason stated.
+  const fullBasisAmpsEarly = input.demandBasisAmps ?? calcResult.governingAmps
+  const fullKWEarly = kwOf(fullBasisAmpsEarly * 240)
+  const partialSavesNothing =
+    fullKWEarly > 0 && partialKW >= PARTIAL_COLLAPSE_RATIO * fullKWEarly
+  if (partialSavesNothing && !stripsOverThreshold) {
+    flags.push({
+      id: 'partial_no_savings',
+      severity: 'advisory',
+      message:
+        `The essential-loads tier calculates to ${partialKW} kW — ` +
+        `${Math.round((partialKW / fullKWEarly) * 100)}% of the ${fullKWEarly} kW whole-home load. ` +
+        'A partial backup saves nothing here; recommend whole-home sizing (with load management where it fits).',
+    })
+  }
+
+  const partial: PartialTierResult | null = stripsOverThreshold || partialSavesNothing
     ? null
     : {
         ...partialSizing,
@@ -466,11 +503,11 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
 
   // ── Tier A — three whole-home schemes ──
   // Scheme 1: ATS, full-load sized — 702.4(B)(2)(a). Prefer 220.87 demand data.
-  const fullBasisAmps = input.demandBasisAmps ?? calcResult.governingAmps
+  const fullBasisAmps = fullBasisAmpsEarly
   const fullBasis = input.demandBasisAmps !== undefined
     ? '220.87 demand data (recorded maximum demand)'
     : `Article 220 calculation (${calcResult.methodUsed} method)`
-  const fullKW = kwOf(fullBasisAmps * 240)
+  const fullKW = fullKWEarly
   const fullSizing = sizeToModel(fullKW, fuel, derate)
   const fullNotes: string[] = []
   const fullSurgeNote = surgeNoteFor(fullSizing, surge)
@@ -497,13 +534,43 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   if (shedPlan.smmCount > 0) {
     managedNotes.push(
       `${shedPlan.smmCount} Smart Management Module${shedPlan.smmCount > 1 ? 's' : ''} assumed ` +
-      `(200A smart switch manages up to ${SMART_SWITCH_AC_SLOTS} A/C loads natively; up to ${SMM_MAX_MODULES} SMMs).`,
+      `(200A smart switch manages up to ${SMART_SWITCH_AC_SLOTS} A/C compressor loads natively; up to ${SMM_MAX_MODULES} SMMs).`,
     )
+  }
+  if (shedPlan.stripKitSmmCount > 0) {
+    managedNotes.push(HEAT_KIT_SHED_VERIFY)
   }
   if (shedPlan.overflow.length > 0) {
     managedNotes.push(
       `Beyond hardware capacity — stays in the managed load: ${shedPlan.overflow.map((l) => l.label).join('; ')}.`,
     )
+  }
+  // Legal isn't the same as livable (Kyle's review, 2026-08-29): 702.4(B)(2)(b)
+  // is satisfied by any size that carries the managed base, but when the
+  // largest shed load exceeds the headroom above that base, it will rarely or
+  // never run in an outage — say so, and name the size that carries it.
+  if (shedPlan.shed.length > 0 && managedSizing.siteDeratedKW !== null) {
+    const largestShed = shedPlan.shed.reduce(
+      (best, l) => {
+        const kw = kwOf(l.type === 'heatPump' && l.heatPump
+          ? l.heatPump.compressorVA + l.heatPump.supplementalVA
+          : resolveVA(l))
+        return kw > best.kw ? { label: l.label, kw } : best
+      },
+      { label: '', kw: 0 },
+    )
+    const headroomKW = round2(managedSizing.siteDeratedKW - managedKW)
+    if (largestShed.kw > headroomKW) {
+      const stepUp = sizeToModel(managedKW + largestShed.kw, fuel, derate)
+      managedNotes.push(
+        `Managed loads run only as capacity allows: ~${headroomKW} kW of headroom above the base load, ` +
+        `but the largest shed load (${largestShed.label}, ${largestShed.kw} kW) exceeds it — ` +
+        `expect it to run rarely or never during an outage. ` +
+        (stepUp.model !== null
+          ? `For it to run under load management, the Guardian ${stepUp.model.classLabel} kW (model ${stepUp.model.generatorModel}) carries base plus that load.`
+          : 'Carrying base plus that load requires the liquid-cooled class.'),
+      )
+    }
   }
   const managedSurgeNote = surgeNoteFor(managedSizing, surge)
   if (managedSurgeNote) managedNotes.push(managedSurgeNote)
@@ -515,7 +582,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
     'Manual transfer: the homeowner chooses what runs; code sets no minimum size (702.4(B)(1)).',
     partial !== null
       ? `Guidance: the essential-loads tier below (${partialKW} kW calculated) is the working target.`
-      : 'Essential-loads tier suppressed by a hard flag — see flags.',
+      : 'Essential-loads tier suppressed — see flags for the reason.',
   ]
   const scopeLines: string[] = [FUEL_SUPPLY_SCOPE_LINE]
   if (softStart) {

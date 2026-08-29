@@ -78,8 +78,12 @@ describe('sizeToModel — fuel-matched Generac selection (amendment rule 1)', ()
 })
 
 describe('site derate (amendment rule 3)', () => {
-  it('defaults to one 1,000-ft altitude step for Middle TN', () => {
-    expect(siteDerateFactor(undefined)).toBe(0.97) // 1 − 0.035, rounded to 2
+  it('defaults to one 1,000-ft altitude step for Middle TN — the FULL 3.5%, never rounded to 3%', () => {
+    // Kyle's review (2026-08-29) caught 14 × 0.97 = 13.58 on a customer
+    // document — round2 on the factor had turned 0.965 into an untraceable
+    // 0.97. The factor keeps three decimals now: 14 × 0.965 = 13.51.
+    expect(siteDerateFactor(undefined)).toBe(0.965)
+    expect(sizeToModel(13.5, 'LP', siteDerateFactor(undefined)).siteDeratedKW).toBe(13.51)
   })
 
   it('is overridable and compounds altitude with temperature above 60 °F', () => {
@@ -95,7 +99,7 @@ describe('site derate (amendment rule 3)', () => {
       softStart: false,
       // no site given — Middle TN default applies
     })
-    expect(rec.siteDerateFactor).toBe(0.97)
+    expect(rec.siteDerateFactor).toBe(0.965)
   })
 })
 
@@ -133,6 +137,10 @@ describe('partial tier — Kyle\'s ratified scope', () => {
       loads: [
         load({ type: 'spaceHeat', label: 'Electric furnace', nameplateKW: 9.9, separatelyControlledUnits: 1 }),
         load({ type: 'cooling', label: 'A/C', amps: 17, volts: 240 }),
+        // Ballast: EVSE raises the whole-home load but never enters the
+        // partial tier, keeping this fixture under the collapse guardrail so
+        // the 220.60 selection itself is what's under test.
+        load({ type: 'evse', label: 'EV charger', nameplateKW: 9.6 }),
       ],
     })
     const hvac = recommend(calcInput).partial!.covered.find((c) => c.rule.includes('220.60'))!
@@ -154,7 +162,12 @@ describe('partial tier — Kyle\'s ratified scope', () => {
 
   it('applies Table 220.55 demand to cooking, not nameplate', () => {
     const calcInput = input({
-      loads: [load({ type: 'range', label: 'Range', nameplateKW: 12 })],
+      loads: [
+        load({ type: 'range', label: 'Range', nameplateKW: 12 }),
+        // Ballast — see the 220.60 test: keeps the tier under the collapse
+        // guardrail without touching the cooking demand under test.
+        load({ type: 'evse', label: 'EV charger', nameplateKW: 9.6 }),
+      ],
     })
     const cooking = recommend(calcInput).partial!.covered.find((c) => c.rule.includes('220.55'))!
     expect(cooking.va).toBe(8000) // one range ≤12 kW → 8 kW Column C
@@ -279,16 +292,43 @@ describe('whole-home schemes', () => {
   it('load management names every shed load within hardware caps, A/C loads first', () => {
     const rec = recommend(allElectric)
     const managed = rec.wholeHome[1]
-    // 2 A/C loads (≤4 native slots) + 4 other 240 V loads (≤8 SMMs).
+    // 2 A/C loads (≤4 native slots) + 4 other 240 V loads.
     expect(managed.shedLoads).toEqual([
       'Heat pump', 'Second A/C', 'Range', 'Dryer', 'Water heater', 'EV charger (40 A)',
     ])
     expect(managed.notes.join(' ')).toContain('Assumes shed devices on')
-    // One SMM line per non-A/C shed load in the package reference (amendment rule 2).
-    expect(managed.priceBookRefs.filter((r) => r.includes('SMM')).length).toBe(4)
+    // One SMM per non-A/C shed load PLUS one for the heat pump's strip kit —
+    // the smart switch's native slots manage compressors, not resistance kits
+    // (Kyle's review, 2026-08-29).
+    expect(managed.priceBookRefs.filter((r) => r.includes('SMM')).length).toBe(5)
+    expect(managed.notes.join(' ')).toContain('verify the unit')
     // Managed load (lighting/SA/laundry only here) sizes well below full load.
     const full = rec.wholeHome[0]
     expect(managed.requiredKW!).toBeLessThan(full.requiredKW!)
+  })
+
+  it('warns when the largest shed load exceeds the managed headroom, naming the step-up (Kyle review, 2026-08-29)', () => {
+    // Managed base ~11.04 kW on the 14 kW unit leaves ~3 kW headroom; the shed
+    // heat pump needs 11.92 kW — legal per 702.4(B)(2)(b), but heat would
+    // rarely or never run. The note says so and names the size that carries it.
+    const managed = recommend(allElectric).wholeHome[1]
+    const note = managed.notes.join(' ')
+    expect(note).toContain('rarely or never')
+    expect(note).toContain('Heat pump')
+    expect(note).toContain('7209') // 24/21 carries 11.04 base + 11.92 heat pump on LP
+  })
+
+  it('collapses the essential tier when it saves nothing vs whole home (Kyle review, 2026-08-29)', () => {
+    // This all-electric house's essentials ARE the house: partial 29.72 kW vs
+    // ~32.9 kW whole-home (>85%). Printing both reads as "part of my house
+    // costs more than all of it" — the tier is suppressed with the reason.
+    const rec = recommend(allElectric)
+    expect(rec.partial).toBeNull()
+    const flag = rec.flags.find((f) => f.id === 'partial_no_savings')
+    expect(flag).toBeDefined()
+    expect(flag!.message).toContain('saves nothing')
+    const interlock = rec.wholeHome.find((s) => s.scheme === 'interlock_manual')!
+    expect(interlock.notes.join(' ')).toContain('suppressed')
   })
 
   it('never assumes more shed slots than 4 A/C + 8 SMM (amendment rule 2)', () => {
@@ -311,7 +351,16 @@ describe('whole-home schemes', () => {
   })
 
   it('EVSE is excluded from the partial tier and listed as not covered', () => {
-    const partial = recommend(allElectric).partial!
+    // A lighter mixed-fuel house, so the tier survives the collapse guardrail
+    // and the EVSE rule itself is what's under test.
+    const mixedFuel = input({
+      loads: [
+        load({ type: 'cooling', label: 'A/C', amps: 17, volts: 240 }),
+        load({ type: 'range', label: 'Range', nameplateKW: 12 }),
+        load({ type: 'evse', label: 'EV charger (40 A)', nameplateKW: 9.6 }),
+      ],
+    })
+    const partial = recommend(mixedFuel).partial!
     expect(partial.covered.some((c) => c.label.includes('EV'))).toBe(false)
     expect(partial.excludedWithReason.join(' ')).toContain('EV charging')
     expect(partial.notCovered).toContain('EV charging')

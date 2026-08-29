@@ -53,6 +53,27 @@ export const GENERAC_GUARDIAN_MODELS: GeneracModel[] = [
 export const LIQUID_COOLED_TEXT =
   'Generac liquid-cooled (Protector) class — manual selection with dealer sizing tool.'
 
+/**
+ * When the essential-loads tier calculates to at least this fraction of the
+ * whole-home load, the tier is suppressed as saving nothing — an all-electric
+ * house's "essentials" ARE the house (heat, range, water heater), and printing
+ * "partial: 29.7 kW / whole home: 29.0 kW" side by side is incoherent (Kyle's
+ * review, 2026-08-29: "backing up part of my house costs more than all of
+ * it"). The two methods differ — 220.82 demand-factors the whole house down,
+ * the partial tier sums essentials at full value — so near the boundary the
+ * comparison misleads. DEFAULT 0.85; editable.
+ */
+export const PARTIAL_COLLAPSE_RATIO = 0.85
+
+/**
+ * Emitted whenever a heat-strip kit is assumed shed: the smart switch's native
+ * management slots are for A/C COMPRESSOR loads, and a resistance kit is not
+ * one — it budgets an SMM here, and the install must confirm the kit is
+ * actually sheddable at that control point (Kyle's review, 2026-08-29).
+ */
+export const HEAT_KIT_SHED_VERIFY =
+  'Heat-strip kit shed via a Smart Management Module — verify the unit\'s kit can be shed at that control point before quoting.'
+
 // ── Load-management hardware caps (amendment rule 2, Generac published) ─────
 
 /** The 200A service-rated smart switch natively manages up to 4 A/C loads. */
@@ -122,6 +143,11 @@ export const SMALL_APPLIANCE_CIRCUITS_VA = 3000
  * DEFAULT nameplates used when the inventory has no tagged item to read
  * (refrigerators ride the small-appliance circuits in Article 220, so one is
  * often not entered as a line item). Editable data.
+ *
+ * DELIBERATE CONSERVATISM (stands per Kyle's review, 2026-08-29): counting the
+ * fridge and microwave on top of both SA circuits may double-count ~2.3 kVA
+ * when they live on those circuits — over-sizing an essential tier, never
+ * under-sizing it.
  */
 export const REFRIGERATOR_DEFAULT_VA = 800
 export const MICROWAVE_DEFAULT_VA = 1500

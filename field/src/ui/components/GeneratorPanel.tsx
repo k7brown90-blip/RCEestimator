@@ -137,7 +137,7 @@ export function GeneratorPanel({
         </p>
         {rec.partial === null ? (
           <p className="text-xs text-amber-300">
-            Suppressed by a hard flag above — offer whole-home with load management or liquid-cooled equipment.
+            Suppressed — see the flag above; offer whole-home sizing (with load management where it fits).
           </p>
         ) : (
           <div className="rounded border border-slate-700 bg-slate-800/60 p-2 text-xs">

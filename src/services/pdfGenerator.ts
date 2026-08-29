@@ -1232,7 +1232,7 @@ export async function generateGeneratorReport(
   doc.fontSize(9);
   if (rec.partial === null) {
     doc.fillColor("#b45309").text(
-      "Suppressed by a hard flag above — offer whole-home with load management, or liquid-cooled equipment.",
+      "Suppressed — see the flag above; whole-home sizing recommended (with load management where it fits).",
     );
     doc.fillColor(BRAND.text);
   } else {
