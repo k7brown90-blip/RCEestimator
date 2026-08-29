@@ -120,8 +120,27 @@ export function GeneratorPanel({
               <p className="text-slate-400">
                 {s.necBasis} · {s.requiredKW !== null ? `${s.requiredKW} kW required (${s.requiredAmps} A)` : 'no code-minimum size'} · basis: {s.loadBasis}
               </p>
-              {s.shedLoads !== undefined && s.shedLoads.length > 0 && (
-                <p className="text-slate-400">Shed devices on: {s.shedLoads.join('; ')}</p>
+              {/* Installer priority table — mirrors Generac's panel decal (Appendix B). */}
+              {s.managementPlan !== undefined && s.managementPlan.managed.length > 0 && (
+                <table className="mt-1 w-full text-left text-[10px] text-slate-400">
+                  <thead>
+                    <tr className="text-slate-500">
+                      <th className="pr-2">P</th><th className="pr-2">Load</th>
+                      <th className="pr-2">Mechanism</th><th className="pr-2">kW</th><th>BOM</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {s.managementPlan.managed.map((row) => (
+                      <tr key={row.label}>
+                        <td className="pr-2">{row.priority}</td>
+                        <td className="pr-2">{row.label}</td>
+                        <td className="pr-2">{row.mechanism}</td>
+                        <td className="pr-2">{row.kw}</td>
+                        <td>{row.bomSlot ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
               {s.notes.map((n) => (
                 <p key={n} className="text-slate-500">{n}</p>

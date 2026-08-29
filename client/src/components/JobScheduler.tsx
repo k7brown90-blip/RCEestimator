@@ -9,6 +9,8 @@ interface Props {
   scheduledStart?: string | null;
   scheduledEnd?: string | null;
   durationDays?: number | null;
+  /** Set once the consultation was closed out — swaps the card to its archived state. */
+  completedAt?: string | null;
   /** Carries the booking result on a fresh schedule (so the caller can say whether the
       customer's confirmation went out); undefined on reschedule/cancel. */
   onScheduled?: (result?: ScheduleJobResult) => void;
@@ -55,8 +57,17 @@ function busyDuringBusinessHours(busy: TechDayAvailability["busy"]): TechDayAvai
   });
 }
 
-export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, onScheduled, autoOpen }: Props) {
+export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, completedAt, onScheduled, autoOpen }: Props) {
   const queryClient = useQueryClient();
+  // Consultations get marked completed and archived — signed estimates are
+  // what become active jobs (Kyle, 2026-08-29).
+  const completeConsultation = useMutation({
+    mutationFn: () => api.completeConsultation(jobId),
+    onSuccess: () => {
+      for (const key of SCHEDULE_QUERY_KEYS) void queryClient.invalidateQueries({ queryKey: key });
+      onScheduled?.();
+    },
+  });
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
@@ -178,8 +189,15 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
         {isEstimateVisit ? "Estimate Appointment" : "Job Scheduling"}
       </h3>
 
-      {/* Current status */}
-      {isScheduled && scheduledStart && (
+      {/* A closed-out consultation shows its record, not a live booking. */}
+      {isEstimateVisit && completedAt ? (
+        <div className="mb-3 rounded-md border border-rce-border bg-rce-surface p-3 text-sm">
+          <p className="font-medium text-rce-muted">Consultation completed</p>
+          <p className="text-xs text-rce-soft">
+            {formatScheduled(completedAt)} — archived. A signed estimate is what becomes an active job.
+          </p>
+        </div>
+      ) : isScheduled && scheduledStart ? (
         <div className="mb-3 rounded-md bg-green-50 border border-green-200 p-3 text-sm">
           <p className="font-medium text-green-800">
             {isEstimateVisit ? "Estimate booked" : "Scheduled"}
@@ -193,8 +211,20 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
           {isEstimateVisit
             ? <p className="text-green-600 text-xs">2 hr visit + 1 hr travel leeway</p>
             : durationDays ? <p className="text-green-600 text-xs">{durationDays} day(s)</p> : null}
+          {/* The close-out Kyle asked for (2026-08-29): "This appointment has
+              been completed and there is no way to close it out." */}
+          {isEstimateVisit && (
+            <button
+              type="button"
+              className="btn btn-secondary mt-2 text-xs"
+              disabled={completeConsultation.isPending}
+              onClick={() => completeConsultation.mutate()}
+            >
+              {completeConsultation.isPending ? "Completing…" : "Mark consultation complete"}
+            </button>
+          )}
         </div>
-      )}
+      ) : null}
 
       {/* Action buttons */}
       {mode === "idle" && (

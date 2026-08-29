@@ -9,6 +9,10 @@ import { VitePWA } from 'vite-plugin-pwa'
 // all have to agree on the prefix. Change this and the Express mount together.
 export default defineConfig({
   base: '/field/',
+  // The bundle's real identity, stamped on every synced record as appVersion.
+  // "phase-2" as a permanent string made a stale service-worker cache
+  // invisible (Kyle's Caysens sync, 2026-08-29).
+  define: { __BUILD_ID__: JSON.stringify(new Date().toISOString().slice(0, 16) + 'Z') },
   // The Article 220 engine lives in app/shared/, outside this package, so the
   // CRM and the server can run the same calculation. Vite sandboxes file reads
   // to the project root by default, so it has to be allowed explicitly.

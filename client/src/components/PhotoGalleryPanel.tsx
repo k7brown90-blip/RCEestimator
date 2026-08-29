@@ -302,6 +302,88 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
 }
 
 /**
+ * Read-only photo browser for the ACCOUNT page (Kyle, 2026-08-29: "I don't see
+ * where to find the photos, I need to be able to access them") — every photo
+ * at an address: job photos across visits plus Health Record assessment shots.
+ * Uploading and tagging stay on the visit page's gallery, where the job
+ * context lives; each photo links back through its visit.
+ */
+export function PropertyPhotoSection(props: { propertyId: string; propertyLabel: string }) {
+  const [open, setOpen] = useState(false);
+  const { data: photos } = useQuery({
+    queryKey: ["property-photos", props.propertyId],
+    queryFn: () => api.propertyPhotos(props.propertyId),
+    enabled: open,
+  });
+  const jobPhotos = photos?.jobPhotos ?? [];
+  const assessmentPhotos = photos?.assessmentPhotos ?? [];
+  const total = jobPhotos.length + assessmentPhotos.length;
+
+  return (
+    <div className="rounded-lg border border-rce-border/70 p-3">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between text-left"
+        onClick={() => setOpen((s) => !s)}
+      >
+        <span className="text-sm font-medium">{props.propertyLabel}</span>
+        <span className="text-xs text-rce-accent">
+          {open ? "Hide photos" : `View photos${total > 0 ? ` (${total})` : ""}`}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-4">
+          {jobPhotos.length === 0 && assessmentPhotos.length === 0 && (
+            <p className="text-sm text-rce-soft">No photos at this address yet.</p>
+          )}
+          {jobPhotos.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-rce-soft">Job photos</h4>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+                {jobPhotos.map((p) => (
+                  <figure key={p.id}>
+                    <AuthedPhoto
+                      path={`/health-record-admin/visit-photos/${p.id}`}
+                      alt={p.caption ?? "job photo"}
+                      className="h-24 w-full rounded object-cover"
+                    />
+                    <figcaption className="mt-0.5 text-[10px] text-rce-soft">
+                      {new Date(p.visitDate).toLocaleDateString()} · {tagLabel(p.tag)}
+                      {p.caption ? ` · ${p.caption}` : ""}
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            </div>
+          )}
+          {assessmentPhotos.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-rce-soft">
+                Electrical assessment photos
+              </h4>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+                {assessmentPhotos.map((p) => (
+                  <figure key={p.id}>
+                    <AuthedPhoto
+                      path={`/health-record-admin/inspection-photos/${p.id}`}
+                      alt="assessment photo"
+                      className="h-24 w-full rounded object-cover"
+                    />
+                    <figcaption className="mt-0.5 text-[10px] text-rce-soft">
+                      {new Date(p.inspectionDate).toLocaleDateString()} · Health Record
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Compact photo picker for the estimate/invoice send flows — tick the photos
  * to ride the email. Lists every job photo at the address so before/after from
  * the right visit is always reachable, capped at 10 per send (server cap).

@@ -40,19 +40,24 @@ import {
   GENERAC_GUARDIAN_MODELS,
   GENERAC_SURGE_PUBLISHED,
   GENERATOR_DISCLAIMER,
+  LOAD_MGMT_SOURCE,
   LRA_PER_TON_ESTIMATE,
+  MANAGED_LOADS_TOTAL_CAP,
+  MANAGED_LOAD_CUSTOMER_WORDING,
   MICROWAVE_DEFAULT_VA,
   PARTIAL_COLLAPSE_RATIO,
   PRICE_BOOK_SLOTS,
+  RECOVERY_STAGGER_NOTE,
   REFRIGERATOR_DEFAULT_VA,
+  SACM_SLOTS,
   SHED_CANDIDATE_TYPES,
   SMALL_APPLIANCE_CIRCUITS_VA,
-  SMART_SWITCH_AC_SLOTS,
-  SMM_MAX_MODULES,
-  SMM_MODULES,
+  SMM_100A,
+  SMM_100A_VERIFY_FLAG,
+  SMM_50A,
   SOFT_START_LRA_FACTOR,
-  STRIPS_STAY_IN_BASE_NOTE,
   STRIP_HEAT_THRESHOLD_KW,
+  STRIP_SACM_VERIFY_FLAG,
   SURGE_VERIFY_FLAG_TEXT,
   TEMP_DERATE_PER_10F_ABOVE_60,
   type GeneracModel,
@@ -109,8 +114,10 @@ export interface SchemeResult extends ModelSizing {
   loadBasis: string
   requiredKW: number | null // null for interlock — 702.4(B)(1) sets no minimum
   requiredAmps: number | null
-  /** Labels of the loads assumed on shed devices (load-management scheme only). */
+  /** Labels of the managed loads (load-management scheme only). */
   shedLoads?: string[]
+  /** The full SACM/SMM plan with the installer priority table (Appendix B). */
+  managementPlan?: ManagementPlan
   /** Price-book package references, one line per component (unit, switch, SMMs). */
   priceBookRefs: string[]
   notes: string[]
@@ -366,57 +373,181 @@ function buildPartialLoads(loads: LoadItem[]): PartialBuild {
   }
 }
 
-// ── Load-management shed slots (amendment rule 2, Generac hardware caps) ────
+// ── Load management — SACM vs SMM decision tree (P031 Appendix B) ────────────
+// Controlling source: Generac 50A SMM manual 10000030493 Rev E. Two
+// mechanisms: SACM interrupts a compressor's 24 VAC thermostat circuit (up to
+// 4, priorities 1–4, zero hardware); SMMs are standalone 240 V contactors for
+// any other load (each a billable BOM line). Combined cap: 8 managed loads.
+// Rule 5 is the honesty rule: a load leaves the required-capacity calculation
+// ONLY when a valid management path exists — no phantom shedding.
 
-interface ShedPlan {
-  /** Items actually assumed shed, within hardware capacity. */
-  shed: LoadItem[]
-  /** Shed candidates that did NOT fit the hardware — they stay in the managed load. */
-  overflow: LoadItem[]
-  /** Smart Management Modules assumed, one per non-A/C shed load. */
-  smmCount: number
-  /**
-   * Strip kits on shed heat pumps, carried as spaceHeat in the managed load —
-   * "the load shed system is built specifically for A/C units" (Kyle,
-   * 2026-08-29): the compressor sheds, the resistance kit never does.
-   */
+export interface ManagedLoadRow {
+  label: string
+  kw: number
+  /** 'SACM (thermostat interrupt)' | '50A SMM' | '100A SMM' | the verify-strips variant. */
+  mechanism: string
+  /** Suggested priority dial, 1–8 — mirrors Generac's panel decal. */
+  priority: number
+  /** Price-book BOM line; null for SACM (zero marginal hardware). */
+  bomSlot: string | null
+  flags: string[]
+}
+
+export interface RefusedLoadRow {
+  label: string
+  reason: string
+}
+
+export interface ManagementPlan {
+  managed: ManagedLoadRow[]
+  refused: RefusedLoadRow[]
+  /** Item ids removed from the base load (validly managed whole items). */
+  managedItemIds: string[]
+  /** Strip kits carried in the base load (their compressor is managed, they are not). */
   carriedStrips: LoadItem[]
+  recoveryNote: string
 }
 
-function planShedding(loads: LoadItem[]): ShedPlan {
+function planManagement(loads: LoadItem[]): ManagementPlan {
   const candidates = loads.filter((l) => SHED_CANDIDATE_TYPES.includes(l.type))
-  const acLoads = candidates.filter((l) => l.type === 'cooling' || l.type === 'heatPump')
+  const compressors = candidates.filter((l) => l.type === 'cooling' || l.type === 'heatPump')
   const others = candidates.filter((l) => l.type !== 'cooling' && l.type !== 'heatPump')
-  // The 200A smart switch natively manages up to 4 A/C COMPRESSOR loads;
-  // the amendment's non-A/C list (WH, cooking, dryer, EVSE) rides SMMs, at
-  // most 8. Never assume more.
-  const shedAC = acLoads.slice(0, SMART_SWITCH_AC_SLOTS)
-  const shedOther = others.slice(0, SMM_MAX_MODULES)
-  // A shed heat pump sheds its compressor; its strip kit stays a live load.
-  const carriedStrips: LoadItem[] = shedAC
-    .filter((l) => l.type === 'heatPump' && (l.heatPump?.supplementalVA ?? 0) > 0)
-    .map((l) => ({
-      id: `${l.id}-strips-carried`,
-      type: 'spaceHeat',
-      label: `${l.label} — strip kit (stays in base load)`,
-      nameplateVA: l.heatPump!.supplementalVA,
-      volts: 240,
-      separatelyControlledUnits: 1,
-      nameplateRead: l.nameplateRead,
-    }))
-  return {
-    shed: [...shedAC, ...shedOther],
-    overflow: [...acLoads.slice(SMART_SWITCH_AC_SLOTS), ...others.slice(SMM_MAX_MODULES)],
-    smmCount: shedOther.length,
-    carriedStrips,
+
+  const managed: ManagedLoadRow[] = []
+  const refused: RefusedLoadRow[] = []
+  const managedItemIds: string[] = []
+  const carriedStrips: LoadItem[] = []
+  let sacmUsed = 0
+  const capReached = () => managed.length >= MANAGED_LOADS_TOTAL_CAP
+
+  const compressorAmps = (l: LoadItem): number =>
+    l.type === 'heatPump' && l.heatPump ? l.heatPump.compressorVA / 240 : (l.amps ?? resolveVA(l) / 240)
+  const compressorLRA = (l: LoadItem): number | undefined =>
+    l.lockedRotorAmps ?? (l.tons !== undefined ? l.tons * LRA_PER_TON_ESTIMATE : undefined)
+
+  // HVAC on the earliest priorities (Generac guidance), appliances after.
+  // Track heat pumps whose compressor landed a SACM slot — their strips ride
+  // rule 4.
+  const sacmHeatPumpsWithStrips: LoadItem[] = []
+
+  for (const comp of compressors) {
+    if (capReached()) {
+      refused.push({ label: comp.label, reason: '8-managed-load cap reached — stays in the base load.' })
+      continue
+    }
+    if (sacmUsed < SACM_SLOTS) {
+      // Rule 1 — standard 24 VAC thermostat assumed (typical residential);
+      // rule 2's SMM fallback is what a communicating t-stat would get on site.
+      sacmUsed += 1
+      managed.push({
+        label: comp.label,
+        kw: kwOf(comp.type === 'heatPump' && comp.heatPump ? comp.heatPump.compressorVA : resolveVA(comp)),
+        mechanism: `SACM slot ${sacmUsed} (thermostat interrupt)`,
+        priority: managed.length + 1,
+        bomSlot: null,
+        flags: [],
+      })
+      managedItemIds.push(comp.id)
+      if (comp.type === 'heatPump' && (comp.heatPump?.supplementalVA ?? 0) > 0) {
+        sacmHeatPumpsWithStrips.push(comp)
+      }
+      continue
+    }
+    // Rule 2 — SMM at the unit, ONLY within 40 A inductive / 3 HP / 180 LRA.
+    const amps = compressorAmps(comp)
+    const lra = compressorLRA(comp)
+    if (amps > SMM_50A.inductiveAmps || (lra !== undefined && lra > SMM_50A.lraMax)) {
+      refused.push({
+        label: comp.label,
+        reason:
+          `exceeds the 50A SMM's ${SMM_50A.inductiveAmps} A inductive / ${SMM_50A.lraMax} A LRA rating ` +
+          'with no SACM slot free — no management path; stays in the base load.',
+      })
+      continue
+    }
+    const flags: string[] = []
+    if (lra === undefined) flags.push('LRA not captured — verify ≤ 180 A before assigning the SMM.')
+    managed.push({
+      label: comp.label,
+      kw: kwOf(comp.type === 'heatPump' && comp.heatPump ? comp.heatPump.compressorVA : resolveVA(comp)),
+      mechanism: `${SMM_50A.label} (${SMM_50A.model}) at the unit`,
+      priority: managed.length + 1,
+      bomSlot: PRICE_BOOK_SLOTS.smm50,
+      flags,
+    })
+    managedItemIds.push(comp.id)
+    if (comp.type === 'heatPump' && (comp.heatPump?.supplementalVA ?? 0) > 0) {
+      // Compressor on an SMM interrupts the unit's power path — strips ride it.
+      // Nothing extra to plan; the whole item is managed.
+    }
   }
+
+  // Rule 4 — strip kits on SACM-managed heat pumps: may ride the compressor's
+  // interrupted thermostat call (common on packaged units). Never silently
+  // assumed either way: plan the dedicated SMM, flag the verification that
+  // lets the installer drop it.
+  for (const hp of sacmHeatPumpsWithStrips) {
+    const stripVA = hp.heatPump!.supplementalVA
+    const stripAmps = stripVA / 240
+    if (capReached()) {
+      refused.push({
+        label: `${hp.label} — strip kit`,
+        reason: '8-managed-load cap reached — strips stay in the base load.',
+      })
+      carriedStrips.push(stripCarry(hp))
+      continue
+    }
+    const overFifty = stripAmps > SMM_50A.resistiveAmps
+    managed.push({
+      label: `${hp.label} — strip kit`,
+      kw: kwOf(stripVA),
+      mechanism: overFifty
+        ? `SACM (with compressor) or dedicated ${SMM_100A.label} — field-verify`
+        : `SACM (with compressor) or dedicated ${SMM_50A.label} — field-verify`,
+      priority: managed.length + 1,
+      bomSlot: overFifty ? PRICE_BOOK_SLOTS.smm100 : PRICE_BOOK_SLOTS.smm50,
+      flags: [STRIP_SACM_VERIFY_FLAG, ...(overFifty ? [SMM_100A_VERIFY_FLAG] : [])],
+    })
+    // Strips are managed on either path — the base load drops them; the
+    // heatPump item is already in managedItemIds via its compressor, so the
+    // whole item leaves the base and nothing is carried.
+  }
+
+  // Rule 3 — resistance / appliance / EVSE / pool loads on SMMs, sized by
+  // resistive amps.
+  for (const other of others) {
+    if (!isElectric(other)) continue // gas appliances are no electrical load to manage
+    if (capReached()) {
+      refused.push({ label: other.label, reason: '8-managed-load cap reached — stays in the base load.' })
+      continue
+    }
+    const amps = resolveVA(other) / 240
+    const overFifty = amps > SMM_50A.resistiveAmps
+    managed.push({
+      label: other.label,
+      kw: kwOf(resolveVA(other)),
+      mechanism: overFifty ? `${SMM_100A.label} (${SMM_100A.model})` : `${SMM_50A.label} (${SMM_50A.model})`,
+      priority: managed.length + 1,
+      bomSlot: overFifty ? PRICE_BOOK_SLOTS.smm100 : PRICE_BOOK_SLOTS.smm50,
+      flags: overFifty ? [SMM_100A_VERIFY_FLAG] : [],
+    })
+    managedItemIds.push(other.id)
+  }
+
+  return { managed, refused, managedItemIds, carriedStrips, recoveryNote: RECOVERY_STAGGER_NOTE }
 }
 
-/** One SMM reference per assumed module (amendment: each must emit a line). */
-function smmRefs(smmCount: number): string[] {
-  // Module size is picked at install per circuit ampacity; the reference emits
-  // the 50 A part as the default line item, one per assumed module.
-  return Array.from({ length: smmCount }, (_, i) => `${PRICE_BOOK_SLOTS.smm50} — ${SMM_MODULES.amp50} #${i + 1}`)
+/** A strip kit that could NOT be managed, carried back into the base load. */
+function stripCarry(hp: LoadItem): LoadItem {
+  return {
+    id: `${hp.id}-strips-carried`,
+    type: 'spaceHeat',
+    label: `${hp.label} — strip kit (stays in base load)`,
+    nameplateVA: hp.heatPump!.supplementalVA,
+    volts: 240,
+    separatelyControlledUnits: 1,
+    nameplateRead: hp.nameplateRead,
+  }
 }
 
 function generatorRefs(sizing: ModelSizing): string[] {
@@ -524,63 +655,53 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   const fullSurgeNote = surgeNoteFor(fullSizing, surge)
   if (fullSurgeNote) fullNotes.push(fullSurgeNote)
 
-  // Scheme 2: ATS + load management — 702.4(B)(2)(b). The managed load is the
-  // same Article 220 engine run on the inventory minus the shed loads — no
-  // second load model. Shedding respects Generac hardware caps: 4 native A/C
-  // compressor slots on the 200A smart switch, 8 further 240 V loads via SMMs.
-  // Strip kits on shed heat pumps stay IN the managed load (Kyle, 2026-08-29:
-  // the shed system is built for A/C units) — so heat runs, and the unit is
-  // sized to carry it.
-  const shedPlan = planShedding(calcInput.loads)
-  const shedIds = new Set(shedPlan.shed.map((l) => l.id))
+  // Scheme 2: ATS + load management — 702.4(B)(2)(b). The managed base is the
+  // same Article 220 engine run on the inventory minus VALIDLY managed loads —
+  // no second load model, and no phantom shedding (Appendix B rule 5): a
+  // candidate with no SACM slot, over SMM ratings, or past the 8-load cap goes
+  // back into the base and the tier steps up.
+  const plan = planManagement(calcInput.loads)
+  const managedIds = new Set(plan.managedItemIds)
   const managedResult: LoadCalcResult = calculateLoad({
     ...calcInput,
-    loads: [...calcInput.loads.filter((l) => !shedIds.has(l.id)), ...shedPlan.carriedStrips],
+    loads: [...calcInput.loads.filter((l) => !managedIds.has(l.id)), ...plan.carriedStrips],
     futureLoads: [],
   })
   const managedKW = kwOf(managedResult.governingAmps * 240)
   const managedSizing = sizeToModel(managedKW, fuel, derate)
   const managedNotes: string[] = [
-    shedPlan.shed.length > 0
-      ? `Assumes shed devices on: ${shedPlan.shed.map((l) => l.label).join('; ')}.`
-      : 'No shed candidates in the inventory — identical to full-load sizing.',
+    plan.managed.length > 0
+      ? `${plan.managed.length} managed load${plan.managed.length > 1 ? 's' : ''} ` +
+        `(${MANAGED_LOADS_TOTAL_CAP}-load cap; SACM = thermostat-interrupt, compressors only, no hardware; each SMM is a BOM line). ` +
+        `Source: ${LOAD_MGMT_SOURCE}.`
+      : 'No manageable loads in the inventory — identical to full-load sizing.',
   ]
-  if (shedPlan.smmCount > 0) {
-    managedNotes.push(
-      `${shedPlan.smmCount} Smart Management Module${shedPlan.smmCount > 1 ? 's' : ''} assumed ` +
-      `(200A smart switch manages up to ${SMART_SWITCH_AC_SLOTS} A/C compressor loads natively; up to ${SMM_MAX_MODULES} SMMs).`,
-    )
+  // The installer priority table (mirrors Generac's panel decal) rides the
+  // plan itself; the notes carry refusals and flags.
+  for (const row of plan.refused) {
+    managedNotes.push(`No management path — ${row.label}: ${row.reason}`)
   }
-  if (shedPlan.carriedStrips.length > 0) {
-    managedNotes.push(STRIPS_STAY_IN_BASE_NOTE)
+  for (const row of plan.managed) {
+    for (const flag of row.flags) managedNotes.push(`${row.label}: ${flag}`)
   }
-  if (shedPlan.overflow.length > 0) {
-    managedNotes.push(
-      `Beyond hardware capacity — stays in the managed load: ${shedPlan.overflow.map((l) => l.label).join('; ')}.`,
-    )
+  if (plan.managed.length > 0) {
+    managedNotes.push(plan.recoveryNote)
+    managedNotes.push(MANAGED_LOAD_CUSTOMER_WORDING)
   }
-  // Legal isn't the same as livable (Kyle's review, 2026-08-29): 702.4(B)(2)(b)
-  // is satisfied by any size that carries the managed base, but when the
-  // largest shed load exceeds the headroom above that base, it will rarely or
-  // never run in an outage — say so, and name the size that carries it.
-  if (shedPlan.shed.length > 0 && managedSizing.siteDeratedKW !== null) {
-    const largestShed = shedPlan.shed.reduce(
-      (best, l) => {
-        // A shed heat pump sheds its COMPRESSOR only — the strips are carried
-        // in the base load, so they don't count as a shed load here.
-        const kw = kwOf(l.type === 'heatPump' && l.heatPump
-          ? l.heatPump.compressorVA
-          : resolveVA(l))
-        return kw > best.kw ? { label: l.label, kw } : best
-      },
+  // Legal isn't the same as livable (Kyle's review, 2026-08-29): when the
+  // largest managed load exceeds the headroom above the base, it will rarely
+  // run in an outage — say so, and name the size that carries it.
+  if (plan.managed.length > 0 && managedSizing.siteDeratedKW !== null) {
+    const largestManaged = plan.managed.reduce(
+      (best, row) => (row.kw > best.kw ? { label: row.label, kw: row.kw } : best),
       { label: '', kw: 0 },
     )
     const headroomKW = round2(managedSizing.siteDeratedKW - managedKW)
-    if (largestShed.kw > headroomKW) {
-      const stepUp = sizeToModel(managedKW + largestShed.kw, fuel, derate)
+    if (largestManaged.kw > headroomKW) {
+      const stepUp = sizeToModel(managedKW + largestManaged.kw, fuel, derate)
       managedNotes.push(
         `Managed loads run only as capacity allows: ~${headroomKW} kW of headroom above the base load, ` +
-        `but the largest shed load (${largestShed.label}, ${largestShed.kw} kW) exceeds it — ` +
+        `but the largest managed load (${largestManaged.label}, ${largestManaged.kw} kW) exceeds it — ` +
         `expect it to run rarely or never during an outage. ` +
         (stepUp.model !== null
           ? `For it to run under load management, the Guardian ${stepUp.model.classLabel} kW (model ${stepUp.model.generatorModel}) carries base plus that load.`
@@ -631,10 +752,12 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       requiredKW: managedKW,
       requiredAmps: managedResult.governingAmps,
       ...managedSizing,
-      shedLoads: shedPlan.shed.map((l) => l.label),
+      shedLoads: plan.managed.map((row) => row.label),
+      managementPlan: plan,
       priceBookRefs: [
         ...generatorRefs(managedSizing),
-        ...smmRefs(shedPlan.smmCount),
+        // One line per SMM — dedupe never: each module is billable hardware.
+        ...plan.managed.filter((row) => row.bomSlot !== null).map((row) => `${row.bomSlot} — ${row.label}`),
         ...(softStart ? [PRICE_BOOK_SLOTS.softStartKit] : []),
       ],
       notes: managedNotes,

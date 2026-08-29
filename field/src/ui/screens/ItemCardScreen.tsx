@@ -37,6 +37,8 @@ interface Props {
    */
   openFinding?: FindingRecord
   onSave: (result: ItemResult, loadCalc?: InspectionLoadCalc) => void
+  /** Fires the moment Apply is tapped — the calc persists even if the tech backs out of the card. */
+  onLoadCalcApplied?: (record: InspectionLoadCalc) => void
   onBack: () => void
 }
 
@@ -93,7 +95,7 @@ const resultOptions: { value: ResultState; label: string; classes: string }[] = 
 ]
 
 export function ItemCardScreen({
-  item, existing, existingLoadCalc, otherResults = {}, openFinding, onSave, onBack,
+  item, existing, existingLoadCalc, otherResults = {}, openFinding, onSave, onLoadCalcApplied, onBack,
 }: Props) {
   const [result, setResult] = useState<ResultState | undefined>(existing?.result)
   const [gradedState, setGradedState] = useState<GradedState | undefined>(existing?.gradedState)
@@ -294,6 +296,9 @@ export function ItemCardScreen({
               service_amps: record.input.serviceAmps,
               calc_load: record.result.governingAmps,
             }))
+            // Persist NOW — an applied calc must survive backing out of the
+            // card (Kyle's Caysens record synced without one, 2026-08-29).
+            onLoadCalcApplied?.(record)
           }}
         />
       )}

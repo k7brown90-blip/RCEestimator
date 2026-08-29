@@ -6,7 +6,7 @@ import { CustomerMatchPicker } from "../components/CustomerMatchPicker";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
-import { isArchivedJob } from "../lib/types";
+import { isActiveJob } from "../lib/types";
 import { money } from "../lib/utils";
 
 /** One row of the addresses repeater. */
@@ -222,7 +222,9 @@ export function AccountsPage() {
         {filtered.map((account) => {
           const properties = account.properties ?? [];
           const visits = properties.flatMap((property) => property.visits ?? []);
-          const activeCount = visits.filter((visit) => !isArchivedJob(visit.status ?? "")).length;
+          // Signed work only — a booked consultation is not an "active job"
+          // (Kyle, 2026-08-29).
+          const activeCount = visits.filter((visit) => isActiveJob(visit.status ?? "")).length;
           const lifetimeRevenue = visits.reduce((sum, visit) => sum + (visit.revenue ?? 0), 0);
 
           return (

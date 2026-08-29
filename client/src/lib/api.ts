@@ -361,6 +361,12 @@ export const api = {
   updateVisit: (visitId: string, input: { mode?: string; purpose?: string; jobType?: string; notes?: string }) =>
     request<Visit>(`/visits/${visitId}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteVisit: (visitId: string) => request<void>(`/visits/${visitId}`, { method: "DELETE" }),
+  /** Close out a consultation (estimate-stage visit): completed + archived in one act (Kyle, 2026-08-29). */
+  completeConsultation: (visitId: string) =>
+    request<{ completed: true; completedAt: string }>(`/visits/${visitId}/complete-consultation`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   upsertCustomerRequest: (visitId: string, input: { requestText: string; urgency?: string }) => request(`/visits/${visitId}/customer-request`, { method: "POST", body: JSON.stringify(input) }),
   updateCustomerRequest: (visitId: string, input: { requestText: string; urgency?: string }) => request(`/visits/${visitId}/customer-request`, { method: "PATCH", body: JSON.stringify(input) }),
   addObservation: (visitId: string, input: { observationText: string; location?: string }) => request(`/visits/${visitId}/observations`, { method: "POST", body: JSON.stringify(input) }),

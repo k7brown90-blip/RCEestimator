@@ -242,6 +242,14 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
           otherResults={session.results}
           openFinding={findingByItem.get(item.id)}
           existingLoadCalc={item.id === 'LOAD' ? session.loadCalc : undefined}
+          // Persist the calc the moment Apply is tapped — waiting for the item
+          // save silently lost the calculation when the tech backed out
+          // (Kyle's Caysens record, 2026-08-29, synced with no load calc).
+          onLoadCalcApplied={(record) => {
+            const next: Session = { ...session, loadCalc: record }
+            setSession(next)
+            void saveDraft(toInspection(next, 'draft', false, visibleItems))
+          }}
           onBack={() => setScreen('checklist')}
           onSave={(result, loadCalc) => {
             const withLocation = locateResult(result, session.subPanels)

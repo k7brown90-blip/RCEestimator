@@ -1220,8 +1220,13 @@ export async function generateGeneratorReport(
     doc.fontSize(9).fillColor(BRAND.muted);
     doc.text(`    ${scheme.necBasis} · ${scheme.requiredKW !== null ? `${scheme.requiredKW} kW required (${scheme.requiredAmps} A)` : "no code-minimum size"} · basis: ${scheme.loadBasis}`);
     doc.fillColor(BRAND.text).text(`    Recommended: ${modelLine(scheme)}`);
-    // The engine's notes already name the shed loads ("Assumes shed devices
-    // on: …") — printing scheme.shedLoads too doubled the list on the page.
+    // Installer priority table — mirrors Generac's panel decal (Appendix B).
+    const planRows = (scheme as { managementPlan?: { managed: Array<{ priority: number; label: string; mechanism: string; kw: number; bomSlot: string | null }> } }).managementPlan?.managed ?? [];
+    for (const row of planRows) {
+      doc.fillColor(BRAND.text).text(
+        `    P${row.priority} · ${row.label} (${row.kw} kW) — ${row.mechanism}${row.bomSlot ? ` · ${row.bomSlot}` : " · no hardware"}`,
+      );
+    }
     for (const note of scheme.notes) doc.fillColor(BRAND.muted).text(`    ${note}`);
     doc.fillColor(BRAND.text);
     doc.moveDown(0.3);

@@ -216,7 +216,9 @@ export function buildPushPayload(inspection: Inspection, property: Property): ob
     ...(inspection.sectionNotes?.length ? { sectionNotes: inspection.sectionNotes } : {}),
     ...(inspection.acknowledgment ? { acknowledgment: inspection.acknowledgment } : {}),
     ...(inspection.ackSkippedReason ? { ackSkippedReason: inspection.ackSkippedReason } : {}),
-    appVersion: 'phase-2',
+    // The build id, not a frozen phase label — so the office can see exactly
+    // which bundle a record came from and spot a stale cached app at a glance.
+    appVersion: `phase-2 · ${__BUILD_ID__}`,
   }
 }
 

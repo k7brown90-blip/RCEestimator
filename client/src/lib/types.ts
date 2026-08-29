@@ -15,6 +15,16 @@ export const ARCHIVED_JOB_STATUSES: JobStatus[] = ["completed", "cancelled"];
 export const isArchivedJob = (status: string): boolean =>
   ARCHIVED_JOB_STATUSES.includes(status as JobStatus);
 
+/**
+ * Kyle, 2026-08-29: "Signed estimates turn into active jobs. Consultations
+ * just get marked completed and archived." Estimate-stage visits are
+ * consultations — never counted as active jobs anywhere in the UI.
+ */
+export const ACTIVE_JOB_STATUSES: JobStatus[] = ["contracted", "scheduled", "in_progress"];
+
+export const isActiveJob = (status: string): boolean =>
+  ACTIVE_JOB_STATUSES.includes(status as JobStatus);
+
 export type JobCosts = {
   estimatedCost: number | null;
   materialCost: number;

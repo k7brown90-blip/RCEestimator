@@ -323,6 +323,7 @@ export function PriceBookIntakePage() {
             options={computed?.options}
             openQuestions={review?.counts.openQuestions ?? 0}
             openItems={openItems}
+            draftId={draftId}
           />
         </>
       )}
@@ -1427,7 +1428,18 @@ function TotalsBar(props: {
   options?: PbOptionSummary[];
   openQuestions: number;
   openItems: number;
+  draftId?: string | null;
 }) {
+  // One-or-the-other mode (Kyle, 2026-08-29: "it is still totaling all
+  // options together") — under exclusive options a grand sum is a lie; the
+  // bar shows the per-option range instead. Cache-shared with OptionsModeBar.
+  const draftId = props.draftId ?? "";
+  const { data: optionsMode } = useQuery({
+    queryKey: ["pbOptionsMode", draftId],
+    queryFn: () => api.pbOptionsMode(draftId),
+    enabled: Boolean(props.draftId),
+  });
+  const exclusive = optionsMode?.exclusiveOptions ?? false;
   /*
     Declared BEFORE the early return below, deliberately.
 
@@ -1546,7 +1558,22 @@ function TotalsBar(props: {
           </>
           )}
           <div className="flex items-center justify-end gap-2">
-            <div className="text-lg font-semibold">{money(c.total)}</div>
+            {/* Exclusive mode: the customer picks ONE, so a grand sum of all
+                options is the wrong number to headline (Kyle, 2026-08-29). */}
+            {exclusive && usedOptions.length > 1 ? (
+              <div className="text-right">
+                <div className="text-lg font-semibold">
+                  {money(Math.min(...usedOptions.map((o) => o.subtotal)))}
+                  {"–"}
+                  {money(Math.max(...usedOptions.map((o) => o.subtotal)))}
+                </div>
+                <div className="text-[10px] text-rce-soft">
+                  one of: {usedOptions.map((o) => `${o.option} ${money(o.subtotal)}`).join(" · ")}
+                </div>
+              </div>
+            ) : (
+              <div className="text-lg font-semibold">{money(c.total)}</div>
+            )}
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}

@@ -65,25 +65,69 @@ export const LIQUID_COOLED_TEXT =
  */
 export const PARTIAL_COLLAPSE_RATIO = 0.85
 
+
+// ── Load-management hardware (P031 second amendment — Appendix B) ───────────
+// Controlling source: Generac 50A SMM install manual 10000030493 Rev E
+// (12/2020); where spec sheets conflict, the install manual controls.
+
+export const LOAD_MGMT_SOURCE = 'Generac 50A SMM manual 10000030493 Rev E (12/2020)'
+
 /**
- * Emitted when a shed heat pump carries a strip kit: the shed system is built
- * for A/C units (Kyle, 2026-08-29), so the compressor sheds and the strips
- * stay in the base load the generator must carry.
+ * SACM (Smart A/C Module) — built into the 100–800A RTS/RXS transfer switch
+ * ("DPM" in marketing). Sheds by interrupting the load's 24 VAC THERMOSTAT
+ * circuit: control-side, no contactor rating limit, COMPRESSORS ONLY, up to 4
+ * loads on priorities 1–4, zero marginal hardware cost.
  */
-export const STRIPS_STAY_IN_BASE_NOTE =
-  'Heat-strip kit stays in the managed base load — the shed system manages A/C compressor loads; resistance heat is never assumed sheddable, so heat keeps running.'
+export const SACM_SLOTS = 4
 
-// ── Load-management hardware caps (amendment rule 2, Generac published) ─────
+/**
+ * Combined cap: 8 managed loads TOTAL (SACM priorities + SMMs together — the
+ * priority table has exactly 8 slots; install manual controls over spec-sheet
+ * wording). Fewer SACM loads frees slots for more SMMs.
+ */
+export const MANAGED_LOADS_TOTAL_CAP = 8
 
-/** The 200A service-rated smart switch natively manages up to 4 A/C loads. */
-export const SMART_SWITCH_AC_SLOTS = 4
-/** Up to 8 additional 240 V loads via Smart Management Modules. */
-export const SMM_MAX_MODULES = 8
-/** SMM module references, emitted per assumed module in the package reference. */
-export const SMM_MODULES = {
-  amp50: 'G007000-0 (50A SMM)',
-  amp100: 'G007006-0 (100A SMM)',
+/**
+ * SMM (Smart Management Module) — standalone 240 V contactor in the load's
+ * power path; autonomous under-frequency shed, no control wires, works on ANY
+ * 240 V load. Every SMM is a billable BOM line.
+ */
+export const SMM_50A = {
+  model: 'G007000-0',
+  label: '50A SMM',
+  resistiveAmps: 50,
+  inductiveAmps: 40,
+  hp: 3,
+  lraMax: 180,
 } as const
+
+/** 100A model exists; inductive/HP/LRA ratings NOT in the fetched documents — verify before assigning, never invent. */
+export const SMM_100A = {
+  model: 'G007006-0',
+  label: '100A SMM',
+} as const
+
+export const SMM_100A_VERIFY_FLAG =
+  '100A SMM (G007006-0) ratings are unverified in the source documents — verify inductive/HP/LRA limits before assigning.'
+
+/**
+ * Rule 4 — heat-pump strip kits. May ride the compressor's SACM slot IF the
+ * strips stage off the same interrupted thermostat call (common on packaged
+ * units). Never silently assumed either way.
+ */
+export const STRIP_SACM_VERIFY_FLAG =
+  'Confirm aux-heat staging is interrupted by the thermostat circuit — if so, the strips ride the ' +
+  "compressor's SACM slot and the dedicated SMM below can be dropped; otherwise install it " +
+  '(strip kW ÷ 240 V against the 50 A resistive rating).'
+
+/** Recovery staggering, printed with the installer priority table. */
+export const RECOVERY_STAGGER_NOTE =
+  'Recovery: priority 1 returns 5:00 after the generator stabilizes, +15 s per priority step (P8 = 6:45); ' +
+  'a failed recovery locks that load out for 30 minutes; 5-minute initial delay on any power-up. ' +
+  'Generac guidance: HVAC loads on the earliest priorities, appliance loads after.'
+
+/** The customer-sheet wording for managed loads (SMM lockout behavior). */
+export const MANAGED_LOAD_CUSTOMER_WORDING = 'Managed loads run only as capacity allows.'
 
 // ── Site derates (amendment rule 3, Generac published) ──────────────────────
 
@@ -118,22 +162,20 @@ export const FUEL_SUPPLY_SCOPE_LINE =
 // ── Partial-tier and check constants (unchanged by the amendment) ───────────
 
 /**
- * DEFAULT shed-candidate list for the load-management scheme (702.4(B)(2)(b)):
- * the big deferrable 240 V loads. Editable data; the output names what it shed.
- *
- * NO HEATING TYPES (Kyle, 2026-08-29: "The load shed system is built
- * specifically for A/C units"). A/C compressor loads ride the smart switch's
- * native management; water heater / cooking / dryer / EVSE ride SMMs per the
- * P031 amendment. Resistance heat is NEVER assumed sheddable — a shed heat
- * pump sheds its COMPRESSOR only, and its strip kit stays in the managed base
- * load the generator carries (which is also what keeps the house warm).
+ * Shed candidates for the load-management scheme (702.4(B)(2)(b)) — the
+ * Appendix B rule-3 list: compressors ride SACM (or an in-ratings SMM),
+ * resistance/appliance/EVSE/pool loads ride SMMs. A candidate only LEAVES the
+ * required-capacity calculation when a valid management path exists (free
+ * slot, within SMM ratings, within the 8-load cap) — no phantom shedding.
  */
 export const SHED_CANDIDATE_TYPES: readonly string[] = [
-  'cooling', 'heatPump', // compressor loads — native smart-switch management
+  'cooling', 'heatPump',
+  'spaceHeat',
   'waterHeaterTank', 'waterHeaterTankless',
   'range', 'oven', 'cooktop',
   'dryer',
   'evse',
+  'poolPump', 'poolHeater', 'spaSelfContained',
 ]
 
 /**
@@ -181,7 +223,7 @@ export const TANKLESS_ELECTRIC_MIN_KW = 18
  * Price-book slot references (P031: "by slot ID only — do not invent prices").
  * These resolve against the price book when the import lane lands; until then
  * the UI says so instead of showing blanks. Amendment: slots are Generac
- * model-keyed, and each assumed SMM emits its own line.
+ * model-keyed; each SMM is a billable BOM line (Appendix B).
  */
 export const PRICE_BOOK_SLOTS = {
   generator: (generatorModel: string) => `GEN-GENERAC-${generatorModel.replace(/\//g, '_')}`,

@@ -142,6 +142,7 @@ export function VisitWorkspacePage() {
           scheduledStart={visit.scheduledStart}
           scheduledEnd={visit.scheduledEnd}
           durationDays={visit.estimatedDurationDays}
+          completedAt={visit.completedAt}
           onScheduled={refreshVisit}
         />
         {/* Money renders itself only when a signed estimate exists — the

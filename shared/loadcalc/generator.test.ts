@@ -289,39 +289,91 @@ describe('whole-home schemes', () => {
     expect(full.model?.generatorModel).toBe('7035/36/37')
   })
 
-  it('load management names every shed load within hardware caps, A/C loads first', () => {
+  it('SACM first for compressors, SMMs for the rest, strips on the verify path (Appendix B)', () => {
     const rec = recommend(allElectric)
     const managed = rec.wholeHome[1]
-    // 2 A/C loads (≤4 native slots) + 4 other 240 V loads.
-    expect(managed.shedLoads).toEqual([
-      'Heat pump', 'Second A/C', 'Range', 'Dryer', 'Water heater', 'EV charger (40 A)',
-    ])
-    expect(managed.notes.join(' ')).toContain('Assumes shed devices on')
-    // One SMM per non-A/C shed load (range, dryer, WH, EVSE). The heat pump's
-    // strip kit gets NO shed hardware — "the load shed system is built
-    // specifically for A/C units" (Kyle, 2026-08-29): the compressor sheds,
-    // the strips stay in the base load and the unit is sized to carry them.
-    expect(managed.priceBookRefs.filter((r) => r.includes('SMM')).length).toBe(4)
-    expect(managed.notes.join(' ')).toContain('stays in the managed base load')
-    // Base = lighting/SA/laundry + the carried 7 kW strips at 65% → ~15.6 kW,
-    // sized to the 16/16 class, NOT the 14 kW unit a strip-shedding assumption
-    // would have picked.
-    expect(managed.requiredKW).toBeCloseTo(15.6, 1)
-    expect(managed.model?.generatorModel).toBe('7035/36/37')
-    const full = rec.wholeHome[0]
-    expect(managed.requiredKW!).toBeLessThan(full.requiredKW!)
+    const plan = managed.managementPlan!
+    // Compressors take the free SACM slots on the earliest priorities.
+    expect(plan.managed[0].label).toBe('Heat pump')
+    expect(plan.managed[0].mechanism).toContain('SACM')
+    expect(plan.managed[0].priority).toBe(1)
+    expect(plan.managed[0].bomSlot).toBeNull() // zero marginal hardware
+    expect(plan.managed[1].mechanism).toContain('SACM')
+    // Rule 4: strips may ride the compressor's interrupted t-stat call —
+    // never silently assumed; the dedicated SMM is planned WITH the verify flag.
+    const strips = plan.managed.find((r) => r.label.includes('strip kit'))!
+    expect(strips.mechanism).toContain('field-verify')
+    expect(strips.bomSlot).toContain('SMM')
+    expect(strips.flags.join(' ')).toContain('aux-heat staging')
+    // Appliances ride SMMs (range at exactly 50 A resistive fits the 50A module).
+    const range = plan.managed.find((r) => r.label === 'Range')!
+    expect(range.mechanism).toContain('50A SMM')
+    // 5 billable SMM lines: strips, range, dryer, WH, EVSE. Nothing refused.
+    expect(managed.priceBookRefs.filter((r) => r.includes('SMM')).length).toBe(5)
+    expect(plan.refused).toEqual([])
+    // Everything validly managed leaves the base: lighting/SA/laundry only.
+    expect(managed.requiredKW).toBeCloseTo(11.04, 1)
+    expect(managed.model?.generatorModel).toBe('7223')
+    expect(managed.notes.join(' ')).toContain('Recovery')
   })
 
-  it('warns when the largest shed load exceeds the managed headroom (Kyle review, 2026-08-29)', () => {
-    // ~0.4 kW headroom on the 16 kW unit; the largest SHED load is the range
-    // (12 kW — the heat pump counts compressor-only, its strips being carried).
-    // Legal per 702.4(B)(2)(b); the note says it plainly and prices the truth:
-    // base + range on LP is past air-cooled.
+  it('warns when the largest managed load exceeds the headroom, naming the step-up', () => {
+    // 14 kW unit − 11.04 base ≈ 3 kW headroom; the range (12 kW) exceeds it.
     const managed = recommend(allElectric).wholeHome[1]
     const note = managed.notes.join(' ')
     expect(note).toContain('rarely or never')
     expect(note).toContain('Range')
-    expect(note).toContain('liquid-cooled')
+    expect(note).toContain('7209') // base + range = 23.04 kW → 24/21 on LP
+  })
+
+  it('5th compressor falls to an SMM with the rating check; over-ratings are refused — no phantom shedding', () => {
+    const five = input({
+      loads: [
+        ...Array.from({ length: 4 }, (_, i) =>
+          load({ type: 'cooling', label: `A/C ${i + 1}`, amps: 17, volts: 240, lockedRotorAmps: 100 })),
+        load({ type: 'cooling', label: 'A/C 5 (small)', amps: 17, volts: 240, lockedRotorAmps: 100 }),
+        load({ type: 'cooling', label: 'A/C 6 (5-ton)', amps: 26, volts: 240, lockedRotorAmps: 230 }),
+      ],
+    })
+    const plan = recommend(five).wholeHome[1].managementPlan!
+    // 5th compressor: no SACM slot left → 50A SMM, within 40 A / 180 LRA.
+    const fifth = plan.managed.find((r) => r.label === 'A/C 5 (small)')!
+    expect(fifth.mechanism).toContain('50A SMM')
+    expect(fifth.bomSlot).toContain('SMM')
+    // 6th (5-ton, 230 LRA): over the SMM's 180 LRA with no SACM slot → refused,
+    // returns to the base load (rule 5 — the tier steps up instead of lying).
+    const refused = plan.refused.find((r) => r.label === 'A/C 6 (5-ton)')!
+    expect(refused.reason).toContain('no management path')
+    expect(plan.managed.some((r) => r.label === 'A/C 6 (5-ton)')).toBe(false)
+  })
+
+  it('9th managed load is refused at the combined cap', () => {
+    const crowded = input({
+      loads: [
+        ...Array.from({ length: 4 }, (_, i) =>
+          load({ type: 'cooling', label: `A/C ${i + 1}`, amps: 17, volts: 240, lockedRotorAmps: 100 })),
+        load({ type: 'waterHeaterTank', label: 'WH', nameplateKW: 4.5 }),
+        load({ type: 'dryer', label: 'Dryer', nameplateKW: 5 }),
+        load({ type: 'range', label: 'Range', nameplateKW: 12 }),
+        load({ type: 'evse', label: 'EVSE', nameplateKW: 9.6 }),
+        load({ type: 'poolHeater', label: 'Pool heater', nameplateKW: 11 }),
+      ],
+    })
+    const plan = recommend(crowded).wholeHome[1].managementPlan!
+    expect(plan.managed.length).toBe(8)
+    expect(plan.refused.length).toBe(1)
+    expect(plan.refused[0].label).toBe('Pool heater')
+    expect(plan.refused[0].reason).toContain('cap')
+  })
+
+  it('a load over 50 A resistive gets the 100A module with the verify flag', () => {
+    const big = input({
+      loads: [load({ type: 'waterHeaterTankless', label: 'Tankless WH', nameplateKW: 13, fuel: 'electric' })],
+    })
+    const plan = recommend(big).wholeHome[1].managementPlan!
+    const row = plan.managed.find((r) => r.label === 'Tankless WH')!
+    expect(row.mechanism).toContain('100A SMM')
+    expect(row.flags.join(' ')).toContain('unverified')
   })
 
   it('collapses the essential tier when it saves nothing vs whole home (Kyle review, 2026-08-29)', () => {
@@ -335,25 +387,6 @@ describe('whole-home schemes', () => {
     expect(flag!.message).toContain('saves nothing')
     const interlock = rec.wholeHome.find((s) => s.scheme === 'interlock_manual')!
     expect(interlock.notes.join(' ')).toContain('suppressed')
-  })
-
-  it('never assumes more shed slots than 4 A/C + 8 SMM (amendment rule 2)', () => {
-    const crowded = input({
-      loads: [
-        ...Array.from({ length: 6 }, (_, i) =>
-          load({ type: 'cooling', label: `A/C ${i + 1}`, amps: 11, volts: 240 })),
-        ...Array.from({ length: 10 }, (_, i) =>
-          load({ type: 'fixedAppliance', label: `Fixed ${i + 1}`, nameplateKW: 1 })),
-        ...Array.from({ length: 10 }, (_, i) =>
-          load({ type: 'waterHeaterTank', label: `WH ${i + 1}`, nameplateKW: 4.5 })),
-      ],
-    })
-    const managed = recommend(crowded).wholeHome[1]
-    const acShed = managed.shedLoads!.filter((l) => l.startsWith('A/C')).length
-    const otherShed = managed.shedLoads!.length - acShed
-    expect(acShed).toBe(4)
-    expect(otherShed).toBe(8)
-    expect(managed.notes.join(' ')).toContain('stays in the managed load')
   })
 
   it('EVSE is excluded from the partial tier and listed as not covered', () => {

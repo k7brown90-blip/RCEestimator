@@ -3438,6 +3438,39 @@ app.post("/crm/jobs/:jobId/cancel", asyncHandler(async (req, res) => {
 /** A job is archived once it's finished or called off; everything else is active. */
 export const ARCHIVED_JOB_STATUSES = ["completed", "cancelled"] as const;
 
+/**
+ * Kyle, 2026-08-29: "Signed estimates turn into active jobs. Consultations
+ * just get marked completed and archived." An estimate-stage visit is a
+ * consultation, never an "active job" — only signed work counts.
+ */
+export const ACTIVE_JOB_STATUSES = ["contracted", "scheduled", "in_progress"] as const;
+
+/**
+ * Close out a consultation. Estimate-stage only — real jobs close through the
+ * job flow. Sets completedAt and archives it directly (no needs-next-step
+ * queue: "consultations just get marked completed and archived").
+ */
+app.post("/visits/:id/complete-consultation", asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const visit = await prisma.visit.findUnique({ where: { id }, select: { id: true, status: true } });
+  if (!visit) {
+    res.status(404).json({ error: "Visit not found" });
+    return;
+  }
+  if (visit.status !== "estimate") {
+    res.status(409).json({
+      error: "Only estimate-stage consultations complete this way — jobs close out through the job flow.",
+    });
+    return;
+  }
+  const now = new Date();
+  const updated = await prisma.visit.update({
+    where: { id },
+    data: { completedAt: now, nextStep: "archived", nextStepAt: now },
+  });
+  res.json({ completed: true, completedAt: updated.completedAt });
+}));
+
 app.get("/jobs", asyncHandler(async (req, res) => {
   // Absent ?archived returns every job, so existing callers are unaffected.
   const archivedParam = readQuery(req, "archived");
@@ -4452,7 +4485,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       const propertyFindings = findings.filter((f) => f.propertyId === property.id);
       return {
         ...property,
-        activeJobCount: propertyJobs.filter((j) => !j.archived).length,
+        activeJobCount: propertyJobs.filter((j) => ACTIVE_JOB_STATUSES.includes(j.status as (typeof ACTIVE_JOB_STATUSES)[number])).length, // signed work only (Kyle, 2026-08-29)
         completedJobCount: propertyJobs.filter((j) => j.archived).length,
         lastInspectionDate: lastInspectionByProperty.get(property.id) ?? null,
         openFindingCount: propertyFindings.filter((f) => f.status === "open" || f.status === "scheduled").length,
@@ -4518,7 +4551,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
     })),
     totals: {
       ...sumJobCosts(jobs.map((j) => j.costs)),
-      activeJobCount: jobs.filter((j) => !j.archived).length,
+      activeJobCount: jobs.filter((j) => ACTIVE_JOB_STATUSES.includes(j.status as (typeof ACTIVE_JOB_STATUSES)[number])).length, // signed work only (Kyle, 2026-08-29)
       completedJobCount: jobs.filter((j) => j.archived).length,
       propertyCount: account.properties.length,
     },

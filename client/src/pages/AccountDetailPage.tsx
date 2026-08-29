@@ -6,7 +6,7 @@ import { InspectionResultChip } from "../components/InspectionResultChip";
 import { FindingLedger } from "../components/FindingLedger";
 import { SendToPicker } from "../components/SendToPicker";
 import { PaymentPanel } from "../components/PaymentPanel";
-import { PhotoAttachPicker } from "../components/PhotoGalleryPanel";
+import { PhotoAttachPicker, PropertyPhotoSection } from "../components/PhotoGalleryPanel";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, openProtectedPdf } from "../lib/api";
@@ -461,6 +461,28 @@ export function AccountDetailPage() {
       />
 
       <HealthInspectionHistory accountId={account.id} customerEmail={account.email} />
+
+      {/* ── Photos, per address (Kyle, 2026-08-29: "I don't see where to find
+          the photos, I need to be able to access them"). Read-only here —
+          upload and tagging live on the visit's gallery. ── */}
+      {properties.length > 0 && (
+        <section className="card mt-5 p-4">
+          <h2 className="text-lg font-semibold">Photos</h2>
+          <p className="mb-3 text-xs text-rce-muted">
+            Every photo on record at each address — job photos across visits and Health Record
+            assessment shots. Add photos from the visit page's gallery.
+          </p>
+          <div className="space-y-2">
+            {properties.map((property) => (
+              <PropertyPhotoSection
+                key={property.id}
+                propertyId={property.id}
+                propertyLabel={`${property.name} — ${property.addressLine1}, ${property.city}`}
+              />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
