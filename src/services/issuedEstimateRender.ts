@@ -476,7 +476,6 @@ export function renderEstimatePage(
             <tbody>${wholeRows}</tbody>
           </table>
           ${partialBlock}
-          <p style="font-size:12px;color:#555;margin:10px 0 0;">${escapeHtml(rec.disclaimer)}</p>
         </div>`;
     } catch {
       // A malformed snapshot must not take down the estimate page — the
