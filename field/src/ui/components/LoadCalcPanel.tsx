@@ -112,6 +112,25 @@ function LoadRow({
             />
           </label>
         )}
+        {/* Off the condenser plate — feeds the generator sizing surge check
+            (P031). Without it every recommendation flags "provide condenser
+            LRA or tonnage" with nowhere on site to answer it (Kyle,
+            2026-08-29, the Hamrick report). */}
+        {(item.type === 'cooling' || item.type === 'heatPump') && (
+          <label className="flex items-center gap-1">
+            LRA
+            <input
+              type="number"
+              step="0.1"
+              placeholder="plate"
+              className="w-16 rounded border border-slate-600 bg-slate-800 p-1 text-white"
+              value={item.lockedRotorAmps ?? ''}
+              onChange={(e) =>
+                onChange({ ...item, lockedRotorAmps: e.target.value === '' ? undefined : Number(e.target.value) })
+              }
+            />
+          </label>
+        )}
         {(item.type === 'arcWelder' || item.type === 'resistanceWelder') && (
           <label className="flex items-center gap-1">
             duty %
