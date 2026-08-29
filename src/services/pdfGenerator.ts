@@ -1176,7 +1176,7 @@ export async function generateGeneratorReport(
 
   const docId = uuidv4();
   const doc = new PDFDocument({ margin: 36 });
-  addHeader(doc, "Generator Sizing Recommendation");
+  addHeader(doc, "Generator Sizing Data Sheet");
 
   const dateStr = inspection.inspectionDate.toLocaleDateString("en-US", { timeZone: "America/Chicago" });
   doc.fontSize(11).fillColor(BRAND.text);
@@ -1240,7 +1240,8 @@ export async function generateGeneratorReport(
   bullet(`Calculated demand: ${stored.result.governingAmps} A × 240 V = ${full.requiredKW} kW (Article 220, ${stored.result.methodUsed} method)`);
   bullet(`Electrical service: ${stored.input.serviceAmps} A`);
   bullet(`Generator fuel: ${fuelName} — sizing uses each model's published ${rec.fuel} rating`);
-  bullet(`Site adjustment: ×${rec.siteDerateFactor} (−3.5% per 1,000 ft altitude; −1% per 10 °F above 60 °F)`);
+  // ASCII hyphen, not U+2212 — PDFKit's WinAnsi fonts print the Unicode minus as a quote mark.
+  bullet(`Site adjustment: ×${rec.siteDerateFactor} (-3.5% per 1,000 ft altitude; -1% per 10 °F above 60 °F)`);
   if (rec.surge.status === "ok" && rec.surge.startKVA !== null) {
     bullet(`Largest motor start: ${rec.surge.largestMotorLabel} — ${rec.surge.startKVA} kVA locked-rotor`);
   }
