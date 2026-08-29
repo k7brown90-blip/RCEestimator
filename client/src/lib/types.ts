@@ -164,6 +164,8 @@ export type Visit = {
   googleEventId?: string | null;
   confirmationStatus?: string | null;
   contractedAt?: string | null;
+  /** Set when the visit (a consultation, or later a job) was closed out. */
+  completedAt?: string | null;
   estimatedCost?: number | null;
   actualMaterialCost?: number | null;
   laborHours?: number | null;

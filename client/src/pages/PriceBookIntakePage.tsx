@@ -1563,12 +1563,12 @@ function TotalsBar(props: {
             {exclusive && usedOptions.length > 1 ? (
               <div className="text-right">
                 <div className="text-lg font-semibold">
-                  {money(Math.min(...usedOptions.map((o) => o.subtotal)))}
+                  {money(Math.min(...usedOptions.map((o) => o.subtotal ?? 0)))}
                   {"–"}
-                  {money(Math.max(...usedOptions.map((o) => o.subtotal)))}
+                  {money(Math.max(...usedOptions.map((o) => o.subtotal ?? 0)))}
                 </div>
                 <div className="text-[10px] text-rce-soft">
-                  one of: {usedOptions.map((o) => `${o.option} ${money(o.subtotal)}`).join(" · ")}
+                  one of: {usedOptions.map((o) => `${o.option} ${money(o.subtotal ?? 0)}`).join(" · ")}
                 </div>
               </div>
             ) : (
