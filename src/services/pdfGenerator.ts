@@ -479,6 +479,8 @@ interface PreparedPhoto {
   buf: Buffer;
   width: number;
   height: number;
+  /** Gallery photos carry their caption under the image. */
+  caption?: string | null;
 }
 
 async function preparePhoto(data: Buffer | Uint8Array): Promise<PreparedPhoto | null> {
@@ -496,6 +498,7 @@ async function preparePhoto(data: Buffer | Uint8Array): Promise<PreparedPhoto | 
 
 /**
  * Draw photos two-up, breaking pages so an image never straddles the footer.
+ * A photo with a caption gets it printed under its own cell.
  */
 function drawPhotos(doc: PDFKit.PDFDocument, photos: PreparedPhoto[]): void {
   const margin = 36;
@@ -509,12 +512,21 @@ function drawPhotos(doc: PDFKit.PDFDocument, photos: PreparedPhoto[]): void {
       return { w: p.width * scale, h: p.height * scale };
     });
     const rowH = Math.max(...dims.map((d) => d.h));
-    if (doc.y + rowH > doc.page.height - 72) doc.addPage();
+    const anyCaption = row.some((p) => (p.caption ?? "").trim().length > 0);
+    const captionH = anyCaption ? 14 : 0;
+    if (doc.y + rowH + captionH > doc.page.height - 72) doc.addPage();
     const y = doc.y;
     row.forEach((p, j) => {
-      doc.image(p.buf, margin + j * (cellW + gutter), y, { width: dims[j].w, height: dims[j].h });
+      const x = margin + j * (cellW + gutter);
+      doc.image(p.buf, x, y, { width: dims[j].w, height: dims[j].h });
+      const caption = (p.caption ?? "").trim();
+      if (caption) {
+        doc.fillColor(BRAND.muted).fontSize(7)
+          .text(caption, x, y + rowH + 2, { width: cellW, height: 10, ellipsis: true });
+        doc.fillColor(BRAND.text);
+      }
     });
-    doc.y = y + rowH + 6;
+    doc.y = y + rowH + captionH + 6;
     doc.x = margin;
   }
 }
@@ -748,6 +760,21 @@ export async function generateHealthReport(
   }
   const photosFor = (row: ReportItemRow): PreparedPhoto[] =>
     row.photoIds.map((id) => photoById.get(id)).filter((p): p is PreparedPhoto => Boolean(p));
+
+  // Job-gallery photos tagged "Assessment" ride the Health Record with their
+  // captions (Kyle, 2026-08-29: "I can't add photos to the health report from
+  // my gallery"). Tagging is the control: Before/After/Reference photos stay
+  // off this document.
+  const galleryRows = await prisma.visitPhoto.findMany({
+    where: { visitId: inspection.visitId, tag: "assessment" },
+    select: { data: true, caption: true },
+    orderBy: { uploadedAt: "asc" },
+  });
+  const galleryPhotos: PreparedPhoto[] = [];
+  for (const row of galleryRows) {
+    const prepared = await preparePhoto(row.data);
+    if (prepared) galleryPhotos.push({ ...prepared, caption: row.caption });
+  }
   const criticals = parseJsonStringArray(inspection.criticalFindingsJson);
   const loadCalc = inspection.loadCalcJson
     ? (JSON.parse(inspection.loadCalcJson) as {
@@ -1012,17 +1039,19 @@ export async function generateHealthReport(
     doc.moveDown(0.5);
   }
 
-  // Photos taken during the walk that weren't attached to a specific item still
-  // belong on the record — an official document doesn't hold evidence back.
+  // Photos taken during the walk that weren't attached to a specific item —
+  // plus assessment-tagged photos from the job gallery — still belong on the
+  // record; an official document doesn't hold evidence back.
   const referencedPhotoIds = new Set(items.flatMap((item) => item.photoIds ?? []));
   const unattached = inspection.photos
     .filter((photo) => !referencedPhotoIds.has(photo.id))
     .map((photo) => photoById.get(photo.id))
     .filter((p): p is PreparedPhoto => Boolean(p));
-  if (unattached.length > 0) {
+  const additional = [...unattached, ...galleryPhotos];
+  if (additional.length > 0) {
     doc.fillColor(BRAND.cedar).fontSize(12).text("Additional Photo Documentation", { underline: true });
     doc.moveDown(0.2);
-    drawPhotos(doc, unattached);
+    drawPhotos(doc, additional);
     doc.moveDown(0.5);
   }
 
@@ -1037,7 +1066,7 @@ export async function generateHealthReport(
       : `Assessed and reviewed on site by ${techName}, licensed electrical contractor.`;
   doc.fillColor(BRAND.muted).fontSize(8).text(
     `${reviewerLine} Red Cedar Electric LLC — License #61828. ` +
-    `Photo evidence on file: ${inspection.photos.length} image(s).`,
+    `Photo evidence on file: ${inspection.photos.length + galleryPhotos.length} image(s).`,
   );
   doc.moveDown(0.5);
 

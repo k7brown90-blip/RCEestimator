@@ -179,7 +179,9 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
           <h2 className="text-lg font-semibold">Job Photos</h2>
           <p className="text-sm text-rce-muted">
             Before &amp; after, assessment shots, and the record at this address. Attach them to the
-            estimate or invoice email when you send it.
+            estimate or invoice email when you send it. Photos tagged{" "}
+            <span className="font-medium">Assessment</span> are included in the Health Record report
+            with their captions.
           </p>
         </div>
         <div className="flex items-center gap-2">
