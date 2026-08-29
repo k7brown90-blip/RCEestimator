@@ -1007,10 +1007,27 @@ function ReviewTab(props: {
   // with gaps — it now runs at the moment of issuing, where the refusal is about something
   // the operator is actually trying to do rather than a button they were guessing at.
 
+  // Cache-shared with IssueAndSendPanel — no second fetch on line edits.
+  const { data: issuedList } = useQuery({
+    queryKey: ["pb-issued", draftId],
+    queryFn: () => api.pbIssuedList(draftId),
+  });
+  const liveIssued = (issuedList?.estimates ?? []).find((e) => !e.supersededBy);
+
   if (!review) return <p className="text-sm text-rce-muted">Loading…</p>;
 
   return (
     <div className="space-y-3">
+      {/* Kyle, 2026-08-29: he edited an option name here and found "no way to
+          save changes made to the estimate." The banner says where the save
+          lives, right where the editing happens. */}
+      {liveIssued && (
+        <p className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+          Estimate <strong>{liveIssued.number}</strong> was issued from this draft. Edits here don't
+          change it until you press <strong>"Save changes to the estimate"</strong> in the Estimate
+          &amp; Send section below.
+        </p>
+      )}
       {review.proposedLines.length > 0 && (
         <div className="space-y-2">
           <h3 className="text-sm font-semibold">
@@ -1824,7 +1841,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   const revise = useMutation({
     mutationFn: () => api.pbIssuedRevise(activeId as string),
     onSuccess: (r) => {
-      setNotice(`Created revision ${r.revision} of ${r.number}. The customer's old link no longer opens — send the new one.`);
+      setNotice(`Changes saved to ${r.number} (revision ${r.revision}). The customer's old link no longer opens — send the new one.`);
       setSelectedId(r.estimateId);
       refresh();
     },
@@ -1940,7 +1957,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
               <p className="rounded bg-emerald-50 p-2 text-xs text-emerald-900">
                 <strong>Signed by {est.signerName}</strong> on {new Date(est.signedAt).toLocaleString()}
                 {est.signedChannel === "in_person" ? " — signed in person" : est.signedChannel === "email" ? " — signed from the emailed link" : ""}.
-                This estimate is locked; a change needs a new revision, which voids the customer's link.
+                This estimate is locked; "Save changes to the estimate" creates a new revision and replaces the customer's link.
               </p>
               <button
                 className="btn btn-primary w-full py-3 text-base"
@@ -2026,17 +2043,25 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
             </>
           )}
 
+          {/* Kyle, 2026-08-29: "I just made an edit to the name and there is
+              no way to save changes... It should overwrite the existing one."
+              This IS that save — a revision keeps the estimate number, bumps
+              the revision, and replaces the customer's copy. The old label
+              ("New revision from this draft") never read as saving. */}
           <button
-            className="btn btn-secondary w-full"
+            className="btn btn-primary w-full"
             disabled={revise.isPending}
             onClick={() => {
-              if (window.confirm("Create a new revision? The customer's current link will stop working.")) {
+              if (window.confirm(`Save your draft changes to estimate ${est.number}? The customer's copy is replaced (same estimate number, new revision); their old link stops working.`)) {
                 revise.mutate();
               }
             }}
           >
-            {revise.isPending ? "Revising…" : "New revision from this draft"}
+            {revise.isPending ? "Saving…" : "Save changes to the estimate"}
           </button>
+          <p className="text-xs text-rce-muted">
+            Edits made in this builder don't reach the issued estimate until saved to it.
+          </p>
 
           {(est.events ?? []).length > 0 && (
             <div className="rounded-lg bg-rce-accentBg/30 p-2">
