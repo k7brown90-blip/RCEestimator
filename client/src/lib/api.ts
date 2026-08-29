@@ -955,7 +955,7 @@ export const api = {
     request<{ estimate: PbIssuedEstimate; customerLink: string }>(`/issued-estimates/${id}`),
 
   /** OPERATOR ACTION ONLY. Behind the PIN session and a confirm; never called automatically. */
-  pbIssuedSend: (id: string, input: { to?: string | null; message?: string | null; photoIds?: string[] }) =>
+  pbIssuedSend: (id: string, input: { to?: string | null; message?: string | null; photoIds?: string[]; attachHealthReport?: boolean; attachGeneratorReport?: boolean }) =>
     request<{ sent: true; to: string }>(`/issued-estimates/${id}/send`, {
       method: "POST",
       body: JSON.stringify(input),

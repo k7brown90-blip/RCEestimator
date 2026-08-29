@@ -2630,6 +2630,9 @@ app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
     // Photo gallery (2026-08-28): job photos chosen to ride the email. The
     // service refuses any photo not taken at this estimate's address.
     photoIds: z.array(z.string().min(1)).max(10).optional(),
+    // Support documentation (2026-08-29), rendered fresh at send time.
+    attachHealthReport: z.boolean().optional(),
+    attachGeneratorReport: z.boolean().optional(),
   }).parse(req.body ?? {});
 
   const result = await sendEstimateEmail(prisma, String(req.params.id), {
@@ -2637,6 +2640,8 @@ app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
     toOverride: body.to ?? null,
     message: body.message ?? null,
     photoIds: body.photoIds,
+    attachHealthReport: body.attachHealthReport,
+    attachGeneratorReport: body.attachGeneratorReport,
   });
 
   if (!result.ok) {

@@ -1172,7 +1172,28 @@ export async function generateGeneratorReport(
         fuel: "NG",
         softStart: false,
       });
-  const fuelName = rec.fuel === "NG" ? "natural gas" : "propane (LP)";
+
+  // Generating the sheet IS documenting the sizing (Kyle, 2026-08-29: "It is
+  // linking to the field app rather than the documented information") —
+  // persist the recommendation so the estimate flow's attach finds it, instead
+  // of demanding a field-app pass that already happened here.
+  if (!fromField) {
+    const generatorPayload = JSON.stringify({
+      recommendation: rec,
+      fuel: rec.fuel,
+      softStart: false,
+      altitudeSteps: 1,
+      includeInEstimate: true,
+    });
+    await prisma.healthInspection.update({
+      where: { id: inspectionId },
+      data: { loadCalcJson: JSON.stringify({ ...stored, generator: JSON.parse(generatorPayload) }) },
+    });
+    await prisma.capacityCheck.updateMany({
+      where: { sourceInspectionId: inspectionId },
+      data: { generatorJson: generatorPayload },
+    });
+  }
 
   const docId = uuidv4();
   const doc = new PDFDocument({ margin: 36 });
@@ -1186,11 +1207,6 @@ export async function generateGeneratorReport(
     `Based on the NEC Article 220 load calculation of ${dateStr}` +
     `${inspection.technician ? ` by ${inspection.technician.name}` : ""}: ` +
     `${stored.result.governingAmps} A calculated on a ${stored.input.serviceAmps} A service.`,
-  );
-  // Facts only — no workflow commentary on an authoritative document.
-  doc.fillColor(BRAND.muted).fontSize(9).text(
-    `Sized on ${fuelName} · site factor ×${rec.siteDerateFactor}` +
-    (fromField ? " · selections recorded on site" : ""),
   );
   doc.fillColor(BRAND.text);
   doc.moveDown();
@@ -1219,15 +1235,24 @@ export async function generateGeneratorReport(
     doc.fillColor(BRAND.text).fontSize(10).text(text);
     doc.moveDown(0.3);
   };
-  const unitText = (s: { model: { classLabel: string; generatorModel: string; switchPackage: string } | null; liquidCooled: boolean; ratedKW: number | null; siteDeratedKW: number | null }): string =>
-    s.liquidCooled
-      ? LIQUID_COOLED_TEXT
-      : s.model
-        ? `Generac Guardian ${s.model.classLabel} kW — generator model ${s.model.generatorModel}, transfer switch ${s.model.switchPackage}` +
-          (s.ratedKW !== null && s.siteDeratedKW !== null
-            ? ` · published ${rec.fuel} rating ${s.ratedKW} kW × ${rec.siteDerateFactor} site factor = ${s.siteDeratedKW} kW available`
-            : "")
-        : "—";
+  /*
+    ── ELECTRICAL SCOPE ONLY (Kyle, 2026-08-29) ─────────────────────────────
+    "Since we do not deal with the plumbing or gas lines I would not want to
+    put any fuel recommendations or specific generator model types on the
+    report. The customer will take this info to make an informed decision. We
+    stay only in the electrical scope."
+
+    No fuel, no brands, no model numbers, no product-specific timings. The
+    sheet states the home's electrical requirements per connection option; the
+    customer shops any generator with these numbers. Brand/model/fuel/BOM
+    detail stays on the internal tech panel and in the stored recommendation.
+  */
+  // A shed heat pump's mechanism names Generac hardware internally — the
+  // customer sheet describes it generically.
+  const genericMechanism = (mechanism: string): string =>
+    mechanism.includes("SACM")
+      ? "managed through the transfer switch (thermostat interrupt)"
+      : "managed by a load-management module on the circuit";
 
   const [full, managed, interlock] = rec.wholeHome;
 
@@ -1235,63 +1260,39 @@ export async function generateGeneratorReport(
   sectionHead("The Home's Electrical Load — the Basis for Every Option");
   explain(
     "All sizing below derives from the NEC Article 220 load calculation performed at this home. " +
-    "Published generator ratings are adjusted for site conditions before comparison.",
+    "A generator's continuous output rating must meet the stated requirement of the chosen option.",
   );
   bullet(`Calculated demand: ${stored.result.governingAmps} A × 240 V = ${full.requiredKW} kW (Article 220, ${stored.result.methodUsed} method)`);
   bullet(`Electrical service: ${stored.input.serviceAmps} A`);
-  bullet(`Generator fuel: ${fuelName} — sizing uses each model's published ${rec.fuel} rating`);
-  // ASCII hyphen, not U+2212 — PDFKit's WinAnsi fonts print the Unicode minus as a quote mark.
-  bullet(`Site adjustment: ×${rec.siteDerateFactor} (-3.5% per 1,000 ft altitude; -1% per 10 °F above 60 °F)`);
   if (rec.surge.status === "ok" && rec.surge.startKVA !== null) {
-    bullet(`Largest motor start: ${rec.surge.largestMotorLabel} — ${rec.surge.startKVA} kVA locked-rotor`);
+    bullet(`Largest motor start: ${rec.surge.largestMotorLabel} — ${rec.surge.startKVA} kVA locked-rotor (the generator's surge rating must cover this)`);
   }
 
   // ── Option 1 — full load ──
   sectionHead("Option 1 — Automatic Transfer, Sized for the Full Load");
   explain(
     "The generator carries the entire calculated load; every circuit stays powered with no load " +
-    "management. The unit's available output must meet or exceed the full calculated demand. " +
+    "management. Continuous output must meet or exceed the full calculated demand. " +
     `Code basis: ${full.necBasis}.`,
   );
-  bullet(`Required output: ${full.requiredKW} kW (${full.requiredAmps} A)`);
-  bullet(`Unit: ${unitText(full)}`);
+  bullet(`Required continuous output: ${full.requiredKW} kW (${full.requiredAmps} A)`);
 
   // ── Option 2 — load management ──
   sectionHead("Option 2 — Automatic Transfer with Load Management");
   explain(
     "Managed loads are disconnected automatically when demand would exceed generator capacity and " +
     "restored in priority order as capacity allows. The generator is sized to the unmanaged base " +
-    `load; each managed circuit carries its own management hardware. Code basis: ${managed.necBasis}.`,
+    `load; each managed circuit carries load-management hardware. Code basis: ${managed.necBasis}.`,
   );
-  bullet(`Base load with managed loads removed: ${managed.requiredKW} kW (${managed.requiredAmps} A)`);
-  bullet(`Unit: ${unitText(managed)}`);
-  if (managed.siteDeratedKW !== null && managed.requiredKW !== null) {
-    bullet(`Capacity available for managed loads above the base: ${Math.round((managed.siteDeratedKW - managed.requiredKW) * 100) / 100} kW — managed loads operate as this capacity allows`);
-  }
+  bullet(`Required continuous output (base load with managed loads removed): ${managed.requiredKW} kW (${managed.requiredAmps} A)`);
   const planRows = managed.managementPlan?.managed ?? [];
   if (planRows.length > 0) {
     doc.moveDown(0.3);
     doc.fillColor(BRAND.text).fontSize(10).text("Managed loads and priority order:");
     for (const row of planRows) {
-      bullet(
-        `Priority ${row.priority}: ${row.label} — ${row.kw} kW · ${row.mechanism}` +
-        (row.bomSlot ? ` · ${row.bomSlot}` : " · no additional hardware"),
-        BRAND.muted,
-      );
+      bullet(`Priority ${row.priority}: ${row.label} — ${row.kw} kW · ${genericMechanism(row.mechanism)}`, BRAND.muted);
     }
-    bullet(
-      `Load recovery: priority 1 reconnects 5:00 after the generator stabilizes, +15 seconds per ` +
-      `priority step; a failed reconnection locks that load out for 30 minutes; 5-minute initial delay on power-up`,
-      BRAND.muted,
-    );
-    const stripRow = planRows.find((row) => row.label.includes("strip kit"));
-    if (stripRow) {
-      bullet(
-        "Heat-strip staging: if the strips stage from the thermostat circuit the SACM interrupts, " +
-        "they share the compressor's slot and the dedicated module is not required — confirmed at installation",
-        BRAND.muted,
-      );
-    }
+    bullet("Managed loads operate as generator capacity allows", BRAND.muted);
   }
 
   // ── Option 3 — interlock ──
@@ -1313,8 +1314,7 @@ export async function generateGeneratorReport(
       "The loads below, summed at their calculated demand, define a reduced backup scope. " +
       "Loads not listed are not carried by this selection.",
     );
-    bullet(`Selection total: ${rec.partial.requiredKW} kW (${rec.partial.requiredAmps} A)`);
-    bullet(`Unit: ${unitText(rec.partial)}`);
+    bullet(`Required continuous output: ${rec.partial.requiredKW} kW (${rec.partial.requiredAmps} A)`);
     doc.moveDown(0.3);
     doc.fillColor(BRAND.text).fontSize(10).text("Included loads:");
     for (const line of rec.partial.covered) {
@@ -1326,12 +1326,10 @@ export async function generateGeneratorReport(
     for (const line of rec.partial.excludedWithReason) bullet(line, BRAND.muted);
   }
 
-  // ── Data notes — source and installation facts only. No preliminary-sizing
-  // disclaimer: this document is the on-site sizing (Kyle, 2026-08-29: "It is
-  // an authoritative document"); the caveat survives on the tech panel.
+  // ── Data notes — electrical scope statement, nothing else ──
   sectionHead("Data Notes");
-  bullet(`Fuel supply: NG full-load draw runs ~127–333 ft³/hr by model at 3.5–7 in WC inlet (LP 10–12 in WC); gas meter and fuel-pipe sizing are confirmed before installation`, BRAND.muted);
-  bullet(`Product data source: ${rec.dataRevision} · load management per Generac 50A SMM manual 10000030493 Rev E`, BRAND.muted);
+  bullet("Generator selection, fuel type, and fuel supply are outside Red Cedar Electric's scope; this sheet provides the electrical requirements for that selection", BRAND.muted);
+  bullet("Load figures per NEC 2017 Article 220; standby connection arrangements per NEC 2017 Article 702", BRAND.muted);
   doc.fillColor(BRAND.text);
 
   const pdfPath = await savePdf(doc, `generator-sizing-${docId}.pdf`);

@@ -440,26 +440,26 @@ export function renderEstimatePage(
         fuel: "NG" | "LP";
       };
       const rec = stored.recommendation;
-      const fuelName = stored.fuel === "NG" ? "natural gas" : "propane";
-      const tierText = (model: StoredModel | null, liquidCooled: boolean) =>
-        liquidCooled
-          ? "a liquid-cooled unit, selected with you"
-          : model !== null
-            ? `a ${model.classLabel.split("/")[0]} kW Generac Guardian standby generator (model ${model.generatorModel})`
-            : "sized with you";
+      // ELECTRICAL SCOPE ONLY (Kyle, 2026-08-29): no fuel, no brands, no model
+      // numbers on customer documents — the required output is the electrical
+      // fact the customer shops with. Product detail stays internal.
+      const requirementText = (s: { requiredKW: number | null }) =>
+        s.requiredKW !== null
+          ? `${s.requiredKW} kW continuous output`
+          : "sized by the loads you select — no code minimum";
       const wholeRows = rec.wholeHome
         .map((s) => `<tr>
             <td><strong>${escapeHtml(s.title)}</strong>
               ${s.shedLoads && s.shedLoads.length > 0
-                ? `<br><span style="font-size:12px;color:#555;">Managed (paused under generator power as needed): ${escapeHtml(s.shedLoads.join("; "))}</span>`
+                ? `<br><span style="font-size:12px;color:#555;">Managed loads (run as generator capacity allows): ${escapeHtml(s.shedLoads.join("; "))}</span>`
                 : ""}
             </td>
-            <td class="r">${escapeHtml(tierText(s.model, s.liquidCooled))}</td>
+            <td class="r">${escapeHtml(requirementText(s))}</td>
           </tr>`)
         .join("");
       const partialBlock = rec.partial
         ? `<h3 style="margin:14px 0 4px;font-size:15px;">Essential-loads option</h3>
-           <p style="font-size:13px;margin:0 0 6px;">Keeps the essentials running on ${escapeHtml(tierText(rec.partial.model, rec.partial.liquidCooled))}.</p>
+           <p style="font-size:13px;margin:0 0 6px;">Requires ${rec.partial.requiredKW} kW of continuous generator output.</p>
            <p style="font-size:13px;margin:0;"><strong>Covered:</strong> ${rec.partial.covered.map((c) => escapeHtml(c.label)).join("; ")}.</p>
            <p style="font-size:13px;margin:4px 0 0;"><strong>Not covered:</strong> ${rec.partial.notCovered.map(escapeHtml).join("; ")}.</p>
            ${rec.partial.excludedWithReason.length > 0
@@ -469,10 +469,11 @@ export function renderEstimatePage(
       return `<div class="box" style="page-break-inside:avoid;">
           <h2 style="margin-top:0;">Backup generator options for this home</h2>
           <p style="font-size:13px;margin:0 0 8px;">
-            Sized from the load calculation we performed at your home, on ${escapeHtml(fuelName)}.
+            Electrical requirements from the load calculation we performed at your home. Generator
+            selection and fuel supply are yours to choose with these numbers.
           </p>
           <table>
-            <thead><tr><th>Whole-home option</th><th class="r">Recommended size</th></tr></thead>
+            <thead><tr><th>Connection option</th><th class="r">Required generator output</th></tr></thead>
             <tbody>${wholeRows}</tbody>
           </table>
           ${partialBlock}

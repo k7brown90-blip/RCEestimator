@@ -28,7 +28,9 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
+import fs from "node:fs";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
+import { generateGeneratorReport, generateHealthReport } from "./pdfGenerator";
 import { logSystemEvent } from "./systemEvents";
 // The invoice send renders the customer's PDF itself rather than reading a stored file — same
 // reason the filed copies are rendered on demand: nothing to drift, nothing lost to a deploy.
@@ -281,7 +283,18 @@ export async function sendInvoiceEmail(
 export async function sendEstimateEmail(
   prisma: PrismaClient,
   estimateId: string,
-  opts: { sentBy: string; toOverride?: string | null; message?: string | null; photoIds?: string[] }
+  opts: {
+    sentBy: string;
+    toOverride?: string | null;
+    message?: string | null;
+    photoIds?: string[];
+    /** Support documentation (Kyle, 2026-08-29: "I should be able to add the
+     * reports here for the electrical assessment, generator report, and any
+     * photos") — rendered fresh from the newest assessment at the estimate's
+     * address, so the attachment is never a stale file. */
+    attachHealthReport?: boolean;
+    attachGeneratorReport?: boolean;
+  }
 ): Promise<SendResult> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
@@ -333,12 +346,47 @@ export async function sendEstimateEmail(
     ? await photoAttachments(prisma, opts.photoIds, est.serviceAddressId)
     : { attachments: [], refused: [] };
 
+  // Support documentation, rendered fresh at send time (2026-08-29). Refuses
+  // plainly when the record to render from doesn't exist — an email that
+  // silently arrived thinner than the operator ticked would be worse.
+  const docAttachments: Array<{ filename: string; content: Buffer; contentType: string }> = [];
+  if (opts.attachHealthReport || opts.attachGeneratorReport) {
+    const inspection = await prisma.healthInspection.findFirst({
+      where: { propertyId: est.serviceAddressId },
+      orderBy: { inspectionDate: "desc" },
+      select: { id: true, loadCalcJson: true },
+    });
+    if (!inspection) {
+      return { ok: false, reason: "No electrical assessment is on file for this address — the report attachments can't be produced." };
+    }
+    if (opts.attachHealthReport) {
+      const report = await generateHealthReport(inspection.id);
+      docAttachments.push({
+        filename: `electrical-health-record-${est.number}.pdf`,
+        content: await fs.promises.readFile(report.pdfPath),
+        contentType: "application/pdf",
+      });
+    }
+    if (opts.attachGeneratorReport) {
+      if (!inspection.loadCalcJson) {
+        return { ok: false, reason: "This address's assessment has no load calculation — the generator sizing sheet can't be produced." };
+      }
+      const report = await generateGeneratorReport(inspection.id);
+      docAttachments.push({
+        filename: `generator-sizing-data-sheet-${est.number}.pdf`,
+        content: await fs.promises.readFile(report.pdfPath),
+        contentType: "application/pdf",
+      });
+    }
+  }
+
+  const allAttachments = [...docAttachments, ...photos.attachments];
   const sent = await sendBrandedEmail({
     to,
     subject: `Your estimate from Red Cedar Electric — ${est.number}`,
     headline: "Your estimate is ready",
     bodyHtml,
-    ...(photos.attachments.length > 0 ? { attachments: photos.attachments } : {}),
+    ...(allAttachments.length > 0 ? { attachments: allAttachments } : {}),
   });
 
   if (!sent) {

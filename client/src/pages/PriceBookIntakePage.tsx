@@ -1727,6 +1727,10 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   const [sendMsg, setSendMsg] = useState("");
   // Photo gallery (2026-08-28): job photos ticked to ride the estimate email.
   const [sendPhotoIds, setSendPhotoIds] = useState<string[]>([]);
+  // Support documentation (Kyle, 2026-08-29): the assessment report and the
+  // generator sizing sheet, rendered fresh at send time.
+  const [attachHealthReport, setAttachHealthReport] = useState(false);
+  const [attachGeneratorReport, setAttachGeneratorReport] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -1798,6 +1802,8 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
         to: sendTo.trim() || null,
         message: sendMsg.trim() || null,
         photoIds: sendPhotoIds.length > 0 ? sendPhotoIds : undefined,
+        attachHealthReport: attachHealthReport || undefined,
+        attachGeneratorReport: attachGeneratorReport || undefined,
       }),
     onSuccess: (r) => {
       setNotice(`Sent to ${r.to}.`);
@@ -2016,6 +2022,27 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                   value={sendMsg}
                   onChange={(e) => setSendMsg(e.target.value)}
                 />
+                {/* Support documentation + photos (Kyle, 2026-08-29: "The
+                    email estimate should prompt and ask to attach any support
+                    documentation or photos"). Reports render fresh at send. */}
+                <div className="mt-2 space-y-1">
+                  <label className="flex items-center gap-2 text-xs text-rce-soft">
+                    <input
+                      type="checkbox"
+                      checked={attachHealthReport}
+                      onChange={(e) => setAttachHealthReport(e.target.checked)}
+                    />
+                    Attach Electrical Health Record report (latest assessment at this address)
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-rce-soft">
+                    <input
+                      type="checkbox"
+                      checked={attachGeneratorReport}
+                      onChange={(e) => setAttachGeneratorReport(e.target.checked)}
+                    />
+                    Attach Generator Sizing data sheet
+                  </label>
+                </div>
                 {/* Photo gallery (2026-08-28): assessment/job photos can ride
                     the estimate email — ticked here, per send, never assumed. */}
                 {serviceAddressId && (
@@ -2034,7 +2061,12 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                       setReasons(["No customer email address. Type one above, or add it to the account."]);
                       return;
                     }
-                    if (window.confirm(`Email estimate ${est.number} to ${to}${sendPhotoIds.length ? ` with ${sendPhotoIds.length} photo(s)` : ""}?`)) send.mutate();
+                    const extras = [
+                      attachHealthReport ? "the Health Record report" : null,
+                      attachGeneratorReport ? "the Generator Sizing sheet" : null,
+                      sendPhotoIds.length ? `${sendPhotoIds.length} photo(s)` : null,
+                    ].filter(Boolean).join(", ");
+                    if (window.confirm(`Email estimate ${est.number} to ${to}${extras ? ` with ${extras}` : ""}?`)) send.mutate();
                   }}
                 >
                   {send.isPending ? "Sending…" : est.sentAt ? "Email again" : "Email estimate"}
