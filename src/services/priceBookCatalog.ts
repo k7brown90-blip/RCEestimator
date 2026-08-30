@@ -107,6 +107,16 @@ export async function updateAtomic(
   }
   if (audits.length === 0) return { ok: true, atomic: existing };
 
+  // Editing hours on a row with no unit basis (in-app items created before the
+  // 2026-08-30 fix): heal the basis so laborHoursFor can read what was typed.
+  const touchesHours = audits.some((a) => a.field.startsWith("labor"));
+  if (touchesHours && (existing as { laborUnitDivisor: number | null }).laborUnitDivisor === null) {
+    data["laborUnitBasis"] = "E";
+    data["laborUnitDivisor"] = 1;
+    data["laborUnitBasisRaw"] = "E [in-app editor — per-unit hours, already resolved]";
+    audits.push({ field: "laborUnitDivisor", oldValue: null, newValue: "1" });
+  }
+
   // Any pricing input changed → recompute tier and sells the workbook's way.
   if (audits.some((a) => PRICING_FIELDS.has(a.field))) {
     const tiers = await loadMarkupTiers(prisma);
@@ -207,6 +217,18 @@ export async function createAtomic(
         laborVeryDifficult: input.laborVeryDifficult ?? null,
         notes: input.notes ?? null,
         source: "in-app",
+        /*
+          THE ENGINE WILL NOT READ HOURS WITHOUT A UNIT BASIS. laborHoursFor
+          blocks on a null divisor by design (E vs C is a 100× error), so an
+          item created without these fields prices its labour as $0 and the
+          whole sell lands in the material column — Kyle's GENERAL LABOR item
+          did exactly that on 2026-08-30. Editor hours are per-unit by
+          definition, so E / divisor 1 is correct, same as the importers.
+        */
+        laborUnitBasis: "E",
+        laborUnitDivisor: 1,
+        laborUnitBasisRaw: "E [in-app editor — per-unit hours, already resolved]",
+        laborStatus: "IN-APP",
         ...computed,
       },
     });

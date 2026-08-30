@@ -7,8 +7,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { computePricing } from "../src/services/priceBookCatalog";
+import { computePricing, createAtomic, updateAtomic } from "../src/services/priceBookCatalog";
 import type { MarkupTiers } from "../src/services/priceBookPricing";
+import { laborHoursFor } from "../src/services/atomicEstimateEngine";
 
 // Representative tier multipliers — the real ones live in PriceBookRateConfig;
 // the formula, not the figures, is under test here.
@@ -62,6 +63,69 @@ describe("computePricing — workbook parity", () => {
     expect(p.sellNormal).toBe(87.5); // 0.5 × 150 + 12.50
     expect(p.sellDifficult).toBeNull();
     expect(p.sellVeryDifficult).toBeNull();
+  });
+
+  it("in-app items carry a labor unit basis the engine can read", async () => {
+    // Kyle's GENERAL LABOR item (2026-08-30): created in the editor with per-unit
+    // hours but no laborUnitBasis/divisor, so laborHoursFor blocked (by design —
+    // the E-vs-C guard) and the whole $100 sell was classified as material.
+    let created: Record<string, unknown> | null = null;
+    const prisma = {
+      priceBookAtomic: {
+        findUnique: () => Promise.resolve(null),
+        findMany: () => Promise.resolve([]),
+        create: (args: { data: Record<string, unknown> }) => { created = args.data; return Promise.resolve(args.data); },
+      },
+      priceBookEdit: { create: () => Promise.resolve({}), createMany: () => Promise.resolve({}) },
+      priceBookRateConfig: {
+        findMany: () => Promise.resolve([1, 2, 3, 4, 5].map((n) => ({ key: `markupTier${n}`, numberValue: n }))),
+      },
+      $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+    } as never;
+
+    const result = await createAtomic(
+      prisma,
+      { description: "General labor", category: "LABOR", rowType: "LABOR ONLY", laborNormal: 0.00664 },
+      "test",
+    );
+    expect(result.ok).toBe(true);
+    expect(created!["laborUnitBasis"]).toBe("E");
+    expect(created!["laborUnitDivisor"]).toBe(1);
+
+    // The engine must resolve hours from the created row: qty 100 × 0.00664 / 1.
+    const hours = laborHoursFor(
+      { ...(created as object), unit: null, costBasisUsed: null, sellPricePerUnit: null, necaUnitBasis: null } as never,
+      100,
+      "NORMAL",
+    );
+    expect(hours).toBeCloseTo(0.664, 10);
+  });
+
+  it("editing hours on a basis-less row heals the unit basis", async () => {
+    const existing = {
+      itemId: "GENERAL LABOR", description: "General labor", category: "LABOR", subCategory: null,
+      unitLabel: null, notes: null, sector: null, rowType: "LABOR ONLY",
+      companyCost: null, laborNormal: 0.006, laborDifficult: null, laborVeryDifficult: null,
+      laborUnitBasis: null, laborUnitDivisor: null,
+      markupTier: "T1", companyPrice: null, sellNormal: 0.9, sellDifficult: null, sellVeryDifficult: null,
+    };
+    let updated: Record<string, unknown> | null = null;
+    const prisma = {
+      priceBookAtomic: {
+        findUnique: () => Promise.resolve(existing),
+        update: (args: { data: Record<string, unknown> }) => { updated = args.data; return Promise.resolve({ ...existing, ...args.data }); },
+      },
+      priceBookEdit: { create: () => Promise.resolve({}), createMany: () => Promise.resolve({}) },
+      priceBookRateConfig: {
+        findMany: () => Promise.resolve([1, 2, 3, 4, 5].map((n) => ({ key: `markupTier${n}`, numberValue: n }))),
+      },
+      $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+    } as never;
+
+    const result = await updateAtomic(prisma, "GENERAL LABOR", { laborNormal: 0.00664 }, "test");
+    expect(result.ok).toBe(true);
+    expect(updated!["laborUnitBasis"]).toBe("E");
+    expect(updated!["laborUnitDivisor"]).toBe(1);
   });
 
   it("rounds to cents exactly once, at each formula's output", () => {
