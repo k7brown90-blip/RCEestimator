@@ -738,11 +738,6 @@ export function renderEstimatePage(
 
        ${generatorSection}
 
-       <div class="box">
-         <strong>Payment.</strong> Cards are welcome at the invoice amount — or save 3% by paying with bank transfer, cash, check, or Zelle. Payment details are provided with your
-         invoice when the work is complete.
-       </div>
-
        ${signBlock}
        ${pickerScript}
      </div>

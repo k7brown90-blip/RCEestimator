@@ -234,7 +234,6 @@ export async function sendInvoiceEmail(
         Pay online
       </a>
     </p>` : ""}
-    <p style="font-size:14px;color:#555;">Pay by bank transfer, cash, check, or Zelle and save 3% off your total. Card payments are welcome at the full invoice amount.</p>
     <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
 
   // Job photos the operator chose to include — before/after shots belong on
