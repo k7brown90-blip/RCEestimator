@@ -317,17 +317,18 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
             {cells.map((cell, i) => {
               if (!cell) return <div key={`e-${i}`} className="bg-white min-h-[32px]" />;
               const isPast = cell.date < todayStr;
-              const isWeekend = cell.weekday === 0 || cell.weekday === 6;
               const isSel = cell.date === selectedDate;
               const isToday = cell.date === todayStr;
 
+              // Weekends are selectable (Kyle, 2026-08-30: "open up Saturday
+              // and Sunday for scheduling") — only past days stay locked.
               return (
                 <button
                   key={cell.date}
-                  disabled={isPast || isWeekend}
+                  disabled={isPast}
                   onClick={() => setSelectedDate(isSel ? null : cell.date)}
                   className={`min-h-[32px] text-xs font-medium transition bg-white
-                    ${isPast || isWeekend ? "text-rce-muted/40 cursor-not-allowed" : "hover:bg-rce-accentBg/30 cursor-pointer"}
+                    ${isPast ? "text-rce-muted/40 cursor-not-allowed" : "hover:bg-rce-accentBg/30 cursor-pointer"}
                     ${isSel ? "!bg-rce-accent text-white" : ""}
                     ${isToday && !isSel ? "ring-1 ring-inset ring-rce-accent" : ""}
                   `}

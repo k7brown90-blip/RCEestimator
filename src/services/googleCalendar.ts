@@ -200,8 +200,8 @@ export async function getAvailability(startDate?: Date): Promise<AvailabilityRes
     const dayBase = new Date(windowStart.getTime() + offset * 86_400_000);
     const dayParts = getCentralParts(dayBase);
 
-    // Skip weekends
-    if (dayParts.weekday === 0 || dayParts.weekday === 6) continue;
+    // Weekends are bookable (Kyle, 2026-08-30: "open up Saturday and Sunday
+    // for scheduling") — every day of the week offers the same windows.
 
     const dayEnd = centralToUtc(dayParts.year, dayParts.month, dayParts.day, BUSINESS_END);
 

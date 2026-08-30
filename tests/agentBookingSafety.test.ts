@@ -74,10 +74,10 @@ afterAll(async () => {
 });
 
 describe("workingDaysCT", () => {
-  it("lists consecutive business days, skipping Sundays", () => {
-    // 2026-08-01 is a Saturday (CT) — a 3-day job spans Sat, Mon, Tue.
+  it("lists consecutive calendar days — weekends count (Kyle, 2026-08-30)", () => {
+    // 2026-08-01 is a Saturday (CT) — a 3-day job spans Sat, Sun, Mon.
     const start = new Date("2026-08-01T12:00:00-05:00");
-    expect(workingDaysCT(start, 3)).toEqual(["2026-08-01", "2026-08-03", "2026-08-04"]);
+    expect(workingDaysCT(start, 3)).toEqual(["2026-08-01", "2026-08-02", "2026-08-03"]);
   });
 
   it("single-day job claims exactly one date", () => {

@@ -92,15 +92,16 @@ function buildStartDate(dateStr: string, timeStr?: string | null): Date {
   return new Date(guess.getTime() - (gotMin - wantMin) * 60_000);
 }
 
-/** Compute end date given start + duration in working days (skip Sundays) */
+/**
+ * Compute end date given start + duration in consecutive calendar days.
+ * Weekends count (Kyle, 2026-08-30) — mirrors workingDaysCT in slotHolds.
+ */
 function computeEndDate(startDate: Date, durationDays: number): Date {
   let cursor = new Date(startDate);
   let remaining = durationDays;
   while (remaining > 1) {
     cursor = new Date(cursor.getTime() + 86_400_000);
-    const wd = new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "short" })
-      .format(cursor);
-    if (wd !== "Sun") remaining--;
+    remaining--;
   }
   // End at 5pm CT on the last day
   const dp = new Intl.DateTimeFormat("en-US", {

@@ -56,18 +56,17 @@ export function slotKeyCT(d: Date): string {
   return `${dateStrCT(d)}T${time}`;
 }
 
-/** The business days (CT, skipping Sundays) a job occupies — mirrors computeEndDate. */
+/**
+ * The days (CT) a job occupies — mirrors computeEndDate. Consecutive calendar
+ * days: weekends count (Kyle, 2026-08-30, "open up Saturday and Sunday for
+ * scheduling"), so a job's holds and its calendar block cover the same dates.
+ */
 export function workingDaysCT(start: Date, durationDays: number): string[] {
   const days: string[] = [dateStrCT(start)];
   let cursor = new Date(start);
-  let remaining = durationDays;
-  while (remaining > 1) {
+  while (days.length < durationDays) {
     cursor = new Date(cursor.getTime() + 86_400_000);
-    const wd = new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "short" }).format(cursor);
-    if (wd !== "Sun") {
-      remaining--;
-      days.push(dateStrCT(cursor));
-    }
+    days.push(dateStrCT(cursor));
   }
   return days;
 }

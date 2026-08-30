@@ -382,7 +382,10 @@ function ctToUtc(year: number, month: number, day: number, hour: number, minute 
 
 /**
  * Check if a block of consecutive working days is available on the calendar.
- * Skips Sundays. Mon–Fri 7am–5pm, Sat 8am–12pm.
+ * Every day of the week counts, 7am–5pm (Kyle, 2026-08-30: "open up Saturday
+ * and Sunday for scheduling"). Must stay in step with workingDaysCT and
+ * computeEndDate — if this counts a day those skip, holds and availability
+ * disagree and double-booking becomes possible.
  */
 export async function checkAvailabilityBlock(
   startDate: Date,
@@ -391,14 +394,10 @@ export async function checkAvailabilityBlock(
 ): Promise<AvailabilityCheckResult> {
   const calendar = getCalendarClient();
 
-  // Build working day list (skip Sundays)
   const workDays: Date[] = [];
   let cursor = new Date(startDate);
   while (workDays.length < daysNeeded) {
-    const dp = getCTParts(cursor);
-    if (dp.weekday !== 0) { // Skip Sundays
-      workDays.push(new Date(cursor));
-    }
+    workDays.push(new Date(cursor));
     cursor = new Date(cursor.getTime() + 86_400_000);
   }
 
@@ -451,9 +450,8 @@ export async function checkAvailabilityBlock(
 
   for (const day of workDays) {
     const dp = getCTParts(day);
-    const isSaturday = dp.weekday === 6;
-    const bhStart = isSaturday ? 8 : 7;
-    const bhEnd = isSaturday ? 12 : 17;
+    const bhStart = 7;
+    const bhEnd = 17;
     const dayStart = ctToUtc(dp.year, dp.month, dp.day, bhStart);
     const dayEnd = ctToUtc(dp.year, dp.month, dp.day, bhEnd);
 
@@ -487,19 +485,12 @@ export async function findConsecutiveOpenDays(
   const limit = new Date(fromDate.getTime() + lookAheadDays * 86_400_000);
 
   while (cursor < limit) {
-    const dp = getCTParts(cursor);
-    if (dp.weekday === 0) { // Skip Sundays
-      cursor = new Date(cursor.getTime() + 86_400_000);
-      continue;
-    }
-
     const result = await checkAvailabilityBlock(cursor, daysNeeded);
     if (result.available) {
       const days: Date[] = [];
       let c = new Date(cursor);
       while (days.length < daysNeeded) {
-        const cdp = getCTParts(c);
-        if (cdp.weekday !== 0) days.push(new Date(c));
+        days.push(new Date(c));
         c = new Date(c.getTime() + 86_400_000);
       }
       return days;
