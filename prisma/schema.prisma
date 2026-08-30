@@ -1716,6 +1716,9 @@ model PriceBookAtomic {
   necArticle         String?
   notes              String?
   workbookRow        Int?    // provenance only — never used to resolve a component
+  // In-app catalog editor (Kyle, 2026-08-30, Option A: the app IS the book now).
+  // Second-level grouping under `category`; nullable — most items have none.
+  subCategory        String?
   firstSeenAt        DateTime @default(now())
   lastSeenAt         DateTime @updatedAt
   // Set when an import no longer finds this ID. Rows are retired, never deleted
@@ -1825,6 +1828,36 @@ model PriceBookRateConfig {
   numberValue Float?
   textValue   String?
   lastSeenAt  DateTime @updatedAt
+}
+
+// ─── In-app price book editor (Kyle, 2026-08-30) ─────────────────────────────
+//
+// Option A ratified: the app is the book now. Every edit lands here as an
+// append-only audit row — a price a customer asks about needs a story, and
+// "who changed what, when, from what to what" is that story. The workbook
+// import lane remains for a final import; after that the export is the
+// spreadsheet view, not the authority.
+
+model PriceBookEdit {
+  id        String   @id @default(cuid())
+  itemId    String   // the atomic touched; "(category)" ops use the item rows they touched
+  field     String   // "description" | "companyCost" | "laborNormal" | "category" | "created" | "retired" | "restored" | ...
+  oldValue  String?
+  newValue  String?
+  editedBy  String   // "human:crm-session" until logins differentiate
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([itemId, createdAt])
+}
+
+// Display order for the catalog's category cards. A category exists by being
+// named on an item; this row only orders (and survives renames by following
+// them). No parent pointer — sub-categories live on the item (`subCategory`)
+// and order alphabetically within their category.
+model PriceBookCategoryMeta {
+  name      String @id
+  sortOrder Int    @default(0)
 }
 
 model PriceBookNecCategory {

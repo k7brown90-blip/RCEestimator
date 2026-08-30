@@ -51,6 +51,14 @@ import {
   rejectProposedLine,
   resolveQuestion,
 } from "./services/atomicEstimateService";
+import {
+  createAtomic,
+  listCategories,
+  renameCategory,
+  retireAtomic,
+  setCategoryOrder,
+  updateAtomic,
+} from "./services/priceBookCatalog";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
@@ -1865,6 +1873,121 @@ app.get("/price-book/atomics", asyncHandler(async (req, res) => {
     category: readQuery(req, "category")?.trim(),
     limit: Number(readQuery(req, "limit") ?? 50) || 50,
   }));
+}));
+
+// ─── PRICE BOOK EDITOR (Kyle, 2026-08-30 — Option A: the app is the book) ────
+
+app.get("/price-book/catalog/categories", asyncHandler(async (_req, res) => {
+  res.json({ categories: await listCategories(prisma) });
+}));
+
+app.put("/price-book/catalog/categories/order", asyncHandler(async (req, res) => {
+  const body = z.object({ names: z.array(z.string().trim().min(1)).min(1) }).parse(req.body ?? {});
+  res.json(await setCategoryOrder(prisma, body.names));
+}));
+
+app.post("/price-book/catalog/categories/rename", asyncHandler(async (req, res) => {
+  const body = z.object({ from: z.string().trim().min(1), to: z.string().trim().min(1) }).parse(req.body ?? {});
+  const result = await renameCategory(prisma, body.from, body.to, "human:crm-session");
+  if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
+  res.json(result);
+}));
+
+/** Full rows for the editor table — the browse payload is picker-shaped. */
+app.get("/price-book/catalog/items", asyncHandler(async (req, res) => {
+  const category = readQuery(req, "category")?.trim();
+  const search = readQuery(req, "search")?.trim();
+  const where: Record<string, unknown> = { retiredAt: null };
+  if (category) where["category"] = category;
+  if (search) {
+    where["OR"] = [
+      { itemId: { contains: search, mode: "insensitive" } },
+      { description: { contains: search, mode: "insensitive" } },
+    ];
+  }
+  const atomics = await prisma.priceBookAtomic.findMany({
+    where,
+    orderBy: [{ subCategory: "asc" }, { itemId: "asc" }],
+    take: 500,
+  });
+  res.json({ atomics });
+}));
+
+/** Full row for the edit drawer — the browse payload is picker-shaped. */
+app.get("/price-book/catalog/items/:itemId", asyncHandler(async (req, res) => {
+  const atomic = await prisma.priceBookAtomic.findUnique({ where: { itemId: readParam(req, "itemId") } });
+  if (!atomic) { res.status(404).json({ error: "Item not found" }); return; }
+  const edits = await prisma.priceBookEdit.findMany({
+    where: { itemId: atomic.itemId },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+  res.json({ atomic, edits });
+}));
+
+const atomicPatchSchema = z.object({
+  description: z.string().trim().min(1).optional(),
+  category: z.string().trim().min(1).optional(),
+  subCategory: z.string().trim().nullable().optional(),
+  unitLabel: z.string().trim().nullable().optional(),
+  notes: z.string().trim().nullable().optional(),
+  sector: z.string().trim().nullable().optional(),
+  rowType: z.string().trim().min(1).optional(),
+  companyCost: z.number().nonnegative().nullable().optional(),
+  laborNormal: z.number().nonnegative().nullable().optional(),
+  laborDifficult: z.number().nonnegative().nullable().optional(),
+  laborVeryDifficult: z.number().nonnegative().nullable().optional(),
+});
+
+app.patch("/price-book/catalog/items/:itemId", asyncHandler(async (req, res) => {
+  const patch = atomicPatchSchema.parse(req.body ?? {});
+  const result = await updateAtomic(prisma, readParam(req, "itemId"), patch, "human:crm-session");
+  if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
+  res.json({ atomic: result.atomic });
+}));
+
+app.post("/price-book/catalog/items", asyncHandler(async (req, res) => {
+  const body = z.object({
+    itemId: z.string().trim().nullable().optional(),
+    idPrefix: z.string().trim().nullable().optional(),
+    description: z.string().trim().min(1),
+    category: z.string().trim().min(1),
+    subCategory: z.string().trim().nullable().optional(),
+    unitLabel: z.string().trim().nullable().optional(),
+    sector: z.string().trim().nullable().optional(),
+    rowType: z.string().trim().min(1),
+    companyCost: z.number().nonnegative().nullable().optional(),
+    laborNormal: z.number().nonnegative().nullable().optional(),
+    laborDifficult: z.number().nonnegative().nullable().optional(),
+    laborVeryDifficult: z.number().nonnegative().nullable().optional(),
+    notes: z.string().trim().nullable().optional(),
+  }).parse(req.body ?? {});
+  const result = await createAtomic(prisma, body, "human:crm-session");
+  if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
+  res.status(201).json({ atomic: result.atomic });
+}));
+
+app.post("/price-book/catalog/items/:itemId/retire", asyncHandler(async (req, res) => {
+  const result = await retireAtomic(prisma, readParam(req, "itemId"), "human:crm-session");
+  if (!result.ok) { res.status(404).json({ error: result.reason }); return; }
+  res.json({ atomic: result.atomic });
+}));
+
+app.post("/price-book/catalog/items/:itemId/restore", asyncHandler(async (req, res) => {
+  const result = await retireAtomic(prisma, readParam(req, "itemId"), "human:crm-session", true);
+  if (!result.ok) { res.status(404).json({ error: result.reason }); return; }
+  res.json({ atomic: result.atomic });
+}));
+
+/** Retired rows for the editor's "retired" view — pickers never see them. */
+app.get("/price-book/catalog/retired", asyncHandler(async (_req, res) => {
+  const atomics = await prisma.priceBookAtomic.findMany({
+    where: { retiredAt: { not: null } },
+    orderBy: { retiredAt: "desc" },
+    select: { itemId: true, description: true, category: true, retiredAt: true },
+    take: 200,
+  });
+  res.json({ atomics });
 }));
 
 // ─── DRAFTS (human path) ─────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ import { PresentationPage } from "./pages/PresentationPage";
 import { EstimatesPage } from "./pages/EstimatesPage";
 import { InvoicesPage } from "./pages/InvoicesPage";
 import { VisitWorkspacePage } from "./pages/VisitWorkspacePage";
+import { PriceBookCatalogPage } from "./pages/PriceBookCatalogPage";
 import { SigningModePage } from "./pages/SigningModePage";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -71,6 +72,9 @@ function App() {
                 {/* In-person signing: a full-screen view inside the operator session.
                     No device lock — Kyle vetoed it 2026-08-18. */}
                 <Route path="/sign-in-person/:estimateId" element={<SigningModePage />} />
+                {/* The book itself (Kyle, 2026-08-30, Option A): items, prices,
+                    categories — edited in place, with the workbook's math. */}
+                <Route path="/price-book" element={<PriceBookCatalogPage />} />
                 <Route path="/team" element={<TeamPage />} />
                 <Route path="/financials" element={<FinancialsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />

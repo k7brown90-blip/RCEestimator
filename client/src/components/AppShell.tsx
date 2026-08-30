@@ -23,6 +23,10 @@ const nav = [
   // Money — bills, revenue, and the accounting reports (Kyle, 2026-08-25).
   { to: "/financials", label: "Financials" },
   { to: "/team", label: "Team" },
+  // The book itself — every item, price, and category, edited in place
+  // (Kyle, 2026-08-30: "a new tab that is labeled 'Price Book' that will be
+  // the full in-app editor"). The workbook is history; this is the source.
+  { to: "/price-book", label: "Price Book" },
   { to: "/settings", label: "Settings" },
 ];
 
@@ -34,6 +38,9 @@ const MOBILE_NAV_COLS: Record<number, string> = {
   7: "grid-cols-7",
   8: "grid-cols-8",
   9: "grid-cols-9",
+  // Ten entries in one phone row would leave ~36px per label; five columns
+  // wrap into two even rows instead, so every label stays readable.
+  10: "grid-cols-5",
 };
 
 function NavItem({ to, label, badge }: { to: string; label: string; badge?: number }) {

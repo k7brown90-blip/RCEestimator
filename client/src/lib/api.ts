@@ -249,6 +249,70 @@ export async function fetchProtectedObjectUrl(path: string): Promise<string> {
  * leak into. So this returns the text as-is for the signing screen to display in a sandboxed
  * iframe.
  */
+// ─── Price Book editor payloads (the app is the book — 2026-08-30) ───────────
+export interface PbCatalogAtomic {
+  itemId: string;
+  description: string | null;
+  category: string | null;
+  subCategory: string | null;
+  unitLabel: string | null;
+  sector: string | null;
+  rowType: string | null;
+  notes: string | null;
+  companyCost: number | null;
+  companyPrice: number | null;
+  markupTier: string | null;
+  laborNormal: number | null;
+  laborDifficult: number | null;
+  laborVeryDifficult: number | null;
+  sellNormal: number | null;
+  sellDifficult: number | null;
+  sellVeryDifficult: number | null;
+  source: string | null;
+  retiredAt: string | null;
+}
+
+export interface PbCatalogEdit {
+  id: string;
+  itemId: string;
+  field: string;
+  oldValue: string | null;
+  newValue: string | null;
+  editedBy: string;
+  note: string | null;
+  createdAt: string;
+}
+
+export type PbCatalogPatch = Partial<{
+  description: string;
+  category: string;
+  subCategory: string | null;
+  unitLabel: string | null;
+  notes: string | null;
+  sector: string | null;
+  rowType: string;
+  companyCost: number | null;
+  laborNormal: number | null;
+  laborDifficult: number | null;
+  laborVeryDifficult: number | null;
+}>;
+
+export interface PbCatalogCreate {
+  itemId?: string | null;
+  idPrefix?: string | null;
+  description: string;
+  category: string;
+  subCategory?: string | null;
+  unitLabel?: string | null;
+  sector?: string | null;
+  rowType: string;
+  companyCost?: number | null;
+  laborNormal?: number | null;
+  laborDifficult?: number | null;
+  laborVeryDifficult?: number | null;
+  notes?: string | null;
+}
+
 async function requestHtml(path: string): Promise<string> {
   const token = sessionToken();
   const response = await fetch(`${API_BASE}${path}`, {
@@ -944,6 +1008,55 @@ export const api = {
     request<{ issued: true; estimateId: string; number: string; revision: number; unpriced?: string[] }>(
       `/price-book/drafts/${draftId}/issue`,
       { method: "POST", body: JSON.stringify(input) }
+    ),
+
+  // ─── Price Book editor (2026-08-30 — the app is the book) ─────────────────
+  pbCatalogCategories: () =>
+    request<{ categories: Array<{ name: string; count: number; sortOrder: number }> }>(
+      "/price-book/catalog/categories",
+    ),
+  pbCatalogCategoryOrder: (names: string[]) =>
+    request<{ ok: true }>("/price-book/catalog/categories/order", {
+      method: "PUT",
+      body: JSON.stringify({ names }),
+    }),
+  pbCatalogRenameCategory: (from: string, to: string) =>
+    request<{ ok: true; renamed: number }>("/price-book/catalog/categories/rename", {
+      method: "POST",
+      body: JSON.stringify({ from, to }),
+    }),
+  pbCatalogItems: (params?: { category?: string; search?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.category) qs.set("category", params.category);
+    if (params?.search) qs.set("search", params.search);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<{ atomics: PbCatalogAtomic[] }>(`/price-book/catalog/items${suffix}`);
+  },
+  pbCatalogItem: (itemId: string) =>
+    request<{ atomic: PbCatalogAtomic; edits: PbCatalogEdit[] }>(
+      `/price-book/catalog/items/${encodeURIComponent(itemId)}`,
+    ),
+  pbCatalogUpdateItem: (itemId: string, patch: PbCatalogPatch) =>
+    request<{ atomic: PbCatalogAtomic }>(`/price-book/catalog/items/${encodeURIComponent(itemId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  pbCatalogCreateItem: (input: PbCatalogCreate) =>
+    request<{ atomic: PbCatalogAtomic }>("/price-book/catalog/items", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  pbCatalogRetireItem: (itemId: string) =>
+    request<{ atomic: PbCatalogAtomic }>(`/price-book/catalog/items/${encodeURIComponent(itemId)}/retire`, {
+      method: "POST", body: JSON.stringify({}),
+    }),
+  pbCatalogRestoreItem: (itemId: string) =>
+    request<{ atomic: PbCatalogAtomic }>(`/price-book/catalog/items/${encodeURIComponent(itemId)}/restore`, {
+      method: "POST", body: JSON.stringify({}),
+    }),
+  pbCatalogRetired: () =>
+    request<{ atomics: Array<{ itemId: string; description: string | null; category: string | null; retiredAt: string }> }>(
+      "/price-book/catalog/retired",
     ),
 
   pbIssuedList: (draftId?: string) =>
