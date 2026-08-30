@@ -15,7 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
-import { api } from "../lib/api";
+import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type { PbCatalogAtomic, PbCatalogCreate, PbCatalogPatch } from "../lib/api";
 
 const money = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `$${v.toFixed(2)}`);
@@ -38,6 +38,7 @@ export function PriceBookCatalogPage() {
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [showRetired, setShowRetired] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameText, setRenameText] = useState("");
 
@@ -144,6 +145,26 @@ export function PriceBookCatalogPage() {
           }`}
         >
           Retired items
+        </button>
+        <button
+          type="button"
+          disabled={exporting}
+          onClick={() => {
+            // A snapshot of the book as a spreadsheet — a report, not an input.
+            setExporting(true);
+            void fetchProtectedObjectUrl("/price-book/catalog/export")
+              .then((url) => {
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `RCE-price-book-${new Date().toISOString().slice(0, 10)}.xlsx`;
+                a.click();
+                URL.revokeObjectURL(url);
+              })
+              .finally(() => setExporting(false));
+          }}
+          className="rounded-lg border border-rce-border px-3 py-2 text-sm text-rce-muted disabled:opacity-50"
+        >
+          {exporting ? "Building…" : "Download .xlsx"}
         </button>
       </div>
 

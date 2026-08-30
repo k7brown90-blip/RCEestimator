@@ -59,6 +59,7 @@ import {
   setCategoryOrder,
   updateAtomic,
 } from "./services/priceBookCatalog";
+import { exportPriceBookXlsx } from "./services/priceBookExport";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
@@ -1977,6 +1978,15 @@ app.post("/price-book/catalog/items/:itemId/restore", asyncHandler(async (req, r
   const result = await retireAtomic(prisma, readParam(req, "itemId"), "human:crm-session", true);
   if (!result.ok) { res.status(404).json({ error: result.reason }); return; }
   res.json({ atomic: result.atomic });
+}));
+
+/** The book as a spreadsheet — a report of the database, never an input. */
+app.get("/price-book/catalog/export", asyncHandler(async (_req, res) => {
+  const bytes = await exportPriceBookXlsx(prisma);
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="RCE-price-book-${stamp}.xlsx"`);
+  res.send(bytes);
 }));
 
 /** Retired rows for the editor's "retired" view — pickers never see them. */
