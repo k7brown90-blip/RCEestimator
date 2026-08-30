@@ -1241,11 +1241,10 @@ app.use("/e", estimatePageRouter);
  * unsigned, void, and already-paid invoices.
  */
 /**
- * The chooser — reframed on Kyle's ruling (2026-08-25): the invoice total IS
- * the card price; non-card payment earns a 3% DISCOUNT. "To be legal it
- * cannot be seen as a punishment for using a card but that does not mean
- * there can't be a reward for other forms of payment." The page leads with
- * the reward, never a fee.
+ * One amount, one button (Kyle, 2026-08-30: "keep it straight to the invoice
+ * amount, no check or cash discount"). The page states what's due and hands
+ * off to Stripe Checkout, where card and bank transfer sit side by side at
+ * the same price. Cash/check/Zelle are recorded by hand in the CRM.
  */
 app.get("/pay/:token", asyncHandler(async (req, res) => {
   const token = readParam(req, "token");
@@ -1263,30 +1262,25 @@ app.get("/pay/:token", asyncHandler(async (req, res) => {
     res.status(400).send(page(`<p>${chargeable.reason}</p>`));
     return;
   }
-  const typeParam = payType === "deposit" ? "&type=deposit" : "";
+  const typeParam = payType === "deposit" ? "?type=deposit" : "";
   const btn = "display:block;margin:10px 0;padding:16px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:600;";
   res.send(page(`
     <p style="font-size:15px;">${payType === "deposit" ? "Deposit (1/3)" : "Payment"} on invoice
     <b>${chargeable.number}</b> — ${chargeable.title}</p>
     <p style="font-size:14px;">Amount due: <b>$${chargeable.amount.toFixed(2)}</b></p>
-    <a style="${btn}background:#1a5c2e;color:#fff;" href="/pay/${token}/checkout?method=bank${typeParam}">
-      Bank transfer — $${chargeable.discounted.toFixed(2)}<br>
-      <span style="font-size:12px;font-weight:400;">save 3% ($${chargeable.discount.toFixed(2)}) — our thank-you for paying by bank, cash, check, or Zelle</span>
+    <a style="${btn}background:#1a5c2e;color:#fff;" href="/pay/${token}/checkout${typeParam}">
+      Pay now — $${chargeable.amount.toFixed(2)}
     </a>
-    <a style="${btn}background:#fff;color:#1a5c2e;border:2px solid #1a5c2e;" href="/pay/${token}/checkout?method=card${typeParam}">
-      Credit / debit card — $${chargeable.amount.toFixed(2)}
-    </a>
-    <p style="color:#666;font-size:12px;">Paying by cash, check, or Zelle instead? The same 3% comes off — just let us know.</p>
+    <p style="color:#666;font-size:12px;">Credit / debit card or bank transfer — secure checkout by Stripe.</p>
     ${payType === "deposit" ? `<p style="color:#666;font-size:12px;">Deposits are non-refundable up to $300 if the job is cancelled.</p>` : ""}
   `));
 }));
 
-/** Mint the session for the chosen rail and hand off to Stripe. */
+/** Mint the session and hand off to Stripe. */
 app.get("/pay/:token/checkout", asyncHandler(async (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   const payType = readQuery(req, "type") === "deposit" ? "deposit" as const : "balance" as const;
-  const method = readQuery(req, "method") === "bank" ? "bank" as const : "card" as const;
-  const result = await createInvoiceCheckoutSession(prisma, readParam(req, "token"), origin, payType, method);
+  const result = await createInvoiceCheckoutSession(prisma, readParam(req, "token"), origin, payType);
   if (!result.ok) {
     res.status(400).send(`<!doctype html><meta charset="utf-8">
       <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center;">
@@ -3816,8 +3810,9 @@ app.get("/jobs", asyncHandler(async (req, res) => {
 // what ones are paid." An invoice IS a signed issued estimate (his 2026-08-21
 // ruling: "The signed estimates need to be labeled invoices") — so this list is
 // every signed, unvoided estimate with its money rolled up the same way
-// paymentSummary does it: totalPaid includes the 3% non-card discount rows
-// (they close balances), `collected` is real money only.
+// paymentSummary does it: totalPaid includes any legacy "discount" rows from
+// the retired 3% non-card programme (they close balances), `collected` is
+// real money only.
 app.get("/invoices", asyncHandler(async (_req, res) => {
   const estimates = await prisma.issuedEstimate.findMany({
     // Test-account rows are excluded like the estimate chain — practice

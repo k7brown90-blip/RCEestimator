@@ -86,20 +86,14 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 export const DEPOSIT_NONREFUNDABLE_CAP = 300;
 
 /**
- * The NON-CARD DISCOUNT (reframed on Kyle's ruling, 2026-08-25): "the
- * additional 3% is charged regardless, checks, cash, zelle, save 3%. To be
- * legal it cannot be seen as a punishment for using a card but that does not
- * mean there can't be a reward for other forms of payment."
- *
- * So: the INVOICE TOTAL IS THE CARD PRICE. A card pays it in full, no fee
- * line, nothing added. Every other method — bank transfer, cash, check,
- * Zelle — earns a 3% DISCOUNT off what's due, recorded as its own visible
- * Payment row (method "discount") so the invoice still closes to exactly
- * zero and the books show real money and reward separately. A discount rows
- * counts toward the balance and the deposit gate, but never toward
- * "collected" in the financials — it isn't money, it's a thank-you.
+ * ONE PRICE, EVERY METHOD (Kyle, 2026-08-30: "keep it straight to the invoice
+ * amount, no check or cash discount"). Card, bank transfer, cash, check, and
+ * Zelle all pay exactly what the invoice says — no card fee, no non-card
+ * reward. The 3% non-card discount that ran 2026-08-25 → 08-30 is retired;
+ * the only trace left is that paymentSummary/financials still tolerate the
+ * legacy Payment rows it wrote (method "discount") so those invoices keep
+ * closing to zero and "collected" stays real money only.
  */
-export const NONCARD_DISCOUNT_PCT = 0.03;
 
 export function depositDueOf(billedTotal: number): number {
   return round2(billedTotal / 3);
@@ -185,9 +179,8 @@ export async function chargeableAmount(
   estimateToken: string,
   payType: "balance" | "deposit",
 ): Promise<
-  // amount = the invoice (card) price due. discount/discounted = the 3%
-  // non-card reward and the resulting bank/cash/check/Zelle price.
-  | { ok: true; estimateId: string; number: string; title: string; amount: number; discount: number; discounted: number }
+  // amount = what's due right now, the same figure for every payment method.
+  | { ok: true; estimateId: string; number: string; title: string; amount: number }
   | { ok: false; reason: string }
 > {
   const est = await prisma.issuedEstimate.findUnique({
@@ -207,17 +200,7 @@ export async function chargeableAmount(
     ? round2(Math.min(summary.depositDue - summary.depositPaid, summary.balance))
     : summary.balance;
   if (!(amount > 0)) return { ok: false, reason: "Nothing is due on this invoice." };
-  const discounted = round2(amount * (1 - NONCARD_DISCOUNT_PCT));
-  return {
-    ok: true,
-    estimateId: est.id,
-    number: summary.number,
-    title: est.title,
-    amount,
-    // Exact complement, so payment + discount always sums to precisely the due.
-    discount: round2(amount - discounted),
-    discounted,
-  };
+  return { ok: true, estimateId: est.id, number: summary.number, title: est.title, amount };
 }
 
 export async function createInvoiceCheckoutSession(
@@ -227,8 +210,6 @@ export async function createInvoiceCheckoutSession(
   // "deposit" charges the ⅓ down (less any deposit already paid); "balance"
   // charges what remains after every paid row. (Kyle, 2026-08-25.)
   payType: "balance" | "deposit" = "balance",
-  // bank = ACH only, no fee; card = card only, +3% as its own line item.
-  method: "bank" | "card" = "card",
 ): Promise<{ ok: true; url: string } | { ok: false; reason: string }> {
   if (!stripeConfigured()) return { ok: false, reason: "Online payment is not configured." };
 
@@ -236,10 +217,8 @@ export async function createInvoiceCheckoutSession(
   if (!chargeable.ok) return chargeable;
 
   const full = await prisma.issuedEstimate.findUnique({ where: { id: chargeable.estimateId } });
-  // Card pays the invoice price. Bank pays the discounted price, and the 3%
-  // reward becomes its own recorded discount row via webhook metadata.
-  const charged = method === "bank" ? chargeable.discounted : chargeable.amount;
-  const discountApplied = method === "bank" ? chargeable.discount : 0;
+  // One price for every rail — card and bank both pay exactly what's due.
+  const charged = chargeable.amount;
 
   const session = await stripe().checkout.sessions.create({
     mode: "payment",
@@ -255,23 +234,16 @@ export async function createInvoiceCheckoutSession(
               : `Invoice ${chargeable.number} — ${full!.title}`,
             // The non-refundable term is DISCLOSED where the card is entered —
             // a kept deposit the customer never saw coming is a chargeback.
-            description: [
-              discountApplied > 0 ? `3% non-card discount applied (−$${discountApplied.toFixed(2)}).` : null,
-              payType === "deposit"
-                ? `${full!.serviceAddress ?? ""} — Deposits are non-refundable up to $${DEPOSIT_NONREFUNDABLE_CAP} if the job is cancelled.`.trim()
-                : full!.serviceAddress ?? null,
-            ].filter(Boolean).join(" ") || undefined,
+            description: payType === "deposit"
+              ? `${full!.serviceAddress ?? ""} — Deposits are non-refundable up to $${DEPOSIT_NONREFUNDABLE_CAP} if the job is cancelled.`.trim()
+              : full!.serviceAddress ?? undefined,
           },
         },
       },
     ],
     customer_email: full!.customerEmail ?? undefined,
-    // Method steering via EXCLUSION, per Stripe's own guidance — never
-    // payment_method_types. Bank hides card; card hides the bank rail.
-    // ("link" is not an excludable type — live Stripe rejected it on go-live day.)
-    excluded_payment_method_types: (method === "bank"
-      ? ["card"]
-      : ["us_bank_account"]) as Stripe.Checkout.SessionCreateParams.ExcludedPaymentMethodType[],
+    // No payment_method_types and no exclusions: dynamic payment methods let
+    // the Dashboard offer card AND bank transfer side by side, same price.
     // Fulfillment keys off these in the webhook — never trust the success page.
     metadata: {
       estimateId: chargeable.estimateId,
@@ -279,10 +251,7 @@ export async function createInvoiceCheckoutSession(
       customerId: full!.customerId,
       visitId: full!.jobVisitId ?? "",
       kind: payType === "deposit" ? "deposit" : "final",
-      // The money actually moving. The discount rides separately so the
-      // webhook can record both and the invoice closes to exactly zero.
       baseAmount: String(charged),
-      discountAmount: String(discountApplied),
     },
     // NO SALES TAX — Kyle, 2026-08-25: "I don't charge sales tax, its a
     // service business." The TN contractor posture: tax is paid on materials
@@ -324,7 +293,6 @@ export async function handleStripeWebhook(
     // record only when the money is actually in flight or landed.
     if (session.payment_status === "unpaid") return;
     const estimateId = session.metadata?.estimateId ?? null;
-    // The money that actually moved (the discount rides as its own row below).
     const base = Number(session.metadata?.baseAmount);
     const amount = Number.isFinite(base) && base > 0 ? base : (session.amount_total ?? 0) / 100;
     // Receipt goes out only on the FIRST paid recording — Stripe retries and
@@ -357,25 +325,6 @@ export async function handleStripeWebhook(
       `Payment received: $${amount.toFixed(2)}`,
       `Invoice ${session.metadata?.estimateNumber ?? "?"} was paid online via Stripe.\nAmount: $${amount.toFixed(2)}\nSession: ${session.id}`,
     ).catch(() => {});
-    // The 3% non-card reward (Kyle's ruling): a bank payment carries its
-    // discount as its own row, so the balance closes to zero and the books
-    // show money and reward separately. First recording only.
-    const discountAmt = Number(session.metadata?.discountAmount);
-    if (firstPaidRecording && Number.isFinite(discountAmt) && discountAmt > 0) {
-      await prisma.payment.create({
-        data: {
-          estimateId,
-          customerId: session.metadata?.customerId || null,
-          visitId: session.metadata?.visitId || null,
-          amount: discountAmt,
-          method: "discount",
-          kind: session.metadata?.kind === "deposit" ? "deposit" : "final",
-          status: "paid",
-          paidAt: new Date(),
-          note: `3% non-card discount (bank transfer, session ${session.id})`,
-        },
-      });
-    }
 
     // The customer's receipt (Kyle, 2026-08-25: "final receipts to email that
     // show something is paid"). Fire-and-forget — the payment is already durable.

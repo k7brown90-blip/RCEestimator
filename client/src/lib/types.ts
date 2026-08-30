@@ -818,8 +818,8 @@ export type AccountJob = {
 /**
  * One row of the Invoices tab (Kyle, 2026-08-26: "tracks the invoices sent and
  * what ones are paid"). An invoice is a signed issued estimate; the money
- * mirrors paymentSummary — totalPaid includes 3% non-card discount rows,
- * `collected` is real money only.
+ * mirrors paymentSummary — totalPaid includes any legacy "discount" rows from
+ * the retired 3% non-card programme, `collected` is real money only.
  */
 export type InvoiceSummary = {
   id: string;

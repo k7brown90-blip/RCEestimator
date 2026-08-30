@@ -26,7 +26,7 @@
  *
  * WHAT IS DELIBERATELY NOT ON THIS PAGE: the ACH account and routing numbers that the emailed
  * PDFs carry. Payment TERMS are here because the prompt asks for them and the customer needs to
- * know non-card payment saves 3%; the account credentials are not, because this is a long-lived URL
+ * know how to pay; the account credentials are not, because this is a long-lived URL
  * whose only protection is a token that will be forwarded around in email. Payment processing is
  * explicitly out of scope for P027, so nothing on this page needs them. Flagged for Kyle.
  */
@@ -518,7 +518,7 @@ export function renderEstimatePage(
                             padding:12px 24px;border-radius:6px;font-size:16px;font-weight:600;">
                     Pay your deposit — $${opts.deposit.due.toFixed(2)}
                   </a>
-                  <p style="font-size:12px;color:#555;margin:8px 0 0;">Save 3% by paying with bank transfer, cash, check, or Zelle. Deposits are non-refundable up to $300 if the job is cancelled.</p>
+                  <p style="font-size:12px;color:#555;margin:8px 0 0;">Card or bank transfer online, or cash, check, or Zelle — same amount either way. Deposits are non-refundable up to $300 if the job is cancelled.</p>
                 </div>
                 <p style="font-size:13px;color:#555;margin:10px 0 0;">Questions? Call ${BUSINESS_PHONE}.</p>`
              : opts.deposit?.paidInFull

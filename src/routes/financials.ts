@@ -113,9 +113,6 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
     // check or do another form of payment that the system can't detect like
     // cash or zelle"). Stripe rows only ever arrive via the webhook.
     method: z.enum(["cash", "check", "zelle", "other"]),
-    // The 3% non-card reward (Kyle's ruling): recorded as its own companion
-    // discount row so the invoice closes to zero while collected stays honest.
-    nonCardDiscount: z.number().nonnegative().optional(),
     // deposit satisfies the scheduling gate (Kyle, 2026-08-25).
     kind: z.enum(["deposit", "final", "other"]).default("other"),
     customerId: z.string().optional(),
@@ -137,21 +134,6 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
       paidAt: body.paidAt ? new Date(body.paidAt) : new Date(),
     },
   });
-  if (body.nonCardDiscount && body.nonCardDiscount > 0) {
-    await prisma.payment.create({
-      data: {
-        amount: body.nonCardDiscount,
-        method: "discount",
-        kind: body.kind,
-        status: "paid",
-        customerId: body.customerId ?? null,
-        estimateId: body.estimateId ?? null,
-        visitId: body.visitId ?? null,
-        note: `3% non-card discount (with ${body.method} payment)`,
-        paidAt: body.paidAt ? new Date(body.paidAt) : new Date(),
-      },
-    });
-  }
   // A recorded cash/check tied to an invoice emails the customer their receipt
   // too (Kyle, 2026-08-25) — same document either way the money arrived.
   if (payment.estimateId) {
@@ -214,8 +196,9 @@ async function yearLedger(year: number): Promise<YearLedger> {
       where: { signedAt: { gte: from, lt: to }, status: { not: "void" }, account: { isTestAccount: false } },
       include: { options: true, account: { select: { name: true } } },
     }),
-    // Collected = MONEY. The 3% non-card discount rows close invoices but are
-    // a reward, not revenue — they stay out of every collected figure.
+    // Collected = MONEY. Legacy "discount" rows (the retired 3% non-card
+    // programme, 2026-08-25 → 08-30) close invoices but were never revenue —
+    // they stay out of every collected figure.
     prisma.payment.findMany({ where: { status: "paid", method: { not: "discount" }, paidAt: { gte: from, lt: to } } }),
     prisma.receipt.findMany({
       where: { status: "confirmed", receivedAt: { gte: from, lt: to } },

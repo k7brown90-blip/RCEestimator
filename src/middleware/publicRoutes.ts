@@ -234,7 +234,7 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
   },
   {
     methods: ["GET"], path: "/pay/:token/checkout", credential: "URL-path token",
-    reason: "The chooser's second leg — mints the Stripe session for the chosen rail (card at the invoice price, bank with the 3% non-card discount) and redirects. Same token, same guards in stripePayments.",
+    reason: "The pay page's second leg — mints the Stripe Checkout session for exactly the amount due (card or bank, same price) and redirects. Same token, same guards in stripePayments.",
   },
   {
     methods: ["POST"], path: "/stripe/webhook", credential: "query-string secret",

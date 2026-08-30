@@ -127,7 +127,7 @@ export function InvoicesPage() {
                   </div>
                   {inv.discountTotal > 0 && (
                     <div className="text-xs text-emerald-700">
-                      includes {money(inv.discountTotal)} non-card savings
+                      includes {money(inv.discountTotal)} discount credit (retired 3% programme)
                     </div>
                   )}
                 </div>

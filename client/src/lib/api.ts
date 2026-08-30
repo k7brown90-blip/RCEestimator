@@ -813,7 +813,7 @@ export const api = {
     request<CompanyBillRow>("/financials/bills", { method: "POST", body: JSON.stringify(input) }),
   deleteCompanyBill: (id: string) => request<void>(`/financials/bills/${id}`, { method: "DELETE" }),
   paymentsList: (year: number) => request<PaymentRow[]>(`/financials/payments?year=${year}`),
-  recordPayment: (input: { amount: number; method: "cash" | "check" | "zelle" | "other"; kind?: "deposit" | "final" | "other"; nonCardDiscount?: number; customerId?: string; estimateId?: string; note?: string }) =>
+  recordPayment: (input: { amount: number; method: "cash" | "check" | "zelle" | "other"; kind?: "deposit" | "final" | "other"; customerId?: string; estimateId?: string; note?: string }) =>
     request<PaymentRow>("/financials/payments", { method: "POST", body: JSON.stringify(input) }),
   // ─── Company settings ───────────────────────────────────────────────────
   companySettings: () => request<CompanySettings>("/crm/settings"),
