@@ -2102,6 +2102,107 @@ app.put("/price-book/drafts/:draftId/options-mode", asyncHandler(async (req, res
 }));
 
 /*
+  ── DUPLICATE A DRAFT (Kyle, 2026-08-31) ───────────────────────────────────────────────────────
+
+  "I also need a way to create a new version from already sent estimates. I want to be able to
+   take one, have it copied exactly the way it is into the estimate builder, and begin editing it
+   to send it as a new estimate."
+
+  Copies the draft behind an estimate — lines with their confirm state, option names, discount,
+  photos, resolved questions, the rate snapshot — into a brand-new EDITABLE draft (status
+  "draft", never finalized). The sent estimate and its own draft are untouched; issuing the copy
+  produces a NEW estimate number, not a revision. changeOrderForId is deliberately not copied —
+  a fresh estimate is not a change order on the old one.
+*/
+app.post("/price-book/drafts/:draftId/duplicate", asyncHandler(async (req, res) => {
+  const sourceId = String(req.params.draftId);
+  const source = await prisma.priceBookDraftEstimate.findUnique({
+    where: { id: sourceId },
+    include: { lines: true, questions: true, optionMeta: true, photos: true },
+  });
+  if (!source) {
+    res.status(404).json({ error: `Draft ${sourceId} not found.` });
+    return;
+  }
+  const copy = await prisma.priceBookDraftEstimate.create({
+    data: {
+      title: source.title,
+      leadId: source.leadId,
+      customerId: source.customerId,
+      visitId: source.visitId,
+      supplierId: source.supplierId,
+      jobDescription: source.jobDescription,
+      scenarioRef: source.scenarioRef,
+      exclusiveOptions: source.exclusiveOptions,
+      // Editable from the first click — the whole point of the copy.
+      status: "draft",
+      billedLaborRate: source.billedLaborRate,
+      rateProvisional: source.rateProvisional,
+      provisionalReason: source.provisionalReason,
+      notes: source.notes,
+      discountType: source.discountType,
+    },
+  });
+  if (source.lines.length > 0) {
+    await prisma.priceBookDraftLine.createMany({
+      data: source.lines.map((l) => ({
+        draftId: copy.id,
+        itemId: l.itemId,
+        quantity: l.quantity,
+        quantitySource: l.quantitySource,
+        difficulty: l.difficulty,
+        location: l.location,
+        note: l.note,
+        sortOrder: l.sortOrder,
+        option: l.option,
+        state: l.state,
+        proposedBy: l.proposedBy,
+        proposalReasoning: l.proposalReasoning,
+        proposedAt: l.proposedAt,
+        confirmedBy: l.confirmedBy,
+        confirmedAt: l.confirmedAt,
+        editedBeforeConfirm: l.editedBeforeConfirm,
+      })),
+    });
+  }
+  if (source.questions.length > 0) {
+    await prisma.priceBookDraftQuestion.createMany({
+      data: source.questions.map((q) => ({
+        draftId: copy.id,
+        question: q.question,
+        rawText: q.rawText,
+        raisedBy: q.raisedBy,
+        resolvedAt: q.resolvedAt,
+        resolvedBy: q.resolvedBy,
+        resolutionNote: q.resolutionNote,
+      })),
+    });
+  }
+  if (source.optionMeta.length > 0) {
+    await prisma.priceBookDraftOption.createMany({
+      data: source.optionMeta.map((o) => ({
+        draftId: copy.id,
+        option: o.option,
+        label: o.label,
+        note: o.note,
+      })),
+    });
+  }
+  if (source.photos.length > 0) {
+    await prisma.draftPhoto.createMany({
+      data: source.photos.map((p) => ({
+        draftId: copy.id,
+        mime: p.mime,
+        bytes: p.bytes,
+        size: p.size,
+        note: p.note,
+      })),
+    });
+  }
+  res.status(201).json({ id: copy.id, title: copy.title });
+}));
+
+/*
   ── COPY AN OPTION'S LINES (Kyle, 2026-08-25) ──────────────────────────────────────────────────
 
   "It would be nice to be able to copy an option to another so I could build on it" — build the

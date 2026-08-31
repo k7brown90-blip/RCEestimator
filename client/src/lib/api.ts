@@ -740,6 +740,29 @@ export const api = {
       `/health-record-admin/inspections/${inspectionId}/generator-report`,
       { method: "POST", body: JSON.stringify({}) },
     ),
+  /** The stored A2 load calculation + generator design — feeds the CRM's generator designer. */
+  inspectionLoadCalc: (inspectionId: string) =>
+    request<{
+      input: import("../../../shared/loadcalc/loadcalc").LoadCalcInput;
+      result: import("../../../shared/loadcalc/loadcalc").LoadCalcResult;
+      generator: {
+        recommendation: import("../../../shared/loadcalc/generator").GeneratorRecommendation;
+        fuel: "NG" | "LP";
+        softStart: boolean;
+        altitudeSteps: number;
+        includeInEstimate: boolean;
+        shedSelection?: string[];
+      } | null;
+    }>(`/health-record-admin/inspections/${inspectionId}/load-calc`),
+  /** Save a generator design; the server recomputes the recommendation from the stored calc. */
+  saveGeneratorDesign: (
+    inspectionId: string,
+    input: { fuel: "NG" | "LP"; softStart: boolean; altitudeSteps: number; includeInEstimate: boolean; shedSelection?: string[] },
+  ) =>
+    request<{ ok: true }>(`/health-record-admin/inspections/${inspectionId}/generator`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
   /** Email the report to the customer — logged as a delivery; refuses an unreviewed critical report. */
   emailHealthReport: (inspectionId: string, to?: string) =>
     request<{ sent: true; sentTo: string; documentId: string }>(
@@ -871,6 +894,13 @@ export const api = {
     request<PbDraft>("/price-book/drafts", { method: "POST", body: JSON.stringify(input) }),
 
   pbReview: (draftId: string) => request<PbReview>(`/price-book/drafts/${draftId}/review`),
+
+  /** New estimate from a sent one (Kyle, 2026-08-31): duplicate the draft behind it, exactly. */
+  pbDuplicateDraft: (draftId: string) =>
+    request<{ id: string; title: string }>(`/price-book/drafts/${draftId}/duplicate`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
 
   /**
    * Kyle's names for the three options (2026-08-20).

@@ -1334,6 +1334,90 @@ healthRecordAdminRouter.post("/inspections/:id/report", asyncHandler(async (req,
 }));
 
 /**
+ * GET /health-record-admin/inspections/:id/load-calc — the stored A2 load
+ * calculation + generator design, for the CRM's generator designer (Kyle,
+ * 2026-08-31: "bring up past reports to edit or review to design the
+ * generator system").
+ */
+healthRecordAdminRouter.get("/inspections/:id/load-calc", asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const inspection = await prisma.healthInspection.findUnique({
+    where: { id },
+    select: { id: true, loadCalcJson: true },
+  });
+  if (!inspection) {
+    res.status(404).json({ error: "Inspection not found" });
+    return;
+  }
+  if (!inspection.loadCalcJson) {
+    res.status(409).json({ error: "This inspection has no load calculation — run the A2 load calc first." });
+    return;
+  }
+  const stored = JSON.parse(inspection.loadCalcJson) as { input: unknown; result: unknown; generator?: unknown };
+  res.json({ input: stored.input, result: stored.result, generator: stored.generator ?? null });
+}));
+
+/**
+ * PUT /health-record-admin/inspections/:id/generator — save a generator design
+ * from the CRM designer. The recommendation is recomputed SERVER-SIDE from the
+ * stored calculation with the submitted settings — one engine, no drift; the
+ * client never writes the numbers the data sheet will print. Mirrors to the
+ * capacityCheck row exactly as the PDF path does, so the estimate attachment
+ * stays in step.
+ */
+healthRecordAdminRouter.put("/inspections/:id/generator", asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const body = z.object({
+    fuel: z.enum(["NG", "LP"]),
+    softStart: z.boolean(),
+    altitudeSteps: z.number().nonnegative(),
+    includeInEstimate: z.boolean(),
+    shedSelection: z.array(z.string()).optional(),
+  }).parse(req.body ?? {});
+  const inspection = await prisma.healthInspection.findUnique({
+    where: { id },
+    select: { id: true, loadCalcJson: true },
+  });
+  if (!inspection) {
+    res.status(404).json({ error: "Inspection not found" });
+    return;
+  }
+  if (!inspection.loadCalcJson) {
+    res.status(409).json({ error: "This inspection has no load calculation — run the A2 load calc first." });
+    return;
+  }
+  const { recommendGenerator } = await import("../../shared/loadcalc/generator");
+  const stored = JSON.parse(inspection.loadCalcJson) as {
+    input: import("../../shared/loadcalc/loadcalc").LoadCalcInput;
+    result: import("../../shared/loadcalc/loadcalc").LoadCalcResult;
+  };
+  const generator = {
+    recommendation: recommendGenerator({
+      calcInput: stored.input,
+      calcResult: stored.result,
+      fuel: body.fuel,
+      softStart: body.softStart,
+      site: { altitudeSteps: body.altitudeSteps },
+      shedSelection: body.shedSelection,
+    }),
+    fuel: body.fuel,
+    softStart: body.softStart,
+    altitudeSteps: body.altitudeSteps,
+    includeInEstimate: body.includeInEstimate,
+    shedSelection: body.shedSelection,
+  };
+  await prisma.healthInspection.update({
+    where: { id },
+    data: { loadCalcJson: JSON.stringify({ ...stored, generator }) },
+  });
+  await prisma.capacityCheck.updateMany({
+    where: { sourceInspectionId: id },
+    data: { generatorJson: JSON.stringify(generator) },
+  });
+  res.json({ ok: true });
+}));
+
+/**
  * POST /health-record-admin/inspections/:id/generator-report — the P031
  * generator sizing document off this inspection's load calculation (Kyle,
  * 2026-08-28: "a button... that becomes available after the load calcs are

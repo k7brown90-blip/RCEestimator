@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { InspectionResultChip } from "./InspectionResultChip";
 import { ProtectedImage } from "./ProtectedImage";
+import { GeneratorDesigner } from "./GeneratorDesigner";
 
 /**
  * Health Record panel for the visit workspace — read-only from the CRM's side.
@@ -16,6 +17,8 @@ import { ProtectedImage } from "./ProtectedImage";
 export function HealthRecordPanel({ visitId }: { visitId: string }) {
   const queryClient = useQueryClient();
   const [expandedInspectionId, setExpandedInspectionId] = useState<string | null>(null);
+  // The CRM-side generator designer (Kyle, 2026-08-31) — one open at a time.
+  const [designerInspectionId, setDesignerInspectionId] = useState<string | null>(null);
 
   const { data: assignments } = useQuery({
     queryKey: ["visitAssignments", visitId],
@@ -201,14 +204,31 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                           unlocks once the A2 load calc is on the record —
                           without one there is nothing to size from. */}
                       {inspection.hasLoadCalc && (
-                        <button
-                          type="button"
-                          className="btn btn-secondary ml-2 mt-2 text-xs"
-                          disabled={generatorReportMutation.isPending}
-                          onClick={() => generatorReportMutation.mutate(inspection.id)}
-                        >
-                          {generatorReportMutation.isPending ? "Generating…" : "Generator sizing report"}
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-secondary ml-2 mt-2 text-xs"
+                            disabled={generatorReportMutation.isPending}
+                            onClick={() => generatorReportMutation.mutate(inspection.id)}
+                          >
+                            {generatorReportMutation.isPending ? "Generating…" : "Generator sizing report"}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary ml-2 mt-2 text-xs"
+                            onClick={() =>
+                              setDesignerInspectionId(designerInspectionId === inspection.id ? null : inspection.id)
+                            }
+                          >
+                            {designerInspectionId === inspection.id ? "Close designer" : "Design generator"}
+                          </button>
+                        </>
+                      )}
+                      {designerInspectionId === inspection.id && (
+                        <GeneratorDesigner
+                          inspectionId={inspection.id}
+                          onClose={() => setDesignerInspectionId(null)}
+                        />
                       )}
                       <button
                         type="button"

@@ -301,7 +301,7 @@ describe('whole-home schemes', () => {
     expect(plan.managed[1].mechanism).toContain('SACM')
     // Rule 4: strips may ride the compressor's interrupted t-stat call —
     // never silently assumed; the dedicated SMM is planned WITH the verify flag.
-    const strips = plan.managed.find((r) => r.label.includes('strip kit'))!
+    const strips = plan.managed.find((r) => r.stage === 'supplemental')!
     expect(strips.mechanism).toContain('field-verify')
     expect(strips.bomSlot).toContain('SMM')
     expect(strips.flags.join(' ')).toContain('aux-heat staging')

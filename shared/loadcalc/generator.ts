@@ -416,6 +416,12 @@ function buildPartialLoads(loads: LoadItem[]): PartialBuild {
 
 export interface ManagedLoadRow {
   label: string
+  /** The inventory item this row manages — lets renderers pair a heat pump's
+   * compressor and supplemental rows as stages of one unit instead of
+   * printing the appliance name twice (Kyle, 2026-08-31, the Himrick sheet). */
+  itemId: string
+  /** Which stage of the item this row is; absent for whole-item loads. */
+  stage?: 'compressor' | 'supplemental'
   kw: number
   /** 'SACM (thermostat interrupt)' | '50A SMM' | '100A SMM' | the verify-strips variant. */
   mechanism: string
@@ -479,6 +485,8 @@ function planManagement(loads: LoadItem[], shedSelection?: string[]): Management
       sacmUsed += 1
       managed.push({
         label: comp.label,
+        itemId: comp.id,
+        stage: comp.type === 'heatPump' ? 'compressor' : undefined,
         kw: kwOf(comp.type === 'heatPump' && comp.heatPump ? comp.heatPump.compressorVA : resolveVA(comp)),
         mechanism: `SACM slot ${sacmUsed} (thermostat interrupt)`,
         priority: managed.length + 1,
@@ -507,6 +515,8 @@ function planManagement(loads: LoadItem[], shedSelection?: string[]): Management
     if (lra === undefined) flags.push('LRA not captured — verify ≤ 180 A before assigning the SMM.')
     managed.push({
       label: comp.label,
+      itemId: comp.id,
+      stage: comp.type === 'heatPump' ? 'compressor' : undefined,
       kw: kwOf(comp.type === 'heatPump' && comp.heatPump ? comp.heatPump.compressorVA : resolveVA(comp)),
       mechanism: `${SMM_50A.label} (${SMM_50A.model}) at the unit`,
       priority: managed.length + 1,
@@ -529,7 +539,7 @@ function planManagement(loads: LoadItem[], shedSelection?: string[]): Management
     const stripAmps = stripVA / 240
     if (capReached()) {
       refused.push({
-        label: `${hp.label} — strip kit`,
+        label: `${hp.label} — supplemental heat`,
         reason: '8-managed-load cap reached — strips stay in the base load.',
       })
       carriedStrips.push(stripCarry(hp))
@@ -537,7 +547,9 @@ function planManagement(loads: LoadItem[], shedSelection?: string[]): Management
     }
     const overFifty = stripAmps > SMM_50A.resistiveAmps
     managed.push({
-      label: `${hp.label} — strip kit`,
+      label: `${hp.label} — supplemental heat`,
+      itemId: hp.id,
+      stage: 'supplemental',
       kw: kwOf(stripVA),
       mechanism: overFifty
         ? `SACM (with compressor) or dedicated ${SMM_100A.label} — field-verify`
@@ -563,6 +575,7 @@ function planManagement(loads: LoadItem[], shedSelection?: string[]): Management
     const overFifty = amps > SMM_50A.resistiveAmps
     managed.push({
       label: other.label,
+      itemId: other.id,
       kw: kwOf(resolveVA(other)),
       mechanism: overFifty ? `${SMM_100A.label} (${SMM_100A.model})` : `${SMM_50A.label} (${SMM_50A.model})`,
       priority: managed.length + 1,
@@ -580,7 +593,7 @@ function stripCarry(hp: LoadItem): LoadItem {
   return {
     id: `${hp.id}-strips-carried`,
     type: 'spaceHeat',
-    label: `${hp.label} — strip kit (stays in base load)`,
+    label: `${hp.label} — supplemental heat (stays in base load)`,
     nameplateVA: hp.heatPump!.supplementalVA,
     volts: 240,
     separatelyControlledUnits: 1,
@@ -722,10 +735,10 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   for (const row of plan.managed) {
     for (const flag of row.flags) managedNotes.push(`${row.label}: ${flag}`)
   }
-  if (plan.managed.some((row) => row.label.includes('strip kit'))) {
+  if (plan.managed.some((row) => row.stage === 'supplemental')) {
     managedNotes.push(
-      'Two managed rows for a heat pump — compressor and supplemental strip kit — are stages of ' +
-      'one unit: each needs its own management path, and the unit is counted once in every load figure.',
+      'A heat pump lists two managed rows — its compressor and its supplemental heat — because each ' +
+      'stage needs its own management path; the unit is counted once in every load figure.',
     )
   }
   if (plan.managed.length > 0) {

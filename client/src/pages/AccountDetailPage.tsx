@@ -7,6 +7,7 @@ import { FindingLedger } from "../components/FindingLedger";
 import { SendToPicker } from "../components/SendToPicker";
 import { PaymentPanel } from "../components/PaymentPanel";
 import { PhotoAttachPicker, PropertyPhotoSection } from "../components/PhotoGalleryPanel";
+import { GeneratorDesigner } from "../components/GeneratorDesigner";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, openProtectedPdf } from "../lib/api";
@@ -665,6 +666,19 @@ function AccountEstimates({
     mutationFn: (id: string) => api.deleteIssuedEstimate(id),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["account-estimates", accountId] }),
   });
+  // New estimate from a sent one (Kyle, 2026-08-31): duplicate the draft behind
+  // the row and land in the builder on the copy — the original is untouched.
+  const duplicateDraft = useMutation({
+    mutationFn: (e: { draftId: string; customerId: string; serviceAddressId: string }) =>
+      api.pbDuplicateDraft(e.draftId),
+    onSuccess: (copy, e) => {
+      navigate(
+        `/estimate-intake?account=${encodeURIComponent(e.customerId)}` +
+          `&address=${encodeURIComponent(e.serviceAddressId)}` +
+          `&draft=${encodeURIComponent(copy.id)}&tab=review`,
+      );
+    },
+  });
   const { data } = useQuery({
     queryKey: ["account-estimates", accountId, addressId],
     queryFn: () => api.accountEstimates(accountId, addressId || undefined),
@@ -794,6 +808,19 @@ function AccountEstimates({
                     Edit
                   </button>
                 )}
+                {/* New estimate from this one (Kyle, 2026-08-31): "take one, have it
+                    copied exactly the way it is into the estimate builder, and begin
+                    editing it to send it as a new estimate." Duplicates the draft —
+                    lines, options, photos, discount — and opens the builder on the copy;
+                    the sent estimate itself is untouched. */}
+                <button
+                  type="button"
+                  disabled={duplicateDraft.isPending}
+                  onClick={() => duplicateDraft.mutate(e)}
+                  className="btn-secondary flex-1 text-sm"
+                >
+                  {duplicateDraft.isPending ? "Copying…" : "Copy to new"}
+                </button>
                 {!e.signedAt && (
                   <button
                     type="button"
@@ -1133,6 +1160,8 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
     mutationFn: (inspectionId: string) => api.generateHealthReport(inspectionId),
     onSuccess: (r) => void openProtectedPdf(`/documents/${r.documentId}/pdf`),
   });
+  // The CRM-side generator designer (Kyle, 2026-08-31) — one open at a time.
+  const [designerInspectionId, setDesignerInspectionId] = useState<string | null>(null);
   // P031 (Kyle, 2026-08-28): the generator sizing report, rendered on demand
   // like the health report — a stored file would die on the next deploy.
   const viewGeneratorReport = useMutation({
@@ -1229,13 +1258,23 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                 </button>
                 {/* Unlocked by the A2 load calc — without one there is nothing to size from. */}
                 {inspection.hasLoadCalc && (
-                  <button
-                    className="btn btn-secondary text-xs"
-                    disabled={viewGeneratorReport.isPending}
-                    onClick={() => viewGeneratorReport.mutate(inspection.id)}
-                  >
-                    {viewGeneratorReport.isPending ? "Rendering…" : "Generator sizing report"}
-                  </button>
+                  <>
+                    <button
+                      className="btn btn-secondary text-xs"
+                      disabled={viewGeneratorReport.isPending}
+                      onClick={() => viewGeneratorReport.mutate(inspection.id)}
+                    >
+                      {viewGeneratorReport.isPending ? "Rendering…" : "Generator sizing report"}
+                    </button>
+                    <button
+                      className="btn btn-secondary text-xs"
+                      onClick={() =>
+                        setDesignerInspectionId(designerInspectionId === inspection.id ? null : inspection.id)
+                      }
+                    >
+                      {designerInspectionId === inspection.id ? "Close designer" : "Design generator"}
+                    </button>
+                  </>
                 )}
                 <button
                   className="btn btn-primary text-xs"
@@ -1248,6 +1287,12 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                     : `Email to customer${customerEmail ? ` (${customerEmail})` : ""}`}
                 </button>
               </div>
+              {designerInspectionId === inspection.id && (
+                <GeneratorDesigner
+                  inspectionId={inspection.id}
+                  onClose={() => setDesignerInspectionId(null)}
+                />
+              )}
             </li>
           );
         })}

@@ -1264,8 +1264,8 @@ export async function generateGeneratorReport(
   // customer sheet describes it generically.
   const genericMechanism = (mechanism: string): string =>
     mechanism.includes("SACM")
-      ? "managed through the transfer switch (thermostat interrupt)"
-      : "managed by a load-management module on the circuit";
+      ? "managed through the transfer switch's thermostat interrupt"
+      : "managed by a dedicated load-management module on its circuit";
 
   const [full, managed, interlock] = rec.wholeHome;
 
@@ -1337,16 +1337,30 @@ export async function generateGeneratorReport(
   if (planRows.length > 0) {
     doc.moveDown(0.3);
     doc.fillColor(BRAND.text).fontSize(10).text("Managed loads and priority order:");
+    // A heat pump's two stages — compressor and supplemental heat — are named
+    // once and cross-referenced, never printed as two whole appliances (Kyle,
+    // 2026-08-31: the Himrick sheet read as a duplicate).
+    const compressorPriority = new Map<string, number>();
     for (const row of planRows) {
-      bullet(`Priority ${row.priority}: ${row.label} — ${row.kw} kW · ${genericMechanism(row.mechanism)}`, BRAND.muted);
+      if (row.stage === "compressor" && row.itemId) compressorPriority.set(row.itemId, row.priority);
+    }
+    for (const row of planRows) {
+      let label = row.label;
+      if (row.stage === "supplemental" && row.itemId !== undefined) {
+        const compAt = compressorPriority.get(row.itemId);
+        label = compAt !== undefined
+          ? `Supplemental heat stage of the Priority ${compAt} unit`
+          : label;
+      } else if (
+        row.stage === "compressor" &&
+        row.itemId !== undefined &&
+        planRows.some((r) => r.itemId === row.itemId && r.stage === "supplemental")
+      ) {
+        label = `${label}, compressor stage`;
+      }
+      bullet(`Priority ${row.priority}: ${label} — ${row.kw} kW, ${genericMechanism(row.mechanism)}`, BRAND.muted);
     }
     bullet("Managed loads operate as generator capacity allows", BRAND.muted);
-    if (planRows.some((row) => row.label.includes("strip kit"))) {
-      bullet(
-        "A heat pump's compressor and its supplemental strip heat are stages of one unit — each stage carries its own management hardware; the unit is counted once in every load figure",
-        BRAND.muted,
-      );
-    }
   }
 
   // ── The load-management menu (Kyle, 2026-08-31): a variety of shed options,
