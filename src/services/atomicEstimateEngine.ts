@@ -168,6 +168,13 @@ export interface ComputedLine {
   materialCost: number | null;
   materialSell: number | null;
 
+  /**
+   * True when the line priced FLAT from Kyle's own sell columns (his catalog tab and every
+   * in-app item). The job-level material gates never touch these — see the cap block in
+   * computeEstimate (Kyle, 2026-08-31: a $456 book price landing on the estimate at $285.98).
+   */
+  flatPriced: boolean;
+
   gaps: LineGap[];
   complete: boolean;
 }
@@ -412,6 +419,7 @@ export function computeEstimate(
         sellPerUnit: null,
         materialCost: null,
         materialSell: null,
+        flatPriced: false,
         gaps: [
           {
             kind: "ATOMIC_NOT_FOUND",
@@ -495,6 +503,7 @@ export function computeEstimate(
           ? null
           : round2(input.quantity * atomic.costBasisUsed),
         materialSell: material,
+        flatPriced: true,
         gaps,
         complete: gaps.length === 0,
       });
@@ -598,6 +607,7 @@ export function computeEstimate(
       sellPerUnit: sellPerUnit ?? null,
       materialCost,
       materialSell,
+      flatPriced: false,
       gaps,
       complete: gaps.length === 0,
     });
@@ -621,9 +631,25 @@ export function computeEstimate(
   // Kyle's schedule from Rate Config when his workbook carries it, the code's otherwise.
   const bands = bandsFrom(rc.jobBands);
 
+  /*
+    ── KYLE'S PRICES ARE NOT RE-MARKED (2026-08-31) ─────────────────────────────────────────────
+
+    The per-item ladder this check corrects is the SUPPLIER-PRICED one: NECA labour + a supplier
+    cost run through the tiers. Kyle's catalog rows and every in-app item price FLAT from the sell
+    he set — labour x $150 + the tier HE chose, asserted to the cent — and the material half of a
+    flat line is a bookkeeping split, not a markup this gate has any standing to revisit.
+
+    It was revisiting it. A "50 AMP Generac SMM" entered in the price book at $456 landed on an
+    estimate at $285.98: gate 2 read the whole option's material, found the blend over the
+    $3,000+ ceiling, and scaled the SMM's material share by 0.44 along with everything else.
+    Kyle: "The '+New Item' in the price book is not adding up in the estimate correctly."
+
+    So gates 2 and 3 now see only the supplier-priced lines. A flat line's price on the estimate
+    IS its price in the book, whatever else is on the job.
+  */
   const materialCaps: Record<string, MaterialCapResult> = {};
   for (const option of ESTIMATE_OPTIONS) {
-    const inOption = computed.filter((l) => l.option === option);
+    const inOption = computed.filter((l) => l.option === option && !l.flatPriced);
     if (inOption.length === 0) continue;
 
     const cost = inOption.reduce((n, l) => n + (l.materialCost ?? 0), 0);
@@ -658,8 +684,14 @@ export function computeEstimate(
   }
 
   // Gate 3 runs on the lines AS GATE 2 LEFT THEM — the discount is what combining adds on top.
+  // Flat-priced lines contribute nothing here either (same reasoning as above); they keep their
+  // option membership so every combination key still enumerates.
   const combinationDiscounts = allSelectionCaps(
-    computed.map((l) => ({ option: l.option, materialCost: l.materialCost, materialSell: l.materialSell })),
+    computed.map((l) => ({
+      option: l.option,
+      materialCost: l.flatPriced ? null : l.materialCost,
+      materialSell: l.flatPriced ? null : l.materialSell,
+    })),
     bands,
   );
 

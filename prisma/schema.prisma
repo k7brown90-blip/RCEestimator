@@ -2379,6 +2379,10 @@ model IssuedEstimateLine {
   /// column E is what we see to track spending." Frozen alongside the charge so the company copy
   /// can show both and the margin on a signed job is a fact rather than a re-derivation.
   materialCost Float?
+  /// Priced FLAT from Kyle's own sell columns (his catalog tab / in-app items). The combination
+  /// discount recomputed from frozen lines skips these — their price is the book's price
+  /// (2026-08-31). Frozen here so the exemption never depends on the live catalog.
+  flatPriced   Boolean  @default(false)
 
   estimate     IssuedEstimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
   atomic       PriceBookAtomic @relation(fields: [itemId], references: [itemId], onDelete: Restrict)

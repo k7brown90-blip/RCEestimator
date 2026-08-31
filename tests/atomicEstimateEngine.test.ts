@@ -586,3 +586,48 @@ describe("the third gate, through the engine", () => {
     expect(est.combinationDiscounts.A.applied).toBe(false); // gate 3 has nothing left to say
   });
 });
+
+describe("flat-priced lines survive the job-level material gates (Kyle, 2026-08-31)", () => {
+  // Kyle's book: a $170-cost SMM at tier x1.8 with 1 hr → 306 + 150 = $456, asserted at import.
+  const smm = atomic({
+    itemId: "SMM", laborNormal: 1, source: "in-app",
+    costBasisUsed: 170, sellPricePerUnit: 306, companyCost: 170, companyPrice: 306, sellNormal: 456,
+  });
+  // A big flat generator line in the same option pushes the blend over the $3,000+ ceiling.
+  const gen = atomic({
+    itemId: "GEN", laborNormal: 8, source: "in-app",
+    costBasisUsed: 5400, sellPricePerUnit: 6750, companyCost: 5400, companyPrice: 6750, sellNormal: 7950,
+  });
+  // A supplier-priced NECA row (no sell columns) — the ladder the gates were built for.
+  const wire = atomic({ itemId: "WIRE", laborNormal: 1, costBasisUsed: 3000, sellPricePerUnit: 4500 });
+  const rc = { ...RC, billedLaborRate: 150, jobFixedCost: 0 };
+
+  it("a flat line's estimate price equals its book price whatever else is on the job", () => {
+    const out = computeEstimate(
+      [line({ itemId: "GEN", option: "B" }), line({ itemId: "SMM", option: "B" })],
+      new Map([["GEN", gen], ["SMM", smm]]), rc, "HD",
+    );
+    const smmLine = out.lines.find((l) => l.itemId === "SMM")!;
+    expect(smmLine.flatPriced).toBe(true);
+    expect((smmLine.laborDollars ?? 0) + (smmLine.materialSell ?? 0)).toBe(456);
+    // An all-flat option has nothing for the gates to do — and says so.
+    expect(out.materialCaps.B).toBeUndefined();
+    expect(out.combinationDiscounts.B.applied).toBe(false);
+  });
+
+  it("supplier-priced lines in the same option are still capped, on their own numbers", () => {
+    const out = computeEstimate(
+      [line({ itemId: "GEN", option: "A" }), line({ itemId: "WIRE", option: "A" })],
+      new Map([["GEN", gen], ["WIRE", wire]]), rc, "HD",
+    );
+    // $3,000 of supplier material sold at $4,500 = 1.5x, over the $3,000+ band's 1.25x ceiling.
+    expect(out.materialCaps.A.applied).toBe(true);
+    expect(out.materialCaps.A.materialCost).toBe(3000);
+    expect(out.materialCaps.A.cappedSell).toBe(3750);
+    const wireLine = out.lines.find((l) => l.itemId === "WIRE")!;
+    expect(wireLine.materialSell).toBe(3750);
+    // The flat generator did not move.
+    const genLine = out.lines.find((l) => l.itemId === "GEN")!;
+    expect((genLine.laborDollars ?? 0) + (genLine.materialSell ?? 0)).toBe(7950);
+  });
+});

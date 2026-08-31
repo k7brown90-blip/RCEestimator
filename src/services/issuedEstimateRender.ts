@@ -307,7 +307,13 @@ export function renderEstimatePage(
       ? (JSON.parse(est.jobBandsJson) as Parameters<typeof allSelectionCaps>[1])
       : undefined;
     const caps = allSelectionCaps(
-      est.lines.map((l) => ({ option: l.option, materialCost: l.materialCost, materialSell: l.materialSell })),
+      // Kyle's flat book prices sit outside the combination gate (2026-08-31) — the frozen flag
+      // mirrors the engine's live exemption, so the page and the issue agree.
+      est.lines.map((l) => ({
+        option: l.option,
+        materialCost: l.flatPriced ? null : l.materialCost,
+        materialSell: l.flatPriced ? null : l.materialSell,
+      })),
       frozenBands,
     );
     for (const [key, cap] of Object.entries(caps)) {

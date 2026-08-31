@@ -180,6 +180,8 @@ export async function graduateDraft(
     laborHours: number | null;
     materialSell: number | null;
     materialCost: number | null;
+    /** Kyle's flat book price — the combination discount skips these (2026-08-31). */
+    flatPriced: boolean;
   }> = [];
   const refusals: string[] = [];
   /** Lines frozen at zero because the engine had no price for them. Never silently dropped. */
@@ -238,6 +240,8 @@ export async function graduateDraft(
       // E — what it costs Red Cedar. Kyle tracks spending against this, so it is frozen with the
       // rest rather than re-derived later from a catalog that will have moved on.
       materialCost: l.materialCost,
+      // Frozen so the gate-3 exemption for Kyle's own prices never depends on the live catalog.
+      flatPriced: l.flatPriced,
     });
   });
 
@@ -723,10 +727,16 @@ async function applySignature(
     must never restate a price a customer signed. Computed from the FROZEN lines of the options
     bought, the same figures every other document surface reads.
   */
-  const frozenLines = await prisma.issuedEstimateLine.findMany({
+  const frozenLines = (await prisma.issuedEstimateLine.findMany({
     where: { estimateId },
-    select: { option: true, materialCost: true, materialSell: true },
-  });
+    select: { option: true, materialCost: true, materialSell: true, flatPriced: true },
+  })).map((l) => ({
+    option: l.option,
+    // Kyle's flat book prices are not re-marked by the combination gate (2026-08-31) — same
+    // exemption the engine applies live, carried on the frozen line so it cannot drift.
+    materialCost: l.flatPriced ? null : l.materialCost,
+    materialSell: l.flatPriced ? null : l.materialSell,
+  }));
   /*
     Priced with the schedule frozen AT ISSUE, not whatever Rate Config says today. The customer is
     signing the document they were shown; a band Kyle retuned in between is not part of it.
