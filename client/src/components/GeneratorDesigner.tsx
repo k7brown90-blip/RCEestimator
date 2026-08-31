@@ -182,12 +182,18 @@ export function GeneratorDesigner({ inspectionId, onClose }: { inspectionId: str
       {rec.shedScenarios.length > 0 && (
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-rce-muted">
-            Sizing by what is managed — each row its own Article 220 calculation
+            Sizing by what is managed — the menu of alternatives
+          </p>
+          <p className="text-[11px] text-rce-soft">
+            Independent of the checkboxes above: each row manages one load on its own, plus the
+            everything-managed floor. A load with no row saves nothing alone — another load governs
+            its Article 220 category. Option 2 reflects your current selection.
           </p>
           <ul className="mt-1 space-y-0.5 text-xs text-rce-muted">
             {rec.shedScenarios.map((s) => (
               <li key={s.label}>
-                Manage {s.managedLabels.join(" + ")}: carries <b>{s.requiredKW} kW</b> ({s.requiredAmps} A) —
+                Manage {s.label === "Every manageable load" ? "every manageable load" : s.managedLabels.join(" + ")}:
+                {" "}carries <b>{s.requiredKW} kW</b> ({s.requiredAmps} A) —
                 {" "}{s.reductionKW} kW less than the full load
               </li>
             ))}

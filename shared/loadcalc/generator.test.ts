@@ -498,3 +498,22 @@ describe('shed scenarios — the customer-facing load-management menu', () => {
     expect(range.reductionKW).toBeCloseTo(4.8, 1)
   })
 })
+
+describe('shed scenario labels — one name per physical unit', () => {
+  it("a heat pump's scenario names the unit once, never compressor + strips separately", () => {
+    const rec = recommend(input({
+      loads: [
+        load({
+          id: 'hp3', type: 'heatPump', label: 'Daikin packaged heat pump',
+          heatPump: { compressorVA: 4920, supplementalVA: 7000, lockout: false },
+          lockedRotorAmps: 84,
+        }),
+        load({ id: 'rg3', type: 'range', label: 'Range', nameplateKW: 12 }),
+      ],
+    }))
+    const hpRow = rec.shedScenarios.find((s) => s.label === 'Daikin packaged heat pump')!
+    expect(hpRow.managedLabels).toEqual(['Daikin packaged heat pump'])
+    const everything = rec.shedScenarios.find((s) => s.label === 'Every manageable load')!
+    expect(everything.managedLabels).toEqual(['Daikin packaged heat pump', 'Range'])
+  })
+})

@@ -1368,14 +1368,24 @@ export async function generateGeneratorReport(
   const scenarios = rec.shedScenarios ?? [];
   if (scenarios.length > 0) {
     doc.moveDown(0.3);
-    doc.fillColor(BRAND.text).fontSize(10).text("Sizing by what is managed — each row is its own Article 220 calculation:");
+    doc.fillColor(BRAND.text).fontSize(10).text("Sizing by what is managed — the menu of alternatives:");
+    doc.fillColor(BRAND.muted).fontSize(9).text(
+      "Option 2 above is sized to the selected design. Each row below is an independent Article 220 " +
+      "calculation managing one load on its own, plus the everything-managed floor.",
+    );
     for (const s of scenarios) {
+      const what = s.label === "Every manageable load" ? "every manageable load" : s.managedLabels.join(" + ");
       bullet(
-        `Manage ${s.managedLabels.join(" + ")}: generator carries ${s.requiredKW} kW (${s.requiredAmps} A) — ` +
+        `Manage ${what}: generator carries ${s.requiredKW} kW (${s.requiredAmps} A) — ` +
         `${s.reductionKW} kW less than the full calculated load`,
         BRAND.muted,
       );
     }
+    bullet(
+      "A load not listed reduces nothing on its own — another load governs its Article 220 category " +
+      "(for example, an air conditioner smaller than the heat pump in the heating-vs-cooling selection)",
+      BRAND.muted,
+    );
   }
 
   // ── Option 3 — interlock ──

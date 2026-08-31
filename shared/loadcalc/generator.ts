@@ -784,9 +784,17 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       futureLoads: [],
     })
     const kw = kwOf(res.governingAmps * 240)
+    // One name per physical unit — a heat pump's compressor and supplemental
+    // rows collapse to the unit's own label, never the appliance name twice
+    // (Kyle, 2026-08-31, the Himrick sheet).
+    const unitLabels: string[] = []
+    for (const row of p.managed) {
+      const name = calcInput.loads.find((l) => l.id === row.itemId)?.label ?? row.label
+      if (!unitLabels.includes(name)) unitLabels.push(name)
+    }
     return {
       label,
-      managedLabels: p.managed.map((r) => r.label),
+      managedLabels: unitLabels,
       requiredKW: kw,
       requiredAmps: res.governingAmps,
       reductionKW: round2(calcFullKW - kw),
