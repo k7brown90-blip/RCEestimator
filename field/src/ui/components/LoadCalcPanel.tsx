@@ -179,6 +179,8 @@ export function LoadCalcPanel({ initial, onApply }: Props) {
   // DEFAULT one 1,000-ft altitude step for Middle TN, tech-overridable (P031 amendment).
   const [generatorAltitude, setGeneratorAltitude] = useState(initial?.generator?.altitudeSteps ?? 1)
   const [generatorInclude, setGeneratorInclude] = useState(initial?.generator?.includeInEstimate ?? false)
+  // Tech-chosen shed set for Option 2; undefined = every valid candidate.
+  const [generatorShed, setGeneratorShed] = useState<string[] | undefined>(initial?.generator?.shedSelection)
 
   const input: LoadCalcInput = useMemo(
     () => ({
@@ -435,10 +437,12 @@ export function LoadCalcPanel({ initial, onApply }: Props) {
           softStart={generatorSoftStart}
           altitudeSteps={generatorAltitude}
           includeInEstimate={generatorInclude}
+          shedSelection={generatorShed}
           onFuel={setGeneratorFuel}
           onSoftStart={setGeneratorSoftStart}
           onAltitudeSteps={setGeneratorAltitude}
           onIncludeInEstimate={setGeneratorInclude}
+          onShedSelection={setGeneratorShed}
         />
       )}
 
@@ -452,6 +456,7 @@ export function LoadCalcPanel({ initial, onApply }: Props) {
               ? {
                   generator: generatorSelection(
                     input, result, generatorFuel, generatorSoftStart, generatorAltitude, generatorInclude,
+                    generatorShed,
                   ),
                 }
               : {}),

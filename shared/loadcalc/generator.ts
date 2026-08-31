@@ -28,6 +28,7 @@ import {
   cookingDemandVA,
   resolveVA,
   roundAmps,
+  type BreakdownLine,
   type LoadCalcInput,
   type LoadCalcResult,
   type LoadItem,
@@ -88,6 +89,13 @@ export interface GeneratorInput {
    * scheme per 702.4(B)(2)(a); the output states which basis was used.
    */
   demandBasisAmps?: number
+  /**
+   * Item ids the technician chose for load management (Joe Himrick scenario,
+   * 2026-08-31: shed just the range). Absent = every valid candidate — the
+   * original behavior. Present = only these items are offered to the planner;
+   * everything else stays in the base load Option 2 is sized for.
+   */
+  shedSelection?: string[]
 }
 
 export interface GeneratorFlag {
@@ -118,6 +126,12 @@ export interface SchemeResult extends ModelSizing {
   shedLoads?: string[]
   /** The full SACM/SMM plan with the installer priority table (Appendix B). */
   managementPlan?: ManagementPlan
+  /**
+   * Line-by-line Article 220 breakdown of the managed base (load-management
+   * scheme only) — printed on the data sheet so "shedding the range" visibly
+   * does not subtract its nameplate one-for-one.
+   */
+  baseBreakdown?: BreakdownLine[]
   /** Price-book package references, one line per component (unit, switch, SMMs). */
   priceBookRefs: string[]
   notes: string[]
@@ -149,10 +163,29 @@ export interface SurgeCheck {
   message: string
 }
 
+/**
+ * One row of the customer-facing load-management menu (Kyle, 2026-08-31: "allow
+ * us to produce a variety of options to shed to give the customer control over
+ * what installation they want"): what managing a given load does to the
+ * required generator size — its own full Article 220 run, so the saving shown
+ * is the demand-staged truth, never a nameplate subtracted one-for-one.
+ */
+export interface ShedScenario {
+  /** e.g. 'Range', or 'Every manageable load'. */
+  label: string
+  managedLabels: string[]
+  requiredKW: number
+  requiredAmps: number
+  /** vs the full calculated load (Article 220 basis). */
+  reductionKW: number
+}
+
 export interface GeneratorRecommendation {
   wholeHome: SchemeResult[]
   /** Null when a hard disqualifier forces whole-home/liquid-cooled guidance. */
   partial: PartialTierResult | null
+  /** The load-management menu: one row per manageable load, plus the everything-managed floor. */
+  shedScenarios: ShedScenario[]
   flags: GeneratorFlag[]
   surge: SurgeCheck
   fuel: GeneratorFuel
@@ -408,8 +441,13 @@ export interface ManagementPlan {
   recoveryNote: string
 }
 
-function planManagement(loads: LoadItem[]): ManagementPlan {
-  const candidates = loads.filter((l) => SHED_CANDIDATE_TYPES.includes(l.type))
+function planManagement(loads: LoadItem[], shedSelection?: string[]): ManagementPlan {
+  // Tech-chosen shed set: when present, only these item ids are offered to the
+  // planner; everything else stays in the base. Absent = every valid candidate.
+  const selected = shedSelection === undefined ? null : new Set(shedSelection)
+  const candidates = loads.filter(
+    (l) => SHED_CANDIDATE_TYPES.includes(l.type) && (selected === null || selected.has(l.id)),
+  )
   const compressors = candidates.filter((l) => l.type === 'cooling' || l.type === 'heatPump')
   const others = candidates.filter((l) => l.type !== 'cooling' && l.type !== 'heatPump')
 
@@ -660,7 +698,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   // no second load model, and no phantom shedding (Appendix B rule 5): a
   // candidate with no SACM slot, over SMM ratings, or past the 8-load cap goes
   // back into the base and the tier steps up.
-  const plan = planManagement(calcInput.loads)
+  const plan = planManagement(calcInput.loads, input.shedSelection)
   const managedIds = new Set(plan.managedItemIds)
   const managedResult: LoadCalcResult = calculateLoad({
     ...calcInput,
@@ -683,6 +721,12 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   }
   for (const row of plan.managed) {
     for (const flag of row.flags) managedNotes.push(`${row.label}: ${flag}`)
+  }
+  if (plan.managed.some((row) => row.label.includes('strip kit'))) {
+    managedNotes.push(
+      'Two managed rows for a heat pump — compressor and supplemental strip kit — are stages of ' +
+      'one unit: each needs its own management path, and the unit is counted once in every load figure.',
+    )
   }
   if (plan.managed.length > 0) {
     managedNotes.push(plan.recoveryNote)
@@ -711,6 +755,40 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   }
   const managedSurgeNote = surgeNoteFor(managedSizing, surge)
   if (managedSurgeNote) managedNotes.push(managedSurgeNote)
+
+  // ── The load-management menu (Kyle, 2026-08-31) — one row per manageable
+  // load ("what does managing JUST this one buy me?"), plus the everything-
+  // managed floor. Every row is the same Article 220 engine on the remaining
+  // inventory; the reduction is measured against the calculated full load.
+  const calcFullKW = kwOf(calcResult.governingAmps * 240)
+  const scenarioFor = (ids: string[] | undefined, label: string): ShedScenario | null => {
+    const p = planManagement(calcInput.loads, ids)
+    if (p.managed.length === 0) return null
+    const pIds = new Set(p.managedItemIds)
+    const res = calculateLoad({
+      ...calcInput,
+      loads: [...calcInput.loads.filter((l) => !pIds.has(l.id)), ...p.carriedStrips],
+      futureLoads: [],
+    })
+    const kw = kwOf(res.governingAmps * 240)
+    return {
+      label,
+      managedLabels: p.managed.map((r) => r.label),
+      requiredKW: kw,
+      requiredAmps: res.governingAmps,
+      reductionKW: round2(calcFullKW - kw),
+    }
+  }
+  const shedScenarios: ShedScenario[] = []
+  for (const cand of calcInput.loads.filter((l) => SHED_CANDIDATE_TYPES.includes(l.type))) {
+    const s = scenarioFor([cand.id], cand.label)
+    if (s && s.reductionKW > 0) shedScenarios.push(s)
+  }
+  shedScenarios.sort((a, b) => b.reductionKW - a.reductionKW)
+  if (shedScenarios.length > 1) {
+    const everything = scenarioFor(undefined, 'Every manageable load')
+    if (everything) shedScenarios.push(everything)
+  }
 
   // Scheme 3: interlock / manual transfer — 702.4(B)(1): the user selects the
   // load; there is no code-minimum size. The essential-loads tier is offered as
@@ -754,6 +832,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       ...managedSizing,
       shedLoads: plan.managed.map((row) => row.label),
       managementPlan: plan,
+      baseBreakdown: managedResult.breakdown,
       priceBookRefs: [
         ...generatorRefs(managedSizing),
         // One line per SMM — dedupe never: each module is billable hardware.
@@ -781,6 +860,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   return {
     wholeHome,
     partial,
+    shedScenarios,
     flags,
     surge,
     fuel,

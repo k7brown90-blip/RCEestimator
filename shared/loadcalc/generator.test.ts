@@ -433,3 +433,68 @@ describe('output hygiene', () => {
     }
   })
 })
+
+describe('shed selection — the tech chooses what Option 2 may manage (Joe scenario, 2026-08-31)', () => {
+  const joe = input({
+    loads: [
+      load({ id: 'ac', type: 'cooling', label: 'A/C condenser', nameplateVA: 4000, lockedRotorAmps: 60 }),
+      load({ id: 'strip', type: 'spaceHeat', label: 'Heat strips', nameplateVA: 9600 }),
+      load({ id: 'rg', type: 'range', label: 'Range', nameplateKW: 12 }),
+      load({ id: 'wh', type: 'waterHeaterTank', label: 'Water heater', nameplateKW: 4.5 }),
+    ],
+  })
+
+  it('range-only selection manages the range and nothing else', () => {
+    const managed = recommend(joe, { shedSelection: ['rg'] }).wholeHome[1]
+    expect(managed.managementPlan!.managed.map((r) => r.label)).toEqual(['Range'])
+    expect(managed.managementPlan!.managed[0].mechanism).toContain('50A SMM')
+    // The base is the same Article 220 engine run without the range — nothing else left it.
+    const baseWithoutRange = calculateLoad({ ...joe, loads: joe.loads.filter((l) => l.id !== 'rg') })
+    expect(managed.requiredAmps).toBe(baseWithoutRange.governingAmps)
+    // And the reduction is the demand-staged difference, never the 12 kW nameplate.
+    const fullAmps = calculateLoad(joe).governingAmps
+    expect(fullAmps - managed.requiredAmps!).toBeLessThan(12000 / 240)
+    expect(fullAmps - managed.requiredAmps!).toBeGreaterThan(0)
+  })
+
+  it('absent selection keeps the original behavior — every valid candidate is managed', () => {
+    const managed = recommend(joe).wholeHome[1]
+    expect(managed.managementPlan!.managed.length).toBe(4)
+  })
+
+  it('the managed scheme carries its base breakdown for the data sheet', () => {
+    const managed = recommend(joe, { shedSelection: ['rg'] }).wholeHome[1]
+    expect(managed.baseBreakdown!.length).toBeGreaterThan(0)
+    expect(managed.baseBreakdown!.some((l) => l.label.includes('Range'))).toBe(false)
+  })
+})
+
+describe('shed scenarios — the customer-facing load-management menu', () => {
+  const house = input({
+    loads: [
+      load({ id: 'ac2', type: 'cooling', label: 'A/C condenser', nameplateVA: 4000, lockedRotorAmps: 60 }),
+      load({ id: 'rg2', type: 'range', label: 'Range', nameplateKW: 12 }),
+      load({ id: 'dr2', type: 'dryer', label: 'Dryer', nameplateKW: 5 }),
+      load({ id: 'wh2', type: 'waterHeaterTank', label: 'Water heater', nameplateKW: 4.5 }),
+    ],
+  })
+
+  it('one row per manageable load, sorted by saving, plus the everything floor', () => {
+    const rec = recommend(house)
+    const labels = rec.shedScenarios.map((s) => s.label)
+    expect(labels).toContain('Range')
+    expect(labels).toContain('A/C condenser')
+    expect(labels[labels.length - 1]).toBe('Every manageable load')
+    const reductions = rec.shedScenarios.slice(0, -1).map((s) => s.reductionKW)
+    expect([...reductions].sort((a, b) => b - a)).toEqual(reductions)
+  })
+
+  it('the range row shows the demand-staged saving, not 12 kW off', () => {
+    const rec = recommend(house)
+    const range = rec.shedScenarios.find((s) => s.label === 'Range')!
+    // 220.82: the range rides the 40% tier — managing it saves 4.8 kW, never 12.
+    expect(range.reductionKW).toBeGreaterThan(0)
+    expect(range.reductionKW).toBeLessThan(12)
+    expect(range.reductionKW).toBeCloseTo(4.8, 1)
+  })
+})

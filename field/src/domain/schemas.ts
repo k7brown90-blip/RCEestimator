@@ -282,6 +282,7 @@ export const inspectionLoadCalcSchema = z.object({
       softStart: z.boolean(),
       altitudeSteps: z.number().nonnegative(),
       includeInEstimate: z.boolean(),
+      shedSelection: z.array(z.string()).optional(),
     })
     .optional(),
 })

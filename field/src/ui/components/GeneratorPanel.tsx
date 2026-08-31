@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type { LoadCalcInput, LoadCalcResult } from '../../domain/loadcalc'
 import {
   LIQUID_COOLED_TEXT,
+  SHED_CANDIDATE_TYPES,
   recommendGenerator,
   type GeneratorFuel,
   type GeneratorRecommendation,
@@ -18,10 +19,13 @@ interface Props {
   softStart: boolean
   altitudeSteps: number
   includeInEstimate: boolean
+  /** Item ids chosen for load management (Option 2); undefined = every valid candidate. */
+  shedSelection?: string[]
   onFuel: (fuel: GeneratorFuel) => void
   onSoftStart: (on: boolean) => void
   onAltitudeSteps: (steps: number) => void
   onIncludeInEstimate: (on: boolean) => void
+  onShedSelection: (ids: string[] | undefined) => void
 }
 
 function ModelCell({ model, ratedKW, siteDeratedKW, liquidCooled }: {
@@ -52,12 +56,26 @@ function ModelCell({ model, ratedKW, siteDeratedKW, liquidCooled }: {
  */
 export function GeneratorPanel({
   input, result, fuel, softStart, altitudeSteps, includeInEstimate,
-  onFuel, onSoftStart, onAltitudeSteps, onIncludeInEstimate,
+  shedSelection,
+  onFuel, onSoftStart, onAltitudeSteps, onIncludeInEstimate, onShedSelection,
 }: Props) {
   const site: SiteConditions = useMemo(() => ({ altitudeSteps }), [altitudeSteps])
+  // Shed candidates in the current inventory; the tech picks which ones Option
+  // 2 may manage (Joe Himrick, 2026-08-31: shed just the range). Undefined =
+  // all of them — the original behavior.
+  const shedCandidates = useMemo(
+    () => input.loads.filter((l) => SHED_CANDIDATE_TYPES.includes(l.type)),
+    [input.loads],
+  )
+  const shedActive = (id: string) => shedSelection === undefined || shedSelection.includes(id)
+  const toggleShed = (id: string) => {
+    const base = shedSelection ?? shedCandidates.map((l) => l.id)
+    const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id]
+    onShedSelection(next.length === shedCandidates.length ? undefined : next)
+  }
   const rec: GeneratorRecommendation = useMemo(
-    () => recommendGenerator({ calcInput: input, calcResult: result, fuel, softStart, site }),
-    [input, result, fuel, softStart, site],
+    () => recommendGenerator({ calcInput: input, calcResult: result, fuel, softStart, site, shedSelection }),
+    [input, result, fuel, softStart, site, shedSelection],
   )
 
   return (
@@ -103,6 +121,30 @@ export function GeneratorPanel({
               {f.message}
             </p>
           ))}
+        </div>
+      )}
+
+      {shedCandidates.length > 0 && (
+        <div>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            Load management — which loads may shed (Option 2)
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {shedCandidates.map((l) => (
+              <label
+                key={l.id}
+                className="flex items-center gap-1 rounded border border-slate-700 bg-slate-800/60 px-2 py-1 text-xs text-slate-200"
+              >
+                <input type="checkbox" checked={shedActive(l.id)} onChange={() => toggleShed(l.id)} />
+                {l.label}
+              </label>
+            ))}
+          </div>
+          <p className="mt-1 text-[10px] text-slate-500">
+            Unchecked loads stay in the base load Option 2 is sized for. A checked load leaves the
+            calculation only when a valid management path exists (SACM slot or in-ratings SMM) —
+            no phantom shedding.
+          </p>
         </div>
       )}
 
@@ -227,14 +269,16 @@ export function generatorSelection(
   softStart: boolean,
   altitudeSteps: number,
   includeInEstimate: boolean,
+  shedSelection?: string[],
 ): GeneratorSelection {
   return {
     recommendation: recommendGenerator({
-      calcInput: input, calcResult: result, fuel, softStart, site: { altitudeSteps },
+      calcInput: input, calcResult: result, fuel, softStart, site: { altitudeSteps }, shedSelection,
     }),
     fuel,
     softStart,
     altitudeSteps,
     includeInEstimate,
+    shedSelection,
   }
 }

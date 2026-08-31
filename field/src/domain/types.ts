@@ -180,6 +180,8 @@ export interface InspectionLoadCalc {
     altitudeSteps: number
     /** Propose-only: the customer one-pager renders on an estimate only when this is set AND a human issues it. */
     includeInEstimate: boolean
+    /** Item ids the tech chose for load management; absent = every valid candidate. */
+    shedSelection?: string[]
   }
 }
 

@@ -784,6 +784,7 @@ export async function generateHealthReport(
           loadPct?: number;
           spareAmps?: number;
           methodUsed?: string;
+          breakdown?: { label: string; rawVA: number; appliedVA: number; rule: string }[];
         };
       }).result ?? null
     : null;
@@ -908,6 +909,18 @@ export async function generateHealthReport(
     doc.fillColor(BRAND.muted).fontSize(8).text(
       `Calculated per NEC Article 220 (${loadCalc.methodUsed ?? "optional"} method); capacity basis NEC 230.42.`,
     );
+    // The math itself (Kyle, 2026-08-31: "We need to have the math show for
+    // the calculations.") — every line of the governing method, raw → applied.
+    if (loadCalc.breakdown && loadCalc.breakdown.length > 0) {
+      doc.moveDown(0.2);
+      doc.fillColor(BRAND.text).fontSize(9).text("The calculation, line by line:");
+      for (const line of loadCalc.breakdown) {
+        doc.fillColor(BRAND.muted).fontSize(8).text(
+          `•  ${line.label}: ${Math.round(line.rawVA).toLocaleString()} VA → ${Math.round(line.appliedVA).toLocaleString()} VA applied (${line.rule})`,
+          { indent: 12 },
+        );
+      }
+    }
     doc.fillColor(BRAND.text);
     doc.moveDown();
   }
@@ -1264,6 +1277,20 @@ export async function generateGeneratorReport(
   );
   bullet(`Calculated demand: ${stored.result.governingAmps} A × 240 V = ${full.requiredKW} kW (Article 220, ${stored.result.methodUsed} method)`);
   bullet(`Electrical service: ${stored.input.serviceAmps} A`);
+  // The math itself (Kyle, 2026-08-31: "We need to have the math show for the
+  // calculations. It needs to show for the generator too.") — every line of the
+  // governing Article 220 method, raw entry → applied demand, with its rule.
+  if (stored.result.breakdown?.length) {
+    doc.moveDown(0.3);
+    doc.fillColor(BRAND.text).fontSize(10).text("The calculation, line by line:");
+    for (const line of stored.result.breakdown) {
+      bullet(
+        `${line.label}: ${Math.round(line.rawVA).toLocaleString()} VA → ${Math.round(line.appliedVA).toLocaleString()} VA applied (${line.rule})`,
+        BRAND.muted,
+      );
+    }
+    bullet(`Applied total ÷ 240 V = ${stored.result.governingAmps} A calculated demand`, BRAND.muted);
+  }
   if (rec.surge.status === "ok" && rec.surge.startKVA !== null) {
     bullet(`Largest motor start: ${rec.surge.largestMotorLabel} — ${rec.surge.startKVA} kVA locked-rotor (the generator's surge rating must cover this)`);
   }
@@ -1285,6 +1312,27 @@ export async function generateGeneratorReport(
     `load; each managed circuit carries load-management hardware. Code basis: ${managed.necBasis}.`,
   );
   bullet(`Required continuous output (base load with managed loads removed): ${managed.requiredKW} kW (${managed.requiredAmps} A)`);
+  // The managed-base math, line by line. Article 220's demand factors apply in
+  // both calculations, so the two printed totals carry the true difference —
+  // shedding a 12 kW range does not subtract 12 kW.
+  if (managed.baseBreakdown?.length) {
+    doc.moveDown(0.3);
+    doc.fillColor(BRAND.text).fontSize(10).text("Base-load calculation with the managed loads removed, line by line:");
+    for (const line of managed.baseBreakdown) {
+      bullet(
+        `${line.label}: ${Math.round(line.rawVA).toLocaleString()} VA → ${Math.round(line.appliedVA).toLocaleString()} VA applied (${line.rule})`,
+        BRAND.muted,
+      );
+    }
+    if (full.requiredKW !== null && managed.requiredKW !== null) {
+      bullet(
+        `Full calculated load ${full.requiredKW} kW − managed base ${managed.requiredKW} kW = ` +
+        `${Math.round((full.requiredKW - managed.requiredKW) * 100) / 100} kW carried by load management. ` +
+        "Article 220 demand factors apply to both calculations; a managed load's nameplate is not subtracted one-for-one.",
+        BRAND.muted,
+      );
+    }
+  }
   const planRows = managed.managementPlan?.managed ?? [];
   if (planRows.length > 0) {
     doc.moveDown(0.3);
@@ -1293,6 +1341,27 @@ export async function generateGeneratorReport(
       bullet(`Priority ${row.priority}: ${row.label} — ${row.kw} kW · ${genericMechanism(row.mechanism)}`, BRAND.muted);
     }
     bullet("Managed loads operate as generator capacity allows", BRAND.muted);
+    if (planRows.some((row) => row.label.includes("strip kit"))) {
+      bullet(
+        "A heat pump's compressor and its supplemental strip heat are stages of one unit — each stage carries its own management hardware; the unit is counted once in every load figure",
+        BRAND.muted,
+      );
+    }
+  }
+
+  // ── The load-management menu (Kyle, 2026-08-31): a variety of shed options,
+  // each its own Article 220 calculation — the customer picks the installation.
+  const scenarios = rec.shedScenarios ?? [];
+  if (scenarios.length > 0) {
+    doc.moveDown(0.3);
+    doc.fillColor(BRAND.text).fontSize(10).text("Sizing by what is managed — each row is its own Article 220 calculation:");
+    for (const s of scenarios) {
+      bullet(
+        `Manage ${s.managedLabels.join(" + ")}: generator carries ${s.requiredKW} kW (${s.requiredAmps} A) — ` +
+        `${s.reductionKW} kW less than the full calculated load`,
+        BRAND.muted,
+      );
+    }
   }
 
   // ── Option 3 — interlock ──
