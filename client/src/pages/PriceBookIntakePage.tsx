@@ -6,6 +6,7 @@ import { PageHeader } from "../components/PageHeader";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
 import { downscale } from "../lib/images";
 import { PhotoAttachPicker } from "../components/PhotoGalleryPanel";
+import { PhotoLightbox } from "../components/PhotoLightbox";
 import type {
   PbAtomic,
   PbComputed,
@@ -2145,6 +2146,8 @@ function PhotoAttach(props: { draftId: string }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  // Zoomable viewer (Kyle, 2026-08-31) — nameplates are unreadable at thumbnail size.
+  const [lightboxId, setLightboxId] = useState<string | null>(null);
 
   const { data } = useQuery({
     queryKey: ["pb-photos", props.draftId],
@@ -2211,7 +2214,12 @@ function PhotoAttach(props: { draftId: string }) {
           {photos.map((ph) => (
             <div key={ph.id} className="relative">
               {thumbs[ph.id]
-                ? <img src={thumbs[ph.id]} alt="walkthrough" className="h-24 w-full rounded object-cover" />
+                ? <img
+                    src={thumbs[ph.id]}
+                    alt="walkthrough"
+                    className="h-24 w-full cursor-zoom-in rounded object-cover"
+                    onClick={() => setLightboxId(ph.id)}
+                  />
                 : <div className="h-24 w-full animate-pulse rounded bg-rce-border/40" />}
               <button
                 type="button"
@@ -2224,6 +2232,13 @@ function PhotoAttach(props: { draftId: string }) {
             </div>
           ))}
         </div>
+      )}
+      {lightboxId && thumbs[lightboxId] && (
+        <PhotoLightbox
+          src={thumbs[lightboxId]}
+          alt="walkthrough photo"
+          onClose={() => setLightboxId(null)}
+        />
       )}
     </div>
   );

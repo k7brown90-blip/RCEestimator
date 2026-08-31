@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { InspectionResultChip } from "./InspectionResultChip";
 import { ProtectedImage } from "./ProtectedImage";
 import { GeneratorDesigner } from "./GeneratorDesigner";
+import { PhotoLightbox } from "./PhotoLightbox";
 
 /**
  * Health Record panel for the visit workspace — read-only from the CRM's side.
@@ -19,6 +20,8 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
   const [expandedInspectionId, setExpandedInspectionId] = useState<string | null>(null);
   // The CRM-side generator designer (Kyle, 2026-08-31) — one open at a time.
   const [designerInspectionId, setDesignerInspectionId] = useState<string | null>(null);
+  // Zoomable viewer for nameplate-reading (Kyle, 2026-08-31).
+  const [lightbox, setLightbox] = useState<{ path: string; alt: string } | null>(null);
 
   const { data: assignments } = useQuery({
     queryKey: ["visitAssignments", visitId],
@@ -86,6 +89,9 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
         <h2 className="text-lg font-semibold">Electrical Health Record</h2>
         <span className="text-xs text-rce-muted">Field inspection PWA</span>
       </div>
+      {lightbox && (
+        <PhotoLightbox path={lightbox.path} alt={lightbox.alt} onClose={() => setLightbox(null)} />
+      )}
 
       {/* Read-only: assignment happens in the scheduler when the appointment
           is booked. This just shows who's on it. */}
@@ -176,7 +182,13 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                                 key={photo.id}
                                 path={`/health-record-admin/photos/${photo.id}`}
                                 alt="Inspection evidence"
-                                className="h-16 w-16 rounded border border-rce-border object-cover"
+                                className="h-16 w-16 cursor-zoom-in rounded border border-rce-border object-cover"
+                                onClick={() =>
+                                  setLightbox({
+                                    path: `/health-record-admin/photos/${photo.id}`,
+                                    alt: "Inspection evidence",
+                                  })
+                                }
                               />
                             ))}
                           </div>

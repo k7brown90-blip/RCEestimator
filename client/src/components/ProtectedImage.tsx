@@ -18,12 +18,14 @@ import { fetchProtectedObjectUrl } from "../lib/api";
  * its own.
  */
 export function ProtectedImage({
-  path, alt, className, linkToFullSize = true,
+  path, alt, className, linkToFullSize = true, onClick,
 }: {
   path: string;
   alt: string;
   className?: string;
   linkToFullSize?: boolean;
+  /** When set, the image is a click target (e.g. opens the PhotoLightbox) instead of a new-tab link. */
+  onClick?: () => void;
 }) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -65,8 +67,8 @@ export function ProtectedImage({
     return <div className={`animate-pulse bg-rce-border/40 ${className ?? ""}`} aria-label={`Loading ${alt}`} />;
   }
 
-  const image = <img src={objectUrl} alt={alt} className={className} />;
-  if (!linkToFullSize) return image;
+  const image = <img src={objectUrl} alt={alt} className={className} onClick={onClick} />;
+  if (onClick || !linkToFullSize) return image;
 
   return (
     <a href={objectUrl} target="_blank" rel="noreferrer">

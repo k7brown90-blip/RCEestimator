@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type { PhotoTag, VisitPhotoMeta } from "../lib/api";
 import { downscale } from "../lib/images";
+import { PhotoLightbox } from "./PhotoLightbox";
 
 /**
  * The job photo gallery (Kyle, 2026-08-28) — replaced the legacy
@@ -110,16 +111,12 @@ function PhotoCard(props: { photo: VisitPhotoMeta; onChanged: () => void }) {
         />
       </div>
       {viewing && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-          onClick={() => setViewing(false)}
-        >
-          <AuthedPhoto
-            path={`/health-record-admin/visit-photos/${photo.id}`}
-            alt={photo.caption ?? "job photo"}
-            className="max-h-full max-w-full rounded-lg object-contain"
-          />
-        </div>
+        <PhotoLightbox
+          path={`/health-record-admin/visit-photos/${photo.id}`}
+          alt={photo.caption ?? "job photo"}
+          caption={photo.caption}
+          onClose={() => setViewing(false)}
+        />
       )}
     </div>
   );
@@ -132,6 +129,8 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
   const [uploadTag, setUploadTag] = useState<PhotoTag | "">("");
   const [filter, setFilter] = useState<PhotoTag | "all">("all");
   const [showHistory, setShowHistory] = useState(false);
+  // Zoomable viewer for the history thumbnails (Kyle, 2026-08-31).
+  const [lightbox, setLightbox] = useState<{ path: string; alt: string; caption?: string | null } | null>(null);
 
   const { data: photos = [] } = useQuery({
     queryKey: ["visit-photos", props.visitId],
@@ -262,7 +261,14 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
                       <AuthedPhoto
                         path={`/health-record-admin/visit-photos/${p.id}`}
                         alt={p.caption ?? "job photo"}
-                        className="h-24 w-full rounded object-cover"
+                        className="h-24 w-full cursor-zoom-in rounded object-cover"
+                        onClick={() =>
+                          setLightbox({
+                            path: `/health-record-admin/visit-photos/${p.id}`,
+                            alt: p.caption ?? "job photo",
+                            caption: p.caption,
+                          })
+                        }
                       />
                       <figcaption className="mt-0.5 text-[10px] text-rce-soft">
                         {new Date(p.visitDate).toLocaleDateString()} · {tagLabel(p.tag)}
@@ -284,7 +290,13 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
                       <AuthedPhoto
                         path={`/health-record-admin/inspection-photos/${p.id}`}
                         alt="assessment photo"
-                        className="h-24 w-full rounded object-cover"
+                        className="h-24 w-full cursor-zoom-in rounded object-cover"
+                        onClick={() =>
+                          setLightbox({
+                            path: `/health-record-admin/inspection-photos/${p.id}`,
+                            alt: "assessment photo",
+                          })
+                        }
                       />
                       <figcaption className="mt-0.5 text-[10px] text-rce-soft">
                         {new Date(p.inspectionDate).toLocaleDateString()} · Health Record
@@ -297,6 +309,14 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
           </div>
         )}
       </div>
+      {lightbox && (
+        <PhotoLightbox
+          path={lightbox.path}
+          alt={lightbox.alt}
+          caption={lightbox.caption}
+          onClose={() => setLightbox(null)}
+        />
+      )}
     </article>
   );
 }
@@ -310,6 +330,8 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
  */
 export function PropertyPhotoSection(props: { propertyId: string; propertyLabel: string }) {
   const [open, setOpen] = useState(false);
+  // Zoomable viewer (Kyle, 2026-08-31) — nameplates are unreadable at thumbnail size.
+  const [lightbox, setLightbox] = useState<{ path: string; alt: string; caption?: string | null } | null>(null);
   const { data: photos } = useQuery({
     queryKey: ["property-photos", props.propertyId],
     queryFn: () => api.propertyPhotos(props.propertyId),
@@ -345,7 +367,14 @@ export function PropertyPhotoSection(props: { propertyId: string; propertyLabel:
                     <AuthedPhoto
                       path={`/health-record-admin/visit-photos/${p.id}`}
                       alt={p.caption ?? "job photo"}
-                      className="h-24 w-full rounded object-cover"
+                      className="h-24 w-full cursor-zoom-in rounded object-cover"
+                      onClick={() =>
+                        setLightbox({
+                          path: `/health-record-admin/visit-photos/${p.id}`,
+                          alt: p.caption ?? "job photo",
+                          caption: p.caption,
+                        })
+                      }
                     />
                     <figcaption className="mt-0.5 text-[10px] text-rce-soft">
                       {new Date(p.visitDate).toLocaleDateString()} · {tagLabel(p.tag)}
@@ -367,7 +396,13 @@ export function PropertyPhotoSection(props: { propertyId: string; propertyLabel:
                     <AuthedPhoto
                       path={`/health-record-admin/inspection-photos/${p.id}`}
                       alt="assessment photo"
-                      className="h-24 w-full rounded object-cover"
+                      className="h-24 w-full cursor-zoom-in rounded object-cover"
+                      onClick={() =>
+                        setLightbox({
+                          path: `/health-record-admin/inspection-photos/${p.id}`,
+                          alt: "assessment photo",
+                        })
+                      }
                     />
                     <figcaption className="mt-0.5 text-[10px] text-rce-soft">
                       {new Date(p.inspectionDate).toLocaleDateString()} · Health Record
@@ -378,6 +413,14 @@ export function PropertyPhotoSection(props: { propertyId: string; propertyLabel:
             </div>
           )}
         </div>
+      )}
+      {lightbox && (
+        <PhotoLightbox
+          path={lightbox.path}
+          alt={lightbox.alt}
+          caption={lightbox.caption}
+          onClose={() => setLightbox(null)}
+        />
       )}
     </div>
   );
