@@ -30,6 +30,7 @@
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
 import type { JobBandConfig } from "./materialMarkupCap";
+import { RULED_BILLED_RATE } from "./laborRate";
 
 export type Quotable = "YES" | "NO" | "NEVER";
 
@@ -441,13 +442,13 @@ export function quoteAssembly(
     reasons.push(
       `PROVISIONAL RATE — refusing to issue a customer price. ` +
         (opts.provisionalReason ??
-          `Rate Config B2 does not match Kyle's ruled $150/hr ` +
-            `(decisions/2026-08-11-billed-rate-and-no-memberships.md).`) +
+          `Rate Config B2 does not match Kyle's ruled $${RULED_BILLED_RATE}/hr ` +
+            `(src/services/laborRate.ts).`) +
         ` The cell is the 02:00 task's lane; this pipeline will not override it.`
     );
   } else if (opts.rateProvisional) {
     warnings.push(
-      `Computed at a PROVISIONAL labour rate. ` + (opts.provisionalReason ?? "Rate Config B2 is not $150/hr.")
+      `Computed at a PROVISIONAL labour rate. ` + (opts.provisionalReason ?? `Rate Config B2 is not $${RULED_BILLED_RATE}/hr.`)
     );
   }
 

@@ -53,7 +53,7 @@ const HERE = __dirname;
 const EXTRACTOR = path.join(HERE, "extract_workbook.py");
 
 /** Kyle's ruled company-wide billed rate. decisions/2026-08-11-billed-rate-and-no-memberships.md */
-const RULED_BILLED_RATE = 150;
+const RULED_BILLED_RATE = 100; // Kyle, 2026-09-01 — was 150 (2026-08-11); see src/services/laborRate.ts
 
 // ─── CLI ────────────────────────────────────────────────────────────────────────
 

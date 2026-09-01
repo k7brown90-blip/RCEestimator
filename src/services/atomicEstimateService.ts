@@ -26,8 +26,9 @@ import {
 import type { MarkupTiers, RateConfig, SupplierPriceRow } from "./priceBookPricing";
 import { logSystemEvent } from "./systemEvents";
 
-/** Kyle's ruled company-wide billed rate. decisions/2026-08-11-billed-rate-and-no-memberships.md */
-export const RULED_BILLED_RATE = 150;
+/** Kyle's ruled company-wide billed rate — $100/hr from 2026-09-01 (was $150). See laborRate.ts. */
+import { RULED_BILLED_RATE } from "./laborRate";
+export { RULED_BILLED_RATE };
 
 export interface RateContext {
   rc: RateConfig;

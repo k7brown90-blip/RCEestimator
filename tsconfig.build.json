@@ -22,6 +22,8 @@
     "scripts/applySourcedCosts.ts",
     // 12-space outdoor load centers, 100 A MB and 125 A ML (Kyle, 2026-09-01) — createAtomic.
     "scripts/addLoadCenters12Space.ts",
+    // Billed labour rate change, $150 → $100 (Kyle, 2026-09-01) — Rate Config cell + every flat sell, audited.
+    "scripts/setLaborRate.ts",
     "scripts/checkGoogleCalendarConnection.ts",
     // The price-book writer, so the import can run where the database is reachable.
     // Extraction stays on Kyle's machine; only --from-json runs in here.

@@ -36,7 +36,7 @@ import {
 } from "../../src/services/priceBookPricing";
 
 const prisma = new PrismaClient();
-const RULED_BILLED_RATE = 150;
+const RULED_BILLED_RATE = 100; // Kyle, 2026-09-01 — was 150 (2026-08-11); see src/services/laborRate.ts
 
 interface Row {
   assemblyId: string;

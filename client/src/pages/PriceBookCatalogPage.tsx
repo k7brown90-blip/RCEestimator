@@ -7,7 +7,7 @@
  *
  * Ground rules carried from the import:
  *  - Prices RECOMPUTE server-side with the workbook's exact math (tier markup
- *    on cost, hours × $150 + material). The sell columns here are display only.
+ *    on cost, hours × the billed rate + material). The sell columns here are display only.
  *  - Every change writes an audit row — the drawer shows the item's history.
  *  - Items RETIRE, never delete: estimate lines reference them forever.
  */

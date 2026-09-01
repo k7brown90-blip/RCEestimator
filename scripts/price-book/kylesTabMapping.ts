@@ -8,7 +8,11 @@ import { createHash } from "node:crypto";
  * whatever database happened to be configured. The rules live here; the script orchestrates them.
  */
 
-/** Kyle's own labour rate, the one his sheet's formulas use. */
+/**
+ * The rate baked into the RETIRED workbook's formulas (`=(B*150)+F`), kept only so the import
+ * lane's parity assertion still reads that sheet as written. The LIVE billed rate is Rate Config
+ * `billedLaborRate` / RULED_BILLED_RATE in src/services/laborRate.ts ($100/hr from 2026-09-01).
+ */
 export const RATE = 150;
 
 /** Excel gives numbers, strings, or nothing. Anything unparseable is null — never 0. */

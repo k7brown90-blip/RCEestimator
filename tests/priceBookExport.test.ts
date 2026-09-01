@@ -41,6 +41,7 @@ function fakePrisma() {
     priceBookRateConfig: {
       findMany: () =>
         Promise.resolve([1, 2, 3, 4, 5].map((n) => ({ key: `markupTier${n}`, numberValue: n }))),
+      findUnique: () => Promise.resolve({ key: "billedLaborRate", numberValue: 100 }),
     },
   } as never;
 }
@@ -65,7 +66,7 @@ describe("exportPriceBookXlsx", () => {
     expect(retired.getRow(2).getCell(18).value).toBe("2026-08-25");
 
     const rates = wb.getWorksheet("Rate Config")!;
-    expect(rates.getRow(2).getCell(2).value).toBe(150); // labor rate
+    expect(rates.getRow(2).getCell(2).value).toBe(100); // labor rate — the live Rate Config cell, not a constant
     expect(rates.getRow(3).getCell(2).value).toBe(1); // tier 1
   });
 });

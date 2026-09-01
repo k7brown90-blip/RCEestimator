@@ -37,6 +37,7 @@ import {
 } from "./priceBookPricing";
 // The second, job-level check on material markup — see that file for why it exists.
 import { allSelectionCaps, bandsFrom, capMaterial, type MaterialCapResult } from "./materialMarkupCap";
+import { RULED_BILLED_RATE } from "./laborRate";
 
 // ─── Inputs ─────────────────────────────────────────────────────────────────────
 
@@ -63,7 +64,7 @@ export interface EngineAtomic {
 
   // ── KYLE'S CATALOG (P030) ──────────────────────────────────────────────────────────────
   // "kyles-tab" rows carry the authoritative CUSTOMER PRICE per difficulty, computed on his own
-  // sheet as labour x $150 + marked-up material and asserted to the cent at import. When these
+  // sheet as labour x the billed rate + marked-up material ($150 at import, $100 from 2026-09-01). When these
   // are present the line prices FLAT from them and the engine does not re-derive anything.
   source?: string | null;
   sellNormal?: number | null;
@@ -491,7 +492,7 @@ export function computeEstimate(
       KYLE'S CATALOG PRICES FLAT (P030).
 
       His sheet already did the arithmetic this engine was built to do: every row carries a sell
-      price per difficulty, computed as labour x $150 + marked-up material and asserted to the cent
+      price per difficulty, computed as labour x the billed rate + marked-up material and asserted to the cent
       at import. So for these rows the engine READS the price rather than rebuilding it — the same
       instinct as difficulty being read from a published column instead of scaled from Normal.
 
@@ -946,14 +947,14 @@ export function finalizeEstimate(
     warnings.push(
       `PROVISIONAL LABOUR RATE — every labour figure on this estimate is computed from it. ` +
         (opts.provisionalReason ??
-          `Rate Config B2 does not match Kyle's ruled $150/hr ` +
-            `(decisions/2026-08-11-billed-rate-and-no-memberships.md).`) +
+          `Rate Config B2 does not match Kyle's ruled $${RULED_BILLED_RATE}/hr ` +
+            `(src/services/laborRate.ts).`) +
         ` The cell is the price-book task's lane; this engine will not override it.`
     );
   } else if (opts.rateProvisional) {
     warnings.push(
       `Computed at a PROVISIONAL labour rate. ` +
-        (opts.provisionalReason ?? "Rate Config B2 is not $150/hr.")
+        (opts.provisionalReason ?? `Rate Config B2 is not $${RULED_BILLED_RATE}/hr.`)
     );
   }
 

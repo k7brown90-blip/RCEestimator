@@ -14,8 +14,7 @@
 
 import ExcelJS from "exceljs";
 import type { PrismaClient } from "@prisma/client";
-import { RATE } from "../../scripts/price-book/kylesTabMapping";
-import { listCategories, loadMarkupTiers } from "./priceBookCatalog";
+import { listCategories, loadPricingContext } from "./priceBookCatalog";
 
 const HEADER_FILL: ExcelJS.Fill = {
   type: "pattern", pattern: "solid", fgColor: { argb: "FF1F2937" },
@@ -62,11 +61,11 @@ function addItemSheet(
 
 /** Build the snapshot workbook. Returns xlsx bytes ready to send. */
 export async function exportPriceBookXlsx(prisma: PrismaClient): Promise<Buffer> {
-  const [active, retired, categories, tiers] = await Promise.all([
+  const [active, retired, categories, { tiers, rate }] = await Promise.all([
     prisma.priceBookAtomic.findMany({ where: { retiredAt: null } }),
     prisma.priceBookAtomic.findMany({ where: { retiredAt: { not: null } }, orderBy: { retiredAt: "desc" } }),
     listCategories(prisma),
-    loadMarkupTiers(prisma),
+    loadPricingContext(prisma),
   ]);
 
   // Category display order carries into the sheet, same as the app shows it.
@@ -96,7 +95,7 @@ export async function exportPriceBookXlsx(prisma: PrismaClient): Promise<Buffer>
   const rHead = rates.getRow(1);
   rHead.fill = HEADER_FILL;
   rHead.font = HEADER_FONT as ExcelJS.Font;
-  rates.addRow({ k: "Labor rate ($/hour)", v: RATE });
+  rates.addRow({ k: "Labor rate ($/hour)", v: rate });
   rates.addRow({ k: "Markup tier 1 (cost under $1.00)", v: tiers.tier1 });
   rates.addRow({ k: "Markup tier 2 ($1.00–$9.99)", v: tiers.tier2 });
   rates.addRow({ k: "Markup tier 3 ($10.00–$49.99)", v: tiers.tier3 });

@@ -9,7 +9,9 @@
  *  1. THE WORKBOOK'S MATH, EXACTLY. Sell prices recompute the way Kyle's tab
  *     computed them and the import parity-asserted them:
  *       companyPrice = companyCost × tier multiplier   (Rate Config tiers)
- *       sell_d       = round(laborHours_d × $150 + companyPrice, 2)
+ *       sell_d       = round(laborHours_d × billed rate + companyPrice, 2)
+ *     The rate is Rate Config `billedLaborRate` ($100/hr from 2026-09-01; $150 before).
+ *     Changing it recomputes every sell column — scripts/setLaborRate.ts, audited.
  *     A labour-only row carries no material — $0, not a missing number.
  *  2. EVERY EDIT HAS A STORY. Append-only PriceBookEdit rows: who, when,
  *     field, old, new. A price a customer asks about must be explainable.
@@ -19,7 +21,7 @@
 
 import type { PrismaClient } from "@prisma/client";
 import { markupMultiplierFor, markupTierFor, type MarkupTiers } from "./priceBookPricing";
-import { RATE } from "../../scripts/price-book/kylesTabMapping";
+import { loadBilledLaborRate } from "./laborRate";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -53,24 +55,55 @@ export interface ComputedPricing {
   sellVeryDifficult: number | null;
 }
 
-/** The workbook's formulas, verbatim — see kylesTabMapping's parity assertion. */
-export function computePricing(input: PricingInput, tiers: MarkupTiers): ComputedPricing {
+/** Tiers and the live billed rate together — every price the editor writes comes from these. */
+export async function loadPricingContext(prisma: PrismaClient): Promise<{ tiers: MarkupTiers; rate: number }> {
+  const [tiers, rate] = await Promise.all([loadMarkupTiers(prisma), loadBilledLaborRate(prisma)]);
+  return { tiers, rate };
+}
+
+export interface SellInputs {
+  rowType: string | null;
+  companyPrice: number | null;
+  laborNormal: number | null;
+  laborDifficult: number | null;
+  laborVeryDifficult: number | null;
+}
+
+/**
+ * The sell columns alone, from a row's marked-up material and hours:
+ * sell_d = hours_d × rate + material. This is the half of the formula a rate change moves —
+ * material is untouched by it — so setLaborRate.ts rebuilds rows through here and
+ * computePricing composes it.
+ */
+export function sellsAtRate(
+  row: SellInputs,
+  rate: number,
+): Pick<ComputedPricing, "sellNormal" | "sellDifficult" | "sellVeryDifficult"> {
+  const type = (row.rowType ?? "").toUpperCase();
+  const materialOnly = type.includes("MATERIAL ONLY");
+  const material = type.includes("LABOR ONLY") ? 0 : (row.companyPrice ?? 0);
+  const sellFor = (hours: number | null): number | null => {
+    if (materialOnly) return row.companyPrice; // material rows sell the marked-up material, no labour line
+    if (hours === null || hours === undefined) return null;
+    return round2(hours * rate + material);
+  };
+  return {
+    sellNormal: sellFor(row.laborNormal),
+    sellDifficult: sellFor(row.laborDifficult),
+    sellVeryDifficult: sellFor(row.laborVeryDifficult),
+  };
+}
+
+/** The workbook's formulas, verbatim, at the given billed rate — see kylesTabMapping's parity assertion. */
+export function computePricing(input: PricingInput, tiers: MarkupTiers, rate: number): ComputedPricing {
   const laborOnly = (input.rowType ?? "").toUpperCase().includes("LABOR ONLY");
-  const materialOnly = (input.rowType ?? "").toUpperCase().includes("MATERIAL ONLY");
   const cost = laborOnly ? null : input.companyCost;
   const mult = markupMultiplierFor(cost ?? null, tiers);
   const companyPrice = cost !== null && cost !== undefined && mult !== null ? round2(cost * mult) : null;
-  const sellFor = (hours: number | null): number | null => {
-    if (materialOnly) return companyPrice; // material rows sell the marked-up material, no labour line
-    if (hours === null || hours === undefined) return null;
-    return round2(hours * RATE + (companyPrice ?? 0));
-  };
   return {
     markupTier: markupTierFor(cost ?? null),
     companyPrice,
-    sellNormal: sellFor(input.laborNormal),
-    sellDifficult: sellFor(input.laborDifficult),
-    sellVeryDifficult: sellFor(input.laborVeryDifficult),
+    ...sellsAtRate({ ...input, companyPrice }, rate),
   };
 }
 
@@ -119,7 +152,7 @@ export async function updateAtomic(
 
   // Any pricing input changed → recompute tier and sells the workbook's way.
   if (audits.some((a) => PRICING_FIELDS.has(a.field))) {
-    const tiers = await loadMarkupTiers(prisma);
+    const { tiers, rate } = await loadPricingContext(prisma);
     // `in data` not `??` — clearing a value to null is an edit, not an absence.
     const pick = <K extends keyof PricingInput>(k: K): PricingInput[K] =>
       (k in data ? data[k] : (existing as Record<string, unknown>)[k]) as PricingInput[K];
@@ -130,7 +163,7 @@ export async function updateAtomic(
       laborDifficult: pick("laborDifficult"),
       laborVeryDifficult: pick("laborVeryDifficult"),
     };
-    const computed = computePricing(merged, tiers);
+    const computed = computePricing(merged, tiers, rate);
     for (const [k, v] of Object.entries(computed)) {
       const prev = (existing as Record<string, unknown>)[k] ?? null;
       if (String(prev ?? "") !== String(v ?? "")) {
@@ -189,7 +222,7 @@ export async function createAtomic(
   const clash = await prisma.priceBookAtomic.findUnique({ where: { itemId }, select: { itemId: true } });
   if (clash) return { ok: false, reason: `Item ID ${itemId} already exists.` };
 
-  const tiers = await loadMarkupTiers(prisma);
+  const { tiers, rate } = await loadPricingContext(prisma);
   const computed = computePricing(
     {
       rowType: input.rowType,
@@ -199,6 +232,7 @@ export async function createAtomic(
       laborVeryDifficult: input.laborVeryDifficult ?? null,
     },
     tiers,
+    rate,
   );
 
   const atomic = await prisma.$transaction(async (tx) => {
