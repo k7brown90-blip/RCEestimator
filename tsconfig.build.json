@@ -12,6 +12,8 @@
     // a developer machine, so `railway run` cannot connect to it.
     "scripts/readSystemEvents.ts",
     "scripts/tailClientLog.ts",
+    // Read-only estimate dump for offline what-if re-pricing (Kyle, 2026-08-31).
+    "scripts/dumpEstimateForRepricing.ts",
     "scripts/checkGoogleCalendarConnection.ts",
     // The price-book writer, so the import can run where the database is reachable.
     // Extraction stays on Kyle's machine; only --from-json runs in here.
