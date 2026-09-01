@@ -180,8 +180,10 @@ export async function graduateDraft(
     laborHours: number | null;
     materialSell: number | null;
     materialCost: number | null;
-    /** Kyle's flat book price — the combination discount skips these (2026-08-31). */
+    /** Kyle's flat book price — informational, for the company copy. */
     flatPriced: boolean;
+    /** Continuous-length material — the only lines the combination discount reads (2026-08-31). */
+    inMaterialCap: boolean;
   }> = [];
   const refusals: string[] = [];
   /** Lines frozen at zero because the engine had no price for them. Never silently dropped. */
@@ -240,8 +242,9 @@ export async function graduateDraft(
       // E — what it costs Red Cedar. Kyle tracks spending against this, so it is frozen with the
       // rest rather than re-derived later from a catalog that will have moved on.
       materialCost: l.materialCost,
-      // Frozen so the gate-3 exemption for Kyle's own prices never depends on the live catalog.
       flatPriced: l.flatPriced,
+      // Frozen so the cap's scope at signing never depends on the live catalog's descriptions.
+      inMaterialCap: l.inMaterialCap,
     });
   });
 
@@ -727,15 +730,16 @@ async function applySignature(
     must never restate a price a customer signed. Computed from the FROZEN lines of the options
     bought, the same figures every other document surface reads.
   */
+  // Only continuous-length material is in the cap (Kyle, 2026-08-31, "split the difference");
+  // unit items keep their book price and contribute nothing to the band — same population the
+  // engine used at issue, read off the frozen flag.
   const frozenLines = (await prisma.issuedEstimateLine.findMany({
     where: { estimateId },
-    select: { option: true, materialCost: true, materialSell: true, flatPriced: true },
+    select: { option: true, materialCost: true, materialSell: true, inMaterialCap: true },
   })).map((l) => ({
     option: l.option,
-    // Kyle's flat book prices are not re-marked by the combination gate (2026-08-31) — same
-    // exemption the engine applies live, carried on the frozen line so it cannot drift.
-    materialCost: l.flatPriced ? null : l.materialCost,
-    materialSell: l.flatPriced ? null : l.materialSell,
+    materialCost: l.inMaterialCap ? l.materialCost : null,
+    materialSell: l.inMaterialCap ? l.materialSell : null,
   }));
   /*
     Priced with the schedule frozen AT ISSUE, not whatever Rate Config says today. The customer is

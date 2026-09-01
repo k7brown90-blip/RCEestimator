@@ -46,6 +46,10 @@ function line(option: Opt, description: string, lineTotal: number, quantity = 1)
     laborHours: 2,
     materialSell: lineTotal / 2,
     materialCost: lineTotal / 4,
+    // Frozen flags (2026-08-31): these fixture lines are the wire-and-conduit kind the
+    // combination gate reads, priced from the supplier ladder.
+    flatPriced: false,
+    inMaterialCap: true,
   };
 }
 

@@ -170,10 +170,15 @@ export interface ComputedLine {
 
   /**
    * True when the line priced FLAT from Kyle's own sell columns (his catalog tab and every
-   * in-app item). The job-level material gates never touch these — see the cap block in
-   * computeEstimate (Kyle, 2026-08-31: a $456 book price landing on the estimate at $285.98).
+   * in-app item). Informational — carried to the company copy.
    */
   flatPriced: boolean;
+  /**
+   * True when the line is continuous-length material (wire, cable, conduit) — the only lines the
+   * job-level material cap reads and scales (Kyle, 2026-08-31, "split the difference"). Unit
+   * items sell at their book price whatever the job's material blend.
+   */
+  inMaterialCap: boolean;
 
   gaps: LineGap[];
   complete: boolean;
@@ -380,6 +385,50 @@ export function isConductor(atomic: EngineAtomic): boolean {
   return false;
 }
 
+/**
+ * Is this atomic CONTINUOUS-LENGTH MATERIAL — wire, cable, conduit, tubing: the stuff sold by
+ * the foot, where quantity is what breaks the per-item markup ladder?
+ *
+ * ── WHY THIS DECIDES THE JOB-LEVEL CAP'S SCOPE (Kyle, 2026-08-31) ─────────────────────────────
+ *
+ * The per-item tiers key off unit price and quietly assume a cheap item is a small line. A
+ * thousand feet of #14 at $0.64 is $640 of cost marked up five times — that is the failure the
+ * job-level cap (materialMarkupCap.ts) exists for, and it is a FOOTAGE failure. A $170 SMM, a
+ * $283 load center or a $27 disconnect is one unit at the tier Kyle chose for it; scaling those
+ * down because the wire on the same job was heavy re-marks prices he set on purpose.
+ *
+ * His ruling, after seeing both extremes the same day ("The '+New Item' in the price book is not
+ * adding up" — the SMM cut from $456 to $285.98 — and then "We still need the material cap, I
+ * never said to remove that"): split the difference. The cap applies to continuous-length
+ * material only; unit items sell at their book price.
+ *
+ * Matching is on description and category because Kyle's catalog carries no unit column (see
+ * isConductor). Fittings are the trap: "Insulated Multi-Tap Connector, #14 to 2/0 AWG" contains
+ * "AWG", a "PVC Factory Elbow" contains "PVC" — both are unit items, so anything that names a
+ * fitting is excluded before the length patterns are tried.
+ */
+const FITTING_WORDS =
+  /\b(elbow|coupling|connector|connectors|box|boxes|bushing|strap|straps|hanger|clamp|clamps|body|bodies|fitting|adapter|nipple|locknut|hub|cover|plate|reducer|bell end|cap|lug|lugs|terminal|tap|clip|clips|support)\b/;
+
+export function isContinuousLengthMaterial(atomic: {
+  itemId: string;
+  description: string | null;
+  unit?: string | null;
+  unitLabel?: string | null;
+  category?: string | null;
+}): boolean {
+  const unit = (atomic.unit ?? atomic.unitLabel ?? "").trim().toLowerCase();
+  if (/^(ft|lf|foot|feet|per foot|per ft|linear f(oo|ee)t)$/.test(unit)) return true;
+  const hay = `${atomic.itemId} ${atomic.description ?? ""} ${atomic.category ?? ""}`.toLowerCase();
+  if (FITTING_WORDS.test(hay)) return false;
+  // Conductors — wire and cable of every kind.
+  if (/(thhn|thwn|xhhw|romex|conductor|nm-b|mc cable|se cable|ser cable|uf-b|use-2|building wire|feeder cable|awg|kcmil)/.test(hay)) return true;
+  // Raceway lengths — conduit and tubing (sticks or per foot).
+  if (/\b(conduit|tubing|raceway)\b/.test(hay)) return true;
+  if (/\b(emt|imc|rmc|pvc|lfmc|lfnc|liquidtight|ent)\b/.test(hay) && /\b(inch|in\.|\d\/\d|sch|schedule)\b/.test(hay)) return true;
+  return false;
+}
+
 function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
@@ -420,6 +469,7 @@ export function computeEstimate(
         materialCost: null,
         materialSell: null,
         flatPriced: false,
+        inMaterialCap: false,
         gaps: [
           {
             kind: "ATOMIC_NOT_FOUND",
@@ -504,6 +554,7 @@ export function computeEstimate(
           : round2(input.quantity * atomic.costBasisUsed),
         materialSell: material,
         flatPriced: true,
+        inMaterialCap: isContinuousLengthMaterial(atomic),
         gaps,
         complete: gaps.length === 0,
       });
@@ -608,6 +659,7 @@ export function computeEstimate(
       materialCost,
       materialSell,
       flatPriced: false,
+      inMaterialCap: isContinuousLengthMaterial(atomic),
       gaps,
       complete: gaps.length === 0,
     });
@@ -632,24 +684,22 @@ export function computeEstimate(
   const bands = bandsFrom(rc.jobBands);
 
   /*
-    ── KYLE'S PRICES ARE NOT RE-MARKED (2026-08-31) ─────────────────────────────────────────────
+    ── THE CAP'S SCOPE: CONTINUOUS-LENGTH MATERIAL ONLY (Kyle, 2026-08-31) ──────────────────────
 
-    The per-item ladder this check corrects is the SUPPLIER-PRICED one: NECA labour + a supplier
-    cost run through the tiers. Kyle's catalog rows and every in-app item price FLAT from the sell
-    he set — labour x $150 + the tier HE chose, asserted to the cent — and the material half of a
-    flat line is a bookkeeping split, not a markup this gate has any standing to revisit.
+    Both extremes were tried the same day. Capping every line cut a "50 AMP Generac SMM" from its
+    $456 book price to $285.98 ("The '+New Item' in the price book is not adding up"). Exempting
+    every book-priced line lifted a wire-heavy generator install by $2,500 / $5,400 per option
+    ("We still need the material cap, I never said to remove that"). His ruling: split the
+    difference.
 
-    It was revisiting it. A "50 AMP Generac SMM" entered in the price book at $456 landed on an
-    estimate at $285.98: gate 2 read the whole option's material, found the blend over the
-    $3,000+ ceiling, and scaled the SMM's material share by 0.44 along with everything else.
-    Kyle: "The '+New Item' in the price book is not adding up in the estimate correctly."
-
-    So gates 2 and 3 now see only the supplier-priced lines. A flat line's price on the estimate
-    IS its price in the book, whatever else is on the job.
+    So gates 2 and 3 read only the lines where footage is the problem — wire, cable, conduit,
+    tubing (isContinuousLengthMaterial). Their material is banded and scaled as a job. Unit items
+    — SMMs, panels, disconnects, breakers, fittings — sell at the book price Kyle set for them,
+    whatever else is on the job, and contribute nothing to the band.
   */
   const materialCaps: Record<string, MaterialCapResult> = {};
   for (const option of ESTIMATE_OPTIONS) {
-    const inOption = computed.filter((l) => l.option === option && !l.flatPriced);
+    const inOption = computed.filter((l) => l.option === option && l.inMaterialCap);
     if (inOption.length === 0) continue;
 
     const cost = inOption.reduce((n, l) => n + (l.materialCost ?? 0), 0);
@@ -684,13 +734,13 @@ export function computeEstimate(
   }
 
   // Gate 3 runs on the lines AS GATE 2 LEFT THEM — the discount is what combining adds on top.
-  // Flat-priced lines contribute nothing here either (same reasoning as above); they keep their
-  // option membership so every combination key still enumerates.
+  // Same scope as gate 2: unit items contribute nothing; they keep their option membership so
+  // every combination key still enumerates.
   const combinationDiscounts = allSelectionCaps(
     computed.map((l) => ({
       option: l.option,
-      materialCost: l.flatPriced ? null : l.materialCost,
-      materialSell: l.flatPriced ? null : l.materialSell,
+      materialCost: l.inMaterialCap ? l.materialCost : null,
+      materialSell: l.inMaterialCap ? l.materialSell : null,
     })),
     bands,
   );

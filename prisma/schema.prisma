@@ -2383,6 +2383,11 @@ model IssuedEstimateLine {
   /// discount recomputed from frozen lines skips these — their price is the book's price
   /// (2026-08-31). Frozen here so the exemption never depends on the live catalog.
   flatPriced   Boolean  @default(false)
+  /// Continuous-length material (wire, cable, conduit) — the only lines the job-level material
+  /// cap reads (Kyle, 2026-08-31, "split the difference"). Frozen so the combination discount
+  /// recomputed at signing and on the customer page uses the same population as the issue.
+  /// Defaults true so estimates issued before the rule keep the numbers they were issued with.
+  inMaterialCap Boolean @default(true)
 
   estimate     IssuedEstimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
   atomic       PriceBookAtomic @relation(fields: [itemId], references: [itemId], onDelete: Restrict)

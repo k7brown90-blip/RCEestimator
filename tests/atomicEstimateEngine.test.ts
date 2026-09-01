@@ -30,6 +30,7 @@ import {
   finalizeEstimate,
   impliesConductors,
   isContinuousLength,
+  isContinuousLengthMaterial,
   laborHoursFor,
   laborValueFor,
   rowTypeSells,
@@ -494,7 +495,8 @@ describe("the job-level material check, through the engine", () => {
       re-price option A. Here A is small enough to sit under its ceiling while B is not, and A must
       come through untouched.
     */
-    const modest = atomic({ itemId: "M", laborNormal: 1, costBasisUsed: 10, sellPricePerUnit: 25 });
+    // Per-foot material, so the cap reads it (its scope is continuous-length only, 2026-08-31).
+    const modest = atomic({ itemId: "M", unit: "ft", laborNormal: 1, costBasisUsed: 10, sellPricePerUnit: 25 });
     const est = computeEstimate(
       [
         line({ itemId: "M", quantity: 2, option: "A" }),                 // $20 cost at 2.5x — under its ceiling
@@ -512,7 +514,8 @@ describe("the job-level material check, through the engine", () => {
 
   it("leaves a small job entirely alone", () => {
     // The dormancy property, at the engine level. Four of Kyle's six real estimates behave this way.
-    const modest = atomic({ itemId: "M", laborNormal: 1, costBasisUsed: 10, sellPricePerUnit: 25 });
+    // Per-foot material, so the cap reads it (its scope is continuous-length only, 2026-08-31).
+    const modest = atomic({ itemId: "M", unit: "ft", laborNormal: 1, costBasisUsed: 10, sellPricePerUnit: 25 });
     const est = computeEstimate([line({ itemId: "M", quantity: 2 })], new Map([["M", modest]]), RC, "HD");
     expect(est.materialCaps.A.applied).toBe(false);
     expect(est.materialSell).toBeCloseTo(50, 2); // 2 x 25, untouched
@@ -533,7 +536,9 @@ describe("what the job ceiling does to the 5x tier", () => {
     that pulls his 4.53x estimate into line. It is recorded because it is easy to mistake for a bug
     later: the workbook says 5x and the invoice will not.
   */
-  const pennies = atomic({ itemId: "P", laborNormal: 1, costBasisUsed: 0.3, sellPricePerUnit: 1.5 });
+  // Per-foot material — the cap's scope is continuous-length only (2026-08-31); the 5x-vs-3.5x
+  // arithmetic below is unchanged.
+  const pennies = atomic({ itemId: "P", unit: "ft", laborNormal: 1, costBasisUsed: 0.3, sellPricePerUnit: 1.5 });
 
   it("caps a small all-cheap-parts job at 3.5x, not 5x", () => {
     const est = computeEstimate([line({ itemId: "P", quantity: 100 })], new Map([["P", pennies]]), RC, "HD");
@@ -549,8 +554,9 @@ describe("the third gate, through the engine", () => {
     as a single job." The engine prices every combination so the presentation screen can show the
     saving live — this pins that the map ships and that it reads the POST-gate-2 lines.
   */
-  const partA = atomic({ itemId: "PA", laborNormal: 1, costBasisUsed: 30, sellPricePerUnit: 75 });
-  const partB = atomic({ itemId: "PB", laborNormal: 1, costBasisUsed: 30, sellPricePerUnit: 75 });
+  // Per-foot material — the gates' scope is continuous-length only (2026-08-31).
+  const partA = atomic({ itemId: "PA", unit: "ft", laborNormal: 1, costBasisUsed: 30, sellPricePerUnit: 75 });
+  const partB = atomic({ itemId: "PB", unit: "ft", laborNormal: 1, costBasisUsed: 30, sellPricePerUnit: 75 });
 
   it("ships a priced entry for every combination the customer could tick", () => {
     // Each option: $600 cost at 2.5x tier = $1,500 sell, exactly its own band ceiling (gate 2
@@ -587,7 +593,7 @@ describe("the third gate, through the engine", () => {
   });
 });
 
-describe("flat-priced lines survive the job-level material gates (Kyle, 2026-08-31)", () => {
+describe("the job-level material cap applies to book-priced lines too (Kyle, 2026-08-31: 'We still need the material cap, I never said to remove that')", () => {
   // Kyle's book: a $170-cost SMM at tier x1.8 with 1 hr → 306 + 150 = $456, asserted at import.
   const smm = atomic({
     itemId: "SMM", laborNormal: 1, source: "in-app",
@@ -598,36 +604,66 @@ describe("flat-priced lines survive the job-level material gates (Kyle, 2026-08-
     itemId: "GEN", laborNormal: 8, source: "in-app",
     costBasisUsed: 5400, sellPricePerUnit: 6750, companyCost: 5400, companyPrice: 6750, sellNormal: 7950,
   });
-  // A supplier-priced NECA row (no sell columns) — the ladder the gates were built for.
-  const wire = atomic({ itemId: "WIRE", laborNormal: 1, costBasisUsed: 3000, sellPricePerUnit: 4500 });
+  // Kyle's book wire: 1,000 ft of #14 THHN at $0.64 cost, 5x tier → $3.20 + labour. Footage is
+  // exactly what the cap exists for.
+  const thhn14 = atomic({
+    itemId: "thhn-14-awg", description: "THHN, #14 AWG", laborNormal: 0.005, source: "kyles-tab",
+    costBasisUsed: 0.64, sellPricePerUnit: 3.2, companyCost: 0.64, companyPrice: 3.2, sellNormal: 3.95,
+  });
   const rc = { ...RC, billedLaborRate: 150, jobFixedCost: 0 };
 
-  it("a flat line's estimate price equals its book price whatever else is on the job", () => {
-    const out = computeEstimate(
-      [line({ itemId: "GEN", option: "B" }), line({ itemId: "SMM", option: "B" })],
-      new Map([["GEN", gen], ["SMM", smm]]), rc, "HD",
-    );
-    const smmLine = out.lines.find((l) => l.itemId === "SMM")!;
-    expect(smmLine.flatPriced).toBe(true);
-    expect((smmLine.laborDollars ?? 0) + (smmLine.materialSell ?? 0)).toBe(456);
-    // An all-flat option has nothing for the gates to do — and says so.
-    expect(out.materialCaps.B).toBeUndefined();
-    expect(out.combinationDiscounts.B.applied).toBe(false);
+  it("classifies continuous-length material by what it is, and keeps fittings on the unit side", () => {
+    const cls = (description: string, category: string | null = null) =>
+      isContinuousLengthMaterial({ itemId: "x", description, category });
+    expect(cls("THHN, #14 AWG")).toBe(true);
+    expect(cls("Bare Solid Copper Grounding Electrode Conductor, #4 AWG")).toBe(true);
+    expect(cls("EMT Conduit, 1 1/2-inch")).toBe(true);
+    expect(cls("PVC Conduit, Sch 40, 1 1/4-inch")).toBe(true);
+    expect(cls("Liquidtight Non-Metallic Flexible Tubing, 1-inch")).toBe(true);
+    expect(isContinuousLengthMaterial({ itemId: "1 AWG - 100 AMP SER", description: "Feeder Cables", unitLabel: "per foot" })).toBe(true);
+    // Unit items — including the traps that mention AWG or PVC.
+    expect(cls("50 AMP Generac SMM")).toBe(false);
+    expect(cls("Load Center, 200A, 20-Space/40-Circuit, OUTDOOR, Main Breaker")).toBe(false);
+    expect(cls("AC Disconnect, 60A, 2-Pole, Non-Fused, 240V, Outdoor")).toBe(false);
+    expect(cls("Circuit Breaker, 100A, Double-Pole")).toBe(false);
+    expect(cls("Insulated Multi-Tap Connector, #14 to 2/0 AWG, 2-Port")).toBe(false);
+    expect(cls("PVC Factory Elbow, 90-Degree, Schedule 40, 1 1/4-inch")).toBe(false);
+    expect(cls("PVC Expansion Coupling, 1 1/4-inch")).toBe(false);
+    expect(cls("Insulated Grounding Bushing w/ Lug and lock nut, 2-inch")).toBe(false);
   });
 
-  it("supplier-priced lines in the same option are still capped, on their own numbers", () => {
+  it("unit items sell at their book price while the wire on the same job is capped", () => {
     const out = computeEstimate(
-      [line({ itemId: "GEN", option: "A" }), line({ itemId: "WIRE", option: "A" })],
-      new Map([["GEN", gen], ["WIRE", wire]]), rc, "HD",
+      [
+        line({ itemId: "GEN", option: "B" }),
+        line({ itemId: "SMM", option: "B" }),
+        line({ itemId: "thhn-14-awg", option: "B", quantity: 1000, quantitySource: "MEASURED_LENGTH" }),
+      ],
+      new Map([["GEN", gen], ["SMM", smm], ["thhn-14-awg", thhn14]]), rc, "HD",
     );
-    // $3,000 of supplier material sold at $4,500 = 1.5x, over the $3,000+ band's 1.25x ceiling.
-    expect(out.materialCaps.A.applied).toBe(true);
-    expect(out.materialCaps.A.materialCost).toBe(3000);
-    expect(out.materialCaps.A.cappedSell).toBe(3750);
-    const wireLine = out.lines.find((l) => l.itemId === "WIRE")!;
-    expect(wireLine.materialSell).toBe(3750);
-    // The flat generator did not move.
+    const smmLine = out.lines.find((l) => l.itemId === "SMM")!;
     const genLine = out.lines.find((l) => l.itemId === "GEN")!;
+    const wireLine = out.lines.find((l) => l.itemId === "thhn-14-awg")!;
+    expect(smmLine.inMaterialCap).toBe(false);
+    expect(genLine.inMaterialCap).toBe(false);
+    expect(wireLine.inMaterialCap).toBe(true);
+    // Book prices, untouched.
+    expect((smmLine.laborDollars ?? 0) + (smmLine.materialSell ?? 0)).toBe(456);
     expect((genLine.laborDollars ?? 0) + (genLine.materialSell ?? 0)).toBe(7950);
+    // The wire alone is the cap's population: $640 cost sold at $3,200 = 5x, in the $250–999
+    // band (2.5x ceiling) → capped to $1,600.
+    expect(out.materialCaps.B.materialCost).toBe(640);
+    expect(out.materialCaps.B.applied).toBe(true);
+    expect(out.materialCaps.B.cappedSell).toBe(1600);
+    expect(wireLine.materialSell).toBe(1600);
+  });
+
+  it("an option with only unit items has nothing for the cap to do", () => {
+    const out = computeEstimate(
+      [line({ itemId: "GEN", option: "A" }), line({ itemId: "SMM", option: "A" })],
+      new Map([["GEN", gen], ["SMM", smm]]), rc, "HD",
+    );
+    expect(out.materialCaps.A).toBeUndefined();
+    expect(out.combinationDiscounts.A.applied).toBe(false);
   });
 });
