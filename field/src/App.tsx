@@ -19,12 +19,13 @@ import { ReportScreen } from './ui/screens/ReportScreen'
 import { ReviewScreen } from './ui/screens/ReviewScreen'
 import { V2CaptureScreen } from './ui/screens/V2CaptureScreen'
 import { JobSiteScreen } from './ui/screens/JobSiteScreen'
+import { MyAccountsScreen } from './ui/screens/MyAccountsScreen'
 import { emptyV2Capture, type V2Capture } from './domain/v2Types'
 import { checkCapture } from './domain/v2Rules'
 
 type Screen =
   | 'assignment' | 'jobsite' | 'jurisdiction' | 'checklist' | 'item' | 'review' | 'report'
-  | 'findings' | 'capacity' | 'v2capture'
+  | 'findings' | 'capacity' | 'v2capture' | 'accounts'
 
 interface Session {
   inspectionId: string
@@ -181,6 +182,12 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     )
   }
 
+  // My accounts (2026-09-01) — like the capacity check, this is an ordinary
+  // tech verb that needs no assessment session open.
+  if (screen === 'accounts') {
+    return <MyAccountsScreen onBack={() => setScreen('assignment')} />
+  }
+
   if (screen === 'assignment' || !session || !profile) {
     return (
       <AssignmentScreen
@@ -189,6 +196,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
           setActiveAssignment(assignment)
           setScreen('jobsite')
         }}
+        onOpenAccounts={() => setScreen('accounts')}
       />
     )
   }

@@ -1001,19 +1001,160 @@ function serializeFinding(finding: {
  * Declined findings matter most here: without them a tech re-sells work the
  * customer already refused, which is the fastest way to lose one.
  */
-healthRecordTechRouter.get("/properties/:propertyId/findings", asyncHandler(async (req: TechRequest, res) => {
-  const propertyId = readParam(req, "propertyId");
-  // Scoped to the technician's own assignments — the field app has no business
-  // enumerating findings at an address nobody sent this person to.
+/** True when this technician has a real history at the address — an assignment or an inspection. */
+async function techServicedProperty(technicianId: string, propertyId: string): Promise<boolean> {
   const assigned = await prisma.visitAssignment.findFirst({
-    where: {
-      technicianId: req.technician!.id,
-      visit: { propertyId },
-    },
+    where: { technicianId, visit: { propertyId } },
     select: { id: true },
   });
-  if (!assigned) {
-    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not assigned to this property" } });
+  if (assigned) return true;
+  const inspected = await prisma.healthInspection.findFirst({
+    where: { technicianId, propertyId },
+    select: { id: true },
+  });
+  return Boolean(inspected);
+}
+
+/**
+ * GET /health-record/my-properties — the accounts this technician services
+ * (Kyle, 2026-09-01: "The tech needs to assess accounts that they service").
+ * Sourced from the tech's OWN assignments and inspections — never a directory
+ * of every customer. Newest activity first.
+ */
+healthRecordTechRouter.get("/my-properties", asyncHandler(async (req: TechRequest, res) => {
+  const techId = req.technician!.id;
+  const [assignments, inspections] = await Promise.all([
+    prisma.visitAssignment.findMany({
+      where: { technicianId: techId },
+      select: { visit: { select: { propertyId: true, visitDate: true, scheduledStart: true } } },
+    }),
+    prisma.healthInspection.findMany({
+      where: { technicianId: techId },
+      select: { propertyId: true, inspectionDate: true },
+    }),
+  ]);
+  const lastSeen = new Map<string, number>();
+  const note = (propertyId: string, at: Date | null) => {
+    const t = at ? at.getTime() : 0;
+    if (t > (lastSeen.get(propertyId) ?? 0)) lastSeen.set(propertyId, t);
+  };
+  for (const a of assignments) note(a.visit.propertyId, a.visit.scheduledStart ?? a.visit.visitDate);
+  for (const i of inspections) note(i.propertyId, i.inspectionDate);
+  const ids = [...lastSeen.keys()];
+  if (ids.length === 0) { res.json({ success: true, data: [] }); return; }
+
+  const [properties, findingCounts, latestInspections] = await Promise.all([
+    prisma.property.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true, name: true, addressLine1: true, city: true, state: true, postalCode: true,
+        customer: { select: { id: true, name: true } },
+      },
+    }),
+    prisma.propertyFinding.groupBy({
+      by: ["propertyId"],
+      where: { propertyId: { in: ids }, status: { in: ["open", "scheduled"] } },
+      _count: { _all: true },
+    }),
+    prisma.healthInspection.findMany({
+      where: { propertyId: { in: ids } },
+      orderBy: { inspectionDate: "desc" },
+      select: { id: true, propertyId: true, inspectionDate: true, score: true, loadCalcJson: true },
+    }),
+  ]);
+  const openByProperty = new Map(findingCounts.map((f) => [f.propertyId, f._count._all]));
+  const latestByProperty = new Map<string, (typeof latestInspections)[number]>();
+  for (const insp of latestInspections) if (!latestByProperty.has(insp.propertyId)) latestByProperty.set(insp.propertyId, insp);
+
+  const rows = properties
+    .map((p) => {
+      const latest = latestByProperty.get(p.id) ?? null;
+      return {
+        propertyId: p.id,
+        name: p.name,
+        customerName: p.customer.name,
+        address: { line1: p.addressLine1, city: p.city, state: p.state, postalCode: p.postalCode },
+        lastServicedAt: lastSeen.get(p.id) ? new Date(lastSeen.get(p.id)!).toISOString() : null,
+        openFindingCount: openByProperty.get(p.id) ?? 0,
+        latestInspection: latest
+          ? { id: latest.id, date: latest.inspectionDate.toISOString(), score: latest.score, hasLoadCalc: Boolean(latest.loadCalcJson) }
+          : null,
+      };
+    })
+    .sort((a, b) => (b.lastServicedAt ?? "").localeCompare(a.lastServicedAt ?? ""));
+  res.json({ success: true, data: rows });
+}));
+
+/**
+ * GET /health-record/properties/:propertyId/history — one serviced address in
+ * full: every assessment (newest first) with its counts and whether it carries
+ * a load calc, so the tech standing at a repeat address knows what was said
+ * before. Findings ride the existing findings route.
+ */
+healthRecordTechRouter.get("/properties/:propertyId/history", asyncHandler(async (req: TechRequest, res) => {
+  const propertyId = readParam(req, "propertyId");
+  if (!(await techServicedProperty(req.technician!.id, propertyId))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "You have not serviced this property" } });
+    return;
+  }
+  const [property, inspections] = await Promise.all([
+    prisma.property.findUnique({
+      where: { id: propertyId },
+      select: {
+        id: true, name: true, addressLine1: true, city: true, state: true, postalCode: true, jurisdictionId: true,
+        customer: { select: { id: true, name: true, email: true, phone: true } },
+      },
+    }),
+    prisma.healthInspection.findMany({
+      where: { propertyId },
+      orderBy: { inspectionDate: "desc" },
+      select: {
+        id: true, inspectionDate: true, score: true, scope: true, schemaVersion: true,
+        itemsAssessed: true, failCount: true, monitorCount: true, passCount: true,
+        contractorReviewed: true, loadCalcJson: true, technicianId: true,
+        technician: { select: { name: true } },
+      },
+    }),
+  ]);
+  if (!property) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Property not found" } });
+    return;
+  }
+  res.json({
+    success: true,
+    data: {
+      property: {
+        id: property.id, name: property.name,
+        address: { line1: property.addressLine1, city: property.city, state: property.state, postalCode: property.postalCode },
+        jurisdictionId: property.jurisdictionId,
+        customer: property.customer,
+      },
+      inspections: inspections.map((i) => ({
+        id: i.id,
+        date: i.inspectionDate.toISOString(),
+        score: i.score,
+        scope: i.scope,
+        schemaVersion: i.schemaVersion,
+        itemsAssessed: i.itemsAssessed,
+        failCount: i.failCount,
+        monitorCount: i.monitorCount,
+        passCount: i.passCount,
+        contractorReviewed: i.contractorReviewed,
+        hasLoadCalc: Boolean(i.loadCalcJson),
+        technicianName: i.technician?.name ?? null,
+        mine: i.technicianId === req.technician!.id,
+      })),
+    },
+  });
+}));
+
+healthRecordTechRouter.get("/properties/:propertyId/findings", asyncHandler(async (req: TechRequest, res) => {
+  const propertyId = readParam(req, "propertyId");
+  // Scoped to the technician's own history — the field app has no business
+  // enumerating findings at an address nobody sent this person to. Serviced =
+  // assigned there, or inspected it (My accounts, 2026-09-01).
+  if (!(await techServicedProperty(req.technician!.id, propertyId))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "You have not serviced this property" } });
     return;
   }
 

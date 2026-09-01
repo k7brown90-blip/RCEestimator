@@ -18,6 +18,8 @@ const JOB_STATUSES = new Set(['contracted', 'scheduled', 'in_progress'])
 interface Props {
   /** Tapping a card opens the job site — the day's verbs live there, not here. */
   onOpenVisit: (assignment: CrmAssignment) => void
+  /** My accounts (2026-09-01): the serviced-address history, no appointment needed. */
+  onOpenAccounts?: () => void
   /** A token was just consumed from the enrollment QR's URL fragment. */
   justEnrolled?: boolean
 }
@@ -79,7 +81,7 @@ function relativeTime(iso: string): string {
   return `${Math.round(hours / 24)} d ago`
 }
 
-export function AssignmentScreen({ onOpenVisit, justEnrolled }: Props) {
+export function AssignmentScreen({ onOpenVisit, onOpenAccounts, justEnrolled }: Props) {
   const [configured, setConfigured] = useState(getCrmSettings() !== null)
   const [technician, setTechnician] = useState<CrmTechnician | null>(null)
   const [assignments, setAssignments] = useState<CrmAssignment[]>([])
@@ -260,6 +262,16 @@ export function AssignmentScreen({ onOpenVisit, justEnrolled }: Props) {
               </p>
             )}
           </section>
+
+          {onOpenAccounts && (
+            <button
+              type="button"
+              onClick={onOpenAccounts}
+              className="w-full rounded-lg border border-sky-800 bg-slate-800/60 p-3 text-sm font-medium text-sky-200"
+            >
+              🏠 My accounts — history at every address you service
+            </button>
+          )}
 
           <button
             type="button"

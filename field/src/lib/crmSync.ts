@@ -644,6 +644,54 @@ export async function emailPaymentRequest(
   })
 }
 
+// ─── My accounts (Kyle, 2026-09-01: "The tech needs to assess accounts that
+//     they service") — the properties this tech has actually worked, and one
+//     address's full history. Server-gated to the tech's own assignments and
+//     inspections; this is a service history, not a customer directory. ──────
+
+export interface MyProperty {
+  propertyId: string
+  name: string
+  customerName: string
+  address: { line1: string; city: string; state: string; postalCode: string }
+  lastServicedAt: string | null
+  openFindingCount: number
+  latestInspection: { id: string; date: string; score: number | null; hasLoadCalc: boolean } | null
+}
+
+export interface PropertyHistory {
+  property: {
+    id: string
+    name: string
+    address: { line1: string; city: string; state: string; postalCode: string }
+    jurisdictionId: string | null
+    customer: { id: string; name: string; email: string | null; phone: string | null }
+  }
+  inspections: Array<{
+    id: string
+    date: string
+    score: number | null
+    scope: string
+    schemaVersion: string
+    itemsAssessed: number
+    failCount: number
+    monitorCount: number
+    passCount: number
+    contractorReviewed: boolean
+    hasLoadCalc: boolean
+    technicianName: string | null
+    mine: boolean
+  }>
+}
+
+export async function fetchMyProperties(): Promise<MyProperty[]> {
+  return crmRequest('/my-properties', { method: 'GET' })
+}
+
+export async function fetchPropertyHistory(propertyId: string): Promise<PropertyHistory> {
+  return crmRequest(`/properties/${propertyId}/history`, { method: 'GET' })
+}
+
 // ─── Capacity checks ────────────────────────────────────────────────────────
 
 export interface CapacityCheckPush {
