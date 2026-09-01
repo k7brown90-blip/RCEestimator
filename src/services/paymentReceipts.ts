@@ -97,6 +97,69 @@ export async function sendDepositRequestEmail(
   }
 }
 
+/**
+ * The FINAL BILL (Kyle, 2026-09-01: "it should email the final bill not try
+ * and log in as the customer" — the admin "charge balance" button used to open
+ * the customer's own payment portal in Kyle's browser). This sends the invoice
+ * statement instead: total, credits, paid to date, balance due, and the same
+ * durable pay link the invoice email carries. Refuses quietly when there is
+ * nothing to bill — unsigned, no email on file, or already paid in full.
+ */
+export async function sendBalanceRequestEmail(
+  prisma: PrismaClient,
+  estimateId: string,
+  payBaseUrl: string,
+): Promise<{ ok: true; to: string; amount: number } | { ok: false; reason: string }> {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { number: true, title: true, token: true, customerName: true, customerEmail: true, signedAt: true, serviceAddress: true },
+  });
+  if (!est) return { ok: false, reason: "Estimate not found." };
+  if (!est.signedAt) return { ok: false, reason: "This estimate has not been signed yet — there is nothing to bill." };
+  if (!est.customerEmail) return { ok: false, reason: "No customer email on file — add one to the account first." };
+
+  const summary = await paymentSummary(prisma, estimateId, payBaseUrl);
+  if (!summary) return { ok: false, reason: "Estimate not found." };
+  if (summary.paidInFull) return { ok: false, reason: "This invoice is already paid in full." };
+  const due = summary.balance;
+  if (!(due > 0)) return { ok: false, reason: "Nothing is due on this invoice." };
+
+  const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
+  const payUrl = `${payBaseUrl}/pay/${est.token}`;
+
+  const sent = await sendBrandedEmail({
+    to: est.customerEmail,
+    subject: `Your bill for ${est.title} — $${due.toFixed(2)} due (Invoice ${est.number})`,
+    headline: "Your final bill",
+    bodyHtml: `
+      <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
+      <p style="font-size:15px;">Here is the bill for <strong>${escapeHtml(est.title)}</strong>
+      (invoice ${escapeHtml(est.number)}).</p>
+      <table style="width:100%;font-size:15px;border-collapse:collapse;margin:12px 0;">
+        ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
+        <tr><td style="padding:4px 0;color:#666;">Invoice total</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
+        ${discountRows(summary)}
+        ${summary.totalPaid > 0 ? `<tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>` : ""}
+        <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">Balance due</td>
+          <td style="text-align:right;font-weight:700;">$${due.toFixed(2)}</td></tr>
+      </table>
+      <p style="margin:24px 0;">
+        <a href="${escapeHtml(payUrl)}"
+           style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
+                  border-radius:6px;font-size:16px;font-weight:600;display:inline-block;">
+          Pay your balance — $${due.toFixed(2)}
+        </a>
+      </p>
+      <p style="font-size:13px;color:#666;">Pay by card or bank transfer online, or by cash, check, or Zelle — same amount either way.</p>
+      <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
+  });
+  if (!sent) return { ok: false, reason: "The email could not be sent — check the email connection." };
+  logSystemEvent("info", "stripe", `Final bill emailed to ${est.customerEmail} — $${due.toFixed(2)} due on ${est.number}`, {
+    estimateId,
+  });
+  return { ok: true, to: est.customerEmail, amount: due };
+}
+
 export async function sendPaymentReceiptEmail(
   prisma: PrismaClient,
   paymentId: string,

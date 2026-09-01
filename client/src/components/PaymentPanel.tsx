@@ -3,11 +3,13 @@
  * anywhere to even charge a deposit on the admin side.")
  *
  * Charging a card never means typing a card number into the CRM — that would
- * put card data in scope of this app. "Charge" opens the Stripe-hosted
- * Checkout for the exact amount (deposit or balance) computed server-side:
- * hand the customer the device, or let them scan the QR with their own phone.
- * Cash and checks get recorded here too, and a recorded deposit opens the
- * scheduling gate the same as a card one.
+ * put card data in scope of this app. And it never means opening the
+ * customer's payment portal in the admin's browser either (Kyle, 2026-09-01:
+ * "it should email the final bill not try and log in as the customer") — the
+ * buttons EMAIL the deposit request / final bill with the pay link; the QR
+ * stays for the customer's own phone across the counter. Cash and checks get
+ * recorded here too, and a recorded deposit opens the scheduling gate the
+ * same as a card one.
  */
 
 import { useState } from "react";
@@ -30,6 +32,19 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
   // Methods the system can't detect (Kyle, 2026-08-25): cash, check, Zelle.
   const [method, setMethod] = useState<"cash" | "check" | "zelle">("check");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const emailRequest = useMutation({
+    mutationFn: (kind: "deposit" | "balance") =>
+      kind === "deposit"
+        ? api.emailDepositRequest(info!.estimateId)
+        : api.emailBalanceRequest(info!.estimateId),
+    onSuccess: (r, kind) => {
+      setError(null);
+      setNotice(`${kind === "deposit" ? "Deposit request" : "Final bill"} emailed to ${r.to} — $${r.amount.toFixed(2)} due.`);
+    },
+    onError: (err) => { setNotice(null); setError((err as Error).message); },
+  });
 
   const record = useMutation({
     mutationFn: () =>
@@ -88,21 +103,29 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
       <div className="mt-3 flex flex-wrap gap-2">
         {info.stripeConfigured && !info.depositSatisfied && depositRemaining > 0 && (
           <>
-            <a className="btn btn-primary text-sm" href={info.depositPayUrl} target="_blank" rel="noreferrer">
-              Charge deposit — {money(depositRemaining)}
-            </a>
+            <button
+              className="btn btn-primary text-sm"
+              disabled={emailRequest.isPending}
+              onClick={() => emailRequest.mutate("deposit")}
+            >
+              Email deposit request — {money(depositRemaining)}
+            </button>
             <button className="btn btn-secondary text-sm" onClick={() => setShowQr(showQr === "deposit" ? null : "deposit")}>
-              {showQr === "deposit" ? "Hide QR" : "Deposit QR"}
+              {showQr === "deposit" ? "Hide QR" : "Deposit QR (in person)"}
             </button>
           </>
         )}
         {info.stripeConfigured && !info.paidInFull && (
           <>
-            <a className="btn btn-primary text-sm" href={info.payUrl} target="_blank" rel="noreferrer">
-              Charge balance — {money(info.balance)}
-            </a>
+            <button
+              className="btn btn-primary text-sm"
+              disabled={emailRequest.isPending}
+              onClick={() => emailRequest.mutate("balance")}
+            >
+              Email final bill — {money(info.balance)}
+            </button>
             <button className="btn btn-secondary text-sm" onClick={() => setShowQr(showQr === "balance" ? null : "balance")}>
-              {showQr === "balance" ? "Hide QR" : "Balance QR"}
+              {showQr === "balance" ? "Hide QR" : "Balance QR (in person)"}
             </button>
           </>
         )}
@@ -152,6 +175,7 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
           <button className="btn text-sm" onClick={() => { setRecording(null); setError(null); }}>Cancel</button>
         </div>
       )}
+      {notice && <p className="mt-2 text-xs text-green-700">{notice}</p>}
       {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
 
       {info.payments.length > 0 && (

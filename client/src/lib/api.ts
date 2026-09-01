@@ -823,6 +823,12 @@ export const api = {
 
   // ─── Payments & deposits (2026-08-25) ──────────────────────────────────────
   jobPaymentInfo: (jobId: string) => request<PaymentInfo | null>(`/jobs/${jobId}/payment-info`),
+
+  /** Bill in writing (Kyle, 2026-09-01): the deposit request / final bill lands in the customer's inbox. */
+  emailDepositRequest: (estimateId: string) =>
+    request<{ ok: true; to: string; amount: number }>(`/issued-estimates/${estimateId}/email-deposit-request`, { method: "POST" }),
+  emailBalanceRequest: (estimateId: string) =>
+    request<{ ok: true; to: string; amount: number }>(`/issued-estimates/${estimateId}/email-balance-request`, { method: "POST" }),
   estimatePaymentInfo: (estimateId: string) =>
     request<PaymentInfo | null>(`/issued-estimates/${estimateId}/payment-info`),
 

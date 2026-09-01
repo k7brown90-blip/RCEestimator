@@ -3289,6 +3289,45 @@ app.get("/issued-estimates/:id/payment-info", asyncHandler(async (req, res) => {
   res.json({ ...summary, stripeConfigured: stripeConfigured() });
 }));
 
+/*
+  ── BILL BY EMAIL, NEVER BY IMPERSONATION (Kyle, 2026-09-01) ───────────────────────────────────
+
+  "the charge balance is trying to log me into the customers payment portal. Massive error, it
+   should email the final bill not try and lig in as the customer."
+
+  The admin buttons used to be links straight to /pay/:token — Kyle's browser landed on the
+  customer's own checkout. These routes send the request in writing instead: the deposit request
+  (the same email the signing flow sends) and the final bill with the balance and pay link. The
+  QR remains the in-person path; nobody's session ever opens the customer's portal.
+*/
+app.post("/issued-estimates/:id/email-deposit-request", asyncHandler(async (req, res) => {
+  const { sendDepositRequestEmail } = await import("./services/paymentReceipts");
+  const { publicBaseUrl } = await import("./services/issuedEstimateSend");
+  const estimateId = String(req.params.id);
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { customerEmail: true, signedAt: true },
+  });
+  if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
+  if (!est.signedAt) { res.status(400).json({ error: "This estimate has not been signed yet." }); return; }
+  if (!est.customerEmail) { res.status(400).json({ error: "No customer email on file — add one to the account first." }); return; }
+  const summary = await paymentSummary(prisma, estimateId, publicBaseUrl());
+  if (!summary || summary.depositSatisfied || summary.paidInFull) {
+    res.status(400).json({ error: "The deposit on this job is already in." });
+    return;
+  }
+  await sendDepositRequestEmail(prisma, estimateId, publicBaseUrl());
+  res.json({ ok: true, to: est.customerEmail, amount: Math.round((summary.depositDue - summary.depositPaid) * 100) / 100 });
+}));
+
+app.post("/issued-estimates/:id/email-balance-request", asyncHandler(async (req, res) => {
+  const { sendBalanceRequestEmail } = await import("./services/paymentReceipts");
+  const { publicBaseUrl } = await import("./services/issuedEstimateSend");
+  const result = await sendBalanceRequestEmail(prisma, String(req.params.id), publicBaseUrl());
+  if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
+  res.json(result);
+}));
+
 /** Same summary, addressed by the JOB — what the visit workspace shows. */
 app.get("/jobs/:jobId/payment-info", asyncHandler(async (req, res) => {
   const jobId = readParam(req, "jobId");

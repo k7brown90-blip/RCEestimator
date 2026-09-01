@@ -955,6 +955,50 @@ describe("photos and the discount, end to end", () => {
   });
 });
 
+/*
+  Kyle, 2026-09-01: "the charge balance is trying to log me into the customers payment portal.
+  Massive error, it should email the final bill not try and log in as the customer." The admin
+  buttons now BILL IN WRITING; these prove the route emails the statement with the pay link and
+  refuses when there is nothing to bill.
+*/
+describe("billing in writing — the final-bill email", () => {
+  it("emails the balance with the pay link, and refuses before signature", async () => {
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const d = await quotableDraft("email-bill");
+      const issued = await request(app)
+        .post(`/price-book/drafts/${d.id}/issue`)
+        .send({ accountId: customerId, serviceAddressId: propertyId })
+        .expect(201);
+
+      // Unsigned: nothing is billable yet — refuse, never impersonate a fallback.
+      await request(app).post(`/issued-estimates/${issued.body.estimateId}/email-balance-request`).expect(400);
+
+      await request(app)
+        .post(`/issued-estimates/${issued.body.estimateId}/sign-in-person`)
+        .send({ signerName: "A Customer", signatureImage: TEST_SIGNATURE, selectedOptions: ["A"] })
+        .expect(200);
+
+      const r = await request(app)
+        .post(`/issued-estimates/${issued.body.estimateId}/email-balance-request`)
+        .expect(200);
+      expect(r.body.to).toBe("p027-customer@example.com");
+      expect(r.body.amount).toBeGreaterThan(0);
+
+      const est = await prisma.issuedEstimate.findUnique({ where: { id: issued.body.estimateId } });
+      const call = spy.mock.calls.find((c) => String(c[0].subject).includes("Your bill"));
+      expect(call).toBeTruthy();
+      const html = String(call![0].bodyHtml);
+      expect(html).toContain(`/pay/${est!.token}`); // the durable pay link, not a session URL
+      expect(html).toContain("Balance due");
+      expect(call![0].to).toBe("p027-customer@example.com");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe("editing a draft after issue — Kyle's exact flow", () => {
   /*
     Kyle, 2026-08-22, from the field: "I still cannot edit this draft." — the Edit button opened
