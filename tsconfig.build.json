@@ -18,6 +18,8 @@
     "scripts/applyNecaLaborUnits.ts",
     // AC cable + steel 4-square boxes/covers (Kyle, 2026-09-01) — writes through createAtomic.
     "scripts/addAcCableAndSquareBoxes.ts",
+    // Multi-source cost averages for those items (Kyle, 2026-09-01) — writes through updateAtomic.
+    "scripts/applySourcedCosts.ts",
     "scripts/checkGoogleCalendarConnection.ts",
     // The price-book writer, so the import can run where the database is reachable.
     // Extraction stays on Kyle's machine; only --from-json runs in here.
