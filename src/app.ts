@@ -93,7 +93,7 @@ import {
   EXCLUDE_TEST_ACCOUNT,
 } from "./services/accountSpine";
 import { sendEstimateEmail, sendInvoiceEmail, estimateLink, notifyOwnerSigned } from "./services/issuedEstimateSend";
-import { asDiscountType, discountLabel, DISCOUNT_CAP, DISCOUNT_RATE } from "./services/discounts";
+import { asCustomPercent, programmeFor } from "./services/discounts";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
 import {
@@ -1573,6 +1573,7 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
       discountType: est.discountType,
+      discountPercent: est.discountPercent,
       discount: est.discountJson ? JSON.parse(est.discountJson) : null,
       signatureImage: est.signatureImage,
         createdAt: est.createdAt,
@@ -2062,19 +2063,32 @@ app.post("/price-book/drafts", asyncHandler(async (req, res) => {
   capped at $250." One programme per estimate; setting a new one replaces the old, null clears.
   The AMOUNT is never stored on the draft — it is 5% of what the customer eventually selects, so
   it does not exist yet. Surfaces compute it live; the signature freezes it.
+
+  Custom percentage (Kyle, 2026-09-01): "I want a simple enter a percentage and apply button next
+  to the other discounts" — for price matching. Type "custom" carries its percent (0 < p ≤ 50,
+  uncapped); the percent is stored only with that type so a stale figure cannot ride along under
+  a programme.
 */
 app.put("/price-book/drafts/:draftId/discount", asyncHandler(async (req, res) => {
-  const body = z.object({ type: z.enum(["military", "senior"]).nullable() }).parse(req.body ?? {});
+  const body = z.object({
+    type: z.enum(["military", "senior", "custom"]).nullable(),
+    percent: z.number().optional().nullable(),
+  }).parse(req.body ?? {});
   const draftId = String(req.params.draftId);
   const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { id: true } });
   if (!draft) {
     res.status(404).json({ error: `Draft ${draftId} not found.` });
     return;
   }
+  const percent = body.type === "custom" ? asCustomPercent(body.percent) : null;
+  if (body.type === "custom" && percent === null) {
+    res.status(400).json({ error: "A custom discount needs a percentage above 0 and at most 50." });
+    return;
+  }
   const saved = await prisma.priceBookDraftEstimate.update({
     where: { id: draftId },
-    data: { discountType: body.type },
-    select: { discountType: true },
+    data: { discountType: body.type, discountPercent: percent },
+    select: { discountType: true, discountPercent: true },
   });
   res.json(saved);
 }));
@@ -2146,6 +2160,7 @@ app.post("/price-book/drafts/:draftId/duplicate", asyncHandler(async (req, res) 
       provisionalReason: rate.provisionalReason,
       notes: source.notes,
       discountType: source.discountType,
+      discountPercent: source.discountPercent,
     },
   });
   if (source.lines.length > 0) {
@@ -2663,16 +2678,14 @@ app.get("/price-book/drafts/:draftId/compute", asyncHandler(async (req, res) => 
   const { computed, rate } = await computeDraft(prisma, String(req.params.draftId));
   const draftRow = await prisma.priceBookDraftEstimate.findUnique({
     where: { id: String(req.params.draftId) },
-    select: { discountType: true },
+    select: { discountType: true, discountPercent: true },
   });
   res.json({
     computed,
     // The discount programme + its terms, so the presentation screen can show the amount for the
     // live selection without hardcoding the rate (2026-08-22). The amount itself is per-selection
-    // and computed where the selection lives.
-    discount: asDiscountType(draftRow?.discountType)
-      ? { type: draftRow!.discountType, rate: DISCOUNT_RATE, cap: DISCOUNT_CAP }
-      : null,
+    // and computed where the selection lives. cap is null for a custom percentage (uncapped).
+    discount: programmeFor(draftRow?.discountType, draftRow?.discountPercent),
     // Per-option subtotals (Kyle 2026-08-19). Grouped from the engine's own numbers, never
     // re-priced. The trip charge is deliberately absent from these — it is charged once for the
     // job, not once per option; see summarizeOptions.
@@ -3117,6 +3130,7 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
       discountType: est.discountType,
+      discountPercent: est.discountPercent,
       discount: est.discountJson ? JSON.parse(est.discountJson) : null,
       lines: est.lines.map((l) => ({
         option: l.option,

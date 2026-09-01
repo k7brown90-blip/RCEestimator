@@ -33,7 +33,7 @@ import PDFDocument from "pdfkit";
 import type { PriceBookOption } from "@prisma/client";
 import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 import { signatureBuffer } from "./signatureImage";
-import { asDiscountType, discountFor, discountLabel } from "./discounts";
+import { discountFor, discountLabel, programmeFor } from "./discounts";
 
 export type PdfAudience = "customer" | "company";
 
@@ -97,8 +97,9 @@ export interface PdfEstimate {
    * the working. Null before the gate existed or before anything is signed.
    */
   comboCap?: { reduction: number; ceiling: number; bandLabel: string; applied: boolean } | null;
-  /** The programme in force ("military"|"senior") and — once signed — the frozen amount. */
+  /** The programme in force ("military"|"senior"|"custom"), its custom percent, and — once signed — the frozen amount. */
   discountType?: string | null;
+  discountPercent?: number | null;
   discount?: { amount: number; base: number } | null;
 }
 
@@ -327,7 +328,7 @@ export async function renderEstimatePdf(
       : round2(estimate.total - comboReduction);
   const progAmount = estimate.signedAt
     ? estimate.discount?.amount ?? 0
-    : discountFor(asDiscountType(estimate.discountType), preDiscount)?.amount ?? 0;
+    : discountFor(programmeFor(estimate.discountType, estimate.discountPercent), preDiscount)?.amount ?? 0;
   const billed = round2(preDiscount - progAmount);
 
   if (comboReduction > 0) {
@@ -337,7 +338,7 @@ export async function renderEstimatePdf(
     doc.fillColor("#000");
   }
   if (progAmount > 0) {
-    const label = asDiscountType(estimate.discountType);
+    const label = programmeFor(estimate.discountType, estimate.discountPercent);
     doc.fontSize(10).fillColor("#1a5c2e")
       .text(label ? discountLabel(label) : "Discount", { continued: true })
       .text(`-${money(progAmount)}`, { align: "right" });

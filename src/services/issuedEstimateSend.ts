@@ -176,6 +176,7 @@ export async function sendInvoiceEmail(
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
       discountType: est.discountType,
+      discountPercent: est.discountPercent,
       discount: est.discountJson ? JSON.parse(est.discountJson) : null,
       lines: est.lines.map((l) => ({
         option: l.option,

@@ -24,6 +24,8 @@
     "scripts/addLoadCenters12Space.ts",
     // Billed labour rate change, $150 → $100 (Kyle, 2026-09-01) — Rate Config cell + every flat sell, audited.
     "scripts/setLaborRate.ts",
+    // One material markup for every band (x1.30, Kyle 2026-09-01) + book re-price, audited.
+    "scripts/applyMaterialMarkup.ts",
     "scripts/checkGoogleCalendarConnection.ts",
     // The price-book writer, so the import can run where the database is reachable.
     // Extraction stays on Kyle's machine; only --from-json runs in here.

@@ -1153,8 +1153,8 @@ export interface PbComputed {
 
 /** What `GET /price-book/drafts/:id/compute` returns. */
 export interface PbComputeResponse {
-  /** The discount programme on the draft, with its terms (2026-08-22). Amount is per-selection. */
-  discount?: { type: "military" | "senior"; rate: number; cap: number } | null;
+  /** The discount programme on the draft, with its terms (2026-08-22; custom 2026-09-01). Amount is per-selection; cap null = uncapped. */
+  discount?: { type: "military" | "senior" | "custom"; rate: number; cap: number | null; percent: number } | null;
   computed: PbComputed;
   options: PbOptionSummary[];
   rateProvisional?: boolean;

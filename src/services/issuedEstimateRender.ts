@@ -33,7 +33,7 @@
 
 import type { IssuedEstimateWithLines } from "./issuedEstimateService";
 import { allSelectionCaps, comboKey } from "./materialMarkupCap";
-import { asDiscountType, discountFor, discountLabel } from "./discounts";
+import { discountFor, discountLabel, programmeFor } from "./discounts";
 import { CONSENT_TEXT } from "./issuedEstimateService";
 
 const TZ = "America/Chicago";
@@ -296,7 +296,7 @@ export function renderEstimatePage(
     is the only authority — the bands live in code, and a signed price must not move with them.
   */
   const comboTable: Record<string, { total: number; saving: number; discount: number }> = {};
-  const programme = asDiscountType(est.discountType);
+  const programme = programmeFor(est.discountType, est.discountPercent);
   if (estOptions.length > 0) {
     /*
       Priced with the schedule frozen at issue (jobBandsJson), not whatever Rate Config holds now.

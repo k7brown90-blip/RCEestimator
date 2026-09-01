@@ -1980,9 +1980,13 @@ model PriceBookDraftEstimate {
   /// Kyle's names and short descriptions for each option, editable until issue (2026-08-20).
   optionMeta    PriceBookDraftOption[]
 
-  /// "military" | "senior" | null (2026-08-22). Kyle: "military discount at 5%, senior citizen
-  /// discount at 5%". One per estimate, never stacked — a customer is not 10% off for being both.
+  /// "military" | "senior" | "custom" | null (2026-08-22; custom 2026-09-01). Kyle: "military
+  /// discount at 5%, senior citizen discount at 5%". One per estimate, never stacked — a customer
+  /// is not 10% off for being both.
   discountType  String?
+  /// The custom percentage (Kyle, 2026-09-01: "enter a percentage and apply" — a price match).
+  /// Only meaningful with discountType "custom"; uncapped, bounded at 50%.
+  discountPercent Float?
 
   /// Walkthrough photos (2026-08-22). Cascade: photos of a deleted draft mean nothing.
   photos        DraftPhoto[]
@@ -2230,8 +2234,12 @@ model IssuedEstimate {
   /// a signed price. Null on estimates signed before the gate existed.
   comboCapJson String?
 
-  /// The discount programme this estimate carries — "military" | "senior" | null (2026-08-22).
+  /// The discount programme this estimate carries — "military" | "senior" | "custom" | null
+  /// (2026-08-22; custom 2026-09-01).
   discountType String?
+  /// The custom percentage, frozen from the draft at issue so a later draft edit cannot restate
+  /// a document already in a customer's hands.
+  discountPercent Float?
 
   /// Option mode, frozen from the draft at issuance (Kyle, 2026-08-25).
   /// false = options ADD (all that apply). true = one-or-the-other — the

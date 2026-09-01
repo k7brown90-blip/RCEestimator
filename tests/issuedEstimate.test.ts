@@ -909,6 +909,50 @@ describe("photos and the discount, end to end", () => {
     expect(frozen.amount).toBeCloseTo(Math.min(Math.round(frozen.base * 5) / 100, 250), 2);
     expect(frozen.amount).toBeGreaterThan(0);
   });
+
+  it("freezes a custom percentage at issue and applies it uncapped at signature (Kyle, 2026-09-01)", async () => {
+    const d = await quotableDraft("discount-custom");
+    // The route refuses a custom discount with no usable percentage.
+    await request(app).put(`/price-book/drafts/${d.id}/discount`).send({ type: "custom" }).expect(400);
+    await request(app).put(`/price-book/drafts/${d.id}/discount`).send({ type: "custom", percent: 80 }).expect(400);
+    const set = await request(app)
+      .put(`/price-book/drafts/${d.id}/discount`)
+      .send({ type: "custom", percent: 12.5 })
+      .expect(200);
+    expect(set.body).toEqual({ discountType: "custom", discountPercent: 12.5 });
+
+    // Switching to a programme drops the stale percentage rather than carrying it along.
+    await request(app).put(`/price-book/drafts/${d.id}/discount`).send({ type: "senior" }).expect(200);
+    const asSenior = await prisma.priceBookDraftEstimate.findUnique({ where: { id: d.id } });
+    expect(asSenior!.discountPercent).toBeNull();
+    await request(app).put(`/price-book/drafts/${d.id}/discount`).send({ type: "custom", percent: 12.5 }).expect(200);
+
+    const compute = await request(app).get(`/price-book/drafts/${d.id}/compute`).expect(200);
+    expect(compute.body.discount).toEqual({ type: "custom", rate: 0.125, cap: null, percent: 12.5 });
+
+    const issued = await request(app)
+      .post(`/price-book/drafts/${d.id}/issue`)
+      .send({ accountId: customerId, serviceAddressId: propertyId })
+      .expect(201);
+    const est = await prisma.issuedEstimate.findUnique({ where: { id: issued.body.estimateId } });
+    expect(est!.discountType).toBe("custom");
+    expect(est!.discountPercent).toBe(12.5); // frozen at issue
+
+    // Editing the draft afterwards cannot restate the issued document.
+    await request(app).put(`/price-book/drafts/${d.id}/discount`).send({ type: "custom", percent: 30 }).expect(200);
+
+    await request(app)
+      .post(`/issued-estimates/${issued.body.estimateId}/sign-in-person`)
+      .send({ signerName: "A Customer", signatureImage: TEST_SIGNATURE, selectedOptions: ["A"] })
+      .expect(200);
+    const signed = await prisma.issuedEstimate.findUnique({ where: { id: issued.body.estimateId } });
+    const frozen = JSON.parse(signed!.discountJson!) as { type: string; percent: number; cap: number | null; amount: number; base: number };
+    expect(frozen.type).toBe("custom");
+    expect(frozen.percent).toBe(12.5);
+    expect(frozen.cap).toBeNull();
+    expect(frozen.amount).toBeCloseTo(Math.round(frozen.base * 12.5) / 100, 2); // no $250 ceiling
+    expect(frozen.amount).toBeGreaterThan(0);
+  });
 });
 
 describe("editing a draft after issue — Kyle's exact flow", () => {

@@ -528,6 +528,13 @@ describe("the programme discount, on the document", () => {
     expect(text).not.toContain("$67.50");
   });
 
+  it("prints a custom percentage with its figure, uncapped (Kyle, 2026-09-01)", async () => {
+    const text = extractText(await renderEstimatePdf(
+      { ...ESTIMATE, options: OPTIONS, discountType: "custom", discountPercent: 12.5 }, "customer", PROFILE));
+    expect(text).toContain("Discount (12.5%)");
+    expect(text).not.toMatch(/Military discount|Senior discount/);
+  });
+
   it("stacks after the combination discount, not before", async () => {
     const signed = {
       ...ESTIMATE, options: OPTIONS,

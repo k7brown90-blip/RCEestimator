@@ -99,7 +99,11 @@ export function PresentationPage() {
   const prog = data?.discount ?? null;
   const progAmount =
     prog && afterCombo !== null && afterCombo > 0
-      ? Math.min(Math.round(afterCombo * prog.rate * 100) / 100, prog.cap)
+      ? (() => {
+          const raw = Math.round(afterCombo * prog.rate * 100) / 100;
+          // cap null = the custom percentage, uncapped (2026-09-01).
+          return prog.cap === null ? raw : Math.min(raw, prog.cap);
+        })()
       : 0;
   const total = afterCombo === null ? null : Math.round((afterCombo - progAmount) * 100) / 100;
   const materials = data ? materialList(data.computed, effectiveSelected) : [];
@@ -377,7 +381,7 @@ export function PresentationPage() {
             )}
             {progAmount > 0 && (
               <div className="text-xs font-semibold text-green-700">
-                {prog!.type === "military" ? "military" : "senior"} discount −{money(progAmount)}
+                {prog!.type === "military" ? "military" : prog!.type === "senior" ? "senior" : `${prog!.percent}%`} discount −{money(progAmount)}
               </div>
             )}
             <div className="text-xs text-rce-soft">Total</div>

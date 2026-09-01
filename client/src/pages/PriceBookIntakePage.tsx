@@ -1748,10 +1748,25 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
     enabled: Boolean(draftId),
   });
   const programme = computeData?.discount?.type ?? null;
+  const activePercent = computeData?.discount?.percent ?? null;
   const setDiscount = useMutation({
-    mutationFn: (type: "military" | "senior" | null) => api.pbSetDiscount(draftId, type),
+    mutationFn: (next: { type: "military" | "senior" | "custom" | null; percent?: number | null }) =>
+      api.pbSetDiscount(draftId, next.type, next.percent ?? null),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["pb-compute", draftId] }),
   });
+  /*
+    The custom percentage (Kyle, 2026-09-01): "I want to be able to add a custom discount here.
+    This will allow me to stay competitive and I can follow through with a price match system. I
+    want a simple enter a percentage and apply button next to the other discounts." Uncapped —
+    a ceiling would undercut the match he just promised; bounded at 50% because more than half
+    off is a typo. The box shows the applied figure when the draft already carries one.
+  */
+  const [customPct, setCustomPct] = useState<string>("");
+  useEffect(() => {
+    if (programme === "custom" && activePercent !== null) setCustomPct(String(activePercent));
+  }, [programme, activePercent]);
+  const customPctNumber = Number(customPct);
+  const customPctValid = customPct.trim() !== "" && Number.isFinite(customPctNumber) && customPctNumber > 0 && customPctNumber <= 50;
 
   const { data: list } = useQuery({
     queryKey: ["pb-issued", draftId],
@@ -1889,13 +1904,59 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                 key={val}
                 type="button"
                 disabled={setDiscount.isPending}
-                onClick={() => setDiscount.mutate(programme === val ? null : val)}
+                onClick={() => setDiscount.mutate({ type: programme === val ? null : val })}
                 className={programme === val ? "btn btn-primary" : "btn btn-secondary"}
               >
                 {label}
               </button>
             ))}
-            {programme && <span className="text-xs text-green-700">capped at $250 · shows on the customer's page</span>}
+            <span className="ml-1 inline-flex items-center gap-1">
+              <input
+                type="number"
+                inputMode="decimal"
+                min={0.01}
+                max={50}
+                step={0.5}
+                value={customPct}
+                onChange={(e) => setCustomPct(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && customPctValid && !setDiscount.isPending) {
+                    e.preventDefault();
+                    setDiscount.mutate({ type: "custom", percent: customPctNumber });
+                  }
+                }}
+                placeholder="Custom %"
+                aria-label="Custom discount percentage"
+                className="field w-24 text-sm"
+              />
+              <button
+                type="button"
+                disabled={setDiscount.isPending || !customPctValid}
+                onClick={() => setDiscount.mutate({ type: "custom", percent: customPctNumber })}
+                className={programme === "custom" ? "btn btn-primary" : "btn btn-secondary"}
+              >
+                {programme === "custom" && activePercent === customPctNumber ? `Custom ${activePercent}%` : "Apply"}
+              </button>
+              {programme === "custom" && (
+                <button
+                  type="button"
+                  disabled={setDiscount.isPending}
+                  onClick={() => { setDiscount.mutate({ type: null }); setCustomPct(""); }}
+                  className="text-xs text-rce-soft underline"
+                >
+                  clear
+                </button>
+              )}
+            </span>
+            {programme === "custom" && activePercent !== null && (
+              <span className="text-xs text-green-700">{activePercent}% of the whole job, no cap · shows on the customer's page</span>
+            )}
+            {(programme === "military" || programme === "senior") && (
+              <span className="text-xs text-green-700">capped at $250 · shows on the customer's page</span>
+            )}
+            {setDiscount.isError && (
+              <span className="text-xs text-red-700">{(setDiscount.error as Error)?.message ?? "Could not set the discount."}</span>
+            )}
           </div>
           {/* The waive-trip checkbox is GONE (Kyle, 2026-08-22): "this is not doing anything
               there is no trip charge that is even applied. we can get rid of it." He is right:

@@ -39,7 +39,7 @@ import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { checkSignatureImage } from "./signatureImage";
 import { logSystemEvent } from "./systemEvents";
 import { bandsFrom, selectionCap, type MarkupBand } from "./materialMarkupCap";
-import { asDiscountType, discountFor } from "./discounts";
+import { discountFor, programmeFor } from "./discounts";
 import { notifyOwnerViewed } from "./issuedEstimateSend";
 
 /** House numbering continues the issued PDFs, the last of which was 2026-1010. */
@@ -371,8 +371,10 @@ export async function graduateDraft(
           eat that. Fourteen days is the pairing Kyle accepted with the tighter top band: the
           protection is a shorter promise, not a fatter margin.
         */
-        // The discount programme rides from the draft; the AMOUNT waits for the signature.
-        discountType: asDiscountType(draft.discountType),
+        // The discount programme rides from the draft; the AMOUNT waits for the signature. The
+        // custom percentage is frozen here (2026-09-01) — the draft can change, the document cannot.
+        discountType: programmeFor(draft.discountType, draft.discountPercent)?.type ?? null,
+        discountPercent: programmeFor(draft.discountType, draft.discountPercent)?.type === "custom" ? draft.discountPercent : null,
         // Option mode rides from the draft too (Kyle, 2026-08-25): exclusive
         // means the customer signs for exactly ONE option.
         exclusiveOptions: draft.exclusiveOptions,
@@ -750,6 +752,7 @@ async function applySignature(
     select: {
       jobBandsJson: true,
       discountType: true,
+      discountPercent: true,
       tripCharge: true,
       options: { select: { option: true, subtotal: true } },
     },
@@ -768,7 +771,7 @@ async function applySignature(
     .filter((o) => bought.includes(o.option))
     .reduce((n, o) => n + o.subtotal, 0);
   const discount = discountFor(
-    asDiscountType(issuedWith?.discountType),
+    programmeFor(issuedWith?.discountType, issuedWith?.discountPercent),
     boughtSubtotals + (issuedWith?.tripCharge ?? 0) - (comboCap.applied ? comboCap.reduction : 0),
   );
 

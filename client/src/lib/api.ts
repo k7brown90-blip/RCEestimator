@@ -911,11 +911,11 @@ export const api = {
    * These are what the customer reads on the tick boxes of the issued estimate — "Exterior pathway
    * lights" instead of "Option B" — so they are frozen onto it at graduation.
    */
-  /** The discount programme on a draft — "military" | "senior" | null (2026-08-22). */
-  pbSetDiscount: (draftId: string, type: "military" | "senior" | null) =>
-    request<{ discountType: string | null }>(`/price-book/drafts/${draftId}/discount`, {
+  /** The discount on a draft — "military" | "senior" | "custom" (with its percent) | null (2026-08-22; custom 2026-09-01). */
+  pbSetDiscount: (draftId: string, type: "military" | "senior" | "custom" | null, percent?: number | null) =>
+    request<{ discountType: string | null; discountPercent: number | null }>(`/price-book/drafts/${draftId}/discount`, {
       method: "PUT",
-      body: JSON.stringify({ type }),
+      body: JSON.stringify({ type, percent: percent ?? null }),
     }),
 
   /** Walkthrough photos (2026-08-22). Bytes live in the DB; nothing goes to any AI. */

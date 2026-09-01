@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { asDiscountType, discountFor, DISCOUNT_CAP } from "../src/services/discounts";
+import { asCustomPercent, asDiscountType, discountFor, discountLabel, DISCOUNT_CAP, programmeFor } from "../src/services/discounts";
 
 describe("the 5% with a $250 ceiling", () => {
   it("takes 5% of a modest job", () => {
@@ -51,5 +51,53 @@ describe("the 5% with a $250 ceiling", () => {
   it("rounds to the cent before capping", () => {
     const d = discountFor("military", 333.33)!; // 16.6665
     expect(d.amount).toBe(16.67);
+  });
+});
+
+/*
+  The custom percentage (Kyle, 2026-09-01): "I want to be able to add a custom discount here. This
+  will allow me to stay competitive and I can follow through with a price match system."
+*/
+describe("the custom percentage — Kyle's number, uncapped", () => {
+  it("takes exactly the typed percentage of the whole job, with no ceiling", () => {
+    const d = discountFor(programmeFor("custom", 7.5), 10000)!;
+    expect(d.type).toBe("custom");
+    expect(d.percent).toBe(7.5);
+    expect(d.rate).toBe(0.075);
+    expect(d.cap).toBeNull();
+    expect(d.amount).toBe(750); // a 5% programme would have stopped at $250
+    expect(d.capped).toBe(false);
+  });
+
+  it("is nothing without a valid percentage — never a guessed one", () => {
+    expect(programmeFor("custom")).toBeNull();
+    expect(programmeFor("custom", null)).toBeNull();
+    expect(programmeFor("custom", 0)).toBeNull();
+    expect(programmeFor("custom", -5)).toBeNull();
+    expect(programmeFor("custom", 50.01)).toBeNull(); // more than half off is a typo
+    expect(programmeFor("custom", "abc")).toBeNull();
+    expect(discountFor(programmeFor("custom", null), 1000)).toBeNull();
+  });
+
+  it("normalises the percentage to two decimals and accepts the string a form sends", () => {
+    expect(asCustomPercent("7")).toBe(7);
+    expect(asCustomPercent(7.126)).toBe(7.13);
+    expect(asCustomPercent(50)).toBe(50);
+    expect(programmeFor("custom", "12.5")!.rate).toBe(0.125);
+  });
+
+  it("does not stack: the programmes keep their 5%/$250 and ignore any stray percent", () => {
+    const m = programmeFor("military", 40)!;
+    expect(m.rate).toBe(0.05);
+    expect(m.cap).toBe(DISCOUNT_CAP);
+    expect(discountFor(m, 10000)!.amount).toBe(250);
+    expect(asDiscountType("custom")).toBe("custom");
+  });
+
+  it("labels itself with the percentage the customer is getting", () => {
+    expect(discountLabel(programmeFor("custom", 7)!)).toBe("Discount (7%)");
+    expect(discountLabel(programmeFor("custom", 7.5)!)).toBe("Discount (7.5%)");
+    expect(discountLabel("military")).toBe("Military discount (5%)");
+    expect(discountLabel("senior")).toBe("Senior discount (5%)");
   });
 });
