@@ -1749,6 +1749,46 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   });
   const programme = computeData?.discount?.type ?? null;
   const activePercent = computeData?.discount?.percent ?? null;
+  /*
+    SHOW THE MONEY (Kyle, 2026-09-01: "The discounts are not showing up. I can't tell if it is
+    applying them."). The amount is per selection, so this panel prices the discount for the whole
+    job (every option together) and, under exclusive options, for each option on its own -- the
+    same arithmetic the customer's page and the PDF run: options + trip - combination discount,
+    then the percentage, then the programme cap.
+  */
+  const { data: sendOptionsMode } = useQuery({
+    queryKey: ["pbOptionsMode", draftId],
+    queryFn: () => api.pbOptionsMode(draftId),
+    enabled: Boolean(draftId),
+  });
+  const discountPreview = (() => {
+    const prog = computeData?.discount ?? null;
+    const comp = computeData?.computed;
+    if (!prog || !comp) return null;
+    const used = (computeData?.options ?? []).filter((o) => o.lineCount > 0);
+    if (used.length === 0) return { rows: [], incomplete: false };
+    const fmt = (n: number) => "$" + n.toFixed(2);
+    const priceFor = (sel: typeof used) => {
+      if (sel.some((o) => o.subtotal === null)) return null;
+      const key = sel.map((o) => o.option).sort().join("+");
+      const combo = comp.combinationDiscounts?.[key];
+      const base = Math.round((sel.reduce((n, o) => n + (o.subtotal ?? 0), 0) + (comp.jobFixedCost ?? 0) - (combo?.applied ? combo.reduction : 0)) * 100) / 100;
+      if (base <= 0) return { base, amount: 0, capped: false };
+      const raw = Math.round(base * prog.rate * 100) / 100;
+      const amount = prog.cap === null ? raw : Math.min(raw, prog.cap);
+      return { base, amount, capped: prog.cap !== null && raw > prog.cap };
+    };
+    const exclusive = sendOptionsMode?.exclusiveOptions ?? false;
+    const sets = exclusive && used.length > 1 ? used.map((o) => [o]) : [used];
+    const rows = sets.map((sel) => {
+      const priced = priceFor(sel);
+      const label = sel.length === used.length ? (used.length > 1 ? "whole job" : "Option " + sel[0].option) : "Option " + sel[0].option;
+      return priced === null
+        ? { label, text: "prices once every line is confirmed" }
+        : { label, text: "-" + fmt(priced.amount) + (priced.capped ? " (capped)" : "") + " -> " + fmt(Math.round((priced.base - priced.amount) * 100) / 100) };
+    });
+    return { rows, incomplete: rows.some((r) => r.text.startsWith("prices")) };
+  })();
   const setDiscount = useMutation({
     mutationFn: (next: { type: "military" | "senior" | "custom" | null; percent?: number | null }) =>
       api.pbSetDiscount(draftId, next.type, next.percent ?? null),
@@ -1948,11 +1988,22 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                 </button>
               )}
             </span>
-            {programme === "custom" && activePercent !== null && (
-              <span className="text-xs text-green-700">{activePercent}% of the whole job, no cap · shows on the customer's page</span>
-            )}
-            {(programme === "military" || programme === "senior") && (
-              <span className="text-xs text-green-700">capped at $250 · shows on the customer's page</span>
+            {programme && (
+              <span className="text-xs text-green-700">
+                {programme === "custom" ? `${activePercent}% off, no cap` : "5% off, capped at $250"}
+                {discountPreview && discountPreview.rows.length > 0 && (
+                  <>
+                    {" · "}
+                    {discountPreview.rows.map((r, i) => (
+                      <span key={r.label}>
+                        {i > 0 ? " · " : ""}
+                        <b>{r.label}</b> {r.text}
+                      </span>
+                    ))}
+                  </>
+                )}
+                {" · shows on the customer's page and the PDF"}
+              </span>
             )}
             {setDiscount.isError && (
               <span className="text-xs text-red-700">{(setDiscount.error as Error)?.message ?? "Could not set the discount."}</span>
