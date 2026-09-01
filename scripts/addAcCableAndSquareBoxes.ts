@@ -117,7 +117,8 @@ async function main(): Promise<void> {
   console.log("");
   let created = 0;
   for (const item of ITEMS) {
-    const existing = await prisma.priceBookAtomic.findUnique({ where: { itemId: item.itemId! }, select: { itemId: true } });
+    // createAtomic upper-cases the id it stores — check the same way, or a re-run would duplicate.
+    const existing = await prisma.priceBookAtomic.findUnique({ where: { itemId: item.itemId!.toUpperCase() }, select: { itemId: true } });
     console.log(`${item.description}  [${item.itemId}]`);
     console.log(`   ${item.category} · per ${item.unitLabel} · cost ${money(item.companyCost)} · hours N/D/VD ${item.laborNormal} / ${item.laborDifficult} / ${item.laborVeryDifficult}`);
     if (existing) {

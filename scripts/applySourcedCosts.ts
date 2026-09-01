@@ -133,16 +133,19 @@ async function main(): Promise<void> {
   console.log("");
   let changed = 0;
   for (const t of TARGETS) {
+    // createAtomic upper-cases every itemId it stores (the book's own ID scheme), so the rows
+    // added on 2026-09-01 live as AC-CABLE-14-2-W-GRD etc. Match that, or nothing is found.
+    const itemId = t.itemId.toUpperCase();
     const before = await prisma.priceBookAtomic.findUnique({
-      where: { itemId: t.itemId },
+      where: { itemId },
       select: { itemId: true, description: true, unitLabel: true, companyCost: true, notes: true, sellNormal: true, sellDifficult: true, sellVeryDifficult: true, markupTier: true },
     });
     if (!before) {
-      console.log(`!! ${t.itemId}: NOT FOUND — skipped`);
+      console.log(`!! ${itemId}: NOT FOUND — skipped`);
       continue;
     }
     const avg = round2(t.quotes.reduce((s, q) => s + q.unitCost, 0) / t.quotes.length);
-    console.log(`${before.description}  [${t.itemId}]  per ${before.unitLabel}`);
+    console.log(`${before.description}  [${itemId}]  per ${before.unitLabel}`);
     for (const q of t.quotes) console.log(`   ${money(q.unitCost)}  ${q.source}  (${q.basis})`);
     console.log(`   average of ${t.quotes.length}: ${money(avg)}   (was ${money(before.companyCost)})${t.caveat ? `\n   note: ${t.caveat}` : ""}`);
     const quoteLine =
@@ -157,7 +160,7 @@ async function main(): Promise<void> {
       .trim();
     const notes = `${quoteLine}${priorNotes ? ` ${priorNotes}` : ""}`;
     if (apply) {
-      const result = await updateAtomic(prisma, t.itemId, { companyCost: avg, notes }, EDITED_BY);
+      const result = await updateAtomic(prisma, itemId, { companyCost: avg, notes }, EDITED_BY);
       if (!result.ok) {
         console.log(`   !! update refused: ${result.reason}`);
       } else {
