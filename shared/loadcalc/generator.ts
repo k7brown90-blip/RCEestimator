@@ -133,13 +133,13 @@ export interface SchemeResult extends ModelSizing {
    */
   baseBreakdown?: BreakdownLine[]
   /**
-   * Set when the base landed above the air-cooled ceiling (Kyle, 2026-08-31:
-   * "I do not want to get into liquid cooled generators… if we have a load that
-   * exceeds the air-cooled we start the load shed recommendations"). `added`
-   * names the loads the engine managed ON TOP of the tech's selection to get
-   * under the ceiling; `fits` is false when even everything managed exceeds it.
+   * Where this scheme's requirement sits against the air-cooled ceiling (Kyle,
+   * 2026-08-31: "I do not want to get into liquid cooled generators… have a
+   * flag that shows once we go over"). The engine never changes the tech's
+   * shed selection on its own — over the line it FLAGS and the shed menu shows
+   * which loads bring it under. `overByKW` is 0 when it fits.
    */
-  autoShed?: { ceilingKW: number; added: string[]; fits: boolean }
+  airCooled?: { ceilingKW: number; fits: boolean; overByKW: number }
   /** Price-book package references, one line per component (unit, switch, SMMs). */
   priceBookRefs: string[]
   notes: string[]
@@ -755,52 +755,30 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
     return { plan: p, result: res, kw: kwOf(res.governingAmps * 240) }
   }
 
-  // Scheme 2: ATS + load management — 702.4(B)(2)(b). Start from the tech's
-  // selection; if that base still exceeds air-cooled, EXTEND the shed set —
-  // greedy, the load that lowers the base most first, valid paths only — until
-  // it fits or nothing manageable is left. What was added is named, never silent.
-  const allCandidateIds = calcInput.loads
-    .filter((l) => SHED_CANDIDATE_TYPES.includes(l.type))
-    .map((l) => l.id)
-  let base = baseFor(input.shedSelection)
-  const autoAdded: string[] = []
-  if (base.kw > ceilingKW) {
-    const selected = new Set(input.shedSelection ?? allCandidateIds)
-    let remaining = allCandidateIds.filter((id) => !selected.has(id))
-    while (base.kw > ceilingKW && remaining.length > 0) {
-      let bestId: string | null = null
-      let bestBase = base
-      for (const id of remaining) {
-        const trial = baseFor([...selected, id])
-        if (bestId === null || trial.kw < bestBase.kw) {
-          bestId = id
-          bestBase = trial
-        }
-      }
-      // The best remaining candidate lowers nothing (no valid path, or it does not
-      // govern its Article 220 category) — every other one does less; stop here.
-      if (bestId === null || bestBase.kw >= base.kw) break
-      selected.add(bestId)
-      remaining = remaining.filter((id) => id !== bestId)
-      base = bestBase
-      autoAdded.push(calcInput.loads.find((l) => l.id === bestId)?.label ?? bestId)
-    }
-  }
+  // Scheme 2: ATS + load management — 702.4(B)(2)(b), on exactly the tech's
+  // selection. The engine never adds loads to management on its own (Kyle,
+  // 2026-08-31: "take off the automatic additions and have a flag that shows
+  // once we go over") — over the ceiling it flags, and the shed menu below is
+  // how the tech and the customer decide what else to manage.
+  const base = baseFor(input.shedSelection)
   const plan = base.plan
   const managedResult = base.result
   const managedKW = base.kw
   const managedSizing = sizeToModel(managedKW, fuel, derate)
-  const autoShed = autoAdded.length > 0 || managedKW > ceilingKW
-    ? { ceilingKW, added: autoAdded, fits: managedKW <= ceilingKW }
-    : undefined
-  if (autoShed && !autoShed.fits) {
+  const airCooledFor = (kw: number) => ({
+    ceilingKW,
+    fits: kw <= ceilingKW,
+    overByKW: kw > ceilingKW ? round2(kw - ceilingKW) : 0,
+  })
+  const managedAirCooled = airCooledFor(managedKW)
+  if (!managedAirCooled.fits) {
     flags.push({
       id: 'exceeds_air_cooled',
       severity: 'hard',
       message:
-        `Base load ${managedKW} kW exceeds the air-cooled ceiling of ${ceilingKW} kW at this site even ` +
-        'with every manageable load shed — reduce the backup scope or split the system. Red Cedar ' +
-        'does not install liquid-cooled units.',
+        `Base load ${managedKW} kW exceeds the air-cooled ceiling of ${ceilingKW} kW at this site by ` +
+        `${managedAirCooled.overByKW} kW — extend load management (the shed menu shows what each load ` +
+        'brings it down by). Red Cedar does not install liquid-cooled units.',
     })
   }
   const managedNotes: string[] = [
@@ -824,10 +802,10 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       'stage needs its own management path; the unit is counted once in every load figure.',
     )
   }
-  if (autoShed && autoShed.added.length > 0) {
+  if (!managedAirCooled.fits) {
     managedNotes.push(
-      `Extended beyond the selected loads to stay within air-cooled equipment (${ceilingKW} kW ceiling ` +
-      `at this site): ${autoShed.added.join(', ')} added to management.`,
+      `Over the air-cooled ceiling (${ceilingKW} kW at this site) by ${managedAirCooled.overByKW} kW — ` +
+      'add loads to management until the base fits.',
     )
   }
   if (plan.managed.length > 0) {
@@ -920,6 +898,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       requiredKW: fullKW,
       requiredAmps: fullBasisAmps,
       ...fullSizing,
+      airCooled: airCooledFor(fullKW),
       priceBookRefs: [
         ...generatorRefs(fullSizing),
         ...(softStart ? [PRICE_BOOK_SLOTS.softStartKit] : []),
@@ -937,7 +916,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       shedLoads: plan.managed.map((row) => row.label),
       managementPlan: plan,
       baseBreakdown: managedResult.breakdown,
-      autoShed,
+      airCooled: managedAirCooled,
       priceBookRefs: [
         ...generatorRefs(managedSizing),
         // One line per SMM — dedupe never: each module is billable hardware.

@@ -1321,16 +1321,10 @@ export async function generateGeneratorReport(
     `load; each managed circuit carries load-management hardware. Code basis: ${managed.necBasis}.`,
   );
   bullet(`Required continuous output (base load with managed loads removed): ${managed.requiredKW} kW (${managed.requiredAmps} A)`);
-  if (managed.autoShed && managed.autoShed.added.length > 0) {
+  if (managed.airCooled && !managed.airCooled.fits) {
     bullet(
-      `Management extended beyond the selected loads to stay within air-cooled equipment ` +
-      `(${managed.autoShed.ceilingKW} kW at this site): ${managed.autoShed.added.join(", ")} added`,
-    );
-  }
-  if (managed.autoShed && !managed.autoShed.fits) {
-    bullet(
-      `Even with every manageable load managed, the base load exceeds air-cooled equipment at this site ` +
-      `(${managed.autoShed.ceilingKW} kW); a reduced backup scope is required`,
+      `Exceeds air-cooled equipment at this site (${managed.airCooled.ceilingKW} kW) by ` +
+      `${managed.airCooled.overByKW} kW with the loads selected; additional load management is required`,
     );
   } else if (ceilingKW !== null && managed.requiredKW !== null) {
     bullet(`Within air-cooled equipment: ${managed.requiredKW} kW required against a ${ceilingKW} kW ceiling`);

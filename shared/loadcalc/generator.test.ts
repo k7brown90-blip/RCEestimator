@@ -62,11 +62,14 @@ describe('sizeToModel — fuel-matched Generac selection (amendment rule 1)', ()
     expect(sizeToModel(10.01, 'LP', 1).model?.generatorModel).toBe('7223')
   })
 
-  it('goes liquid-cooled (Protector) above the largest air-cooled rating', () => {
-    const ng = sizeToModel(22.51, 'NG', 1)
+  it('marks anything above the largest air-cooled rating (28 kW LP / 25 kW NG, the 7282) as over the class', () => {
+    // 22.51 NG used to be "over" when the table stopped at the 26/22.5; the 28/25 carries it now.
+    expect(sizeToModel(22.51, 'NG', 1).model?.generatorModel).toBe('7282')
+    const ng = sizeToModel(25.01, 'NG', 1)
     expect(ng.model).toBeNull()
     expect(ng.liquidCooled).toBe(true)
-    expect(sizeToModel(26.01, 'LP', 1).liquidCooled).toBe(true)
+    expect(sizeToModel(28, 'LP', 1).model?.generatorModel).toBe('7282')
+    expect(sizeToModel(28.01, 'LP', 1).liquidCooled).toBe(true)
   })
 
   it('applies the site derate before comparing', () => {
@@ -533,30 +536,32 @@ describe('air-cooled ceiling — load shed starts where the air-cooled class end
     ],
   })
 
-  it('publishes the ceiling as the top fuel-matched rating after derate', () => {
-    expect(recommend(bigHouse, { fuel: 'NG' }).airCooledCeilingKW).toBe(22.5)
-    expect(recommend(bigHouse, { fuel: 'LP' }).airCooledCeilingKW).toBe(26)
-    expect(recommend(bigHouse, { fuel: 'NG', site: { altitudeSteps: 1 } }).airCooledCeilingKW).toBeCloseTo(21.71, 2)
+  it('publishes the ceiling as the top fuel-matched rating after derate — the 28/25 kW 7282', () => {
+    expect(recommend(bigHouse, { fuel: 'NG' }).airCooledCeilingKW).toBe(25)
+    expect(recommend(bigHouse, { fuel: 'LP' }).airCooledCeilingKW).toBe(28)
+    expect(recommend(bigHouse, { fuel: 'NG', site: { altitudeSteps: 1 } }).airCooledCeilingKW).toBeCloseTo(24.13, 2)
   })
 
-  it('extends a range-only selection until the base fits air-cooled, naming what it added', () => {
-    const rec = recommend(bigHouse, { fuel: 'NG', shedSelection: ['rg'] })
+  it('never changes the selection on its own — a dryer-only base over the line is FLAGGED', () => {
+    const rec = recommend(bigHouse, { fuel: 'NG', shedSelection: ['dr'] })
     const managed = rec.wholeHome[1]
-    expect(managed.requiredKW).toBeLessThanOrEqual(22.5)
-    expect(managed.liquidCooled).toBe(false)
-    expect(managed.autoShed).toBeDefined()
-    expect(managed.autoShed!.fits).toBe(true)
-    expect(managed.autoShed!.added.length).toBeGreaterThan(0)
-    // The range the tech picked is still managed; the additions are on top of it.
-    expect(managed.shedLoads).toContain('Range')
-    expect(managed.notes.join(' ')).toContain('Extended beyond the selected loads')
-    expect(rec.flags.some((f) => f.id === 'exceeds_air_cooled')).toBe(false)
+    // Exactly what the tech picked, nothing added.
+    expect(managed.shedLoads).toEqual(['Dryer'])
+    expect(managed.requiredKW).toBeGreaterThan(rec.airCooledCeilingKW)
+    expect(managed.airCooled!.fits).toBe(false)
+    expect(managed.airCooled!.overByKW).toBeCloseTo(managed.requiredKW! - rec.airCooledCeilingKW, 2)
+    expect(managed.notes.join(' ')).toContain('Over the air-cooled ceiling')
+    const flag = rec.flags.find((f) => f.id === 'exceeds_air_cooled')!
+    expect(flag.severity).toBe('hard')
+    expect(flag.message).toContain('extend load management')
   })
 
-  it('leaves a selection alone when it already fits', () => {
+  it('reports a fit, with nothing over, when the selection lands under the ceiling', () => {
     const rec = recommend(bigHouse, { fuel: 'LP' })
-    // Everything managed on LP: well under the 26 kW ceiling — no extension recorded.
-    expect(rec.wholeHome[1].autoShed).toBeUndefined()
+    const ac = rec.wholeHome[1].airCooled!
+    expect(ac.fits).toBe(true)
+    expect(ac.overByKW).toBe(0)
+    expect(rec.flags.some((f) => f.id === 'exceeds_air_cooled')).toBe(false)
   })
 
   it('never answers "liquid-cooled": the full-load option says so and points at Option 2', () => {
@@ -570,12 +575,12 @@ describe('air-cooled ceiling — load shed starts where the air-cooled class end
     // A house whose UNMANAGEABLE load alone (lighting on a huge footprint) beats 22.5 kW.
     const mansion = input({ floorAreaSqFt: 30000, loads: [load({ id: 'rg', type: 'range', label: 'Range', nameplateKW: 12 })] })
     const rec = recommend(mansion, { fuel: 'NG' })
-    expect(rec.wholeHome[1].autoShed?.fits).toBe(false)
+    expect(rec.wholeHome[1].airCooled?.fits).toBe(false)
     expect(rec.flags.some((f) => f.id === 'exceeds_air_cooled' && f.severity === 'hard')).toBe(true)
   })
 
   it('every menu row says whether it lands within air-cooled equipment', () => {
     const rec = recommend(bigHouse, { fuel: 'NG' })
-    for (const s of rec.shedScenarios) expect(s.fitsAirCooled).toBe(s.requiredKW <= 22.5)
+    for (const s of rec.shedScenarios) expect(s.fitsAirCooled).toBe(s.requiredKW <= rec.airCooledCeilingKW)
   })
 })

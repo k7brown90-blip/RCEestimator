@@ -174,16 +174,11 @@ export function GeneratorDesigner({ inspectionId, onClose }: { inspectionId: str
             {s.shedLoads !== undefined && s.shedLoads.length > 0 && (
               <p className="text-rce-soft">Managed: {s.shedLoads.join(" · ")}</p>
             )}
-            {/* The engine extended the shed set to stay air-cooled — say what it added. */}
-            {s.autoShed && s.autoShed.added.length > 0 && (
-              <p className="text-amber-800">
-                Added automatically to stay within air-cooled equipment ({s.autoShed.ceilingKW} kW ceiling at this site):{" "}
-                {s.autoShed.added.join(", ")}
-              </p>
-            )}
-            {s.autoShed && !s.autoShed.fits && (
+            {/* Over the ceiling: a flag, never an automatic change to the selection (Kyle, 2026-08-31). */}
+            {s.airCooled && !s.airCooled.fits && (
               <p className="font-medium text-red-700">
-                Exceeds the air-cooled ceiling ({s.autoShed.ceilingKW} kW) even with every manageable load shed — reduce the backup scope.
+                Exceeds the air-cooled ceiling ({s.airCooled.ceilingKW} kW at this site) by {s.airCooled.overByKW} kW
+                {s.scheme === "ats_load_management" ? " — add loads to management until it fits" : " — see load management"}
               </p>
             )}
           </div>

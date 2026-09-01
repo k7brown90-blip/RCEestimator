@@ -35,7 +35,7 @@ export interface GeneracModel {
  * may be hard-coded outside this module.
  */
 export const GENERAC_DATA_REVISION =
-  'Generac brochure 201902144 Rev 08/22; spec sheets Rev L / Rev F (2022)'
+  'Generac brochure 201902144 Rev 08/22; spec sheets Rev L / Rev F (2022); 28 kW 7282 from generac.com product page, 2026-08-31'
 
 /** Ascending by rating. Sizing selects the smallest fuel-matched fit. */
 export const GENERAC_GUARDIAN_MODELS: GeneracModel[] = [
@@ -47,6 +47,12 @@ export const GENERAC_GUARDIAN_MODELS: GeneracModel[] = [
   { classLabel: '22/19.5', generatorModel: '7042', switchPackage: '7043', lpWatts: 22000, ngWatts: 19500, lpAmps240: 91.7, ngAmps240: 81.3 },
   { classLabel: '24/21', generatorModel: '7209', switchPackage: '7210', lpWatts: 24000, ngWatts: 21000, lpAmps240: 100, ngAmps240: 87.5 },
   { classLabel: '26/22.5', generatorModel: '7290', switchPackage: '7291', lpWatts: 26000, ngWatts: 22500, lpAmps240: 108.3, ngAmps240: 93.8 },
+  // 28 kW Guardian (Kyle, 2026-08-31: "the air cooled goes up to 28"). Verified on Generac's
+  // product page for model 7282 / G0072820 the same day: 28 kW LP (28,000 running watts),
+  // 25 kW NG, air-cooled ("the most powerful air-cooled standby generator"), 125 A main
+  // breaker, G-Force 1000 engine. Amps are watts ÷ 240 like every row above. Generac lists no
+  // bundled switch SKU for it — the switch is a separate line; verify the pairing at quote time.
+  { classLabel: '28/25', generatorModel: '7282', switchPackage: 'separate 200A transfer switch (no bundled SKU — verify)', lpWatts: 28000, ngWatts: 25000, lpAmps240: 116.7, ngAmps240: 104.2 },
 ]
 
 /** Above 26 kW air-cooled (amendment rule 1) — verbatim output text. */

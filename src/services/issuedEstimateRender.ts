@@ -434,7 +434,7 @@ export function renderEstimatePage(
           wholeHome: Array<{
             scheme: string; title: string; necBasis: string; requiredKW: number | null;
             model: StoredModel | null; liquidCooled: boolean; shedLoads?: string[]; notes: string[];
-            autoShed?: { ceilingKW: number; added: string[]; fits: boolean };
+            airCooled?: { ceilingKW: number; fits: boolean; overByKW: number };
           }>;
           airCooledCeilingKW?: number;
           partial: {
@@ -464,11 +464,8 @@ export function renderEstimatePage(
               ${s.shedLoads && s.shedLoads.length > 0
                 ? `<br><span style="font-size:12px;color:#555;">Managed loads (run as generator capacity allows): ${escapeHtml(s.shedLoads.join("; "))}</span>`
                 : ""}
-              ${s.autoShed && s.autoShed.added.length > 0
-                ? `<br><span style="font-size:12px;color:#555;">Management extended to stay within air-cooled equipment${ceiling !== null ? ` (${ceiling} kW at this site)` : ""}: ${escapeHtml(s.autoShed.added.join("; "))}</span>`
-                : ""}
               ${s.liquidCooled && s.requiredKW !== null
-                ? `<br><span style="font-size:12px;color:#8a1c1c;">Exceeds air-cooled standby equipment${ceiling !== null ? ` (${ceiling} kW at this site)` : ""} — see the load-management option</span>`
+                ? `<br><span style="font-size:12px;color:#8a1c1c;">Exceeds air-cooled standby equipment${ceiling !== null ? ` (${ceiling} kW at this site)` : ""}${s.airCooled ? ` by ${s.airCooled.overByKW} kW` : ""} — ${s.scheme === "ats_load_management" ? "additional load management required" : "see the load-management option"}</span>`
                 : ""}
             </td>
             <td class="r">${escapeHtml(requirementText(s))}</td>
