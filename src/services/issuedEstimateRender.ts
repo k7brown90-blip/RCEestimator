@@ -434,7 +434,9 @@ export function renderEstimatePage(
           wholeHome: Array<{
             scheme: string; title: string; necBasis: string; requiredKW: number | null;
             model: StoredModel | null; liquidCooled: boolean; shedLoads?: string[]; notes: string[];
+            autoShed?: { ceilingKW: number; added: string[]; fits: boolean };
           }>;
+          airCooledCeilingKW?: number;
           partial: {
             requiredKW: number; model: StoredModel | null; liquidCooled: boolean;
             covered: Array<{ label: string; va: number }>;
@@ -453,11 +455,20 @@ export function renderEstimatePage(
         s.requiredKW !== null
           ? `${s.requiredKW} kW continuous output`
           : "sized by the loads you select — no code minimum";
+      // The air-cooled ceiling (Kyle, 2026-08-31): an option above it is stated as such and the
+      // reader is pointed at load management — never at a bigger class of equipment.
+      const ceiling = typeof rec.airCooledCeilingKW === "number" ? rec.airCooledCeilingKW : null;
       const wholeRows = rec.wholeHome
         .map((s) => `<tr>
             <td><strong>${escapeHtml(s.title)}</strong>
               ${s.shedLoads && s.shedLoads.length > 0
                 ? `<br><span style="font-size:12px;color:#555;">Managed loads (run as generator capacity allows): ${escapeHtml(s.shedLoads.join("; "))}</span>`
+                : ""}
+              ${s.autoShed && s.autoShed.added.length > 0
+                ? `<br><span style="font-size:12px;color:#555;">Management extended to stay within air-cooled equipment${ceiling !== null ? ` (${ceiling} kW at this site)` : ""}: ${escapeHtml(s.autoShed.added.join("; "))}</span>`
+                : ""}
+              ${s.liquidCooled && s.requiredKW !== null
+                ? `<br><span style="font-size:12px;color:#8a1c1c;">Exceeds air-cooled standby equipment${ceiling !== null ? ` (${ceiling} kW at this site)` : ""} — see the load-management option</span>`
                 : ""}
             </td>
             <td class="r">${escapeHtml(requirementText(s))}</td>

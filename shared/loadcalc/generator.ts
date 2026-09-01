@@ -132,6 +132,14 @@ export interface SchemeResult extends ModelSizing {
    * does not subtract its nameplate one-for-one.
    */
   baseBreakdown?: BreakdownLine[]
+  /**
+   * Set when the base landed above the air-cooled ceiling (Kyle, 2026-08-31:
+   * "I do not want to get into liquid cooled generators… if we have a load that
+   * exceeds the air-cooled we start the load shed recommendations"). `added`
+   * names the loads the engine managed ON TOP of the tech's selection to get
+   * under the ceiling; `fits` is false when even everything managed exceeds it.
+   */
+  autoShed?: { ceilingKW: number; added: string[]; fits: boolean }
   /** Price-book package references, one line per component (unit, switch, SMMs). */
   priceBookRefs: string[]
   notes: string[]
@@ -178,14 +186,18 @@ export interface ShedScenario {
   requiredAmps: number
   /** vs the full calculated load (Article 220 basis). */
   reductionKW: number
+  /** Whether this row's base lands within air-cooled equipment at this site. */
+  fitsAirCooled: boolean
 }
 
 export interface GeneratorRecommendation {
   wholeHome: SchemeResult[]
-  /** Null when a hard disqualifier forces whole-home/liquid-cooled guidance. */
+  /** Null when a hard disqualifier forces whole-home guidance. */
   partial: PartialTierResult | null
   /** The load-management menu: one row per manageable load, plus the everything-managed floor. */
   shedScenarios: ShedScenario[]
+  /** Largest fuel-matched air-cooled rating after site derates — the line nothing may land above. */
+  airCooledCeilingKW: number
   flags: GeneratorFlag[]
   surge: SurgeCheck
   fuel: GeneratorFuel
@@ -232,6 +244,16 @@ export function sizeToModel(requiredKW: number, fuel: GeneratorFuel, derate: num
     }
   }
   return { model: null, ratedKW: null, siteDeratedKW: null, liquidCooled: true }
+}
+
+/**
+ * The largest fuel-matched air-cooled rating after site derates — the ceiling
+ * every recommendation must land under. Red Cedar does not install liquid-
+ * cooled units (Kyle, 2026-08-31); above this line the answer is load management.
+ */
+export function airCooledCeilingKW(fuel: GeneratorFuel, derate: number): number {
+  const top = GENERAC_GUARDIAN_MODELS.reduce((best, m) => Math.max(best, fuelKW(m, fuel)), 0)
+  return round2(top * derate)
 }
 
 const isElectric = (item: LoadItem) => (item.fuel ?? 'electric') === 'electric'
@@ -629,7 +651,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       message:
         `${t.label} (${kwOf(resolveVA(t))} kW): electric tankless water heating exceeds the ` +
         'air-cooled standby class. Excluded from the essential-loads tier; whole-home service ' +
-        'requires load management or liquid-cooled equipment.',
+        'requires load management.',
     })
   }
   const stripsKW = stripHeatKW(calcInput.loads)
@@ -643,7 +665,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       message:
         `${stripsKW} kW of resistance strip heat meets or exceeds the ${STRIP_HEAT_THRESHOLD_KW} kW ` +
         'threshold for an essential-loads tier — recommend whole-home sizing with load ' +
-        'management, or liquid-cooled equipment.',
+        'management.',
     })
   }
 
@@ -706,20 +728,81 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   const fullSurgeNote = surgeNoteFor(fullSizing, surge)
   if (fullSurgeNote) fullNotes.push(fullSurgeNote)
 
-  // Scheme 2: ATS + load management — 702.4(B)(2)(b). The managed base is the
-  // same Article 220 engine run on the inventory minus VALIDLY managed loads —
-  // no second load model, and no phantom shedding (Appendix B rule 5): a
-  // candidate with no SACM slot, over SMM ratings, or past the 8-load cap goes
-  // back into the base and the tier steps up.
-  const plan = planManagement(calcInput.loads, input.shedSelection)
-  const managedIds = new Set(plan.managedItemIds)
-  const managedResult: LoadCalcResult = calculateLoad({
-    ...calcInput,
-    loads: [...calcInput.loads.filter((l) => !managedIds.has(l.id)), ...plan.carriedStrips],
-    futureLoads: [],
-  })
-  const managedKW = kwOf(managedResult.governingAmps * 240)
+  // ── The air-cooled ceiling (Kyle, 2026-08-31) ──
+  // "I do not want to get into liquid cooled generators. We need to make sure
+  // if we have a load that exceeds the air-cooled that we start the load shed
+  // recommendations." Nothing below is allowed to answer "bigger unit".
+  const ceilingKW = airCooledCeilingKW(fuel, derate)
+  if (fullSizing.liquidCooled) {
+    fullNotes.push(
+      `Exceeds the air-cooled ceiling (${ceilingKW} kW at this site) — load management (Option 2) ` +
+      'is the recommendation; Red Cedar does not install liquid-cooled units.',
+    )
+  }
+
+  // The managed base for any shed set: the same Article 220 engine run on the
+  // inventory minus VALIDLY managed loads — no second load model, and no
+  // phantom shedding (Appendix B rule 5): a candidate with no SACM slot, over
+  // SMM ratings, or past the 8-load cap goes back into the base.
+  const baseFor = (ids: string[] | undefined) => {
+    const p = planManagement(calcInput.loads, ids)
+    const pIds = new Set(p.managedItemIds)
+    const res: LoadCalcResult = calculateLoad({
+      ...calcInput,
+      loads: [...calcInput.loads.filter((l) => !pIds.has(l.id)), ...p.carriedStrips],
+      futureLoads: [],
+    })
+    return { plan: p, result: res, kw: kwOf(res.governingAmps * 240) }
+  }
+
+  // Scheme 2: ATS + load management — 702.4(B)(2)(b). Start from the tech's
+  // selection; if that base still exceeds air-cooled, EXTEND the shed set —
+  // greedy, the load that lowers the base most first, valid paths only — until
+  // it fits or nothing manageable is left. What was added is named, never silent.
+  const allCandidateIds = calcInput.loads
+    .filter((l) => SHED_CANDIDATE_TYPES.includes(l.type))
+    .map((l) => l.id)
+  let base = baseFor(input.shedSelection)
+  const autoAdded: string[] = []
+  if (base.kw > ceilingKW) {
+    const selected = new Set(input.shedSelection ?? allCandidateIds)
+    let remaining = allCandidateIds.filter((id) => !selected.has(id))
+    while (base.kw > ceilingKW && remaining.length > 0) {
+      let bestId: string | null = null
+      let bestBase = base
+      for (const id of remaining) {
+        const trial = baseFor([...selected, id])
+        if (bestId === null || trial.kw < bestBase.kw) {
+          bestId = id
+          bestBase = trial
+        }
+      }
+      // The best remaining candidate lowers nothing (no valid path, or it does not
+      // govern its Article 220 category) — every other one does less; stop here.
+      if (bestId === null || bestBase.kw >= base.kw) break
+      selected.add(bestId)
+      remaining = remaining.filter((id) => id !== bestId)
+      base = bestBase
+      autoAdded.push(calcInput.loads.find((l) => l.id === bestId)?.label ?? bestId)
+    }
+  }
+  const plan = base.plan
+  const managedResult = base.result
+  const managedKW = base.kw
   const managedSizing = sizeToModel(managedKW, fuel, derate)
+  const autoShed = autoAdded.length > 0 || managedKW > ceilingKW
+    ? { ceilingKW, added: autoAdded, fits: managedKW <= ceilingKW }
+    : undefined
+  if (autoShed && !autoShed.fits) {
+    flags.push({
+      id: 'exceeds_air_cooled',
+      severity: 'hard',
+      message:
+        `Base load ${managedKW} kW exceeds the air-cooled ceiling of ${ceilingKW} kW at this site even ` +
+        'with every manageable load shed — reduce the backup scope or split the system. Red Cedar ' +
+        'does not install liquid-cooled units.',
+    })
+  }
   const managedNotes: string[] = [
     plan.managed.length > 0
       ? `${plan.managed.length} managed load${plan.managed.length > 1 ? 's' : ''} ` +
@@ -739,6 +822,12 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
     managedNotes.push(
       'A heat pump lists two managed rows — its compressor and its supplemental heat — because each ' +
       'stage needs its own management path; the unit is counted once in every load figure.',
+    )
+  }
+  if (autoShed && autoShed.added.length > 0) {
+    managedNotes.push(
+      `Extended beyond the selected loads to stay within air-cooled equipment (${ceilingKW} kW ceiling ` +
+      `at this site): ${autoShed.added.join(', ')} added to management.`,
     )
   }
   if (plan.managed.length > 0) {
@@ -762,7 +851,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
         `expect it to run rarely or never during an outage. ` +
         (stepUp.model !== null
           ? `For it to run under load management, the Guardian ${stepUp.model.classLabel} kW (model ${stepUp.model.generatorModel}) carries base plus that load.`
-          : 'Carrying base plus that load requires the liquid-cooled class.'),
+          : 'Base plus that load exceeds the air-cooled class — it stays a managed load.'),
       )
     }
   }
@@ -775,29 +864,23 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
   // inventory; the reduction is measured against the calculated full load.
   const calcFullKW = kwOf(calcResult.governingAmps * 240)
   const scenarioFor = (ids: string[] | undefined, label: string): ShedScenario | null => {
-    const p = planManagement(calcInput.loads, ids)
-    if (p.managed.length === 0) return null
-    const pIds = new Set(p.managedItemIds)
-    const res = calculateLoad({
-      ...calcInput,
-      loads: [...calcInput.loads.filter((l) => !pIds.has(l.id)), ...p.carriedStrips],
-      futureLoads: [],
-    })
-    const kw = kwOf(res.governingAmps * 240)
+    const b = baseFor(ids)
+    if (b.plan.managed.length === 0) return null
     // One name per physical unit — a heat pump's compressor and supplemental
     // rows collapse to the unit's own label, never the appliance name twice
     // (Kyle, 2026-08-31, the Himrick sheet).
     const unitLabels: string[] = []
-    for (const row of p.managed) {
+    for (const row of b.plan.managed) {
       const name = calcInput.loads.find((l) => l.id === row.itemId)?.label ?? row.label
       if (!unitLabels.includes(name)) unitLabels.push(name)
     }
     return {
       label,
       managedLabels: unitLabels,
-      requiredKW: kw,
-      requiredAmps: res.governingAmps,
-      reductionKW: round2(calcFullKW - kw),
+      requiredKW: b.kw,
+      requiredAmps: b.result.governingAmps,
+      reductionKW: round2(calcFullKW - b.kw),
+      fitsAirCooled: b.kw <= ceilingKW,
     }
   }
   const shedScenarios: ShedScenario[] = []
@@ -854,6 +937,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
       shedLoads: plan.managed.map((row) => row.label),
       managementPlan: plan,
       baseBreakdown: managedResult.breakdown,
+      autoShed,
       priceBookRefs: [
         ...generatorRefs(managedSizing),
         // One line per SMM — dedupe never: each module is billable hardware.
@@ -882,6 +966,7 @@ export function recommendGenerator(input: GeneratorInput): GeneratorRecommendati
     wholeHome,
     partial,
     shedScenarios,
+    airCooledCeilingKW: ceilingKW,
     flags,
     surge,
     fuel,

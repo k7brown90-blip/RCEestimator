@@ -50,8 +50,16 @@ export const GENERAC_GUARDIAN_MODELS: GeneracModel[] = [
 ]
 
 /** Above 26 kW air-cooled (amendment rule 1) — verbatim output text. */
+/**
+ * Shown wherever a requirement lands above the largest air-cooled rating.
+ * Kyle, 2026-08-31: "I do not want to get into liquid cooled generators. We
+ * need to make sure if we have a load that exceeds the air-cooled that we
+ * start the load shed recommendations." So this is a stop sign, never a
+ * product suggestion — the engine's answer above the ceiling is load
+ * management (see autoShed in generator.ts).
+ */
 export const LIQUID_COOLED_TEXT =
-  'Generac liquid-cooled (Protector) class — manual selection with dealer sizing tool.'
+  'Exceeds the air-cooled class — load management required (Red Cedar does not install liquid-cooled units).'
 
 /**
  * When the essential-loads tier calculates to at least this fraction of the

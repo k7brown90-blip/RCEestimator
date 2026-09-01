@@ -1277,6 +1277,12 @@ export async function generateGeneratorReport(
   );
   bullet(`Calculated demand: ${stored.result.governingAmps} A × 240 V = ${full.requiredKW} kW (Article 220, ${stored.result.methodUsed} method)`);
   bullet(`Electrical service: ${stored.input.serviceAmps} A`);
+  // The air-cooled ceiling (Kyle, 2026-08-31): Red Cedar does not install
+  // liquid-cooled units, so every option is read against this line.
+  const ceilingKW: number | null = typeof rec.airCooledCeilingKW === "number" ? rec.airCooledCeilingKW : null;
+  if (ceilingKW !== null) {
+    bullet(`Air-cooled standby equipment at this site carries up to about ${ceilingKW} kW continuous; every option below is read against that line`);
+  }
   // The math itself (Kyle, 2026-08-31: "We need to have the math show for the
   // calculations. It needs to show for the generator too.") — every line of the
   // governing Article 220 method, raw entry → applied demand, with its rule.
@@ -1303,6 +1309,9 @@ export async function generateGeneratorReport(
     `Code basis: ${full.necBasis}.`,
   );
   bullet(`Required continuous output: ${full.requiredKW} kW (${full.requiredAmps} A)`);
+  if (full.liquidCooled && ceilingKW !== null) {
+    bullet(`Exceeds air-cooled equipment at this site (${ceilingKW} kW) — see Option 2, load management`);
+  }
 
   // ── Option 2 — load management ──
   sectionHead("Option 2 — Automatic Transfer with Load Management");
@@ -1312,6 +1321,20 @@ export async function generateGeneratorReport(
     `load; each managed circuit carries load-management hardware. Code basis: ${managed.necBasis}.`,
   );
   bullet(`Required continuous output (base load with managed loads removed): ${managed.requiredKW} kW (${managed.requiredAmps} A)`);
+  if (managed.autoShed && managed.autoShed.added.length > 0) {
+    bullet(
+      `Management extended beyond the selected loads to stay within air-cooled equipment ` +
+      `(${managed.autoShed.ceilingKW} kW at this site): ${managed.autoShed.added.join(", ")} added`,
+    );
+  }
+  if (managed.autoShed && !managed.autoShed.fits) {
+    bullet(
+      `Even with every manageable load managed, the base load exceeds air-cooled equipment at this site ` +
+      `(${managed.autoShed.ceilingKW} kW); a reduced backup scope is required`,
+    );
+  } else if (ceilingKW !== null && managed.requiredKW !== null) {
+    bullet(`Within air-cooled equipment: ${managed.requiredKW} kW required against a ${ceilingKW} kW ceiling`);
+  }
   // The managed-base math, line by line. Article 220's demand factors apply in
   // both calculations, so the two printed totals carry the true difference —
   // shedding a 12 kW range does not subtract 12 kW.
@@ -1375,9 +1398,12 @@ export async function generateGeneratorReport(
     );
     for (const s of scenarios) {
       const what = s.label === "Every manageable load" ? "every manageable load" : s.managedLabels.join(" + ");
+      const fit = typeof s.fitsAirCooled === "boolean"
+        ? (s.fitsAirCooled ? "; within air-cooled equipment" : "; exceeds air-cooled equipment")
+        : "";
       bullet(
         `Manage ${what}: generator carries ${s.requiredKW} kW (${s.requiredAmps} A) — ` +
-        `${s.reductionKW} kW less than the full calculated load`,
+        `${s.reductionKW} kW less than the full calculated load${fit}`,
         BRAND.muted,
       );
     }

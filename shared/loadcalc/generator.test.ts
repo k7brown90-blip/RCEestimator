@@ -517,3 +517,65 @@ describe('shed scenario labels — one name per physical unit', () => {
     expect(everything.managedLabels).toEqual(['Daikin packaged heat pump', 'Range'])
   })
 })
+
+describe('air-cooled ceiling — load shed starts where the air-cooled class ends (Kyle, 2026-08-31)', () => {
+  // Joe-shaped: heat pump + strips, a second A/C, range, dryer, WH, EVSE — 29 kW-class full load
+  // on NG, where the top air-cooled unit is 22.5 kW (× site derate).
+  const bigHouse = input({
+    floorAreaSqFt: 2718,
+    loads: [
+      load({ id: 'hp', type: 'heatPump', label: 'Heat pump', heatPump: { compressorVA: 4920, supplementalVA: 7000, lockout: false }, lockedRotorAmps: 84 }),
+      load({ id: 'ac', type: 'cooling', label: 'Second A/C', amps: 11, volts: 240, lockedRotorAmps: 54 }),
+      load({ id: 'rg', type: 'range', label: 'Range', nameplateKW: 12 }),
+      load({ id: 'dr', type: 'dryer', label: 'Dryer', nameplateKW: 5 }),
+      load({ id: 'wh', type: 'waterHeaterTank', label: 'Water heater', nameplateKW: 4.5 }),
+      load({ id: 'ev', type: 'evse', label: 'EV charger', nameplateKW: 9.6 }),
+    ],
+  })
+
+  it('publishes the ceiling as the top fuel-matched rating after derate', () => {
+    expect(recommend(bigHouse, { fuel: 'NG' }).airCooledCeilingKW).toBe(22.5)
+    expect(recommend(bigHouse, { fuel: 'LP' }).airCooledCeilingKW).toBe(26)
+    expect(recommend(bigHouse, { fuel: 'NG', site: { altitudeSteps: 1 } }).airCooledCeilingKW).toBeCloseTo(21.71, 2)
+  })
+
+  it('extends a range-only selection until the base fits air-cooled, naming what it added', () => {
+    const rec = recommend(bigHouse, { fuel: 'NG', shedSelection: ['rg'] })
+    const managed = rec.wholeHome[1]
+    expect(managed.requiredKW).toBeLessThanOrEqual(22.5)
+    expect(managed.liquidCooled).toBe(false)
+    expect(managed.autoShed).toBeDefined()
+    expect(managed.autoShed!.fits).toBe(true)
+    expect(managed.autoShed!.added.length).toBeGreaterThan(0)
+    // The range the tech picked is still managed; the additions are on top of it.
+    expect(managed.shedLoads).toContain('Range')
+    expect(managed.notes.join(' ')).toContain('Extended beyond the selected loads')
+    expect(rec.flags.some((f) => f.id === 'exceeds_air_cooled')).toBe(false)
+  })
+
+  it('leaves a selection alone when it already fits', () => {
+    const rec = recommend(bigHouse, { fuel: 'LP' })
+    // Everything managed on LP: well under the 26 kW ceiling — no extension recorded.
+    expect(rec.wholeHome[1].autoShed).toBeUndefined()
+  })
+
+  it('never answers "liquid-cooled": the full-load option says so and points at Option 2', () => {
+    const full = recommend(bigHouse, { fuel: 'NG' }).wholeHome[0]
+    expect(full.liquidCooled).toBe(true)
+    expect(full.notes.join(' ')).toContain('Exceeds the air-cooled ceiling')
+    expect(full.notes.join(' ')).toContain('Option 2')
+  })
+
+  it('flags hard when even everything managed exceeds the ceiling', () => {
+    // A house whose UNMANAGEABLE load alone (lighting on a huge footprint) beats 22.5 kW.
+    const mansion = input({ floorAreaSqFt: 30000, loads: [load({ id: 'rg', type: 'range', label: 'Range', nameplateKW: 12 })] })
+    const rec = recommend(mansion, { fuel: 'NG' })
+    expect(rec.wholeHome[1].autoShed?.fits).toBe(false)
+    expect(rec.flags.some((f) => f.id === 'exceeds_air_cooled' && f.severity === 'hard')).toBe(true)
+  })
+
+  it('every menu row says whether it lands within air-cooled equipment', () => {
+    const rec = recommend(bigHouse, { fuel: 'NG' })
+    for (const s of rec.shedScenarios) expect(s.fitsAirCooled).toBe(s.requiredKW <= 22.5)
+  })
+})
