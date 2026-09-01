@@ -25,7 +25,7 @@
 import fs from "node:fs/promises";
 import { prisma } from "../lib/prisma";
 import { sendBrandedEmail } from "./confirmationEmail";
-import { generateHealthReport } from "./pdfGenerator";
+import { generateHealthReport, generateGeneratorReport } from "./pdfGenerator";
 import { logSystemEvent } from "./systemEvents";
 
 export type HealthReportEmailResult =
@@ -34,7 +34,18 @@ export type HealthReportEmailResult =
 
 export async function sendHealthReportEmail(
   inspectionId: string,
-  opts: { to?: string | null; sentBy: string },
+  opts: {
+    to?: string | null;
+    sentBy: string;
+    /**
+     * Attach the generator sizing report too (Kyle, 2026-09-01, field app step 3:
+     * "email the load calc, electrical assesment, and generator sizing report").
+     * That report IS the load-calc sheet — the Article 220 math line by line plus
+     * the sizing — so one attachment covers both asks. Refused (not silently
+     * skipped) when the inspection has no load calculation.
+     */
+    includeGenerator?: boolean;
+  },
 ): Promise<HealthReportEmailResult> {
   const inspection = await prisma.healthInspection.findUnique({
     where: { id: inspectionId },
@@ -44,6 +55,12 @@ export async function sendHealthReportEmail(
     },
   });
   if (!inspection) return { sent: false, reason: "Inspection not found." };
+  if (opts.includeGenerator && !inspection.loadCalcJson) {
+    return {
+      sent: false,
+      reason: "This assessment has no load calculation — run the A2 load calc first, or send the report alone.",
+    };
+  }
 
   const criticals = (() => {
     try {
@@ -70,6 +87,11 @@ export async function sendHealthReportEmail(
   // before any deploy could sweep generated/ out from under it.
   const { documentId, pdfPath } = await generateHealthReport(inspectionId);
   const pdfBytes = await fs.readFile(pdfPath);
+  let generatorDoc: { documentId: string; bytes: Buffer } | null = null;
+  if (opts.includeGenerator) {
+    const gen = await generateGeneratorReport(inspectionId);
+    generatorDoc = { documentId: gen.documentId, bytes: await fs.readFile(gen.pdfPath) };
+  }
 
   const address = `${inspection.property.addressLine1}, ${inspection.property.city}, ${inspection.property.state}`;
   const dateStr = inspection.inspectionDate.toLocaleDateString("en-US", { timeZone: "America/Chicago" });
@@ -80,11 +102,10 @@ export async function sendHealthReportEmail(
     headline: "Your Electrical Health Record",
     bodyHtml: `
       <p>Hi ${inspection.customer.name},</p>
-      <p>Attached is the Electrical Health Record from our assessment of
-      <strong>${address}</strong> on ${dateStr}. It documents what we measured,
-      what passed, and anything worth correcting or keeping an eye on —
-      including the code basis for each finding, so you can tell a violation
-      from a recommendation.</p>
+      <p>Attached ${generatorDoc ? "are the documents" : "is the Electrical Health Record"} from our assessment of
+      <strong>${address}</strong> on ${dateStr}. ${generatorDoc
+        ? "The Electrical Health Record documents what we measured, what passed, and anything worth correcting — with the code basis for each finding. The Load Calculation &amp; Generator Sizing sheet shows the Article 220 math line by line and what it means for standby power at your home."
+        : "It documents what we measured, what passed, and anything worth correcting or keeping an eye on — including the code basis for each finding, so you can tell a violation from a recommendation."}</p>
       <p>Keep it with your home records; it's yours. If you'd like to talk
       through any finding, just reply to this email or call us.</p>
       <p style="color:#666;font-size:12px;">"We don't guess. We measure."</p>`,
@@ -94,6 +115,13 @@ export async function sendHealthReportEmail(
         content: pdfBytes,
         contentType: "application/pdf",
       },
+      ...(generatorDoc
+        ? [{
+            filename: `Load-Calc-and-Generator-Sizing-${dateStr.replaceAll("/", "-")}.pdf`,
+            content: generatorDoc.bytes,
+            contentType: "application/pdf",
+          }]
+        : []),
     ],
   });
 
@@ -106,9 +134,13 @@ export async function sendHealthReportEmail(
   });
   await prisma.document.update({ where: { id: documentId }, data: { sentAt: delivery.sentAt } });
 
-  logSystemEvent("info", "health-record", `Health report emailed to ${sentTo}`, {
+  if (generatorDoc) {
+    await prisma.document.update({ where: { id: generatorDoc.documentId }, data: { sentAt: delivery.sentAt } }).catch(() => {});
+  }
+  logSystemEvent("info", "health-record", `Health report emailed to ${sentTo}${generatorDoc ? " with the load-calc & generator sizing sheet" : ""}`, {
     inspectionId,
     documentId,
+    generatorDocumentId: generatorDoc?.documentId ?? null,
     sentBy: opts.sentBy,
     property: address,
   });

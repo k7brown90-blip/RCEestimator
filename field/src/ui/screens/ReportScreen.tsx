@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { NOT_ASSESSED, ROLLUP_LABEL, type ReportItem, type ReportModel, type RollupStatusValue } from '../../domain/report'
 import { REPORT_LIMITATIONS } from '../../data/reportLimitations'
 import { emailReportToCustomer, pendingSyncCount } from '../../lib/crmSync'
+// (the load-calc & generator sheet rides the same send — see the checkbox below)
 import type { Inspection, Property } from '../../domain/types'
 
 interface Props {
@@ -35,6 +36,14 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
   const [emailState, setEmailState] = useState<
     { phase: 'idle' } | { phase: 'sending' } | { phase: 'sent'; to: string } | { phase: 'failed'; error: string }
   >({ phase: 'idle' })
+  /*
+    Step 3 of the service call (Kyle, 2026-09-01): "email the load calc,
+    electrical assesment, and generator sizing report." One send, and the
+    Load Calc & Generator Sizing sheet — the Article 220 math plus the sizing —
+    rides along when the assessment ran the calc. Defaults on when a load calc
+    exists; the server refuses (never silently skips) if it's ticked without one.
+  */
+  const [attachGenerator, setAttachGenerator] = useState(Boolean(inspection.loadCalc))
 
   /**
    * Email the customer's PDF from the field (2026-08-24). The server renders
@@ -48,7 +57,7 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
       if ((await pendingSyncCount()) > 0) {
         throw new Error('This record has not synced to the office yet — get signal, then try again.')
       }
-      const result = await emailReportToCustomer(inspection.id)
+      const result = await emailReportToCustomer(inspection.id, { includeGenerator: attachGenerator })
       setEmailState({ phase: 'sent', to: result.sentTo })
     } catch (error) {
       setEmailState({ phase: 'failed', error: error instanceof Error ? error.message : String(error) })
@@ -75,6 +84,16 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
       </div>
 
       <div className="space-y-1 print:hidden">
+        <label className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/60 p-2 text-xs text-slate-300">
+          <input
+            type="checkbox"
+            checked={attachGenerator}
+            disabled={emailState.phase === 'sending' || emailState.phase === 'sent'}
+            onChange={(e) => setAttachGenerator(e.target.checked)}
+          />
+          Attach the Load Calc &amp; Generator Sizing sheet
+          {!inspection.loadCalc && <span className="text-amber-300">(no load calc on this assessment)</span>}
+        </label>
         <button
           type="button"
           disabled={emailState.phase === 'sending' || emailState.phase === 'sent'}
@@ -84,8 +103,10 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
           {emailState.phase === 'sending'
             ? 'Sending…'
             : emailState.phase === 'sent'
-              ? `✓ Report emailed to ${emailState.to}`
-              : "Email the report to the customer"}
+              ? `✓ ${attachGenerator ? 'Report + load calc emailed' : 'Report emailed'} to ${emailState.to}`
+              : attachGenerator
+                ? 'Email report + load calc & generator sizing'
+                : 'Email the report to the customer'}
         </button>
         {emailState.phase === 'failed' && (
           <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{emailState.error}</p>

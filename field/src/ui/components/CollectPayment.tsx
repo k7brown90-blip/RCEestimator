@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import { fetchVisitPaymentInfo, type VisitPaymentInfo } from '../../lib/crmSync'
+import { emailPaymentRequest, fetchVisitPaymentInfo, type VisitPaymentInfo } from '../../lib/crmSync'
 
 export function CollectPayment({ visitId, startOpen = false }: { visitId: string; startOpen?: boolean }) {
   const [open, setOpen] = useState(startOpen)
@@ -18,6 +18,21 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  // Bill in writing (Kyle, 2026-09-01): the customer who isn't standing there
+  // gets the deposit request / final bill by email instead of a QR.
+  const [emailState, setEmailState] = useState<'idle' | 'sending' | string>('idle')
+
+  const sendBill = async (kind: 'deposit' | 'balance') => {
+    setEmailState('sending')
+    setError(null)
+    try {
+      const r = await emailPaymentRequest(visitId, kind)
+      setEmailState(`✓ ${kind === 'deposit' ? 'Deposit request' : 'Final bill'} emailed to ${r.to} — $${r.amount.toFixed(2)} due`)
+    } catch (err) {
+      setEmailState('idle')
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
 
   const load = async () => {
     setLoading(true)
@@ -115,6 +130,19 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
                   </button>
                 )}
               </div>
+              <button
+                type="button"
+                disabled={emailState === 'sending'}
+                onClick={() => void sendBill(info.depositSatisfied ? 'balance' : 'deposit')}
+                className="w-full rounded-lg border border-emerald-700 bg-emerald-950/40 p-2 text-xs font-medium text-emerald-200 disabled:opacity-50"
+              >
+                {emailState === 'sending'
+                  ? 'Sending…'
+                  : `📧 Email the ${info.depositSatisfied ? 'final bill' : 'deposit request'} instead`}
+              </button>
+              {emailState !== 'idle' && emailState !== 'sending' && (
+                <p className="rounded bg-emerald-900/50 p-2 text-xs text-emerald-200">{emailState}</p>
+              )}
               <p className="text-[10px] text-slate-500">
                 Tap refresh after they pay — the paid mark comes from the office record, live.
               </p>

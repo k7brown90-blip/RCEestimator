@@ -493,8 +493,10 @@ healthRecordTechRouter.post("/inspections/:id/email", asyncHandler(async (req: T
     return;
   }
 
+  const emailBody = z.object({ includeGenerator: z.boolean().optional() }).parse(req.body ?? {});
   const result = await sendHealthReportEmail(inspectionId, {
     sentBy: `tech:${req.technician!.id}`,
+    includeGenerator: emailBody.includeGenerator ?? false,
   });
   if (!result.sent) {
     res.status(409).json({ success: false, error: { code: "not_sent", message: result.reason } });
@@ -511,6 +513,59 @@ healthRecordTechRouter.post("/inspections/:id/email", asyncHandler(async (req: T
  * tech can never type a card number or change an amount — the link and its
  * amounts are computed server-side off the signed estimate.
  */
+/*
+  Bill in writing from the field (Kyle, 2026-09-01) — the same two emails the
+  CRM's Take-payment panel sends: the deposit request and the final bill, each
+  carrying the customer's durable pay link. Assignment-gated like every tech
+  route; the tech can put the bill in the customer's inbox from the driveway
+  without ever opening the customer's payment portal.
+*/
+healthRecordTechRouter.post("/visits/:visitId/email-payment-request", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const body = z.object({ kind: z.enum(["deposit", "balance"]) }).parse(req.body ?? {});
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const est = await prisma.issuedEstimate.findFirst({
+    where: { signedAt: { not: null }, status: { not: "void" }, OR: [{ jobVisitId: visitId }, { visitId }] },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, customerEmail: true },
+  });
+  if (!est) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "No signed estimate on this visit yet — nothing to bill." } });
+    return;
+  }
+  const { publicBaseUrl } = await import("../services/issuedEstimateSend");
+  if (body.kind === "balance") {
+    const { sendBalanceRequestEmail } = await import("../services/paymentReceipts");
+    const result = await sendBalanceRequestEmail(prisma, est.id, publicBaseUrl());
+    if (!result.ok) {
+      res.status(400).json({ success: false, error: { code: "not_sent", message: result.reason } });
+      return;
+    }
+    res.json({ success: true, data: result });
+    return;
+  }
+  if (!est.customerEmail) {
+    res.status(400).json({ success: false, error: { code: "not_sent", message: "No customer email on file — the office can add one to the account." } });
+    return;
+  }
+  const { paymentSummary } = await import("../services/stripePayments");
+  const summary = await paymentSummary(prisma, est.id, publicBaseUrl());
+  if (!summary || summary.depositSatisfied || summary.paidInFull) {
+    res.status(400).json({ success: false, error: { code: "not_sent", message: "The deposit on this job is already in." } });
+    return;
+  }
+  const { sendDepositRequestEmail } = await import("../services/paymentReceipts");
+  await sendDepositRequestEmail(prisma, est.id, publicBaseUrl());
+  res.json({ success: true, data: { ok: true, to: est.customerEmail, amount: Math.round((summary.depositDue - summary.depositPaid) * 100) / 100 } });
+}));
+
 healthRecordTechRouter.get("/visits/:visitId/payment-info", asyncHandler(async (req: TechRequest, res) => {
   const visitId = readParam(req, "visitId");
   const assigned = await prisma.visitAssignment.findFirst({

@@ -621,8 +621,27 @@ export async function fetchVisitPaymentInfo(visitId: string): Promise<VisitPayme
  */
 export async function emailReportToCustomer(
   inspectionId: string,
+  opts?: { includeGenerator?: boolean },
 ): Promise<{ sentTo: string; documentId: string }> {
-  return crmRequest(`/inspections/${inspectionId}/email`, { method: 'POST', body: '{}' })
+  return crmRequest(`/inspections/${inspectionId}/email`, {
+    method: 'POST',
+    body: JSON.stringify({ includeGenerator: opts?.includeGenerator ?? false }),
+  })
+}
+
+/**
+ * Bill in writing from the driveway (Kyle, 2026-09-01): the deposit request or
+ * the final bill lands in the customer's inbox with their pay link. The tech
+ * never opens the customer's payment portal.
+ */
+export async function emailPaymentRequest(
+  visitId: string,
+  kind: 'deposit' | 'balance',
+): Promise<{ ok: true; to: string; amount: number }> {
+  return crmRequest(`/visits/${visitId}/email-payment-request`, {
+    method: 'POST',
+    body: JSON.stringify({ kind }),
+  })
 }
 
 // ─── Capacity checks ────────────────────────────────────────────────────────

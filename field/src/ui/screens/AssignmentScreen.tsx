@@ -145,6 +145,17 @@ export function AssignmentScreen({ onOpenVisit, justEnrolled }: Props) {
   }
   const todays = assignments.filter(isToday).sort(byClock)
   const later = assignments.filter((a) => !isToday(a)).sort(byClock)
+  // Grouped by day (Kyle, 2026-09-01): a scheduled job shows up under its date,
+  // so the week reads like a schedule. Unscheduled visits gather at the end.
+  const laterByDay: Array<[string, CrmAssignment[]]> = []
+  for (const a of later) {
+    const key = a.scheduledStart
+      ? new Date(a.scheduledStart).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })
+      : 'Not scheduled yet'
+    const bucket = laterByDay.find(([k]) => k === key)
+    if (bucket) bucket[1].push(a)
+    else laterByDay.push([key, [a]])
+  }
 
   return (
     <div className="mx-auto max-w-xl space-y-5 p-6">
@@ -229,11 +240,16 @@ export function AssignmentScreen({ onOpenVisit, justEnrolled }: Props) {
               </p>
             )}
 
-            {later.length > 0 && (
+            {laterByDay.length > 0 && (
               <>
                 <h2 className="pt-2 text-sm font-medium text-slate-300">Coming up</h2>
-                {later.map((assignment) => (
-                  <VisitCard key={assignment.assignmentId} assignment={assignment} onOpen={onOpenVisit} />
+                {laterByDay.map(([day, list]) => (
+                  <div key={day} className="space-y-2">
+                    <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">{day}</h3>
+                    {list.map((assignment) => (
+                      <VisitCard key={assignment.assignmentId} assignment={assignment} onOpen={onOpenVisit} />
+                    ))}
+                  </div>
                 ))}
               </>
             )}
