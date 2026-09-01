@@ -62,7 +62,8 @@ async function main(): Promise<void> {
   const stripe = new Stripe(key);
 
   await section("Account", async () => {
-    const acct = await stripe.accounts.retrieve();
+    // No id = the key's own account (/v1/account); the v22 typings only model the by-id form.
+    const acct = await (stripe.accounts as unknown as { retrieve: () => Promise<Stripe.Account> }).retrieve();
     console.log(`  id ${acct.id} · ${acct.business_profile?.name ?? acct.settings?.dashboard?.display_name ?? "(no name)"} · country ${acct.country} · currency ${acct.default_currency}`);
     acct.charges_enabled ? ok("charges_enabled") : bad("charges_enabled is FALSE — the account cannot take payments");
     acct.payouts_enabled ? ok("payouts_enabled") : bad("payouts_enabled is FALSE — money cannot reach the bank");
