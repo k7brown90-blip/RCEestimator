@@ -26,6 +26,8 @@
     "scripts/setLaborRate.ts",
     // One material markup for every band (x1.30, Kyle 2026-09-01) + book re-price, audited.
     "scripts/applyMaterialMarkup.ts",
+    // Read-only Stripe production check (Kyle, 2026-09-01) — account, webhook, sessions, reconciliation.
+    "scripts/checkStripe.ts",
     "scripts/checkGoogleCalendarConnection.ts",
     // The price-book writer, so the import can run where the database is reachable.
     // Extraction stays on Kyle's machine; only --from-json runs in here.
