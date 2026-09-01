@@ -54,6 +54,7 @@ import { sellsAtRate } from "../src/services/priceBookCatalog";
 
 const prisma = new PrismaClient();
 const EDITED_BY = "claude:labor-rate-2026-09-01";
+const SCRIPT_REV = "setLaborRate rev 2026-09-01c"; // grep target so a deploy check cannot match an older build
 const SELL_FIELDS = ["sellNormal", "sellDifficult", "sellVeryDifficult"] as const;
 const HOUR_FIELDS = ["laborNormal", "laborDifficult", "laborVeryDifficult"] as const;
 type SellField = (typeof SELL_FIELDS)[number];
@@ -92,25 +93,28 @@ interface Plan { row: Row; shape: Shape; audits: Audit[]; detail: string }
 /** Which of the known shapes a stored row is, judged against the formula at the OLD rate. */
 function classify(r: Row, oldRate: number | null): { shape: Shape; detail: string } {
   if (oldRate === null) return { shape: "OTHER", detail: "no current rate to check against" };
+  const type = (r.rowType ?? "").toUpperCase();
+
+  // Checked FIRST: a per-dollar unit also satisfies the plain formula at the old rate
+  // (1/150 hr x $150 = $1.00), and the formula at the new rate would quietly turn it into $0.67.
+  const perDollar =
+    type.includes("LABOR ONLY") &&
+    HOUR_FIELDS.every((f) => r[f] !== null && Math.abs((r[f] as number) * oldRate - 1) < 0.001) &&
+    SELL_FIELDS.every((f) => near(r[f], 1, 0.0051));
+  if (perDollar) return { shape: "PER-DOLLAR", detail: `hours = 1/${oldRate} so one unit is $1.00` };
+
   const atOld = sellsAtRate(r, oldRate);
   const diffs = SELL_FIELDS.map((f) => (r[f] === null || atOld[f] === null ? (r[f] === atOld[f] ? 0 : Infinity) : Math.abs((r[f] as number) - (atOld[f] as number))));
   const worst = Math.max(...diffs);
   if (worst <= 0.0051) return { shape: "FORMULA", detail: "" };
   if (worst <= PENNY) return { shape: "PENNY", detail: `off by ≤ $0.01 (sheet summed before rounding)` };
 
-  const type = (r.rowType ?? "").toUpperCase();
   const rateAsMaterial =
     r.companyCost === null &&
     r.companyPrice !== null && near(r.companyPrice, oldRate, 0.0051) &&
     !type.includes("LABOR ONLY") && !type.includes("MATERIAL ONLY") &&
     SELL_FIELDS.every((f, i) => r[f] === null ? r[HOUR_FIELDS[i]] === null : r[HOUR_FIELDS[i]] !== null && near(r[f], round2((r[HOUR_FIELDS[i]] as number) * oldRate), PENNY));
   if (rateAsMaterial) return { shape: "RATE-AS-MATERIAL", detail: `companyPrice ${money(r.companyPrice)} is the old rate; sells = hours × rate exactly` };
-
-  const perDollar =
-    type.includes("LABOR ONLY") &&
-    HOUR_FIELDS.every((f) => r[f] !== null && Math.abs((r[f] as number) * oldRate - 1) < 0.001) &&
-    SELL_FIELDS.every((f) => near(r[f], 1, 0.0051));
-  if (perDollar) return { shape: "PER-DOLLAR", detail: `hours = 1/${oldRate} so one unit is $1.00` };
 
   return { shape: "OTHER", detail: `stored ${SELL_FIELDS.map((f) => money(r[f])).join("/")} vs formula ${SELL_FIELDS.map((f) => money(atOld[f])).join("/")}` };
 }
@@ -152,7 +156,7 @@ async function main(): Promise<void> {
 
   const cell = await prisma.priceBookRateConfig.findUnique({ where: { key: "billedLaborRate" } });
   const oldRate = cell?.numberValue ?? null;
-  console.log(apply ? "APPLYING labour rate change" : "DRY RUN — no writes (pass --apply to write)");
+  console.log(`${apply ? "APPLYING labour rate change" : "DRY RUN — no writes (pass --apply to write)"}  [${SCRIPT_REV}]`);
   console.log(`Rate Config billedLaborRate: ${oldRate === null ? "blank" : `$${oldRate}/hr`} → $${newRate}/hr`);
   console.log(`Ruling in code (RULED_BILLED_RATE): $${RULED_BILLED_RATE}/hr${newRate !== RULED_BILLED_RATE ? "  !! differs from --rate; estimates will read PROVISIONAL" : ""}`);
   console.log("");
