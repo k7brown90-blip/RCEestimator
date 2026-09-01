@@ -16,6 +16,8 @@
     "scripts/dumpEstimateForRepricing.ts",
     // NECA labor-unit corrections from the 2026-09-01 audit — writes through updateAtomic.
     "scripts/applyNecaLaborUnits.ts",
+    // AC cable + steel 4-square boxes/covers (Kyle, 2026-09-01) — writes through createAtomic.
+    "scripts/addAcCableAndSquareBoxes.ts",
     "scripts/checkGoogleCalendarConnection.ts",
     // The price-book writer, so the import can run where the database is reachable.
     // Extraction stays on Kyle's machine; only --from-json runs in here.
