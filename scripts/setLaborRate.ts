@@ -133,7 +133,7 @@ function plan(r: Row, shape: Shape, oldRate: number | null, newRate: number): Au
     }
     case "PER-DOLLAR": {
       const hours = Number((1 / newRate).toFixed(7));
-      for (const f of HOUR_FIELDS) audits.push({ field: f, oldValue: r[f], newValue: hours });
+      for (const f of HOUR_FIELDS) if (!near(r[f], hours, 1e-9)) audits.push({ field: f, oldValue: r[f], newValue: hours });
       // 1/newRate × newRate is $1.00 by construction; write it as such rather than trust float dust.
       setSells({ sellNormal: 1, sellDifficult: 1, sellVeryDifficult: 1 });
       return audits;

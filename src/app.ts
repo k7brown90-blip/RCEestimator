@@ -47,6 +47,7 @@ import {
   finalizeDraft,
   findAtomicByCode,
   getDraftReview,
+  loadRateContext,
   looksLikeLegacyCode,
   rejectProposedLine,
   resolveQuestion,
@@ -2124,6 +2125,7 @@ app.post("/price-book/drafts/:draftId/duplicate", asyncHandler(async (req, res) 
     res.status(404).json({ error: `Draft ${sourceId} not found.` });
     return;
   }
+  const rate = await loadRateContext(prisma);
   const copy = await prisma.priceBookDraftEstimate.create({
     data: {
       title: source.title,
@@ -2136,9 +2138,12 @@ app.post("/price-book/drafts/:draftId/duplicate", asyncHandler(async (req, res) 
       exclusiveOptions: source.exclusiveOptions,
       // Editable from the first click — the whole point of the copy.
       status: "draft",
-      billedLaborRate: source.billedLaborRate,
-      rateProvisional: source.rateProvisional,
-      provisionalReason: source.provisionalReason,
+      // A fresh rate snapshot, not the source's: the copy prices live at today's Rate Config
+      // and book, so its record must say today's rate (Kyle, 2026-09-01 — a copy of a $150
+      // estimate is a $100 estimate now).
+      billedLaborRate: rate.rc.billedLaborRate,
+      rateProvisional: rate.provisional,
+      provisionalReason: rate.provisionalReason,
       notes: source.notes,
       discountType: source.discountType,
     },
