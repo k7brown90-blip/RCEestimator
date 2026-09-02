@@ -10,7 +10,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
@@ -29,9 +29,19 @@ const STATUS_META: Record<InvoiceSummary["paymentStatus"], { label: string; tone
 type Filter = "all" | "open" | InvoiceSummary["paymentStatus"];
 
 export function InvoicesPage() {
+  const queryClient = useQueryClient();
   const { data: invoices = [], isLoading, error } = useQuery({
     queryKey: ["invoices"],
     queryFn: api.invoices,
+  });
+  const [reminderResult, setReminderResult] = useState<string | null>(null);
+  const remind = useMutation({
+    mutationFn: (estimateId: string) => api.sendPaymentReminder(estimateId),
+    onSuccess: (r) => {
+      setReminderResult(`Reminder emailed to ${r.to} — $${r.amount.toFixed(2)} open.`);
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+    onError: (err) => setReminderResult((err as Error).message),
   });
   const [filter, setFilter] = useState<Filter>("all");
 
@@ -61,6 +71,8 @@ export function InvoicesPage() {
         title="Invoices"
         subtitle="Every signed estimate, what has been collected, and what is still owed"
       />
+
+      {reminderResult && <p className="rounded bg-rce-accentBg/40 p-2 text-xs">{reminderResult}</p>}
 
       <div className="grid grid-cols-2 gap-2">
         <div className="card p-3">
@@ -141,6 +153,22 @@ export function InvoicesPage() {
                     <>
                       <div className="text-xs text-rce-soft">paid {money(inv.totalPaid)}</div>
                       <div className="text-xs font-medium text-red-700">owes {money(inv.balance)}</div>
+                      {inv.remindersSent > 0 && (
+                        <div className="text-[11px] text-rce-muted">
+                          reminded {inv.remindersSent}x{inv.lastReminderAt ? ` · ${new Date(inv.lastReminderAt).toLocaleDateString()}` : ""}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-secondary mt-1 text-xs"
+                        disabled={remind.isPending}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          remind.mutate(inv.id);
+                        }}
+                      >
+                        {remind.isPending ? "Sending…" : "Send reminder"}
+                      </button>
                     </>
                   )}
                 </div>

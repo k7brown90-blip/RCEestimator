@@ -109,6 +109,7 @@ export async function sendBalanceRequestEmail(
   prisma: PrismaClient,
   estimateId: string,
   payBaseUrl: string,
+  opts: { reminder?: boolean } = {},
 ): Promise<{ ok: true; to: string; amount: number } | { ok: false; reason: string }> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
@@ -129,12 +130,15 @@ export async function sendBalanceRequestEmail(
 
   const sent = await sendBrandedEmail({
     to: est.customerEmail,
-    subject: `Your bill for ${est.title} — $${due.toFixed(2)} due (Invoice ${est.number})`,
-    headline: "Your final bill",
+    subject: opts.reminder
+      ? `Friendly reminder — $${due.toFixed(2)} still open on Invoice ${est.number}`
+      : `Your bill for ${est.title} — $${due.toFixed(2)} due (Invoice ${est.number})`,
+    headline: opts.reminder ? "A friendly reminder" : "Your final bill",
     bodyHtml: `
       <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
-      <p style="font-size:15px;">Here is the bill for <strong>${escapeHtml(est.title)}</strong>
-      (invoice ${escapeHtml(est.number)}).</p>
+      <p style="font-size:15px;">${opts.reminder
+        ? `Just a friendly reminder — the balance below is still open on <strong>${escapeHtml(est.title)}</strong> (invoice ${escapeHtml(est.number)}). If payment is already on its way, thank you — please disregard this.`
+        : `Here is the bill for <strong>${escapeHtml(est.title)}</strong> (invoice ${escapeHtml(est.number)}).`}</p>
       <table style="width:100%;font-size:15px;border-collapse:collapse;margin:12px 0;">
         ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
         <tr><td style="padding:4px 0;color:#666;">Invoice total</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>

@@ -841,6 +841,9 @@ export const api = {
   /** Bill in writing (Kyle, 2026-09-01): the deposit request / final bill lands in the customer's inbox. */
   emailDepositRequest: (estimateId: string) =>
     request<{ ok: true; to: string; amount: number }>(`/issued-estimates/${estimateId}/email-deposit-request`, { method: "POST" }),
+  /** Manual unpaid-invoice nudge (Kyle, 2026-09-02) — reminder-voiced final bill; stamps the pacing clock. */
+  sendPaymentReminder: (estimateId: string) =>
+    request<{ ok: true; to: string; amount: number }>(`/issued-estimates/${estimateId}/payment-reminder`, { method: "POST" }),
   emailBalanceRequest: (estimateId: string) =>
     request<{ ok: true; to: string; amount: number }>(`/issued-estimates/${estimateId}/email-balance-request`, { method: "POST" }),
   estimatePaymentInfo: (estimateId: string) =>

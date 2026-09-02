@@ -3320,6 +3320,14 @@ app.post("/issued-estimates/:id/email-deposit-request", asyncHandler(async (req,
   res.json({ ok: true, to: est.customerEmail, amount: Math.round((summary.depositDue - summary.depositPaid) * 100) / 100 });
 }));
 
+/** Manual nudge from the Invoices page — a human pressed it, so pacing does not apply; the stamp still restarts the sweep's clock. */
+app.post("/issued-estimates/:id/payment-reminder", asyncHandler(async (req, res) => {
+  const { sendInvoiceReminder } = await import("./services/invoiceReminders");
+  const result = await sendInvoiceReminder(prisma, String(req.params.id));
+  if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
+  res.json(result);
+}));
+
 app.post("/issued-estimates/:id/email-balance-request", asyncHandler(async (req, res) => {
   const { sendBalanceRequestEmail } = await import("./services/paymentReceipts");
   const { publicBaseUrl } = await import("./services/issuedEstimateSend");
@@ -4092,6 +4100,8 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       id: est.id,
       number: est.number,
       revision: est.revision,
+      remindersSent: est.paymentRemindersSent,
+      lastReminderAt: est.lastPaymentReminderAt,
       title: est.title,
       customer: est.account,
       // The frozen text is what the signed document says; the live property

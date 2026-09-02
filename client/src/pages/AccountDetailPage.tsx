@@ -1029,6 +1029,13 @@ function JobCard({ job }: { job: AccountJob }) {
         </div>
       </div>
 
+      {job.costsRolledUpTo ? (
+        <p className="mt-3 rounded bg-rce-bg p-2 text-xs text-rce-muted">
+          Hours and costs from this visit are counted under its{" "}
+          <Link to={`/visits/${job.costsRolledUpTo}`} className="text-rce-accent hover:underline">sold job</Link>
+          {" "}— nothing is double-counted.
+        </p>
+      ) : (
       <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <Metric label="Revenue" value={money(costs.revenue)} />
         <Metric label="Cost" value={money(costs.totalCost)} />
@@ -1039,6 +1046,7 @@ function JobCard({ job }: { job: AccountJob }) {
         />
         <Metric label="Margin" value={costs.margin != null ? `${costs.margin}%` : "-"} />
       </div>
+      )}
 
       {hasCostDetail && (
         <button

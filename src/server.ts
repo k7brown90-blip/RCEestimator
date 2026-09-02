@@ -121,6 +121,19 @@ async function startServer(): Promise<void> {
     } catch (err) {
       console.error("[Cron] Equipment end-of-life sweep failed:", err);
     }
+
+    // 6. Unpaid-invoice reminder sweep (Kyle, 2026-09-02) - gentle weekly
+    // nudges, three max per invoice; gated like every customer send.
+    console.log("[Cron] Running unpaid-invoice reminder sweep...");
+    try {
+      const { sweepInvoiceReminders } = await import("./services/invoiceReminders");
+      const { prisma } = await import("./lib/prisma");
+      const r = await sweepInvoiceReminders(prisma);
+      if (r.reminded > 0) console.log(`[Cron] Sent ${r.reminded} payment reminder(s).`);
+    } catch (err) {
+      console.error("[Cron] Invoice reminder sweep failed:", err);
+    }
+
   }, { timezone: "America/Chicago" });
 
   console.log("[Cron] Daily automation suite scheduled for 6:00 PM CT Mon-Fri");

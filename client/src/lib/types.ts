@@ -792,6 +792,8 @@ export type AccountReceipt = {
 };
 
 export type AccountJob = {
+  /** Set when this visit's costs are counted under its sold job's card (the P&L chain). */
+  costsRolledUpTo?: string | null;
   visitId: string;
   propertyId: string;
   propertyLabel: string;
@@ -824,6 +826,8 @@ export type AccountJob = {
  * the retired 3% non-card programme, `collected` is real money only.
  */
 export type InvoiceSummary = {
+  remindersSent: number;
+  lastReminderAt: string | null;
   id: string;
   number: string;
   revision: number;
