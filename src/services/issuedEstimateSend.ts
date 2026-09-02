@@ -486,8 +486,26 @@ export async function notifyOwnerViewed(prisma: PrismaClient, estimateId: string
 }
 
 export async function notifyOwnerSigned(prisma: PrismaClient, estimateId: string): Promise<boolean> {
-  const est = await prisma.issuedEstimate.findUnique({ where: { id: estimateId } });
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    include: { options: true },
+  });
   if (!est) return false;
+  // The SELL price (Kyle, 2026-09-02: "all options combined when I sold only
+  // option A" — this email announced the whole menu). billedTotalOf returns
+  // est.total when nothing was selected, so single-scope signs are unchanged.
+  const { billedTotalOf } = await import("./stripePayments");
+  const billed = billedTotalOf({
+    total: est.total,
+    tripCharge: est.tripCharge,
+    selectedOptions: est.selectedOptions,
+    comboCapJson: est.comboCapJson,
+    discountJson: est.discountJson,
+    optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+  });
+  const optionRow = est.selectedOptions.length > 0
+    ? `<tr><td style="padding:3px 12px 3px 0;color:#666;">Option${est.selectedOptions.length > 1 ? "s" : ""} taken</td><td>${escapeHtml(est.selectedOptions.join(", "))}</td></tr>`
+    : "";
 
   const to = (process.env.SUMMARY_EMAIL ?? process.env.GMAIL_USER ?? "").trim();
   if (!to) {
@@ -502,7 +520,8 @@ export async function notifyOwnerSigned(prisma: PrismaClient, estimateId: string
       <tr><td style="padding:3px 12px 3px 0;color:#666;">Customer</td><td>${escapeHtml(est.customerName)}</td></tr>
       <tr><td style="padding:3px 12px 3px 0;color:#666;">Job</td><td>${escapeHtml(est.title)}</td></tr>
       ${est.serviceAddress ? `<tr><td style="padding:3px 12px 3px 0;color:#666;">Address</td><td>${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
-      <tr><td style="padding:3px 12px 3px 0;color:#666;">Total</td><td><strong>$${est.total.toFixed(2)}</strong></td></tr>
+      ${optionRow}
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">Total</td><td><strong>$${billed.toFixed(2)}</strong></td></tr>
       <tr><td style="padding:3px 12px 3px 0;color:#666;">Signed at</td><td>${est.signedAt?.toISOString() ?? ""}</td></tr>
       <tr><td style="padding:3px 12px 3px 0;color:#666;">IP</td><td>${escapeHtml(est.signerIp ?? "unknown")}</td></tr>
     </table>
@@ -511,7 +530,7 @@ export async function notifyOwnerSigned(prisma: PrismaClient, estimateId: string
 
   return sendBrandedEmail({
     to,
-    subject: `SIGNED — ${est.number} — ${est.customerName} — $${est.total.toFixed(2)}`,
+    subject: `SIGNED — ${est.number} — ${est.customerName} — $${billed.toFixed(2)}`,
     headline: "Estimate signed",
     bodyHtml,
   });
