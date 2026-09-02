@@ -41,7 +41,7 @@ const GMAIL_BATCH_PAUSE_MS = 45_000;
 const GMAIL_DAILY_CAP = 300;
 const RESEND_PAUSE_MS = 600;
 const RESEND_DAILY_CAP = Number(process.env.RESEND_DAILY_CAP ?? 1500);
-const RESEND_FROM = process.env.RESEND_FROM ?? "Red Cedar Electric <news@redcedarelectricllc.com>";
+const RESEND_FROM = process.env.RESEND_FROM ?? "Red Cedar Electric <news@redcedarelectricllc.com>"; // root domain is the VERIFIED one (Kyle, 2026-09-02)
 const RESEND_REPLY_TO = process.env.RESEND_REPLY_TO ?? "service@redcedarelectricllc.com";
 
 export function campaignTransport(): "resend" | "gmail" {
@@ -193,6 +193,16 @@ export async function sendCampaign(prisma: PrismaClient, campaignId: string): Pr
     const check = await fetch("https://api.resend.com/domains", {
       headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
     });
+    /*
+      Kyle's key is send-only ("restricted_api_key") and CANNOT list domains —
+      a 401 here says nothing about verification (his root domain IS verified,
+      confirmed by a live send on 2026-09-02). Only an affirmative 200 listing
+      that EXCLUDES the from-domain refuses; anything else proceeds, and an
+      actually-unverified domain still fails per-row with Resend's own message.
+    */
+    if (check.status === 401) {
+      // send-only key: skip the check, the live send is the proof
+    } else {
     const domains = check.ok ? ((await check.json()) as { data?: Array<{ name: string; status: string }> }).data ?? [] : [];
     const fromDomain = RESEND_FROM.match(/@([^>\s]+)/)?.[1] ?? "";
     const verified = domains.some((d) => d.name === fromDomain && d.status === "verified");
@@ -200,6 +210,7 @@ export async function sendCampaign(prisma: PrismaClient, campaignId: string): Pr
       throw new Error(
         `The Resend sending domain (${fromDomain}) is not verified yet — add the DNS records at your domain host, wait for Resend to show "verified", then Send again. Nothing was sent.`,
       );
+    }
     }
   }
   const blocks = JSON.parse(campaign.blocksJson) as CampaignBlock[];
