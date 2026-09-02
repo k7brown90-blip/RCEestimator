@@ -16,6 +16,7 @@ import { summarizeOptions } from "../services/atomicEstimateEngine";
 import { graduateDraft } from "../services/issuedEstimateService";
 import { addLine, browseAtomics, computeDraft, createDraft, editLine, loadRateContext, removeLine } from "../services/atomicEstimateService";
 import crypto from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
@@ -1927,6 +1928,125 @@ healthRecordAdminRouter.get("/inspections/:id/load-calc", asyncHandler(async (re
  * capacityCheck row exactly as the PDF path does, so the estimate attachment
  * stays in step.
  */
+
+/**
+ * PUT /health-record-admin/inspections/:id/load-calc — correct the A2 inputs
+ * from the office (Kyle, 2026-09-01: fix an appliance or nameplate typo with
+ * no truck roll). The result is recomputed by the SAME shared engine, the
+ * stored generator design (if any) is recomputed against the corrected calc,
+ * and Kyle's overwrite ruling applies: this creates a REVISION inspection,
+ * supersedes the original, and re-sends the corrected report when the
+ * original was ever delivered. History is never rewritten.
+ */
+healthRecordAdminRouter.put("/inspections/:id/load-calc", asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const body = z.object({
+    serviceAmps: z.number().positive(),
+    floorAreaSqFt: z.number().nonnegative(),
+    // The load list rides as-is: the shared engine's resolveVA is the authority
+    // on each item's fields, and re-validating its union here would just drift.
+    loads: z.array(z.record(z.string(), z.unknown())),
+  }).parse(req.body ?? {});
+
+  const original = await prisma.healthInspection.findUnique({ where: { id } });
+  if (!original) { res.status(404).json({ error: "Inspection not found" }); return; }
+  if (!original.loadCalcJson) {
+    res.status(409).json({ error: "This inspection has no load calculation — run the A2 load calc first." });
+    return;
+  }
+  if (original.supersededById) {
+    res.status(409).json({ error: "This record was already corrected by a newer revision — edit the latest instead." });
+    return;
+  }
+
+  const { calculateLoad } = await import("../../shared/loadcalc/loadcalc");
+  const { recommendGenerator } = await import("../../shared/loadcalc/generator");
+  const stored = JSON.parse(original.loadCalcJson) as {
+    input: import("../../shared/loadcalc/loadcalc").LoadCalcInput;
+    result: import("../../shared/loadcalc/loadcalc").LoadCalcResult;
+    generator?: {
+      fuel: import("../../shared/loadcalc/generator").GeneratorFuel;
+      softStart: boolean; altitudeSteps: number; includeInEstimate: boolean;
+      shedSelection?: string[];
+    };
+  };
+  const correctedInput: import("../../shared/loadcalc/loadcalc").LoadCalcInput = {
+    ...stored.input,
+    serviceAmps: body.serviceAmps,
+    floorAreaSqFt: body.floorAreaSqFt,
+    loads: body.loads as unknown as import("../../shared/loadcalc/loadcalc").LoadCalcInput["loads"],
+  };
+  let correctedResult: import("../../shared/loadcalc/loadcalc").LoadCalcResult;
+  try {
+    correctedResult = calculateLoad(correctedInput);
+  } catch (err) {
+    res.status(422).json({ error: `The corrected inputs do not compute: ${err instanceof Error ? err.message : String(err)}` });
+    return;
+  }
+  const correctedLoadCalc: Record<string, unknown> = { ...stored, input: correctedInput, result: correctedResult };
+  if (stored.generator) {
+    correctedLoadCalc["generator"] = {
+      ...stored.generator,
+      recommendation: recommendGenerator({
+        calcInput: correctedInput,
+        calcResult: correctedResult,
+        fuel: stored.generator.fuel,
+        softStart: stored.generator.softStart,
+        site: { altitudeSteps: stored.generator.altitudeSteps },
+        shedSelection: stored.generator.shedSelection,
+      }),
+    };
+  }
+
+  // The revision row: the original inspection with the corrected calc. Same
+  // linkage the field's Revise flow writes, so every surface reads one chain.
+  const revisionId = randomUUID();
+  const deliveries = await prisma.healthReportDelivery.count({ where: { inspectionId: id } });
+  await prisma.$transaction(async (tx) => {
+    const src = original as unknown as Record<string, unknown>;
+    const clone: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(src)) {
+      if (["id", "syncedAt", "revisesId", "supersededById"].includes(k)) continue;
+      clone[k] = v;
+    }
+    await tx.healthInspection.create({
+      data: { ...(clone as object), id: revisionId, revisesId: id, loadCalcJson: JSON.stringify(correctedLoadCalc) } as never,
+    });
+    await tx.healthInspection.update({ where: { id }, data: { supersededById: revisionId } });
+  });
+  await recordInspectionLoadCalc({
+    inspectionId: revisionId,
+    visitId: original.visitId,
+    propertyId: original.propertyId,
+    customerId: original.customerId,
+    technicianId: original.technicianId,
+    loadCalc: correctedLoadCalc,
+  });
+  logSystemEvent("info", "health-record", `Load calc corrected from the CRM — revision ${revisionId} supersedes ${id}`, {
+    inspectionId: revisionId, revises: id,
+  });
+
+  // Kyle's overwrite ruling: the correction goes OUT. Held sends are visible.
+  let resend: { sent: boolean; to?: string; reason?: string; skipped?: string };
+  if (deliveries === 0) {
+    resend = { sent: false, skipped: "The original was never emailed - nothing stale to replace." };
+  } else {
+    const replacesDate = original.inspectionDate.toLocaleDateString("en-US", { timeZone: "America/Chicago" });
+    const sendResult = await sendHealthReportEmail(revisionId, {
+      sentBy: "owner:crm",
+      includeGenerator: true,
+      corrected: { replacesDate },
+    });
+    resend = sendResult.sent ? { sent: true, to: sendResult.sentTo } : { sent: false, reason: sendResult.reason };
+    if (!sendResult.sent) {
+      logSystemEvent("warn", "health-record", `Corrected report ${revisionId} was NOT re-sent: ${sendResult.reason}`, {
+        inspectionId: revisionId, revises: id,
+      });
+    }
+  }
+  res.json({ inspectionId: revisionId, resend });
+}));
+
 healthRecordAdminRouter.put("/inspections/:id/generator", asyncHandler(async (req, res) => {
   const id = readParam(req, "id");
   const body = z.object({

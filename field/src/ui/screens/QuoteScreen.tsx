@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   addQuoteLine,
   editQuoteLine,
+  fetchPropertyFindings,
   fetchQuote,
   issueQuote,
   openQuoteForVisit,
@@ -25,9 +26,11 @@ import {
   type QuoteLine,
   type QuoteState,
 } from '../../lib/crmSync'
+import type { FindingRecord } from '../../db/database'
 
 interface Props {
   visitId: string
+  propertyId: string
   customerName: string
   onBack: () => void
 }
@@ -96,7 +99,7 @@ function LineRow({ line, busy, onPatch, onRemove }: {
   )
 }
 
-export function QuoteScreen({ visitId, customerName, onBack }: Props) {
+export function QuoteScreen({ visitId, propertyId, customerName, onBack }: Props) {
   const [draftId, setDraftId] = useState<string | null>(null)
   const [quote, setQuote] = useState<QuoteState | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -106,6 +109,20 @@ export function QuoteScreen({ visitId, customerName, onBack }: Props) {
   const [issued, setIssued] = useState<{ number: string; customerUrl: string; unpriced: string[] } | null>(null)
   const [issueReasons, setIssueReasons] = useState<string[]>([])
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /*
+    Open item 2 (2026-09-01): what the assessment found offers itself while
+    quoting. A finding is NOT a price-book row, so nothing is auto-mapped —
+    tapping one seeds the search with its words, and the next line added
+    carries the finding as its note, so the estimate line says WHY it exists.
+  */
+  const [findings, setFindings] = useState<FindingRecord[]>([])
+  const [findingsOpen, setFindingsOpen] = useState(false)
+  const [activeFinding, setActiveFinding] = useState<FindingRecord | null>(null)
+  useEffect(() => {
+    fetchPropertyFindings(propertyId)
+      .then((r) => setFindings(r.findings.filter((f) => f.status === 'open' || f.status === 'scheduled')))
+      .catch(() => setFindings([]))
+  }, [propertyId])
 
   const refresh = async (id: string) => setQuote(await fetchQuote(id))
 
@@ -195,6 +212,42 @@ export function QuoteScreen({ visitId, customerName, onBack }: Props) {
         value={search}
         onChange={(e) => setSearch(e.target.value)}
       />
+      {findings.length > 0 && (
+        <div className="space-y-1 rounded-lg border border-amber-800 bg-amber-950/20 p-2">
+          <button
+            type="button"
+            onClick={() => setFindingsOpen((o) => !o)}
+            className="w-full text-left text-xs font-medium text-amber-200"
+          >
+            ⚡ {findings.length} open finding{findings.length > 1 ? 's' : ''} at this address — tap one to quote it
+          </button>
+          {findingsOpen && findings.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => {
+                setActiveFinding(f)
+                setFindingsOpen(false)
+                // Seed the book search with the finding's own words; the tech
+                // trims it to the term that matches how the book names things.
+                setSearch(f.title.split(/[—:-]/)[0].trim().slice(0, 40))
+              }}
+              className={`block w-full rounded p-2 text-left text-xs ${activeFinding?.id === f.id ? 'bg-amber-900/60 text-amber-100' : 'text-amber-200 hover:bg-amber-950/40'}`}
+            >
+              {f.critical ? '⚠ ' : ''}{f.title}
+              <span className="block text-[10px] text-amber-400/70">{f.severity}{f.section ? ` · ${f.section}` : ''}</span>
+            </button>
+          ))}
+          {activeFinding && (
+            <p className="rounded bg-slate-900/70 p-2 text-[11px] text-slate-300">
+              Quoting: <b className="text-amber-200">{activeFinding.title}</b> — the next item you add
+              carries it as the line note.{' '}
+              <button type="button" className="underline" onClick={() => setActiveFinding(null)}>clear</button>
+            </p>
+          )}
+        </div>
+      )}
+
       {results !== null && (
         <div className="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-slate-700 bg-slate-900 p-2">
           {results.length === 0 && <p className="p-2 text-xs text-slate-500">Nothing in the book matches.</p>}
@@ -205,10 +258,13 @@ export function QuoteScreen({ visitId, customerName, onBack }: Props) {
               disabled={busy}
               onClick={() => {
                 setSearch(''); setResults(null)
+                const note = activeFinding ? `Assessment finding: ${activeFinding.title}` : undefined
+                setActiveFinding(null)
                 void act(() => addQuoteLine(draftId!, {
                   itemId: r.itemId,
                   quantity: 1,
                   quantitySource: r.isContinuousLength ? 'MEASURED_LENGTH' : 'COUNT',
+                  ...(note ? { note } : {}),
                 }))
               }}
               className="block w-full rounded p-2 text-left text-sm text-slate-200 hover:bg-slate-800"

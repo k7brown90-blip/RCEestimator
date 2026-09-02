@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NOT_ASSESSED, ROLLUP_LABEL, type ReportItem, type ReportModel, type RollupStatusValue } from '../../domain/report'
 import { REPORT_LIMITATIONS } from '../../data/reportLimitations'
-import { emailReportToCustomer, pendingSyncCount } from '../../lib/crmSync'
+import { emailReportToCustomer, getResendOutcome, pendingSyncCount, type ResendOutcome } from '../../lib/crmSync'
 // (the load-calc & generator sheet rides the same send — see the checkbox below)
 import type { Inspection, Property } from '../../domain/types'
 
@@ -44,6 +44,27 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
     exists; the server refuses (never silently skips) if it's ticked without one.
   */
   const [attachGenerator, setAttachGenerator] = useState(Boolean(inspection.loadCalc))
+  /*
+    Open item 3 (2026-09-01): a revision's automatic re-send happens on the
+    server when the push lands. Poll the recorded outcome until it appears so
+    the tech SEES "corrected report re-sent to X" (or the held reason) instead
+    of trusting a promise. Stops polling once known or after two minutes —
+    offline pushes surface it on the next visit to this screen.
+  */
+  const [resend, setResend] = useState<ResendOutcome | null>(
+    inspection.revises ? getResendOutcome(inspection.id) : null,
+  )
+  useEffect(() => {
+    if (!inspection.revises || resend) return
+    let ticks = 0
+    const timer = setInterval(() => {
+      const found = getResendOutcome(inspection.id)
+      ticks += 1
+      if (found) { setResend(found); clearInterval(timer) }
+      else if (ticks > 40) clearInterval(timer)
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [inspection.revises, inspection.id, resend])
 
   /**
    * Email the customer's PDF from the field (2026-08-24). The server renders
@@ -84,11 +105,22 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
       </div>
 
       <div className="space-y-1 print:hidden">
-        {inspection.revises && (
+        {inspection.revises && !resend && (
           <p className="rounded-lg border border-amber-700 bg-amber-950/40 p-2 text-xs text-amber-200">
             This is a correction. Once it syncs, the office marks the original superseded and
-            automatically re-sends the corrected report to the customer — if the send is held
-            (for example, an unreviewed critical), it shows up in the office record, never silently.
+            automatically re-sends the corrected report to the customer — the outcome will show
+            right here.
+          </p>
+        )}
+        {inspection.revises && resend && resend.sent && (
+          <p className="rounded-lg border border-emerald-700 bg-emerald-950/40 p-2 text-xs text-emerald-200">
+            ✓ Corrected report re-sent to {resend.to} — the customer no longer holds the old one.
+          </p>
+        )}
+        {inspection.revises && resend && !resend.sent && (
+          <p className="rounded-lg border border-amber-700 bg-amber-950/40 p-2 text-xs text-amber-200">
+            Correction saved and the original is superseded, but the report was
+            {resend.skipped ? ' not re-sent: ' : ' HELD: '}{resend.skipped ?? resend.reason}
           </p>
         )}
         <label className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/60 p-2 text-xs text-slate-300">

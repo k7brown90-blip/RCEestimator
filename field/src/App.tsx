@@ -192,6 +192,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     return (
       <QuoteScreen
         visitId={activeAssignment.visitId}
+        propertyId={activeAssignment.propertyId}
         customerName={activeAssignment.customerName}
         onBack={() => setScreen('jobsite')}
       />

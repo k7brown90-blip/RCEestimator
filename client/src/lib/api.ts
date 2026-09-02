@@ -741,6 +741,16 @@ export const api = {
       { method: "POST", body: JSON.stringify({}) },
     ),
   /** The stored A2 load calculation + generator design — feeds the CRM's generator designer. */
+  /** Correct the A2 inputs from the office (2026-09-01). Creates a REVISION and re-sends per Kyle's overwrite ruling. */
+  updateInspectionLoadCalc: (inspectionId: string, body: {
+    serviceAmps: number;
+    floorAreaSqFt: number;
+    loads: unknown[];
+  }) =>
+    request<{ inspectionId: string; resend: { sent: boolean; to?: string; reason?: string; skipped?: string } }>(
+      `/health-record-admin/inspections/${inspectionId}/load-calc`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
   inspectionLoadCalc: (inspectionId: string) =>
     request<{
       input: import("../../../shared/loadcalc/loadcalc").LoadCalcInput;

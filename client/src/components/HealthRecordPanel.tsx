@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { InspectionResultChip } from "./InspectionResultChip";
 import { ProtectedImage } from "./ProtectedImage";
 import { GeneratorDesigner } from "./GeneratorDesigner";
+import { LoadCalcEditor } from "./LoadCalcEditor";
 import { PhotoLightbox } from "./PhotoLightbox";
 
 /**
@@ -20,6 +21,7 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
   const [expandedInspectionId, setExpandedInspectionId] = useState<string | null>(null);
   // The CRM-side generator designer (Kyle, 2026-08-31) — one open at a time.
   const [designerInspectionId, setDesignerInspectionId] = useState<string | null>(null);
+  const [editorInspectionId, setEditorInspectionId] = useState<string | null>(null);
   // Zoomable viewer for nameplate-reading (Kyle, 2026-08-31).
   const [lightbox, setLightbox] = useState<{ path: string; alt: string } | null>(null);
 
@@ -234,7 +236,23 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                           >
                             {designerInspectionId === inspection.id ? "Close designer" : "Design generator"}
                           </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary ml-2 mt-2 text-xs"
+                            onClick={() =>
+                              setEditorInspectionId(editorInspectionId === inspection.id ? null : inspection.id)
+                            }
+                          >
+                            {editorInspectionId === inspection.id ? "Close editor" : "Edit load calc"}
+                          </button>
                         </>
+                      )}
+                      {editorInspectionId === inspection.id && (
+                        <LoadCalcEditor
+                          inspectionId={inspection.id}
+                          onClose={() => setEditorInspectionId(null)}
+                          onRevised={() => setEditorInspectionId(null)}
+                        />
                       )}
                       {designerInspectionId === inspection.id && (
                         <GeneratorDesigner

@@ -281,6 +281,38 @@ async function pushPhoto(record: PhotoSyncRecord): Promise<void> {
   await db.photoSyncQueue.delete(record.photoId)
 }
 
+// ── Resend outcomes (open item 3, 2026-09-01). When a REVISION pushes, the
+// server re-sends the corrected report and the outcome rides the response.
+// Stored per inspection id so the report screen can show "re-sent to X" (or
+// the held reason) instead of a static promise. localStorage: tiny, per-device.
+export interface ResendOutcome {
+  sent: boolean
+  to?: string
+  reason?: string
+  skipped?: string
+  at: string
+}
+const RESEND_KEY = 'rce-resend-outcomes'
+
+function readResendMap(): Record<string, ResendOutcome> {
+  try { return JSON.parse(localStorage.getItem(RESEND_KEY) ?? '{}') as Record<string, ResendOutcome> } catch { return {} }
+}
+
+export function getResendOutcome(inspectionId: string): ResendOutcome | null {
+  return readResendMap()[inspectionId] ?? null
+}
+
+function saveResendOutcome(inspectionId: string, outcome: Omit<ResendOutcome, 'at'>): void {
+  try {
+    const map = readResendMap()
+    map[inspectionId] = { ...outcome, at: new Date().toISOString() }
+    // Keep the map small — this is a notice, not a ledger (the office record is).
+    const ids = Object.keys(map)
+    if (ids.length > 20) for (const stale of ids.slice(0, ids.length - 20)) delete map[stale]
+    localStorage.setItem(RESEND_KEY, JSON.stringify(map))
+  } catch { /* storage unavailable — the office record still has it */ }
+}
+
 /** Push every queued inspection; leaves failures in the queue for retry. */
 export async function flushSyncQueue(): Promise<{ pushed: number; remaining: number }> {
   if (!getCrmSettings()) {
@@ -291,7 +323,10 @@ export async function flushSyncQueue(): Promise<{ pushed: number; remaining: num
   let pushed = 0
   for (const record of pending) {
     try {
-      await crmRequest('/inspections', { method: 'POST', body: record.payload })
+      const result = await crmRequest<{ resend?: { sent: boolean; to?: string; reason?: string; skipped?: string } | null }>(
+        '/inspections', { method: 'POST', body: record.payload },
+      )
+      if (result?.resend) saveResendOutcome(record.inspectionId, result.resend)
       await db.syncQueue.delete(record.inspectionId)
       pushed += 1
     } catch (error) {
