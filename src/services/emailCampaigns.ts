@@ -22,11 +22,73 @@ import { publicBaseUrl } from "./issuedEstimateSend";
 import { logSystemEvent } from "./systemEvents";
 
 export const DEFAULT_LIST_NAME = "Storm Preparedness Campaign";
-/** Gmail-friendly pacing: a batch, a breath, repeat. */
-const BATCH_SIZE = 15;
-const BATCH_PAUSE_MS = 45_000;
-/** Stay far under the mailbox's daily ceiling. */
-const DAILY_SEND_CAP = 300;
+
+/*
+  TWO PIPES (Kyle, 2026-09-02: "I already have resend set up").
+
+  Campaigns prefer RESEND — a purpose-built bulk sender on the website's
+  verified domain, so list traffic never spends the Gmail mailbox's budget or
+  its reputation. Gmail remains the fallback (and the only pipe for
+  transactional mail). Pacing per pipe:
+    Resend: ~2 requests/sec, generous daily cap (RESEND_DAILY_CAP, default 1500)
+            — 4,000 addresses ≈ 35 minutes of sending per capped day.
+    Gmail:  15 per 45s, 300/day — the old safe numbers.
+  A 429 from Resend (plan limit) stops the run cleanly: rows stay pending, the
+  campaign stays "sending", and the next Send press resumes.
+*/
+const GMAIL_BATCH_SIZE = 15;
+const GMAIL_BATCH_PAUSE_MS = 45_000;
+const GMAIL_DAILY_CAP = 300;
+const RESEND_PAUSE_MS = 600;
+const RESEND_DAILY_CAP = Number(process.env.RESEND_DAILY_CAP ?? 1500);
+const RESEND_FROM = process.env.RESEND_FROM ?? "Red Cedar Electric <news@redcedarelectricllc.com>";
+const RESEND_REPLY_TO = process.env.RESEND_REPLY_TO ?? "service@redcedarelectricllc.com";
+
+export function campaignTransport(): "resend" | "gmail" {
+  return process.env.RESEND_API_KEY ? "resend" : "gmail";
+}
+
+/** One campaign email through Resend's HTTP API. Throws on 429 so the run can stop cleanly. */
+async function sendViaResend(input: { to: string; subject: string; html: string; headers?: Record<string, string> }): Promise<void> {
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: RESEND_FROM,
+      to: [input.to],
+      reply_to: RESEND_REPLY_TO,
+      subject: input.subject,
+      html: input.html,
+      headers: input.headers,
+    }),
+  });
+  if (res.status === 429) {
+    const err = new Error("Resend rate/plan limit reached (429)");
+    (err as Error & { rateLimited?: boolean }).rateLimited = true;
+    throw err;
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Resend refused (${res.status}): ${body.slice(0, 300)}`);
+  }
+}
+
+/** The branded shell campaigns wear on the Resend pipe — same look as Gmail's. */
+export function wrapCampaignHtml(headline: string, bodyHtml: string): string {
+  return `
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
+      <div style="background:#1a5c2e;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0;">
+        <h1 style="margin:0;font-size:20px;">${headline}</h1>
+        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">Red Cedar Electric LLC</p>
+      </div>
+      <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
+        ${bodyHtml}
+      </div>
+    </div>`;
+}
 
 export type CampaignBlock =
   | { kind: "text"; text: string }
@@ -125,6 +187,21 @@ export async function sendCampaign(prisma: PrismaClient, campaignId: string): Pr
   const campaign = await prisma.emailCampaign.findUnique({ where: { id: campaignId } });
   if (!campaign) throw new Error("Campaign not found.");
   if (campaign.status === "sent") throw new Error("This campaign has already been sent.");
+  if (campaignTransport() === "resend") {
+    // Refuse a run that would fail on every row: the sending domain must be
+    // verified at Resend (DNS records added and propagated) first.
+    const check = await fetch("https://api.resend.com/domains", {
+      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
+    });
+    const domains = check.ok ? ((await check.json()) as { data?: Array<{ name: string; status: string }> }).data ?? [] : [];
+    const fromDomain = RESEND_FROM.match(/@([^>\s]+)/)?.[1] ?? "";
+    const verified = domains.some((d) => d.name === fromDomain && d.status === "verified");
+    if (!verified) {
+      throw new Error(
+        `The Resend sending domain (${fromDomain}) is not verified yet — add the DNS records at your domain host, wait for Resend to show "verified", then Send again. Nothing was sent.`,
+      );
+    }
+  }
   const blocks = JSON.parse(campaign.blocksJson) as CampaignBlock[];
   if (blocks.length === 0) throw new Error("The campaign has no content blocks.");
   const profile = await getCompanyProfile();
@@ -147,12 +224,16 @@ export async function sendCampaign(prisma: PrismaClient, campaignId: string): Pr
   await prisma.emailCampaign.update({ where: { id: campaignId }, data: { status: "sending" } });
 
   const base = publicBaseUrl();
+  const transport = campaignTransport();
+  const dailyCap = transport === "resend" ? RESEND_DAILY_CAP : GMAIL_DAILY_CAP;
   let sent = 0, failed = 0, suppressed = 0, inBatch = 0;
+  let rateLimited = false;
   const pending = await prisma.emailCampaignSend.findMany({
     where: { campaignId, status: "pending" },
-    take: DAILY_SEND_CAP,
+    take: dailyCap,
   });
   for (const row of pending) {
+    if (rateLimited) break;
     if (await isSuppressed(prisma, row.email)) {
       await prisma.emailCampaignSend.update({ where: { id: row.id }, data: { status: "suppressed" } });
       suppressed += 1;
@@ -161,31 +242,49 @@ export async function sendCampaign(prisma: PrismaClient, campaignId: string): Pr
     const unsubscribeUrl = `${base}/unsubscribe/${row.unsubscribeToken}`;
     const html = renderCampaignHtml(blocks, unsubscribeUrl, profile.mailingAddress);
     try {
-      const ok = await sendBrandedEmail({
-        to: row.email,
-        subject: campaign.subject,
-        headline: campaign.subject,
-        bodyHtml: html,
-        headers: { "List-Unsubscribe": `<${unsubscribeUrl}>` },
-      });
-      if (ok) {
+      if (transport === "resend") {
+        await sendViaResend({
+          to: row.email,
+          subject: campaign.subject,
+          html: wrapCampaignHtml(campaign.subject, html),
+          headers: { "List-Unsubscribe": `<${unsubscribeUrl}>` },
+        });
         await prisma.emailCampaignSend.update({ where: { id: row.id }, data: { status: "sent", sentAt: new Date() } });
         sent += 1;
+        await new Promise((r) => setTimeout(r, RESEND_PAUSE_MS));
       } else {
-        await prisma.emailCampaignSend.update({ where: { id: row.id }, data: { status: "failed", error: "transport returned false" } });
-        failed += 1;
+        const ok = await sendBrandedEmail({
+          to: row.email,
+          subject: campaign.subject,
+          headline: campaign.subject,
+          bodyHtml: html,
+          headers: { "List-Unsubscribe": `<${unsubscribeUrl}>` },
+        });
+        if (ok) {
+          await prisma.emailCampaignSend.update({ where: { id: row.id }, data: { status: "sent", sentAt: new Date() } });
+          sent += 1;
+        } else {
+          await prisma.emailCampaignSend.update({ where: { id: row.id }, data: { status: "failed", error: "transport returned false" } });
+          failed += 1;
+        }
+        inBatch += 1;
+        if (inBatch >= GMAIL_BATCH_SIZE) {
+          inBatch = 0;
+          await new Promise((r) => setTimeout(r, GMAIL_BATCH_PAUSE_MS));
+        }
       }
     } catch (err) {
+      if ((err as Error & { rateLimited?: boolean }).rateLimited) {
+        // The plan's ceiling — stop cleanly; pending rows resume on the next Send.
+        rateLimited = true;
+        logSystemEvent("warn", "campaigns", `Resend rate limit hit mid-campaign — run paused with pending rows (press Send to resume later)`, { campaignId });
+        break;
+      }
       await prisma.emailCampaignSend.update({
         where: { id: row.id },
         data: { status: "failed", error: err instanceof Error ? err.message.slice(0, 400) : String(err) },
       });
       failed += 1;
-    }
-    inBatch += 1;
-    if (inBatch >= BATCH_SIZE) {
-      inBatch = 0;
-      await new Promise((r) => setTimeout(r, BATCH_PAUSE_MS));
     }
   }
 
@@ -204,7 +303,7 @@ export async function sendCampaign(prisma: PrismaClient, campaignId: string): Pr
       suppressedCount: count("suppressed"),
     },
   });
-  logSystemEvent("info", "campaigns", `Campaign "${campaign.name}" run: ${sent} sent, ${failed} failed, ${suppressed} suppressed${remaining > 0 ? `, ${remaining} pending (daily cap)` : ""}`, { campaignId });
+  logSystemEvent("info", "campaigns", `Campaign "${campaign.name}" run via ${transport}: ${sent} sent, ${failed} failed, ${suppressed} suppressed${remaining > 0 ? `, ${remaining} pending` : ""}`, { campaignId });
   return { sent, failed, suppressed };
 }
 

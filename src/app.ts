@@ -4199,14 +4199,38 @@ app.post("/email-campaigns/:id/test", asyncHandler(async (req, res) => {
   const { getCompanyProfile } = await import("./services/companyProfile");
   const { sendBrandedEmail } = await import("./services/confirmationEmail");
   const profile = await getCompanyProfile();
+  const { campaignTransport, wrapCampaignHtml, renderCampaignHtml: render } = await import("./services/emailCampaigns");
+  const body = render(JSON.parse(campaign.blocksJson), "#test-send", profile.mailingAddress);
+  // The test rides the SAME pipe the real send will use — a Gmail test proving
+  // out a Resend campaign would prove nothing.
+  if (campaignTransport() === "resend") {
+    const res2 = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: process.env.RESEND_FROM ?? "Red Cedar Electric <news@redcedarelectricllc.com>",
+        to: [profile.email],
+        reply_to: profile.email,
+        subject: `[TEST] ${campaign.subject}`,
+        html: wrapCampaignHtml(campaign.subject, body),
+      }),
+    });
+    if (!res2.ok) {
+      const detail = await res2.text().catch(() => "");
+      res.status(502).json({ error: `Resend refused the test (${res2.status}): ${detail.slice(0, 200)}` });
+      return;
+    }
+    res.json({ sent: true, to: profile.email, via: "resend" });
+    return;
+  }
   const ok = await sendBrandedEmail({
     to: profile.email,
     subject: `[TEST] ${campaign.subject}`,
     headline: campaign.subject,
-    bodyHtml: renderCampaignHtml(JSON.parse(campaign.blocksJson), "#test-send", profile.mailingAddress),
+    bodyHtml: body,
   });
   if (!ok) { res.status(502).json({ error: "The test email could not be sent — check the email connection." }); return; }
-  res.json({ sent: true, to: profile.email });
+  res.json({ sent: true, to: profile.email, via: "gmail" });
 }));
 
 /**
