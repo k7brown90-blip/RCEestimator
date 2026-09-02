@@ -8,6 +8,7 @@ import { SendToPicker } from "../components/SendToPicker";
 import { PaymentPanel } from "../components/PaymentPanel";
 import { PhotoAttachPicker, PropertyPhotoSection } from "../components/PhotoGalleryPanel";
 import { GeneratorDesigner } from "../components/GeneratorDesigner";
+import { LoadCalcEditor } from "../components/LoadCalcEditor";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, openProtectedPdf } from "../lib/api";
@@ -1162,6 +1163,7 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
   });
   // The CRM-side generator designer (Kyle, 2026-08-31) — one open at a time.
   const [designerInspectionId, setDesignerInspectionId] = useState<string | null>(null);
+  const [editorInspectionId, setEditorInspectionId] = useState<string | null>(null);
   // P031 (Kyle, 2026-08-28): the generator sizing report, rendered on demand
   // like the health report — a stored file would die on the next deploy.
   const viewGeneratorReport = useMutation({
@@ -1274,6 +1276,14 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                     >
                       {designerInspectionId === inspection.id ? "Close designer" : "Design generator"}
                     </button>
+                    <button
+                      className="btn btn-secondary text-xs"
+                      onClick={() =>
+                        setEditorInspectionId(editorInspectionId === inspection.id ? null : inspection.id)
+                      }
+                    >
+                      {editorInspectionId === inspection.id ? "Close editor" : "Edit load calc"}
+                    </button>
                   </>
                 )}
                 <button
@@ -1291,6 +1301,13 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                 <GeneratorDesigner
                   inspectionId={inspection.id}
                   onClose={() => setDesignerInspectionId(null)}
+                />
+              )}
+              {editorInspectionId === inspection.id && (
+                <LoadCalcEditor
+                  inspectionId={inspection.id}
+                  onClose={() => setEditorInspectionId(null)}
+                  onRevised={() => setEditorInspectionId(null)}
                 />
               )}
             </li>

@@ -253,6 +253,7 @@ function CloseOutForm({ finding, onDone }: { finding: PropertyFinding; onDone: (
   const [partyName, setPartyName] = useState("");
   const [detail, setDetail] = useState("");
   const [attestedBy, setAttestedBy] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
 
   const resolve = useMutation({
     mutationFn: () =>
@@ -324,13 +325,28 @@ function CloseOutForm({ finding, onDone }: { finding: PropertyFinding; onDone: (
       <div className="flex gap-2">
         <button
           className="btn btn-primary"
-          disabled={!detail.trim() || !attestedBy.trim() || resolve.isPending}
-          onClick={() => resolve.mutate()}
+          disabled={resolve.isPending}
+          onClick={() => {
+            // A silently-disabled button reads as broken (Kyle, 2026-09-01:
+            // "not reacting to my click"). Click always answers: either it
+            // records, or it names the missing lines — they ARE the certificate.
+            const missing: string[] = [];
+            if (!detail.trim()) missing.push('"What was actually done"');
+            if (!attestedBy.trim()) missing.push("the attesting name");
+            if (party !== "red_cedar" && !partyName.trim()) missing.push("who did the work, by name");
+            if (missing.length > 0) {
+              setProblem(`Before recording: fill in ${missing.join(" and ")} — the certificate prints them verbatim.`);
+              return;
+            }
+            setProblem(null);
+            resolve.mutate();
+          }}
         >
           {resolve.isPending ? "Saving…" : "Record resolution"}
         </button>
         <button className="btn btn-secondary" onClick={onDone}>Cancel</button>
       </div>
+      {problem && <p className="text-xs text-amber-800">{problem}</p>}
       {resolve.error && <p className="text-xs text-red-600">{(resolve.error as Error).message}</p>}
     </div>
   );
@@ -339,6 +355,7 @@ function CloseOutForm({ finding, onDone }: { finding: PropertyFinding; onDone: (
 function IssueCertificate({ finding }: { finding: PropertyFinding }) {
   const queryClient = useQueryClient();
   const [attestedBy, setAttestedBy] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
   const issue = useMutation({
     mutationFn: () =>
       api.issueFindingCertificate({
@@ -368,8 +385,12 @@ function IssueCertificate({ finding }: { finding: PropertyFinding }) {
       />
       <button
         className="btn btn-secondary"
-        disabled={!attestedBy.trim() || issue.isPending}
-        onClick={() => issue.mutate()}
+        disabled={issue.isPending}
+        onClick={() => {
+          if (!attestedBy.trim()) { setProblem("Enter the attesting name first — it signs the certificate."); return; }
+          setProblem(null);
+          issue.mutate();
+        }}
       >
         {issue.isPending
           ? "Generating…"
@@ -377,6 +398,7 @@ function IssueCertificate({ finding }: { finding: PropertyFinding }) {
             ? "Issue certificate of correction"
             : "Issue record of upgrade"}
       </button>
+      {problem && <p className="text-xs text-amber-800">{problem}</p>}
       {issue.error && <p className="text-xs text-red-600">{(issue.error as Error).message}</p>}
     </div>
   );
