@@ -17,10 +17,10 @@ import {
   clockOut,
   completeVisitFromField,
   fetchJobBrief,
+  scheduleVisitFromField,
   uploadJobPhoto,
   uploadReceiptFromField,
-  type JobBrief,,
-  scheduleVisitFromField,
+  type JobBrief,
 } from '../../lib/crmSync'
 import { CollectPayment } from '../components/CollectPayment'
 import type { CrmAssignment } from '../../domain/types'
