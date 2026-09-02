@@ -90,7 +90,7 @@ healthRecordTechRouter.get("/assignments", asyncHandler(async (req: TechRequest,
     // address has been assessed before without opening the CRM.
     propertyIds.length
       ? prisma.healthInspection.findMany({
-        where: { propertyId: { in: propertyIds } },
+        where: { propertyId: { in: propertyIds }, supersededById: null },
         select: { propertyId: true, inspectionDate: true },
         orderBy: { inspectionDate: "desc" },
       })
@@ -1424,7 +1424,7 @@ healthRecordTechRouter.get("/my-properties", asyncHandler(async (req: TechReques
       _count: { _all: true },
     }),
     prisma.healthInspection.findMany({
-      where: { propertyId: { in: ids } },
+      where: { propertyId: { in: ids }, supersededById: null },
       orderBy: { inspectionDate: "desc" },
       select: { id: true, propertyId: true, inspectionDate: true, score: true, loadCalcJson: true },
     }),
@@ -1473,7 +1473,10 @@ healthRecordTechRouter.get("/properties/:propertyId/history", asyncHandler(async
       },
     }),
     prisma.healthInspection.findMany({
-      where: { propertyId },
+      // Overwrite ruling: the field's history shows only what stands. The
+      // superseded rows remain in the database; the Revise verb always lands
+      // on the record that is currently true.
+      where: { propertyId, supersededById: null },
       orderBy: { inspectionDate: "desc" },
       select: {
         id: true, inspectionDate: true, score: true, scope: true, schemaVersion: true,
@@ -1818,7 +1821,8 @@ const summarizeInspections = (
 /** Inspection history for a customer (newest first) — the retention record. */
 healthRecordAdminRouter.get("/customers/:customerId/inspections", asyncHandler(async (req, res) => {
   const inspections = await prisma.healthInspection.findMany({
-    where: { customerId: readParam(req, "customerId") },
+    // Overwrite ruling (2026-09-01): a superseded record is history, not a card.
+    where: { customerId: readParam(req, "customerId"), supersededById: null },
     select: inspectionSummary,
     orderBy: { inspectionDate: "desc" },
   });
@@ -1827,7 +1831,7 @@ healthRecordAdminRouter.get("/customers/:customerId/inspections", asyncHandler(a
 
 healthRecordAdminRouter.get("/properties/:propertyId/inspections", asyncHandler(async (req, res) => {
   const inspections = await prisma.healthInspection.findMany({
-    where: { propertyId: readParam(req, "propertyId") },
+    where: { propertyId: readParam(req, "propertyId"), supersededById: null },
     select: inspectionSummary,
     orderBy: { inspectionDate: "desc" },
   });
@@ -1836,7 +1840,7 @@ healthRecordAdminRouter.get("/properties/:propertyId/inspections", asyncHandler(
 
 healthRecordAdminRouter.get("/visits/:visitId/inspections", asyncHandler(async (req, res) => {
   const inspections = await prisma.healthInspection.findMany({
-    where: { visitId: readParam(req, "visitId") },
+    where: { visitId: readParam(req, "visitId"), supersededById: null },
     select: inspectionSummary,
     orderBy: { inspectionDate: "desc" },
   });
