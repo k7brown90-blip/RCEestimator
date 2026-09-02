@@ -204,6 +204,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     return (
       <MyAccountsScreen
         onBack={() => setScreen('assignment')}
+        onServiceCallCreated={() => setScreen('assignment')}
         onRevise={(full) => {
           void (async () => {
             const me = await cachedMe()

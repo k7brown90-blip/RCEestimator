@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from 'react'
 import {
+  createServiceCall,
   fetchInspectionFull,
   fetchMyProperties,
   fetchPropertyHistory,
@@ -21,6 +22,8 @@ import { OpenFindingsScreen } from './OpenFindingsScreen'
 
 interface Props {
   onBack: () => void
+  /** A self-created service call landed on the schedule — jump the tech there. */
+  onServiceCallCreated: () => void
   /**
    * Reopen an assessment pre-filled to correct it (Kyle, 2026-09-01). The
    * office supersedes the original and re-sends the corrected report — the
@@ -32,7 +35,9 @@ interface Props {
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
-export function MyAccountsScreen({ onBack, onRevise }: Props) {
+export function MyAccountsScreen({ onBack, onRevise, onServiceCallCreated }: Props) {
+  const [callPurpose, setCallPurpose] = useState('')
+  const [creatingCall, setCreatingCall] = useState(false)
   const [revising, setRevising] = useState<string | null>(null)
   const [list, setList] = useState<MyProperty[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -90,6 +95,33 @@ export function MyAccountsScreen({ onBack, onRevise }: Props) {
           Open findings at this address
           {active.openFindingCount > 0 ? ` (${active.openFindingCount})` : ''} →
         </button>
+
+        {/* Self-serve service call (phase 5): the visit lands on this tech's own
+            list and the office is notified — everything downstream (assessment,
+            quote, clock-in, payment) hangs off it as normal. */}
+        <div className="space-y-2 rounded-lg border border-emerald-800 bg-emerald-950/30 p-3">
+          <p className="text-xs font-medium text-emerald-200">New service call at this address</p>
+          <input
+            className="w-full rounded-lg border border-slate-600 bg-slate-800 p-2 text-sm text-white"
+            placeholder="What's the call for? (e.g. water heater circuit dead)"
+            value={callPurpose}
+            onChange={(e) => setCallPurpose(e.target.value)}
+          />
+          <button
+            type="button"
+            disabled={creatingCall || callPurpose.trim().length < 3}
+            onClick={() => {
+              setCreatingCall(true)
+              createServiceCall(active.propertyId, callPurpose.trim())
+                .then(() => { setCallPurpose(''); onServiceCallCreated() })
+                .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+                .finally(() => setCreatingCall(false))
+            }}
+            className="w-full rounded-lg bg-emerald-700 p-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {creatingCall ? 'Creating…' : 'Start the service call — it lands on your schedule'}
+          </button>
+        </div>
 
         <section className="space-y-2">
           <h2 className="text-sm font-medium text-slate-300">Assessments</h2>

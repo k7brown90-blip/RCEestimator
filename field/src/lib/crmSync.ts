@@ -718,6 +718,22 @@ export async function fetchInspectionFull(inspectionId: string): Promise<Inspect
   return crmRequest(`/inspections/${inspectionId}/full`, { method: 'GET' })
 }
 
+// ─── Self-serve visits & scheduling (Kyle, 2026-09-01, phase 5) ─────────────
+
+/** Open a service call at an address this tech services. The office is notified. */
+export async function createServiceCall(propertyId: string, purpose: string): Promise<{ visitId: string }> {
+  return crmRequest(`/properties/${propertyId}/service-call`, { method: 'POST', body: JSON.stringify({ purpose }) })
+}
+
+/** Schedule (or move) an assigned visit — same gates as the office, deposit included. */
+export async function scheduleVisitFromField(
+  visitId: string,
+  date: string,
+  time: string | null,
+): Promise<{ scheduledStart: string | null; scheduledEnd: string | null; status: string | null }> {
+  return crmRequest(`/visits/${visitId}/schedule`, { method: 'POST', body: JSON.stringify({ date, time }) })
+}
+
 // ─── Quote in the field (Kyle, 2026-09-01, step 4) ──────────────────────────
 //    Same price book, same engine, same gates as the CRM — these call the
 //    tech-authenticated wrappers, never a second pricing path.

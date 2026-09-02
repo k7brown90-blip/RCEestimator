@@ -10,6 +10,8 @@
  */
 
 import express from "express";
+import { techAvailabilityForDate } from "../services/techCalendars";
+import { scheduleJob } from "../services/scheduling";
 import { summarizeOptions } from "../services/atomicEstimateEngine";
 import { graduateDraft } from "../services/issuedEstimateService";
 import { addLine, browseAtomics, computeDraft, createDraft, editLine, loadRateContext, removeLine } from "../services/atomicEstimateService";
@@ -825,6 +827,107 @@ healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: T
       number: result.number,
       unpriced: result.unpriced ?? [],
       customerUrl: `${publicBaseUrl()}/e/${est!.token}`,
+    },
+  });
+}));
+
+
+// ─── SELF-SERVE VISITS & SCHEDULING FROM THE FIELD (Kyle, 2026-09-01, phase 5) ─
+//
+// "If scheduled for a later date. The job shows up on the techs schedule and is
+//  available to clock into on that date/time (this needs to be flexible)." And
+//  the ratified My-accounts option: the tech can START a service call at an
+//  address they service, without waiting for the office to create the visit.
+//  The office is notified of every self-created visit — self-serve, not silent.
+
+healthRecordTechRouter.post("/properties/:propertyId/service-call", asyncHandler(async (req: TechRequest, res) => {
+  const propertyId = readParam(req, "propertyId");
+  const body = z.object({ purpose: z.string().trim().min(3).max(200) }).parse(req.body ?? {});
+  if (!(await techServicedProperty(req.technician!.id, propertyId))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "You have not serviced this property" } });
+    return;
+  }
+  const property = await prisma.property.findUnique({
+    where: { id: propertyId },
+    select: { id: true, customerId: true, addressLine1: true, city: true, customer: { select: { name: true } } },
+  });
+  if (!property) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Property not found" } });
+    return;
+  }
+  const visit = await prisma.$transaction(async (tx) => {
+    const created = await tx.visit.create({
+      data: {
+        customerId: property.customerId,
+        propertyId: property.id,
+        mode: "onsite",
+        purpose: body.purpose,
+        status: "estimate",
+      },
+    });
+    await tx.visitAssignment.create({
+      data: { visitId: created.id, technicianId: req.technician!.id, role: "lead", status: "assigned" },
+    });
+    return created;
+  });
+  logSystemEvent("info", "health-record", `Field-created service call at ${property.addressLine1} (${property.customer.name}) by ${req.technician!.name}: ${body.purpose}`, {
+    visitId: visit.id, propertyId, technicianId: req.technician!.id,
+  });
+  sendKyleNotificationEmail(
+    `Field service call: ${property.customer.name}`,
+    `${req.technician!.name} opened a service call from the field.\n\nAccount: ${property.customer.name}\nAddress: ${property.addressLine1}, ${property.city}\nPurpose: ${body.purpose}\n\nIt is on their assignment list now; schedule or adjust it in the CRM if needed.`,
+  ).catch(() => {});
+  res.status(201).json({ success: true, data: { visitId: visit.id } });
+}));
+
+/** The tech's own free/busy for a candidate slot — so scheduling from the driveway isn't blind. */
+healthRecordTechRouter.get("/schedule-availability", asyncHandler(async (req: TechRequest, res) => {
+  const date = typeof req.query.date === "string" ? req.query.date : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ success: false, error: { code: "bad_request", message: "date must be YYYY-MM-DD" } });
+    return;
+  }
+  const techs = await techAvailabilityForDate(date);
+  const mine = techs.find((t) => (t as { technicianId?: string }).technicianId === req.technician!.id) ?? null;
+  res.json({ success: true, data: { date, me: mine, techs } });
+}));
+
+/**
+ * Schedule (or reschedule) a visit from the field. The SAME scheduleJob the
+ * CRM uses — deposit gate, calendar event, confirmation machinery — with this
+ * technician on the booking. Gate refusals (unpaid deposit) return their real
+ * wording; the tech collects the deposit and taps again.
+ */
+healthRecordTechRouter.post("/visits/:visitId/schedule", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const body = z.object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    time: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
+  }).parse(req.body ?? {});
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  try {
+    await scheduleJob(visitId, body.date, body.time ?? null, req.technician!.id);
+  } catch (err) {
+    res.status(409).json({ success: false, error: { code: "not_scheduled", message: err instanceof Error ? err.message : String(err) } });
+    return;
+  }
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    select: { scheduledStart: true, scheduledEnd: true, status: true },
+  });
+  res.json({
+    success: true,
+    data: {
+      scheduledStart: visit?.scheduledStart?.toISOString() ?? null,
+      scheduledEnd: visit?.scheduledEnd?.toISOString() ?? null,
+      status: visit?.status ?? null,
     },
   });
 }));

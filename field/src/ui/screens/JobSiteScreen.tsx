@@ -19,7 +19,8 @@ import {
   fetchJobBrief,
   uploadJobPhoto,
   uploadReceiptFromField,
-  type JobBrief,
+  type JobBrief,,
+  scheduleVisitFromField,
 } from '../../lib/crmSync'
 import { CollectPayment } from '../components/CollectPayment'
 import type { CrmAssignment } from '../../domain/types'
@@ -92,6 +93,13 @@ export function JobSiteScreen({
   // ── The clock (Phase 5): "a time stamp for labor tracking with a clock in
   // button." One open punch; banked minutes feed job profitability's labor. ──
   const [clockedInAt, setClockedInAt] = useState<string | null>(null)
+  // Schedule for later (phase 5): same scheduleJob the office uses — the
+  // deposit gate's refusal comes back verbatim and tells the tech what to do.
+  const [schedOpen, setSchedOpen] = useState(false)
+  const [schedDate, setSchedDate] = useState('')
+  const [schedTime, setSchedTime] = useState('08:00')
+  const [schedBusy, setSchedBusy] = useState(false)
+  const [schedMsg, setSchedMsg] = useState<string | null>(null)
   const [laborMinutes, setLaborMinutes] = useState(0)
   const [clockBusy, setClockBusy] = useState(false)
   const [clockError, setClockError] = useState<string | null>(null)
@@ -282,6 +290,34 @@ export function JobSiteScreen({
       >
         ⚡ Run electrical assessment
       </button>
+      <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-800/60 p-2">
+        <button type="button" onClick={() => setSchedOpen((o) => !o)} className="w-full text-left text-xs text-sky-200">
+          📅 {schedOpen ? 'Hide scheduling' : 'Schedule for a later date'}
+        </button>
+        {schedOpen && (
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <input type="date" value={schedDate} onChange={(e) => setSchedDate(e.target.value)} className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
+              <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)} className="w-28 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
+            </div>
+            <button
+              type="button"
+              disabled={schedBusy || !schedDate}
+              onClick={() => {
+                setSchedBusy(true); setSchedMsg(null)
+                scheduleVisitFromField(assignment.visitId, schedDate, schedTime || null)
+                  .then((r) => setSchedMsg(r.scheduledStart ? `Scheduled — ${new Date(r.scheduledStart).toLocaleString()}. It's on your list under that day.` : 'Scheduled.'))
+                  .catch((err) => setSchedMsg(err instanceof Error ? err.message : String(err)))
+                  .finally(() => setSchedBusy(false))
+              }}
+              className="w-full rounded-lg bg-sky-700 p-2 text-xs font-medium text-white disabled:opacity-50"
+            >
+              {schedBusy ? 'Scheduling…' : 'Book it'}
+            </button>
+            {schedMsg && <p className="rounded bg-slate-900 p-2 text-[11px] text-slate-200">{schedMsg}</p>}
+          </div>
+        )}
+      </div>
       {onBuildQuote && (
         <button
           type="button"
