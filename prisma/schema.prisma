@@ -2435,3 +2435,75 @@ model IssuedEstimateEvent {
 
   @@index([estimateId, at])
 }
+
+// ─── EMAIL CAMPAIGNS (Kyle, 2026-09-02) ──────────────────────────────────────
+// Lists are the audience (leads added by hand; the default list also includes
+// every account automatically). Campaigns render a block stack (text, Sanity
+// article cards, promotions) and send through the branded mailer in paced
+// batches. Unsubscribes are GLOBAL and permanent — CAN-SPAM is not per-list.
+
+model EmailList {
+  id                 String   @id @default(cuid())
+  name               String   @unique
+  /// The default "Storm Preparedness Campaign" list carries this: every
+  /// customer account with an email rides it at send time, no rows needed.
+  includeAllAccounts Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  members            EmailListMember[]
+  campaigns          EmailCampaign[]
+}
+
+model EmailListMember {
+  id         String   @id @default(cuid())
+  listId     String
+  email      String
+  name       String?
+  leadId     String?
+  customerId String?
+  addedAt    DateTime @default(now())
+  list       EmailList @relation(fields: [listId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, email])
+  @@index([leadId])
+}
+
+model EmailCampaign {
+  id              String    @id @default(cuid())
+  listId          String
+  name            String
+  subject         String
+  /// The composer's block stack: [{kind:"text"|"article"|"promo", ...}] —
+  /// rendered server-side at preview AND at send, so they can never differ.
+  blocksJson      String    @default("[]")
+  status          String    @default("draft") // draft | sending | sent
+  /// Set by the blog watcher when it auto-drafts from a new Sanity post.
+  sourceArticleId String?   @unique
+  createdAt       DateTime  @default(now())
+  sentAt          DateTime?
+  sentCount       Int       @default(0)
+  failedCount     Int       @default(0)
+  suppressedCount Int       @default(0)
+  list            EmailList @relation(fields: [listId], references: [id], onDelete: Restrict)
+  sends           EmailCampaignSend[]
+}
+
+model EmailCampaignSend {
+  id               String    @id @default(cuid())
+  campaignId       String
+  email            String
+  name             String?
+  status           String    @default("pending") // pending | sent | failed | suppressed
+  error            String?
+  sentAt           DateTime?
+  unsubscribeToken String    @unique
+  campaign         EmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, email])
+}
+
+model EmailSuppression {
+  email     String   @id
+  reason    String   @default("unsubscribed") // unsubscribed | bounced | manual
+  createdAt DateTime @default(now())
+}
+

@@ -27,6 +27,9 @@ const nav = [
   // (Kyle, 2026-08-30: "a new tab that is labeled 'Price Book' that will be
   // the full in-app editor"). The workbook is history; this is the source.
   { to: "/price-book", label: "Price Book" },
+  // Marketing email — lists, the composer, and what each send did
+  // (Kyle, 2026-09-02: "set up an email campaigns tab").
+  { to: "/campaigns", label: "Campaigns" },
   { to: "/settings", label: "Settings" },
 ];
 
@@ -41,6 +44,7 @@ const MOBILE_NAV_COLS: Record<number, string> = {
   // Ten entries in one phone row would leave ~36px per label; five columns
   // wrap into two even rows instead, so every label stays readable.
   10: "grid-cols-5",
+  11: "grid-cols-6",
 };
 
 function NavItem({ to, label, badge }: { to: string; label: string; badge?: number }) {

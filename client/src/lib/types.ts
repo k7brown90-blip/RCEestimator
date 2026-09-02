@@ -1294,3 +1294,26 @@ export interface PbChainRow {
   supersededBy: { id: string; revision: number } | null;
   job: { id: string; status: string; scheduledStart: string | null } | null;
 }
+
+// ─── Email campaigns (Kyle, 2026-09-02) ───────────────────────────────────────
+export type CampaignBlock =
+  | { kind: "text"; text: string }
+  | { kind: "article"; articleId: string; title: string; excerpt: string; url: string; imageUrl?: string | null }
+  | { kind: "promo"; headline: string; text: string; ctaLabel: string; ctaUrl: string };
+
+export type CampaignArticle = {
+  id: string; title: string; slug: string; excerpt: string; tag: string | null;
+  publishedAt: string | null; url: string;
+};
+
+export type CampaignOverview = {
+  lists: Array<{ id: string; name: string; includeAllAccounts: boolean; manualMembers: number; reach: number }>;
+  campaigns: Array<{
+    id: string; name: string; subject: string; status: "draft" | "sending" | "sent";
+    listName: string; listId: string; blocks: CampaignBlock[];
+    createdAt: string; sentAt: string | null;
+    sentCount: number; failedCount: number; suppressedCount: number; fromArticle: boolean;
+  }>;
+  suppressedCount: number;
+};
+

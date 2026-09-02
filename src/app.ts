@@ -1247,6 +1247,24 @@ app.use("/e", estimatePageRouter);
  * off to Stripe Checkout, where card and bank transfer sit side by side at
  * the same price. Cash/check/Zelle are recorded by hand in the CRM.
  */
+/**
+ * One-click unsubscribe (public — on the allowlist). Effective immediately and
+ * GLOBAL: the address never receives another campaign from any list. CAN-SPAM
+ * is not a preference center.
+ */
+app.get("/unsubscribe/:token", asyncHandler(async (req, res) => {
+  const row = await prisma.emailCampaignSend.findUnique({ where: { unsubscribeToken: String(req.params.token) } });
+  const page = (msg: string) => `<!doctype html><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <body style="font-family:sans-serif;max-width:440px;margin:64px auto;padding:0 16px;text-align:center;">
+    <h2 style="color:#1a5c2e;">Red Cedar Electric</h2><p>${msg}</p></body>`;
+  if (!row) { res.status(404).type("html").send(page("This unsubscribe link is no longer valid.")); return; }
+  const { suppressEmail } = await import("./services/emailCampaigns");
+  await suppressEmail(prisma, row.email);
+  logSystemEvent("info", "campaigns", `Unsubscribed: ${row.email}`, { campaignId: row.campaignId });
+  res.type("html").send(page("You're unsubscribed — you won't receive marketing email from us again. Job and invoice emails you request are unaffected."));
+}));
+
 app.get("/pay/:token", asyncHandler(async (req, res) => {
   const token = readParam(req, "token");
   const payType = readQuery(req, "type") === "deposit" ? "deposit" as const : "balance" as const;
@@ -4045,6 +4063,170 @@ app.get("/jobs", asyncHandler(async (req, res) => {
 // paymentSummary does it: totalPaid includes any legacy "discount" rows from
 // the retired 3% non-card programme (they close balances), `collected` is
 // real money only.
+// ─── EMAIL CAMPAIGNS (Kyle, 2026-09-02) ──────────────────────────────────────
+
+/** Everything the Campaigns tab shows, one round trip. Ensures the default list. */
+app.get("/email-campaigns/overview", asyncHandler(async (_req, res) => {
+  const { ensureDefaultList, resolveListRecipients } = await import("./services/emailCampaigns");
+  await ensureDefaultList(prisma);
+  const lists = await prisma.emailList.findMany({
+    include: { _count: { select: { members: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+  const resolved: Record<string, number> = {};
+  for (const l of lists) resolved[l.id] = (await resolveListRecipients(prisma, l.id)).length;
+  const campaigns = await prisma.emailCampaign.findMany({
+    orderBy: { createdAt: "desc" },
+    include: { list: { select: { name: true } } },
+  });
+  const suppressedCount = await prisma.emailSuppression.count();
+  res.json({
+    lists: lists.map((l) => ({
+      id: l.id, name: l.name, includeAllAccounts: l.includeAllAccounts,
+      manualMembers: l._count.members, reach: resolved[l.id] ?? 0,
+    })),
+    campaigns: campaigns.map((c) => ({
+      id: c.id, name: c.name, subject: c.subject, status: c.status,
+      listName: c.list.name, listId: c.listId, blocks: JSON.parse(c.blocksJson),
+      createdAt: c.createdAt, sentAt: c.sentAt,
+      sentCount: c.sentCount, failedCount: c.failedCount, suppressedCount: c.suppressedCount,
+      fromArticle: Boolean(c.sourceArticleId),
+    })),
+    suppressedCount,
+  });
+}));
+
+/** The lead card's one-tap add (Kyle: "on the lead channel have an option to add to an email campaign"). */
+app.post("/leads/:leadId/add-to-campaign", asyncHandler(async (req, res) => {
+  const lead = await prisma.lead.findUnique({ where: { id: String(req.params.leadId) } });
+  if (!lead) { res.status(404).json({ error: "Lead not found" }); return; }
+  if (!lead.email) { res.status(400).json({ error: "This lead has no email on file — add one first." }); return; }
+  const { ensureDefaultList, isSuppressed } = await import("./services/emailCampaigns");
+  const list = await ensureDefaultList(prisma);
+  if (await isSuppressed(prisma, lead.email)) {
+    res.status(409).json({ error: "That address unsubscribed from Red Cedar email — it cannot be re-added." });
+    return;
+  }
+  await prisma.emailListMember.upsert({
+    where: { listId_email: { listId: list.id, email: lead.email } },
+    create: { listId: list.id, email: lead.email, name: lead.name, leadId: lead.id },
+    update: { name: lead.name, leadId: lead.id },
+  });
+  res.json({ added: true, listName: list.name });
+}));
+
+/** Which leads are already on a list — the card shows a check instead of a button. */
+app.get("/email-campaigns/lead-membership", asyncHandler(async (_req, res) => {
+  const members = await prisma.emailListMember.findMany({
+    where: { leadId: { not: null } },
+    select: { leadId: true },
+  });
+  res.json({ leadIds: [...new Set(members.map((m) => m.leadId))] });
+}));
+
+/** The published blog, for the composer's article picker. */
+app.get("/email-campaigns/articles", asyncHandler(async (_req, res) => {
+  const { fetchPublishedArticles } = await import("./services/sanityArticles");
+  try {
+    res.json({ articles: await fetchPublishedArticles(20) });
+  } catch (err) {
+    res.status(502).json({ error: `Could not reach the blog: ${err instanceof Error ? err.message : String(err)}` });
+  }
+}));
+
+const campaignBlockSchema = z.union([
+  z.object({ kind: z.literal("text"), text: z.string().max(8000) }),
+  z.object({
+    kind: z.literal("article"), articleId: z.string(), title: z.string(),
+    excerpt: z.string().max(2000), url: z.string().url(), imageUrl: z.string().nullable().optional(),
+  }),
+  z.object({
+    kind: z.literal("promo"), headline: z.string().max(200), text: z.string().max(2000),
+    ctaLabel: z.string().max(60), ctaUrl: z.string().max(500),
+  }),
+]);
+
+app.post("/email-campaigns", asyncHandler(async (req, res) => {
+  const body = z.object({
+    name: z.string().trim().min(1).max(120),
+    subject: z.string().trim().min(1).max(200),
+    listId: z.string().optional(),
+    blocks: z.array(campaignBlockSchema).default([]),
+  }).parse(req.body ?? {});
+  const { ensureDefaultList } = await import("./services/emailCampaigns");
+  const listId = body.listId ?? (await ensureDefaultList(prisma)).id;
+  const campaign = await prisma.emailCampaign.create({
+    data: { listId, name: body.name, subject: body.subject, blocksJson: JSON.stringify(body.blocks) },
+  });
+  res.status(201).json({ id: campaign.id });
+}));
+
+app.patch("/email-campaigns/:id", asyncHandler(async (req, res) => {
+  const body = z.object({
+    name: z.string().trim().min(1).max(120).optional(),
+    subject: z.string().trim().min(1).max(200).optional(),
+    blocks: z.array(campaignBlockSchema).optional(),
+  }).parse(req.body ?? {});
+  const existing = await prisma.emailCampaign.findUnique({ where: { id: String(req.params.id) }, select: { status: true } });
+  if (!existing) { res.status(404).json({ error: "Campaign not found" }); return; }
+  if (existing.status !== "draft") { res.status(409).json({ error: "Only a draft can be edited." }); return; }
+  await prisma.emailCampaign.update({
+    where: { id: String(req.params.id) },
+    data: {
+      ...(body.name ? { name: body.name } : {}),
+      ...(body.subject ? { subject: body.subject } : {}),
+      ...(body.blocks ? { blocksJson: JSON.stringify(body.blocks) } : {}),
+    },
+  });
+  res.json({ ok: true });
+}));
+
+/** Server-rendered preview — the same renderer the send uses, so they cannot differ. */
+app.get("/email-campaigns/:id/preview", asyncHandler(async (req, res) => {
+  const campaign = await prisma.emailCampaign.findUnique({ where: { id: String(req.params.id) } });
+  if (!campaign) { res.status(404).json({ error: "Campaign not found" }); return; }
+  const { renderCampaignHtml } = await import("./services/emailCampaigns");
+  const { getCompanyProfile } = await import("./services/companyProfile");
+  const profile = await getCompanyProfile();
+  res.json({ html: renderCampaignHtml(JSON.parse(campaign.blocksJson), "#unsubscribe-preview", profile.mailingAddress), subject: campaign.subject });
+}));
+
+/** Test send to the shop's own inbox. */
+app.post("/email-campaigns/:id/test", asyncHandler(async (req, res) => {
+  const campaign = await prisma.emailCampaign.findUnique({ where: { id: String(req.params.id) } });
+  if (!campaign) { res.status(404).json({ error: "Campaign not found" }); return; }
+  const { renderCampaignHtml } = await import("./services/emailCampaigns");
+  const { getCompanyProfile } = await import("./services/companyProfile");
+  const { sendBrandedEmail } = await import("./services/confirmationEmail");
+  const profile = await getCompanyProfile();
+  const ok = await sendBrandedEmail({
+    to: profile.email,
+    subject: `[TEST] ${campaign.subject}`,
+    headline: campaign.subject,
+    bodyHtml: renderCampaignHtml(JSON.parse(campaign.blocksJson), "#test-send", profile.mailingAddress),
+  });
+  if (!ok) { res.status(502).json({ error: "The test email could not be sent — check the email connection." }); return; }
+  res.json({ sent: true, to: profile.email });
+}));
+
+/**
+ * Send for real. Paced batches run in the BACKGROUND (a 300-recipient run
+ * takes ~15 minutes at Gmail-safe pacing) — the page polls the overview for
+ * progress. Kyle pressing this is a manual, attended send. Resumable: a
+ * second press on a "sending" campaign continues the pending rows.
+ */
+app.post("/email-campaigns/:id/send", asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  const campaign = await prisma.emailCampaign.findUnique({ where: { id }, select: { status: true } });
+  if (!campaign) { res.status(404).json({ error: "Campaign not found" }); return; }
+  if (campaign.status === "sent") { res.status(409).json({ error: "This campaign has already been sent." }); return; }
+  const { sendCampaign } = await import("./services/emailCampaigns");
+  sendCampaign(prisma, id).catch((err) => {
+    logSystemEvent("error", "campaigns", `Campaign send crashed: ${err instanceof Error ? err.message : String(err)}`, { campaignId: id });
+  });
+  res.json({ started: true });
+}));
+
 app.get("/invoices", asyncHandler(async (_req, res) => {
   const estimates = await prisma.issuedEstimate.findMany({
     // Test-account rows are excluded like the estimate chain — practice

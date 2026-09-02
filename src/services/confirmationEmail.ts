@@ -343,6 +343,8 @@ export async function sendBrandedEmail(input: {
    * Optional, so every existing caller is unchanged — nodemailer ignores an undefined value here.
    */
   attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
+  /** Extra SMTP headers — the campaign sender's List-Unsubscribe. Optional; existing callers unchanged. */
+  headers?: Record<string, string>;
 }): Promise<boolean> {
   const mail = getTransporter();
   if (!mail) {
@@ -378,6 +380,7 @@ export async function sendBrandedEmail(input: {
       subject: input.subject,
       html,
       attachments: input.attachments,
+      headers: input.headers,
     });
     console.log(`[BrandedEmail] Sent "${input.subject}" to ${input.to}`);
     return true;

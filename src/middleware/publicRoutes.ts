@@ -194,6 +194,10 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
     reason: "Twilio's inbound-message webhook — public ONLY while TWILIO_INBOUND_SMS_WEBHOOK is on, which it is not. Twilio cannot send a session header, so the channel needs this entry when it is in use; when it is closed the route is refused with 410 and this entry is inert.",
   },
   {
+    methods: ["GET"], path: "/unsubscribe", prefix: true, credential: "unguessable id in path",
+    reason: "One-click campaign unsubscribe (CAN-SPAM). The customer arrives from a marketing email carrying a per-recipient random token; the handler resolves it or 404s. GET only.",
+  },
+  {
     methods: ["GET", "POST"], path: "/confirm", prefix: true, credential: "unguessable id in path",
     reason: "Appointment confirm/reschedule/cancel page. The customer arrives from an emailed link carrying a random confirmationToken; requiring a login would make the link useless.",
   },

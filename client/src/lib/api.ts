@@ -4,7 +4,9 @@ import type {
   AssemblyTemplate,
   AvailabilityResponse,
   CalendarSchedule,
-  LeadPipeline,
+  CampaignArticle,
+  CampaignBlock,
+  CampaignOverview,
   CompanionSuggestion,
   CrmCycleTimeMetrics,
   CrmFollowUpsMetrics,
@@ -15,35 +17,36 @@ import type {
   CustomerMatch,
   Estimate,
   EstimateAssembly,
+  EstimateItem,
+  FindingEvent,
   InvoiceSummary,
   JobSummary,
-  MonthSchedule,
-  Property,
-  PropertyWriteInput,
-  ScheduleJobResult,
-  Visit,
-  ModifierDef,
-  EstimateItem,
-  SupportItem,
-  TechDayAvailability,
-  FindingEvent,
   Lead,
+  LeadPipeline,
   LeadWriteInput,
-  PropertyFinding,
-  WeekSchedule,
+  ModifierDef,
+  MonthSchedule,
   PbAtomic,
+  PbChainRow,
   PbComputeResponse,
-  PbOption,
   PbDifficulty,
   PbDraft,
   PbFinalizeResult,
+  PbIssuedEstimate,
   PbNecCategory,
+  PbOption,
   PbQuantitySource,
   PbQuestion,
   PbReview,
   PbWalkthroughRow,
-  PbIssuedEstimate,
-  PbChainRow,
+  Property,
+  PropertyFinding,
+  PropertyWriteInput,
+  ScheduleJobResult,
+  SupportItem,
+  TechDayAvailability,
+  Visit,
+  WeekSchedule,
 } from "./types";
 
 const API_BASE = "/api";
@@ -837,6 +840,20 @@ export const api = {
 
   // ─── Payments & deposits (2026-08-25) ──────────────────────────────────────
   jobPaymentInfo: (jobId: string) => request<PaymentInfo | null>(`/jobs/${jobId}/payment-info`),
+
+  // ─── Email campaigns (Kyle, 2026-09-02) ───────────────────────────────────
+  campaignOverview: () => request<CampaignOverview>(`/email-campaigns/overview`),
+  addLeadToCampaign: (leadId: string) =>
+    request<{ added: true; listName: string }>(`/leads/${leadId}/add-to-campaign`, { method: "POST" }),
+  campaignLeadMembership: () => request<{ leadIds: string[] }>(`/email-campaigns/lead-membership`),
+  campaignArticles: () => request<{ articles: CampaignArticle[] }>(`/email-campaigns/articles`),
+  createCampaign: (input: { name: string; subject: string; blocks: CampaignBlock[] }) =>
+    request<{ id: string }>(`/email-campaigns`, { method: "POST", body: JSON.stringify(input) }),
+  updateCampaign: (id: string, input: { name?: string; subject?: string; blocks?: CampaignBlock[] }) =>
+    request<{ ok: true }>(`/email-campaigns/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  campaignPreview: (id: string) => request<{ html: string; subject: string }>(`/email-campaigns/${id}/preview`),
+  campaignTestSend: (id: string) => request<{ sent: true; to: string }>(`/email-campaigns/${id}/test`, { method: "POST" }),
+  campaignSend: (id: string) => request<{ started: true }>(`/email-campaigns/${id}/send`, { method: "POST" }),
 
   /** Bill in writing (Kyle, 2026-09-01): the deposit request / final bill lands in the customer's inbox. */
   emailDepositRequest: (estimateId: string) =>

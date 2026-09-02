@@ -19,6 +19,8 @@ export interface CompanyProfile {
   phone: string;
   email: string;
   tagline: string;
+  /** CAN-SPAM footer line for marketing email — street or PO box. Editable in Settings. */
+  mailingAddress: string;
   /** TN electrician licence number — printed on every attestation. */
   licenseNumber: string | null;
   licenseState: string;
@@ -29,6 +31,9 @@ export const DEFAULT_COMPANY_PROFILE: CompanyProfile = {
   phone: "615-625-2163",
   email: "service@redcedarelectricllc.com",
   tagline: "Licensed & Insured · Serving Middle Tennessee",
+  // Best-judgment default (Kyle, 2026-09-02): city-level until he fills the
+  // street or PO box in Settings — the campaign send WARNS while it is vague.
+  mailingAddress: "La Vergne, TN",
   licenseNumber: null,
   licenseState: "TN",
 };
@@ -47,6 +52,9 @@ export async function getCompanyProfile(): Promise<CompanyProfile> {
 
   const licenseNumber = str(raw.licenseNumber ?? raw.license, "");
   return {
+    // Settings already carries "Business address" as `address` — reuse it
+    // (Kyle, 2026-09-02: footer address "use your best judgment").
+    mailingAddress: str(raw.mailingAddress ?? raw.address, DEFAULT_COMPANY_PROFILE.mailingAddress),
     legalName: str(raw.legalName ?? raw.name, DEFAULT_COMPANY_PROFILE.legalName),
     phone: str(raw.phone, DEFAULT_COMPANY_PROFILE.phone),
     email: str(raw.email, DEFAULT_COMPANY_PROFILE.email),

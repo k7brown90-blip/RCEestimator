@@ -134,6 +134,18 @@ async function startServer(): Promise<void> {
       console.error("[Cron] Invoice reminder sweep failed:", err);
     }
 
+    // 7. Blog auto-draft (Kyle, 2026-09-02): a new published article becomes a
+    // DRAFT campaign on the Storm Preparedness list. Never auto-sends.
+    console.log("[Cron] Running blog auto-draft check...");
+    try {
+      const { autoDraftFromNewArticles } = await import("./services/emailCampaigns");
+      const { prisma } = await import("./lib/prisma");
+      const d = await autoDraftFromNewArticles(prisma);
+      if (d.drafted > 0) console.log(`[Cron] Drafted ${d.drafted} campaign(s) from new blog posts.`);
+    } catch (err) {
+      console.error("[Cron] Blog auto-draft failed:", err);
+    }
+
   }, { timezone: "America/Chicago" });
 
   console.log("[Cron] Daily automation suite scheduled for 6:00 PM CT Mon-Fri");

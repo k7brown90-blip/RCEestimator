@@ -168,6 +168,15 @@ export function LeadsPage() {
    * appointment on, so booking one implies conversion — doing both in a single
    * click is the whole point of scheduling from this tab.
    */
+  const { data: campaignMembership } = useQuery({
+    queryKey: ["campaignLeadMembership"],
+    queryFn: api.campaignLeadMembership,
+  });
+  const campaignLeadIds = new Set(campaignMembership?.leadIds ?? []);
+  const addToCampaign = useMutation({
+    mutationFn: (leadId: string) => api.addLeadToCampaign(leadId),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["campaignLeadMembership"] }),
+  });
   const convertAndSchedule = useMutation({
     mutationFn: (leadId: string) => api.convertLead(leadId),
     onError: (err, leadId) => {
@@ -420,6 +429,23 @@ export function LeadsPage() {
                         Mark Lost
                       </button>
                     )}
+
+                    {/* Email campaign membership (Kyle, 2026-09-02). One tap adds the
+                        lead to the Storm Preparedness list; on it already = a quiet check. */}
+                    {lead.email && (campaignLeadIds.has(lead.id) ? (
+                      <span className="rounded-lg border border-green-300 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700">
+                        ✓ On email campaign
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-secondary text-xs"
+                        disabled={addToCampaign.isPending}
+                        onClick={() => addToCampaign.mutate(lead.id)}
+                      >
+                        + Email campaign
+                      </button>
+                    ))}
 
                     {/* A converted lead can't be deleted — the server 409s, and
                         the button used to just do nothing when clicked. */}
