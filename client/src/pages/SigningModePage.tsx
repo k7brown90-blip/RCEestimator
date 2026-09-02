@@ -27,8 +27,10 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
+import { PaymentPanel } from "../components/PaymentPanel";
 import { SignaturePad } from "../components/SignaturePad";
 
 type Phase = "reviewing" | "signed";
@@ -48,9 +50,21 @@ export function SigningModePage() {
   const [signature, setSignature] = useState<string | null>(null);
   const [signError, setSignError] = useState<string | null>(null);
   const [signing, setSigning] = useState(false);
-  // The job auto-created from the signed quote. Signing flows straight into scheduling
-  // (Kyle, 2026-08-24) — null only if the server couldn't create it, which falls back to Done.
+  // The job auto-created from the signed quote. Signing used to flow straight into
+  // scheduling (Kyle, 2026-08-24); Kyle re-ordered it 2026-09-02: "We need to get the
+  // payment and scheduling in the right priority" — deposit first, THEN the calendar.
   const [jobVisitId, setJobVisitId] = useState<string | null>(null);
+  // Same query key/fn the PaymentPanel uses, so the two share one cache entry.
+  // Polls while the signed sheet is up — a QR payment flips the gate live.
+  const { data: payInfo } = useQuery({
+    queryKey: ["paymentInfo", estimateId],
+    queryFn: () => api.estimatePaymentInfo(estimateId),
+    enabled: phase === "signed" && Boolean(estimateId),
+    refetchInterval: 10_000,
+  });
+  // null = unknown (fetch pending/failed): don't block the button — the server's
+  // scheduling gate still refuses an unpaid job with a clear message.
+  const depositIn = payInfo ? payInfo.depositSatisfied || payInfo.paidInFull : null;
 
   const load = useCallback(async () => {
     if (!estimateId) return;
@@ -162,25 +176,33 @@ export function SigningModePage() {
       )}
 
       {phase === "signed" && (
-        <div className="border-t border-rce-border bg-white p-4 text-center">
+        <div className="max-h-[65vh] overflow-y-auto border-t border-rce-border bg-white p-4 text-center">
           <p className="text-sm text-rce-text">
             <strong>Thank you.</strong> Your signature has been recorded and a copy has gone to
             Red Cedar Electric.
           </p>
-          {/* Signed → schedule, in one motion. The job already exists (created server-side at
-              signature), so the primary action lands on the calendar with the scheduler open
-              for it. Kyle's ruling, 2026-08-24: "It should immediately go to the calendar view
-              to schedule." */}
+          {/* Signed → DEPOSIT → schedule (Kyle, 2026-09-02: "We need to get the payment and
+              scheduling in the right priority"). The Take-payment panel leads: QR across the
+              counter, emailed pay link, or a recorded cash/check — any of them opens the
+              scheduling gate, and the poll flips the button the moment the money lands. The
+              server's deposit gate stays the enforcer; this sheet just puts the steps in the
+              honest order. */}
+          {depositIn === false && (
+            <div className="mt-3 text-left">
+              <PaymentPanel estimateId={estimateId} />
+            </div>
+          )}
           {jobVisitId ? (
             <>
               <button
                 className="btn btn-primary mt-3 w-full py-3"
+                disabled={depositIn === false}
                 onClick={() => navigate(`/calendar?schedule=${jobVisitId}`)}
               >
-                Schedule this job
+                {depositIn === false ? "Schedule this job — deposit first" : "Schedule this job"}
               </button>
               <button className="btn btn-secondary mt-2 w-full py-2" onClick={() => navigate(-1)}>
-                Close without scheduling
+                {depositIn === false ? "Close — collect the deposit later" : "Close without scheduling"}
               </button>
             </>
           ) : (
