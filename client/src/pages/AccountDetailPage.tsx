@@ -1293,7 +1293,7 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                   className="btn btn-primary text-xs"
                   disabled={emailReport.isPending || needsReview}
                   title={needsReview ? "Critical finding — contractor review required before this can be emailed" : undefined}
-                  onClick={() => emailReport.mutate({ id: inspection.id, includeGenerator: inspection.hasLoadCalc })}
+                  onClick={() => emailReport.mutate({ id: inspection.id, includeGenerator: Boolean(inspection.hasLoadCalc) })}
                 >
                   {emailReport.isPending
                     ? "Sending…"

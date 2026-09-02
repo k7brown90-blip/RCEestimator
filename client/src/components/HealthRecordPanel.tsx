@@ -273,7 +273,7 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                             ? "Critical finding — contractor review required before this can be emailed"
                             : undefined
                         }
-                        onClick={() => emailMutation.mutate({ id: inspection.id, includeGenerator: inspection.hasLoadCalc })}
+                        onClick={() => emailMutation.mutate({ id: inspection.id, includeGenerator: Boolean(inspection.hasLoadCalc) })}
                       >
                         {emailMutation.isPending ? "Sending…" : `Email report to customer${inspection.hasLoadCalc ? " + generator sizing" : ""}`}
                       </button>
