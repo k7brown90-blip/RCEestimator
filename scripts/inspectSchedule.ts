@@ -95,7 +95,10 @@ async function main(): Promise<void> {
   });
   if (orphans.length === 0) console.log("  none — every signed estimate has its job.");
   for (const e of orphans) {
-    console.log(`  ${e.number}  signed ${d(e.signedAt)} by ${e.signerName ?? "?"}  total $${e.total.toFixed(2)}`);
+    const { paymentSummary } = await import("../src/services/stripePayments");
+    const summary = await paymentSummary(prisma, e.id, "https://unused.invalid");
+    const billed = summary?.billedTotal ?? e.total;
+    console.log(`  ${e.number}  signed ${d(e.signedAt)} by ${e.signerName ?? "?"}  billed $${billed.toFixed(2)}${Math.abs(billed - e.total) > 0.005 ? ` (full scope $${e.total.toFixed(2)})` : ""}`);
     if (createMissing && apply) {
       const r = await createJobFromSignedEstimate(prisma, e.id, { actor: "claude:schedule-backfill-2026-09-02" });
       console.log(r.ok ? `    → job created: visit ${r.visitId}${r.created ? "" : " (already existed)"}` : `    !! refused: ${r.reason}`);

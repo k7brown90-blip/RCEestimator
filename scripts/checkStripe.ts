@@ -171,7 +171,10 @@ async function main(): Promise<void> {
     if (ests.length === 0) warn("no signed estimates on file");
     for (const e of ests) {
       const paid = await prisma.payment.aggregate({ where: { estimateId: e.id, status: "paid" }, _sum: { amount: true } });
-      console.log(`  ${e.number}  signed ${e.signedAt?.toISOString().slice(0, 10)}  total $${e.total.toFixed(2)}  paid $${(paid._sum.amount ?? 0).toFixed(2)}  pay link https://${process.env.RAILWAY_PUBLIC_DOMAIN}/pay/${e.token}`);
+      const { paymentSummary } = await import("../src/services/stripePayments");
+      const summary = await paymentSummary(prisma, e.id, "https://unused.invalid");
+      const billed = summary?.billedTotal ?? e.total;
+      console.log(`  ${e.number}  signed ${e.signedAt?.toISOString().slice(0, 10)}  BILLED $${billed.toFixed(2)}${Math.abs(billed - e.total) > 0.005 ? ` (full scope $${e.total.toFixed(2)} — customer took fewer options)` : ""}  paid $${(paid._sum.amount ?? 0).toFixed(2)}  pay link https://${process.env.RAILWAY_PUBLIC_DOMAIN}/pay/${e.token}`);
     }
   });
 
