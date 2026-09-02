@@ -304,19 +304,22 @@ export function CalendarPage() {
           )}
         </div>
 
-        {/* Needs-scheduling rail — the pipe from Leads into the calendar */}
+        {/* Needs-scheduling rail (reworked 2026-09-02 — Kyle: "the 'jobs need
+            scheduling' on the calendar are not jobs at all"). SOLD JOBS lead:
+            every card in that group has a signed estimate behind it. The lead
+            pipe — consultation and estimate visits — keeps its own section
+            under its own name, never dressed as production work. */}
         <aside className="space-y-2">
-          <h3 className="text-sm font-semibold">Needs scheduling</h3>
-          <p className="text-xs text-rce-muted">Jobs with no appointment yet.</p>
-          {(schedule?.unscheduled ?? []).map((job) => (
+          <h3 className="text-sm font-semibold">Sold jobs — ready to schedule</h3>
+          <p className="text-xs text-rce-muted">Signed work with no appointment yet.</p>
+          {(schedule?.unscheduled ?? []).filter((j) => j.status === "contracted").map((job) => (
             <div key={job.visitId} className="rounded-lg border border-rce-border bg-rce-bg p-3">
               <Link to={`/visits/${job.visitId}`} className="text-sm font-medium hover:text-rce-accent">
                 {job.customerName}
               </Link>
               <p className="text-xs text-rce-muted">{job.address}</p>
               <p className="mt-1 text-xs text-rce-soft">
-                {job.appointmentKind === "estimate" ? "Estimate visit" : "Production work"}
-                {job.jobType && ` · ${job.jobType}`}
+                Sold job{job.jobType ? ` · ${job.jobType}` : ""}{job.purpose ? ` · ${job.purpose}` : ""}
               </p>
               <button
                 type="button"
@@ -327,8 +330,32 @@ export function CalendarPage() {
               </button>
             </div>
           ))}
-          {(schedule?.unscheduled ?? []).length === 0 && !isLoading && (
-            <p className="text-xs text-rce-muted">Everything's booked.</p>
+          {(schedule?.unscheduled ?? []).filter((j) => j.status === "contracted").length === 0 && !isLoading && (
+            <p className="text-xs text-rce-muted">No sold jobs waiting.</p>
+          )}
+
+          <h3 className="pt-3 text-sm font-semibold">Estimate visits to book</h3>
+          <p className="text-xs text-rce-muted">Consultations from the lead pipe — not sold work.</p>
+          {(schedule?.unscheduled ?? []).filter((j) => j.status !== "contracted").map((job) => (
+            <div key={job.visitId} className="rounded-lg border border-rce-border/60 bg-rce-bg p-3">
+              <Link to={`/visits/${job.visitId}`} className="text-sm font-medium hover:text-rce-accent">
+                {job.customerName}
+              </Link>
+              <p className="text-xs text-rce-muted">{job.address}</p>
+              <p className="mt-1 text-xs text-rce-soft">
+                Estimate visit{job.jobType ? ` · ${job.jobType}` : ""}{job.purpose ? ` · ${job.purpose}` : ""}
+              </p>
+              <button
+                type="button"
+                className="btn btn-secondary mt-2 w-full text-xs"
+                onClick={() => setRescheduling(job)}
+              >
+                Book the visit
+              </button>
+            </div>
+          ))}
+          {(schedule?.unscheduled ?? []).filter((j) => j.status !== "contracted").length === 0 && !isLoading && (
+            <p className="text-xs text-rce-muted">None waiting.</p>
           )}
         </aside>
       </div>

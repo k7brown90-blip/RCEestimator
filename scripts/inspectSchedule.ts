@@ -21,6 +21,8 @@ const d = (x: Date | null | undefined) => (x ? x.toISOString().slice(0, 16).repl
 async function main(): Promise<void> {
   const createMissing = process.argv.includes("--create-missing-jobs");
   const apply = process.argv.includes("--apply");
+  const numArg = process.argv.indexOf("--number");
+  const onlyNumber = numArg >= 0 ? process.argv[numArg + 1] : null;
 
   console.log("── The Needs-scheduling rail (scheduledStart null, status estimate|contracted) ──");
   const rail = await prisma.visit.findMany({
@@ -49,7 +51,10 @@ async function main(): Promise<void> {
 
   console.log("\n── Signed estimates with NO job (Mabel's class) ──");
   const orphans = await prisma.issuedEstimate.findMany({
-    where: { signedAt: { not: null }, status: { not: "void" }, jobVisitId: null, supersededBy: null },
+    where: {
+      signedAt: { not: null }, status: { not: "void" }, jobVisitId: null, supersededBy: null,
+      ...(onlyNumber ? { number: onlyNumber } : {}),
+    },
     select: { id: true, number: true, signedAt: true, signerName: true, customerId: true, total: true },
     orderBy: { signedAt: "desc" },
   });
