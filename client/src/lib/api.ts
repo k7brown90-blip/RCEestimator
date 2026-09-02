@@ -774,10 +774,10 @@ export const api = {
       body: JSON.stringify(input),
     }),
   /** Email the report to the customer — logged as a delivery; refuses an unreviewed critical report. */
-  emailHealthReport: (inspectionId: string, to?: string) =>
+  emailHealthReport: (inspectionId: string, to?: string, includeGenerator?: boolean) =>
     request<{ sent: true; sentTo: string; documentId: string }>(
       `/health-record-admin/inspections/${inspectionId}/email`,
-      { method: "POST", body: JSON.stringify(to ? { to } : {}) },
+      { method: "POST", body: JSON.stringify({ ...(to ? { to } : {}), includeGenerator: includeGenerator ?? false }) },
     ),
 
   // ─── Account contacts (2026-08-25) ─────────────────────────────────────────

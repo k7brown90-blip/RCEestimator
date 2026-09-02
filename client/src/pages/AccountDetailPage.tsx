@@ -1171,7 +1171,10 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
     onSuccess: (r) => void openProtectedPdf(`/documents/${r.documentId}/pdf`),
   });
   const emailReport = useMutation({
-    mutationFn: (inspectionId: string) => api.emailHealthReport(inspectionId),
+    // The generator sheet rides along whenever the assessment has a calc —
+    // "email the load calc, electrical assesment, and generator sizing report."
+    mutationFn: (input: { id: string; includeGenerator: boolean }) =>
+      api.emailHealthReport(input.id, undefined, input.includeGenerator),
     onSuccess: () => {
       setEmailError(null);
       void queryClient.invalidateQueries({ queryKey: ["accountHealthRecords", accountId] });
@@ -1290,11 +1293,11 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                   className="btn btn-primary text-xs"
                   disabled={emailReport.isPending || needsReview}
                   title={needsReview ? "Critical finding — contractor review required before this can be emailed" : undefined}
-                  onClick={() => emailReport.mutate(inspection.id)}
+                  onClick={() => emailReport.mutate({ id: inspection.id, includeGenerator: inspection.hasLoadCalc })}
                 >
                   {emailReport.isPending
                     ? "Sending…"
-                    : `Email to customer${customerEmail ? ` (${customerEmail})` : ""}`}
+                    : `Email to customer${inspection.hasLoadCalc ? " + generator sizing" : ""}${customerEmail ? ` (${customerEmail})` : ""}`}
                 </button>
               </div>
               {designerInspectionId === inspection.id && (

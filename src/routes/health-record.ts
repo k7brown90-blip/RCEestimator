@@ -2183,10 +2183,13 @@ healthRecordAdminRouter.post("/inspections/:id/generator-report", asyncHandler(a
  * unreviewed critical report, and logs the delivery.
  */
 healthRecordAdminRouter.post("/inspections/:id/email", asyncHandler(async (req, res) => {
-  const body = z.object({ to: z.string().email().optional() }).parse(req.body ?? {});
+  // includeGenerator (2026-09-01): the CRM send carries the Load Calc &
+  // Generator Sizing sheet exactly like the field's — one email, all of it.
+  const body = z.object({ to: z.string().email().optional(), includeGenerator: z.boolean().optional() }).parse(req.body ?? {});
   const result = await sendHealthReportEmail(readParam(req, "id"), {
     to: body.to ?? null,
     sentBy: "owner:crm",
+    includeGenerator: body.includeGenerator ?? false,
   });
   if (!result.sent) {
     res.status(409).json({ sent: false, error: result.reason });

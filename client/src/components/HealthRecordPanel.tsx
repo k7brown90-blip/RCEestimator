@@ -72,7 +72,8 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
   // unreviewed critical report and logs every send as a delivery.
   const [emailResult, setEmailResult] = useState<string | null>(null);
   const emailMutation = useMutation({
-    mutationFn: (inspectionId: string) => api.emailHealthReport(inspectionId),
+    mutationFn: (input: { id: string; includeGenerator: boolean }) =>
+      api.emailHealthReport(input.id, undefined, input.includeGenerator),
     onSuccess: (r) => setEmailResult(`Sent to ${r.sentTo}.`),
     onError: (err) => setEmailResult((err as Error).message),
   });
@@ -272,9 +273,9 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                             ? "Critical finding — contractor review required before this can be emailed"
                             : undefined
                         }
-                        onClick={() => emailMutation.mutate(inspection.id)}
+                        onClick={() => emailMutation.mutate({ id: inspection.id, includeGenerator: inspection.hasLoadCalc })}
                       >
-                        {emailMutation.isPending ? "Sending…" : "Email report to customer"}
+                        {emailMutation.isPending ? "Sending…" : `Email report to customer${inspection.hasLoadCalc ? " + generator sizing" : ""}`}
                       </button>
                       {emailResult && <p className="mt-1 text-xs">{emailResult}</p>}
                     </div>
