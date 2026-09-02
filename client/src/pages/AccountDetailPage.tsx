@@ -258,7 +258,10 @@ export function AccountDetailPage() {
   if (!summary) return <p className="text-sm text-rce-muted">Account not found.</p>;
 
   const { account, properties, jobs, totals } = summary;
-  const activeJobs = jobs.filter((job) => !job.archived);
+  // Kyle's rulings (2026-08-29 + the 2026-09-02 report): an estimate-stage
+  // visit is a consultation, never a "current job"; finished work is history.
+  const activeJobs = jobs.filter((job) => !job.archived && job.status !== "estimate");
+  const openConsultations = jobs.filter((job) => !job.archived && job.status === "estimate");
   const pastJobs = jobs.filter((job) => job.archived);
 
   return (
@@ -453,7 +456,10 @@ export function AccountDetailPage() {
       )}
 
       <JobSection title="Current jobs" jobs={activeJobs} emptyText="No jobs in flight." defaultOpen />
-      <JobSection title="Past jobs" jobs={pastJobs} emptyText="No completed jobs yet." />
+      {openConsultations.length > 0 && (
+        <JobSection title="Open consultations" jobs={openConsultations} emptyText="" />
+      )}
+      <JobSection title="Past jobs & consultations" jobs={pastJobs} emptyText="No completed work yet." />
 
       <FindingLedger
         findings={summary.findings ?? []}
@@ -790,7 +796,7 @@ function AccountEstimates({
                 <button
                   type="button"
                   onClick={() => void openProtectedPdf(`/issued-estimates/${e.id}/pdf?audience=company`)}
-                  className="btn-secondary flex-1 text-sm"
+                  className="btn btn-secondary flex-1 text-sm"
                 >
                   View
                 </button>
@@ -804,7 +810,7 @@ function AccountEstimates({
                           `&draft=${encodeURIComponent(e.draftId)}&tab=review`,
                       )
                     }
-                    className="btn-primary flex-1 text-sm"
+                    className="btn btn-primary flex-1 text-sm"
                   >
                     Edit
                   </button>
@@ -818,7 +824,7 @@ function AccountEstimates({
                   type="button"
                   disabled={duplicateDraft.isPending}
                   onClick={() => duplicateDraft.mutate(e)}
-                  className="btn-secondary flex-1 text-sm"
+                  className="btn btn-secondary flex-1 text-sm"
                 >
                   {duplicateDraft.isPending ? "Copying…" : "Copy to new"}
                 </button>
@@ -1372,7 +1378,7 @@ function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][nu
         <button
           type="button"
           onClick={() => void openProtectedPdf(`/documents/${d.id}/pdf`)}
-          className="btn-secondary flex-1 text-sm"
+          className="btn btn-secondary flex-1 text-sm"
         >
           Open PDF
         </button>
@@ -1383,7 +1389,7 @@ function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][nu
               type="button"
               onClick={() => send.mutate()}
               disabled={send.isPending}
-              className="btn-primary flex-1 text-sm disabled:opacity-60"
+              className="btn btn-primary flex-1 text-sm disabled:opacity-60"
             >
               {send.isPending ? "Sending…" : "Email invoice"}
             </button>

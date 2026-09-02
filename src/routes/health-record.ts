@@ -1161,6 +1161,12 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
     technician: req.technician!.name,
     warnings,
   });
+  // The review ask rides completion (Kyle, 2026-09-02) — fire-and-forget.
+  {
+    const { sendReviewRequestEmail } = await import("../services/reviewRequest");
+    sendReviewRequestEmail(prisma, visitId).catch((err) =>
+      console.error("[jobs] review request failed:", err));
+  }
   // The handoff (Kyle: "admin then schedules an estimate or install once that
   // job is closed out") — the office hears about it the moment it happens.
   sendKyleNotificationEmail(

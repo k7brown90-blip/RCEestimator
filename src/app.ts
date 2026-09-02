@@ -3616,11 +3616,33 @@ app.get("/crm/schedule/calendar", asyncHandler(async (req, res) => {
     console.error("[crm/schedule/calendar] Google overlay unavailable:", err);
   }
 
+  /*
+    Kyle's ruling (2026-09-02 report): the rail tracks "leads and signed jobs
+    with paid deposits". So every contracted row carries the deposit's true
+    state (the client sorts paid-and-ready from signed-awaiting-deposit), and
+    the marked test account never rides the rail — it is a price-book
+    instrument, not work.
+  */
+  const { findTestAccount } = await import("./services/accountSpine");
+  const test = await findTestAccount(prisma);
+  const railVisits = unscheduledVisits.filter((v) => v.customer.id !== test?.id);
+  const depositByVisit = new Map<string, boolean>();
+  for (const v of railVisits) {
+    if (v.status !== "contracted") continue;
+    const est = await prisma.issuedEstimate.findFirst({
+      where: { signedAt: { not: null }, status: { not: "void" }, OR: [{ jobVisitId: v.id }, { visitId: v.id }] },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+    if (!est) { depositByVisit.set(v.id, false); continue; }
+    const summary = await paymentSummary(prisma, est.id, "https://unused.invalid");
+    depositByVisit.set(v.id, Boolean(summary?.depositSatisfied));
+  }
   res.json({
     start: startStr,
     end: endStr,
     appointments,
-    unscheduled: unscheduledVisits.map((visit) => ({
+    unscheduled: railVisits.map((visit) => ({
       visitId: visit.id,
       customerId: visit.customer.id,
       customerName: visit.customer.name,
@@ -3632,6 +3654,7 @@ app.get("/crm/schedule/calendar", asyncHandler(async (req, res) => {
       appointmentKind: appointmentKindFor(visit.status),
       estimatedDurationDays: visit.estimatedDurationDays,
       createdAt: visit.createdAt,
+      depositSatisfied: visit.status === "contracted" ? depositByVisit.get(visit.id) ?? false : null,
     })),
     googleOnlyEvents,
   });
@@ -3663,6 +3686,25 @@ app.post("/crm/jobs/:jobId/schedule", asyncHandler(async (req, res) => {
 // freebusy response is reported calendarAccessible=false — never as "free".
 // Optional start (HH:MM CT) + durationMinutes compute freeAtRequested per
 // tech server-side, because the browser can't be trusted to do CT/DST math.
+/*
+  Archive a stale estimate visit off the rail (Kyle, 2026-09-02: "none of these
+  need scheduling"). Only an UNSCHEDULED estimate visit qualifies — a booked
+  visit is cancelled through the scheduler so the calendar and the customer
+  hear about it, and a contracted job is sold work, not clutter.
+*/
+app.post("/crm/visits/:visitId/archive", asyncHandler(async (req, res) => {
+  const visitId = readParam(req, "visitId");
+  const visit = await prisma.visit.findUnique({ where: { id: visitId }, select: { status: true, scheduledStart: true } });
+  if (!visit) { res.status(404).json({ error: "Visit not found" }); return; }
+  if (visit.status !== "estimate" || visit.scheduledStart) {
+    res.status(409).json({ error: "Only an unscheduled estimate visit can be archived from the rail." });
+    return;
+  }
+  await prisma.visit.update({ where: { id: visitId }, data: { status: "cancelled" } });
+  logSystemEvent("info", "jobs", `Estimate visit archived off the scheduling rail`, { visitId });
+  res.json({ archived: true });
+}));
+
 app.get("/crm/schedule/tech-availability", asyncHandler(async (req, res) => {
   const date = String(req.query.date ?? "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -4227,6 +4269,12 @@ app.post("/jobs/:jobId/complete", asyncHandler(async (req, res) => {
     visitId: jobId,
     warnings,
   });
+  // The review ask rides completion (Kyle, 2026-09-02) — never able to fail it.
+  {
+    const { sendReviewRequestEmail } = await import("./services/reviewRequest");
+    sendReviewRequestEmail(prisma, jobId).catch((err) =>
+      console.error("[jobs] review request failed:", err));
+  }
   res.json({ completed: true, completedAt: updated.completedAt, warnings });
 }));
 
@@ -4708,7 +4756,11 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       propertyId: visit.property.id,
       propertyLabel: `${visit.property.name} — ${visit.property.addressLine1}, ${visit.property.city}`,
       status: visit.status,
-      archived: ARCHIVED_JOB_STATUSES.includes(visit.status as (typeof ARCHIVED_JOB_STATUSES)[number]),
+      archived:
+        ARCHIVED_JOB_STATUSES.includes(visit.status as (typeof ARCHIVED_JOB_STATUSES)[number]) ||
+        // A consultation closed via complete-consultation keeps status "estimate"
+        // but is finished (Kyle, 2026-09-02) — it reads archived, not current.
+        (visit.status === "estimate" && visit.completedAt != null),
       jobType: visit.jobType,
       purpose: visit.purpose,
       mode: visit.mode,

@@ -53,7 +53,9 @@ export type CustomerSendWorkflow =
   /** Web-form lead: opt-in confirmation SMS + instant auto-reply email. */
   | "webLeadAutoReply"
   /** Automatic replies to a customer's inbound text (confirm / reschedule / cancel). */
-  | "inboundAutoReply";
+  | "inboundAutoReply"
+  /** Google review request email when a job is marked done (Kyle, 2026-09-02). */
+  | "reviewRequests";
 
 const MASTER_ENV = "AUTOMATED_CUSTOMER_SENDS";
 
@@ -62,6 +64,7 @@ const WORKFLOW_ENV: Record<CustomerSendWorkflow, string> = {
   bookingConfirmations: "AUTOMATED_CUSTOMER_SENDS_BOOKING_CONFIRMATIONS",
   webLeadAutoReply: "AUTOMATED_CUSTOMER_SENDS_WEB_LEAD_AUTOREPLY",
   inboundAutoReply: "AUTOMATED_CUSTOMER_SENDS_INBOUND_AUTOREPLY",
+  reviewRequests: "AUTOMATED_CUSTOMER_SENDS_REVIEW_REQUESTS",
 };
 
 const WORKFLOW_LABEL: Record<CustomerSendWorkflow, string> = {
@@ -69,6 +72,7 @@ const WORKFLOW_LABEL: Record<CustomerSendWorkflow, string> = {
   bookingConfirmations: "booking/reschedule/cancel confirmations to customer",
   webLeadAutoReply: "web-lead opt-in SMS + auto-reply email",
   inboundAutoReply: "auto-replies to customer inbound texts",
+  reviewRequests: "Google review request email on job completion",
 };
 
 /**

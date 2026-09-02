@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { JobScheduler } from "../components/JobScheduler";
 import { Modal } from "../components/Modal";
@@ -49,6 +49,7 @@ const dateCT = (iso: string) =>
 const pad = (n: number) => String(n).padStart(2, "0");
 
 export function CalendarPage() {
+  const queryClient = useQueryClient();
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
@@ -311,8 +312,8 @@ export function CalendarPage() {
             under its own name, never dressed as production work. */}
         <aside className="space-y-2">
           <h3 className="text-sm font-semibold">Sold jobs — ready to schedule</h3>
-          <p className="text-xs text-rce-muted">Signed work with no appointment yet.</p>
-          {(schedule?.unscheduled ?? []).filter((j) => j.status === "contracted").map((job) => (
+          <p className="text-xs text-rce-muted">Signed, deposit in, no appointment yet.</p>
+          {(schedule?.unscheduled ?? []).filter((j) => j.status === "contracted" && j.depositSatisfied).map((job) => (
             <div key={job.visitId} className="rounded-lg border border-rce-border bg-rce-bg p-3">
               <Link to={`/visits/${job.visitId}`} className="text-sm font-medium hover:text-rce-accent">
                 {job.customerName}
@@ -330,8 +331,24 @@ export function CalendarPage() {
               </button>
             </div>
           ))}
-          {(schedule?.unscheduled ?? []).filter((j) => j.status === "contracted").length === 0 && !isLoading && (
+          {(schedule?.unscheduled ?? []).filter((j) => j.status === "contracted" && j.depositSatisfied).length === 0 && !isLoading && (
             <p className="text-xs text-rce-muted">No sold jobs waiting.</p>
+          )}
+
+          {(schedule?.unscheduled ?? []).some((j) => j.status === "contracted" && !j.depositSatisfied) && (
+            <>
+              <h3 className="pt-3 text-sm font-semibold">Signed — awaiting deposit</h3>
+              <p className="text-xs text-rce-muted">Sold, but the deposit gate is not open yet. Collect it, then schedule.</p>
+              {(schedule?.unscheduled ?? []).filter((j) => j.status === "contracted" && !j.depositSatisfied).map((job) => (
+                <div key={job.visitId} className="rounded-lg border border-amber-300/70 bg-rce-bg p-3">
+                  <Link to={`/accounts/${job.customerId}`} className="text-sm font-medium hover:text-rce-accent">
+                    {job.customerName}
+                  </Link>
+                  <p className="text-xs text-rce-muted">{job.address}</p>
+                  <p className="mt-1 text-xs text-amber-800">Deposit unpaid — Take payment lives on the account's invoice.</p>
+                </div>
+              ))}
+            </>
           )}
 
           <h3 className="pt-3 text-sm font-semibold">Estimate visits to book</h3>
@@ -345,13 +362,28 @@ export function CalendarPage() {
               <p className="mt-1 text-xs text-rce-soft">
                 Estimate visit{job.jobType ? ` · ${job.jobType}` : ""}{job.purpose ? ` · ${job.purpose}` : ""}
               </p>
-              <button
-                type="button"
-                className="btn btn-secondary mt-2 w-full text-xs"
-                onClick={() => setRescheduling(job)}
-              >
-                Book the visit
-              </button>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  className="btn btn-secondary flex-1 text-xs"
+                  onClick={() => setRescheduling(job)}
+                >
+                  Book the visit
+                </button>
+                <button
+                  type="button"
+                  className="btn text-xs text-rce-muted"
+                  title="Not needed — removes it from this list"
+                  onClick={() => {
+                    void api.archiveVisit(job.visitId).then(() => {
+                      void queryClient.invalidateQueries({ queryKey: ["calendar"] });
+                      void queryClient.invalidateQueries({ queryKey: ["schedule"] });
+                    });
+                  }}
+                >
+                  Archive
+                </button>
+              </div>
             </div>
           ))}
           {(schedule?.unscheduled ?? []).filter((j) => j.status !== "contracted").length === 0 && !isLoading && (

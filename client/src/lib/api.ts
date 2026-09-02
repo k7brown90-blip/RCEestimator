@@ -396,6 +396,10 @@ export const api = {
   accounts: () => request<Account[]>("/accounts"),
   account: (accountId: string) => request<Account>(`/accounts/${accountId}`),
   accountSummary: (accountId: string) => request<AccountSummary>(`/accounts/${accountId}/summary`),
+
+  /** Take a stale estimate visit off the scheduling rail (Kyle, 2026-09-02). */
+  archiveVisit: (visitId: string) =>
+    request<{ archived: true }>(`/crm/visits/${visitId}/archive`, { method: "POST" }),
   createAccount: (input: { name: string; email?: string; phone?: string }) =>
     request<Account>("/accounts", { method: "POST", body: JSON.stringify(input) }),
   updateAccount: (accountId: string, input: { name?: string; email?: string | null; phone?: string | null }) =>

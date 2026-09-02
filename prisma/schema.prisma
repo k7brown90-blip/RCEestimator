@@ -312,6 +312,9 @@ model Visit {
   // Estimate → job → job complete → stored and tracked"). The labor-tracking
   // timestamp; clock in/out is a later phase and hangs off this same visit.
   completedAt            DateTime?
+  /// Google review request sent for this job (Kyle, 2026-09-02). One ask per
+  /// job, and a customer is never asked twice within 90 days across jobs.
+  reviewRequestedAt      DateTime?
   // ── The handoff (Phase 4). Kyle: "admin then schedules an estimate or
   // install once that job is closed out." A completed job with nextStep null
   // sits in the office's Needs-next-step queue until someone dispositions it:

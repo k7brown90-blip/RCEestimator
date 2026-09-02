@@ -87,6 +87,8 @@ export function VisitWorkspacePage() {
   return (
     <div className="relative">
       <PageHeader
+        backTo={visit.customerId ? `/accounts/${visit.customerId}` : "/accounts"}
+        backLabel={visit.customer?.name ? `${visit.customer.name}'s account` : "Accounts"}
         title={visit.property?.addressLine1 ?? "Visit"}
         subtitle={`${shortDate(visit.visitDate)} | ${visit.mode.replaceAll("_", " ")} | ${visit.customer?.name ?? ""}`}
         actions={

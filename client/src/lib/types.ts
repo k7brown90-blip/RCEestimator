@@ -472,6 +472,8 @@ export type UnscheduledJob = {
   appointmentKind: AppointmentKind;
   estimatedDurationDays: number | null;
   createdAt: string;
+  /** Contracted rows: is the deposit in (Kyle's rail ruling, 2026-09-02)? Null for estimate visits. */
+  depositSatisfied: boolean | null;
 };
 
 /**
