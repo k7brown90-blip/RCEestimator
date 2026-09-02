@@ -32,6 +32,8 @@ interface Session {
   property: Property
   technician: string
   results: Record<string, ItemResult>
+  /** Set when this session REVISES a synced record (Kyle, 2026-09-01). */
+  revises?: string
   loadCalc?: InspectionLoadCalc
   v2?: V2Capture
   /** Per-section notes, keyed by group (2026-08-24). */
@@ -65,6 +67,7 @@ function toInspection(
     contractorReviewed,
     status,
     loadCalc: session.loadCalc,
+    ...(session.revises ? { revises: session.revises } : {}),
     v2: session.v2,
     ...(sectionNotes.length > 0 ? { sectionNotes } : {}),
     ...(ack?.acknowledgment ? { acknowledgment: ack.acknowledgment } : {}),
@@ -185,7 +188,51 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
   // My accounts (2026-09-01) — like the capacity check, this is an ordinary
   // tech verb that needs no assessment session open.
   if (screen === 'accounts') {
-    return <MyAccountsScreen onBack={() => setScreen('assignment')} />
+    return (
+      <MyAccountsScreen
+        onBack={() => setScreen('assignment')}
+        onRevise={(full) => {
+          void (async () => {
+            const me = await cachedMe()
+            // A local Property mirroring propertyForAssignment's shape, keyed to
+            // the ORIGINAL visit so the revision files to the same job.
+            const property: Property = {
+              id: crypto.randomUUID(),
+              address: full.address,
+              jurisdictionId: full.jurisdictionId,
+              jurisdictionSource: 'property',
+              createdAt: new Date().toISOString(),
+              crm: {
+                visitId: full.visitId,
+                propertyId: full.propertyId,
+                customerId: full.customerId,
+                customerName: full.customerName,
+              },
+            }
+            const items = full.items as ItemResult[]
+            const results: Record<string, ItemResult> = {}
+            for (const r of items) results[r.itemId] = r
+            // Sub-panel rows re-materialize from their stamped location labels.
+            const subPanels = items
+              .filter((r) => r.itemId.startsWith('SUB:') && r.locationId)
+              .map((r) => r.locationId as string)
+            const notes = Object.fromEntries(full.sectionNotes.map((n) => [n.group, n]))
+            setSession({
+              inspectionId: crypto.randomUUID(),
+              revises: full.id,
+              property,
+              technician: me?.name ?? 'Unknown technician',
+              results,
+              ...(full.loadCalc ? { loadCalc: full.loadCalc as InspectionLoadCalc } : {}),
+              ...(subPanels.length > 0 ? { subPanels } : {}),
+              ...(full.sectionNotes.length > 0 ? { sectionNotes: notes } : {}),
+            })
+            setCompleted(null)
+            setScreen('checklist')
+          })()
+        }}
+      />
+    )
   }
 
   if (screen === 'assignment' || !session || !profile) {

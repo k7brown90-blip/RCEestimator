@@ -45,6 +45,12 @@ export async function sendHealthReportEmail(
      * skipped) when the inspection has no load calculation.
      */
     includeGenerator?: boolean;
+    /**
+     * This send REPLACES a report the customer already holds (a revision —
+     * Kyle, 2026-09-01: "the customer isn't left holding an inaccurate
+     * calculation"). Changes the subject and says so in the body.
+     */
+    corrected?: { replacesDate: string };
   },
 ): Promise<HealthReportEmailResult> {
   const inspection = await prisma.healthInspection.findUnique({
@@ -98,10 +104,13 @@ export async function sendHealthReportEmail(
 
   const ok = await sendBrandedEmail({
     to: sentTo,
-    subject: `Your Electrical Health Record — ${address}`,
-    headline: "Your Electrical Health Record",
+    subject: opts.corrected
+      ? `Corrected — Your Electrical Health Record — ${address}`
+      : `Your Electrical Health Record — ${address}`,
+    headline: opts.corrected ? "Your corrected Electrical Health Record" : "Your Electrical Health Record",
     bodyHtml: `
       <p>Hi ${inspection.customer.name},</p>
+      ${opts.corrected ? `<p style="background:#F8EEDD;border-radius:6px;padding:10px 12px;"><strong>This replaces the report we sent you dated ${opts.corrected.replacesDate}.</strong> We corrected the record — please use this version and disregard the earlier one.</p>` : ""}
       <p>Attached ${generatorDoc ? "are the documents" : "is the Electrical Health Record"} from our assessment of
       <strong>${address}</strong> on ${dateStr}. ${generatorDoc
         ? "The Electrical Health Record documents what we measured, what passed, and anything worth correcting — with the code basis for each finding. The Load Calculation &amp; Generator Sizing sheet shows the Article 220 math line by line and what it means for standby power at your home."

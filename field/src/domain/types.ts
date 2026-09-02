@@ -233,4 +233,10 @@ export interface Inspection {
   /** Signed on site, or `ackSkippedReason` says why not — absence of both just means an old record. */
   acknowledgment?: CustomerAcknowledgment
   ackSkippedReason?: string
+  /**
+   * Revision (Kyle, 2026-09-01): the id of the inspection this one corrects.
+   * The office marks the original superseded and re-sends the corrected report
+   * to the customer automatically — a held report is surfaced, never silent.
+   */
+  revises?: string
 }

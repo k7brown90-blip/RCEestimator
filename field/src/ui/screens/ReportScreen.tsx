@@ -84,6 +84,13 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
       </div>
 
       <div className="space-y-1 print:hidden">
+        {inspection.revises && (
+          <p className="rounded-lg border border-amber-700 bg-amber-950/40 p-2 text-xs text-amber-200">
+            This is a correction. Once it syncs, the office marks the original superseded and
+            automatically re-sends the corrected report to the customer — if the send is held
+            (for example, an unreviewed critical), it shows up in the office record, never silently.
+          </p>
+        )}
         <label className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/60 p-2 text-xs text-slate-300">
           <input
             type="checkbox"

@@ -214,6 +214,9 @@ export function buildPushPayload(inspection: Inspection, property: Property): ob
     // Per-section notes + on-site acknowledgment (2026-08-24). Optional on the
     // server for old bundles; this bundle always sends what it captured.
     ...(inspection.sectionNotes?.length ? { sectionNotes: inspection.sectionNotes } : {}),
+    // Revision linkage (2026-09-01): the office supersedes the original and
+    // re-sends the corrected report to the customer.
+    ...(inspection.revises ? { revises: inspection.revises } : {}),
     ...(inspection.acknowledgment ? { acknowledgment: inspection.acknowledgment } : {}),
     ...(inspection.ackSkippedReason ? { ackSkippedReason: inspection.ackSkippedReason } : {}),
     // The build id, not a frozen phase label — so the office can see exactly
@@ -681,6 +684,8 @@ export interface PropertyHistory {
     hasLoadCalc: boolean
     technicianName: string | null
     mine: boolean
+    revisesId: string | null
+    supersededById: string | null
   }>
 }
 
@@ -690,6 +695,27 @@ export async function fetchMyProperties(): Promise<MyProperty[]> {
 
 export async function fetchPropertyHistory(propertyId: string): Promise<PropertyHistory> {
   return crmRequest(`/properties/${propertyId}/history`, { method: 'GET' })
+}
+
+/** Everything needed to reopen an assessment pre-filled — the revision flow. */
+export interface InspectionFull {
+  id: string
+  visitId: string
+  propertyId: string
+  customerId: string
+  customerName: string
+  jurisdictionId: string
+  date: string
+  scope: string
+  address: string
+  items: unknown[]
+  loadCalc: unknown
+  sectionNotes: Array<{ group: string; note: string; includeOnReport: boolean }>
+  supersededById: string | null
+}
+
+export async function fetchInspectionFull(inspectionId: string): Promise<InspectionFull> {
+  return crmRequest(`/inspections/${inspectionId}/full`, { method: 'GET' })
 }
 
 // ─── Capacity checks ────────────────────────────────────────────────────────

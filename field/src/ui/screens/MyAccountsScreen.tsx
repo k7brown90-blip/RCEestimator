@@ -10,8 +10,10 @@
 
 import { useEffect, useState } from 'react'
 import {
+  fetchInspectionFull,
   fetchMyProperties,
   fetchPropertyHistory,
+  type InspectionFull,
   type MyProperty,
   type PropertyHistory,
 } from '../../lib/crmSync'
@@ -19,12 +21,19 @@ import { OpenFindingsScreen } from './OpenFindingsScreen'
 
 interface Props {
   onBack: () => void
+  /**
+   * Reopen an assessment pre-filled to correct it (Kyle, 2026-09-01). The
+   * office supersedes the original and re-sends the corrected report — the
+   * customer is never left holding an inaccurate calculation.
+   */
+  onRevise: (full: InspectionFull) => void
 }
 
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
-export function MyAccountsScreen({ onBack }: Props) {
+export function MyAccountsScreen({ onBack, onRevise }: Props) {
+  const [revising, setRevising] = useState<string | null>(null)
   const [list, setList] = useState<MyProperty[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
@@ -103,9 +112,25 @@ export function MyAccountsScreen({ onBack }: Props) {
                 {i.itemsAssessed} items · {i.passCount} pass · {i.monitorCount} monitor · {i.failCount} fail
                 {i.hasLoadCalc ? ' · load calc ✓' : ''}
                 {i.contractorReviewed ? ' · reviewed' : ''}
+                {i.supersededById ? ' · superseded by a correction' : ''}
+                {i.revisesId ? ' · correction' : ''}
               </p>
-              {/* Phase 3 hangs its "Revise" verb here — the load calc and answers
-                  reopen pre-filled, and a saved correction re-sends the report. */}
+              {!i.supersededById && (
+                <button
+                  type="button"
+                  disabled={revising !== null}
+                  onClick={() => {
+                    setRevising(i.id)
+                    fetchInspectionFull(i.id)
+                      .then((full) => onRevise(full))
+                      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+                      .finally(() => setRevising(null))
+                  }}
+                  className="mt-2 w-full rounded-lg border border-sky-700 bg-sky-950/40 p-2 text-xs font-medium text-sky-200 disabled:opacity-50"
+                >
+                  {revising === i.id ? 'Opening…' : '✏️ Revise — reopens pre-filled; the corrected report is re-sent to the customer'}
+                </button>
+              )}
             </div>
           ))}
         </section>

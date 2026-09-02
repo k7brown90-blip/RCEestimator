@@ -487,6 +487,12 @@ model HealthInspection {
   acknowledgedAt         DateTime?
   ackSkippedReason       String?
   appVersion           String?
+  /// ── Revisions (Kyle, 2026-09-01) ──
+  /// "Any change needs to be sent out and overwrite the original." A revision is a NEW row that
+  /// names what it revises; the revised row gets supersededById and its report is re-delivered.
+  /// History is never rewritten — the correction is layered on top and sent.
+  revisesId            String?
+  supersededById       String?
   syncedAt             DateTime   @default(now())
   visit                Visit      @relation(fields: [visitId], references: [id], onDelete: Restrict)
   property             Property   @relation(fields: [propertyId], references: [id], onDelete: Restrict)
@@ -501,6 +507,7 @@ model HealthInspection {
 
   @@index([customerId, inspectionDate])
   @@index([propertyId, inspectionDate])
+  @@index([revisesId])
 }
 
 // One row per health-report email actually sent — when, to what address, by whom.

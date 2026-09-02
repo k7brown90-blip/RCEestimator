@@ -194,6 +194,13 @@ const inspectionPushSchema = z.object({
   groundingTestMethod: z.enum(["fall_of_potential_3point", "clamp_on_loop", "bonding_continuity"]).optional(),
   items: z.array(z.unknown()),
   loadCalc: z.unknown().optional(),
+  /**
+   * Revision (Kyle, 2026-09-01): the id of the inspection this push corrects.
+   * The old row is marked superseded and the corrected report is automatically
+   * re-sent to the customer if the original was ever delivered — "the customer
+   * isn't left holding an inaccurate calculation."
+   */
+  revises: z.string().optional(),
   appVersion: z.string().optional(),
   /**
    * Per-section technician notes (Kyle, 2026-08-24). Optional for the same
@@ -347,11 +354,33 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     appVersion: body.appVersion ?? null,
   };
 
+  // ── Revision guard: what this claims to revise must exist, at this address,
+  // and not already be superseded by a DIFFERENT revision.
+  let revised: { id: string; inspectionDate: Date; supersededById: string | null; deliveries: number } | null = null;
+  if (body.revises) {
+    const original = await prisma.healthInspection.findUnique({
+      where: { id: body.revises },
+      select: { id: true, propertyId: true, inspectionDate: true, supersededById: true, _count: { select: { deliveries: true } } },
+    });
+    if (!original || original.propertyId !== visit.propertyId) {
+      res.status(422).json({ success: false, error: { code: "bad_revision", message: "The record this revises does not exist at this address." } });
+      return;
+    }
+    if (original.supersededById && original.supersededById !== body.inspectionId) {
+      res.status(409).json({ success: false, error: { code: "already_revised", message: "That record was already corrected by a newer revision — revise the latest instead." } });
+      return;
+    }
+    revised = { id: original.id, inspectionDate: original.inspectionDate, supersededById: original.supersededById, deliveries: original._count.deliveries };
+  }
+
   const inspection = await prisma.healthInspection.upsert({
     where: { id: body.inspectionId },
-    create: { id: body.inspectionId, ...data },
-    update: data,
+    create: { id: body.inspectionId, ...data, revisesId: body.revises ?? null },
+    update: { ...data, revisesId: body.revises ?? null },
   });
+  if (revised) {
+    await prisma.healthInspection.update({ where: { id: revised.id }, data: { supersededById: inspection.id } });
+  }
 
   // Structured v2 rows — already validated above; replace-on-repush inside a
   // transaction so the offline queue can retry the whole inspection safely.
@@ -416,9 +445,40 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     }
   }
 
+  /*
+    THE CORRECTION GOES OUT (Kyle, 2026-09-01: "any change needs to be sent out and overwrite the
+    original... the customer isn't left holding an inaccurate calculation"). If the record this
+    revises was ever delivered, the corrected report — with the load-calc & generator sheet when
+    the revision carries a calc — is emailed now, marked as replacing the dated original. A
+    refusal (unreviewed critical, no address on file) is NOT silent: it rides the response and is
+    logged as a warning, so the held report is a visible fact, never a quiet gap.
+  */
+  let resend: { sent: boolean; to?: string; reason?: string; skipped?: string } | null = null;
+  if (revised) {
+    if (revised.deliveries === 0) {
+      resend = { sent: false, skipped: "The original was never emailed - nothing stale to replace. Send from the report screen when ready." };
+    } else {
+      const replacesDate = revised.inspectionDate.toLocaleDateString("en-US", { timeZone: "America/Chicago" });
+      const sendResult = await sendHealthReportEmail(inspection.id, {
+        sentBy: `tech:${req.technician!.id}`,
+        includeGenerator: Boolean(body.loadCalc),
+        corrected: { replacesDate },
+      });
+      resend = sendResult.sent
+        ? { sent: true, to: sendResult.sentTo }
+        : { sent: false, reason: sendResult.reason };
+      if (!sendResult.sent) {
+        logSystemEvent("warn", "health-record", `Corrected report ${inspection.id} was NOT re-sent: ${sendResult.reason}`, {
+          inspectionId: inspection.id,
+          revises: revised.id,
+        });
+      }
+    }
+  }
+
   res.status(201).json({
     success: true,
-    data: { id: inspection.id, syncedAt: inspection.syncedAt.toISOString(), ledger, v2: v2Summary },
+    data: { id: inspection.id, syncedAt: inspection.syncedAt.toISOString(), ledger, v2: v2Summary, resend },
   });
 }));
 
