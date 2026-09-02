@@ -37,6 +37,7 @@ import { renderEstimatePage, renderUnavailable } from "../services/issuedEstimat
 import { notifyOwnerSigned, publicBaseUrl } from "../services/issuedEstimateSend";
 import { paymentSummary } from "../services/stripePayments";
 import { sendDepositRequestEmail } from "../services/paymentReceipts";
+import { createJobFromSignedEstimate } from "../services/accountSpine";
 
 export const estimatePageRouter = express.Router();
 
@@ -138,6 +139,20 @@ estimatePageRouter.post(
     notifyOwnerSigned(prisma, result.estimateId).catch((err) =>
       console.error("[EstimatePage] owner notification failed:", err)
     );
+    /*
+      THE SOLD JOB EXISTS THE MOMENT THEY SIGN (Kyle, 2026-09-02: "Mabel signed
+      and payed the deposit and there is no way to schedule her"). The in-person
+      path has created the job since P029; the email-link path never did, so a
+      customer signing from home produced a signed estimate with nothing to
+      schedule. Same service, same idempotency; a failure is logged, never shown
+      to the customer — their signature already stands, and the office button
+      remains the manual fallback.
+    */
+    createJobFromSignedEstimate(prisma, result.estimateId, { actor: "customer:email-sign" })
+      .then((job) => {
+        if (!job.ok) console.error("[EstimatePage] job creation after email sign refused:", job.reason);
+      })
+      .catch((err) => console.error("[EstimatePage] job creation after email sign failed:", err));
     // The deposit request (Kyle, 2026-08-25): a customer signing from home has
     // no other way to hear the deposit gate exists. Fire-and-forget.
     sendDepositRequestEmail(prisma, result.estimateId, publicBaseUrl()).catch((err) =>

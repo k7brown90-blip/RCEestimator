@@ -28,6 +28,8 @@
     "scripts/applyMaterialMarkup.ts",
     // Read-only Stripe production check (Kyle, 2026-09-01) — account, webhook, sessions, reconciliation.
     "scripts/checkStripe.ts",
+    // Needs-scheduling rail provenance + signed-estimate job backfill (Kyle, 2026-09-02).
+    "scripts/inspectSchedule.ts",
     "scripts/checkGoogleCalendarConnection.ts",
     // The price-book writer, so the import can run where the database is reachable.
     // Extraction stays on Kyle's machine; only --from-json runs in here.
