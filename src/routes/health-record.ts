@@ -1479,6 +1479,7 @@ healthRecordTechRouter.get("/properties/:propertyId/history", asyncHandler(async
         id: true, inspectionDate: true, score: true, scope: true, schemaVersion: true,
         itemsAssessed: true, failCount: true, monitorCount: true, passCount: true,
         contractorReviewed: true, loadCalcJson: true, technicianId: true,
+        revisesId: true, supersededById: true,
         technician: { select: { name: true } },
       },
     }),
@@ -1510,7 +1511,55 @@ healthRecordTechRouter.get("/properties/:propertyId/history", asyncHandler(async
         hasLoadCalc: Boolean(i.loadCalcJson),
         technicianName: i.technician?.name ?? null,
         mine: i.technicianId === req.technician!.id,
+        revisesId: i.revisesId,
+        supersededById: i.supersededById,
       })),
+    },
+  });
+}));
+
+/**
+ * GET /health-record/inspections/:id/full — everything the field app needs to
+ * REOPEN an assessment pre-filled (the revision flow, Kyle 2026-09-01). Gated
+ * to techs who serviced the address, like the rest of My accounts.
+ */
+healthRecordTechRouter.get("/inspections/:id/full", asyncHandler(async (req: TechRequest, res) => {
+  const id = readParam(req, "id");
+  const inspection = await prisma.healthInspection.findUnique({
+    where: { id },
+    select: {
+      id: true, visitId: true, propertyId: true, customerId: true, jurisdictionId: true,
+      inspectionDate: true, scope: true, itemsJson: true, loadCalcJson: true,
+      sectionNotesJson: true, supersededById: true,
+      customer: { select: { name: true } },
+      property: { select: { addressLine1: true, city: true, state: true, postalCode: true } },
+    },
+  });
+  if (!inspection) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Inspection not found" } });
+    return;
+  }
+  if (!(await techServicedProperty(req.technician!.id, inspection.propertyId))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "You have not serviced this property" } });
+    return;
+  }
+  const parse = (v: string | null) => { try { return v ? JSON.parse(v) : null; } catch { return null; } };
+  res.json({
+    success: true,
+    data: {
+      id: inspection.id,
+      visitId: inspection.visitId,
+      propertyId: inspection.propertyId,
+      customerId: inspection.customerId,
+      customerName: inspection.customer.name,
+      jurisdictionId: inspection.jurisdictionId,
+      date: inspection.inspectionDate.toISOString(),
+      scope: inspection.scope,
+      address: `${inspection.property.addressLine1}, ${inspection.property.city}, ${inspection.property.state} ${inspection.property.postalCode}`,
+      items: parse(inspection.itemsJson) ?? [],
+      loadCalc: parse(inspection.loadCalcJson),
+      sectionNotes: parse(inspection.sectionNotesJson) ?? [],
+      supersededById: inspection.supersededById,
     },
   });
 }));
