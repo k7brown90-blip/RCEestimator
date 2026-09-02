@@ -4031,7 +4031,18 @@ app.get("/jobs", asyncHandler(async (req, res) => {
           title: latestIssued.title,
           status: trackerStatus(latestIssued.status),
           revision: latestIssued.revision,
-          totalCost: latestIssued.total,
+          // The SELL price, not the menu (Kyle, 2026-09-02: "This is all options
+          // combined when I sold only option A"). billedTotalOf = taken options
+          // + trip - combo - discount; with no selection it returns est.total,
+          // so a single-scope estimate reads the same as before.
+          totalCost: billedTotalOf({
+            total: latestIssued.total,
+            tripCharge: latestIssued.tripCharge,
+            selectedOptions: latestIssued.selectedOptions,
+            comboCapJson: latestIssued.comboCapJson,
+            discountJson: latestIssued.discountJson,
+            optionsSubtotals: latestIssued.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+          }),
           hasAcceptance: Boolean(latestIssued.signedAt),
         }
         : latestEstimate
