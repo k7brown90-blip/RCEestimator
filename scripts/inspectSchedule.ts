@@ -21,6 +21,41 @@ const d = (x: Date | null | undefined) => (x ? x.toISOString().slice(0, 16).repl
 async function main(): Promise<void> {
   const createMissing = process.argv.includes("--create-missing-jobs");
   const apply = process.argv.includes("--apply");
+
+  /*
+    --complete-visit <visitId> [--apply]: mark one job visit completed (Kyle,
+    2026-09-02: "Tony Hoover and Mike Corcoran jobs have been finished and are
+    marked complete" — the work was completed on the original appointment
+    visit; the sign-created job visit lingered contracted on the rail). The dry
+    run prints every visit the customer has, so the duplicate is confirmed
+    before anything is written.
+  */
+  const cvArg = process.argv.indexOf("--complete-visit");
+  if (cvArg >= 0) {
+    const visitId = process.argv[cvArg + 1];
+    const visit = await prisma.visit.findUnique({
+      where: { id: visitId },
+      include: { customer: { select: { id: true, name: true } } },
+    });
+    if (!visit) { console.log(`Visit ${visitId} not found.`); return; }
+    console.log(`Visit ${visitId} — ${visit.customer.name} · status ${visit.status} · purpose "${visit.purpose ?? ""}"`);
+    const siblings = await prisma.visit.findMany({
+      where: { customerId: visit.customer.id },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, status: true, purpose: true, createdAt: true, scheduledStart: true, completedAt: true },
+    });
+    console.log(`Every visit on ${visit.customer.name}'s account:`);
+    for (const v of siblings) {
+      console.log(`  ${v.id === visitId ? "→" : " "} ${v.id}  ${v.status.padEnd(11)} created ${d(v.createdAt)}  scheduled ${d(v.scheduledStart)}  completed ${d(v.completedAt)}  "${(v.purpose ?? "").slice(0, 34)}"`);
+    }
+    if (apply) {
+      await prisma.visit.update({ where: { id: visitId }, data: { status: "completed", completedAt: new Date() } });
+      console.log(`Marked completed. It leaves the sold-jobs rail now.`);
+    } else {
+      console.log("(dry run — --apply marks it completed)");
+    }
+    return;
+  }
   const numArg = process.argv.indexOf("--number");
   const onlyNumber = numArg >= 0 ? process.argv[numArg + 1] : null;
 
