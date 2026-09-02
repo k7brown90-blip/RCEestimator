@@ -2256,6 +2256,11 @@ model IssuedEstimate {
   /// customer signs for exactly ONE option, enforced at signature.
   exclusiveOptions Boolean @default(false)
 
+  /// Unpaid-invoice follow-up pacing (Kyle, 2026-09-02): nudges sent and when the last went,
+  /// so the daily sweep spaces reminders a week apart and stops at three.
+  paymentRemindersSent  Int       @default(0)
+  lastPaymentReminderAt DateTime?
+
   /// The discount as APPLIED, frozen at signature: {type, rate, cap, base, amount}. Frozen then
   /// and not at issue because the amount is 5% of what the customer SELECTS, capped at $250 —
   /// Kyle: "Off of the whole job but gets capped at $250" — and the selection does not exist

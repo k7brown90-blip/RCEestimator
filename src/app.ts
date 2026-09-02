@@ -72,7 +72,7 @@ import {
   scheduleJob, rescheduleJob, cancelJob, ConflictError,
   appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES,
 } from "./services/scheduling";
-import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal } from "./services/jobCosting";
+import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, mergeCostableChain, ROLLED_UP_COSTS } from "./services/jobCosting";
 import { parseJsonArrayLength, parseJsonStringArray } from "./lib/json";
 import { findCustomerMatches } from "./services/customerMatch";
 import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
@@ -3816,6 +3816,15 @@ app.post("/visits/:id/complete-consultation", asyncHandler(async (req, res) => {
 }));
 
 app.get("/jobs", asyncHandler(async (req, res) => {
+  // The cost chain (Kyle, 2026-09-02) — see /accounts/:id/summary for the rule.
+  const jobsChainLinks = await prisma.issuedEstimate.findMany({
+    where: { jobVisitId: { not: null }, visitId: { not: null } },
+    select: { visitId: true, jobVisitId: true },
+  });
+  const jobsChildToJob = new Map<string, string>();
+  for (const l of jobsChainLinks) {
+    if (l.visitId && l.jobVisitId && l.visitId !== l.jobVisitId) jobsChildToJob.set(l.visitId, l.jobVisitId);
+  }
   // Absent ?archived returns every job, so existing callers are unaffected.
   const archivedParam = readQuery(req, "archived");
   const statusFilter =
@@ -4009,7 +4018,10 @@ app.get("/jobs", asyncHandler(async (req, res) => {
             hasAcceptance: Boolean(latestEstimate.acceptance),
           }
           : null,
-      costs: rollupJobCosts(visit, acceptedTotal, laborRate),
+      costsRolledUpTo: jobsChildToJob.get(visit.id) ?? null,
+      costs: jobsChildToJob.has(visit.id)
+        ? rollupJobCosts(ROLLED_UP_COSTS, null, laborRate)
+        : rollupJobCosts(visit, acceptedTotal, laborRate),
     };
   });
 
@@ -4729,6 +4741,25 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
   }
 
   const visitIds = account.visits.map((v) => v.id);
+  /*
+    THE COST CHAIN (Kyle, 2026-09-02). An issued estimate names the visit it was
+    quoted on AND the job it became; hours and receipts that landed on the first
+    belong to the second. childToJob maps appointment → sold job so the job's
+    P&L is whole and nothing is counted twice.
+  */
+  const chainLinks = await prisma.issuedEstimate.findMany({
+    where: { customerId, jobVisitId: { not: null }, visitId: { not: null } },
+    select: { visitId: true, jobVisitId: true },
+  });
+  const childToJob = new Map<string, string>();
+  for (const l of chainLinks) {
+    if (l.visitId && l.jobVisitId && l.visitId !== l.jobVisitId) childToJob.set(l.visitId, l.jobVisitId);
+  }
+  const childrenOfJob = new Map<string, string[]>();
+  for (const [child, jobV] of childToJob) {
+    childrenOfJob.set(jobV, [...(childrenOfJob.get(jobV) ?? []), child]);
+  }
+  const visitById = new Map(account.visits.map((v) => [v.id, v]));
   const [receipts, laborRate, findings] = await Promise.all([
     visitIds.length
       ? prisma.receipt.findMany({
@@ -4778,7 +4809,18 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       visitDate: visit.visitDate,
       scheduledStart: visit.scheduledStart,
       scheduledEnd: visit.scheduledEnd,
-      costs: rollupJobCosts(visit, acceptedTotal, laborRate),
+      /** The visit whose card carries this one's costs, when part of a chain. */
+      costsRolledUpTo: childToJob.get(visit.id) ?? null,
+      costs: childToJob.has(visit.id)
+        ? rollupJobCosts(ROLLED_UP_COSTS, null, laborRate)
+        : rollupJobCosts(
+            mergeCostableChain(
+              visit,
+              (childrenOfJob.get(visit.id) ?? []).map((id) => visitById.get(id)!).filter(Boolean),
+            ),
+            acceptedTotal,
+            laborRate,
+          ),
       purchaseOrders: visit.materialOrders.map((order) => ({
         id: order.id,
         supplier: order.supplier,
@@ -4786,7 +4828,10 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
         sentAt: order.sentAt,
         createdAt: order.createdAt,
       })),
-      receipts: receiptsByJob.get(visit.id) ?? [],
+      receipts: [
+        ...(receiptsByJob.get(visit.id) ?? []),
+        ...(childrenOfJob.get(visit.id) ?? []).flatMap((id) => receiptsByJob.get(id) ?? []),
+      ],
       documents: visit.documents.map((doc) => ({
         id: doc.id, type: doc.type, signedAt: doc.signedAt, sentAt: doc.sentAt,
       })),

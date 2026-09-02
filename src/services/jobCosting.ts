@@ -35,6 +35,31 @@ export interface CostableVisit {
 }
 
 /**
+ * A job's cost chain (Kyle, 2026-09-02: "no cost revenue or profit" — the P&L
+ * merge). Hours clocked and materials bought on the ORIGINAL appointment visit
+ * belong to the sold job that came out of it. The chain is defined by the
+ * issued estimate, which names both visits (visitId = where it was quoted,
+ * jobVisitId = the sold job). Costs sum onto the job; the child visit's card
+ * reports that its costs rolled up, and lifetime totals count everything once.
+ */
+export function mergeCostableChain(job: CostableVisit, children: CostableVisit[]): CostableVisit {
+  return {
+    estimatedCost: job.estimatedCost,
+    revenue: job.revenue,
+    actualMaterialCost:
+      (job.actualMaterialCost ?? 0) + children.reduce((s, c) => s + (c.actualMaterialCost ?? 0), 0),
+    laborHours: (job.laborHours ?? 0) + children.reduce((s, c) => s + (c.laborHours ?? 0), 0),
+    overheadAllocation:
+      (job.overheadAllocation ?? 0) + children.reduce((s, c) => s + (c.overheadAllocation ?? 0), 0),
+  };
+}
+
+/** The child's own card after a merge: costs live on the job now. */
+export const ROLLED_UP_COSTS: CostableVisit = {
+  estimatedCost: null, actualMaterialCost: 0, laborHours: 0, overheadAllocation: 0, revenue: null,
+};
+
+/**
  * Revenue precedence: an explicitly recorded Visit.revenue always wins, because
  * that's the number someone typed after the job closed. Falling back to the
  * accepted estimate option keeps in-flight jobs showing an expected value.
