@@ -847,13 +847,19 @@ export const api = {
     request<{ added: true; listName: string }>(`/leads/${leadId}/add-to-campaign`, { method: "POST" }),
   campaignLeadMembership: () => request<{ leadIds: string[] }>(`/email-campaigns/lead-membership`),
   campaignArticles: () => request<{ articles: CampaignArticle[] }>(`/email-campaigns/articles`),
-  createCampaign: (input: { name: string; subject: string; blocks: CampaignBlock[] }) =>
+  createCampaign: (input: { name: string; subject: string; blocks: CampaignBlock[]; listId?: string }) =>
     request<{ id: string }>(`/email-campaigns`, { method: "POST", body: JSON.stringify(input) }),
-  updateCampaign: (id: string, input: { name?: string; subject?: string; blocks?: CampaignBlock[] }) =>
+  updateCampaign: (id: string, input: { name?: string; subject?: string; blocks?: CampaignBlock[]; listId?: string }) =>
     request<{ ok: true }>(`/email-campaigns/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
   campaignPreview: (id: string) => request<{ html: string; subject: string }>(`/email-campaigns/${id}/preview`),
   campaignTestSend: (id: string) => request<{ sent: true; to: string }>(`/email-campaigns/${id}/test`, { method: "POST" }),
   campaignSend: (id: string) => request<{ started: true }>(`/email-campaigns/${id}/send`, { method: "POST" }),
+  createEmailList: (input: { name: string; includeAllAccounts: boolean }) =>
+    request<{ id: string }>(`/email-lists`, { method: "POST", body: JSON.stringify(input) }),
+  addListMember: (listId: string, input: { email: string; name?: string }) =>
+    request<{ added: true }>(`/email-lists/${listId}/members`, { method: "POST", body: JSON.stringify(input) }),
+  removeListMember: (listId: string, memberId: string) =>
+    request<{ removed: true }>(`/email-lists/${listId}/members/${memberId}`, { method: "DELETE" }),
 
   /** Bill in writing (Kyle, 2026-09-01): the deposit request / final bill lands in the customer's inbox. */
   emailDepositRequest: (estimateId: string) =>

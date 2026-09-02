@@ -4070,7 +4070,7 @@ app.get("/email-campaigns/overview", asyncHandler(async (_req, res) => {
   const { ensureDefaultList, resolveListRecipients } = await import("./services/emailCampaigns");
   await ensureDefaultList(prisma);
   const lists = await prisma.emailList.findMany({
-    include: { _count: { select: { members: true } } },
+    include: { _count: { select: { members: true } }, members: { orderBy: { email: "asc" } } },
     orderBy: { createdAt: "asc" },
   });
   const resolved: Record<string, number> = {};
@@ -4084,6 +4084,7 @@ app.get("/email-campaigns/overview", asyncHandler(async (_req, res) => {
     lists: lists.map((l) => ({
       id: l.id, name: l.name, includeAllAccounts: l.includeAllAccounts,
       manualMembers: l._count.members, reach: resolved[l.id] ?? 0,
+      members: l.members.map((m) => ({ id: m.id, email: m.email, name: m.name, fromLead: Boolean(m.leadId) })),
     })),
     campaigns: campaigns.map((c) => ({
       id: c.id, name: c.name, subject: c.subject, status: c.status,
@@ -4122,6 +4123,49 @@ app.get("/email-campaigns/lead-membership", asyncHandler(async (_req, res) => {
     select: { leadId: true },
   });
   res.json({ leadIds: [...new Set(members.map((m) => m.leadId))] });
+}));
+
+/** Lists are user-creatable (Kyle, 2026-09-02): "This shouldn't be hard coded in. I can create a new one and test it." */
+app.post("/email-lists", asyncHandler(async (req, res) => {
+  const body = z.object({
+    name: z.string().trim().min(1).max(120),
+    includeAllAccounts: z.boolean().default(false),
+  }).parse(req.body ?? {});
+  const existing = await prisma.emailList.findUnique({ where: { name: body.name } });
+  if (existing) { res.status(409).json({ error: `A list named "${body.name}" already exists.` }); return; }
+  const list = await prisma.emailList.create({
+    data: { name: body.name, includeAllAccounts: body.includeAllAccounts },
+  });
+  res.status(201).json({ id: list.id });
+}));
+
+/** Hand-add any address to a list — how a brand-new list gets its test members. */
+app.post("/email-lists/:listId/members", asyncHandler(async (req, res) => {
+  const body = z.object({
+    email: z.string().trim().toLowerCase().email().max(320),
+    name: z.string().trim().max(120).optional(),
+  }).parse(req.body ?? {});
+  const list = await prisma.emailList.findUnique({ where: { id: String(req.params.listId) } });
+  if (!list) { res.status(404).json({ error: "List not found" }); return; }
+  const { isSuppressed } = await import("./services/emailCampaigns");
+  if (await isSuppressed(prisma, body.email)) {
+    res.status(409).json({ error: "That address unsubscribed from Red Cedar email — it cannot be re-added." });
+    return;
+  }
+  await prisma.emailListMember.upsert({
+    where: { listId_email: { listId: list.id, email: body.email } },
+    create: { listId: list.id, email: body.email, name: body.name ?? null },
+    update: { ...(body.name ? { name: body.name } : {}) },
+  });
+  res.json({ added: true });
+}));
+
+/** Remove a hand-added address (unsubscribe is separate and global — this is just list housekeeping). */
+app.delete("/email-lists/:listId/members/:memberId", asyncHandler(async (req, res) => {
+  const member = await prisma.emailListMember.findUnique({ where: { id: String(req.params.memberId) } });
+  if (!member || member.listId !== String(req.params.listId)) { res.status(404).json({ error: "Not on this list" }); return; }
+  await prisma.emailListMember.delete({ where: { id: member.id } });
+  res.json({ removed: true });
 }));
 
 /** The published blog, for the composer's article picker. */
@@ -4165,8 +4209,13 @@ app.patch("/email-campaigns/:id", asyncHandler(async (req, res) => {
   const body = z.object({
     name: z.string().trim().min(1).max(120).optional(),
     subject: z.string().trim().min(1).max(200).optional(),
+    listId: z.string().optional(),
     blocks: z.array(campaignBlockSchema).optional(),
   }).parse(req.body ?? {});
+  if (body.listId) {
+    const list = await prisma.emailList.findUnique({ where: { id: body.listId }, select: { id: true } });
+    if (!list) { res.status(400).json({ error: "Unknown list" }); return; }
+  }
   const existing = await prisma.emailCampaign.findUnique({ where: { id: String(req.params.id) }, select: { status: true } });
   if (!existing) { res.status(404).json({ error: "Campaign not found" }); return; }
   if (existing.status !== "draft") { res.status(409).json({ error: "Only a draft can be edited." }); return; }
@@ -4175,6 +4224,7 @@ app.patch("/email-campaigns/:id", asyncHandler(async (req, res) => {
     data: {
       ...(body.name ? { name: body.name } : {}),
       ...(body.subject ? { subject: body.subject } : {}),
+      ...(body.listId ? { listId: body.listId } : {}),
       ...(body.blocks ? { blocksJson: JSON.stringify(body.blocks) } : {}),
     },
   });

@@ -1307,7 +1307,7 @@ export type CampaignArticle = {
 };
 
 export type CampaignOverview = {
-  lists: Array<{ id: string; name: string; includeAllAccounts: boolean; manualMembers: number; reach: number }>;
+  lists: Array<{ id: string; name: string; includeAllAccounts: boolean; manualMembers: number; reach: number; members: Array<{ id: string; email: string; name: string | null; fromLead: boolean }> }>;
   campaigns: Array<{
     id: string; name: string; subject: string; status: "draft" | "sending" | "sent";
     listName: string; listId: string; blocks: CampaignBlock[];

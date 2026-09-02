@@ -51,27 +51,12 @@ export function CampaignsPage() {
       {isLoading && <p className="text-sm text-rce-muted">Loading…</p>}
       {error ? <p className="text-sm text-red-500">{(error as Error).message}</p> : null}
 
-      {data && (
-        <section className="card p-4">
-          <h2 className="text-lg font-semibold">Audience</h2>
-          {data.lists.map((l) => (
-            <p key={l.id} className="mt-1 text-sm">
-              <span className="font-medium">{l.name}</span>
-              {" — reaches "}<b>{l.reach}</b>{" address(es)"}
-              <span className="text-xs text-rce-muted">
-                {" · "}{l.includeAllAccounts ? `every account with an email + ${l.manualMembers} added lead(s)` : `${l.manualMembers} member(s)`}
-              </span>
-            </p>
-          ))}
-          <p className="mt-1 text-xs text-rce-muted">
-            Leads join from the Leads tab ("+ Email campaign"). Unsubscribed: {data.suppressedCount} — global and permanent, never re-added.
-          </p>
-        </section>
-      )}
+      {data && <AudienceCard lists={data.lists} suppressedCount={data.suppressedCount} onChanged={refresh} />}
 
       {(creating || editing) && (
         <Composer
           campaign={editing}
+          lists={data?.lists ?? []}
           onDone={() => { setCreating(false); setEditing(null); refresh(); }}
         />
       )}
@@ -151,12 +136,15 @@ function SendControls({ campaign, onChanged }: { campaign: Campaign; onChanged: 
   );
 }
 
-function Composer({ campaign, onDone }: { campaign: Campaign | null; onDone: () => void }) {
+function Composer({ campaign, lists, onDone }: { campaign: Campaign | null; lists: CampaignOverview["lists"]; onDone: () => void }) {
   const [name, setName] = useState(campaign?.name ?? "");
   const [subject, setSubject] = useState(campaign?.subject ?? "");
   const [blocks, setBlocks] = useState<CampaignBlock[]>(campaign?.blocks ?? []);
   const [error, setError] = useState<string | null>(null);
   const [savedId, setSavedId] = useState<string | null>(campaign?.id ?? null);
+  const [listId, setListId] = useState<string>(
+    campaign?.listId ?? lists.find((l) => l.includeAllAccounts)?.id ?? lists[0]?.id ?? "",
+  );
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const { data: articleData, error: articleError } = useQuery({
     queryKey: ["campaignArticles"],
@@ -178,10 +166,10 @@ function Composer({ campaign, onDone }: { campaign: Campaign | null; onDone: () 
   const save = useMutation({
     mutationFn: async () => {
       if (savedId) {
-        await api.updateCampaign(savedId, { name, subject, blocks });
+        await api.updateCampaign(savedId, { name, subject, blocks, ...(listId ? { listId } : {}) });
         return savedId;
       }
-      const r = await api.createCampaign({ name, subject, blocks });
+      const r = await api.createCampaign({ name, subject, blocks, ...(listId ? { listId } : {}) });
       return r.id;
     },
     onSuccess: (id) => { setSavedId(id); setError(null); },
@@ -209,6 +197,13 @@ function Composer({ campaign, onDone }: { campaign: Campaign | null; onDone: () 
         </label>
         <label className="text-sm font-medium">Email subject
           <input className="field mt-1 w-full" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Is your home ready for storm season?" />
+        </label>
+        <label className="text-sm font-medium">Send to list
+          <select className="field mt-1 w-full" value={listId} onChange={(e) => setListId(e.target.value)}>
+            {lists.map((l) => (
+              <option key={l.id} value={l.id}>{l.name} — {l.reach} address(es)</option>
+            ))}
+          </select>
         </label>
       </div>
 
@@ -313,5 +308,97 @@ function ArticlePicker({ articles, error, onPick }: {
         </div>
       )}
     </span>
+  );
+}
+
+/** The audience is editable, not a plaque (Kyle: "This shouldn't be hard coded in. I can create a new one and test it."). */
+function AudienceCard({ lists, suppressedCount, onChanged }: {
+  lists: CampaignOverview["lists"]; suppressedCount: number; onChanged: () => void;
+}) {
+  const [newName, setNewName] = useState("");
+  const [newAll, setNewAll] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const createList = useMutation({
+    mutationFn: () => api.createEmailList({ name: newName.trim(), includeAllAccounts: newAll }),
+    onSuccess: () => { setNewName(""); setNewAll(false); setNote(null); onChanged(); },
+    onError: (err) => setNote((err as Error).message),
+  });
+  return (
+    <section className="card space-y-3 p-4">
+      <h2 className="text-lg font-semibold">Audience</h2>
+      {lists.map((l) => <ListRow key={l.id} list={l} onChanged={onChanged} />)}
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(e) => { e.preventDefault(); if (newName.trim()) createList.mutate(); }}
+      >
+        <input className="field text-sm" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New list name…" />
+        <label className="flex items-center gap-1 text-xs text-rce-muted">
+          <input type="checkbox" checked={newAll} onChange={(e) => setNewAll(e.target.checked)} />
+          include every account
+        </label>
+        <button className="btn btn-secondary text-xs" type="submit" disabled={createList.isPending || !newName.trim()}>
+          + New list
+        </button>
+      </form>
+      {note && <p className="text-xs text-red-500">{note}</p>}
+      <p className="text-xs text-rce-muted">
+        Leads join from the Leads tab ("+ Email campaign"). Unsubscribed: {suppressedCount} — global and permanent, never re-added.
+      </p>
+    </section>
+  );
+}
+
+function ListRow({ list, onChanged }: { list: CampaignOverview["lists"][number]; onChanged: () => void }) {
+  const [addEmail, setAddEmail] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const add = useMutation({
+    mutationFn: () => api.addListMember(list.id, { email: addEmail.trim() }),
+    onSuccess: () => { setAddEmail(""); setNote(null); onChanged(); },
+    onError: (err) => setNote((err as Error).message),
+  });
+  const removeMember = useMutation({
+    mutationFn: (memberId: string) => api.removeListMember(list.id, memberId),
+    onSuccess: () => { setNote(null); onChanged(); },
+    onError: (err) => setNote((err as Error).message),
+  });
+  return (
+    <div className="rounded-lg border border-rce-border/60 p-2">
+      <p className="text-sm">
+        <span className="font-medium">{list.name}</span>
+        {" — reaches "}<b>{list.reach}</b>{" address(es)"}
+        <span className="text-xs text-rce-muted">
+          {" · "}{list.includeAllAccounts ? `every account with an email + ${list.manualMembers} added` : `${list.manualMembers} member(s)`}
+        </span>
+      </p>
+      {list.members.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {list.members.map((m) => (
+            <span key={m.id} className="flex items-center gap-1 rounded bg-rce-accentBg px-1.5 py-0.5 text-[11px]">
+              {m.name ? `${m.name} · ` : ""}{m.email}
+              <button
+                type="button"
+                className="text-red-600"
+                title="Remove from this list (not an unsubscribe)"
+                onClick={() => removeMember.mutate(m.id)}
+              >×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <form
+        className="mt-1 flex items-center gap-2"
+        onSubmit={(e) => { e.preventDefault(); if (addEmail.trim()) add.mutate(); }}
+      >
+        <input
+          className="field text-xs"
+          type="email"
+          value={addEmail}
+          onChange={(e) => setAddEmail(e.target.value)}
+          placeholder="add an email address…"
+        />
+        <button className="btn btn-secondary text-xs" type="submit" disabled={add.isPending || !addEmail.trim()}>Add</button>
+        {note && <span className="text-xs text-red-500">{note}</span>}
+      </form>
+    </div>
   );
 }
