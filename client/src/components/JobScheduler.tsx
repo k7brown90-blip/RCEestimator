@@ -76,6 +76,10 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   // crew-start default because the durations aren't slot-shaped.
   const isEstimateVisit = status === "estimate";
   const [startTime, setStartTime] = useState(isEstimateVisit ? "08:00" : "07:00");
+  // Explicit block end (Kyle, 2026-09-02): production jobs set their own end —
+  // multi-day when the end date is later. Estimates keep the fixed blocks.
+  const [endDate, setEndDate] = useState<string | null>(null);
+  const [endTime, setEndTime] = useState("16:00");
   const [technicianId, setTechnicianId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -109,7 +113,10 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   const techs = techQuery.data?.techs ?? [];
 
   const scheduleMutation = useMutation({
-    mutationFn: () => api.scheduleJob(jobId, { startDate: selectedDate!, startTime, technicianId: technicianId ?? undefined }),
+    mutationFn: () => api.scheduleJob(jobId, {
+      startDate: selectedDate!, startTime, technicianId: technicianId ?? undefined,
+      ...(isEstimateVisit ? {} : { endDate: endDate ?? selectedDate!, endTime }),
+    }),
     onSuccess: (result) => {
       invalidateAll();
       setMode("idle");
@@ -122,7 +129,10 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   });
 
   const rescheduleMutation = useMutation({
-    mutationFn: () => api.rescheduleJob(jobId, { newStartDate: selectedDate!, newStartTime: startTime, reason }),
+    mutationFn: () => api.rescheduleJob(jobId, {
+      newStartDate: selectedDate!, newStartTime: startTime, reason,
+      ...(isEstimateVisit ? {} : { endDate: endDate ?? selectedDate!, endTime }),
+    }),
     onSuccess: () => {
       invalidateAll();
       setMode("idle");
@@ -378,6 +388,44 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
                 />
               )}
             </div>
+            {!isEstimateVisit && (
+              <>
+                <div>
+                  <label className="block text-xs text-rce-muted mb-1">End date</label>
+                  <input
+                    type="date"
+                    className="field"
+                    min={selectedDate ?? undefined}
+                    value={endDate ?? selectedDate ?? ""}
+                    onChange={(e) => setEndDate(e.target.value || null)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-rce-muted mb-1">End time</label>
+                  <input
+                    type="time"
+                    className="field"
+                    value={endTime}
+                    onChange={(e) => setEndTime(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+            {!isEstimateVisit && selectedDate && (() => {
+              const endD = endDate ?? selectedDate;
+              const days = Math.round((Date.parse(endD) - Date.parse(selectedDate)) / 86_400_000) + 1;
+              const [sh, sm] = startTime.split(":").map(Number);
+              const [eh, em] = endTime.split(":").map(Number);
+              const perDay = (eh * 60 + em - sh * 60 - sm) / 60;
+              if (days < 1 || perDay <= 0) return (
+                <p className="text-xs text-red-600">The end must come after the start.</p>
+              );
+              return (
+                <p className="text-xs text-rce-muted">
+                  {days} day{days > 1 ? "s" : ""} · {perDay.toFixed(1)} h/day · {(days * perDay).toFixed(1)} h scheduled
+                </p>
+              );
+            })()}
             {mode === "reschedule" && (
               <div className="flex-1">
                 <label className="block text-xs text-rce-muted mb-1">Reason</label>

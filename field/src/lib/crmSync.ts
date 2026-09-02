@@ -765,8 +765,13 @@ export async function scheduleVisitFromField(
   visitId: string,
   date: string,
   time: string | null,
+  endDate?: string | null,
+  endTime?: string | null,
 ): Promise<{ scheduledStart: string | null; scheduledEnd: string | null; status: string | null }> {
-  return crmRequest(`/visits/${visitId}/schedule`, { method: 'POST', body: JSON.stringify({ date, time }) })
+  return crmRequest(`/visits/${visitId}/schedule`, {
+    method: 'POST',
+    body: JSON.stringify({ date, time, endDate: endDate ?? null, endTime: endTime ?? null }),
+  })
 }
 
 // ─── Quote in the field (Kyle, 2026-09-01, step 4) ──────────────────────────

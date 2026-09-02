@@ -98,6 +98,8 @@ export function JobSiteScreen({
   const [schedOpen, setSchedOpen] = useState(false)
   const [schedDate, setSchedDate] = useState('')
   const [schedTime, setSchedTime] = useState('08:00')
+  const [schedEndDate, setSchedEndDate] = useState('')
+  const [schedEndTime, setSchedEndTime] = useState('16:00')
   const [schedBusy, setSchedBusy] = useState(false)
   const [schedMsg, setSchedMsg] = useState<string | null>(null)
   const [laborMinutes, setLaborMinutes] = useState(0)
@@ -300,12 +302,17 @@ export function JobSiteScreen({
               <input type="date" value={schedDate} onChange={(e) => setSchedDate(e.target.value)} className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
               <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)} className="w-28 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
             </div>
+            <p className="text-[10px] text-slate-500">Multi-day? Set the end below — hours per day come from the times.</p>
+            <div className="flex gap-2">
+              <input type="date" value={schedEndDate || schedDate} min={schedDate || undefined} onChange={(e) => setSchedEndDate(e.target.value)} className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
+              <input type="time" value={schedEndTime} onChange={(e) => setSchedEndTime(e.target.value)} className="w-28 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
+            </div>
             <button
               type="button"
               disabled={schedBusy || !schedDate}
               onClick={() => {
                 setSchedBusy(true); setSchedMsg(null)
-                scheduleVisitFromField(assignment.visitId, schedDate, schedTime || null)
+                scheduleVisitFromField(assignment.visitId, schedDate, schedTime || null, schedEndDate || schedDate, schedEndTime || null)
                   .then((r) => setSchedMsg(r.scheduledStart ? `Scheduled — ${new Date(r.scheduledStart).toLocaleString()}. It's on your list under that day.` : 'Scheduled.'))
                   .catch((err) => setSchedMsg(err instanceof Error ? err.message : String(err)))
                   .finally(() => setSchedBusy(false))

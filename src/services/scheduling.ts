@@ -118,11 +118,30 @@ function computeEndDate(startDate: Date, durationDays: number): Date {
 
 // ─── SCHEDULE A JOB ─────────────────────────────────────────────────────────────
 
+/** Explicit end of the scheduled block (Kyle, 2026-09-02: "update the scheduling
+ *  time with a start and end time/date... I should be able to schedule over
+ *  multiple days"). Date + optional time; when absent the old duration-derived
+ *  end stands, so every existing caller keeps working. */
+export interface ScheduleEnd {
+  date: string; // YYYY-MM-DD
+  time?: string | null; // HH:MM CT; defaults to 16:00
+}
+
+/** Calendar days spanned, inclusive, from two YYYY-MM-DD strings. */
+function calendarDaysInclusive(startDateStr: string, endDateStr: string): number {
+  const [sy, sm, sd] = startDateStr.split("-").map(Number);
+  const [ey, em, ed] = endDateStr.split("-").map(Number);
+  const a = Date.UTC(sy, sm - 1, sd);
+  const b = Date.UTC(ey, em - 1, ed);
+  return Math.round((b - a) / 86_400_000) + 1;
+}
+
 export async function scheduleJob(
   jobId: string,
   startDateStr: string,
   startTime?: string | null,
   technicianId?: string | null,
+  end?: ScheduleEnd | null,
 ): Promise<ScheduleJobResult> {
   // Load the job
   const job = await prisma.visit.findUnique({
@@ -180,11 +199,35 @@ export async function scheduleJob(
 
   // An estimate is a fixed 2-hour block regardless of the job's day estimate —
   // durationDays only describes the work, not the visit that prices it.
-  const durationDays = isEstimate ? 1 : (job.estimatedDurationDays ?? 1);
+  // Production work with an EXPLICIT end (Kyle, 2026-09-02): the block is what
+  // the operator set — days and daily hours derive from it, never the reverse.
   const scheduledStart = buildStartDate(startDateStr, startTime);
+  const explicitEnd = !isEstimate && end ? buildStartDate(end.date, end.time ?? "16:00") : null;
+  if (explicitEnd && explicitEnd.getTime() <= scheduledStart.getTime()) {
+    throw new ConflictError(
+      "The end of the job must be after its start.",
+      [],
+      "The end date/time is before the start — check the dates.",
+    );
+  }
+  const durationDays = isEstimate
+    ? 1
+    : explicitEnd
+      ? calendarDaysInclusive(startDateStr, end!.date)
+      : (job.estimatedDurationDays ?? 1);
   const scheduledEnd = isEstimate
     ? new Date(scheduledStart.getTime() + ESTIMATE_BLOCK_MINUTES * 60_000)
-    : computeEndDate(scheduledStart, durationDays);
+    : explicitEnd ?? computeEndDate(scheduledStart, durationDays);
+  // Hours per working day, off the block's own clock — this is the "we track
+  // the hours for each job" number the P&L schedules against.
+  const dailyHours = explicitEnd
+    ? (() => {
+        const startMin = scheduledStart.getUTCHours() * 60 + scheduledStart.getUTCMinutes();
+        const endMin = scheduledEnd.getUTCHours() * 60 + scheduledEnd.getUTCMinutes();
+        const span = (endMin - startMin + 1440) % 1440;
+        return span > 0 ? Math.round((span / 60) * 100) / 100 : null;
+      })()
+    : null;
   const timeDisplay = formatTimeCT(scheduledStart);
 
   // Production work claims the business days atomically BEFORE the availability
@@ -307,6 +350,9 @@ export async function scheduleJob(
       ...(isEstimate ? {} : { status: "scheduled" }),
       scheduledStart,
       scheduledEnd,
+      // An explicit block writes the job's tracked span (Kyle, 2026-09-02);
+      // a derived end leaves the stored estimates alone.
+      ...(explicitEnd ? { estimatedDurationDays: durationDays, ...(dailyHours ? { estimatedDurationHours: dailyHours } : {}) } : {}),
       googleEventId: event.id,
       confirmationStatus: "unconfirmed",
       confirmedAt: null,
@@ -366,6 +412,7 @@ export async function rescheduleJob(
   newStartDateStr: string,
   newStartTime: string | null,
   reason: string,
+  end?: ScheduleEnd | null,
 ): Promise<ScheduleJobResult> {
   const job = await prisma.visit.findUnique({
     where: { id: jobId },
@@ -380,11 +427,19 @@ export async function rescheduleJob(
   const kind = appointmentKindFor(job.status);
   const isEstimate = kind === "estimate";
   const travelBufferMinutes = isEstimate ? ESTIMATE_TRAVEL_BUFFER_MINUTES : 0;
-  const durationDays = isEstimate ? 1 : (job.estimatedDurationDays ?? 1);
   const newStart = buildStartDate(newStartDateStr, newStartTime);
+  const rescheduleEnd = !isEstimate && end ? buildStartDate(end.date, end.time ?? "16:00") : null;
+  if (rescheduleEnd && rescheduleEnd.getTime() <= newStart.getTime()) {
+    throw new ConflictError("The end of the job must be after its start.", [], "The end date/time is before the start — check the dates.");
+  }
+  const durationDays = isEstimate
+    ? 1
+    : rescheduleEnd
+      ? calendarDaysInclusive(newStartDateStr, end!.date)
+      : (job.estimatedDurationDays ?? 1);
   const newEnd = isEstimate
     ? new Date(newStart.getTime() + ESTIMATE_BLOCK_MINUTES * 60_000)
-    : computeEndDate(newStart, durationDays);
+    : rescheduleEnd ?? computeEndDate(newStart, durationDays);
   const newTimeDisplay = formatTimeCT(newStart);
   const oldTimeDisplay = formatTimeCT(job.scheduledStart);
 
@@ -493,6 +548,7 @@ export async function rescheduleJob(
   await prisma.visit.update({
     where: { id: jobId },
     data: {
+      ...(rescheduleEnd ? { estimatedDurationDays: durationDays } : {}),
       scheduledStart: newStart,
       scheduledEnd: newEnd,
       confirmationStatus: "unconfirmed",

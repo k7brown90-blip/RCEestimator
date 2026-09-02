@@ -3666,11 +3666,17 @@ app.post("/crm/jobs/:jobId/schedule", asyncHandler(async (req, res) => {
   const body = z.object({
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
     startTime: z.string().optional(),
+    // Explicit block end (Kyle, 2026-09-02) — multi-day jobs set their own end.
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    endTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     technicianId: z.string().optional(),
   }).parse(req.body);
 
   try {
-    const result = await scheduleJob(jobId, body.startDate, body.startTime, body.technicianId);
+    const result = await scheduleJob(
+      jobId, body.startDate, body.startTime, body.technicianId,
+      body.endDate ? { date: body.endDate, time: body.endTime ?? null } : null,
+    );
     res.json(result);
   } catch (err) {
     if (err instanceof ConflictError) {
@@ -3743,11 +3749,16 @@ app.post("/crm/jobs/:jobId/reschedule", asyncHandler(async (req, res) => {
     // and fell back to DEFAULT_JOB_START_TIME, so an estimate rescheduled to
     // 10:00 AM came out at 7:00 AM and looked like it "didn't take".
     newStartTime: z.string().regex(/^\d{2}:\d{2}$/, "Time must be HH:MM").optional(),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    endTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     reason: z.string().min(1),
   }).parse(req.body);
 
   try {
-    const result = await rescheduleJob(jobId, body.newStartDate, body.newStartTime ?? null, body.reason);
+    const result = await rescheduleJob(
+      jobId, body.newStartDate, body.newStartTime ?? null, body.reason,
+      body.endDate ? { date: body.endDate, time: body.endTime ?? null } : null,
+    );
     res.json(result);
   } catch (err) {
     if (err instanceof ConflictError) {

@@ -904,6 +904,8 @@ healthRecordTechRouter.post("/visits/:visitId/schedule", asyncHandler(async (req
   const body = z.object({
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     time: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+    endTime: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
   }).parse(req.body ?? {});
   const assigned = await prisma.visitAssignment.findFirst({
     where: { visitId, technicianId: req.technician!.id },
@@ -914,7 +916,10 @@ healthRecordTechRouter.post("/visits/:visitId/schedule", asyncHandler(async (req
     return;
   }
   try {
-    await scheduleJob(visitId, body.date, body.time ?? null, req.technician!.id);
+    await scheduleJob(
+      visitId, body.date, body.time ?? null, req.technician!.id,
+      body.endDate ? { date: body.endDate, time: body.endTime ?? null } : null,
+    );
   } catch (err) {
     res.status(409).json({ success: false, error: { code: "not_scheduled", message: err instanceof Error ? err.message : String(err) } });
     return;
