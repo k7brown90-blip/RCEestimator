@@ -68,11 +68,14 @@ export function JobSiteScreen({
   assignment,
   onRunAssessment,
   onCapacityCheck,
+  onBuildQuote,
   onBack,
 }: {
   assignment: CrmAssignment
   onRunAssessment: () => void
   onCapacityCheck?: () => void
+  /** Quote in the field (2026-09-01): same book and gates as the office. */
+  onBuildQuote?: () => void
   onBack: () => void
 }) {
   const [brief, setBrief] = useState<JobBrief | null>(null)
@@ -279,6 +282,15 @@ export function JobSiteScreen({
       >
         ⚡ Run electrical assessment
       </button>
+      {onBuildQuote && (
+        <button
+          type="button"
+          onClick={onBuildQuote}
+          className="w-full rounded-lg border border-emerald-800 bg-emerald-950/40 p-2 text-xs text-emerald-200"
+        >
+          🧾 Build the quote
+        </button>
+      )}
       {onCapacityCheck && (
         <button
           type="button"

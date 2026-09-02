@@ -10,6 +10,9 @@
  */
 
 import express from "express";
+import { summarizeOptions } from "../services/atomicEstimateEngine";
+import { graduateDraft } from "../services/issuedEstimateService";
+import { addLine, browseAtomics, computeDraft, createDraft, editLine, loadRateContext, removeLine } from "../services/atomicEstimateService";
 import crypto from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
@@ -624,6 +627,206 @@ healthRecordTechRouter.post("/visits/:visitId/email-payment-request", asyncHandl
   const { sendDepositRequestEmail } = await import("../services/paymentReceipts");
   await sendDepositRequestEmail(prisma, est.id, publicBaseUrl());
   res.json({ success: true, data: { ok: true, to: est.customerEmail, amount: Math.round((summary.depositDue - summary.depositPaid) * 100) / 100 } });
+}));
+
+
+// ─── QUOTE IN THE FIELD (Kyle, 2026-09-01, ratified Option A) ────────────────
+//
+// "Step four build the quote for the service call and any issues found during
+//  the electrical assessment." The tech builds on the SAME price book, engine
+//  and gates as the CRM — these routes wrap the same services, never a second
+//  pricing path. Every route is assignment-gated; lines added here are entered
+//  by a human technician, so they are born CONFIRMED (confirmedBy tech:<id>),
+//  exactly like Kyle's direct entry in the CRM.
+
+/** The draft's visit must be assigned to this technician. */
+async function quoteDraftForTech(draftId: string, technicianId: string) {
+  const draft = await prisma.priceBookDraftEstimate.findUnique({
+    where: { id: draftId },
+    select: { id: true, visitId: true, status: true, customerId: true },
+  });
+  if (!draft || !draft.visitId) return null;
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId: draft.visitId, technicianId },
+    select: { id: true },
+  });
+  return assigned ? draft : null;
+}
+
+/** Find-or-create the working draft for a visit — one quote per visit, resumable. */
+healthRecordTechRouter.post("/visits/:visitId/quote", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    select: { id: true, customerId: true, propertyId: true, customer: { select: { name: true } }, property: { select: { addressLine1: true } } },
+  });
+  if (!visit) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Visit not found" } });
+    return;
+  }
+  const existing = await prisma.priceBookDraftEstimate.findFirst({
+    where: { visitId, status: "draft" },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (existing) {
+    res.json({ success: true, data: { draftId: existing.id, resumed: true } });
+    return;
+  }
+  const { rc } = await loadRateContext(prisma);
+  const draft = await createDraft(prisma, {
+    title: `${visit.customer.name} — ${visit.property.addressLine1}`,
+    supplierId: rc.activeSupplier ?? "HD",
+    visitId,
+    jobDescription: null,
+  });
+  res.status(201).json({ success: true, data: { draftId: draft.id, resumed: false } });
+}));
+
+/** Catalog search for the picker — same browse the CRM uses, capped for a phone. */
+healthRecordTechRouter.get("/quote-catalog", asyncHandler(async (req: TechRequest, res) => {
+  const result = await browseAtomics(prisma, {
+    search: typeof req.query.search === "string" ? req.query.search : null,
+    category: typeof req.query.category === "string" ? req.query.category : null,
+    limit: 30,
+  });
+  res.json({ success: true, data: result });
+}));
+
+/** The working quote: lines with live prices, per-option totals, gaps. */
+healthRecordTechRouter.get("/quotes/:draftId", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const { computed, rate } = await computeDraft(prisma, draft.id);
+  const rows = await prisma.priceBookDraftLine.findMany({
+    where: { draftId: draft.id },
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    select: { id: true, itemId: true, quantity: true, quantitySource: true, difficulty: true, option: true, note: true, location: true },
+  });
+  const priced = new Map(computed.lines.map((l) => [l.id, l]));
+  res.json({
+    success: true,
+    data: {
+      draftId: draft.id,
+      lines: rows.map((l) => {
+        const c = priced.get(l.id);
+        return {
+          ...l,
+          description: c?.description ?? l.itemId,
+          laborHours: c?.laborHours ?? null,
+          lineTotal: c ? Math.round(((c.laborDollars ?? 0) + (c.materialSell ?? 0)) * 100) / 100 : null,
+          gaps: c?.gaps.map((g) => g.message) ?? [],
+        };
+      }),
+      options: summarizeOptions(computed),
+      total: computed.total,
+      rateProvisional: rate.provisional,
+    },
+  });
+}));
+
+healthRecordTechRouter.post("/quotes/:draftId/lines", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = z.object({
+    itemId: z.string().min(1),
+    quantity: z.number().positive(),
+    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).default("COUNT"),
+    difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).default("NORMAL"),
+    option: z.enum(["A", "B", "C"]).default("A"),
+    note: z.string().nullable().optional(),
+    location: z.string().nullable().optional(),
+  }).parse(req.body ?? {});
+  const line = await addLine(prisma, draft.id, { ...body, confirmedBy: `tech:${req.technician!.id}` });
+  res.status(201).json({ success: true, data: { lineId: line.id } });
+}));
+
+healthRecordTechRouter.patch("/quote-lines/:lineId", asyncHandler(async (req: TechRequest, res) => {
+  const row = await prisma.priceBookDraftLine.findUnique({ where: { id: readParam(req, "lineId") }, select: { draftId: true } });
+  const draft = row ? await quoteDraftForTech(row.draftId, req.technician!.id) : null;
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = z.object({
+    quantity: z.number().positive().optional(),
+    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).optional(),
+    difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
+    option: z.enum(["A", "B", "C"]).optional(),
+    note: z.string().nullable().optional(),
+    location: z.string().nullable().optional(),
+  }).parse(req.body ?? {});
+  try {
+    await editLine(prisma, readParam(req, "lineId"), body);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ success: false, error: { code: "bad_request", message: err instanceof Error ? err.message : String(err) } });
+  }
+}));
+
+healthRecordTechRouter.delete("/quote-lines/:lineId", asyncHandler(async (req: TechRequest, res) => {
+  const row = await prisma.priceBookDraftLine.findUnique({ where: { id: readParam(req, "lineId") }, select: { draftId: true } });
+  const draft = row ? await quoteDraftForTech(row.draftId, req.technician!.id) : null;
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  await removeLine(prisma, readParam(req, "lineId"));
+  res.json({ success: true });
+}));
+
+/**
+ * Issue from the driveway. Same graduation gate as the CRM (finalizeDraft —
+ * unconfirmed lines, gaps and provisional rates all refuse with their real
+ * reasons); account and address come from the visit, which is exactly "the
+ * address that we are working at". Returns the customer-page link so the
+ * customer signs on their own phone or the tech's, and payment follows.
+ */
+healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const visit = await prisma.visit.findUnique({
+    where: { id: draft.visitId! },
+    select: { customerId: true, propertyId: true },
+  });
+  const result = await graduateDraft(prisma, {
+    draftId: draft.id,
+    accountId: visit!.customerId,
+    serviceAddressId: visit!.propertyId,
+    createdBy: `tech:${req.technician!.id}`,
+  });
+  if (!result.ok) {
+    res.status(409).json({ success: false, error: { code: "not_ready", message: result.reasons.join(" ") }, reasons: result.reasons });
+    return;
+  }
+  const est = await prisma.issuedEstimate.findUnique({ where: { id: result.estimateId }, select: { token: true } });
+  const { publicBaseUrl } = await import("../services/issuedEstimateSend");
+  res.status(201).json({
+    success: true,
+    data: {
+      estimateId: result.estimateId,
+      number: result.number,
+      unpriced: result.unpriced ?? [],
+      customerUrl: `${publicBaseUrl()}/e/${est!.token}`,
+    },
+  });
 }));
 
 healthRecordTechRouter.get("/visits/:visitId/payment-info", asyncHandler(async (req: TechRequest, res) => {

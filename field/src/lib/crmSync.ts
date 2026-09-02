@@ -718,6 +718,77 @@ export async function fetchInspectionFull(inspectionId: string): Promise<Inspect
   return crmRequest(`/inspections/${inspectionId}/full`, { method: 'GET' })
 }
 
+// ─── Quote in the field (Kyle, 2026-09-01, step 4) ──────────────────────────
+//    Same price book, same engine, same gates as the CRM — these call the
+//    tech-authenticated wrappers, never a second pricing path.
+
+export interface QuoteCatalogRow {
+  itemId: string
+  description: string | null
+  category: string | null
+  unit: string | null
+  isFlatPriced: boolean
+  isContinuousLength: boolean
+  isHourlyProduct: boolean
+  hasPublishedLabour: boolean
+  hasPriceAtActiveSupplier: boolean
+  sellsMaterial: boolean
+}
+
+export interface QuoteLine {
+  id: string
+  itemId: string
+  description: string
+  quantity: number
+  quantitySource: 'COUNT' | 'MEASURED_LENGTH' | 'TERMINATION_COUNT' | 'MANUAL'
+  difficulty: 'NORMAL' | 'DIFFICULT' | 'VERY_DIFFICULT'
+  option: 'A' | 'B' | 'C'
+  note: string | null
+  location: string | null
+  laborHours: number | null
+  lineTotal: number | null
+  gaps: string[]
+}
+
+export interface QuoteState {
+  draftId: string
+  lines: QuoteLine[]
+  options: Array<{ option: 'A' | 'B' | 'C'; lineCount: number; laborHours: number; laborDollars: number; materialSell: number; subtotal: number | null; complete: boolean }>
+  total: number | null
+  rateProvisional: boolean
+}
+
+export async function openQuoteForVisit(visitId: string): Promise<{ draftId: string; resumed: boolean }> {
+  return crmRequest(`/visits/${visitId}/quote`, { method: 'POST', body: '{}' })
+}
+
+export async function searchQuoteCatalog(search: string): Promise<{ atomics: QuoteCatalogRow[]; truncated: boolean }> {
+  return crmRequest(`/quote-catalog?search=${encodeURIComponent(search)}`, { method: 'GET' })
+}
+
+export async function fetchQuote(draftId: string): Promise<QuoteState> {
+  return crmRequest(`/quotes/${draftId}`, { method: 'GET' })
+}
+
+export async function addQuoteLine(draftId: string, line: {
+  itemId: string; quantity: number; quantitySource: QuoteLine['quantitySource'];
+  difficulty?: QuoteLine['difficulty']; option?: QuoteLine['option']; note?: string | null;
+}): Promise<{ lineId: string }> {
+  return crmRequest(`/quotes/${draftId}/lines`, { method: 'POST', body: JSON.stringify(line) })
+}
+
+export async function editQuoteLine(lineId: string, patch: Partial<Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'quantitySource'>>): Promise<void> {
+  await crmRequest(`/quote-lines/${lineId}`, { method: 'PATCH', body: JSON.stringify(patch) })
+}
+
+export async function removeQuoteLine(lineId: string): Promise<void> {
+  await crmRequest(`/quote-lines/${lineId}`, { method: 'DELETE' })
+}
+
+export async function issueQuote(draftId: string): Promise<{ estimateId: string; number: string; unpriced: string[]; customerUrl: string }> {
+  return crmRequest(`/quotes/${draftId}/issue`, { method: 'POST', body: '{}' })
+}
+
 // ─── Capacity checks ────────────────────────────────────────────────────────
 
 export interface CapacityCheckPush {
