@@ -56,6 +56,31 @@ async function main(): Promise<void> {
     }
     return;
   }
+
+  /*
+    --uncomplete-visit <visitId> [--apply]: the exact undo of --complete-visit
+    (Kyle, 2026-09-03: "revert everything back to before you started") — the
+    visit returns to contracted with no completion stamp, so it rides the
+    sold-jobs rail again. Dry run prints the visit first.
+  */
+  const uvArg = process.argv.indexOf("--uncomplete-visit");
+  if (uvArg >= 0) {
+    const visitId = process.argv[uvArg + 1];
+    const visit = await prisma.visit.findUnique({
+      where: { id: visitId },
+      include: { customer: { select: { name: true } } },
+    });
+    if (!visit) { console.log(`Visit ${visitId} not found.`); return; }
+    console.log(`Visit ${visitId} — ${visit.customer.name} · status ${visit.status} · completed ${d(visit.completedAt)}`);
+    if (visit.status !== "completed") { console.log("Not completed — nothing to revert."); return; }
+    if (apply) {
+      await prisma.visit.update({ where: { id: visitId }, data: { status: "contracted", completedAt: null } });
+      console.log("Reverted to contracted, completion stamp cleared. It is back on the sold-jobs rail.");
+    } else {
+      console.log("(dry run — --apply reverts it to contracted)");
+    }
+    return;
+  }
   const numArg = process.argv.indexOf("--number");
   const onlyNumber = numArg >= 0 ? process.argv[numArg + 1] : null;
 
