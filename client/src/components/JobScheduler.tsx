@@ -103,8 +103,14 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   });
 
   // Per-tech availability for the chosen date + time. Estimates block 2h + 1h
-  // travel; production is treated as the full day for conflict purposes.
-  const durationMinutes = isEstimateVisit ? 180 : 600;
+  // travel; production checks the block actually being set - start to end
+  // clock (Kyle, 2026-09-03: a 7am-noon booking is not a full-day claim).
+  const clockMin = (t: string) => {
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  };
+  const blockSpan = (clockMin(endTime) - clockMin(startTime) + 1440) % 1440;
+  const durationMinutes = isEstimateVisit ? 180 : blockSpan > 0 ? blockSpan : 540;
   const techQuery = useQuery<{ date: string; techs: TechDayAvailability[] }>({
     queryKey: ["tech-availability", selectedDate, startTime, durationMinutes],
     queryFn: () => api.techAvailability(selectedDate!, { start: startTime, durationMinutes }),
@@ -475,7 +481,9 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
                       {!tech.calendarAccessible ? (
                         <span className="text-xs text-amber-600">calendar not shared — can't verify</span>
                       ) : tech.freeAtRequested === false ? (
-                        <span className="text-xs text-red-600">busy: {busyLabel}</span>
+                        <span className="text-xs text-red-600">
+                          {inHoursBusy.length > 0 ? `busy: ${busyLabel}` : "conflict at the chosen time"}
+                        </span>
                       ) : (
                         <span className="text-xs text-green-700">available · {busyLabel}</span>
                       )}

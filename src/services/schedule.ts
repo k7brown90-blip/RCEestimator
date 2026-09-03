@@ -391,6 +391,15 @@ export async function checkAvailabilityBlock(
   startDate: Date,
   daysNeeded: number,
   excludeEventId?: string,
+  /**
+   * The ACTUAL daily block being booked (Kyle, 2026-09-03: "I think the time
+   * calculation from the estimate ... is overriding the manual entry"). When
+   * given, only busy periods overlapping this clock window (per work day, CT)
+   * conflict — a 2-5pm event no longer blocks a 7am-noon booking. Without it,
+   * the old whole-business-day rule (7am-5pm) applies, which is what the voice
+   * agents and open-day finder want.
+   */
+  window?: { start: Date; end: Date },
 ): Promise<AvailabilityCheckResult> {
   const calendar = getCalendarClient();
 
@@ -428,6 +437,22 @@ export async function checkAvailabilityBlock(
       end: new Date(b.end!),
     }));
 
+  // The same appointment lives on several company calendars (primary + the
+  // assigned tech), so the raw freebusy union repeats it — "Busy: 2:00 PM-5:00
+  // PM, 2:00 PM-5:00 PM" (Kyle's screenshot). Merge overlapping/duplicate
+  // periods into single spans before any reporting.
+  busyPeriods.sort((a, b) => a.start.getTime() - b.start.getTime());
+  const merged: typeof busyPeriods = [];
+  for (const b of busyPeriods) {
+    const last = merged[merged.length - 1];
+    if (last && b.start.getTime() <= last.end.getTime()) {
+      if (b.end.getTime() > last.end.getTime()) last.end = b.end;
+    } else {
+      merged.push({ start: new Date(b.start), end: new Date(b.end) });
+    }
+  }
+  busyPeriods = merged;
+
   // If excluding a specific event (reschedule), filter its busy block
   if (excludeEventId) {
     try {
@@ -448,12 +473,20 @@ export async function checkAvailabilityBlock(
 
   const conflicts: Array<{ date: string; reason: string }> = [];
 
+  // The clock span each work day defends: the booked block's own hours when a
+  // window is given, business hours otherwise. A multi-day job applies the same
+  // daily clock span every day - matching how its hours are tracked.
+  const winStart = window ? getCTParts(window.start) : null;
+  const winEnd = window ? getCTParts(window.end) : null;
+
   for (const day of workDays) {
     const dp = getCTParts(day);
-    const bhStart = 7;
-    const bhEnd = 17;
-    const dayStart = ctToUtc(dp.year, dp.month, dp.day, bhStart);
-    const dayEnd = ctToUtc(dp.year, dp.month, dp.day, bhEnd);
+    const dayStart = winStart
+      ? ctToUtc(dp.year, dp.month, dp.day, winStart.hour, winStart.minute)
+      : ctToUtc(dp.year, dp.month, dp.day, 7);
+    const dayEnd = winEnd
+      ? ctToUtc(dp.year, dp.month, dp.day, winEnd.hour, winEnd.minute)
+      : ctToUtc(dp.year, dp.month, dp.day, 17);
 
     const dayBusy = busyPeriods.filter(
       (b) => b.start.getTime() < dayEnd.getTime() && b.end.getTime() > dayStart.getTime(),

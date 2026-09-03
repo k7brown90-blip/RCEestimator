@@ -252,7 +252,15 @@ export async function scheduleJob(
   let event: { id: string };
   try {
     if (!isEstimate) {
-      const availability = await checkAvailabilityBlock(scheduledStart, durationDays);
+      // The check defends the block Kyle actually set - not the whole business
+      // day - and never counts this job's own existing calendar event against
+      // itself (a prior booking of the same job is not a conflict).
+      const availability = await checkAvailabilityBlock(
+        scheduledStart,
+        durationDays,
+        job.googleEventId ?? undefined,
+        { start: scheduledStart, end: scheduledEnd },
+      );
       if (!availability.available) {
         const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
         throw new ConflictError(`Calendar conflict: ${conflictSummary}`, availability.conflicts);
@@ -475,7 +483,10 @@ export async function rescheduleJob(
   try {
     if (!isEstimate) {
       // Check availability (exclude current event)
-      const availability = await checkAvailabilityBlock(newStart, durationDays, job.googleEventId);
+      const availability = await checkAvailabilityBlock(newStart, durationDays, job.googleEventId, {
+        start: newStart,
+        end: newEnd,
+      });
       if (!availability.available) {
         const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
         // Notify Kyle about the blocked reschedule
