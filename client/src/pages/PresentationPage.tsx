@@ -350,6 +350,13 @@ export function PresentationPage() {
               <p>
                 Job length: <strong>{summary.days.toFixed(2)} day(s)</strong> at 8 hr/day
               </p>
+              <p>
+                Profit: <strong>{money(summary.profit)}</strong>
+                {summary.charge > 0 && (
+                  <> ({((summary.profit / summary.charge) * 100).toFixed(0)}% of charge)</>
+                )}{" "}
+                — before trip charge &amp; discounts
+              </p>
             </div>
           )}
         </section>

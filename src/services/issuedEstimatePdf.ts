@@ -455,6 +455,20 @@ export async function renderEstimatePdf(
     doc.text(
       `Job length: ${hours.toFixed(2)} hr = ${days.toFixed(2)} day(s) at 8 hr/day`,
     );
+    /*
+      Profit (Kyle, 2026-09-03: "I would like to see a profit calculation added
+      here so I can gauge the success of each job") — what the job actually
+      bills (taken options + trip - combo - discount, the same `billed` the
+      invoice shows) minus what the material costs us. Labour is the owner's
+      own earning on a one-man shop, so it lives inside the profit figure
+      rather than being costed against it.
+    */
+    const jobProfit = round2(billed - materialSpend);
+    doc.moveDown(0.2);
+    doc.text(
+      `Profit: ${money(billed)} billed - ${money(materialSpend)} material = ${money(jobProfit)}` +
+        (billed > 0 ? `  (${((jobProfit / billed) * 100).toFixed(0)}% of billed)` : ""),
+    );
   }
 
   // ── Signature ──

@@ -190,5 +190,13 @@ export function companySummary(computed: PbComputed, selected: PbOption[]) {
     materialCost,
     materialCharged,
     labourCost,
+    /**
+     * Profit at line scope (Kyle, 2026-09-03: "gauge the success of each
+     * job"): everything charged minus material spend — labour is the owner's
+     * earning. Trip charge and discounts land at issue; the PDF's figure
+     * includes them.
+     */
+    charge: materialCharged + labourCost,
+    profit: materialCharged - materialCost + labourCost,
   };
 }
