@@ -26,14 +26,20 @@ function arg(name: string): string | undefined {
 async function main(): Promise<void> {
   const photoId = arg("photo");
   if (photoId) {
-    const photo = await prisma.visitPhoto.findUnique({ where: { id: photoId } });
-    if (!photo) {
-      console.error(`Photo ${photoId} not found.`);
+    // Photos live in three stores: the visit gallery, the assessment
+    // (InspectionPhoto), and the estimate-draft gallery (DraftPhoto). One id,
+    // three lookups.
+    const vp = await prisma.visitPhoto.findUnique({ where: { id: photoId } });
+    const ip = vp ? null : await prisma.inspectionPhoto.findUnique({ where: { id: photoId } });
+    const dp = vp || ip ? null : await prisma.draftPhoto.findUnique({ where: { id: photoId } });
+    const bytes = vp?.data ?? ip?.data ?? dp?.bytes;
+    if (!bytes) {
+      console.error(`Photo ${photoId} not found in visit, inspection, or draft stores.`);
       process.exitCode = 1;
       return;
     }
     // Base64 to stdout, nothing else — the caller redirects to a file.
-    process.stdout.write(Buffer.from(photo.data).toString("base64"));
+    process.stdout.write(Buffer.from(bytes).toString("base64"));
     return;
   }
 
@@ -61,11 +67,34 @@ async function main(): Promise<void> {
       orderBy: { uploadedAt: "asc" },
       select: { id: true, mimeType: true, sizeBytes: true, tag: true, caption: true, uploadedAt: true },
     });
-    console.log(`Visit ${v.id} — ${v.customer.name} · "${v.purpose ?? ""}" · ${photos.length} photo(s)`);
+    console.log(`Visit ${v.id} — ${v.customer.name} · "${v.purpose ?? ""}" · ${photos.length} visit photo(s)`);
     for (const p of photos) {
       console.log(
         `  ${p.id}  ${p.mimeType.padEnd(11)} ${(p.sizeBytes / 1024).toFixed(0).padStart(5)} KB  tag=${p.tag ?? "—"}  "${p.caption ?? ""}"`,
       );
+    }
+  }
+
+  const visitIds = visits.map((v) => v.id);
+  const inspections = await prisma.healthInspection.findMany({
+    where: { visitId: { in: visitIds } },
+    select: { id: true, inspectionDate: true, photos: { select: { id: true, mimeType: true, sizeBytes: true, uploadedAt: true } } },
+  });
+  for (const ins of inspections) {
+    console.log(`Inspection ${ins.id} — ${ins.inspectionDate.toISOString().slice(0, 10)} · ${ins.photos.length} assessment photo(s)`);
+    for (const p of ins.photos) {
+      console.log(`  ${p.id}  ${p.mimeType.padEnd(11)} ${(p.sizeBytes / 1024).toFixed(0).padStart(5)} KB`);
+    }
+  }
+
+  const drafts = await prisma.priceBookDraftEstimate.findMany({
+    where: { visitId: { in: visitIds } },
+    select: { id: true, title: true, photos: { select: { id: true, mime: true, size: true, note: true } } },
+  });
+  for (const d of drafts) {
+    console.log(`Draft ${d.id} — "${d.title}" · ${d.photos.length} draft photo(s)`);
+    for (const p of d.photos) {
+      console.log(`  ${p.id}  ${p.mime.padEnd(11)} ${(p.size / 1024).toFixed(0).padStart(5)} KB  "${p.note ?? ""}"`);
     }
   }
 }
