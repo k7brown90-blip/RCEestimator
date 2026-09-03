@@ -102,15 +102,15 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
     enabled: mode === "schedule" || mode === "reschedule",
   });
 
-  // Per-tech availability for the chosen date + time. Estimates block 2h + 1h
-  // travel; production checks the block actually being set - start to end
-  // clock (Kyle, 2026-09-03: a 7am-noon booking is not a full-day claim).
+  // Per-tech availability for the chosen date + time. Estimates block exactly
+  // their 2h slot (Kyle, 2026-09-03: "match the 2 hour blocks"); production
+  // checks the block actually being set - start to end clock.
   const clockMin = (t: string) => {
     const [h, m] = t.split(":").map(Number);
     return h * 60 + m;
   };
   const blockSpan = (clockMin(endTime) - clockMin(startTime) + 1440) % 1440;
-  const durationMinutes = isEstimateVisit ? 180 : blockSpan > 0 ? blockSpan : 540;
+  const durationMinutes = isEstimateVisit ? 120 : blockSpan > 0 ? blockSpan : 540;
   const techQuery = useQuery<{ date: string; techs: TechDayAvailability[] }>({
     queryKey: ["tech-availability", selectedDate, startTime, durationMinutes],
     queryFn: () => api.techAvailability(selectedDate!, { start: startTime, durationMinutes }),

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { JobScheduler } from "../components/JobScheduler";
@@ -65,10 +65,11 @@ export function CalendarPage() {
   const rangeStart = `${year}-${pad(month)}-01`;
   const rangeEnd = `${year}-${pad(month)}-${pad(daysInMonth)}`;
 
-  const { data: schedule, isLoading, error } = useQuery<CalendarSchedule>({
+  const { data: schedule, isLoading, error, refetch: refetchSchedule } = useQuery<CalendarSchedule>({
     queryKey: ["calendar", rangeStart, rangeEnd],
     queryFn: () => api.calendarSchedule(rangeStart, rangeEnd),
   });
+  const scheduleParamRetried = useRef(false);
 
   const { data: availability } = useQuery<AvailabilityResponse>({
     queryKey: ["schedule", "availability"],
@@ -84,9 +85,21 @@ export function CalendarPage() {
     const job =
       schedule.unscheduled.find((j) => j.visitId === scheduleId) ??
       schedule.appointments.find((a) => a.visitId === scheduleId);
-    if (job) setRescheduling(job);
-    setSearchParams({}, { replace: true });
-  }, [searchParams, schedule, setSearchParams]);
+    if (job) {
+      setRescheduling(job);
+      setSearchParams({}, { replace: true });
+    } else if (!scheduleParamRetried.current) {
+      // A just-created visit (Book consultation -> here) can beat the rail:
+      // react-query serves the cached month first, the visit isn't in it, and
+      // the old code consumed the param anyway - so the scheduler never opened
+      // (Kyle, 2026-09-03, Cecilia Pesavento). Refetch once and keep the param;
+      // the effect re-runs on fresh data and opens the picker.
+      scheduleParamRetried.current = true;
+      void refetchSchedule();
+    } else {
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, schedule, setSearchParams, refetchSchedule]);
 
   /** Appointments and unlinked Google events bucketed by Central calendar day. */
   const byDay = useMemo(() => {

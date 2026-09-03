@@ -31,7 +31,10 @@ const DEFAULT_START_TIME = process.env.DEFAULT_JOB_START_TIME ?? "07:00";
 export type AppointmentKind = "estimate" | "production";
 
 export const ESTIMATE_BLOCK_MINUTES = 120;
-export const ESTIMATE_TRAVEL_BUFFER_MINUTES = 60;
+// Kyle, 2026-09-03: "get rid of the 3 hour back end scheduling. It needs to
+// match the 2 hour blocks that are available to schedule." An estimate books
+// exactly its 2-hour slot - no travel padding on the calendar event.
+export const ESTIMATE_TRAVEL_BUFFER_MINUTES = 0;
 
 export function appointmentKindFor(visitStatus: string): AppointmentKind {
   return visitStatus === "estimate" ? "estimate" : "production";
@@ -281,7 +284,7 @@ export async function scheduleJob(
         `Phone: ${job.customer.phone ?? "N/A"}`,
         `Address: ${job.property.addressLine1}`,
         ...(technician ? [`Technician: ${technician.name}`] : []),
-        ...(isEstimate ? [`Includes ${travelBufferMinutes} min travel leeway after the visit.`] : []),
+        ...(travelBufferMinutes > 0 ? [`Includes ${travelBufferMinutes} min travel leeway after the visit.`] : []),
       ].join("\n"),
       location: `${job.property.addressLine1}, ${job.property.city}, ${job.property.state}`,
       startTime: scheduledStart,
