@@ -23,7 +23,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { billedTotalOf, stripeConfigured } from "../services/stripePayments";
-import { getLaborRate } from "../services/jobCosting";
+import { estimateMaterialCost, getLaborRate } from "../services/jobCosting";
 
 export const financialsRouter = express.Router();
 
@@ -292,18 +292,34 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
 
 financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
-  const visits = await prisma.visit.findMany({
-    where: {
-      status: "completed",
-      completedAt: { gte: new Date(`${year}-01-01`), lt: new Date(`${year + 1}-01-01`) },
-      customer: { isTestAccount: false },
-    },
-    include: {
-      customer: { select: { id: true, name: true } },
-      property: { select: { addressLine1: true, city: true } },
-    },
-    orderBy: { completedAt: "desc" },
-  });
+  const jobInclude = {
+    customer: { select: { id: true, name: true } },
+    property: { select: { addressLine1: true, city: true } },
+  } as const;
+  // Completed jobs for the year PLUS sold work still in flight (Kyle,
+  // 2026-09-04: "Jason Daughdrill is not showing up in the financials
+  // either" - he signed and paid the deposit that morning; a report that
+  // waits for completion hides every job currently being worked).
+  const [completed, openSold] = await Promise.all([
+    prisma.visit.findMany({
+      where: {
+        status: "completed",
+        completedAt: { gte: new Date(`${year}-01-01`), lt: new Date(`${year + 1}-01-01`) },
+        customer: { isTestAccount: false },
+      },
+      include: jobInclude,
+      orderBy: { completedAt: "desc" },
+    }),
+    prisma.visit.findMany({
+      where: {
+        status: { in: ["contracted", "scheduled", "in_progress"] },
+        customer: { isTestAccount: false },
+      },
+      include: jobInclude,
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
+  const visits = [...openSold, ...completed];
 
   const visitIds = visits.map((v) => v.id);
   const [estimates, receipts] = await Promise.all([
@@ -312,7 +328,7 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
         signedAt: { not: null },
         OR: [{ jobVisitId: { in: visitIds } }, { visitId: { in: visitIds } }],
       },
-      include: { options: true },
+      include: { options: true, lines: { select: { option: true, materialCost: true } } },
     }),
     prisma.receipt.groupBy({
       by: ["jobId"],
@@ -337,10 +353,29 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       if (key && !estimateByJob.has(key)) estimateByJob.set(key, amount);
     }
   }
+  // The signed estimate's frozen taken-scope material - the SAME rule the
+  // Jobs tab and account summary apply (Kyle, 2026-09-04, third report:
+  // "Both Mike Corcoran jobs are not reporting material" - this route read
+  // receipts only, so a job with no receipts showed \$0.00 forever).
+  const estMaterialByJob = new Map<string, number | null>();
+  for (const est of estimates) {
+    const mat = estimateMaterialCost({
+      selectedOptions: est.selectedOptions.map(String),
+      lines: est.lines.map((l) => ({ option: String(l.option), materialCost: l.materialCost })),
+    });
+    for (const key of [est.jobVisitId, est.visitId]) {
+      if (key && !estMaterialByJob.has(key)) estMaterialByJob.set(key, mat);
+    }
+  }
 
-  res.json(visits.map((visit) => {
+  // An open visit earns a row only when a signed estimate backs it - stray
+  // contracted rows without a sale are pipeline, not financials.
+  res.json(visits.filter((v) => v.status === "completed" || estimateByJob.has(v.id)).map((visit) => {
     const quoted = estimateByJob.get(visit.id) ?? null;
-    const materialSpend = round2(spendByJob.get(visit.id) ?? 0);
+    // Positive receipts win; zero/none falls back to the signed estimate's
+    // frozen material - one rule everywhere money is reported.
+    const receiptSpend = spendByJob.get(visit.id) ?? 0;
+    const materialSpend = round2(receiptSpend > 0 ? receiptSpend : estMaterialByJob.get(visit.id) ?? 0);
     // Real labor now (Phase 5): the time clock rolls punches into
     // Visit.laborHours; the rate is the company labor rate.
     const laborHours = visit.laborHours ?? 0;
@@ -351,6 +386,7 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       customerId: visit.customer.id,
       address: `${visit.property.addressLine1}, ${visit.property.city}`,
       jobType: visit.jobType,
+      status: visit.status,
       completedAt: visit.completedAt,
       quoted,
       materialSpend,

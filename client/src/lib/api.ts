@@ -116,6 +116,7 @@ export interface JobProfitRow {
   customerId: string;
   address: string;
   jobType: string | null;
+  status: string;
   completedAt: string | null;
   quoted: number | null;
   materialSpend: number;

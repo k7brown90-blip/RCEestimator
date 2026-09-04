@@ -150,8 +150,9 @@ export function FinancialsPage() {
       <section className="card p-4">
         <h2 className="text-lg font-semibold">Job profitability</h2>
         <p className="mb-2 text-xs text-rce-muted">
-          Completed jobs: quoted vs materials vs clocked labor. Hours come from the field app's
-          time clock.
+          Completed and sold-in-flight jobs: quoted vs materials vs clocked labor. Hours come
+          from the field app's time clock; materials fall back to the signed estimate's frozen
+          cost until receipts land.
         </p>
         {(profitability ?? []).length === 0 && (
           <p className="text-sm text-rce-muted">No completed jobs in {year} yet — margins appear as jobs close.</p>
@@ -170,7 +171,7 @@ export function FinancialsPage() {
               <p className="text-xs text-rce-muted">
                 {j.address} · quoted {j.quoted !== null ? money(j.quoted) : "—"} · materials {money(j.materialSpend)}
                 {" · labor "}{j.laborHours > 0 ? `${j.laborHours}h (${money(j.laborCost)})` : "not clocked"}
-                {j.completedAt && ` · closed ${new Date(j.completedAt).toLocaleDateString()}`}
+                {j.completedAt ? ` · closed ${new Date(j.completedAt).toLocaleDateString()}` : " · sold — in flight"}
               </p>
             </li>
           ))}
