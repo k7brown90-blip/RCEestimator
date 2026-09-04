@@ -41,7 +41,10 @@ export function money(value: number | null | undefined): string {
   if (typeof value !== "number") {
     return "-";
   }
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
+  // Exact cents, always (Kyle, 2026-09-03: "The financials cannot be rounding
+  // and need to match stripe exactly") — $502.77 shown as $503 misrepresents
+  // money, on the payments ledger most of all.
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 }
 
 export function shortDate(value: string): string {
