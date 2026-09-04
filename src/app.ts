@@ -72,7 +72,7 @@ import {
   scheduleJob, rescheduleJob, cancelJob, ConflictError,
   appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES,
 } from "./services/scheduling";
-import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, mergeCostableChain, ROLLED_UP_COSTS } from "./services/jobCosting";
+import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, estimateMaterialCost, mergeCostableChain, ROLLED_UP_COSTS } from "./services/jobCosting";
 import { parseJsonArrayLength, parseJsonStringArray } from "./lib/json";
 import { findCustomerMatches } from "./services/customerMatch";
 import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
@@ -3905,7 +3905,7 @@ app.get("/jobs", asyncHandler(async (req, res) => {
       voidedAt: null,
       OR: [{ visitId: { in: visitIds } }, { jobVisitId: { in: visitIds } }],
     },
-    include: { options: true },
+    include: { options: true, lines: { select: { option: true, materialCost: true } } },
     orderBy: { createdAt: "desc" },
   });
 
@@ -4058,7 +4058,14 @@ app.get("/jobs", asyncHandler(async (req, res) => {
       costsRolledUpTo: jobsChildToJob.get(visit.id) ?? null,
       costs: jobsChildToJob.has(visit.id)
         ? rollupJobCosts(ROLLED_UP_COSTS, null, laborRate)
-        : rollupJobCosts(visit, acceptedTotal, laborRate),
+        : rollupJobCosts(
+            visit,
+            acceptedTotal,
+            laborRate,
+            // The signed estimate's frozen material cost backfills jobs where
+            // no actuals were typed — the invoice's own numbers, never $0.
+            signedQualifies.has(visit.id) ? estimateMaterialCost(signedQualifies.get(visit.id)!) : null,
+          ),
     };
   });
 
@@ -5036,6 +5043,19 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
   for (const [child, jobV] of childToJob) {
     childrenOfJob.set(jobV, [...(childrenOfJob.get(jobV) ?? []), child]);
   }
+  // The signed estimate's frozen material cost, per job (newest signed wins) —
+  // the same fallback GET /jobs applies, kept in lockstep by the money
+  // invariant test. Keyed by the job side of the chain.
+  const signedForCosts = await prisma.issuedEstimate.findMany({
+    where: { customerId, signedAt: { not: null }, voidedAt: null, status: { not: "void" } },
+    orderBy: { createdAt: "desc" },
+    select: { visitId: true, jobVisitId: true, selectedOptions: true, lines: { select: { option: true, materialCost: true } } },
+  });
+  const estMaterialByJob = new Map<string, number | null>();
+  for (const est of signedForCosts) {
+    const key = est.jobVisitId ?? est.visitId;
+    if (key && !estMaterialByJob.has(key)) estMaterialByJob.set(key, estimateMaterialCost(est));
+  }
   const visitById = new Map(account.visits.map((v) => [v.id, v]));
   const [receipts, laborRate, findings] = await Promise.all([
     visitIds.length
@@ -5097,6 +5117,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
             ),
             acceptedTotal,
             laborRate,
+            estMaterialByJob.get(visit.id) ?? null,
           ),
       purchaseOrders: visit.materialOrders.map((order) => ({
         id: order.id,

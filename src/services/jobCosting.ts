@@ -46,8 +46,13 @@ export function mergeCostableChain(job: CostableVisit, children: CostableVisit[]
   return {
     estimatedCost: job.estimatedCost,
     revenue: job.revenue,
+    // Nullness is information: "no actuals recorded anywhere on the chain" must
+    // survive the merge so the estimate-material fallback below can fire. A
+    // chain where nobody typed a cost is null, not $0.
     actualMaterialCost:
-      (job.actualMaterialCost ?? 0) + children.reduce((s, c) => s + (c.actualMaterialCost ?? 0), 0),
+      job.actualMaterialCost === null && children.every((c) => c.actualMaterialCost === null)
+        ? null
+        : (job.actualMaterialCost ?? 0) + children.reduce((s, c) => s + (c.actualMaterialCost ?? 0), 0),
     laborHours: (job.laborHours ?? 0) + children.reduce((s, c) => s + (c.laborHours ?? 0), 0),
     overheadAllocation:
       (job.overheadAllocation ?? 0) + children.reduce((s, c) => s + (c.overheadAllocation ?? 0), 0),
@@ -68,9 +73,16 @@ export function rollupJobCosts(
   visit: CostableVisit,
   acceptedOptionTotal: number | null,
   laborRate: number = DEFAULT_LABOR_RATE,
+  /**
+   * Material cost frozen on the signed estimate's taken lines (Kyle,
+   * 2026-09-03: "completed jobs have not calculated the material costs that
+   * are on the invoice/estimates"). Typed actuals always win; this fills the
+   * gap when nobody recorded actuals on a job sold through an issued estimate.
+   */
+  estimatedMaterialCost: number | null = null,
 ): JobCosts {
   const revenue = visit.revenue ?? acceptedOptionTotal ?? null;
-  const materialCost = visit.actualMaterialCost ?? 0;
+  const materialCost = visit.actualMaterialCost ?? estimatedMaterialCost ?? 0;
   const laborHours = visit.laborHours ?? 0;
   const laborCost = laborHours * laborRate;
   const overhead = visit.overheadAllocation ?? 0;
@@ -127,6 +139,22 @@ export function sumJobCosts(costs: JobCosts[]): {
     lifetimeMargin:
       lifetimeRevenue > 0 ? Math.round((lifetimeProfit / lifetimeRevenue) * 100) : null,
   };
+}
+
+/**
+ * Material cost of a signed issued estimate at TAKEN scope — the same lines
+ * the invoice bills (selected options; every line when no selection was made).
+ * Null when no line carries a cost, so callers can tell "unknown" from $0.
+ */
+export function estimateMaterialCost(est: {
+  selectedOptions: string[];
+  lines: Array<{ option: string; materialCost: number | null }>;
+}): number | null {
+  const taken = new Set(est.selectedOptions.map(String));
+  const lines = taken.size > 0 ? est.lines.filter((l) => taken.has(String(l.option))) : est.lines;
+  const costs = lines.map((l) => l.materialCost).filter((v): v is number => v != null);
+  if (costs.length === 0) return null;
+  return Math.round(costs.reduce((s, v) => s + v, 0) * 100) / 100;
 }
 
 /**
