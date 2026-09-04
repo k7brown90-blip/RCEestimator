@@ -53,9 +53,9 @@ async function main(): Promise<void> {
     const cardKey = est.jobVisitId ?? est.visitId;
     const card = cardKey ? byId.get(cardKey) : null;
     const cardDead = !card || card.status === "cancelled";
-    const blockedByZero = card ? card.actualMaterialCost === 0 : false;
-    const problem =
-      mat !== null && mat > 0 && (cardDead || blockedByZero);
+    // Rule since the 2026-09-03 fix: a POSITIVE typed actual wins; zero/null
+    // falls back to the estimate. The only remaining failure is a dead card.
+    const problem = mat !== null && mat > 0 && cardDead;
     if (problem) flagged += 1;
     console.log(
       `${problem ? "⚠ " : "  "}${est.number}  ${est.customerName.padEnd(20)} estMaterial=${mat === null ? "null" : `$${mat.toFixed(2)}`}`,
@@ -64,7 +64,7 @@ async function main(): Promise<void> {
     console.log(`      job:       ${show(est.jobVisitId)}`);
     if (problem) {
       console.log(
-        `      → PROBLEM: material would land on ${cardDead ? "a cancelled/missing card" : "a card whose typed actualMaterialCost=0 blocks the fallback"}.`,
+        "      → PROBLEM: material has no live card to land on (no linked job visit, or it was cancelled).",
       );
     }
   }

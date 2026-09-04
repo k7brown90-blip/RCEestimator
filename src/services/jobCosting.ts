@@ -82,7 +82,13 @@ export function rollupJobCosts(
   estimatedMaterialCost: number | null = null,
 ): JobCosts {
   const revenue = visit.revenue ?? acceptedOptionTotal ?? null;
-  const materialCost = visit.actualMaterialCost ?? estimatedMaterialCost ?? 0;
+  // A POSITIVE typed actual wins. Production data shows the receipt/PO sync
+  // stamps actualMaterialCost=0 on jobs with no receipts, so 0 means "nothing
+  // recorded", not "cost nothing" - the signed estimate's frozen material is
+  // the honest figure there too (Kyle's 2026-09-03 audit: six signed jobs all
+  // blocked on actualMat=0).
+  const actual = visit.actualMaterialCost;
+  const materialCost = actual != null && actual > 0 ? actual : estimatedMaterialCost ?? actual ?? 0;
   const laborHours = visit.laborHours ?? 0;
   const laborCost = laborHours * laborRate;
   const overhead = visit.overheadAllocation ?? 0;
