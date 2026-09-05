@@ -3221,6 +3221,16 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
     console.error("[IssuedEstimate] job creation after in-person sign failed:", err);
   }
 
+  // The customer's signed copy (Kyle, 2026-09-05: "The emails are not going
+  // out after the customer signs and pays the deposit on site") — the signed
+  // invoice, PDF attached, pay link included, the moment they sign. Existed
+  // only behind the manual button before; both sign doors now fire it.
+  // Fire-and-forget: their signature already stands, and a missing email
+  // address refuses cleanly and is logged.
+  sendInvoiceEmail(prisma, result.estimateId, { sentBy: "system:auto-on-sign" })
+    .then((r) => { if (!r.ok) console.error("[IssuedEstimate] auto invoice email refused:", r.reason); })
+    .catch((err) => console.error("[IssuedEstimate] auto invoice email failed:", err));
+
   // The deposit request in writing (Kyle, 2026-08-25). In person the deposit
   // is usually collected on the spot by QR, so this waits ten minutes and
   // sends only if it still isn't in — the customer who says "I'll pay

@@ -34,7 +34,7 @@ import {
   signEstimate,
 } from "../services/issuedEstimateService";
 import { renderEstimatePage, renderUnavailable } from "../services/issuedEstimateRender";
-import { notifyOwnerSigned, publicBaseUrl } from "../services/issuedEstimateSend";
+import { notifyOwnerSigned, publicBaseUrl, sendInvoiceEmail } from "../services/issuedEstimateSend";
 import { paymentSummary } from "../services/stripePayments";
 import { sendDepositRequestEmail } from "../services/paymentReceipts";
 import { createJobFromSignedEstimate } from "../services/accountSpine";
@@ -158,6 +158,15 @@ estimatePageRouter.post(
     sendDepositRequestEmail(prisma, result.estimateId, publicBaseUrl()).catch((err) =>
       console.error("[EstimatePage] deposit request email failed:", err)
     );
+    // The customer's signed copy (Kyle, 2026-09-05: "The emails are not going
+    // out after the customer signs and pays the deposit on site") — the signed
+    // invoice, PDF attached, pay link included, the moment they sign. Existed
+    // only behind the manual button before; both sign doors now fire it.
+    // Fire-and-forget: their signature already stands, and a missing email
+    // address refuses cleanly and is logged.
+    sendInvoiceEmail(prisma, result.estimateId, { sentBy: "system:auto-on-sign" })
+      .then((r) => { if (!r.ok) console.error("[EstimatePage] auto invoice email refused:", r.reason); })
+      .catch((err) => console.error("[EstimatePage] auto invoice email failed:", err));
 
     const signed = await getEstimateByToken(prisma, token);
     if (!signed.ok) {

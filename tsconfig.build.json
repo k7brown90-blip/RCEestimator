@@ -34,6 +34,8 @@
     "scripts/exportVisitPhotos.ts",
     // Read-only audit: signed-estimate material cost vs what the P&L shows (Kyle, 2026-09-03).
     "scripts/auditMaterialCosts.ts",
+    // Signed-invoice email backfill by estimate number (Kyle, 2026-09-05).
+    "scripts/sendInvoiceFor.ts",
     "scripts/checkGoogleCalendarConnection.ts",
     // The price-book writer, so the import can run where the database is reachable.
     // Extraction stays on Kyle's machine; only --from-json runs in here.
