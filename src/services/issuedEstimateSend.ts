@@ -522,7 +522,7 @@ export async function notifyOwnerSigned(prisma: PrismaClient, estimateId: string
       ${est.serviceAddress ? `<tr><td style="padding:3px 12px 3px 0;color:#666;">Address</td><td>${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
       ${optionRow}
       <tr><td style="padding:3px 12px 3px 0;color:#666;">Total</td><td><strong>$${billed.toFixed(2)}</strong></td></tr>
-      <tr><td style="padding:3px 12px 3px 0;color:#666;">Signed at</td><td>${est.signedAt?.toISOString() ?? ""}</td></tr>
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">Signed at</td><td>${est.signedAt?.toLocaleString("en-US", { timeZone: "America/Chicago", timeZoneName: "short" }) ?? ""}</td></tr>
       <tr><td style="padding:3px 12px 3px 0;color:#666;">IP</td><td>${escapeHtml(est.signerIp ?? "unknown")}</td></tr>
     </table>
     <p style="font-size:14px;margin-top:18px;">The estimate is now locked. Any change needs a new

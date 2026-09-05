@@ -192,7 +192,10 @@ export async function renderEstimatePdf(
   if (estimate.title) doc.text(estimate.title);
   if (estimate.customerName) doc.text(estimate.customerName);
   if (estimate.serviceAddress) doc.text(estimate.serviceAddress);
-  doc.fillColor("#555").text(`Prepared ${estimate.createdAt.toLocaleDateString("en-US")}`).fillColor("#000");
+  // Central Time explicitly (Kyle, 2026-09-05: "make sure the time stamps are
+  // correct and the time zone is right") — the container runs UTC, so a bare
+  // toLocaleDateString dates an evening estimate tomorrow.
+  doc.fillColor("#555").text(`Prepared ${estimate.createdAt.toLocaleDateString("en-US", { timeZone: "America/Chicago" })}`).fillColor("#000");
   doc.moveDown(0.8);
 
   if (estimate.scopeText) {
@@ -475,7 +478,7 @@ export async function renderEstimatePdf(
   if (estimate.signedAt) {
     doc.moveDown(1);
     doc.fontSize(10).fillColor("#0a5c2e")
-      .text(`Accepted by ${estimate.signedByName ?? "the customer"} on ${estimate.signedAt.toLocaleString("en-US")}`)
+      .text(`Accepted by ${estimate.signedByName ?? "the customer"} on ${estimate.signedAt.toLocaleString("en-US", { timeZone: "America/Chicago", timeZoneName: "short" })}`)
       .fillColor("#000");
 
     /*
