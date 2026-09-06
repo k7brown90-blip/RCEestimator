@@ -397,10 +397,10 @@ export async function graduateDraft(
           working (cost, what the tiers wanted, the ceiling, the reduction) so the company copy can
           print it. An adjustment Kyle cannot see is one he cannot defend to a customer who asks.
 
-          validDays: a material-heavy quote holds a supplier-priced bill of goods at a 1.25x
-          ceiling — roughly 25 points of cover. Thirty days is long enough for copper or gear to
-          eat that. Fourteen days is the pairing Kyle accepted with the tighter top band: the
-          protection is a shorter promise, not a fatter margin.
+          validDays: a flat 30, every estimate (Kyle, 2026-09-06: "The 30 day expiration is
+          fine for both, we do not need to implement a 14 day for heavy material cost. Most of
+          that heavy material is ordered and some of it even takes longer to get than 30 days.")
+          The earlier 14-day fuse on $3k+ material quotes fought his own supply chain.
         */
         // The discount programme rides from the draft; the AMOUNT waits for the signature. The
         // custom percentage is frozen here (2026-09-01) — the draft can change, the document cannot.
@@ -413,7 +413,7 @@ export async function graduateDraft(
           Object.keys(computed.materialCaps ?? {}).length > 0
             ? JSON.stringify(computed.materialCaps)
             : null,
-        validDays: computed.materialCost >= 3000 ? 14 : 30,
+        validDays: 30,
         // The band schedule in force right now, frozen with the prices it produced. Without this
         // a retune in Rate Config would restate the combination discounts on an estimate already
         // in a customer's hands.
@@ -703,6 +703,27 @@ async function applySignature(
   */
   const drawn = checkSignatureImage(input.signatureImage);
   if (!drawn.ok) return { ok: false, reason: drawn.reason };
+
+  /*
+    ── THE 30 DAYS MEAN IT (Kyle, 2026-09-06) ──────────────────────────────────────────────────
+    Every document prints "Valid N days" and until now nothing enforced it — a customer could
+    sign a stale price sheet months later. Checked HERE, at the one write path both doors share,
+    and by date arithmetic rather than the sweep's label, so a signature at 12:01 AM on day 31
+    is refused even if the cron hasn't relabeled the row yet.
+  */
+  const validity = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { createdAt: true, validDays: true },
+  });
+  if (validity) {
+    const expiresAt = new Date(validity.createdAt.getTime() + validity.validDays * 86_400_000);
+    if (Date.now() > expiresAt.getTime()) {
+      return {
+        ok: false,
+        reason: `This estimate expired on ${expiresAt.toLocaleDateString("en-US", { timeZone: "America/Chicago" })} — material prices are no longer guaranteed. Call Red Cedar Electric for a current quote.`,
+      };
+    }
+  }
 
   /*
     ── WHAT THEY ACTUALLY BOUGHT ────────────────────────────────────────────────────────────────
