@@ -455,7 +455,15 @@ export function AccountDetailPage() {
         </section>
       )}
 
-      <JobSection title="Current jobs" jobs={activeJobs} emptyText="No jobs in flight." defaultOpen />
+      <JobSection
+        title="Current jobs"
+        jobs={activeJobs}
+        emptyText="No jobs in flight."
+        defaultOpen
+        // Ride-along targets (Kyle, 2026-09-06): an unscheduled sold job can
+        // join a sibling's already-booked visit — one truck roll, two invoices.
+        scheduleTargets={activeJobs.filter((j) => j.scheduledStart && j.scheduledEnd)}
+      />
       {openConsultations.length > 0 && (
         <JobSection title="Open consultations" jobs={openConsultations} emptyText="" />
       )}
@@ -978,8 +986,8 @@ function Stat({ label, value, hint, tone }: { label: string; value: string; hint
 }
 
 function JobSection({
-  title, jobs, emptyText, defaultOpen = false,
-}: { title: string; jobs: AccountJob[]; emptyText: string; defaultOpen?: boolean }) {
+  title, jobs, emptyText, defaultOpen = false, scheduleTargets = [],
+}: { title: string; jobs: AccountJob[]; emptyText: string; defaultOpen?: boolean; scheduleTargets?: AccountJob[] }) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
@@ -997,7 +1005,13 @@ function JobSection({
 
       {open && (
         <div className="mt-3 space-y-3">
-          {jobs.map((job) => <JobCard key={job.visitId} job={job} />)}
+          {jobs.map((job) => (
+            <JobCard
+              key={job.visitId}
+              job={job}
+              scheduleTargets={scheduleTargets.filter((t) => t.visitId !== job.visitId)}
+            />
+          ))}
           {jobs.length === 0 && <p className="text-sm text-rce-muted">{emptyText}</p>}
         </div>
       )}
@@ -1005,8 +1019,17 @@ function JobSection({
   );
 }
 
-function JobCard({ job }: { job: AccountJob }) {
+function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTargets?: AccountJob[] }) {
   const [showCosts, setShowCosts] = useState(false);
+  const queryClient = useQueryClient();
+  const [rideError, setRideError] = useState<string | null>(null);
+  const rideAlong = useMutation({
+    mutationFn: (withJobId: string) => api.coScheduleJob(job.visitId, withJobId),
+    onSuccess: () => { setRideError(null); void queryClient.invalidateQueries(); },
+    onError: (err) => setRideError((err as Error).message),
+  });
+  // A sold-but-unbooked job can join a sibling's visit (Kyle, 2026-09-06).
+  const canRideAlong = job.status === "contracted" && !job.scheduledStart && scheduleTargets.length > 0;
   const { costs } = job;
   const hasCostDetail = job.purchaseOrders.length > 0 || job.receipts.length > 0 || job.documents.length > 0;
 
@@ -1028,6 +1051,23 @@ function JobCard({ job }: { job: AccountJob }) {
           {job.latestEstimate && <StatusBadge status={job.latestEstimate.status} />}
         </div>
       </div>
+
+      {canRideAlong && (
+        <div className="mt-2 space-y-1">
+          {scheduleTargets.map((t) => (
+            <button
+              key={t.visitId}
+              type="button"
+              className="btn btn-secondary text-xs"
+              disabled={rideAlong.isPending}
+              onClick={() => rideAlong.mutate(t.visitId)}
+            >
+              {rideAlong.isPending ? "Scheduling…" : `⏱ Do during "${t.jobType || t.purpose || "scheduled job"}" (${shortDate(t.scheduledStart!)})`}
+            </button>
+          ))}
+          {rideError && <p className="text-xs text-red-600">{rideError}</p>}
+        </div>
+      )}
 
       {job.costsRolledUpTo ? (
         <p className="mt-3 rounded bg-rce-bg p-2 text-xs text-rce-muted">

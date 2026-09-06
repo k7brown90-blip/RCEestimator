@@ -131,6 +131,115 @@ export interface ScheduleEnd {
 }
 
 /** Calendar days spanned, inclusive, from two YYYY-MM-DD strings. */
+/**
+ * THE DEPOSIT GATE, one implementation (extracted 2026-09-06 so co-scheduling
+ * cannot drift from scheduling). Money at or past 1/3 of the billed total
+ * opens it; a job with no signed estimate is not gated.
+ */
+async function assertProductionDepositGate(jobId: string): Promise<void> {
+  const est = await prisma.issuedEstimate.findFirst({
+    where: {
+      signedAt: { not: null },
+      status: { not: "void" },
+      OR: [{ jobVisitId: jobId }, { visitId: jobId }],
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!est) return;
+  const { paymentSummary } = await import("./stripePayments");
+  const summary = await paymentSummary(prisma, est.id, "https://unused.invalid");
+  if (summary && !summary.depositSatisfied) {
+    throw new ConflictError(
+      `Deposit required before scheduling: $${(summary.depositDue - summary.depositPaid).toFixed(2)} of the ` +
+      `$${summary.depositDue.toFixed(2)} deposit (1/3 of $${summary.billedTotal.toFixed(2)}) is still unpaid. ` +
+      `Take the deposit — card via the Take payment panel, or record the cash/check — then schedule.`,
+      [],
+    );
+  }
+}
+
+/**
+ * Ride along on an already-scheduled job (Kyle, 2026-09-06: "I want to be able
+ * to add the general labor job to the same scheduled install ... if I am
+ * planning a job and they call back to add something on and I plan to do it
+ * during the same visit").
+ *
+ * The rider copies the anchor's exact window and gets its OWN calendar event —
+ * cancelling one job never orphans the other. The availability check is
+ * deliberately skipped (sharing the anchor's block is the point), but the
+ * deposit gate is NOT: an add-on rides only when its own 1/3 is in. Account-
+ * specific by rule — both jobs must belong to the same customer. The customer
+ * hears nothing new (their visit is unchanged); Kyle gets the note.
+ */
+export async function coScheduleJob(
+  jobId: string,
+  withJobId: string,
+): Promise<{ scheduled: true; scheduledStart: Date; scheduledEnd: Date }> {
+  if (jobId === withJobId) throw new ConflictError("A job cannot ride along with itself.", []);
+  const [rider, anchor] = await Promise.all([
+    prisma.visit.findUnique({ where: { id: jobId }, include: { customer: true, property: true } }),
+    prisma.visit.findUnique({ where: { id: withJobId }, select: { customerId: true, scheduledStart: true, scheduledEnd: true, jobType: true, purpose: true, status: true } }),
+  ]);
+  if (!rider) throw new Error("Job not found");
+  if (!anchor) throw new Error("The job to schedule with was not found");
+  if (rider.customerId !== anchor.customerId) {
+    throw new ConflictError("Both jobs must belong to the same account.", []);
+  }
+  if (!anchor.scheduledStart || !anchor.scheduledEnd) {
+    throw new ConflictError("That job isn't scheduled yet — schedule it first, then add this one to the visit.", []);
+  }
+  if (appointmentKindFor(rider.status) === "estimate") {
+    throw new ConflictError("Estimate visits book their own 2-hour block — ride-alongs are for sold work.", []);
+  }
+  if (rider.status === "cancelled" || rider.status === "completed") {
+    throw new ConflictError("This job is not open for scheduling.", []);
+  }
+
+  await assertProductionDepositGate(jobId);
+
+  const scheduledStart = anchor.scheduledStart;
+  const scheduledEnd = anchor.scheduledEnd;
+  const durationDays = Math.max(
+    1,
+    Math.round((scheduledEnd.getTime() - scheduledStart.getTime()) / 86_400_000) + 1,
+  );
+
+  const event = await createCalendarEvent({
+    summary: `JOB: ${rider.customer.name} — ${rider.jobType ?? rider.purpose ?? "service"} (same visit as ${anchor.jobType ?? anchor.purpose ?? "scheduled job"})`,
+    description: [
+      `Job ID: ${jobId}`,
+      `Rides along with job: ${withJobId}`,
+      `Customer: ${rider.customer.name}`,
+      `Address: ${rider.property.addressLine1}`,
+    ].join("\n"),
+    location: `${rider.property.addressLine1}, ${rider.property.city}, ${rider.property.state}`,
+    startTime: scheduledStart,
+    endTime: scheduledEnd,
+  });
+
+  await prisma.visit.update({
+    where: { id: jobId },
+    data: {
+      status: "scheduled",
+      scheduledStart,
+      scheduledEnd,
+      googleEventId: event.id,
+      confirmationStatus: "unconfirmed",
+    },
+  });
+
+  sendKyleNotificationEmail("Job added to an existing visit", [
+    `Customer: ${rider.customer.name}`,
+    `Added: ${rider.jobType ?? rider.purpose ?? "service work"}`,
+    `Rides with: ${anchor.jobType ?? anchor.purpose ?? "scheduled job"} — ${formatTimeCT(scheduledStart)} start`,
+    `Address: ${rider.property.addressLine1}, ${rider.property.city}`,
+    `Days: ${durationDays}`,
+  ].join("\n")).catch((err) => console.error("[coScheduleJob] Kyle email failed:", err));
+
+  return { scheduled: true, scheduledStart, scheduledEnd };
+}
+
 function calendarDaysInclusive(startDateStr: string, endDateStr: string): number {
   const [sy, sm, sd] = startDateStr.split("-").map(Number);
   const [ey, em, ed] = endDateStr.split("-").map(Number);
@@ -177,27 +286,7 @@ export async function scheduleJob(
   // take a third of, so it is not gated — the signature is the moment the
   // deposit starts existing.
   if (!isEstimate) {
-    const est = await prisma.issuedEstimate.findFirst({
-      where: {
-        signedAt: { not: null },
-        status: { not: "void" },
-        OR: [{ jobVisitId: jobId }, { visitId: jobId }],
-      },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-    });
-    if (est) {
-      const { paymentSummary } = await import("./stripePayments");
-      const summary = await paymentSummary(prisma, est.id, "https://unused.invalid");
-      if (summary && !summary.depositSatisfied) {
-        throw new ConflictError(
-          `Deposit required before scheduling: $${(summary.depositDue - summary.depositPaid).toFixed(2)} of the ` +
-          `$${summary.depositDue.toFixed(2)} deposit (1/3 of $${summary.billedTotal.toFixed(2)}) is still unpaid. ` +
-          `Take the deposit — card via the Take payment panel, or record the cash/check — then schedule.`,
-          [],
-        );
-      }
-    }
+    await assertProductionDepositGate(jobId);
   }
 
   // An estimate is a fixed 2-hour block regardless of the job's day estimate —

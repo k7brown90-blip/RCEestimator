@@ -645,6 +645,9 @@ export const api = {
   },
   rescheduleJob: (jobId: string, input: { newStartDate: string; newStartTime?: string; endDate?: string; endTime?: string; reason: string }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/reschedule`, { method: "POST", body: JSON.stringify(input) }),
+  /** Ride along on an already-scheduled visit at the same account (Kyle, 2026-09-06). */
+  coScheduleJob: (jobId: string, withJobId: string) =>
+    request<{ scheduled: true; scheduledStart: string; scheduledEnd: string }>(`/crm/jobs/${jobId}/schedule-with`, { method: "POST", body: JSON.stringify({ withJobId }) }),
   cancelJob: (jobId: string, input: { reason: string }) =>
     request<{ jobId: string; cancelled: boolean }>(`/crm/jobs/${jobId}/cancel`, { method: "POST", body: JSON.stringify(input) }),
   // ─── Health Record (field inspection PWA) ─────────────────────────────────

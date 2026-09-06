@@ -68,10 +68,7 @@ import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositD
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
-import {
-  scheduleJob, rescheduleJob, cancelJob, ConflictError,
-  appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES,
-} from "./services/scheduling";
+import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
 import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, estimateMaterialCost, mergeCostableChain, ROLLED_UP_COSTS } from "./services/jobCosting";
 import { parseJsonArrayLength, parseJsonStringArray } from "./lib/json";
 import { findCustomerMatches } from "./services/customerMatch";
@@ -3799,6 +3796,21 @@ app.post("/crm/jobs/:jobId/reschedule", asyncHandler(async (req, res) => {
       jobId, body.newStartDate, body.newStartTime ?? null, body.reason,
       body.endDate ? { date: body.endDate, time: body.endTime ?? null } : null,
     );
+    res.json(result);
+  } catch (err) {
+    if (err instanceof ConflictError) {
+      res.status(409).json({ error: err.message, conflicts: err.conflicts });
+      return;
+    }
+    throw err;
+  }
+}));
+
+/** Ride along on an already-scheduled visit (Kyle, 2026-09-06). Same deposit gate, no availability check — sharing the block is the point. */
+app.post("/crm/jobs/:jobId/schedule-with", asyncHandler(async (req, res) => {
+  const body = z.object({ withJobId: z.string().min(1) }).parse(req.body ?? {});
+  try {
+    const result = await coScheduleJob(readParam(req, "jobId"), body.withJobId);
     res.json(result);
   } catch (err) {
     if (err instanceof ConflictError) {
