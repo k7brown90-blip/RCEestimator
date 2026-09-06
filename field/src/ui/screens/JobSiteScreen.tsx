@@ -16,10 +16,13 @@ import {
   clockIn,
   clockOut,
   completeVisitFromField,
+  createPurchaseOrderFromField,
   fetchJobBrief,
+  fetchPurchaseOrders,
   scheduleVisitFromField,
   uploadJobPhoto,
   uploadReceiptFromField,
+  type FieldPurchaseOrder,
   type JobBrief,
 } from '../../lib/crmSync'
 import { CollectPayment } from '../components/CollectPayment'
@@ -186,12 +189,51 @@ export function JobSiteScreen({
     }
   }
 
+  // ── Purchase order (Kyle, 2026-09-05: "allow a P.O. to be made") ──
+  const [showPo, setShowPo] = useState(false)
+  const [poSupplier, setPoSupplier] = useState('')
+  const [poLines, setPoLines] = useState<{ name: string; qty: string }[]>([{ name: '', qty: '1' }])
+  const [poOrders, setPoOrders] = useState<FieldPurchaseOrder[]>([])
+  const [poBusy, setPoBusy] = useState(false)
+  const [poStatus, setPoStatus] = useState<string | null>(null)
+  useEffect(() => {
+    if (!showPo) return
+    let cancelled = false
+    void fetchPurchaseOrders(assignment.visitId)
+      .then((r) => { if (!cancelled) setPoOrders(r.orders) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [showPo, assignment.visitId])
+  const sendPo = async () => {
+    const items = poLines
+      .map((l) => ({ name: l.name.trim(), qty: Number(l.qty) }))
+      .filter((l) => l.name && Number.isFinite(l.qty) && l.qty > 0)
+    if (!poSupplier.trim() || items.length === 0) {
+      setPoStatus('Supplier and at least one item line are needed.')
+      return
+    }
+    setPoBusy(true)
+    setPoStatus(null)
+    try {
+      await createPurchaseOrderFromField(assignment.visitId, { supplier: poSupplier.trim(), items })
+      setPoStatus(`✓ P.O. filed — ${items.length} item(s) from ${poSupplier.trim()}.`)
+      setPoSupplier('')
+      setPoLines([{ name: '', qty: '1' }])
+      const r = await fetchPurchaseOrders(assignment.visitId).catch(() => null)
+      if (r) setPoOrders(r.orders)
+    } catch (err) {
+      setPoStatus(`Failed — ${err instanceof Error ? err.message : 'no signal?'}`)
+    } finally {
+      setPoBusy(false)
+    }
+  }
+
   // ── Close-out ──
   const [closing, setClosing] = useState(false)
   const [closed, setClosed] = useState<{ warnings: string[] } | null>(null)
   const [closeError, setCloseError] = useState<string | null>(null)
   const closeOut = async () => {
-    if (!window.confirm('Close this job out? The office gets notified to schedule what comes next.')) return
+    if (!window.confirm('Close this visit out? It leaves your Today list and the office gets notified.')) return
     setClosing(true)
     setCloseError(null)
     try {
@@ -211,7 +253,7 @@ export function JobSiteScreen({
   }
 
   const isJob = JOB_STATUSES.has(brief?.status ?? assignment.visitStatus ?? '')
-  const alreadyDone = brief?.status === 'completed' || Boolean(closed)
+  const alreadyDone = brief?.status === 'completed' || Boolean(brief?.completedAt) || Boolean(closed)
 
   return (
     <div className="mx-auto max-w-xl space-y-4 p-6 pb-16">
@@ -391,22 +433,87 @@ export function JobSiteScreen({
         {receiptStatus && <p className="text-xs text-slate-300">{receiptStatus}</p>}
       </section>
 
+      {/* ── Purchase order ── */}
+      <section className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-white">Parts order (P.O.)</h2>
+          <button type="button" className="text-xs text-sky-300 underline" onClick={() => setShowPo((s) => !s)}>
+            {showPo ? 'hide' : 'new P.O.'}
+          </button>
+        </div>
+        {showPo && (
+          <>
+            <input
+              className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
+              placeholder="Supplier (e.g. Nashville Electric Supply)"
+              value={poSupplier}
+              onChange={(e) => setPoSupplier(e.target.value)}
+            />
+            {poLines.map((line, i) => (
+              <div key={i} className="flex gap-2">
+                <input
+                  className="w-16 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white"
+                  type="number"
+                  min="1"
+                  value={line.qty}
+                  onChange={(e) => setPoLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, qty: e.target.value } : l)))}
+                />
+                <input
+                  className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
+                  placeholder="Part / material"
+                  value={line.name}
+                  onChange={(e) => setPoLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, name: e.target.value } : l)))}
+                />
+              </div>
+            ))}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="flex-1 rounded-lg border border-slate-600 p-2 text-xs text-slate-200"
+                onClick={() => setPoLines((ls) => [...ls, { name: '', qty: '1' }])}
+              >
+                ＋ line
+              </button>
+              <button
+                type="button"
+                disabled={poBusy}
+                onClick={() => void sendPo()}
+                className="flex-1 rounded-lg bg-sky-700 p-2 text-xs font-medium text-white disabled:opacity-40"
+              >
+                {poBusy ? 'Filing…' : 'File the P.O.'}
+              </button>
+            </div>
+          </>
+        )}
+        {poStatus && <p className="text-xs text-slate-300">{poStatus}</p>}
+        {showPo && poOrders.length > 0 && (
+          <ul className="space-y-1 pt-1 text-xs text-slate-400">
+            {poOrders.map((o) => (
+              <li key={o.id}>
+                {o.supplier} — {o.items.length} item(s) · {new Date(o.createdAt).toLocaleDateString()}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {/* ── Payment ── */}
       <CollectPayment visitId={assignment.visitId} />
 
-      {/* ── Close-out — jobs only ── */}
-      {isJob && (
+      {/* ── Close-out — every visit ends when the TECH says so (Kyle, 2026-09-05) ── */}
+      {(
         <section className="space-y-2 rounded-xl border border-amber-800 bg-amber-950/20 p-4">
-          <h2 className="text-sm font-semibold text-amber-200">Close the job out</h2>
+          <h2 className="text-sm font-semibold text-amber-200">{isJob ? 'Close the job out' : 'Close this visit out'}</h2>
           {alreadyDone ? (
             <p className="rounded bg-emerald-900/50 p-2 text-sm text-emerald-200">
-              ✓ Closed. The office has been notified to schedule what comes next.
+              ✓ Closed. The office has been notified{isJob ? ' to schedule what comes next' : ''}.
             </p>
           ) : (
             <>
               <p className="text-xs text-slate-400">
-                Work done, photos in, receipts filed, money collected? Closing notifies the office
-                to schedule the install or follow-up.
+                {isJob
+                  ? 'Work done, photos in, receipts filed, money collected? Closing notifies the office to schedule the install or follow-up.'
+                  : 'Assessment sent, quote built, receipts filed? The visit stays on your Today list until you close it — closing logs it to the office.'}
               </p>
               <button
                 type="button"

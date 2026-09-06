@@ -395,11 +395,16 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     v2Summary = await persistV2(inspection.id, visit.propertyId, validatedV2);
   }
 
-  // Close out the technician's assignment for this visit (if one exists).
-  await prisma.visitAssignment.updateMany({
-    where: { visitId: visit.id, technicianId: req.technician!.id, status: { not: "completed" } },
-    data: { status: "completed", completedAt: new Date() },
-  });
+  /*
+    THE ASSESSMENT NO LONGER ENDS THE JOB (Kyle, 2026-09-05: "Once I complete
+    an assessment it ends the job with no ability to create an estimate and
+    there is no way to go back to the job ... It should ... be manually marked
+    completed before becoming inaccessible and logged to the office.")
+    This used to complete the tech's assignment right here, which vanished the
+    visit from the Today list mid-day. The assessment is one module of the
+    visit; the visit stays open — quote, P.O., receipts, payment — until the
+    tech closes it out from the job screen, which is what notifies the office.
+  */
 
   // The A2 calculation joins the address's one capacity-check history, so an
   // assessment and a phone quote read from the same list instead of two.
@@ -1138,10 +1143,34 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
     return;
   }
   if (visit.status === "estimate") {
-    res.status(409).json({
-      success: false,
-      error: { code: "conflict", message: "This is an estimate visit — it wraps up by submitting the assessment, not by closing a job." },
+    // Manual close for an estimate visit (Kyle, 2026-09-05): assessment done,
+    // report sent, maybe a quote issued — the TECH says when the visit is
+    // over, and the office hears about it. Mirrors the CRM's
+    // complete-consultation door: completedAt + archived, status untouched.
+    const now = new Date();
+    await prisma.visit.update({
+      where: { id: visitId },
+      data: { completedAt: now, nextStep: "archived", nextStepAt: now },
     });
+    await prisma.visitAssignment.updateMany({
+      where: { visitId, technicianId: req.technician!.id, status: { not: "completed" } },
+      data: { status: "completed", completedAt: now },
+    });
+    const consultLabel = `${visit.customer.name} — ${visit.property.addressLine1}, ${visit.property.city}`;
+    logSystemEvent("info", "jobs", `Consultation closed from the field: ${consultLabel}`, {
+      visitId,
+      technician: req.technician!.name,
+    });
+    sendKyleNotificationEmail(
+      `Consultation closed from the field: ${visit.customer.name}`,
+      [
+        consultLabel,
+        `Closed by: ${req.technician!.name}`,
+        "",
+        "Assessment/estimate visit wrapped up. Next steps (quote follow-up, scheduling) run from the CRM.",
+      ].join("\n"),
+    ).catch(() => {});
+    res.json({ success: true, data: { completed: true, warnings: [] } });
     return;
   }
 
@@ -1187,6 +1216,68 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
   ).catch(() => {});
 
   res.json({ success: true, data: { completed: true, warnings } });
+}));
+
+/**
+ * Purchase orders from the field (Kyle, 2026-09-05: the job screen should
+ * "allow a P.O. to be made"). Same MaterialOrder model and shape as the CRM's
+ * job-screen door — a P.O. is the plan; receipts remain the spend.
+ */
+healthRecordTechRouter.post("/visits/:visitId/purchase-orders", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const body = z.object({
+    supplier: z.string().trim().min(1).max(200),
+    items: z.array(z.object({
+      name: z.string().trim().min(1).max(300),
+      qty: z.number().positive(),
+      unit: z.string().trim().max(20).optional(),
+    })).min(1),
+  }).parse(req.body);
+  const order = await prisma.materialOrder.create({
+    data: { jobId: visitId, supplier: body.supplier, items: JSON.stringify(body.items) },
+  });
+  logSystemEvent("info", "jobs", `P.O. created from the field — ${body.supplier}, ${body.items.length} item(s)`, {
+    visitId,
+    technician: req.technician!.name,
+    orderId: order.id,
+  });
+  res.status(201).json({ success: true, data: { id: order.id, supplier: order.supplier, createdAt: order.createdAt } });
+}));
+
+healthRecordTechRouter.get("/visits/:visitId/purchase-orders", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const orders = await prisma.materialOrder.findMany({
+    where: { jobId: visitId },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({
+    success: true,
+    data: {
+      orders: orders.map((o) => ({
+        id: o.id,
+        supplier: o.supplier,
+        items: JSON.parse(o.items) as { name: string; qty: number; unit?: string }[],
+        sentAt: o.sentAt?.toISOString() ?? null,
+        createdAt: o.createdAt.toISOString(),
+      })),
+    },
+  });
 }));
 
 /**

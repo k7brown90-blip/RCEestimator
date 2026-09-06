@@ -525,6 +525,26 @@ export async function completeVisitFromField(visitId: string): Promise<{ complet
   return crmRequest(`/visits/${visitId}/complete`, { method: 'POST', body: '{}' })
 }
 
+/** P.O. from the driveway (Kyle, 2026-09-05) — the plan to order; receipts stay the spend. */
+export async function createPurchaseOrderFromField(
+  visitId: string,
+  input: { supplier: string; items: { name: string; qty: number }[] },
+): Promise<{ id: string; supplier: string }> {
+  return crmRequest(`/visits/${visitId}/purchase-orders`, { method: 'POST', body: JSON.stringify(input) })
+}
+
+export interface FieldPurchaseOrder {
+  id: string
+  supplier: string
+  items: { name: string; qty: number; unit?: string }[]
+  sentAt: string | null
+  createdAt: string
+}
+
+export async function fetchPurchaseOrders(visitId: string): Promise<{ orders: FieldPurchaseOrder[] }> {
+  return crmRequest(`/visits/${visitId}/purchase-orders`, { method: 'GET' })
+}
+
 /** The time clock (Phase 5). One open punch per visit; needs signal on purpose. */
 export async function clockIn(visitId: string): Promise<{ clockedInAt: string }> {
   return crmRequest(`/visits/${visitId}/clock-in`, { method: 'POST', body: '{}' })

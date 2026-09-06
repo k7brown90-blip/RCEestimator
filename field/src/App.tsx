@@ -376,6 +376,13 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
           setSession(null)
           setScreen('assignment')
         }}
+        /*
+          The report is a waypoint, not a dead end (Kyle, 2026-09-05): back to
+          the job site for the P.O./receipts/close-out, or straight into a
+          quote built off what the assessment just found.
+        */
+        onBackToJob={activeAssignment ? () => setScreen('jobsite') : undefined}
+        onBuildQuote={activeAssignment ? () => setScreen('quote') : undefined}
       />
     )
   }

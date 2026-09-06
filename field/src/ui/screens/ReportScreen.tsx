@@ -10,6 +10,10 @@ interface Props {
   inspection: Inspection
   property: Property
   onNewInspection: () => void
+  /** Back to the job screen this assessment ran from (Kyle, 2026-09-05). */
+  onBackToJob?: () => void
+  /** Straight into a field quote off what was just found. */
+  onBuildQuote?: () => void
 }
 
 const statusColor: Record<RollupStatusValue, string> = {
@@ -30,7 +34,7 @@ const statusText: Record<RollupStatusValue, string> = {
   [NOT_ASSESSED]: 'text-slate-500 print:text-black',
 }
 
-export function ReportScreen({ report, inspection, property, onNewInspection }: Props) {
+export function ReportScreen({ report, inspection, property, onNewInspection, onBackToJob, onBuildQuote }: Props) {
   const { summary, sections } = report
   const hasCritical = summary.criticalFindings.length > 0
   const [emailState, setEmailState] = useState<
@@ -87,7 +91,26 @@ export function ReportScreen({ report, inspection, property, onNewInspection }: 
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 p-6 print:bg-white print:text-black">
-      <div className="flex items-center justify-between print:hidden">
+      <div className="flex flex-wrap items-center gap-2 print:hidden">
+        {onBackToJob && (
+          <button
+            type="button"
+            onClick={onBackToJob}
+            className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white"
+          >
+            ← Back to the job
+          </button>
+        )}
+        {onBuildQuote && (
+          <button
+            type="button"
+            onClick={onBuildQuote}
+            className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white"
+          >
+            Build a quote →
+          </button>
+        )}
+        <span className="flex-1" />
         <button
           type="button"
           onClick={onNewInspection}
