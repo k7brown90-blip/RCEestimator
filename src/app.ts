@@ -4074,7 +4074,26 @@ app.get("/jobs", asyncHandler(async (req, res) => {
         ? rollupJobCosts(ROLLED_UP_COSTS, null, laborRate)
         : rollupJobCosts(
             visit,
-            acceptedTotal,
+            /*
+              Revenue precedence (Kyle, 2026-09-06: "incorrect job cost
+              calculations" on Brady's completed job): typed Visit.revenue,
+              else the LEGACY accepted option, else the SIGNED issued
+              estimate's billed total — the same number the invoice charges.
+              Without the third rung, every estimate-sold job showed real
+              costs against null revenue and the account read negative
+              lifetime profit.
+            */
+            acceptedTotal ??
+              (signedQualifies.has(visit.id)
+                ? billedTotalOf({
+                    total: signedQualifies.get(visit.id)!.total,
+                    tripCharge: signedQualifies.get(visit.id)!.tripCharge,
+                    selectedOptions: signedQualifies.get(visit.id)!.selectedOptions,
+                    comboCapJson: signedQualifies.get(visit.id)!.comboCapJson,
+                    discountJson: signedQualifies.get(visit.id)!.discountJson,
+                    optionsSubtotals: signedQualifies.get(visit.id)!.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+                  })
+                : null),
             laborRate,
             // The signed estimate's frozen material cost backfills jobs where
             // no actuals were typed — the invoice's own numbers, never $0.
@@ -5063,12 +5082,31 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
   const signedForCosts = await prisma.issuedEstimate.findMany({
     where: { customerId, signedAt: { not: null }, voidedAt: null, status: { not: "void" } },
     orderBy: { createdAt: "desc" },
-    select: { visitId: true, jobVisitId: true, selectedOptions: true, lines: { select: { option: true, materialCost: true } } },
+    select: {
+      visitId: true, jobVisitId: true, selectedOptions: true,
+      total: true, tripCharge: true, comboCapJson: true, discountJson: true,
+      options: { select: { option: true, subtotal: true } },
+      lines: { select: { option: true, materialCost: true } },
+    },
   });
   const estMaterialByJob = new Map<string, number | null>();
+  // The billed total of the signed estimate, per job — the revenue rung that
+  // backfills estimate-sold jobs (Kyle, 2026-09-06), kept in lockstep with
+  // GET /jobs by the money-invariant test.
+  const estRevenueByJob = new Map<string, number>();
   for (const est of signedForCosts) {
     const key = est.jobVisitId ?? est.visitId;
     if (key && !estMaterialByJob.has(key)) estMaterialByJob.set(key, estimateMaterialCost(est));
+    if (key && !estRevenueByJob.has(key)) {
+      estRevenueByJob.set(key, billedTotalOf({
+        total: est.total,
+        tripCharge: est.tripCharge,
+        selectedOptions: est.selectedOptions,
+        comboCapJson: est.comboCapJson,
+        discountJson: est.discountJson,
+        optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+      }));
+    }
   }
   const visitById = new Map(account.visits.map((v) => [v.id, v]));
   const [receipts, laborRate, findings] = await Promise.all([
@@ -5129,7 +5167,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
               visit,
               (childrenOfJob.get(visit.id) ?? []).map((id) => visitById.get(id)!).filter(Boolean),
             ),
-            acceptedTotal,
+            acceptedTotal ?? estRevenueByJob.get(visit.id) ?? null,
             laborRate,
             estMaterialByJob.get(visit.id) ?? null,
           ),
