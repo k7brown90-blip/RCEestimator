@@ -6,6 +6,9 @@ import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { sendPendingSupplierEmails } from "./services/supplierEmail";
 import { generateInspectionRenewalLeads, generateUpgradeFollowUpLeads } from "./services/inspectionRetention";
 import { sendVisitReminders } from "./services/visitConfirmations";
+import { prisma } from "./lib/prisma";
+import { logSystemEvent } from "./services/systemEvents";
+import { sendKyleNotificationEmail } from "./services/confirmationEmail";
 import { sendAlert } from "./services/alerting";
 import {
   customerSendsEnabled,
@@ -176,6 +179,75 @@ async function startServer(): Promise<void> {
       customerSendsEnabled("visitReminders") ? "ENABLED" : "DISABLED (registered, will skip)"
     }`,
   );
+
+  // 8:30 AM CT daily — housekeeping (2026-09-06 review). Separate schedule on
+  // purpose: the 8:00 reminder job returns early when customer sends are
+  // gated, and housekeeping must never ride that gate.
+  cron.schedule("30 8 * * *", async () => {
+    // ── Stale estimate visits self-archive (review: "lifecycle debris") ──
+    // An estimate visit whose scheduled date passed 7+ days ago and was never
+    // completed archives itself into history — same completedAt + archived
+    // shape as the manual complete-consultation door. Unscheduled visits are
+    // untouched: those are pipeline, and the rail's archive button owns them.
+    try {
+      const cutoff = new Date(Date.now() - 7 * 86_400_000);
+      const stale = await prisma.visit.findMany({
+        where: {
+          status: "estimate",
+          completedAt: null,
+          scheduledStart: { not: null, lt: cutoff },
+        },
+        select: { id: true, scheduledStart: true, scheduledEnd: true },
+      });
+      for (const v of stale) {
+        await prisma.visit.update({
+          where: { id: v.id },
+          data: {
+            completedAt: v.scheduledEnd ?? v.scheduledStart ?? new Date(),
+            nextStep: "archived",
+            nextStepAt: new Date(),
+          },
+        });
+      }
+      if (stale.length > 0) {
+        logSystemEvent("info", "jobs", `Auto-archived ${stale.length} stale estimate visit(s) (scheduled 7+ days ago, never completed)`, {
+          visitIds: stale.map((v) => v.id),
+        });
+      }
+    } catch (err) {
+      console.error("[Cron] Stale-visit sweep failed:", err);
+    }
+
+    // ── Quarterly credential drill (review: "single-credential lifelines") ──
+    // First morning of each quarter: exercise the Google Calendar token and
+    // the Gmail token, and tell Kyle the result. Both fail silently otherwise.
+    const now = new Date();
+    if (now.getDate() === 1 && now.getMonth() % 3 === 0) {
+      let calendarOk = false;
+      let calendarErr = "";
+      try {
+        await getNextDaySchedule();
+        calendarOk = true;
+      } catch (err) {
+        calendarErr = err instanceof Error ? err.message : String(err);
+      }
+      const emailed = await sendKyleNotificationEmail(
+        "Quarterly credential drill",
+        [
+          `Google Calendar token: ${calendarOk ? "healthy" : `FAILED — ${calendarErr}`}`,
+          "Gmail token: healthy (this email is the proof).",
+          "",
+          calendarOk
+            ? "Nothing to do."
+            : "Fix: railway ssh \"node dist/scripts/checkGoogleCalendarConnection.js\" for the full diagnosis.",
+        ].join("\n"),
+      ).then(() => true).catch(() => false);
+      logSystemEvent(calendarOk && emailed ? "info" : "error", "ops",
+        `Credential drill — calendar ${calendarOk ? "ok" : "FAILED"}, gmail ${emailed ? "ok" : "FAILED"}`,
+        { calendarOk, emailed, calendarErr });
+    }
+  }, { timezone: "America/Chicago" });
+  console.log("[Cron] Housekeeping scheduled for 8:30 AM CT daily (stale-visit sweep; credential drill on quarter days).");
 
   logAutomationGateState();
 }

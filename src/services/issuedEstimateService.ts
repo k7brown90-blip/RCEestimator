@@ -330,6 +330,37 @@ export async function graduateDraft(
     generatorJson = check.generatorJson;
   }
 
+  /*
+    THE QUOTED-ON VISIT (2026-09-06 review: "the severed cost chain"). The
+    estimate's visitId is what lets hours clocked and receipts filed on the
+    appointment merge onto the sold job — and 11 of 12 signed estimates had
+    none, because the office intake starts from an account, not a visit. When
+    the draft carries no visit, link the newest OPEN estimate-stage visit at
+    this exact account + address (45-day window). Field quotes already link;
+    a truly visit-less speculative draft stays unlinked, which is honest.
+  */
+  let linkedVisitId = draft.visitId;
+  if (!linkedVisitId) {
+    const candidate = await prisma.visit.findFirst({
+      where: {
+        customerId: input.accountId,
+        propertyId: input.serviceAddressId,
+        status: "estimate",
+        completedAt: null,
+        createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+    if (candidate) {
+      linkedVisitId = candidate.id;
+      logSystemEvent("info", "issued-estimate", `Estimate auto-linked to its quoted-on visit`, {
+        draftId: draft.id,
+        visitId: candidate.id,
+      });
+    }
+  }
+
   const number = await nextNumber(prisma);
   const token = newToken();
 
@@ -344,7 +375,7 @@ export async function graduateDraft(
         customerId: input.accountId,
         serviceAddressId: input.serviceAddressId,
         leadId: draft.leadId,
-        visitId: draft.visitId,
+        visitId: linkedVisitId,
         customerName: context.customerName,
         customerEmail: context.customerEmail,
         customerPhone: context.customerPhone,

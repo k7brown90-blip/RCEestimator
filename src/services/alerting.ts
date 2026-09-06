@@ -79,7 +79,13 @@ export async function sendAlert(event: AlertEvent): Promise<AlertResult> {
   // beats SMS as the alert channel by Kyle's own decision. Checked before the dedup window is
   // stamped, so the first alert after a re-enable is not swallowed by a suppressed one.
   if (!twilioSendEnabled("operatorAlerts")) {
-    logSystemEvent("warn", "alerting", `alert not texted — Twilio sends gated: ${event.eventType}`, { event });
+    // Railway tears the OLD container down on every successful rollover and
+    // fires Deployment.crashed/failed for it — 15 of 15 warnings in the
+    // 2026-09-05 review were this. Gated deploy-teardown noise logs at info
+    // so the warn level means something again; every other event type still
+    // warns. (Kyle held off on a real pager for now.)
+    const level = event.eventType.startsWith("railway.Deployment.") ? "info" : "warn";
+    logSystemEvent(level, "alerting", `alert not texted — Twilio sends gated: ${event.eventType}`, { event });
     logTwilioSendSkipped("operatorAlerts", `${event.severity}/${event.eventType} recorded as a SystemEvent instead.`);
     return { delivered: false, reason: "twilio-sends-disabled" };
   }

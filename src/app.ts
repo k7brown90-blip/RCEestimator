@@ -1194,8 +1194,12 @@ app.post("/receipts", asyncHandler(async (req, res) => {
 
   // If tied to a job, update the job's actualMaterialCost
   if (body.jobId && body.category === "materials") {
+    // CONFIRMED only (ruled 2026-09-06) — the review/edit door already counted
+    // only confirmed receipts, so the two writers could stamp different totals
+    // for the same job, and an unreviewed Vision misread could pollute the
+    // P&L. Now both agree: money counts once a human has confirmed it.
     const jobReceipts = await prisma.receipt.findMany({
-      where: { jobId: body.jobId, category: "materials" },
+      where: { jobId: body.jobId, category: "materials", status: "confirmed" },
     });
     const totalMaterials = jobReceipts.reduce((sum, r) => sum + r.amount, 0);
     await prisma.visit.update({
