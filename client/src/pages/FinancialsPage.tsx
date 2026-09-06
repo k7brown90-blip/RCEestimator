@@ -36,7 +36,6 @@ export function FinancialsPage() {
     queryKey: ["receiptInsights", year],
     queryFn: () => api.receiptInsights(year),
   });
-  const { data: stripeStatus } = useQuery({ queryKey: ["stripeStatus"], queryFn: () => api.stripeStatus() });
   const { data: payments } = useQuery({
     queryKey: ["payments", year],
     queryFn: () => api.paymentsList(year),
@@ -87,6 +86,7 @@ export function FinancialsPage() {
         <h2 className="text-lg font-semibold">Monthly P&amp;L</h2>
         <p className="mb-2 text-xs text-rce-muted">
           Invoiced = signed work (accrual). Collected = money received (cash). Net = invoiced − expenses.
+          Est. materials = frozen material on signed jobs with no receipts yet; Projected net subtracts it.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -96,7 +96,9 @@ export function FinancialsPage() {
                 <th className="py-1 pr-2 text-right">Invoiced</th>
                 <th className="py-1 pr-2 text-right">Collected</th>
                 <th className="py-1 pr-2 text-right">Expenses</th>
-                <th className="py-1 text-right">Net</th>
+                <th className="py-1 pr-2 text-right">Net</th>
+                <th className="py-1 pr-2 text-right">Est. materials</th>
+                <th className="py-1 text-right">Projected net</th>
               </tr>
             </thead>
             <tbody>
@@ -106,8 +108,12 @@ export function FinancialsPage() {
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.invoiced)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.collected)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.expenses)}</td>
-                  <td className={`py-1 text-right font-medium tabular-nums ${m.net < 0 ? "text-red-600" : ""}`}>
+                  <td className={`py-1 pr-2 text-right font-medium tabular-nums ${m.net < 0 ? "text-red-600" : ""}`}>
                     {money(m.net)}
+                  </td>
+                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(m.estMaterials)}</td>
+                  <td className={`py-1 text-right font-medium tabular-nums ${m.projectedNet < 0 ? "text-red-600" : ""}`}>
+                    {money(m.projectedNet)}
                   </td>
                 </tr>
               ))}
@@ -117,8 +123,12 @@ export function FinancialsPage() {
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.invoiced)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.collected)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.expenses)}</td>
-                  <td className={`py-1 text-right tabular-nums ${summary.totals.net < 0 ? "text-red-600" : ""}`}>
+                  <td className={`py-1 pr-2 text-right tabular-nums ${summary.totals.net < 0 ? "text-red-600" : ""}`}>
                     {money(summary.totals.net)}
+                  </td>
+                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(summary.totals.estMaterials)}</td>
+                  <td className={`py-1 text-right tabular-nums ${summary.totals.projectedNet < 0 ? "text-red-600" : ""}`}>
+                    {money(summary.totals.projectedNet)}
                   </td>
                 </tr>
               )}
@@ -225,26 +235,6 @@ export function FinancialsPage() {
           </>
         )}
       </section>
-
-      {/* ── Go-live checklist (Phase 5) ── */}
-      {stripeStatus && (
-        <section className="card p-4">
-          <h2 className="text-lg font-semibold">Stripe go-live</h2>
-          <p className="mb-2 text-xs text-rce-muted">
-            {stripeStatus.keyMode === "live"
-              ? "Live mode — real cards, real money."
-              : "Test mode — no real money moves. The steps below are yours to click in the Stripe Dashboard; the app picks the changes up from its settings."}
-          </p>
-          <ul className="space-y-1 text-sm">
-            <li>{stripeStatus.configured ? "✅" : "⬜"} Stripe connected ({stripeStatus.keyMode} mode)</li>
-            <li>{stripeStatus.webhookSecretSet ? "✅" : "⬜"} Webhook receiving payments</li>
-            <li>{stripeStatus.keyMode === "live" ? "✅" : "⬜"} Live keys installed — create a <b>restricted</b> key (rk_) in the Dashboard, plus a live webhook endpoint, and swap both on Railway</li>
-            <li>{stripeStatus.restrictedKey ? "✅" : "⬜"} Using a restricted key (least privilege){!stripeStatus.restrictedKey && " — currently a full secret key"}</li>
-            <li>✅ Sales tax — not applicable: service business, no sales tax charged (your ruling, 8/25). Materials tax is paid at purchase and lands in receipts.</li>
-            <li>✅ One price, every method — card, bank transfer, cash, check, and Zelle all pay exactly the invoice amount; no card fee, no cash discount (your ruling, 8/30)</li>
-          </ul>
-        </section>
-      )}
 
       {/* ── Company bills ── */}
       <BillsCard bills={bills ?? []} onChange={() => {

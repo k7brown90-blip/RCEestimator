@@ -105,8 +105,8 @@ export interface PurchaseOrderRow {
 export interface FinancialsSummary {
   year: number;
   stripeConfigured: boolean;
-  months: { month: number; invoiced: number; collected: number; expenses: number; net: number }[];
-  totals: { invoiced: number; collected: number; expenses: number; net: number };
+  months: { month: number; invoiced: number; collected: number; expenses: number; net: number; estMaterials: number; projectedNet: number }[];
+  totals: { invoiced: number; collected: number; expenses: number; net: number; estMaterials: number; projectedNet: number };
   expensesByCategory: { category: string; monthly: number[]; total: number }[];
 }
 

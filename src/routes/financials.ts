@@ -181,7 +181,13 @@ export function billMonthsInYear(
 
 interface YearLedger {
   /** Signed invoices: { month, amount, number, customer, estimateId, signedAt } */
-  invoiced: { month: number; amount: number; number: string; customer: string; estimateId: string; date: Date }[];
+  invoiced: {
+    month: number; amount: number; number: string; customer: string; estimateId: string; date: Date;
+    /** Frozen taken-scope material on the signed estimate — the committed spend. */
+    estMaterial: number | null;
+    /** The visits this estimate's receipts would land on. */
+    jobIds: string[];
+  }[];
   collected: { month: number; amount: number; method: string; date: Date; note: string | null }[];
   receiptRows: { month: number; amount: number; category: string; vendor: string | null; date: Date; jobId: string | null }[];
   billRows: { month: number; amount: number; category: string; name: string }[];
@@ -194,7 +200,7 @@ async function yearLedger(year: number): Promise<YearLedger> {
   const [estimates, payments, receipts, bills] = await Promise.all([
     prisma.issuedEstimate.findMany({
       where: { signedAt: { gte: from, lt: to }, status: { not: "void" }, account: { isTestAccount: false } },
-      include: { options: true, account: { select: { name: true } } },
+      include: { options: true, account: { select: { name: true } }, lines: { select: { option: true, materialCost: true } } },
     }),
     // Collected = MONEY. Legacy "discount" rows (the retired 3% non-card
     // programme, 2026-08-25 → 08-30) close invoices but were never revenue —
@@ -222,6 +228,11 @@ async function yearLedger(year: number): Promise<YearLedger> {
       customer: est.account.name,
       estimateId: est.id,
       date: est.signedAt!,
+      estMaterial: estimateMaterialCost({
+        selectedOptions: est.selectedOptions.map(String),
+        lines: est.lines.map((l) => ({ option: String(l.option), materialCost: l.materialCost })),
+      }),
+      jobIds: [est.jobVisitId, est.visitId].filter((v): v is string => Boolean(v)),
     })),
     collected: payments.map((p) => ({
       month: p.paidAt!.getMonth(), amount: p.amount, method: p.method, date: p.paidAt!, note: p.note,
@@ -245,17 +256,37 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
   const ledger = await yearLedger(year);
 
+  /*
+    Estimated materials (Kyle, 2026-09-05: "I do not see materials compiling on
+    the P&L report. Even from the sold jobs.") — the frozen material cost on
+    each signed job whose receipts haven't landed yet. Kept OUT of Expenses on
+    purpose: Expenses is real money (receipts + bills, the Schedule C shape),
+    and estimated material is committed-but-unspent. It gets its own column,
+    attributed to the sign month, and Projected net subtracts it — so Net can
+    never overstate a month just because the supply-house run hasn't happened.
+    A job with any materials receipt is "covered": its real spend is already in
+    Expenses, and counting the estimate too would double it.
+  */
+  const jobsWithReceipts = new Set(ledger.receiptRows.map((r) => r.jobId).filter(Boolean));
+  const uncommittedMaterial = (month: number) =>
+    ledger.invoiced
+      .filter((r) => r.month === month && !r.jobIds.some((id) => jobsWithReceipts.has(id)))
+      .reduce((s, r) => s + (r.estMaterial ?? 0), 0);
+
   const months = Array.from({ length: 12 }, (_, month) => {
     const invoiced = ledger.invoiced.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     const collected = ledger.collected.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     const receiptExp = ledger.receiptRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     const billExp = ledger.billRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
+    const estMaterials = round2(uncommittedMaterial(month));
     return {
       month,
       invoiced: round2(invoiced),
       collected: round2(collected),
       expenses: round2(receiptExp + billExp),
       net: round2(invoiced - receiptExp - billExp),
+      estMaterials,
+      projectedNet: round2(invoiced - receiptExp - billExp - estMaterials),
     };
   });
 
@@ -279,6 +310,8 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
       collected: round2(months.reduce((s, m) => s + m.collected, 0)),
       expenses: round2(months.reduce((s, m) => s + m.expenses, 0)),
       net: round2(months.reduce((s, m) => s + m.net, 0)),
+      estMaterials: round2(months.reduce((s, m) => s + m.estMaterials, 0)),
+      projectedNet: round2(months.reduce((s, m) => s + m.projectedNet, 0)),
     },
     expensesByCategory: [...categories.entries()].map(([category, row]) => ({
       category,
