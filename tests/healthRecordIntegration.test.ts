@@ -149,10 +149,25 @@ describe("health record CRM integration", () => {
     expect(JSON.parse(stored!.criticalFindingsJson)).toEqual(["C4"]);
     expect(JSON.parse(stored!.loadCalcJson!).result.governingAmps).toBe(109);
 
-    // Assignment auto-closed.
+    // The assessment no longer ends the job (Kyle, 2026-09-05): the visit
+    // stays on the tech's Today list until they close it out themselves.
     const assignment = await prisma.visitAssignment.findFirst({ where: { visitId, technicianId } });
-    expect(assignment?.status).toBe("completed");
-    expect(assignment?.completedAt).not.toBeNull();
+    expect(assignment?.status).not.toBe("completed");
+    expect(assignment?.completedAt).toBeNull();
+
+    // The manual close-out is what ends it — estimate visits included: the
+    // visit archives with a completion stamp and the assignment closes.
+    const closeRes = await request(app)
+      .post(`/health-record/visits/${visitId}/complete`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({})
+      .expect(200);
+    expect(closeRes.body.data.completed).toBe(true);
+    const closedAssignment = await prisma.visitAssignment.findFirst({ where: { visitId, technicianId } });
+    expect(closedAssignment?.status).toBe("completed");
+    const closedVisit = await prisma.visit.findUnique({ where: { id: visitId } });
+    expect(closedVisit?.completedAt).not.toBeNull();
+    expect(closedVisit?.nextStep).toBe("archived");
 
     // Critical finding surfaced into the visit's Finding chain.
     const findings = await prisma.finding.findMany({ where: { visitId } });
