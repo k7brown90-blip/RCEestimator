@@ -2836,6 +2836,7 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
       account: { select: { id: true, name: true, isTestAccount: true } },
       serviceProperty: { select: { id: true, name: true, addressLine1: true, city: true, state: true } },
       supersededBy: { select: { id: true, revision: true } },
+      options: { select: { option: true, subtotal: true } },
     },
   });
 
@@ -2857,10 +2858,25 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
       status: r.status,
       title: r.title,
       total: r.total,
+      // The sell price: taken options + trip − combo cap − discount. On an unsigned
+      // multi-option sheet nothing is selected yet, so this equals `total`; on a signed
+      // one it is what the invoice charges (Kyle's billed-total-everywhere rule).
+      billedTotal: billedTotalOf({
+        total: r.total,
+        tripCharge: r.tripCharge,
+        selectedOptions: r.selectedOptions,
+        comboCapJson: r.comboCapJson,
+        discountJson: r.discountJson,
+        optionsSubtotals: r.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+      }),
       createdAt: r.createdAt,
       sentAt: r.sentAt,
       signedAt: r.signedAt,
       signedChannel: r.signedChannel,
+      // Kyle, 2026-09-07 (Estimates sectioned into Sent / Viewed / Sold): the page derives
+      // "expired" from sentAt + validDays, so the window rides along. Additive — nothing
+      // that read this payload before is changed.
+      validDays: r.validDays,
       account: r.account,
       serviceAddress: r.serviceProperty,
       supersededBy: r.supersededBy,
@@ -4368,14 +4384,27 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
   const estimates = await prisma.issuedEstimate.findMany({
     // Test-account rows are excluded like the estimate chain — practice
     // invoices must not mix into the money Kyle reads off this page.
-    where: { signedAt: { not: null }, voidedAt: null, ...EXCLUDE_TEST_ACCOUNT },
+    // Kyle, 2026-09-07 (invoices merged into Financials): a signed revision that
+    // has been superseded is not an open invoice — the newer revision is.
+    where: { signedAt: { not: null }, voidedAt: null, supersededBy: null, ...EXCLUDE_TEST_ACCOUNT },
     include: {
       options: true,
-      account: { select: { id: true, name: true } },
-      serviceProperty: { select: { addressLine1: true, city: true } },
+      account: { select: { id: true, name: true, phone: true, email: true } },
+      serviceProperty: { select: { id: true, addressLine1: true, city: true } },
     },
     orderBy: { signedAt: "desc" },
   });
+
+  // Kyle, 2026-09-07: the Financials drill-down goes account → property → job → invoices,
+  // so each row names its job. One query for the lot, never N.
+  const invoiceJobIds = [...new Set(estimates.map((e) => e.jobVisitId ?? e.visitId).filter((v): v is string => Boolean(v)))];
+  const invoiceJobs = invoiceJobIds.length
+    ? await prisma.visit.findMany({
+        where: { id: { in: invoiceJobIds } },
+        select: { id: true, jobType: true, purpose: true, status: true, scheduledStart: true },
+      })
+    : [];
+  const invoiceJobById = new Map(invoiceJobs.map((j) => [j.id, j]));
 
   const paidRows = estimates.length === 0 ? [] : await prisma.payment.findMany({
     where: { estimateId: { in: estimates.map((e) => e.id) }, status: "paid" },
@@ -4422,7 +4451,19 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       remindersSent: est.paymentRemindersSent,
       lastReminderAt: est.lastPaymentReminderAt,
       title: est.title,
-      customer: est.account,
+      customer: { id: est.account.id, name: est.account.name },
+      // Kyle, 2026-09-07: the expanded invoice panel shows the customer's contact info
+      // beside the email buttons. Frozen-at-issue values first, the live account backstops.
+      customerPhone: est.customerPhone ?? est.account.phone ?? null,
+      customerEmail: est.customerEmail ?? est.account.email ?? null,
+      propertyId: est.serviceProperty.id,
+      job: (() => {
+        const jobId = est.jobVisitId ?? est.visitId;
+        const job = jobId ? invoiceJobById.get(jobId) : undefined;
+        return job
+          ? { id: job.id, jobType: job.jobType, purpose: job.purpose, status: job.status, scheduledStart: job.scheduledStart }
+          : null;
+      })(),
       // The frozen text is what the signed document says; the live property
       // backstops estimates issued before the freeze existed.
       serviceAddress: est.serviceAddress
@@ -4726,6 +4767,36 @@ app.put(
     res.status(201).json({ id: receiptId, amount: query.amount });
   }),
 );
+
+/**
+ * Receipts on one job (Kyle, 2026-09-07 — Financials job drill-down: "Job can be selected
+ * for exact details, receipts, and P.O.'s. All info stays in the card"). Never selects the
+ * image bytes — `hasImage` tells the card whether to offer the viewer, and the bytes come
+ * from /health-record-admin/receipts/:id/image on demand.
+ */
+app.get("/jobs/:jobId/receipts", asyncHandler(async (req, res) => {
+  const jobId = readParam(req, "jobId");
+  const receipts = await prisma.receipt.findMany({
+    where: { jobId },
+    orderBy: { receivedAt: "desc" },
+    select: {
+      id: true, vendor: true, category: true, amount: true, status: true, source: true,
+      receivedAt: true, imageMime: true, lineItems: true,
+    },
+  });
+  res.json(receipts.map((r) => ({
+    id: r.id,
+    vendor: r.vendor,
+    category: r.category,
+    amount: r.amount,
+    status: r.status,
+    source: r.source,
+    receivedAt: r.receivedAt,
+    hasImage: Boolean(r.imageMime),
+    imageMime: r.imageMime,
+    lineItems: (() => { try { return r.lineItems ? JSON.parse(r.lineItems) : []; } catch { return []; } })(),
+  })));
+}));
 
 app.get("/accounts", listCustomers);
 

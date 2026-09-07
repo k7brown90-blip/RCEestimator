@@ -114,6 +114,7 @@ export interface JobProfitRow {
   visitId: string;
   customer: string;
   customerId: string;
+  propertyId: string;
   address: string;
   jobType: string | null;
   status: string;
@@ -124,6 +125,20 @@ export interface JobProfitRow {
   laborCost: number;
   marginBeforeLabor: number | null;
   margin: number | null;
+}
+
+/** One receipt on a job (Kyle, 2026-09-07 — Financials job drill-down). Bytes are fetched separately. */
+export interface JobReceiptRow {
+  id: string;
+  vendor: string | null;
+  category: string;
+  amount: number;
+  status: string;
+  source: string;
+  receivedAt: string;
+  hasImage: boolean;
+  imageMime: string | null;
+  lineItems: { name?: string; qty?: number; unit?: string; unitCost?: number }[];
 }
 
 export interface ReceiptInsights {
@@ -808,6 +823,8 @@ export const api = {
     request<{ reopened: true }>(`/jobs/${jobId}/reopen`, { method: "POST", body: JSON.stringify({}) }),
   jobPurchaseOrders: (jobId: string) =>
     request<PurchaseOrderRow[]>(`/jobs/${jobId}/purchase-orders`),
+  /** Receipts on one job, no image bytes (Kyle, 2026-09-07 — Financials drill-down). */
+  jobReceipts: (jobId: string) => request<JobReceiptRow[]>(`/jobs/${jobId}/receipts`),
   createPurchaseOrder: (jobId: string, input: { supplier: string; items: { name: string; qty: number; unit?: string; partNumber?: string }[] }) =>
     request<{ id: string }>(`/jobs/${jobId}/purchase-orders`, { method: "POST", body: JSON.stringify(input) }),
   deletePurchaseOrder: (jobId: string, orderId: string) =>

@@ -88,6 +88,8 @@ export type Customer = {
   name: string;
   email?: string | null;
   phone?: string | null;
+  /** The price-book practice account — kept out of every money report. */
+  isTestAccount?: boolean;
   properties?: Property[];
 };
 
@@ -833,6 +835,13 @@ export type InvoiceSummary = {
   revision: number;
   title: string;
   customer: { id: string; name: string };
+  // Kyle, 2026-09-07 (invoices merged into Financials): contact info for the expanded
+  // panel, and the property/job the invoice belongs to for the account → property → job
+  // drill-down.
+  customerPhone: string | null;
+  customerEmail: string | null;
+  propertyId: string;
+  job: { id: string; jobType: string | null; purpose: string | null; status: string; scheduledStart: string | null } | null;
   serviceAddress: string;
   signedAt: string;
   signedChannel: "in_person" | "email" | null;
@@ -1285,10 +1294,14 @@ export interface PbChainRow {
   status: "draft" | "sent" | "viewed" | "signed" | "void";
   title: string;
   total: number;
+  /** Sell price (taken options + trip − caps − discount); equals `total` when nothing is selected. */
+  billedTotal?: number;
   createdAt: string;
   sentAt: string | null;
   signedAt: string | null;
   signedChannel: "in_person" | "email" | null;
+  /** Days the quote stays open after sending (Kyle, 2026-09-07 — "expired" is derived from this). */
+  validDays?: number;
   account: { id: string; name: string; isTestAccount: boolean };
   serviceAddress: { id: string; name: string; addressLine1: string; city: string; state: string } | null;
   supersededBy: { id: string; revision: number } | null;

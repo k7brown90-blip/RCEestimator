@@ -16,9 +16,10 @@ const nav = [
   // the customers account not as a stand alone feature." Quoting begins on an account (or a
   // visit); this entry is where you see what has been quoted and where it got to.
   { to: "/estimates", label: "Estimates" },
-  // Signed work and where its money stands (Kyle, 2026-08-26: "an invoices tab
-  // that tracks the invoices sent and what ones are paid").
-  { to: "/invoices", label: "Invoices" },
+  // "Invoices" used to sit here (Kyle, 2026-08-26). Kyle, 2026-09-07: "We should look at
+  // merging invoices into the financials tab ... isolate each tab's purpose while getting
+  // rid of the repeated features." Signed work and its money now live in the Financials
+  // tab's Payments received card; /invoices redirects there so old links keep working.
   { to: "/accounts", label: "Accounts" },
   // Money — bills, revenue, and the accounting reports (Kyle, 2026-08-25).
   { to: "/financials", label: "Financials" },

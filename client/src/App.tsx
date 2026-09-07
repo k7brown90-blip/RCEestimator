@@ -16,7 +16,6 @@ import { PriceBookIntakePage } from "./pages/PriceBookIntakePage";
 import { FinancialsPage } from "./pages/FinancialsPage";
 import { PresentationPage } from "./pages/PresentationPage";
 import { EstimatesPage } from "./pages/EstimatesPage";
-import { InvoicesPage } from "./pages/InvoicesPage";
 import { CampaignsPage } from "./pages/CampaignsPage";
 import { VisitWorkspacePage } from "./pages/VisitWorkspacePage";
 import { PriceBookCatalogPage } from "./pages/PriceBookCatalogPage";
@@ -62,7 +61,9 @@ function App() {
                 <Route path="/properties/:propertyId" element={<PropertyDetailPage />} />
                 <Route path="/visits/:visitId" element={<VisitWorkspacePage />} />
                 <Route path="/estimates" element={<EstimatesPage />} />
-                <Route path="/invoices" element={<InvoicesPage />} />
+                {/* Invoices merged into Financials (Kyle, 2026-09-07). Route kept so old
+                    links and bookmarks land on the Payments received card. */}
+                <Route path="/invoices" element={<Navigate to="/financials" replace />} />
                 <Route path="/campaigns" element={<CampaignsPage />} />
                 {/* Still routable — reached from an account or a visit, never from the nav.
                     The full-move ruling removed the standalone ENTRY POINT, not the screen. */}

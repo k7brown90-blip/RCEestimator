@@ -327,7 +327,9 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
   const jobInclude = {
     customer: { select: { id: true, name: true } },
-    property: { select: { addressLine1: true, city: true } },
+    // Kyle, 2026-09-07: the Financials card drills account → address → job, so each
+    // row carries its property id. Additive.
+    property: { select: { id: true, addressLine1: true, city: true } },
   } as const;
   // Completed jobs for the year PLUS sold work still in flight (Kyle,
   // 2026-09-04: "Jason Daughdrill is not showing up in the financials
@@ -417,6 +419,7 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       visitId: visit.id,
       customer: visit.customer.name,
       customerId: visit.customer.id,
+      propertyId: visit.property.id,
       address: `${visit.property.addressLine1}, ${visit.property.city}`,
       jobType: visit.jobType,
       status: visit.status,

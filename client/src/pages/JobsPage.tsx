@@ -15,18 +15,9 @@ const MODES: Array<{ value: VisitMode; label: string }> = [
   { value: "maintenance", label: "Maintenance" },
 ];
 
-/**
- * Estimate-lifecycle filters. These only apply to Active — an estimate's status
- * is meaningless once the job itself is finished or cancelled.
- */
-const ESTIMATE_FILTERS: Array<{ value: string; label: string }> = [
-  { value: "", label: "All" },
-  { value: "draft", label: "Draft" },
-  { value: "review", label: "Review" },
-  { value: "sent", label: "Sent" },
-  { value: "accepted", label: "Accepted" },
-  { value: "no_estimate", label: "No Estimate" },
-];
+// The "All / Draft / Review / Sent / Accepted / No Estimate" filter row used to live here.
+// Kyle, 2026-09-07: "This list is out of date and not being used. It can be deleted."
+// Estimate lifecycle is the Estimates tab's job now; this page is the work itself.
 
 const JOB_STATUS_CLASS: Record<string, string> = {
   estimate: "bg-zinc-200 text-zinc-700",
@@ -48,12 +39,11 @@ export function JobsPage() {
   const [mode, setMode] = useState<VisitMode>("service_diagnostic");
   const [purpose, setPurpose] = useState("");
   /*
-    Both filters can arrive in the URL, because the property page links here for "Sold Work" and
+    The address filter arrives in the URL, because the property page links here for "Sold Work" and
     that button has to actually show sold work AT THAT ADDRESS. A link that lands on an unfiltered
     list is worse than no link — it looks like the address has sold work it does not have.
   */
   const [searchParams] = useSearchParams();
-  const [estimateFilter, setEstimateFilter] = useState(searchParams.get("estimate") ?? "");
   const addressFilter = searchParams.get("address");
   /*
     ── SOLD WORK MEANS OPEN WORK ORDERS (Kyle, R9, 2026-08-20) ─────────────────────────────────
@@ -102,12 +92,7 @@ export function JobsPage() {
             j.status !== "cancelled",
         )
       : atAddress;
-    const filtered = archived || !estimateFilter
-      ? scoped
-      : scoped.filter((job) => {
-        if (estimateFilter === "no_estimate") return !job.estimate;
-        return job.estimate?.status === estimateFilter;
-      });
+    const filtered = scoped;
 
     if (!archived) return filtered;
     // Search: name, address, or phone — digits compared as digits so
@@ -130,7 +115,7 @@ export function JobsPage() {
       const diff = new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime();
       return sortNewestFirst ? diff : -diff;
     });
-  }, [jobs, archived, estimateFilter, addressFilter, openWorkOrders, sortNewestFirst, search]);
+  }, [jobs, archived, addressFilter, openWorkOrders, sortNewestFirst, search]);
 
   /** Completed jobs grouped by account, preserving the sort inside each group. */
   const archivedGroups = useMemo(() => {
@@ -219,26 +204,6 @@ export function JobsPage() {
           for the office to schedule what's next or call it done. */}
       {!archived && <NeedsNextStep />}
 
-      {/* Secondary filter — estimate lifecycle only makes sense on live work */}
-      {!archived && (
-        <div className="mb-5 flex flex-wrap gap-2">
-          {ESTIMATE_FILTERS.map((f) => (
-            <button
-              key={f.value}
-              type="button"
-              onClick={() => setEstimateFilter(f.value)}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-                estimateFilter === f.value
-                  ? "bg-rce-accent text-white"
-                  : "bg-rce-border/40 text-rce-muted hover:bg-rce-border"
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-      )}
-
       {archived && (
         <div className="mb-5 flex flex-wrap items-center gap-3">
           <input
@@ -297,9 +262,7 @@ export function JobsPage() {
               ? search
                 ? "Nothing matches that search."
                 : "No completed or cancelled jobs."
-              : estimateFilter
-                ? "No active jobs match that estimate status."
-                : "No active jobs. A job appears here once its estimate is signed and the deposit is paid."}
+              : "No active jobs. A job appears here once its estimate is signed and the deposit is paid."}
           </p>
         )}
       </section>
