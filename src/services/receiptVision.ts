@@ -27,6 +27,20 @@ Category guidance: electrical supply houses / hardware stores => "materials"; fu
 vehicle or tool service => "maintenance"; anything else => "overhead".
 If the image is not a receipt, reply with {"vendor":null,"total":null,"purchaseDate":null,"category":"overhead","lineItems":[]}.`;
 
+/**
+ * Vision reads receipt dates loosely — Kyle's 2026-09-08 captures came back
+ * dated 2022-09-08 (the year misread). A purchase date is only trusted when it
+ * is a real YYYY-MM-DD within the last 400 days and not in the future;
+ * otherwise the receipt keeps its upload time, which is at worst days off.
+ */
+export function plausiblePurchaseDate(value: unknown, now: Date = new Date()): string | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const at = new Date(`${value}T12:00:00Z`).getTime();
+  if (Number.isNaN(at)) return null;
+  const ageDays = (now.getTime() - at) / 86_400_000;
+  return ageDays < -1 || ageDays > 400 ? null : value;
+}
+
 export async function parseReceiptImage(imageBuffer: Buffer, mimeType: string): Promise<ParsedReceipt | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -73,7 +87,7 @@ export async function parseReceiptImage(imageBuffer: Buffer, mimeType: string): 
     return {
       vendor: typeof parsed.vendor === "string" ? parsed.vendor : null,
       total: typeof parsed.total === "number" ? parsed.total : null,
-      purchaseDate: typeof parsed.purchaseDate === "string" ? parsed.purchaseDate : null,
+      purchaseDate: plausiblePurchaseDate(parsed.purchaseDate),
       category,
       lineItems: Array.isArray(parsed.lineItems)
         ? parsed.lineItems

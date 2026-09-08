@@ -13,7 +13,7 @@ import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, openProtectedPdf } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
-import type { AccountJob, AccountSummary } from "../lib/types";
+import type { AccountJob, AccountReceipt, AccountSummary } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
 const JOB_STATUS_CLASS: Record<string, string> = {
@@ -1036,7 +1036,7 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
   // tracking right and that they are easily seen/found in the CRM when in that customer's account").
   const [receiptError, setReceiptError] = useState<string | null>(null);
   const reviewReceipt = useMutation({
-    mutationFn: ({ id, ...input }: { id: string; status?: "confirmed" | "pending_review"; amount?: number }) => api.reviewReceipt(id, input),
+    mutationFn: ({ id, ...input }: { id: string; status?: "confirmed" | "pending_review"; amount?: number; vendor?: string | null }) => api.reviewReceipt(id, input),
     onSuccess: () => { setReceiptError(null); void queryClient.invalidateQueries(); },
     onError: (err) => setReceiptError((err as Error).message),
   });
@@ -1164,16 +1164,16 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
                       )}
                     </span>
                     <span className="flex items-center gap-2">
-                      <span className="text-rce-muted">{money(receipt.amount)} · {shortDate(receipt.receivedAt)}</span>
-                      {receipt.status === "pending_review" && (
-                        <button
-                          type="button"
-                          className="btn btn-primary px-2 py-0.5 text-xs"
-                          disabled={reviewReceipt.isPending}
-                          onClick={() => reviewReceipt.mutate({ id: receipt.id, status: "confirmed" })}
-                        >
-                          Confirm
-                        </button>
+                      {receipt.status === "pending_review" ? (
+                        // Kyle, 2026-09-08 (Robert Tran): the vision read can miss the vendor or
+                        // the amount entirely ($0.00, no vendor) — fix both here, then confirm.
+                        <PendingReceiptFields
+                          receipt={receipt}
+                          busy={reviewReceipt.isPending}
+                          onConfirm={(input) => reviewReceipt.mutate({ id: receipt.id, status: "confirmed", ...input })}
+                        />
+                      ) : (
+                        <span className="text-rce-muted">{money(receipt.amount)} · {shortDate(receipt.receivedAt)}</span>
                       )}
                       <button
                         type="button"
@@ -1211,6 +1211,53 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
         </div>
       )}
     </article>
+  );
+}
+
+/**
+ * A field-captured receipt waiting for review: the amount and vendor the vision
+ * read produced, editable, and one Confirm that saves both and counts the
+ * receipt (Kyle, 2026-09-08 — a City Electric receipt came back $0.00 with no
+ * vendor, a Home Depot one with the vendor read as "RED CEDAR ELECTRIC LLC").
+ */
+function PendingReceiptFields({
+  receipt,
+  busy,
+  onConfirm,
+}: {
+  receipt: AccountReceipt;
+  busy: boolean;
+  onConfirm: (input: { amount: number; vendor: string | null }) => void;
+}) {
+  const [amount, setAmount] = useState(receipt.amount > 0 ? receipt.amount.toFixed(2) : "");
+  const [vendor, setVendor] = useState(receipt.vendor ?? "");
+  const parsed = Number(amount);
+  const valid = amount.trim() !== "" && Number.isFinite(parsed) && parsed > 0;
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      <input
+        className="field w-28 px-1 py-0.5 text-xs"
+        placeholder="Vendor"
+        value={vendor}
+        onChange={(e) => setVendor(e.target.value)}
+      />
+      <input
+        className="field w-20 px-1 py-0.5 text-right text-xs tabular-nums"
+        inputMode="decimal"
+        placeholder="0.00"
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+      />
+      <button
+        type="button"
+        className="btn btn-primary px-2 py-0.5 text-xs"
+        disabled={busy || !valid}
+        title={valid ? "Confirm and count this receipt" : "Enter the receipt total first"}
+        onClick={() => onConfirm({ amount: Math.round(parsed * 100) / 100, vendor: vendor.trim() || null })}
+      >
+        Confirm
+      </button>
+    </span>
   );
 }
 

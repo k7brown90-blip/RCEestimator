@@ -38,6 +38,20 @@ vi.mock("googleapis", () => {
 
 import { app } from "../src/app";
 import { rollupJobCosts } from "../src/services/jobCosting";
+import { plausiblePurchaseDate } from "../src/services/receiptVision";
+
+describe("vision purchase dates are only trusted when plausible", () => {
+  const now = new Date("2026-09-08T17:00:00Z");
+  it("keeps a recent date, drops a misread year, the future, and garbage", () => {
+    expect(plausiblePurchaseDate("2026-09-08", now)).toBe("2026-09-08");
+    expect(plausiblePurchaseDate("2025-11-30", now)).toBe("2025-11-30");
+    // Kyle's 2026-09-08 captures came back as 2022-09-08.
+    expect(plausiblePurchaseDate("2022-09-08", now)).toBeNull();
+    expect(plausiblePurchaseDate("2026-09-20", now)).toBeNull();
+    expect(plausiblePurchaseDate("09/08/2026", now)).toBeNull();
+    expect(plausiblePurchaseDate(null, now)).toBeNull();
+  });
+});
 
 const newId = () => crypto.randomUUID().replaceAll("-", "");
 const jpg = Buffer.from("ffd8ffe000104a464946", "hex");
