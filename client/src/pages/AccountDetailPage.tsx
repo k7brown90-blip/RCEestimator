@@ -1032,6 +1032,20 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
   const canRideAlong = job.status === "contracted" && !job.scheduledStart && scheduleTargets.length > 0;
   const { costs } = job;
   const hasCostDetail = job.purchaseOrders.length > 0 || job.receipts.length > 0 || job.documents.length > 0;
+  // Receipt review from the account page (Kyle, 2026-09-08: "make sure the Financials are
+  // tracking right and that they are easily seen/found in the CRM when in that customer's account").
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+  const reviewReceipt = useMutation({
+    mutationFn: ({ id, ...input }: { id: string; status?: "confirmed" | "pending_review"; amount?: number }) => api.reviewReceipt(id, input),
+    onSuccess: () => { setReceiptError(null); void queryClient.invalidateQueries(); },
+    onError: (err) => setReceiptError((err as Error).message),
+  });
+  const deleteReceipt = useMutation({
+    mutationFn: (id: string) => api.deleteReceipt(id),
+    onSuccess: () => { setReceiptError(null); void queryClient.invalidateQueries(); },
+    onError: (err) => setReceiptError((err as Error).message),
+  });
+  const pendingReceipts = job.receipts.filter((r) => r.status === "pending_review").length;
 
   return (
     <article className="rounded-lg border border-rce-border p-3">
@@ -1088,6 +1102,16 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
       </div>
       )}
 
+      {pendingReceipts > 0 && !showCosts && (
+        <button
+          type="button"
+          className="mt-2 block w-full rounded bg-amber-50 px-2 py-1 text-left text-xs text-amber-800"
+          onClick={() => setShowCosts(true)}
+        >
+          {pendingReceipts} receipt{pendingReceipts === 1 ? "" : "s"} waiting for review — not counted in this job's material until confirmed. Open cost detail to confirm.
+        </button>
+      )}
+
       {hasCostDetail && (
         <button
           type="button"
@@ -1125,19 +1149,47 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
           {job.receipts.length > 0 && (
             <div>
               <p className="font-semibold uppercase tracking-wide text-rce-soft">Receipts</p>
+              {/* Kyle, 2026-09-08: field captures wait in "needs review" and did not count until
+                  confirmed, and nothing in the CRM could confirm them. Confirm / Remove live here. */}
               <ul className="mt-1 space-y-1">
                 {job.receipts.map((receipt) => (
-                  <li key={receipt.id} className="flex justify-between gap-2">
+                  <li key={receipt.id} className="flex flex-wrap items-center justify-between gap-2">
                     <span>
                       {receipt.vendor || "Unknown vendor"} · {receipt.category}
                       {receipt.status === "pending_review" && (
-                        <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">needs review</span>
+                        <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">needs review · not counted yet</span>
+                      )}
+                      {receipt.status === "confirmed" && receipt.category === "materials" && (
+                        <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-800">counted</span>
                       )}
                     </span>
-                    <span className="text-rce-muted">{money(receipt.amount)} · {shortDate(receipt.receivedAt)}</span>
+                    <span className="flex items-center gap-2">
+                      <span className="text-rce-muted">{money(receipt.amount)} · {shortDate(receipt.receivedAt)}</span>
+                      {receipt.status === "pending_review" && (
+                        <button
+                          type="button"
+                          className="btn btn-primary px-2 py-0.5 text-xs"
+                          disabled={reviewReceipt.isPending}
+                          onClick={() => reviewReceipt.mutate({ id: receipt.id, status: "confirmed" })}
+                        >
+                          Confirm
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="text-xs text-red-600 hover:underline"
+                        disabled={deleteReceipt.isPending}
+                        onClick={() => {
+                          if (window.confirm(`Remove this ${money(receipt.amount)} receipt from the job?`)) deleteReceipt.mutate(receipt.id);
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </span>
                   </li>
                 ))}
               </ul>
+              {receiptError && <p className="mt-1 text-red-600">{receiptError}</p>}
             </div>
           )}
 
@@ -1168,7 +1220,18 @@ function CostBreakdown({ job }: { job: AccountJob }) {
     <div>
       <p className="font-semibold uppercase tracking-wide text-rce-soft">Cost breakdown</p>
       <ul className="mt-1 space-y-1">
-        <li className="flex justify-between gap-2"><span>Materials</span><span>{money(costs.materialCost)}</span></li>
+        {/* Kyle, 2026-09-08: say where the material figure came from — receipts or the estimate. */}
+        <li className="flex justify-between gap-2">
+          <span>
+            Materials
+            <span className="ml-1 text-rce-muted">
+              {costs.materialSource === "receipts" && "· from confirmed receipts"}
+              {costs.materialSource === "estimate" && "· from the signed estimate (no confirmed receipts)"}
+              {costs.materialSource === "none" && "· nothing recorded"}
+            </span>
+          </span>
+          <span>{money(costs.materialCost)}</span>
+        </li>
         <li className="flex justify-between gap-2">
           <span>Labor · {costs.laborHours} hr @ {money(costs.laborRate)}/hr</span>
           <span>{money(costs.laborCost)}</span>

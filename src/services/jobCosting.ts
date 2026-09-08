@@ -23,6 +23,11 @@ export interface JobCosts {
   grossProfit: number | null;
   /** Whole percent, or null when there's no revenue to divide by. */
   margin: number | null;
+  /**
+   * Where materialCost came from (Kyle, 2026-09-08: the account page must say
+   * whether a job's material is receipts or still the estimate's frozen figure).
+   */
+  materialSource: "receipts" | "estimate" | "none";
 }
 
 /** The Visit fields the rollup actually reads — keeps callers from over-selecting. */
@@ -89,6 +94,8 @@ export function rollupJobCosts(
   // blocked on actualMat=0).
   const actual = visit.actualMaterialCost;
   const materialCost = actual != null && actual > 0 ? actual : estimatedMaterialCost ?? actual ?? 0;
+  const materialSource: JobCosts["materialSource"] =
+    actual != null && actual > 0 ? "receipts" : estimatedMaterialCost != null ? "estimate" : "none";
   const laborHours = visit.laborHours ?? 0;
   const laborCost = laborHours * laborRate;
   const overhead = visit.overheadAllocation ?? 0;
@@ -108,6 +115,7 @@ export function rollupJobCosts(
       revenue != null && revenue > 0
         ? Math.round(((revenue - totalCost) / revenue) * 100)
         : null,
+    materialSource,
   };
 }
 

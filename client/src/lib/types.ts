@@ -36,6 +36,8 @@ export type JobCosts = {
   revenue: number | null;
   grossProfit: number | null;
   margin: number | null;
+  /** Where materialCost came from: confirmed receipts, the signed estimate, or nothing. */
+  materialSource?: "receipts" | "estimate" | "none";
 };
 
 export type AssignedTechnician = {

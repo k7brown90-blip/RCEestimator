@@ -825,6 +825,15 @@ export const api = {
     request<PurchaseOrderRow[]>(`/jobs/${jobId}/purchase-orders`),
   /** Receipts on one job, no image bytes (Kyle, 2026-09-07 — Financials drill-down). */
   jobReceipts: (jobId: string) => request<JobReceiptRow[]>(`/jobs/${jobId}/receipts`),
+  /**
+   * Review a receipt from the account page (Kyle, 2026-09-08): confirm a field
+   * capture so it counts toward the job's material, fix its amount/vendor, or
+   * move it to another job. The server re-rolls the job total.
+   */
+  reviewReceipt: (receiptId: string, input: { status?: "confirmed" | "pending_review"; amount?: number; vendor?: string | null; jobId?: string | null; category?: string }) =>
+    request<{ id: string; jobId: string | null; amount: number; status: string }>(`/health-record-admin/receipts/${receiptId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  /** Remove a receipt (duplicate upload); the server re-rolls the job total. */
+  deleteReceipt: (receiptId: string) => request<void>(`/health-record-admin/receipts/${receiptId}`, { method: "DELETE" }),
   createPurchaseOrder: (jobId: string, input: { supplier: string; items: { name: string; qty: number; unit?: string; partNumber?: string }[] }) =>
     request<{ id: string }>(`/jobs/${jobId}/purchase-orders`, { method: "POST", body: JSON.stringify(input) }),
   deletePurchaseOrder: (jobId: string, orderId: string) =>

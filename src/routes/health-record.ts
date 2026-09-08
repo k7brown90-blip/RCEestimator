@@ -19,6 +19,7 @@ import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { rerollJobsMaterialCost } from "../services/receiptCosting";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
 import {
@@ -1383,11 +1384,15 @@ healthRecordTechRouter.put(
       imageMime: mimeType,
       ...(parsed?.purchaseDate ? { receivedAt: new Date(`${parsed.purchaseDate}T12:00:00Z`) } : {}),
     };
+    const previous = await prisma.receipt.findUnique({ where: { id: receiptId }, select: { jobId: true } });
     const receipt = await prisma.receipt.upsert({
       where: { id: receiptId },
       create: { id: receiptId, ...data },
       update: data,
     });
+    // A re-upload resets the row to pending_review; if it had been confirmed the
+    // job's stamped total must drop it again (Kyle, 2026-09-08).
+    await rerollJobsMaterialCost([receipt.jobId, previous?.jobId]);
 
     res.status(201).json({
       success: true,
@@ -2722,15 +2727,28 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
     select: { id: true, jobId: true, category: true, vendor: true, amount: true, status: true },
   });
 
-  // Re-roll material cost for any job the receipt touched (old and new)
-  const jobsToRoll = [...new Set([existing.jobId, receipt.jobId].filter((j): j is string => j != null))];
-  for (const jobId of jobsToRoll) {
-    const jobReceipts = await prisma.receipt.findMany({ where: { jobId, category: "materials", status: "confirmed" }, select: { amount: true } });
-    const totalMaterials = jobReceipts.reduce((sum, r) => sum + r.amount, 0);
-    await prisma.visit.update({ where: { id: jobId }, data: { actualMaterialCost: totalMaterials } }).catch(() => {});
-  }
+  // Re-roll material cost for any job the receipt touched (old and new) — the
+  // one shared writer (Kyle, 2026-09-08).
+  await rerollJobsMaterialCost([existing.jobId, receipt.jobId]);
 
   res.json(receipt);
+}));
+
+/**
+ * Remove a receipt (Kyle, 2026-09-08 — the account page now confirms and
+ * removes receipts in place; a duplicate upload from the truck and the office
+ * would otherwise double-count the job's material). Re-rolls the job it was on.
+ */
+healthRecordAdminRouter.delete("/receipts/:id", asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true, jobId: true } });
+  if (!existing) {
+    res.status(404).json({ error: "Receipt not found" });
+    return;
+  }
+  await prisma.receipt.delete({ where: { id } });
+  await rerollJobsMaterialCost([existing.jobId]);
+  res.status(204).end();
 }));
 
 healthRecordAdminRouter.use(zodErrorHandler);

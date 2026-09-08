@@ -65,6 +65,7 @@ import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, handleStripeWebhook, paymentSummary, stripeConfigured } from "./services/stripePayments";
+import { rerollJobMaterialCost, rerollJobsMaterialCost } from "./services/receiptCosting";
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
@@ -1189,21 +1190,10 @@ app.post("/receipts", asyncHandler(async (req, res) => {
     },
   });
 
-  // If tied to a job, update the job's actualMaterialCost
-  if (body.jobId && body.category === "materials") {
-    // CONFIRMED only (ruled 2026-09-06) — the review/edit door already counted
-    // only confirmed receipts, so the two writers could stamp different totals
-    // for the same job, and an unreviewed Vision misread could pollute the
-    // P&L. Now both agree: money counts once a human has confirmed it.
-    const jobReceipts = await prisma.receipt.findMany({
-      where: { jobId: body.jobId, category: "materials", status: "confirmed" },
-    });
-    const totalMaterials = jobReceipts.reduce((sum, r) => sum + r.amount, 0);
-    await prisma.visit.update({
-      where: { id: body.jobId },
-      data: { actualMaterialCost: totalMaterials },
-    });
-  }
+  // If tied to a job, re-roll the job's actualMaterialCost — confirmed
+  // material receipts only (ruled 2026-09-06), through the one writer
+  // every receipt door shares (Kyle, 2026-09-08).
+  if (body.jobId) await rerollJobMaterialCost(body.jobId);
 
   res.status(201).json(receipt);
 }));
@@ -4759,11 +4749,15 @@ app.put(
       status: "confirmed",
       ...(hasImage ? { imageData: body, imageMime: req.headers["content-type"] ?? "image/jpeg" } : {}),
     };
+    const previous = await prisma.receipt.findUnique({ where: { id: receiptId }, select: { jobId: true } });
     await prisma.receipt.upsert({
       where: { id: receiptId },
       create: { id: receiptId, ...data },
       update: data,
     });
+    // Kyle, 2026-09-08 (Daughdrill): this door landed receipts confirmed but never
+    // re-rolled the job, so the card kept showing the estimate's material.
+    await rerollJobsMaterialCost([jobId, previous?.jobId]);
     res.status(201).json({ id: receiptId, amount: query.amount });
   }),
 );
