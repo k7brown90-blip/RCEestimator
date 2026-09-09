@@ -22,6 +22,7 @@ interface Props {
   onOpenAccounts?: () => void
   /** Purchases (2026-09-09): start a PO with no job — truck stock, warehouse, tool. */
   onOpenPurchases?: () => void
+  onOpenMyTruck?: () => void
   /** A token was just consumed from the enrollment QR's URL fragment. */
   justEnrolled?: boolean
 }
@@ -83,7 +84,7 @@ function relativeTime(iso: string): string {
   return `${Math.round(hours / 24)} d ago`
 }
 
-export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases, justEnrolled }: Props) {
+export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases, onOpenMyTruck, justEnrolled }: Props) {
   const [configured, setConfigured] = useState(getCrmSettings() !== null)
   const [technician, setTechnician] = useState<CrmTechnician | null>(null)
   const [assignments, setAssignments] = useState<CrmAssignment[]>([])
@@ -282,6 +283,16 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
               className="w-full rounded-lg border border-amber-800 bg-slate-800/60 p-3 text-sm font-medium text-amber-200"
             >
               🧾 Purchases — get a PO number before you buy
+            </button>
+          )}
+
+          {onOpenMyTruck && (
+            <button
+              type="button"
+              onClick={onOpenMyTruck}
+              className="w-full rounded-lg border border-emerald-800 bg-slate-800/60 p-3 text-sm font-medium text-emerald-200"
+            >
+              🚚 My truck — stock, tools, restock, land a PO
             </button>
           )}
 

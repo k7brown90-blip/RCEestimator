@@ -794,6 +794,8 @@ export type PurchaseOrderLine = {
   partNumber: string | null;
   unitCost: number | null;
   qtyLanded: number | null;
+  /** When the line landed on its truck / in the warehouse (Build 3). */
+  landedAt: string | null;
   sortOrder: number;
 };
 
@@ -820,6 +822,8 @@ export type PurchaseOrderSummary = {
   closedAt: string | null;
   cancelledAt: string | null;
   sentAt: string | null;
+  /** Kyle, 2026-09-09 (Build 3): when the material landed. Null until it does. */
+  landedAt: string | null;
   createdAt: string;
   receiptCount: number;
   /** Kyle, 2026-09-09: "card proves" — a linked Issuing transaction is the money behind this PO. */
@@ -834,7 +838,7 @@ export type PurchaseOrderEvent = {
   id: string;
   at: string;
   actor: string;
-  kind: "created" | "edited" | "status" | "receipt_attached" | "receipt_detached" | "line_added" | "line_edited" | "line_removed" | "card_matched" | "card_detached";
+  kind: "created" | "edited" | "status" | "receipt_attached" | "receipt_detached" | "line_added" | "line_edited" | "line_removed" | "card_matched" | "card_detached" | "landed";
   reason: string | null;
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
@@ -930,6 +934,9 @@ export type TruckRow = {
   balance: TruckBalance | null;
   mtd: TruckMtd;
   unmatchedMaterials: number;
+  /** Build 3: stock on the truck at moving-average cost, and the tools on it. */
+  stockValue: number;
+  toolCount: number;
 };
 
 export type TrucksResponse = {
@@ -961,6 +968,8 @@ export type TruckDetail = {
   balance: TruckBalance | null;
   balancesAvailable: boolean;
   balancesReason: string | null;
+  stockValue: number;
+  toolCount: number;
 };
 
 export type IssuingCardsResponse =
@@ -987,6 +996,143 @@ export type ReceiptCandidate = {
   purchaseOrderNumber: string | null;
   hasImage: boolean;
   exact: boolean;
+};
+
+// ─── Inventory ledger and tool register (Kyle, 2026-09-09, Build 3) ──────────
+// "tracks what is on the truck and what is at the warehouse so on future jobs
+// I can label some stock as truckstock and it won't double count the cost."
+// Locations are string keys: "warehouse" | "truck:<truckId>".
+
+export type MovementKind = "purchase_in" | "transfer" | "consume" | "return" | "count" | "correction";
+
+export type StockLevelView = {
+  id: string;
+  locationKey: string;
+  itemId: string;
+  name: string;
+  unit: string | null;
+  qtyOnHand: number;
+  avgUnitCost: number;
+  value: number;
+  parLevel: number | null;
+  low: boolean;
+  updatedAt: string;
+};
+
+export type StockMovementView = {
+  id: string;
+  kind: MovementKind;
+  itemId: string;
+  name: string;
+  unit: string | null;
+  qty: number;
+  delta: number | null;
+  unitCost: number | null;
+  fromLocationKey: string | null;
+  toLocationKey: string | null;
+  purchaseOrderId: string | null;
+  purchaseOrderLineId: string | null;
+  jobId: string | null;
+  correctsId: string | null;
+  reason: string | null;
+  actor: string;
+  at: string;
+};
+
+export type StockRequestView = {
+  id: string;
+  truckId: string;
+  truckName: string;
+  itemId: string | null;
+  name: string;
+  qty: number;
+  unit: string | null;
+  note: string | null;
+  status: "open" | "fulfilled" | "declined";
+  requestedByTechnicianId: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+};
+
+export type UnlandedPo = {
+  id: string;
+  number: string;
+  supplier: string;
+  status: PoStatus;
+  purpose: PoPurpose;
+  truckId: string | null;
+  truckName: string | null;
+  purchasedAt: string | null;
+  receiptCount: number;
+  lineCount: number;
+};
+
+export type InventoryTruck = {
+  truck: { id: string; name: string; technicianId: string | null; technicianName: string | null };
+  locationKey: string;
+  levels: StockLevelView[];
+  value: number;
+  lowStock: StockLevelView[];
+};
+
+export type InventoryOverview = {
+  warehouse: { locationKey: string; levels: StockLevelView[]; value: number };
+  trucks: InventoryTruck[];
+  openRequests: StockRequestView[];
+  unlandedPos: UnlandedPo[];
+};
+
+export type LandingLineDefault = {
+  lineId: string;
+  itemId: string | null;
+  name: string;
+  unit: string | null;
+  qtyExpected: number;
+  qtyLandedDefault: number;
+  unitCostDefault: number;
+  costSource: "receipt" | "line" | "book" | "none";
+  bookPurchasePrice: number | null;
+};
+
+export type LandingDefaults = {
+  purchaseOrder: PurchaseOrderSummary;
+  destinationKey: string | null;
+  destinationLabel: string;
+  receiptTotal: number;
+  receiptCount: number;
+  hasReceiptPhoto: boolean;
+  blocker: string | null;
+  lines: LandingLineDefault[];
+};
+
+export type ToolCondition = "good" | "needs_repair" | "retired";
+
+export type ToolView = {
+  id: string;
+  name: string;
+  serial: string | null;
+  cost: number | null;
+  purchasedAt: string | null;
+  purchaseOrderId: string | null;
+  purchaseOrderNumber: string | null;
+  condition: ToolCondition;
+  locationKey: string;
+  notes: string | null;
+  createdAt: string;
+};
+
+export type ToolMovementView = { id: string; toolId: string; fromLocationKey: string; toLocationKey: string; actor: string; reason: string | null; at: string };
+export type ToolDetail = ToolView & { movements: ToolMovementView[] };
+
+/** The book, picker-shaped (from /inventory/items). */
+export type InventoryItem = {
+  itemId: string;
+  description: string | null;
+  unit: string | null;
+  category: string | null;
+  purchasePrice: number | null;
+  costBasisUsed: number | null;
+  lastCost: number | null;
 };
 
 export type CardSpendSyncResult =

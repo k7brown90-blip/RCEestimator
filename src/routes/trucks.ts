@@ -19,6 +19,7 @@ import {
   syncIssuingTransactions, truckSpendRollups, updateCardSpend,
 } from "../services/cardSpend";
 import { PO_LIST_INCLUDE, defaultTruckId, serializePurchaseOrder } from "../services/purchaseOrders";
+import { truckInventoryRollups } from "../services/inventory";
 
 export const trucksRouter = express.Router();
 
@@ -47,10 +48,11 @@ async function assertTechnician(technicianId: string | null | undefined) {
 /** Every truck with its tech, card, financial account balance, MTD spend by kind and unmatched count. */
 trucksRouter.get("/trucks", asyncHandler(async (_req, res) => {
   await defaultTruckId();
-  const [trucks, rollups, balances] = await Promise.all([
+  const [trucks, rollups, balances, inventory] = await Promise.all([
     prisma.truck.findMany({ orderBy: [{ isActive: "desc" }, { createdAt: "asc" }], select: TRUCK_SELECT }),
     truckSpendRollups(),
     readBalances(),
+    truckInventoryRollups(),
   ]);
   const faById = new Map(balances.financialAccounts.map((fa) => [fa.id, fa]));
   res.json({
@@ -72,6 +74,9 @@ trucksRouter.get("/trucks", asyncHandler(async (_req, res) => {
         balance: fa ? { cashUsd: fa.cashUsd, inboundPending: fa.inboundPending, outboundPending: fa.outboundPending, status: fa.status } : null,
         mtd: { fuel: r.fuel, maintenance: r.maintenance, materials: r.materials, tool: r.tool, other: r.other },
         unmatchedMaterials: r.unmatched,
+        // Kyle, 2026-09-09 (Build 3): what the truck is carrying — stock at moving-average cost, and its tools.
+        stockValue: inventory.get(t.id)?.stockValue ?? 0,
+        toolCount: inventory.get(t.id)?.toolCount ?? 0,
       };
     }),
     // Spend on a card no truck claims — Kyle sees it here so it never hides.
@@ -140,7 +145,7 @@ trucksRouter.get("/trucks/:id", asyncHandler(async (req, res) => {
   const to = new Date(`${year + 1}-01-01`);
   const truck = await prisma.truck.findUnique({ where: { id }, select: TRUCK_SELECT });
   if (!truck) { res.status(404).json({ error: "Truck not found" }); return; }
-  const [spend, orders, balances] = await Promise.all([
+  const [spend, orders, balances, inventory] = await Promise.all([
     prisma.cardSpend.findMany({
       where: { truckId: id, occurredAt: { gte: from, lt: to } },
       orderBy: { occurredAt: "desc" },
@@ -153,6 +158,7 @@ trucksRouter.get("/trucks/:id", asyncHandler(async (req, res) => {
       include: PO_LIST_INCLUDE,
     }),
     readBalances(),
+    truckInventoryRollups(),
   ]);
   const rows = spend.map(serializeCardSpend);
   const byKind = CARD_SPEND_KINDS.map((kind) => {
@@ -170,6 +176,8 @@ trucksRouter.get("/trucks/:id", asyncHandler(async (req, res) => {
     balance: fa ? { cashUsd: fa.cashUsd, inboundPending: fa.inboundPending, outboundPending: fa.outboundPending, status: fa.status } : null,
     balancesAvailable: balances.available,
     balancesReason: balances.reason ?? null,
+    stockValue: inventory.get(id)?.stockValue ?? 0,
+    toolCount: inventory.get(id)?.toolCount ?? 0,
   });
 }));
 

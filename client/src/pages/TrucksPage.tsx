@@ -122,6 +122,9 @@ export function TrucksPage() {
                   <span>MTD fuel {money(t.mtd.fuel)}</span>
                   <span>maint. {money(t.mtd.maintenance)}</span>
                   <span>materials on card {money(t.mtd.materials)}</span>
+                  {/* Build 3: what the truck is carrying. */}
+                  <span>stock {money(t.stockValue)}</span>
+                  <span>{t.toolCount} tool{t.toolCount === 1 ? "" : "s"}</span>
                   {t.unmatchedMaterials > 0
                     ? <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800">{t.unmatchedMaterials} need a receipt</span>
                     : <span className="text-emerald-700">receipts matched</span>}

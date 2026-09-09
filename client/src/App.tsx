@@ -21,6 +21,7 @@ import { VisitWorkspacePage } from "./pages/VisitWorkspacePage";
 import { PriceBookCatalogPage } from "./pages/PriceBookCatalogPage";
 import { SigningModePage } from "./pages/SigningModePage";
 import { TrucksPage } from "./pages/TrucksPage";
+import { InventoryPage } from "./pages/InventoryPage";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -82,6 +83,9 @@ function App() {
                 <Route path="/team" element={<TeamPage />} />
                 <Route path="/financials" element={<FinancialsPage />} />
                 <Route path="/trucks" element={<TrucksPage />} />
+                {/* Stock on every truck and in the warehouse, the tool register, POs to land
+                    (Kyle, 2026-09-09: "We need an inventory tab"). */}
+                <Route path="/inventory" element={<InventoryPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
               </CrashBoundary>

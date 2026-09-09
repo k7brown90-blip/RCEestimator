@@ -55,6 +55,16 @@ import type {
   TruckDetail,
   TruckRecord,
   TrucksResponse,
+  InventoryItem,
+  InventoryOverview,
+  LandingDefaults,
+  StockLevelView,
+  StockMovementView,
+  StockRequestView,
+  ToolCondition,
+  ToolDetail,
+  ToolMovementView,
+  ToolView,
   ScheduleJobResult,
   SupportItem,
   TechDayAvailability,
@@ -930,6 +940,43 @@ export const api = {
   cardSpendReceiptCandidates: (id: string) => request<ReceiptCandidate[]>(`/card-spend/${id}/receipt-candidates`),
   syncCardSpend: (days: number) => request<CardSpendSyncResult>("/card-spend/sync", { method: "POST", body: JSON.stringify({ days }) }),
   financialsBalances: () => request<Balances>("/financials/balances"),
+  // ── Inventory ledger, landing, tools, restock (Kyle, 2026-09-09, Build 3) ──
+  inventory: () => request<InventoryOverview>("/inventory"),
+  inventoryMovements: (params: { itemId?: string; locationKey?: string; purchaseOrderId?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.itemId) qs.set("itemId", params.itemId);
+    if (params.locationKey) qs.set("locationKey", params.locationKey);
+    if (params.purchaseOrderId) qs.set("purchaseOrderId", params.purchaseOrderId);
+    if (params.limit) qs.set("limit", String(params.limit));
+    const q = qs.toString();
+    return request<StockMovementView[]>(`/inventory/movements${q ? `?${q}` : ""}`);
+  },
+  inventoryItems: (q: string) => request<InventoryItem[]>(`/inventory/items?q=${encodeURIComponent(q)}`),
+  /** Warehouse → truck. The from side is always the warehouse (Kyle's rule). */
+  transferStock: (input: { itemId: string; qty: number; toTruckId: string; reason?: string | null }) =>
+    request<StockMovementView>("/inventory/transfer", { method: "POST", body: JSON.stringify(input) }),
+  countStock: (input: { locationKey: string; reason: string; lines: { itemId: string; name?: string | null; unit?: string | null; qty: number; unitCost?: number | null }[] }) =>
+    request<StockMovementView[]>("/inventory/count", { method: "POST", body: JSON.stringify(input) }),
+  correctMovement: (input: { correctsId: string; delta: number; unitCost?: number | null; reason: string }) =>
+    request<StockMovementView>("/inventory/correction", { method: "POST", body: JSON.stringify(input) }),
+  setParLevel: (levelId: string, parLevel: number | null) =>
+    request<StockLevelView>(`/inventory/levels/${levelId}`, { method: "PATCH", body: JSON.stringify({ parLevel }) }),
+  landingDefaults: (poId: string) => request<LandingDefaults>(`/purchase-orders/${poId}/landing`),
+  landPurchaseOrder: (poId: string, input: { lines: { lineId: string; qtyLanded: number; unitCost: number }[]; reason?: string | null }) =>
+    request<{ id: string; number: string; status: string; landedAt: string; destination: string }>(`/purchase-orders/${poId}/land`, { method: "POST", body: JSON.stringify(input) }),
+  tools: (locationKey?: string) => request<ToolView[]>(`/tools${locationKey ? `?locationKey=${encodeURIComponent(locationKey)}` : ""}`),
+  tool: (id: string) => request<ToolDetail>(`/tools/${id}`),
+  createTool: (input: { name: string; serial?: string | null; cost?: number | null; locationKey: string; notes?: string | null }) =>
+    request<ToolView>("/tools", { method: "POST", body: JSON.stringify(input) }),
+  updateTool: (id: string, input: { reason: string; name?: string; serial?: string | null; cost?: number | null; condition?: ToolCondition; notes?: string | null }) =>
+    request<ToolView>(`/tools/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  moveTool: (id: string, input: { toLocationKey: string; reason?: string | null }) =>
+    request<{ tool: ToolView; movement: ToolMovementView }>(`/tools/${id}/move`, { method: "POST", body: JSON.stringify(input) }),
+  stockRequests: (status?: string) => request<StockRequestView[]>(`/inventory/requests${status ? `?status=${status}` : ""}`),
+  fulfillStockRequest: (id: string, itemId?: string | null) =>
+    request<{ request: StockRequestView; movement: StockMovementView }>(`/inventory/requests/${id}/fulfill`, { method: "POST", body: JSON.stringify({ itemId: itemId ?? null }) }),
+  declineStockRequest: (id: string, reason: string) =>
+    request<StockRequestView>(`/inventory/requests/${id}/decline`, { method: "POST", body: JSON.stringify({ reason }) }),
   /** Receipt from the office — typed values, optional photo. */
   uploadJobReceipt: async (jobId: string, input: { amount: number; vendor?: string; category?: string; image?: File | null }) => {
     const receiptId = crypto.randomUUID().replaceAll("-", "");

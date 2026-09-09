@@ -588,6 +588,124 @@ export async function setPurchaseOrderStatus(id: string, to: 'purchased' | 'veri
   return crmRequest(`/purchase-orders/${id}/status`, { method: 'POST', body: JSON.stringify({ to }) })
 }
 
+// ─── My truck: stock, tools, restock, landing (Kyle, 2026-09-09, Build 3) ────
+// "tracks what is on the truck and what is at the warehouse ... When they are
+// used and stored the stock will be updated as to where the tool is currently
+// at." Online only and NOT queued: a landing or a tool move that replayed
+// later could double-count, so the failure text says "needs signal" instead.
+
+export interface FieldStockLevel {
+  id: string
+  itemId: string
+  name: string
+  unit: string | null
+  qtyOnHand: number
+  avgUnitCost: number
+  value: number
+  parLevel: number | null
+  low: boolean
+}
+
+export interface FieldTool {
+  id: string
+  name: string
+  serial: string | null
+  cost: number | null
+  condition: string
+  locationKey: string
+  purchaseOrderNumber: string | null
+  notes: string | null
+}
+
+export interface FieldStockRequest {
+  id: string
+  itemId: string | null
+  name: string
+  qty: number
+  unit: string | null
+  note: string | null
+  createdAt: string
+}
+
+export interface FieldMyTruck {
+  truck: { id: string; name: string }
+  locationKey: string
+  levels: FieldStockLevel[]
+  tools: FieldTool[]
+  openRequests: FieldStockRequest[]
+  /** Where a tool can go from here: the warehouse, or any other active truck. */
+  locations: { key: string; label: string }[]
+  /** Purchased / verified POs on this truck that have not landed. */
+  unlandedPos: FieldPurchaseOrder[]
+}
+
+export async function fetchMyTruck(): Promise<FieldMyTruck> {
+  return crmRequest('/my-truck', { method: 'GET' })
+}
+
+export interface FieldStockItem {
+  itemId: string
+  description: string | null
+  unit: string | null
+  lastCost: number | null
+}
+
+export async function searchStockItems(q: string): Promise<FieldStockItem[]> {
+  return crmRequest(`/inventory/items?q=${encodeURIComponent(q)}`, { method: 'GET' })
+}
+
+export async function requestRestock(input: {
+  itemId?: string | null
+  name: string
+  qty: number
+  unit?: string | null
+  note?: string | null
+}): Promise<FieldStockRequest & { status: string }> {
+  return crmRequest('/stock-requests', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export async function moveToolFromField(toolId: string, toLocationKey: string, reason?: string): Promise<{ tool: FieldTool }> {
+  return crmRequest(`/tools/${toolId}/move`, { method: 'POST', body: JSON.stringify({ toLocationKey, reason: reason ?? null }) })
+}
+
+export interface FieldLandingLine {
+  lineId: string
+  itemId: string | null
+  name: string
+  unit: string | null
+  qtyExpected: number
+  qtyLandedDefault: number
+  unitCostDefault: number
+  costSource: 'receipt' | 'line' | 'book' | 'none'
+}
+
+export interface FieldLanding {
+  purchaseOrder: { number: string; purpose: FieldPoPurpose }
+  destinationLabel: string
+  receiptTotal: number
+  receiptCount: number
+  blocker: string | null
+  lines: FieldLandingLine[]
+}
+
+export async function fetchLandingDefaults(poId: string): Promise<FieldLanding> {
+  return crmRequest(`/purchase-orders/${poId}/landing`, { method: 'GET' })
+}
+
+export async function landPurchaseOrderFromField(
+  poId: string,
+  lines: { lineId: string; qtyLanded: number; unitCost: number }[],
+): Promise<{ id: string; number: string; status: string; landedAt: string; destination: string }> {
+  return crmRequest(`/purchase-orders/${poId}/land`, { method: 'POST', body: JSON.stringify({ lines }) })
+}
+
+/** Landing and tool moves are online-only and never queued — refuse up front when the phone knows it has no signal. */
+export function requireSignal(): void {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error('no signal. This is online-only and is not queued — try again with bars.')
+  }
+}
+
 /** The time clock (Phase 5). One open punch per visit; needs signal on purpose. */
 export async function clockIn(visitId: string): Promise<{ clockedInAt: string }> {
   return crmRequest(`/visits/${visitId}/clock-in`, { method: 'POST', body: '{}' })

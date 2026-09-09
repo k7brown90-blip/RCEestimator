@@ -97,7 +97,7 @@ describe("route table: nothing answers without a session unless it is on the all
     }
 
     expect(failures, `\n${failures.join("\n")}\n`).toEqual([]);
-  });
+  }, 60_000);
 
   it("B. every non-allowlisted mounted router prefix returns 401 at BOTH spellings", async () => {
     const failures: string[] = [];
@@ -112,7 +112,7 @@ describe("route table: nothing answers without a session unless it is on the all
     }
 
     expect(failures, `\n${failures.join("\n")}\n`).toEqual([]);
-  });
+  }, 60_000);
 
   it("the two spellings are indistinguishable — same status for every top-level route", async () => {
     const mismatches: string[] = [];
@@ -125,7 +125,9 @@ describe("route table: nothing answers without a session unless it is on the all
       }
     }
     expect(mismatches, `\n${mismatches.join("\n")}\n`).toEqual([]);
-  });
+    // Two requests per route across the whole table: the route count grew past
+    // what vitest's 5 s default allows under full-suite load (Build 3, 2026-09-09).
+  }, 60_000);
 });
 
 describe("the specific routes that were exposed in production", () => {

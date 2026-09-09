@@ -21,6 +21,7 @@ import {
   type FieldPoPurpose,
   type FieldPurchaseOrder,
 } from '../../lib/crmSync'
+import { LandPoForm } from './LandPoForm'
 
 export const PO_PURPOSE_LABEL: Record<FieldPoPurpose, string> = {
   truck_stock: 'Truck stock',
@@ -207,6 +208,7 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [showPhoto, setShowPhoto] = useState(false)
+  const [showLand, setShowLand] = useState(false)
 
   const move = async (to: 'purchased' | 'verified') => {
     setBusy(true)
@@ -302,6 +304,20 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
       )}
       {live && showPhoto && (
         <PhotoPicker onPick={(f) => void receiptPhoto(f)} disabled={busy} cameraLabel="📷 Take receipt photo" />
+      )}
+      {/* Kyle, 2026-09-09 (Build 3): bought and back at the truck — land it. Material goes on the truck / in the warehouse; the PO closes. */}
+      {po.status === 'purchased' && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setShowLand((s) => !s)}
+          className="w-full rounded-lg border border-emerald-700 p-2 text-xs text-emerald-200 disabled:opacity-40"
+        >
+          {showLand ? 'hide landing' : '📦 Land — material is on the truck'}
+        </button>
+      )}
+      {po.status === 'purchased' && showLand && (
+        <LandPoForm poId={po.id} onLanded={(r) => { setMsg(`✓ ${r.number} landed.`); setShowLand(false); onChanged() }} />
       )}
       {busy && <p className="text-xs text-slate-400">Working…</p>}
       {msg && <p className="text-xs text-slate-300">{msg}</p>}

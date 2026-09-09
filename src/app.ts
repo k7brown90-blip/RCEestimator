@@ -74,6 +74,7 @@ import {
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
 import { trucksRouter } from "./routes/trucks";
+import { inventoryRouter } from "./routes/inventory";
 import { matchSpendForReceipt } from "./services/cardSpend";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
@@ -1801,6 +1802,8 @@ app.use("/health-record", healthRecordTechRouter);
 app.use("/financials", financialsRouter);
 // Trucks, cards, card spend (Kyle, 2026-09-09) — /trucks, /card-spend.
 app.use(trucksRouter);
+// Inventory ledger, landing, tools, restock requests (Kyle, 2026-09-09, Build 3) — /inventory, /tools, /purchase-orders/:id/land.
+app.use(inventoryRouter);
 // Capacity checks run on ordinary service calls with no assessment in progress,
 // so this is its own router rather than a branch of the health record.
 app.use("/health-record/capacity-checks", capacityCheckTechRouter);

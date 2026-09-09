@@ -25,6 +25,9 @@ import {
   serializePurchaseOrder, transitionPurchaseOrder, truckIdForTechnician,
 } from "../services/purchaseOrders";
 import { matchSpendForReceipt } from "../services/cardSpend";
+import {
+  WAREHOUSE_KEY, createStockRequest, landPurchaseOrder, landingDefaults, listTools, moveTool, searchItems, serializeLevel, truckLocationKey,
+} from "../services/inventory";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
 import {
@@ -1361,6 +1364,101 @@ healthRecordTechRouter.post("/purchase-orders/:id/status", asyncHandler(async (r
   try {
     const po = await transitionPurchaseOrder(readParam(req, "id"), body.to, { actor: `tech:${req.technician!.name}` });
     res.json({ success: true, data: { id: po.id, number: po.number, status: po.status } });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
+}));
+
+// ─── My truck: stock, tools, restock, landing (Kyle, 2026-09-09, Build 3) ────
+//
+// "tracks what is on the truck and what is at the warehouse ... When they are
+// used and stored the stock will be updated as to where the tool is currently
+// at." Online only — the ledger is the office's; nothing here rides the queue.
+
+/** This tech's truck: its stock levels, the tools on it, its open restock requests, and POs waiting to land. */
+healthRecordTechRouter.get("/my-truck", asyncHandler(async (req: TechRequest, res) => {
+  const tech = req.technician!;
+  const truckId = await truckIdForTechnician(tech.id);
+  const key = truckLocationKey(truckId);
+  const [truck, levels, tools, requests, trucks, orders] = await Promise.all([
+    prisma.truck.findUniqueOrThrow({ where: { id: truckId }, select: { id: true, name: true } }),
+    prisma.stockLevel.findMany({ where: { locationKey: key }, orderBy: { name: "asc" } }),
+    listTools({ locationKey: key }),
+    prisma.stockRequest.findMany({ where: { truckId, status: "open" }, orderBy: { createdAt: "desc" } }),
+    prisma.truck.findMany({ where: { isActive: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } }),
+    prisma.purchaseOrder.findMany({
+      where: { truckId, status: { in: ["purchased", "verified"] }, landedAt: null },
+      orderBy: { openedAt: "desc" },
+      take: 50,
+      include: PO_LIST_INCLUDE,
+    }),
+  ]);
+  res.json({
+    success: true,
+    data: {
+      truck,
+      locationKey: key,
+      levels: levels.map(serializeLevel),
+      tools,
+      openRequests: requests.map((r) => ({ id: r.id, itemId: r.itemId, name: r.name, qty: r.qty, unit: r.unit, note: r.note, createdAt: r.createdAt })),
+      // Where a tool can go from here: the warehouse, or any other active truck.
+      locations: [{ key: WAREHOUSE_KEY, label: "Warehouse (home)" }, ...trucks.filter((t) => t.id !== truckId).map((t) => ({ key: truckLocationKey(t.id), label: t.name }))],
+      unlandedPos: orders.map(fieldPoView),
+    },
+  });
+}));
+
+/** The book, picker-shaped, for the restock form. */
+healthRecordTechRouter.get("/inventory/items", asyncHandler(async (req: TechRequest, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q : "";
+  res.json({ success: true, data: await searchItems(q, 25) });
+}));
+
+/** "Request restock" — item from the book or free text; the office fulfills from the warehouse. */
+healthRecordTechRouter.post("/stock-requests", asyncHandler(async (req: TechRequest, res) => {
+  const body = z.object({
+    itemId: z.string().trim().max(80).nullable().optional(),
+    name: z.string().trim().min(1).max(300),
+    qty: z.number().positive(),
+    unit: z.string().trim().max(20).nullable().optional(),
+    note: z.string().trim().max(500).nullable().optional(),
+  }).parse(req.body);
+  const tech = req.technician!;
+  try {
+    const row = await createStockRequest({ ...body, truckId: await truckIdForTechnician(tech.id), requestedByTechnicianId: tech.id });
+    res.status(201).json({ success: true, data: row });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
+}));
+
+/** A tech moves a tool between their truck, the warehouse, or another truck. */
+healthRecordTechRouter.post("/tools/:id/move", asyncHandler(async (req: TechRequest, res) => {
+  const body = z.object({ toLocationKey: z.string().trim().min(1).max(80), reason: z.string().trim().max(300).nullable().optional() }).parse(req.body);
+  try {
+    const result = await moveTool(readParam(req, "id"), body.toLocationKey, { actor: `tech:${req.technician!.name}`, reason: body.reason ?? null });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.get("/purchase-orders/:id/landing", asyncHandler(async (req: TechRequest, res) => {
+  try {
+    res.json({ success: true, data: await landingDefaults(readParam(req, "id")) });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.post("/purchase-orders/:id/land", asyncHandler(async (req: TechRequest, res) => {
+  const body = z.object({
+    lines: z.array(z.object({ lineId: z.string().trim().min(1), qtyLanded: z.number().nonnegative(), unitCost: z.number().nonnegative() })),
+    reason: z.string().trim().max(300).nullable().optional(),
+  }).parse(req.body);
+  try {
+    const result = await landPurchaseOrder(readParam(req, "id"), body.lines, `tech:${req.technician!.name}`, body.reason ?? null);
+    res.json({ success: true, data: { id: result.purchaseOrder.id, number: result.purchaseOrder.number, status: result.purchaseOrder.status, landedAt: result.purchaseOrder.landedAt, destination: result.destination } });
   } catch (err) {
     if (!techServiceError(res, err)) throw err;
   }

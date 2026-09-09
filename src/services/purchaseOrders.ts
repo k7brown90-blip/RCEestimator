@@ -360,6 +360,45 @@ async function transitionLoaded(
 }
 
 /**
+ * Closing on landing (Kyle, 2026-09-09, Build 3): material that landed on the
+ * truck or in the warehouse is the end of the PO. A purchased PO passes
+ * through verified on the way — one "status" event with reason "landed"
+ * records the whole hop. The after-the-fact receipt guard applies exactly as
+ * it does for a hand close. Called inside the landing transaction by
+ * services/inventory.ts; refuses anything but purchased/verified.
+ */
+export async function closePurchaseOrderForLanding(tx: Tx, po: PurchaseOrder, meta: { actor: string }): Promise<PurchaseOrder> {
+  const from = po.status as PoStatus;
+  if (from !== "purchased" && from !== "verified") {
+    throw new PoError(`${po.number} is ${from}; it cannot land.`, 409);
+  }
+  if (po.afterTheFact) {
+    const photos = await tx.receipt.count({
+      where: { purchaseOrderId: po.id, OR: [{ imageMime: { not: null } }, { imageUrl: { not: null } }] },
+    });
+    if (photos === 0) {
+      throw new PoError(`${po.number} was drafted after the fact from a card transaction — attach the receipt photo before landing it.`, 409);
+    }
+  }
+  const now = new Date();
+  const updated = await tx.purchaseOrder.update({
+    where: { id: po.id },
+    data: { status: "closed", closedAt: now, ...(po.verifiedAt ? {} : { verifiedAt: now }) },
+  });
+  await tx.purchaseOrderEvent.create({
+    data: {
+      purchaseOrderId: po.id,
+      actor: meta.actor,
+      kind: "status",
+      reason: "landed",
+      before: JSON.stringify({ status: from }),
+      after: JSON.stringify({ status: "closed" }),
+    },
+  });
+  return updated;
+}
+
+/**
  * The receipt is the verification. Attaching sets receipt.purchaseOrderId; a
  * receipt with no job inherits the PO's job so the job's material keeps
  * rolling (costing rule unchanged); an open PO moves to purchased — a receipt
@@ -461,6 +500,8 @@ export function serializePurchaseOrder(po: PoListRow) {
     closedAt: po.closedAt,
     cancelledAt: po.cancelledAt,
     sentAt: po.sentAt,
+    // Kyle, 2026-09-09 (Build 3): when the material landed on its truck / in the warehouse.
+    landedAt: po.landedAt,
     createdAt: po.createdAt,
     receiptCount: po._count.receipts,
     // Kyle, 2026-09-09: "card proves" — a linked Issuing transaction is the money behind this PO.
@@ -469,7 +510,7 @@ export function serializePurchaseOrder(po: PoListRow) {
     afterTheFact: po.afterTheFact,
     lines: po.lines.map((l) => ({
       id: l.id, itemId: l.itemId, name: l.name, qty: l.qty, unit: l.unit, partNumber: l.partNumber,
-      unitCost: l.unitCost, qtyLanded: l.qtyLanded, sortOrder: l.sortOrder,
+      unitCost: l.unitCost, qtyLanded: l.qtyLanded, landedAt: l.landedAt, sortOrder: l.sortOrder,
     })),
   };
 }

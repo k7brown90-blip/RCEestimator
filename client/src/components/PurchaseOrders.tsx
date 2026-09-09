@@ -21,6 +21,7 @@ import { api } from "../lib/api";
 import type { PurchaseOrderLineInput } from "../lib/api";
 import type { PoPurpose, PoStatus, PurchaseOrderDetail, PurchaseOrderLine, PurchaseOrderSummary, ReviewReceiptRow } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
+import { LandingPanel } from "./LandingPanel";
 
 const PAGE_SIZE = 8;
 
@@ -62,7 +63,7 @@ export function useLivePurchaseOrders() {
 function usePoRefresh() {
   const queryClient = useQueryClient();
   return () => {
-    for (const key of [["purchase-orders"], ["purchase-order"], ["receipts-needing-po"], ["receipt-review"], ["account-summary"], ["jobPOs"], ["jobReceipts"], ["jobProfitability"], ["financials"]]) {
+    for (const key of [["purchase-orders"], ["purchase-order"], ["receipts-needing-po"], ["receipt-review"], ["account-summary"], ["jobPOs"], ["jobReceipts"], ["jobProfitability"], ["financials"], ["inventory"], ["tools"], ["trucks"]]) {
       void queryClient.invalidateQueries({ queryKey: key });
     }
   };
@@ -234,6 +235,7 @@ export function PurchasesCard() {
                 {/* Kyle, 2026-09-09: "card proves" — the money behind this PO is on a card transaction. */}
                 {po.cardMatched && <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] text-sky-800">card</span>}
                 {po.afterTheFact && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">after the fact</span>}
+                {po.landedAt && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-800">landed {shortDate(po.landedAt)}</span>}
               </span>
               <span className="flex flex-wrap items-center gap-2 text-xs text-rce-muted">
                 <PoStatusPill status={po.status} />
@@ -358,6 +360,20 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
         )}
       </div>
 
+      {/* Kyle, 2026-09-09 (Build 3): material lands on the truck or in the warehouse; a tool PO lands on the register. Landing closes the PO. */}
+      {(po.status === "purchased" || po.status === "verified") && !po.landedAt && (
+        <div>
+          <p className="font-semibold uppercase tracking-wide text-rce-soft">Land</p>
+          <LandingPanel poId={po.id} onLanded={onDone} />
+        </div>
+      )}
+      {po.landedAt && (
+        <p className="rounded bg-emerald-50 px-2 py-1 text-emerald-800">
+          Landed {shortDate(po.landedAt)} — {po.purpose === "tool" ? "on the tool register" : po.destinationType === "warehouse" ? "in the warehouse" : `on ${po.truckName ?? "the truck"}`}.
+          {" "}<Link to="/inventory" className="text-rce-accent hover:underline">Inventory →</Link>
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         {po.status === "open" && <button type="button" className="btn btn-primary text-xs" disabled={transition.isPending} onClick={() => transition.mutate({ to: "purchased" })}>Mark purchased</button>}
         {po.status === "purchased" && <button type="button" className="btn btn-primary text-xs" disabled={transition.isPending} onClick={() => transition.mutate({ to: "verified" })}>Verify</button>}
@@ -378,6 +394,7 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
               {e.reason ? ` — ${e.reason}` : ""}
               {e.kind === "edited" && e.before && e.after ? ` (${describeDiff(e.before, e.after)})` : ""}
               {e.kind === "status" && e.after ? ` → ${String(e.after.status)}` : ""}
+              {e.kind === "landed" && e.after && Array.isArray(e.after.lines) ? ` (${(e.after.lines as { name: string; qtyLanded: number }[]).map((l) => `${l.qtyLanded} ${l.name}`).join(", ")})` : ""}
             </li>
           ))}
         </ul>

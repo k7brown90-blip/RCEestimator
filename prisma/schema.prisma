@@ -344,6 +344,7 @@ model Visit {
   estimates              Estimate[]
   documents              Document[]
   purchaseOrders         PurchaseOrder[]
+  stockMovements         StockMovement[]
   assignments            VisitAssignment[]
   healthInspections      HealthInspection[]
   visitPhotos            VisitPhoto[]
@@ -1448,6 +1449,7 @@ model Truck {
   technician   Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
   purchaseOrders PurchaseOrder[]
   cardSpends     CardSpend[]
+  stockRequests  StockRequest[]
 }
 
 // One Stripe Issuing card transaction (Kyle, 2026-09-09: "photo verifies, card
@@ -1515,6 +1517,9 @@ model PurchaseOrder {
   cancelledAt          DateTime?
   // Supplier email (kept from MaterialOrder — services/supplierEmail.ts).
   sentAt               DateTime?
+  // Kyle, 2026-09-09: material lands on a truck or in the warehouse (Build 3).
+  // Set once by services/inventory.ts landPurchaseOrder; landing twice is refused.
+  landedAt             DateTime?
   createdAt            DateTime  @default(now())
   truck                Truck?    @relation(fields: [truckId], references: [id], onDelete: SetNull)
   job                  Visit?    @relation(fields: [jobId], references: [id], onDelete: SetNull)
@@ -1522,6 +1527,8 @@ model PurchaseOrder {
   events               PurchaseOrderEvent[]
   receipts             Receipt[]
   cardSpends           CardSpend[]
+  stockMovements       StockMovement[]
+  tools                Tool[]
 
   @@index([status])
   @@index([jobId])
@@ -1538,6 +1545,7 @@ model PurchaseOrderLine {
   partNumber      String?
   unitCost        Float?
   qtyLanded       Float?
+  landedAt        DateTime?
   sortOrder       Int     @default(0)
   purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
 
@@ -1566,6 +1574,127 @@ model PurchaseOrderEvent {
 model PurchaseOrderCounter {
   year Int @id
   next Int
+}
+
+// ─── Inventory ledger and tool register (Kyle, 2026-09-09, Build 3) ──────────
+//
+// "We need an inventory tab that tracks what is on the truck and what is at the
+// warehouse so on future jobs I can label some stock as truckstock and it won't
+// double count the cost." "Warehouse items will only be used to transfer
+// material to truck stock." "There is only one warehouse for now it is my home
+// location."
+//
+// A location is a string key — "warehouse" or "truck:<truckId>" — because
+// Postgres treats NULLs as distinct in unique indexes, so nullable columns could
+// never make (location, item) unique. StockLevel is the running balance per
+// item per location, written ONLY by services/inventory.ts applyMovement.
+// StockMovement is the append-only ledger: a correction is a NEW movement that
+// references the one it corrects ("We need to be able to edit manually in case
+// there are errors found"). Cost method is moving average per item per
+// location. Job costing is unchanged in this build — "consume" exists in the
+// ledger but nothing charges a job yet (Build 4).
+
+model StockLevel {
+  id          String   @id @default(cuid())
+  locationKey String   // "warehouse" | "truck:<truckId>"
+  itemId      String   // PriceBookAtomic.itemId (no FK — the book is editable)
+  name        String
+  unit        String?
+  qtyOnHand   Float    @default(0)
+  avgUnitCost Float    @default(0)
+  // Restock threshold; on hand below par is flagged low (nullable = no par set).
+  parLevel    Float?
+  updatedAt   DateTime @updatedAt
+
+  @@unique([locationKey, itemId])
+  @@index([locationKey])
+}
+
+model StockMovement {
+  id                  String    @id @default(cuid())
+  kind                String    // purchase_in | transfer | consume | return | count | correction
+  itemId              String
+  name                String
+  unit                String?
+  // Positive. For "count" it is the counted quantity and `delta` holds the change.
+  qty                 Float
+  delta               Float?
+  // The cost applied: the purchase price for purchase_in; the from-location's
+  // moving average for transfer/consume/return.
+  unitCost            Float?
+  fromLocationKey     String?
+  toLocationKey       String?
+  purchaseOrderId     String?
+  purchaseOrderLineId String?
+  jobId               String?
+  // A correction references the movement it corrects; reason is required for it.
+  correctsId          String?
+  reason              String?
+  actor               String
+  at                  DateTime  @default(now())
+  createdAt           DateTime  @default(now())
+  purchaseOrder       PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  job                 Visit?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([itemId])
+  @@index([purchaseOrderId])
+  @@index([jobId])
+  @@index([at])
+  @@index([fromLocationKey])
+  @@index([toLocationKey])
+}
+
+// "A tool purchase is the same, some tools will not stay on a truck but will be
+// used between trucks as the jobs demand. The tools can be assigned to the
+// warehouse and also to a truck. When they are used and stored the stock will
+// be updated as to where the tool is currently at."
+model Tool {
+  id              String    @id @default(cuid())
+  name            String
+  serial          String?
+  cost            Float?
+  purchasedAt     DateTime?
+  purchaseOrderId String?
+  condition       String    @default("good") // good | needs_repair | retired
+  locationKey     String    // "warehouse" | "truck:<truckId>"
+  notes           String?
+  createdAt       DateTime  @default(now())
+  purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  movements       ToolMovement[]
+
+  @@index([locationKey])
+}
+
+model ToolMovement {
+  id              String   @id @default(cuid())
+  toolId          String
+  fromLocationKey String
+  toLocationKey   String
+  actor           String
+  reason          String?
+  at              DateTime @default(now())
+  tool            Tool     @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@index([toolId])
+}
+
+// A tech asks for stock from the warehouse; the office fulfills it with a
+// warehouse → truck transfer, or declines with a reason.
+model StockRequest {
+  id                      String    @id @default(cuid())
+  truckId                 String
+  itemId                  String?
+  name                    String
+  qty                     Float
+  unit                    String?
+  note                    String?
+  status                  String    @default("open") // open | fulfilled | declined
+  requestedByTechnicianId String?
+  createdAt               DateTime  @default(now())
+  resolvedAt              DateTime?
+  truck                   Truck     @relation(fields: [truckId], references: [id], onDelete: Cascade)
+
+  @@index([status])
 }
 
 // Job-site photo uploaded from the tech PWA. Client-generated UUID id makes

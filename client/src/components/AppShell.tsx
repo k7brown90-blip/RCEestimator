@@ -27,6 +27,10 @@ const nav = [
   // materials on the card (Kyle, 2026-09-09: "Each tech will have their own
   // card for material and gas through stripe").
   { to: "/trucks", label: "Trucks" },
+  // What is on each truck and in the warehouse, the tool register, and POs
+  // waiting to land (Kyle, 2026-09-09: "We need an inventory tab that tracks
+  // what is on the truck and what is at the warehouse").
+  { to: "/inventory", label: "Inventory" },
   { to: "/team", label: "Team" },
   // The book itself — every item, price, and category, edited in place
   // (Kyle, 2026-08-30: "a new tab that is labeled 'Price Book' that will be
@@ -52,6 +56,8 @@ const MOBILE_NAV_COLS: Record<number, string> = {
   11: "grid-cols-6",
   // Twelve entries: two even rows of six.
   12: "grid-cols-6",
+  // Thirteen (Inventory, 2026-09-09): seven then six.
+  13: "grid-cols-7",
 };
 
 function NavItem({ to, label, badge }: { to: string; label: string; badge?: number }) {
