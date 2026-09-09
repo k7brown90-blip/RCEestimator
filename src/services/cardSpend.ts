@@ -506,6 +506,61 @@ export function resetBalancesCache(): void {
  * Payments balance + every Treasury financial account with its truck. Cached
  * in-process for five minutes — Financials and every truck row read it.
  */
+/**
+ * Financial accounts, whichever Stripe product Kyle's account actually has.
+ *
+ * Kyle's Dashboard shows a "Financial account" that payouts transfer into and
+ * the Issuing card draws on. That is Stripe's Financial Accounts product for
+ * direct businesses, served by the v2 money-management API — NOT the
+ * Connect-platform Treasury API, which answers "Unrecognized request URL ...
+ * have you onboarded to Treasury?" on this account (checkStripe, 2026-09-09).
+ * The installed SDK (22.5) has no typed v2 money-management resource, so the
+ * v2 call goes through rawRequest; the v1 Treasury list stays as the fallback
+ * for an account that is a platform. Amounts normalise to dollars.
+ */
+export async function listFinancialAccounts(): Promise<
+  { id: string; status: string; cashUsd: number; inboundPending: number; outboundPending: number }[]
+> {
+  const minor = (v: unknown): number => {
+    if (typeof v === "number") return v;
+    if (v && typeof v === "object" && typeof (v as { value?: unknown }).value === "number") return (v as { value: number }).value;
+    if (v && typeof v === "object" && typeof (v as { usd?: unknown }).usd === "number") return (v as { usd: number }).usd;
+    if (v && typeof v === "object" && (v as { usd?: { value?: unknown } }).usd && typeof (v as { usd: { value?: unknown } }).usd.value === "number") {
+      return (v as { usd: { value: number } }).usd.value;
+    }
+    return 0;
+  };
+  // v2 money management first.
+  try {
+    const res = (await stripe().rawRequest("GET", "/v2/money_management/financial_accounts", undefined, {})) as {
+      data?: Array<{ id: string; status?: string; balance?: { available?: unknown; inbound_pending?: unknown; outbound_pending?: unknown } }>;
+    };
+    if (Array.isArray(res?.data)) {
+      return res.data.map((fa) => ({
+        id: fa.id,
+        status: fa.status ?? "unknown",
+        cashUsd: round2(minor(fa.balance?.available) / 100),
+        inboundPending: round2(minor(fa.balance?.inbound_pending) / 100),
+        outboundPending: round2(minor(fa.balance?.outbound_pending) / 100),
+      }));
+    }
+  } catch (err) {
+    // A permission error here is the real answer; anything else (URL not
+    // recognised, product not enabled) falls through to the Treasury list.
+    const { reason, permission } = describeStripeError(err);
+    if (permission) throw err;
+    logSystemEvent("info", "card-spend", `v2 financial accounts not readable, trying Treasury: ${reason}`);
+  }
+  const list = await stripe().treasury.financialAccounts.list({ limit: 100 });
+  return list.data.map((fa) => ({
+    id: fa.id,
+    status: fa.status,
+    cashUsd: round2((fa.balance?.cash?.usd ?? 0) / 100),
+    inboundPending: round2((fa.balance?.inbound_pending?.usd ?? 0) / 100),
+    outboundPending: round2((fa.balance?.outbound_pending?.usd ?? 0) / 100),
+  }));
+}
+
 export async function readBalances(): Promise<Balances> {
   if (balanceCache && Date.now() - balanceCache.at < BALANCE_TTL) return balanceCache.value;
   const readAt = new Date();
@@ -531,18 +586,9 @@ export async function readBalances(): Promise<Balances> {
   try {
     const trucks = await prisma.truck.findMany({ where: { stripeFinancialAccountId: { not: null } }, select: { id: true, name: true, stripeFinancialAccountId: true } });
     const truckByFa = new Map(trucks.map((t) => [t.stripeFinancialAccountId!, t]));
-    const list = await stripe().treasury.financialAccounts.list({ limit: 100 });
-    financialAccounts = list.data.map((fa) => {
+    financialAccounts = (await listFinancialAccounts()).map((fa) => {
       const truck = truckByFa.get(fa.id);
-      return {
-        id: fa.id,
-        cashUsd: round2((fa.balance?.cash?.usd ?? 0) / 100),
-        inboundPending: round2((fa.balance?.inbound_pending?.usd ?? 0) / 100),
-        outboundPending: round2((fa.balance?.outbound_pending?.usd ?? 0) / 100),
-        status: fa.status,
-        truckId: truck?.id ?? null,
-        truckName: truck?.name ?? null,
-      };
+      return { ...fa, truckId: truck?.id ?? null, truckName: truck?.name ?? null };
     });
   } catch (err) {
     available = false;

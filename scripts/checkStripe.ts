@@ -118,7 +118,20 @@ async function main(): Promise<void> {
     ok(`issuing.cards.list permitted (${cards.data.length === 0 ? "no cards yet" : `first: ${cards.data[0].id} ••••${cards.data[0].last4}`})`);
   });
 
-  await section("Treasury read scope (financial accounts)", async () => {
+  await section("Financial accounts read scope (v2 money management, then Treasury)", async () => {
+    // Kyle's "Financial account" is Stripe's product for direct businesses (v2
+    // money-management API); the v1 Treasury API is Connect-platform only and
+    // answered "Unrecognized request URL" on this account (2026-09-09).
+    try {
+      const res = (await stripe.rawRequest("GET", "/v2/money_management/financial_accounts", undefined, {})) as {
+        data?: Array<{ id: string; status?: string; balance?: { available?: { usd?: { value?: number } } } }>;
+      };
+      const rows = res?.data ?? [];
+      ok(`v2 money_management.financial_accounts permitted (${rows.length === 0 ? "none yet" : rows.map((fa) => `${fa.id} ${fa.status ?? ""} available ${money(fa.balance?.available?.usd?.value ?? 0)}`).join("; ")})`);
+      return;
+    } catch (err) {
+      warn(`v2 money_management.financial_accounts: ${err instanceof Error ? err.message : String(err)}`);
+    }
     const fas = await stripe.treasury.financialAccounts.list({ limit: 1 });
     ok(`treasury.financialAccounts.list permitted (${fas.data.length === 0 ? "no financial accounts yet" : `first: ${fas.data[0].id} cash ${money(fas.data[0].balance?.cash?.usd ?? 0)}`})`);
   });
