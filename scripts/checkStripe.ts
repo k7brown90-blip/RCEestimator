@@ -110,6 +110,19 @@ async function main(): Promise<void> {
     if (!matched) bad(`no endpoint points at ${EXPECTED_WEBHOOK_URL}`);
   });
 
+  // Kyle, 2026-09-09: each tech's card + financial account. The restricted key
+  // needs Issuing and Treasury READ scope (added in the Dashboard) before the
+  // Trucks page can show cards, spend, and balances.
+  await section("Issuing read scope (cards / card spend)", async () => {
+    const cards = await stripe.issuing.cards.list({ limit: 1 });
+    ok(`issuing.cards.list permitted (${cards.data.length === 0 ? "no cards yet" : `first: ${cards.data[0].id} ••••${cards.data[0].last4}`})`);
+  });
+
+  await section("Treasury read scope (financial accounts)", async () => {
+    const fas = await stripe.treasury.financialAccounts.list({ limit: 1 });
+    ok(`treasury.financialAccounts.list permitted (${fas.data.length === 0 ? "no financial accounts yet" : `first: ${fas.data[0].id} cash ${money(fas.data[0].balance?.cash?.usd ?? 0)}`})`);
+  });
+
   await section("Balance", async () => {
     const bal = await stripe.balance.retrieve();
     for (const a of bal.available) ok(`available ${money(a.amount, a.currency)}`);

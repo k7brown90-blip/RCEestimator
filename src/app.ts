@@ -73,6 +73,8 @@ import {
 } from "./services/purchaseOrders";
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
+import { trucksRouter } from "./routes/trucks";
+import { matchSpendForReceipt } from "./services/cardSpend";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
 import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, estimateMaterialCost, mergeCostableChain, ROLLED_UP_COSTS } from "./services/jobCosting";
@@ -1797,6 +1799,8 @@ app.use("/agent/calendar", sharedAgentRouter);
 // ─── HEALTH RECORD PWA (per-technician bearer auth, not the CRM session) ─────
 app.use("/health-record", healthRecordTechRouter);
 app.use("/financials", financialsRouter);
+// Trucks, cards, card spend (Kyle, 2026-09-09) — /trucks, /card-spend.
+app.use(trucksRouter);
 // Capacity checks run on ordinary service calls with no assessment in progress,
 // so this is its own router rather than a branch of the health record.
 app.use("/health-record/capacity-checks", capacityCheckTechRouter);
@@ -4798,11 +4802,17 @@ app.get("/purchase-orders/:id", asyncHandler(async (req, res) => {
         orderBy: { receivedAt: "desc" },
         select: { id: true, jobId: true, vendor: true, category: true, amount: true, status: true, source: true, receivedAt: true, imageMime: true },
       },
+      // Kyle, 2026-09-09: "card proves" — the Issuing transactions behind this PO.
+      cardSpends: {
+        orderBy: { occurredAt: "desc" },
+        select: { id: true, merchantName: true, amount: true, kind: true, status: true, occurredAt: true, receiptId: true },
+      },
     },
   });
   if (!po) { res.status(404).json({ error: "Purchase order not found" }); return; }
   res.json({
     ...serializePurchaseOrder(po),
+    cardSpends: po.cardSpends,
     events: po.events.map((e) => ({
       id: e.id, at: e.at, actor: e.actor, kind: e.kind, reason: e.reason,
       before: (() => { try { return e.before ? JSON.parse(e.before) : null; } catch { return null; } })(),
@@ -4887,7 +4897,10 @@ app.get("/receipts-needing-po", asyncHandler(async (_req, res) => {
     where: { status: "confirmed", category: "materials", purchaseOrderId: null },
     orderBy: { receivedAt: "desc" },
     take: 200,
-    select: { id: true, jobId: true, vendor: true, category: true, amount: true, source: true, receivedAt: true, createdAt: true },
+    select: {
+      id: true, jobId: true, vendor: true, category: true, amount: true, source: true, receivedAt: true, createdAt: true,
+      cardSpend: { select: { id: true } },
+    },
   });
   const jobIds = [...new Set(receipts.map((r) => r.jobId).filter((v): v is string => Boolean(v)))];
   const jobs = jobIds.length
@@ -4915,6 +4928,9 @@ app.get("/receipts-needing-po", asyncHandler(async (_req, res) => {
           purchaseOrderId: null,
           purchaseOrderNumber: null,
           needsPo: true,
+          // Kyle, 2026-09-09: "card proves" — the card transaction this receipt itemizes, if matched.
+          cardSpendId: r.cardSpend?.id ?? null,
+          cardMatched: Boolean(r.cardSpend),
         };
       }),
   );
@@ -4961,6 +4977,8 @@ app.put(
     // Kyle, 2026-09-08 (Daughdrill): this door landed receipts confirmed but never
     // re-rolled the job, so the card kept showing the estimate's material.
     await rerollJobsMaterialCost([jobId, previous?.jobId]);
+    // Kyle, 2026-09-09: "photo verifies, card proves" — pair it with the card transaction if one is waiting.
+    await matchSpendForReceipt(receiptId).catch((err) => console.error("[receipts] card match failed:", err));
     res.status(201).json({ id: receiptId, amount: query.amount });
   }),
 );
@@ -4979,6 +4997,7 @@ app.get("/receipt-review", asyncHandler(async (_req, res) => {
     select: {
       id: true, jobId: true, vendor: true, category: true, amount: true, source: true, receivedAt: true, createdAt: true,
       purchaseOrderId: true, purchaseOrder: { select: { number: true } },
+      cardSpend: { select: { id: true } },
     },
   });
   const jobIds = [...new Set(receipts.map((r) => r.jobId).filter((v): v is string => Boolean(v)))];
@@ -5015,6 +5034,9 @@ app.get("/receipt-review", asyncHandler(async (_req, res) => {
           purchaseOrderId: r.purchaseOrderId,
           purchaseOrderNumber: r.purchaseOrder?.number ?? null,
           needsPo: r.category === "materials" && !r.purchaseOrderId,
+          // Kyle, 2026-09-09: "card proves" — the card transaction this receipt itemizes, if matched.
+          cardSpendId: r.cardSpend?.id ?? null,
+          cardMatched: Boolean(r.cardSpend),
         };
       }),
   );

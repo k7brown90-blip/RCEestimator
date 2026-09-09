@@ -37,7 +37,8 @@ export function stripeConfigured(): boolean {
 }
 
 let client: Stripe | null = null;
-function stripe(): Stripe {
+/** The one Stripe client. Exported for the Issuing/Treasury reads in services/cardSpend.ts. */
+export function stripe(): Stripe {
   if (!client) {
     const key = process.env.STRIPE_SECRET_KEY;
     if (!key) throw new Error("STRIPE_SECRET_KEY is not set.");
@@ -288,6 +289,17 @@ export async function handleStripeWebhook(
     return { received: false, reason: "Invalid signature." };
   }
 
+  await dispatchStripeEvent(prisma, event);
+  return { received: true };
+}
+
+/**
+ * The event switch, separated from signature verification so it can be
+ * exercised with a hand-built event. Checkout fulfilment stays exactly as it
+ * was; Issuing card transactions (Kyle, 2026-09-09: "card proves") land in
+ * services/cardSpend.ts.
+ */
+export async function dispatchStripeEvent(prisma: PrismaClient, event: Stripe.Event): Promise<void> {
   const recordPaid = async (session: Stripe.Checkout.Session) => {
     // Delayed-notification methods complete the session while still unpaid —
     // record only when the money is actually in flight or landed.
@@ -363,9 +375,17 @@ export async function handleStripeWebhook(
       });
       break;
     }
+    // Kyle, 2026-09-09: each tech's Issuing card — "photo verifies, card
+    // proves". Every capture/refund becomes a CardSpend routed to the truck
+    // that owns the card. Dynamic import: cardSpend.ts imports stripe() from here.
+    case "issuing_transaction.created":
+    case "issuing_transaction.updated": {
+      const { ingestIssuingTransaction } = await import("./cardSpend");
+      await ingestIssuingTransaction(event.data.object as Stripe.Issuing.Transaction);
+      break;
+    }
     default:
       // Unhandled event types are acknowledged, not errored — Stripe retries errors.
       break;
   }
-  return { received: true };
 }

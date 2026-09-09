@@ -28,6 +28,8 @@
     "scripts/applyMaterialMarkup.ts",
     // Read-only Stripe production check (Kyle, 2026-09-01) — account, webhook, sessions, reconciliation.
     "scripts/checkStripe.ts",
+    // Issuing card transactions → CardSpend, --days N [--dry] (Kyle, 2026-09-09: "card proves").
+    "scripts/syncCardSpend.ts",
     // Duplicate-receipt removal + re-roll through the one material writer (Kyle, 2026-09-08 "do both").
     "scripts/removeReceipts.ts",
     // Needs-scheduling rail provenance + signed-estimate job backfill (Kyle, 2026-09-02).

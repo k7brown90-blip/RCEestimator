@@ -20,6 +20,7 @@ import { CampaignsPage } from "./pages/CampaignsPage";
 import { VisitWorkspacePage } from "./pages/VisitWorkspacePage";
 import { PriceBookCatalogPage } from "./pages/PriceBookCatalogPage";
 import { SigningModePage } from "./pages/SigningModePage";
+import { TrucksPage } from "./pages/TrucksPage";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -80,6 +81,7 @@ function App() {
                 <Route path="/price-book" element={<PriceBookCatalogPage />} />
                 <Route path="/team" element={<TeamPage />} />
                 <Route path="/financials" element={<FinancialsPage />} />
+                <Route path="/trucks" element={<TrucksPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
               </CrashBoundary>

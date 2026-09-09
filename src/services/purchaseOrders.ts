@@ -109,10 +109,17 @@ export interface CreatePurchaseOrderInput {
   jobId?: string | null;
   notes?: string | null;
   lines?: PoLineInput[];
-  openedBy: "owner" | "tech";
+  /** "system" = drafted from a card transaction (Kyle, 2026-09-09: "PO after the fact"). */
+  openedBy: "owner" | "tech" | "system";
   openedByTechnicianId?: string | null;
   /** Service-level only (tests): number under this date's year. */
   openedAt?: Date;
+  /**
+   * Kyle, 2026-09-09: a supplier card transaction with no PO behind it drafts
+   * one on its own, flagged "PO after the fact" — it cannot close until a
+   * receipt photo is attached and the purpose confirmed.
+   */
+  afterTheFact?: boolean;
   actor: string;
 }
 
@@ -159,6 +166,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput): Prom
         openedBy: input.openedBy,
         openedByTechnicianId: input.openedByTechnicianId ?? null,
         openedAt,
+        afterTheFact: input.afterTheFact ?? false,
         lines: { create: lines.map((l, i) => lineData(l, i)) },
       },
     });
@@ -167,7 +175,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput): Prom
         purchaseOrderId: po.id,
         actor: input.actor,
         kind: "created",
-        after: JSON.stringify({ number, purpose, destinationType, truckId, jobId: po.jobId, supplier: po.supplier, lines: lines.length }),
+        after: JSON.stringify({ number, purpose, destinationType, truckId, jobId: po.jobId, supplier: po.supplier, lines: lines.length, afterTheFact: input.afterTheFact ?? false }),
       },
     });
     return po;
@@ -322,6 +330,17 @@ async function transitionLoaded(
   if (!TRANSITIONS[from]?.includes(to)) {
     throw new PoError(`${po.number} is ${from}; it cannot go to ${to}.`, 409);
   }
+  // Kyle, 2026-09-09: a PO drafted after the fact from a card transaction
+  // "cannot close until a receipt photo is attached and the purpose confirmed".
+  // Closing is the owner's confirmation; the photo is checked here.
+  if (to === "closed" && po.afterTheFact) {
+    const photos = await db.receipt.count({
+      where: { purchaseOrderId: po.id, OR: [{ imageMime: { not: null } }, { imageUrl: { not: null } }] },
+    });
+    if (photos === 0) {
+      throw new PoError(`${po.number} was drafted after the fact from a card transaction — attach the receipt photo before closing it.`, 409);
+    }
+  }
   const stamp = STATUS_STAMP[to];
   const updated = await db.purchaseOrder.update({
     where: { id: po.id },
@@ -409,7 +428,7 @@ export const PO_LIST_INCLUDE = {
       property: { select: { addressLine1: true, city: true } },
     },
   },
-  _count: { select: { receipts: true } },
+  _count: { select: { receipts: true, cardSpends: true } },
 } satisfies Prisma.PurchaseOrderInclude;
 
 type PoListRow = Prisma.PurchaseOrderGetPayload<{ include: typeof PO_LIST_INCLUDE }>;
@@ -444,6 +463,10 @@ export function serializePurchaseOrder(po: PoListRow) {
     sentAt: po.sentAt,
     createdAt: po.createdAt,
     receiptCount: po._count.receipts,
+    // Kyle, 2026-09-09: "card proves" — a linked Issuing transaction is the money behind this PO.
+    cardSpendCount: po._count.cardSpends,
+    cardMatched: po._count.cardSpends > 0,
+    afterTheFact: po.afterTheFact,
     lines: po.lines.map((l) => ({
       id: l.id, itemId: l.itemId, name: l.name, qty: l.qty, unit: l.unit, partNumber: l.partNumber,
       unitCost: l.unitCost, qtyLanded: l.qtyLanded, sortOrder: l.sortOrder,

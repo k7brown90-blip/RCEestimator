@@ -24,6 +24,7 @@ import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { billedTotalOf, stripeConfigured } from "../services/stripePayments";
 import { estimateMaterialCost, getLaborRate } from "../services/jobCosting";
+import { readBalances } from "../services/cardSpend";
 
 export const financialsRouter = express.Router();
 
@@ -191,13 +192,29 @@ interface YearLedger {
   collected: { month: number; amount: number; method: string; date: Date; note: string | null }[];
   receiptRows: { month: number; amount: number; category: string; vendor: string | null; date: Date; jobId: string | null }[];
   billRows: { month: number; amount: number; category: string; name: string }[];
+  /**
+   * Card transactions with NO receipt behind them (Kyle, 2026-09-09: "photo
+   * verifies, card proves"). Expenses count ONCE: a spend matched to a receipt
+   * is already counted by that receipt, so only unmatched, non-ignored spend
+   * lands here. Refunds are negative rows.
+   */
+  spendRows: { month: number; amount: number; category: string; merchant: string; date: Date; truck: string | null }[];
 }
+
+/** CardSpend.kind → the P&L expense category receipts already use. */
+const SPEND_CATEGORY: Record<string, string> = {
+  materials: "materials",
+  fuel: "gas",
+  maintenance: "maintenance",
+  tool: "tools",
+  other: "overhead",
+};
 
 async function yearLedger(year: number): Promise<YearLedger> {
   const from = new Date(`${year}-01-01`);
   const to = new Date(`${year + 1}-01-01`);
 
-  const [estimates, payments, receipts, bills] = await Promise.all([
+  const [estimates, payments, receipts, bills, spend] = await Promise.all([
     prisma.issuedEstimate.findMany({
       where: { signedAt: { gte: from, lt: to }, status: { not: "void" }, account: { isTestAccount: false } },
       include: { options: true, account: { select: { name: true } }, lines: { select: { option: true, materialCost: true } } },
@@ -211,6 +228,11 @@ async function yearLedger(year: number): Promise<YearLedger> {
       select: { amount: true, category: true, vendor: true, receivedAt: true, jobId: true },
     }),
     prisma.companyBill.findMany(),
+    // Once-only rule: receiptId null — a spend with a receipt is counted by the receipt.
+    prisma.cardSpend.findMany({
+      where: { status: { not: "ignored" }, receiptId: null, occurredAt: { gte: from, lt: to } },
+      select: { amount: true, kind: true, merchantName: true, occurredAt: true, truck: { select: { name: true } } },
+    }),
   ]);
 
   return {
@@ -245,6 +267,10 @@ async function yearLedger(year: number): Promise<YearLedger> {
         month: hit.month, amount: hit.amount, category: bill.category, name: bill.name,
       })),
     ),
+    spendRows: spend.map((s) => ({
+      month: s.occurredAt.getMonth(), amount: s.amount, category: SPEND_CATEGORY[s.kind] ?? "overhead",
+      merchant: s.merchantName, date: s.occurredAt, truck: s.truck?.name ?? null,
+    })),
   };
 }
 
@@ -278,15 +304,18 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
     const collected = ledger.collected.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     const receiptExp = ledger.receiptRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     const billExp = ledger.billRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
+    // Card spend with no receipt (a spend matched to a receipt is already in receiptExp — counted once).
+    const spendExp = ledger.spendRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
+    const expenses = receiptExp + billExp + spendExp;
     const estMaterials = round2(uncommittedMaterial(month));
     return {
       month,
       invoiced: round2(invoiced),
       collected: round2(collected),
-      expenses: round2(receiptExp + billExp),
-      net: round2(invoiced - receiptExp - billExp),
+      expenses: round2(expenses),
+      net: round2(invoiced - expenses),
       estMaterials,
-      projectedNet: round2(invoiced - receiptExp - billExp - estMaterials),
+      projectedNet: round2(invoiced - expenses - estMaterials),
     };
   });
 
@@ -299,6 +328,7 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
     categories.set(category, row);
   };
   for (const r of ledger.receiptRows) addExpense(r.category, r.month, r.amount);
+  for (const s of ledger.spendRows) addExpense(s.category, s.month, s.amount);
   for (const b of ledger.billRows) addExpense(`bill:${b.category}`, b.month, b.amount);
 
   res.json({
@@ -547,6 +577,13 @@ financialsRouter.get("/stripe-status", asyncHandler(async (_req, res) => {
   });
 }));
 
+// ── Balances (Kyle, 2026-09-09): Payments available/pending and every truck's
+// financial account. Cached five minutes in services/cardSpend.ts; until the
+// restricted key has Treasury read scope this answers available:false + reason.
+financialsRouter.get("/balances", asyncHandler(async (_req, res) => {
+  res.json(await readBalances());
+}));
+
 // ── Report 4: tax-year CSV export ───────────────────────────────────────────
 
 financialsRouter.get("/export", asyncHandler(async (req, res) => {
@@ -563,6 +600,10 @@ financialsRouter.get("/export", asyncHandler(async (req, res) => {
   }
   for (const r of ledger.receiptRows) {
     rows.push(`${r.date.toISOString().slice(0, 10)},expense,${r.category},${esc(r.vendor ?? "receipt")},${r.amount.toFixed(2)}`);
+  }
+  // Card spend with no receipt behind it — counted once (a matched spend rides its receipt above).
+  for (const s of ledger.spendRows) {
+    rows.push(`${s.date.toISOString().slice(0, 10)},expense,${s.category},${esc(`Card — ${s.merchant}${s.truck ? ` (${s.truck})` : ""}`)},${s.amount.toFixed(2)}`);
   }
   for (const b of ledger.billRows) {
     rows.push(`${year}-${String(b.month + 1).padStart(2, "0")}-01,expense,${b.category},${esc(`Bill — ${b.name}`)},${b.amount.toFixed(2)}`);

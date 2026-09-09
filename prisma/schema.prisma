@@ -1375,6 +1375,9 @@ model Receipt {
   // without one is flagged "needs PO" rather than refused.
   purchaseOrderId String?
   purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  // The card transaction this receipt itemizes (Kyle, 2026-09-09: "photo
+  // verifies, card proves"). Set by the matcher or by hand; one spend per receipt.
+  cardSpend       CardSpend?
 
   // The account summary pulls receipts by job id across an account's whole history.
   @@index([jobId])
@@ -1433,8 +1436,56 @@ model Truck {
   technicianId String?
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
+  // Kyle, 2026-09-09: "Each tech will have their own card for material and gas
+  // through stripe and I will have to set up a financial account for each."
+  // Spend routes to a truck BY THE CARD, never by guessing — the Issuing card
+  // id is the key, last4 is what Kyle reads off the plastic, and the Treasury
+  // financial account is where that truck's balance lives.
+  stripeCardId             String?  @unique
+  cardLast4                String?
+  stripeFinancialAccountId String?
+  notes                    String?
   technician   Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
   purchaseOrders PurchaseOrder[]
+  cardSpends     CardSpend[]
+}
+
+// One Stripe Issuing card transaction (Kyle, 2026-09-09: "photo verifies, card
+// proves"). The receipt photo is the itemized record; this row is the money.
+// amount is DOLLARS, positive for a purchase and negative for a refund. Gas and
+// maintenance sit on the truck ledger; a materials capture with no PO behind it
+// drafts one "after the fact". A spend matched to a receipt is counted by that
+// receipt on the P&L — expenses count once.
+model CardSpend {
+  id                    String   @id @default(cuid())
+  stripeTransactionId   String   @unique
+  stripeAuthorizationId String?
+  stripeCardId          String
+  truckId               String?
+  kind                  String   // materials | fuel | maintenance | tool | other
+  amount                Float
+  currency              String   @default("usd")
+  merchantName          String
+  merchantCategory      String?  // Stripe's category slug, e.g. hardware_stores
+  merchantCategoryCode  String?  // the MCC
+  merchantCity          String?
+  merchantState         String?
+  purchaseOrderId       String?
+  receiptId             String?  @unique // one receipt matches one spend
+  status                String   @default("unmatched") // unmatched | matched | ignored
+  ignoredReason         String?
+  note                  String?  // the reason behind the last hand edit
+  occurredAt            DateTime
+  rawJson               String?
+  createdAt             DateTime @default(now())
+  truck         Truck?         @relation(fields: [truckId], references: [id], onDelete: SetNull)
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  receipt       Receipt?       @relation(fields: [receiptId], references: [id], onDelete: SetNull)
+
+  @@index([truckId])
+  @@index([status])
+  @@index([occurredAt])
+  @@index([purchaseOrderId])
 }
 
 model PurchaseOrder {
@@ -1451,8 +1502,12 @@ model PurchaseOrder {
   supplier             String
   status               String    @default("open") // open | purchased | verified | closed | cancelled
   notes                String?
-  openedBy             String    // owner | tech
+  openedBy             String    // owner | tech | system (drafted from a card transaction)
   openedByTechnicianId String?
+  // Kyle, 2026-09-09: a supplier card transaction with no PO behind it drafts
+  // one on its own, flagged "PO after the fact" — it cannot close until a
+  // receipt photo is attached and the purpose confirmed.
+  afterTheFact         Boolean   @default(false)
   openedAt             DateTime  @default(now())
   purchasedAt          DateTime?
   verifiedAt           DateTime?
@@ -1466,6 +1521,7 @@ model PurchaseOrder {
   lines                PurchaseOrderLine[]
   events               PurchaseOrderEvent[]
   receipts             Receipt[]
+  cardSpends           CardSpend[]
 
   @@index([status])
   @@index([jobId])

@@ -231,6 +231,9 @@ export function PurchasesCard() {
                 <PurposePill purpose={po.purpose} />
                 <span>{po.supplier}</span>
                 {po.truckName && <span className="text-xs text-rce-muted">{po.truckName}</span>}
+                {/* Kyle, 2026-09-09: "card proves" — the money behind this PO is on a card transaction. */}
+                {po.cardMatched && <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] text-sky-800">card</span>}
+                {po.afterTheFact && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">after the fact</span>}
               </span>
               <span className="flex flex-wrap items-center gap-2 text-xs text-rce-muted">
                 <PoStatusPill status={po.status} />
@@ -336,6 +339,22 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
             </select>
             <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={!attachChoice || attach.isPending} onClick={() => { attach.mutate(attachChoice); setAttachChoice(""); }}>Attach</button>
           </div>
+        )}
+      </div>
+
+      <div>
+        <p className="font-semibold uppercase tracking-wide text-rce-soft">Card transactions ({po.cardSpends.length})</p>
+        {po.cardSpends.length === 0 && <p className="text-rce-muted">No card transaction behind this PO yet — the card is the money; it lands here on its own.</p>}
+        <ul className="mt-1 space-y-0.5">
+          {po.cardSpends.map((s) => (
+            <li key={s.id}>
+              {s.merchantName} · <span className="tabular-nums">{money(s.amount)}</span> · {shortDate(s.occurredAt)} · {s.kind}
+              {s.receiptId ? <span className="text-emerald-700"> · receipt matched</span> : s.status === "ignored" ? " · ignored" : <span className="text-amber-800"> · no receipt matched</span>}
+            </li>
+          ))}
+        </ul>
+        {po.afterTheFact && (
+          <p className="mt-1 text-amber-800">Drafted after the fact from the card — attach the receipt photo and confirm the purpose before closing.</p>
         )}
       </div>
 

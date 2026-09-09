@@ -30,6 +30,7 @@ import type { InvoiceSummary } from "../lib/types";
 import { money } from "../lib/utils";
 import { ReceiptReviewList } from "../components/ReceiptReviewList";
 import { PurchasesCard } from "../components/PurchaseOrders";
+import { BalancesStrip, TrucksCard } from "../components/TrucksCards";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -68,17 +69,23 @@ export function FinancialsPage() {
     <div className="space-y-6">
       <PageHeader title="Financials" subtitle="Bills, revenue, invoices, and the company's accounting reports" />
 
+      {/* ── Money on hand (Kyle, 2026-09-09): Payments balance + each truck's financial account ── */}
+      <BalancesStrip />
+
       <ReceiptReviewList
         title="Receipts to review (all accounts)"
         rows={(pendingReceipts ?? []).map((r) => ({
           id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, receivedAt: r.receivedAt,
           jobLabel: r.jobLabel, accountId: r.accountId ?? undefined, accountName: r.accountName ?? undefined,
-          purchaseOrderNumber: r.purchaseOrderNumber, needsPo: r.needsPo,
+          purchaseOrderNumber: r.purchaseOrderNumber, needsPo: r.needsPo, cardMatched: r.cardMatched,
         }))}
       />
 
       {/* ── Purchases (Kyle, 2026-09-09): the PO is the document — number, purchase, receipt photo ── */}
       <PurchasesCard />
+
+      {/* ── Trucks (Kyle, 2026-09-09): per-truck card spend this month; the ledger lives at /trucks ── */}
+      <TrucksCard />
 
       <div className="flex items-center gap-2">
         <button className="btn btn-secondary text-sm" onClick={() => setYear((y) => y - 1)}>← {year - 1}</button>

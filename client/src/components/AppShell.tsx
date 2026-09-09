@@ -23,6 +23,10 @@ const nav = [
   { to: "/accounts", label: "Accounts" },
   // Money — bills, revenue, and the accounting reports (Kyle, 2026-08-25).
   { to: "/financials", label: "Financials" },
+  // Each truck's tech, card, balance and this month's fuel / maintenance /
+  // materials on the card (Kyle, 2026-09-09: "Each tech will have their own
+  // card for material and gas through stripe").
+  { to: "/trucks", label: "Trucks" },
   { to: "/team", label: "Team" },
   // The book itself — every item, price, and category, edited in place
   // (Kyle, 2026-08-30: "a new tab that is labeled 'Price Book' that will be
@@ -46,6 +50,8 @@ const MOBILE_NAV_COLS: Record<number, string> = {
   // wrap into two even rows instead, so every label stays readable.
   10: "grid-cols-5",
   11: "grid-cols-6",
+  // Twelve entries: two even rows of six.
+  12: "grid-cols-6",
 };
 
 function NavItem({ to, label, badge }: { to: string; label: string; badge?: number }) {

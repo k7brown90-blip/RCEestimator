@@ -811,7 +811,8 @@ export type PurchaseOrderSummary = {
   supplier: string;
   status: PoStatus;
   notes: string | null;
-  openedBy: "owner" | "tech";
+  /** "system" = drafted from a card transaction (Kyle, 2026-09-09: "PO after the fact"). */
+  openedBy: "owner" | "tech" | "system";
   openedByTechnicianId: string | null;
   openedAt: string;
   purchasedAt: string | null;
@@ -821,6 +822,11 @@ export type PurchaseOrderSummary = {
   sentAt: string | null;
   createdAt: string;
   receiptCount: number;
+  /** Kyle, 2026-09-09: "card proves" — a linked Issuing transaction is the money behind this PO. */
+  cardSpendCount: number;
+  cardMatched: boolean;
+  /** Drafted from a card transaction with no PO behind it; cannot close without a receipt photo. */
+  afterTheFact: boolean;
   lines: PurchaseOrderLine[];
 };
 
@@ -828,7 +834,7 @@ export type PurchaseOrderEvent = {
   id: string;
   at: string;
   actor: string;
-  kind: "created" | "edited" | "status" | "receipt_attached" | "receipt_detached" | "line_added" | "line_edited" | "line_removed";
+  kind: "created" | "edited" | "status" | "receipt_attached" | "receipt_detached" | "line_added" | "line_edited" | "line_removed" | "card_matched" | "card_detached";
   reason: string | null;
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
@@ -849,6 +855,8 @@ export type PurchaseOrderReceipt = {
 export type PurchaseOrderDetail = PurchaseOrderSummary & {
   events: PurchaseOrderEvent[];
   receipts: PurchaseOrderReceipt[];
+  /** The card transactions behind this PO (Kyle, 2026-09-09). */
+  cardSpends: { id: string; merchantName: string; amount: number; kind: string; status: string; occurredAt: string; receiptId: string | null }[];
 };
 
 /** A receipt row from /receipt-review or /receipts-needing-po. */
@@ -866,7 +874,124 @@ export type ReviewReceiptRow = {
   purchaseOrderId: string | null;
   purchaseOrderNumber: string | null;
   needsPo: boolean;
+  /** Kyle, 2026-09-09: "card proves" — the card transaction this receipt itemizes, if matched. */
+  cardSpendId?: string | null;
+  cardMatched?: boolean;
 };
+
+// ── Trucks, cards, card spend (Kyle, 2026-09-09) ─────────────────────────────
+// "Each tech will have their own card for material and gas through stripe and
+// I will have to set up a financial account for each." Spend routes to a truck
+// by the card; gas and maintenance belong to the truck, never a job.
+
+export type CardSpendKind = "materials" | "fuel" | "maintenance" | "tool" | "other";
+export type CardSpendStatus = "unmatched" | "matched" | "ignored";
+
+export type CardSpendRow = {
+  id: string;
+  stripeTransactionId: string;
+  stripeCardId: string;
+  truckId: string | null;
+  truckName: string | null;
+  kind: CardSpendKind;
+  /** Dollars — positive for a purchase, negative for a refund. */
+  amount: number;
+  currency: string;
+  merchantName: string;
+  merchantCategory: string | null;
+  merchantCity: string | null;
+  merchantState: string | null;
+  purchaseOrderId: string | null;
+  purchaseOrderNumber: string | null;
+  purchaseOrderStatus: string | null;
+  purchaseOrderAfterTheFact: boolean;
+  receiptId: string | null;
+  receipt: { id: string; vendor: string | null; amount: number; category: string; status: string; receivedAt: string; jobId: string | null; hasImage: boolean } | null;
+  status: CardSpendStatus;
+  ignoredReason: string | null;
+  note: string | null;
+  occurredAt: string;
+  createdAt: string;
+};
+
+export type TruckBalance = { cashUsd: number; inboundPending: number; outboundPending: number; status: string };
+export type TruckMtd = { fuel: number; maintenance: number; materials: number; tool: number; other: number };
+
+export type TruckRow = {
+  id: string;
+  name: string;
+  technicianId: string | null;
+  technicianName: string | null;
+  isActive: boolean;
+  stripeCardId: string | null;
+  cardLast4: string | null;
+  stripeFinancialAccountId: string | null;
+  notes: string | null;
+  balance: TruckBalance | null;
+  mtd: TruckMtd;
+  unmatchedMaterials: number;
+};
+
+export type TrucksResponse = {
+  balancesAvailable: boolean;
+  balancesReason: string | null;
+  trucks: TruckRow[];
+  unassigned: (TruckMtd & { unmatched: number }) | null;
+};
+
+export type TruckRecord = {
+  id: string;
+  name: string;
+  technicianId: string | null;
+  isActive: boolean;
+  createdAt: string;
+  stripeCardId: string | null;
+  cardLast4: string | null;
+  stripeFinancialAccountId: string | null;
+  notes: string | null;
+  technician: { id: string; name: string } | null;
+};
+
+export type TruckDetail = {
+  truck: TruckRecord;
+  year: number;
+  ledger: { kind: CardSpendKind; total: number; rows: CardSpendRow[] }[];
+  needingReceipt: CardSpendRow[];
+  purchaseOrders: PurchaseOrderSummary[];
+  balance: TruckBalance | null;
+  balancesAvailable: boolean;
+  balancesReason: string | null;
+};
+
+export type IssuingCardsResponse =
+  | { available: true; cards: { id: string; last4: string; cardholderName: string | null; status: string; financialAccountId: string | null }[] }
+  | { available: false; reason: string };
+
+export type Balances = {
+  payments: { available: number; pending: number } | null;
+  financialAccounts: { id: string; cashUsd: number; inboundPending: number; outboundPending: number; status: string; truckId: string | null; truckName: string | null }[];
+  available: boolean;
+  reason?: string;
+  readAt: string;
+};
+
+export type ReceiptCandidate = {
+  id: string;
+  vendor: string | null;
+  amount: number;
+  category: string;
+  status: string;
+  receivedAt: string;
+  jobId: string | null;
+  purchaseOrderId: string | null;
+  purchaseOrderNumber: string | null;
+  hasImage: boolean;
+  exact: boolean;
+};
+
+export type CardSpendSyncResult =
+  | { available: true; seen: number; created: number; updated: number; dry: boolean }
+  | { available: false; reason: string };
 
 export type AccountPurchaseOrder = {
   id: string;

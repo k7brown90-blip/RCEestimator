@@ -24,6 +24,7 @@ import {
   PO_LIST_INCLUDE, PO_PURPOSES, attachReceiptToPurchaseOrder, createPurchaseOrder, detachReceiptFromPurchaseOrder,
   serializePurchaseOrder, transitionPurchaseOrder, truckIdForTechnician,
 } from "../services/purchaseOrders";
+import { matchSpendForReceipt } from "../services/cardSpend";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
 import {
@@ -1497,6 +1498,8 @@ healthRecordTechRouter.put(
       await attachReceiptToPurchaseOrder(receipt.id, query.purchaseOrderId, `tech:${req.technician!.name}`);
       purchaseOrderNumber = (await prisma.purchaseOrder.findUnique({ where: { id: query.purchaseOrderId }, select: { number: true } }))?.number ?? null;
     }
+    // Kyle, 2026-09-09: "photo verifies, card proves" — pair the photo with its card transaction if one is waiting.
+    await matchSpendForReceipt(receipt.id).catch((err) => console.error("[receipts] card match failed:", err));
 
     res.status(201).json({
       success: true,
@@ -2842,6 +2845,11 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
   if (body.purchaseOrderId !== undefined && body.purchaseOrderId !== existing.purchaseOrderId) {
     if (body.purchaseOrderId) await attachReceiptToPurchaseOrder(id, body.purchaseOrderId, "owner");
     else await detachReceiptFromPurchaseOrder(id, "owner");
+  }
+  // Kyle, 2026-09-09: a confirmed receipt, or one whose amount was corrected, goes
+  // looking for the card transaction it itemizes ("photo verifies, card proves").
+  if (body.status === "confirmed" || body.amount !== undefined || body.category !== undefined) {
+    await matchSpendForReceipt(id).catch((err) => console.error("[receipts] card match failed:", err));
   }
   const after = await prisma.receipt.findUniqueOrThrow({ where: { id }, select: { purchaseOrderId: true, jobId: true } });
   res.json({ ...receipt, jobId: after.jobId, purchaseOrderId: after.purchaseOrderId });

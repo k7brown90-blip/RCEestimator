@@ -46,6 +46,15 @@ import type {
   PurchaseOrderLine,
   PurchaseOrderSummary,
   ReviewReceiptRow,
+  Balances,
+  CardSpendKind,
+  CardSpendRow,
+  CardSpendSyncResult,
+  IssuingCardsResponse,
+  ReceiptCandidate,
+  TruckDetail,
+  TruckRecord,
+  TrucksResponse,
   ScheduleJobResult,
   SupportItem,
   TechDayAvailability,
@@ -894,6 +903,33 @@ export const api = {
     request<{ receiptId: string; purchaseOrderId: string; jobId: string | null }>(`/purchase-orders/${poId}/receipts/${receiptId}`, { method: "POST", body: "{}" }),
   detachReceiptFromPurchaseOrder: (poId: string, receiptId: string) =>
     request<void>(`/purchase-orders/${poId}/receipts/${receiptId}`, { method: "DELETE" }),
+
+  // ── Trucks, cards, card spend (Kyle, 2026-09-09) ──────────────────────────
+  trucks: () => request<TrucksResponse>("/trucks"),
+  truck: (id: string, year: number) => request<TruckDetail>(`/trucks/${id}?year=${year}`),
+  createTruck: (input: { name: string; technicianId?: string | null }) =>
+    request<TruckRecord>("/trucks", { method: "POST", body: JSON.stringify(input) }),
+  updateTruck: (id: string, input: {
+    name?: string; technicianId?: string | null; stripeCardId?: string | null; cardLast4?: string | null;
+    stripeFinancialAccountId?: string | null; notes?: string | null; isActive?: boolean;
+  }) => request<TruckRecord>(`/trucks/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  truckStripeCards: () => request<IssuingCardsResponse>("/trucks/stripe-cards"),
+  cardSpend: (params: { status?: string; kind?: string; truckId?: string; year?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set("status", params.status);
+    if (params.kind) qs.set("kind", params.kind);
+    if (params.truckId) qs.set("truckId", params.truckId);
+    if (params.year) qs.set("year", String(params.year));
+    const q = qs.toString();
+    return request<CardSpendRow[]>(`/card-spend${q ? `?${q}` : ""}`);
+  },
+  /** Reason required — every edit leaves a trail. */
+  updateCardSpend: (id: string, input: {
+    reason: string; kind?: CardSpendKind; truckId?: string | null; purchaseOrderId?: string | null; receiptId?: string | null; status?: "ignored" | "unmatched";
+  }) => request<CardSpendRow>(`/card-spend/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  cardSpendReceiptCandidates: (id: string) => request<ReceiptCandidate[]>(`/card-spend/${id}/receipt-candidates`),
+  syncCardSpend: (days: number) => request<CardSpendSyncResult>("/card-spend/sync", { method: "POST", body: JSON.stringify({ days }) }),
+  financialsBalances: () => request<Balances>("/financials/balances"),
   /** Receipt from the office — typed values, optional photo. */
   uploadJobReceipt: async (jobId: string, input: { amount: number; vendor?: string; category?: string; image?: File | null }) => {
     const receiptId = crypto.randomUUID().replaceAll("-", "");
