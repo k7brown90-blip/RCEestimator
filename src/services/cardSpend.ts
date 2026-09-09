@@ -26,7 +26,7 @@
  * readers answer { available: false, reason } instead of throwing.
  */
 
-import type Stripe from "stripe";
+import Stripe from "stripe";
 import type { CardSpend, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
@@ -507,6 +507,17 @@ export function resetBalancesCache(): void {
  * in-process for five minutes — Financials and every truck row read it.
  */
 /**
+ * The preview Stripe-Version for v2 preview endpoints: the SDK's pinned
+ * version date with ".preview" in place of its release name
+ * ("2026-07-29.dahlia" → "2026-07-29.preview").
+ */
+export function previewApiVersion(): string {
+  const pinned = String(Stripe.API_VERSION ?? "");
+  const date = pinned.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+  return date ? `${date}.preview` : pinned;
+}
+
+/**
  * Financial accounts, whichever Stripe product Kyle's account actually has.
  *
  * Kyle's Dashboard shows a "Financial account" that payouts transfer into and
@@ -530,9 +541,11 @@ export async function listFinancialAccounts(): Promise<
     }
     return 0;
   };
-  // v2 money management first.
+  // v2 money management first. It is a preview API: Stripe answers "The API
+  // method cannot be found ... specify a .preview Stripe-Version" without the
+  // preview version header (production, 2026-09-09).
   try {
-    const res = (await stripe().rawRequest("GET", "/v2/money_management/financial_accounts", undefined, {})) as {
+    const res = (await stripe().rawRequest("GET", "/v2/money_management/financial_accounts", undefined, { apiVersion: previewApiVersion() })) as {
       data?: Array<{ id: string; status?: string; balance?: { available?: unknown; inbound_pending?: unknown; outbound_pending?: unknown } }>;
     };
     if (Array.isArray(res?.data)) {

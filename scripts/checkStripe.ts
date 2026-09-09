@@ -15,6 +15,7 @@
  */
 
 import Stripe from "stripe";
+import { previewApiVersion } from "../src/services/cardSpend";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
@@ -123,7 +124,7 @@ async function main(): Promise<void> {
     // money-management API); the v1 Treasury API is Connect-platform only and
     // answered "Unrecognized request URL" on this account (2026-09-09).
     try {
-      const res = (await stripe.rawRequest("GET", "/v2/money_management/financial_accounts", undefined, {})) as {
+      const res = (await stripe.rawRequest("GET", "/v2/money_management/financial_accounts", undefined, { apiVersion: previewApiVersion() })) as {
         data?: Array<{ id: string; status?: string; balance?: { available?: { usd?: { value?: number } } } }>;
       };
       const rows = res?.data ?? [];
