@@ -42,6 +42,10 @@ import type {
   Property,
   PropertyFinding,
   PropertyWriteInput,
+  PurchaseOrderDetail,
+  PurchaseOrderLine,
+  PurchaseOrderSummary,
+  ReviewReceiptRow,
   ScheduleJobResult,
   SupportItem,
   TechDayAvailability,
@@ -96,11 +100,25 @@ export interface CustomerContact {
 
 export interface PurchaseOrderRow {
   id: string;
+  /** PO-YYYY-NNNN (Kyle, 2026-09-09). */
+  number: string;
+  purpose: "truck_stock" | "warehouse" | "tool";
+  status: "open" | "purchased" | "verified" | "closed" | "cancelled";
   supplier: string;
   sentAt: string | null;
   createdAt: string;
+  receiptCount: number;
   items: { name: string; qty: number; unit?: string; partNumber?: string }[];
 }
+
+export type PurchaseOrderLineInput = {
+  itemId?: string | null;
+  name: string;
+  qty: number;
+  unit?: string | null;
+  partNumber?: string | null;
+  unitCost?: number | null;
+};
 
 export interface FinancialsSummary {
   year: number;
@@ -830,17 +848,52 @@ export const api = {
    * capture so it counts toward the job's material, fix its amount/vendor, or
    * move it to another job. The server re-rolls the job total.
    */
-  reviewReceipt: (receiptId: string, input: { status?: "confirmed" | "pending_review"; amount?: number; vendor?: string | null; jobId?: string | null; category?: string }) =>
-    request<{ id: string; jobId: string | null; amount: number; status: string }>(`/health-record-admin/receipts/${receiptId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  reviewReceipt: (receiptId: string, input: { status?: "confirmed" | "pending_review"; amount?: number; vendor?: string | null; jobId?: string | null; category?: string; purchaseOrderId?: string | null }) =>
+    request<{ id: string; jobId: string | null; amount: number; status: string; purchaseOrderId: string | null }>(`/health-record-admin/receipts/${receiptId}`, { method: "PATCH", body: JSON.stringify(input) }),
   /** Every receipt waiting for review across accounts, with account and job labels (Kyle, 2026-09-08). */
-  pendingReceipts: () =>
-    request<Array<{ id: string; jobId: string | null; vendor: string | null; category: string; amount: number; source: string; receivedAt: string; accountId: string | null; accountName: string | null; jobLabel: string }>>("/receipt-review"),
+  pendingReceipts: () => request<ReviewReceiptRow[]>("/receipt-review"),
+  /** Confirmed materials receipts with no PO (Kyle, 2026-09-09: purchasing starts with a PO). */
+  receiptsNeedingPo: () => request<ReviewReceiptRow[]>("/receipts-needing-po"),
   /** Remove a receipt (duplicate upload); the server re-rolls the job total. */
   deleteReceipt: (receiptId: string) => request<void>(`/health-record-admin/receipts/${receiptId}`, { method: "DELETE" }),
-  createPurchaseOrder: (jobId: string, input: { supplier: string; items: { name: string; qty: number; unit?: string; partNumber?: string }[] }) =>
-    request<{ id: string }>(`/jobs/${jobId}/purchase-orders`, { method: "POST", body: JSON.stringify(input) }),
+  createPurchaseOrder: (jobId: string, input: { supplier: string; purpose?: "truck_stock" | "warehouse" | "tool"; items: { name: string; qty: number; unit?: string; partNumber?: string }[] }) =>
+    request<{ id: string; number: string; purpose: string; status: string }>(`/jobs/${jobId}/purchase-orders`, { method: "POST", body: JSON.stringify(input) }),
+  /** Cancels the PO (the number is never reused; the trail stays). */
   deletePurchaseOrder: (jobId: string, orderId: string) =>
     request<void>(`/jobs/${jobId}/purchase-orders/${orderId}`, { method: "DELETE" }),
+
+  // ─── Purchase orders — the document (Kyle, 2026-09-09) ─────────────────────
+  purchaseOrders: (params: { status?: string; truckId?: string; jobId?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set("status", params.status);
+    if (params.truckId) q.set("truckId", params.truckId);
+    if (params.jobId) q.set("jobId", params.jobId);
+    const qs = q.toString();
+    return request<PurchaseOrderSummary[]>(`/purchase-orders${qs ? `?${qs}` : ""}`);
+  },
+  purchaseOrder: (id: string) => request<PurchaseOrderDetail>(`/purchase-orders/${id}`),
+  purchaseOrderTrucks: () => request<{ id: string; name: string; technicianId: string | null }[]>("/purchase-orders/trucks"),
+  startPurchaseOrder: (input: {
+    supplier: string; purpose?: "truck_stock" | "warehouse" | "tool"; truckId?: string | null; jobId?: string | null;
+    notes?: string | null; lines?: PurchaseOrderLineInput[];
+  }) => request<PurchaseOrderSummary>("/purchase-orders", { method: "POST", body: JSON.stringify(input) }),
+  /** Header edits — a reason is required and lands in the trail. */
+  updatePurchaseOrder: (id: string, input: {
+    reason: string; supplier?: string; purpose?: "truck_stock" | "warehouse" | "tool"; truckId?: string | null;
+    jobId?: string | null; notes?: string | null;
+  }) => request<PurchaseOrderSummary>(`/purchase-orders/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  addPurchaseOrderLine: (id: string, line: PurchaseOrderLineInput & { reason?: string }) =>
+    request<PurchaseOrderLine>(`/purchase-orders/${id}/lines`, { method: "POST", body: JSON.stringify(line) }),
+  editPurchaseOrderLine: (id: string, lineId: string, patch: Partial<PurchaseOrderLineInput> & { qtyLanded?: number | null; reason: string }) =>
+    request<PurchaseOrderLine>(`/purchase-orders/${id}/lines/${lineId}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  removePurchaseOrderLine: (id: string, lineId: string, reason: string) =>
+    request<void>(`/purchase-orders/${id}/lines/${lineId}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
+  transitionPurchaseOrder: (id: string, to: "purchased" | "verified" | "closed" | "cancelled", reason?: string) =>
+    request<{ id: string; number: string; status: string }>(`/purchase-orders/${id}/status`, { method: "POST", body: JSON.stringify({ to, reason }) }),
+  attachReceiptToPurchaseOrder: (poId: string, receiptId: string) =>
+    request<{ receiptId: string; purchaseOrderId: string; jobId: string | null }>(`/purchase-orders/${poId}/receipts/${receiptId}`, { method: "POST", body: "{}" }),
+  detachReceiptFromPurchaseOrder: (poId: string, receiptId: string) =>
+    request<void>(`/purchase-orders/${poId}/receipts/${receiptId}`, { method: "DELETE" }),
   /** Receipt from the office — typed values, optional photo. */
   uploadJobReceipt: async (jobId: string, input: { amount: number; vendor?: string; category?: string; image?: File | null }) => {
     const receiptId = crypto.randomUUID().replaceAll("-", "");

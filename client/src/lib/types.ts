@@ -776,8 +776,103 @@ export type FindingEvent = {
   createdAt: string;
 };
 
+// ─── Purchase orders (Kyle, 2026-09-09) ───────────────────────────────────────
+// "Purchasing needs to start with a P.O. number then the purchase and photo
+// verification of the receipt." Purpose is chosen ("Truck Stock, Warehouse, or
+// Tool purchase"; default truck stock); material lands on a truck or in the
+// warehouse, never on a job.
+
+export type PoPurpose = "truck_stock" | "warehouse" | "tool";
+export type PoStatus = "open" | "purchased" | "verified" | "closed" | "cancelled";
+
+export type PurchaseOrderLine = {
+  id: string;
+  itemId: string | null;
+  name: string;
+  qty: number;
+  unit: string | null;
+  partNumber: string | null;
+  unitCost: number | null;
+  qtyLanded: number | null;
+  sortOrder: number;
+};
+
+export type PurchaseOrderSummary = {
+  id: string;
+  number: string;
+  purpose: PoPurpose;
+  destinationType: "truck" | "warehouse";
+  truckId: string | null;
+  truckName: string | null;
+  jobId: string | null;
+  jobLabel: string | null;
+  accountId: string | null;
+  accountName: string | null;
+  supplier: string;
+  status: PoStatus;
+  notes: string | null;
+  openedBy: "owner" | "tech";
+  openedByTechnicianId: string | null;
+  openedAt: string;
+  purchasedAt: string | null;
+  verifiedAt: string | null;
+  closedAt: string | null;
+  cancelledAt: string | null;
+  sentAt: string | null;
+  createdAt: string;
+  receiptCount: number;
+  lines: PurchaseOrderLine[];
+};
+
+export type PurchaseOrderEvent = {
+  id: string;
+  at: string;
+  actor: string;
+  kind: "created" | "edited" | "status" | "receipt_attached" | "receipt_detached" | "line_added" | "line_edited" | "line_removed";
+  reason: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+};
+
+export type PurchaseOrderReceipt = {
+  id: string;
+  jobId: string | null;
+  vendor: string | null;
+  category: string;
+  amount: number;
+  status: string;
+  source: string;
+  receivedAt: string;
+  hasImage: boolean;
+};
+
+export type PurchaseOrderDetail = PurchaseOrderSummary & {
+  events: PurchaseOrderEvent[];
+  receipts: PurchaseOrderReceipt[];
+};
+
+/** A receipt row from /receipt-review or /receipts-needing-po. */
+export type ReviewReceiptRow = {
+  id: string;
+  jobId: string | null;
+  vendor: string | null;
+  category: string;
+  amount: number;
+  source: string;
+  receivedAt: string;
+  accountId: string | null;
+  accountName: string | null;
+  jobLabel: string;
+  purchaseOrderId: string | null;
+  purchaseOrderNumber: string | null;
+  needsPo: boolean;
+};
+
 export type AccountPurchaseOrder = {
   id: string;
+  number: string;
+  purpose: PoPurpose;
+  status: PoStatus;
   supplier: string;
   itemCount: number;
   sentAt: string | null;
@@ -793,6 +888,9 @@ export type AccountReceipt = {
   status: string;
   source: string;
   receivedAt: string;
+  /** The PO this receipt verifies (Kyle, 2026-09-09) — null reads "needs PO" on a materials receipt. */
+  purchaseOrderId: string | null;
+  purchaseOrderNumber: string | null;
 };
 
 export type AccountJob = {

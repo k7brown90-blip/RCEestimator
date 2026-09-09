@@ -20,6 +20,10 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { rerollJobsMaterialCost } from "../services/receiptCosting";
+import {
+  PO_LIST_INCLUDE, PO_PURPOSES, attachReceiptToPurchaseOrder, createPurchaseOrder, detachReceiptFromPurchaseOrder,
+  serializePurchaseOrder, transitionPurchaseOrder, truckIdForTechnician,
+} from "../services/purchaseOrders";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
 import {
@@ -1133,7 +1137,7 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
   const visit = await prisma.visit.findUnique({
     where: { id: visitId },
     include: {
-      materialOrders: { select: { id: true } },
+      purchaseOrders: { where: { status: { not: "cancelled" } }, select: { id: true } },
       customer: { select: { name: true } },
       property: { select: { addressLine1: true, city: true } },
     },
@@ -1175,10 +1179,16 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
     return;
   }
 
-  const receipts = await prisma.receipt.count({ where: { jobId: visitId } });
+  const receiptRows = await prisma.receipt.findMany({ where: { jobId: visitId }, select: { category: true, purchaseOrderId: true } });
+  const receipts = receiptRows.length;
   const warnings: string[] = [];
-  if (visit.materialOrders.length > 0 && receipts === 0) {
-    warnings.push(`${visit.materialOrders.length} purchase order(s) and no receipts on this job yet.`);
+  if (visit.purchaseOrders.length > 0 && receipts === 0) {
+    warnings.push(`${visit.purchaseOrders.length} purchase order(s) and no receipts on this job yet.`);
+  }
+  // Kyle, 2026-09-09: purchasing starts with a PO. A warning, never a wall.
+  const receiptsWithoutPo = receiptRows.filter((r) => r.category === "materials" && !r.purchaseOrderId).length;
+  if (receiptsWithoutPo > 0) {
+    warnings.push(`${receiptsWithoutPo} materials receipt(s) on this job have no PO.`);
   }
 
   await prisma.visit.update({
@@ -1221,9 +1231,70 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
 
 /**
  * Purchase orders from the field (Kyle, 2026-09-05: the job screen should
- * "allow a P.O. to be made"). Same MaterialOrder model and shape as the CRM's
- * job-screen door — a P.O. is the plan; receipts remain the spend.
+ * "allow a P.O. to be made"; 2026-09-09: "Purchasing needs to start with a
+ * P.O. number then the purchase and photo verification of the receipt").
+ * A real numbered PO (services/purchaseOrders.ts). Purpose is chosen — truck
+ * stock by default; the job is where the tech was, never where material lands.
  */
+const fieldPoBodySchema = z.object({
+  supplier: z.string().trim().min(1).max(200),
+  purpose: z.enum(PO_PURPOSES).default("truck_stock"),
+  notes: z.string().trim().max(1000).nullable().optional(),
+  items: z.array(z.object({
+    name: z.string().trim().min(1).max(300),
+    qty: z.number().positive(),
+    unit: z.string().trim().max(20).nullable().optional(),
+    partNumber: z.string().trim().max(100).nullable().optional(),
+  })).optional(),
+});
+
+/** The shape the PWA lists — number first, because that's what gets read at the counter. */
+function fieldPoView(po: Parameters<typeof serializePurchaseOrder>[0]) {
+  const v = serializePurchaseOrder(po);
+  return {
+    id: v.id, number: v.number, purpose: v.purpose, status: v.status, supplier: v.supplier,
+    jobId: v.jobId, jobLabel: v.jobLabel, truckName: v.truckName, receiptCount: v.receiptCount,
+    items: v.lines.map((l) => ({ name: l.name, qty: l.qty, unit: l.unit ?? undefined, partNumber: l.partNumber ?? undefined })),
+    sentAt: v.sentAt?.toISOString() ?? null,
+    openedAt: v.openedAt.toISOString(),
+    createdAt: v.createdAt.toISOString(),
+  };
+}
+
+/** Service refusals (409 chain, 404) in the PWA's envelope, so the phone shows the reason. */
+function techServiceError(res: express.Response, err: unknown): boolean {
+  if (typeof err === "object" && err !== null && "statusCode" in err && typeof (err as { statusCode: unknown }).statusCode === "number") {
+    const statusCode = (err as { statusCode: number }).statusCode;
+    res.status(statusCode).json({
+      success: false,
+      error: { code: statusCode === 404 ? "not_found" : statusCode === 409 ? "conflict" : "error", message: err instanceof Error ? err.message : "Request failed" },
+    });
+    return true;
+  }
+  return false;
+}
+
+async function createFieldPo(req: TechRequest, body: z.infer<typeof fieldPoBodySchema>, jobId: string | null) {
+  const tech = req.technician!;
+  const po = await createPurchaseOrder({
+    supplier: body.supplier,
+    purpose: body.purpose,
+    truckId: await truckIdForTechnician(tech.id),
+    jobId,
+    notes: body.notes ?? null,
+    lines: body.items ?? [],
+    openedBy: "tech",
+    openedByTechnicianId: tech.id,
+    actor: `tech:${tech.name}`,
+  });
+  logSystemEvent("info", "jobs", `${po.number} opened from the field — ${body.supplier} (${body.purpose})`, {
+    visitId: jobId ?? undefined,
+    technician: tech.name,
+    purchaseOrderId: po.id,
+  });
+  return po;
+}
+
 healthRecordTechRouter.post("/visits/:visitId/purchase-orders", asyncHandler(async (req: TechRequest, res) => {
   const visitId = readParam(req, "visitId");
   const assigned = await prisma.visitAssignment.findFirst({
@@ -1234,23 +1305,9 @@ healthRecordTechRouter.post("/visits/:visitId/purchase-orders", asyncHandler(asy
     res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
     return;
   }
-  const body = z.object({
-    supplier: z.string().trim().min(1).max(200),
-    items: z.array(z.object({
-      name: z.string().trim().min(1).max(300),
-      qty: z.number().positive(),
-      unit: z.string().trim().max(20).optional(),
-    })).min(1),
-  }).parse(req.body);
-  const order = await prisma.materialOrder.create({
-    data: { jobId: visitId, supplier: body.supplier, items: JSON.stringify(body.items) },
-  });
-  logSystemEvent("info", "jobs", `P.O. created from the field — ${body.supplier}, ${body.items.length} item(s)`, {
-    visitId,
-    technician: req.technician!.name,
-    orderId: order.id,
-  });
-  res.status(201).json({ success: true, data: { id: order.id, supplier: order.supplier, createdAt: order.createdAt } });
+  const body = fieldPoBodySchema.parse(req.body);
+  const po = await createFieldPo(req, body, visitId);
+  res.status(201).json({ success: true, data: { id: po.id, number: po.number, purpose: po.purpose, status: po.status, supplier: po.supplier, createdAt: po.createdAt } });
 }));
 
 healthRecordTechRouter.get("/visits/:visitId/purchase-orders", asyncHandler(async (req: TechRequest, res) => {
@@ -1263,22 +1320,49 @@ healthRecordTechRouter.get("/visits/:visitId/purchase-orders", asyncHandler(asyn
     res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
     return;
   }
-  const orders = await prisma.materialOrder.findMany({
+  const orders = await prisma.purchaseOrder.findMany({
     where: { jobId: visitId },
     orderBy: { createdAt: "desc" },
+    include: PO_LIST_INCLUDE,
   });
-  res.json({
-    success: true,
-    data: {
-      orders: orders.map((o) => ({
-        id: o.id,
-        supplier: o.supplier,
-        items: JSON.parse(o.items) as { name: string; qty: number; unit?: string }[],
-        sentAt: o.sentAt?.toISOString() ?? null,
-        createdAt: o.createdAt.toISOString(),
-      })),
+  res.json({ success: true, data: { orders: orders.map(fieldPoView) } });
+}));
+
+/**
+ * The tech's live purchases — open and purchased, newest first. Includes POs
+ * the office opened (openedByTechnicianId null): Kyle opens one at the desk and
+ * reads it at the counter from the phone. Other techs' POs stay theirs.
+ */
+healthRecordTechRouter.get("/purchase-orders", asyncHandler(async (req: TechRequest, res) => {
+  const techId = req.technician!.id;
+  const orders = await prisma.purchaseOrder.findMany({
+    where: {
+      status: { in: ["open", "purchased"] },
+      OR: [{ openedByTechnicianId: techId }, { openedByTechnicianId: null }, { truck: { technicianId: techId } }],
     },
+    orderBy: { openedAt: "desc" },
+    take: 100,
+    include: PO_LIST_INCLUDE,
   });
+  res.json({ success: true, data: { orders: orders.map(fieldPoView) } });
+}));
+
+/** Start a purchase with no job — truck stock, warehouse, or a tool run. */
+healthRecordTechRouter.post("/purchase-orders", asyncHandler(async (req: TechRequest, res) => {
+  const body = fieldPoBodySchema.parse(req.body);
+  const po = await createFieldPo(req, body, null);
+  res.status(201).json({ success: true, data: { id: po.id, number: po.number, purpose: po.purpose, status: po.status, supplier: po.supplier, createdAt: po.createdAt } });
+}));
+
+/** Purchased at the counter / verified — the two transitions a tech makes. */
+healthRecordTechRouter.post("/purchase-orders/:id/status", asyncHandler(async (req: TechRequest, res) => {
+  const body = z.object({ to: z.enum(["purchased", "verified"]) }).parse(req.body);
+  try {
+    const po = await transitionPurchaseOrder(readParam(req, "id"), body.to, { actor: `tech:${req.technician!.name}` });
+    res.json({ success: true, data: { id: po.id, number: po.number, status: po.status } });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
 }));
 
 /**
@@ -1355,12 +1439,27 @@ healthRecordTechRouter.put(
       category: z.enum(["materials", "gas", "maintenance", "overhead"]).optional(),
       vendor: z.string().optional(),
       amount: z.coerce.number().positive().optional(),
+      // Kyle, 2026-09-09: the receipt photo verifies a PO. When present the
+      // receipt is attached, inherits the PO's job if it has none, and an open
+      // PO moves to purchased.
+      purchaseOrderId: z.string().optional(),
     }).parse(req.query);
 
     if (query.jobId) {
       const visit = await prisma.visit.findUnique({ where: { id: query.jobId }, select: { id: true } });
       if (!visit) {
         res.status(404).json({ success: false, error: { code: "not_found", message: `Visit ${query.jobId} not found` } });
+        return;
+      }
+    }
+    if (query.purchaseOrderId) {
+      const po = await prisma.purchaseOrder.findUnique({ where: { id: query.purchaseOrderId }, select: { id: true, status: true, number: true } });
+      if (!po) {
+        res.status(404).json({ success: false, error: { code: "not_found", message: "Purchase order not found" } });
+        return;
+      }
+      if (po.status === "closed" || po.status === "cancelled") {
+        res.status(409).json({ success: false, error: { code: "conflict", message: `${po.number} is ${po.status} — start a new PO for this receipt.` } });
         return;
       }
     }
@@ -1393,6 +1492,11 @@ healthRecordTechRouter.put(
     // A re-upload resets the row to pending_review; if it had been confirmed the
     // job's stamped total must drop it again (Kyle, 2026-09-08).
     await rerollJobsMaterialCost([receipt.jobId, previous?.jobId]);
+    let purchaseOrderNumber: string | null = null;
+    if (query.purchaseOrderId) {
+      await attachReceiptToPurchaseOrder(receipt.id, query.purchaseOrderId, `tech:${req.technician!.name}`);
+      purchaseOrderNumber = (await prisma.purchaseOrder.findUnique({ where: { id: query.purchaseOrderId }, select: { number: true } }))?.number ?? null;
+    }
 
     res.status(201).json({
       success: true,
@@ -1403,6 +1507,8 @@ healthRecordTechRouter.put(
         category: receipt.category,
         status: receipt.status,
         parsed: parsed != null,
+        purchaseOrderId: query.purchaseOrderId ?? null,
+        purchaseOrderNumber,
       },
     });
   }),
@@ -2705,10 +2811,12 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
     amount: z.number().nonnegative().optional(),
     lineItems: z.unknown().optional(),
     status: z.enum(["pending_review", "confirmed"]).optional(),
+    // Kyle, 2026-09-09: attach (string) or detach (null) the PO this receipt verifies.
+    purchaseOrderId: z.string().nullable().optional(),
   }).parse(req.body);
 
   const id = readParam(req, "id");
-  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true, jobId: true } });
+  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true, jobId: true, purchaseOrderId: true } });
   if (!existing) {
     res.status(404).json({ error: "Receipt not found" });
     return;
@@ -2731,7 +2839,12 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
   // one shared writer (Kyle, 2026-09-08).
   await rerollJobsMaterialCost([existing.jobId, receipt.jobId]);
 
-  res.json(receipt);
+  if (body.purchaseOrderId !== undefined && body.purchaseOrderId !== existing.purchaseOrderId) {
+    if (body.purchaseOrderId) await attachReceiptToPurchaseOrder(id, body.purchaseOrderId, "owner");
+    else await detachReceiptFromPurchaseOrder(id, "owner");
+  }
+  const after = await prisma.receipt.findUniqueOrThrow({ where: { id }, select: { purchaseOrderId: true, jobId: true } });
+  res.json({ ...receipt, jobId: after.jobId, purchaseOrderId: after.purchaseOrderId });
 }));
 
 /**

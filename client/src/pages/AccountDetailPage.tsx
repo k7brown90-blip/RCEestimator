@@ -15,6 +15,7 @@ import { api, openProtectedPdf } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
 import type { AccountJob, AccountSummary } from "../lib/types";
 import { PendingReceiptFields, ReceiptReviewList } from "../components/ReceiptReviewList";
+import { PO_PURPOSE_LABEL, PoStatusPill, ReceiptPoPicker } from "../components/PurchaseOrders";
 import { money, shortDate } from "../lib/utils";
 
 const JOB_STATUS_CLASS: Record<string, string> = {
@@ -1148,11 +1149,16 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
             <div>
               <p className="font-semibold uppercase tracking-wide text-rce-soft">Purchase orders</p>
               <ul className="mt-1 space-y-1">
+                {/* Kyle, 2026-09-09: the PO is a numbered document — number, purpose, status. */}
                 {job.purchaseOrders.map((order) => (
-                  <li key={order.id} className="flex justify-between gap-2">
-                    <span>{order.supplier} · {order.itemCount} item{order.itemCount === 1 ? "" : "s"}</span>
-                    <span className="text-rce-muted">
-                      {order.sentAt ? `sent ${shortDate(order.sentAt)}` : "not sent"}
+                  <li key={order.id} className="flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      <span className="font-medium tabular-nums">{order.number}</span> · {order.supplier} · {PO_PURPOSE_LABEL[order.purpose] ?? order.purpose}
+                      {" · "}{order.itemCount} item{order.itemCount === 1 ? "" : "s"}
+                    </span>
+                    <span className="flex items-center gap-2 text-rce-muted">
+                      <PoStatusPill status={order.status} />
+                      {order.sentAt ? `sent ${shortDate(order.sentAt)}` : shortDate(order.createdAt)}
                     </span>
                   </li>
                 ))}
@@ -1176,6 +1182,12 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
                       {receipt.status === "confirmed" && receipt.category === "materials" && (
                         <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-800">counted</span>
                       )}
+                      {/* Kyle, 2026-09-09: the receipt verifies a PO — show which, or offer to attach one. */}
+                      {receipt.purchaseOrderNumber ? (
+                        <span className="ml-1 rounded bg-slate-100 px-1 tabular-nums text-slate-700">{receipt.purchaseOrderNumber}</span>
+                      ) : receipt.category === "materials" ? (
+                        <ReceiptPoPicker receiptId={receipt.id} jobId={job.visitId} />
+                      ) : null}
                     </span>
                     <span className="flex items-center gap-2">
                       {receipt.status === "pending_review" ? (

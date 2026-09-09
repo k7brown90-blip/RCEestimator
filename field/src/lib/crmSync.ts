@@ -525,24 +525,67 @@ export async function completeVisitFromField(visitId: string): Promise<{ complet
   return crmRequest(`/visits/${visitId}/complete`, { method: 'POST', body: '{}' })
 }
 
-/** P.O. from the driveway (Kyle, 2026-09-05) — the plan to order; receipts stay the spend. */
-export async function createPurchaseOrderFromField(
-  visitId: string,
-  input: { supplier: string; items: { name: string; qty: number }[] },
-): Promise<{ id: string; supplier: string }> {
+// ─── Purchase orders (Kyle, 2026-09-09) ───────────────────────────────────────
+// "Purchasing needs to start with a P.O. number then the purchase and photo
+// verification of the receipt." Purpose is chosen (truck stock default); the
+// job is where the tech was, never where material lands. Online only — the
+// number comes from the office's counter, so nothing here rides the sync queue.
+
+export type FieldPoPurpose = 'truck_stock' | 'warehouse' | 'tool'
+
+export interface FieldPoInput {
+  supplier: string
+  purpose?: FieldPoPurpose
+  items?: { name: string; qty: number; unit?: string; partNumber?: string }[]
+}
+
+export interface FieldPoCreated {
+  id: string
+  number: string
+  purpose: FieldPoPurpose
+  status: string
+  supplier: string
+  createdAt: string
+}
+
+/** P.O. opened on a job from the driveway (Kyle, 2026-09-05 / 2026-09-09). */
+export async function createPurchaseOrderFromField(visitId: string, input: FieldPoInput): Promise<FieldPoCreated> {
   return crmRequest(`/visits/${visitId}/purchase-orders`, { method: 'POST', body: JSON.stringify(input) })
+}
+
+/** A purchase with no job — truck stock, warehouse, or a tool run. */
+export async function createStandalonePurchaseOrder(input: FieldPoInput): Promise<FieldPoCreated> {
+  return crmRequest('/purchase-orders', { method: 'POST', body: JSON.stringify(input) })
 }
 
 export interface FieldPurchaseOrder {
   id: string
+  number: string
+  purpose: FieldPoPurpose
+  status: string
   supplier: string
-  items: { name: string; qty: number; unit?: string }[]
+  jobId: string | null
+  jobLabel: string | null
+  truckName: string | null
+  receiptCount: number
+  items: { name: string; qty: number; unit?: string; partNumber?: string }[]
   sentAt: string | null
+  openedAt: string
   createdAt: string
 }
 
 export async function fetchPurchaseOrders(visitId: string): Promise<{ orders: FieldPurchaseOrder[] }> {
   return crmRequest(`/visits/${visitId}/purchase-orders`, { method: 'GET' })
+}
+
+/** This tech's open and purchased POs, newest first (plus ones the office opened). */
+export async function fetchMyPurchaseOrders(): Promise<{ orders: FieldPurchaseOrder[] }> {
+  return crmRequest('/purchase-orders', { method: 'GET' })
+}
+
+/** Purchased at the counter; verified once the receipt photo is on it. */
+export async function setPurchaseOrderStatus(id: string, to: 'purchased' | 'verified'): Promise<{ id: string; number: string; status: string }> {
+  return crmRequest(`/purchase-orders/${id}/status`, { method: 'POST', body: JSON.stringify({ to }) })
 }
 
 /** The time clock (Phase 5). One open punch per visit; needs signal on purpose. */
@@ -579,16 +622,21 @@ export async function uploadJobPhoto(visitId: string, blob: Blob, caption?: stri
  * pending review either way.
  */
 export async function uploadReceiptFromField(input: {
-  visitId: string
+  /** Optional since 2026-09-09: a receipt for a job-less PO has no visit. */
+  visitId?: string
+  /** The PO this receipt verifies (Kyle, 2026-09-09) — attaches it and moves an open PO to purchased. */
+  purchaseOrderId?: string
   blob: Blob
   amount?: number
   vendor?: string
   category?: 'materials' | 'gas' | 'maintenance' | 'overhead'
-}): Promise<{ id: string; amount: number; status: string }> {
+}): Promise<{ id: string; amount: number; status: string; purchaseOrderNumber?: string | null }> {
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')
   const receiptId = crypto.randomUUID().replaceAll('-', '')
-  const query = new URLSearchParams({ jobId: input.visitId })
+  const query = new URLSearchParams()
+  if (input.visitId) query.set('jobId', input.visitId)
+  if (input.purchaseOrderId) query.set('purchaseOrderId', input.purchaseOrderId)
   if (input.amount) query.set('amount', String(input.amount))
   if (input.vendor) query.set('vendor', input.vendor)
   if (input.category) query.set('category', input.category)
@@ -604,7 +652,7 @@ export async function uploadReceiptFromField(input: {
     },
   )
   const body = (await response.json().catch(() => null)) as
-    | { success?: boolean; data?: { id: string; amount: number; status: string }; error?: { message?: string } }
+    | { success?: boolean; data?: { id: string; amount: number; status: string; purchaseOrderNumber?: string | null }; error?: { message?: string } }
     | null
   if (!response.ok || body?.success === false) {
     throw new Error(body?.error?.message ?? `Receipt upload failed (${response.status})`)

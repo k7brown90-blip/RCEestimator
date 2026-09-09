@@ -68,7 +68,7 @@ async function clearAgentTables() {
   await prisma.observation.deleteMany();
   await prisma.customerRequest.deleteMany();
   await prisma.document.deleteMany();
-  await prisma.materialOrder.deleteMany();
+  await prisma.purchaseOrder.deleteMany();
   // Clear estimate chain
   await prisma.itemModifier.deleteMany();
   await prisma.estimateItem.deleteMany();

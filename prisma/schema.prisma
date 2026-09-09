@@ -343,7 +343,7 @@ model Visit {
   recommendations        Recommendation[]
   estimates              Estimate[]
   documents              Document[]
-  materialOrders         MaterialOrder[]
+  purchaseOrders         PurchaseOrder[]
   assignments            VisitAssignment[]
   healthInspections      HealthInspection[]
   visitPhotos            VisitPhoto[]
@@ -397,6 +397,7 @@ model Technician {
   assignments    VisitAssignment[]
   healthInspections HealthInspection[]
   visitPhotos    VisitPhoto[]
+  trucks         Truck[]
 }
 
 // Flexible company configuration store — license info, operating territories,
@@ -1367,9 +1368,17 @@ model Receipt {
   imageMime    String?
   receivedAt   DateTime @default(now())
   createdAt    DateTime @default(now())
+  // Kyle, 2026-09-09: "Purchasing needs to start with a P.O. number then the
+  // purchase and photo verification of the receipt." The receipt is the
+  // verification; this is the PO it verifies. Nullable — gas, overhead, and
+  // receipts from before POs were real have none, and a materials receipt
+  // without one is flagged "needs PO" rather than refused.
+  purchaseOrderId String?
+  purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
 
   // The account summary pulls receipts by job id across an account's whole history.
   @@index([jobId])
+  @@index([purchaseOrderId])
 }
 
 model Document {
@@ -1406,14 +1415,101 @@ model Document {
   @@index([issuedEstimateId])
 }
 
-model MaterialOrder {
-  id         String    @id @default(cuid())
-  jobId      String    // visit ID
-  supplier   String
-  items      String    // JSON array: [{name, qty, unit, partNumber?}]
-  sentAt     DateTime?
-  createdAt  DateTime  @default(now())
-  job        Visit     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+// ─── Purchasing (Kyle, 2026-09-09) ────────────────────────────────────────────
+//
+// "Purchasing needs to start with a P.O. number then the purchase and photo
+// verification of the receipt." The PO is the document; it replaced the
+// unnumbered MaterialOrder that floated beside receipts. Materials never land
+// on a job: a PO's destination is a truck or the warehouse ("Warehouse items
+// will only be used to transfer material to truck stock"); jobs are charged by
+// consuming truck stock in a later build. Until then receipts on a job still
+// count as that job's material (services/receiptCosting.ts) — unchanged here.
+
+// A truck is where truck-stock purchases land. Kyle's is "Truck 1" (seeded by
+// the migration); card/financial-account fields come in a later build.
+model Truck {
+  id           String   @id @default(cuid())
+  name         String
+  technicianId String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  technician   Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+  purchaseOrders PurchaseOrder[]
+}
+
+model PurchaseOrder {
+  id                   String    @id @default(cuid())
+  // PO-YYYY-NNNN — assigned at creation from PurchaseOrderCounter, never reused.
+  number               String    @unique
+  // "When creating the P.O. we should have a choice - Truck Stock, Warehouse, or
+  // Tool purchase." Chosen, never inferred; default truck_stock.
+  purpose              String    // truck_stock | warehouse | tool
+  destinationType      String    // truck | warehouse
+  truckId              String?
+  // The job the tech was on when opening — context only, never where the material lands.
+  jobId                String?
+  supplier             String
+  status               String    @default("open") // open | purchased | verified | closed | cancelled
+  notes                String?
+  openedBy             String    // owner | tech
+  openedByTechnicianId String?
+  openedAt             DateTime  @default(now())
+  purchasedAt          DateTime?
+  verifiedAt           DateTime?
+  closedAt             DateTime?
+  cancelledAt          DateTime?
+  // Supplier email (kept from MaterialOrder — services/supplierEmail.ts).
+  sentAt               DateTime?
+  createdAt            DateTime  @default(now())
+  truck                Truck?    @relation(fields: [truckId], references: [id], onDelete: SetNull)
+  job                  Visit?    @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  lines                PurchaseOrderLine[]
+  events               PurchaseOrderEvent[]
+  receipts             Receipt[]
+
+  @@index([status])
+  @@index([jobId])
+  @@index([truckId])
+}
+
+model PurchaseOrderLine {
+  id              String  @id @default(cuid())
+  purchaseOrderId String
+  itemId          String? // a PriceBookAtomic.itemId when the line came from the book (no FK — the book is editable)
+  name            String
+  qty             Float
+  unit            String?
+  partNumber      String?
+  unitCost        Float?
+  qtyLanded       Float?
+  sortOrder       Int     @default(0)
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([purchaseOrderId])
+}
+
+// The edit trail. "We need to be able to edit manually in case there are errors
+// found." Every edit records a one-line reason and the before/after.
+model PurchaseOrderEvent {
+  id              String   @id @default(cuid())
+  purchaseOrderId String
+  at              DateTime @default(now())
+  actor           String
+  kind            String   // created | edited | status | receipt_attached | receipt_detached | line_added | line_edited | line_removed
+  reason          String?
+  before          String?  // JSON
+  after           String?  // JSON
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([purchaseOrderId, at])
+}
+
+// One row per year; `next` is the next sequence to hand out. Bumped with a
+// row-locking upsert inside the creating transaction so concurrent creates
+// get distinct numbers.
+model PurchaseOrderCounter {
+  year Int @id
+  next Int
 }
 
 // Job-site photo uploaded from the tech PWA. Client-generated UUID id makes

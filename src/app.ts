@@ -66,12 +66,17 @@ import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, handleStripeWebhook, paymentSummary, stripeConfigured } from "./services/stripePayments";
 import { rerollJobMaterialCost, rerollJobsMaterialCost } from "./services/receiptCosting";
+import {
+  PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
+  defaultTruckId, detachReceiptFromPurchaseOrder, editPurchaseOrderLine, jobLabelOf, parseStatusFilter,
+  removePurchaseOrderLine, serializePurchaseOrder, transitionPurchaseOrder, updatePurchaseOrder,
+} from "./services/purchaseOrders";
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
 import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, estimateMaterialCost, mergeCostableChain, ROLLED_UP_COSTS } from "./services/jobCosting";
-import { parseJsonArrayLength, parseJsonStringArray } from "./lib/json";
+import { parseJsonStringArray } from "./lib/json";
 import { findCustomerMatches } from "./services/customerMatch";
 import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
 import { requireWebhookSecret, requireWebhookSecretWhenEnabled } from "./middleware/webhookSecret";
@@ -4623,13 +4628,13 @@ app.post("/jobs/:jobId/complete", asyncHandler(async (req, res) => {
   const jobId = readParam(req, "jobId");
   const visit = await prisma.visit.findUnique({
     where: { id: jobId },
-    include: { materialOrders: true },
+    include: { purchaseOrders: { where: { status: { not: "cancelled" } }, select: { id: true } } },
   });
   if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
   if (visit.status === "cancelled") { res.status(409).json({ error: "This job was cancelled." }); return; }
 
   const [receipts, invoiceEvents] = await Promise.all([
-    prisma.receipt.findMany({ where: { jobId }, select: { id: true } }),
+    prisma.receipt.findMany({ where: { jobId }, select: { id: true, category: true, purchaseOrderId: true } }),
     prisma.issuedEstimateEvent.findMany({
       where: { type: "invoice_sent", estimate: { OR: [{ jobVisitId: jobId }, { visitId: jobId }] } },
       select: { id: true },
@@ -4637,8 +4642,14 @@ app.post("/jobs/:jobId/complete", asyncHandler(async (req, res) => {
   ]);
 
   const warnings: string[] = [];
-  if (visit.materialOrders.length > 0 && receipts.length === 0) {
-    warnings.push(`${visit.materialOrders.length} purchase order(s) on this job and no receipts uploaded yet.`);
+  if (visit.purchaseOrders.length > 0 && receipts.length === 0) {
+    warnings.push(`${visit.purchaseOrders.length} purchase order(s) on this job and no receipts uploaded yet.`);
+  }
+  // Kyle, 2026-09-09: purchasing starts with a PO. A materials receipt with none
+  // is a WARNING here, never a block — closing a job is never gated.
+  const receiptsWithoutPo = receipts.filter((r) => r.category === "materials" && !r.purchaseOrderId).length;
+  if (receiptsWithoutPo > 0) {
+    warnings.push(`${receiptsWithoutPo} materials receipt(s) on this job have no PO.`);
   }
   if (invoiceEvents.length === 0) {
     warnings.push("No invoice has been emailed for this job.");
@@ -4674,47 +4685,239 @@ app.post("/jobs/:jobId/reopen", asyncHandler(async (req, res) => {
   res.json({ reopened: true });
 }));
 
-// ─── PURCHASE ORDERS ON THE JOB (Kyle, 2026-08-25) ──────────────────────────
+// ─── PURCHASE ORDERS ON THE JOB (Kyle, 2026-08-25 → 2026-09-09) ─────────────
 //
-// "Creating a P.O. is now necessary and should be on this screen. Part Orders
-// will track actual job spending." The MaterialOrder model already existed and
-// already rolls into the account's job costs — this is the door onto it.
+// "Creating a P.O. is now necessary and should be on this screen." Since
+// 2026-09-09 the PO is a real numbered document (services/purchaseOrders.ts);
+// this job-scoped door stays for the account page and the Financials
+// drill-down. The job is context — where the tech was — never the destination.
+
+const poLineSchema = z.object({
+  itemId: z.string().trim().max(40).nullable().optional(),
+  name: z.string().trim().min(1).max(300),
+  qty: z.number().positive(),
+  unit: z.string().trim().max(20).nullable().optional(),
+  partNumber: z.string().trim().max(100).nullable().optional(),
+  unitCost: z.number().nonnegative().nullable().optional(),
+});
+const poPurposeSchema = z.enum(PO_PURPOSES);
+const poReasonSchema = z.string().trim().min(1, "A reason is required").max(300);
 
 app.get("/jobs/:jobId/purchase-orders", asyncHandler(async (req, res) => {
-  const orders = await prisma.materialOrder.findMany({
+  const orders = await prisma.purchaseOrder.findMany({
     where: { jobId: readParam(req, "jobId") },
     orderBy: { createdAt: "desc" },
+    include: { lines: { orderBy: { sortOrder: "asc" } }, _count: { select: { receipts: true } } },
   });
   res.json(orders.map((o) => ({
-    id: o.id, supplier: o.supplier, sentAt: o.sentAt, createdAt: o.createdAt,
-    items: (() => { try { return JSON.parse(o.items); } catch { return []; } })(),
+    id: o.id, number: o.number, purpose: o.purpose, status: o.status, supplier: o.supplier,
+    sentAt: o.sentAt, createdAt: o.createdAt, receiptCount: o._count.receipts,
+    items: o.lines.map((l) => ({ name: l.name, qty: l.qty, unit: l.unit ?? undefined, partNumber: l.partNumber ?? undefined })),
   })));
 }));
 
 app.post("/jobs/:jobId/purchase-orders", asyncHandler(async (req, res) => {
   const body = z.object({
     supplier: z.string().trim().min(1).max(200),
-    items: z.array(z.object({
-      name: z.string().trim().min(1).max(300),
-      qty: z.number().positive(),
-      unit: z.string().trim().max(20).optional(),
-      partNumber: z.string().trim().max(100).optional(),
-    })).min(1),
+    purpose: poPurposeSchema.default("truck_stock"),
+    notes: z.string().trim().max(1000).nullable().optional(),
+    items: z.array(poLineSchema).optional(),
+    lines: z.array(poLineSchema).optional(),
   }).parse(req.body);
   const jobId = readParam(req, "jobId");
   const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { id: true } });
   if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
-  const order = await prisma.materialOrder.create({
-    data: { jobId, supplier: body.supplier, items: JSON.stringify(body.items) },
+  const po = await createPurchaseOrder({
+    supplier: body.supplier, purpose: body.purpose, jobId, notes: body.notes ?? null,
+    lines: body.lines ?? body.items ?? [], openedBy: "owner", actor: "owner",
   });
-  res.status(201).json(order);
+  res.status(201).json({ id: po.id, number: po.number, purpose: po.purpose, status: po.status, supplier: po.supplier, createdAt: po.createdAt });
 }));
 
+/** "Delete" from the job screen CANCELS — a number is never reused and the trail stays. */
 app.delete("/jobs/:jobId/purchase-orders/:orderId", asyncHandler(async (req, res) => {
-  await prisma.materialOrder.deleteMany({
-    where: { id: readParam(req, "orderId"), jobId: readParam(req, "jobId") },
+  const po = await prisma.purchaseOrder.findFirst({
+    where: { id: readParam(req, "orderId"), jobId: readParam(req, "jobId") }, select: { id: true },
   });
+  if (!po) { res.status(404).json({ error: "Purchase order not found on this job" }); return; }
+  await transitionPurchaseOrder(po.id, "cancelled", { actor: "owner", reason: "Removed from the job screen" });
   res.status(204).end();
+}));
+
+// ─── PURCHASE ORDERS (Kyle, 2026-09-09) ─────────────────────────────────────
+//
+// "Purchasing needs to start with a P.O. number then the purchase and photo
+// verification of the receipt." Session-gated by default-deny.
+
+app.get("/purchase-orders", asyncHandler(async (req, res) => {
+  const status = parseStatusFilter(req.query.status);
+  const truckId = typeof req.query.truckId === "string" && req.query.truckId ? req.query.truckId : undefined;
+  const jobId = typeof req.query.jobId === "string" && req.query.jobId ? req.query.jobId : undefined;
+  const orders = await prisma.purchaseOrder.findMany({
+    where: { ...(status ? { status: { in: status } } : {}), ...(truckId ? { truckId } : {}), ...(jobId ? { jobId } : {}) },
+    orderBy: { openedAt: "desc" },
+    take: 300,
+    include: PO_LIST_INCLUDE,
+  });
+  res.json(orders.map(serializePurchaseOrder));
+}));
+
+app.get("/purchase-orders/trucks", asyncHandler(async (_req, res) => {
+  await defaultTruckId();
+  const trucks = await prisma.truck.findMany({ where: { isActive: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true, technicianId: true } });
+  res.json(trucks);
+}));
+
+app.post("/purchase-orders", asyncHandler(async (req, res) => {
+  const body = z.object({
+    supplier: z.string().trim().min(1).max(200),
+    purpose: poPurposeSchema.default("truck_stock"),
+    destinationType: z.enum(["truck", "warehouse"]).optional(),
+    truckId: z.string().nullable().optional(),
+    jobId: z.string().nullable().optional(),
+    notes: z.string().trim().max(1000).nullable().optional(),
+    lines: z.array(poLineSchema).optional(),
+  }).parse(req.body);
+  const po = await createPurchaseOrder({
+    supplier: body.supplier, purpose: body.purpose, destinationType: body.destinationType,
+    truckId: body.truckId ?? undefined, jobId: body.jobId ?? null, notes: body.notes ?? null,
+    lines: body.lines ?? [], openedBy: "owner", actor: "owner",
+  });
+  const full = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: po.id }, include: PO_LIST_INCLUDE });
+  res.status(201).json(serializePurchaseOrder(full));
+}));
+
+/** Full document: lines, the edit trail, and attached receipts (no image bytes). */
+app.get("/purchase-orders/:id", asyncHandler(async (req, res) => {
+  const po = await prisma.purchaseOrder.findUnique({
+    where: { id: readParam(req, "id") },
+    include: {
+      ...PO_LIST_INCLUDE,
+      events: { orderBy: { at: "asc" } },
+      receipts: {
+        orderBy: { receivedAt: "desc" },
+        select: { id: true, jobId: true, vendor: true, category: true, amount: true, status: true, source: true, receivedAt: true, imageMime: true },
+      },
+    },
+  });
+  if (!po) { res.status(404).json({ error: "Purchase order not found" }); return; }
+  res.json({
+    ...serializePurchaseOrder(po),
+    events: po.events.map((e) => ({
+      id: e.id, at: e.at, actor: e.actor, kind: e.kind, reason: e.reason,
+      before: (() => { try { return e.before ? JSON.parse(e.before) : null; } catch { return null; } })(),
+      after: (() => { try { return e.after ? JSON.parse(e.after) : null; } catch { return null; } })(),
+    })),
+    receipts: po.receipts.map((r) => ({
+      id: r.id, jobId: r.jobId, vendor: r.vendor, category: r.category, amount: r.amount, status: r.status,
+      source: r.source, receivedAt: r.receivedAt, hasImage: Boolean(r.imageMime),
+    })),
+  });
+}));
+
+/** Header edits — reason required (Kyle: "edit manually in case there are errors found"). */
+app.patch("/purchase-orders/:id", asyncHandler(async (req, res) => {
+  const body = z.object({
+    reason: poReasonSchema,
+    supplier: z.string().trim().min(1).max(200).optional(),
+    purpose: poPurposeSchema.optional(),
+    destinationType: z.enum(["truck", "warehouse"]).optional(),
+    truckId: z.string().nullable().optional(),
+    jobId: z.string().nullable().optional(),
+    notes: z.string().trim().max(1000).nullable().optional(),
+  }).parse(req.body);
+  const { reason, ...patch } = body;
+  await updatePurchaseOrder(readParam(req, "id"), patch, { actor: "owner", reason });
+  const full = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: readParam(req, "id") }, include: PO_LIST_INCLUDE });
+  res.json(serializePurchaseOrder(full));
+}));
+
+app.post("/purchase-orders/:id/lines", asyncHandler(async (req, res) => {
+  const body = poLineSchema.extend({ reason: z.string().trim().max(300).optional() }).parse(req.body);
+  const { reason, ...line } = body;
+  const created = await addPurchaseOrderLine(readParam(req, "id"), line, { actor: "owner", reason });
+  res.status(201).json(created);
+}));
+
+app.patch("/purchase-orders/:id/lines/:lineId", asyncHandler(async (req, res) => {
+  const body = poLineSchema.partial().extend({
+    reason: poReasonSchema,
+    qtyLanded: z.number().nonnegative().nullable().optional(),
+  }).parse(req.body);
+  const { reason, ...patch } = body;
+  const updated = await editPurchaseOrderLine(readParam(req, "id"), readParam(req, "lineId"), patch, { actor: "owner", reason });
+  res.json(updated);
+}));
+
+app.delete("/purchase-orders/:id/lines/:lineId", asyncHandler(async (req, res) => {
+  const body = z.object({ reason: poReasonSchema }).parse(req.body ?? {});
+  await removePurchaseOrderLine(readParam(req, "id"), readParam(req, "lineId"), { actor: "owner", reason: body.reason });
+  res.status(204).end();
+}));
+
+app.post("/purchase-orders/:id/status", asyncHandler(async (req, res) => {
+  const body = z.object({
+    to: z.enum(PO_STATUSES),
+    reason: z.string().trim().max(300).optional(),
+  }).parse(req.body);
+  if (body.to === "cancelled" && !body.reason) { res.status(400).json({ error: "A reason is required to cancel a PO." }); return; }
+  const po = await transitionPurchaseOrder(readParam(req, "id"), body.to, { actor: "owner", reason: body.reason ?? null });
+  res.json({ id: po.id, number: po.number, status: po.status });
+}));
+
+app.post("/purchase-orders/:id/receipts/:receiptId", asyncHandler(async (req, res) => {
+  const result = await attachReceiptToPurchaseOrder(readParam(req, "receiptId"), readParam(req, "id"), "owner");
+  res.json(result);
+}));
+
+app.delete("/purchase-orders/:id/receipts/:receiptId", asyncHandler(async (req, res) => {
+  const receipt = await prisma.receipt.findUnique({ where: { id: readParam(req, "receiptId") }, select: { purchaseOrderId: true } });
+  if (!receipt || receipt.purchaseOrderId !== readParam(req, "id")) { res.status(404).json({ error: "That receipt is not on this PO" }); return; }
+  await detachReceiptFromPurchaseOrder(readParam(req, "receiptId"), "owner");
+  res.status(204).end();
+}));
+
+/**
+ * Confirmed materials receipts with no PO (Kyle, 2026-09-09) — the ones that
+ * skipped "start with a P.O. number". Same row shape as /receipt-review so the
+ * Financials card can render both lists with one component.
+ */
+app.get("/receipts-needing-po", asyncHandler(async (_req, res) => {
+  const receipts = await prisma.receipt.findMany({
+    where: { status: "confirmed", category: "materials", purchaseOrderId: null },
+    orderBy: { receivedAt: "desc" },
+    take: 200,
+    select: { id: true, jobId: true, vendor: true, category: true, amount: true, source: true, receivedAt: true, createdAt: true },
+  });
+  const jobIds = [...new Set(receipts.map((r) => r.jobId).filter((v): v is string => Boolean(v)))];
+  const jobs = jobIds.length
+    ? await prisma.visit.findMany({
+        where: { id: { in: jobIds } },
+        select: {
+          id: true, jobType: true, purpose: true,
+          customer: { select: { id: true, name: true, isTestAccount: true } },
+          property: { select: { addressLine1: true, city: true } },
+        },
+      })
+    : [];
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+  res.json(
+    receipts
+      .filter((r) => !(r.jobId && jobById.get(r.jobId)?.customer.isTestAccount))
+      .map((r) => {
+        const job = r.jobId ? jobById.get(r.jobId) : undefined;
+        return {
+          id: r.id, jobId: r.jobId, vendor: r.vendor, category: r.category, amount: r.amount, source: r.source,
+          receivedAt: r.receivedAt ?? r.createdAt,
+          accountId: job?.customer.id ?? null,
+          accountName: job?.customer.name ?? null,
+          jobLabel: job ? jobLabelOf(job) : "Not tied to a job",
+          purchaseOrderId: null,
+          purchaseOrderNumber: null,
+          needsPo: true,
+        };
+      }),
+  );
 }));
 
 /**
@@ -4773,7 +4976,10 @@ app.get("/receipt-review", asyncHandler(async (_req, res) => {
     where: { status: "pending_review" },
     orderBy: { createdAt: "desc" },
     take: 200,
-    select: { id: true, jobId: true, vendor: true, category: true, amount: true, source: true, receivedAt: true, createdAt: true },
+    select: {
+      id: true, jobId: true, vendor: true, category: true, amount: true, source: true, receivedAt: true, createdAt: true,
+      purchaseOrderId: true, purchaseOrder: { select: { number: true } },
+    },
   });
   const jobIds = [...new Set(receipts.map((r) => r.jobId).filter((v): v is string => Boolean(v)))];
   const jobs = jobIds.length
@@ -4805,6 +5011,10 @@ app.get("/receipt-review", asyncHandler(async (_req, res) => {
           jobLabel: job
             ? `${job.jobType || job.purpose || "Job"} — ${job.property.addressLine1}, ${job.property.city}`
             : "Not tied to a job",
+          // Kyle, 2026-09-09: purchasing starts with a PO; a materials receipt without one is flagged.
+          purchaseOrderId: r.purchaseOrderId,
+          purchaseOrderNumber: r.purchaseOrder?.number ?? null,
+          needsPo: r.category === "materials" && !r.purchaseOrderId,
         };
       }),
   );
@@ -4912,7 +5122,7 @@ const deleteCustomer = asyncHandler(async (req: express.Request, res: express.Re
               id: true, status: true, scheduledStart: true, revenue: true,
               _count: {
                 select: {
-                  estimates: true, materialOrders: true, visitPhotos: true,
+                  estimates: true, purchaseOrders: true, visitPhotos: true,
                   healthInspections: true, observations: true, findings: true,
                   documents: true,
                 },
@@ -4938,7 +5148,7 @@ const deleteCustomer = asyncHandler(async (req: express.Request, res: express.Re
     if (v.scheduledStart) realHistory.push("a scheduled appointment");
     if (v.revenue && v.revenue > 0) realHistory.push("recorded revenue");
     if (v._count.estimates > 0) realHistory.push(`${v._count.estimates} estimate(s)`);
-    if (v._count.materialOrders > 0) realHistory.push(`${v._count.materialOrders} material order(s)`);
+    if (v._count.purchaseOrders > 0) realHistory.push(`${v._count.purchaseOrders} purchase order(s)`);
     if (v._count.visitPhotos > 0) realHistory.push("job-site photos");
     if (v._count.healthInspections > 0) realHistory.push("a health inspection");
     if (v._count.observations > 0 || v._count.findings > 0) realHistory.push("technician observations");
@@ -5160,7 +5370,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
             include: { options: true, acceptance: true },
           },
           documents: { orderBy: { createdAt: "desc" } },
-          materialOrders: { orderBy: { createdAt: "desc" } },
+          purchaseOrders: { orderBy: { createdAt: "desc" }, include: { _count: { select: { lines: true } } } },
         },
         orderBy: { visitDate: "desc" },
       },
@@ -5243,6 +5453,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
         select: {
           id: true, jobId: true, vendor: true, category: true, amount: true,
           status: true, source: true, receivedAt: true,
+          purchaseOrderId: true, purchaseOrder: { select: { number: true } },
         },
       })
       : Promise.resolve([]),
@@ -5256,11 +5467,14 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       take: 500,
     }),
   ]);
-  const receiptsByJob = new Map<string, typeof receipts>();
+  type SummaryReceipt = Omit<(typeof receipts)[number], "purchaseOrder"> & { purchaseOrderNumber: string | null };
+  const receiptsByJob = new Map<string, SummaryReceipt[]>();
   for (const receipt of receipts) {
     if (!receipt.jobId) continue;
     const list = receiptsByJob.get(receipt.jobId) ?? [];
-    list.push(receipt);
+    // Kyle, 2026-09-09: the account page shows the PO a receipt verifies, or "needs PO".
+    const { purchaseOrder, ...rest } = receipt;
+    list.push({ ...rest, purchaseOrderNumber: purchaseOrder?.number ?? null });
     receiptsByJob.set(receipt.jobId, list);
   }
 
@@ -5296,10 +5510,13 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
             laborRate,
             estMaterialByJob.get(visit.id) ?? null,
           ),
-      purchaseOrders: visit.materialOrders.map((order) => ({
+      purchaseOrders: visit.purchaseOrders.map((order) => ({
         id: order.id,
+        number: order.number,
+        purpose: order.purpose,
+        status: order.status,
         supplier: order.supplier,
-        itemCount: parseJsonArrayLength(order.items),
+        itemCount: order._count.lines,
         sentAt: order.sentAt,
         createdAt: order.createdAt,
       })),

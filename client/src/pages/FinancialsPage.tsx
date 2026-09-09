@@ -29,6 +29,7 @@ import type { CompanyBillRow, JobProfitRow, JobReceiptRow, PaymentRow } from "..
 import type { InvoiceSummary } from "../lib/types";
 import { money } from "../lib/utils";
 import { ReceiptReviewList } from "../components/ReceiptReviewList";
+import { PurchasesCard } from "../components/PurchaseOrders";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -72,8 +73,12 @@ export function FinancialsPage() {
         rows={(pendingReceipts ?? []).map((r) => ({
           id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, receivedAt: r.receivedAt,
           jobLabel: r.jobLabel, accountId: r.accountId ?? undefined, accountName: r.accountName ?? undefined,
+          purchaseOrderNumber: r.purchaseOrderNumber, needsPo: r.needsPo,
         }))}
       />
+
+      {/* ── Purchases (Kyle, 2026-09-09): the PO is the document — number, purchase, receipt photo ── */}
+      <PurchasesCard />
 
       <div className="flex items-center gap-2">
         <button className="btn btn-secondary text-sm" onClick={() => setYear((y) => y - 1)}>← {year - 1}</button>
@@ -515,9 +520,10 @@ function JobDetail({ job }: { job: JobProfitRow }) {
           {orders.map((o) => (
             <li key={o.id} className="rounded-lg border border-rce-border px-3 py-1.5 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-medium">{o.supplier}</span>
+                <span className="font-medium"><span className="tabular-nums">{o.number}</span> · {o.supplier}</span>
                 <span className="text-xs text-rce-muted">
-                  {new Date(o.createdAt).toLocaleDateString()} · {o.sentAt ? `sent ${new Date(o.sentAt).toLocaleDateString()}` : "not sent"}
+                  {o.purpose.replaceAll("_", " ")} · {o.status} · {new Date(o.createdAt).toLocaleDateString()}
+                  {o.receiptCount > 0 ? ` · ${o.receiptCount} receipt(s)` : ""}
                 </span>
               </div>
               <ul className="mt-1 text-xs text-rce-muted">

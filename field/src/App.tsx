@@ -21,12 +21,13 @@ import { V2CaptureScreen } from './ui/screens/V2CaptureScreen'
 import { JobSiteScreen } from './ui/screens/JobSiteScreen'
 import { MyAccountsScreen } from './ui/screens/MyAccountsScreen'
 import { QuoteScreen } from './ui/screens/QuoteScreen'
+import { PurchasesScreen } from './ui/screens/PurchasesScreen'
 import { emptyV2Capture, type V2Capture } from './domain/v2Types'
 import { checkCapture } from './domain/v2Rules'
 
 type Screen =
   | 'assignment' | 'jobsite' | 'jurisdiction' | 'checklist' | 'item' | 'review' | 'report'
-  | 'findings' | 'capacity' | 'v2capture' | 'accounts' | 'quote'
+  | 'findings' | 'capacity' | 'v2capture' | 'accounts' | 'quote' | 'purchases'
 
 interface Session {
   inspectionId: string
@@ -199,6 +200,11 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     )
   }
 
+  // Purchases (2026-09-09) — a PO number before the buy; no job or session needed.
+  if (screen === 'purchases') {
+    return <PurchasesScreen onBack={() => setScreen('assignment')} />
+  }
+
   // My accounts (2026-09-01) — like the capacity check, this is an ordinary
   // tech verb that needs no assessment session open.
   if (screen === 'accounts') {
@@ -259,6 +265,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
           setScreen('jobsite')
         }}
         onOpenAccounts={() => setScreen('accounts')}
+        onOpenPurchases={() => setScreen('purchases')}
       />
     )
   }

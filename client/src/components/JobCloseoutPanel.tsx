@@ -46,6 +46,9 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
   const [showPoForm, setShowPoForm] = useState(false);
   const [supplier, setSupplier] = useState("");
   const [itemsText, setItemsText] = useState("");
+  // Kyle, 2026-09-09: purpose is chosen, never inferred — truck stock by default.
+  const [purpose, setPurpose] = useState<"truck_stock" | "warehouse" | "tool">("truck_stock");
+  const [justCreated, setJustCreated] = useState<{ number: string } | null>(null);
   const createPo = useMutation({
     mutationFn: () => {
       const items = itemsText
@@ -57,9 +60,9 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
           const m = line.match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(.+)$/i);
           return m ? { name: m[2].trim(), qty: Number(m[1]) } : { name: line, qty: 1 };
         });
-      return api.createPurchaseOrder(visitId, { supplier: supplier.trim(), items });
+      return api.createPurchaseOrder(visitId, { supplier: supplier.trim(), purpose, items });
     },
-    onSuccess: () => { setSupplier(""); setItemsText(""); setShowPoForm(false); refresh(); },
+    onSuccess: (po) => { setJustCreated({ number: po.number }); setSupplier(""); setItemsText(""); setShowPoForm(false); refresh(); },
     onError: (err) => setError((err as Error).message),
   });
 
@@ -121,12 +124,19 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
         </div>
         {showPoForm && (
           <div className="mt-2 space-y-2 rounded-lg border border-rce-border p-3">
-            <input
-              className="field w-full"
-              placeholder="Supplier (Home Depot, ASD, …)"
-              value={supplier}
-              onChange={(e) => setSupplier(e.target.value)}
-            />
+            <div className="flex flex-wrap gap-2">
+              <select className="field" value={purpose} onChange={(e) => setPurpose(e.target.value as typeof purpose)}>
+                <option value="truck_stock">Truck stock</option>
+                <option value="warehouse">Warehouse</option>
+                <option value="tool">Tool</option>
+              </select>
+              <input
+                className="field flex-1"
+                placeholder="Supplier (Home Depot, ASD, …)"
+                value={supplier}
+                onChange={(e) => setSupplier(e.target.value)}
+              />
+            </div>
             <textarea
               className="field w-full"
               rows={4}
@@ -136,12 +146,18 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
             />
             <button
               className="btn btn-primary text-sm"
-              disabled={!supplier.trim() || !itemsText.trim() || createPo.isPending}
+              disabled={!supplier.trim() || createPo.isPending}
               onClick={() => createPo.mutate()}
             >
               {createPo.isPending ? "Creating…" : "Create P.O."}
             </button>
           </div>
+        )}
+        {justCreated && (
+          <p className="mt-2 rounded bg-emerald-50 p-2 text-sm text-emerald-900">
+            <span className="text-xl font-bold tabular-nums">{justCreated.number}</span>
+            <span className="ml-2 text-xs">Read this at the counter.</span>
+          </p>
         )}
         {(orders ?? []).length === 0 && !showPoForm && (
           <p className="mt-1 text-xs text-rce-muted">No purchase orders on this job yet.</p>
@@ -149,16 +165,20 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
         <ul className="mt-2 space-y-1">
           {(orders ?? []).map((po) => (
             <li key={po.id} className="rounded-lg border border-rce-border p-2 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="font-medium">{po.supplier}</span>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-medium"><span className="tabular-nums">{po.number}</span> · {po.supplier}</span>
                 <span className="flex items-center gap-2 text-xs text-rce-muted">
-                  {po.items.length} item(s) · {new Date(po.createdAt).toLocaleDateString()}
-                  <button
-                    className="text-red-600 underline"
-                    onClick={() => { void api.deletePurchaseOrder(visitId, po.id).then(refresh); }}
-                  >
-                    delete
-                  </button>
+                  {po.purpose.replaceAll("_", " ")} · {po.status} · {po.items.length} item(s) · {new Date(po.createdAt).toLocaleDateString()}
+                  {(po.status === "open" || po.status === "purchased") && (
+                    <button
+                      className="text-red-600 underline"
+                      onClick={() => {
+                        if (window.confirm(`Cancel ${po.number}? The number is never reused.`)) void api.deletePurchaseOrder(visitId, po.id).then(refresh);
+                      }}
+                    >
+                      cancel
+                    </button>
+                  )}
                 </span>
               </div>
               <p className="mt-0.5 text-xs text-rce-soft">

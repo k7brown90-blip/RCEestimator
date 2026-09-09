@@ -20,6 +20,8 @@ interface Props {
   onOpenVisit: (assignment: CrmAssignment) => void
   /** My accounts (2026-09-01): the serviced-address history, no appointment needed. */
   onOpenAccounts?: () => void
+  /** Purchases (2026-09-09): start a PO with no job — truck stock, warehouse, tool. */
+  onOpenPurchases?: () => void
   /** A token was just consumed from the enrollment QR's URL fragment. */
   justEnrolled?: boolean
 }
@@ -81,7 +83,7 @@ function relativeTime(iso: string): string {
   return `${Math.round(hours / 24)} d ago`
 }
 
-export function AssignmentScreen({ onOpenVisit, onOpenAccounts, justEnrolled }: Props) {
+export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases, justEnrolled }: Props) {
   const [configured, setConfigured] = useState(getCrmSettings() !== null)
   const [technician, setTechnician] = useState<CrmTechnician | null>(null)
   const [assignments, setAssignments] = useState<CrmAssignment[]>([])
@@ -270,6 +272,16 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, justEnrolled }: 
               className="w-full rounded-lg border border-sky-800 bg-slate-800/60 p-3 text-sm font-medium text-sky-200"
             >
               🏠 My accounts — history at every address you service
+            </button>
+          )}
+
+          {onOpenPurchases && (
+            <button
+              type="button"
+              onClick={onOpenPurchases}
+              className="w-full rounded-lg border border-amber-800 bg-slate-800/60 p-3 text-sm font-medium text-amber-200"
+            >
+              🧾 Purchases — get a PO number before you buy
             </button>
           )}
 

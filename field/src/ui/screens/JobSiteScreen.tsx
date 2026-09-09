@@ -11,12 +11,11 @@
  * the identity of the app.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   clockIn,
   clockOut,
   completeVisitFromField,
-  createPurchaseOrderFromField,
   fetchJobBrief,
   fetchPurchaseOrders,
   scheduleVisitFromField,
@@ -26,47 +25,16 @@ import {
   type JobBrief,
 } from '../../lib/crmSync'
 import { CollectPayment } from '../components/CollectPayment'
+import {
+  PhotoPicker,
+  PoNumberBanner,
+  PurchaseOrderList,
+  StartPurchaseForm,
+  type CreatedPo,
+} from '../components/PurchaseOrderPanel'
 import type { CrmAssignment } from '../../domain/types'
 
 const JOB_STATUSES = new Set(['contracted', 'scheduled', 'in_progress', 'completed'])
-
-/**
- * Camera AND gallery (Kyle, 2026-08-25: "needs access to the phones photo
- * gallery for upload along with the take photo option"). Two inputs on
- * purpose: `capture` forces the camera and locks the gallery out, so each
- * door gets its own input instead of one ambiguous chooser.
- */
-function PhotoPicker({ onPick, disabled }: { onPick: (file: File) => void; disabled?: boolean }) {
-  const cameraRef = useRef<HTMLInputElement>(null)
-  const galleryRef = useRef<HTMLInputElement>(null)
-  const handle = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) onPick(file)
-    e.target.value = ''
-  }
-  return (
-    <div className="flex gap-2">
-      <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handle} />
-      <input ref={galleryRef} type="file" accept="image/*" className="hidden" onChange={handle} />
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => cameraRef.current?.click()}
-        className="flex-1 rounded-lg border border-slate-600 p-2 text-xs text-slate-200 disabled:opacity-40"
-      >
-        📷 Take photo
-      </button>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => galleryRef.current?.click()}
-        className="flex-1 rounded-lg border border-slate-600 p-2 text-xs text-slate-200 disabled:opacity-40"
-      >
-        🖼 From gallery
-      </button>
-    </div>
-  )
-}
 
 export function JobSiteScreen({
   assignment,
@@ -189,43 +157,24 @@ export function JobSiteScreen({
     }
   }
 
-  // ── Purchase order (Kyle, 2026-09-05: "allow a P.O. to be made") ──
+  // ── Purchase orders (Kyle, 2026-09-05: "allow a P.O. to be made"; 2026-09-09:
+  // "start with a P.O. number then the purchase and photo verification of the receipt") ──
   const [showPo, setShowPo] = useState(false)
-  const [poSupplier, setPoSupplier] = useState('')
-  const [poLines, setPoLines] = useState<{ name: string; qty: string }[]>([{ name: '', qty: '1' }])
   const [poOrders, setPoOrders] = useState<FieldPurchaseOrder[]>([])
-  const [poBusy, setPoBusy] = useState(false)
-  const [poStatus, setPoStatus] = useState<string | null>(null)
+  const [justCreatedPo, setJustCreatedPo] = useState<CreatedPo | null>(null)
+  const [poError, setPoError] = useState<string | null>(null)
   useEffect(() => {
     if (!showPo) return
     let cancelled = false
     void fetchPurchaseOrders(assignment.visitId)
-      .then((r) => { if (!cancelled) setPoOrders(r.orders) })
-      .catch(() => {})
+      .then((r) => { if (!cancelled) { setPoOrders(r.orders); setPoError(null) } })
+      .catch((err) => { if (!cancelled) setPoError(`Needs signal — ${err instanceof Error ? err.message : String(err)}`) })
     return () => { cancelled = true }
   }, [showPo, assignment.visitId])
-  const sendPo = async () => {
-    const items = poLines
-      .map((l) => ({ name: l.name.trim(), qty: Number(l.qty) }))
-      .filter((l) => l.name && Number.isFinite(l.qty) && l.qty > 0)
-    if (!poSupplier.trim() || items.length === 0) {
-      setPoStatus('Supplier and at least one item line are needed.')
-      return
-    }
-    setPoBusy(true)
-    setPoStatus(null)
-    try {
-      await createPurchaseOrderFromField(assignment.visitId, { supplier: poSupplier.trim(), items })
-      setPoStatus(`✓ P.O. filed — ${items.length} item(s) from ${poSupplier.trim()}.`)
-      setPoSupplier('')
-      setPoLines([{ name: '', qty: '1' }])
-      const r = await fetchPurchaseOrders(assignment.visitId).catch(() => null)
-      if (r) setPoOrders(r.orders)
-    } catch (err) {
-      setPoStatus(`Failed — ${err instanceof Error ? err.message : 'no signal?'}`)
-    } finally {
-      setPoBusy(false)
-    }
+  const reloadPos = () => {
+    void fetchPurchaseOrders(assignment.visitId)
+      .then((r) => { setPoOrders(r.orders); setPoError(null) })
+      .catch((err) => setPoError(`Needs signal — ${err instanceof Error ? err.message : String(err)}`))
   }
 
   // ── Close-out ──
@@ -433,67 +382,27 @@ export function JobSiteScreen({
         {receiptStatus && <p className="text-xs text-slate-300">{receiptStatus}</p>}
       </section>
 
-      {/* ── Purchase order ── */}
+      {/* ── Purchase orders — number first, then the buy, then the receipt photo (Kyle, 2026-09-09) ── */}
       <section className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-white">Parts order (P.O.)</h2>
+          <h2 className="text-sm font-semibold text-white">Purchase orders</h2>
           <button type="button" className="text-xs text-sky-300 underline" onClick={() => setShowPo((s) => !s)}>
             {showPo ? 'hide' : 'new P.O.'}
           </button>
         </div>
         {showPo && (
-          <>
-            <input
-              className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
-              placeholder="Supplier (e.g. Nashville Electric Supply)"
-              value={poSupplier}
-              onChange={(e) => setPoSupplier(e.target.value)}
-            />
-            {poLines.map((line, i) => (
-              <div key={i} className="flex gap-2">
-                <input
-                  className="w-16 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white"
-                  type="number"
-                  min="1"
-                  value={line.qty}
-                  onChange={(e) => setPoLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, qty: e.target.value } : l)))}
-                />
-                <input
-                  className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
-                  placeholder="Part / material"
-                  value={line.name}
-                  onChange={(e) => setPoLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, name: e.target.value } : l)))}
-                />
-              </div>
-            ))}
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="flex-1 rounded-lg border border-slate-600 p-2 text-xs text-slate-200"
-                onClick={() => setPoLines((ls) => [...ls, { name: '', qty: '1' }])}
-              >
-                ＋ line
-              </button>
-              <button
-                type="button"
-                disabled={poBusy}
-                onClick={() => void sendPo()}
-                className="flex-1 rounded-lg bg-sky-700 p-2 text-xs font-medium text-white disabled:opacity-40"
-              >
-                {poBusy ? 'Filing…' : 'File the P.O.'}
-              </button>
-            </div>
-          </>
+          <StartPurchaseForm
+            visitId={assignment.visitId}
+            onCreated={(po) => { setJustCreatedPo(po); reloadPos() }}
+          />
         )}
-        {poStatus && <p className="text-xs text-slate-300">{poStatus}</p>}
-        {showPo && poOrders.length > 0 && (
-          <ul className="space-y-1 pt-1 text-xs text-slate-400">
-            {poOrders.map((o) => (
-              <li key={o.id}>
-                {o.supplier} — {o.items.length} item(s) · {new Date(o.createdAt).toLocaleDateString()}
-              </li>
-            ))}
-          </ul>
+        {justCreatedPo && <PoNumberBanner po={justCreatedPo} />}
+        {showPo && poError && <p className="rounded-lg bg-red-950/60 p-2 text-xs text-red-200">{poError}</p>}
+        {showPo && (
+          <div className="space-y-1 pt-1">
+            <p className="text-[11px] text-slate-500">This job's POs</p>
+            <PurchaseOrderList orders={poOrders} onChanged={reloadPos} />
+          </div>
         )}
       </section>
 
