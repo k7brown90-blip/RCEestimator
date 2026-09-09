@@ -28,6 +28,7 @@ import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type { CompanyBillRow, JobProfitRow, JobReceiptRow, PaymentRow } from "../lib/api";
 import type { InvoiceSummary } from "../lib/types";
 import { money } from "../lib/utils";
+import { ReceiptReviewList } from "../components/ReceiptReviewList";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -58,10 +59,21 @@ export function FinancialsPage() {
   // Every signed invoice with its money rolled up server-side (Kyle, 2026-09-07:
   // the Invoices tab now lives inside the Payments received card).
   const { data: invoices } = useQuery({ queryKey: ["invoices"], queryFn: api.invoices });
+  // Kyle, 2026-09-08: "It is not clear where to confirm field inputs" — every account's
+  // receipts waiting for review, first thing on Financials.
+  const { data: pendingReceipts } = useQuery({ queryKey: ["receipt-review"], queryFn: api.pendingReceipts });
 
   return (
     <div className="space-y-6">
       <PageHeader title="Financials" subtitle="Bills, revenue, invoices, and the company's accounting reports" />
+
+      <ReceiptReviewList
+        title="Receipts to review (all accounts)"
+        rows={(pendingReceipts ?? []).map((r) => ({
+          id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, receivedAt: r.receivedAt,
+          jobLabel: r.jobLabel, accountId: r.accountId ?? undefined, accountName: r.accountName ?? undefined,
+        }))}
+      />
 
       <div className="flex items-center gap-2">
         <button className="btn btn-secondary text-sm" onClick={() => setYear((y) => y - 1)}>← {year - 1}</button>

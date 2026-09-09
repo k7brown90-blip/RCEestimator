@@ -4763,6 +4763,54 @@ app.put(
 );
 
 /**
+ * Every receipt waiting for review, across accounts, with the labels the
+ * reviewer needs (Kyle, 2026-09-08: "It is not clear where to confirm field
+ * inputs"). Session-gated by default-deny — deliberately NOT under /receipts,
+ * which is the webhook-secret path. No image bytes.
+ */
+app.get("/receipt-review", asyncHandler(async (_req, res) => {
+  const receipts = await prisma.receipt.findMany({
+    where: { status: "pending_review" },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    select: { id: true, jobId: true, vendor: true, category: true, amount: true, source: true, receivedAt: true, createdAt: true },
+  });
+  const jobIds = [...new Set(receipts.map((r) => r.jobId).filter((v): v is string => Boolean(v)))];
+  const jobs = jobIds.length
+    ? await prisma.visit.findMany({
+        where: { id: { in: jobIds } },
+        select: {
+          id: true, jobType: true, purpose: true,
+          customer: { select: { id: true, name: true, isTestAccount: true } },
+          property: { select: { addressLine1: true, city: true } },
+        },
+      })
+    : [];
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+  res.json(
+    receipts
+      .filter((r) => !(r.jobId && jobById.get(r.jobId)?.customer.isTestAccount))
+      .map((r) => {
+        const job = r.jobId ? jobById.get(r.jobId) : undefined;
+        return {
+          id: r.id,
+          jobId: r.jobId,
+          vendor: r.vendor,
+          category: r.category,
+          amount: r.amount,
+          source: r.source,
+          receivedAt: r.receivedAt ?? r.createdAt,
+          accountId: job?.customer.id ?? null,
+          accountName: job?.customer.name ?? null,
+          jobLabel: job
+            ? `${job.jobType || job.purpose || "Job"} — ${job.property.addressLine1}, ${job.property.city}`
+            : "Not tied to a job",
+        };
+      }),
+  );
+}));
+
+/**
  * Receipts on one job (Kyle, 2026-09-07 — Financials job drill-down: "Job can be selected
  * for exact details, receipts, and P.O.'s. All info stays in the card"). Never selects the
  * image bytes — `hasImage` tells the card whether to offer the viewer, and the bytes come

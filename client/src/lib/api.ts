@@ -832,6 +832,9 @@ export const api = {
    */
   reviewReceipt: (receiptId: string, input: { status?: "confirmed" | "pending_review"; amount?: number; vendor?: string | null; jobId?: string | null; category?: string }) =>
     request<{ id: string; jobId: string | null; amount: number; status: string }>(`/health-record-admin/receipts/${receiptId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  /** Every receipt waiting for review across accounts, with account and job labels (Kyle, 2026-09-08). */
+  pendingReceipts: () =>
+    request<Array<{ id: string; jobId: string | null; vendor: string | null; category: string; amount: number; source: string; receivedAt: string; accountId: string | null; accountName: string | null; jobLabel: string }>>("/receipt-review"),
   /** Remove a receipt (duplicate upload); the server re-rolls the job total. */
   deleteReceipt: (receiptId: string) => request<void>(`/health-record-admin/receipts/${receiptId}`, { method: "DELETE" }),
   createPurchaseOrder: (jobId: string, input: { supplier: string; items: { name: string; qty: number; unit?: string; partNumber?: string }[] }) =>

@@ -1,0 +1,132 @@
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+import { api } from "../lib/api";
+import { money, shortDate } from "../lib/utils";
+
+/**
+ * Receipts waiting for review, in one place (Kyle, 2026-09-08: "It is not
+ * clear where to confirm field inputs"). Field-app captures land here with
+ * whatever the vision read produced; the vendor and amount are editable, and
+ * Confirm saves both and counts the receipt toward its job's material.
+ * Rendered at the top of the account page (that account's jobs) and at the
+ * top of Financials (every account).
+ */
+export type ReviewableReceipt = {
+  id: string;
+  vendor: string | null;
+  amount: number;
+  category: string;
+  receivedAt: string;
+  /** "Panel Upgrade — 12 Oak St, Franklin" or similar. */
+  jobLabel: string;
+  /** When set, the row links to the account. */
+  accountId?: string;
+  accountName?: string;
+};
+
+export function PendingReceiptFields({
+  receipt,
+  busy,
+  onConfirm,
+}: {
+  receipt: { amount: number; vendor: string | null };
+  busy: boolean;
+  onConfirm: (input: { amount: number; vendor: string | null }) => void;
+}) {
+  const [amount, setAmount] = useState(receipt.amount > 0 ? receipt.amount.toFixed(2) : "");
+  const [vendor, setVendor] = useState(receipt.vendor ?? "");
+  const parsed = Number(amount);
+  const valid = amount.trim() !== "" && Number.isFinite(parsed) && parsed > 0;
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      <input
+        className="field w-32 px-1 py-0.5 text-xs"
+        placeholder="Vendor"
+        value={vendor}
+        onChange={(e) => setVendor(e.target.value)}
+      />
+      <input
+        className="field w-24 px-1 py-0.5 text-right text-xs tabular-nums"
+        inputMode="decimal"
+        placeholder="0.00"
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+      />
+      <button
+        type="button"
+        className="btn btn-primary px-2 py-0.5 text-xs"
+        disabled={busy || !valid}
+        title={valid ? "Confirm and count this receipt" : "Enter the receipt total first"}
+        onClick={() => onConfirm({ amount: Math.round(parsed * 100) / 100, vendor: vendor.trim() || null })}
+      >
+        Confirm
+      </button>
+    </span>
+  );
+}
+
+export function ReceiptReviewList({ rows, title = "Receipts to review" }: { rows: ReviewableReceipt[]; title?: string }) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const review = useMutation({
+    mutationFn: ({ id, ...input }: { id: string; amount: number; vendor: string | null }) =>
+      api.reviewReceipt(id, { status: "confirmed", ...input }),
+    onSuccess: () => { setError(null); void queryClient.invalidateQueries(); },
+    onError: (err) => setError((err as Error).message),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deleteReceipt(id),
+    onSuccess: () => { setError(null); void queryClient.invalidateQueries(); },
+    onError: (err) => setError((err as Error).message),
+  });
+
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="card mb-5 border-amber-300 bg-amber-50/60 p-4">
+      <h2 className="text-base font-semibold text-amber-900">
+        {title} ({rows.length})
+      </h2>
+      <p className="mb-2 text-xs text-amber-800">
+        Field captures wait here and are not counted in any job's material until confirmed. Fix the vendor or
+        total if the photo was read wrong, then Confirm. Remove a duplicate.
+      </p>
+      <ul className="space-y-2">
+        {rows.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-200 bg-white px-3 py-2 text-sm">
+            <span>
+              <span className="font-medium">{r.vendor || "Unknown vendor"}</span>
+              <span className="text-rce-muted"> · {r.category} · read as {money(r.amount)} · {shortDate(r.receivedAt)}</span>
+              <span className="block text-xs text-rce-muted">
+                {r.accountId ? (
+                  <Link to={`/accounts/${r.accountId}`} className="text-rce-accent hover:underline">{r.accountName}</Link>
+                ) : null}
+                {r.accountId ? " · " : ""}
+                {r.jobLabel}
+              </span>
+            </span>
+            <span className="flex items-center gap-2">
+              <PendingReceiptFields
+                receipt={r}
+                busy={review.isPending}
+                onConfirm={(input) => review.mutate({ id: r.id, ...input })}
+              />
+              <button
+                type="button"
+                className="text-xs text-red-600 hover:underline"
+                disabled={remove.isPending}
+                onClick={() => {
+                  if (window.confirm(`Remove this ${money(r.amount)} receipt?`)) remove.mutate(r.id);
+                }}
+              >
+                Remove
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+    </section>
+  );
+}

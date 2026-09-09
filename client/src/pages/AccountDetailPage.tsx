@@ -13,7 +13,8 @@ import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, openProtectedPdf } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
-import type { AccountJob, AccountReceipt, AccountSummary } from "../lib/types";
+import type { AccountJob, AccountSummary } from "../lib/types";
+import { PendingReceiptFields, ReceiptReviewList } from "../components/ReceiptReviewList";
 import { money, shortDate } from "../lib/utils";
 
 const JOB_STATUS_CLASS: Record<string, string> = {
@@ -267,6 +268,19 @@ export function AccountDetailPage() {
   return (
     <div>
       <PageHeader title={account.name} subtitle="Account record" />
+
+      {/* Kyle, 2026-09-08: "It is not clear where to confirm field inputs" — every receipt
+          waiting for review on this account, first thing on the page. */}
+      <ReceiptReviewList
+        rows={jobs.flatMap((job) =>
+          job.receipts
+            .filter((r) => r.status === "pending_review")
+            .map((r) => ({
+              id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, receivedAt: r.receivedAt,
+              jobLabel: `${job.jobType || job.purpose || "Job"} — ${job.propertyLabel}`,
+            })),
+        )}
+      />
 
       {/* ── Lifetime totals ─────────────────────────────────────────────── */}
       <div className="card mb-5 grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -1211,53 +1225,6 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
         </div>
       )}
     </article>
-  );
-}
-
-/**
- * A field-captured receipt waiting for review: the amount and vendor the vision
- * read produced, editable, and one Confirm that saves both and counts the
- * receipt (Kyle, 2026-09-08 — a City Electric receipt came back $0.00 with no
- * vendor, a Home Depot one with the vendor read as "RED CEDAR ELECTRIC LLC").
- */
-function PendingReceiptFields({
-  receipt,
-  busy,
-  onConfirm,
-}: {
-  receipt: AccountReceipt;
-  busy: boolean;
-  onConfirm: (input: { amount: number; vendor: string | null }) => void;
-}) {
-  const [amount, setAmount] = useState(receipt.amount > 0 ? receipt.amount.toFixed(2) : "");
-  const [vendor, setVendor] = useState(receipt.vendor ?? "");
-  const parsed = Number(amount);
-  const valid = amount.trim() !== "" && Number.isFinite(parsed) && parsed > 0;
-  return (
-    <span className="flex flex-wrap items-center gap-1">
-      <input
-        className="field w-28 px-1 py-0.5 text-xs"
-        placeholder="Vendor"
-        value={vendor}
-        onChange={(e) => setVendor(e.target.value)}
-      />
-      <input
-        className="field w-20 px-1 py-0.5 text-right text-xs tabular-nums"
-        inputMode="decimal"
-        placeholder="0.00"
-        value={amount}
-        onChange={(e) => setAmount(e.target.value)}
-      />
-      <button
-        type="button"
-        className="btn btn-primary px-2 py-0.5 text-xs"
-        disabled={busy || !valid}
-        title={valid ? "Confirm and count this receipt" : "Enter the receipt total first"}
-        onClick={() => onConfirm({ amount: Math.round(parsed * 100) / 100, vendor: vendor.trim() || null })}
-      >
-        Confirm
-      </button>
-    </span>
   );
 }
 
