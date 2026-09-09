@@ -102,9 +102,14 @@ export function FinancialsPage() {
       {/* ── Report 1: monthly P&L ── */}
       <section className="card p-4">
         <h2 className="text-lg font-semibold">Monthly P&amp;L</h2>
+        {/* Kyle, 2026-09-08: "Does it track the payment on the month it is paid or apply it
+            toward the month that it was issued?" — say which month each column lands in. */}
         <p className="mb-2 text-xs text-rce-muted">
-          Invoiced = signed work (accrual). Collected = money received (cash). Net = invoiced − expenses.
-          Est. materials = frozen material on signed jobs with no receipts yet; Projected net subtracts it.
+          Invoiced lands in the month the estimate was <b>signed</b> (accrual). Collected lands in the month the
+          payment was <b>received</b> (cash) — a job signed in August and paid in September shows in both months, once each.
+          Expenses land in the month on the receipt or bill. Net = invoiced − expenses.
+          Est. materials = frozen material on signed jobs with no confirmed receipts yet; Projected net subtracts it.
+          Money still owed is per invoice (billed − paid), not per month — see Outstanding below.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
