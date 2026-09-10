@@ -25,6 +25,7 @@ import {
   type JobBrief,
 } from '../../lib/crmSync'
 import { CollectPayment } from '../components/CollectPayment'
+import { MaterialsUsedStep } from '../components/MaterialsUsedStep'
 import {
   PhotoPicker,
   PoNumberBanner,
@@ -178,6 +179,7 @@ export function JobSiteScreen({
   }
 
   // ── Close-out ──
+  const [showMaterials, setShowMaterials] = useState(false)
   const [closing, setClosing] = useState(false)
   const [closed, setClosed] = useState<{ warnings: string[] } | null>(null)
   const [closeError, setCloseError] = useState<string | null>(null)
@@ -419,9 +421,20 @@ export function JobSiteScreen({
             </p>
           ) : (
             <>
+              {/* Materials used (Kyle, 2026-09-09, Build 4): what came off the truck,
+                  pre-filled from the signed estimate. The job is charged only through
+                  this; closing without it is allowed and comes back as a warning. */}
+              {isJob && (
+                <div className="space-y-1">
+                  <button type="button" className="text-xs text-sky-300 underline" onClick={() => setShowMaterials((s) => !s)}>
+                    {showMaterials ? 'hide materials used' : 'Materials used — what came off the truck'}
+                  </button>
+                  {showMaterials && <MaterialsUsedStep visitId={assignment.visitId} />}
+                </div>
+              )}
               <p className="text-xs text-slate-400">
                 {isJob
-                  ? 'Work done, photos in, receipts filed, money collected? Closing notifies the office to schedule the install or follow-up.'
+                  ? 'Work done, photos in, receipts filed, materials recorded, money collected? Closing notifies the office to schedule the install or follow-up.'
                   : 'Assessment sent, quote built, receipts filed? The visit stays on your Today list until you close it — closing logs it to the office.'}
               </p>
               <button

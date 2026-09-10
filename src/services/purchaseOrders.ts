@@ -400,9 +400,11 @@ export async function closePurchaseOrderForLanding(tx: Tx, po: PurchaseOrder, me
 
 /**
  * The receipt is the verification. Attaching sets receipt.purchaseOrderId; a
- * receipt with no job inherits the PO's job so the job's material keeps
- * rolling (costing rule unchanged); an open PO moves to purchased — a receipt
- * means the purchase happened.
+ * receipt with no job inherits the PO's job (context — the PO's job); an open
+ * PO moves to purchased — a receipt means the purchase happened. Build 4
+ * (Kyle, 2026-09-09): once on a PO the receipt is inventory value, not job
+ * cost, so the re-roll below drops it from the job's receipt rung — the job is
+ * charged when the material is consumed off the truck.
  */
 export async function attachReceiptToPurchaseOrder(receiptId: string, poId: string, actor: string) {
   const receipt = await prisma.receipt.findUnique({
@@ -453,6 +455,9 @@ export async function detachReceiptFromPurchaseOrder(receiptId: string, actor: s
       },
     });
   });
+  // Build 4 (Kyle, 2026-09-09): a receipt on a PO is inventory value, not job
+  // cost — so leaving the PO puts it back on the job's receipt rung. Re-roll.
+  await rerollJobsMaterialCost([receipt.jobId]);
 }
 
 // ─── Read shapes shared by the CRM and field routes ──────────────────────────

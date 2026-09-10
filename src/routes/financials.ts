@@ -23,8 +23,9 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { billedTotalOf, stripeConfigured } from "../services/stripePayments";
-import { estimateMaterialCost, getLaborRate } from "../services/jobCosting";
+import { estimateMaterialCost, getLaborRate, materialCostForJobs } from "../services/jobCosting";
 import { readBalances } from "../services/cardSpend";
+import { createLedgerReplay } from "../services/inventory";
 
 export const financialsRouter = express.Router();
 
@@ -277,11 +278,81 @@ async function yearLedger(year: number): Promise<YearLedger> {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/**
+ * The Materials card (Kyle, 2026-09-09, Build 4). Three rows per month:
+ *
+ *   bought          — cash view: purchase_in movements (a PO landing on a truck or
+ *                     in the warehouse, at the landed cost) plus confirmed materials
+ *                     receipts NOT on a PO (the pre-PO way of buying). A receipt on
+ *                     a PO is represented by its landing, so it is not added again.
+ *   used            — cost view: consume − return off trucks, at the moving average
+ *                     (corrections to either included, signed).
+ *   inventoryValue  — Σ qty × avg over every location at the END of the month,
+ *                     replayed from the ledger (services/inventory.ts
+ *                     createLedgerReplay) so past months are what they were.
+ */
+export async function materialsByMonth(year: number) {
+  const yearStart = new Date(year, 0, 1);
+  const yearEnd = new Date(year + 1, 0, 1);
+  const [movements, receipts] = await Promise.all([
+    // Everything up to the end of the year — the replay needs history before January too.
+    prisma.stockMovement.findMany({
+      where: { at: { lt: yearEnd } },
+      orderBy: [{ at: "asc" }, { createdAt: "asc" }],
+      select: { id: true, kind: true, itemId: true, qty: true, delta: true, unitCost: true, fromLocationKey: true, toLocationKey: true, correctsId: true, at: true },
+    }),
+    prisma.receipt.findMany({
+      where: { status: "confirmed", category: "materials", purchaseOrderId: null, receivedAt: { gte: yearStart, lt: yearEnd } },
+      select: { amount: true, receivedAt: true },
+    }),
+  ]);
+  const bought = Array(12).fill(0) as number[];
+  const used = Array(12).fill(0) as number[];
+  const inventoryValue = Array(12).fill(0) as number[];
+  const byId = new Map(movements.map((m) => [m.id, m]));
+  const replay = createLedgerReplay();
+  let cursor = 0;
+  for (let month = 0; month < 12; month++) {
+    const monthEnd = new Date(year, month + 1, 1);
+    while (cursor < movements.length && movements[cursor].at < monthEnd) {
+      const m = movements[cursor];
+      replay.apply(m);
+      if (m.at >= yearStart) {
+        const cost = m.unitCost ?? 0;
+        if (m.kind === "purchase_in") bought[month] += m.qty * cost;
+        else if (m.kind === "consume") used[month] += m.qty * cost;
+        else if (m.kind === "return") used[month] -= m.qty * cost;
+        else if (m.kind === "correction" && m.correctsId) {
+          const original = byId.get(m.correctsId);
+          if (original?.kind === "consume") used[month] += (m.delta ?? 0) * (m.unitCost ?? original.unitCost ?? 0);
+          else if (original?.kind === "return") used[month] -= (m.delta ?? 0) * (m.unitCost ?? original.unitCost ?? 0);
+          else if (original?.kind === "purchase_in") bought[month] += (m.delta ?? 0) * (m.unitCost ?? original.unitCost ?? 0);
+        }
+      }
+      cursor += 1;
+    }
+    inventoryValue[month] = replay.value();
+  }
+  for (const r of receipts) bought[r.receivedAt.getMonth()] += r.amount;
+  return {
+    months: Array.from({ length: 12 }, (_, month) => ({
+      month, bought: round2(bought[month]), used: round2(used[month]), inventoryValue: round2(inventoryValue[month]),
+    })),
+    totals: { bought: round2(bought.reduce((s, v) => s + v, 0)), used: round2(used.reduce((s, v) => s + v, 0)) },
+  };
+}
+
+/** The Materials card on its own (Kyle, 2026-09-09, Build 4) — also rides /summary as `materials`. */
+financialsRouter.get("/materials", asyncHandler(async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  res.json({ year, ...(await materialsByMonth(year)) });
+}));
+
 // ── Report 1+2: monthly P&L and expenses by category ────────────────────────
 
 financialsRouter.get("/summary", asyncHandler(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
-  const ledger = await yearLedger(year);
+  const [ledger, materials] = await Promise.all([yearLedger(year), materialsByMonth(year)]);
 
   /*
     Estimated materials (Kyle, 2026-09-05: "I do not see materials compiling on
@@ -349,6 +420,8 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
       monthly: row.monthly.map(round2),
       total: round2(row.total),
     })).sort((a, b) => b.total - a.total),
+    // The Materials card (Build 4): bought / used / inventory value per month.
+    materials,
   });
 }));
 
@@ -388,23 +461,15 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
   const visits = [...openSold, ...completed];
 
   const visitIds = visits.map((v) => v.id);
-  const [estimates, receipts] = await Promise.all([
-    prisma.issuedEstimate.findMany({
-      where: {
-        signedAt: { not: null },
-        OR: [{ jobVisitId: { in: visitIds } }, { visitId: { in: visitIds } }],
-      },
-      include: { options: true, lines: { select: { option: true, materialCost: true } } },
-    }),
-    prisma.receipt.groupBy({
-      by: ["jobId"],
-      where: { jobId: { in: visitIds }, status: "confirmed" },
-      _sum: { amount: true },
-    }),
-  ]);
+  const estimates = await prisma.issuedEstimate.findMany({
+    where: {
+      signedAt: { not: null },
+      OR: [{ jobVisitId: { in: visitIds } }, { visitId: { in: visitIds } }],
+    },
+    include: { options: true, lines: { select: { option: true, materialCost: true } } },
+  });
 
   const laborRate = await getLaborRate();
-  const spendByJob = new Map(receipts.map((r) => [r.jobId, r._sum.amount ?? 0]));
   const estimateByJob = new Map<string, number>();
   for (const est of estimates) {
     const amount = billedTotalOf({
@@ -437,12 +502,24 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
 
   // An open visit earns a row only when a signed estimate backs it - stray
   // contracted rows without a sale are pipeline, not financials.
-  res.json(visits.filter((v) => v.status === "completed" || estimateByJob.has(v.id)).map((visit) => {
+  const rows = visits.filter((v) => v.status === "completed" || estimateByJob.has(v.id));
+  /*
+    THE MATERIAL RULE (Build 4, Kyle 2026-09-09): stock consumed off the truck,
+    else receipts not on a PO (Visit.actualMaterialCost), else the signed
+    estimate's frozen material — through the SAME helper GET /jobs and the
+    account summary call, so this report and the job card show one number.
+    (Before this build the report summed every confirmed receipt on its own,
+    which is how a roll on a PO could be counted here and nowhere else.)
+  */
+  const materialByJob = await materialCostForJobs(rows.map((v) => ({
+    visitId: v.id,
+    actualMaterialCost: v.actualMaterialCost,
+    estimatedMaterialCost: estMaterialByJob.get(v.id) ?? null,
+  })));
+  res.json(rows.map((visit) => {
     const quoted = estimateByJob.get(visit.id) ?? null;
-    // Positive receipts win; zero/none falls back to the signed estimate's
-    // frozen material - one rule everywhere money is reported.
-    const receiptSpend = spendByJob.get(visit.id) ?? 0;
-    const materialSpend = round2(receiptSpend > 0 ? receiptSpend : estMaterialByJob.get(visit.id) ?? 0);
+    const material = materialByJob.get(visit.id)!;
+    const materialSpend = round2(material.materialCost);
     // Real labor now (Phase 5): the time clock rolls punches into
     // Visit.laborHours; the rate is the company labor rate.
     const laborHours = visit.laborHours ?? 0;
@@ -458,6 +535,7 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       completedAt: visit.completedAt,
       quoted,
       materialSpend,
+      materialSource: material.materialSource,
       laborHours,
       laborCost,
       marginBeforeLabor: quoted !== null ? round2(quoted - materialSpend) : null,

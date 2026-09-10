@@ -38,8 +38,10 @@
     "scripts/inspectSchedule.ts",
     // Job-photo listing/base64 export for Kyle's machine (Kyle, 2026-09-03).
     "scripts/exportVisitPhotos.ts",
-    // Read-only audit: signed-estimate material cost vs what the P&L shows (Kyle, 2026-09-03).
+    // Read-only audit: the rung each job's material comes from, PO receipts still counted, never-landed consumes (Kyle, 2026-09-03 / 2026-09-09).
     "scripts/auditMaterialCosts.ts",
+    // Build 4 backfill: drop receipts on a PO from the receipt rung, dry-run default, --apply (Kyle, 2026-09-09).
+    "scripts/backfillMaterialRule.ts",
     // Signed-invoice email backfill by estimate number (Kyle, 2026-09-05).
     "scripts/sendInvoiceFor.ts",
     "scripts/checkGoogleCalendarConnection.ts",

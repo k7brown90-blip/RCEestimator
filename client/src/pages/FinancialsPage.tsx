@@ -26,7 +26,7 @@ import { PageHeader } from "../components/PageHeader";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type { CompanyBillRow, JobProfitRow, JobReceiptRow, PaymentRow } from "../lib/api";
-import type { InvoiceSummary } from "../lib/types";
+import { MATERIAL_SOURCE_LABEL, type InvoiceSummary, type MaterialsByMonth } from "../lib/types";
 import { money } from "../lib/utils";
 import { ReceiptReviewList } from "../components/ReceiptReviewList";
 import { BouncedEmailsCard } from "../components/BouncedEmailsCard";
@@ -191,6 +191,9 @@ export function FinancialsPage() {
         </div>
       </section>
 
+      {/* ── Materials: bought / used / inventory value (Kyle, 2026-09-09, Build 4) ── */}
+      <MaterialsCard year={year} materials={summary?.materials} />
+
       {/* ── Report 2: expenses by category ── */}
       <section className="card p-4">
         <h2 className="text-lg font-semibold">Expenses by category</h2>
@@ -332,6 +335,77 @@ function matchesQuery(q: string, fields: (string | null | undefined)[], phone?: 
 }
 
 // ─── Report 3: job profitability ──────────────────────────────────────────────
+
+/**
+ * The Materials card (Kyle, 2026-09-09, Build 4 — the costing switch). Compact,
+ * collapsed by default, under the Monthly P&L:
+ *   bought          — cash view: PO landings (purchase_in at landed cost) plus
+ *                     confirmed materials receipts NOT on a PO
+ *   used            — cost view: consume − return off trucks at the moving average
+ *   inventory value — Σ qty × avg over every location at the END of the month,
+ *                     replayed from the ledger
+ * Rides /financials/summary as `materials`; /financials/materials?year= on its own.
+ */
+function MaterialsCard({ year, materials }: { year: number; materials: Omit<MaterialsByMonth, "year"> | undefined }) {
+  const [open, setOpen] = useState(false);
+  const latest = materials ? [...materials.months].reverse().find((m) => m.inventoryValue !== 0 || m.bought !== 0 || m.used !== 0) : undefined;
+  return (
+    <section className="card p-4">
+      <button type="button" className="flex w-full items-center justify-between text-left" onClick={() => setOpen((o) => !o)}>
+        <span>
+          <span className="text-lg font-semibold">Materials</span>
+          {materials && (
+            <span className="ml-3 text-xs text-rce-muted">
+              {year}: bought {money(materials.totals.bought)} · used {money(materials.totals.used)}
+              {latest ? ` · inventory ${money(latest.inventoryValue)} at end of ${MONTHS[latest.month]}` : ""}
+            </span>
+          )}
+        </span>
+        <span className="text-xs text-rce-soft">{open ? "hide" : "show"}</span>
+      </button>
+      {open && (
+        <>
+          <p className="my-2 text-xs text-rce-muted">
+            <b>Bought</b> = PO landings at landed cost plus materials receipts with no PO (cash out).
+            <b> Used</b> = stock consumed onto jobs less returns, at the truck's moving average (what the job cards charge).
+            <b> Inventory</b> = what every truck and the warehouse held at month end. A roll bought in one month and used
+            the next shows as bought first, used later — once each.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-rce-border text-left text-xs uppercase text-rce-soft">
+                  <th className="py-1 pr-2">Month</th>
+                  <th className="py-1 pr-2 text-right">Bought</th>
+                  <th className="py-1 pr-2 text-right">Used</th>
+                  <th className="py-1 text-right">Inventory at month end</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(materials?.months ?? []).map((m) => (
+                  <tr key={m.month} className="border-b border-rce-border/50">
+                    <td className="py-1 pr-2">{MONTHS[m.month]}</td>
+                    <td className="py-1 pr-2 text-right tabular-nums">{money(m.bought)}</td>
+                    <td className="py-1 pr-2 text-right tabular-nums">{money(m.used)}</td>
+                    <td className="py-1 text-right tabular-nums">{money(m.inventoryValue)}</td>
+                  </tr>
+                ))}
+                {materials && (
+                  <tr className="font-semibold">
+                    <td className="py-1 pr-2">Total</td>
+                    <td className="py-1 pr-2 text-right tabular-nums">{money(materials.totals.bought)}</td>
+                    <td className="py-1 pr-2 text-right tabular-nums">{money(materials.totals.used)}</td>
+                    <td className="py-1 text-right tabular-nums text-rce-muted">—</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
 
 function JobProfitabilityCard({ year, rows }: { year: number; rows: JobProfitRow[] }) {
   const [search, setSearch] = useState("");
@@ -475,7 +549,12 @@ function JobDetail({ job }: { job: JobProfitRow }) {
         </div>
         <div className="mt-2 grid gap-2 text-sm md:grid-cols-4">
           <div><span className="text-xs text-rce-soft">Quoted</span><p className="font-semibold tabular-nums">{job.quoted !== null ? money(job.quoted) : "—"}</p></div>
-          <div><span className="text-xs text-rce-soft">Materials</span><p className="font-semibold tabular-nums">{money(job.materialSpend)}</p></div>
+          <div>
+            <span className="text-xs text-rce-soft">Materials</span>
+            <p className="font-semibold tabular-nums">{money(job.materialSpend)}</p>
+            {/* Which rung of THE MATERIAL RULE (Kyle, 2026-09-09, Build 4). */}
+            {job.materialSource && <p className="text-[10px] text-rce-muted">{MATERIAL_SOURCE_LABEL[job.materialSource]}</p>}
+          </div>
           <div>
             <span className="text-xs text-rce-soft">Labor</span>
             <p className="font-semibold tabular-nums">

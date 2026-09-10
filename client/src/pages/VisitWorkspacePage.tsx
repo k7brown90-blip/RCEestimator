@@ -8,6 +8,7 @@ import { money, shortDate } from "../lib/utils";
 import { JobScheduler } from "../components/JobScheduler";
 import { HealthRecordPanel } from "../components/HealthRecordPanel";
 import { JobCloseoutPanel } from "../components/JobCloseoutPanel";
+import { MaterialsUsedPanel } from "../components/MaterialsUsedPanel";
 import { PaymentPanel } from "../components/PaymentPanel";
 import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
 import { PhotoGalleryPanel } from "../components/PhotoGalleryPanel";
@@ -156,7 +157,12 @@ export function VisitWorkspacePage() {
             there was "buttons placed with no reference" (Kyle, 2026-08-25).
             It appears once the visit is contracted work. */}
         {["contracted", "scheduled", "in_progress", "completed"].includes(visit.status ?? "") && (
-          <JobCloseoutPanel visitId={visitId} status={visit.status ?? "estimate"} />
+          <>
+            <JobCloseoutPanel visitId={visitId} status={visit.status ?? "estimate"} />
+            {/* Materials used (Kyle, 2026-09-09, Build 4): the ledger lines that
+                charge this job, their source label, Add / Return with a reason. */}
+            <MaterialsUsedPanel visitId={visitId} />
+          </>
         )}
 
         {/* ── The photo gallery that replaced the legacy tabs (2026-08-28) ── */}

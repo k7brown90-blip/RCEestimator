@@ -3,8 +3,10 @@
  * with a P.O. number then the purchase and photo verification of the receipt").
  *
  * Numbers are PO-YYYY-NNNN, unique, assigned at creation, never reused; the
- * status chain is enforced; attaching a receipt is the verification and keeps
- * the job's material rolling; every edit leaves a reason in the trail.
+ * status chain is enforced; attaching a receipt is the verification; every edit
+ * leaves a reason in the trail. Build 4 (Kyle, 2026-09-09): a receipt on a PO
+ * is inventory value, not job cost — the job's receipt rung drops it while it
+ * rides the PO and picks it back up if it is detached.
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -165,7 +167,7 @@ describe("status chain", () => {
 });
 
 describe("attaching a receipt", () => {
-  it("copies the PO's job onto a jobless receipt, re-rolls the job, moves the PO to purchased, and writes the event", async () => {
+  it("copies the PO's job onto a jobless receipt, keeps it OFF the job's receipt rung while on the PO, moves the PO to purchased, and writes the event", async () => {
     const created = await request(app).post("/purchase-orders").send({ supplier: "Lowes", jobId });
     expect(created.status).toBe(201);
     const poId = created.body.id as string;
@@ -182,7 +184,10 @@ describe("attaching a receipt", () => {
     const after = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
     expect(after.purchaseOrderId).toBe(poId);
     expect(after.jobId).toBe(jobId);
-    expect(await stamped(jobId)).toBe(Math.round(((before ?? 0) + 150.25) * 100) / 100);
+    // Build 4 (Kyle, 2026-09-09): a receipt on a PO is inventory value, not job
+    // cost — the job is charged when the material is consumed off the truck.
+    // So attaching does NOT add it to the job's receipt rung.
+    expect(await stamped(jobId)).toBe(before ?? 0);
 
     const po = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: poId } });
     expect(po.status).toBe("purchased");
@@ -201,11 +206,14 @@ describe("attaching a receipt", () => {
     const needing = await request(app).get("/receipts-needing-po");
     expect(needing.status).toBe(200);
     expect(needing.body.some((r: { id: string; needsPo: boolean }) => r.id === receipt.id && r.needsPo)).toBe(true);
+    // Off the PO it is a plain confirmed materials receipt again — the receipt rung counts it.
+    expect(await stamped(jobId)).toBe(Math.round(((before ?? 0) + 150.25) * 100) / 100);
 
     // And the admin receipt PATCH routes purchaseOrderId through the same attach.
     const patched = await request(app).patch(`/health-record-admin/receipts/${receipt.id}`).send({ purchaseOrderId: poId });
     expect(patched.status).toBe(200);
     expect(patched.body.purchaseOrderId).toBe(poId);
+    expect(await stamped(jobId)).toBe(before ?? 0);
   });
 
   it("the account summary and job PO list carry number, purpose and status", async () => {

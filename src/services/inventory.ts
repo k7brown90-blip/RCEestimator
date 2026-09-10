@@ -19,9 +19,10 @@
  * truck. When they are used and stored the stock will be updated as to where
  * the tool is currently at."
  *
- * JOB COSTING IS UNCHANGED IN THIS BUILD. "consume" and "return" exist in the
- * ledger with the same math, but nothing here charges a job — that switch is
- * Build 4 (services/jobCosting.ts, receiptCosting.ts and the P&L are untouched).
+ * Build 4 (Kyle, 2026-09-09, the costing switch): "consume" and "return" now
+ * charge the job they name — services/jobCosting.ts reads them straight from
+ * this ledger (services/jobMaterials.ts writes them at close-out). Nothing here
+ * changed for that; the ledger was already the truth.
  */
 
 import type { Prisma, PurchaseOrder, StockLevel, StockMovement, Tool } from "@prisma/client";
@@ -309,6 +310,73 @@ export async function applyMovement(tx: Tx, m: MovementInput): Promise<StockMove
       ...(m.at ? { at: m.at } : {}),
     },
   });
+}
+
+// ─── Replaying the ledger (Build 4: "Inventory value" at a month end) ─────────
+
+export type ReplayableMovement = Pick<StockMovement, "kind" | "itemId" | "qty" | "delta" | "unitCost" | "fromLocationKey" | "toLocationKey">;
+
+/**
+ * The same arithmetic as applyMovement, run over ledger rows in order, with no
+ * database — so the Financials tab can say what stock was worth at the end of
+ * any past month. Every row carries the cost that was applied when it was
+ * written (unitCost), so replaying reproduces the levels exactly.
+ */
+export function createLedgerReplay() {
+  const levels = new Map<string, { qty: number; avg: number }>();
+  const key = (loc: string, itemId: string) => `${loc}|${itemId}`;
+  const get = (loc: string, itemId: string) => levels.get(key(loc, itemId)) ?? null;
+  const set = (loc: string, itemId: string, qty: number, avg: number) => levels.set(key(loc, itemId), { qty: r4(qty), avg: r6(avg) });
+  const mergeIn = (loc: string, itemId: string, qty: number, unitCost: number) => {
+    const l = get(loc, itemId);
+    if (!l) { set(loc, itemId, qty, unitCost); return; }
+    const newQty = l.qty + qty;
+    const avg = l.qty <= 0 || newQty <= 0 ? unitCost : (l.qty * l.avg + qty * unitCost) / newQty;
+    set(loc, itemId, newQty, avg);
+  };
+  const takeOut = (loc: string, itemId: string, qty: number, fallbackCost: number) => {
+    const l = get(loc, itemId);
+    if (!l) { set(loc, itemId, -qty, fallbackCost); return; }
+    set(loc, itemId, l.qty - qty, l.avg);
+  };
+  return {
+    apply(m: ReplayableMovement) {
+      const cost = m.unitCost ?? 0;
+      switch (m.kind) {
+        case "purchase_in": if (m.toLocationKey) mergeIn(m.toLocationKey, m.itemId, m.qty, cost); break;
+        case "transfer":
+          if (m.fromLocationKey) takeOut(m.fromLocationKey, m.itemId, m.qty, cost);
+          if (m.toLocationKey) mergeIn(m.toLocationKey, m.itemId, m.qty, cost);
+          break;
+        case "consume": if (m.fromLocationKey) takeOut(m.fromLocationKey, m.itemId, m.qty, cost); break;
+        case "return": if (m.toLocationKey) mergeIn(m.toLocationKey, m.itemId, m.qty, cost); break;
+        case "count": {
+          if (!m.toLocationKey) break;
+          const l = get(m.toLocationKey, m.itemId);
+          set(m.toLocationKey, m.itemId, m.qty, l ? l.avg : cost);
+          break;
+        }
+        case "correction": {
+          const signed = m.delta ?? 0;
+          if (m.toLocationKey) {
+            const l = get(m.toLocationKey, m.itemId);
+            set(m.toLocationKey, m.itemId, (l?.qty ?? 0) + signed, m.unitCost != null ? m.unitCost : l?.avg ?? 0);
+          }
+          if (m.fromLocationKey) {
+            const l = get(m.fromLocationKey, m.itemId);
+            set(m.fromLocationKey, m.itemId, (l?.qty ?? 0) - signed, m.unitCost != null && !m.toLocationKey ? m.unitCost : l?.avg ?? 0);
+          }
+          break;
+        }
+      }
+    },
+    /** Σ qty × avg over every location, to the cent. */
+    value(): number {
+      let v = 0;
+      for (const l of levels.values()) v += l.qty * l.avg;
+      return Math.round(v * 100) / 100;
+    },
+  };
 }
 
 // ─── Landing a PO ─────────────────────────────────────────────────────────────

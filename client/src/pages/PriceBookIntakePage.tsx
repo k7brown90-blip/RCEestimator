@@ -19,6 +19,7 @@ import type {
   PbOption,
   PbQuantitySource,
   PbWalkthroughRow,
+  OnHand,
 } from "../lib/types";
 
 /**
@@ -1015,6 +1016,25 @@ function ReviewTab(props: {
     queryFn: () => api.pbIssuedList(draftId),
   });
   const liveIssued = (issuedList?.estimates ?? []).find((e) => !e.supersededBy);
+  // The default truck's on-hand beside each material line (Kyle, 2026-09-09,
+  // Build 4): "on truck: 190 ft" and a shortfall hint. One read for every
+  // confirmed line that carries material; read-only, nothing here moves stock.
+  const materialItemIds = useMemo(() => {
+    const ids = (review?.confirmedLines ?? [])
+      .filter((l) => {
+        const c = computed?.lines.find((x) => x.id === l.id);
+        return (c?.materialCost ?? 0) > 0 || (c?.materialSell ?? 0) > 0;
+      })
+      .map((l) => l.itemId);
+    return [...new Set(ids)].sort();
+  }, [review?.confirmedLines, computed]);
+  // Its own key: the close-out step reads the same endpoint for a named truck,
+  // and the collision test wants one fetch expression per key.
+  const { data: truckOnHand } = useQuery({
+    queryKey: ["draft-truck-on-hand", { itemIds: materialItemIds.join(",") }],
+    queryFn: () => api.inventoryOnHand(materialItemIds),
+    enabled: materialItemIds.length > 0,
+  });
 
   if (!review) return <p className="text-sm text-rce-muted">Loading…</p>;
 
@@ -1102,6 +1122,7 @@ function ReviewTab(props: {
                       line={x.line}
                       computed={x.computed}
                       onChanged={onChanged}
+                      onHand={truckOnHand?.[x.line.itemId]}
                     />
                   ))
                 )}
@@ -1172,8 +1193,13 @@ function ReviewTab(props: {
  * rather than swallowed: a button that silently does nothing is the defect this whole screen has
  * been paying for.
  */
-function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | undefined; onChanged: () => void }) {
-  const { line: l, computed: c, onChanged } = props;
+function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | undefined; onChanged: () => void; onHand?: OnHand }) {
+  const { line: l, computed: c, onChanged, onHand } = props;
+  // On-hand on the default truck beside a material line (Kyle, 2026-09-09, Build 4).
+  // Read-only: "on truck: 190 ft", and "short 60 ft → add to a PO" when the line
+  // needs more than the truck holds. Only lines that carry material.
+  const carriesMaterial = (c?.materialCost ?? 0) > 0 || (c?.materialSell ?? 0) > 0;
+  const shortBy = onHand ? Math.round((l.quantity - onHand.qty) * 10000) / 10000 : 0;
   const [editing, setEditing] = useState(false);
   const [qty, setQty] = useState(String(l.quantity));
   const [difficulty, setDifficulty] = useState<PbDifficulty>(l.difficulty);
@@ -1229,6 +1255,12 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
           </div>
           {l.location && <div className="text-xs text-rce-soft">{l.location}</div>}
           {l.note && <div className="text-xs text-rce-soft italic">{l.note}</div>}
+          {carriesMaterial && onHand && (
+            <div className="text-xs">
+              <span className="text-rce-soft">on truck: {onHand.qty} {onHand.unit ?? l.unit ?? ""}</span>
+              {shortBy > 0 && <span className="ml-1 text-amber-800">· short {shortBy} {onHand.unit ?? l.unit ?? ""} → add to a PO</span>}
+            </div>
+          )}
         </div>
         <div className="shrink-0 text-right text-xs">
           <div>{hours(c?.laborHours)} hr</div>

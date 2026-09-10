@@ -14,6 +14,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { money } from "../lib/utils";
+import { MaterialsConsumeStep, jobMaterialsKey } from "./MaterialsUsedPanel";
 
 export function JobCloseoutPanel({ visitId, status }: { visitId: string; status: string }) {
   const queryClient = useQueryClient();
@@ -24,6 +26,13 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
     queryKey: ["jobPOs", visitId],
     queryFn: () => api.jobPurchaseOrders(visitId),
   });
+  // The "Materials used" step (Kyle, 2026-09-09, Build 4): what came off the
+  // truck, pre-filled from the signed estimate. The job is charged only through
+  // this — a signed estimate with material lines and no consume is a WARNING at
+  // completion, never a wall.
+  const { data: materials } = useQuery({ queryKey: jobMaterialsKey(visitId), queryFn: () => api.jobMaterials(visitId) });
+  const [showMaterials, setShowMaterials] = useState(false);
+  const materialsPending = Boolean(materials && materials.suggested.length > 0 && (materials.stock?.movementCount ?? 0) === 0);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["jobPOs", visitId] });
@@ -113,6 +122,33 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
         <p key={w} className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900">⚠ {w}</p>
       ))}
       {error && <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{error}</p>}
+
+      {/* ── Materials used — the costing switch (Kyle, 2026-09-09, Build 4) ── */}
+      {!isCompleted && (
+        <div className="mt-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-rce-soft">
+              Materials used
+              {materials && (
+                <span className="ml-2 text-xs font-normal text-rce-muted">
+                  {materials.stock ? `${money(materials.stock.net)} charged from truck stock` : materialsPending ? `${materials.suggested.length} line(s) from ${materials.estimate?.number ?? "the signed estimate"} waiting` : "nothing on the signed estimate to pull"}
+                </span>
+              )}
+            </h3>
+            <button className="btn btn-secondary text-xs" onClick={() => setShowMaterials((s) => !s)}>
+              {showMaterials ? "Hide" : materialsPending ? "Record what came off the truck" : "Add / edit"}
+            </button>
+          </div>
+          {materialsPending && !showMaterials && (
+            <p className="mt-1 text-xs text-amber-900">Closing without this is allowed — the job's material then falls back to receipts or the estimate's frozen figure.</p>
+          )}
+          {showMaterials && (
+            <div className="mt-2 rounded-lg border border-rce-border p-3">
+              <MaterialsConsumeStep visitId={visitId} compact />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Purchase orders ── */}
       <div className="mt-4">

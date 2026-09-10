@@ -4,8 +4,8 @@
  * "We need an inventory tab that tracks what is on the truck and what is at
  * the warehouse." Mounted behind the operator session like trucksRouter.
  * Every quantity and cost is correctable with a one-line reason and a trail —
- * the ledger is append-only (services/inventory.ts). Nothing here charges a
- * job; that is Build 4.
+ * the ledger is append-only (services/inventory.ts). Charging a job is the
+ * consume/return pair on /jobs/:jobId in app.ts (Build 4, services/jobMaterials.ts).
  */
 
 import express from "express";
@@ -16,6 +16,8 @@ import {
   inventoryOverview, landPurchaseOrder, landingDefaults, listMovements, listStockRequests, listTools, moveTool, searchItems, setParLevel,
   toolDetail, transferStock, truckLocationKey, updateTool,
 } from "../services/inventory";
+import { onHandFor } from "../services/jobMaterials";
+import { defaultTruckId } from "../services/purchaseOrders";
 
 export const inventoryRouter = express.Router();
 
@@ -43,6 +45,19 @@ inventoryRouter.get("/inventory/movements", asyncHandler(async (req, res) => {
 inventoryRouter.get("/inventory/items", asyncHandler(async (req, res) => {
   const q = typeof req.query.q === "string" ? req.query.q : "";
   res.json(await searchItems(q, 25));
+}));
+
+/**
+ * On-hand for a set of items on one truck (Kyle, 2026-09-09, Build 4) — the
+ * estimate builder shows "on truck: 190 ft" beside each material line and a
+ * shortfall hint when the quantity exceeds it. Read-only; the default truck
+ * when none is named. {itemId: {qty, unit, avgUnitCost}} — every id answers.
+ */
+inventoryRouter.get("/inventory/on-hand", asyncHandler(async (req, res) => {
+  const raw = typeof req.query.itemIds === "string" ? req.query.itemIds : "";
+  const itemIds = raw.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 200);
+  const truckId = typeof req.query.truckId === "string" && req.query.truckId ? req.query.truckId : await defaultTruckId();
+  res.json(await onHandFor(truckId, itemIds));
 }));
 
 // ── Movements ────────────────────────────────────────────────────────────────

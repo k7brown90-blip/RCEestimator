@@ -71,6 +71,11 @@ import type {
   ToolDetail,
   ToolMovementView,
   ToolView,
+  ConsumeLineInput,
+  JobMaterialsView,
+  MaterialSource,
+  MaterialsByMonth,
+  OnHand,
   ScheduleJobResult,
   SupportItem,
   TechDayAvailability,
@@ -151,6 +156,8 @@ export interface FinancialsSummary {
   months: { month: number; invoiced: number; collected: number; expenses: number; net: number; estMaterials: number; projectedNet: number }[];
   totals: { invoiced: number; collected: number; expenses: number; net: number; estMaterials: number; projectedNet: number };
   expensesByCategory: { category: string; monthly: number[]; total: number }[];
+  /** The Materials card (Kyle, 2026-09-09, Build 4): bought / used / inventory value per month. */
+  materials?: Omit<MaterialsByMonth, "year">;
 }
 
 export interface JobProfitRow {
@@ -164,6 +171,8 @@ export interface JobProfitRow {
   completedAt: string | null;
   quoted: number | null;
   materialSpend: number;
+  /** Which rung of THE MATERIAL RULE materialSpend came from (Build 4). */
+  materialSource?: MaterialSource;
   laborHours: number;
   laborCost: number;
   marginBeforeLabor: number | null;
@@ -890,6 +899,26 @@ export const api = {
     request<{ reopened: true }>(`/jobs/${jobId}/reopen`, { method: "POST", body: JSON.stringify({}) }),
   jobPurchaseOrders: (jobId: string) =>
     request<PurchaseOrderRow[]>(`/jobs/${jobId}/purchase-orders`),
+  // ─── Materials used — the costing switch (Kyle, 2026-09-09, Build 4) ─────────
+  // A job is charged ONLY when stock is consumed off a truck, at the truck's
+  // moving average. The view carries the suggested lines off the signed
+  // estimate (on-hand beside each), what has been consumed, and the receipts
+  // (those on a PO flagged "inventory, not job cost").
+  jobMaterials: (jobId: string, truckId?: string | null) =>
+    request<JobMaterialsView>(`/jobs/${jobId}/materials${truckId ? `?truckId=${encodeURIComponent(truckId)}` : ""}`),
+  /** Truck → job. 409 names the item and on-hand when short unless allowNegative + reason (recorded). */
+  consumeForJob: (jobId: string, input: { truckId?: string | null; lines: ConsumeLineInput[]; reason?: string | null; allowNegative?: boolean }) =>
+    request<StockMovementView[]>(`/jobs/${jobId}/consume`, { method: "POST", body: JSON.stringify(input) }),
+  /** Job → truck, credited at the cost the job was charged. */
+  returnForJob: (jobId: string, input: { truckId?: string | null; lines: ConsumeLineInput[]; reason?: string | null }) =>
+    request<StockMovementView[]>(`/jobs/${jobId}/return`, { method: "POST", body: JSON.stringify(input) }),
+  /** On-hand for a set of items on one truck (the default truck when none is named). Read-only. */
+  inventoryOnHand: (itemIds: string[], truckId?: string | null) => {
+    const qs = new URLSearchParams({ itemIds: itemIds.join(",") });
+    if (truckId) qs.set("truckId", truckId);
+    return request<Record<string, OnHand>>(`/inventory/on-hand?${qs.toString()}`);
+  },
+  financialsMaterials: (year: number) => request<MaterialsByMonth>(`/financials/materials?year=${year}`),
   /** Receipts on one job, no image bytes (Kyle, 2026-09-07 — Financials drill-down). */
   jobReceipts: (jobId: string) => request<JobReceiptRow[]>(`/jobs/${jobId}/receipts`),
   /**

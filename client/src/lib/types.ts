@@ -36,8 +36,80 @@ export type JobCosts = {
   revenue: number | null;
   grossProfit: number | null;
   margin: number | null;
-  /** Where materialCost came from: confirmed receipts, the signed estimate, or nothing. */
-  materialSource?: "receipts" | "estimate" | "none";
+  /**
+   * Where materialCost came from (Kyle, 2026-09-09, Build 4 — THE MATERIAL RULE):
+   * stock consumed off a truck, confirmed receipts not on a PO, the signed
+   * estimate's frozen material, or nothing.
+   */
+  materialSource?: MaterialSource;
+};
+
+export type MaterialSource = "stock" | "receipts" | "estimate" | "none";
+
+/** The label every money surface prints beside a material figure. */
+export const MATERIAL_SOURCE_LABEL: Record<MaterialSource, string> = {
+  stock: "from truck stock",
+  receipts: "from receipts",
+  estimate: "from the signed estimate",
+  none: "nothing recorded",
+};
+
+// ─── Materials used on a job (Kyle, 2026-09-09, Build 4) ─────────────────────
+
+export type OnHand = { qty: number; unit: string | null; avgUnitCost: number | null };
+
+export type SuggestedMaterialLine = {
+  itemId: string;
+  name: string;
+  qty: number;
+  unit: string | null;
+  onHand: number;
+  avgUnitCost: number | null;
+  /** Already consumed for this job, so a second close-out pass does not double up. */
+  consumedQty: number;
+};
+
+export type JobMaterialLine = {
+  movementId: string;
+  kind: "consume" | "return" | "correction";
+  itemId: string;
+  name: string;
+  unit: string | null;
+  qty: number;
+  unitCost: number | null;
+  /** Signed: a consume charges, a return credits. */
+  cost: number;
+  reason: string | null;
+  actor: string;
+  at: string;
+  onVisitId: string | null;
+};
+
+export type JobMaterialsView = {
+  jobId: string;
+  truck: { id: string; name: string };
+  estimate: { id: string; number: string; title: string } | null;
+  suggested: SuggestedMaterialLine[];
+  lines: JobMaterialLine[];
+  stock: { consumed: number; returned: number; net: number; movementCount: number } | null;
+  receipts: Array<{
+    id: string; vendor: string | null; amount: number; category: string; status: string; receivedAt: string;
+    purchaseOrderId: string | null; purchaseOrderNumber: string | null;
+    countsTowardJob: boolean;
+    note: string | null;
+  }>;
+  materialCost: number;
+  materialSource: MaterialSource;
+  estimateMaterial: number | null;
+  receiptMaterial: number | null;
+};
+
+export type ConsumeLineInput = { itemId?: string; name?: string | null; qty: number; unit?: string | null };
+
+export type MaterialsByMonth = {
+  year: number;
+  months: { month: number; bought: number; used: number; inventoryValue: number }[];
+  totals: { bought: number; used: number };
 };
 
 export type AssignedTechnician = {

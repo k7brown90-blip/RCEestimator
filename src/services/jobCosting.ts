@@ -25,9 +25,145 @@ export interface JobCosts {
   margin: number | null;
   /**
    * Where materialCost came from (Kyle, 2026-09-08: the account page must say
-   * whether a job's material is receipts or still the estimate's frozen figure).
+   * whether a job's material is receipts or still the estimate's frozen figure;
+   * 2026-09-09, Build 4: "stock" — consumed from a truck at its moving average).
    */
-  materialSource: "receipts" | "estimate" | "none";
+  materialSource: MaterialSource;
+}
+
+export type MaterialSource = "stock" | "receipts" | "estimate" | "none";
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * THE MATERIAL RULE (Kyle, 2026-09-09, Build 4 — "on future jobs I can label
+ * some stock as truckstock and it won't double count the cost"). One place,
+ * four rungs, first that fires wins:
+ *
+ *   1. stock     — the job has consume/return StockMovements: Σ consume − Σ return
+ *                  at the truck's moving-average cost. The ledger is the truth;
+ *                  nothing is stored on the visit for this.
+ *   2. receipts  — Visit.actualMaterialCost > 0: confirmed materials receipts
+ *                  that are NOT on a PO (services/receiptCosting.ts). A receipt on
+ *                  a PO is inventory value, not job cost — the job pays by consuming.
+ *   3. estimate  — the signed estimate's frozen taken-scope material.
+ *   4. none      — nothing recorded anywhere.
+ *
+ * Legacy jobs closed before this build have no movements, so rung 2 keeps their
+ * receipt figures exactly as they were (Daughdrill $381.90, Womack $406.74).
+ */
+export function resolveMaterialCost(
+  stockMaterial: number | null,
+  actualMaterialCost: number | null,
+  estimatedMaterialCost: number | null,
+): { materialCost: number; materialSource: MaterialSource } {
+  if (stockMaterial != null) return { materialCost: round2(stockMaterial), materialSource: "stock" };
+  // A POSITIVE typed actual wins. Production data shows the receipt/PO sync
+  // stamps actualMaterialCost=0 on jobs with no receipts, so 0 means "nothing
+  // recorded", not "cost nothing" - the signed estimate's frozen material is
+  // the honest figure there too (Kyle's 2026-09-03 audit: six signed jobs all
+  // blocked on actualMat=0).
+  if (actualMaterialCost != null && actualMaterialCost > 0) return { materialCost: actualMaterialCost, materialSource: "receipts" };
+  if (estimatedMaterialCost != null) return { materialCost: estimatedMaterialCost, materialSource: "estimate" };
+  return { materialCost: actualMaterialCost ?? 0, materialSource: "none" };
+}
+
+/** What a job has drawn from truck stock, from the ledger. */
+export interface StockMaterial {
+  consumed: number;
+  returned: number;
+  /** consumed − returned, the figure the P&L charges. */
+  net: number;
+  /** Ledger rows behind it (consume, return, and corrections to either). */
+  movementCount: number;
+}
+
+/**
+ * The stock rung, per job, in ONE grouped query — never one query per job.
+ * A job appears in the map only when it has at least one consume/return row
+ * (a correction referencing one of those rows counts too: Kyle, "corrections
+ * are new ledger rows referencing the original", so a corrected consume charges
+ * the corrected quantity). Jobs with no rows are absent → the rung does not fire.
+ */
+export async function stockMaterialByJob(visitIds: string[]): Promise<Map<string, StockMaterial>> {
+  const out = new Map<string, StockMaterial>();
+  const ids = [...new Set(visitIds.filter(Boolean))];
+  if (ids.length === 0) return out;
+  const rows = await prisma.stockMovement.findMany({
+    where: { jobId: { in: ids }, kind: { in: ["consume", "return", "correction"] } },
+    select: { id: true, jobId: true, kind: true, qty: true, delta: true, unitCost: true, correctsId: true },
+  });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  for (const r of rows) {
+    if (!r.jobId) continue;
+    let signedCost: number;
+    if (r.kind === "consume") signedCost = r.qty * (r.unitCost ?? 0);
+    else if (r.kind === "return") signedCost = -(r.qty * (r.unitCost ?? 0));
+    else {
+      // A correction adjusts the row it references. Its delta reads from the
+      // receiving side (services/inventory.ts): on a consume (from a truck) a
+      // +delta takes MORE off the truck → more charged; on a return (to a truck)
+      // a +delta puts more back → more credited.
+      const original = r.correctsId ? byId.get(r.correctsId) : undefined;
+      if (!original || (original.kind !== "consume" && original.kind !== "return")) continue;
+      const cost = r.unitCost ?? original.unitCost ?? 0;
+      signedCost = (r.delta ?? 0) * cost * (original.kind === "consume" ? 1 : -1);
+    }
+    const row = out.get(r.jobId) ?? { consumed: 0, returned: 0, net: 0, movementCount: 0 };
+    if (signedCost >= 0) row.consumed += signedCost; else row.returned += -signedCost;
+    row.movementCount += 1;
+    out.set(r.jobId, row);
+  }
+  for (const row of out.values()) {
+    row.consumed = round2(row.consumed);
+    row.returned = round2(row.returned);
+    row.net = round2(row.consumed - row.returned);
+  }
+  return out;
+}
+
+export interface MaterialCostInput {
+  visitId: string;
+  /** Other visits whose costs roll onto this job (the P&L chain) — their movements count here. */
+  chainVisitIds?: string[];
+  actualMaterialCost: number | null;
+  estimatedMaterialCost: number | null;
+}
+
+export interface MaterialCostResult {
+  materialCost: number;
+  materialSource: MaterialSource;
+  /** The stock rung's figure, or null when the job has no consume/return rows. */
+  stockMaterial: number | null;
+  stock: StockMaterial | null;
+}
+
+/**
+ * The one helper every money surface calls (GET /jobs, the account summary,
+ * /financials/job-profitability): the grouped stock query plus the fallbacks,
+ * per job. Feed the `stockMaterial` it returns into rollupJobCosts so the card
+ * and the report can never disagree.
+ */
+export async function materialCostForJobs(jobs: MaterialCostInput[]): Promise<Map<string, MaterialCostResult>> {
+  const allIds = jobs.flatMap((j) => [j.visitId, ...(j.chainVisitIds ?? [])]);
+  const stockByVisit = await stockMaterialByJob(allIds);
+  const out = new Map<string, MaterialCostResult>();
+  for (const job of jobs) {
+    const parts = [job.visitId, ...(job.chainVisitIds ?? [])]
+      .map((id) => stockByVisit.get(id))
+      .filter((s): s is StockMaterial => Boolean(s));
+    const stock: StockMaterial | null = parts.length === 0
+      ? null
+      : {
+        consumed: round2(parts.reduce((s, p) => s + p.consumed, 0)),
+        returned: round2(parts.reduce((s, p) => s + p.returned, 0)),
+        net: round2(parts.reduce((s, p) => s + p.net, 0)),
+        movementCount: parts.reduce((s, p) => s + p.movementCount, 0),
+      };
+    const stockMaterial = stock ? stock.net : null;
+    out.set(job.visitId, { ...resolveMaterialCost(stockMaterial, job.actualMaterialCost, job.estimatedMaterialCost), stockMaterial, stock });
+  }
+  return out;
 }
 
 /** The Visit fields the rollup actually reads — keeps callers from over-selecting. */
@@ -85,17 +221,15 @@ export function rollupJobCosts(
    * gap when nobody recorded actuals on a job sold through an issued estimate.
    */
   estimatedMaterialCost: number | null = null,
+  /**
+   * The stock rung (Kyle, 2026-09-09, Build 4): consume − return from the ledger,
+   * from materialCostForJobs(). Null when the job has drawn nothing from a truck,
+   * and then the receipt and estimate rungs apply exactly as before.
+   */
+  stockMaterial: number | null = null,
 ): JobCosts {
   const revenue = visit.revenue ?? acceptedOptionTotal ?? null;
-  // A POSITIVE typed actual wins. Production data shows the receipt/PO sync
-  // stamps actualMaterialCost=0 on jobs with no receipts, so 0 means "nothing
-  // recorded", not "cost nothing" - the signed estimate's frozen material is
-  // the honest figure there too (Kyle's 2026-09-03 audit: six signed jobs all
-  // blocked on actualMat=0).
-  const actual = visit.actualMaterialCost;
-  const materialCost = actual != null && actual > 0 ? actual : estimatedMaterialCost ?? actual ?? 0;
-  const materialSource: JobCosts["materialSource"] =
-    actual != null && actual > 0 ? "receipts" : estimatedMaterialCost != null ? "estimate" : "none";
+  const { materialCost, materialSource } = resolveMaterialCost(stockMaterial, visit.actualMaterialCost, estimatedMaterialCost);
   const laborHours = visit.laborHours ?? 0;
   const laborCost = laborHours * laborRate;
   const overhead = visit.overheadAllocation ?? 0;

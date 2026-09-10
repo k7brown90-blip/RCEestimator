@@ -80,7 +80,8 @@ import { inventoryRouter } from "./routes/inventory";
 import { matchSpendForReceipt } from "./services/cardSpend";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
-import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, estimateMaterialCost, mergeCostableChain, ROLLED_UP_COSTS } from "./services/jobCosting";
+import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, estimateMaterialCost, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs } from "./services/jobCosting";
+import { closeOutMaterialWarning, consumeForJob, jobMaterials, returnForJob } from "./services/jobMaterials";
 import { parseJsonStringArray } from "./lib/json";
 import { findCustomerMatches } from "./services/customerMatch";
 import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
@@ -4223,6 +4224,28 @@ app.get("/jobs", asyncHandler(async (req, res) => {
   const trackerStatus = (status: string): string =>
     status === "signed" ? "accepted" : status === "viewed" ? "sent" : status;
 
+  /*
+    THE MATERIAL RULE (Kyle, 2026-09-09, Build 4). Stock consumed off a truck
+    charges the job first; receipts (not on a PO) second; the signed estimate's
+    frozen material third. ONE grouped query for every job on the tab through
+    materialCostForJobs — the same helper the account summary and the
+    Financials job-profitability report call, so the three can never disagree.
+    Movements on the chain's other visit (the appointment the job was quoted
+    on) count toward the job, like its hours and receipts do.
+  */
+  const jobsChildrenOf = new Map<string, string[]>();
+  for (const [child, jobV] of jobsChildToJob) jobsChildrenOf.set(jobV, [...(jobsChildrenOf.get(jobV) ?? []), child]);
+  const materialByJob = await materialCostForJobs(
+    jobVisits
+      .filter((v) => !jobsChildToJob.has(v.id))
+      .map((v) => ({
+        visitId: v.id,
+        chainVisitIds: jobsChildrenOf.get(v.id) ?? [],
+        actualMaterialCost: v.actualMaterialCost,
+        estimatedMaterialCost: signedQualifies.has(v.id) ? estimateMaterialCost(signedQualifies.get(v.id)!) : null,
+      })),
+  );
+
   const jobs = jobVisits.map((visit: typeof visits[number]) => {
     const latestEstimate = visit.estimates[0] ?? null;
     const { acceptedTotal, displayTotal } = estimateOptionTotal(latestEstimate?.options ?? []);
@@ -4327,6 +4350,8 @@ app.get("/jobs", asyncHandler(async (req, res) => {
             // The signed estimate's frozen material cost backfills jobs where
             // no actuals were typed — the invoice's own numbers, never $0.
             signedQualifies.has(visit.id) ? estimateMaterialCost(signedQualifies.get(visit.id)!) : null,
+            // The stock rung: consume − return off the truck (Build 4).
+            materialByJob.get(visit.id)?.stockMaterial ?? null,
           ),
     };
   });
@@ -4878,6 +4903,10 @@ app.post("/jobs/:jobId/complete", asyncHandler(async (req, res) => {
   if (invoiceEvents.length === 0) {
     warnings.push("No invoice has been emailed for this job.");
   }
+  // Build 4 (Kyle, 2026-09-09): a signed estimate with material lines and no
+  // consume recorded — a warning, never a wall; the P&L falls back to receipts/estimate.
+  const materialWarning = await closeOutMaterialWarning(jobId);
+  if (materialWarning) warnings.push(materialWarning);
 
   const updated = await prisma.visit.update({
     where: { id: jobId },
@@ -4938,6 +4967,54 @@ app.get("/jobs/:jobId/purchase-orders", asyncHandler(async (req, res) => {
     sentAt: o.sentAt, createdAt: o.createdAt, receiptCount: o._count.receipts,
     items: o.lines.map((l) => ({ name: l.name, qty: l.qty, unit: l.unit ?? undefined, partNumber: l.partNumber ?? undefined })),
   })));
+}));
+
+/*
+  ── MATERIALS USED — THE COSTING SWITCH (Kyle, 2026-09-09, Build 4) ─────────────
+  "On future jobs I can label some stock as truckstock and it won't double count
+  the cost." A job is charged ONLY when stock is consumed from a truck, at the
+  truck's moving average; a return credits it back. Everything is a ledger row
+  with an actor and a reason (services/jobMaterials.ts → applyMovement).
+*/
+const consumeLineSchema = z.object({
+  itemId: z.string().trim().max(80).optional().default(""),
+  name: z.string().trim().max(300).nullable().optional(),
+  qty: z.number().positive(),
+  unit: z.string().trim().max(20).nullable().optional(),
+});
+
+/** The job's stock lines with cost, its receipts (PO ones flagged), and the suggested lines off the signed estimate. */
+app.get("/jobs/:jobId/materials", asyncHandler(async (req, res) => {
+  const truckId = typeof req.query.truckId === "string" && req.query.truckId ? req.query.truckId : null;
+  res.json(await jobMaterials(readParam(req, "jobId"), truckId));
+}));
+
+/** Truck → job. 409 when the truck is short (names the item and on-hand) unless allowNegative + reason — Kyle's manual override, recorded. */
+app.post("/jobs/:jobId/consume", asyncHandler(async (req, res) => {
+  const body = z.object({
+    truckId: z.string().trim().nullable().optional(),
+    lines: z.array(consumeLineSchema).min(1),
+    reason: z.string().trim().max(300).nullable().optional(),
+    allowNegative: z.boolean().optional(),
+  }).parse(req.body);
+  const movements = await consumeForJob({
+    jobId: readParam(req, "jobId"), truckId: body.truckId ?? null, lines: body.lines,
+    reason: body.reason ?? null, actor: "owner", allowNegative: body.allowNegative === true,
+  });
+  res.status(201).json(movements);
+}));
+
+/** Job → truck, credited at the cost the job was charged. */
+app.post("/jobs/:jobId/return", asyncHandler(async (req, res) => {
+  const body = z.object({
+    truckId: z.string().trim().nullable().optional(),
+    lines: z.array(consumeLineSchema).min(1),
+    reason: z.string().trim().max(300).nullable().optional(),
+  }).parse(req.body);
+  const movements = await returnForJob({
+    jobId: readParam(req, "jobId"), truckId: body.truckId ?? null, lines: body.lines, reason: body.reason ?? null, actor: "owner",
+  });
+  res.status(201).json(movements);
 }));
 
 app.post("/jobs/:jobId/purchase-orders", asyncHandler(async (req, res) => {
@@ -5687,6 +5764,21 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
     }
   }
   const visitById = new Map(account.visits.map((v) => [v.id, v]));
+  // The material rule, one grouped query (Build 4) — the same helper GET /jobs
+  // and /financials/job-profitability call. Kept in lockstep by the invariant test.
+  const materialByJob = await materialCostForJobs(
+    account.visits
+      .filter((v) => !childToJob.has(v.id))
+      .map((v) => ({
+        visitId: v.id,
+        chainVisitIds: childrenOfJob.get(v.id) ?? [],
+        actualMaterialCost: mergeCostableChain(
+          v,
+          (childrenOfJob.get(v.id) ?? []).map((id) => visitById.get(id)!).filter(Boolean),
+        ).actualMaterialCost,
+        estimatedMaterialCost: estMaterialByJob.get(v.id) ?? null,
+      })),
+  );
   const [receipts, laborRate, findings] = await Promise.all([
     visitIds.length
       ? prisma.receipt.findMany({
@@ -5752,6 +5844,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
             acceptedTotal ?? estRevenueByJob.get(visit.id) ?? null,
             laborRate,
             estMaterialByJob.get(visit.id) ?? null,
+            materialByJob.get(visit.id)?.stockMaterial ?? null,
           ),
       purchaseOrders: visit.purchaseOrders.map((order) => ({
         id: order.id,

@@ -5,7 +5,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, type VisitMode } from "../lib/api";
-import type { JobSummary } from "../lib/types";
+import { MATERIAL_SOURCE_LABEL, type JobSummary } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
 const MODES: Array<{ value: VisitMode; label: string }> = [
@@ -383,6 +383,8 @@ function JobCard({
           <div>
             <span className="text-rce-soft">Materials</span>
             <p className="font-semibold">{money(job.costs.materialCost)}</p>
+            {/* Which rung of THE MATERIAL RULE (Kyle, 2026-09-09, Build 4). */}
+            {job.costs.materialSource && <p className="text-[10px] text-rce-muted">{MATERIAL_SOURCE_LABEL[job.costs.materialSource]}</p>}
           </div>
           <div>
             <span className="text-rce-soft">Labor ({job.costs.laborHours}h)</span>

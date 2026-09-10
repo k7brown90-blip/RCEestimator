@@ -1267,13 +1267,15 @@ function CostBreakdown({ job }: { job: AccountJob }) {
     <div>
       <p className="font-semibold uppercase tracking-wide text-rce-soft">Cost breakdown</p>
       <ul className="mt-1 space-y-1">
-        {/* Kyle, 2026-09-08: say where the material figure came from — receipts or the estimate. */}
+        {/* Kyle, 2026-09-08: say where the material figure came from. 2026-09-09
+            (Build 4): "from truck stock" — consumed off the truck at its moving average. */}
         <li className="flex justify-between gap-2">
           <span>
             Materials
             <span className="ml-1 text-rce-muted">
-              {costs.materialSource === "receipts" && "· from confirmed receipts"}
-              {costs.materialSource === "estimate" && "· from the signed estimate (no confirmed receipts)"}
+              {costs.materialSource === "stock" && "· from truck stock"}
+              {costs.materialSource === "receipts" && "· from receipts (no PO)"}
+              {costs.materialSource === "estimate" && "· from the signed estimate (nothing consumed, no receipts)"}
               {costs.materialSource === "none" && "· nothing recorded"}
             </span>
           </span>

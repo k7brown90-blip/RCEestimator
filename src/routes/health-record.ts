@@ -28,6 +28,7 @@ import { matchSpendForReceipt } from "../services/cardSpend";
 import {
   WAREHOUSE_KEY, createStockRequest, landPurchaseOrder, landingDefaults, listTools, moveTool, searchItems, serializeLevel, truckLocationKey,
 } from "../services/inventory";
+import { closeOutMaterialWarning, consumeForJob, jobMaterials, returnForJob } from "../services/jobMaterials";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
 import {
@@ -1194,6 +1195,10 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
   if (receiptsWithoutPo > 0) {
     warnings.push(`${receiptsWithoutPo} materials receipt(s) on this job have no PO.`);
   }
+  // Build 4 (Kyle, 2026-09-09): material lines sold, nothing consumed off the
+  // truck — a warning, never a wall; the P&L falls back to receipts/estimate.
+  const materialWarning = await closeOutMaterialWarning(visitId);
+  if (materialWarning) warnings.push(materialWarning);
 
   await prisma.visit.update({
     where: { id: visitId },
@@ -1364,6 +1369,81 @@ healthRecordTechRouter.post("/purchase-orders/:id/status", asyncHandler(async (r
   try {
     const po = await transitionPurchaseOrder(readParam(req, "id"), body.to, { actor: `tech:${req.technician!.name}` });
     res.json({ success: true, data: { id: po.id, number: po.number, status: po.status } });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
+}));
+
+// ─── Materials used at close-out (Kyle, 2026-09-09, Build 4) ─────────────────
+//
+// "Anything in a truck can be assigned to a job." The tech confirms what came
+// off the truck — pre-filled from the signed estimate, on-hand beside each line
+// — and the job is charged at the truck's moving average. Online only: a
+// consume that replayed later could double-charge. No negative override from
+// the field; that is Kyle's, from the CRM, with a reason.
+
+const fieldConsumeLineSchema = z.object({
+  itemId: z.string().trim().max(80).optional().default(""),
+  name: z.string().trim().max(300).nullable().optional(),
+  qty: z.number().positive(),
+  unit: z.string().trim().max(20).nullable().optional(),
+});
+
+async function assertAssigned(req: TechRequest, res: express.Response, visitId: string): Promise<boolean> {
+  const assigned = await prisma.visitAssignment.findFirst({ where: { visitId, technicianId: req.technician!.id }, select: { id: true } });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return false;
+  }
+  return true;
+}
+
+healthRecordTechRouter.get("/visits/:visitId/materials", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await assertAssigned(req, res, visitId))) return;
+  try {
+    const view = await jobMaterials(visitId, await truckIdForTechnician(req.technician!.id));
+    res.json({ success: true, data: view });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.post("/visits/:visitId/consume", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await assertAssigned(req, res, visitId))) return;
+  const body = z.object({
+    truckId: z.string().trim().nullable().optional(),
+    lines: z.array(fieldConsumeLineSchema).min(1),
+    reason: z.string().trim().max(300).nullable().optional(),
+  }).parse(req.body);
+  try {
+    const tech = req.technician!;
+    const movements = await consumeForJob({
+      jobId: visitId, truckId: body.truckId ?? (await truckIdForTechnician(tech.id)), lines: body.lines,
+      reason: body.reason ?? null, actor: `tech:${tech.name}`,
+    });
+    res.status(201).json({ success: true, data: movements });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.post("/visits/:visitId/return", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await assertAssigned(req, res, visitId))) return;
+  const body = z.object({
+    truckId: z.string().trim().nullable().optional(),
+    lines: z.array(fieldConsumeLineSchema).min(1),
+    reason: z.string().trim().max(300).nullable().optional(),
+  }).parse(req.body);
+  try {
+    const tech = req.technician!;
+    const movements = await returnForJob({
+      jobId: visitId, truckId: body.truckId ?? (await truckIdForTechnician(tech.id)), lines: body.lines,
+      reason: body.reason ?? null, actor: `tech:${tech.name}`,
+    });
+    res.status(201).json({ success: true, data: movements });
   } catch (err) {
     if (!techServiceError(res, err)) throw err;
   }

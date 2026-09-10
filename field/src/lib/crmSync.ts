@@ -525,6 +525,70 @@ export async function completeVisitFromField(visitId: string): Promise<{ complet
   return crmRequest(`/visits/${visitId}/complete`, { method: 'POST', body: '{}' })
 }
 
+// ─── Materials used — the costing switch (Kyle, 2026-09-09, Build 4) ─────────
+// "On future jobs I can label some stock as truckstock and it won't double
+// count the cost." The tech confirms what came off the truck at close-out —
+// pre-filled from the signed estimate, on-hand beside each line — and the job
+// is charged at the truck's moving average. Online only and NOT queued: a
+// consume that replayed later could double-charge. No negative override from
+// the field; that is the office's, with a reason.
+
+export interface FieldSuggestedLine {
+  itemId: string
+  name: string
+  qty: number
+  unit: string | null
+  onHand: number
+  avgUnitCost: number | null
+  /** Already consumed for this job, so a second pass does not double up. */
+  consumedQty: number
+}
+
+export interface FieldMaterialLine {
+  movementId: string
+  kind: 'consume' | 'return' | 'correction'
+  itemId: string
+  name: string
+  unit: string | null
+  qty: number
+  unitCost: number | null
+  cost: number
+  reason: string | null
+  actor: string
+  at: string
+}
+
+export interface FieldJobMaterials {
+  truck: { id: string; name: string }
+  estimate: { id: string; number: string; title: string } | null
+  suggested: FieldSuggestedLine[]
+  lines: FieldMaterialLine[]
+  stock: { consumed: number; returned: number; net: number; movementCount: number } | null
+  materialCost: number
+  materialSource: 'stock' | 'receipts' | 'estimate' | 'none'
+}
+
+export interface FieldConsumeLine {
+  itemId?: string
+  name?: string | null
+  qty: number
+  unit?: string | null
+}
+
+export async function fetchJobMaterials(visitId: string): Promise<FieldJobMaterials> {
+  return crmRequest(`/visits/${visitId}/materials`, { method: 'GET' })
+}
+
+/** Truck → job at the truck's average. 409 names the item and on-hand when the truck is short. */
+export async function consumeFromField(visitId: string, lines: FieldConsumeLine[], reason?: string | null): Promise<{ id: string; qty: number; unitCost: number | null; name: string }[]> {
+  return crmRequest(`/visits/${visitId}/consume`, { method: 'POST', body: JSON.stringify({ lines, reason: reason ?? null }) })
+}
+
+/** Job → truck, credited at the cost the job was charged. */
+export async function returnFromField(visitId: string, lines: FieldConsumeLine[], reason: string): Promise<{ id: string }[]> {
+  return crmRequest(`/visits/${visitId}/return`, { method: 'POST', body: JSON.stringify({ lines, reason }) })
+}
+
 // ─── Purchase orders (Kyle, 2026-09-09) ───────────────────────────────────────
 // "Purchasing needs to start with a P.O. number then the purchase and photo
 // verification of the receipt." Purpose is chosen (truck stock default); the
