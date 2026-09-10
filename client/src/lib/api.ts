@@ -247,14 +247,24 @@ export interface PaymentInfo {
   totalPaid: number;
   balance: number;
   depositSatisfied: boolean;
+  /** The HOMEOWNER is paid up; the warranty share may still be open (Kyle, 2026-09-10). */
   paidInFull: boolean;
+  /** Both payers paid up. */
+  fullyPaid?: boolean;
   payUrl: string;
   depositPayUrl: string;
   stripeConfigured: boolean;
-  payments: { id: string; amount: number; method: string; kind: string; status: string; paidAt: string | null }[];
+  payments: {
+    id: string; amount: number; method: string; kind: string; status: string; paidAt: string | null;
+    /** "customer" | "warranty" (Kyle, 2026-09-10). */
+    payer?: string;
+    checkNumber?: string | null;
+  }[];
   /** Home-warranty coverage (Kyle, 2026-09-09): already off billedTotal, which is the homeowner share. */
   warrantyCovered?: number;
   warrantyClaim?: WarrantyClaimRef | null;
+  /** The warranty company's side of the account (Kyle, 2026-09-10): covered, paid, balance, and the claim with its dates. */
+  warranty?: { covered: number; paid: number; balance: number; claim: WarrantyClaim } | null;
 }
 
 export interface PaymentRow {
@@ -266,6 +276,38 @@ export interface PaymentRow {
   paidAt: string | null;
   createdAt: string;
   customer?: { id: string; name: string } | null;
+  /** "customer" | "warranty" (Kyle, 2026-09-10). */
+  payer?: string;
+  checkNumber?: string | null;
+}
+
+/** One row of GET /warranty-receivables (Kyle, 2026-09-10): the warranty company's open money. */
+export interface WarrantyReceivableRow {
+  estimateId: string;
+  number: string;
+  title: string;
+  account: { id: string; name: string };
+  signedAt: string | null;
+  company: string;
+  claimNumber: string;
+  authNumber: string | null;
+  covered: number;
+  paid: number;
+  balance: number;
+  lastPaidAt: string | null;
+  submittedAt: string | null;
+  expectedAt: string | null;
+  approvedAt: string | null;
+  receivedAt: string | null;
+  depositedAt: string | null;
+  checkNumber: string | null;
+  daysOutstanding: number;
+  status: "not submitted" | "submitted" | "overdue" | "paid";
+}
+
+export interface WarrantyReceivables {
+  rows: WarrantyReceivableRow[];
+  totals: { count: number; open: number; overdue: number; covered: number; paid: number; balance: number };
 }
 
 /**
@@ -1126,8 +1168,21 @@ export const api = {
     request<CompanyBillRow>("/financials/bills", { method: "POST", body: JSON.stringify(input) }),
   deleteCompanyBill: (id: string) => request<void>(`/financials/bills/${id}`, { method: "DELETE" }),
   paymentsList: (year: number) => request<PaymentRow[]>(`/financials/payments?year=${year}`),
-  recordPayment: (input: { amount: number; method: "cash" | "check" | "zelle" | "other"; kind?: "deposit" | "final" | "other"; customerId?: string; estimateId?: string; note?: string }) =>
+  recordPayment: (input: {
+    amount: number;
+    method: "cash" | "check" | "zelle" | "ach" | "other";
+    kind?: "deposit" | "final" | "other";
+    /** "warranty" records the warranty company's check against the claim (Kyle, 2026-09-10); default "customer". */
+    payer?: "customer" | "warranty";
+    checkNumber?: string | null;
+    paidAt?: string;
+    customerId?: string;
+    estimateId?: string;
+    note?: string;
+  }) =>
     request<PaymentRow>("/financials/payments", { method: "POST", body: JSON.stringify(input) }),
+  /** Every warranty receivable — signed estimates with a claim, with money and status (Kyle, 2026-09-10). */
+  warrantyReceivables: () => request<WarrantyReceivables>("/warranty-receivables"),
   // ─── Company settings ───────────────────────────────────────────────────
   companySettings: () => request<CompanySettings>("/crm/settings"),
   saveCompanySetting: (key: string, value: unknown) =>
@@ -1503,6 +1558,24 @@ export const api = {
       method: "PATCH",
       // A bare `null` body is refused by the server's strict JSON parser; `{ clear: true }` clears.
       body: JSON.stringify(input ?? { clear: true }),
+    }),
+
+  /**
+   * Claim tracking on a covered estimate (Kyle, 2026-09-10): submitted / expected / approved /
+   * received / deposited / check #, note — bookkeeping, allowed after signing, every change with
+   * a reason on the trail. expectedAt defaults to submitted + 45 days when omitted.
+   */
+  pbWarrantyTracking: (
+    id: string,
+    input: {
+      submittedAt?: string | null; expectedAt?: string | null; approvedAt?: string | null;
+      receivedAt?: string | null; depositedAt?: string | null; checkNumber?: string | null;
+      note?: string | null; reason: string;
+    },
+  ) =>
+    request<{ ok: true; warranty: WarrantyClaim; changed: boolean }>(`/issued-estimates/${id}/warranty/tracking`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
     }),
 
 };

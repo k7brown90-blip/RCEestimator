@@ -203,19 +203,29 @@ export async function sendPaymentReceiptEmail(
   const summary = await paymentSummary(prisma, payment.estimateId, "https://unused.invalid");
   if (!summary) return;
 
+  // The warranty company's check (Kyle, 2026-09-10) is not the homeowner's payment: the
+  // homeowner is never written to about the warranty share — EXCEPT when that check settles
+  // the whole invoice and their own balance is already zero, when the paid-in-full receipt
+  // is the one document that says everything on the job is closed.
+  const warrantyPayer = payment.payer === "warranty";
+  if (warrantyPayer && !(summary.fullyPaid && summary.balance <= 0.01)) return;
+
   const paidInFull = summary.paidInFull;
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
   const dateStr = (payment.paidAt ?? payment.createdAt).toLocaleDateString("en-US", {
     timeZone: "America/Chicago", month: "long", day: "numeric", year: "numeric",
   });
+  const paymentLabel = warrantyPayer
+    ? `Warranty payment — ${escapeHtml(summary.warrantyClaim?.company ?? "warranty company")}${summary.warrantyClaim ? ` (claim ${escapeHtml(summary.warrantyClaim.claimNumber)})` : ""}`
+    : (KIND_LABEL[payment.kind] ?? "Payment");
 
   const bodyHtml = `
     <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
-    <p style="font-size:15px;">This is your receipt — thank you.</p>
+    <p style="font-size:15px;">${warrantyPayer ? "Your warranty company's payment has arrived — everything on this invoice is now settled. Thank you." : "This is your receipt — thank you."}</p>
     <table style="width:100%;font-size:15px;border-collapse:collapse;margin:12px 0;">
       <tr><td style="padding:4px 0;color:#666;">Invoice</td><td style="text-align:right;">${escapeHtml(est.number)} — ${escapeHtml(est.title)}</td></tr>
       ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
-      <tr><td style="padding:4px 0;color:#666;">${KIND_LABEL[payment.kind] ?? "Payment"}</td>
+      <tr><td style="padding:4px 0;color:#666;">${paymentLabel}</td>
         <td style="text-align:right;font-weight:600;">$${payment.amount.toFixed(2)} ${METHOD_LABEL[payment.method] ?? "paid"} on ${dateStr}</td></tr>
       ${warrantyRow(summary)}
       <tr><td style="padding:4px 0;color:#666;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>

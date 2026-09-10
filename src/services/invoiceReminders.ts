@@ -60,10 +60,14 @@ export async function sweepInvoiceReminders(prisma: PrismaClient): Promise<{ rem
   let reminded = 0;
   let skipped = 0;
   for (const est of candidates) {
+    // HOMEOWNER balance only (Kyle, 2026-09-10: "the homeowner is never reminded
+    // about the warranty share"). paidInFull / balance are the homeowner's
+    // figures; the warranty company's open receivable never puts a customer on
+    // this list. Pinned by tests/warrantyPayments.test.ts.
     const summary = await paymentSummary(prisma, est.id, "https://unused.invalid");
     if (!summary || summary.paidInFull || summary.balance <= 0.009) continue;
     const lastPaid = summary.payments
-      .filter((pmt) => pmt.status === "paid" && pmt.paidAt)
+      .filter((pmt) => pmt.status === "paid" && pmt.paidAt && pmt.payer !== "warranty")
       .reduce<Date | null>((latest, pmt) => (!latest || pmt.paidAt! > latest ? pmt.paidAt! : latest), null);
     const anchor = Math.max(
       est.signedAt?.getTime() ?? 0,

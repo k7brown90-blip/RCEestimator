@@ -4,9 +4,15 @@
  * A purchased PO's material lands on its truck or in the warehouse; a tool PO
  * lands on the tool register. Each line shows the expected quantity, an
  * editable quantity landed (default expected) and an editable unit cost
- * (default from /purchase-orders/:id/landing — the receipt total prorated
- * across lines when there is one, else the keyed cost, else the book).
- * Landing closes the PO. Shared by the Inventory page and the Purchases card.
+ * (default from /purchase-orders/:id/landing). Landing closes the PO. Shared
+ * by the Inventory page and the Purchases card.
+ *
+ * Kyle, 2026-09-10: "The pricing on the P.O.'s does not seem to be applied
+ * correctly from the receipts … they are not the same price." Each line's
+ * default is the price printed beside it on the receipt, and the source label
+ * says which lines are guesses (prorated, book). The receipt's own lines show
+ * under the PO lines; one that is not on the PO can be added as a line so it
+ * lands at the receipt's price.
  */
 
 import { useEffect, useState } from "react";
@@ -16,11 +22,13 @@ import type { LandingDefaults } from "../lib/types";
 import { money } from "../lib/utils";
 
 const COST_SOURCE_LABEL: Record<LandingDefaults["lines"][number]["costSource"], string> = {
-  receipt: "from receipt",
-  line: "as keyed",
+  "receipt-line": "from receipt line",
+  "po-line": "typed on PO",
+  "receipt-prorated": "prorated",
   book: "book price",
   none: "no default",
 };
+const GUESS_SOURCES = new Set<LandingDefaults["lines"][number]["costSource"]>(["receipt-prorated", "book", "none"]);
 
 type Row = { lineId: string; qty: string; cost: string };
 
@@ -31,8 +39,19 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (data) setRows(data.lines.map((l) => ({ lineId: l.lineId, qty: String(l.qtyLandedDefault), cost: String(l.unitCostDefault) })));
+    // A refetch (after adding a line from the receipt) keeps what Kyle already typed on the lines he had.
+    if (data) setRows((prev) => data.lines.map((l) => prev.find((r) => r.lineId === l.lineId) ?? { lineId: l.lineId, qty: String(l.qtyLandedDefault), cost: String(l.unitCostDefault) }));
   }, [data]);
+
+  const addLine = useMutation({
+    mutationFn: (rl: LandingDefaults["receiptLines"][number]["lines"][number]) =>
+      api.addPurchaseOrderLine(poId, { name: rl.name, qty: rl.qty, unit: rl.unit, unitCost: rl.unitCost, reason: "added from the receipt at landing" }),
+    onSuccess: () => {
+      setError(null);
+      for (const key of [["purchase-order-landing"], ["purchase-order"], ["purchase-orders"]]) void queryClient.invalidateQueries({ queryKey: key });
+    },
+    onError: (err) => setError((err as Error).message),
+  });
 
   const land = useMutation({
     mutationFn: () => api.landPurchaseOrder(poId, {
@@ -82,7 +101,10 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
                 </td>
                 <td className="py-0.5 pr-2">
                   <input className="field w-24 px-1 py-0.5 text-xs" inputMode="decimal" value={row.cost} onChange={(e) => setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, cost: e.target.value } : r)))} />
-                  <span className="ml-1 text-rce-muted">{COST_SOURCE_LABEL[l.costSource]}</span>
+                  <span className={`ml-1 text-[10px] ${GUESS_SOURCES.has(l.costSource) ? "text-amber-800" : "text-rce-muted"}`} title={l.matchedReceiptLine ? `receipt: ${l.matchedReceiptLine.name} × ${l.matchedReceiptLine.qty}` : undefined}>
+                    {COST_SOURCE_LABEL[l.costSource]}
+                    {l.costSource !== "receipt-line" && l.matchedReceiptLine ? " · receipt line has no price" : ""}
+                  </span>
                 </td>
                 <td className="py-0.5 text-right tabular-nums">{money((Number(row.qty) || 0) * (Number(row.cost) || 0))}</td>
               </tr>
@@ -90,6 +112,34 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
           })}
         </tbody>
       </table>
+      {data.receiptLines.length > 0 && (
+        <div className="space-y-1 rounded border border-rce-border/60 bg-rce-bg/40 p-2">
+          <p className="text-[11px] uppercase tracking-wide text-rce-soft">Receipt lines</p>
+          {data.receiptLines.map((r) => (
+            <div key={r.receiptId}>
+              <p className="text-rce-muted">{r.vendor ?? "receipt"} · {money(r.amount)}{r.parseError ? ` · ${r.parseError}` : r.lines.length === 0 ? " · no parsed lines" : ""}</p>
+              {r.lines.map((rl) => (
+                <p key={`${r.receiptId}-${rl.index}`} className="flex flex-wrap items-center gap-x-2 pl-2 tabular-nums">
+                  <span>{rl.name}</span>
+                  <span className="text-rce-muted">× {rl.qty} {rl.unit ?? ""}</span>
+                  <span className="text-rce-muted">{rl.unitCost != null ? `@ ${money(rl.unitCost)}` : "no price"}</span>
+                  {rl.matchedLineId ? (
+                    <span className="text-rce-muted">→ {data.lines.find((l) => l.lineId === rl.matchedLineId)?.name ?? "PO line"}</span>
+                  ) : (
+                    <>
+                      <span className="text-amber-800">not on this PO — add as a line?</span>
+                      <button type="button" className="btn px-1.5 py-0 text-[11px]" disabled={addLine.isPending || Boolean(data.purchaseOrder.landedAt)} onClick={() => addLine.mutate(rl)}>Add</button>
+                    </>
+                  )}
+                </p>
+              ))}
+            </div>
+          ))}
+          {data.remainder > 0 && data.lines.some((l) => l.costSource === "receipt-prorated") && (
+            <p className="text-rce-muted">{money(data.remainder)} of the receipt is not on a priced line — spread over the prorated lines.</p>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="tabular-nums">Landing total {money(total)}{data.receiptTotal > 0 && Math.abs(total - data.receiptTotal) > 0.01 ? <span className="text-amber-800"> · receipt {money(data.receiptTotal)}</span> : null}</span>
         <span className="inline-flex flex-wrap items-center gap-1">

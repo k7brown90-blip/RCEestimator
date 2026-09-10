@@ -22,10 +22,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
-import type { CompanyBillRow, JobProfitRow, JobReceiptRow, PaymentRow } from "../lib/api";
+import type { CompanyBillRow, JobProfitRow, JobReceiptRow, PaymentRow, WarrantyReceivableRow } from "../lib/api";
 import { MATERIAL_SOURCE_LABEL, type InvoiceSummary, type MaterialsByMonth } from "../lib/types";
 import { money } from "../lib/utils";
 import { ReceiptReviewList } from "../components/ReceiptReviewList";
@@ -294,9 +295,110 @@ export function FinancialsPage() {
           void queryClient.invalidateQueries({ queryKey: ["financials", year] });
           void queryClient.invalidateQueries({ queryKey: ["invoices"] });
           void queryClient.invalidateQueries({ queryKey: ["jobProfitability", year] });
+          void queryClient.invalidateQueries({ queryKey: ["warrantyReceivables"] });
         }}
       />
+
+      {/* ── Warranty receivables (Kyle, 2026-09-10): the warranty company's share of each covered
+          job, chased separately from the homeowner — who is never reminded about it. ── */}
+      <WarrantyReceivablesCard />
     </div>
+  );
+}
+
+// ─── Warranty receivables ─────────────────────────────────────────────────────
+
+const WARRANTY_STATUS_META: Record<WarrantyReceivableRow["status"], { label: string; tone: string }> = {
+  "not submitted": { label: "not submitted", tone: "bg-red-100 text-red-900" },
+  submitted: { label: "submitted", tone: "bg-sky-100 text-sky-900" },
+  overdue: { label: "overdue", tone: "bg-amber-100 text-amber-900" },
+  paid: { label: "paid", tone: "bg-emerald-100 text-emerald-900" },
+};
+
+/**
+ * Kyle, 2026-09-10: "Patricia's warranty portion of the job is not getting tracked and doesn't
+ * have a system to record its payment to that job when that check comes in." Every signed,
+ * unvoided estimate with a claim — what the company owes, has paid, the dates, and a status —
+ * so RELY's $370 is a receivable with a due date, not an invisible credit. Recording the check
+ * and the claim dates happens on the estimate (the account page), which each row links to.
+ */
+function WarrantyReceivablesCard() {
+  const { data } = useQuery({ queryKey: ["warrantyReceivables"], queryFn: api.warrantyReceivables });
+  const [showPaid, setShowPaid] = useState(false);
+  const rows = (data?.rows ?? []).filter((r) => showPaid || r.status !== "paid");
+  const paidCount = (data?.rows ?? []).filter((r) => r.status === "paid").length;
+  const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : "—");
+  return (
+    <section className="card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">
+            Warranty receivables ({data?.totals.open ?? 0} · {money(data?.totals.balance ?? 0)})
+          </h2>
+          <p className="text-xs text-rce-muted">
+            The warranty company's share of each covered job — a second payer, chased on its own. The
+            homeowner's balance never includes it and the homeowner is never reminded about it.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <div className="rounded-lg border border-rce-border px-3 py-1.5">
+            <div className="text-[10px] uppercase tracking-wide text-rce-muted">Overdue</div>
+            <div className={`font-semibold tabular-nums ${(data?.totals.overdue ?? 0) > 0 ? "text-amber-800" : ""}`}>{data?.totals.overdue ?? 0}</div>
+          </div>
+          <div className="rounded-lg border border-rce-border px-3 py-1.5">
+            <div className="text-[10px] uppercase tracking-wide text-rce-muted">Collected</div>
+            <div className="font-semibold tabular-nums text-emerald-700">{money(data?.totals.paid ?? 0)}</div>
+          </div>
+        </div>
+      </div>
+      {rows.length === 0 && (
+        <p className="mt-2 text-sm text-rce-muted">
+          {data && data.rows.length > 0 ? "Every warranty claim is paid." : "No warranty claims on signed work."}
+        </p>
+      )}
+      <ul className="mt-2 space-y-1">
+        {rows.map((r) => {
+          const s = WARRANTY_STATUS_META[r.status];
+          return (
+            <li key={r.estimateId} className="rounded-lg border border-rce-border px-3 py-2 text-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link to={`/accounts/${r.account.id}`} className="font-medium hover:underline">{r.account.name}</Link>
+                    <span className={`rounded px-1.5 py-0.5 text-[11px] ${s.tone}`}>{s.label}</span>
+                    {r.balance > 0.009 && r.daysOutstanding > 0 && (
+                      <span className="text-[11px] text-rce-muted">{r.daysOutstanding}d outstanding</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-rce-muted">
+                    <Link to={`/accounts/${r.account.id}`} className="hover:underline">{r.number}</Link> · {r.title} · {r.company} claim {r.claimNumber}{r.authNumber ? ` · auth ${r.authNumber}` : ""}
+                  </div>
+                  <div className="text-xs text-rce-muted">
+                    submitted {fmt(r.submittedAt)} · expected {fmt(r.expectedAt)}
+                    {r.approvedAt ? ` · approved ${fmt(r.approvedAt)}` : ""}
+                    {r.receivedAt ? ` · received ${fmt(r.receivedAt)}` : ""}
+                    {r.depositedAt ? ` · deposited ${fmt(r.depositedAt)}` : ""}
+                    {r.checkNumber ? ` · check #${r.checkNumber}` : ""}
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <div className="font-semibold tabular-nums">{money(r.covered)}</div>
+                  {r.paid > 0 && <div className="text-xs text-emerald-700">paid {money(r.paid)}</div>}
+                  {r.balance > 0.009
+                    ? <div className="text-xs font-medium text-red-700">owes {money(r.balance)}</div>
+                    : <div className="text-xs text-emerald-700">settled</div>}
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {paidCount > 0 && (
+        <button type="button" className="mt-2 text-xs font-medium text-rce-accent hover:underline" onClick={() => setShowPaid((v) => !v)}>
+          {showPaid ? "Hide" : "Show"} paid claims ({paidCount})
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -1000,9 +1102,14 @@ function PaymentsCard({
               <li key={p.id} className="flex items-center justify-between rounded-lg border border-rce-border px-3 py-2 text-sm">
                 <span>
                   <span className="font-medium capitalize">{p.method}</span>
+                  {/* Whose money (Kyle, 2026-09-10): a warranty company's check is labelled as such. */}
+                  {p.payer === "warranty" && (
+                    <span className="ml-2 rounded bg-green-100 px-1.5 py-0.5 text-[11px] text-green-800">warranty company</span>
+                  )}
                   <span className="ml-2 text-xs text-rce-muted">
                     {p.paidAt ? new Date(p.paidAt).toLocaleDateString() : ""}
                     {p.customer ? ` · ${p.customer.name}` : ""}
+                    {p.checkNumber ? ` · check #${p.checkNumber}` : ""}
                     {p.note ? ` · ${p.note}` : ""}
                     {p.status !== "paid" ? ` · ${p.status}` : ""}
                   </span>
@@ -1058,13 +1165,19 @@ function InvoiceRow({
         </span>
         <span className="shrink-0 text-right">
           <span className="block font-semibold tabular-nums">{money(inv.billedTotal)}</span>
-          {(inv.warrantyCovered ?? 0) > 0 && (
-            <span className="block text-[11px] text-green-700">warranty −{money(inv.warrantyCovered ?? 0)}</span>
-          )}
           {inv.paymentStatus === "paid" ? (
             <span className="block text-xs text-emerald-700">paid{inv.lastPaidAt ? ` ${new Date(inv.lastPaidAt).toLocaleDateString()}` : ""}</span>
           ) : (
             <span className="block text-xs font-medium text-red-700">owes {money(inv.balance)}</span>
+          )}
+          {/* Two payers (Kyle, 2026-09-10): the homeowner's line above; the warranty company's here. */}
+          {(inv.warrantyCovered ?? 0) > 0 && (
+            <span className="block text-[11px] text-green-700">
+              {inv.warrantyClaim?.company ?? "warranty"}: covered {money(inv.warrantyCovered ?? 0)}
+              {(inv.warrantyBalance ?? inv.warrantyCovered ?? 0) > 0.009
+                ? ` · owes ${money(inv.warrantyBalance ?? inv.warrantyCovered ?? 0)}`
+                : " · paid"}
+            </span>
           )}
         </span>
       </button>
@@ -1146,13 +1259,21 @@ function InvoicePanel({ inv, stripeConfigured, onChange }: { inv: InvoiceSummary
           </p>
         </div>
       </div>
+      {/* One account, two payers (Kyle, 2026-09-10): the homeowner's money and the warranty
+          company's money on their own lines — a RELY check never touches the homeowner's balance. */}
       {(inv.warrantyCovered ?? 0) > 0 && (
-        <p className="mt-1 text-xs text-green-700">
-          Billed is the homeowner share — warranty −{money(inv.warrantyCovered ?? 0)}
-          {inv.warrantyClaim
-            ? ` billed to ${inv.warrantyClaim.company} (claim ${inv.warrantyClaim.claimNumber}${inv.warrantyClaim.authNumber ? `, auth ${inv.warrantyClaim.authNumber}` : ""})`
-            : ""}
-        </p>
+        <div className="mt-1 text-xs">
+          <p>
+            <span className="font-medium">Homeowner:</span> billed {money(inv.billedTotal)} · paid {money(inv.totalPaid)} · balance {money(inv.balance)}
+          </p>
+          <p className="text-green-700">
+            <span className="font-medium">{inv.warrantyClaim?.company ?? "Warranty company"}:</span> covered {money(inv.warrantyCovered ?? 0)}
+            {" · "}paid {money(inv.warrantyPaid ?? 0)} · balance {money(inv.warrantyBalance ?? inv.warrantyCovered ?? 0)}
+            {inv.warrantyClaim ? ` · claim ${inv.warrantyClaim.claimNumber}${inv.warrantyClaim.authNumber ? `, auth ${inv.warrantyClaim.authNumber}` : ""}` : ""}
+            {inv.warrantyStatus ? ` · ${inv.warrantyStatus}` : ""}
+          </p>
+          <p className="text-rce-muted">Record the warranty company's check on the estimate (account page) — it posts against the claim, not the homeowner.</p>
+        </div>
       )}
       {inv.discountTotal > 0 && (
         <p className="mt-1 text-xs text-emerald-700">includes {money(inv.discountTotal)} discount credit (retired 3% programme)</p>

@@ -22,7 +22,7 @@ import express from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
-import { billedTotalOf, stripeConfigured } from "../services/stripePayments";
+import { fullBillOf, stripeConfigured } from "../services/stripePayments";
 import { estimateMaterialCost, getLaborRate, materialCostForJobs } from "../services/jobCosting";
 import { readBalances } from "../services/cardSpend";
 import { TreasuryError, executeSweep, readSweep, stripeFeeRows } from "../services/treasury";
@@ -109,27 +109,137 @@ financialsRouter.get("/payments", asyncHandler(async (req, res) => {
   res.json(payments);
 }));
 
-/** Hand-recorded cash/check payments. Stripe rows only ever arrive via webhook. */
+/**
+ * Hand-recorded cash/check payments. Stripe rows only ever arrive via webhook.
+ *
+ * Two payers (Kyle, 2026-09-10: "Patricia's warranty portion of the job is not
+ * getting tracked and doesn't have a system to record its payment to that job
+ * when that check comes in"). `payer: "warranty"` records the warranty
+ * company's check against the covered amount on the estimate's claim — it
+ * needs a claim, cannot exceed what the company still owes, stamps the claim's
+ * received/deposited dates and check number with an event, and never reduces
+ * the homeowner's balance. The homeowner is not emailed about it.
+ */
 financialsRouter.post("/payments", asyncHandler(async (req, res) => {
   const body = z.object({
     amount: z.number().positive(),
     // Methods the system can't detect (Kyle, 2026-08-25: "when they write a
     // check or do another form of payment that the system can't detect like
-    // cash or zelle"). Stripe rows only ever arrive via the webhook.
-    method: z.enum(["cash", "check", "zelle", "other"]),
+    // cash or zelle"). Stripe rows only ever arrive via the webhook. "ach" is
+    // how a warranty company pays when it does not mail a check.
+    method: z.enum(["cash", "check", "zelle", "ach", "other"]),
     // deposit satisfies the scheduling gate (Kyle, 2026-08-25).
     kind: z.enum(["deposit", "final", "other"]).default("other"),
+    // Whose money (Kyle, 2026-09-10): the homeowner's, or the warranty company's.
+    payer: z.enum(["customer", "warranty"]).default("customer"),
+    checkNumber: z.string().trim().max(40).nullable().optional(),
     customerId: z.string().optional(),
     estimateId: z.string().optional(),
     visitId: z.string().optional(),
     note: z.string().trim().max(500).optional(),
     paidAt: z.string().optional(),
   }).parse(req.body);
+
+  if (body.payer === "warranty") {
+    if (!body.estimateId) {
+      res.status(400).json({ error: "A warranty payment must be recorded against an estimate with a warranty claim." });
+      return;
+    }
+    const { paymentSummary, parseWarrantyJson } = await import("../services/stripePayments");
+    const est = await prisma.issuedEstimate.findUnique({
+      where: { id: body.estimateId },
+      select: { id: true, number: true, customerId: true, jobVisitId: true, visitId: true, warrantyJson: true },
+    });
+    if (!est) { res.status(404).json({ error: "Estimate not found." }); return; }
+    const claim = parseWarrantyJson(est.warrantyJson);
+    if (!claim) {
+      res.status(400).json({ error: `No warranty claim is recorded on ${est.number} — set the coverage before recording the warranty company's payment.` });
+      return;
+    }
+    const before = (await paymentSummary(prisma, est.id, "https://unused.invalid"))!;
+    const owed = before.warranty?.balance ?? 0;
+    if (body.amount > owed + 0.01) {
+      res.status(409).json({
+        error: `$${body.amount.toFixed(2)} is more than ${claim.company} still owes on ${est.number} ($${owed.toFixed(2)} of $${(before.warranty?.covered ?? 0).toFixed(2)} covered).`,
+      });
+      return;
+    }
+    const paidAt = body.paidAt ? new Date(body.paidAt) : new Date();
+    const checkNumber = body.checkNumber?.trim() || null;
+    // The claim's own record: received + deposited stamp to the paid date, the
+    // check number lands on the claim, and the trail says so.
+    const next = {
+      ...claim,
+      receivedAt: claim.receivedAt ?? paidAt.toISOString(),
+      depositedAt: paidAt.toISOString(),
+      checkNumber: checkNumber ?? claim.checkNumber,
+      events: [
+        ...claim.events,
+        {
+          at: new Date().toISOString(),
+          actor: "human:crm-session",
+          kind: "payment",
+          detail: `$${body.amount.toFixed(2)} ${body.method}${checkNumber ? ` #${checkNumber}` : ""} received ${paidAt.toISOString().slice(0, 10)}`,
+          ...(body.note ? { reason: body.note } : {}),
+        },
+      ],
+    };
+    const payment = await prisma.$transaction(async (tx) => {
+      const row = await tx.payment.create({
+        data: {
+          amount: body.amount,
+          method: body.method,
+          kind: body.kind === "deposit" ? "final" : body.kind, // the ⅓ deposit is the homeowner's concept
+          payer: "warranty",
+          checkNumber,
+          status: "paid",
+          customerId: body.customerId ?? est.customerId,
+          estimateId: est.id,
+          visitId: body.visitId ?? est.jobVisitId ?? est.visitId ?? null,
+          note: body.note ?? null,
+          paidAt,
+        },
+      });
+      await tx.issuedEstimate.update({ where: { id: est.id }, data: { warrantyJson: JSON.stringify(next) } });
+      await tx.issuedEstimateEvent.create({
+        data: {
+          estimateId: est.id,
+          type: "warranty_payment",
+          actor: "human:crm-session",
+          detail: `${claim.company} paid $${body.amount.toFixed(2)} by ${body.method}${checkNumber ? ` #${checkNumber}` : ""} on claim ${claim.claimNumber}`,
+        },
+      });
+      return row;
+    });
+    const after = (await paymentSummary(prisma, est.id, "https://unused.invalid"))!;
+    const { logSystemEvent } = await import("../services/systemEvents");
+    logSystemEvent(
+      "info",
+      "financials",
+      `Warranty payment received — $${body.amount.toFixed(2)} from ${claim.company} on ${est.number} (claim ${claim.claimNumber}); ` +
+        `warranty balance $${(after.warranty?.balance ?? 0).toFixed(2)}, homeowner balance $${after.balance.toFixed(2)}` +
+        `${after.fullyPaid ? " — invoice fully paid" : ""}`,
+      { paymentId: payment.id, estimateId: est.id },
+    );
+    // Nothing goes to the homeowner about the warranty share — unless this check closed the
+    // whole invoice and the homeowner's own balance is already zero, in which case the existing
+    // paid-in-full receipt is the one document that says "everything on this job is settled".
+    if (after.fullyPaid && after.balance <= 0.01) {
+      const { sendPaymentReceiptEmail } = await import("../services/paymentReceipts");
+      sendPaymentReceiptEmail(prisma, payment.id).catch((err) =>
+        console.error("[financials] receipt email failed:", err));
+    }
+    res.status(201).json(payment);
+    return;
+  }
+
   const payment = await prisma.payment.create({
     data: {
       amount: body.amount,
       method: body.method,
       kind: body.kind,
+      payer: "customer",
+      checkNumber: body.checkNumber?.trim() || null,
       status: "paid",
       customerId: body.customerId ?? null,
       estimateId: body.estimateId ?? null,
@@ -192,7 +302,8 @@ interface YearLedger {
     /** The visits this estimate's receipts would land on. */
     jobIds: string[];
   }[];
-  collected: { month: number; amount: number; method: string; date: Date; note: string | null }[];
+  /** Every paid row, both payers — money is money (Kyle, 2026-09-10); `payer` says whose. */
+  collected: { month: number; amount: number; method: string; payer: string; date: Date; note: string | null }[];
   receiptRows: { month: number; amount: number; category: string; vendor: string | null; date: Date; jobId: string | null }[];
   billRows: { month: number; amount: number; category: string; name: string }[];
   /**
@@ -253,7 +364,10 @@ async function yearLedger(year: number): Promise<YearLedger> {
   return {
     invoiced: estimates.map((est) => ({
       month: est.signedAt!.getMonth(),
-      amount: billedTotalOf({
+      // The FULL bill — homeowner share + warranty share (Kyle, 2026-09-10). Collected
+      // below counts both payers' money, so invoiced must too or the P&L would show
+      // RELY's $370 arriving against nothing.
+      amount: fullBillOf({
         total: est.total,
         tripCharge: est.tripCharge,
         selectedOptions: est.selectedOptions,
@@ -273,7 +387,7 @@ async function yearLedger(year: number): Promise<YearLedger> {
       jobIds: [est.jobVisitId, est.visitId].filter((v): v is string => Boolean(v)),
     })),
     collected: payments.map((p) => ({
-      month: p.paidAt!.getMonth(), amount: p.amount, method: p.method, date: p.paidAt!, note: p.note,
+      month: p.paidAt!.getMonth(), amount: p.amount, method: p.method, payer: p.payer, date: p.paidAt!, note: p.note,
     })),
     receiptRows: receipts.map((r) => ({
       month: r.receivedAt.getMonth(), amount: r.amount, category: r.category, vendor: r.vendor, date: r.receivedAt, jobId: r.jobId,
@@ -497,7 +611,9 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
   const laborRate = await getLaborRate();
   const estimateByJob = new Map<string, number>();
   for (const est of estimates) {
-    const amount = billedTotalOf({
+    // The full bill, both payers (Kyle, 2026-09-10) — the same revenue rung GET /jobs
+    // and the account summary use.
+    const amount = fullBillOf({
       total: est.total,
       tripCharge: est.tripCharge,
       selectedOptions: est.selectedOptions,
@@ -737,7 +853,7 @@ financialsRouter.get("/export", asyncHandler(async (req, res) => {
     rows.push(`${r.date.toISOString().slice(0, 10)},income,invoiced,${esc(`Invoice ${r.number} — ${r.customer}`)},${r.amount.toFixed(2)}`);
   }
   for (const c of ledger.collected) {
-    rows.push(`${c.date.toISOString().slice(0, 10)},income,collected,${esc(`Payment (${c.method})${c.note ? ` — ${c.note}` : ""}`)},${c.amount.toFixed(2)}`);
+    rows.push(`${c.date.toISOString().slice(0, 10)},income,collected,${esc(`Payment (${c.method}${c.payer === "warranty" ? ", warranty company" : ""})${c.note ? ` — ${c.note}` : ""}`)},${c.amount.toFixed(2)}`);
   }
   for (const r of ledger.receiptRows) {
     rows.push(`${r.date.toISOString().slice(0, 10)},expense,${r.category},${esc(r.vendor ?? "receipt")},${r.amount.toFixed(2)}`);

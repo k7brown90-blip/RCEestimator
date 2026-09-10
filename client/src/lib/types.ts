@@ -1194,6 +1194,30 @@ export type InventoryOverview = {
   unlandedPos: UnlandedPo[];
 };
 
+// Kyle, 2026-09-10: each PO line prices from ITS receipt line; the source rides beside the number.
+export type LandingCostSource = "receipt-line" | "po-line" | "receipt-prorated" | "book" | "none";
+
+export type LandingReceiptLine = {
+  receiptId: string;
+  index: number;
+  name: string;
+  qty: number;
+  unit: string | null;
+  unitCost: number | null;
+  lineTotal: number | null;
+  itemId: string | null;
+  matchedLineId: string | null;
+};
+
+export type LandingReceiptView = {
+  receiptId: string;
+  vendor: string | null;
+  amount: number;
+  parseError: string | null;
+  lines: LandingReceiptLine[];
+  unmatched: LandingReceiptLine[];
+};
+
 export type LandingLineDefault = {
   lineId: string;
   itemId: string | null;
@@ -1202,8 +1226,9 @@ export type LandingLineDefault = {
   qtyExpected: number;
   qtyLandedDefault: number;
   unitCostDefault: number;
-  costSource: "receipt" | "line" | "book" | "none";
+  costSource: LandingCostSource;
   bookPurchasePrice: number | null;
+  matchedReceiptLine: { receiptId: string; name: string; qty: number; unit: string | null; unitCost: number | null } | null;
 };
 
 export type LandingDefaults = {
@@ -1211,7 +1236,10 @@ export type LandingDefaults = {
   destinationKey: string | null;
   destinationLabel: string;
   receiptTotal: number;
+  matchedTotal: number;
+  remainder: number;
   receiptCount: number;
+  receiptLines: LandingReceiptView[];
   hasReceiptPhoto: boolean;
   blocker: string | null;
   lines: LandingLineDefault[];
@@ -1342,6 +1370,10 @@ export type InvoiceSummary = {
   /** Home-warranty coverage (Kyle, 2026-09-09) — already off billedTotal; shown beside it. */
   warrantyCovered?: number;
   warrantyClaim?: WarrantyClaimRef | null;
+  /** The warranty receivable (Kyle, 2026-09-10): what the company has paid and still owes. */
+  warrantyPaid?: number;
+  warrantyBalance?: number;
+  warrantyStatus?: "not submitted" | "submitted" | "overdue" | "paid" | null;
   /** Gmail reported the last email about this row undeliverable (Kyle, 2026-09-09). Additive. */
   lastBounceAt?: string | null;
   lastBounceReason?: string | null;
@@ -1362,6 +1394,14 @@ export type WarrantyClaim = {
   coveredAmount: number;
   note: string | null;
   setAt: string;
+  /** Receivable tracking (Kyle, 2026-09-10) — absent on claims recorded before it existed. */
+  submittedAt?: string | null;
+  expectedAt?: string | null;
+  approvedAt?: string | null;
+  receivedAt?: string | null;
+  depositedAt?: string | null;
+  checkNumber?: string | null;
+  events?: { at: string; actor: string; kind: string; reason?: string; detail?: string }[];
 };
 export type WarrantyClaimRef = Pick<WarrantyClaim, "company" | "claimNumber" | "authNumber">;
 
@@ -1796,6 +1836,8 @@ export interface PbIssuedEstimate {
   /** The claim as applied, from the account-estimates route; already off billedTotal. */
   warranty?: WarrantyClaim | null;
   warrantyCovered?: number;
+  /** What the warranty company has paid on it so far (Kyle, 2026-09-10). */
+  warrantyPaid?: number;
   /** Gmail reported the last email about this row undeliverable (Kyle, 2026-09-09). Additive. */
   lastBounceAt?: string | null;
   lastBounceReason?: string | null;

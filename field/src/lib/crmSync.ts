@@ -732,6 +732,29 @@ export async function moveToolFromField(toolId: string, toLocationKey: string, r
   return crmRequest(`/tools/${toolId}/move`, { method: 'POST', body: JSON.stringify({ toLocationKey, reason: reason ?? null }) })
 }
 
+// Kyle, 2026-09-10: each PO line prices from ITS receipt line; the source rides beside the number.
+export type FieldLandingCostSource = 'receipt-line' | 'po-line' | 'receipt-prorated' | 'book' | 'none'
+
+export interface FieldLandingReceiptLine {
+  receiptId: string
+  index: number
+  name: string
+  qty: number
+  unit: string | null
+  unitCost: number | null
+  lineTotal: number | null
+  matchedLineId: string | null
+}
+
+export interface FieldLandingReceipt {
+  receiptId: string
+  vendor: string | null
+  amount: number
+  parseError: string | null
+  lines: FieldLandingReceiptLine[]
+  unmatched: FieldLandingReceiptLine[]
+}
+
 export interface FieldLandingLine {
   lineId: string
   itemId: string | null
@@ -740,16 +763,28 @@ export interface FieldLandingLine {
   qtyExpected: number
   qtyLandedDefault: number
   unitCostDefault: number
-  costSource: 'receipt' | 'line' | 'book' | 'none'
+  costSource: FieldLandingCostSource
+  matchedReceiptLine: { receiptId: string; name: string; qty: number; unit: string | null; unitCost: number | null } | null
 }
 
 export interface FieldLanding {
   purchaseOrder: { number: string; purpose: FieldPoPurpose }
   destinationLabel: string
   receiptTotal: number
+  matchedTotal: number
+  remainder: number
   receiptCount: number
+  receiptLines: FieldLandingReceipt[]
   blocker: string | null
   lines: FieldLandingLine[]
+}
+
+/** A receipt line that is not on the PO becomes a PO line (Kyle, 2026-09-10) — so it lands at the receipt's price. */
+export async function addPurchaseOrderLineFromField(
+  poId: string,
+  line: { name: string; qty: number; unit?: string | null; unitCost?: number | null },
+): Promise<{ id: string }> {
+  return crmRequest(`/purchase-orders/${poId}/lines`, { method: 'POST', body: JSON.stringify(line) })
 }
 
 export async function fetchLandingDefaults(poId: string): Promise<FieldLanding> {

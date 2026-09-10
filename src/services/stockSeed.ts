@@ -47,12 +47,16 @@ export interface BookItem {
   costBasisUsed: number | null;
 }
 
+/** Where a purchase's unit cost came from (Kyle, 2026-09-10: a book-price fallback must be visible, not silent). */
+export type PurchaseCostSource = "receipt" | "book" | "none";
+
 export interface Purchase {
   key: string;
   name: string;
   qty: number;
   unit: string | null;
   unitCost: number | null;
+  costSource: PurchaseCostSource;
   receiptId: string;
   /** How the key was chosen. */
   match: { kind: "itemId" | "name" | "adhoc"; score: number };
@@ -76,12 +80,21 @@ export interface ProposalRow {
   usedUnit: string | null;
   proposedQty: number;
   unitCost: number;
+  /** "receipt" when any purchase carried its own price; "book" when the price book filled in; "none" when nothing did. */
+  costSource: PurchaseCostSource;
   value: number;
   flags: string[];
   receiptIds: string[];
 }
 
 export const SEED_REASON = "Opening count seeded from receipts and completed jobs (2026-09-10) — Kyle to correct";
+/** The count reason carries where the cost came from, so a book-price guess reads as one in the trail. */
+export const SEED_COST_SUFFIX: Record<PurchaseCostSource, string> = {
+  receipt: "cost from receipt line",
+  book: "cost from book price — receipt had no line price",
+  none: "no cost — receipt had no line price and the book has none",
+};
+export const seedReasonFor = (source: PurchaseCostSource) => `${SEED_REASON} — ${SEED_COST_SUFFIX[source]}`;
 export const SEED_ACTOR = "system";
 export const MATCH_THRESHOLD = 0.5;
 
@@ -193,12 +206,16 @@ export function resolveLineKey(line: ReceiptLineIn, book: BookItem[], byId: Map<
   return { key: adhocItemId(name), name, item: null, match: { kind: "adhoc", score: 0 } };
 }
 
-/** line.unitCost → line total ÷ qty → book purchasePrice ÷ pack qty → null. */
+/** line.unitCost → line total ÷ qty (both "receipt") → book purchasePrice ÷ pack qty ("book") → null ("none"). */
+export function lineCost(line: ReceiptLineIn, qty: number, item: BookItem | null): { unitCost: number | null; source: PurchaseCostSource } {
+  if (typeof line.unitCost === "number" && Number.isFinite(line.unitCost) && line.unitCost > 0) return { unitCost: line.unitCost, source: "receipt" };
+  if (typeof line.total === "number" && Number.isFinite(line.total) && line.total > 0 && qty > 0) return { unitCost: r4(line.total / qty), source: "receipt" };
+  if (item?.purchasePrice != null) return { unitCost: r4(item.purchasePrice / (item.purchasePackQty ?? 1)), source: "book" };
+  return { unitCost: null, source: "none" };
+}
+
 export function lineUnitCost(line: ReceiptLineIn, qty: number, item: BookItem | null): number | null {
-  if (typeof line.unitCost === "number" && Number.isFinite(line.unitCost) && line.unitCost > 0) return line.unitCost;
-  if (typeof line.total === "number" && Number.isFinite(line.total) && line.total > 0 && qty > 0) return r4(line.total / qty);
-  if (item?.purchasePrice != null) return r4(item.purchasePrice / (item.purchasePackQty ?? 1));
-  return null;
+  return lineCost(line, qty, item).unitCost;
 }
 
 // ─── Units ───────────────────────────────────────────────────────────────────
@@ -250,7 +267,8 @@ export function buildProposal(purchases: Purchase[], usages: Usage[], byId: Map<
     a.boughtQty += p.qty;
     const u = normalizeUnit(p.unit);
     if (u) { a.boughtUnits.add(u); a.boughtUnit = a.boughtUnit ?? u; }
-    if (p.unitCost != null && p.qty > 0) { a.costQty += p.qty; a.costSum += p.qty * p.unitCost; }
+    // Only a price the receipt itself carried counts toward the average; a book fallback stays a fallback.
+    if (p.unitCost != null && p.qty > 0 && p.costSource === "receipt") { a.costQty += p.qty; a.costSum += p.qty * p.unitCost; }
     a.receiptIds.add(p.receiptId);
   }
   for (const u of usages) {
@@ -285,16 +303,17 @@ export function buildProposal(purchases: Purchase[], usages: Usage[], byId: Map<
     }
 
     let unitCost: number;
-    if (a.costQty > 0) unitCost = r4(a.costSum / a.costQty);
-    else if (item?.purchasePrice != null) unitCost = item.purchasePrice;
-    else if (item?.costBasisUsed != null) unitCost = item.costBasisUsed;
-    else { unitCost = 0; flags.push("no cost"); }
+    let costSource: PurchaseCostSource;
+    if (a.costQty > 0) { unitCost = r4(a.costSum / a.costQty); costSource = "receipt"; }
+    else if (item?.purchasePrice != null) { unitCost = item.purchasePrice; costSource = "book"; }
+    else if (item?.costBasisUsed != null) { unitCost = item.costBasisUsed; costSource = "book"; }
+    else { unitCost = 0; costSource = "none"; flags.push("no cost"); }
     if (!item) flags.push("not in price book (adhoc)");
 
     rows.push({
       key, name: a.name, isBook: Boolean(item),
       boughtQty, boughtUnit: a.boughtUnit, usedQty, usedUnit: a.usedUnit,
-      proposedQty, unitCost, value: r2(proposedQty * unitCost), flags, receiptIds: [...a.receiptIds],
+      proposedQty, unitCost, costSource, value: r2(proposedQty * unitCost), flags, receiptIds: [...a.receiptIds],
     });
   }
   return rows.sort((x, y) => x.key.localeCompare(y.key));
@@ -334,9 +353,10 @@ export async function loadPurchases(book: BookItem[], byId: Map<string, BookItem
       const qtyRaw = Number(line.qty);
       const qty = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : 1;
       const { key, name, item, match } = resolveLineKey(line, book, byId);
+      const cost = lineCost(line, qty, item);
       purchases.push({
         key, name, qty, unit: line.unit?.toString().trim() || (item?.purchaseUnit ?? item?.unit ?? null),
-        unitCost: lineUnitCost(line, qty, item), receiptId: r.id, match,
+        unitCost: cost.unitCost, costSource: cost.source, receiptId: r.id, match,
       });
     }
   }
@@ -416,14 +436,18 @@ export async function applyProposal(truckId: string, rows: ProposalRow[]): Promi
     else toWrite.push(r);
   }
   const written: ApplyResult["written"] = [];
-  if (toWrite.length > 0) {
+  // One count per cost source so each movement's reason says where its cost came from.
+  for (const source of ["receipt", "book", "none"] as PurchaseCostSource[]) {
+    const group = toWrite.filter((r) => r.costSource === source);
+    if (group.length === 0) continue;
     const movements = await countStock({
       locationKey,
-      lines: toWrite.map((r) => ({ itemId: r.key, name: r.name, unit: r.boughtUnit ?? r.usedUnit ?? null, qty: r.proposedQty, unitCost: r.unitCost })),
-      reason: SEED_REASON,
+      lines: group.map((r) => ({ itemId: r.key, name: r.name, unit: r.boughtUnit ?? r.usedUnit ?? null, qty: r.proposedQty, unitCost: r.unitCost })),
+      reason: seedReasonFor(source),
       actor: SEED_ACTOR,
     });
-    movements.forEach((m, i) => written.push({ key: toWrite[i].key, name: toWrite[i].name, qty: toWrite[i].proposedQty, unitCost: toWrite[i].unitCost, movementId: m.id }));
+    movements.forEach((m, i) => written.push({ key: group[i].key, name: group[i].name, qty: group[i].proposedQty, unitCost: group[i].unitCost, movementId: m.id }));
   }
+  written.sort((x, y) => x.key.localeCompare(y.key));
   return { written, skipped };
 }

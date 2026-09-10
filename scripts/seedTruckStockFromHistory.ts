@@ -37,7 +37,7 @@ function printRow(r: ProposalRow): void {
   const bought = r.boughtQty > 0 ? `${num(r.boughtQty)} ${r.boughtUnit ?? ""}`.trim() : "-";
   const used = r.usedQty > 0 ? `${num(r.usedQty)} ${r.usedUnit ?? ""}`.trim() : "-";
   console.log(
-    `${pad(r.key, 28)} | ${pad(r.name.slice(0, 40), 40)} | ${lpad(bought, 12)} | ${lpad(used, 12)} | ${lpad(num(r.proposedQty), 9)} | ${lpad(money(r.unitCost), 9)} | ${lpad(money(r.value), 10)} | ${pad(r.flags.join("; "), 60)} | ${r.receiptIds.map((id) => id.slice(-6)).join(",")}`,
+    `${pad(r.key, 28)} | ${pad(r.name.slice(0, 40), 40)} | ${lpad(bought, 12)} | ${lpad(used, 12)} | ${lpad(num(r.proposedQty), 9)} | ${lpad(`${money(r.unitCost)} ${r.costSource}`, 17)} | ${lpad(money(r.value), 10)} | ${pad(r.flags.join("; "), 60)} | ${r.receiptIds.map((id) => id.slice(-6)).join(",")}`,
   );
 }
 
@@ -57,14 +57,14 @@ async function main(): Promise<void> {
   console.log(`Bought: ${receiptCount} confirmed materials receipt(s) → ${purchases.length} line(s)`);
   for (const p of purchases) {
     const how = p.match.kind === "itemId" ? "itemId" : p.match.kind === "name" ? `name match ${p.match.score.toFixed(2)}` : "adhoc (no match ≥ 0.50)";
-    console.log(`  ${p.receiptId.slice(-6)}  ${pad(`${num(p.qty)} ${p.unit ?? ""}`.trim(), 10)} ${pad(p.name.slice(0, 44), 44)} → ${pad(p.key, 28)} ${how}${p.unitCost != null ? `  @ ${money(p.unitCost)}` : "  (no cost)"}`);
+    console.log(`  ${p.receiptId.slice(-6)}  ${pad(`${num(p.qty)} ${p.unit ?? ""}`.trim(), 10)} ${pad(p.name.slice(0, 44), 44)} → ${pad(p.key, 28)} ${how}${p.unitCost != null ? `  @ ${money(p.unitCost)} (${p.costSource})` : "  (no cost)"}`);
   }
   for (const n of notes) console.log(`  note: ${n}`);
   console.log(`\nUsed: ${estimateCount} signed estimate(s) on completed jobs → ${usages.length} material line(s)`);
   for (const u of usages) console.log(`  ${pad(u.estimateNumber, 14)} ${pad(`${num(u.qty)} ${u.unit ?? ""}`.trim(), 10)} ${u.name.slice(0, 44)} (${u.key})`);
 
   const rows = buildProposal(purchases, usages, byId);
-  console.log(`\n${pad("key", 28)} | ${pad("name", 40)} | ${lpad("bought", 12)} | ${lpad("used", 12)} | ${lpad("proposed", 9)} | ${lpad("unit cost", 9)} | ${lpad("value", 10)} | ${pad("flags", 60)} | receipts`);
+  console.log(`\n${pad("key", 28)} | ${pad("name", 40)} | ${lpad("bought", 12)} | ${lpad("used", 12)} | ${lpad("proposed", 9)} | ${lpad("unit cost (source)", 17)} | ${lpad("value", 10)} | ${pad("flags", 60)} | receipts`);
   console.log("-".repeat(200));
   for (const r of rows) printRow(r);
 
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
   const result = await applyProposal(truck.id, rows);
   for (const s of result.skipped) console.log(`  ${pad(s.key, 28)} already counted (${num(s.qtyOnHand)} on hand), skipped`);
   for (const w of result.written) console.log(`  ${pad(w.key, 28)} count ${num(w.qty)} @ ${money(w.unitCost)}  movement ${w.movementId.slice(-6)}`);
-  console.log(`\nWrote ${result.written.length} count(s) to ${truck.name}, skipped ${result.skipped.length}. Reason: "${SEED_REASON}".`);
+  console.log(`\nWrote ${result.written.length} count(s) to ${truck.name}, skipped ${result.skipped.length}. Reason: "${SEED_REASON} — <cost source>".`);
 }
 
 main()

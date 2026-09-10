@@ -17,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { money } from "../lib/utils";
 import type { PaymentInfo } from "../lib/api";
+import { WarrantyClaimTracker } from "./WarrantyCoveragePanel";
 
 export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId?: string }) {
   const queryClient = useQueryClient();
@@ -83,18 +84,28 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         )}
       </div>
 
-      <p className="mt-1 text-sm text-rce-muted">
-        {(info.warrantyCovered ?? 0) > 0 ? "Homeowner total" : "Total"} {money(info.billedTotal)} · Deposit (⅓) {money(info.depositDue)}
-        {info.totalPaid > 0 && ` · Paid ${money(info.totalPaid)}`}
-        {" · "}Balance <b>{money(info.balance)}</b>
-      </p>
-      {/* Home-warranty coverage (Kyle, 2026-09-09): the second payer's share, already off the total. */}
-      {(info.warrantyCovered ?? 0) > 0 && (
-        <p className="mt-1 text-xs text-green-700">
-          warranty −{money(info.warrantyCovered ?? 0)}
-          {info.warrantyClaim
-            ? ` · billed to ${info.warrantyClaim.company}, claim ${info.warrantyClaim.claimNumber}${info.warrantyClaim.authNumber ? `, auth ${info.warrantyClaim.authNumber}` : ""}`
-            : ""}
+      {info.warranty ? (
+        /* One account, two payers (Kyle, 2026-09-10): the homeowner's line and the warranty
+           company's line. Every button on this panel is the HOMEOWNER's money; the warranty
+           company's check is recorded on the estimate's warranty panel and never lands here. */
+        <div className="mt-1 text-sm text-rce-muted">
+          <p>
+            <span className="font-medium text-rce-soft">Homeowner:</span> billed {money(info.billedTotal)} · Deposit (⅓) {money(info.depositDue)}
+            {info.totalPaid > 0 && ` · paid ${money(info.totalPaid)}`}
+            {" · "}balance <b>{money(info.balance)}</b>
+          </p>
+          <p className="text-xs text-green-700">
+            <span className="font-medium">{info.warranty.claim.company}:</span> covered {money(info.warranty.covered)}
+            {" · "}paid {money(info.warranty.paid)} · balance <b>{money(info.warranty.balance)}</b>
+            {" · "}claim {info.warranty.claim.claimNumber}{info.warranty.claim.authNumber ? `, auth ${info.warranty.claim.authNumber}` : ""}
+            {info.warranty.balance <= 0.01 ? " · paid" : ""}
+          </p>
+        </div>
+      ) : (
+        <p className="mt-1 text-sm text-rce-muted">
+          Total {money(info.billedTotal)} · Deposit (⅓) {money(info.depositDue)}
+          {info.totalPaid > 0 && ` · Paid ${money(info.totalPaid)}`}
+          {" · "}Balance <b>{money(info.balance)}</b>
         </p>
       )}
       {!info.depositSatisfied && (
@@ -187,11 +198,21 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
       {notice && <p className="mt-2 text-xs text-green-700">{notice}</p>}
       {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
 
+      {/* The warranty company's side (Kyle, 2026-09-10): claim dates + "Record RELY payment",
+          posted against the claim — never against the homeowner's balance above. */}
+      {info.warranty && (
+        <WarrantyClaimTracker
+          estimateId={info.estimateId}
+          onChanged={() => { void queryClient.invalidateQueries({ queryKey }); void queryClient.invalidateQueries({ queryKey: ["jobs"] }); }}
+        />
+      )}
+
       {info.payments.length > 0 && (
         <ul className="mt-3 space-y-1 text-xs text-rce-muted">
           {info.payments.map((p) => (
             <li key={p.id}>
-              {money(p.amount)} · {p.method} · {p.kind}
+              {money(p.amount)} · {p.method} · {p.payer === "warranty" ? `${info.warranty?.claim.company ?? "warranty company"}` : p.kind}
+              {p.checkNumber ? ` · check #${p.checkNumber}` : ""}
               {p.paidAt ? ` · ${new Date(p.paidAt).toLocaleDateString()}` : ""} · {p.status}
             </li>
           ))}

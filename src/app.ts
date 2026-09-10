@@ -64,7 +64,7 @@ import { exportPriceBookXlsx } from "./services/priceBookExport";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
-import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf } from "./services/stripePayments";
+import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
 import { rerollJobMaterialCost, rerollJobsMaterialCost } from "./services/receiptCosting";
 import {
   PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
@@ -3367,6 +3367,19 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
   */
   // The newest customer email about each estimate and what became of it (Kyle, 2026-09-09).
   const lastDeliveryById = await lastDeliveriesForEstimates(prisma, estimates.map((e) => e.id));
+  // The warranty company's money per covered estimate (Kyle, 2026-09-10) — the row reads
+  // "warranty $370 · RELY unpaid/paid". One query for the covered rows, never N.
+  const coveredIds = estimates.filter((e) => e.warrantyJson).map((e) => e.id);
+  const warrantyPaidById = new Map<string, number>();
+  if (coveredIds.length > 0) {
+    const rows = await prisma.payment.findMany({
+      where: { estimateId: { in: coveredIds }, status: "paid", payer: "warranty" },
+      select: { estimateId: true, amount: true },
+    });
+    for (const r of rows) {
+      if (r.estimateId) warrantyPaidById.set(r.estimateId, Math.round(((warrantyPaidById.get(r.estimateId) ?? 0) + r.amount) * 100) / 100);
+    }
+  }
   const rows = estimates.map((e) => {
     // Same arithmetic as before — an unsigned row bills its quoted total, a signed one what was
     // taken — routed through billedTotalOf so the home-warranty credit (Kyle, 2026-09-09) comes
@@ -3388,6 +3401,8 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
       // "billed $55 · warranty −$370" so the numbers add up on the page.
       warrantyCovered: coverage?.applied ?? 0,
       warranty: coverage?.claim ?? null,
+      // What the warranty company has actually paid on it (Kyle, 2026-09-10) — the receivable.
+      warrantyPaid: coverage ? (warrantyPaidById.get(e.id) ?? 0) : 0,
       // The last email's delivery state (Kyle, 2026-09-09). Additive.
       lastDelivery: lastDeliveryById.get(e.id) ?? null,
     };
@@ -3520,6 +3535,180 @@ app.patch("/issued-estimates/:id/warranty", asyncHandler(async (req, res) => {
     preCoverageTotal: preCoverage,
     homeownerTotal,
     depositDue: depositDueOf(homeownerTotal),
+  });
+}));
+
+/*
+  ── THE WARRANTY SHARE IS A RECEIVABLE (Kyle, 2026-09-10) ───────────────────────────────────
+
+  "Patricia's warranty portion of the job is not getting tracked and doesn't have a system to
+   record its payment to that job when that check comes in."
+
+  Ratified 2026-09-09: one account, two payers. The warranty share is a receivable with dates —
+  submitted, expected (= submitted + 45 days per RELY's agreement), approved, check received,
+  deposited — chased separately from the homeowner, who is never reminded about it. Everything
+  editable with a reason and a trail. These are BOOKKEEPING fields, not the price, so they move
+  after signing; the covered amount itself stays frozen with the signature (the route above).
+*/
+// A date the CRM's date inputs produce ("2026-09-10") or a full ISO timestamp — both parse.
+const trackingDate = z.string().trim().refine((v) => !Number.isNaN(Date.parse(v)), "Not a date.").nullable().optional();
+const warrantyTrackingSchema = z.object({
+  submittedAt: trackingDate,
+  expectedAt: trackingDate,
+  approvedAt: trackingDate,
+  receivedAt: trackingDate,
+  depositedAt: trackingDate,
+  checkNumber: z.string().trim().max(40).nullable().optional(),
+  note: z.string().trim().max(500).nullable().optional(),
+  reason: z.string().trim().min(1, "A reason is required — every change to the claim leaves a trail.").max(300),
+});
+
+app.patch("/issued-estimates/:id/warranty/tracking", asyncHandler(async (req, res) => {
+  const parsed = warrantyTrackingSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid claim tracking." });
+    return;
+  }
+  const estimateId = readParam(req, "id");
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { id: true, number: true, status: true, voidedAt: true, warrantyJson: true },
+  });
+  if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
+  if (est.status === "void" || est.voidedAt) {
+    res.status(409).json({ error: "This estimate is void — the claim cannot be tracked on it." });
+    return;
+  }
+  const claim = parseWarrantyJson(est.warrantyJson);
+  if (!claim) {
+    res.status(400).json({ error: "No warranty claim is recorded on this estimate — set the coverage first." });
+    return;
+  }
+
+  const body = parsed.data;
+  const changes: string[] = [];
+  const next = { ...claim };
+  const dateKeys = ["submittedAt", "expectedAt", "approvedAt", "receivedAt", "depositedAt"] as const;
+  for (const key of dateKeys) {
+    if (body[key] === undefined) continue;
+    const value = body[key] ? new Date(body[key]!).toISOString() : null;
+    if (value !== claim[key]) {
+      next[key] = value;
+      changes.push(`${key} ${claim[key] ? claim[key]!.slice(0, 10) : "—"} → ${value ? value.slice(0, 10) : "—"}`);
+    }
+  }
+  // Expected defaults to submitted + 45 days (RELY's agreement) when submitted is set and
+  // expected was not given — and the default never overwrites a date Kyle typed.
+  if (body.submittedAt && body.expectedAt === undefined && next.submittedAt && !claim.expectedAt) {
+    const expected = new Date(Date.parse(next.submittedAt) + WARRANTY_EXPECTED_DAYS * 24 * 3600 * 1000).toISOString();
+    next.expectedAt = expected;
+    changes.push(`expectedAt — → ${expected.slice(0, 10)} (submitted + ${WARRANTY_EXPECTED_DAYS} days)`);
+  }
+  if (body.checkNumber !== undefined) {
+    const value = body.checkNumber?.trim() || null;
+    if (value !== claim.checkNumber) { next.checkNumber = value; changes.push(`check # ${claim.checkNumber ?? "—"} → ${value ?? "—"}`); }
+  }
+  if (body.note !== undefined) {
+    const value = body.note?.trim() || null;
+    if (value !== claim.note) { next.note = value; changes.push("note updated"); }
+  }
+  if (changes.length === 0) {
+    res.json({ ok: true, warranty: claim, changed: false });
+    return;
+  }
+  next.events = [
+    ...claim.events,
+    { at: new Date().toISOString(), actor: "human:crm-session", kind: "tracking", reason: body.reason, detail: changes.join("; ") },
+  ];
+  const detail = `Warranty claim ${claim.claimNumber} (${claim.company}) tracking — ${changes.join("; ")} — reason: ${body.reason}`;
+  await prisma.$transaction(async (tx) => {
+    await tx.issuedEstimate.update({ where: { id: est.id }, data: { warrantyJson: JSON.stringify(next) } });
+    await tx.issuedEstimateEvent.create({
+      data: { estimateId: est.id, type: "warranty_tracking", actor: "human:crm-session", detail },
+    });
+  });
+  logSystemEvent("info", "issued-estimate", `Estimate ${est.number}: ${detail}`, { estimateId: est.id });
+  res.json({ ok: true, warranty: next, changed: true });
+}));
+
+/**
+ * Every open or settled warranty receivable (Kyle, 2026-09-10): each signed, unvoided estimate
+ * with a claim — who owes it, what is paid, what remains, the dates, and a status. Sorted with
+ * the most overdue first; totals across the list. Test-account rows stay out.
+ */
+app.get("/warranty-receivables", asyncHandler(async (_req, res) => {
+  const estimates = await prisma.issuedEstimate.findMany({
+    where: { signedAt: { not: null }, voidedAt: null, status: { not: "void" }, warrantyJson: { not: null }, account: { isTestAccount: false } },
+    include: {
+      options: { select: { option: true, subtotal: true } },
+      account: { select: { id: true, name: true } },
+    },
+    orderBy: { signedAt: "desc" },
+  });
+  const paid = estimates.length === 0 ? [] : await prisma.payment.findMany({
+    where: { estimateId: { in: estimates.map((e) => e.id) }, status: "paid", payer: "warranty" },
+    select: { estimateId: true, amount: true, paidAt: true },
+  });
+  const paidById = new Map<string, { amount: number; lastAt: Date | null }>();
+  for (const p of paid) {
+    if (!p.estimateId) continue;
+    const cur = paidById.get(p.estimateId) ?? { amount: 0, lastAt: null };
+    cur.amount = Math.round((cur.amount + p.amount) * 100) / 100;
+    if (p.paidAt && (!cur.lastAt || p.paidAt > cur.lastAt)) cur.lastAt = p.paidAt;
+    paidById.set(p.estimateId, cur);
+  }
+  const now = Date.now();
+  const rank: Record<string, number> = { overdue: 0, submitted: 1, "not submitted": 2, paid: 3 };
+  const rows = estimates.flatMap((est) => {
+    const coverage = warrantyCoverageOf({
+      total: est.total,
+      tripCharge: est.tripCharge,
+      selectedOptions: est.selectedOptions,
+      comboCapJson: est.comboCapJson,
+      discountJson: est.discountJson,
+      warrantyJson: est.warrantyJson,
+      optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+    });
+    if (!coverage) return [];
+    const money = paidById.get(est.id) ?? { amount: 0, lastAt: null };
+    const balance = Math.round((coverage.applied - money.amount) * 100) / 100;
+    const status = warrantyReceivableStatus(coverage.claim, balance);
+    const anchor = coverage.claim.submittedAt ?? est.signedAt!.toISOString();
+    const daysOutstanding = balance > 0.01 ? Math.max(0, Math.floor((now - Date.parse(anchor)) / (24 * 3600 * 1000))) : 0;
+    return [{
+      estimateId: est.id,
+      number: est.number,
+      title: est.title,
+      account: est.account,
+      signedAt: est.signedAt,
+      company: coverage.claim.company,
+      claimNumber: coverage.claim.claimNumber,
+      authNumber: coverage.claim.authNumber,
+      covered: coverage.applied,
+      paid: money.amount,
+      balance,
+      lastPaidAt: money.lastAt,
+      submittedAt: coverage.claim.submittedAt,
+      expectedAt: coverage.claim.expectedAt,
+      approvedAt: coverage.claim.approvedAt,
+      receivedAt: coverage.claim.receivedAt,
+      depositedAt: coverage.claim.depositedAt,
+      checkNumber: coverage.claim.checkNumber,
+      daysOutstanding,
+      status,
+    }];
+  }).sort((a, b) => (rank[a.status] - rank[b.status]) || (b.daysOutstanding - a.daysOutstanding));
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  res.json({
+    rows,
+    totals: {
+      count: rows.length,
+      open: rows.filter((r) => r.balance > 0.01).length,
+      overdue: rows.filter((r) => r.status === "overdue").length,
+      covered: round2(rows.reduce((s, r) => s + r.covered, 0)),
+      paid: round2(rows.reduce((s, r) => s + r.paid, 0)),
+      balance: round2(rows.reduce((s, r) => s + r.balance, 0)),
+    },
   });
 }));
 
@@ -4175,7 +4364,9 @@ app.get("/jobs", asyncHandler(async (req, res) => {
   }
   const signedEstIds = [...new Set([...signedQualifies.values()].map((e) => e.id))];
   const paidRows = signedEstIds.length === 0 ? [] : await prisma.payment.findMany({
-    where: { estimateId: { in: signedEstIds }, status: "paid" },
+    // The homeowner's money only (Kyle, 2026-09-10): a warranty company's check
+    // is against the covered amount and never opens the homeowner's deposit gate.
+    where: { estimateId: { in: signedEstIds }, status: "paid", payer: { not: "warranty" } },
     select: { estimateId: true, amount: true },
   });
   const paidByEstimate = new Map<string, number>();
@@ -4332,14 +4523,16 @@ app.get("/jobs", asyncHandler(async (req, res) => {
               Revenue precedence (Kyle, 2026-09-06: "incorrect job cost
               calculations" on Brady's completed job): typed Visit.revenue,
               else the LEGACY accepted option, else the SIGNED issued
-              estimate's billed total — the same number the invoice charges.
+              estimate's FULL bill — homeowner share + warranty share (Kyle,
+              2026-09-10: the job earned $425 on Option A, $370 of it from
+              RELY; revenue must not read the homeowner share only).
               Without the third rung, every estimate-sold job showed real
               costs against null revenue and the account read negative
               lifetime profit.
             */
             acceptedTotal ??
               (signedQualifies.has(visit.id)
-                ? billedTotalOf({
+                ? fullBillOf({
                     total: signedQualifies.get(visit.id)!.total,
                     tripCharge: signedQualifies.get(visit.id)!.tripCharge,
                     selectedOptions: signedQualifies.get(visit.id)!.selectedOptions,
@@ -4638,7 +4831,7 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
 
   const paidRows = estimates.length === 0 ? [] : await prisma.payment.findMany({
     where: { estimateId: { in: estimates.map((e) => e.id) }, status: "paid" },
-    select: { estimateId: true, amount: true, method: true, paidAt: true },
+    select: { estimateId: true, amount: true, method: true, paidAt: true, payer: true },
   });
   const paymentsByEstimate = new Map<string, typeof paidRows>();
   for (const row of paidRows) {
@@ -4664,14 +4857,19 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     // The homeowner share — a home-warranty credit (Kyle, 2026-09-09) is already off.
     const billedTotal = billedTotalOf(money);
     const coverage = warrantyCoverageOf(money);
-    const rows = paymentsByEstimate.get(est.id) ?? [];
-    const totalPaid = round2(rows.reduce((s, r) => s + r.amount, 0));
+    // Two payers, two ledgers (Kyle, 2026-09-10): totalPaid / balance / paymentStatus are
+    // the HOMEOWNER's; the warranty company's money sits on its own lines below.
+    const split = splitPaidByPayer(paymentsByEstimate.get(est.id) ?? []);
+    const rows = split.customer;
+    const totalPaid = split.customerPaid;
     const discountTotal = round2(rows.filter((r) => r.method === "discount").reduce((s, r) => s + r.amount, 0));
     const lastPaidAt = rows.reduce<Date | null>(
       (latest, r) => (r.paidAt && (!latest || r.paidAt > latest) ? r.paidAt : latest), null,
     );
     const depositDue = depositDueOf(billedTotal);
     const paidInFull = totalPaid >= billedTotal - 0.01;
+    const warrantyPaid = coverage ? split.warrantyPaid : 0;
+    const warrantyBalance = coverage ? round2(coverage.applied - warrantyPaid) : 0;
     const paymentStatus = paidInFull
       ? "paid"
       : totalPaid >= depositDue - 0.01
@@ -4717,7 +4915,9 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       depositDue,
       totalPaid,
       discountTotal,
-      collected: round2(totalPaid - discountTotal),
+      // Collected is MONEY from either payer (Kyle, 2026-09-10: "money is money") — the
+      // homeowner's real cash plus whatever the warranty company has paid.
+      collected: round2(totalPaid - discountTotal + warrantyPaid),
       balance: round2(billedTotal - totalPaid),
       lastPaidAt,
       paymentStatus,
@@ -4728,6 +4928,10 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       warrantyClaim: coverage
         ? { company: coverage.claim.company, claimNumber: coverage.claim.claimNumber, authNumber: coverage.claim.authNumber }
         : null,
+      // The warranty receivable (Kyle, 2026-09-10): paid by the company so far, and what it still owes.
+      warrantyPaid,
+      warrantyBalance,
+      warrantyStatus: coverage ? warrantyReceivableStatus(coverage.claim, warrantyBalance) : null,
     };
   }));
 }));
@@ -5747,15 +5951,16 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
     },
   });
   const estMaterialByJob = new Map<string, number | null>();
-  // The billed total of the signed estimate, per job — the revenue rung that
-  // backfills estimate-sold jobs (Kyle, 2026-09-06), kept in lockstep with
-  // GET /jobs by the money-invariant test.
+  // The FULL bill of the signed estimate, per job — homeowner share + warranty
+  // share (Kyle, 2026-09-10) — the revenue rung that backfills estimate-sold
+  // jobs (Kyle, 2026-09-06), kept in lockstep with GET /jobs by the
+  // money-invariant test.
   const estRevenueByJob = new Map<string, number>();
   for (const est of signedForCosts) {
     const key = est.jobVisitId ?? est.visitId;
     if (key && !estMaterialByJob.has(key)) estMaterialByJob.set(key, estimateMaterialCost(est));
     if (key && !estRevenueByJob.has(key)) {
-      estRevenueByJob.set(key, billedTotalOf({
+      estRevenueByJob.set(key, fullBillOf({
         total: est.total,
         tripCharge: est.tripCharge,
         selectedOptions: est.selectedOptions,

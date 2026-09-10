@@ -29,6 +29,8 @@ import type { Prisma, PurchaseOrder, StockLevel, StockMovement, Tool } from "@pr
 import { prisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
 import { PO_LIST_INCLUDE, closePurchaseOrderForLanding, serializePurchaseOrder, type PoPurpose } from "./purchaseOrders";
+// Cycle with stockSeed (it imports countStock from here) is benign: both sides only use the other inside function bodies.
+import { MATCH_THRESHOLD, scoreMatch } from "./stockSeed";
 
 type Tx = Prisma.TransactionClient;
 
@@ -383,7 +385,7 @@ export function createLedgerReplay() {
 
 const LANDING_INCLUDE = {
   lines: { orderBy: { sortOrder: "asc" as const } },
-  receipts: { select: { id: true, amount: true, imageMime: true, imageUrl: true } },
+  receipts: { select: { id: true, amount: true, vendor: true, lineItems: true, imageMime: true, imageUrl: true } },
   truck: { select: { id: true, name: true } },
 } satisfies Prisma.PurchaseOrderInclude;
 
@@ -405,6 +407,34 @@ export function landingBlocker(po: Pick<PurchaseOrder, "status" | "number" | "la
   return null;
 }
 
+/** Where a landing line's default unit cost came from — shown beside the editable field. */
+export type LandingCostSource = "receipt-line" | "po-line" | "receipt-prorated" | "book" | "none";
+
+/** One parsed line of an attached receipt, as the landing panel shows it. */
+export interface LandingReceiptLine {
+  receiptId: string;
+  index: number;
+  name: string;
+  qty: number;
+  unit: string | null;
+  /** The receipt's own unit price: unitCost as parsed, else lineTotal ÷ qty, else null. */
+  unitCost: number | null;
+  lineTotal: number | null;
+  itemId: string | null;
+  /** The PO line this receipt line priced, when one matched. */
+  matchedLineId: string | null;
+}
+
+export interface LandingReceiptView {
+  receiptId: string;
+  vendor: string | null;
+  amount: number;
+  parseError: string | null;
+  lines: LandingReceiptLine[];
+  /** Receipt lines no PO line claimed — "not on this PO — add as a line?" */
+  unmatched: LandingReceiptLine[];
+}
+
 export interface LandingLineDefault {
   lineId: string;
   itemId: string | null;
@@ -413,26 +443,67 @@ export interface LandingLineDefault {
   qtyExpected: number;
   qtyLandedDefault: number;
   unitCostDefault: number;
-  /** Where the default came from — shown beside the editable field. */
-  costSource: "receipt" | "line" | "book" | "none";
+  costSource: LandingCostSource;
   bookPurchasePrice: number | null;
+  /** The receipt line that priced (or at least named) this PO line. */
+  matchedReceiptLine: { receiptId: string; name: string; qty: number; unit: string | null; unitCost: number | null } | null;
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/** A receipt's parsed lineItems as landing lines; bad JSON is a note, not a crash. */
+function parseReceiptLines(receipt: { id: string; lineItems: string | null }): { lines: LandingReceiptLine[]; parseError: string | null } {
+  if (!receipt.lineItems) return { lines: [], parseError: null };
+  let raw: unknown;
+  try { raw = JSON.parse(receipt.lineItems); } catch { return { lines: [], parseError: "line items are not valid JSON" }; }
+  if (!Array.isArray(raw)) return { lines: [], parseError: "line items are not a list" };
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const lines: LandingReceiptLine[] = [];
+  raw.forEach((item, index) => {
+    if (!item || typeof item !== "object") return;
+    const o = item as Record<string, unknown>;
+    const name = str(o.name);
+    if (!name) return;
+    const qtyRaw = Number(o.qty);
+    const qty = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : 1;
+    const unitCost = num(o.unitCost);
+    const lineTotal = num(o.lineTotal) ?? num(o.total);
+    lines.push({
+      receiptId: receipt.id, index, name, qty, unit: str(o.unit), itemId: str(o.itemId),
+      unitCost: unitCost ?? (lineTotal != null ? r4(lineTotal / qty) : null),
+      lineTotal: lineTotal ?? (unitCost != null ? r2(unitCost * qty) : null),
+      matchedLineId: null,
+    });
+  });
+  return { lines, parseError: null };
 }
 
 /**
- * The defaults the landing panel shows, all editable. Unit cost: when the PO
- * has a receipt with an amount and every line has a quantity, the receipt
- * total is prorated across lines by expected qty × the book's purchase price
- * (equal split when the book has no price for one of them); otherwise the
- * line's keyed unit cost, else the book price, else 0.
+ * The defaults the landing panel shows, all editable.
+ *
+ * Kyle, 2026-09-10: "The pricing on the P.O.'s does not seem to be applied
+ * correctly from the receipts, same with the breakers above, they are not the
+ * same price." Two GFCI breakers on one receipt both landed at the book's
+ * $21.32 because the receipt total was prorated across the lines instead of
+ * each line taking the price printed beside it. A landed line's unit cost, in
+ * order: (1) the receipt line that matches this PO line (explicit itemId, else
+ * the stockSeed name matcher against the PO line's name and its book
+ * description) — its unitCost, else lineTotal ÷ qty; (2) the PO line's own
+ * unitCost when Kyle typed one; (3) the receipt total's REMAINDER — after the
+ * matched lines, the receipt's lines that are not on this PO, and the typed
+ * lines are subtracted — prorated across the remaining lines by qty × book
+ * price (equal split when one of them has no book price); (4) the book's
+ * purchase price; (5) 0. Every line says which, so the guesses are visible.
  */
 export async function landingDefaults(id: string) {
   const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: { ...LANDING_INCLUDE, ...PO_LIST_INCLUDE } });
   if (!po) throw new InventoryError("Purchase order not found", 404);
   const hasPhoto = po.receipts.some((r) => r.imageMime || r.imageUrl);
-  const receiptTotal = Math.round(po.receipts.reduce((s, r) => s + (r.amount ?? 0), 0) * 100) / 100;
+  const receiptTotal = r2(po.receipts.reduce((s, r) => s + (r.amount ?? 0), 0));
   const itemIds = po.lines.map((l) => l.itemId).filter((x): x is string => Boolean(x));
   const book = itemIds.length
-    ? await prisma.priceBookAtomic.findMany({ where: { itemId: { in: itemIds } }, select: { itemId: true, purchasePrice: true, costBasisUsed: true, unit: true, unitLabel: true } })
+    ? await prisma.priceBookAtomic.findMany({ where: { itemId: { in: itemIds } }, select: { itemId: true, description: true, purchasePrice: true, costBasisUsed: true, unit: true, unitLabel: true } })
     : [];
   const bookById = new Map(book.map((b) => [b.itemId, b]));
   const bookPrice = (itemId: string | null) => {
@@ -440,22 +511,60 @@ export async function landingDefaults(id: string) {
     return b?.purchasePrice ?? b?.costBasisUsed ?? null;
   };
 
-  const allHaveQty = po.lines.length > 0 && po.lines.every((l) => Number.isFinite(l.qty) && l.qty > 0);
-  const prorate = receiptTotal > 0 && allHaveQty;
-  const allPriced = po.lines.every((l) => bookPrice(l.itemId) != null);
-  const weights = po.lines.map((l) => (prorate && allPriced ? l.qty * (bookPrice(l.itemId) ?? 0) : 1));
-  const weightSum = weights.reduce((s, w) => s + w, 0);
+  // (1) Pair receipt lines with PO lines, best score first, each side claimed once.
+  const receipts: LandingReceiptView[] = po.receipts.map((r) => {
+    const parsed = parseReceiptLines(r);
+    return { receiptId: r.id, vendor: r.vendor ?? null, amount: r.amount ?? 0, parseError: parsed.parseError, lines: parsed.lines, unmatched: [] };
+  });
+  const receiptLines = receipts.flatMap((r) => r.lines);
+  const pairScore = (l: (typeof po.lines)[number], rl: LandingReceiptLine): number => {
+    if (rl.itemId && l.itemId && rl.itemId === l.itemId) return 2;
+    let score = scoreMatch(rl.name, l.name);
+    const desc = l.itemId ? bookById.get(l.itemId)?.description : null;
+    if (desc) score = Math.max(score, scoreMatch(rl.name, desc));
+    return score >= MATCH_THRESHOLD ? score : 0;
+  };
+  const pairs: Array<{ poIndex: number; rl: LandingReceiptLine; score: number }> = [];
+  po.lines.forEach((l, poIndex) => {
+    for (const rl of receiptLines) {
+      const score = pairScore(l, rl);
+      if (score > 0) pairs.push({ poIndex, rl, score });
+    }
+  });
+  pairs.sort((a, b) => b.score - a.score || a.poIndex - b.poIndex || a.rl.index - b.rl.index);
+  const matched = new Map<number, LandingReceiptLine>();
+  for (const p of pairs) {
+    if (matched.has(p.poIndex) || p.rl.matchedLineId) continue;
+    matched.set(p.poIndex, p.rl);
+    p.rl.matchedLineId = po.lines[p.poIndex].id;
+  }
+  for (const r of receipts) r.unmatched = r.lines.filter((rl) => !rl.matchedLineId);
+
+  // (3) What the receipt total still has to explain once its priced lines are taken out.
+  const matchedTotal = r2([...matched.values()].reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
+  const offPoTotal = r2(receipts.flatMap((r) => r.unmatched).reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
+  const typedTotal = r2(po.lines.reduce((s, l, i) => (matched.get(i)?.unitCost == null && l.unitCost != null ? s + l.qty * l.unitCost : s), 0));
+  const remainder = receiptTotal > 0 ? Math.max(0, r2(receiptTotal - matchedTotal - offPoTotal - typedTotal)) : 0;
+  const pool = po.lines.map((l, i) => i).filter((i) => matched.get(i)?.unitCost == null && po.lines[i].unitCost == null);
+  const prorate = remainder > 0 && pool.length > 0 && pool.every((i) => Number.isFinite(po.lines[i].qty) && po.lines[i].qty > 0);
+  const allPriced = pool.every((i) => bookPrice(po.lines[i].itemId) != null);
+  const weights = new Map(pool.map((i) => [i, allPriced ? po.lines[i].qty * (bookPrice(po.lines[i].itemId) ?? 0) : 1]));
+  const weightSum = [...weights.values()].reduce((s, w) => s + w, 0);
 
   const lines: LandingLineDefault[] = po.lines.map((l, i) => {
     const price = bookPrice(l.itemId);
+    const hit = matched.get(i) ?? null;
     let unitCostDefault = 0;
-    let costSource: LandingLineDefault["costSource"] = "none";
-    if (prorate && weightSum > 0) {
-      unitCostDefault = (receiptTotal * (weights[i] / weightSum)) / l.qty;
-      costSource = "receipt";
+    let costSource: LandingCostSource = "none";
+    if (hit?.unitCost != null) {
+      unitCostDefault = hit.unitCost;
+      costSource = "receipt-line";
     } else if (l.unitCost != null) {
       unitCostDefault = l.unitCost;
-      costSource = "line";
+      costSource = "po-line";
+    } else if (prorate && weightSum > 0 && weights.has(i)) {
+      unitCostDefault = (remainder * ((weights.get(i) ?? 0) / weightSum)) / l.qty;
+      costSource = "receipt-prorated";
     } else if (price != null) {
       unitCostDefault = price;
       costSource = "book";
@@ -467,9 +576,10 @@ export async function landingDefaults(id: string) {
       unit: l.unit ?? (l.itemId ? bookById.get(l.itemId)?.unitLabel ?? bookById.get(l.itemId)?.unit ?? null : null),
       qtyExpected: l.qty,
       qtyLandedDefault: l.qtyLanded ?? l.qty,
-      unitCostDefault: Math.round(unitCostDefault * 10000) / 10000,
+      unitCostDefault: r4(unitCostDefault),
       costSource,
       bookPurchasePrice: price,
+      matchedReceiptLine: hit ? { receiptId: hit.receiptId, name: hit.name, qty: hit.qty, unit: hit.unit, unitCost: hit.unitCost } : null,
     };
   });
 
@@ -480,7 +590,10 @@ export async function landingDefaults(id: string) {
     destinationKey,
     destinationLabel: po.destinationType === "warehouse" ? "Warehouse (home)" : po.truck?.name ?? "truck",
     receiptTotal,
+    matchedTotal,
+    remainder,
     receiptCount: po.receipts.length,
+    receiptLines: receipts,
     hasReceiptPhoto: hasPhoto,
     blocker: landingBlocker(po, hasPhoto) ?? (destinationKey ? null : `${po.number} points at no truck.`),
     lines,

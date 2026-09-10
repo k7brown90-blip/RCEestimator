@@ -1347,6 +1347,14 @@ model Payment {
   status          String    @default("paid") // pending | paid | failed | refunded
   stripeSessionId String?   @unique
   note            String?
+  // WHO paid (Kyle, 2026-09-10: "Patricia's warranty portion of the job is not
+  // getting tracked and doesn't have a system to record its payment"). One
+  // account, two payers: "customer" (the homeowner, against the homeowner
+  // share) or "warranty" (the home-warranty company, against the covered
+  // amount on IssuedEstimate.warrantyJson). A warranty check never reduces the
+  // homeowner's balance and vice versa.
+  payer           String    @default("customer")
+  checkNumber     String?
   paidAt          DateTime?
   createdAt       DateTime  @default(now())
   customer        Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)

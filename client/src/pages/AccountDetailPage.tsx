@@ -829,8 +829,14 @@ function AccountEstimates({
                   <p className="font-semibold">${(e.billedTotal ?? e.total).toFixed(2)}</p>
                   {(e.warrantyCovered ?? 0) > 0 && (
                     <p className="text-[11px] text-green-700">
-                      warranty −${(e.warrantyCovered ?? 0).toFixed(2)}
+                      warranty ${(e.warrantyCovered ?? 0).toFixed(2)}
                       {e.warranty ? ` · ${e.warranty.company} claim ${e.warranty.claimNumber}` : ""}
+                      {/* The receivable (Kyle, 2026-09-10): has the warranty company paid its share yet? */}
+                      {e.signedAt && (
+                        (e.warrantyPaid ?? 0) >= (e.warrantyCovered ?? 0) - 0.01
+                          ? <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-800">{e.warranty?.company ?? "warranty"} paid</span>
+                          : <span className="ml-1 rounded bg-amber-100 px-1 text-amber-900">{e.warranty?.company ?? "warranty"} unpaid{(e.warrantyPaid ?? 0) > 0 ? ` (${money(e.warrantyPaid ?? 0)} in)` : ""}</span>
+                      )}
                     </p>
                   )}
                 </div>

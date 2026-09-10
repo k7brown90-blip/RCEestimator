@@ -197,7 +197,9 @@ describe("landing a PO", () => {
     expect(defaults.status).toBe(200);
     expect(defaults.body.receiptTotal).toBe(90);
     // weights 100×0.72 = 72 and 10×1.10 = 11 → 83
-    expect(defaults.body.lines[0].costSource).toBe("receipt");
+    // Kyle, 2026-09-10: no parsed lines on this receipt, so the whole total prorates — and says so.
+    expect(defaults.body.lines[0].costSource).toBe("receipt-prorated");
+    expect(defaults.body.remainder).toBe(90);
     expect(defaults.body.lines[0].unitCostDefault).toBe(r4((90 * 72) / 83 / 100));
     expect(defaults.body.lines[1].unitCostDefault).toBe(r4((90 * 11) / 83 / 10));
   });

@@ -125,7 +125,7 @@ describe("name matching", () => {
 
 describe("proposal arithmetic", () => {
   const purchase = (key: string, qty: number, unit: string | null, unitCost: number | null, receiptId = "r1"): Purchase =>
-    ({ key, name: key, qty, unit, unitCost, receiptId, match: { kind: "itemId", score: 1 } });
+    ({ key, name: key, qty, unit, unitCost, costSource: unitCost != null ? "receipt" : "none", receiptId, match: { kind: "itemId", score: 1 } });
   const usage = (key: string, qty: number, unit: string | null): Usage => ({ key, name: key, qty, unit, estimateNumber: "0000-X" });
 
   it("unit mismatch is flagged and not subtracted", () => {
@@ -161,8 +161,10 @@ describe("proposal arithmetic", () => {
   it("no purchase cost falls back to the book price; an adhoc key with no cost is flagged", () => {
     const rows = buildProposal([purchase(GFCI, 3, "ea", null), purchase("adhoc:mystery", 2, null, null)], [], byId);
     expect(rows.find((r) => r.key === GFCI)!.unitCost).toBe(14.5);
+    expect(rows.find((r) => r.key === GFCI)!.costSource).toBe("book");
     const adhoc = rows.find((r) => r.key === "adhoc:mystery")!;
     expect(adhoc.unitCost).toBe(0);
+    expect(adhoc.costSource).toBe("none");
     expect(adhoc.flags).toContain("no cost");
     expect(adhoc.flags).toContain("not in price book (adhoc)");
     expect(adhoc.isBook).toBe(false);
@@ -213,7 +215,8 @@ describe("against the database", () => {
     expect(wireLevel!.avgUnitCost).toBe(89);
     const movements = await prisma.stockMovement.findMany({ where: { toLocationKey: truckKey, kind: "count" } });
     expect(movements).toHaveLength(2);
-    expect(movements.every((m) => m.actor === "system" && m.reason === SEED_REASON)).toBe(true);
+    // Kyle, 2026-09-10: the reason says where the cost came from — both fixture lines carried a receipt price.
+    expect(movements.every((m) => m.actor === "system" && m.reason === `${SEED_REASON} — cost from receipt line`)).toBe(true);
 
     const second = await applyProposal(truckId, rows);
     expect(second.written).toEqual([]);

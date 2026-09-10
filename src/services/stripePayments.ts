@@ -66,7 +66,43 @@ export interface WarrantyClaim {
   note: string | null;
   /** ISO timestamp of when the claim was recorded on the estimate. */
   setAt: string;
+  /*
+    Receivable tracking (Kyle, 2026-09-10: "Patricia's warranty portion of the
+    job is not getting tracked and doesn't have a system to record its payment
+    to that job when that check comes in"). The warranty share is a RECEIVABLE
+    with dates: submitted to the company, expected (submitted + 45 days per
+    RELY's agreement), approved, check received, check deposited. Chased
+    separately from the homeowner, who is never reminded about it. Bookkeeping
+    only — never the price — so these move after signing, each move with a
+    reason on the trail. Written only through the tracking route and the
+    warranty-payment route; absent on claims recorded before 2026-09-10.
+  */
+  submittedAt: string | null;
+  expectedAt: string | null;
+  approvedAt: string | null;
+  receivedAt: string | null;
+  depositedAt: string | null;
+  checkNumber: string | null;
+  events: WarrantyClaimEvent[];
 }
+
+/** One line of the claim's trail — who moved what, when, and why. */
+export interface WarrantyClaimEvent {
+  at: string;
+  actor: string;
+  /** "tracking" | "payment" | … */
+  kind: string;
+  /** Kyle's stated reason, verbatim. */
+  reason?: string;
+  /** What moved — "submittedAt — → 2026-09-10; expectedAt — → 2026-10-25". */
+  detail?: string;
+}
+
+/** The days RELY's service-provider agreement allows before a submitted claim is due. */
+export const WARRANTY_EXPECTED_DAYS = 45;
+
+const isoOrNull = (v: unknown): string | null =>
+  typeof v === "string" && v.trim() && !Number.isNaN(Date.parse(v)) ? v : null;
 
 /** Tolerant parse — a malformed column must never take down an invoice. */
 export function parseWarrantyJson(json: string | null | undefined): WarrantyClaim | null {
@@ -82,10 +118,45 @@ export function parseWarrantyJson(json: string | null | undefined): WarrantyClai
       coveredAmount: Math.round(raw.coveredAmount * 100) / 100,
       note: typeof raw.note === "string" && raw.note.trim() ? raw.note : null,
       setAt: typeof raw.setAt === "string" ? raw.setAt : "",
+      submittedAt: isoOrNull(raw.submittedAt),
+      expectedAt: isoOrNull(raw.expectedAt),
+      approvedAt: isoOrNull(raw.approvedAt),
+      receivedAt: isoOrNull(raw.receivedAt),
+      depositedAt: isoOrNull(raw.depositedAt),
+      checkNumber: typeof raw.checkNumber === "string" && raw.checkNumber.trim() ? raw.checkNumber.trim() : null,
+      events: Array.isArray(raw.events)
+        ? raw.events
+          .filter((e): e is WarrantyClaimEvent =>
+            Boolean(e) && typeof e === "object" && typeof (e as WarrantyClaimEvent).at === "string" && typeof (e as WarrantyClaimEvent).kind === "string")
+          .map((e) => ({
+            at: e.at,
+            actor: typeof e.actor === "string" ? e.actor : "unknown",
+            kind: e.kind,
+            ...(typeof e.reason === "string" && e.reason.trim() ? { reason: e.reason } : {}),
+            ...(typeof e.detail === "string" && e.detail.trim() ? { detail: e.detail } : {}),
+          }))
+        : [],
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Where a warranty receivable stands (Kyle, 2026-09-10). "overdue" = the
+ * expected date has passed and money is still owed; "paid" wins over everything.
+ */
+export type WarrantyReceivableStatus = "not submitted" | "submitted" | "overdue" | "paid";
+
+export function warrantyReceivableStatus(
+  claim: Pick<WarrantyClaim, "submittedAt" | "expectedAt">,
+  balance: number,
+  now: Date = new Date(),
+): WarrantyReceivableStatus {
+  if (balance <= 0.01) return "paid";
+  if (!claim.submittedAt) return "not submitted";
+  if (claim.expectedAt && Date.parse(claim.expectedAt) < now.getTime()) return "overdue";
+  return "submitted";
 }
 
 export interface BilledTotalInput {
@@ -115,6 +186,17 @@ export function preCoverageTotalOf(est: BilledTotalInput): number {
     : null;
   const disc = est.discountJson ? ((JSON.parse(est.discountJson) as { amount: number }).amount ?? 0) : 0;
   return Math.round((subtotals + est.tripCharge - (combo?.applied ? combo.reduction : 0) - disc) * 100) / 100;
+}
+
+/**
+ * What the JOB EARNS in total — homeowner share + warranty share (Kyle,
+ * 2026-09-10: the job earned $425 on Option A, $370 of it from RELY). This is
+ * the revenue rung for job costing, the account summary, and job
+ * profitability. The invoice, deposit, and balance surfaces stay on
+ * billedTotalOf (the homeowner share); the warranty share is its own receivable.
+ */
+export function fullBillOf(est: BilledTotalInput): number {
+  return preCoverageTotalOf(est);
 }
 
 /**
@@ -184,17 +266,28 @@ export function depositKeptOnCancel(depositPaid: number): number {
 export interface PaymentSummary {
   estimateId: string;
   number: string;
+  /** The HOMEOWNER share — coverage already off. */
   billedTotal: number;
   depositDue: number;
-  /** Paid rows only. */
+  /** Paid rows only — customer (homeowner) rows. */
   depositPaid: number;
+  /** Homeowner money only (payer "customer"); a warranty check never lands here. */
   totalPaid: number;
+  /** The homeowner's balance. */
   balance: number;
   depositSatisfied: boolean;
+  /** The HOMEOWNER is paid up (balance ≤ $0.01). The warranty share may still be open. */
   paidInFull: boolean;
+  /** Both payers are paid up — the homeowner AND the warranty company (Kyle, 2026-09-10). */
+  fullyPaid: boolean;
   payUrl: string;        // balance
   depositPayUrl: string; // deposit
-  payments: { id: string; amount: number; method: string; kind: string; status: string; paidAt: Date | null }[];
+  payments: {
+    id: string; amount: number; method: string; kind: string; status: string; paidAt: Date | null;
+    /** "customer" | "warranty" (Kyle, 2026-09-10). */
+    payer: string;
+    checkNumber: string | null;
+  }[];
   /**
    * Home-warranty coverage (Kyle, 2026-09-09). `warrantyCovered` is what the
    * warranty company is credited — already subtracted from `billedTotal`, which
@@ -202,6 +295,34 @@ export interface PaymentSummary {
    */
   warrantyCovered: number;
   warrantyClaim: { company: string; claimNumber: string; authNumber: string | null } | null;
+  /**
+   * The warranty company's side of the account (Kyle, 2026-09-10: "one
+   * account, two payers"): what it owes, what it has paid (payer "warranty"
+   * rows), what remains, and the claim with its tracking dates. Null when no
+   * claim is recorded.
+   */
+  warranty: { covered: number; paid: number; balance: number; claim: WarrantyClaim } | null;
+}
+
+/**
+ * Split paid rows by payer (Kyle, 2026-09-10). Rows written before the column
+ * existed default to "customer"; legacy "discount" rows stay on the homeowner
+ * side where they have always closed balances.
+ */
+export function splitPaidByPayer<T extends { amount: number; payer?: string | null }>(paid: T[]): {
+  customer: T[];
+  warranty: T[];
+  customerPaid: number;
+  warrantyPaid: number;
+} {
+  const customer = paid.filter((p) => p.payer !== "warranty");
+  const warranty = paid.filter((p) => p.payer === "warranty");
+  return {
+    customer,
+    warranty,
+    customerPaid: round2(customer.reduce((s, p) => s + p.amount, 0)),
+    warrantyPaid: round2(warranty.reduce((s, p) => s + p.amount, 0)),
+  };
 }
 
 /** One place that answers "where does the money on this estimate stand?" */
@@ -234,9 +355,22 @@ export async function paymentSummary(
     orderBy: { createdAt: "desc" },
   });
   const paid = payments.filter((p) => p.status === "paid");
-  const totalPaid = round2(paid.reduce((s, p) => s + p.amount, 0));
-  const depositPaid = round2(paid.filter((p) => p.kind === "deposit").reduce((s, p) => s + p.amount, 0));
+  // Two payers, two ledgers (Kyle, 2026-09-10): the homeowner's money closes
+  // the homeowner share; the warranty company's money closes the covered
+  // amount. Neither ever reduces the other's balance.
+  const split = splitPaidByPayer(paid);
+  const totalPaid = split.customerPaid;
+  const depositPaid = round2(split.customer.filter((p) => p.kind === "deposit").reduce((s, p) => s + p.amount, 0));
   const depositDue = depositDueOf(billedTotal);
+  const homeownerBalance = round2(billedTotal - totalPaid);
+  const warranty = coverage
+    ? {
+      covered: coverage.applied,
+      paid: split.warrantyPaid,
+      balance: round2(coverage.applied - split.warrantyPaid),
+      claim: coverage.claim,
+    }
+    : null;
 
   return {
     estimateId: est.id,
@@ -245,20 +379,23 @@ export async function paymentSummary(
     depositDue,
     depositPaid,
     totalPaid,
-    balance: round2(billedTotal - totalPaid),
+    balance: homeownerBalance,
     // Any money at or past the deposit satisfies the gate — a customer who paid
     // in full up front did not fail to pay a deposit.
     depositSatisfied: totalPaid >= depositDue - 0.01,
-    paidInFull: totalPaid >= billedTotal - 0.01,
+    paidInFull: homeownerBalance <= 0.01,
+    fullyPaid: homeownerBalance <= 0.01 && (!warranty || warranty.balance <= 0.01),
     payUrl: `${origin}/pay/${est.token}`,
     depositPayUrl: `${origin}/pay/${est.token}?type=deposit`,
     payments: payments.map((p) => ({
       id: p.id, amount: p.amount, method: p.method, kind: p.kind, status: p.status, paidAt: p.paidAt,
+      payer: p.payer, checkNumber: p.checkNumber,
     })),
     warrantyCovered: coverage?.applied ?? 0,
     warrantyClaim: coverage
       ? { company: coverage.claim.company, claimNumber: coverage.claim.claimNumber, authNumber: coverage.claim.authNumber }
       : null,
+    warranty,
   };
 }
 

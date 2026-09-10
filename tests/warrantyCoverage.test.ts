@@ -431,7 +431,9 @@ describe("rendering the claim", () => {
 // ─── Money invariant ─────────────────────────────────────────────────────────
 
 describe("GET /jobs and GET /accounts/:id/summary agree about a job sold on a covered estimate", () => {
-  it("both quote the homeowner share as revenue, byte-identical", async () => {
+  // Kyle, 2026-09-10: the job earned $425 on Option A, $370 of it from RELY — revenue is the
+  // FULL bill (both payers); the invoice / deposit / balance surfaces stay on the homeowner share.
+  it("both quote the full bill (homeowner + warranty) as revenue, byte-identical", async () => {
     const visit = await prisma.visit.create({
       data: {
         customerId,
@@ -457,7 +459,8 @@ describe("GET /jobs and GET /accounts/:id/summary agree about a job sold on a co
     expect(fromJobs).toBeTruthy();
     expect(fromSummary).toBeTruthy();
     expect(fromSummary.costs).toEqual(fromJobs.costs);
-    expect(fromJobs.costs.revenue).toBe(55);
+    expect(fromJobs.costs.revenue).toBe(425);
+    // The job card's estimate figure stays the homeowner share — what the invoice charges her.
     expect(fromJobs.estimate.totalCost).toBe(55);
   });
 });

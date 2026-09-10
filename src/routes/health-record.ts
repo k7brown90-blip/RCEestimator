@@ -21,7 +21,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { rerollJobsMaterialCost } from "../services/receiptCosting";
 import {
-  PO_LIST_INCLUDE, PO_PURPOSES, attachReceiptToPurchaseOrder, createPurchaseOrder, detachReceiptFromPurchaseOrder,
+  PO_LIST_INCLUDE, PO_PURPOSES, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder, detachReceiptFromPurchaseOrder,
   serializePurchaseOrder, transitionPurchaseOrder, truckIdForTechnician,
 } from "../services/purchaseOrders";
 import { matchSpendForReceipt } from "../services/cardSpend";
@@ -1369,6 +1369,31 @@ healthRecordTechRouter.post("/purchase-orders/:id/status", asyncHandler(async (r
   try {
     const po = await transitionPurchaseOrder(readParam(req, "id"), body.to, { actor: `tech:${req.technician!.name}` });
     res.json({ success: true, data: { id: po.id, number: po.number, status: po.status } });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
+}));
+
+/**
+ * A receipt line that is not on the PO becomes a PO line from the landing
+ * panel (Kyle, 2026-09-10: "the pricing on the P.O.'s does not seem to be
+ * applied correctly from the receipts") — the same shape the office route
+ * takes, so the new line lands at the receipt's own price.
+ */
+healthRecordTechRouter.post("/purchase-orders/:id/lines", asyncHandler(async (req: TechRequest, res) => {
+  const body = z.object({
+    itemId: z.string().trim().max(40).nullable().optional(),
+    name: z.string().trim().min(1).max(300),
+    qty: z.number().positive(),
+    unit: z.string().trim().max(20).nullable().optional(),
+    partNumber: z.string().trim().max(100).nullable().optional(),
+    unitCost: z.number().nonnegative().nullable().optional(),
+    reason: z.string().trim().max(300).optional(),
+  }).parse(req.body);
+  const { reason, ...line } = body;
+  try {
+    const created = await addPurchaseOrderLine(readParam(req, "id"), line, { actor: `tech:${req.technician!.name}`, reason: reason ?? "added from the receipt at landing" });
+    res.status(201).json({ success: true, data: { id: created.id, name: created.name, qty: created.qty, unit: created.unit, unitCost: created.unitCost } });
   } catch (err) {
     if (!techServiceError(res, err)) throw err;
   }
