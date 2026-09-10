@@ -33,6 +33,8 @@ import type {
   PbDraft,
   PbFinalizeResult,
   PbIssuedEstimate,
+  WarrantyClaim,
+  WarrantyClaimRef,
   PbNecCategory,
   PbOption,
   PbQuantitySource,
@@ -230,6 +232,9 @@ export interface PaymentInfo {
   depositPayUrl: string;
   stripeConfigured: boolean;
   payments: { id: string; amount: number; method: string; kind: string; status: string; paidAt: string | null }[];
+  /** Home-warranty coverage (Kyle, 2026-09-09): already off billedTotal, which is the homeowner share. */
+  warrantyCovered?: number;
+  warrantyClaim?: WarrantyClaimRef | null;
 }
 
 export interface PaymentRow {
@@ -1408,6 +1413,27 @@ export const api = {
       `/issued-estimates/${id}/revise`,
       { method: "POST", body: JSON.stringify({}) }
     ),
+
+  /**
+   * Home-warranty coverage on an UNSIGNED issued estimate (Kyle, 2026-09-09). `null` clears.
+   * The server answers 409 once the estimate is signed — revise it to change coverage then.
+   */
+  pbSetWarranty: (
+    id: string,
+    input: { company: string; claimNumber: string; authNumber?: string | null; coveredAmount: number; note?: string | null } | null,
+  ) =>
+    request<{
+      ok: true;
+      warranty: WarrantyClaim | null;
+      warrantyCovered: number;
+      preCoverageTotal: number;
+      homeownerTotal: number;
+      depositDue: number;
+    }>(`/issued-estimates/${id}/warranty`, {
+      method: "PATCH",
+      // A bare `null` body is refused by the server's strict JSON parser; `{ clear: true }` clears.
+      body: JSON.stringify(input ?? { clear: true }),
+    }),
 
 };
 

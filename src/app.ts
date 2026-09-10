@@ -64,7 +64,7 @@ import { exportPriceBookXlsx } from "./services/priceBookExport";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
-import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, handleStripeWebhook, paymentSummary, stripeConfigured } from "./services/stripePayments";
+import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf } from "./services/stripePayments";
 import { rerollJobMaterialCost, rerollJobsMaterialCost } from "./services/receiptCosting";
 import {
   PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
@@ -1592,6 +1592,7 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
       discountType: est.discountType,
       discountPercent: est.discountPercent,
       discount: est.discountJson ? JSON.parse(est.discountJson) : null,
+      warranty: parseWarrantyJson(est.warrantyJson),
       signatureImage: est.signatureImage,
         createdAt: est.createdAt,
         lines: est.lines.map((l) => ({
@@ -2869,8 +2870,19 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
         selectedOptions: r.selectedOptions,
         comboCapJson: r.comboCapJson,
         discountJson: r.discountJson,
+        warrantyJson: r.warrantyJson,
         optionsSubtotals: r.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
       }),
+      // Home-warranty credit already off billedTotal (Kyle, 2026-09-09) — shown beside it.
+      warrantyCovered: warrantyCoverageOf({
+        total: r.total,
+        tripCharge: r.tripCharge,
+        selectedOptions: r.selectedOptions,
+        comboCapJson: r.comboCapJson,
+        discountJson: r.discountJson,
+        warrantyJson: r.warrantyJson,
+        optionsSubtotals: r.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+      })?.applied ?? 0,
       createdAt: r.createdAt,
       sentAt: r.sentAt,
       signedAt: r.signedAt,
@@ -3169,6 +3181,8 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       discountType: est.discountType,
       discountPercent: est.discountPercent,
       discount: est.discountJson ? JSON.parse(est.discountJson) : null,
+      // Home-warranty coverage (Kyle, 2026-09-09) — the credit row and the claim notice.
+      warranty: parseWarrantyJson(est.warrantyJson),
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,
@@ -3305,22 +3319,157 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
     the taken options' subtotals, plus the trip, minus the frozen combination discount.
   */
   const rows = estimates.map((e) => {
-    let billedTotal = e.total;
-    if (e.signedAt && e.selectedOptions.length > 0 && e.options.length > 0) {
-      const taken = new Set(e.selectedOptions as string[]);
-      const subtotals = e.options
-        .filter((o) => taken.has(o.option))
-        .reduce((n, o) => n + o.subtotal, 0);
-      const combo = e.comboCapJson
-        ? (JSON.parse(e.comboCapJson) as { applied: boolean; reduction: number })
-        : null;
-      const disc = e.discountJson ? ((JSON.parse(e.discountJson) as { amount: number }).amount ?? 0) : 0;
-      billedTotal = Math.round((subtotals + e.tripCharge - (combo?.applied ? combo.reduction : 0) - disc) * 100) / 100;
-    }
-    return { ...e, billedTotal };
+    // Same arithmetic as before — an unsigned row bills its quoted total, a signed one what was
+    // taken — routed through billedTotalOf so the home-warranty credit (Kyle, 2026-09-09) comes
+    // off here exactly as it does on the invoice, the Jobs tab, and the account summary.
+    const money = {
+      total: e.total,
+      tripCharge: e.tripCharge,
+      selectedOptions: e.signedAt && e.options.length > 0 ? (e.selectedOptions as string[]) : [],
+      comboCapJson: e.comboCapJson,
+      discountJson: e.discountJson,
+      warrantyJson: e.warrantyJson,
+      optionsSubtotals: e.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+    };
+    const coverage = warrantyCoverageOf(money);
+    return {
+      ...e,
+      billedTotal: billedTotalOf(money),
+      // What the warranty company is credited (already off billedTotal) — the row reads
+      // "billed $55 · warranty −$370" so the numbers add up on the page.
+      warrantyCovered: coverage?.applied ?? 0,
+      warranty: coverage?.claim ?? null,
+    };
   });
 
   res.json({ estimates: rows });
+}));
+
+/*
+  ── HOME-WARRANTY COVERAGE ON AN ISSUED ESTIMATE (Kyle, 2026-09-09) ──────────────────────────
+
+  "The warranty company is covering $370 of this bill. I need to get a signature from the home
+   owner first to clarify they owe the remainder and be able to show on the invoice sent to her
+   that the warranty is covering what ever their chosen amount is with the claim number."
+
+  The live case: 2026-1065, RELY Home WO 343467219, auth45978673 for $370 of a $425 job. The
+  homeowner is the customer of record and signs; the warranty company is a second payer. The
+  credit on the document is GENERATED from this record — never typed as a discount — and the
+  homeowner's ⅓ deposit and balance are computed on the homeowner share (billed total after
+  coverage).
+
+  Set while unsigned; frozen from signature on (like discountJson) — a signed share must not move,
+  so changing it afterwards means a revision. Body `null` clears. Covered amount is capped at the
+  pre-coverage billed total for the current selection (or the quoted total when nothing is
+  selected yet): a claim cannot cover more than the bill.
+*/
+app.patch("/issued-estimates/:id/warranty", asyncHandler(async (req, res) => {
+  const claimSchema = z.object({
+    company: z.string().trim().min(1).max(80).default("RELY Home"),
+    claimNumber: z.string().trim().min(1, "Claim number is required.").max(40),
+    authNumber: z.string().trim().max(60).nullable().optional(),
+    coveredAmount: z.number().positive("Covered amount must be more than $0."),
+    note: z.string().trim().max(500).nullable().optional(),
+  });
+  // A clear is `null`, `{}`, or `{ clear: true }` — Express's strict JSON parser refuses a bare
+  // `null` body, so the object forms are what a client can actually send.
+  const isClear =
+    req.body === null ||
+    req.body === undefined ||
+    (typeof req.body === "object" && (
+      (req.body as { clear?: unknown }).clear === true ||
+      Object.keys(req.body as object).length === 0
+    ));
+  const parsed = isClear
+    ? ({ success: true, data: null } as const)
+    : claimSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid warranty coverage." });
+    return;
+  }
+
+  const estimateId = readParam(req, "id");
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    include: { options: { select: { option: true, subtotal: true } } },
+  });
+  if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
+  if (est.status === "void" || est.voidedAt) {
+    res.status(409).json({ error: "This estimate is void — warranty coverage cannot be changed on it." });
+    return;
+  }
+  if (est.signedAt) {
+    res.status(409).json({ error: "Revise the estimate to change warranty coverage after signing" });
+    return;
+  }
+
+  const money = {
+    total: est.total,
+    tripCharge: est.tripCharge,
+    selectedOptions: est.selectedOptions as string[],
+    comboCapJson: est.comboCapJson,
+    discountJson: est.discountJson,
+    warrantyJson: null,
+    optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+  };
+  const preCoverage = billedTotalOf(money);
+
+  let warrantyJson: string | null = null;
+  let detail: string;
+  if (parsed.data === null) {
+    const previous = parseWarrantyJson(est.warrantyJson);
+    detail = previous
+      ? `Warranty coverage cleared — was ${previous.company} claim ${previous.claimNumber} for $${previous.coveredAmount.toFixed(2)}`
+      : "Warranty coverage cleared (none was recorded)";
+  } else {
+    const coveredAmount = Math.round(parsed.data.coveredAmount * 100) / 100;
+    if (coveredAmount > preCoverage + 0.005) {
+      res.status(400).json({
+        error:
+          `Covered amount $${coveredAmount.toFixed(2)} is more than this estimate bills ` +
+          `($${preCoverage.toFixed(2)}). A warranty claim cannot cover more than the job.`,
+      });
+      return;
+    }
+    const claim = {
+      company: parsed.data.company,
+      claimNumber: parsed.data.claimNumber,
+      authNumber: parsed.data.authNumber?.trim() || null,
+      coveredAmount,
+      note: parsed.data.note?.trim() || null,
+      setAt: new Date().toISOString(),
+    };
+    warrantyJson = JSON.stringify(claim);
+    detail =
+      `Warranty coverage set — ${claim.company} claim ${claim.claimNumber}` +
+      `${claim.authNumber ? ` auth ${claim.authNumber}` : ""} covering $${coveredAmount.toFixed(2)} ` +
+      `of $${preCoverage.toFixed(2)}; homeowner share $${(preCoverage - coveredAmount).toFixed(2)}`;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.issuedEstimate.update({ where: { id: est.id }, data: { warrantyJson } });
+    await tx.issuedEstimateEvent.create({
+      data: {
+        estimateId: est.id,
+        type: warrantyJson ? "warranty_set" : "warranty_cleared",
+        actor: "human:crm-session",
+        detail,
+      },
+    });
+  });
+  logSystemEvent("info", "issued-estimate", `Estimate ${est.number}: ${detail}`, { estimateId: est.id });
+
+  const after = { ...money, warrantyJson };
+  const homeownerTotal = billedTotalOf(after);
+  const coverage = warrantyCoverageOf(after);
+  res.json({
+    ok: true,
+    warranty: coverage?.claim ?? null,
+    warrantyCovered: coverage?.applied ?? 0,
+    preCoverageTotal: preCoverage,
+    homeownerTotal,
+    depositDue: depositDueOf(homeownerTotal),
+  });
 }));
 
 /**
@@ -3990,6 +4139,7 @@ app.get("/jobs", asyncHandler(async (req, res) => {
       selectedOptions: est.selectedOptions,
       comboCapJson: est.comboCapJson,
       discountJson: est.discountJson,
+      warrantyJson: est.warrantyJson,
       optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
     });
     // Mirrors paymentSummary: any money at or past the deposit satisfies the gate.
@@ -4085,6 +4235,7 @@ app.get("/jobs", asyncHandler(async (req, res) => {
             selectedOptions: latestIssued.selectedOptions,
             comboCapJson: latestIssued.comboCapJson,
             discountJson: latestIssued.discountJson,
+            warrantyJson: latestIssued.warrantyJson,
             optionsSubtotals: latestIssued.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
           }),
           hasAcceptance: Boolean(latestIssued.signedAt),
@@ -4121,6 +4272,7 @@ app.get("/jobs", asyncHandler(async (req, res) => {
                     selectedOptions: signedQualifies.get(visit.id)!.selectedOptions,
                     comboCapJson: signedQualifies.get(visit.id)!.comboCapJson,
                     discountJson: signedQualifies.get(visit.id)!.discountJson,
+                    warrantyJson: signedQualifies.get(visit.id)!.warrantyJson,
                     optionsSubtotals: signedQualifies.get(visit.id)!.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
                   })
                 : null),
@@ -4422,14 +4574,18 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
 
   const round2 = (n: number) => Math.round(n * 100) / 100;
   res.json(estimates.map((est) => {
-    const billedTotal = billedTotalOf({
+    const money = {
       total: est.total,
       tripCharge: est.tripCharge,
       selectedOptions: est.selectedOptions,
       comboCapJson: est.comboCapJson,
       discountJson: est.discountJson,
+      warrantyJson: est.warrantyJson,
       optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
-    });
+    };
+    // The homeowner share — a home-warranty credit (Kyle, 2026-09-09) is already off.
+    const billedTotal = billedTotalOf(money);
+    const coverage = warrantyCoverageOf(money);
     const rows = paymentsByEstimate.get(est.id) ?? [];
     const totalPaid = round2(rows.reduce((s, r) => s + r.amount, 0));
     const discountTotal = round2(rows.filter((r) => r.method === "discount").reduce((s, r) => s + r.amount, 0));
@@ -4483,6 +4639,12 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       lastPaidAt,
       paymentStatus,
       payToken: est.token,
+      // Home-warranty coverage (Kyle, 2026-09-09): what the warranty company is credited,
+      // already off billedTotal, and the claim it rides on — so the row reads right.
+      warrantyCovered: coverage?.applied ?? 0,
+      warrantyClaim: coverage
+        ? { company: coverage.claim.company, claimNumber: coverage.claim.claimNumber, authNumber: coverage.claim.authNumber }
+        : null,
     };
   }));
 }));
@@ -5444,7 +5606,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
     orderBy: { createdAt: "desc" },
     select: {
       visitId: true, jobVisitId: true, selectedOptions: true,
-      total: true, tripCharge: true, comboCapJson: true, discountJson: true,
+      total: true, tripCharge: true, comboCapJson: true, discountJson: true, warrantyJson: true,
       options: { select: { option: true, subtotal: true } },
       lines: { select: { option: true, materialCost: true } },
     },
@@ -5464,6 +5626,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
         selectedOptions: est.selectedOptions,
         comboCapJson: est.comboCapJson,
         discountJson: est.discountJson,
+        warrantyJson: est.warrantyJson,
         optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
       }));
     }

@@ -34,6 +34,8 @@ import type { PriceBookOption } from "@prisma/client";
 import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 import { signatureBuffer } from "./signatureImage";
 import { discountFor, discountLabel, programmeFor } from "./discounts";
+import type { WarrantyClaim } from "./stripePayments";
+import { warrantyCompanyLine, warrantyNoticeText, warrantyRowLabel } from "./warrantyNotice";
 
 export type PdfAudience = "customer" | "company";
 
@@ -101,6 +103,13 @@ export interface PdfEstimate {
   discountType?: string | null;
   discountPercent?: number | null;
   discount?: { amount: number; base: number } | null;
+  /**
+   * Home-warranty coverage (Kyle, 2026-09-09: "show on the invoice sent to her that the warranty
+   * is covering what ever their chosen amount is with the claim number"). Prints the credit row
+   * under the discount, the claim notice above the signature, and — company copy — the claim in
+   * the header. Null when no claim is on the estimate.
+   */
+  warranty?: WarrantyClaim | null;
 }
 
 const OPTIONS: PriceBookOption[] = ["A", "B", "C"];
@@ -185,6 +194,14 @@ export async function renderEstimatePdf(
   );
   if (audience === "company") {
     doc.fontSize(9).fillColor("#a15c00").text("COMPANY COPY — not for the customer").fillColor("#000");
+    // The claim, where Kyle files it (2026-09-09): "Warranty: RELY Home claim 343467219 auth
+    // auth45978673 covering $370.00". The applied figure is recomputed below the same way the
+    // totals are; the header states the recorded coverage so the two can be compared.
+    if (estimate.warranty) {
+      doc.fontSize(9).fillColor("#1a5c2e")
+        .text(warrantyCompanyLine(estimate.warranty, estimate.warranty.coveredAmount))
+        .fillColor("#000");
+    }
   }
   doc.moveDown(0.4);
 
@@ -332,7 +349,18 @@ export async function renderEstimatePdf(
   const progAmount = estimate.signedAt
     ? estimate.discount?.amount ?? 0
     : discountFor(programmeFor(estimate.discountType, estimate.discountPercent), preDiscount)?.amount ?? 0;
-  const billed = round2(preDiscount - progAmount);
+  /*
+    Home-warranty coverage (Kyle, 2026-09-09) comes off LAST — after the combination cap and the
+    programme discount — capped at what the job bills, so the warranty company is never credited
+    more than the bill. `billed` below is the HOMEOWNER SHARE: the figure the deposit and balance
+    divide. `jobBilled` is what the work bills across both payers, which is what the company
+    copy's profit line is about.
+  */
+  const jobBilled = round2(preDiscount - progAmount);
+  const warrantyApplied = estimate.warranty
+    ? round2(Math.max(0, Math.min(estimate.warranty.coveredAmount, jobBilled)))
+    : 0;
+  const billed = round2(Math.max(0, jobBilled - warrantyApplied));
 
   if (comboReduction > 0) {
     doc.fontSize(10).fillColor("#1a5c2e")
@@ -347,8 +375,20 @@ export async function renderEstimatePdf(
       .text(`-${money(progAmount)}`, { align: "right" });
     doc.fillColor("#000");
   }
-  doc.fontSize(13).text(isInvoice ? "INVOICE TOTAL" : "ESTIMATE TOTAL", { continued: true })
-    .text(money(billed), { align: "right" });
+  if (estimate.warranty && warrantyApplied > 0) {
+    // The credit row: "Warranty coverage — RELY Home, claim 343467219, auth auth45978673 · billed
+    // to RELY Home    −$370.00". Generated from the claim record, never typed.
+    doc.fontSize(10).fillColor("#1a5c2e")
+      .text(warrantyRowLabel(estimate.warranty), { width: 400, continued: true })
+      .text(`-${money(warrantyApplied)}`, { align: "right" });
+    doc.fillColor("#000");
+  }
+  doc.fontSize(13).text(
+    estimate.warranty && warrantyApplied > 0
+      ? "YOUR TOTAL"
+      : isInvoice ? "INVOICE TOTAL" : "ESTIMATE TOTAL",
+    { continued: true },
+  ).text(money(billed), { align: "right" });
 
   // ── The company's working sheet ──
   if (audience === "company") {
@@ -466,12 +506,29 @@ export async function renderEstimatePdf(
       own earning on a one-man shop, so it lives inside the profit figure
       rather than being costed against it.
     */
-    const jobProfit = round2(billed - materialSpend);
+    // Across BOTH payers when a warranty claim is on the job (2026-09-09): the warranty company's
+    // share is still the job's money, so profit is judged on what the work bills in total.
+    const jobProfit = round2(jobBilled - materialSpend);
     doc.moveDown(0.2);
     doc.text(
-      `Profit: ${money(billed)} billed - ${money(materialSpend)} material = ${money(jobProfit)}` +
-        (billed > 0 ? `  (${((jobProfit / billed) * 100).toFixed(0)}% of billed)` : ""),
+      `Profit: ${money(jobBilled)} billed` +
+        (warrantyApplied > 0 ? ` (${money(warrantyApplied)} of it to ${estimate.warranty?.company ?? "the warranty company"})` : "") +
+        ` - ${money(materialSpend)} material = ${money(jobProfit)}` +
+        (jobBilled > 0 ? `  (${((jobProfit / jobBilled) * 100).toFixed(0)}% of billed)` : ""),
     );
+  }
+
+  /*
+    ── THE WARRANTY NOTICE, ABOVE THE SIGNATURE (Kyle, 2026-09-09) ────────────────────────────
+    Printed on every copy that carries a claim — the customer's, the invoice, and the company's
+    — in the ratified wording (services/warrantyNotice.ts). It is what makes the homeowner's
+    signature an informed one: the covered portion is billed to the warranty company, the rest
+    is theirs, and the clause B(f) points are stated before the work begins.
+  */
+  if (estimate.warranty && warrantyApplied > 0) {
+    doc.moveDown(0.8);
+    doc.fontSize(8.5).fillColor("#333").text(warrantyNoticeText(estimate.warranty), { width: 500 });
+    doc.fillColor("#000");
   }
 
   // ── Signature ──

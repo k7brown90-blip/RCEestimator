@@ -47,15 +47,64 @@ export function stripe(): Stripe {
   return client;
 }
 
-/** Taken options + trip − combo − discount: the invoice arithmetic, one place. */
-export function billedTotalOf(est: {
+/**
+ * A home-warranty company paying PART of an estimate (Kyle, 2026-09-09: "The
+ * warranty company is covering $370 of this bill. I need to get a signature
+ * from the home owner first to clarify they owe the remainder and be able to
+ * show on the invoice sent to her that the warranty is covering what ever
+ * their chosen amount is with the claim number.").
+ *
+ * The homeowner is the customer of record and signs; the warranty company is a
+ * SECOND PAYER. This is the record the credit is generated from — it is never
+ * typed as a discount. Stored as IssuedEstimate.warrantyJson.
+ */
+export interface WarrantyClaim {
+  company: string;
+  claimNumber: string;
+  authNumber: string | null;
+  coveredAmount: number;
+  note: string | null;
+  /** ISO timestamp of when the claim was recorded on the estimate. */
+  setAt: string;
+}
+
+/** Tolerant parse — a malformed column must never take down an invoice. */
+export function parseWarrantyJson(json: string | null | undefined): WarrantyClaim | null {
+  if (!json) return null;
+  try {
+    const raw = JSON.parse(json) as Partial<WarrantyClaim>;
+    if (!raw || typeof raw.claimNumber !== "string" || typeof raw.coveredAmount !== "number") return null;
+    if (!Number.isFinite(raw.coveredAmount) || raw.coveredAmount <= 0) return null;
+    return {
+      company: typeof raw.company === "string" && raw.company.trim() ? raw.company : "RELY Home",
+      claimNumber: raw.claimNumber,
+      authNumber: typeof raw.authNumber === "string" && raw.authNumber.trim() ? raw.authNumber : null,
+      coveredAmount: Math.round(raw.coveredAmount * 100) / 100,
+      note: typeof raw.note === "string" && raw.note.trim() ? raw.note : null,
+      setAt: typeof raw.setAt === "string" ? raw.setAt : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface BilledTotalInput {
   total: number;
   tripCharge: number;
   selectedOptions: string[];
   comboCapJson: string | null;
   discountJson: string | null;
+  /** Optional so every historical caller keeps compiling; absent means no coverage. */
+  warrantyJson?: string | null;
   optionsSubtotals: { option: string; subtotal: number }[];
-}): number {
+}
+
+/**
+ * Taken options + trip − combo − discount, BEFORE any warranty coverage: what
+ * the work bills in total, across both payers. This is the figure a warranty
+ * claim is capped against.
+ */
+export function preCoverageTotalOf(est: BilledTotalInput): number {
   if (est.selectedOptions.length === 0) return est.total;
   const taken = new Set(est.selectedOptions);
   const subtotals = est.optionsSubtotals
@@ -66,6 +115,33 @@ export function billedTotalOf(est: {
     : null;
   const disc = est.discountJson ? ((JSON.parse(est.discountJson) as { amount: number }).amount ?? 0) : 0;
   return Math.round((subtotals + est.tripCharge - (combo?.applied ? combo.reduction : 0) - disc) * 100) / 100;
+}
+
+/**
+ * What the warranty company is actually credited on this estimate: the
+ * recorded coverage, capped at the pre-coverage total (a claim can never
+ * cover more than the bill). Null when no claim is recorded.
+ */
+export function warrantyCoverageOf(est: BilledTotalInput): { applied: number; claim: WarrantyClaim } | null {
+  const claim = parseWarrantyJson(est.warrantyJson);
+  if (!claim) return null;
+  const pre = preCoverageTotalOf(est);
+  const applied = Math.round(Math.max(0, Math.min(claim.coveredAmount, pre)) * 100) / 100;
+  return { applied, claim };
+}
+
+/**
+ * Taken options + trip − combo − discount − warranty coverage: the invoice
+ * arithmetic, one place. With a warranty claim on the row this is the
+ * HOMEOWNER SHARE — the deposit (⅓) and balance divide this number, which is
+ * the intended behaviour (Kyle, 2026-09-09: the homeowner signs for, and owes,
+ * the remainder). Never below zero.
+ */
+export function billedTotalOf(est: BilledTotalInput): number {
+  const pre = preCoverageTotalOf(est);
+  const coverage = warrantyCoverageOf(est);
+  if (!coverage) return pre;
+  return Math.round(Math.max(0, pre - coverage.applied) * 100) / 100;
 }
 
 const randomSuffix = () =>
@@ -119,6 +195,13 @@ export interface PaymentSummary {
   payUrl: string;        // balance
   depositPayUrl: string; // deposit
   payments: { id: string; amount: number; method: string; kind: string; status: string; paidAt: Date | null }[];
+  /**
+   * Home-warranty coverage (Kyle, 2026-09-09). `warrantyCovered` is what the
+   * warranty company is credited — already subtracted from `billedTotal`, which
+   * is therefore the homeowner share. Zero / null when no claim is recorded.
+   */
+  warrantyCovered: number;
+  warrantyClaim: { company: string; claimNumber: string; authNumber: string | null } | null;
 }
 
 /** One place that answers "where does the money on this estimate stand?" */
@@ -133,14 +216,19 @@ export async function paymentSummary(
   });
   if (!est) return null;
 
-  const billedTotal = billedTotalOf({
+  const money = {
     total: est.total,
     tripCharge: est.tripCharge,
     selectedOptions: est.selectedOptions,
     comboCapJson: est.comboCapJson,
     discountJson: est.discountJson,
+    warrantyJson: est.warrantyJson,
     optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
-  });
+  };
+  // The homeowner share: coverage already off. depositDueOf divides THIS —
+  // the ⅓ is a third of what the homeowner owes, not of the whole job.
+  const billedTotal = billedTotalOf(money);
+  const coverage = warrantyCoverageOf(money);
   const payments = await prisma.payment.findMany({
     where: { estimateId },
     orderBy: { createdAt: "desc" },
@@ -167,6 +255,10 @@ export async function paymentSummary(
     payments: payments.map((p) => ({
       id: p.id, amount: p.amount, method: p.method, kind: p.kind, status: p.status, paidAt: p.paidAt,
     })),
+    warrantyCovered: coverage?.applied ?? 0,
+    warrantyClaim: coverage
+      ? { company: coverage.claim.company, claimNumber: coverage.claim.claimNumber, authNumber: coverage.claim.authNumber }
+      : null,
   };
 }
 

@@ -7,6 +7,7 @@ import { api, fetchProtectedObjectUrl } from "../lib/api";
 import { downscale } from "../lib/images";
 import { PhotoAttachPicker } from "../components/PhotoGalleryPanel";
 import { PhotoLightbox } from "../components/PhotoLightbox";
+import { WarrantyCoveragePanel } from "../components/WarrantyCoveragePanel";
 import type {
   PbAtomic,
   PbComputed,
@@ -2070,6 +2071,16 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
               </>
             )}
           </div>
+
+          {/* Home-warranty coverage (Kyle, 2026-09-09): the warranty company's share as a
+              credit line with the claim number; the homeowner signs for the remainder. */}
+          <WarrantyCoveragePanel
+            estimateId={est.id}
+            estimateNumber={est.number}
+            warrantyJson={est.warrantyJson ?? null}
+            signed={Boolean(est.signedAt)}
+            onChanged={refresh}
+          />
 
           {est.signedAt ? (
             <>

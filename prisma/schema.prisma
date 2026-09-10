@@ -2548,6 +2548,18 @@ model IssuedEstimate {
   /// until they sign. Unsigned surfaces recompute it live from the frozen lines.
   discountJson String?
 
+  /// A home-warranty company paying PART of this bill (Kyle, 2026-09-09: "The warranty company is
+  /// covering $370 of this bill. I need to get a signature from the home owner first to clarify
+  /// they owe the remainder and be able to show on the invoice sent to her that the warranty is
+  /// covering what ever their chosen amount is with the claim number.").
+  ///
+  /// JSON: { company, claimNumber, authNumber, coveredAmount, note, setAt }. The homeowner stays
+  /// the customer of record and signs; the warranty company is a SECOND PAYER, and this record is
+  /// what generates the credit — never a typed discount. Set while the estimate is unsigned and
+  /// frozen from signature on, like discountJson: the deposit and balance are computed on the
+  /// homeowner share (billed total after coverage), and a signed share must not move.
+  warrantyJson String?
+
   /// The job-level band SCHEDULE in force when this was issued, as JSON (2026-08-22).
   ///
   /// Frozen for the same reason the prices are. Kyle tunes these bands in Rate Config now, and

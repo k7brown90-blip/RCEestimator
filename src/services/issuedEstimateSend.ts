@@ -36,7 +36,8 @@ import { logSystemEvent } from "./systemEvents";
 // reason the filed copies are rendered on demand: nothing to drift, nothing lost to a deploy.
 import { renderEstimatePdf } from "./issuedEstimatePdf";
 import { getCompanyProfile } from "./companyProfile";
-import { stripeConfigured } from "./stripePayments";
+import { billedTotalOf, parseWarrantyJson, stripeConfigured, warrantyCoverageOf } from "./stripePayments";
+import { warrantyEmailLine } from "./warrantyNotice";
 import sharp from "sharp";
 
 export type SendResult = { ok: true; to: string } | { ok: false; reason: string };
@@ -178,6 +179,8 @@ export async function sendInvoiceEmail(
       discountType: est.discountType,
       discountPercent: est.discountPercent,
       discount: est.discountJson ? JSON.parse(est.discountJson) : null,
+      // Home-warranty coverage (Kyle, 2026-09-09) — the credit row and the claim notice.
+      warranty: parseWarrantyJson(est.warrantyJson),
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,
@@ -193,25 +196,23 @@ export async function sendInvoiceEmail(
   );
 
   // What they actually owe — the same arithmetic the PDF prints, so the email and its attachment
-  // cannot quote different numbers.
-  const taken = new Set((est.selectedOptions ?? []) as string[]);
-  // The third gate's frozen reduction (2026-08-22) — the email body and the attached PDF must
-  // state the same number, and both read the same stored figure.
-  const comboReduction = est.comboCapJson
-    ? ((JSON.parse(est.comboCapJson) as { applied: boolean; reduction: number }).applied
-        ? (JSON.parse(est.comboCapJson) as { reduction: number }).reduction
-        : 0)
-    : 0;
-  const progAmount = est.discountJson
-    ? ((JSON.parse(est.discountJson) as { amount: number }).amount ?? 0)
-    : 0;
-  const billed =
-    taken.size > 0 && est.options.length > 0
-      ? Math.round(
-          (est.options.filter((o) => taken.has(o.option)).reduce((n, o) => n + o.subtotal, 0) +
-            est.tripCharge - comboReduction - progAmount) * 100,
-        ) / 100
-      : Math.round((est.total - comboReduction - progAmount) * 100) / 100;
+  // cannot quote different numbers. The third gate's frozen reduction (2026-08-22), the frozen
+  // programme discount, and the home-warranty credit (Kyle, 2026-09-09) all come off through
+  // billedTotalOf — one arithmetic, every surface. What is left is the homeowner share.
+  const money = {
+    total: est.total,
+    tripCharge: est.tripCharge,
+    selectedOptions: (est.selectedOptions ?? []) as string[],
+    comboCapJson: est.comboCapJson,
+    discountJson: est.discountJson,
+    warrantyJson: est.warrantyJson,
+    optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+  };
+  const billed = billedTotalOf(money);
+  const coverage = warrantyCoverageOf(money);
+  const warrantyLine = coverage
+    ? `<p style="font-size:14px;color:#1a5c2e;margin:0 0 4px;">${escapeHtml(warrantyEmailLine(coverage.claim, coverage.applied))}</p>`
+    : "";
 
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
   const note = (opts.message ?? "").trim();
@@ -224,9 +225,10 @@ export async function sendInvoiceEmail(
     <p style="font-size:15px;">Thank you for approving <strong>${escapeHtml(est.title)}</strong>.
     Your signed invoice is attached.</p>
     ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
+    ${warrantyLine}
     <p style="font-size:15px;">Invoice <strong>${escapeHtml(est.number)}</strong>${
       est.revision > 1 ? ` (revision ${est.revision})` : ""
-    } &middot; Total <strong>${`$${billed.toFixed(2)}`}</strong></p>
+    } &middot; ${coverage ? "Your total" : "Total"} <strong>${`$${billed.toFixed(2)}`}</strong></p>
     ${payUrl ? `
     <p style="margin:24px 0;">
       <a href="${escapeHtml(payUrl)}"
@@ -501,6 +503,7 @@ export async function notifyOwnerSigned(prisma: PrismaClient, estimateId: string
     selectedOptions: est.selectedOptions,
     comboCapJson: est.comboCapJson,
     discountJson: est.discountJson,
+    warrantyJson: est.warrantyJson,
     optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
   });
   const optionRow = est.selectedOptions.length > 0

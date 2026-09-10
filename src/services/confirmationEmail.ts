@@ -93,6 +93,7 @@ export async function sendConfirmationEmail(input: ConfirmationInput): Promise<b
       to: input.customerEmail,
       subject: `Appointment Confirmed — ${input.appointmentDate}`,
       html,
+      text: htmlToPlainText(html),
     });
     console.log(`[ConfirmationEmail] Sent to ${input.customerEmail}`);
     return true;
@@ -161,6 +162,7 @@ export async function sendRescheduleEmail(input: RescheduleInput): Promise<boole
       to: input.customerEmail,
       subject: `Appointment Rescheduled — ${input.newDate}`,
       html,
+      text: htmlToPlainText(html),
     });
     console.log(`[RescheduleEmail] Sent to ${input.customerEmail}`);
     return true;
@@ -219,6 +221,7 @@ export async function sendCancellationEmail(input: CancellationInput): Promise<b
       to: input.customerEmail,
       subject: `Appointment Cancelled — Red Cedar Electric`,
       html,
+      text: htmlToPlainText(html),
     });
     console.log(`[CancellationEmail] Sent to ${input.customerEmail}`);
     return true;
@@ -277,6 +280,7 @@ export async function sendProposalEmail(input: ProposalEmailInput): Promise<bool
       to: input.customerEmail,
       subject: "Your Proposal from Red Cedar Electric — Review & Sign",
       html,
+      text: htmlToPlainText(html),
     });
     console.log(`[ProposalEmail] Sent to ${input.customerEmail}`);
     return true;
@@ -314,6 +318,7 @@ export async function sendKyleNotificationEmail(subject: string, body: string): 
       to: kyleEmail,
       subject: `[RCE] ${subject}`,
       html,
+      text: htmlToPlainText(html),
     });
     console.log(`[KyleNotificationEmail] Sent: ${subject}`);
     return true;
@@ -379,6 +384,10 @@ export async function sendBrandedEmail(input: {
       to: input.to,
       subject: input.subject,
       html,
+      // Kyle, 2026-09-09: "very few are actually getting through". Every message went out as
+      // HTML-only, which strict receivers (AOL, Comcast, iCloud) score against. A real
+      // multipart/alternative with a plain-text twin is the cheapest deliverability win there is.
+      text: htmlToPlainText(html),
       attachments: input.attachments,
       headers: input.headers,
     });
@@ -435,4 +444,32 @@ function logEmailFailure(to: string, subject: string, err: unknown): void {
 /** HTML-escape a string for safe interpolation into email templates. */
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * The plain-text twin of a branded HTML email (Kyle, 2026-09-09: deliverability).
+ * Links keep their URL in brackets so the estimate link survives in text-only readers;
+ * block elements become line breaks; entities are decoded; whitespace is collapsed.
+ */
+export function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, label: string) => {
+      const text = label.replace(/<[^>]+>/g, "").trim();
+      return text && text !== href ? `${text} [${href}]` : href;
+    })
+    .replace(/<\/(p|div|h[1-6]|li|tr|table|pre)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&middot;/g, "·")
+    .replace(/&mdash;/g, "—")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }

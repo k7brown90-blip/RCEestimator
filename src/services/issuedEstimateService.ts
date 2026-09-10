@@ -972,7 +972,16 @@ export async function reviseEstimate(
   const next = await prisma.$transaction(async (tx) => {
     const updated = await tx.issuedEstimate.update({
       where: { id: graduated.estimateId },
-      data: { number: prev.number, revision: prev.revision + 1, supersedesId: prev.id },
+      data: {
+        number: prev.number,
+        revision: prev.revision + 1,
+        supersedesId: prev.id,
+        // The home-warranty claim rides the revision (Kyle, 2026-09-09): same claim number, same
+        // authorization — a revision changes the WORK, not who is paying for it. The credit is
+        // re-capped live against the new figures, and the new revision is unsigned, so Kyle can
+        // change or clear it there (that is what "revise to change coverage after signing" means).
+        warrantyJson: prev.warrantyJson,
+      },
     });
     await tx.issuedEstimateEvent.create({
       data: {

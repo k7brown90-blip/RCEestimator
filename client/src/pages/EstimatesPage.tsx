@@ -234,6 +234,9 @@ function EstimateRow({ row, label, tone }: Classified) {
         </div>
         <div className="shrink-0 text-right">
           <div className="font-semibold">{money(row.billedTotal ?? row.total)}</div>
+          {(row.warrantyCovered ?? 0) > 0 && (
+            <div className="text-[11px] text-green-700">warranty −{money(row.warrantyCovered ?? 0)}</div>
+          )}
           <div className="text-xs text-rce-soft">
             {new Date(row.createdAt).toLocaleDateString()}
           </div>

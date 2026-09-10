@@ -35,6 +35,8 @@ import type { IssuedEstimateWithLines } from "./issuedEstimateService";
 import { allSelectionCaps, comboKey } from "./materialMarkupCap";
 import { discountFor, discountLabel, programmeFor } from "./discounts";
 import { CONSENT_TEXT } from "./issuedEstimateService";
+import { parseWarrantyJson } from "./stripePayments";
+import { warrantyNoticeText, warrantyRowLabel } from "./warrantyNotice";
 
 const TZ = "America/Chicago";
 const BUSINESS_EMAIL = "service@redcedarelectricllc.com";
@@ -352,6 +354,37 @@ export function renderEstimatePage(
   const exclusive = Boolean(est.exclusiveOptions) && selectable;
   const firstOption = shownOptions[0]?.option ?? null;
 
+  /*
+    ── HOME-WARRANTY COVERAGE (Kyle, 2026-09-09) ───────────────────────────────────────────────
+
+    "The warranty company is covering $370 of this bill. I need to get a signature from the home
+     owner first to clarify they owe the remainder and be able to show on the invoice sent to her
+     that the warranty is covering what ever their chosen amount is with the claim number."
+
+    The homeowner is the customer of record and signs; the warranty company is a second payer.
+    The credit is GENERATED from the claim record on the row — never typed as a discount — and
+    comes off LAST: after the combination cap and the programme discount, capped at what the
+    selection bills so the warranty company is never credited more than the job. What is left is
+    the homeowner share, which the "YOUR TOTAL" line and the ⅓ deposit ask both read.
+
+    Unsigned, the page recomputes it live as the customer ticks (the script below caps it against
+    each selection's pre-coverage total). Signed, the frozen selection is the only authority.
+  */
+  const warranty = parseWarrantyJson(est.warrantyJson);
+  const preCoverageTotal =
+    signedOff && chosen.size > 0
+      ? round2(
+          shownOptions.reduce((n, o) => n + o.subtotal, 0) + est.tripCharge -
+            (signedCombo?.reduction ?? 0) - (signedDiscount?.amount ?? 0),
+        )
+      : estOptions.length > 0
+        ? comboTable[liveAllKey]?.total ?? est.total
+        : round2(est.total - (discountShown ?? 0));
+  const warrantyApplied = warranty
+    ? round2(Math.max(0, Math.min(warranty.coveredAmount, preCoverageTotal)))
+    : 0;
+  const grandTotal = round2(Math.max(0, preCoverageTotal - warrantyApplied));
+
   const optionName = (o: { option: string; label: string | null }) =>
     o.label ? `${escapeHtml(o.label)}` : `Option ${escapeHtml(o.option)}`;
 
@@ -657,6 +690,11 @@ export function renderEstimatePage(
            // page — combining options can only ever lower the number, and the table is the proof.
            var combos = ${JSON.stringify(comboTable)};
            var trip  = ${est.tripCharge};
+           // Home-warranty coverage (2026-09-09): the recorded amount, capped live at what the
+           // current selection bills — the warranty company is never credited more than the job.
+           var warrantyCovered = ${warranty ? warranty.coveredAmount : 0};
+           var warrantyRow = document.getElementById("warrantyRow");
+           var warrantyAmt = document.getElementById("warrantyAmt");
            // Formats EXACTLY as the server's money() does — no thousands separator. They have to
            // agree: the server paints the first total and this repaints it on the first tick, and
            // a customer watching "$1610.69" become "$1,610.69" has been shown a glitch.
@@ -674,7 +712,13 @@ export function renderEstimatePage(
              // The trip charge applies once, to the visit — and not at all if nothing is taken.
              // The combination table already carries the trip and the multi-option discount; the
              // summed fallback covers only a combination the server somehow did not price.
-             total.textContent = picked.length ? money(combo ? combo.total : sum + trip) : money(0);
+             var pre = picked.length ? (combo ? combo.total : sum + trip) : 0;
+             var cov = Math.max(0, Math.min(warrantyCovered, pre));
+             total.textContent = money(Math.max(0, Math.round((pre - cov) * 100) / 100));
+             if (warrantyRow) {
+               warrantyRow.style.display = cov > 0 ? "" : "none";
+               if (warrantyAmt) warrantyAmt.innerHTML = "&minus;" + money(cov);
+             }
              var saving = combo ? combo.saving : 0;
              if (savingRow) {
                savingRow.style.display = saving > 0 ? "" : "none";
@@ -733,16 +777,13 @@ export function renderEstimatePage(
            <span>${programme ? escapeHtml(discountLabel(programme)) : "Discount"}</span>
            <span id="progDiscountAmt">&minus;${money(discountShown)}</span>
          </div>
-         <div class="grand"><span>ESTIMATE TOTAL</span><span id="grandTotal">${money(
-           signedOff && chosen.size > 0
-             ? round2(
-                 shownOptions.reduce((n, o) => n + o.subtotal, 0) + est.tripCharge -
-                   (signedCombo?.reduction ?? 0) - (signedDiscount?.amount ?? 0),
-               )
-             : estOptions.length > 0
-               ? comboTable[liveAllKey]?.total ?? est.total
-               : round2(est.total - (discountShown ?? 0))
-         )}</span></div>
+         ${warranty
+           ? `<div id="warrantyRow" class="saving" ${warrantyApplied > 0 ? "" : 'style="display:none;"'}>
+                <span>${escapeHtml(warrantyRowLabel(warranty))}</span>
+                <span id="warrantyAmt">&minus;${money(warrantyApplied)}</span>
+              </div>`
+           : ""}
+         <div class="grand"><span>${warranty ? "YOUR TOTAL" : "ESTIMATE TOTAL"}</span><span id="grandTotal">${money(grandTotal)}</span></div>
        </div>
        <p style="font-size:12px;color:#777;margin:8px 4px 0;">
          Furnished and installed, flat rate. The scope above is what the price covers.
@@ -751,6 +792,12 @@ export function renderEstimatePage(
        ${included}
 
        ${generatorSection}
+
+       ${warranty
+         ? `<div class="box" style="border-color:#1a5c2e;page-break-inside:avoid;" id="warrantyNotice">
+              <strong>Home warranty coverage.</strong> ${escapeHtml(warrantyNoticeText(warranty))}
+            </div>`
+         : ""}
 
        ${signBlock}
        ${pickerScript}

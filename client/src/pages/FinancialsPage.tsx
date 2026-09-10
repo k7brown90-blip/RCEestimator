@@ -951,6 +951,9 @@ function InvoiceRow({
         </span>
         <span className="shrink-0 text-right">
           <span className="block font-semibold tabular-nums">{money(inv.billedTotal)}</span>
+          {(inv.warrantyCovered ?? 0) > 0 && (
+            <span className="block text-[11px] text-green-700">warranty −{money(inv.warrantyCovered ?? 0)}</span>
+          )}
           {inv.paymentStatus === "paid" ? (
             <span className="block text-xs text-emerald-700">paid{inv.lastPaidAt ? ` ${new Date(inv.lastPaidAt).toLocaleDateString()}` : ""}</span>
           ) : (
@@ -1036,6 +1039,14 @@ function InvoicePanel({ inv, stripeConfigured, onChange }: { inv: InvoiceSummary
           </p>
         </div>
       </div>
+      {(inv.warrantyCovered ?? 0) > 0 && (
+        <p className="mt-1 text-xs text-green-700">
+          Billed is the homeowner share — warranty −{money(inv.warrantyCovered ?? 0)}
+          {inv.warrantyClaim
+            ? ` billed to ${inv.warrantyClaim.company} (claim ${inv.warrantyClaim.claimNumber}${inv.warrantyClaim.authNumber ? `, auth ${inv.warrantyClaim.authNumber}` : ""})`
+            : ""}
+        </p>
+      )}
       {inv.discountTotal > 0 && (
         <p className="mt-1 text-xs text-emerald-700">includes {money(inv.discountTotal)} discount credit (retired 3% programme)</p>
       )}

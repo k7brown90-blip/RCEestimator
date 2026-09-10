@@ -84,10 +84,19 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
       </div>
 
       <p className="mt-1 text-sm text-rce-muted">
-        Total {money(info.billedTotal)} · Deposit (⅓) {money(info.depositDue)}
+        {(info.warrantyCovered ?? 0) > 0 ? "Homeowner total" : "Total"} {money(info.billedTotal)} · Deposit (⅓) {money(info.depositDue)}
         {info.totalPaid > 0 && ` · Paid ${money(info.totalPaid)}`}
         {" · "}Balance <b>{money(info.balance)}</b>
       </p>
+      {/* Home-warranty coverage (Kyle, 2026-09-09): the second payer's share, already off the total. */}
+      {(info.warrantyCovered ?? 0) > 0 && (
+        <p className="mt-1 text-xs text-green-700">
+          warranty −{money(info.warrantyCovered ?? 0)}
+          {info.warrantyClaim
+            ? ` · billed to ${info.warrantyClaim.company}, claim ${info.warrantyClaim.claimNumber}${info.warrantyClaim.authNumber ? `, auth ${info.warrantyClaim.authNumber}` : ""}`
+            : ""}
+        </p>
+      )}
       {!info.depositSatisfied && (
         <p className="mt-1 text-xs text-amber-800">
           This job can't be scheduled until the deposit is in — charge it below or record the cash/check.

@@ -15,6 +15,22 @@ import type { PrismaClient } from "@prisma/client";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { logSystemEvent } from "./systemEvents";
 import { paymentSummary } from "./stripePayments";
+import { warrantyEmailLine } from "./warrantyNotice";
+
+/**
+ * Home-warranty coverage (Kyle, 2026-09-09): the credit the warranty company
+ * is billed for, shown above the homeowner's total so the statement adds up —
+ * "Warranty coverage (RELY Home, claim 343467219): −$370.00 · billed to RELY Home".
+ */
+function warrantyRow(summary: {
+  warrantyCovered: number;
+  warrantyClaim: { company: string; claimNumber: string; authNumber: string | null } | null;
+}): string {
+  if (!summary.warrantyClaim || !(summary.warrantyCovered > 0)) return "";
+  return `<tr><td colspan="2" style="padding:4px 0;color:#1a5c2e;">${escapeHtml(
+    warrantyEmailLine(summary.warrantyClaim, summary.warrantyCovered),
+  )}</td></tr>`;
+}
 
 const KIND_LABEL: Record<string, string> = {
   deposit: "Deposit (1/3)",
@@ -141,7 +157,8 @@ export async function sendBalanceRequestEmail(
         : `Here is the bill for <strong>${escapeHtml(est.title)}</strong> (invoice ${escapeHtml(est.number)}).`}</p>
       <table style="width:100%;font-size:15px;border-collapse:collapse;margin:12px 0;">
         ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
-        <tr><td style="padding:4px 0;color:#666;">Invoice total</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
+        ${warrantyRow(summary)}
+        <tr><td style="padding:4px 0;color:#666;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
         ${discountRows(summary)}
         ${summary.totalPaid > 0 ? `<tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>` : ""}
         <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">Balance due</td>
@@ -194,7 +211,8 @@ export async function sendPaymentReceiptEmail(
       ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
       <tr><td style="padding:4px 0;color:#666;">${KIND_LABEL[payment.kind] ?? "Payment"}</td>
         <td style="text-align:right;font-weight:600;">$${payment.amount.toFixed(2)} ${METHOD_LABEL[payment.method] ?? "paid"} on ${dateStr}</td></tr>
-      <tr><td style="padding:4px 0;color:#666;">Invoice total</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
+      ${warrantyRow(summary)}
+      <tr><td style="padding:4px 0;color:#666;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
       ${discountRows(summary)}
       <tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>
       <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">${paidInFull ? "Balance" : "Remaining balance"}</td>

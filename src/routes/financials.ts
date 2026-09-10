@@ -244,6 +244,7 @@ async function yearLedger(year: number): Promise<YearLedger> {
         selectedOptions: est.selectedOptions,
         comboCapJson: est.comboCapJson,
         discountJson: est.discountJson,
+        warrantyJson: est.warrantyJson,
         optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
       }),
       number: est.number,
@@ -412,6 +413,7 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       selectedOptions: est.selectedOptions,
       comboCapJson: est.comboCapJson,
       discountJson: est.discountJson,
+      warrantyJson: est.warrantyJson,
       optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
     });
     for (const key of [est.jobVisitId, est.visitId]) {

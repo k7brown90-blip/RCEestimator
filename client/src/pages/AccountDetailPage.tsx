@@ -811,8 +811,18 @@ function AccountEstimates({
                   )
                 )}
                 </div>
-                {/* The billed figure once signed — the row and the document must agree (2026-08-22). */}
-                <p className="shrink-0 font-semibold">${(e.billedTotal ?? e.total).toFixed(2)}</p>
+                {/* The billed figure once signed — the row and the document must agree (2026-08-22).
+                    With a home-warranty claim (2026-09-09) it is the homeowner share, and the
+                    warranty company's credit is shown beside it so the numbers read right. */}
+                <div className="shrink-0 text-right">
+                  <p className="font-semibold">${(e.billedTotal ?? e.total).toFixed(2)}</p>
+                  {(e.warrantyCovered ?? 0) > 0 && (
+                    <p className="text-[11px] text-green-700">
+                      warranty −${(e.warrantyCovered ?? 0).toFixed(2)}
+                      {e.warranty ? ` · ${e.warranty.company} claim ${e.warranty.claimNumber}` : ""}
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="mt-2 flex gap-2">

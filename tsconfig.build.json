@@ -32,6 +32,8 @@
     "scripts/syncCardSpend.ts",
     // Duplicate-receipt removal + re-roll through the one material writer (Kyle, 2026-09-08 "do both").
     "scripts/removeReceipts.ts",
+    // Deliverability probe: sends one branded email through the production transport to an address you name (Kyle, 2026-09-09).
+    "scripts/sendTestEmail.ts",
     // Needs-scheduling rail provenance + signed-estimate job backfill (Kyle, 2026-09-02).
     "scripts/inspectSchedule.ts",
     // Job-photo listing/base64 export for Kyle's machine (Kyle, 2026-09-03).

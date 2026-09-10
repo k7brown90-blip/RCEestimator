@@ -1,0 +1,16 @@
+-- Home-warranty coverage on an issued estimate (Kyle, 2026-09-09).
+--
+-- "The warranty company is covering $370 of this bill. I need to get a signature
+-- from the home owner first to clarify they owe the remainder and be able to show
+-- on the invoice sent to her that the warranty is covering what ever their chosen
+-- amount is with the claim number."
+--
+-- One nullable JSON column: { company, claimNumber, authNumber, coveredAmount,
+-- note, setAt }. The homeowner is the customer of record and signs; the warranty
+-- company is a second payer. The credit on the document is GENERATED from this
+-- record (never typed as a discount), comes off after the programme discount and
+-- the combination cap, and is frozen from signature on. Deposit (1/3) and balance
+-- are computed on the homeowner share.
+--
+-- Additive only.
+ALTER TABLE "IssuedEstimate" ADD COLUMN "warrantyJson" TEXT;

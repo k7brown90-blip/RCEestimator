@@ -1227,7 +1227,26 @@ export type InvoiceSummary = {
   lastPaidAt: string | null;
   paymentStatus: "unpaid" | "partial" | "deposit_paid" | "paid";
   payToken: string;
+  /** Home-warranty coverage (Kyle, 2026-09-09) — already off billedTotal; shown beside it. */
+  warrantyCovered?: number;
+  warrantyClaim?: WarrantyClaimRef | null;
 };
+
+/**
+ * A home-warranty claim on an issued estimate (Kyle, 2026-09-09: "The warranty
+ * company is covering $370 of this bill... show on the invoice sent to her that
+ * the warranty is covering what ever their chosen amount is with the claim
+ * number."). The homeowner signs; the warranty company is a second payer.
+ */
+export type WarrantyClaim = {
+  company: string;
+  claimNumber: string;
+  authNumber: string | null;
+  coveredAmount: number;
+  note: string | null;
+  setAt: string;
+};
+export type WarrantyClaimRef = Pick<WarrantyClaim, "company" | "claimNumber" | "authNumber">;
 
 export type AccountInspectionSummary = {
   id: string;
@@ -1655,6 +1674,11 @@ export interface PbIssuedEstimate {
   supersededBy?: { id: string; revision: number } | null;
   lines?: PbIssuedLine[];
   events?: PbIssuedEvent[];
+  /** Home-warranty coverage (Kyle, 2026-09-09) — the raw record; null when none. */
+  warrantyJson?: string | null;
+  /** The claim as applied, from the account-estimates route; already off billedTotal. */
+  warranty?: WarrantyClaim | null;
+  warrantyCovered?: number;
 }
 
 /** One row of the Estimates chain view (P029): account + address + status + job. */
@@ -1677,6 +1701,8 @@ export interface PbChainRow {
   serviceAddress: { id: string; name: string; addressLine1: string; city: string; state: string } | null;
   supersededBy: { id: string; revision: number } | null;
   job: { id: string; status: string; scheduledStart: string | null } | null;
+  /** Home-warranty credit (Kyle, 2026-09-09), already off billedTotal. */
+  warrantyCovered?: number;
 }
 
 // ─── Email campaigns (Kyle, 2026-09-02) ───────────────────────────────────────
