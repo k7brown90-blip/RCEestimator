@@ -68,7 +68,7 @@ function EmailStatusStrip({ status }: { status?: EmailStatus }) {
     c.failed ? `${c.failed} failed` : null,
   ].filter(Boolean).join(", ");
   return (
-    <p className="mt-2 rounded-md border border-rce-border/60 bg-rce-bg/40 px-2.5 py-1.5 text-xs text-rce-muted">
+    <p className="mt-2 break-words rounded-md border border-rce-border/60 bg-rce-bg/40 px-2.5 py-1.5 text-xs text-rce-muted">
       Transactional email: <span className="font-medium text-rce-text">{pipe}</span>
       {" · "}webhook: <span className={`font-medium ${webhook.tone}`}>{webhook.text}</span>
       {status.provider === "resend" && (
@@ -187,7 +187,7 @@ function BounceItem({ row, onResolved }: { row: EmailBounceRow; onResolved: () =
             )}
           </div>
           <p className="text-sm">{what}</p>
-          <p className="text-xs text-rce-muted">
+          <p className="break-words text-xs text-rce-muted">
             To <span className="font-medium text-rce-text">{row.recipient}</span>
             {row.remoteMta ? ` · refused by ${row.remoteMta}` : ""}
             {" · "}
@@ -203,7 +203,7 @@ function BounceItem({ row, onResolved }: { row: EmailBounceRow; onResolved: () =
       {open && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <input
-            className="field flex-1 text-sm"
+            className="field min-w-0 flex-1 text-sm"
             placeholder="What you did — called, fixed the address, re-sent…"
             value={note}
             maxLength={500}

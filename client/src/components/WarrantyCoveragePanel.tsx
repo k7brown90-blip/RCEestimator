@@ -164,7 +164,7 @@ export function WarrantyClaimTracker({ estimateId, onChanged }: { estimateId: st
     : status === "submitted" ? "bg-sky-100 text-sky-900" : "bg-red-100 text-red-900";
 
   return (
-    <div className="mt-2 rounded-lg border border-rce-border p-2 text-xs">
+    <div className="mt-3 border-t border-rce-border pt-2 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="font-semibold text-rce-soft">Claim tracking — {claim.company}</p>
         <span className={`rounded px-1.5 py-0.5 text-[11px] ${tone}`}>{status}</span>

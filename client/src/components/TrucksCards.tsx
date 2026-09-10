@@ -32,7 +32,7 @@ export function BalancesStrip() {
           <span className="text-xs text-rce-muted">No financial accounts yet</span>
         ) : (
           data.financialAccounts.map((fa) => (
-            <span key={fa.id} className="tabular-nums">
+            <span key={fa.id} className="min-w-0 break-words tabular-nums">
               {fa.truckName ?? fa.id} <b>{money(fa.cashUsd)}</b>
               {fa.inboundPending ? <span className="text-rce-muted"> · {money(fa.inboundPending)} inbound</span> : null}
               {fa.outboundPending ? <span className="text-rce-muted"> · {money(fa.outboundPending)} outbound</span> : null}
@@ -54,7 +54,7 @@ export function TrucksCard() {
   const trucks = (data?.trucks ?? []).filter((t) => t.isActive);
   return (
     <section className="card p-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">Trucks</h2>
         <Link to="/trucks" className="text-xs text-rce-accent hover:underline">Open the ledger →</Link>
       </div>

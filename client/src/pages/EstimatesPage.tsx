@@ -221,7 +221,7 @@ function EstimateRow({ row, label, tone }: Classified) {
             <span className="font-semibold">{row.account.name}</span>
             <span className={`rounded px-1.5 py-0.5 text-[11px] ${tone}`}>{label}</span>
           </div>
-          <div className="text-sm text-rce-text">{row.title}</div>
+          <div className="break-words text-sm text-rce-text">{row.title}</div>
           {/* The address is the point of this row — an account with three properties
               needs to say WHICH one the work is at. */}
           <div className="text-xs text-rce-soft">

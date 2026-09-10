@@ -289,7 +289,7 @@ export function SettingsPage() {
         <div className="space-y-4">
           {territories.map((territory, index) => (
             <div key={index} className="rounded-lg border border-rce-border bg-white p-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-sm font-semibold">
                   {territory.zip || "New territory"}
                   {territory.area ? ` — ${territory.area}` : ""}

@@ -67,7 +67,7 @@ function ReasonRow({ label, busy, onSubmit, onCancel, placeholder = "Reason (req
   const [reason, setReason] = useState("");
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
-      <input className="field w-52 px-1 py-0.5 text-xs" placeholder={placeholder} value={reason} onChange={(e) => setReason(e.target.value)} />
+      <input className="field w-52 max-w-full px-1 py-0.5 text-xs" placeholder={placeholder} value={reason} onChange={(e) => setReason(e.target.value)} />
       <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!reason.trim() || busy} onClick={() => onSubmit(reason.trim())}>{label}</button>
       <button type="button" className="text-xs text-rce-muted" onClick={onCancel}>cancel</button>
     </span>
@@ -192,7 +192,7 @@ function RequestRow({ row }: { row: StockRequestView }) {
   const decline = useMutation({ mutationFn: (reason: string) => api.declineStockRequest(row.id, reason), onSuccess: () => { setError(null); setMode("view"); refresh(); }, onError: (err) => setError((err as Error).message) });
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-1.5 text-sm">
-      <span>
+      <span className="min-w-0">
         <span className="font-medium">{row.truckName}</span> wants <span className="tabular-nums">{qtyText(row.qty)} {row.unit ?? ""}</span> {row.name}
         {row.itemId ? <span className="text-xs text-rce-muted"> · {row.itemId}</span> : <span className="text-xs text-amber-800"> · not a book item</span>}
         <span className="block text-xs text-rce-muted">{shortDate(row.createdAt)}{row.note ? ` · ${row.note}` : ""}</span>
@@ -233,7 +233,8 @@ function LocationCard({ title, subtitle, locationKey, levels, value, trucks, isW
       {counting && <CountForm locationKey={locationKey} onDone={() => setCounting(false)} />}
       {levels.length === 0 && <p className="mt-2 text-sm text-rce-muted">Nothing on hand yet — land a PO here, or Count what is already on the shelf.</p>}
       {levels.length > 0 && (
-        <table className="mt-2 w-full text-sm">
+        <div className="mt-2 overflow-x-auto">
+        <table className="w-full text-sm">
           <thead className="text-left text-[11px] uppercase tracking-wide text-rce-soft">
             <tr><th className="pr-2">Item</th><th className="pr-2 text-right">On hand</th><th className="pr-2 text-right">Unit cost</th><th className="pr-2 text-right">Value</th><th className="pr-2 text-right">Par</th><th className="text-right">Actions</th></tr>
           </thead>
@@ -241,6 +242,7 @@ function LocationCard({ title, subtitle, locationKey, levels, value, trucks, isW
             {visible.map((l) => <LevelRow key={l.id} level={l} locationKey={locationKey} trucks={trucks} isWarehouse={isWarehouse} />)}
           </tbody>
         </table>
+        </div>
       )}
       <ShowMore total={levels.length} shown={visible.length} onMore={() => setShowAll(true)} />
     </section>
@@ -284,7 +286,7 @@ function LevelRow({ level, locationKey, trucks, isWarehouse }: { level: StockLev
           )}
         </td>
         <td className="py-1 text-right text-xs">
-          <span className="inline-flex gap-2">
+          <span className="inline-flex gap-2 whitespace-nowrap">
             {isWarehouse && <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "transfer" ? "view" : "transfer")}>Transfer to truck</button>}
             <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "adjust" ? "view" : "adjust")}>Adjust</button>
             <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "history" ? "view" : "history")}>{mode === "history" ? "hide history" : "history"}</button>
@@ -353,7 +355,7 @@ function MovementRow({ m, here }: { m: StockMovementView; here: string }) {
   const other = m.kind === "transfer" ? (m.toLocationKey === here ? `from ${m.fromLocationKey}` : `to ${m.toLocationKey}`) : "";
   return (
     <li className="flex flex-wrap items-center justify-between gap-2">
-      <span>
+      <span className="min-w-0">
         <span className="tabular-nums text-rce-muted">{new Date(m.at).toLocaleString()}</span> · {KIND_LABEL[m.kind]}
         {" "}<span className={`tabular-nums ${sign < 0 ? "text-red-700" : "text-emerald-700"}`}>{sign > 0 ? "+" : ""}{qtyText(sign)}</span>
         {m.kind === "count" ? ` → ${qtyText(m.qty)} counted` : ""}
@@ -384,9 +386,9 @@ function ItemSearch({ onPick }: { onPick: (item: InventoryItem) => void }) {
   const { data: items = [] } = useQuery({ queryKey: ["inventory-items", { q }], queryFn: () => api.inventoryItems(q), enabled: q.trim().length >= 2 });
   return (
     <div className="relative">
-      <input className="field w-64 px-1 py-0.5 text-xs" placeholder="Search the book (item id or name)…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <input className="field w-64 max-w-full px-1 py-0.5 text-xs" placeholder="Search the book (item id or name)…" value={q} onChange={(e) => setQ(e.target.value)} />
       {q.trim().length >= 2 && items.length > 0 && (
-        <ul className="absolute z-10 mt-1 max-h-56 w-96 overflow-auto rounded-md border border-rce-border bg-white text-xs shadow">
+        <ul className="absolute left-0 z-10 mt-1 max-h-56 w-96 max-w-[calc(100vw-3rem)] overflow-auto rounded-md border border-rce-border bg-white text-xs shadow">
           {items.map((i) => (
             <li key={i.itemId}>
               <button type="button" className="flex w-full items-center justify-between gap-2 px-2 py-1 text-left hover:bg-rce-bg" onClick={() => { onPick(i); setQ(""); }}>
@@ -425,7 +427,7 @@ function CountForm({ locationKey, onDone }: { locationKey: string; onDone: () =>
       <ul className="mt-2 space-y-1">
         {lines.map((l, i) => (
           <li key={l.itemId} className="flex flex-wrap items-center gap-1">
-            <span className="w-64">{l.name} <span className="text-rce-muted">· {l.itemId}</span></span>
+            <span className="w-64 max-w-full">{l.name} <span className="text-rce-muted">· {l.itemId}</span></span>
             <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" placeholder="Counted" value={l.qty} onChange={(e) => setLines((ls) => ls.map((x, idx) => (idx === i ? { ...x, qty: e.target.value } : x)))} />
             <span className="text-rce-muted">{l.unit ?? ""}</span>
             <input className="field w-24 px-1 py-0.5 text-xs" inputMode="decimal" placeholder="Unit cost" value={l.unitCost} onChange={(e) => setLines((ls) => ls.map((x, idx) => (idx === i ? { ...x, unitCost: e.target.value } : x)))} />
@@ -434,7 +436,7 @@ function CountForm({ locationKey, onDone }: { locationKey: string; onDone: () =>
         ))}
       </ul>
       <div className="mt-2 flex flex-wrap items-center gap-1">
-        <input className="field w-64 px-1 py-0.5 text-xs" placeholder="Reason (required) — e.g. Friday count" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <input className="field w-64 max-w-full px-1 py-0.5 text-xs" placeholder="Reason (required) — e.g. Friday count" value={reason} onChange={(e) => setReason(e.target.value)} />
         <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!valid || count.isPending} onClick={() => count.mutate()}>{count.isPending ? "Saving…" : `Record count (${lines.length})`}</button>
         <button type="button" className="text-rce-muted" onClick={onDone}>cancel</button>
       </div>
@@ -469,7 +471,8 @@ function ToolsCard({ locations }: { locations: Location[] }) {
       {isLoading && <p className="mt-2 text-sm text-rce-muted">Loading…</p>}
       {!isLoading && live.length === 0 && <p className="mt-2 text-sm text-rce-muted">No tools on the register yet — land a tool PO or add one by hand.</p>}
       {live.length > 0 && (
-        <table className="mt-2 w-full text-sm">
+        <div className="mt-2 overflow-x-auto">
+        <table className="w-full text-sm">
           <thead className="text-left text-[11px] uppercase tracking-wide text-rce-soft">
             <tr><th className="pr-2">Tool</th><th className="pr-2">Serial</th><th className="pr-2 text-right">Cost</th><th className="pr-2">Condition</th><th className="pr-2">Location</th><th className="text-right">Actions</th></tr>
           </thead>
@@ -477,6 +480,7 @@ function ToolsCard({ locations }: { locations: Location[] }) {
             {visible.map((t) => <ToolRow key={t.id} tool={t} locations={locations} />)}
           </tbody>
         </table>
+        </div>
       )}
       <ShowMore total={live.length} shown={visible.length} onMore={() => setShowAll(true)} />
     </section>
@@ -541,7 +545,7 @@ function ToolRow({ tool, locations }: { tool: ToolView; locations: Location[] })
         </td>
         <td className="py-1 pr-2">{label(tool.locationKey)}</td>
         <td className="py-1 text-right text-xs">
-          <span className="inline-flex gap-2">
+          <span className="inline-flex gap-2 whitespace-nowrap">
             <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "move" ? "view" : "move")}>Move</button>
             <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "edit" ? "view" : "edit")}>Edit</button>
           </span>

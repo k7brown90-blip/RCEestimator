@@ -44,7 +44,7 @@ function ReasonRow({ label, busy, onSubmit, onCancel }: { label: string; busy: b
   const [reason, setReason] = useState("");
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
-      <input className="field w-52 px-1 py-0.5 text-xs" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} />
+      <input className="field w-52 max-w-full px-1 py-0.5 text-xs" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} />
       <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!reason.trim() || busy} onClick={() => onSubmit(reason.trim())}>{label}</button>
       <button type="button" className="text-xs text-rce-muted" onClick={onCancel}>cancel</button>
     </span>
@@ -149,7 +149,7 @@ export function TrucksPage() {
             {technicians.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
           <button type="button" className="btn btn-primary text-sm" disabled={!newName.trim() || create.isPending} onClick={() => create.mutate()}>Add truck</button>
-          {create.error && <span className="text-xs text-red-600">{(create.error as Error).message}</span>}
+          {create.error && <span className="w-full text-xs text-red-600">{(create.error as Error).message}</span>}
         </div>
       </section>
     </div>
@@ -250,7 +250,7 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
   if (!editing) {
     return (
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span>
+        <span className="min-w-0 break-words">
           <span className="font-semibold">{truck.name}</span> · {truck.technicianName ?? "no tech"} ·
           {truck.stripeCardId ? ` card ${truck.stripeCardId}${truck.cardLast4 ? ` (••••${truck.cardLast4})` : ""}` : " no card mapped"} ·
           {truck.stripeFinancialAccountId ? ` account ${truck.stripeFinancialAccountId}` : " no financial account"}
@@ -291,7 +291,7 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
         >
           Delete
         </button>
-        {actionError && <span className="text-xs text-red-600">{actionError}</span>}
+        {actionError && <span className="w-full text-xs text-red-600">{actionError}</span>}
       </div>
       <div className="flex flex-wrap items-center gap-1">
         {cards && cards.available && !manualCard ? (
@@ -303,20 +303,20 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
             {stripeCardId && !cardOptions.some((c) => c.id === stripeCardId) && <option value={stripeCardId}>{stripeCardId}</option>}
           </select>
         ) : (
-          <input className="field w-52 px-1 py-0.5 text-xs" value={stripeCardId} onChange={(e) => setStripeCardId(e.target.value)} placeholder="Issuing card id (ic_…)" />
+          <input className="field w-52 max-w-full px-1 py-0.5 text-xs" value={stripeCardId} onChange={(e) => setStripeCardId(e.target.value)} placeholder="Issuing card id (ic_…)" />
         )}
         {cards && cards.available && (
           <button type="button" className="text-rce-accent" onClick={() => setManualCard((m) => !m)}>{manualCard ? "pick from Stripe" : "type the id"}</button>
         )}
         {cards && !cards.available && <span className="text-amber-800">card list not readable ({cards.reason.split("(")[0].trim()}) — type the id</span>}
         <input className="field w-16 px-1 py-0.5 text-xs" value={cardLast4} onChange={(e) => setCardLast4(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="last4" />
-        <input className="field w-52 px-1 py-0.5 text-xs" value={financialAccountId} onChange={(e) => setFinancialAccountId(e.target.value)} placeholder="Financial account id (fa_…)" />
+        <input className="field w-52 max-w-full px-1 py-0.5 text-xs" value={financialAccountId} onChange={(e) => setFinancialAccountId(e.target.value)} placeholder="Financial account id (fa_…)" />
       </div>
       <div className="flex flex-wrap items-center gap-1">
-        <input className="field w-72 px-1 py-0.5 text-xs" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes" />
+        <input className="field w-72 max-w-full px-1 py-0.5 text-xs" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes" />
         <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!name.trim() || save.isPending} onClick={() => save.mutate()}>Save</button>
         <button type="button" className="text-rce-muted" onClick={() => setEditing(false)}>cancel</button>
-        {save.error && <span className="text-red-600">{(save.error as Error).message}</span>}
+        {save.error && <span className="w-full text-red-600">{(save.error as Error).message}</span>}
       </div>
     </div>
   );
@@ -355,7 +355,7 @@ function NeedingRow({ row }: { row: CardSpendRow }) {
     `${c.vendor || "Unknown vendor"} · ${money(c.amount)}${c.exact ? " ✓" : ""} · ${shortDate(c.receivedAt)}${c.purchaseOrderNumber ? ` · ${c.purchaseOrderNumber}` : ""}${c.status !== "confirmed" ? " · needs review" : ""}`;
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-200 bg-amber-50/40 px-2 py-1">
-      <span>
+      <span className="min-w-0">
         <span className="font-medium">{row.merchantName}</span> · <span className="tabular-nums">{money(row.amount)}</span> · {shortDate(row.occurredAt)}
         {row.purchaseOrderNumber && <span className="ml-1 rounded bg-slate-100 px-1 tabular-nums text-slate-700">{row.purchaseOrderNumber}</span>}
         {row.purchaseOrderAfterTheFact && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">after the fact</span>}
@@ -379,7 +379,7 @@ function NeedingRow({ row }: { row: CardSpendRow }) {
       {mode === "ignore" && (
         <ReasonRow label="Ignore" busy={patch.isPending} onSubmit={(reason) => patch.mutate({ status: "ignored", reason })} onCancel={() => setMode("view")} />
       )}
-      {error && <span className="text-red-600">{error}</span>}
+      {error && <span className="w-full text-red-600">{error}</span>}
     </li>
   );
 }
@@ -395,11 +395,13 @@ function LedgerKind({ kind, total, rows }: { kind: CardSpendKind; total: number;
         <span className="font-medium">{KIND_LABEL[kind]}</span>
         <span className="tabular-nums">{money(total)}</span>
       </p>
+      <div className="overflow-x-auto">
       <table className="w-full">
         <tbody>
           {visible.map((r) => <LedgerRow key={r.id} row={r} />)}
         </tbody>
       </table>
+      </div>
       {rows.length > 8 && !showAll && (
         <button type="button" className="text-rce-accent" onClick={() => setShowAll(true)}>Show more ({rows.length - 8})</button>
       )}

@@ -56,6 +56,15 @@ body {
   min-height: 100vh;
 }
 
+/*
+  Tailwind v4 puts every utility in the native `utilities` cascade layer, and un-layered CSS
+  beats layered CSS no matter the order or specificity. These component classes used to sit
+  outside any layer, so `field w-24`, `btn px-2 py-0.5 text-xs`, `card rounded-2xl` and the
+  like silently lost to `.field { width: 100% }` / `.btn { padding: 0 16px }` — every inline
+  input rendered full-width and 44px tall, every compact button as a full pill. Declaring them
+  in `components` (which Tailwind orders before `utilities`) lets the utilities next to them win.
+*/
+@layer components {
 .card {
   background: var(--rce-surface);
   border: 1px solid var(--rce-border);
@@ -117,4 +126,5 @@ body {
   background: var(--rce-surface);
   color: var(--rce-danger);
   border-color: rgba(220, 38, 38, 0.25);
+}
 }

@@ -46,7 +46,7 @@ export function PendingReceiptFields({
   return (
     <span className="flex flex-wrap items-center gap-1">
       <input
-        className="field w-32 px-1 py-0.5 text-xs"
+        className="field w-32 max-w-full px-1 py-0.5 text-xs"
         placeholder="Vendor"
         value={vendor}
         onChange={(e) => setVendor(e.target.value)}
@@ -100,7 +100,7 @@ export function ReceiptReviewList({ rows, title = "Receipts to review" }: { rows
       <ul className="space-y-2">
         {rows.map((r) => (
           <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-200 bg-white px-3 py-2 text-sm">
-            <span>
+            <span className="min-w-0">
               <span className="font-medium">{r.vendor || "Unknown vendor"}</span>
               <span className="text-rce-muted"> · {r.category} · read as {money(r.amount)} · {shortDate(r.receivedAt)}</span>
               {r.purchaseOrderNumber && <span className="ml-1 rounded bg-slate-100 px-1 text-xs tabular-nums text-slate-700">{r.purchaseOrderNumber}</span>}
@@ -114,7 +114,7 @@ export function ReceiptReviewList({ rows, title = "Receipts to review" }: { rows
                 {r.jobLabel}
               </span>
             </span>
-            <span className="flex items-center gap-2">
+            <span className="flex flex-wrap items-center gap-2">
               <PendingReceiptFields
                 receipt={r}
                 busy={review.isPending}

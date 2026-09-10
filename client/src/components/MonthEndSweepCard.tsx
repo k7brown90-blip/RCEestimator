@@ -122,7 +122,7 @@ export function MonthEndSweepCard() {
               </dl>
               <p className="mt-2 text-xs uppercase tracking-wide text-rce-soft">Excess</p>
               <p className={`text-3xl font-bold tabular-nums ${excess > 0 ? "text-emerald-700" : "text-rce-muted"}`}>{money(excess)}</p>
-              <p className="text-xs text-rce-muted">{main.financialAccountId}</p>
+              <p className="break-all text-xs text-rce-muted">{main.financialAccountId}</p>
             </>
           ) : (
             <p className="mt-1 text-sm text-rce-muted">Not readable yet.</p>
@@ -135,7 +135,8 @@ export function MonthEndSweepCard() {
           {data.trucks.length === 0 ? (
             <p className="mt-1 text-sm text-rce-muted">No trucks yet.</p>
           ) : (
-            <table className="mt-1 w-full text-sm">
+            <div className="mt-1 overflow-x-auto">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase text-rce-soft">
                   <th className="py-0.5 pr-2">Truck</th>
@@ -157,6 +158,7 @@ export function MonthEndSweepCard() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       </div>
@@ -172,7 +174,7 @@ export function MonthEndSweepCard() {
         ) : (
           <div className="rounded-lg border border-rce-border bg-white p-3">
             <p className="text-sm font-semibold">Confirm the sweep</p>
-            <p className="text-xs text-rce-muted">
+            <p className="break-words text-xs text-rce-muted">
               Stripe will move this from the main account to <b>{data.destination?.label}</b> ({data.destination?.externalAccountId}). At most the excess, {money(excess)}.
             </p>
             <div className="mt-2 grid gap-3 md:grid-cols-2">
@@ -187,7 +189,7 @@ export function MonthEndSweepCard() {
             </div>
             {!amountOk && amount !== "" && <p className="mt-1 text-xs text-red-700">The amount must be more than zero and at most the excess.</p>}
             {error && <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{error}</p>}
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <button
                 type="button"
                 className="btn btn-primary"
@@ -221,8 +223,8 @@ function RecentSweeps({ rows }: { rows: TreasurySweepRow[] }) {
             <span className="font-medium tabular-nums">{money(r.amount)}</span>
             <span className="text-rce-muted">→ {r.destinationLabel}</span>
             <span className={`rounded px-1.5 text-xs ${statusClass(r.status)}`}>{STATUS_LABEL[r.status] ?? r.status}</span>
-            {r.stripeTransferId && <span className="text-xs text-rce-muted">{r.stripeTransferId}</span>}
-            {r.error && <span className="basis-full text-xs text-red-700">{r.error}</span>}
+            {r.stripeTransferId && <span className="break-all text-xs text-rce-muted">{r.stripeTransferId}</span>}
+            {r.error && <span className="basis-full break-words text-xs text-red-700">{r.error}</span>}
           </li>
         ))}
       </ul>

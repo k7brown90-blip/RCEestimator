@@ -99,7 +99,7 @@ export function FinancialsPage() {
       {/* ── Trucks (Kyle, 2026-09-09): per-truck card spend this month; the ledger lives at /trucks ── */}
       <TrucksCard />
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button className="btn btn-secondary text-sm" onClick={() => setYear((y) => y - 1)}>← {year - 1}</button>
         <span className="text-lg font-bold">{year}</span>
         <button className="btn btn-secondary text-sm" onClick={() => setYear((y) => y + 1)}>{year + 1} →</button>
@@ -219,7 +219,7 @@ export function FinancialsPage() {
         )}
         <ul className="space-y-1">
           {(summary?.expensesByCategory ?? []).map((c) => (
-            <li key={c.category} className="flex items-center justify-between rounded-lg border border-rce-border px-3 py-2 text-sm">
+            <li key={c.category} className="flex items-center justify-between gap-3 rounded-lg border border-rce-border px-3 py-2 text-sm">
               <span className="capitalize">{c.category === "stripe_fees" ? "Stripe fees" : c.category.replace("bill:", "bills — ")}</span>
               <span className="font-medium tabular-nums">{money(c.total)}</span>
             </li>
@@ -248,7 +248,7 @@ export function FinancialsPage() {
             <h3 className="text-sm font-semibold text-rce-soft">Most-purchased items</h3>
             <ul className="mt-1 space-y-1">
               {(insights?.topItems ?? []).slice(0, 10).map((item) => (
-                <li key={item.name} className="flex items-center justify-between rounded-lg border border-rce-border px-3 py-1.5 text-sm">
+                <li key={item.name} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rce-border px-3 py-1.5 text-sm">
                   <span>{item.name} <span className="text-xs text-rce-muted">×{item.totalQty} across {item.receipts} receipt(s)</span></span>
                   <span className="text-xs tabular-nums text-rce-muted">
                     {item.avgUnitCost !== null ? `avg ${money(item.avgUnitCost)}/unit` : ""}
@@ -370,7 +370,7 @@ function WarrantyReceivablesCard() {
                       <span className="text-[11px] text-rce-muted">{r.daysOutstanding}d outstanding</span>
                     )}
                   </div>
-                  <div className="text-xs text-rce-muted">
+                  <div className="break-words text-xs text-rce-muted">
                     <Link to={`/accounts/${r.account.id}`} className="hover:underline">{r.number}</Link> · {r.title} · {r.company} claim {r.claimNumber}{r.authNumber ? ` · auth ${r.authNumber}` : ""}
                   </div>
                   <div className="text-xs text-rce-muted">
@@ -466,8 +466,8 @@ function MaterialsCard({ year, materials }: { year: number; materials: Omit<Mate
   const latest = materials ? [...materials.months].reverse().find((m) => m.inventoryValue !== 0 || m.bought !== 0 || m.used !== 0) : undefined;
   return (
     <section className="card p-4">
-      <button type="button" className="flex w-full items-center justify-between text-left" onClick={() => setOpen((o) => !o)}>
-        <span>
+      <button type="button" className="flex w-full items-center justify-between gap-2 text-left" onClick={() => setOpen((o) => !o)}>
+        <span className="min-w-0">
           <span className="text-lg font-semibold">Materials</span>
           {materials && (
             <span className="ml-3 text-xs text-rce-muted">
@@ -476,7 +476,7 @@ function MaterialsCard({ year, materials }: { year: number; materials: Omit<Mate
             </span>
           )}
         </span>
-        <span className="text-xs text-rce-soft">{open ? "hide" : "show"}</span>
+        <span className="shrink-0 text-xs text-rce-soft">{open ? "hide" : "show"}</span>
       </button>
       {open && (
         <>
@@ -816,7 +816,7 @@ function BillsCard({ bills, onChange }: { bills: CompanyBillRow[]; onChange: () 
       </p>
       <ul className="space-y-1">
         {bills.map((b) => (
-          <li key={b.id} className="flex items-center justify-between rounded-lg border border-rce-border px-3 py-2 text-sm">
+          <li key={b.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rce-border px-3 py-2 text-sm">
             <span>
               <span className="font-medium">{b.name}</span>
               <span className="ml-2 text-xs text-rce-muted">
@@ -837,7 +837,7 @@ function BillsCard({ bills, onChange }: { bills: CompanyBillRow[]; onChange: () 
         {bills.length === 0 && <li className="text-sm text-rce-muted">No bills entered yet.</li>}
       </ul>
       <div className="mt-3 flex flex-wrap gap-2">
-        <input className="field w-44" placeholder="Bill name" value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="field w-44 max-w-full" placeholder="Bill name" value={name} onChange={(e) => setName(e.target.value)} />
         <input className="field w-28" type="number" step="0.01" placeholder="Amount $" value={amount} onChange={(e) => setAmount(e.target.value)} />
         <select className="field" value={category} onChange={(e) => setCategory(e.target.value)}>
           {["overhead", "insurance", "vehicle", "software", "marketing", "other"].map((c) => (
@@ -1099,8 +1099,8 @@ function PaymentsCard({
         <div className="mt-2">
           <ul className="space-y-1">
             {payments.slice(0, ledgerLimit).map((p) => (
-              <li key={p.id} className="flex items-center justify-between rounded-lg border border-rce-border px-3 py-2 text-sm">
-                <span>
+              <li key={p.id} className="flex items-start justify-between gap-2 rounded-lg border border-rce-border px-3 py-2 text-sm">
+                <span className="min-w-0">
                   <span className="font-medium capitalize">{p.method}</span>
                   {/* Whose money (Kyle, 2026-09-10): a warranty company's check is labelled as such. */}
                   {p.payer === "warranty" && (
@@ -1114,7 +1114,7 @@ function PaymentsCard({
                     {p.status !== "paid" ? ` · ${p.status}` : ""}
                   </span>
                 </span>
-                <span className="font-medium tabular-nums">{money(p.amount)}</span>
+                <span className="shrink-0 font-medium tabular-nums">{money(p.amount)}</span>
               </li>
             ))}
             {payments.length === 0 && <li className="text-sm text-rce-muted">No payments recorded this year.</li>}
@@ -1233,7 +1233,7 @@ function InvoicePanel({ inv, stripeConfigured, onChange }: { inv: InvoiceSummary
         <div>
           <div className="text-xs text-rce-soft">Account</div>
           <div className="font-medium">{inv.customer.name}</div>
-          <div className="text-xs text-rce-muted">{inv.customerPhone ?? "no phone on file"} · {inv.customerEmail ?? "no email on file"}</div>
+          <div className="break-words text-xs text-rce-muted">{inv.customerPhone ?? "no phone on file"} · {inv.customerEmail ?? "no email on file"}</div>
           <div className="text-xs text-rce-muted">{inv.serviceAddress}</div>
         </div>
         <div>
@@ -1329,7 +1329,7 @@ function InvoicePanel({ inv, stripeConfigured, onChange }: { inv: InvoiceSummary
             <option value="final">final</option>
             <option value="other">other</option>
           </select>
-          <input className="field flex-1" placeholder="Note (check #, etc.)" value={note} onChange={(e) => setNote(e.target.value)} />
+          <input className="field min-w-0 flex-1" placeholder="Note (check #, etc.)" value={note} onChange={(e) => setNote(e.target.value)} />
           <button className="btn btn-primary text-sm" disabled={!(Number(amount) > 0) || record.isPending} onClick={() => record.mutate()}>
             {record.isPending ? "Recording…" : "Record"}
           </button>
@@ -1366,7 +1366,7 @@ function UntiedPaymentForm({ onChange }: { onChange: () => void }) {
           <option value="zelle">Zelle</option>
           <option value="other">other</option>
         </select>
-        <input className="field flex-1" placeholder="Note (what it was for)" value={note} onChange={(e) => setNote(e.target.value)} />
+        <input className="field min-w-0 flex-1" placeholder="Note (what it was for)" value={note} onChange={(e) => setNote(e.target.value)} />
         <button
           className="btn btn-primary text-sm"
           disabled={!(Number(amount) > 0) || record.isPending}

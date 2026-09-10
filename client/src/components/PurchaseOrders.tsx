@@ -110,7 +110,7 @@ export function ReceiptPoPicker({ receiptId, jobId }: { receiptId: string; jobId
       >
         Attach
       </button>
-      {error && <span className="text-red-600">{error}</span>}
+      {error && <span className="w-full text-red-600">{error}</span>}
     </span>
   );
 }
@@ -257,7 +257,7 @@ export function PurchasesCard() {
       <ul className="mt-1 space-y-1">
         {visibleNeeding.map((r) => (
           <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-1.5 text-sm">
-            <span>
+            <span className="min-w-0">
               <span className="font-medium">{r.vendor || "Unknown vendor"}</span>
               <span className="ml-1 text-xs text-rce-muted">{money(r.amount)} · {shortDate(r.receivedAt)}</span>
               <span className="block text-xs text-rce-muted">
@@ -282,7 +282,7 @@ function ReasonRow({ label, busy, onSubmit, onCancel }: { label: string; busy: b
   const [reason, setReason] = useState("");
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
-      <input className="field w-56 px-1 py-0.5 text-xs" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} />
+      <input className="field w-56 max-w-full px-1 py-0.5 text-xs" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} />
       <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!reason.trim() || busy} onClick={() => onSubmit(reason.trim())}>{label}</button>
       <button type="button" className="text-xs text-rce-muted" onClick={onCancel}>cancel</button>
     </span>
@@ -422,7 +422,7 @@ function PoHeader({ po, editable }: { po: PurchaseOrderDetail; editable: boolean
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span>
+        <span className="min-w-0">
           <span className="font-semibold">{po.supplier}</span> · {PO_PURPOSE_LABEL[po.purpose]} · {po.destinationType === "warehouse" ? "Warehouse (home)" : po.truckName ?? "truck"}
           {po.jobLabel && <span className="text-rce-muted"> · opened on {po.accountId ? <Link to={`/accounts/${po.accountId}`} className="text-rce-accent hover:underline">{po.accountName}</Link> : null} {po.jobLabel}</span>}
           <span className="text-rce-muted"> · opened by {po.openedBy}{po.sentAt ? ` · emailed ${shortDate(po.sentAt)}` : ""}</span>
@@ -438,7 +438,7 @@ function PoHeader({ po, editable }: { po: PurchaseOrderDetail; editable: boolean
             <option value="warehouse">Warehouse</option>
             <option value="tool">Tool</option>
           </select>
-          <input className="field w-52 px-1 py-0.5 text-xs" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes" />
+          <input className="field w-52 max-w-full px-1 py-0.5 text-xs" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes" />
           <ReasonRow label="Save" busy={save.isPending} onSubmit={(reason) => save.mutate(reason)} onCancel={() => setEditing(false)} />
         </div>
       )}

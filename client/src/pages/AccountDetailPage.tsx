@@ -325,13 +325,13 @@ export function AccountDetailPage() {
             </div>
           </form>
         ) : (
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <p className="text-sm text-rce-muted">{account.email || <span className="italic text-rce-soft">No email</span>}</p>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 space-y-1">
+              <p className="break-words text-sm text-rce-muted">{account.email || <span className="italic text-rce-soft">No email</span>}</p>
               <p className="text-sm text-rce-muted">{account.phone || <span className="italic text-rce-soft">No phone</span>}</p>
               <p className="text-xs text-rce-soft">Account opened {shortDate(account.createdAt)}</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex shrink-0 flex-wrap gap-2">
               <button className="btn btn-secondary" onClick={startEdit}>Edit Contact</button>
               <button
                 className="btn btn-secondary text-red-600 hover:border-red-400"
@@ -423,7 +423,7 @@ export function AccountDetailPage() {
                     </p>
                   )}
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <button className="btn btn-secondary" onClick={() => startEditProperty(property)}>Edit</button>
                   {/* Hidden once there's job history, but the server's 409 is the
                       real guard — findings and documents aren't in these counts. */}
@@ -783,7 +783,7 @@ function AccountEstimates({
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="font-medium">{e.title}</p>
+                  <p className="break-words font-medium">{e.title}</p>
                   <p className="text-xs text-rce-soft">
                     {e.number}
                     {e.revision > 1 ? ` rev ${e.revision}` : ""} ·{" "}
@@ -842,7 +842,7 @@ function AccountEstimates({
                 </div>
               </div>
 
-              <div className="mt-2 flex gap-2">
+              <div className="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => void openProtectedPdf(`/issued-estimates/${e.id}/pdf?audience=company`)}
@@ -981,8 +981,8 @@ function ContactsCard({ accountId }: { accountId: string }) {
       </p>
       <ul className="mt-3 space-y-1">
         {(contacts ?? []).map((c) => (
-          <li key={c.id} className="flex items-center justify-between rounded-lg border border-rce-border px-3 py-2 text-sm">
-            <span>
+          <li key={c.id} className="flex items-center justify-between gap-2 rounded-lg border border-rce-border px-3 py-2 text-sm">
+            <span className="min-w-0 break-words">
               <span className="font-medium">{c.label}</span>
               <span className="ml-2 text-xs text-rce-muted">
                 {[c.email, c.phone].filter(Boolean).join(" · ")}
@@ -1002,7 +1002,7 @@ function ContactsCard({ accountId }: { accountId: string }) {
       </ul>
       <div className="mt-3 flex flex-wrap gap-2">
         <input className="field w-40" placeholder="Label (Spouse — cell)" value={label} onChange={(e) => setLabel(e.target.value)} />
-        <input className="field w-52" type="email" placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <input className="field w-52 max-w-full" type="email" placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
         <input className="field w-36" placeholder="Phone (optional)" value={phone} onChange={(e) => setPhone(e.target.value)} />
         <button
           className="btn btn-primary text-sm"
@@ -1102,7 +1102,7 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
             {job.scheduledStart && ` · scheduled ${shortDate(job.scheduledStart)}`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <JobStatusPill status={job.status} />
           {job.latestEstimate && <StatusBadge status={job.latestEstimate.status} />}
         </div>
@@ -1201,7 +1201,7 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
               <ul className="mt-1 space-y-1">
                 {job.receipts.map((receipt) => (
                   <li key={receipt.id} className="flex flex-wrap items-center justify-between gap-2">
-                    <span>
+                    <span className="min-w-0">
                       {receipt.vendor || "Unknown vendor"} · {receipt.category}
                       {receipt.status === "pending_review" && (
                         <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">needs review · not counted yet</span>
@@ -1216,7 +1216,7 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
                         <ReceiptPoPicker receiptId={receipt.id} jobId={job.visitId} />
                       ) : null}
                     </span>
-                    <span className="flex items-center gap-2">
+                    <span className="flex flex-wrap items-center gap-2">
                       {receipt.status === "pending_review" ? (
                         // Kyle, 2026-09-08 (Robert Tran): the vision read can miss the vendor or
                         // the amount entirely ($0.00, no vendor) — fix both here, then confirm.

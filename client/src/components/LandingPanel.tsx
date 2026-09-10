@@ -84,6 +84,7 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
       </p>
       {data.blocker && <p className="rounded bg-amber-50 px-2 py-1 text-amber-800">{data.blocker}</p>}
       {data.lines.length === 0 && <p className="text-rce-muted">This PO has no lines — add them on the Purchases card, then land it.</p>}
+      <div className="overflow-x-auto">
       <table className="w-full">
         <thead className="text-left text-[11px] uppercase tracking-wide text-rce-soft">
           <tr><th className="pr-2">Item</th><th className="pr-2 text-right">Expected</th><th className="pr-2">Landed</th><th className="pr-2">Unit cost</th><th className="text-right">Line</th></tr>
@@ -112,8 +113,9 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
           })}
         </tbody>
       </table>
+      </div>
       {data.receiptLines.length > 0 && (
-        <div className="space-y-1 rounded border border-rce-border/60 bg-rce-bg/40 p-2">
+        <div className="space-y-1 border-t border-rce-border/60 pt-2">
           <p className="text-[11px] uppercase tracking-wide text-rce-soft">Receipt lines</p>
           {data.receiptLines.map((r) => (
             <div key={r.receiptId}>
@@ -143,7 +145,7 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="tabular-nums">Landing total {money(total)}{data.receiptTotal > 0 && Math.abs(total - data.receiptTotal) > 0.01 ? <span className="text-amber-800"> · receipt {money(data.receiptTotal)}</span> : null}</span>
         <span className="inline-flex flex-wrap items-center gap-1">
-          <input className="field w-48 px-1 py-0.5 text-xs" placeholder="Note (optional)" value={reason} onChange={(e) => setReason(e.target.value)} />
+          <input className="field w-48 max-w-full px-1 py-0.5 text-xs" placeholder="Note (optional)" value={reason} onChange={(e) => setReason(e.target.value)} />
           <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!valid || Boolean(data.blocker) || land.isPending} onClick={() => land.mutate()}>
             {land.isPending ? "Landing…" : "Land"}
           </button>
