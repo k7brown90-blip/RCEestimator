@@ -24,6 +24,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { BounceBadge } from "../components/BounceBadge";
 import { api } from "../lib/api";
 import type { PbChainRow } from "../lib/types";
 import { money } from "../lib/utils";
@@ -231,6 +232,12 @@ function EstimateRow({ row, label, tone }: Classified) {
             {row.signedChannel === "in_person" ? " · signed in person" : ""}
             {row.signedChannel === "email" ? " · signed from the emailed link" : ""}
           </div>
+          {/* Kyle, 2026-09-09: a bounced estimate must not read like a delivered one. */}
+          {row.lastBounceAt && (
+            <div className="mt-1">
+              <BounceBadge at={row.lastBounceAt} reason={row.lastBounceReason} />
+            </div>
+          )}
         </div>
         <div className="shrink-0 text-right">
           <div className="font-semibold">{money(row.billedTotal ?? row.total)}</div>

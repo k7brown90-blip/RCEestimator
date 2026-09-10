@@ -11,6 +11,7 @@ import { GeneratorDesigner } from "../components/GeneratorDesigner";
 import { LoadCalcEditor } from "../components/LoadCalcEditor";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
+import { BounceBadge } from "../components/BounceBadge";
 import { api, openProtectedPdf } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
 import type { AccountJob, AccountSummary } from "../lib/types";
@@ -789,6 +790,13 @@ function AccountEstimates({
                     {e.serviceAddress ?? "address missing"}
                   </p>
                   <p className="text-xs uppercase tracking-wide text-rce-muted">{e.status}</p>
+                {/* Kyle, 2026-09-09: "My emails are not getting to the clients" — when Gmail
+                    reported this estimate's email undeliverable, say so here, with the reason. */}
+                {e.lastBounceAt && (
+                  <div className="mt-1">
+                    <BounceBadge at={e.lastBounceAt} reason={e.lastBounceReason} />
+                  </div>
+                )}
                 {/*
                   Kyle, 2026-08-22: "Is there any way to know if our emails have been read?"
                   For an estimate the honest signal already exists — the customer either opened

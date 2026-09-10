@@ -14,29 +14,29 @@ datasource db {
 
 model Customer {
   priceBookDrafts   PriceBookDraftEstimate[]
-  id          String     @id @default(cuid())
-  name        String
-  email       String?
-  phone       String?
+  id                String                   @id @default(cuid())
+  name              String
+  email             String?
+  phone             String?
   // Tri-state SMS consent, carried from the lead at conversion. true = opted in
   // (web form checkbox), false = explicitly declined or texted STOP, null =
   // never asked (phone leads, manual entries). sendSms() only sends to a known
   // Customer/Lead when this is true — null and false are both "not opted in"
   // (the website checkbox is the only opt-in channel) — see services/twilio.ts.
-  smsConsent  Boolean?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  properties  Property[]
-  visits      Visit[]
-  issuedEstimates IssuedEstimate[]
+  smsConsent        Boolean?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  properties        Property[]
+  visits            Visit[]
+  issuedEstimates   IssuedEstimate[]
   // Marks the internal price-book testing account (P029). Kyle, 2026-08-18: "Speculative
   // pricing may exist only for testing the price book but should be a planned deletion."
   // Rows under a test account are excluded from funnel counts and the Estimates chain view,
   // and the whole account deletes in one action — on Kyle's word, never on a schedule.
-  isTestAccount Boolean  @default(false)
+  isTestAccount     Boolean                  @default(false)
   healthInspections HealthInspection[]
-  contacts    CustomerContact[]
-  payments    Payment[]
+  contacts          CustomerContact[]
+  payments          Payment[]
 
   @@index([phone])
 }
@@ -51,7 +51,7 @@ model Customer {
 model CustomerContact {
   id         String   @id @default(cuid())
   customerId String
-  label      String   // "Spouse — cell", "Work email", "Property manager"
+  label      String // "Spouse — cell", "Work email", "Property manager"
   email      String?
   phone      String?
   createdAt  DateTime @default(now())
@@ -62,41 +62,41 @@ model CustomerContact {
 }
 
 model Property {
-  id                     String         @id @default(cuid())
-  customerId             String
-  name                   String
-  addressLine1           String
-  addressLine2           String?
-  city                   String
-  state                  String
-  postalCode             String
-  notes                  String?
-  occupancyType          String         @default("residential") // residential | commercial
+  id                       String             @id @default(cuid())
+  customerId               String
+  name                     String
+  addressLine1             String
+  addressLine2             String?
+  city                     String
+  state                    String
+  postalCode               String
+  notes                    String?
+  occupancyType            String             @default("residential") // residential | commercial
   // Explicit office override for the code jurisdiction at this address. Null means
   // "derive it" — see services/jurisdictionResolver.ts, which falls back to the
   // ZIP-keyed territories setting, then a city map. The field PWA must never guess.
-  jurisdictionId         String?
+  jurisdictionId           String?
   // ── Protocol v2 code-era resolution (§1.3) ──
   // The AHJ's enforced NEC edition, set at intake. Null = resolve via
   // jurisdictionResolver's edition mapping. NOTHING may hardcode an edition.
-  ahjCodeEdition         String?  // "2017" | "2020" | "2023"
+  ahjCodeEdition           String? // "2017" | "2020" | "2023"
   // Drives the no-FAIL-against-later-code rule (v2 hard rule 5): no finding may
   // be classified FAIL against a requirement introduced after this date, absent
   // an explicitly retroactive requirement.
-  estimatedInstallYear   Int?
+  estimatedInstallYear     Int?
   conductorMaterialService String? // copper | aluminum | copper_clad_aluminum | unknown
   conductorMaterialBranch  String? // copper | aluminum | mixed | unknown
-  createdAt              DateTime       @default(now())
-  updatedAt              DateTime       @updatedAt
-  customer               Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  systemSnapshot         SystemSnapshot?
-  visits                 Visit[]
-  estimates              Estimate[]
-  issuedEstimates        IssuedEstimate[]
-  healthInspections      HealthInspection[]
-  findings               PropertyFinding[]
-  documents              Document[]
-  enclosures             Enclosure[]
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+  customer                 Customer           @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  systemSnapshot           SystemSnapshot?
+  visits                   Visit[]
+  estimates                Estimate[]
+  issuedEstimates          IssuedEstimate[]
+  healthInspections        HealthInspection[]
+  findings                 PropertyFinding[]
+  documents                Document[]
+  enclosures               Enclosure[]
 
   // Prisma doesn't index relation scalars on Postgres, and every account read
   // fans out by customerId — the account summary, the customer list, and now
@@ -123,18 +123,18 @@ model Property {
 // upgraded* — wear tracked against a published service life, or work that meets
 // code but not our standard. Both are documented whether or not the work is done.
 model PropertyFinding {
-  id             String   @id @default(cuid())
-  propertyId     String
-  customerId     String
-  itemId         String // checklist item, e.g. "C4"
+  id          String @id @default(cuid())
+  propertyId  String
+  customerId  String
+  itemId      String // checklist item, e.g. "C4"
   // Which enclosure. NOT nullable: Postgres treats NULLs as distinct in a unique
   // index, so a nullable column would silently duplicate every Phase 1 row.
   // Not defaulted to a real location either — that would assert a place the
   // technician never recorded.
-  locationKey    String   @default("_default")
-  cycle          Int      @default(1) // nth time this has been documented here
+  locationKey String @default("_default")
+  cycle       Int    @default(1) // nth time this has been documented here
 
-  track          String // defect | upgrade
+  track String // defect | upgrade
 
   // ── Snapshot taken when the finding opened. Never re-derived: a 2017-NEC
   // finding must not be recited under 2023 because the county adopted it later.
@@ -144,7 +144,7 @@ model PropertyFinding {
   jurisdictionId String
   severity       String // FAIL | MONITOR | BELOW_STANDARD
   gradedState    String?
-  critical       Boolean  @default(false)
+  critical       Boolean @default(false)
   findingText    String
   resolutionNote String?
 
@@ -209,35 +209,35 @@ model PropertyFinding {
 // wait) and is only reachable when a 220.83 check has already failed AND the
 // customer has said they want to avoid the upgrade cost.
 model CapacityCheck {
-  id             String   @id // client-generated UUID
-  visitId        String?
-  propertyId     String
-  customerId     String
-  technicianId   String?
-  method         String // "220.83" | "220.87"
-  serviceAmps    Int
-  serviceVoltage Int      @default(240)
-  floorAreaSqFt  Int      @default(0)
-  variant        String? // A | B — 220.83 only
-  newLoadLabel   String?
-  calculatedAmps Float
-  loadPct        Float
-  fits           Boolean
+  id                  String    @id // client-generated UUID
+  visitId             String?
+  propertyId          String
+  customerId          String
+  technicianId        String?
+  method              String // "220.83" | "220.87"
+  serviceAmps         Int
+  serviceVoltage      Int       @default(240)
+  floorAreaSqFt       Int       @default(0)
+  variant             String? // A | B — 220.83 only
+  newLoadLabel        String?
+  calculatedAmps      Float
+  loadPct             Float
+  fits                Boolean
   // 220.87 only: false when the demand data does not meet the code's own
   // requirements (short window, wrong interval). A number from unqualified data
   // is worse than no number.
-  qualifies      Boolean  @default(true)
-  inputJson      String
-  resultJson     String
+  qualifies           Boolean   @default(true)
+  inputJson           String
+  resultJson          String
   // Set when a later check replaces this one, so a superseded calculation stays
   // readable rather than being edited into something that was never issued.
-  supersedesId   String?
+  supersedesId        String?
   // Set when the calculation was taken during a Health Record rather than run
   // standalone. Worth distinguishing: one was done with the panel open and the
   // plates read, the other in two minutes on the phone, and they are not the
   // same quality of document even when they agree.
-  sourceInspectionId String?
-  documentId     String?
+  sourceInspectionId  String?
+  documentId          String?
   // 220.87 study tracking — the two visits it takes and when the window closes.
   studyInstallVisitId String?
   studyRemovalVisitId String?
@@ -245,8 +245,8 @@ model CapacityCheck {
   // P031 generator sizing recommendation produced alongside this calculation
   // ({recommendation, fuel, softStart, includeInEstimate}). Nullable — most
   // calculations never ask the generator question.
-  generatorJson  String?
-  createdAt      DateTime @default(now())
+  generatorJson       String?
+  createdAt           DateTime  @default(now())
 
   @@index([propertyId, createdAt])
   @@index([visitId])
@@ -257,7 +257,7 @@ model CapacityCheck {
 // so the record can show the sequence — documented, declined, recurred, corrected
 // — which is the part that actually defends anybody.
 model PropertyFindingEvent {
-  id           String   @id @default(cuid())
+  id           String          @id @default(cuid())
   findingId    String
   fromStatus   String?
   toStatus     String
@@ -277,33 +277,33 @@ model PropertyFindingEvent {
 }
 
 model SystemSnapshot {
-  id                     String    @id @default(cuid())
-  propertyId             String    @unique
-  serviceSummary         String?
-  panelSummary           String?
-  groundingSummary       String?
-  wiringMethodSummary    String?
-  deficienciesJson       String?
-  changeLogJson          String?
-  updatedAt              DateTime  @updatedAt
-  property               Property  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  id                  String   @id @default(cuid())
+  propertyId          String   @unique
+  serviceSummary      String?
+  panelSummary        String?
+  groundingSummary    String?
+  wiringMethodSummary String?
+  deficienciesJson    String?
+  changeLogJson       String?
+  updatedAt           DateTime @updatedAt
+  property            Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 }
 
 model Visit {
-  priceBookDrafts   PriceBookDraftEstimate[]
-  id                     String            @id @default(cuid())
+  priceBookDrafts        PriceBookDraftEstimate[]
+  id                     String                   @id @default(cuid())
   propertyId             String
   customerId             String
   mode                   String
   purpose                String?
-  visitDate              DateTime          @default(now())
+  visitDate              DateTime                 @default(now())
   notes                  String?
   // ── Job tracking fields (Phase 1 data model) ──
-  status                 String            @default("estimate") // estimate | contracted | scheduled | in_progress | completed | cancelled
-  jobType                String?           // e.g. "Panel Upgrade", "Lighting Install"
-  estimatedJobLength     Float?            // hours — used for calendar blocking
-  estimatedDurationDays  Int?              // working days for calendar blocking
-  estimatedDurationHours Float?            // hours within each day
+  status                 String                   @default("estimate") // estimate | contracted | scheduled | in_progress | completed | cancelled
+  jobType                String? // e.g. "Panel Upgrade", "Lighting Install"
+  estimatedJobLength     Float? // hours — used for calendar blocking
+  estimatedDurationDays  Int? // working days for calendar blocking
+  estimatedDurationHours Float? // hours within each day
   scheduledStart         DateTime?
   scheduledEnd           DateTime?
   googleEventId          String?
@@ -322,20 +322,20 @@ model Visit {
   nextStep               String?
   nextStepAt             DateTime?
   // ── Customer appointment confirmation (dual-channel email + SMS) ──
-  confirmationStatus     String            @default("unconfirmed") // unconfirmed | confirmed | reschedule_requested | cancel_requested
-  confirmationToken      String?           @unique // public token for the /confirm/:token page
+  confirmationStatus     String                   @default("unconfirmed") // unconfirmed | confirmed | reschedule_requested | cancel_requested
+  confirmationToken      String?                  @unique // public token for the /confirm/:token page
   confirmedAt            DateTime?
-  confirmationChannel    String?           // email_link | sms_reply | crm
+  confirmationChannel    String? // email_link | sms_reply | crm
   reminderSentAt         DateTime?
   estimatedCost          Float?
-  actualMaterialCost     Float?            @default(0)
-  laborHours             Float?            @default(0)
-  overheadAllocation     Float?            @default(0)
+  actualMaterialCost     Float?                   @default(0)
+  laborHours             Float?                   @default(0)
+  overheadAllocation     Float?                   @default(0)
   revenue                Float?
   // ── Timestamps & relations ──
-  createdAt              DateTime          @default(now())
-  property               Property          @relation(fields: [propertyId], references: [id], onDelete: Restrict)
-  customer               Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  createdAt              DateTime                 @default(now())
+  property               Property                 @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  customer               Customer                 @relation(fields: [customerId], references: [id], onDelete: Restrict)
   customerRequest        CustomerRequest?
   observations           Observation[]
   findings               Finding[]
@@ -349,6 +349,7 @@ model Visit {
   healthInspections      HealthInspection[]
   visitPhotos            VisitPhoto[]
   timeEntries            TimeEntry[]
+  emailBounces           EmailBounce[]
 
   @@index([customerId, visitDate])
   @@index([status, scheduledStart])
@@ -374,31 +375,31 @@ model TimeEntry {
 // ─── Health Record (field inspection PWA) integration ──────────────────────
 
 model Technician {
-  id             String   @id @default(cuid())
-  name           String
+  id                String             @id @default(cuid())
+  name              String
   // Company Google Workspace address (assigned at onboarding). Doubles as the
   // tech's Google Calendar ID: availability reads and event invites use it
   // directly — see services/techCalendars.ts.
-  email          String?
-  phone          String?
-  employeeNumber String?  @unique // internal payroll/identification ID — used by voice agent to authenticate field staff
-  role           String   @default("technician") // technician | supervisor | admin
+  email             String?
+  phone             String?
+  employeeNumber    String?            @unique // internal payroll/identification ID — used by voice agent to authenticate field staff
+  role              String             @default("technician") // technician | supervisor | admin
   // Kyle, 2026-08-25: "This has been reviewed and a whole inspection was done,
   // that was the review." When the inspecting tech holds the license, the
   // contractor-review requirement is satisfied by the inspection itself — no
   // false "pending" state. The gate stays armed for techs without this flag.
-  licenseHolder  Boolean  @default(false)
-  accessToken    String   @unique // bearer token used by the field PWA
-  isActive       Boolean  @default(true)
+  licenseHolder     Boolean            @default(false)
+  accessToken       String             @unique // bearer token used by the field PWA
+  isActive          Boolean            @default(true)
   // Set by the "verify calendar access" probe on the Team page. Google's
   // freebusy API silently OMITS calendars the token can't read — without this
   // flag an unshared calendar looks identical to a perfectly free one.
-  calendarShared Boolean  @default(false)
-  createdAt      DateTime @default(now())
-  assignments    VisitAssignment[]
+  calendarShared    Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+  assignments       VisitAssignment[]
   healthInspections HealthInspection[]
-  visitPhotos    VisitPhoto[]
-  trucks         Truck[]
+  visitPhotos       VisitPhoto[]
+  trucks            Truck[]
 }
 
 // Flexible company configuration store — license info, operating territories,
@@ -446,41 +447,41 @@ model SlotHold {
 // UUID, which makes sync pushes idempotent. Versioned history: one property can
 // accumulate many inspections over time (year-over-year record).
 model HealthInspection {
-  id                   String     @id
-  visitId              String
-  propertyId           String
-  customerId           String
-  technicianId         String?
-  jurisdictionId       String
-  inspectionDate       DateTime
+  id                     String                 @id
+  visitId                String
+  propertyId             String
+  customerId             String
+  technicianId           String?
+  jurisdictionId         String
+  inspectionDate         DateTime
   // v1 records carried a 0-100 headline score. It was dropped because a number
   // invites "why not 100?" instead of "what needs fixing?" — v2 reports lead with
   // the items that need correction. Kept nullable so historical reports still
   // render with the score they were delivered with.
-  score                Int?
-  schemaVersion        String     @default("v1") // v1 (scored) | v2 (findings-led)
-  scope                String     @default("full") // full | phase1
-  itemsAssessed        Int
-  failCount            Int        @default(0)
-  monitorCount         Int        @default(0)
-  passCount            Int        @default(0)
-  belowStandardCount   Int        @default(0)
-  naCount              Int        @default(0)
-  criticalFindingsJson String // string[] of checklist item ids
+  score                  Int?
+  schemaVersion          String                 @default("v1") // v1 (scored) | v2 (findings-led)
+  scope                  String                 @default("full") // full | phase1
+  itemsAssessed          Int
+  failCount              Int                    @default(0)
+  monitorCount           Int                    @default(0)
+  passCount              Int                    @default(0)
+  belowStandardCount     Int                    @default(0)
+  naCount                Int                    @default(0)
+  criticalFindingsJson   String // string[] of checklist item ids
   // §3.3: the grounding claim depends on the instrument. Stored per inspection
   // so the record keeps the honest wording it was made with, forever — company
   // instrument today is the EXTECH 3-point fall-of-potential kit, but a record
   // made with a different meter must not inherit stronger language.
-  groundingTestMethod  String?    // fall_of_potential_3point | clamp_on_loop | bonding_continuity
-  contractorReviewed   Boolean    @default(false)
-  reviewedAt           DateTime?
-  reviewedBy           String?
-  itemsJson            String // full ItemResult[] from the PWA
-  loadCalcJson         String? // { input, result } NEC Art. 220 record
+  groundingTestMethod    String? // fall_of_potential_3point | clamp_on_loop | bonding_continuity
+  contractorReviewed     Boolean                @default(false)
+  reviewedAt             DateTime?
+  reviewedBy             String?
+  itemsJson              String // full ItemResult[] from the PWA
+  loadCalcJson           String? // { input, result } NEC Art. 220 record
   // ── Per-section technician notes (Kyle, 2026-08-24) ──
   // [{ group, note, includeOnReport }]. Internal by default; a note reaches the
   // customer's report only when the technician promoted it with the toggle.
-  sectionNotesJson     String?
+  sectionNotesJson       String?
   // ── On-site customer acknowledgment (Kyle, 2026-08-24) ──
   // The digital version of the paper form's signature box: findings were reviewed
   // with the customer, drawn signature captured on the technician's device.
@@ -491,24 +492,24 @@ model HealthInspection {
   customerSignatureImage String? // data-URL PNG from the PWA's signature pad
   acknowledgedAt         DateTime?
   ackSkippedReason       String?
-  appVersion           String?
+  appVersion             String?
   /// ── Revisions (Kyle, 2026-09-01) ──
   /// "Any change needs to be sent out and overwrite the original." A revision is a NEW row that
   /// names what it revises; the revised row gets supersededById and its report is re-delivered.
   /// History is never rewritten — the correction is layered on top and sent.
-  revisesId            String?
-  supersededById       String?
-  syncedAt             DateTime   @default(now())
-  visit                Visit      @relation(fields: [visitId], references: [id], onDelete: Restrict)
-  property             Property   @relation(fields: [propertyId], references: [id], onDelete: Restrict)
-  customer             Customer   @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  technician           Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
-  photos               InspectionPhoto[]
-  deliveries           HealthReportDelivery[]
+  revisesId              String?
+  supersededById         String?
+  syncedAt               DateTime               @default(now())
+  visit                  Visit                  @relation(fields: [visitId], references: [id], onDelete: Restrict)
+  property               Property               @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  customer               Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  technician             Technician?            @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+  photos                 InspectionPhoto[]
+  deliveries             HealthReportDelivery[]
   // ── Protocol v2 structured capture ──
-  items                InspectionItem[]
-  gfciCoverage         GfciCoverage[]
-  samplingRecords      SamplingRecord[]
+  items                  InspectionItem[]
+  gfciCoverage           GfciCoverage[]
+  samplingRecords        SamplingRecord[]
 
   @@index([customerId, inspectionDate])
   @@index([propertyId, inspectionDate])
@@ -520,12 +521,12 @@ model HealthInspection {
 // a report that exists but was never demonstrably received is Kyle's word
 // against the customer's, in exactly the scenario the record exists for.
 model HealthReportDelivery {
-  id           String   @id @default(cuid())
+  id           String           @id @default(cuid())
   inspectionId String
   documentId   String
   sentTo       String
-  sentBy       String   // "owner:crm" | "tech:<technicianId>"
-  sentAt       DateTime @default(now())
+  sentBy       String // "owner:crm" | "tech:<technicianId>"
+  sentAt       DateTime         @default(now())
   inspection   HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
 
   @@index([inspectionId, sentAt])
@@ -590,25 +591,25 @@ model PanelModel {
 // Append-only (rule 8). A 2026 inspection must always reproduce the spec value
 // applied that day — revisions create a NEW row pointing back via supersededById.
 model TorqueSpec {
-  id                 String      @id @default(cuid())
-  panelModelId       String?     // null = generic fallback row
-  conductorSizeMin   String?     // AWG/kcmil text — "14 AWG", "250 kcmil"
-  conductorSizeMax   String?
-  breakerRatingMinA  Int?
-  breakerRatingMaxA  Int?
-  torqueValue        Float
-  torqueUnit         String      // in_lb | ft_lb
-  sourceCitation     String
+  id                String      @id @default(cuid())
+  panelModelId      String? // null = generic fallback row
+  conductorSizeMin  String? // AWG/kcmil text — "14 AWG", "250 kcmil"
+  conductorSizeMax  String?
+  breakerRatingMinA Int?
+  breakerRatingMaxA Int?
+  torqueValue       Float
+  torqueUnit        String // in_lb | ft_lb
+  sourceCitation    String
   // manufacturer_doc | cross_reference | field_reported — §7.1 requires every
   // value to carry its confidence; nothing ships as verified until checked
   // against a current official spec sheet.
-  sourceConfidence   String
-  verifiedSource     String?
-  verificationDate   DateTime?
-  specVersion        Int         @default(1)
-  supersededById     String?
-  createdAt          DateTime    @default(now())
-  panelModel         PanelModel? @relation(fields: [panelModelId], references: [id], onDelete: Restrict)
+  sourceConfidence  String
+  verifiedSource    String?
+  verificationDate  DateTime?
+  specVersion       Int         @default(1)
+  supersededById    String?
+  createdAt         DateTime    @default(now())
+  panelModel        PanelModel? @relation(fields: [panelModelId], references: [id], onDelete: Restrict)
 
   @@index([panelModelId])
 }
@@ -616,10 +617,10 @@ model TorqueSpec {
 // NETA MTS Table 100.18 framework (§7.2). Append-only like TorqueSpec.
 model ThermalThreshold {
   id                String   @id @default(cuid())
-  method            String   // comparative | absolute
+  method            String // comparative | absolute
   deltaTMinC        Float
-  deltaTMaxC        Float?   // null = open-ended upper band
-  classification    String   // MONITOR | FAIL | FAIL_IMMEDIATE
+  deltaTMaxC        Float? // null = open-ended upper band
+  classification    String // MONITOR | FAIL | FAIL_IMMEDIATE
   recommendedAction String
   standardCitation  String
   specVersion       Int      @default(1)
@@ -630,13 +631,13 @@ model ThermalThreshold {
 // Drives the code-era resolver (§1.3, rule 5). is_retroactive is the only
 // path to a FAIL against a requirement newer than the install date.
 model CodeRequirement {
-  id                    String  @id @default(cuid())
-  necArticle            String
-  necEditionIntroduced  String  // "2017" | "2020" | "2023" | "pre2017"
-  requirementType       String  // gfci_location | afci_coverage | spd | tr_receptacle | emergency_disconnect | other
-  appliesTo             String  // free text: "dwelling unit service", "kitchen receptacles"...
-  isRetroactive         Boolean @default(false)
-  description           String
+  id                   String  @id @default(cuid())
+  necArticle           String
+  necEditionIntroduced String // "2017" | "2020" | "2023" | "pre2017"
+  requirementType      String // gfci_location | afci_coverage | spd | tr_receptacle | emergency_disconnect | other
+  appliesTo            String // free text: "dwelling unit service", "kitchen receptacles"...
+  isRetroactive        Boolean @default(false)
+  description          String
 
   @@index([requirementType])
 }
@@ -647,26 +648,26 @@ model CodeRequirement {
 // existing PropertyFinding.locationKey and ItemResult.locationId so v1
 // checklist rows and v2 enclosure rows describe the same physical thing.
 model Enclosure {
-  id                       String   @id @default(cuid())
+  id                       String           @id @default(cuid())
   propertyId               String
-  locationKey              String   // stable key shared with PropertyFinding/ItemResult
-  enclosureType            String   // service_equipment | main_disconnect | main_panel | subpanel | equipment_disconnect
-  disconnectSubtype        String?  // breakered | fused | non_fused_switch | pullout
-  equipmentServed          String?  // "HVAC condenser", "water heater"...
+  locationKey              String // stable key shared with PropertyFinding/ItemResult
+  enclosureType            String // service_equipment | main_disconnect | main_panel | subpanel | equipment_disconnect
+  disconnectSubtype        String? // breakered | fused | non_fused_switch | pullout
+  equipmentServed          String? // "HVAC condenser", "water heater"...
   panelModelId             String?
   locationDescription      String?
-  distanceFromMainFt       Float?   // drives the 50 ft SPD recommendation (Step 12)
-  labelTorqueValueObserved String?  // the panel's own printed label — overrides all defaults
+  distanceFromMainFt       Float? // drives the 50 ft SPD recommendation (Step 12)
+  labelTorqueValueObserved String? // the panel's own printed label — overrides all defaults
   labelLegible             Boolean?
-  busMaterial              String?  // aluminum_tin_plated | copper_silver_flash | unknown
+  busMaterial              String? // aluminum_tin_plated | copper_silver_flash | unknown
   // §3.3 settled policy: line side of a service main stays energized with the
   // main open. Items on such an enclosure may NEVER carry a torque record —
   // enforced by the measurement validator.
-  serviceSideEnergized     Boolean  @default(false)
+  serviceSideEnergized     Boolean          @default(false)
   retiredAt                DateTime? // replaced/removed — kept for history
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
-  property                 Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
+  property                 Property         @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   items                    InspectionItem[]
 
   @@unique([propertyId, locationKey])
@@ -675,31 +676,31 @@ model Enclosure {
 
 // One assessed component at one enclosure in one inspection (§12.2).
 model InspectionItem {
-  id                 String   @id @default(cuid())
-  inspectionId       String
-  enclosureId        String?
-  componentType      String   // lug | breaker | bus_stab | bus_joint | bus_bar_section | neutral_bar | ground_bar | receptacle | switch | fixture | smoke_alarm | co_alarm | spd | service_entrance | weatherhead | mast | meter_base
-  locationLabel      String?  // "kitchen east wall", "leg A stab 4"
-  circuitNumber      String?
-  busLeg             String?  // A | B
-  stabPosition       Int?
+  id                   String               @id @default(cuid())
+  inspectionId         String
+  enclosureId          String?
+  componentType        String // lug | breaker | bus_stab | bus_joint | bus_bar_section | neutral_bar | ground_bar | receptacle | switch | fixture | smoke_alarm | co_alarm | spd | service_entrance | weatherhead | mast | meter_base
+  locationLabel        String? // "kitchen east wall", "leg A stab 4"
+  circuitNumber        String?
+  busLeg               String? // A | B
+  stabPosition         Int?
   // Four states (§1.4). UPGRADE is not a defect; MONITOR feeds no defect
   // metrics and is internal-only pending counsel (customerVisible toggle).
-  classification     String   // pass | fail | monitor | upgrade
-  codeEditionApplied String?  // resolved edition this item was judged against
+  classification       String // pass | fail | monitor | upgrade
+  codeEditionApplied   String? // resolved edition this item was judged against
   // §3.3 applies PER TERMINATION, not per enclosure: the main lugs stay hot
   // with the main open, but branch breakers in the same panel are load-side
   // and can be de-energized and torqued. True here = this specific
   // termination remains energized — thermal + visual only, no torque record,
   // and the report prints the disclosed-scope-boundary language for it.
-  serviceSideEnergized Boolean @default(false)
-  techNote           String?
-  customerVisible    Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  inspection         HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
-  enclosure          Enclosure?       @relation(fields: [enclosureId], references: [id], onDelete: SetNull)
-  measurements       Measurement[]
-  busVisual          BusVisualAssessment?
+  serviceSideEnergized Boolean              @default(false)
+  techNote             String?
+  customerVisible      Boolean              @default(true)
+  createdAt            DateTime             @default(now())
+  inspection           HealthInspection     @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  enclosure            Enclosure?           @relation(fields: [enclosureId], references: [id], onDelete: SetNull)
+  measurements         Measurement[]
+  busVisual            BusVisualAssessment?
 
   @@index([inspectionId])
   @@index([enclosureId])
@@ -712,23 +713,23 @@ model InspectionItem {
 //   3. classificationCeiling caps what a metric alone may claim
 //   4. methodConditionsMet=false forces disclosure language in the report
 model Measurement {
-  id                         String   @id @default(cuid())
+  id                         String         @id @default(cuid())
   inspectionItemId           String
-  measurementType            String   // voltage_unloaded | voltage_loaded | current | source_impedance | voltage_drop_pct | torque | thermal_delta_t | thermal_absolute | stab_thermal_delta_t | grounding_resistance | receptacle_tension | circuit_current_at_reading
+  measurementType            String // voltage_unloaded | voltage_loaded | current | source_impedance | voltage_drop_pct | torque | thermal_delta_t | thermal_absolute | stab_thermal_delta_t | grounding_resistance | receptacle_tension | circuit_current_at_reading
   measuredValue              Float
   unit                       String
   referenceValueApplied      Float?
-  referenceSourceId          String?  // TorqueSpec/ThermalThreshold row id — pins the exact spec version
-  referenceMethod            String?  // panel_label | manufacturer_doc | generic_fallback
-  comparativeReferenceItemId String?  // what it was compared against (rule 2)
+  referenceSourceId          String? // TorqueSpec/ThermalThreshold row id — pins the exact spec version
+  referenceMethod            String? // panel_label | manufacturer_doc | generic_fallback
+  comparativeReferenceItemId String? // what it was compared against (rule 2)
   comparativeLoadDeltaAmps   Float?
-  loadAmperageAtReading      Float?   // rule 1 companion
+  loadAmperageAtReading      Float? // rule 1 companion
   ambientAtReadingC          Float?
-  methodStandard             String?  // "NETA MTS 100.18", "NEC 210.19(A) IN4"...
-  methodConditionsMet        Boolean  @default(true)
-  classificationCeiling      String   @default("pass_fail") // pass_fail | monitor_max | informational_only
+  methodStandard             String? // "NETA MTS 100.18", "NEC 210.19(A) IN4"...
+  methodConditionsMet        Boolean        @default(true)
+  classificationCeiling      String         @default("pass_fail") // pass_fail | monitor_max | informational_only
   passed                     Boolean?
-  createdAt                  DateTime @default(now())
+  createdAt                  DateTime       @default(now())
   inspectionItem             InspectionItem @relation(fields: [inspectionItemId], references: [id], onDelete: Cascade)
 
   @@index([inspectionItemId])
@@ -737,16 +738,16 @@ model Measurement {
 // Structured visual rubric for bus/stab assessment (§8.5) — required capture,
 // because "corrosion" without location and plating status is not a finding.
 model BusVisualAssessment {
-  id                String   @id @default(cuid())
-  inspectionItemId  String   @unique
-  corrosionLocation String   // stab_contact_patch | bar_flat_non_contact | bolted_joint | neutral_bar | ground_bar
-  corrosionProduct  String?  // white_powdery | green_blue | black_brown | red_rust
-  platingStatus     String   // intact | tarnished_intact | breached_localized | breached_at_contact | absent
-  materialLoss      String   // none | surface_film | light_pitting | deep_pitting | erosion_deformation
-  arcSignature      String   // none | spatter | rounded_melted_edges | material_transfer
-  adjacentPolymer   String   // unaffected | discolored | browned_embrittled | charred
-  heatTintMetal     String   // none | straw | blue_purple
-  createdAt         DateTime @default(now())
+  id                String         @id @default(cuid())
+  inspectionItemId  String         @unique
+  corrosionLocation String // stab_contact_patch | bar_flat_non_contact | bolted_joint | neutral_bar | ground_bar
+  corrosionProduct  String? // white_powdery | green_blue | black_brown | red_rust
+  platingStatus     String // intact | tarnished_intact | breached_localized | breached_at_contact | absent
+  materialLoss      String // none | surface_film | light_pitting | deep_pitting | erosion_deformation
+  arcSignature      String // none | spatter | rounded_melted_edges | material_transfer
+  adjacentPolymer   String // unaffected | discolored | browned_embrittled | charred
+  heatTintMetal     String // none | straw | blue_purple
+  createdAt         DateTime       @default(now())
   inspectionItem    InspectionItem @relation(fields: [inspectionItemId], references: [id], onDelete: Cascade)
 }
 
@@ -754,15 +755,15 @@ model BusVisualAssessment {
 // at the panel or at an upstream device; what matters is whether the location
 // that requires it is protected, judged against the code era that applies.
 model GfciCoverage {
-  id                  String   @id @default(cuid())
+  id                  String           @id @default(cuid())
   inspectionId        String
-  locationDescriptor  String   // "kitchen counter east", "exterior rear"...
+  locationDescriptor  String // "kitchen counter east", "exterior rear"...
   requiredAtInstall   Boolean
   requiredCurrentCode Boolean
-  protectionSource    String   // none | device | upstream_device | panel_breaker
-  functionTestResult  String?  // pass | fail | not_tested
-  classification      String   // pass | fail | monitor | upgrade
-  createdAt           DateTime @default(now())
+  protectionSource    String // none | device | upstream_device | panel_breaker
+  functionTestResult  String? // pass | fail | not_tested
+  classification      String // pass | fail | monitor | upgrade
+  createdAt           DateTime         @default(now())
   inspection          HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
 
   @@index([inspectionId])
@@ -772,16 +773,16 @@ model GfciCoverage {
 // report states what was sampled, on what basis, and tested-vs-total. Rule 6:
 // a FAIL inside a sample expands that category to 100% before close.
 model SamplingRecord {
-  id                 String   @id @default(cuid())
-  inspectionId       String
-  category           String   // receptacle | torque | switch | fixture
-  totalCount         Int
-  testedCount        Int
-  basis              String   // "one per branch circuit + 25% minimum"...
-  expandedDueToFail  Boolean  @default(false)
-  untestedLocations  String?  // by room, for the report
-  createdAt          DateTime @default(now())
-  inspection         HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  id                String           @id @default(cuid())
+  inspectionId      String
+  category          String // receptacle | torque | switch | fixture
+  totalCount        Int
+  testedCount       Int
+  basis             String // "one per branch circuit + 25% minimum"...
+  expandedDueToFail Boolean          @default(false)
+  untestedLocations String? // by room, for the report
+  createdAt         DateTime         @default(now())
+  inspection        HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
 
   @@index([inspectionId])
 }
@@ -798,7 +799,7 @@ model MonitorTracker {
   firstObservedInspectionId String
   lastObservedInspectionId  String
   occurrenceCount           Int       @default(1)
-  trendDirection            String?   // stable | worsening | improving
+  trendDirection            String? // stable | worsening | improving
   internalNotes             String?
   followUpDueDate           DateTime?
   createdAt                 DateTime  @default(now())
@@ -809,389 +810,389 @@ model MonitorTracker {
 }
 
 model CustomerRequest {
-  id                     String    @id @default(cuid())
-  visitId                String    @unique
-  requestText            String
-  urgency                String?
-  createdAt              DateTime  @default(now())
-  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  id          String   @id @default(cuid())
+  visitId     String   @unique
+  requestText String
+  urgency     String?
+  createdAt   DateTime @default(now())
+  visit       Visit    @relation(fields: [visitId], references: [id], onDelete: Cascade)
 }
 
 model Observation {
-  id                     String    @id @default(cuid())
-  visitId                String
-  location               String?
-  observationText        String
-  createdAt              DateTime  @default(now())
-  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  id              String   @id @default(cuid())
+  visitId         String
+  location        String?
+  observationText String
+  createdAt       DateTime @default(now())
+  visit           Visit    @relation(fields: [visitId], references: [id], onDelete: Cascade)
 }
 
 model Finding {
-  id                     String    @id @default(cuid())
-  visitId                String
-  findingText            String
-  confidence             String?
-  createdAt              DateTime  @default(now())
-  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  id          String   @id @default(cuid())
+  visitId     String
+  findingText String
+  confidence  String?
+  createdAt   DateTime @default(now())
+  visit       Visit    @relation(fields: [visitId], references: [id], onDelete: Cascade)
 }
 
 model Limitation {
-  id                     String    @id @default(cuid())
-  visitId                String
-  limitationText         String
-  createdAt              DateTime  @default(now())
-  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  id             String   @id @default(cuid())
+  visitId        String
+  limitationText String
+  createdAt      DateTime @default(now())
+  visit          Visit    @relation(fields: [visitId], references: [id], onDelete: Cascade)
 }
 
 model Recommendation {
-  id                     String    @id @default(cuid())
-  visitId                String
-  recommendationText     String
-  priority               String?
-  createdAt              DateTime  @default(now())
-  visit                  Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  id                 String   @id @default(cuid())
+  visitId            String
+  recommendationText String
+  priority           String?
+  createdAt          DateTime @default(now())
+  visit              Visit    @relation(fields: [visitId], references: [id], onDelete: Cascade)
 }
 
 model Estimate {
-  id                     String                 @id @default(cuid())
-  visitId                String
-  propertyId             String
-  status                 String                 @default("draft")
-  revision               Int                    @default(1)
-  title                  String
-  notes                  String?
-  materialMarkupPct      Float                  @default(30)
-  laborMarkupPct         Float                  @default(0)
-  lockedAt               DateTime?
-  createdAt              DateTime               @default(now())
-  updatedAt              DateTime               @updatedAt
-  visit                  Visit                  @relation(fields: [visitId], references: [id], onDelete: Restrict)
-  property               Property               @relation(fields: [propertyId], references: [id], onDelete: Restrict)
-  options                EstimateOption[]
-  permitStatus           PermitStatus?
-  inspections            InspectionStatus[]
-  proposalDeliveries     ProposalDelivery[]
-  signatures             SignatureRecord[]
-  acceptance             ProposalAcceptance?
-  changeOrders           ChangeOrder[]
-  supportItems           SupportItem[]
-  estimateModifiers      EstimateModifier[]
+  id                 String              @id @default(cuid())
+  visitId            String
+  propertyId         String
+  status             String              @default("draft")
+  revision           Int                 @default(1)
+  title              String
+  notes              String?
+  materialMarkupPct  Float               @default(30)
+  laborMarkupPct     Float               @default(0)
+  lockedAt           DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  visit              Visit               @relation(fields: [visitId], references: [id], onDelete: Restrict)
+  property           Property            @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  options            EstimateOption[]
+  permitStatus       PermitStatus?
+  inspections        InspectionStatus[]
+  proposalDeliveries ProposalDelivery[]
+  signatures         SignatureRecord[]
+  acceptance         ProposalAcceptance?
+  changeOrders       ChangeOrder[]
+  supportItems       SupportItem[]
+  estimateModifiers  EstimateModifier[]
 }
 
 model EstimateOption {
-  id                     String             @id @default(cuid())
-  estimateId             String
-  optionLabel            String
-  description            String?
-  sortOrder              Int                @default(0)
-  accepted               Boolean            @default(false)
-  subtotalLabor          Float              @default(0)
-  subtotalMaterial       Float              @default(0)
-  subtotalOther          Float              @default(0)
-  totalCost              Float              @default(0)
-  estimate               Estimate           @relation(fields: [estimateId], references: [id], onDelete: Cascade)
-  assemblies             EstimateAssembly[]
-  items                  EstimateItem[]
-  changeOrders           ChangeOrder[]
+  id               String             @id @default(cuid())
+  estimateId       String
+  optionLabel      String
+  description      String?
+  sortOrder        Int                @default(0)
+  accepted         Boolean            @default(false)
+  subtotalLabor    Float              @default(0)
+  subtotalMaterial Float              @default(0)
+  subtotalOther    Float              @default(0)
+  totalCost        Float              @default(0)
+  estimate         Estimate           @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  assemblies       EstimateAssembly[]
+  items            EstimateItem[]
+  changeOrders     ChangeOrder[]
 }
 
 model AssemblyTemplate {
-  id                     String                  @id
-  assemblyNumber         Int
-  name                   String
-  description            String?
-  category               String?
-  tier                   String
-  laborClass             String?
-  applicableModesJson    String?
-  parametersJson         String?
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
-  components             AssemblyTemplateComponent[]
-  childLinks             AssemblyTemplateChild[] @relation("ParentTemplate")
-  parentLinks            AssemblyTemplateChild[] @relation("ChildTemplate")
-  parameterDefinitions   AssemblyParameterDefinition[]
-  variants               AssemblyTemplateVariant[]
-  estimateAssemblies     EstimateAssembly[]
+  id                   String                        @id
+  assemblyNumber       Int
+  name                 String
+  description          String?
+  category             String?
+  tier                 String
+  laborClass           String?
+  applicableModesJson  String?
+  parametersJson       String?
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @updatedAt
+  components           AssemblyTemplateComponent[]
+  childLinks           AssemblyTemplateChild[]       @relation("ParentTemplate")
+  parentLinks          AssemblyTemplateChild[]       @relation("ChildTemplate")
+  parameterDefinitions AssemblyParameterDefinition[]
+  variants             AssemblyTemplateVariant[]
+  estimateAssemblies   EstimateAssembly[]
 }
 
 model AssemblyParameterDefinition {
-  id                     String            @id @default(cuid())
-  templateId             String
-  key                    String
-  label                  String
-  valueType              String
-  required               Boolean           @default(false)
-  defaultValueJson       String?
-  enumOptionsJson        String?
-  unit                   String?
-  helpText               String?
-  estimatorFacing        Boolean           @default(true)
-  sortOrder              Int               @default(0)
-  minValue               Float?
-  maxValue               Float?
-  createdAt              DateTime          @default(now())
-  updatedAt              DateTime          @updatedAt
-  template               AssemblyTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  id               String           @id @default(cuid())
+  templateId       String
+  key              String
+  label            String
+  valueType        String
+  required         Boolean          @default(false)
+  defaultValueJson String?
+  enumOptionsJson  String?
+  unit             String?
+  helpText         String?
+  estimatorFacing  Boolean          @default(true)
+  sortOrder        Int              @default(0)
+  minValue         Float?
+  maxValue         Float?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  template         AssemblyTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 
   @@unique([templateId, key])
 }
 
 model AssemblyTemplateVariant {
-  id                     String            @id @default(cuid())
-  templateId             String
-  variantKey             String
-  variantValue           String?
-  notes                  String?
-  createdAt              DateTime          @default(now())
-  updatedAt              DateTime          @updatedAt
-  template               AssemblyTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  id           String           @id @default(cuid())
+  templateId   String
+  variantKey   String
+  variantValue String?
+  notes        String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  template     AssemblyTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 
   @@unique([templateId, variantKey, variantValue])
 }
 
 model AssemblyTemplateChild {
-  id                     String            @id @default(cuid())
-  parentTemplateId       String
-  childTemplateId        String
-  quantity               Int?
-  qtyParameterRef        String?
-  required               Boolean           @default(true)
-  parentTemplate         AssemblyTemplate  @relation("ParentTemplate", fields: [parentTemplateId], references: [id], onDelete: Cascade)
-  childTemplate          AssemblyTemplate  @relation("ChildTemplate", fields: [childTemplateId], references: [id], onDelete: Restrict)
+  id               String           @id @default(cuid())
+  parentTemplateId String
+  childTemplateId  String
+  quantity         Int?
+  qtyParameterRef  String?
+  required         Boolean          @default(true)
+  parentTemplate   AssemblyTemplate @relation("ParentTemplate", fields: [parentTemplateId], references: [id], onDelete: Cascade)
+  childTemplate    AssemblyTemplate @relation("ChildTemplate", fields: [childTemplateId], references: [id], onDelete: Restrict)
 }
 
 model AssemblyTemplateComponent {
-  id                     String            @id @default(cuid())
-  templateId             String
-  componentType          String
-  code                   String
-  description            String
-  quantity               Float             @default(1)
-  quantityExpr           String?
-  unit                   String?
-  unitCost               Float             @default(0)
-  laborHours             Float             @default(0)
-  laborRate              Float             @default(0)
-  template               AssemblyTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  id            String           @id @default(cuid())
+  templateId    String
+  componentType String
+  code          String
+  description   String
+  quantity      Float            @default(1)
+  quantityExpr  String?
+  unit          String?
+  unitCost      Float            @default(0)
+  laborHours    Float            @default(0)
+  laborRate     Float            @default(0)
+  template      AssemblyTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 }
 
 model EstimateAssembly {
-  id                     String               @id @default(cuid())
+  id                     String              @id @default(cuid())
   optionId               String
   assemblyTemplateId     String
   location               String?
-  quantity               Int                  @default(1)
+  quantity               Int                 @default(1)
   parametersJson         String?
   modifiersJson          String?
   expandedFromPackageId  String?
   manualLaborOverride    Float?
   manualMaterialOverride Float?
   assemblyNotes          String?
-  laborCost              Float                @default(0)
-  materialCost           Float                @default(0)
-  otherCost              Float                @default(0)
-  totalCost              Float                @default(0)
-  option                 EstimateOption       @relation(fields: [optionId], references: [id], onDelete: Cascade)
-  assemblyTemplate       AssemblyTemplate     @relation(fields: [assemblyTemplateId], references: [id], onDelete: Restrict)
+  laborCost              Float               @default(0)
+  materialCost           Float               @default(0)
+  otherCost              Float               @default(0)
+  totalCost              Float               @default(0)
+  option                 EstimateOption      @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  assemblyTemplate       AssemblyTemplate    @relation(fields: [assemblyTemplateId], references: [id], onDelete: Restrict)
   components             AssemblyComponent[]
 }
 
 model AssemblyComponent {
-  id                     String             @id @default(cuid())
-  estimateAssemblyId     String
-  componentType          String
-  code                   String
-  description            String
-  quantity               Float
-  unit                   String?
-  unitCost               Float              @default(0)
-  laborHours             Float              @default(0)
-  laborRate              Float              @default(0)
-  extendedCost           Float              @default(0)
-  estimateAssembly       EstimateAssembly   @relation(fields: [estimateAssemblyId], references: [id], onDelete: Cascade)
+  id                 String           @id @default(cuid())
+  estimateAssemblyId String
+  componentType      String
+  code               String
+  description        String
+  quantity           Float
+  unit               String?
+  unitCost           Float            @default(0)
+  laborHours         Float            @default(0)
+  laborRate          Float            @default(0)
+  extendedCost       Float            @default(0)
+  estimateAssembly   EstimateAssembly @relation(fields: [estimateAssemblyId], references: [id], onDelete: Cascade)
 }
 
 model ProposalDelivery {
-  id                     String         @id @default(cuid())
-  estimateId             String
-  estimateRevision       Int
-  method                 String
-  recipient              String?
-  deliveredAt            DateTime       @default(now())
-  pdfPath                String
-  notes                  String?
-  estimate               Estimate       @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  id               String   @id @default(cuid())
+  estimateId       String
+  estimateRevision Int
+  method           String
+  recipient        String?
+  deliveredAt      DateTime @default(now())
+  pdfPath          String
+  notes            String?
+  estimate         Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
 }
 
 model SignatureRecord {
-  id                     String         @id @default(cuid())
-  estimateId             String
-  estimateRevision       Int
-  signerName             String
-  signerEmail            String?
-  signedAt               DateTime       @default(now())
-  signatureData          String
-  consentText            String
-  ipAddress              String?
-  userAgent              String?
-  estimate               Estimate       @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  id               String   @id @default(cuid())
+  estimateId       String
+  estimateRevision Int
+  signerName       String
+  signerEmail      String?
+  signedAt         DateTime @default(now())
+  signatureData    String
+  consentText      String
+  ipAddress        String?
+  userAgent        String?
+  estimate         Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
 }
 
 model ProposalAcceptance {
-  id                     String                    @id @default(cuid())
-  estimateId             String                    @unique
-  estimateRevision       Int
-  optionId               String
-  status                 String
-  acceptedAt             DateTime                  @default(now())
-  signatureId            String?
-  notes                  String?
-  estimate               Estimate                  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  id               String   @id @default(cuid())
+  estimateId       String   @unique
+  estimateRevision Int
+  optionId         String
+  status           String
+  acceptedAt       DateTime @default(now())
+  signatureId      String?
+  notes            String?
+  estimate         Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
 }
 
 model PermitStatus {
-  id                     String                @id @default(cuid())
-  estimateId             String                @unique
-  required               Boolean               @default(false)
-  permitType             String?
-  status                 String               @default("not_required")
-  permitNumber           String?
-  filingDate             DateTime?
-  issuedDate             DateTime?
-  cost                   Float                 @default(0)
-  estimate               Estimate              @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  id           String    @id @default(cuid())
+  estimateId   String    @unique
+  required     Boolean   @default(false)
+  permitType   String?
+  status       String    @default("not_required")
+  permitNumber String?
+  filingDate   DateTime?
+  issuedDate   DateTime?
+  cost         Float     @default(0)
+  estimate     Estimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
 }
 
 model InspectionStatus {
-  id                     String                     @id @default(cuid())
-  estimateId             String
-  inspectionType         String
-  status                 String                     @default("not_scheduled")
-  scheduledDate          DateTime?
-  resultDate             DateTime?
-  notes                  String?
-  correctionsJson        String?
-  estimate               Estimate                   @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  id              String    @id @default(cuid())
+  estimateId      String
+  inspectionType  String
+  status          String    @default("not_scheduled")
+  scheduledDate   DateTime?
+  resultDate      DateTime?
+  notes           String?
+  correctionsJson String?
+  estimate        Estimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
 }
 
 model ChangeOrder {
-  id                     String            @id @default(cuid())
+  id                     String         @id @default(cuid())
   estimateId             String
   parentOptionId         String
   sequenceNumber         Int
   title                  String
   reason                 String?
   reasonType             String?
-  status                 String            @default("draft")
+  status                 String         @default("draft")
   estimateRevision       Int
   assembliesAddedJson    String?
   assembliesRemovedJson  String?
   assembliesModifiedJson String?
-  deltaLabor             Float             @default(0)
-  deltaMaterial          Float             @default(0)
-  deltaOther             Float             @default(0)
-  deltaTotal             Float             @default(0)
-  createdAt              DateTime          @default(now())
-  estimate               Estimate          @relation(fields: [estimateId], references: [id], onDelete: Cascade)
-  parentOption           EstimateOption    @relation(fields: [parentOptionId], references: [id], onDelete: Restrict)
+  deltaLabor             Float          @default(0)
+  deltaMaterial          Float          @default(0)
+  deltaOther             Float          @default(0)
+  deltaTotal             Float          @default(0)
+  createdAt              DateTime       @default(now())
+  estimate               Estimate       @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  parentOption           EstimateOption @relation(fields: [parentOptionId], references: [id], onDelete: Restrict)
 
   @@unique([estimateId, sequenceNumber])
 }
+
 // ─── ATOMIC MODEL ────────────────────────────────────────────────────────────
 
 model AtomicUnit {
-  id                   String         @id @default(cuid())
-  code                 String         // LINE-001, RI-001, TRIM-D01, DM-001, etc.
-  catalog              String         @default("shared") // "new_work" | "old_work" | "service" | "shared"
-  category             String         // LINE, ROUGH_IN, TRIM, DEMO, PANEL, ACCESS, CIRCUIT_MOD, SURFACE, DIAG, TROUBLE, INSPECT
-  name                 String
-  description          String?
-  unitType             String         // EA, LF, HR
-  visibilityTier       Int            @default(1) // 1=user-facing, 2=conditional, 3=system-only
-  baseLaborHrs         Float          @default(0)
-  baseLaborRate        Float          @default(115)
-  baseMaterialCost     Float          @default(0)
-  necRefsJson          String?        // JSON array: ["210.8", "406"]
-  necaSectionRef       String?        // NECA MLU section reference
-  requiresCableLength  Boolean        @default(false) // true for LF unit types (cable, conduit, conductor)
-  requiresEndpoint     Boolean        @default(false) // true for branch circuit units (triggers suggestion)
-  resolverGroupId      String?        // links unit to WiringMethodResolver group key
-  isActive             Boolean        @default(true)
-  sortOrder            Int            @default(0)
-  createdAt            DateTime       @default(now())
-  updatedAt            DateTime       @updatedAt
+  id                  String         @id @default(cuid())
+  code                String // LINE-001, RI-001, TRIM-D01, DM-001, etc.
+  catalog             String         @default("shared") // "new_work" | "old_work" | "service" | "shared"
+  category            String // LINE, ROUGH_IN, TRIM, DEMO, PANEL, ACCESS, CIRCUIT_MOD, SURFACE, DIAG, TROUBLE, INSPECT
+  name                String
+  description         String?
+  unitType            String // EA, LF, HR
+  visibilityTier      Int            @default(1) // 1=user-facing, 2=conditional, 3=system-only
+  baseLaborHrs        Float          @default(0)
+  baseLaborRate       Float          @default(115)
+  baseMaterialCost    Float          @default(0)
+  necRefsJson         String? // JSON array: ["210.8", "406"]
+  necaSectionRef      String? // NECA MLU section reference
+  requiresCableLength Boolean        @default(false) // true for LF unit types (cable, conduit, conductor)
+  requiresEndpoint    Boolean        @default(false) // true for branch circuit units (triggers suggestion)
+  resolverGroupId     String? // links unit to WiringMethodResolver group key
+  isActive            Boolean        @default(true)
+  sortOrder           Int            @default(0)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
   estimateItems        EstimateItem[]
-
   @@unique([catalog, code])
 }
 
 model ModifierDef {
-  id               String   @id @default(cuid())
-  modifierType     String   // ACCESS, OCCUPANCY, HEIGHT, SCHEDULE, CONDITION
-  value            String   // NORMAL, DIFFICULT, VERY_DIFFICULT, VACANT, OCCUPIED, STANDARD, LADDER, HIGH_WORK, AFTER_HOURS, EMERGENCY, OPEN, RETROFIT, OBSTRUCTED
-  label            String
-  laborMultiplier  Float    @default(1.0)
-  materialMult     Float    @default(1.0)
-  appliesTo        String   // ITEM, ESTIMATE
-  sortOrder        Int      @default(0)
-  isDefault        Boolean  @default(false)
+  id              String  @id @default(cuid())
+  modifierType    String // ACCESS, OCCUPANCY, HEIGHT, SCHEDULE, CONDITION
+  value           String // NORMAL, DIFFICULT, VERY_DIFFICULT, VACANT, OCCUPIED, STANDARD, LADDER, HIGH_WORK, AFTER_HOURS, EMERGENCY, OPEN, RETROFIT, OBSTRUCTED
+  label           String
+  laborMultiplier Float   @default(1.0)
+  materialMult    Float   @default(1.0)
+  appliesTo       String // ITEM, ESTIMATE
+  sortOrder       Int     @default(0)
+  isDefault       Boolean @default(false)
 
   @@unique([modifierType, value])
 }
 
 model EstimateItem {
-  id                        String          @id @default(cuid())
+  id                        String         @id @default(cuid())
   estimateOptionId          String
   atomicUnitId              String
   location                  String?
-  quantity                  Float           @default(1)
+  quantity                  Float          @default(1)
   // Snapshot (locked at creation — catalog changes don't affect existing items)
   snapshotLaborHrs          Float
   snapshotLaborRate         Float
   snapshotMaterialCost      Float
   // Circuit-specific inputs (required when requiresCableLength = true)
-  circuitVoltage            Int?            // 120 | 240
-  circuitAmperage           Int?            // 15 | 20 | 30 | 40 | 50
-  environment               String?         // interior | exterior | underground
-  exposure                  String?         // concealed | exposed
-  cableLength               Float?          // linear feet — required for CIRCUIT/FEEDER
-  needsThreeWire            Boolean?        // true for dryer/range 120/240V 3-wire endpoints
+  circuitVoltage            Int? // 120 | 240
+  circuitAmperage           Int? // 15 | 20 | 30 | 40 | 50
+  environment               String? // interior | exterior | underground
+  exposure                  String? // concealed | exposed
+  cableLength               Float? // linear feet — required for CIRCUIT/FEEDER
+  needsThreeWire            Boolean? // true for dryer/range 120/240V 3-wire endpoints
   // Resolver outputs (system-computed, not user-editable)
-  resolvedWiringMethod      String?         // NM-B | MC | EMT | UF | PVC+THHN
-  resolvedCableCode         String?         // WIR-001, WIR-002, etc.
-  resolvedCableLaborHrs     Float?          // cable labor hours (@ $90/hr)
+  resolvedWiringMethod      String? // NM-B | MC | EMT | UF | PVC+THHN
+  resolvedCableCode         String? // WIR-001, WIR-002, etc.
+  resolvedCableLaborHrs     Float? // cable labor hours (@ $90/hr)
   resolvedCableLaborCost    Float?
   resolvedCableMaterialCost Float?
   // Computed totals
-  laborCost                 Float           @default(0)
-  materialCost              Float           @default(0)
-  otherCost                 Float           @default(0)
-  totalCost                 Float           @default(0)
+  laborCost                 Float          @default(0)
+  materialCost              Float          @default(0)
+  otherCost                 Float          @default(0)
+  totalCost                 Float          @default(0)
   notes                     String?
-  sortOrder                 Int             @default(0)
-  createdAt                 DateTime        @default(now())
-  updatedAt                 DateTime        @updatedAt
-  estimateOption            EstimateOption  @relation(fields: [estimateOptionId], references: [id], onDelete: Cascade)
-  atomicUnit                AtomicUnit      @relation(fields: [atomicUnitId], references: [id], onDelete: Restrict)
+  sortOrder                 Int            @default(0)
+  createdAt                 DateTime       @default(now())
+  updatedAt                 DateTime       @updatedAt
+  estimateOption            EstimateOption @relation(fields: [estimateOptionId], references: [id], onDelete: Cascade)
+  atomicUnit                AtomicUnit     @relation(fields: [atomicUnitId], references: [id], onDelete: Restrict)
   modifiers                 ItemModifier[]
 }
 
 model ItemModifier {
-  id               String       @id @default(cuid())
-  estimateItemId   String
-  modifierType     String       // ACCESS, HEIGHT, CONDITION
-  modifierValue    String       // NORMAL, DIFFICULT, VERY_DIFFICULT, OPEN, RETROFIT, OBSTRUCTED, etc.
-  laborMultiplier  Float        @default(1.0)
-  materialMult     Float        @default(1.0)
-  estimateItem     EstimateItem @relation(fields: [estimateItemId], references: [id], onDelete: Cascade)
+  id              String       @id @default(cuid())
+  estimateItemId  String
+  modifierType    String // ACCESS, HEIGHT, CONDITION
+  modifierValue   String // NORMAL, DIFFICULT, VERY_DIFFICULT, OPEN, RETROFIT, OBSTRUCTED, etc.
+  laborMultiplier Float        @default(1.0)
+  materialMult    Float        @default(1.0)
+  estimateItem    EstimateItem @relation(fields: [estimateItemId], references: [id], onDelete: Cascade)
 }
 
 model EstimateModifier {
   id              String   @id @default(cuid())
   estimateId      String
-  modifierType    String   // OCCUPANCY, SCHEDULE
-  modifierValue   String   // OCCUPIED, AFTER_HOURS, EMERGENCY, etc.
+  modifierType    String // OCCUPANCY, SCHEDULE
+  modifierValue   String // OCCUPIED, AFTER_HOURS, EMERGENCY, etc.
   laborMultiplier Float    @default(1.0)
   materialMult    Float    @default(1.0)
   estimate        Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
@@ -1200,21 +1201,21 @@ model EstimateModifier {
 }
 
 model SupportItem {
-  id             String    @id @default(cuid())
-  estimateId     String
-  supportType    String    // PERMIT, UTILITY_COORD, PANEL_LABELING
-  description    String
-  laborHrs       Float     @default(0)
-  laborRate      Float     @default(115)
-  laborCost      Float     @default(0)
-  otherCost      Float     @default(0)
-  totalCost      Float     @default(0)
-  isOverridden   Boolean   @default(false)
-  overrideNote   String?
-  sourceRule     String?   // rule/trigger that auto-generated this item
-  sortOrder      Int       @default(0)
-  createdAt      DateTime  @default(now())
-  estimate       Estimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  id           String   @id @default(cuid())
+  estimateId   String
+  supportType  String // PERMIT, UTILITY_COORD, PANEL_LABELING
+  description  String
+  laborHrs     Float    @default(0)
+  laborRate    Float    @default(115)
+  laborCost    Float    @default(0)
+  otherCost    Float    @default(0)
+  totalCost    Float    @default(0)
+  isOverridden Boolean  @default(false)
+  overrideNote String?
+  sourceRule   String? // rule/trigger that auto-generated this item
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  estimate     Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
 }
 
 model Preset {
@@ -1222,32 +1223,32 @@ model Preset {
   name        String
   description String?
   category    String?
-  itemsJson   String   // JSON array of preset items with unitCode, quantity, notes
+  itemsJson   String // JSON array of preset items with unitCode, quantity, notes
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())
 }
 
 model JobType {
-  id                  String   @id @default(cuid())
-  name                String   @unique
+  id                  String  @id @default(cuid())
+  name                String  @unique
   description         String?
-  occupancyDefault    String   @default("residential")
-  environmentDefault  String   @default("interior")
-  exposureDefault     String   @default("concealed")
-  resolverProfileJson String?  // JSON config overrides for WiringMethodResolver
-  isActive            Boolean  @default(true)
-  sortOrder           Int      @default(0)
+  occupancyDefault    String  @default("residential")
+  environmentDefault  String  @default("interior")
+  exposureDefault     String  @default("concealed")
+  resolverProfileJson String? // JSON config overrides for WiringMethodResolver
+  isActive            Boolean @default(true)
+  sortOrder           Int     @default(0)
 }
 
 model Lead {
   priceBookDrafts   PriceBookDraftEstimate[]
-  id                String    @id @default(cuid())
+  id                String                   @id @default(cuid())
   name              String
   email             String?
   phone             String?
-  source            String    @default("email")   // email | phone | web | manual | referral | savannah_text | retention
-  status            String    @default("new")     // "new" | "contacted" | "converted" | "lost"
+  source            String                   @default("email") // email | phone | web | manual | referral | savannah_text | retention
+  status            String                   @default("new") // "new" | "contacted" | "converted" | "lost"
   notes             String?
   // ── Address, two tracks ──
   // `address` is free text the phone/email intake fills. Conversion parses it
@@ -1265,34 +1266,34 @@ model Lead {
   state             String?
   postalCode        String?
   jobType           String?
-  callType          String?  // "new_job" | "warranty" | "reschedule" | "cancellation" | "estimate_followup" | "callback" | "vendor" | "referral" | "invoice" | "dispute" | "wrong_number" | "solicitation" | "other"
+  callType          String? // "new_job" | "warranty" | "reschedule" | "cancellation" | "estimate_followup" | "callback" | "vendor" | "referral" | "invoice" | "dispute" | "wrong_number" | "solicitation" | "other"
   referredBy        String?
-  urgentFlag        Boolean   @default(false)
-  warrantyCall      Boolean   @default(false)
+  urgentFlag        Boolean                  @default(false)
+  warrantyCall      Boolean                  @default(false)
   warrantyNote      String?
   // ── Follow-up & pipeline fields (Phase 1 data model) ──
-  contactPreference String?   // "phone" | "email" | "either"
+  contactPreference String? // "phone" | "email" | "either"
   // Tri-state: true = checked the consent box on the website form, false =
   // explicitly declined (box shown, left unchecked on a web lead), null = never
   // asked (phone/email/manual leads). This is the record A2P registration
   // attests to — the website checkbox is the only opt-in channel, so only
   // `true` clears the send gate in services/twilio.ts; null does NOT.
   smsConsent        Boolean?
-  leadStatus        String    @default("new") // "new" | "booked" | "unresolved" | "planning" | "no_answer" | "lost" | "won"
+  leadStatus        String                   @default("new") // "new" | "booked" | "unresolved" | "planning" | "no_answer" | "lost" | "won"
   followUpDate      DateTime?
-  followUpReason    String?   // "comparing_estimates" | "still_planning" | "consulting_partner" | "no_answer"
-  followUpCount     Int       @default(0)
-  lostReason        String?   // "price" | "timing" | "referral" | "trust" | "scope" | "other"
-  lostNotes         String?   // internal only — verbatim customer feedback, never shared
-  bestTimeToReach   String?   // free text, e.g. "mornings" or "after 3pm"
+  followUpReason    String? // "comparing_estimates" | "still_planning" | "consulting_partner" | "no_answer"
+  followUpCount     Int                      @default(0)
+  lostReason        String? // "price" | "timing" | "referral" | "trust" | "scope" | "other"
+  lostNotes         String? // internal only — verbatim customer feedback, never shared
+  bestTimeToReach   String? // free text, e.g. "mornings" or "after 3pm"
   // ── Existing linking fields ──
   estimateId        String?
   existingVisitId   String?
   customerId        String?
   propertyId        String?
   visitId           String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
 
   @@index([customerId])
   @@index([leadStatus, followUpDate])
@@ -1313,18 +1314,18 @@ model Lead {
 // materials/gas/maintenance/overhead categories. Reports read both.
 
 model CompanyBill {
-  id         String    @id @default(cuid())
-  name       String    // "General liability insurance", "Truck payment"
-  category   String    @default("overhead") // overhead | insurance | vehicle | software | marketing | other
-  amount     Float
+  id        String    @id @default(cuid())
+  name      String // "General liability insurance", "Truck payment"
+  category  String    @default("overhead") // overhead | insurance | vehicle | software | marketing | other
+  amount    Float
   // one_time bills hit their billDate's month once; recurring bills hit every
   // period from startDate until endDate (or forever while endDate is null).
-  cadence    String    // one_time | weekly | monthly | quarterly | annual
-  billDate   DateTime? // one_time: the month it lands in
-  startDate  DateTime? // recurring: first period
-  endDate    DateTime? // recurring: null = still active
-  notes      String?
-  createdAt  DateTime  @default(now())
+  cadence   String // one_time | weekly | monthly | quarterly | annual
+  billDate  DateTime? // one_time: the month it lands in
+  startDate DateTime? // recurring: first period
+  endDate   DateTime? // recurring: null = still active
+  notes     String?
+  createdAt DateTime  @default(now())
 }
 
 // Money actually received. Stripe payments arrive via webhook; cash and checks
@@ -1333,10 +1334,10 @@ model CompanyBill {
 model Payment {
   id              String    @id @default(cuid())
   customerId      String?
-  estimateId      String?   // IssuedEstimate id — plain column, provenance
+  estimateId      String? // IssuedEstimate id — plain column, provenance
   visitId         String?
   amount          Float
-  method          String    // stripe | cash | check | other
+  method          String // stripe | cash | check | other
   // What the money was FOR (Kyle, 2026-08-25: "a 1/3 deposit on every job.
   // Deposit required before it can be scheduled"). deposit | final | other.
   // The scheduling gate reads paid deposit rows; the final pay link charges
@@ -1354,21 +1355,21 @@ model Payment {
 }
 
 model Receipt {
-  id           String   @id @default(cuid())
-  jobId        String?  // visit ID — null for overhead/gas not tied to a specific job
-  category     String   // "materials" | "gas" | "maintenance" | "overhead"
-  vendor       String?
-  amount       Float
-  lineItems    String?  // JSON array: [{name, qty, unit, unitCost}]
-  imageUrl     String?
+  id              String         @id @default(cuid())
+  jobId           String? // visit ID — null for overhead/gas not tied to a specific job
+  category        String // "materials" | "gas" | "maintenance" | "overhead"
+  vendor          String?
+  amount          Float
+  lineItems       String? // JSON array: [{name, qty, unit, unitCost}]
+  imageUrl        String?
   // ── Capture provenance & review workflow ──
-  source       String   @default("webhook") // webhook | tech_pwa | mms | manual
-  status       String   @default("confirmed") // pending_review | confirmed
-  technicianId String?  // who captured it (tech PWA or matched MMS sender)
-  imageData    Bytes?   // original receipt photo — rides DB backups like InspectionPhoto
-  imageMime    String?
-  receivedAt   DateTime @default(now())
-  createdAt    DateTime @default(now())
+  source          String         @default("webhook") // webhook | tech_pwa | mms | manual
+  status          String         @default("confirmed") // pending_review | confirmed
+  technicianId    String? // who captured it (tech PWA or matched MMS sender)
+  imageData       Bytes? // original receipt photo — rides DB backups like InspectionPhoto
+  imageMime       String?
+  receivedAt      DateTime       @default(now())
+  createdAt       DateTime       @default(now())
   // Kyle, 2026-09-09: "Purchasing needs to start with a P.O. number then the
   // purchase and photo verification of the receipt." The receipt is the
   // verification; this is the PO it verifies. Nullable — gas, overhead, and
@@ -1386,19 +1387,19 @@ model Receipt {
 }
 
 model Document {
-  id           String    @id @default(cuid())
+  id               String          @id @default(cuid())
   // Nullable since the ledger: a cure certificate for work a third party did has
   // no Red Cedar visit to hang on, and inventing a synthetic Visit would pollute
   // the Jobs list and every calendar and revenue rollup built on it.
-  jobId        String?   // visit ID
-  propertyId   String?   // set when the document belongs to an address, not a job
-  type         String    // "work_order" | "material_list" | "contract" | "change_order" | "signed" | "cure_certificate" | "upgrade_record" | "finding_declination"
-  pdfUrl       String
-  signedAt     DateTime?
-  signedByIp   String?
-  signedByName String?
-  sentAt       DateTime?
-  createdAt    DateTime  @default(now())
+  jobId            String? // visit ID
+  propertyId       String? // set when the document belongs to an address, not a job
+  type             String // "work_order" | "material_list" | "contract" | "change_order" | "signed" | "cure_certificate" | "upgrade_record" | "finding_declination"
+  pdfUrl           String
+  signedAt         DateTime?
+  signedByIp       String?
+  signedByName     String?
+  sentAt           DateTime?
+  createdAt        DateTime        @default(now())
   // ── The signed estimate, filed on the account (Kyle, 2026-08-20) ──
   //
   // "When they sign I should get a notification and a copy of the signed agreement to their
@@ -1412,8 +1413,8 @@ model Document {
   issuedEstimateId String?
   issuedEstimate   IssuedEstimate? @relation(fields: [issuedEstimateId], references: [id], onDelete: Cascade)
 
-  job          Visit?    @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  property     Property? @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  job      Visit?    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  property Property? @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 
   @@index([propertyId, type])
   @@index([issuedEstimateId])
@@ -1432,24 +1433,24 @@ model Document {
 // A truck is where truck-stock purchases land. Kyle's is "Truck 1" (seeded by
 // the migration); card/financial-account fields come in a later build.
 model Truck {
-  id           String   @id @default(cuid())
-  name         String
-  technicianId String?
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
+  id                       String          @id @default(cuid())
+  name                     String
+  technicianId             String?
+  isActive                 Boolean         @default(true)
+  createdAt                DateTime        @default(now())
   // Kyle, 2026-09-09: "Each tech will have their own card for material and gas
   // through stripe and I will have to set up a financial account for each."
   // Spend routes to a truck BY THE CARD, never by guessing — the Issuing card
   // id is the key, last4 is what Kyle reads off the plastic, and the Treasury
   // financial account is where that truck's balance lives.
-  stripeCardId             String?  @unique
+  stripeCardId             String?         @unique
   cardLast4                String?
   stripeFinancialAccountId String?
   notes                    String?
-  technician   Technician? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
-  purchaseOrders PurchaseOrder[]
-  cardSpends     CardSpend[]
-  stockRequests  StockRequest[]
+  technician               Technician?     @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+  purchaseOrders           PurchaseOrder[]
+  cardSpends               CardSpend[]
+  stockRequests            StockRequest[]
 }
 
 // One Stripe Issuing card transaction (Kyle, 2026-09-09: "photo verifies, card
@@ -1459,30 +1460,30 @@ model Truck {
 // drafts one "after the fact". A spend matched to a receipt is counted by that
 // receipt on the P&L — expenses count once.
 model CardSpend {
-  id                    String   @id @default(cuid())
-  stripeTransactionId   String   @unique
+  id                    String         @id @default(cuid())
+  stripeTransactionId   String         @unique
   stripeAuthorizationId String?
   stripeCardId          String
   truckId               String?
-  kind                  String   // materials | fuel | maintenance | tool | other
+  kind                  String // materials | fuel | maintenance | tool | other
   amount                Float
-  currency              String   @default("usd")
+  currency              String         @default("usd")
   merchantName          String
-  merchantCategory      String?  // Stripe's category slug, e.g. hardware_stores
-  merchantCategoryCode  String?  // the MCC
+  merchantCategory      String? // Stripe's category slug, e.g. hardware_stores
+  merchantCategoryCode  String? // the MCC
   merchantCity          String?
   merchantState         String?
   purchaseOrderId       String?
-  receiptId             String?  @unique // one receipt matches one spend
-  status                String   @default("unmatched") // unmatched | matched | ignored
+  receiptId             String?        @unique // one receipt matches one spend
+  status                String         @default("unmatched") // unmatched | matched | ignored
   ignoredReason         String?
-  note                  String?  // the reason behind the last hand edit
+  note                  String? // the reason behind the last hand edit
   occurredAt            DateTime
   rawJson               String?
-  createdAt             DateTime @default(now())
-  truck         Truck?         @relation(fields: [truckId], references: [id], onDelete: SetNull)
-  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
-  receipt       Receipt?       @relation(fields: [receiptId], references: [id], onDelete: SetNull)
+  createdAt             DateTime       @default(now())
+  truck                 Truck?         @relation(fields: [truckId], references: [id], onDelete: SetNull)
+  purchaseOrder         PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  receipt               Receipt?       @relation(fields: [receiptId], references: [id], onDelete: SetNull)
 
   @@index([truckId])
   @@index([status])
@@ -1491,26 +1492,26 @@ model CardSpend {
 }
 
 model PurchaseOrder {
-  id                   String    @id @default(cuid())
+  id                   String               @id @default(cuid())
   // PO-YYYY-NNNN — assigned at creation from PurchaseOrderCounter, never reused.
-  number               String    @unique
+  number               String               @unique
   // "When creating the P.O. we should have a choice - Truck Stock, Warehouse, or
   // Tool purchase." Chosen, never inferred; default truck_stock.
-  purpose              String    // truck_stock | warehouse | tool
-  destinationType      String    // truck | warehouse
+  purpose              String // truck_stock | warehouse | tool
+  destinationType      String // truck | warehouse
   truckId              String?
   // The job the tech was on when opening — context only, never where the material lands.
   jobId                String?
   supplier             String
-  status               String    @default("open") // open | purchased | verified | closed | cancelled
+  status               String               @default("open") // open | purchased | verified | closed | cancelled
   notes                String?
-  openedBy             String    // owner | tech | system (drafted from a card transaction)
+  openedBy             String // owner | tech | system (drafted from a card transaction)
   openedByTechnicianId String?
   // Kyle, 2026-09-09: a supplier card transaction with no PO behind it drafts
   // one on its own, flagged "PO after the fact" — it cannot close until a
   // receipt photo is attached and the purpose confirmed.
-  afterTheFact         Boolean   @default(false)
-  openedAt             DateTime  @default(now())
+  afterTheFact         Boolean              @default(false)
+  openedAt             DateTime             @default(now())
   purchasedAt          DateTime?
   verifiedAt           DateTime?
   closedAt             DateTime?
@@ -1520,9 +1521,9 @@ model PurchaseOrder {
   // Kyle, 2026-09-09: material lands on a truck or in the warehouse (Build 3).
   // Set once by services/inventory.ts landPurchaseOrder; landing twice is refused.
   landedAt             DateTime?
-  createdAt            DateTime  @default(now())
-  truck                Truck?    @relation(fields: [truckId], references: [id], onDelete: SetNull)
-  job                  Visit?    @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  createdAt            DateTime             @default(now())
+  truck                Truck?               @relation(fields: [truckId], references: [id], onDelete: SetNull)
+  job                  Visit?               @relation(fields: [jobId], references: [id], onDelete: SetNull)
   lines                PurchaseOrderLine[]
   events               PurchaseOrderEvent[]
   receipts             Receipt[]
@@ -1536,7 +1537,7 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderLine {
-  id              String  @id @default(cuid())
+  id              String        @id @default(cuid())
   purchaseOrderId String
   itemId          String? // a PriceBookAtomic.itemId when the line came from the book (no FK — the book is editable)
   name            String
@@ -1546,7 +1547,7 @@ model PurchaseOrderLine {
   unitCost        Float?
   qtyLanded       Float?
   landedAt        DateTime?
-  sortOrder       Int     @default(0)
+  sortOrder       Int           @default(0)
   purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
 
   @@index([purchaseOrderId])
@@ -1555,14 +1556,14 @@ model PurchaseOrderLine {
 // The edit trail. "We need to be able to edit manually in case there are errors
 // found." Every edit records a one-line reason and the before/after.
 model PurchaseOrderEvent {
-  id              String   @id @default(cuid())
+  id              String        @id @default(cuid())
   purchaseOrderId String
-  at              DateTime @default(now())
+  at              DateTime      @default(now())
   actor           String
-  kind            String   // created | edited | status | receipt_attached | receipt_detached | line_added | line_edited | line_removed
+  kind            String // created | edited | status | receipt_attached | receipt_detached | line_added | line_edited | line_removed
   reason          String?
-  before          String?  // JSON
-  after           String?  // JSON
+  before          String? // JSON
+  after           String? // JSON
   purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
 
   @@index([purchaseOrderId, at])
@@ -1596,8 +1597,8 @@ model PurchaseOrderCounter {
 
 model StockLevel {
   id          String   @id @default(cuid())
-  locationKey String   // "warehouse" | "truck:<truckId>"
-  itemId      String   // PriceBookAtomic.itemId (no FK — the book is editable)
+  locationKey String // "warehouse" | "truck:<truckId>"
+  itemId      String // PriceBookAtomic.itemId (no FK — the book is editable)
   name        String
   unit        String?
   qtyOnHand   Float    @default(0)
@@ -1611,8 +1612,8 @@ model StockLevel {
 }
 
 model StockMovement {
-  id                  String    @id @default(cuid())
-  kind                String    // purchase_in | transfer | consume | return | count | correction
+  id                  String         @id @default(cuid())
+  kind                String // purchase_in | transfer | consume | return | count | correction
   itemId              String
   name                String
   unit                String?
@@ -1631,8 +1632,8 @@ model StockMovement {
   correctsId          String?
   reason              String?
   actor               String
-  at                  DateTime  @default(now())
-  createdAt           DateTime  @default(now())
+  at                  DateTime       @default(now())
+  createdAt           DateTime       @default(now())
   purchaseOrder       PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
   job                 Visit?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
 
@@ -1649,16 +1650,16 @@ model StockMovement {
 // warehouse and also to a truck. When they are used and stored the stock will
 // be updated as to where the tool is currently at."
 model Tool {
-  id              String    @id @default(cuid())
+  id              String         @id @default(cuid())
   name            String
   serial          String?
   cost            Float?
   purchasedAt     DateTime?
   purchaseOrderId String?
-  condition       String    @default("good") // good | needs_repair | retired
-  locationKey     String    // "warehouse" | "truck:<truckId>"
+  condition       String         @default("good") // good | needs_repair | retired
+  locationKey     String // "warehouse" | "truck:<truckId>"
   notes           String?
-  createdAt       DateTime  @default(now())
+  createdAt       DateTime       @default(now())
   purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
   movements       ToolMovement[]
 
@@ -1725,9 +1726,9 @@ model InboundMessage {
   fromPhone String
   body      String
   numMedia  Int      @default(0)
-  matchType String   // kyle | customer | technician | unknown
-  matchId   String?  // customerId or technicianId when matched
-  handledAs String?  // confirmation_reply | tech_note | receipt | forwarded | kyle_dispatch | ignored
+  matchType String // kyle | customer | technician | unknown
+  matchId   String? // customerId or technicianId when matched
+  handledAs String? // confirmation_reply | tech_note | receipt | forwarded | kyle_dispatch | ignored
   createdAt DateTime @default(now())
 
   @@index([fromPhone, createdAt])
@@ -1736,7 +1737,7 @@ model InboundMessage {
 model AgentAuditLog {
   id              String   @id @default(cuid())
   action          String
-  agent           String?  // "savannah" | "jerry"
+  agent           String? // "savannah" | "jerry"
   endpoint        String?
   visitId         String?
   entityType      String?
@@ -1766,11 +1767,11 @@ model AgentAuditLog {
 // take down the operation being logged.
 model SystemEvent {
   id          String   @id @default(cuid())
-  level       String   // "error" | "warn" | "info"
-  source      String   // "express" | "twilio" | "google_calendar" | "feedback" | "cron" | ...
+  level       String // "error" | "warn" | "info"
+  source      String // "express" | "twilio" | "google_calendar" | "feedback" | "cron" | ...
   message     String
-  route       String?  // HTTP method + path when the event came from a request
-  detailsJson String?  // stack trace, request context, feedback page/context
+  route       String? // HTTP method + path when the event came from a request
+  detailsJson String? // stack trace, request context, feedback page/context
   createdAt   DateTime @default(now())
 
   @@index([level, createdAt])
@@ -1782,7 +1783,7 @@ model AgentIdempotency {
   id              String   @id @default(cuid())
   clientRequestId String
   endpoint        String
-  agent           String?  // "savannah" | "jerry"
+  agent           String? // "savannah" | "jerry"
   visitId         String?
   responseJson    String
   createdAt       DateTime @default(now())
@@ -1795,7 +1796,7 @@ model ChatMessage {
   id               String   @id @default(cuid())
   sessionId        String
   visitId          String?
-  role             String   // "user" | "assistant"
+  role             String // "user" | "assistant"
   content          String
   openaiResponseId String?
   createdAt        DateTime @default(now())
@@ -1852,10 +1853,10 @@ enum PriceBookQuotable {
 // is the queryable one, and it is what makes "when did this price change and which run
 // changed it" answerable without diffing markdown.
 model PriceBookImportRun {
-  id                String   @id @default(cuid())
-  startedAt         DateTime @default(now())
+  id                String    @id @default(cuid())
+  startedAt         DateTime  @default(now())
   finishedAt        DateTime?
-  status            String   // running | success | failed
+  status            String // running | success | failed
   // SHA-256 of the workbook as read. Two runs with the same hash saw the same file.
   workbookSha256    String
   workbookPath      String
@@ -1866,11 +1867,11 @@ model PriceBookImportRun {
   // the 02:00 task, not by this pipeline, so a mismatch marks the import PROVISIONAL
   // rather than overriding the number — an agent may not set a number (who-sets-numbers).
   billedLaborRate   Float?
-  provisional       Boolean  @default(false)
+  provisional       Boolean   @default(false)
   provisionalReason String?
   activeSupplierId  String?
-  countsJson        String?  // created/updated/unchanged/missing per entity
-  parityRan         Boolean  @default(false)
+  countsJson        String? // created/updated/unchanged/missing per entity
+  parityRan         Boolean   @default(false)
   parityPassed      Boolean?
   parityJson        String?
   deltaReportPath   String?
@@ -1880,7 +1881,7 @@ model PriceBookImportRun {
 }
 
 model PriceBookSupplier {
-  id           String            @id // workbook Supplier ID, e.g. "HD"
+  id           String                   @id // workbook Supplier ID, e.g. "HD"
   name         String
   branch       String?
   channel      String? // "A" = same-day retail, "B" = supply-house will-call
@@ -1892,8 +1893,8 @@ model PriceBookSupplier {
   leadTime     String?
   terms        String?
   notes        String?
-  firstSeenAt  DateTime          @default(now())
-  lastSeenAt   DateTime          @updatedAt
+  firstSeenAt  DateTime                 @default(now())
+  lastSeenAt   DateTime                 @updatedAt
   prices       PriceBookSupplierPrice[]
 }
 
@@ -1901,28 +1902,28 @@ model PriceBookSupplier {
 // tab. `unitCost` is the workbook's own column F arithmetic: /c divides by 100, /m by
 // 1000, otherwise by Pack Qty.
 model PriceBookSupplierPrice {
-  id              String            @id @default(cuid())
-  itemId          String
-  supplierId      String
-  priceAsPrinted  Float?
-  pricedUom       String?
-  packQty         Float?
-  unitCost        Float? // null = no usable price. NEVER 0-for-absent.
-  datePriced      String?
-  source          String?
-  availability    String?
-  accountClass    String?
-  quotable        PriceBookQuotable
-  quotableRaw     String?
+  id               String            @id @default(cuid())
+  itemId           String
+  supplierId       String
+  priceAsPrinted   Float?
+  pricedUom        String?
+  packQty          Float?
+  unitCost         Float? // null = no usable price. NEVER 0-for-absent.
+  datePriced       String?
+  source           String?
+  availability     String?
+  accountClass     String?
+  quotable         PriceBookQuotable
+  quotableRaw      String?
   // The workbook's structural quarantine: `=IF(K="YES", A&"|"&B, "")`. Blank here means
   // the cost lookup cannot match this row, so the price cannot reach a quote. Modelled
   // as a nullable unique key so the same guarantee holds in the database.
-  quotableKey     String?           @unique
-  confidence      String?
-  notes           String?
-  workbookRow     Int?
+  quotableKey      String?           @unique
+  confidence       String?
+  notes            String?
+  workbookRow      Int?
   lastSeenImportId String?
-  supplier        PriceBookSupplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplier         PriceBookSupplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
 
   @@unique([itemId, supplierId])
   @@index([itemId])
@@ -1930,12 +1931,12 @@ model PriceBookSupplierPrice {
 }
 
 model PriceBookAtomic {
-  itemId             String  @id // "A016", "SD002" — the workbook's own stable ID
-  description        String?
-  category           String?
-  sector             String? // Residential | Light Commercial | Both
-  unit               String? // ea | ft | sq ft | hr
-  rowType            String? // MATERIAL + LABOR | LABOR ONLY | MATERIAL ONLY | ...
+  itemId      String  @id // "A016", "SD002" — the workbook's own stable ID
+  description String?
+  category    String?
+  sector      String? // Residential | Light Commercial | Both
+  unit        String? // ea | ft | sq ft | hr
+  rowType     String? // MATERIAL + LABOR | LABOR ONLY | MATERIAL ONLY | ...
 
   // Three published labour values, stored as three values. All nullable: a blank
   // labour cell means NECA publishes no unit for this product (GB001, DF013), and
@@ -1954,25 +1955,25 @@ model PriceBookAtomic {
   // null MUST block the line rather than default to E — the column header says so verbatim,
   // and the difference between E and C is a 100x labour error that still looks plausible.
   // laborUnitBasisRaw keeps the workbook's exact wording, including its source citation.
-  laborUnitBasis     String? // "E" | "C" | "M" | null
-  laborUnitDivisor   Float?  // 1 | 100 | 1000 | null
-  laborUnitBasisRaw  String?
+  laborUnitBasis    String? // "E" | "C" | "M" | null
+  laborUnitDivisor  Float? // 1 | 100 | 1000 | null
+  laborUnitBasisRaw String?
 
   // Reference-only historical columns. The live cost is resolved from
   // PriceBookSupplierPrice at the active supplier — these are NOT the quote basis.
-  retailCost         Float?
-  tradeCost          Float?
-  purchaseUnit       String?
-  purchasePackQty    Float?
-  purchasePrice      Float?
+  retailCost      Float?
+  tradeCost       Float?
+  purchaseUnit    String?
+  purchasePackQty Float?
+  purchasePrice   Float?
 
   // ── Resolved at import against the active supplier, mirroring Atomics!K/W/X ──
   // All nullable. A null costBasis is the workbook's blank: the active supplier does
   // not carry this item, the assembly reads incomplete, and no fallback is permitted.
-  costBasisUsed      Float?
-  costBasisSupplier  String?
-  markupTier         String? // T1..T5 | "awaiting cost"
-  sellPricePerUnit   Float?
+  costBasisUsed     Float?
+  costBasisSupplier String?
+  markupTier        String? // T1..T5 | "awaiting cost"
+  sellPricePerUnit  Float?
 
   // ── KYLE'S TAB (P030). The catalog swap, 2026-08-18. ────────────────────────────────
   //
@@ -1994,30 +1995,30 @@ model PriceBookAtomic {
   // stays correct). Hours and the material split are INTERNAL, for job costing. Kyle's standing
   // rule — "Never show labor hour estimate to the customer" — is why the customer-facing models
   // carry none of this.
-  source             String  @default("neca-workbook") // "kyles-tab" | "neca-workbook"
-  sellNormal         Float?
-  sellDifficult      Float?
-  sellVeryDifficult  Float?
-  companyCost        Float?  // internal: what it costs RCE
-  companyPrice       Float?  // internal: tier-marked-up material, before labour
+  source            String  @default("neca-workbook") // "kyles-tab" | "neca-workbook"
+  sellNormal        Float?
+  sellDifficult     Float?
+  sellVeryDifficult Float?
+  companyCost       Float? // internal: what it costs RCE
+  companyPrice      Float? // internal: tier-marked-up material, before labour
   // The unit is embedded in Kyle's item names ("- per ft", "- per box", "- per hour"); parsed out
   // once at import so a quantity field can say what it is counting.
-  unitLabel          String?
+  unitLabel         String?
 
-  necArticle         String?
-  notes              String?
-  workbookRow        Int?    // provenance only — never used to resolve a component
+  necArticle  String?
+  notes       String?
+  workbookRow Int? // provenance only — never used to resolve a component
   // In-app catalog editor (Kyle, 2026-08-30, Option A: the app IS the book now).
   // Second-level grouping under `category`; nullable — most items have none.
-  subCategory        String?
-  firstSeenAt        DateTime @default(now())
-  lastSeenAt         DateTime @updatedAt
+  subCategory String?
+  firstSeenAt DateTime                     @default(now())
+  lastSeenAt  DateTime                     @updatedAt
   // Set when an import no longer finds this ID. Rows are retired, never deleted
   // (write protocol rule 5: move, never delete).
-  retiredAt          DateTime?
-  components         PriceBookAssemblyComponent[]
-  draftLines         PriceBookDraftLine[]
-  issuedLines        IssuedEstimateLine[]
+  retiredAt   DateTime?
+  components  PriceBookAssemblyComponent[]
+  draftLines  PriceBookDraftLine[]
+  issuedLines IssuedEstimateLine[]
 
   @@index([category])
   @@index([retiredAt])
@@ -2025,14 +2026,14 @@ model PriceBookAtomic {
 }
 
 model PriceBookAssembly {
-  assemblyId              String  @id // "AS-001"
-  name                    String?
-  sector                  String? // from the tab it was imported from
-  useCase                 String?
-  status                  String? // "Draft" | "SUPERSEDED ... DO NOT QUOTE"
+  assemblyId String  @id // "AS-001"
+  name       String?
+  sector     String? // from the tab it was imported from
+  useCase    String?
+  status     String? // "Draft" | "SUPERSEDED ... DO NOT QUOTE"
   // True when Status marks the row superseded. Precomputed so the quote path tests a
   // boolean rather than re-parsing prose at estimate time.
-  superseded              Boolean @default(false)
+  superseded Boolean @default(false)
 
   // ── Labour ──
   // FROZEN LITERAL, AND THE PIPELINE SAYS SO RATHER THAN HIDING IT. Verified
@@ -2042,36 +2043,36 @@ model PriceBookAssembly {
   // The value is imported verbatim so the app matches the workbook; the divergence
   // against an atomic-derived figure is reported as a finding, not silently corrected —
   // it is Kyle's number to move.
-  totalLaborNormal        Float?
-  totalLaborFormula       String?
-  laborFormulaIsFrozen    Boolean @default(true)
-  difficultySetting       String?
-  fieldDifficulty         String? // NORMAL default — tech selects in the field
+  totalLaborNormal     Float?
+  totalLaborFormula    String?
+  laborFormulaIsFrozen Boolean @default(true)
+  difficultySetting    String?
+  fieldDifficulty      String? // NORMAL default — tech selects in the field
 
   // ── Job-level inputs (drive the adder arithmetic) ──
-  permitRequiredRaw       String?
-  utilityStandbyRaw       String?
-  heightAccessAdderHours  Float?
-  ceilingHeightBand       String?
-  jobType                 String?
-  sourcingChannel         String?
+  permitRequiredRaw      String?
+  utilityStandbyRaw      String?
+  heightAccessAdderHours Float?
+  ceilingHeightBand      String?
+  jobType                String?
+  sourcingChannel        String?
 
   // ── Workbook-computed snapshot, stored for the parity harness ──
   // These are what Excel produced from the workbook's own formulas at import time.
   // They are the ORACLE the app is checked against — never an input to app pricing.
-  wbLaborHoursAdjusted    Float?
-  wbLaborDollars          Float?
-  wbMaterialCost          Float?
-  wbMaterialSell          Float?
-  wbJobAdderHours         Float?
-  wbJobAdderDollars       Float?
-  wbPermitFee             Float?
-  wbTotalFlatRate         Float?
-  wbComponentsUnpriced    Int?
-  wbMaterialComplete      String?
-  wbTotalJobHours         Float?
-  wbJobFixedCost          Float?
-  wbTotalWithFixedCost    Float?
+  wbLaborHoursAdjusted Float?
+  wbLaborDollars       Float?
+  wbMaterialCost       Float?
+  wbMaterialSell       Float?
+  wbJobAdderHours      Float?
+  wbJobAdderDollars    Float?
+  wbPermitFee          Float?
+  wbTotalFlatRate      Float?
+  wbComponentsUnpriced Int?
+  wbMaterialComplete   String?
+  wbTotalJobHours      Float?
+  wbJobFixedCost       Float?
+  wbTotalWithFixedCost Float?
 
   necCodeRefs             String?
   necCategory             String?
@@ -2080,8 +2081,8 @@ model PriceBookAssembly {
   componentProse          String? // column E, human prose — NOT parsed for components
   componentsTotalDeclared Int?
   workbookRow             Int?
-  firstSeenAt             DateTime @default(now())
-  lastSeenAt              DateTime @updatedAt
+  firstSeenAt             DateTime                     @default(now())
+  lastSeenAt              DateTime                     @updatedAt
   retiredAt               DateTime?
   components              PriceBookAssemblyComponent[]
 
@@ -2095,7 +2096,7 @@ model PriceBookAssembly {
 // deliberately removed from the assembly, and parsing it would re-import exactly what
 // Kyle's 2026-08-09 sweep took out.
 model PriceBookAssemblyComponent {
-  id         String @id @default(cuid())
+  id         String            @id @default(cuid())
   assemblyId String
   itemId     String
   quantity   Float
@@ -2114,7 +2115,7 @@ model PriceBookAssemblyComponent {
 // new policy cell is an import change, not a migration.
 model PriceBookRateConfig {
   key         String   @id // billedLaborRate, markupTier1, activeSupplier, ...
-  label       String   // the workbook's own label text, asserted at import
+  label       String // the workbook's own label text, asserted at import
   workbookRow Int
   numberValue Float?
   textValue   String?
@@ -2131,11 +2132,11 @@ model PriceBookRateConfig {
 
 model PriceBookEdit {
   id        String   @id @default(cuid())
-  itemId    String   // the atomic touched; "(category)" ops use the item rows they touched
-  field     String   // "description" | "companyCost" | "laborNormal" | "category" | "created" | "retired" | "restored" | ...
+  itemId    String // the atomic touched; "(category)" ops use the item rows they touched
+  field     String // "description" | "companyCost" | "laborNormal" | "category" | "created" | "retired" | "restored" | ...
   oldValue  String?
   newValue  String?
-  editedBy  String   // "human:crm-session" until logins differentiate
+  editedBy  String // "human:crm-session" until logins differentiate
   note      String?
   createdAt DateTime @default(now())
 
@@ -2174,7 +2175,7 @@ model PriceBookNecCategory {
 // EstimateAssembly — the existing job-history models are untouched and unreferenced.
 
 enum PriceBookDifficulty {
-  NORMAL         // default; Kyle 2026-08-11 — difficulty is a FIELD OBSERVATION
+  NORMAL // default; Kyle 2026-08-11 — difficulty is a FIELD OBSERVATION
   DIFFICULT
   VERY_DIFFICULT
 }
@@ -2193,16 +2194,16 @@ enum PriceBookLineState {
 // tell "the tech counted 4 receptacles" from "the tech measured 50 ft of EMT", and the
 // measured case is the one Kyle's cable rule governs.
 enum PriceBookQuantitySource {
-  COUNT             // discrete items the tech counted
-  MEASURED_LENGTH   // continuous-length product measured on site (Kyle: "Length is a field
-                    // measurement and needs to be calculated separately")
+  COUNT // discrete items the tech counted
+  MEASURED_LENGTH // continuous-length product measured on site (Kyle: "Length is a field
+  // measurement and needs to be calculated separately")
   TERMINATION_COUNT // driven by how many terminations exist, not by run length
-  MANUAL            // tech overrode the quantity; requires a note
+  MANUAL // tech overrode the quantity; requires a note
 }
 
 model PriceBookDraftEstimate {
-  id            String   @id @default(cuid())
-  title         String
+  id    String @id @default(cuid())
+  title String
 
   // ── CONTEXT (P024, Option A of the P020 map) ──────────────────────────────────────────
   //
@@ -2221,39 +2222,37 @@ model PriceBookDraftEstimate {
   //
   // onDelete: SetNull, not Cascade: deleting a job must not delete the estimate work done
   // for it. The draft survives with a null link and says "unattached".
-  leadId        String?
-  customerId    String?
-  visitId       String?
-  lead          Lead?     @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  customer      Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  visit         Visit?    @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  leadId     String?
+  customerId String?
+  visitId    String?
+  lead       Lead?     @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  visit      Visit?    @relation(fields: [visitId], references: [id], onDelete: SetNull)
 
   // The supplier the tech picked in the field. Kyle 2026-08-08: "the tech in the field
   // decides the best location to purchase from and builds the quote with that supplier
   // selected." Cost resolves HERE and nowhere else — no fallback to another supplier.
-  supplierId    String
-  jobDescription String?
-  scenarioRef   String?  // e.g. "S-2026-08-11-G" when recomposing a recorded job
+  supplierId        String
+  jobDescription    String?
+  scenarioRef       String? // e.g. "S-2026-08-11-G" when recomposing a recorded job
   // ── Option mode (Kyle, 2026-08-25) ──
   // false = all-that-apply (the default: options ADD — A + B + C).
   // true  = one-or-the-other ("a 10 foot option, a 20 foot option and a 30 foot
   // option… they cannot be additive") — the customer picks exactly ONE.
-  exclusiveOptions Boolean @default(false)
-  status        String   @default("draft") // draft | finalized
-  finalizedAt   DateTime?
+  exclusiveOptions  Boolean                  @default(false)
+  status            String                   @default("draft") // draft | finalized
+  finalizedAt       DateTime?
   // Snapshot of the rate this draft was computed against, and whether it was provisional.
   // Stored so a draft priced at $201.34 cannot be silently reinterpreted at $150 later.
   billedLaborRate   Float?
-  rateProvisional   Boolean @default(false)
+  rateProvisional   Boolean                  @default(false)
   provisionalReason String?
-  notes         String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  lines         PriceBookDraftLine[]
-  questions     PriceBookDraftQuestion[]
-  issued        IssuedEstimate[]
-
-  @@index([status, createdAt])
+  notes             String?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  lines             PriceBookDraftLine[]
+  questions         PriceBookDraftQuestion[]
+  issued            IssuedEstimate[]
 
   /// ── CHANGE ORDER (Kyle, 2026-08-19) ──
   ///
@@ -2269,18 +2268,20 @@ model PriceBookDraftEstimate {
   changeOrderFor   IssuedEstimate? @relation("ChangeOrders", fields: [changeOrderForId], references: [id], onDelete: SetNull)
 
   /// Kyle's names and short descriptions for each option, editable until issue (2026-08-20).
-  optionMeta    PriceBookDraftOption[]
+  optionMeta PriceBookDraftOption[]
 
   /// "military" | "senior" | "custom" | null (2026-08-22; custom 2026-09-01). Kyle: "military
   /// discount at 5%, senior citizen discount at 5%". One per estimate, never stacked — a customer
   /// is not 10% off for being both.
-  discountType  String?
+  discountType    String?
   /// The custom percentage (Kyle, 2026-09-01: "enter a percentage and apply" — a price match).
   /// Only meaningful with discountType "custom"; uncapped, bounded at 50%.
   discountPercent Float?
 
   /// Walkthrough photos (2026-08-22). Cascade: photos of a deleted draft mean nothing.
-  photos        DraftPhoto[]
+  photos DraftPhoto[]
+
+  @@index([status, createdAt])
 }
 
 // What the AI could NOT match to an atomic.
@@ -2290,17 +2291,17 @@ model PriceBookDraftEstimate {
 // finalize until a human resolves them, so the failure mode of an unmatched item is a visible
 // unanswered question rather than a quietly short quote.
 model PriceBookDraftQuestion {
-  id             String    @id @default(cuid())
+  id             String                 @id @default(cuid())
   draftId        String
   // The model's own words for what it could not place, e.g. "customer said 'that weird
   // outdoor plug by the pool' — no atomic matches with confidence".
   question       String
-  rawText        String?   // the tech/customer phrasing this came from
-  raisedBy       String    // "ai:gpt-5.1"
+  rawText        String? // the tech/customer phrasing this came from
+  raisedBy       String // "ai:gpt-5.1"
   resolvedAt     DateTime?
   resolvedBy     String?
   resolutionNote String?
-  createdAt      DateTime  @default(now())
+  createdAt      DateTime               @default(now())
   draft          PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Cascade)
 
   @@index([draftId, resolvedAt])
@@ -2343,28 +2344,29 @@ model PriceBookDraftLine {
   // operator can see and click, while an AI line that accidentally defaults to CONFIRMED puts
   // a number the model chose into a customer's price. Fail toward "no money moves".
   // The human path (atomicEstimateService.addLine) sets CONFIRMED explicitly.
-  state          PriceBookLineState      @default(PROPOSED)
+  state               PriceBookLineState @default(PROPOSED)
   // "ai:gpt-5.1" for a model proposal; null when a human entered the line directly.
-  proposedBy     String?
+  proposedBy          String?
   // The model's stated reason for suggesting this line. Kept so a confirmation is informed.
-  proposalReasoning String?
-  proposedAt     DateTime?
+  proposalReasoning   String?
+  proposedAt          DateTime?
   // Who confirmed, and when. Set only by the PIN-authenticated human surface.
-  confirmedBy    String?
-  confirmedAt    DateTime?
+  confirmedBy         String?
+  confirmedAt         DateTime?
   // True when the human changed quantity/difficulty/source before confirming.
   editedBeforeConfirm Boolean            @default(false)
 
-  createdAt      DateTime                @default(now())
-  updatedAt      DateTime                @updatedAt
-  draft          PriceBookDraftEstimate  @relation(fields: [draftId], references: [id], onDelete: Cascade)
-  atomic         PriceBookAtomic         @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
+  createdAt DateTime               @default(now())
+  updatedAt DateTime               @updatedAt
+  draft     PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  atomic    PriceBookAtomic        @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
 
   @@index([draftId])
   @@index([draftId, state])
   @@index([draftId, option])
   @@index([itemId])
 }
+
 // ─── ISSUED ESTIMATES — the customer-facing artifact (P027) ──────────────────
 //
 // Kyle, 2026-08-17: "get the estimates working to the point where I can email the customer
@@ -2385,28 +2387,28 @@ model PriceBookDraftLine {
 // `PriceBookAtomic`, the current catalog, through its own foreign key. Kyle's reorganized units
 // swap in later as a data migration — the flow reads no atomic ID it did not get from the draft.
 model IssuedEstimate {
-  id             String   @id @default(cuid())
+  id       String @id @default(cuid())
   // House numbering, continuing the issued PDFs (…2026-1010). Shared across revisions of the
   // same estimate; `revision` is what distinguishes them.
-  number         String
-  revision       Int      @default(1)
+  number   String
+  revision Int    @default(1)
   // draft | sent | viewed | signed | void
-  status         String   @default("draft")
+  status   String @default("draft")
   // The customer's ONLY credential: 32 random bytes, hex. Not a cuid — cuids embed a counter
   // and a timestamp, so one issued link would narrow the search space for the next.
-  token          String   @unique
+  token    String @unique
 
   // ── Provenance ──
   // Restrict, not Cascade or SetNull: a draft that has been issued to a customer is not
   // deletable. The issued estimate is the business record and it must keep pointing at what
   // produced it.
-  draftId        String
-  draft          PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Restrict)
+  draftId String
+  draft   PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Restrict)
 
   // ── Revision chain. Editing after send never mutates — it supersedes. ──
-  supersedesId   String?  @unique
-  supersedes     IssuedEstimate?  @relation("EstimateRevision", fields: [supersedesId], references: [id], onDelete: SetNull)
-  supersededBy   IssuedEstimate?  @relation("EstimateRevision")
+  supersedesId String?         @unique
+  supersedes   IssuedEstimate? @relation("EstimateRevision", fields: [supersedesId], references: [id], onDelete: SetNull)
+  supersededBy IssuedEstimate? @relation("EstimateRevision")
 
   // ── THE ACCOUNT SPINE (P029). ────────────────────────────────────────────────────────
   //
@@ -2446,56 +2448,47 @@ model IssuedEstimate {
   customerPhone  String?
   serviceAddress String?
 
-  title          String
-  scopeText      String?
-  includedText   String?
+  title         String
+  scopeText     String?
+  includedText  String?
   // P031: the generator sizing one-pager, SNAPSHOT at issuance like every other
   // customer-facing fact on this row. Set only when a human chose to attach it
   // while issuing (propose-only posture) — null renders nothing.
-  generatorJson  String?
-  validDays      Int      @default(30)
+  generatorJson String?
+  validDays     Int     @default(30)
 
   // ── Money, SNAPSHOT, flat. NO HOURS AND NO RATES ARE STORED ON THIS ROW.
   // Kyle 2026-08-17: "Never show labor hour estimate to the customer." The hours exist in the
   // draft and the workbook; what graduates is the flat price they produced. A column that does
   // not exist cannot leak into a template.
-  workSubtotal   Float
-  tripCharge     Float    @default(0)
-  tripWaived     Boolean  @default(false)
-  total          Float
+  workSubtotal Float
+  tripCharge   Float   @default(0)
+  tripWaived   Boolean @default(false)
+  total        Float
 
   // ── Audit ──
-  createdAt      DateTime @default(now())
-  createdBy      String?
-  sentAt         DateTime?
-  sentBy         String?
-  sentTo         String?
-  firstViewedAt  DateTime?
-  signedAt       DateTime?
-  signerName     String?
-  signerIp       String?
+  createdAt       DateTime  @default(now())
+  createdBy       String?
+  sentAt          DateTime?
+  sentBy          String?
+  sentTo          String?
+  firstViewedAt   DateTime?
+  signedAt        DateTime?
+  signerName      String?
+  signerIp        String?
   signerUserAgent String?
-  consentText    String?
+  consentText     String?
   // How the signature was collected: "in_person" (customer signed on the operator's device at
   // the job — Kyle's FIRST option, P028) or "email" (customer opened the tokenized link, P027).
   // Null on estimates issued before P028. Everything else about a signature — the lock, the
   // audit line, the status, the owner notification — is identical between the two channels;
   // this column records only which door it came through.
-  signedChannel  String?
-  voidedAt       DateTime?
-  voidReason     String?
+  signedChannel   String?
+  voidedAt        DateTime?
+  voidReason      String?
 
-  lines          IssuedEstimateLine[]
-  events         IssuedEstimateEvent[]
-
-  @@unique([number, revision])
-  @@index([status, createdAt])
-  @@index([draftId])
-  // Declared here as well as created in the P029 migration — the account page and the chain view
-  // both query by these, and an index that exists in the database but not the schema reads as
-  // drift the next diff will try to drop.
-  @@index([customerId])
-  @@index([serviceAddressId])
+  lines  IssuedEstimateLine[]
+  events IssuedEstimateEvent[]
 
   /// Copies filed against the account — the signed agreement (2026-08-20).
   /// The DRAWN signature, as a PNG data URL (Kyle, 2026-08-20: "I want the signiture to be
@@ -2503,13 +2496,13 @@ model IssuedEstimate {
   /// searched and addressed; the drawing is what was actually made.
   signatureImage String?
 
-  documents      Document[]
+  documents Document[]
 
   /// Drafts raised to change this estimate after it was signed.
-  changeOrders   PriceBookDraftEstimate[] @relation("ChangeOrders")
+  changeOrders PriceBookDraftEstimate[] @relation("ChangeOrders")
 
   /// The named options presented to the customer, frozen at issue (2026-08-20).
-  options        IssuedEstimateOption[]
+  options IssuedEstimateOption[]
 
   /// What the job-level material check did at issue, as JSON keyed by option (2026-08-21).
   ///
@@ -2527,7 +2520,7 @@ model IssuedEstimate {
 
   /// The discount programme this estimate carries — "military" | "senior" | "custom" | null
   /// (2026-08-22; custom 2026-09-01).
-  discountType String?
+  discountType    String?
   /// The custom percentage, frozen from the draft at issue so a later draft edit cannot restate
   /// a document already in a customer's hands.
   discountPercent Float?
@@ -2560,6 +2553,14 @@ model IssuedEstimate {
   /// homeowner share (billed total after coverage), and a signed share must not move.
   warrantyJson String?
 
+  /// The most recent delivery failure for an email about THIS estimate (Kyle, 2026-09-09: "My
+  /// emails are not getting to the clients" — a bounced estimate looked identical to a delivered
+  /// one). Stamped by services/bounceWatcher.ts when Gmail's DSN names this estimate's number;
+  /// cleared when a later send goes to a DIFFERENT address, or by hand from the Financials card.
+  lastBounceAt     DateTime?
+  lastBounceReason String?
+  emailBounces     EmailBounce[]
+
   /// The job-level band SCHEDULE in force when this was issued, as JSON (2026-08-22).
   ///
   /// Frozen for the same reason the prices are. Kyle tunes these bands in Rate Config now, and
@@ -2579,6 +2580,15 @@ model IssuedEstimate {
   /// the ticks, and what they ticked is recorded here when they sign — so the signed agreement
   /// says what was bought rather than what was offered.
   selectedOptions PriceBookOption[]
+
+  @@unique([number, revision])
+  @@index([status, createdAt])
+  @@index([draftId])
+  // Declared here as well as created in the P029 migration — the account page and the chain view
+  // both query by these, and an index that exists in the database but not the schema reads as
+  // drift the next diff will try to drop.
+  @@index([customerId])
+  @@index([serviceAddressId])
 }
 
 /// One option as it was presented to the customer — the thing they tick.
@@ -2590,10 +2600,10 @@ model IssuedEstimate {
 /// two agree today — but storing it means a later change to how lines are grouped or priced cannot
 /// silently restate the number a customer put their name to.
 model IssuedEstimateOption {
-  id          String   @id @default(cuid())
-  estimateId  String
-  estimate    IssuedEstimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
-  option      PriceBookOption
+  id         String          @id @default(cuid())
+  estimateId String
+  estimate   IssuedEstimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  option     PriceBookOption
 
   /// What Kyle renamed it to at the review screen, e.g. "Exterior pathway lights".
   ///
@@ -2602,15 +2612,15 @@ model IssuedEstimateOption {
   ///
   /// Null means it was never renamed and the document falls back to the bare letter — the
   /// fallback lives in the renderer rather than being baked into every row at issue time.
-  label       String?
+  label String?
 
   /// The short description under the name. Sales context, customer-facing.
-  note        String?
+  note String?
 
   /// What this option costs on its own. Excludes the trip charge, which is charged once across
   /// the whole combination rather than once per option.
-  subtotal    Float
-  lineCount   Int      @default(0)
+  subtotal  Float
+  lineCount Int   @default(0)
 
   @@unique([estimateId, option])
   @@index([estimateId])
@@ -2633,26 +2643,26 @@ model IssuedEstimateOption {
 /// NOT sent to any AI. P012 seam: attach-only, no model egress — that is a separate decision
 /// Kyle has not made.
 model DraftPhoto {
-  id        String   @id @default(cuid())
+  id        String                 @id @default(cuid())
   draftId   String
   draft     PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Cascade)
   mime      String
   bytes     Bytes
   size      Int
   note      String?
-  createdAt DateTime @default(now())
+  createdAt DateTime               @default(now())
 
   @@index([draftId])
 }
 
 model PriceBookDraftOption {
-  id        String   @id @default(cuid())
+  id        String                 @id @default(cuid())
   draftId   String
   draft     PriceBookDraftEstimate @relation(fields: [draftId], references: [id], onDelete: Cascade)
   option    PriceBookOption
   label     String?
   note      String?
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime               @updatedAt
 
   @@unique([draftId, option])
   @@index([draftId])
@@ -2664,15 +2674,15 @@ model PriceBookDraftOption {
 // which catalog row produced the line — and the render never reads through it. That is what
 // makes a signed estimate reproducible byte-for-byte after the catalog moves underneath it.
 model IssuedEstimateLine {
-  id           String   @id @default(cuid())
-  estimateId   String
-  itemId       String
-  description  String
-  quantity     Float
+  id          String @id @default(cuid())
+  estimateId  String
+  itemId      String
+  description String
+  quantity    Float
   // Flat sell price for ONE unit: the line's labour dollars and material sell, already combined.
-  unitPrice    Float
-  lineTotal    Float
-  sortOrder    Int      @default(0)
+  unitPrice   Float
+  lineTotal   Float
+  sortOrder   Int    @default(0)
 
   // ── What the COMPANY copy needs, frozen with everything else (2026-08-19) ──
   //
@@ -2685,28 +2695,28 @@ model IssuedEstimateLine {
   //
   // `option` matters just as much: without it the frozen estimate forgets which option each line
   // belonged to, and an estimate presented as three options would come back as one flat list.
-  option       PriceBookOption @default(A)
+  option        PriceBookOption @default(A)
   /// Labour hours for this line, at its difficulty. Scheduling is planned against these.
-  laborHours   Float?
+  laborHours    Float?
   /// Material sell for this line — column F, what the customer is charged. Null and 0 differ:
   /// 0 is customer-supplied, null is unknown.
-  materialSell Float?
+  materialSell  Float?
   /// Material COST — column E, what it costs Red Cedar. Kyle, 2026-08-20: "In the estimate
   /// column E is what we see to track spending." Frozen alongside the charge so the company copy
   /// can show both and the margin on a signed job is a fact rather than a re-derivation.
-  materialCost Float?
+  materialCost  Float?
   /// Priced FLAT from Kyle's own sell columns (his catalog tab / in-app items). The combination
   /// discount recomputed from frozen lines skips these — their price is the book's price
   /// (2026-08-31). Frozen here so the exemption never depends on the live catalog.
-  flatPriced   Boolean  @default(false)
+  flatPriced    Boolean         @default(false)
   /// Continuous-length material (wire, cable, conduit) — the only lines the job-level material
   /// cap reads (Kyle, 2026-08-31, "split the difference"). Frozen so the combination discount
   /// recomputed at signing and on the customer page uses the same population as the issue.
   /// Defaults true so estimates issued before the rule keep the numbers they were issued with.
-  inMaterialCap Boolean @default(true)
+  inMaterialCap Boolean         @default(true)
 
-  estimate     IssuedEstimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
-  atomic       PriceBookAtomic @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
+  estimate IssuedEstimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  atomic   PriceBookAtomic @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
 
   @@index([estimateId])
   @@index([itemId])
@@ -2715,16 +2725,16 @@ model IssuedEstimateLine {
 // Append-only audit trail. The columns on IssuedEstimate carry the CURRENT state; this carries
 // the sequence, including re-sends, which a single `sentAt` cannot represent.
 model IssuedEstimateEvent {
-  id           String   @id @default(cuid())
-  estimateId   String
+  id         String   @id @default(cuid())
+  estimateId String
   // created | sent | viewed | signed | voided | superseded
-  type         String
-  at           DateTime @default(now())
+  type       String
+  at         DateTime @default(now())
   // "human:crm-session" for an operator action, "customer" for a token action.
-  actor        String
-  detail       String?
+  actor      String
+  detail     String?
 
-  estimate     IssuedEstimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  estimate IssuedEstimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
 
   @@index([estimateId, at])
 }
@@ -2736,24 +2746,24 @@ model IssuedEstimateEvent {
 // batches. Unsubscribes are GLOBAL and permanent — CAN-SPAM is not per-list.
 
 model EmailList {
-  id                 String   @id @default(cuid())
-  name               String   @unique
+  id                 String            @id @default(cuid())
+  name               String            @unique
   /// The default "Storm Preparedness Campaign" list carries this: every
   /// customer account with an email rides it at send time, no rows needed.
-  includeAllAccounts Boolean  @default(false)
-  createdAt          DateTime @default(now())
+  includeAllAccounts Boolean           @default(false)
+  createdAt          DateTime          @default(now())
   members            EmailListMember[]
   campaigns          EmailCampaign[]
 }
 
 model EmailListMember {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   listId     String
   email      String
   name       String?
   leadId     String?
   customerId String?
-  addedAt    DateTime @default(now())
+  addedAt    DateTime  @default(now())
   list       EmailList @relation(fields: [listId], references: [id], onDelete: Cascade)
 
   @@unique([listId, email])
@@ -2761,34 +2771,34 @@ model EmailListMember {
 }
 
 model EmailCampaign {
-  id              String    @id @default(cuid())
+  id              String              @id @default(cuid())
   listId          String
   name            String
   subject         String
   /// The composer's block stack: [{kind:"text"|"article"|"promo", ...}] —
   /// rendered server-side at preview AND at send, so they can never differ.
-  blocksJson      String    @default("[]")
-  status          String    @default("draft") // draft | sending | sent
+  blocksJson      String              @default("[]")
+  status          String              @default("draft") // draft | sending | sent
   /// Set by the blog watcher when it auto-drafts from a new Sanity post.
-  sourceArticleId String?   @unique
-  createdAt       DateTime  @default(now())
+  sourceArticleId String?             @unique
+  createdAt       DateTime            @default(now())
   sentAt          DateTime?
-  sentCount       Int       @default(0)
-  failedCount     Int       @default(0)
-  suppressedCount Int       @default(0)
-  list            EmailList @relation(fields: [listId], references: [id], onDelete: Restrict)
+  sentCount       Int                 @default(0)
+  failedCount     Int                 @default(0)
+  suppressedCount Int                 @default(0)
+  list            EmailList           @relation(fields: [listId], references: [id], onDelete: Restrict)
   sends           EmailCampaignSend[]
 }
 
 model EmailCampaignSend {
-  id               String    @id @default(cuid())
+  id               String        @id @default(cuid())
   campaignId       String
   email            String
   name             String?
-  status           String    @default("pending") // pending | sent | failed | suppressed
+  status           String        @default("pending") // pending | sent | failed | suppressed
   error            String?
   sentAt           DateTime?
-  unsubscribeToken String    @unique
+  unsubscribeToken String        @unique
   campaign         EmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
   @@unique([campaignId, email])
@@ -2800,3 +2810,39 @@ model EmailSuppression {
   createdAt DateTime @default(now())
 }
 
+/// One Gmail Delivery Status Notification, parsed (Kyle, 2026-09-09: "very few are actually
+/// getting through, this is priority number one").
+///
+/// The transport is fine (SPF/DKIM/DMARC all pass). What was missing was VISIBILITY: when a
+/// receiver rejects a message, Gmail drops a "Delivery Status Notification (Failure)" from
+/// mailer-daemon@googlemail.com into the inbox and the CRM never saw it. services/bounceWatcher.ts
+/// polls those every 10 minutes through the Gmail REST API (same OAuth refresh token as SMTP) and
+/// files one row per DSN here. gmailMessageId is unique so a re-poll is idempotent.
+model EmailBounce {
+  id               String          @id @default(cuid())
+  gmailMessageId   String          @unique
+  gmailThreadId    String?
+  recipient        String
+  /// The enhanced status code from the DSN, e.g. "5.7.0" / "5.1.1".
+  status           String?
+  /// The Diagnostic-Code line ("smtp; 554 ..."), capped at 500 chars.
+  diagnostic       String?
+  action           String?
+  remoteMta        String?
+  originalSubject  String?
+  /// estimate | invoice | appointment | deposit | balance | receipt | campaign | other
+  kind             String
+  estimateNumber   String?
+  issuedEstimateId String?
+  issuedEstimate   IssuedEstimate? @relation(fields: [issuedEstimateId], references: [id], onDelete: SetNull)
+  visitId          String?
+  visit            Visit?          @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  bouncedAt        DateTime
+  resolvedAt       DateTime?
+  resolvedNote     String?
+  createdAt        DateTime        @default(now())
+
+  @@index([resolvedAt, bouncedAt])
+  @@index([issuedEstimateId])
+  @@index([visitId])
+}

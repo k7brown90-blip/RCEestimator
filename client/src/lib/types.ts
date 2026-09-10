@@ -1230,6 +1230,9 @@ export type InvoiceSummary = {
   /** Home-warranty coverage (Kyle, 2026-09-09) — already off billedTotal; shown beside it. */
   warrantyCovered?: number;
   warrantyClaim?: WarrantyClaimRef | null;
+  /** Gmail reported the last email about this row undeliverable (Kyle, 2026-09-09). Additive. */
+  lastBounceAt?: string | null;
+  lastBounceReason?: string | null;
 };
 
 /**
@@ -1679,7 +1682,40 @@ export interface PbIssuedEstimate {
   /** The claim as applied, from the account-estimates route; already off billedTotal. */
   warranty?: WarrantyClaim | null;
   warrantyCovered?: number;
+  /** Gmail reported the last email about this row undeliverable (Kyle, 2026-09-09). Additive. */
+  lastBounceAt?: string | null;
+  lastBounceReason?: string | null;
 }
+
+/**
+ * One Gmail Delivery Status Notification, parsed (Kyle, 2026-09-09: "very few are actually
+ * getting through, this is priority number one"). From GET /email-bounces.
+ */
+export type EmailBounceRow = {
+  id: string;
+  recipient: string;
+  /** Enhanced status code, e.g. "5.1.1" (no such address) or "5.7.0" (receiver refused). */
+  status: string | null;
+  /** The Diagnostic-Code line, e.g. "smtp; 554 ... ESMTP server not available". */
+  diagnostic: string | null;
+  action: string | null;
+  remoteMta: string | null;
+  originalSubject: string | null;
+  kind: "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt" | "campaign" | "other";
+  estimateNumber: string | null;
+  issuedEstimateId: string | null;
+  visitId: string | null;
+  bouncedAt: string;
+  resolvedAt: string | null;
+  resolvedNote: string | null;
+  account: { id: string; name: string } | null;
+  estimate: { id: string; number: string; revision: number; title: string } | null;
+  visit: { id: string; purpose: string | null; jobType: string | null; scheduledStart: string | null } | null;
+};
+
+export type EmailBouncePollResult =
+  | { available: true; scanned: number; new: number; errors: number }
+  | { available: false; reason: string };
 
 /** One row of the Estimates chain view (P029): account + address + status + job. */
 export interface PbChainRow {
@@ -1703,6 +1739,9 @@ export interface PbChainRow {
   job: { id: string; status: string; scheduledStart: string | null } | null;
   /** Home-warranty credit (Kyle, 2026-09-09), already off billedTotal. */
   warrantyCovered?: number;
+  /** Gmail reported the last email about this row undeliverable (Kyle, 2026-09-09). Additive. */
+  lastBounceAt?: string | null;
+  lastBounceReason?: string | null;
 }
 
 // ─── Email campaigns (Kyle, 2026-09-02) ───────────────────────────────────────

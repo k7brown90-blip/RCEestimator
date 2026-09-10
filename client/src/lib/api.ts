@@ -15,6 +15,8 @@ import type {
   CrmWinLossMetrics,
   Customer,
   CustomerMatch,
+  EmailBouncePollResult,
+  EmailBounceRow,
   Estimate,
   EstimateAssembly,
   EstimateItem,
@@ -450,6 +452,14 @@ export const api = {
 
   // The Invoices tab (Kyle, 2026-08-26) — every signed estimate with its money rolled up.
   invoices: () => request<InvoiceSummary[]>("/invoices"),
+
+  // ── Bounced emails (Kyle, 2026-09-09: "My emails are not getting to the clients") ──
+  emailBounces: (unresolvedOnly = true) =>
+    request<EmailBounceRow[]>(`/email-bounces${unresolvedOnly ? "?unresolved=1" : ""}`),
+  resolveEmailBounce: (id: string, note: string | null) =>
+    request<EmailBounceRow>(`/email-bounces/${id}/resolve`, { method: "POST", body: JSON.stringify({ note }) }),
+  /** "Check now" — runs the mailbox poll on demand and returns the counts. */
+  pollEmailBounces: () => request<EmailBouncePollResult>("/email-bounces/poll", { method: "POST" }),
 
   // ─── Accounts ─────────────────────────────────────────────────────────────
   // The server exposes these under both /accounts and /customers (same handlers,

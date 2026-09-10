@@ -38,6 +38,9 @@ import { renderEstimatePdf } from "./issuedEstimatePdf";
 import { getCompanyProfile } from "./companyProfile";
 import { billedTotalOf, parseWarrantyJson, stripeConfigured, warrantyCoverageOf } from "./stripePayments";
 import { warrantyEmailLine } from "./warrantyNotice";
+// Kyle, 2026-09-09 ("My emails are not getting to the clients"): a send that lands at a
+// DIFFERENT address than the one that bounced clears the estimate's bounce flag.
+import { clearBounceIfDifferentAddress } from "./bounceWatcher";
 import sharp from "sharp";
 
 export type SendResult = { ok: true; to: string } | { ok: false; reason: string };
@@ -279,6 +282,11 @@ export async function sendInvoiceEmail(
     estimateId: est.id,
     sentBy: opts.sentBy,
   });
+  // A resend to the SAME address leaves the flag until the poll says otherwise; a different
+  // address clears it. Never lets a bookkeeping failure turn a sent email into a reported failure.
+  await clearBounceIfDifferentAddress(prisma, est.id, to).catch((err) => {
+    console.warn("[IssuedEstimate] bounce flag not cleared:", err);
+  });
   return { ok: true, to };
 }
 
@@ -424,6 +432,12 @@ export async function sendEstimateEmail(
     estimateId: est.id,
     revision: est.revision,
     sentBy: opts.sentBy,
+  });
+
+  // Bounce flag (Kyle, 2026-09-09): off when this went to a different address than the one
+  // that bounced; left alone on a resend to the same address — the next poll decides.
+  await clearBounceIfDifferentAddress(prisma, est.id, to).catch((err) => {
+    console.warn("[IssuedEstimate] bounce flag not cleared:", err);
   });
 
   return { ok: true, to };

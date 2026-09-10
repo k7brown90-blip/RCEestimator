@@ -29,6 +29,8 @@ import type { CompanyBillRow, JobProfitRow, JobReceiptRow, PaymentRow } from "..
 import type { InvoiceSummary } from "../lib/types";
 import { money } from "../lib/utils";
 import { ReceiptReviewList } from "../components/ReceiptReviewList";
+import { BouncedEmailsCard } from "../components/BouncedEmailsCard";
+import { BounceBadge } from "../components/BounceBadge";
 import { PurchasesCard } from "../components/PurchaseOrders";
 import { BalancesStrip, TrucksCard } from "../components/TrucksCards";
 
@@ -80,6 +82,10 @@ export function FinancialsPage() {
           purchaseOrderNumber: r.purchaseOrderNumber, needsPo: r.needsPo, cardMatched: r.cardMatched,
         }))}
       />
+
+      {/* ── Bounced emails (Kyle, 2026-09-09: "very few are actually getting through") — every
+          customer email Gmail could not deliver, with a Resolve door and a Check-now poll. ── */}
+      <BouncedEmailsCard />
 
       {/* ── Purchases (Kyle, 2026-09-09): the PO is the document — number, purchase, receipt photo ── */}
       <PurchasesCard />
@@ -948,6 +954,12 @@ function InvoiceRow({
           <span className="block text-xs text-rce-muted">
             {inv.number}{inv.revision > 1 ? ` rev ${inv.revision}` : ""} · {inv.title} · {inv.serviceAddress}
           </span>
+          {/* Kyle, 2026-09-09: the invoice email came back — say so on the row. */}
+          {inv.lastBounceAt && (
+            <span className="mt-1 block">
+              <BounceBadge at={inv.lastBounceAt} reason={inv.lastBounceReason} />
+            </span>
+          )}
         </span>
         <span className="shrink-0 text-right">
           <span className="block font-semibold tabular-nums">{money(inv.billedTotal)}</span>

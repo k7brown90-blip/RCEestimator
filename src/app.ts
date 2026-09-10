@@ -73,6 +73,7 @@ import {
 } from "./services/purchaseOrders";
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
+import { emailBouncesRouter } from "./routes/emailBounces";
 import { trucksRouter } from "./routes/trucks";
 import { inventoryRouter } from "./routes/inventory";
 import { matchSpendForReceipt } from "./services/cardSpend";
@@ -1801,6 +1802,9 @@ app.use("/agent/calendar", sharedAgentRouter);
 // ─── HEALTH RECORD PWA (per-technician bearer auth, not the CRM session) ─────
 app.use("/health-record", healthRecordTechRouter);
 app.use("/financials", financialsRouter);
+// Bounced customer emails (Kyle, 2026-09-09: "very few are actually getting through") — the
+// list, the resolve door, and the manual poll. Session-only, like everything after pinAuth.
+app.use(emailBouncesRouter);
 // Trucks, cards, card spend (Kyle, 2026-09-09) — /trucks, /card-spend.
 app.use(trucksRouter);
 // Inventory ledger, landing, tools, restock requests (Kyle, 2026-09-09, Build 3) — /inventory, /tools, /purchase-orders/:id/land.
@@ -2891,6 +2895,10 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
       // "expired" from sentAt + validDays, so the window rides along. Additive — nothing
       // that read this payload before is changed.
       validDays: r.validDays,
+      // Kyle, 2026-09-09: a bounced estimate must not look like a delivered one. Stamped by the
+      // bounce watcher, cleared by a send to a different address or a manual resolve. Additive.
+      lastBounceAt: r.lastBounceAt,
+      lastBounceReason: r.lastBounceReason,
       account: r.account,
       serviceAddress: r.serviceProperty,
       supersededBy: r.supersededBy,
@@ -4630,6 +4638,9 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       signedChannel: est.signedChannel,
       sentAt: est.sentAt,
       sentTo: est.sentTo,
+      // Bounce flag (Kyle, 2026-09-09) — the invoice email came back. Additive.
+      lastBounceAt: est.lastBounceAt,
+      lastBounceReason: est.lastBounceReason,
       billedTotal,
       depositDue,
       totalPaid,

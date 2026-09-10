@@ -10,6 +10,7 @@ import { prisma } from "./lib/prisma";
 import { logSystemEvent } from "./services/systemEvents";
 import { sendKyleNotificationEmail } from "./services/confirmationEmail";
 import { sendAlert } from "./services/alerting";
+import { gmailConfigured, pollBounces } from "./services/bounceWatcher";
 import {
   customerSendsEnabled,
   logAutomationGateState,
@@ -281,6 +282,30 @@ async function startServer(): Promise<void> {
     }
   }, { timezone: "America/Chicago" });
   console.log("[Cron] Housekeeping scheduled for 8:30 AM CT daily (stale-visit sweep; credential drill on quarter days).");
+
+  // Every 10 minutes — email bounce watcher (Kyle, 2026-09-09: "My emails are not getting to
+  // the clients" / "very few are actually getting through, this is priority number one").
+  //
+  // INBOUND, so NOT behind automationGate: it reads Gmail's Delivery Status Notifications and
+  // files them; it sends nothing. Runs whenever Gmail is configured. pollBounces never throws
+  // — auth trouble comes back as {available:false} and is logged once per process. Also runs
+  // once 60 s after boot so a deploy does not wait ten minutes to notice a bounce.
+  const runBouncePoll = async (trigger: "boot" | "cron") => {
+    if (!gmailConfigured()) return;
+    try {
+      const r = await pollBounces({ sinceDays: 3 });
+      if (!r.available) {
+        console.warn(`[BounceWatcher:${trigger}] unavailable — ${r.reason}`);
+      } else if (r.new > 0 || r.errors > 0) {
+        console.log(`[BounceWatcher:${trigger}] scanned ${r.scanned}, new ${r.new}, errors ${r.errors}`);
+      }
+    } catch (err) {
+      console.error(`[BounceWatcher:${trigger}] failed:`, err);
+    }
+  };
+  cron.schedule("*/10 * * * *", () => { void runBouncePoll("cron"); }, { timezone: "America/Chicago" });
+  setTimeout(() => { void runBouncePoll("boot"); }, 60_000).unref();
+  console.log(`[Cron] Email bounce watcher every 10 minutes — ${gmailConfigured() ? "ENABLED" : "DISABLED (Gmail not configured)"}`);
 
   logAutomationGateState();
 }
