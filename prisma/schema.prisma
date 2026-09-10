@@ -2888,3 +2888,29 @@ model EmailDelivery {
   @@index([status])
   @@index([createdAt])
 }
+
+/// One click of the month-end sweep (Kyle, 2026-09-09: "At the end of each month I will take
+/// whatever money is over that value and deposit it into the Chase savings accounts for taxes
+/// and owner distributions"). Every attempt is a row — a transfer Stripe created, and one it
+/// refused (status "failed", the exact Stripe message in `error`). Never scheduled: the only
+/// writer is POST /financials/sweep behind Kyle's typed SWEEP.
+model TreasurySweep {
+  id                 String   @id @default(cuid())
+  /// The Stripe v2 financial account the money left.
+  financialAccountId String
+  /// Dollars.
+  amount             Float
+  /// "Chase savings — taxes & distributions" (the label in Settings, else the payout-method id).
+  destinationLabel   String
+  /// Stripe's outbound transfer id (obt_…) when it created one.
+  stripeTransferId   String?
+  /// created | failed | posted | returned | canceled
+  status             String
+  error              String?
+  requestedBy        String   @default("owner")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([createdAt])
+  @@index([status])
+}

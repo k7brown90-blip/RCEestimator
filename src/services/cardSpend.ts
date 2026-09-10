@@ -410,7 +410,8 @@ export async function matchSpendForReceipt(receiptId: string): Promise<CardSpend
 
 export interface Unavailable { available: false; reason: string }
 
-function describeStripeError(err: unknown): { permission: boolean; reason: string } {
+/** Was this a scope refusal, and what to tell Kyle. Shared with services/treasury.ts. */
+export function describeStripeError(err: unknown): { permission: boolean; reason: string } {
   const e = err as { type?: string; code?: string; message?: string; statusCode?: number };
   const message = e?.message ?? String(err);
   const permission = e?.statusCode === 403 || e?.statusCode === 401 || e?.type === "StripePermissionError"
@@ -418,7 +419,7 @@ function describeStripeError(err: unknown): { permission: boolean; reason: strin
   return {
     permission,
     reason: permission
-      ? `The Stripe key on the server is not permitted to read this yet — add Issuing and Treasury read scope to the restricted key in the Stripe Dashboard. (${message})`
+      ? `The Stripe key on the server is not permitted to read this yet — add Issuing and Money Management (financial accounts) read scope to the restricted key in the Stripe Dashboard. (${message})`
       : message,
   };
 }

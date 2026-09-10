@@ -25,6 +25,8 @@ import { asyncHandler, readParam } from "./agent-helpers";
 import { billedTotalOf, stripeConfigured } from "../services/stripePayments";
 import { estimateMaterialCost, getLaborRate, materialCostForJobs } from "../services/jobCosting";
 import { readBalances } from "../services/cardSpend";
+import { TreasuryError, executeSweep, readSweep, stripeFeeRows } from "../services/treasury";
+import type { StripeFeeRow } from "../services/treasury";
 import { createLedgerReplay } from "../services/inventory";
 
 export const financialsRouter = express.Router();
@@ -200,6 +202,16 @@ interface YearLedger {
    * lands here. Refunds are negative rows.
    */
   spendRows: { month: number; amount: number; category: string; merchant: string; date: Date; truck: string | null }[];
+  /**
+   * Stripe processing fees (Kyle, 2026-09-09: shown nowhere until now — "they
+   * belong in the P&L as their own expense line"). One row per charge/payment
+   * balance transaction with a fee. Collected stays GROSS: ONE PRICE means the
+   * customer pays the invoice amount; the fee is the company's expense.
+   */
+  feeRows: StripeFeeRow[];
+  /** False (with feesReason) when the key cannot read balance transactions — the column is then honestly empty. */
+  feesAvailable: boolean;
+  feesReason: string | null;
 }
 
 /** CardSpend.kind → the P&L expense category receipts already use. */
@@ -215,7 +227,7 @@ async function yearLedger(year: number): Promise<YearLedger> {
   const from = new Date(`${year}-01-01`);
   const to = new Date(`${year + 1}-01-01`);
 
-  const [estimates, payments, receipts, bills, spend] = await Promise.all([
+  const [estimates, payments, receipts, bills, spend, fees] = await Promise.all([
     prisma.issuedEstimate.findMany({
       where: { signedAt: { gte: from, lt: to }, status: { not: "void" }, account: { isTestAccount: false } },
       include: { options: true, account: { select: { name: true } }, lines: { select: { option: true, materialCost: true } } },
@@ -234,6 +246,8 @@ async function yearLedger(year: number): Promise<YearLedger> {
       where: { status: { not: "ignored" }, receiptId: null, occurredAt: { gte: from, lt: to } },
       select: { amount: true, kind: true, merchantName: true, occurredAt: true, truck: { select: { name: true } } },
     }),
+    // Stripe fees for the year — cached 30 minutes in services/treasury.ts; [] + reason when the key lacks scope.
+    stripeFeeRows(year, { from, to }),
   ]);
 
   return {
@@ -273,6 +287,9 @@ async function yearLedger(year: number): Promise<YearLedger> {
       month: s.occurredAt.getMonth(), amount: s.amount, category: SPEND_CATEGORY[s.kind] ?? "overhead",
       merchant: s.merchantName, date: s.occurredAt, truck: s.truck?.name ?? null,
     })),
+    feeRows: fees.rows,
+    feesAvailable: fees.available,
+    feesReason: fees.reason ?? null,
   };
 }
 
@@ -378,12 +395,15 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
     const billExp = ledger.billRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     // Card spend with no receipt (a spend matched to a receipt is already in receiptExp — counted once).
     const spendExp = ledger.spendRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
-    const expenses = receiptExp + billExp + spendExp;
+    // Stripe processing fees — their own column AND inside Expenses (Kyle, 2026-09-09). Collected above stays gross.
+    const stripeFees = ledger.feeRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
+    const expenses = receiptExp + billExp + spendExp + stripeFees;
     const estMaterials = round2(uncommittedMaterial(month));
     return {
       month,
       invoiced: round2(invoiced),
       collected: round2(collected),
+      stripeFees: round2(stripeFees),
       expenses: round2(expenses),
       net: round2(invoiced - expenses),
       estMaterials,
@@ -402,14 +422,19 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
   for (const r of ledger.receiptRows) addExpense(r.category, r.month, r.amount);
   for (const s of ledger.spendRows) addExpense(s.category, s.month, s.amount);
   for (const b of ledger.billRows) addExpense(`bill:${b.category}`, b.month, b.amount);
+  for (const f of ledger.feeRows) addExpense("stripe_fees", f.month, f.amount);
 
   res.json({
     year,
     stripeConfigured: stripeConfigured(),
+    // Stripe fees: false + reason when the key cannot read balance transactions (the column is then empty, not zero-by-guess).
+    feesAvailable: ledger.feesAvailable,
+    feesReason: ledger.feesReason,
     months,
     totals: {
       invoiced: round2(months.reduce((s, m) => s + m.invoiced, 0)),
       collected: round2(months.reduce((s, m) => s + m.collected, 0)),
+      stripeFees: round2(months.reduce((s, m) => s + m.stripeFees, 0)),
       expenses: round2(months.reduce((s, m) => s + m.expenses, 0)),
       net: round2(months.reduce((s, m) => s + m.net, 0)),
       estMaterials: round2(months.reduce((s, m) => s + m.estMaterials, 0)),
@@ -664,6 +689,42 @@ financialsRouter.get("/balances", asyncHandler(async (_req, res) => {
   res.json(await readBalances());
 }));
 
+// ── Month-end sweep (Kyle, 2026-09-09) ──────────────────────────────────────
+// "At the end of each month I will take whatever money is over that value and
+// deposit it into the Chase savings accounts for taxes and owner distributions."
+// Ratified: the floats live in Settings; the sweep happens ON A CLICK from the
+// number this GET shows on the first of the month. NEVER automatic — there is no
+// cron, no schedule, and none may be added. ?fresh=1 bypasses the 5-minute
+// balance cache; the POST always reads fresh before moving money.
+
+financialsRouter.get("/sweep", asyncHandler(async (req, res) => {
+  const fresh = req.query.fresh === "1" || req.query.fresh === "true";
+  res.json(await readSweep({ fresh }));
+}));
+
+/**
+ * The click. Body { amount, confirm: "SWEEP" }: 400 without the word, 409
+ * above the excess or when the sweep is not available (no account chosen, no
+ * scope, no destination, no excess), 502 with Stripe's exact message when Stripe
+ * refuses — every attempt is a TreasurySweep row either way.
+ */
+financialsRouter.post("/sweep", asyncHandler(async (req, res) => {
+  const body = z.object({
+    amount: z.number().finite().positive(),
+    confirm: z.string().trim().default(""),
+  }).parse(req.body ?? {});
+  try {
+    const { sweep, view } = await executeSweep(body);
+    res.status(201).json({ sweep, excessAtClick: view.main?.excess ?? null });
+  } catch (err) {
+    if (err instanceof TreasuryError) {
+      res.status(err.statusCode).json({ error: err.message, ...(err.stripe ? { stripe: err.stripe } : {}) });
+      return;
+    }
+    throw err;
+  }
+}));
+
 // ── Report 4: tax-year CSV export ───────────────────────────────────────────
 
 financialsRouter.get("/export", asyncHandler(async (req, res) => {
@@ -687,6 +748,10 @@ financialsRouter.get("/export", asyncHandler(async (req, res) => {
   }
   for (const b of ledger.billRows) {
     rows.push(`${year}-${String(b.month + 1).padStart(2, "0")}-01,expense,${b.category},${esc(`Bill — ${b.name}`)},${b.amount.toFixed(2)}`);
+  }
+  // Stripe processing fees, one per charge (Kyle, 2026-09-09). Collected rows above are gross.
+  for (const f of ledger.feeRows) {
+    rows.push(`${f.date.toISOString().slice(0, 10)},expense,stripe_fees,${esc(`Stripe fee — ${f.chargeId} (net ${f.net.toFixed(2)})`)},${f.amount.toFixed(2)}`);
   }
 
   res.setHeader("Content-Type", "text/csv");

@@ -53,6 +53,9 @@ import type {
   PurchaseOrderSummary,
   ReviewReceiptRow,
   Balances,
+  TreasurySettings,
+  TreasurySweepRow,
+  SweepView,
   CardSpendKind,
   CardSpendRow,
   CardSpendSyncResult,
@@ -153,8 +156,12 @@ export type PurchaseOrderLineInput = {
 export interface FinancialsSummary {
   year: number;
   stripeConfigured: boolean;
-  months: { month: number; invoiced: number; collected: number; expenses: number; net: number; estMaterials: number; projectedNet: number }[];
-  totals: { invoiced: number; collected: number; expenses: number; net: number; estMaterials: number; projectedNet: number };
+  /** Stripe fees (Build 5): false + reason when the key cannot read balance transactions. */
+  feesAvailable?: boolean;
+  feesReason?: string | null;
+  /** stripeFees is Stripe's processing fee for the month — its own column, and inside expenses. Collected stays gross. */
+  months: { month: number; invoiced: number; collected: number; stripeFees: number; expenses: number; net: number; estMaterials: number; projectedNet: number }[];
+  totals: { invoiced: number; collected: number; stripeFees: number; expenses: number; net: number; estMaterials: number; projectedNet: number };
   expensesByCategory: { category: string; monthly: number[]; total: number }[];
   /** The Materials card (Kyle, 2026-09-09, Build 4): bought / used / inventory value per month. */
   materials?: Omit<MaterialsByMonth, "year">;
@@ -1001,6 +1008,13 @@ export const api = {
   cardSpendReceiptCandidates: (id: string) => request<ReceiptCandidate[]>(`/card-spend/${id}/receipt-candidates`),
   syncCardSpend: (days: number) => request<CardSpendSyncResult>("/card-spend/sync", { method: "POST", body: JSON.stringify({ days }) }),
   financialsBalances: () => request<Balances>("/financials/balances"),
+  // ── Treasury: floats + the month-end sweep (Kyle, 2026-09-09, Build 5). The POST is the click; nothing schedules it. ──
+  treasurySettings: () => request<TreasurySettings>("/settings/treasury"),
+  saveTreasurySettings: (input: TreasurySettings) =>
+    request<TreasurySettings>("/settings/treasury", { method: "PUT", body: JSON.stringify(input) }),
+  financialsSweep: (fresh = false) => request<SweepView>(`/financials/sweep${fresh ? "?fresh=1" : ""}`),
+  runSweep: (input: { amount: number; confirm: string }) =>
+    request<{ sweep: TreasurySweepRow; excessAtClick: number | null }>("/financials/sweep", { method: "POST", body: JSON.stringify(input) }),
   // ── Inventory ledger, landing, tools, restock (Kyle, 2026-09-09, Build 3) ──
   inventory: () => request<InventoryOverview>("/inventory"),
   inventoryMovements: (params: { itemId?: string; locationKey?: string; purchaseOrderId?: string; limit?: number } = {}) => {

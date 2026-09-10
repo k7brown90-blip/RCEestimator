@@ -1056,6 +1056,46 @@ export type Balances = {
   readAt: string;
 };
 
+// ─── Treasury: floats + the month-end sweep (Kyle, 2026-09-09, Build 5) ──────
+// "At the end of each month I will take whatever money is over that value and
+// deposit it into the Chase savings accounts." Floats are set in Settings; the
+// sweep runs on a click from the number Financials shows — never on a schedule.
+
+export type TreasurySettings = {
+  mainFinancialAccountId: string | null;
+  mainFloat: number;
+  truckFloats: Record<string, number>;
+  chaseAccountLabel: string | null;
+  /** Stripe's payout-method id for the Chase account — the outbound transfer destination. */
+  chaseExternalAccountId: string | null;
+};
+
+export type TreasurySweepRow = {
+  id: string;
+  financialAccountId: string;
+  amount: number;
+  destinationLabel: string;
+  stripeTransferId: string | null;
+  /** created | failed | posted | returned | canceled */
+  status: string;
+  error: string | null;
+  requestedBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SweepView = {
+  asOf: string;
+  stripeAvailable: boolean;
+  stripeReason: string | null;
+  main: { financialAccountId: string; balance: number; inboundPending: number; outboundPending: number; float: number; excess: number } | null;
+  trucks: { truckId: string; truckName: string; financialAccountId: string | null; balance: number | null; float: number; excessOrShortfall: number | null }[];
+  destination: { label: string; externalAccountId: string } | null;
+  canSweep: boolean;
+  reason: string | null;
+  recent: TreasurySweepRow[];
+};
+
 export type ReceiptCandidate = {
   id: string;
   vendor: string | null;

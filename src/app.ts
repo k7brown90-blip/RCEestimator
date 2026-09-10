@@ -76,6 +76,7 @@ import { financialsRouter } from "./routes/financials";
 import { emailBouncesRouter } from "./routes/emailBounces";
 import { emailDeliveriesRouter } from "./routes/emailDeliveries";
 import { trucksRouter } from "./routes/trucks";
+import { treasuryRouter } from "./routes/treasury";
 import { inventoryRouter } from "./routes/inventory";
 import { matchSpendForReceipt } from "./services/cardSpend";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
@@ -1838,6 +1839,8 @@ app.use(emailBouncesRouter);
 app.use(emailDeliveriesRouter);
 // Trucks, cards, card spend (Kyle, 2026-09-09) — /trucks, /card-spend.
 app.use(trucksRouter);
+// Treasury settings (Kyle, 2026-09-09): floats + the Chase destination for the month-end sweep — /settings/treasury. Session-only.
+app.use(treasuryRouter);
 // Inventory ledger, landing, tools, restock requests (Kyle, 2026-09-09, Build 3) — /inventory, /tools, /purchase-orders/:id/land.
 app.use(inventoryRouter);
 // Capacity checks run on ordinary service calls with no assessment in progress,

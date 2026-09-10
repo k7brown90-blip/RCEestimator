@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
 import type { CompanyProfile, LegalInfo, OperatingHours, Territory } from "../lib/api";
+import type { TreasurySettings } from "../lib/types";
 
 const EMPTY_PROFILE: CompanyProfile = {
   companyName: "Red Cedar Electric LLC",
@@ -29,6 +30,125 @@ const EMPTY_LEGAL: LegalInfo = {
   policiesText: "",
   insuranceNotes: "",
 };
+
+/**
+ * Treasury (Kyle, 2026-09-09): "At the end of each month I will take whatever
+ * money is over that value and deposit it into the Chase savings accounts for
+ * taxes and owner distributions." The floats are set HERE when the accounts are
+ * opened; the sweep itself is a click on Financials, never a schedule. Numbers
+ * are kept as strings while typing and validated (≥ 0) on save.
+ */
+type TreasuryForm = {
+  mainFinancialAccountId: string;
+  mainFloat: string;
+  truckFloats: Record<string, string>;
+  chaseAccountLabel: string;
+  chaseExternalAccountId: string;
+};
+const EMPTY_TREASURY: TreasuryForm = { mainFinancialAccountId: "", mainFloat: "0", truckFloats: {}, chaseAccountLabel: "", chaseExternalAccountId: "" };
+
+function TreasurySection() {
+  const queryClient = useQueryClient();
+  const { data: treasury } = useQuery({ queryKey: ["treasury-settings"], queryFn: api.treasurySettings });
+  const { data: balances } = useQuery({ queryKey: ["financials-balances"], queryFn: api.financialsBalances });
+  const { data: trucksData } = useQuery({ queryKey: ["trucks"], queryFn: api.trucks });
+  const [form, setForm] = useState<TreasuryForm>(EMPTY_TREASURY);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!treasury) return;
+    setForm({
+      mainFinancialAccountId: treasury.mainFinancialAccountId ?? "",
+      mainFloat: String(treasury.mainFloat ?? 0),
+      truckFloats: Object.fromEntries(Object.entries(treasury.truckFloats ?? {}).map(([k, v]) => [k, String(v)])),
+      chaseAccountLabel: treasury.chaseAccountLabel ?? "",
+      chaseExternalAccountId: treasury.chaseExternalAccountId ?? "",
+    });
+  }, [treasury]);
+
+  const save = useMutation({
+    mutationFn: (value: TreasurySettings) => api.saveTreasurySettings(value),
+    onSuccess: () => {
+      setSaved(true);
+      setError(null);
+      setTimeout(() => setSaved(false), 2500);
+      void queryClient.invalidateQueries({ queryKey: ["treasury-settings"] });
+      void queryClient.invalidateQueries({ queryKey: ["financials-sweep"] });
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const trucks = (trucksData?.trucks ?? []).filter((t) => t.isActive);
+  const accounts = balances?.available ? balances.financialAccounts : [];
+  const chosenMissing = form.mainFinancialAccountId && !accounts.some((a) => a.id === form.mainFinancialAccountId);
+
+  const onSave = () => {
+    const num = (s: string) => (s.trim() === "" ? 0 : Number(s));
+    const mainFloat = num(form.mainFloat);
+    const truckFloats: Record<string, number> = {};
+    for (const [id, s] of Object.entries(form.truckFloats)) truckFloats[id] = num(s);
+    const bad = [mainFloat, ...Object.values(truckFloats)].some((n) => !Number.isFinite(n) || n < 0);
+    if (bad) { setError("Every float must be a number, zero or more."); return; }
+    save.mutate({
+      mainFinancialAccountId: form.mainFinancialAccountId.trim() || null,
+      mainFloat,
+      truckFloats,
+      chaseAccountLabel: form.chaseAccountLabel.trim() || null,
+      chaseExternalAccountId: form.chaseExternalAccountId.trim() || null,
+    });
+  };
+
+  return (
+    <SectionCard
+      title="Treasury"
+      subtitle="Working balances (floats) for the main financial account and each truck, and the Chase account the month-end sweep goes to. The sweep itself is a click on Financials — nothing here runs on its own."
+    >
+      <div className="grid gap-3 md:grid-cols-2">
+        <label className="text-sm font-medium">
+          Main financial account
+          {accounts.length > 0 ? (
+            <select className="field mt-1 w-full" value={form.mainFinancialAccountId} onChange={(e) => setForm((f) => ({ ...f, mainFinancialAccountId: e.target.value }))}>
+              <option value="">— choose —</option>
+              {chosenMissing && <option value={form.mainFinancialAccountId}>{form.mainFinancialAccountId} (not returned by Stripe)</option>}
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>{a.id}{a.truckName ? ` — ${a.truckName}'s truck account` : ""}</option>
+              ))}
+            </select>
+          ) : (
+            <input className="field mt-1 w-full" value={form.mainFinancialAccountId} placeholder="fa_…" onChange={(e) => setForm((f) => ({ ...f, mainFinancialAccountId: e.target.value }))} />
+          )}
+          {balances && !balances.available && (
+            <span className="mt-1 block text-xs font-normal text-amber-800">Stripe's financial accounts are not readable yet ({balances.reason}) — paste the id for now.</span>
+          )}
+        </label>
+        <Field label="Main float (kept in the account, $)" value={form.mainFloat} type="number" onChange={(v) => setForm((f) => ({ ...f, mainFloat: v }))} />
+        <Field label="Chase account label" value={form.chaseAccountLabel} placeholder="Chase savings — taxes & distributions" onChange={(v) => setForm((f) => ({ ...f, chaseAccountLabel: v }))} />
+        <Field label="Chase destination id (Stripe payout method)" value={form.chaseExternalAccountId} placeholder="the outbound-payment destination id from Stripe" onChange={(v) => setForm((f) => ({ ...f, chaseExternalAccountId: v }))} />
+      </div>
+      <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-rce-muted">Truck floats</p>
+      {trucks.length === 0 ? (
+        <p className="mt-1 text-sm text-rce-muted">No trucks yet.</p>
+      ) : (
+        <div className="mt-1 grid gap-3 md:grid-cols-3">
+          {trucks.map((t) => (
+            <Field
+              key={t.id}
+              label={`${t.name} float ($)`}
+              type="number"
+              value={form.truckFloats[t.id] ?? "0"}
+              onChange={(v) => setForm((f) => ({ ...f, truckFloats: { ...f.truckFloats, [t.id]: v } }))}
+            />
+          ))}
+        </div>
+      )}
+      {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{error}</p>}
+      <button className="btn btn-primary mt-4" type="button" disabled={save.isPending} onClick={onSave}>
+        {saved ? "Saved ✓" : "Save treasury"}
+      </button>
+    </SectionCard>
+  );
+}
 
 function SectionCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
@@ -260,6 +380,9 @@ export function SettingsPage() {
           {savedKey === "legal" ? "Saved ✓" : "Save legal"}
         </button>
       </SectionCard>
+
+      {/* ── Treasury (Kyle, 2026-09-09): floats + the Chase destination for the month-end sweep ── */}
+      <TreasurySection />
     </div>
   );
 }

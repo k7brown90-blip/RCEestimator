@@ -34,6 +34,7 @@ import { BounceBadge } from "../components/BounceBadge";
 import { DeliveryChip } from "../components/DeliveryChip";
 import { PurchasesCard } from "../components/PurchaseOrders";
 import { BalancesStrip, TrucksCard } from "../components/TrucksCards";
+import { MonthEndSweepCard } from "../components/MonthEndSweepCard";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -74,6 +75,9 @@ export function FinancialsPage() {
 
       {/* ── Money on hand (Kyle, 2026-09-09): Payments balance + each truck's financial account ── */}
       <BalancesStrip />
+
+      {/* ── Month-end sweep (Kyle, 2026-09-09): excess over the float → Chase, on a click, never scheduled ── */}
+      <MonthEndSweepCard />
 
       <ReceiptReviewList
         title="Receipts to review (all accounts)"
@@ -139,9 +143,15 @@ export function FinancialsPage() {
           Invoiced lands in the month the estimate was <b>signed</b> (accrual). Collected lands in the month the
           payment was <b>received</b> (cash) — a job signed in August and paid in September shows in both months, once each.
           Expenses land in the month on the receipt or bill. Net = invoiced − expenses.
+          Stripe fees are the processing fees Stripe took that month — their own column, and already inside Expenses; Collected is the gross amount the customer paid.
           Est. materials = frozen material on signed jobs with no confirmed receipts yet; Projected net subtracts it.
           Money still owed is per invoice (billed − paid), not per month — see Outstanding below.
         </p>
+        {summary && summary.feesAvailable === false && (
+          <p className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            Stripe fees are not in this table yet — {summary.feesReason ?? "Stripe could not be read."}
+          </p>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -149,6 +159,7 @@ export function FinancialsPage() {
                 <th className="py-1 pr-2">Month</th>
                 <th className="py-1 pr-2 text-right">Invoiced</th>
                 <th className="py-1 pr-2 text-right">Collected</th>
+                <th className="py-1 pr-2 text-right">Stripe fees</th>
                 <th className="py-1 pr-2 text-right">Expenses</th>
                 <th className="py-1 pr-2 text-right">Net</th>
                 <th className="py-1 pr-2 text-right">Est. materials</th>
@@ -161,6 +172,7 @@ export function FinancialsPage() {
                   <td className="py-1 pr-2">{MONTHS[m.month]}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.invoiced)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.collected)}</td>
+                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(m.stripeFees ?? 0)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.expenses)}</td>
                   <td className={`py-1 pr-2 text-right font-medium tabular-nums ${m.net < 0 ? "text-red-600" : ""}`}>
                     {money(m.net)}
@@ -176,6 +188,7 @@ export function FinancialsPage() {
                   <td className="py-1 pr-2">Total</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.invoiced)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.collected)}</td>
+                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(summary.totals.stripeFees ?? 0)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.expenses)}</td>
                   <td className={`py-1 pr-2 text-right tabular-nums ${summary.totals.net < 0 ? "text-red-600" : ""}`}>
                     {money(summary.totals.net)}
@@ -198,7 +211,7 @@ export function FinancialsPage() {
       <section className="card p-4">
         <h2 className="text-lg font-semibold">Expenses by category</h2>
         <p className="mb-2 text-xs text-rce-muted">
-          Receipts (materials, gas, maintenance, overhead) plus company bills — the Schedule C shape.
+          Receipts (materials, gas, maintenance, overhead), card spend, Stripe processing fees, and company bills — the Schedule C shape.
         </p>
         {(summary?.expensesByCategory ?? []).length === 0 && (
           <p className="text-sm text-rce-muted">No expenses recorded for {year} yet.</p>
@@ -206,7 +219,7 @@ export function FinancialsPage() {
         <ul className="space-y-1">
           {(summary?.expensesByCategory ?? []).map((c) => (
             <li key={c.category} className="flex items-center justify-between rounded-lg border border-rce-border px-3 py-2 text-sm">
-              <span className="capitalize">{c.category.replace("bill:", "bills — ")}</span>
+              <span className="capitalize">{c.category === "stripe_fees" ? "Stripe fees" : c.category.replace("bill:", "bills — ")}</span>
               <span className="font-medium tabular-nums">{money(c.total)}</span>
             </li>
           ))}
