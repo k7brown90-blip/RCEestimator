@@ -12,6 +12,7 @@ import { LoadCalcEditor } from "../components/LoadCalcEditor";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { BounceBadge } from "../components/BounceBadge";
+import { DeliveryChip } from "../components/DeliveryChip";
 import { api, openProtectedPdf } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
 import type { AccountJob, AccountSummary } from "../lib/types";
@@ -792,9 +793,11 @@ function AccountEstimates({
                   <p className="text-xs uppercase tracking-wide text-rce-muted">{e.status}</p>
                 {/* Kyle, 2026-09-09: "My emails are not getting to the clients" — when Gmail
                     reported this estimate's email undeliverable, say so here, with the reason. */}
-                {e.lastBounceAt && (
-                  <div className="mt-1">
-                    <BounceBadge at={e.lastBounceAt} reason={e.lastBounceReason} />
+                {(e.lastBounceAt || e.lastDelivery) && (
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    {e.lastBounceAt && <BounceBadge at={e.lastBounceAt} reason={e.lastBounceReason} />}
+                    {/* The last email's delivery report (Kyle, 2026-09-09: Resend first, Gmail fallback). */}
+                    <DeliveryChip delivery={e.lastDelivery} />
                   </div>
                 )}
                 {/*

@@ -1,14 +1,17 @@
 /**
  * Deliverability probe (Kyle, 2026-09-09: "I need the emails working, very few
  * are actually getting through"). Sends ONE branded email through the exact
- * production transport (Gmail OAuth2 SMTP via nodemailer, HTML + plain-text
- * twin) to an address you name — a mail-tester.com address, or a customer's
- * mailbox you control — so the receiving side's authentication results and
- * spam score can be read.
+ * production transport — Resend first from service@ on the verified root
+ * domain, Gmail OAuth2 SMTP as the automatic fallback, HTML + plain-text twin
+ * (services/transactionalEmail.ts) — to an address you name: a mail-tester.com
+ * address, or a customer's mailbox you control, so the receiving side's
+ * authentication results and spam score can be read.
  *
  *   railway ssh "node dist/scripts/sendTestEmail.js --to test-rce0909@srv1.mail-tester.com"
  *
- * Nothing is written to the database. Refuses to run without --to.
+ * Writes exactly one EmailDelivery row (kind "other") like any customer send,
+ * so the Resend webhook's delivered/bounced report for the probe is visible at
+ * GET /email-deliveries. Refuses to run without --to.
  */
 
 import { sendBrandedEmail } from "../src/services/confirmationEmail";

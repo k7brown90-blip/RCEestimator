@@ -31,6 +31,7 @@ import { money } from "../lib/utils";
 import { ReceiptReviewList } from "../components/ReceiptReviewList";
 import { BouncedEmailsCard } from "../components/BouncedEmailsCard";
 import { BounceBadge } from "../components/BounceBadge";
+import { DeliveryChip } from "../components/DeliveryChip";
 import { PurchasesCard } from "../components/PurchaseOrders";
 import { BalancesStrip, TrucksCard } from "../components/TrucksCards";
 
@@ -954,10 +955,12 @@ function InvoiceRow({
           <span className="block text-xs text-rce-muted">
             {inv.number}{inv.revision > 1 ? ` rev ${inv.revision}` : ""} · {inv.title} · {inv.serviceAddress}
           </span>
-          {/* Kyle, 2026-09-09: the invoice email came back — say so on the row. */}
-          {inv.lastBounceAt && (
-            <span className="mt-1 block">
-              <BounceBadge at={inv.lastBounceAt} reason={inv.lastBounceReason} />
+          {/* Kyle, 2026-09-09: the invoice email came back — say so on the row; and when Resend
+              says it was delivered, say that too. */}
+          {(inv.lastBounceAt || inv.lastDelivery) && (
+            <span className="mt-1 flex flex-wrap items-center gap-1.5">
+              {inv.lastBounceAt && <BounceBadge at={inv.lastBounceAt} reason={inv.lastBounceReason} />}
+              <DeliveryChip delivery={inv.lastDelivery} />
             </span>
           )}
         </span>

@@ -43,6 +43,9 @@ function serialize(row: BounceRow) {
   const account = row.issuedEstimate?.account ?? row.visit?.customer ?? null;
   return {
     id: row.id,
+    // Which pipe reported it (Kyle, 2026-09-09): "gmail" = a DSN the watcher read, "resend" = the webhook.
+    provider: row.provider,
+    providerMessageId: row.providerMessageId,
     recipient: row.recipient,
     status: row.status,
     diagnostic: row.diagnostic,

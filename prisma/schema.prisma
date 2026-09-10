@@ -350,6 +350,7 @@ model Visit {
   visitPhotos            VisitPhoto[]
   timeEntries            TimeEntry[]
   emailBounces           EmailBounce[]
+  emailDeliveries        EmailDelivery[]
 
   @@index([customerId, visitDate])
   @@index([status, scheduledStart])
@@ -2560,6 +2561,8 @@ model IssuedEstimate {
   lastBounceAt     DateTime?
   lastBounceReason String?
   emailBounces     EmailBounce[]
+  /// Every customer email about this estimate (Kyle, 2026-09-09) — newest is the row's delivery chip.
+  emailDeliveries  EmailDelivery[]
 
   /// The job-level band SCHEDULE in force when this was issued, as JSON (2026-08-22).
   ///
@@ -2820,7 +2823,12 @@ model EmailSuppression {
 /// files one row per DSN here. gmailMessageId is unique so a re-poll is idempotent.
 model EmailBounce {
   id               String          @id @default(cuid())
-  gmailMessageId   String          @unique
+  /// Which pipe reported it (Kyle, 2026-09-09: Resend-first transactional email). "gmail" rows
+  /// come from the DSN watcher and carry gmailMessageId; "resend" rows come from the
+  /// email.bounced / email.complained webhook and carry providerMessageId (the Resend email id).
+  provider          String         @default("gmail")
+  providerMessageId String?        @unique
+  gmailMessageId   String?         @unique
   gmailThreadId    String?
   recipient        String
   /// The enhanced status code from the DSN, e.g. "5.7.0" / "5.1.1".
@@ -2830,7 +2838,7 @@ model EmailBounce {
   action           String?
   remoteMta        String?
   originalSubject  String?
-  /// estimate | invoice | appointment | deposit | balance | receipt | campaign | other
+  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | other
   kind             String
   estimateNumber   String?
   issuedEstimateId String?
@@ -2845,4 +2853,38 @@ model EmailBounce {
   @@index([resolvedAt, bouncedAt])
   @@index([issuedEstimateId])
   @@index([visitId])
+}
+
+/// One customer email as it left the building, and what became of it (Kyle, 2026-09-09: "I need
+/// the emails working, very few are actually getting through, this is priority number one").
+///
+/// Every customer send goes through services/transactionalEmail.ts: Resend first, Gmail as the
+/// automatic fallback. A Resend send gets a providerMessageId and its status is driven by the
+/// Resend webhook (delivered / delayed / bounced / complained); a Gmail send stays "sent" — Gmail
+/// reports nothing, the DSN watcher covers its bounces. "failed" means neither pipe took it.
+model EmailDelivery {
+  id                String          @id @default(cuid())
+  /// "resend" | "gmail"
+  provider          String
+  /// The Resend email id; null for Gmail. Unique when present (NULLs are distinct in Postgres).
+  providerMessageId String?         @unique
+  to                String
+  subject           String
+  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | other
+  kind              String
+  estimateNumber    String?
+  issuedEstimateId  String?
+  issuedEstimate    IssuedEstimate? @relation(fields: [issuedEstimateId], references: [id], onDelete: SetNull)
+  visitId           String?
+  visit             Visit?          @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  /// sent | delivered | delayed | bounced | complained | failed
+  status            String
+  statusAt          DateTime?
+  error             String?
+  createdAt         DateTime        @default(now())
+
+  @@index([issuedEstimateId])
+  @@index([visitId])
+  @@index([status])
+  @@index([createdAt])
 }

@@ -1,45 +1,26 @@
 /**
  * Ad-hoc document delivery — used by the voice-agent "send_document" tool to
  * re-send an already-generated PDF (contract, work order, health report, etc.)
- * to a customer by email or SMS. Nodemailer transport mirrors the pattern used
- * by confirmationEmail.ts / supplierEmail.ts / dailySummary.ts.
+ * to a customer by email or SMS.
+ *
+ * Kyle, 2026-09-09: "I need the emails working, very few are actually getting
+ * through, this is priority number one." This is a customer send, so it goes
+ * through services/transactionalEmail.ts like every other one — Resend first,
+ * Gmail as the automatic fallback, one EmailDelivery row (kind "document").
+ * The email's content is unchanged.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import nodemailer from "nodemailer";
 import { getCompanyProfile } from "./companyProfile";
+import { sendCustomerEmail } from "./transactionalEmail";
+import { htmlToPlainText } from "./confirmationEmail";
 
 const BRANDED_FOOTER = `
   <p style="font-size:14px;color:#888;margin:16px 0 0;border-top:1px solid #eee;padding-top:12px;">
     Red Cedar Electric LLC &middot; Licensed &amp; Insured<br>
     Serving Middle Tennessee
   </p>`;
-
-function getTransporter() {
-  const gmailUser = process.env.GMAIL_USER;
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
-
-  if (!gmailUser || !clientId || !clientSecret || !refreshToken) {
-    return null;
-  }
-
-  return {
-    transporter: nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        type: "OAuth2" as const,
-        user: gmailUser,
-        clientId,
-        clientSecret,
-        refreshToken,
-      },
-    }),
-    from: `"Red Cedar Electric" <${gmailUser}>`,
-  };
-}
 
 export function humanizeDocType(type: string): string {
   switch (type) {
@@ -66,15 +47,12 @@ interface SendDocumentEmailInput {
   docType: string;      // raw type, human-labeled internally
   pdfPath: string;      // absolute local path to the PDF
   note?: string;        // optional receptionist-added message
+  /** Attribution for the delivery row, when the caller knows them. */
+  issuedEstimateId?: string | null;
+  visitId?: string | null;
 }
 
 export async function sendDocumentEmail(input: SendDocumentEmailInput): Promise<boolean> {
-  const mail = getTransporter();
-  if (!mail) {
-    console.warn("[DocumentDelivery] Gmail not configured — skipping.");
-    return false;
-  }
-
   if (!fs.existsSync(input.pdfPath)) {
     console.error(`[DocumentDelivery] PDF not found on disk: ${input.pdfPath}`);
     return false;
@@ -105,20 +83,24 @@ export async function sendDocumentEmail(input: SendDocumentEmailInput): Promise<
       </div>
     </div>`;
 
-  try {
-    await mail.transporter.sendMail({
-      from: mail.from,
-      to: input.to,
-      subject: `${label} — Red Cedar Electric`,
-      html,
-      attachments: [{ filename, path: input.pdfPath }],
-    });
-    console.log(`[DocumentDelivery] Sent ${input.docType} to ${input.to}`);
-    return true;
-  } catch (err) {
-    console.error("[DocumentDelivery] Send failed:", err);
-    return false;
+  // Read the bytes here: both pipes take a Buffer (Resend wants base64, not a path).
+  const pdf = await fs.promises.readFile(input.pdfPath);
+  const result = await sendCustomerEmail({
+    to: input.to,
+    subject: `${label} — Red Cedar Electric`,
+    html,
+    text: htmlToPlainText(html),
+    attachments: [{ filename, content: pdf, contentType: "application/pdf" }],
+    kind: "document",
+    issuedEstimateId: input.issuedEstimateId ?? null,
+    visitId: input.visitId ?? null,
+  });
+  if (result.ok) {
+    console.log(`[DocumentDelivery] Sent ${input.docType} to ${input.to} via ${result.provider}`);
+  } else {
+    console.error(`[DocumentDelivery] Send failed: ${result.error}`);
   }
+  return result.ok;
 }
 
 function escapeHtml(s: string): string {

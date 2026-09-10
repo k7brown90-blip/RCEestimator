@@ -56,6 +56,8 @@ export async function sendReviewRequestEmail(prisma: PrismaClient, visitId: stri
 
   const firstName = visit.customer.name.trim().split(/\s+/)[0] || visit.customer.name;
   const sent = await sendBrandedEmail({
+    kind: "other",
+    visitId: visit.id,
     to: visit.customer.email,
     subject: `Thank you from Red Cedar Electric — how did we do?`,
     headline: "Thank you — your job is complete",

@@ -1233,6 +1233,8 @@ export type InvoiceSummary = {
   /** Gmail reported the last email about this row undeliverable (Kyle, 2026-09-09). Additive. */
   lastBounceAt?: string | null;
   lastBounceReason?: string | null;
+  /** The last email's real delivery state — Resend's report, or "sent via Gmail" (Kyle, 2026-09-09). Additive. */
+  lastDelivery?: EmailLastDelivery | null;
 };
 
 /**
@@ -1685,6 +1687,8 @@ export interface PbIssuedEstimate {
   /** Gmail reported the last email about this row undeliverable (Kyle, 2026-09-09). Additive. */
   lastBounceAt?: string | null;
   lastBounceReason?: string | null;
+  /** The last email's real delivery state — Resend's report, or "sent via Gmail" (Kyle, 2026-09-09). Additive. */
+  lastDelivery?: EmailLastDelivery | null;
 }
 
 /**
@@ -1693,6 +1697,9 @@ export interface PbIssuedEstimate {
  */
 export type EmailBounceRow = {
   id: string;
+  /** "gmail" = a DSN the watcher read; "resend" = the delivery webhook (Kyle, 2026-09-09). */
+  provider?: "gmail" | "resend";
+  providerMessageId?: string | null;
   recipient: string;
   /** Enhanced status code, e.g. "5.1.1" (no such address) or "5.7.0" (receiver refused). */
   status: string | null;
@@ -1701,7 +1708,7 @@ export type EmailBounceRow = {
   action: string | null;
   remoteMta: string | null;
   originalSubject: string | null;
-  kind: "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt" | "campaign" | "other";
+  kind: EmailKind;
   estimateNumber: string | null;
   issuedEstimateId: string | null;
   visitId: string | null;
@@ -1716,6 +1723,53 @@ export type EmailBounceRow = {
 export type EmailBouncePollResult =
   | { available: true; scanned: number; new: number; errors: number }
   | { available: false; reason: string };
+
+// ─── Transactional email delivery (Kyle, 2026-09-09: "I need the emails working") ───────────
+
+export type EmailKind =
+  | "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt"
+  | "health_record" | "document" | "campaign" | "other";
+
+export type EmailDeliveryStatus = "sent" | "delivered" | "delayed" | "bounced" | "complained" | "failed";
+
+/**
+ * The newest customer email about a row and what became of it. Resend reports delivered /
+ * delayed / bounced / complained by webhook; a Gmail send stays "sent" (Gmail reports nothing —
+ * the DSN watcher covers its bounces); "failed" means neither pipe took it.
+ */
+export type EmailLastDelivery = {
+  provider: "resend" | "gmail";
+  status: EmailDeliveryStatus;
+  statusAt: string | null;
+  to: string;
+  error: string | null;
+  createdAt: string;
+};
+
+/** One row of GET /email-deliveries. */
+export type EmailDeliveryRow = EmailLastDelivery & {
+  id: string;
+  providerMessageId: string | null;
+  subject: string;
+  kind: EmailKind;
+  estimateNumber: string | null;
+  issuedEstimateId: string | null;
+  visitId: string | null;
+  estimate: { id: string; number: string; revision: number; title: string } | null;
+};
+
+/** GET /email-status — the transport's health for the Financials strip. */
+export type EmailStatus = {
+  provider: "resend" | "gmail";
+  from: string;
+  replyTo: string;
+  bccSelf: boolean;
+  resendConfigured: boolean;
+  gmailConfigured: boolean;
+  webhookSecretSet: boolean;
+  lastWebhookEventAt: string | null;
+  last24h: Record<EmailDeliveryStatus | "total", number>;
+};
 
 /** One row of the Estimates chain view (P029): account + address + status + job. */
 export interface PbChainRow {
@@ -1742,6 +1796,8 @@ export interface PbChainRow {
   /** Gmail reported the last email about this row undeliverable (Kyle, 2026-09-09). Additive. */
   lastBounceAt?: string | null;
   lastBounceReason?: string | null;
+  /** The last email's real delivery state — Resend's report, or "sent via Gmail" (Kyle, 2026-09-09). Additive. */
+  lastDelivery?: EmailLastDelivery | null;
 }
 
 // ─── Email campaigns (Kyle, 2026-09-02) ───────────────────────────────────────

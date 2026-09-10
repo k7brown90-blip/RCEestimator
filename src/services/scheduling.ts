@@ -632,6 +632,7 @@ export async function rescheduleJob(
       newWindow: newDates.time,
       serviceAddress: `${job.property.addressLine1}, ${job.property.city}`,
       jobType: job.jobType ?? undefined,
+      visitId: job.id,
     }).catch(err => console.error("[rescheduleJob] Customer email failed:", err));
     customerNotified = true;
   }
@@ -729,6 +730,7 @@ export async function cancelJob(
       appointmentDate: formatDateLong(job.scheduledStart),
       serviceAddress: `${job.property.addressLine1}, ${job.property.city}`,
       jobType: job.jobType ?? undefined,
+      visitId: job.id,
     }).catch(() => false);
     customerNotified = sent === true;
   }

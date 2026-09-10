@@ -74,6 +74,7 @@ import {
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
 import { emailBouncesRouter } from "./routes/emailBounces";
+import { emailDeliveriesRouter } from "./routes/emailDeliveries";
 import { trucksRouter } from "./routes/trucks";
 import { inventoryRouter } from "./routes/inventory";
 import { matchSpendForReceipt } from "./services/cardSpend";
@@ -100,6 +101,9 @@ import {
   EXCLUDE_TEST_ACCOUNT,
 } from "./services/accountSpine";
 import { sendEstimateEmail, sendInvoiceEmail, estimateLink, notifyOwnerSigned } from "./services/issuedEstimateSend";
+// Transactional email delivery tracking (Kyle, 2026-09-09: "very few are actually getting through").
+import { lastDeliveriesForEstimates } from "./services/transactionalEmail";
+import { handleResendWebhook } from "./services/resendWebhook";
 import { asCustomPercent, programmeFor } from "./services/discounts";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
@@ -241,6 +245,29 @@ app.post("/stripe/webhook", express.raw({ type: "application/json" }), (req, res
     res.json({ received: true });
   })().catch((err) => {
     console.error("[stripe/webhook]", err);
+    if (!res.headersSent) res.status(500).json({ error: "webhook handling failed" });
+  });
+});
+
+// Resend delivery events (Kyle, 2026-09-09: "I need the emails working, very few are actually
+// getting through, this is priority number one"). Same placement as the Stripe webhook and for
+// the same reason: the Svix signature is verified over the RAW bytes, so this must mount before
+// express.json. Public-route entry in middleware/publicRoutes.ts; the svix-* headers are the
+// credential; 503 while RESEND_WEBHOOK_SECRET is unset. services/resendWebhook.ts does the work.
+app.post("/resend/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  void (async () => {
+    const header = (name: string): string | null => {
+      const v = req.headers[name];
+      return typeof v === "string" ? v : Array.isArray(v) ? v[0] ?? null : null;
+    };
+    const result = await handleResendWebhook(prisma, req.body, {
+      id: header("svix-id"),
+      timestamp: header("svix-timestamp"),
+      signature: header("svix-signature"),
+    });
+    res.status(result.status).json(result.body);
+  })().catch((err) => {
+    console.error("[resend/webhook]", err);
     if (!res.headersSent) res.status(500).json({ error: "webhook handling failed" });
   });
 });
@@ -1805,6 +1832,9 @@ app.use("/financials", financialsRouter);
 // Bounced customer emails (Kyle, 2026-09-09: "very few are actually getting through") — the
 // list, the resolve door, and the manual poll. Session-only, like everything after pinAuth.
 app.use(emailBouncesRouter);
+// Email deliveries + transport status (Kyle, 2026-09-09: Resend-first transactional email) —
+// /email-deliveries, /email-status. Session-only.
+app.use(emailDeliveriesRouter);
 // Trucks, cards, card spend (Kyle, 2026-09-09) — /trucks, /card-spend.
 app.use(trucksRouter);
 // Inventory ledger, landing, tools, restock requests (Kyle, 2026-09-09, Build 3) — /inventory, /tools, /purchase-orders/:id/land.
@@ -2856,6 +2886,8 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
       })
     : [];
   const jobById = new Map(jobs.map((j) => [j.id, j]));
+  // The newest customer email about each estimate and what became of it (Kyle, 2026-09-09).
+  const lastDeliveryById = await lastDeliveriesForEstimates(prisma, rows.map((r) => r.id));
 
   res.json({
     estimates: rows.map((r) => ({
@@ -2899,6 +2931,9 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
       // bounce watcher, cleared by a send to a different address or a manual resolve. Additive.
       lastBounceAt: r.lastBounceAt,
       lastBounceReason: r.lastBounceReason,
+      // Kyle, 2026-09-09: the real delivery state of the last email about this estimate —
+      // Resend's delivered / delayed / bounced report, or "sent via Gmail". Additive.
+      lastDelivery: lastDeliveryById.get(r.id) ?? null,
       account: r.account,
       serviceAddress: r.serviceProperty,
       supersededBy: r.supersededBy,
@@ -3326,6 +3361,8 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
     Both numbers are true; only one belongs on a row labelled SIGNED. Same arithmetic as the PDF:
     the taken options' subtotals, plus the trip, minus the frozen combination discount.
   */
+  // The newest customer email about each estimate and what became of it (Kyle, 2026-09-09).
+  const lastDeliveryById = await lastDeliveriesForEstimates(prisma, estimates.map((e) => e.id));
   const rows = estimates.map((e) => {
     // Same arithmetic as before — an unsigned row bills its quoted total, a signed one what was
     // taken — routed through billedTotalOf so the home-warranty credit (Kyle, 2026-09-09) comes
@@ -3347,6 +3384,8 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
       // "billed $55 · warranty −$370" so the numbers add up on the page.
       warrantyCovered: coverage?.applied ?? 0,
       warranty: coverage?.claim ?? null,
+      // The last email's delivery state (Kyle, 2026-09-09). Additive.
+      lastDelivery: lastDeliveryById.get(e.id) ?? null,
     };
   });
 
@@ -4515,6 +4554,7 @@ app.post("/email-campaigns/:id/test", asyncHandler(async (req, res) => {
     return;
   }
   const ok = await sendBrandedEmail({
+    kind: "campaign",
     to: profile.email,
     subject: `[TEST] ${campaign.subject}`,
     headline: campaign.subject,
@@ -4579,6 +4619,8 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     list.push(row);
     paymentsByEstimate.set(row.estimateId, list);
   }
+  // The newest customer email about each invoice and what became of it (Kyle, 2026-09-09).
+  const lastDeliveryById = await lastDeliveriesForEstimates(prisma, estimates.map((e) => e.id));
 
   const round2 = (n: number) => Math.round(n * 100) / 100;
   res.json(estimates.map((est) => {
@@ -4641,6 +4683,8 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       // Bounce flag (Kyle, 2026-09-09) — the invoice email came back. Additive.
       lastBounceAt: est.lastBounceAt,
       lastBounceReason: est.lastBounceReason,
+      // The last email's delivery state (Kyle, 2026-09-09). Additive.
+      lastDelivery: lastDeliveryById.get(est.id) ?? null,
       billedTotal,
       depositDue,
       totalPaid,

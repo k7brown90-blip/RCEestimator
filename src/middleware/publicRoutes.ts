@@ -5,7 +5,10 @@
  * down:
  *
  *   1. `pinAuthMiddleware` skipped any request whose path did not begin `/api`, and every data
- *      route is mounted at its BARE path. So `GET /api/accounts` returned 401 while
+ *    | "URL-path token"
+    | "query-string secret"
+    | "svix signature"
+    | "unguessable id in path";  route is mounted at its BARE path. So `GET /api/accounts` returned 401 while
  *      `GET /accounts` returned the full customer list to anyone on the internet. Demonstrated
  *      live in production — P014 report, STOP §1.
  *   2. The middleware was installed most of the way down `app.ts`, so "is this route public?"
@@ -52,6 +55,7 @@ export interface PublicRoute {
     | "bearer token"
     | "URL-path token"
     | "query-string secret"
+    | "svix signature"
     | "unguessable id in path";
   /** Why this is not behind the session. One line, for the next person deciding whether it still should be. */
   reason: string;
@@ -243,6 +247,10 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
   {
     methods: ["POST"], path: "/stripe/webhook", credential: "query-string secret",
     reason: "Stripe event delivery. Authenticated by the Stripe-Signature header verified against STRIPE_WEBHOOK_SECRET over the raw body — mounted before the JSON parser in app.ts for exactly that reason.",
+  },
+  {
+    methods: ["POST"], path: "/resend/webhook", credential: "svix signature",
+    reason: "Resend delivery events (delivered / delayed / bounced / complained) for transactional email (Kyle, 2026-09-09: \"very few are actually getting through\"). Authenticated by the svix-id / svix-timestamp / svix-signature headers verified with RESEND_WEBHOOK_SECRET over the raw body (HMAC-SHA256, 5-minute window) — mounted before the JSON parser in app.ts like /stripe/webhook. 503 while the secret is unset.",
   },
 ];
 

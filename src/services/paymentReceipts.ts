@@ -86,6 +86,9 @@ export async function sendDepositRequestEmail(
   const payUrl = `${payBaseUrl}/pay/${est.token}?type=deposit`;
 
   const sent = await sendBrandedEmail({
+    kind: "deposit",
+    estimateNumber: est.number,
+    issuedEstimateId: estimateId,
     to: est.customerEmail,
     subject: `Next step — your deposit for ${est.title} ($${due.toFixed(2)})`,
     headline: "Thank you — one step to get you scheduled",
@@ -145,6 +148,9 @@ export async function sendBalanceRequestEmail(
   const payUrl = `${payBaseUrl}/pay/${est.token}`;
 
   const sent = await sendBrandedEmail({
+    kind: "balance",
+    estimateNumber: est.number,
+    issuedEstimateId: estimateId,
     to: est.customerEmail,
     subject: opts.reminder
       ? `Friendly reminder — $${due.toFixed(2)} still open on Invoice ${est.number}`
@@ -224,6 +230,9 @@ export async function sendPaymentReceiptEmail(
     <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
 
   const sent = await sendBrandedEmail({
+    kind: "receipt",
+    estimateNumber: est.number,
+    issuedEstimateId: payment.estimateId,
     to: est.customerEmail,
     subject: paidInFull
       ? `Paid in full — receipt for Invoice ${est.number}`

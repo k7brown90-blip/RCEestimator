@@ -265,6 +265,7 @@ export async function sendCampaign(prisma: PrismaClient, campaignId: string): Pr
         await new Promise((r) => setTimeout(r, RESEND_PAUSE_MS));
       } else {
         const ok = await sendBrandedEmail({
+          kind: "campaign",
           to: row.email,
           subject: campaign.subject,
           headline: campaign.subject,

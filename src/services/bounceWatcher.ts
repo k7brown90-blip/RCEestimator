@@ -39,7 +39,7 @@ import { prisma as defaultPrisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
 
 export type BounceKind =
-  | "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt" | "campaign" | "other";
+  | "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt" | "health_record" | "document" | "campaign" | "other";
 
 export interface ParsedDsn {
   recipient: string | null;

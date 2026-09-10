@@ -2,11 +2,14 @@
  * Appointment confirmation email — sends branded HTML to customer
  * when an appointment is booked (via Savannah, email, or CRM).
  *
- * Uses Gmail OAuth2 via nodemailer (same setup as dailySummary.ts).
+ * Customer-facing senders here go through services/transactionalEmail.ts (Kyle, 2026-09-09:
+ * "I need the emails working, very few are actually getting through, this is priority number
+ * one") — Resend first, Gmail as the automatic fallback, one EmailDelivery row per send. The
+ * Kyle-only notification stays on the Gmail transporter (services/gmailTransport.ts).
  */
 
-import nodemailer from "nodemailer";
-import { logSystemEvent } from "./systemEvents";
+import { getGmailTransporter } from "./gmailTransport";
+import { sendCustomerEmail, type EmailKind } from "./transactionalEmail";
 
 const BRANDED_FOOTER = `
   <p style="font-size:14px;color:#888;margin:16px 0 0;border-top:1px solid #eee;padding-top:12px;">
@@ -21,40 +24,14 @@ interface ConfirmationInput {
   appointmentWindow: string; // e.g. "8:00 AM – 10:00 AM"
   serviceAddress: string;
   jobType?: string;
+  /** The visit this is about, when the caller knows it — makes the delivery row attributable. */
+  visitId?: string | null;
 }
 
-function getTransporter() {
-  const gmailUser = process.env.GMAIL_USER;
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
-
-  if (!gmailUser || !clientId || !clientSecret || !refreshToken) {
-    return null;
-  }
-
-  return {
-    transporter: nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        type: "OAuth2" as const,
-        user: gmailUser,
-        clientId,
-        clientSecret,
-        refreshToken,
-      },
-    }),
-    from: `"Red Cedar Electric" <${gmailUser}>`,
-  };
-}
+/** The Gmail transporter, for the Kyle-only sender below. Customer mail does not use this directly. */
+const getTransporter = getGmailTransporter;
 
 export async function sendConfirmationEmail(input: ConfirmationInput): Promise<boolean> {
-  const mail = getTransporter();
-  if (!mail) {
-    console.warn("[ConfirmationEmail] Gmail not configured — skipping.");
-    return false;
-  }
-
   const jobLine = input.jobType
     ? `<p style="margin:0 0 6px;font-size:15px;"><strong>Service:</strong> ${input.jobType}</p>`
     : "";
@@ -87,20 +64,17 @@ export async function sendConfirmationEmail(input: ConfirmationInput): Promise<b
       </div>
     </div>`;
 
-  try {
-    await mail.transporter.sendMail({
-      from: mail.from,
-      to: input.customerEmail,
-      subject: `Appointment Confirmed — ${input.appointmentDate}`,
-      html,
-      text: htmlToPlainText(html),
-    });
-    console.log(`[ConfirmationEmail] Sent to ${input.customerEmail}`);
-    return true;
-  } catch (err) {
-    console.error("[ConfirmationEmail] Failed:", err);
-    return false;
-  }
+  const result = await sendCustomerEmail({
+    to: input.customerEmail,
+    subject: `Appointment Confirmed — ${input.appointmentDate}`,
+    html,
+    text: htmlToPlainText(html),
+    kind: "appointment",
+    visitId: input.visitId ?? null,
+  });
+  if (result.ok) console.log(`[ConfirmationEmail] Sent to ${input.customerEmail} via ${result.provider}`);
+  else console.error("[ConfirmationEmail] Failed:", result.error);
+  return result.ok;
 }
 
 // ─── RESCHEDULE EMAIL ─────────────────────────────────────────────────────────
@@ -114,15 +88,10 @@ interface RescheduleInput {
   newWindow: string;
   serviceAddress: string;
   jobType?: string;
+  visitId?: string | null;
 }
 
 export async function sendRescheduleEmail(input: RescheduleInput): Promise<boolean> {
-  const mail = getTransporter();
-  if (!mail) {
-    console.warn("[RescheduleEmail] Gmail not configured — skipping.");
-    return false;
-  }
-
   const jobLine = input.jobType
     ? `<p style="margin:0 0 6px;font-size:15px;"><strong>Service:</strong> ${input.jobType}</p>`
     : "";
@@ -156,20 +125,17 @@ export async function sendRescheduleEmail(input: RescheduleInput): Promise<boole
       </div>
     </div>`;
 
-  try {
-    await mail.transporter.sendMail({
-      from: mail.from,
-      to: input.customerEmail,
-      subject: `Appointment Rescheduled — ${input.newDate}`,
-      html,
-      text: htmlToPlainText(html),
-    });
-    console.log(`[RescheduleEmail] Sent to ${input.customerEmail}`);
-    return true;
-  } catch (err) {
-    console.error("[RescheduleEmail] Failed:", err);
-    return false;
-  }
+  const result = await sendCustomerEmail({
+    to: input.customerEmail,
+    subject: `Appointment Rescheduled — ${input.newDate}`,
+    html,
+    text: htmlToPlainText(html),
+    kind: "appointment",
+    visitId: input.visitId ?? null,
+  });
+  if (result.ok) console.log(`[RescheduleEmail] Sent to ${input.customerEmail} via ${result.provider}`);
+  else console.error("[RescheduleEmail] Failed:", result.error);
+  return result.ok;
 }
 
 // ─── CANCELLATION EMAIL ───────────────────────────────────────────────────────
@@ -180,15 +146,10 @@ interface CancellationInput {
   appointmentDate: string;
   serviceAddress: string;
   jobType?: string;
+  visitId?: string | null;
 }
 
 export async function sendCancellationEmail(input: CancellationInput): Promise<boolean> {
-  const mail = getTransporter();
-  if (!mail) {
-    console.warn("[CancellationEmail] Gmail not configured — skipping.");
-    return false;
-  }
-
   const jobLine = input.jobType
     ? `<p style="margin:0 0 6px;font-size:15px;"><strong>Service:</strong> ${input.jobType}</p>`
     : "";
@@ -215,20 +176,17 @@ export async function sendCancellationEmail(input: CancellationInput): Promise<b
       </div>
     </div>`;
 
-  try {
-    await mail.transporter.sendMail({
-      from: mail.from,
-      to: input.customerEmail,
-      subject: `Appointment Cancelled — Red Cedar Electric`,
-      html,
-      text: htmlToPlainText(html),
-    });
-    console.log(`[CancellationEmail] Sent to ${input.customerEmail}`);
-    return true;
-  } catch (err) {
-    console.error("[CancellationEmail] Failed:", err);
-    return false;
-  }
+  const result = await sendCustomerEmail({
+    to: input.customerEmail,
+    subject: `Appointment Cancelled — Red Cedar Electric`,
+    html,
+    text: htmlToPlainText(html),
+    kind: "appointment",
+    visitId: input.visitId ?? null,
+  });
+  if (result.ok) console.log(`[CancellationEmail] Sent to ${input.customerEmail} via ${result.provider}`);
+  else console.error("[CancellationEmail] Failed:", result.error);
+  return result.ok;
 }
 
 // ─── PROPOSAL EMAIL ──────────────────────────────────────────────────────────
@@ -242,12 +200,6 @@ interface ProposalEmailInput {
 }
 
 export async function sendProposalEmail(input: ProposalEmailInput): Promise<boolean> {
-  const mail = getTransporter();
-  if (!mail) {
-    console.warn("[ProposalEmail] Gmail not configured — skipping.");
-    return false;
-  }
-
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0;">
@@ -274,20 +226,16 @@ export async function sendProposalEmail(input: ProposalEmailInput): Promise<bool
       </div>
     </div>`;
 
-  try {
-    await mail.transporter.sendMail({
-      from: mail.from,
-      to: input.customerEmail,
-      subject: "Your Proposal from Red Cedar Electric — Review & Sign",
-      html,
-      text: htmlToPlainText(html),
-    });
-    console.log(`[ProposalEmail] Sent to ${input.customerEmail}`);
-    return true;
-  } catch (err) {
-    console.error("[ProposalEmail] Failed:", err);
-    return false;
-  }
+  const result = await sendCustomerEmail({
+    to: input.customerEmail,
+    subject: "Your Proposal from Red Cedar Electric — Review & Sign",
+    html,
+    text: htmlToPlainText(html),
+    kind: "estimate",
+  });
+  if (result.ok) console.log(`[ProposalEmail] Sent to ${input.customerEmail} via ${result.provider}`);
+  else console.error("[ProposalEmail] Failed:", result.error);
+  return result.ok;
 }
 
 // ─── KYLE NOTIFICATION EMAIL ──────────────────────────────────────────────────
@@ -350,22 +298,17 @@ export async function sendBrandedEmail(input: {
   attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
   /** Extra SMTP headers — the campaign sender's List-Unsubscribe. Optional; existing callers unchanged. */
   headers?: Record<string, string>;
+  /**
+   * What this email IS, for the delivery row (Kyle, 2026-09-09: "very few are actually getting
+   * through"). Same vocabulary as EmailBounce.kind. Callers that know the estimate or the visit
+   * pass them so the Estimates / invoice / account rows can show THIS email's delivery state.
+   * All optional; every existing caller is unchanged and files as "other".
+   */
+  kind?: EmailKind;
+  estimateNumber?: string | null;
+  issuedEstimateId?: string | null;
+  visitId?: string | null;
 }): Promise<boolean> {
-  const mail = getTransporter();
-  if (!mail) {
-    console.warn("[BrandedEmail] Gmail not configured — skipping:", input.subject);
-    // Missing configuration is not a transport failure and must not be diagnosed as one. Names
-    // of the absent variables only — never their values.
-    const missing = ["GMAIL_USER", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"]
-      .filter((k) => !process.env[k]);
-    logSystemEvent("error", "email", `Not sent to ${input.to} — Gmail is not configured`, {
-      subject: input.subject,
-      missingEnvVars: missing,
-      likelyCause: "Set the missing variables on the service; nothing was attempted.",
-    });
-    return false;
-  }
-
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0;">
@@ -378,67 +321,30 @@ export async function sendBrandedEmail(input: {
       </div>
     </div>`;
 
-  try {
-    await mail.transporter.sendMail({
-      from: mail.from,
-      to: input.to,
-      subject: input.subject,
-      html,
-      // Kyle, 2026-09-09: "very few are actually getting through". Every message went out as
-      // HTML-only, which strict receivers (AOL, Comcast, iCloud) score against. A real
-      // multipart/alternative with a plain-text twin is the cheapest deliverability win there is.
-      text: htmlToPlainText(html),
-      attachments: input.attachments,
-      headers: input.headers,
-    });
-    console.log(`[BrandedEmail] Sent "${input.subject}" to ${input.to}`);
-    return true;
-  } catch (err) {
-    console.error("[BrandedEmail] Failed:", err);
-    logEmailFailure(input.to, input.subject, err);
-    return false;
-  }
-}
-
-/**
- * Write the TRANSPORT error down, not just the fact of failure.
- *
- * Kyle, 2026-08-18: *"I connot email it either."* Production held exactly two rows about it —
- * `Estimate 2026-1013 send FAILED to …` and the same for 2026-1011 — with `estimateId` and
- * `sentBy` and nothing else. The nodemailer error was caught here, printed to a console nobody
- * was watching, and dropped, so the log could say a send failed but never why. Diagnosing it
- * meant reproducing it, which meant sending a real customer another email.
- *
- * The distinction that matters is between a REVOKED CREDENTIAL and a rejected message, and it is
- * carried in fields nodemailer already provides:
- *
- *   `invalid_grant`  the Google refresh token is expired or revoked — re-mint it with
- *                    scripts/mintGoogleRefreshToken.ts. Nothing about the message is wrong.
- *   `EAUTH` / 535    the OAuth client is wrong or the account lost access.
- *   `EENVELOPE`      the recipient address was rejected. That one IS about the message.
- *
- * The recipient is recorded because "did it fail for everyone or for this address" is the first
- * question; the message body never is.
- */
-function logEmailFailure(to: string, subject: string, err: unknown): void {
-  const e = err as { message?: string; code?: string; responseCode?: number; response?: string };
-  const raw = `${e?.code ?? ""} ${e?.message ?? String(err)}`;
-  const cause = /invalid_grant/i.test(raw)
-    ? "Google refresh token expired or revoked — re-mint GOOGLE_REFRESH_TOKEN (scripts/mintGoogleRefreshToken.ts)."
-    : e?.code === "EAUTH" || e?.responseCode === 535
-      ? "Gmail rejected the credentials (EAUTH) — the OAuth client or the account changed."
-      : e?.code === "EENVELOPE"
-        ? "Gmail rejected the recipient address."
-        : null;
-
-  logSystemEvent("error", "email", `Send failed to ${to}: ${e?.message ?? String(err)}`, {
-    subject,
-    code: e?.code,
-    responseCode: e?.responseCode,
-    // The SMTP response often names the reason verbatim; it is capped because it can be long.
-    response: typeof e?.response === "string" ? e.response.slice(0, 1000) : undefined,
-    likelyCause: cause,
+  // Kyle, 2026-09-09: "I need the emails working, very few are actually getting through, this is
+  // priority number one." Resend first, Gmail as the automatic fallback, one EmailDelivery row per
+  // send — see services/transactionalEmail.ts. The plain-text twin rides along on both pipes:
+  // every message used to go out HTML-only, which strict receivers (AOL, Comcast, iCloud) score
+  // against. The transport error, when there is one, is written down there (Kyle, 2026-08-18:
+  // "I connot email it either" — a failure with no reason is a failure you reproduce on a customer).
+  const result = await sendCustomerEmail({
+    to: input.to,
+    subject: input.subject,
+    html,
+    text: htmlToPlainText(html),
+    attachments: input.attachments,
+    headers: input.headers,
+    kind: input.kind ?? "other",
+    estimateNumber: input.estimateNumber ?? null,
+    issuedEstimateId: input.issuedEstimateId ?? null,
+    visitId: input.visitId ?? null,
   });
+  if (result.ok) {
+    console.log(`[BrandedEmail] Sent "${input.subject}" to ${input.to} via ${result.provider}`);
+  } else {
+    console.error(`[BrandedEmail] Failed "${input.subject}" to ${input.to}: ${result.error}`);
+  }
+  return result.ok;
 }
 
 /** HTML-escape a string for safe interpolation into email templates. */

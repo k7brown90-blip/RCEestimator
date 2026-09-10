@@ -82,6 +82,8 @@ export async function sendVisitConfirmationRequest(c: VisitContact): Promise<{ e
   if (c.email) {
     const jobLine = c.jobType ? `<p style="margin:0 0 6px;font-size:15px;"><strong>Service:</strong> ${escapeHtml(c.jobType)}</p>` : "";
     result.email = await sendBrandedEmail({
+      kind: "appointment",
+      visitId: c.visitId,
       to: c.email,
       subject: `Please confirm your appointment — ${dateStr}`,
       headline: "Confirm Your Appointment",
@@ -215,6 +217,8 @@ export async function sendVisitReminders(now = new Date()): Promise<number> {
 
     if (visit.customer.email) {
       await sendBrandedEmail({
+        kind: "appointment",
+        visitId: visit.id,
         to: visit.customer.email,
         subject: `Reminder: your appointment tomorrow — ${dateStr}`,
         headline: "Appointment Reminder",

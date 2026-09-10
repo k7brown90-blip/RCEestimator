@@ -25,6 +25,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { BounceBadge } from "../components/BounceBadge";
+import { DeliveryChip } from "../components/DeliveryChip";
 import { api } from "../lib/api";
 import type { PbChainRow } from "../lib/types";
 import { money } from "../lib/utils";
@@ -232,10 +233,12 @@ function EstimateRow({ row, label, tone }: Classified) {
             {row.signedChannel === "in_person" ? " · signed in person" : ""}
             {row.signedChannel === "email" ? " · signed from the emailed link" : ""}
           </div>
-          {/* Kyle, 2026-09-09: a bounced estimate must not read like a delivered one. */}
-          {row.lastBounceAt && (
-            <div className="mt-1">
-              <BounceBadge at={row.lastBounceAt} reason={row.lastBounceReason} />
+          {/* Kyle, 2026-09-09: a bounced estimate must not read like a delivered one — and a
+              delivered one should say so. The chip is Resend's delivery report for the last email. */}
+          {(row.lastBounceAt || row.lastDelivery) && (
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {row.lastBounceAt && <BounceBadge at={row.lastBounceAt} reason={row.lastBounceReason} />}
+              <DeliveryChip delivery={row.lastDelivery} />
             </div>
           )}
         </div>

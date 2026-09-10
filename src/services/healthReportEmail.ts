@@ -103,6 +103,7 @@ export async function sendHealthReportEmail(
   const dateStr = inspection.inspectionDate.toLocaleDateString("en-US", { timeZone: "America/Chicago" });
 
   const ok = await sendBrandedEmail({
+    kind: "health_record",
     to: sentTo,
     subject: opts.corrected
       ? `Corrected — Your Electrical Health Record — ${address}`

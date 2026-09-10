@@ -17,6 +17,8 @@ import type {
   CustomerMatch,
   EmailBouncePollResult,
   EmailBounceRow,
+  EmailDeliveryRow,
+  EmailStatus,
   Estimate,
   EstimateAssembly,
   EstimateItem,
@@ -460,6 +462,19 @@ export const api = {
     request<EmailBounceRow>(`/email-bounces/${id}/resolve`, { method: "POST", body: JSON.stringify({ note }) }),
   /** "Check now" — runs the mailbox poll on demand and returns the counts. */
   pollEmailBounces: () => request<EmailBouncePollResult>("/email-bounces/poll", { method: "POST" }),
+
+  // ── Transactional email delivery (Kyle, 2026-09-09: Resend first, Gmail fallback) ──
+  /** Which pipe customer email leaves through, whether the webhook is verified, the last 24 h by status. */
+  emailStatus: () => request<EmailStatus>("/email-status"),
+  /** Every customer email about an estimate or a visit, newest first. */
+  emailDeliveries: (q: { estimateId?: string; visitId?: string; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (q.estimateId) p.set("estimateId", q.estimateId);
+    if (q.visitId) p.set("visitId", q.visitId);
+    if (q.limit) p.set("limit", String(q.limit));
+    const qs = p.toString();
+    return request<EmailDeliveryRow[]>(`/email-deliveries${qs ? `?${qs}` : ""}`);
+  },
 
   // ─── Accounts ─────────────────────────────────────────────────────────────
   // The server exposes these under both /accounts and /customers (same handlers,

@@ -253,6 +253,10 @@ export async function sendInvoiceEmail(
     subject: `Your invoice from Red Cedar Electric — ${est.number}`,
     headline: "Your invoice",
     bodyHtml,
+    // Delivery-row attribution (Kyle, 2026-09-09) — the invoice row shows THIS email's state.
+    kind: "invoice",
+    estimateNumber: est.number,
+    issuedEstimateId: est.id,
     attachments: [
       { filename: `invoice-${est.number}.pdf`, content: pdf, contentType: "application/pdf" },
       ...photos.attachments,
@@ -396,6 +400,10 @@ export async function sendEstimateEmail(
     subject: `Your estimate from Red Cedar Electric — ${est.number}`,
     headline: "Your estimate is ready",
     bodyHtml,
+    // Delivery-row attribution (Kyle, 2026-09-09) — the Estimates row shows THIS email's state.
+    kind: "estimate",
+    estimateNumber: est.number,
+    issuedEstimateId: est.id,
     ...(allAttachments.length > 0 ? { attachments: allAttachments } : {}),
   });
 
