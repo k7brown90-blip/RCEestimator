@@ -119,6 +119,34 @@ async function main(): Promise<void> {
     ok(`issuing.cards.list permitted (${cards.data.length === 0 ? "no cards yet" : `first: ${cards.data[0].id} ••••${cards.data[0].last4}`})`);
   });
 
+  // Kyle, 2026-09-10: after the Issuing scopes were granted Stripe answered "Your account is
+  // not set up to use Issuing" — the Field Expenses ••••3805 card is issued by the Financial
+  // Accounts product, not classic Issuing. Probe the v2 money-management feed read-only and
+  // print the SHAPE of what comes back so the card-spend sync can be built against it.
+  await section("v2 money management: transactions and cards (read-only probe)", async () => {
+    const fas = (await stripe.rawRequest("GET", "/v2/money_management/financial_accounts", undefined, { apiVersion: previewApiVersion() })) as { data?: Array<{ id: string }> };
+    const fa = fas?.data?.[0]?.id;
+    const probes: Array<[string, string]> = [
+      ["transactions", `/v2/money_management/transactions?limit=3${fa ? `&financial_account=${fa}` : ""}`],
+      ["transaction_entries", `/v2/money_management/transaction_entries?limit=3`],
+      ["issued cards (v2)", `/v2/money_management/cards?limit=3`],
+    ];
+    for (const [label, path] of probes) {
+      try {
+        const res = (await stripe.rawRequest("GET", path, undefined, { apiVersion: previewApiVersion() })) as { data?: unknown[] };
+        const rows = Array.isArray(res?.data) ? res.data : [];
+        ok(`${label}: ${rows.length} row(s)`);
+        for (const row of rows.slice(0, 3)) {
+          const r = row as Record<string, unknown>;
+          const flat = JSON.stringify(r, (k, v) => (k === "id" && typeof v === "string" ? `${v.slice(0, 12)}…` : v));
+          console.log(`      ${flat.slice(0, 700)}`);
+        }
+      } catch (err) {
+        warn(`${label}: ${err instanceof Error ? err.message.slice(0, 220) : String(err)}`);
+      }
+    }
+  });
+
   await section("Financial accounts read scope (v2 money management, then Treasury)", async () => {
     // Kyle's "Financial account" is Stripe's product for direct businesses (v2
     // money-management API); the v1 Treasury API is Connect-platform only and
@@ -135,6 +163,33 @@ async function main(): Promise<void> {
     }
     const fas = await stripe.treasury.financialAccounts.list({ limit: 1 });
     ok(`treasury.financialAccounts.list permitted (${fas.data.length === 0 ? "no financial accounts yet" : `first: ${fas.data[0].id} cash ${money(fas.data[0].balance?.cash?.usd ?? 0)}`})`);
+  });
+
+  // Kyle, 2026-09-09 (Build 5): Stripe fees on the P&L read balance transactions;
+  // the month-end sweep writes a v2 money-management outbound transfer. Both
+  // probes are read-only — the sweep only ever runs on Kyle's click.
+  await section("Balance transactions read scope (Stripe fees on the P&L)", async () => {
+    const list = await stripe.balanceTransactions.list({ limit: 1 });
+    if (list.data.length === 0) { ok("balanceTransactions.list permitted (no transactions yet)"); return; }
+    const t = list.data[0];
+    ok(`balanceTransactions.list permitted (latest: ${t.id} ${t.type} ${when(t.created)} gross ${money(t.amount, t.currency)} fee ${money(t.fee, t.currency)} net ${money(t.net, t.currency)})`);
+  });
+
+  await section("Outbound transfers (month-end sweep — v2 money management)", async () => {
+    try {
+      const res = (await stripe.rawRequest("GET", "/v2/money_management/outbound_transfers?limit=1", undefined, { apiVersion: previewApiVersion() })) as {
+        data?: Array<{ id: string; status?: string; amount?: { value?: number } }>;
+      };
+      const rows = res?.data ?? [];
+      ok(`v2 money_management.outbound_transfers readable (${rows.length === 0 ? "none yet" : rows.map((t) => `${t.id} ${t.status ?? ""} ${money(t.amount?.value ?? 0)}`).join("; ")}) — the sweep can be attempted; write scope is proven only by the click`);
+    } catch (err) {
+      const e = err as { type?: string; code?: string; message?: string; statusCode?: number };
+      if (e.statusCode === 403 || e.statusCode === 401 || /permission|not have access|restricted|more_permissions_required/i.test(e.message ?? "")) {
+        warn(`outbound transfers not permitted — add Money Management read + write scope to the restricted key (${e.code ?? e.type ?? e.statusCode ?? "403"}): ${e.message ?? ""}`);
+      } else {
+        warn(`v2 money_management.outbound_transfers: ${e.message ?? String(err)}`);
+      }
+    }
   });
 
   await section("Balance", async () => {

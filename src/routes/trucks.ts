@@ -117,6 +117,16 @@ trucksRouter.patch("/trucks/:id", asyncHandler(async (req, res) => {
     const taken = await prisma.truck.findUnique({ where: { stripeCardId: body.stripeCardId }, select: { id: true, name: true } });
     if (taken && taken.id !== id) { res.status(409).json({ error: `That card is already on ${taken.name}. One card, one truck.` }); return; }
   }
+  // Kyle, 2026-09-10: "need to be able to delete truck 1. This should be editable and trucks
+  // retired." Retiring hides the truck from every picker and the default-truck rule, but it
+  // cannot leave stock, tools or open purchases stranded on a truck nobody drives.
+  if (body.isActive === false) {
+    const blockers = await truckBlockers(id);
+    if (blockers.length > 0) {
+      res.status(409).json({ error: `Move these off the truck first, then retire it: ${blockers.join("; ")}.`, blockers });
+      return;
+    }
+  }
   const truck = await prisma.truck.update({
     where: { id },
     data: {
@@ -135,6 +145,57 @@ trucksRouter.patch("/trucks/:id", asyncHandler(async (req, res) => {
     await prisma.cardSpend.updateMany({ where: { stripeCardId: body.stripeCardId, truckId: null }, data: { truckId: id } });
   }
   res.json(truck);
+}));
+
+/** What would be stranded if this truck were retired: stock on hand, tools on it, open purchases. */
+async function truckBlockers(truckId: string): Promise<string[]> {
+  const key = `truck:${truckId}`;
+  const [levels, tools, openPos] = await Promise.all([
+    prisma.stockLevel.findMany({ where: { locationKey: key, qtyOnHand: { gt: 0 } }, select: { name: true, qtyOnHand: true, unit: true } }),
+    prisma.tool.count({ where: { locationKey: key, condition: { not: "retired" } } }),
+    prisma.purchaseOrder.count({ where: { truckId, status: { in: ["open", "purchased", "verified"] } } }),
+  ]);
+  const out: string[] = [];
+  if (levels.length > 0) {
+    out.push(`${levels.length} stock item(s) on hand (${levels.slice(0, 3).map((l) => `${l.qtyOnHand} ${l.unit ?? ""} ${l.name}`.trim()).join(", ")}${levels.length > 3 ? ", …" : ""})`);
+  }
+  if (tools > 0) out.push(`${tools} tool(s) on the register`);
+  if (openPos > 0) out.push(`${openPos} purchase order(s) not yet landed or closed`);
+  return out;
+}
+
+/**
+ * Delete a truck outright — only when nothing in the books ever pointed at it.
+ * A truck with history keeps its rows and is retired instead (Kyle, 2026-09-10).
+ */
+trucksRouter.delete("/trucks/:id", asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const truck = await prisma.truck.findUnique({ where: { id }, select: { id: true, name: true } });
+  if (!truck) { res.status(404).json({ error: "Truck not found" }); return; }
+  const key = `truck:${id}`;
+  const [pos, spend, movements, levels, tools, requests] = await Promise.all([
+    prisma.purchaseOrder.count({ where: { truckId: id } }),
+    prisma.cardSpend.count({ where: { truckId: id } }),
+    prisma.stockMovement.count({ where: { OR: [{ fromLocationKey: key }, { toLocationKey: key }] } }),
+    prisma.stockLevel.count({ where: { locationKey: key } }),
+    prisma.tool.count({ where: { locationKey: key } }),
+    prisma.stockRequest.count({ where: { truckId: id } }),
+  ]);
+  const history: string[] = [];
+  if (pos) history.push(`${pos} purchase order(s)`);
+  if (spend) history.push(`${spend} card transaction(s)`);
+  if (movements) history.push(`${movements} stock movement(s)`);
+  if (levels) history.push(`${levels} stock level(s)`);
+  if (tools) history.push(`${tools} tool(s)`);
+  if (requests) history.push(`${requests} restock request(s)`);
+  if (history.length > 0) {
+    res.status(409).json({ error: `${truck.name} has history (${history.join(", ")}) — retire it instead so the books keep pointing at it.`, history });
+    return;
+  }
+  const active = await prisma.truck.count({ where: { isActive: true, id: { not: id } } });
+  if (active === 0) { res.status(409).json({ error: "That is the only active truck. Add the replacement first." }); return; }
+  await prisma.truck.delete({ where: { id } });
+  res.status(204).end();
 }));
 
 /** The ledger: this year's card spend grouped by kind, the truck's POs, and its balance. */

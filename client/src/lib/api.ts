@@ -976,6 +976,8 @@ export const api = {
   // ── Trucks, cards, card spend (Kyle, 2026-09-09) ──────────────────────────
   trucks: () => request<TrucksResponse>("/trucks"),
   truck: (id: string, year: number) => request<TruckDetail>(`/trucks/${id}?year=${year}`),
+  /** Delete a truck that has no history; a truck with history is retired instead (Kyle, 2026-09-10). */
+  deleteTruck: (id: string) => request<void>(`/trucks/${id}`, { method: "DELETE" }),
   createTruck: (input: { name: string; technicianId?: string | null }) =>
     request<TruckRecord>("/trucks", { method: "POST", body: JSON.stringify(input) }),
   updateTruck: (id: string, input: {

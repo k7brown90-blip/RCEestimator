@@ -115,7 +115,7 @@ export function TrucksPage() {
                   {t.cardLast4
                     ? <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] tabular-nums text-slate-700">card ••••{t.cardLast4}</span>
                     : <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">no card</span>}
-                  {!t.isActive && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[11px] text-slate-700">inactive</span>}
+                  {!t.isActive && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[11px] text-slate-700">retired</span>}
                 </span>
                 <span className="flex flex-wrap items-center gap-3 text-xs tabular-nums text-rce-muted">
                   <span>balance {t.balance ? money(t.balance.cashUsd) : t.stripeFinancialAccountId ? "—" : "no account"}</span>
@@ -227,6 +227,17 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
     }),
     onSuccess: () => { setEditing(false); refresh(); },
   });
+  const [actionError, setActionError] = useState<string | null>(null);
+  const retire = useMutation({
+    mutationFn: () => api.updateTruck(truck.id, { isActive: false }),
+    onSuccess: () => { setActionError(null); setEditing(false); refresh(); },
+    onError: (err) => setActionError((err as Error).message),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.deleteTruck(truck.id),
+    onSuccess: () => { setActionError(null); setEditing(false); refresh(); },
+    onError: (err) => setActionError((err as Error).message),
+  });
   const pickCard = (id: string) => {
     setStripeCardId(id);
     const card = cards?.available ? cards.cards.find((c) => c.id === id) : undefined;
@@ -259,6 +270,28 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
           {technicians.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
         <label className="flex items-center gap-1"><input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} /> active</label>
+        {/* Kyle, 2026-09-10: "need to be able to delete truck 1. This should be editable and
+            trucks retired." Retire hides it (the server refuses while stock, tools or open POs
+            sit on it); Delete is only for a truck the books never pointed at. */}
+        {truck.isActive && (
+          <button
+            type="button"
+            className="btn btn-secondary px-2 py-0.5 text-xs"
+            disabled={retire.isPending}
+            onClick={() => { if (window.confirm(`Retire ${truck.name}? It leaves every picker and stays in history.`)) retire.mutate(); }}
+          >
+            Retire truck
+          </button>
+        )}
+        <button
+          type="button"
+          className="text-xs text-red-600 hover:underline"
+          disabled={remove.isPending}
+          onClick={() => { if (window.confirm(`Delete ${truck.name}? Only works when nothing in the books points at it.`)) remove.mutate(); }}
+        >
+          Delete
+        </button>
+        {actionError && <span className="text-xs text-red-600">{actionError}</span>}
       </div>
       <div className="flex flex-wrap items-center gap-1">
         {cards && cards.available && !manualCard ? (
