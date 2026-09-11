@@ -197,9 +197,10 @@ describe("landing a PO", () => {
     expect(defaults.status).toBe(200);
     expect(defaults.body.receiptTotal).toBe(90);
     // weights 100×0.72 = 72 and 10×1.10 = 11 → 83; the book price is the WEIGHT, the receipt is the money.
-    // Kyle, 2026-09-11: no parsed lines on this receipt, so all $90 (tax included) splits across the lines.
+    // Kyle, 2026-09-11: no parsed lines on this receipt, so all $90 (tax included) splits across the
+    // lines — and with nothing priced on the photo there is no tax figure to report.
     expect(defaults.body.lines[0].costSource).toBe("book");
-    expect(defaults.body.taxTotal).toBe(90);
+    expect(defaults.body.taxTotal).toBe(0);
     expect(defaults.body.lines[0].unitCostDefault).toBe(r4((90 * 72) / 83 / 100)); // 78.07 ÷ 100 ft
     // The last line absorbs the rounding so the landing equals the receipt to the cent.
     expect(defaults.body.lines[1].unitCostDefault).toBe(1.193);

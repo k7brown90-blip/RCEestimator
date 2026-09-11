@@ -614,7 +614,11 @@ export async function landingDefaults(id: string) {
   const parsedTotal = r2(receiptLines.reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
   const matchedTotal = r2([...matched.values()].flat().reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
   // What the receipt carries past its printed lines: sales tax. Spread, never left over.
-  const taxTotal = receiptTotal > 0 ? Math.max(0, r2(receiptTotal - parsedTotal)) : 0;
+  // Tax is the gap between what the photo's lines add up to and what the receipt
+  // charged. With no parsed lines there is nothing to compare, so the whole
+  // receipt is not "tax" — it is simply unread (Kyle, 2026-09-11: PO-2026-0012,
+  // a SiteOne receipt with no photo, was reporting $381.90 of tax).
+  const taxTotal = receiptTotal > 0 && parsedTotal > 0 ? Math.max(0, r2(receiptTotal - parsedTotal)) : 0;
   const qtyOf = (l: (typeof po.lines)[number]) => {
     const q = l.qtyLanded ?? l.qty;
     return Number.isFinite(q) && q > 0 ? q : 0;

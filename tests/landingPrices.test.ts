@@ -170,7 +170,8 @@ describe("landing prices come from the receipt, line by line", () => {
     const d = await defaultsOf(po.id);
     // Both lines matched a receipt line, but neither carries a price: the book prices become the weights.
     expect(d.matchedTotal).toBe(0);
-    expect(d.taxTotal).toBe(120);
+    // No line on this receipt carries a price, so nothing can be called tax.
+    expect(d.taxTotal).toBe(0);
     expect(d.lines.every((l: { costSource: string; matchedReceiptLine: unknown }) => l.costSource === "book" && l.matchedReceiptLine !== null)).toBe(true);
     // weights 100 × 0.72 = 72 and 2 × 21.32 = 42.64 → 114.64; $75.37 of the $120 goes to the wire.
     expect(d.lines[0].unitCostDefault).toBe(r4((120 * 72) / 114.64 / 100));
@@ -202,6 +203,7 @@ describe("landing prices come from the receipt, line by line", () => {
       [8.07, "po-line"],
     ]);
     expect(d.matchedTotal).toBe(50);
+    // $53 of the $159.50 is priced on the photo; the rest is unread, not tax.
     expect(d.taxTotal).toBe(106.5);
     expect(d.linesTotal).toBe(159.5);
     expect(d.receiptLines[0].unmatched).toHaveLength(1);
@@ -231,7 +233,8 @@ describe("landing prices come from the receipt, line by line", () => {
     expect(d.receiptLines[0].parseError).toMatch(/not valid JSON/);
     expect(d.receiptLines[0].lines).toEqual([]);
     // The receipt is the truth: all $30 splits by weight — book 21.32, typed 4, and "Mystery" on qty alone.
-    expect(d.taxTotal).toBe(30);
+    // Nothing parsed off this receipt, so there is no tax figure to report.
+    expect(d.taxTotal).toBe(0);
     expect(d.lines.map((l: { unitCostDefault: number; costSource: string }) => [l.unitCostDefault, l.costSource])).toEqual([
       [24.3, "book"],
       [4.56, "po-line"],
