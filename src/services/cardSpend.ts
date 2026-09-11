@@ -413,17 +413,43 @@ export async function routeCardSpend(spendId: string): Promise<CardSpend> {
   }
   if (spend.amount === 0) return spend;
 
-  const candidates = await prisma.purchaseOrder.findMany({
+  // Kyle, 2026-09-11 (the duplicate POs 0005–0008): the card feed only became
+  // readable a day after the purchases, by which time the office POs for them
+  // had been verified by their receipts or landed and closed — and this search
+  // only looked at "open"/"purchased", so it drafted a second PO for money that
+  // already had one. Two fixes, strongest signal first:
+  //  1. A receipt for exactly this amount, near this date, already sitting on a
+  //     PO that has no card money yet → that PO is the one. Nothing beats the
+  //     receipt that was photographed against it.
+  //  2. Supplier match across every live status (open, purchased, verified,
+  //     closed) within 7 days before the swipe, because the feed can lag.
+  // A PO still takes one swipe only (cardSpends: none), so nothing doubles up.
+  const byReceipt = await prisma.receipt.findFirst({
     where: {
-      status: { in: ["open", "purchased"] },
+      purchaseOrderId: { not: null },
+      amount: { gte: spend.amount - 0.01, lte: spend.amount + 0.01 },
+      receivedAt: { gte: new Date(spend.occurredAt.getTime() - 3 * DAY), lte: new Date(spend.occurredAt.getTime() + 3 * DAY) },
+      purchaseOrder: { status: { not: "cancelled" }, cardSpends: { none: {} }, ...(spend.truckId ? { OR: [{ truckId: spend.truckId }, { truckId: null }] } : {}) },
+    },
+    orderBy: { receivedAt: "desc" },
+    select: { purchaseOrderId: true },
+  });
+  const receiptPo = byReceipt?.purchaseOrderId
+    ? await prisma.purchaseOrder.findUnique({ where: { id: byReceipt.purchaseOrderId } })
+    : null;
+
+  const candidates = receiptPo ? [] : await prisma.purchaseOrder.findMany({
+    where: {
+      status: { in: ["open", "purchased", "verified", "closed"] },
       ...(spend.truckId ? { truckId: spend.truckId } : {}),
-      openedAt: { gte: new Date(spend.occurredAt.getTime() - 48 * HOUR), lte: new Date(spend.occurredAt.getTime() + 5 * 60 * 1000) },
+      openedAt: { gte: new Date(spend.occurredAt.getTime() - 7 * DAY), lte: new Date(spend.occurredAt.getTime() + DAY) },
       cardSpends: { none: {} },
+      afterTheFact: false,
     },
     orderBy: { openedAt: "desc" },
     take: 50,
   });
-  const po = candidates.find((c) => merchantMatches(c.supplier, spend.merchantName));
+  const po = receiptPo ?? candidates.find((c) => merchantMatches(c.supplier, spend.merchantName));
 
   if (po) {
     const updated = await prisma.$transaction(async (tx) => {

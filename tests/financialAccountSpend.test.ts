@@ -182,3 +182,33 @@ describe("the rest of the feed", () => {
     expect(spend.kind).toBe("materials");
   });
 });
+
+// Kyle, 2026-09-11 — the duplicate POs 0005–0008. The office opened a PO,
+// photographed the receipt against it, and it was verified (or landed and
+// closed) BEFORE the card feed caught up a day later. The swipe must join that
+// PO, not draft a second one.
+describe("a swipe that arrives after the office PO is already verified or landed", () => {
+  it("joins the PO that holds the exact-amount receipt instead of drafting a duplicate", async () => {
+    const { createPurchaseOrder, transitionPurchaseOrder } = await import("../src/services/purchaseOrders");
+    const dayAgo = new Date(Date.now() - 24 * 3600e3);
+    const office = await createPurchaseOrder({
+      supplier: "Home Depot", truckId, openedBy: "owner", actor: "owner", openedAt: new Date(Date.now() - 2 * 24 * 3600e3),
+    } as Parameters<typeof createPurchaseOrder>[0]);
+    await prisma.receipt.create({
+      data: { purchaseOrderId: office.id, category: "materials", status: "confirmed", vendor: "The Home Depot", amount: 30.8, source: "tech_pwa", receivedAt: dayAgo },
+    });
+    for (const to of ["purchased", "verified", "closed"] as const) {
+      await transitionPurchaseOrder(office.id, to, { actor: "test", reason: "office flow" });
+    }
+    const before = await prisma.purchaseOrder.count({ where: { truckId } });
+
+    const { spend } = await ingestFinancialAccountTransaction(
+      txn({ amount: { value: -3080, currency: "usd" }, created: dayAgo.toISOString(), counterparty: { name: "THE HOME DEPOT  #0776/LA VERGNE/USA" } }),
+    );
+
+    expect(spend.purchaseOrderId).toBe(office.id);
+    expect(await prisma.purchaseOrder.count({ where: { truckId } })).toBe(before);
+
+    await prisma.receipt.deleteMany({ where: { purchaseOrderId: office.id } });
+  });
+});
