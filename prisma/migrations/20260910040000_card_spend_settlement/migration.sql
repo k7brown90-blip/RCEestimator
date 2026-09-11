@@ -1,0 +1,11 @@
+-- Card spend settlement (Kyle, 2026-09-10).
+--
+-- Classic Issuing is not enabled on the account ("Your account is not set up
+-- to use Issuing"); the Field Expenses card is issued by Stripe's Financial
+-- Accounts product and its spend arrives on the v2 money-management
+-- transaction feed, where a row's status moves pending -> posted (or void).
+-- CardSpend.settlement carries that status. A void never deletes the row: it
+-- becomes status "ignored" with ignoredReason "voided by Stripe".
+--
+-- Additive only. Every existing (Issuing) row is posted.
+ALTER TABLE "CardSpend" ADD COLUMN "settlement" TEXT NOT NULL DEFAULT 'posted';

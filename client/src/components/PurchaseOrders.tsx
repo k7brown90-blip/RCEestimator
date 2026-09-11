@@ -22,6 +22,7 @@ import type { PurchaseOrderLineInput } from "../lib/api";
 import type { PoPurpose, PoStatus, PurchaseOrderDetail, PurchaseOrderLine, PurchaseOrderSummary, ReviewReceiptRow } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 import { LandingPanel } from "./LandingPanel";
+import { CollapsibleCard } from "./CollapsibleCard";
 
 const PAGE_SIZE = 8;
 
@@ -201,9 +202,19 @@ export function PurchasesCard() {
   const visible = showAll ? orders : orders.slice(0, PAGE_SIZE);
   const visibleNeeding = showAllNeeding ? needing : needing.slice(0, PAGE_SIZE);
 
+  // Folded by default (Kyle, 2026-09-10): "N open · M to land" — open = no purchase yet,
+  // to land = bought but the material has not landed on its truck / in the warehouse.
+  const openCount = orders.filter((po) => po.status === "open").length;
+  const toLand = orders.filter((po) => po.status === "purchased" && !po.landedAt).length;
+  const summary = (
+    <>
+      {openCount} open · {toLand} to land
+      {needing.length > 0 && <span className="text-amber-800"> · {needing.length} receipt{needing.length === 1 ? "" : "s"} need a PO</span>}
+    </>
+  );
+
   return (
-    <section className="card p-4">
-      <h2 className="text-lg font-semibold">Purchases</h2>
+    <CollapsibleCard id="purchases" title="Purchases" summary={summary}>
       <p className="mb-3 text-xs text-rce-muted">
         A purchase starts with a PO number, then the buy, then the receipt photo that verifies it. Material lands on a
         truck or in the warehouse — never on a job. Every edit asks for a reason and keeps a trail.
@@ -272,7 +283,7 @@ export function PurchasesCard() {
       {needing.length > PAGE_SIZE && !showAllNeeding && (
         <button type="button" className="mt-1 text-xs text-rce-accent" onClick={() => setShowAllNeeding(true)}>Show more ({needing.length - PAGE_SIZE})</button>
       )}
-    </section>
+    </CollapsibleCard>
   );
 }
 

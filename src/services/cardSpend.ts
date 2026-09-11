@@ -6,6 +6,15 @@
  * transaction becomes a CardSpend, routed to a truck BY THE CARD (Truck.
  * stripeCardId) — never by guessing.
  *
+ * Kyle, 2026-09-10: classic Issuing is NOT enabled on the account ("Your
+ * account is not set up to use Issuing"). The Field Expenses card ••••3805 is
+ * issued by Stripe's Financial Accounts product and its spend arrives on the
+ * v2 money-management transaction feed (category received_debit, no merchant
+ * category code). Those rows route BY THE FINANCIAL ACCOUNT
+ * (Truck.stripeFinancialAccountId) through the same CardSpend upsert, kind
+ * from the merchant name, settlement pending → posted (or void). Issuing
+ * ingest stays for an account that has it.
+ *
  * The rulings this file enforces:
  * - Gas and maintenance belong to the truck, never a job (per-truck overhead).
  *   Tools never enter job cost; a tool purchase is simply kind "tool".
@@ -68,6 +77,57 @@ export function kindForCategory(category: string | null | undefined, _mcc?: stri
   if (MAINTENANCE_CATEGORIES.has(slug)) return "maintenance";
   if (MATERIALS_CATEGORIES.has(slug)) return "materials";
   return "other";
+}
+
+/**
+ * Kind from the merchant NAME, for feeds that carry no merchant category
+ * (Kyle, 2026-09-10: the v2 money-management transaction has only
+ * `counterparty.name`, e.g. "THE HOME DEPOT #0733/HERMITAGE/USA"). Explicit,
+ * case-insensitive patterns; first list that matches wins. The order matters:
+ * a rental yard is a tool before "AUTO" or "GAS" could catch it, and Harbor
+ * Freight is a tool store, not a materials house. Anything unlisted is
+ * "other" until Kyle re-kinds it with a reason.
+ */
+const KIND_PATTERNS: Array<[CardSpendKind, RegExp[]]> = [
+  ["tool", [/SUNBELT\s*RENTALS?/i, /UNITED\s*RENTALS?/i, /HARBOR\s*FREIGHT/i, /RENTAL/i, /\bTOOL/i]],
+  ["materials", [
+    /HOME\s*DEPOT/i, /LOWE'?S/i, /CITY\s*ELECTRIC/i, /\bCES\b/i, /GRAYBAR/i, /SITE\s*ONE/i, /ELECTRICAL\s*SUPPLY/i,
+    /WESCO/i, /REXEL/i, /MENARDS/i, /FASTENAL/i, /GRAINGER/i,
+  ]],
+  ["fuel", [
+    /\bSHELL\b/i, /EXXON/i, /\bMOBIL\b/i, /\bBP\b/i, /MARATHON/i, /CHEVRON/i, /TEXACO/i, /CITGO/i, /SPEEDWAY/i, /\bPILOT\b/i,
+    /LOVE'?S/i, /RACETRAC/i, /KROGER\s*FUEL/i, /\bWAWA\b/i, /SUNOCO/i, /\bFUEL\b/i, /\bGAS\b/i,
+  ]],
+  ["maintenance", [
+    /AUTOZONE/i, /O'?REILLY/i, /ADVANCE\s*AUTO/i, /\bNAPA\b/i, /JIFFY\s*LUBE/i, /VALVOLINE/i, /DISCOUNT\s*TIRE/i, /FIRESTONE/i,
+    /\bTIRE/i, /\bAUTO\b/i,
+  ]],
+];
+
+export function kindForMerchantName(name: string | null | undefined): CardSpendKind {
+  const text = (name ?? "").trim();
+  if (!text) return "other";
+  for (const [kind, patterns] of KIND_PATTERNS) {
+    if (patterns.some((re) => re.test(text))) return kind;
+  }
+  return "other";
+}
+
+/**
+ * The v2 feed's counterparty name is "MERCHANT/CITY/COUNTRY". Split the
+ * trailing city and country off: "THE HOME DEPOT #0733/HERMITAGE/USA" →
+ * { merchantName: "THE HOME DEPOT #0733", merchantCity: "HERMITAGE" }. A name
+ * without that tail comes back whole with no city.
+ */
+export function splitCounterpartyName(raw: string | null | undefined): { merchantName: string; merchantCity: string | null } {
+  const text = (raw ?? "").trim();
+  if (!text) return { merchantName: "Unknown merchant", merchantCity: null };
+  const parts = text.split("/").map((p) => p.trim());
+  if (parts.length >= 3 && parts[parts.length - 1].length > 0 && parts[parts.length - 2].length > 0) {
+    const merchantName = parts.slice(0, -2).join("/").trim();
+    if (merchantName) return { merchantName, merchantCity: parts[parts.length - 2] };
+  }
+  return { merchantName: text, merchantCity: null };
 }
 
 /** "THE HOME DEPOT #0776" → "thehomedepot0776". */
@@ -163,6 +223,139 @@ export async function ingestIssuingTransaction(
   await matchReceipt(spend.id);
   const fresh = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spend.id } });
   return { spend: fresh, created: !existing };
+}
+
+// ─── Ingest: v2 money-management transactions (Financial Accounts card) ──────
+
+/**
+ * One row of GET /v2/money_management/transactions as production returned it
+ * (Kyle, 2026-09-10). Card spend is category "received_debit"; the amount is
+ * minor units, negative for a purchase. No merchant category code exists.
+ */
+export interface FinancialAccountTransaction {
+  id: string;
+  object?: string;
+  amount?: { value?: number; currency?: string } | null;
+  category?: string | null;
+  counterparty?: { name?: string | null } | null;
+  created?: string | null;
+  description?: string | null;
+  financial_account?: string | null;
+  flow?: { type?: string | null; received_debit?: string | null; [k: string]: unknown } | null;
+  status?: string | null;
+  status_transitions?: { posted_at?: string | null; void_at?: string | null } | null;
+  livemode?: boolean;
+  [k: string]: unknown;
+}
+
+export const SETTLEMENTS = ["pending", "posted", "void"] as const;
+export type Settlement = (typeof SETTLEMENTS)[number];
+
+function settlementOf(status: string | null | undefined): Settlement {
+  const s = (status ?? "").trim().toLowerCase();
+  return (SETTLEMENTS as readonly string[]).includes(s) ? (s as Settlement) : "posted";
+}
+
+/** Is this v2 row card spend? Transfers in from Payments, sweeps out, and fees are not. */
+export function isCardSpendRow(row: FinancialAccountTransaction): boolean {
+  return row.category === "received_debit" || row.flow?.type === "received_debit";
+}
+
+/**
+ * The truck behind a financial account: Truck.stripeFinancialAccountId first
+ * (the mapping Kyle makes on the Trucks page), else a truck whose card id was
+ * typed as the account id. Never a guess.
+ */
+async function truckForFinancialAccount(financialAccountId: string | null): Promise<{ id: string; stripeCardId: string | null } | null> {
+  if (!financialAccountId) return null;
+  const byAccount = await prisma.truck.findFirst({
+    where: { stripeFinancialAccountId: financialAccountId },
+    orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
+    select: { id: true, stripeCardId: true },
+  });
+  if (byAccount) return byAccount;
+  return prisma.truck.findUnique({ where: { stripeCardId: financialAccountId }, select: { id: true, stripeCardId: true } });
+}
+
+/**
+ * Upsert the CardSpend for one v2 money-management transaction, then route it
+ * exactly like an Issuing row (Kyle, 2026-09-10: Issuing is not enabled on the
+ * account; the ••••3805 card is issued by the Financial Accounts product).
+ *
+ * - amount = −value/100: a debit is a purchase (positive), a positive value is
+ *   a refund (negative).
+ * - merchantName / merchantCity come from counterparty.name split at
+ *   "/CITY/USA"; the raw string stays in rawJson. No MCC → kindForMerchantName.
+ * - stripeCardId is the truck's card id when a truck owns the account, else
+ *   the financial account id — so a truck mapped later claims the rows.
+ * - settlement mirrors Stripe's status; a void sets status "ignored", reason
+ *   "voided by Stripe" — never a delete.
+ * - On re-delivery only money, merchant and settlement refresh; kind, truck,
+ *   PO, receipt and status stay Kyle's.
+ */
+export async function ingestFinancialAccountTransaction(
+  row: FinancialAccountTransaction,
+): Promise<{ spend: CardSpend; created: boolean; voided: boolean }> {
+  if (!row?.id) throw new CardSpendError("v2 transaction has no id", 400);
+  const financialAccountId = row.financial_account ?? null;
+  const value = typeof row.amount?.value === "number" ? row.amount.value : 0;
+  const amount = round2(-value / 100);
+  const { merchantName, merchantCity } = splitCounterpartyName(row.counterparty?.name ?? row.description ?? null);
+  const createdMs = row.created ? Date.parse(row.created) : NaN;
+  const occurredAt = Number.isFinite(createdMs) ? new Date(createdMs) : new Date();
+  const settlement = settlementOf(row.status);
+  const truck = await truckForFinancialAccount(financialAccountId);
+  const cardId = truck?.stripeCardId ?? financialAccountId ?? "fa_unknown";
+  const existing = await prisma.cardSpend.findUnique({ where: { stripeTransactionId: row.id } });
+
+  const money = {
+    stripeAuthorizationId: row.flow?.received_debit ?? null,
+    stripeCardId: cardId,
+    amount,
+    currency: (row.amount?.currency ?? "usd").toLowerCase(),
+    merchantName,
+    merchantCategory: null,
+    merchantCategoryCode: null,
+    merchantCity,
+    merchantState: null,
+    occurredAt,
+    settlement,
+    rawJson: JSON.stringify(row),
+  };
+  // A void never deletes: the row is ignored with the reason on it. Kyle's own
+  // ignore reason, if he got there first, stays.
+  const voidPatch = settlement === "void" && (existing?.status ?? "unmatched") !== "ignored"
+    ? { status: "ignored" as const, ignoredReason: "voided by Stripe" }
+    : {};
+  const voided = Object.keys(voidPatch).length > 0;
+
+  let spend: CardSpend;
+  if (existing) {
+    spend = await prisma.cardSpend.update({
+      where: { id: existing.id },
+      data: { ...money, ...voidPatch, ...(existing.truckId === null && truck ? { truckId: truck.id } : {}) },
+    });
+  } else {
+    spend = await prisma.cardSpend.create({
+      data: {
+        stripeTransactionId: row.id,
+        ...money,
+        ...voidPatch,
+        truckId: truck?.id ?? null,
+        kind: kindForMerchantName(merchantName),
+      },
+    });
+    if (!truck) {
+      logSystemEvent("warn", "card-spend", `Financial account ${financialAccountId ?? "?"} is not assigned to a truck — ${merchantName} $${amount.toFixed(2)} is sitting unrouted`, {
+        stripeTransactionId: row.id, financialAccountId, amount, merchant: merchantName,
+      });
+    }
+  }
+
+  await routeCardSpend(spend.id);
+  await matchReceipt(spend.id);
+  const fresh = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spend.id } });
+  return { spend: fresh, created: !existing, voided };
 }
 
 // ─── Routing: the PO behind the money ────────────────────────────────────────
@@ -456,6 +649,169 @@ export async function syncIssuingTransactions(
   return { available: true, seen, created, updated, dry: Boolean(opts.dry), transactions };
 }
 
+// ─── v2 money-management sync (Kyle, 2026-09-10) ─────────────────────────────
+//
+// "Your account is not set up to use Issuing" — the Field Expenses card
+// ••••3805 is issued by Stripe's Financial Accounts product, and its spend is
+// on GET /v2/money_management/transactions (preview API version). No webhook
+// reaches the classic endpoint for v2 objects, so this is polled from
+// server.ts every ten minutes. Rows are read for EVERY financial account, not
+// only the mapped ones, so unrouted spend is visible on the Trucks page.
+
+export interface SyncedTransaction { id: string; merchant: string; amount: number; category: string | null; card: string; occurredAt: Date; settlement?: string }
+export interface SyncCounts { seen: number; created: number; updated: number; voided: number }
+export type SyncResult = ({ available: true; dry: boolean; transactions: SyncedTransaction[] } & SyncCounts) | Unavailable;
+
+/** Non-card categories already logged this process — one INFO per category, so we learn the feed without flooding it. */
+const seenNonCardCategories = new Set<string>();
+
+/** Strip the origin off a v2 `next_page_url` (Stripe returns a path; be safe if it ever returns a full URL). */
+function pagePath(nextPageUrl: string): string {
+  return nextPageUrl.replace(/^https?:\/\/[^/]+/i, "");
+}
+
+/**
+ * Every v2 transaction on one financial account created since `since`,
+ * following `next_page_url` until it is absent or the page is entirely older
+ * than the window. `created_gte` is sent as a filter; the window is enforced
+ * here too, so an ignored filter costs pages, never correctness.
+ */
+export async function listFinancialAccountTransactions(
+  financialAccountId: string,
+  since: Date,
+  opts: { limit?: number; maxPages?: number } = {},
+): Promise<FinancialAccountTransaction[]> {
+  const limit = opts.limit ?? 100;
+  const maxPages = opts.maxPages ?? 50;
+  const out: FinancialAccountTransaction[] = [];
+  const first = `/v2/money_management/transactions?limit=${limit}&financial_account=${encodeURIComponent(financialAccountId)}&created_gte=${encodeURIComponent(since.toISOString())}`;
+  let path: string | null = first;
+  let pages = 0;
+  while (path && pages < maxPages) {
+    pages += 1;
+    let res: { data?: FinancialAccountTransaction[]; next_page_url?: string | null };
+    try {
+      res = (await stripe().rawRequest("GET", path, undefined, { apiVersion: previewApiVersion() })) as typeof res;
+    } catch (err) {
+      // The filter name is the one unverified piece of the request: if Stripe
+      // rejects it, list unfiltered and let the window below do the work.
+      if (pages === 1 && /created_gte/i.test((err as Error)?.message ?? "")) {
+        path = `/v2/money_management/transactions?limit=${limit}&financial_account=${encodeURIComponent(financialAccountId)}`;
+        pages = 0;
+        continue;
+      }
+      throw err;
+    }
+    const rows = Array.isArray(res?.data) ? res.data : [];
+    let allOlder = rows.length > 0;
+    for (const row of rows) {
+      const ms = row.created ? Date.parse(row.created) : NaN;
+      const inWindow = !Number.isFinite(ms) || ms >= since.getTime();
+      if (inWindow) { out.push(row); allOlder = false; }
+    }
+    path = res?.next_page_url && !allOlder ? pagePath(res.next_page_url) : null;
+  }
+  return out;
+}
+
+/**
+ * Pull card spend from the v2 money-management feed for the last `sinceDays`
+ * days and ingest it. Idempotent (upsert by transaction id). Categories other
+ * than received_debit — transfers in from Payments, outbound sweeps, fees —
+ * are NOT card spend: each new one is logged once (INFO) and not stored.
+ */
+export async function syncFinancialAccountTransactions(
+  { sinceDays, dry }: { sinceDays: number; dry?: boolean },
+): Promise<SyncResult> {
+  if (!stripeConfigured()) return { available: false, reason: "STRIPE_SECRET_KEY is not set." };
+  const days = Number.isFinite(sinceDays) && sinceDays > 0 ? Math.min(sinceDays, 365) : 30;
+  const since = new Date(Date.now() - days * DAY);
+  let seen = 0, created = 0, updated = 0, voided = 0;
+  const transactions: SyncedTransaction[] = [];
+  try {
+    const accounts = await listFinancialAccounts();
+    for (const fa of accounts) {
+      const rows = await listFinancialAccountTransactions(fa.id, since);
+      for (const row of rows) {
+        if (!isCardSpendRow(row)) {
+          const category = row.category ?? row.flow?.type ?? "unknown";
+          if (!seenNonCardCategories.has(category)) {
+            seenNonCardCategories.add(category);
+            logSystemEvent("info", "card-spend", `v2 transaction category ${category} seen — not card spend`, {
+              financialAccountId: fa.id, stripeTransactionId: row.id, amount: row.amount?.value ?? null, status: row.status ?? null,
+            });
+          }
+          continue;
+        }
+        seen += 1;
+        const { merchantName } = splitCounterpartyName(row.counterparty?.name ?? row.description ?? null);
+        transactions.push({
+          id: row.id, merchant: merchantName, amount: round2(-(row.amount?.value ?? 0) / 100), category: null, card: fa.id,
+          occurredAt: row.created ? new Date(row.created) : new Date(), settlement: settlementOf(row.status),
+        });
+        if (dry) continue;
+        const result = await ingestFinancialAccountTransaction(row);
+        if (result.created) created += 1; else updated += 1;
+        if (result.voided) voided += 1;
+      }
+    }
+  } catch (err) {
+    const { permission, reason } = describeStripeError(err);
+    logSystemEvent(permission ? "warn" : "error", "card-spend", `v2 card-spend sync stopped: ${reason}`, { seen, created, updated, voided });
+    return { available: false, reason };
+  }
+  return { available: true, seen, created, updated, voided, dry: Boolean(dry), transactions };
+}
+
+/** Per-process memory of "Your account is not set up to use Issuing" — probed once, not every ten minutes. */
+let issuingProbe: "unknown" | "unavailable" = "unknown";
+/** Test hook: forget the Issuing answer. */
+export function resetIssuingProbe(): void {
+  issuingProbe = "unknown";
+}
+export function issuingUnavailableCached(): boolean {
+  return issuingProbe === "unavailable";
+}
+
+export interface CardSpendSyncSummary extends SyncCounts {
+  available: boolean;
+  reason?: string;
+  dry: boolean;
+  transactions: SyncedTransaction[];
+  /** What each feed said, for the script and the log. */
+  feeds: { financialAccounts: SyncResult; issuing: SyncResult | null };
+}
+
+/**
+ * The one sync: v2 money-management first (that is where the ••••3805 card
+ * lives), then classic Issuing only while the account has it. "Not set up to
+ * use Issuing" is remembered for the life of the process and logged once.
+ * The route, the script and the cron all call this.
+ */
+export async function syncCardSpend(sinceDays: number, opts: { dry?: boolean } = {}): Promise<CardSpendSyncSummary> {
+  const v2 = await syncFinancialAccountTransactions({ sinceDays, dry: opts.dry });
+  let issuing: SyncResult | null = null;
+  if (issuingProbe !== "unavailable") {
+    const raw = await syncIssuingTransactions(sinceDays, opts);
+    issuing = raw.available ? { ...raw, voided: 0 } : raw;
+    if (!raw.available && /not set up to use Issuing/i.test(raw.reason)) {
+      issuingProbe = "unavailable";
+      logSystemEvent("info", "card-spend", "Issuing is not enabled on this Stripe account — card spend is read from the v2 money-management feed only (remembered for this process)");
+    }
+  }
+  const feeds = [v2, issuing].filter((f): f is Extract<SyncResult, { available: true }> => Boolean(f?.available));
+  const sum = (k: keyof SyncCounts) => feeds.reduce((s, f) => s + f[k], 0);
+  const available = feeds.length > 0;
+  return {
+    available,
+    reason: available ? undefined : (v2.available ? undefined : v2.reason),
+    seen: sum("seen"), created: sum("created"), updated: sum("updated"), voided: sum("voided"),
+    dry: Boolean(opts.dry),
+    transactions: feeds.flatMap((f) => f.transactions),
+    feeds: { financialAccounts: v2, issuing },
+  };
+}
+
 export interface IssuingCardRow { id: string; last4: string; cardholderName: string | null; status: string; financialAccountId: string | null }
 
 /** The Issuing cards, for the truck picker. */
@@ -647,6 +1003,8 @@ export function serializeCardSpend(row: CardSpendRow) {
     status: row.status,
     ignoredReason: row.ignoredReason,
     note: row.note,
+    // Kyle, 2026-09-10: Stripe's pending → posted (or void) on the v2 row.
+    settlement: row.settlement,
     occurredAt: row.occurredAt,
     createdAt: row.createdAt,
   };

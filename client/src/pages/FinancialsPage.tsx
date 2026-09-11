@@ -36,6 +36,7 @@ import { DeliveryChip } from "../components/DeliveryChip";
 import { PurchasesCard } from "../components/PurchaseOrders";
 import { BalancesStrip, TrucksCard } from "../components/TrucksCards";
 import { MonthEndSweepCard } from "../components/MonthEndSweepCard";
+import { CollapsibleCard } from "../components/CollapsibleCard";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -74,13 +75,18 @@ export function FinancialsPage() {
     <div className="space-y-6">
       <PageHeader title="Financials" subtitle="Bills, revenue, invoices, and the company's accounting reports" />
 
+      {/* Kyle, 2026-09-10: "I like the collapsible idea it will be easier to keep the clutter
+          down." Every card above the year selector folds to a header + one-line summary
+          (CollapsibleCard); open by default only when it holds something that needs a look. */}
+
       {/* ── Money on hand (Kyle, 2026-09-09): Payments balance + each truck's financial account ── */}
-      <BalancesStrip />
+      <BalancesSection />
 
       {/* ── Month-end sweep (Kyle, 2026-09-09): excess over the float → Chase, on a click, never scheduled ── */}
       <MonthEndSweepCard />
 
       <ReceiptReviewList
+        collapsible
         title="Receipts to review (all accounts)"
         rows={(pendingReceipts ?? []).map((r) => ({
           id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, receivedAt: r.receivedAt,
@@ -97,7 +103,7 @@ export function FinancialsPage() {
       <PurchasesCard />
 
       {/* ── Trucks (Kyle, 2026-09-09): per-truck card spend this month; the ledger lives at /trucks ── */}
-      <TrucksCard />
+      <TrucksSection />
 
       <div className="flex flex-wrap items-center gap-2">
         <button className="btn btn-secondary text-sm" onClick={() => setYear((y) => y - 1)}>← {year - 1}</button>
@@ -306,6 +312,55 @@ export function FinancialsPage() {
   );
 }
 
+// ─── Folded wrappers for the two TrucksCards.tsx cards ────────────────────────
+
+/**
+ * BalancesStrip and TrucksCard draw their own card frame and heading, and that file
+ * is being reworked in parallel (2026-09-10), so the fold is put on from outside:
+ * the wrapper runs the same query the card does (same key, same call — one cache
+ * entry) for the header summary, and CollapsibleCard's `nested` flattens the inner
+ * frame. When TrucksCards.tsx is free, give both a frameless mode and drop `nested`.
+ */
+function BalancesSection() {
+  const { data } = useQuery({ queryKey: ["financials-balances"], queryFn: api.financialsBalances });
+  // The strip itself renders nothing until the balances load — same here.
+  if (!data) return null;
+  const truckCash = data.financialAccounts.reduce((sum, fa) => sum + fa.cashUsd, 0);
+  const summary = data.payments
+    ? `Payments ${money(data.payments.available)} available${data.available && data.financialAccounts.length > 0 ? ` · trucks ${money(truckCash)}` : ""}`
+    : "Payments balance not readable";
+  return (
+    <CollapsibleCard id="balances" title="Balances" summary={summary} defaultOpen compact nested>
+      <BalancesStrip />
+    </CollapsibleCard>
+  );
+}
+
+function TrucksSection() {
+  const { data } = useQuery({ queryKey: ["trucks"], queryFn: api.trucks });
+  const trucks = (data?.trucks ?? []).filter((t) => t.isActive);
+  const mtd = trucks.reduce(
+    (acc, t) => ({
+      fuel: acc.fuel + t.mtd.fuel,
+      maintenance: acc.maintenance + t.mtd.maintenance,
+      materials: acc.materials + t.mtd.materials,
+      unmatched: acc.unmatched + t.unmatchedMaterials,
+    }),
+    { fuel: 0, maintenance: 0, materials: 0, unmatched: 0 },
+  );
+  const summary = data ? (
+    <>
+      {trucks.length} truck{trucks.length === 1 ? "" : "s"} · MTD fuel {money(mtd.fuel)} · maintenance {money(mtd.maintenance)} · materials {money(mtd.materials)}
+      {mtd.unmatched > 0 && <span className="text-amber-800"> · {mtd.unmatched} unmatched</span>}
+    </>
+  ) : undefined;
+  return (
+    <CollapsibleCard id="trucks" title="Trucks" summary={summary} nested>
+      <TrucksCard />
+    </CollapsibleCard>
+  );
+}
+
 // ─── Warranty receivables ─────────────────────────────────────────────────────
 
 const WARRANTY_STATUS_META: Record<WarrantyReceivableRow["status"], { label: string; tone: string }> = {
@@ -328,19 +383,28 @@ function WarrantyReceivablesCard() {
   const rows = (data?.rows ?? []).filter((r) => showPaid || r.status !== "paid");
   const paidCount = (data?.rows ?? []).filter((r) => r.status === "paid").length;
   const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : "—");
+  // Kyle, 2026-09-10: open by default only while a warranty company still owes
+  // something; once every claim is paid it folds to its one-line summary.
+  const open = (data?.totals.open ?? 0) > 0;
   return (
-    <section className="card p-4">
+    <CollapsibleCard
+      id="warranty-receivables"
+      title="Warranty receivables"
+      defaultOpen={open}
+      summary={data
+        ? open
+          ? `${data.totals.open} open · ${money(data.totals.balance)}${data.totals.overdue > 0 ? ` · ${data.totals.overdue} overdue` : ""}`
+          : data.rows.length > 0 ? "every claim paid" : "no warranty claims"
+        : undefined}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">
-            Warranty receivables ({data?.totals.open ?? 0} · {money(data?.totals.balance ?? 0)})
-          </h2>
           <p className="text-xs text-rce-muted">
             The warranty company's share of each covered job — a second payer, chased on its own. The
             homeowner's balance never includes it and the homeowner is never reminded about it.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <div className="rounded-lg border border-rce-border px-3 py-1.5">
             <div className="text-[10px] uppercase tracking-wide text-rce-muted">Overdue</div>
             <div className={`font-semibold tabular-nums ${(data?.totals.overdue ?? 0) > 0 ? "text-amber-800" : ""}`}>{data?.totals.overdue ?? 0}</div>
@@ -398,7 +462,7 @@ function WarrantyReceivablesCard() {
           {showPaid ? "Hide" : "Show"} paid claims ({paidCount})
         </button>
       )}
-    </section>
+    </CollapsibleCard>
   );
 }
 
@@ -462,23 +526,18 @@ function matchesQuery(q: string, fields: (string | null | undefined)[], phone?: 
  * Rides /financials/summary as `materials`; /financials/materials?year= on its own.
  */
 function MaterialsCard({ year, materials }: { year: number; materials: Omit<MaterialsByMonth, "year"> | undefined }) {
-  const [open, setOpen] = useState(false);
   const latest = materials ? [...materials.months].reverse().find((m) => m.inventoryValue !== 0 || m.bought !== 0 || m.used !== 0) : undefined;
+  // Kyle, 2026-09-10: this card had its own show/hide; it rides CollapsibleCard now
+  // so every folding card on the page behaves the same way and remembers the same way.
   return (
-    <section className="card p-4">
-      <button type="button" className="flex w-full items-center justify-between gap-2 text-left" onClick={() => setOpen((o) => !o)}>
-        <span className="min-w-0">
-          <span className="text-lg font-semibold">Materials</span>
-          {materials && (
-            <span className="ml-3 text-xs text-rce-muted">
-              {year}: bought {money(materials.totals.bought)} · used {money(materials.totals.used)}
-              {latest ? ` · inventory ${money(latest.inventoryValue)} at end of ${MONTHS[latest.month]}` : ""}
-            </span>
-          )}
-        </span>
-        <span className="shrink-0 text-xs text-rce-soft">{open ? "hide" : "show"}</span>
-      </button>
-      {open && (
+    <CollapsibleCard
+      id="materials"
+      title="Materials"
+      summary={materials
+        ? `${year}: bought ${money(materials.totals.bought)} · used ${money(materials.totals.used)}${latest ? ` · inventory ${money(latest.inventoryValue)} at end of ${MONTHS[latest.month]}` : ""}`
+        : undefined}
+    >
+      {(
         <>
           <p className="my-2 text-xs text-rce-muted">
             <b>Bought</b> = PO landings at landed cost plus materials receipts with no PO (cash out).
@@ -518,7 +577,7 @@ function MaterialsCard({ year, materials }: { year: number; materials: Omit<Mate
           </div>
         </>
       )}
-    </section>
+    </CollapsibleCard>
   );
 }
 

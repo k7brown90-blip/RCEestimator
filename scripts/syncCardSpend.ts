@@ -10,7 +10,7 @@
  */
 
 import { PrismaClient } from "@prisma/client";
-import { syncIssuingTransactions } from "../src/services/cardSpend";
+import { syncCardSpend } from "../src/services/cardSpend";
 
 const prisma = new PrismaClient();
 
@@ -24,16 +24,17 @@ async function main(): Promise<void> {
   const dry = process.argv.includes("--dry");
   console.log(`Card spend sync — last ${days} day(s)${dry ? " (DRY RUN — nothing written)" : ""} — ${new Date().toISOString()}`);
 
-  const result = await syncIssuingTransactions(days, { dry });
-  if (!result.available) {
-    console.log(`  ! Issuing not readable: ${result.reason}`);
-    return;
-  }
+  const result = await syncCardSpend(days, { dry });
+  const feed = result.feeds.financialAccounts;
+  console.log(`  financial accounts: ${feed.available ? `${feed.seen} seen · ${feed.created} new · ${feed.updated} refreshed · ${feed.voided} voided` : `not readable — ${feed.reason}`}`);
+  const issuing = result.feeds.issuing;
+  console.log(`  issuing: ${issuing == null ? "skipped (not enabled on this account)" : issuing.available ? `${issuing.seen} seen · ${issuing.created} new` : `not readable — ${issuing.reason}`}`);
+  if (!result.available) return;
   for (const t of result.transactions) {
-    console.log(`  ${t.occurredAt.toISOString().slice(0, 16).replace("T", " ")}  ${t.id}  ${t.card}  ${t.merchant}  ${t.category ?? "—"}  $${t.amount.toFixed(2)}`);
+    console.log(`  ${t.occurredAt.toISOString().slice(0, 16).replace("T", " ")}  ${t.id.slice(0, 14)}…  ${t.card.slice(0, 14)}…  ${t.merchant}  ${t.category ?? "—"}  $${t.amount.toFixed(2)}${t.settlement && t.settlement !== "posted" ? `  (${t.settlement})` : ""}`);
   }
   if (dry) console.log(`\n${result.seen} transaction(s) would be ingested.`);
-  else console.log(`\n${result.seen} seen · ${result.created} new · ${result.updated} refreshed.`);
+  else console.log(`\n${result.seen} seen · ${result.created} new · ${result.updated} refreshed · ${result.voided} voided.`);
 
   const unrouted = await prisma.cardSpend.count({ where: { truckId: null } });
   if (unrouted > 0) console.log(`  ! ${unrouted} spend row(s) are on a card no truck claims — map the card on the Trucks page.`);

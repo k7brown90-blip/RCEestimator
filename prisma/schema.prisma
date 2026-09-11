@@ -1487,6 +1487,10 @@ model CardSpend {
   status                String         @default("unmatched") // unmatched | matched | ignored
   ignoredReason         String?
   note                  String? // the reason behind the last hand edit
+  // Kyle, 2026-09-10: the card is issued by Stripe's Financial Accounts product, and its
+  // v2 money-management transaction moves pending → posted (or void). A void never deletes
+  // the row — it becomes status "ignored", reason "voided by Stripe".
+  settlement            String         @default("posted") // pending | posted | void
   occurredAt            DateTime
   rawJson               String?
   createdAt             DateTime       @default(now())

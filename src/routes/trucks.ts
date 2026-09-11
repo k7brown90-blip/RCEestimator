@@ -16,7 +16,7 @@ import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import {
   CARD_SPEND_INCLUDE, CARD_SPEND_KINDS, listIssuingCards, readBalances, receiptCategoriesFor, serializeCardSpend,
-  syncIssuingTransactions, truckSpendRollups, updateCardSpend,
+  syncCardSpend, truckSpendRollups, updateCardSpend,
 } from "../services/cardSpend";
 import { PO_LIST_INCLUDE, defaultTruckId, serializePurchaseOrder } from "../services/purchaseOrders";
 import { truckInventoryRollups } from "../services/inventory";
@@ -319,8 +319,11 @@ trucksRouter.get("/card-spend/:id/receipt-candidates", asyncHandler(async (req, 
 
 trucksRouter.post("/card-spend/sync", asyncHandler(async (req, res) => {
   const body = z.object({ days: z.number().int().positive().max(365).default(30) }).parse(req.body ?? {});
-  const result = await syncIssuingTransactions(body.days);
+  // Kyle, 2026-09-10: the ••••3805 card is issued by the Financial Account, not
+  // classic Issuing — syncCardSpend reads the v2 money-management feed first and
+  // only asks Issuing while this account still has it.
+  const result = await syncCardSpend(body.days);
   if (!result.available) { res.json(result); return; }
-  const { transactions: _rows, ...counts } = result;
+  const { transactions: _rows, feeds: _feeds, ...counts } = result;
   res.json(counts);
 }));

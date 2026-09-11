@@ -23,6 +23,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import type { EmailBounceRow, EmailStatus } from "../lib/types";
+import { CollapsibleCard } from "./CollapsibleCard";
 
 const KIND_LABEL: Record<string, string> = {
   estimate: "Estimate",
@@ -107,17 +108,20 @@ export function BouncedEmailsCard() {
     onError: (err: Error) => setNotice(err.message),
   });
 
+  // Open while anything is unresolved, folded to "none unresolved" otherwise (Kyle, 2026-09-10).
+  const unresolved = rows.length;
+  const summary = isLoading
+    ? "checking…"
+    : unresolved > 0
+      ? <span className="font-medium text-red-700">{unresolved} unresolved</span>
+      : "none unresolved";
+
   return (
-    <section className="card p-4">
+    <CollapsibleCard id="bounced-emails" title="Bounced emails" summary={summary} defaultOpen={unresolved > 0}>
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h2 className="text-lg font-semibold">
-            Bounced emails <span className="text-sm font-normal text-rce-muted">({rows.length})</span>
-          </h2>
-          <p className="text-xs text-rce-muted">
-            Customer emails the receiver rejected. Resend reports within a minute; Gmail's mailbox is checked every 10 minutes.
-          </p>
-        </div>
+        <p className="text-xs text-rce-muted">
+          Customer emails the receiver rejected. Resend reports within a minute; Gmail's mailbox is checked every 10 minutes.
+        </p>
         <button
           type="button"
           className="btn btn-secondary text-sm"
@@ -145,7 +149,7 @@ export function BouncedEmailsCard() {
           <BounceItem key={row.id} row={row} onResolved={invalidate} />
         ))}
       </ul>
-    </section>
+    </CollapsibleCard>
   );
 }
 

@@ -977,6 +977,8 @@ export type CardSpendRow = {
   merchantCategory: string | null;
   merchantCity: string | null;
   merchantState: string | null;
+  /** Stripe's own state for the swipe: pending until it posts (Kyle, 2026-09-10). */
+  settlement?: "pending" | "posted" | "void";
   purchaseOrderId: string | null;
   purchaseOrderNumber: string | null;
   purchaseOrderStatus: string | null;

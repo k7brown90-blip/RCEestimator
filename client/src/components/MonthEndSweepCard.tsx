@@ -19,6 +19,7 @@ import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import type { SweepView, TreasurySweepRow } from "../lib/types";
 import { money } from "../lib/utils";
+import { CollapsibleCard } from "./CollapsibleCard";
 
 const STATUS_LABEL: Record<string, string> = {
   created: "sent to Stripe",
@@ -90,10 +91,12 @@ export function MonthEndSweepCard() {
   const amountOk = Number.isFinite(parsedAmount) && parsedAmount > 0 && parsedAmount <= excess + 0.005;
   const ready = data.canSweep && amountOk && word.trim() === "SWEEP";
 
+  // Folded by default (Kyle, 2026-09-10) — the header still says what a click would move.
+  const summary = `Excess ${money(excess)} · ${data.trucks.length} truck${data.trucks.length === 1 ? "" : "s"}`;
+
   return (
-    <section className="card p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold">Month-end sweep</h2>
+    <CollapsibleCard id="month-end-sweep" title="Month-end sweep" summary={summary}>
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <div className="flex items-center gap-3 text-xs text-rce-muted">
           <span>as of {when(data.asOf)}</span>
           <button type="button" className="btn btn-secondary text-xs" disabled={refreshing || isFetching} onClick={() => void refreshNow()}>
@@ -207,7 +210,7 @@ export function MonthEndSweepCard() {
 
       {/* The last five */}
       <RecentSweeps rows={data.recent} />
-    </section>
+    </CollapsibleCard>
   );
 }
 

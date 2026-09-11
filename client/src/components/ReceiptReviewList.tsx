@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { money, shortDate } from "../lib/utils";
+import { CollapsibleCard } from "./CollapsibleCard";
 
 /**
  * Receipts waiting for review, in one place (Kyle, 2026-09-08: "It is not
@@ -71,7 +72,12 @@ export function PendingReceiptFields({
   );
 }
 
-export function ReceiptReviewList({ rows, title = "Receipts to review" }: { rows: ReviewableReceipt[]; title?: string }) {
+/**
+ * `collapsible` (Financials, Kyle 2026-09-10) folds the list into a CollapsibleCard — open
+ * whenever there are rows, and still gone entirely when there are none. The account page
+ * keeps the plain amber card.
+ */
+export function ReceiptReviewList({ rows, title = "Receipts to review", collapsible = false }: { rows: ReviewableReceipt[]; title?: string; collapsible?: boolean }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const review = useMutation({
@@ -88,11 +94,8 @@ export function ReceiptReviewList({ rows, title = "Receipts to review" }: { rows
 
   if (rows.length === 0) return null;
 
-  return (
-    <section className="card mb-5 border-amber-300 bg-amber-50/60 p-4">
-      <h2 className="text-base font-semibold text-amber-900">
-        {title} ({rows.length})
-      </h2>
+  const body = (
+    <>
       <p className="mb-2 text-xs text-amber-800">
         Field captures wait here and are not counted in any job's material until confirmed. Fix the vendor or
         total if the photo was read wrong, then Confirm. Remove a duplicate.
@@ -135,6 +138,29 @@ export function ReceiptReviewList({ rows, title = "Receipts to review" }: { rows
         ))}
       </ul>
       {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+    </>
+  );
+
+  if (collapsible) {
+    return (
+      <CollapsibleCard
+        id="receipts-review"
+        title={<span className="text-amber-900">{title}</span>}
+        summary={<span className="font-medium text-amber-800">{rows.length} waiting</span>}
+        defaultOpen
+        className="border-amber-300 bg-amber-50/60"
+      >
+        {body}
+      </CollapsibleCard>
+    );
+  }
+
+  return (
+    <section className="card mb-5 border-amber-300 bg-amber-50/60 p-4">
+      <h2 className="text-base font-semibold text-amber-900">
+        {title} ({rows.length})
+      </h2>
+      {body}
     </section>
   );
 }

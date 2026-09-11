@@ -1,5 +1,6 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import type { PropsWithChildren } from "react";
 import { api } from "../lib/api";
 import { DebugSidebar } from "./DebugSidebar";
@@ -9,20 +10,20 @@ import { DebugSidebar } from "./DebugSidebar";
 const nav = [
   { to: "/dashboard", label: "Dashboard" },
   { to: "/leads", label: "Leads", badgeQuery: true },
-  { to: "/calendar", label: "Calendar" },
-  { to: "/jobs", label: "Jobs" },
+  { to: "/calendar", label: "Calendar", primary: true },
+  { to: "/jobs", label: "Jobs", primary: true },
   // The Estimates CHAIN VIEW (P029) — a record, not a workshop. `/estimate-intake` was here
   // and is deliberately gone: Kyle, 2026-08-18, "The estimate flow needs to start from within
   // the customers account not as a stand alone feature." Quoting begins on an account (or a
   // visit); this entry is where you see what has been quoted and where it got to.
-  { to: "/estimates", label: "Estimates" },
+  { to: "/estimates", label: "Estimates", primary: true },
   // "Invoices" used to sit here (Kyle, 2026-08-26). Kyle, 2026-09-07: "We should look at
   // merging invoices into the financials tab ... isolate each tab's purpose while getting
   // rid of the repeated features." Signed work and its money now live in the Financials
   // tab's Payments received card; /invoices redirects there so old links keep working.
-  { to: "/accounts", label: "Accounts" },
+  { to: "/accounts", label: "Accounts", primary: true },
   // Money — bills, revenue, and the accounting reports (Kyle, 2026-08-25).
-  { to: "/financials", label: "Financials" },
+  { to: "/financials", label: "Financials", primary: true },
   // Each truck's tech, card, balance and this month's fuel / maintenance /
   // materials on the card (Kyle, 2026-09-09: "Each tech will have their own
   // card for material and gas through stripe").
@@ -42,23 +43,18 @@ const nav = [
   { to: "/settings", label: "Settings" },
 ];
 
-/** Tailwind needs literal class names, so the derived count maps through this. */
-const MOBILE_NAV_COLS: Record<number, string> = {
-  4: "grid-cols-4",
-  5: "grid-cols-5",
-  6: "grid-cols-6",
-  7: "grid-cols-7",
-  8: "grid-cols-8",
-  9: "grid-cols-9",
-  // Ten entries in one phone row would leave ~36px per label; five columns
-  // wrap into two even rows instead, so every label stays readable.
-  10: "grid-cols-5",
-  11: "grid-cols-6",
-  // Twelve entries: two even rows of six.
-  12: "grid-cols-6",
-  // Thirteen (Inventory, 2026-09-09): seven then six.
-  13: "grid-cols-7",
-};
+/**
+ * THE PHONE BAR IS FIVE TABS AND "MORE" — IT NEVER GROWS (Kyle, 2026-09-10).
+ *
+ * It used to lay every nav entry across the bar, with the column count derived
+ * from the array length. At thirteen entries that is ~42 px per label on a
+ * phone and eight of them truncate to "Financ…", so Kyle chose the More tab.
+ * The five below are the daily ones; everything else lives in the sheet, and
+ * the desktop sidebar still shows all of them. Adding a nav entry now changes
+ * the sheet, never the bar — which is the point.
+ */
+const MOBILE_PRIMARY = nav.filter((item) => item.primary);
+const MOBILE_MORE = nav.filter((item) => !item.primary);
 
 function NavItem({ to, label, badge }: { to: string; label: string; badge?: number }) {
   return (
@@ -89,6 +85,22 @@ export function AppShell({ children }: PropsWithChildren) {
     refetchInterval: 60_000,
   });
   const newLeadCount = openLeads.length;
+
+  // The More sheet (Kyle, 2026-09-10). It closes when the route changes — so a
+  // tap inside it navigates and gets out of the way — and on Escape. The tab
+  // stays lit while the page you are on lives inside the sheet, so you can see
+  // where you are without opening it, and carries the badge of anything hidden.
+  const [moreOpen, setMoreOpen] = useState(false);
+  const { pathname } = useLocation();
+  useEffect(() => { setMoreOpen(false); }, [pathname]);
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMoreOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [moreOpen]);
+  const moreHoldsCurrentRoute = MOBILE_MORE.some((item) => pathname.startsWith(item.to));
+  const moreBadge = MOBILE_MORE.some((item) => item.badgeQuery) ? newLeadCount : 0;
 
   return (
     <div className="min-h-screen bg-rce-bg text-rce-text md:grid md:grid-cols-[236px_1fr]">
@@ -122,26 +134,58 @@ export function AppShell({ children }: PropsWithChildren) {
       </main>
 
       {/*
-        COLUMN COUNT IS DERIVED, NOT TYPED.
-
-        This was hard-coded `grid-cols-7` while `nav` held EIGHT entries, so the eighth wrapped
-        onto a second row and the labels crowded into each other. Kyle reported it on 2026-08-16
-        ("The words on the menu down at the bottom are overlapping too") and it survived because a
-        literal in the class string has no relationship to the array it is laying out.
-
-        Tailwind cannot see a computed class name, so the count maps through an explicit lookup —
-        which also means adding a ninth nav entry fails loudly here rather than silently
-        overlapping again.
+        The phone bar: five daily tabs and More. The bar is always six columns —
+        the count no longer follows the nav array, so a new tab cannot crowd the
+        labels again (Kyle, 2026-08-16: "The words on the menu down at the bottom
+        are overlapping too"; 2026-09-10: "the more tab").
       */}
-      <nav
-        className={`fixed inset-x-0 bottom-0 z-30 grid ${
-          MOBILE_NAV_COLS[nav.length] ?? "grid-cols-4"
-        } gap-0.5 border-t border-rce-border bg-rce-surface p-2 md:hidden`}
-      >
-        {nav.map((item) => (
+      {moreOpen && (
+        <>
+          <button
+            type="button"
+            aria-label="Close menu"
+            className="fixed inset-0 z-30 bg-black/30 md:hidden"
+            onClick={() => setMoreOpen(false)}
+          />
+          <div
+            role="dialog"
+            aria-label="More"
+            className="fixed inset-x-0 bottom-[68px] z-40 max-h-[70vh] overflow-y-auto rounded-t-2xl border-t border-rce-border bg-rce-surface p-3 shadow-card md:hidden"
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold">More</span>
+              <button type="button" className="text-xs text-rce-muted" onClick={() => setMoreOpen(false)}>Close</button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {MOBILE_MORE.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) =>
+                    `flex items-center justify-between gap-2 rounded-lg border border-rce-border px-3 py-3 text-sm font-medium ${
+                      isActive ? "bg-rce-accentBg text-rce-accentDark" : "text-rce-text"
+                    }`
+                  }
+                >
+                  <span className="min-w-0 truncate">{item.label}</span>
+                  {item.badgeQuery && newLeadCount > 0 ? (
+                    <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-rce-warning px-1.5 text-[11px] font-bold text-white">
+                      {newLeadCount}
+                    </span>
+                  ) : null}
+                </NavLink>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 gap-0.5 border-t border-rce-border bg-rce-surface p-2 md:hidden">
+        {MOBILE_PRIMARY.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
+            onClick={() => setMoreOpen(false)}
             className={({ isActive }) =>
               `relative truncate rounded-md px-1 py-2 text-center text-[11px] font-medium leading-tight ${
                 isActive ? "bg-rce-accentBg text-rce-accentDark" : "text-rce-muted"
@@ -156,6 +200,21 @@ export function AppShell({ children }: PropsWithChildren) {
             ) : null}
           </NavLink>
         ))}
+        <button
+          type="button"
+          aria-expanded={moreOpen}
+          onClick={() => setMoreOpen((open) => !open)}
+          className={`relative truncate rounded-md px-1 py-2 text-center text-[11px] font-medium leading-tight ${
+            moreOpen || moreHoldsCurrentRoute ? "bg-rce-accentBg text-rce-accentDark" : "text-rce-muted"
+          }`}
+        >
+          More
+          {moreBadge > 0 ? (
+            <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-rce-warning px-1 text-[10px] font-bold text-white">
+              {moreBadge}
+            </span>
+          ) : null}
+        </button>
       </nav>
 
       <DebugSidebar />

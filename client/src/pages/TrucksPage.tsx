@@ -89,7 +89,7 @@ export function TrucksPage() {
           </p>
           <span className="flex flex-wrap items-center gap-2">
             <button type="button" className="btn btn-secondary text-sm" disabled={sync.isPending} onClick={() => sync.mutate()}>
-              {sync.isPending ? "Syncing…" : "Sync from Stripe (30 days)"}
+              {sync.isPending ? "Syncing…" : "Sync card spend (30 days)"}
             </button>
             <button className="btn btn-secondary text-xs" onClick={() => setYear((y) => y - 1)}>← {year - 1}</button>
             <span className="text-sm font-semibold">{year}</span>
@@ -99,7 +99,7 @@ export function TrucksPage() {
         {syncNote && <p className="mt-1 text-xs text-rce-muted">{syncNote}</p>}
         {data && !data.balancesAvailable && (
           <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
-            Balances and cards are not readable yet — add Issuing and Treasury <b>read</b> scope to the restricted Stripe key in the Dashboard.
+            Balances are not readable yet — the restricted Stripe key needs Money Management <b>Financial Accounts Read</b> (and Transactions Read for the card feed) in the Dashboard.
             {data.balancesReason ? <span className="block text-amber-800">{data.balancesReason}</span> : null}
           </p>
         )}
@@ -308,7 +308,7 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
         {cards && cards.available && (
           <button type="button" className="text-rce-accent" onClick={() => setManualCard((m) => !m)}>{manualCard ? "pick from Stripe" : "type the id"}</button>
         )}
-        {cards && !cards.available && <span className="text-amber-800">card list not readable ({cards.reason.split("(")[0].trim()}) — type the id</span>}
+        {cards && !cards.available && <span className="text-amber-800">This card is issued by your Financial Account, not classic Issuing — enter the last 4 and pick the financial account below; spend routes by the account.</span>}
         <input className="field w-16 px-1 py-0.5 text-xs" value={cardLast4} onChange={(e) => setCardLast4(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="last4" />
         <input className="field w-52 max-w-full px-1 py-0.5 text-xs" value={financialAccountId} onChange={(e) => setFinancialAccountId(e.target.value)} placeholder="Financial account id (fa_…)" />
       </div>
@@ -359,6 +359,8 @@ function NeedingRow({ row }: { row: CardSpendRow }) {
         <span className="font-medium">{row.merchantName}</span> · <span className="tabular-nums">{money(row.amount)}</span> · {shortDate(row.occurredAt)}
         {row.purchaseOrderNumber && <span className="ml-1 rounded bg-slate-100 px-1 tabular-nums text-slate-700">{row.purchaseOrderNumber}</span>}
         {row.purchaseOrderAfterTheFact && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">after the fact</span>}
+        {/* Kyle, 2026-09-10: a swipe shows up pending and posts a day or two later. */}
+        {row.settlement === "pending" && <span className="ml-1 rounded bg-slate-100 px-1 text-slate-600">pending</span>}
       </span>
       {mode === "view" && (
         <span className="flex gap-2">

@@ -11,6 +11,7 @@ import { logSystemEvent } from "./services/systemEvents";
 import { sendKyleNotificationEmail } from "./services/confirmationEmail";
 import { sendAlert } from "./services/alerting";
 import { gmailConfigured, pollBounces } from "./services/bounceWatcher";
+import { syncCardSpend } from "./services/cardSpend";
 import {
   customerSendsEnabled,
   logAutomationGateState,
@@ -306,6 +307,29 @@ async function startServer(): Promise<void> {
   cron.schedule("*/10 * * * *", () => { void runBouncePoll("cron"); }, { timezone: "America/Chicago" });
   setTimeout(() => { void runBouncePoll("boot"); }, 60_000).unref();
   console.log(`[Cron] Email bounce watcher every 10 minutes — ${gmailConfigured() ? "ENABLED" : "DISABLED (Gmail not configured)"}`);
+
+  // Every 10 minutes — card spend (Kyle, 2026-09-10). The ••••3805 card is issued by the
+  // Financial Account, not classic Issuing, and the v2 money-management feed has no webhook on
+  // the classic endpoint, so the feed is polled. INBOUND, so not behind automationGate: it reads
+  // transactions and files them; a materials swipe may draft a PO after the fact, which is the
+  // ruling, not an outbound action. syncCardSpend never throws — a key without scope comes back
+  // {available:false} and is logged once. Also runs 90 s after boot.
+  const runCardSpendSync = async (trigger: "boot" | "cron") => {
+    if (!process.env.STRIPE_SECRET_KEY) return;
+    try {
+      const r = await syncCardSpend(30);
+      if (!r.available) {
+        if (trigger === "boot") console.warn(`[CardSpend:${trigger}] unavailable — ${r.reason}`);
+      } else if (r.created > 0 || r.voided > 0) {
+        console.log(`[CardSpend:${trigger}] seen ${r.seen}, new ${r.created}, refreshed ${r.updated}, voided ${r.voided}`);
+      }
+    } catch (err) {
+      console.error(`[CardSpend:${trigger}] failed:`, err);
+    }
+  };
+  cron.schedule("*/10 * * * *", () => { void runCardSpendSync("cron"); }, { timezone: "America/Chicago" });
+  setTimeout(() => { void runCardSpendSync("boot"); }, 90_000).unref();
+  console.log(`[Cron] Card spend sync every 10 minutes — ${process.env.STRIPE_SECRET_KEY ? "ENABLED" : "DISABLED (no Stripe key)"}`);
 
   logAutomationGateState();
 }
