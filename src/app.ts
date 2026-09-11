@@ -79,6 +79,8 @@ import { trucksRouter } from "./routes/trucks";
 import { treasuryRouter } from "./routes/treasury";
 import { inventoryRouter } from "./routes/inventory";
 import { matchSpendForReceipt } from "./services/cardSpend";
+// Kyle, 2026-09-11: the office can photograph a receipt straight onto a PO; Vision reads it.
+import { parseReceiptImage } from "./services/receiptVision";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
 import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, estimateMaterialCost, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs } from "./services/jobCosting";
@@ -5383,6 +5385,72 @@ app.post("/purchase-orders/:id/receipts/:receiptId", asyncHandler(async (req, re
   const result = await attachReceiptToPurchaseOrder(readParam(req, "receiptId"), readParam(req, "id"), "owner");
   res.json(result);
 }));
+
+/**
+ * The receipt photo, straight onto the PO (Kyle, 2026-09-11): "This is where we
+ * need a way to attach a photo of the receipt if one is missing… This should not
+ * pull up existing job costs but be an upload as the receipts will be photos
+ * added from the phone or computer." Same door as PUT /jobs/:jobId/receipts/:id
+ * — raw image body, metadata on the query — but the receipt belongs to the PO,
+ * not a job, and Vision fills the amount and the lines when the amount is not
+ * typed. A failed parse keeps the typed amount and says so.
+ */
+app.put(
+  "/purchase-orders/:id/receipts/:receiptId",
+  express.raw({ type: "image/*", limit: "15mb" }),
+  asyncHandler(async (req, res) => {
+    const poId = readParam(req, "id");
+    const receiptId = readParam(req, "receiptId");
+    const query = z.object({
+      vendor: z.string().trim().max(200).optional(),
+      amount: z.coerce.number().positive().optional(),
+      category: z.enum(["materials", "gas", "maintenance", "overhead"]).default("materials"),
+    }).parse(req.query);
+
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: poId }, select: { id: true, number: true, status: true, supplier: true, jobId: true } });
+    if (!po) { res.status(404).json({ error: "Purchase order not found" }); return; }
+    if (po.status === "closed" || po.status === "cancelled") {
+      res.status(409).json({ error: `${po.number} is ${po.status}; attach the receipt to a live PO.` });
+      return;
+    }
+
+    const body = req.body as Buffer;
+    const hasImage = Buffer.isBuffer(body) && body.length > 0;
+    const mimeType = (req.headers["content-type"] as string | undefined) ?? "image/jpeg";
+    // Read the photo when the amount was not typed — the total AND the lines the landing weights need.
+    const parsed = hasImage && query.amount == null ? await parseReceiptImage(body, mimeType) : null;
+    const amount = query.amount ?? parsed?.total ?? 0;
+    const data = {
+      purchaseOrderId: poId,
+      jobId: po.jobId ?? null,
+      vendor: query.vendor ?? parsed?.vendor ?? po.supplier,
+      amount,
+      category: query.category,
+      lineItems: parsed && parsed.lineItems.length > 0 ? JSON.stringify(parsed.lineItems) : null,
+      source: "manual",
+      status: "confirmed",
+      ...(hasImage ? { imageData: body, imageMime: mimeType } : {}),
+      ...(parsed?.purchaseDate ? { receivedAt: new Date(`${parsed.purchaseDate}T12:00:00Z`) } : {}),
+    };
+    await prisma.receipt.upsert({ where: { id: receiptId }, create: { id: receiptId, ...data }, update: data });
+    // The PO moves to purchased/verified exactly as it does for an already-uploaded receipt.
+    await attachReceiptToPurchaseOrder(receiptId, poId, "owner");
+    // Kyle, 2026-09-09: "photo verifies, card proves" — pair it with the card transaction if one is waiting.
+    await matchSpendForReceipt(receiptId).catch((err) => console.error("[receipts] card match failed:", err));
+
+    res.status(201).json({
+      id: receiptId,
+      purchaseOrderId: poId,
+      amount,
+      vendor: data.vendor,
+      parsed: parsed != null,
+      lineCount: parsed?.lineItems.length ?? 0,
+      note: query.amount == null && parsed == null
+        ? "The photo could not be read — type the amount on the receipt and the lines can be added by hand."
+        : null,
+    });
+  }),
+);
 
 app.delete("/purchase-orders/:id/receipts/:receiptId", asyncHandler(async (req, res) => {
   const receipt = await prisma.receipt.findUnique({ where: { id: readParam(req, "receiptId") }, select: { purchaseOrderId: true } });

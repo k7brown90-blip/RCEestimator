@@ -1196,8 +1196,9 @@ export type InventoryOverview = {
   unlandedPos: UnlandedPo[];
 };
 
-// Kyle, 2026-09-10: each PO line prices from ITS receipt line; the source rides beside the number.
-export type LandingCostSource = "receipt-line" | "po-line" | "receipt-prorated" | "book" | "none";
+// Kyle, 2026-09-11: the receipt total is the truth; the receipt's line prices are only the weights
+// that split it. The source rides beside the number and says which weight decided the line.
+export type LandingCostSource = "receipt-line" | "po-line" | "book" | "even" | "none";
 
 export type LandingReceiptLine = {
   receiptId: string;
@@ -1229,8 +1230,22 @@ export type LandingLineDefault = {
   qtyLandedDefault: number;
   unitCostDefault: number;
   costSource: LandingCostSource;
+  weight: number;
+  weightBasis: string;
+  /** This line's share of the tax the receipt carries past its printed lines. */
+  taxShare: number;
   bookPurchasePrice: number | null;
   matchedReceiptLine: { receiptId: string; name: string; qty: number; unit: string | null; unitCost: number | null } | null;
+  matchedReceiptLines: Array<{ receiptId: string; index: number; name: string; qty: number; unit: string | null; unitCost: number | null; lineTotal: number | null }>;
+};
+
+/** A line the panel offers to add in one click when the PO has none (Kyle, 2026-09-11). */
+export type LandingSuggestedLine = {
+  receiptId: string;
+  name: string;
+  qty: number;
+  unit: string | null;
+  unitCost: number | null;
 };
 
 export type LandingDefaults = {
@@ -1239,7 +1254,11 @@ export type LandingDefaults = {
   destinationLabel: string;
   receiptTotal: number;
   matchedTotal: number;
-  remainder: number;
+  parsedTotal: number;
+  taxTotal: number;
+  linesTotal: number;
+  balanced: boolean;
+  suggestedLines: LandingSuggestedLine[];
   receiptCount: number;
   receiptLines: LandingReceiptView[];
   hasReceiptPhoto: boolean;

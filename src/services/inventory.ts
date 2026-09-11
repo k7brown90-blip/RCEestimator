@@ -30,7 +30,7 @@ import { prisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
 import { PO_LIST_INCLUDE, closePurchaseOrderForLanding, serializePurchaseOrder, type PoPurpose } from "./purchaseOrders";
 // Cycle with stockSeed (it imports countStock from here) is benign: both sides only use the other inside function bodies.
-import { MATCH_THRESHOLD, scoreMatch } from "./stockSeed";
+import { MATCH_THRESHOLD, normalizeName, scoreMatch, specTokens } from "./stockSeed";
 
 type Tx = Prisma.TransactionClient;
 
@@ -407,8 +407,16 @@ export function landingBlocker(po: Pick<PurchaseOrder, "status" | "number" | "la
   return null;
 }
 
-/** Where a landing line's default unit cost came from — shown beside the editable field. */
-export type LandingCostSource = "receipt-line" | "po-line" | "receipt-prorated" | "book" | "none";
+/**
+ * Where a landing line's WEIGHT came from — shown beside the editable field.
+ *
+ * Kyle, 2026-09-11: "The receipt total is the truth. It matches the card swipe
+ * to the cent. The photo's line prices are only WEIGHTS." So the label says
+ * what decided the split, not where the dollars came from — the dollars always
+ * come from the receipt. "none" is the one exception: a PO with no receipt at
+ * all still falls back to the typed cost, then the book, then nothing.
+ */
+export type LandingCostSource = "receipt-line" | "po-line" | "book" | "even" | "none";
 
 /** One parsed line of an attached receipt, as the landing panel shows it. */
 export interface LandingReceiptLine {
@@ -444,9 +452,29 @@ export interface LandingLineDefault {
   qtyLandedDefault: number;
   unitCostDefault: number;
   costSource: LandingCostSource;
+  /** Kyle, 2026-09-11: the weight this line took of the receipt total, and a phrase for the label. */
+  weight: number;
+  weightBasis: string;
+  /** This line's share of the receipt total past its parsed lines — the sales tax, spread. */
+  taxShare: number;
   bookPurchasePrice: number | null;
   /** The receipt line that priced (or at least named) this PO line. */
   matchedReceiptLine: { receiptId: string; name: string; qty: number; unit: string | null; unitCost: number | null } | null;
+  /** Every receipt line this PO line covers — one PO line may cover several (Kyle, 2026-09-11). */
+  matchedReceiptLines: Array<{ receiptId: string; index: number; name: string; qty: number; unit: string | null; unitCost: number | null; lineTotal: number | null }>;
+}
+
+/**
+ * A line the landing panel offers to add in one click when the PO has none
+ * (Kyle, 2026-09-11: "Landing total $0.00 · receipt $46.80" — an after-the-fact
+ * PO with zero lines has nothing to land).
+ */
+export interface LandingSuggestedLine {
+  receiptId: string;
+  name: string;
+  qty: number;
+  unit: string | null;
+  unitCost: number | null;
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -479,22 +507,62 @@ function parseReceiptLines(receipt: { id: string; lineItems: string | null }): {
   return { lines, parseError: null };
 }
 
+/** Kyle, 2026-09-11: "Down Rod" and "DOWNROD" are the same part — compare with the spaces gone too. */
+function squashName(s: string): string {
+  return normalizeName(s).replace(/[^a-z0-9]/g, "");
+}
+
+/** A wire size / amperage / dimension that disagrees is a hard no, exactly as scoreMatch treats it. */
+function specConflict(a: string, b: string): boolean {
+  const ta = specTokens(a);
+  const tb = specTokens(b);
+  for (const axis of ["wire", "amp", "dim", "frac"]) {
+    const xa = [...ta].filter((t) => t.startsWith(`${axis}:`));
+    const xb = [...tb].filter((t) => t.startsWith(`${axis}:`));
+    if (xa.length > 0 && xb.length > 0 && !xa.some((t) => xb.includes(t))) return true;
+  }
+  return false;
+}
+
+/**
+ * scoreMatch, loosened (Kyle, 2026-09-11): PO-2026-0003's "Down Rod" and the
+ * receipt's "DOWNROD" share no word token, so nothing matched and the whole
+ * landing fell back to the tax remainder. Squashing the spaces out makes them
+ * the same string; a name wholly inside a longer one ("DOWNROD" inside "48in
+ * MATTE BLACK EXTENSION DOWNROD") counts too. A spec conflict still kills it.
+ */
+function looseScore(receiptName: string, poText: string): number {
+  const strict = scoreMatch(receiptName, poText);
+  if (strict >= MATCH_THRESHOLD) return strict;
+  if (specConflict(receiptName, poText)) return 0;
+  const a = squashName(receiptName);
+  const b = squashName(poText);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short.length >= 5 && long.includes(short) ? 0.9 : 0;
+}
+
 /**
  * The defaults the landing panel shows, all editable.
  *
- * Kyle, 2026-09-10: "The pricing on the P.O.'s does not seem to be applied
- * correctly from the receipts, same with the breakers above, they are not the
- * same price." Two GFCI breakers on one receipt both landed at the book's
- * $21.32 because the receipt total was prorated across the lines instead of
- * each line taking the price printed beside it. A landed line's unit cost, in
- * order: (1) the receipt line that matches this PO line (explicit itemId, else
- * the stockSeed name matcher against the PO line's name and its book
- * description) — its unitCost, else lineTotal ÷ qty; (2) the PO line's own
- * unitCost when Kyle typed one; (3) the receipt total's REMAINDER — after the
- * matched lines, the receipt's lines that are not on this PO, and the typed
- * lines are subtracted — prorated across the remaining lines by qty × book
- * price (equal split when one of them has no book price); (4) the book's
- * purchase price; (5) 0. Every line says which, so the guesses are visible.
+ * Kyle, 2026-09-11 (the seven picks): "Pricing is not matching up on these
+ * P.O.'s." PO-2026-0003 landed two lines at $6.58 each because nothing matched
+ * and only the $13.16 of SALES TAX was left to prorate; PO-2026-0004 landed at
+ * $0.00 because the photo reader misread prices that summed ABOVE the receipt.
+ * The ruling: "The receipt total is the truth. It matches the card swipe to
+ * the cent. The photo's line prices are only WEIGHTS." And: "Sales tax is
+ * spread across the lines, so a landed unit cost is what was actually paid,
+ * tax included."
+ *
+ * So: match receipt lines to PO lines (explicit itemId, else the loosened
+ * stockSeed matcher against the PO line's name AND its book description), many
+ * receipt lines allowed under one PO line, each receipt line claimed once.
+ * Then a weight per line — (a) its matched receipt lines' extended prices,
+ * (b) the typed unitCost × qty, (c) qty × book purchase price, (d) qty — and
+ * unitCostDefault = receiptTotal × weight / Σweights ÷ qty, with the last
+ * landing line absorbing the rounding so Σ equals the receipt to the cent.
+ * With no receipt at all the old fallback stands: typed, then book, then 0.
  */
 export async function landingDefaults(id: string) {
   const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: { ...LANDING_INCLUDE, ...PO_LIST_INCLUDE } });
@@ -511,7 +579,9 @@ export async function landingDefaults(id: string) {
     return b?.purchasePrice ?? b?.costBasisUsed ?? null;
   };
 
-  // (1) Pair receipt lines with PO lines, best score first, each side claimed once.
+  // (1) Pair receipt lines with PO lines, best score first. A receipt line is
+  // claimed once; a PO line may hold several (Kyle, 2026-09-11: "Fan wire
+  // extension and heat shrink" covers TUBING + HS TUBING + the cable).
   const receipts: LandingReceiptView[] = po.receipts.map((r) => {
     const parsed = parseReceiptLines(r);
     return { receiptId: r.id, vendor: r.vendor ?? null, amount: r.amount ?? 0, parseError: parsed.parseError, lines: parsed.lines, unmatched: [] };
@@ -519,9 +589,9 @@ export async function landingDefaults(id: string) {
   const receiptLines = receipts.flatMap((r) => r.lines);
   const pairScore = (l: (typeof po.lines)[number], rl: LandingReceiptLine): number => {
     if (rl.itemId && l.itemId && rl.itemId === l.itemId) return 2;
-    let score = scoreMatch(rl.name, l.name);
+    let score = looseScore(rl.name, l.name);
     const desc = l.itemId ? bookById.get(l.itemId)?.description : null;
-    if (desc) score = Math.max(score, scoreMatch(rl.name, desc));
+    if (desc) score = Math.max(score, looseScore(rl.name, desc));
     return score >= MATCH_THRESHOLD ? score : 0;
   };
   const pairs: Array<{ poIndex: number; rl: LandingReceiptLine; score: number }> = [];
@@ -532,42 +602,67 @@ export async function landingDefaults(id: string) {
     }
   });
   pairs.sort((a, b) => b.score - a.score || a.poIndex - b.poIndex || a.rl.index - b.rl.index);
-  const matched = new Map<number, LandingReceiptLine>();
+  const matched = new Map<number, LandingReceiptLine[]>();
   for (const p of pairs) {
-    if (matched.has(p.poIndex) || p.rl.matchedLineId) continue;
-    matched.set(p.poIndex, p.rl);
+    if (p.rl.matchedLineId) continue;
     p.rl.matchedLineId = po.lines[p.poIndex].id;
+    matched.set(p.poIndex, [...(matched.get(p.poIndex) ?? []), p.rl]);
   }
   for (const r of receipts) r.unmatched = r.lines.filter((rl) => !rl.matchedLineId);
 
-  // (3) What the receipt total still has to explain once its priced lines are taken out.
-  const matchedTotal = r2([...matched.values()].reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
-  const offPoTotal = r2(receipts.flatMap((r) => r.unmatched).reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
-  const typedTotal = r2(po.lines.reduce((s, l, i) => (matched.get(i)?.unitCost == null && l.unitCost != null ? s + l.qty * l.unitCost : s), 0));
-  const remainder = receiptTotal > 0 ? Math.max(0, r2(receiptTotal - matchedTotal - offPoTotal - typedTotal)) : 0;
-  const pool = po.lines.map((l, i) => i).filter((i) => matched.get(i)?.unitCost == null && po.lines[i].unitCost == null);
-  const prorate = remainder > 0 && pool.length > 0 && pool.every((i) => Number.isFinite(po.lines[i].qty) && po.lines[i].qty > 0);
-  const allPriced = pool.every((i) => bookPrice(po.lines[i].itemId) != null);
-  const weights = new Map(pool.map((i) => [i, allPriced ? po.lines[i].qty * (bookPrice(po.lines[i].itemId) ?? 0) : 1]));
-  const weightSum = [...weights.values()].reduce((s, w) => s + w, 0);
+  // (2) The weights. The receipt total is the money; these only decide the split.
+  const parsedTotal = r2(receiptLines.reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
+  const matchedTotal = r2([...matched.values()].flat().reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
+  // What the receipt carries past its printed lines: sales tax. Spread, never left over.
+  const taxTotal = receiptTotal > 0 ? Math.max(0, r2(receiptTotal - parsedTotal)) : 0;
+  const qtyOf = (l: (typeof po.lines)[number]) => {
+    const q = l.qtyLanded ?? l.qty;
+    return Number.isFinite(q) && q > 0 ? q : 0;
+  };
+  const weights = po.lines.map((l, i): { weight: number; source: LandingCostSource; basis: string } => {
+    const qty = qtyOf(l);
+    if (qty <= 0) return { weight: 0, source: "even", basis: "nothing landing on this line" };
+    const hits = matched.get(i) ?? [];
+    const hitTotal = r2(hits.reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
+    if (hitTotal > 0) return { weight: hitTotal, source: "receipt-line", basis: hits.length > 1 ? `${hits.length} receipt lines` : "its receipt line" };
+    if (l.unitCost != null && l.unitCost > 0) return { weight: r2(l.unitCost * qty), source: "po-line", basis: "the cost typed on the PO" };
+    const price = bookPrice(l.itemId);
+    if (price != null && price > 0) return { weight: r2(price * qty), source: "book", basis: "the book's purchase price" };
+    return { weight: qty, source: "even", basis: "an even split" };
+  });
+  const weightSum = r4(weights.reduce((s, w) => s + w.weight, 0));
+  const spread = receiptTotal > 0 && weightSum > 0;
+  // The last line with something landing absorbs the rounding, so Σ equals the receipt to the cent.
+  const absorber = spread ? po.lines.map((_, i) => i).filter((i) => weights[i].weight > 0).pop() ?? -1 : -1;
 
+  let allocated = 0;
+  let taxAllocated = 0;
   const lines: LandingLineDefault[] = po.lines.map((l, i) => {
     const price = bookPrice(l.itemId);
-    const hit = matched.get(i) ?? null;
+    const hits = matched.get(i) ?? [];
+    const hit = hits[0] ?? null;
+    const w = weights[i];
+    const qty = qtyOf(l);
     let unitCostDefault = 0;
-    let costSource: LandingCostSource = "none";
-    if (hit?.unitCost != null) {
-      unitCostDefault = hit.unitCost;
-      costSource = "receipt-line";
+    let costSource: LandingCostSource = w.source;
+    let taxShare = 0;
+    if (spread) {
+      const share = i === absorber ? r2(receiptTotal - allocated) : w.weight > 0 ? r2((receiptTotal * w.weight) / weightSum) : 0;
+      unitCostDefault = qty > 0 ? r6(share / qty) : 0;
+      allocated = r2(allocated + r2(unitCostDefault * qty));
+      if (taxTotal > 0) {
+        taxShare = i === absorber ? r2(taxTotal - taxAllocated) : w.weight > 0 ? r2((taxTotal * w.weight) / weightSum) : 0;
+        taxAllocated = r2(taxAllocated + taxShare);
+      }
     } else if (l.unitCost != null) {
-      unitCostDefault = l.unitCost;
+      unitCostDefault = r4(l.unitCost);
       costSource = "po-line";
-    } else if (prorate && weightSum > 0 && weights.has(i)) {
-      unitCostDefault = (remainder * ((weights.get(i) ?? 0) / weightSum)) / l.qty;
-      costSource = "receipt-prorated";
     } else if (price != null) {
-      unitCostDefault = price;
+      unitCostDefault = r4(price);
       costSource = "book";
+    } else {
+      unitCostDefault = 0;
+      costSource = "none";
     }
     return {
       lineId: l.id,
@@ -576,12 +671,29 @@ export async function landingDefaults(id: string) {
       unit: l.unit ?? (l.itemId ? bookById.get(l.itemId)?.unitLabel ?? bookById.get(l.itemId)?.unit ?? null : null),
       qtyExpected: l.qty,
       qtyLandedDefault: l.qtyLanded ?? l.qty,
-      unitCostDefault: r4(unitCostDefault),
+      unitCostDefault,
       costSource,
+      weight: w.weight,
+      weightBasis: w.basis,
+      taxShare,
       bookPurchasePrice: price,
       matchedReceiptLine: hit ? { receiptId: hit.receiptId, name: hit.name, qty: hit.qty, unit: hit.unit, unitCost: hit.unitCost } : null,
+      matchedReceiptLines: hits.map((rl) => ({ receiptId: rl.receiptId, index: rl.index, name: rl.name, qty: rl.qty, unit: rl.unit, unitCost: rl.unitCost, lineTotal: rl.lineTotal })),
     };
   });
+
+  const linesTotal = r2(lines.reduce((s, l) => s + l.qtyLandedDefault * l.unitCostDefault, 0));
+  // Kyle, 2026-09-11: "Land is held when the landing total does not equal the receipt total."
+  const balanced = receiptTotal <= 0 || Math.abs(linesTotal - receiptTotal) <= 0.01;
+
+  // A PO with no lines has nothing to land (PO-0009, PO-0012) — offer the receipt's own lines.
+  const suggestedLines: LandingSuggestedLine[] = po.lines.length > 0 ? [] : receipts.flatMap((r) => (
+    r.lines.length > 0
+      ? r.lines.map((rl) => ({ receiptId: r.receiptId, name: rl.name, qty: rl.qty > 0 ? rl.qty : 1, unit: rl.unit, unitCost: rl.unitCost }))
+      : r.amount > 0
+        ? [{ receiptId: r.receiptId, name: `${r.vendor ?? po.supplier} receipt`, qty: 1, unit: null, unitCost: r2(r.amount) }]
+        : []
+  ));
 
   let destinationKey: string | null = null;
   try { destinationKey = destinationKeyOf(po); } catch { destinationKey = null; }
@@ -591,7 +703,14 @@ export async function landingDefaults(id: string) {
     destinationLabel: po.destinationType === "warehouse" ? "Warehouse (home)" : po.truck?.name ?? "truck",
     receiptTotal,
     matchedTotal,
-    remainder,
+    /** Σ of the receipts' printed lines — what the photo reader could price. */
+    parsedTotal,
+    /** receiptTotal − parsedTotal, when positive: the sales tax, spread over the lines. */
+    taxTotal,
+    /** Σ qtyLandedDefault × unitCostDefault — equals receiptTotal when it balances. */
+    linesTotal,
+    balanced,
+    suggestedLines,
     receiptCount: po.receipts.length,
     receiptLines: receipts,
     hasReceiptPhoto: hasPhoto,
@@ -606,14 +725,30 @@ export interface LandingLineInput {
   unitCost: number;
 }
 
+/** Kyle, 2026-09-11: landing out of balance takes a one-line reason, kept on the event and every movement. */
+export interface LandingOverride {
+  reason: string;
+}
+
 /**
  * Land a purchased/verified PO: truck_stock and warehouse POs write one
  * purchase_in per line to the PO's destination; a tool PO creates qtyLanded
  * Tool rows there. Lines then carry qtyLanded / unitCost / landedAt, the PO
  * closes (through verified, one "status" event, reason "landed"), landedAt is
  * stamped, and a "landed" event holds the lines. Landing twice → 409.
+ *
+ * Kyle, 2026-09-11: "Land is held when the landing total does not equal the
+ * receipt total (tolerance $0.01), with a 'Land anyway' override that REQUIRES
+ * a one-line reason." A PO with no receipt attached has nothing to balance
+ * against, so the check only runs once a receipt is on it.
  */
-export async function landPurchaseOrder(id: string, lines: LandingLineInput[], actor: string, reason?: string | null) {
+export async function landPurchaseOrder(
+  id: string,
+  lines: LandingLineInput[],
+  actor: string,
+  reason?: string | null,
+  opts?: { override?: LandingOverride | null },
+) {
   const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: LANDING_INCLUDE });
   if (!po) throw new InventoryError("Purchase order not found", 404);
   const hasPhoto = po.receipts.some((r) => r.imageMime || r.imageUrl);
@@ -627,6 +762,18 @@ export async function landPurchaseOrder(id: string, lines: LandingLineInput[], a
     if (!Number.isFinite(input.qtyLanded) || input.qtyLanded < 0) throw new InventoryError("qtyLanded must be zero or more", 400);
     if (!Number.isFinite(input.unitCost) || input.unitCost < 0) throw new InventoryError("unitCost must be zero or more", 400);
   }
+
+  // The receipt is the truth (Kyle, 2026-09-11) — the lines have to add up to it.
+  const receiptTotal = r2(po.receipts.reduce((s, r) => s + (r.amount ?? 0), 0));
+  const landedTotal = r2(lines.reduce((s, l) => s + l.qtyLanded * l.unitCost, 0));
+  const override = opts?.override?.reason?.trim() || null;
+  if (receiptTotal > 0 && Math.abs(landedTotal - receiptTotal) > 0.01 && !override) {
+    throw new InventoryError(
+      `${po.number} lands at $${landedTotal.toFixed(2)} but its receipt${po.receipts.length === 1 ? "" : "s"} total $${receiptTotal.toFixed(2)} — the receipt is the truth. Fix the lines, or land anyway with a reason.`,
+      409,
+    );
+  }
+  const landReason = [reason?.trim() || null, override ? `Landed anyway: ${override}` : null].filter(Boolean).join(" · ") || null;
 
   return prisma.$transaction(async (tx) => {
     await assertLocation(tx, destination);
@@ -664,7 +811,7 @@ export async function landPurchaseOrder(id: string, lines: LandingLineInput[], a
           toLocationKey: destination,
           purchaseOrderId: po.id,
           purchaseOrderLineId: line.id,
-          reason: reason ?? null,
+          reason: landReason,
           actor,
           at: now,
         });
@@ -683,11 +830,11 @@ export async function landPurchaseOrder(id: string, lines: LandingLineInput[], a
         purchaseOrderId: po.id,
         actor,
         kind: "landed",
-        reason: reason ?? null,
-        after: JSON.stringify({ destination, purpose, lines: landed }),
+        reason: landReason,
+        after: JSON.stringify({ destination, purpose, lines: landed, receiptTotal, landedTotal, ...(override ? { override } : {}) }),
       },
     });
-    return { purchaseOrder: updated, destination, lines: landed };
+    return { purchaseOrder: updated, destination, lines: landed, receiptTotal, landedTotal, override };
   });
 }
 

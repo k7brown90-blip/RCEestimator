@@ -14,7 +14,7 @@
  * lists — rows cap at 8 with Show more).
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
@@ -311,10 +311,24 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
     mutationFn: ({ to, reason }: { to: "purchased" | "verified" | "closed" | "cancelled"; reason?: string }) => api.transitionPurchaseOrder(id, to, reason),
     onSuccess: onDone, onError,
   });
-  const attach = useMutation({ mutationFn: (receiptId: string) => api.attachReceiptToPurchaseOrder(id, receiptId), onSuccess: onDone, onError });
+  const attach = useMutation({ mutationFn: (receiptId: string) => api.attachReceiptToPurchaseOrder(id, receiptId), onSuccess: () => { setLinking(false); onDone(); }, onError });
   const detach = useMutation({ mutationFn: (receiptId: string) => api.detachReceiptFromPurchaseOrder(id, receiptId), onSuccess: onDone, onError });
+  // Kyle, 2026-09-11: the receipt arrives as a photo from the phone or the computer.
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const upload = useMutation({
+    mutationFn: (file: File) => api.uploadPoReceipt(id, { image: file }),
+    onSuccess: (res) => {
+      setUploadNote(res.note ?? `Receipt read: ${money(res.amount)}${res.lineCount > 0 ? ` · ${res.lineCount} line${res.lineCount === 1 ? "" : "s"}` : " · no lines read — type them or land by hand"}`);
+      onDone();
+    },
+    onError,
+  });
   const [cancelling, setCancelling] = useState(false);
+  const [linking, setLinking] = useState(false);
   const [attachChoice, setAttachChoice] = useState("");
+  // Only a receipt that belongs to nothing yet can be linked by hand; everything else is an upload.
+  const loose = needing.filter((r) => !r.jobId);
 
   if (!po) return <p className="mt-2 text-xs text-rce-muted">Loading…</p>;
   const live = po.status === "open" || po.status === "purchased";
@@ -342,15 +356,43 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
             </li>
           ))}
         </ul>
-        {editable && needing.length > 0 && (
-          <div className="mt-1 flex flex-wrap items-center gap-1">
-            <select className="field px-1 py-0.5 text-xs" value={attachChoice} onChange={(e) => setAttachChoice(e.target.value)}>
-              <option value="">Attach receipt…</option>
-              {needing.map((r) => (
-                <option key={r.id} value={r.id}>{r.vendor || "Unknown vendor"} · {money(r.amount)} · {shortDate(r.receivedAt)} · {r.jobLabel}</option>
-              ))}
-            </select>
-            <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={!attachChoice || attach.isPending} onClick={() => { attach.mutate(attachChoice); setAttachChoice(""); }}>Attach</button>
+        {/*
+          Kyle, 2026-09-11: "This should not pull up existing job costs but be an
+          upload as the receipts will be photos added from the phone or computer."
+          The picker is gone; linking a receipt that is on no job and no PO stays
+          behind a toggle for the rare case where the photo is already in.
+        */}
+        {editable && (
+          <div className="mt-1 space-y-1">
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ""; }}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={upload.isPending} onClick={() => fileRef.current?.click()}>
+                {upload.isPending ? "Reading the photo…" : "Upload receipt photo"}
+              </button>
+              {loose.length > 0 && !linking && (
+                <button type="button" className="text-rce-accent hover:underline" onClick={() => setLinking(true)}>or link one already uploaded</button>
+              )}
+            </div>
+            {uploadNote && <p className="text-rce-muted">{uploadNote}</p>}
+            {linking && loose.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1">
+                <select className="field px-1 py-0.5 text-xs" value={attachChoice} onChange={(e) => setAttachChoice(e.target.value)}>
+                  <option value="">Receipts on no job and no PO…</option>
+                  {loose.map((r) => (
+                    <option key={r.id} value={r.id}>{r.vendor || "Unknown vendor"} · {money(r.amount)} · {shortDate(r.receivedAt)}</option>
+                  ))}
+                </select>
+                <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={!attachChoice || attach.isPending} onClick={() => { attach.mutate(attachChoice); setAttachChoice(""); }}>Link</button>
+                <button type="button" className="text-rce-muted" onClick={() => { setLinking(false); setAttachChoice(""); }}>cancel</button>
+              </div>
+            )}
           </div>
         )}
       </div>

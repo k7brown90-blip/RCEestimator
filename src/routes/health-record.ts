@@ -1560,9 +1560,11 @@ healthRecordTechRouter.post("/purchase-orders/:id/land", asyncHandler(async (req
   const body = z.object({
     lines: z.array(z.object({ lineId: z.string().trim().min(1), qtyLanded: z.number().nonnegative(), unitCost: z.number().nonnegative() })),
     reason: z.string().trim().max(300).nullable().optional(),
+    // Kyle, 2026-09-11: "Land anyway" takes a one-line reason, kept on the event and every movement.
+    override: z.object({ reason: z.string().trim().min(1).max(300) }).optional(),
   }).parse(req.body);
   try {
-    const result = await landPurchaseOrder(readParam(req, "id"), body.lines, `tech:${req.technician!.name}`, body.reason ?? null);
+    const result = await landPurchaseOrder(readParam(req, "id"), body.lines, `tech:${req.technician!.name}`, body.reason ?? null, { override: body.override ?? null });
     res.json({ success: true, data: { id: result.purchaseOrder.id, number: result.purchaseOrder.number, status: result.purchaseOrder.status, landedAt: result.purchaseOrder.landedAt, destination: result.destination } });
   } catch (err) {
     if (!techServiceError(res, err)) throw err;

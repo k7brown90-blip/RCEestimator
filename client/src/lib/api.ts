@@ -1079,7 +1079,32 @@ export const api = {
   setParLevel: (levelId: string, parLevel: number | null) =>
     request<StockLevelView>(`/inventory/levels/${levelId}`, { method: "PATCH", body: JSON.stringify({ parLevel }) }),
   landingDefaults: (poId: string) => request<LandingDefaults>(`/purchase-orders/${poId}/landing`),
-  landPurchaseOrder: (poId: string, input: { lines: { lineId: string; qtyLanded: number; unitCost: number }[]; reason?: string | null }) =>
+  /**
+   * The receipt photo straight onto a PO (Kyle, 2026-09-11: "This should not
+   * pull up existing job costs but be an upload as the receipts will be photos
+   * added from the phone or computer"). No amount → the server reads the photo.
+   */
+  uploadPoReceipt: async (poId: string, input: { image: File; amount?: number | null; vendor?: string | null }) => {
+    const receiptId = crypto.randomUUID().replaceAll("-", "");
+    const query = new URLSearchParams();
+    if (input.amount != null) query.set("amount", String(input.amount));
+    if (input.vendor) query.set("vendor", input.vendor);
+    const token = localStorage.getItem("rce_token");
+    const response = await fetch(`/api/purchase-orders/${poId}/receipts/${receiptId}?${query.toString()}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": input.image.type || "image/jpeg",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: input.image,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error((body as { error?: string } | null)?.error ?? `Receipt upload failed (${response.status})`);
+    }
+    return (await response.json()) as { id: string; amount: number; vendor: string | null; parsed: boolean; lineCount: number; note: string | null };
+  },
+  landPurchaseOrder: (poId: string, input: { lines: { lineId: string; qtyLanded: number; unitCost: number }[]; reason?: string | null; override?: { reason: string } }) =>
     request<{ id: string; number: string; status: string; landedAt: string; destination: string }>(`/purchase-orders/${poId}/land`, { method: "POST", body: JSON.stringify(input) }),
   tools: (locationKey?: string) => request<ToolView[]>(`/tools${locationKey ? `?locationKey=${encodeURIComponent(locationKey)}` : ""}`),
   tool: (id: string) => request<ToolDetail>(`/tools/${id}`),

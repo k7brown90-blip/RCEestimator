@@ -732,8 +732,9 @@ export async function moveToolFromField(toolId: string, toLocationKey: string, r
   return crmRequest(`/tools/${toolId}/move`, { method: 'POST', body: JSON.stringify({ toLocationKey, reason: reason ?? null }) })
 }
 
-// Kyle, 2026-09-10: each PO line prices from ITS receipt line; the source rides beside the number.
-export type FieldLandingCostSource = 'receipt-line' | 'po-line' | 'receipt-prorated' | 'book' | 'none'
+// Kyle, 2026-09-11: the receipt total is the truth; its line prices are only the weights that
+// split it, and the tax rides in the unit costs. The source says which weight decided the line.
+export type FieldLandingCostSource = 'receipt-line' | 'po-line' | 'book' | 'even' | 'none'
 
 export interface FieldLandingReceiptLine {
   receiptId: string
@@ -764,15 +765,30 @@ export interface FieldLandingLine {
   qtyLandedDefault: number
   unitCostDefault: number
   costSource: FieldLandingCostSource
+  weightBasis: string
+  /** This line's share of the tax the receipt carries past its printed lines. */
+  taxShare: number
   matchedReceiptLine: { receiptId: string; name: string; qty: number; unit: string | null; unitCost: number | null } | null
 }
 
+/** A line the form offers to add when the PO has none (Kyle, 2026-09-11). */
+export interface FieldLandingSuggestedLine {
+  receiptId: string
+  name: string
+  qty: number
+  unit: string | null
+  unitCost: number | null
+}
+
 export interface FieldLanding {
-  purchaseOrder: { number: string; purpose: FieldPoPurpose }
+  purchaseOrder: { id: string; number: string; purpose: FieldPoPurpose; landedAt: string | null }
   destinationLabel: string
   receiptTotal: number
   matchedTotal: number
-  remainder: number
+  taxTotal: number
+  linesTotal: number
+  balanced: boolean
+  suggestedLines: FieldLandingSuggestedLine[]
   receiptCount: number
   receiptLines: FieldLandingReceipt[]
   blocker: string | null
@@ -794,8 +810,10 @@ export async function fetchLandingDefaults(poId: string): Promise<FieldLanding> 
 export async function landPurchaseOrderFromField(
   poId: string,
   lines: { lineId: string; qtyLanded: number; unitCost: number }[],
+  // Kyle, 2026-09-11: out of balance with the receipt lands only with a one-line reason.
+  override?: { reason: string } | null,
 ): Promise<{ id: string; number: string; status: string; landedAt: string; destination: string }> {
-  return crmRequest(`/purchase-orders/${poId}/land`, { method: 'POST', body: JSON.stringify({ lines }) })
+  return crmRequest(`/purchase-orders/${poId}/land`, { method: 'POST', body: JSON.stringify({ lines, ...(override ? { override } : {}) }) })
 }
 
 /** Landing and tool moves are online-only and never queued — refuse up front when the phone knows it has no signal. */

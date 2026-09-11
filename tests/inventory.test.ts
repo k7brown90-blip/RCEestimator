@@ -183,7 +183,7 @@ describe("landing a PO", () => {
     expect(again.body.error).toMatch(/already landed/);
   });
 
-  it("defaults prorate a receipt total across lines by qty × book price", async () => {
+  it("defaults split the whole receipt total across the lines by qty × book price", async () => {
     const po = await createPurchaseOrder({
       supplier: "NES", openedBy: "owner", actor: "test", truckId,
       lines: [{ itemId: WIRE, name: "12-2 NM-B", qty: 100, unit: "ft" }, { itemId: BOX, name: "4-square", qty: 10, unit: "ea" }],
@@ -196,12 +196,15 @@ describe("landing a PO", () => {
     const defaults = await request(app).get(`/purchase-orders/${po.id}/landing`);
     expect(defaults.status).toBe(200);
     expect(defaults.body.receiptTotal).toBe(90);
-    // weights 100×0.72 = 72 and 10×1.10 = 11 → 83
-    // Kyle, 2026-09-10: no parsed lines on this receipt, so the whole total prorates — and says so.
-    expect(defaults.body.lines[0].costSource).toBe("receipt-prorated");
-    expect(defaults.body.remainder).toBe(90);
-    expect(defaults.body.lines[0].unitCostDefault).toBe(r4((90 * 72) / 83 / 100));
-    expect(defaults.body.lines[1].unitCostDefault).toBe(r4((90 * 11) / 83 / 10));
+    // weights 100×0.72 = 72 and 10×1.10 = 11 → 83; the book price is the WEIGHT, the receipt is the money.
+    // Kyle, 2026-09-11: no parsed lines on this receipt, so all $90 (tax included) splits across the lines.
+    expect(defaults.body.lines[0].costSource).toBe("book");
+    expect(defaults.body.taxTotal).toBe(90);
+    expect(defaults.body.lines[0].unitCostDefault).toBe(r4((90 * 72) / 83 / 100)); // 78.07 ÷ 100 ft
+    // The last line absorbs the rounding so the landing equals the receipt to the cent.
+    expect(defaults.body.lines[1].unitCostDefault).toBe(1.193);
+    expect(defaults.body.linesTotal).toBe(90);
+    expect(defaults.body.balanced).toBe(true);
   });
 
   it("a tool PO with qty 2 lands as two Tool rows on the destination", async () => {
