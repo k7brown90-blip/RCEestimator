@@ -26,10 +26,23 @@ import { prisma } from "../lib/prisma";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-/** The receipt rung's figure for a job, without writing it. */
+/**
+ * The receipt rung's figure for a job, without writing it.
+ *
+ * A receipt riding a live PO is inventory value, not job cost — the job pays by
+ * consuming the stock. A receipt on a CANCELLED PO is a different story (Kyle,
+ * 2026-09-11): that PO landed nothing, so the money never became stock, and the
+ * receipt is simply a job receipt again. Without this the cost would vanish the
+ * moment a PO was cancelled.
+ */
 export async function receiptMaterialCost(jobId: string): Promise<number> {
   const rows = await prisma.receipt.findMany({
-    where: { jobId, category: "materials", status: "confirmed", purchaseOrderId: null },
+    where: {
+      jobId,
+      category: "materials",
+      status: "confirmed",
+      OR: [{ purchaseOrderId: null }, { purchaseOrder: { status: "cancelled" } }],
+    },
     select: { amount: true },
   });
   return round2(rows.reduce((sum, r) => sum + r.amount, 0));

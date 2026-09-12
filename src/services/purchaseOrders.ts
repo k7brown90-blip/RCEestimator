@@ -23,11 +23,20 @@ export const PO_STATUSES = ["open", "purchased", "verified", "closed", "cancelle
 export type PoStatus = (typeof PO_STATUSES)[number];
 export type PoDestination = "truck" | "warehouse";
 
-/** The chain: open → purchased → verified → closed; cancel from open/purchased; closed/cancelled are terminal. */
+/**
+ * The chain: open → purchased → verified → closed; cancel from anywhere before
+ * the goods land; closed and cancelled are terminal.
+ *
+ * Kyle, 2026-09-11: verified could only go to closed, which trapped the four
+ * duplicate POs the card sync drafted — a PO reaches "verified" on its own when
+ * a card transaction and a receipt agree, and there was then no way to cancel
+ * one that should never have existed. Landing is what makes a PO permanent, and
+ * landing closes it, so cancelling a verified PO takes nothing back.
+ */
 const TRANSITIONS: Record<PoStatus, PoStatus[]> = {
   open: ["purchased", "cancelled"],
   purchased: ["verified", "cancelled"],
-  verified: ["closed"],
+  verified: ["closed", "cancelled"],
   closed: [],
   cancelled: [],
 };
