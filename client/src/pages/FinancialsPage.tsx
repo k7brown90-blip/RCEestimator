@@ -30,7 +30,6 @@ import type { CompanyBillRow, JobProfitRow, JobReceiptRow, PaymentRow, WarrantyR
 import { MATERIAL_SOURCE_LABEL, type InvoiceSummary, type MaterialsByMonth } from "../lib/types";
 import { money } from "../lib/utils";
 import { ReceiptReviewList } from "../components/ReceiptReviewList";
-import { BouncedEmailsCard } from "../components/BouncedEmailsCard";
 import { BounceBadge } from "../components/BounceBadge";
 import { DeliveryChip } from "../components/DeliveryChip";
 import { PurchasesCard } from "../components/PurchaseOrders";
@@ -94,10 +93,6 @@ export function FinancialsPage() {
           purchaseOrderNumber: r.purchaseOrderNumber, needsPo: r.needsPo, cardMatched: r.cardMatched,
         }))}
       />
-
-      {/* ── Bounced emails (Kyle, 2026-09-09: "very few are actually getting through") — every
-          customer email Gmail could not deliver, with a Resolve door and a Check-now poll. ── */}
-      <BouncedEmailsCard />
 
       {/* ── Purchases (Kyle, 2026-09-09): the PO is the document — number, purchase, receipt photo ── */}
       <PurchasesCard />

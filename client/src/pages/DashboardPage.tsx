@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
+import { BouncedEmailsCard } from "../components/BouncedEmailsCard";
 import { api } from "../lib/api";
 
 function formatDateInput(value: Date) {
@@ -55,6 +56,12 @@ export function DashboardPage() {
 
   return (
     <div>
+      {/* Kyle, 2026-09-11: "Bounced emails should display in the Dashboard not on the
+          financials page." A customer who never got the estimate is the day's first
+          problem, so it sits above everything else and hides itself when the list is
+          empty. */}
+      <BouncedEmailsCard />
+
       <PageHeader
         title="CRM Dashboard"
         subtitle="Pipeline health, follow-up risk, win/loss trends, and close-cycle pace."
