@@ -181,7 +181,13 @@ export function TechnicianPage() {
               Week of {new Date(week.weekStart).toLocaleDateString()} – {new Date(week.weekEnd).toLocaleDateString()}
             </h2>
             <div className="mt-3 grid gap-3 text-sm md:grid-cols-4">
-              <Stat label="Shift hours (payroll)" value={hm(week.shiftMinutes)} />
+              <Stat
+                label="Paid hours (payroll)"
+                value={hm(week.shiftMinutes + week.impliedMinutes)}
+                note={week.impliedMinutes > 0
+                  ? `includes ${hm(week.impliedMinutes)} of job time with no shift clocked`
+                  : undefined}
+              />
               <Stat label="On jobs" value={hm(week.jobMinutes)} />
               <Stat
                 label="Unbilled (drive / shop / supply house)"
@@ -344,7 +350,10 @@ function EntryTable({
                     </span>
                   )}
                   {e.rateApplied != null ? (
-                    <span className="ml-2 text-xs text-rce-muted">{money(e.rateApplied)}/hr · {money(e.pay)}</span>
+                    <span className="ml-2 text-xs text-rce-muted">
+                      {money(e.rateApplied)}/hr · {money(e.pay)}
+                      {e.rateFrozen === false && <span className="ml-1 text-rce-soft">(current rate)</span>}
+                    </span>
                   ) : (
                     e.endedAt && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">rate not set</span>
                   )}

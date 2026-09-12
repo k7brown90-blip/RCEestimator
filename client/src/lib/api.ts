@@ -1661,8 +1661,14 @@ export interface PayrollEntry {
   startedAt: string;
   endedAt: string | null;
   minutes: number | null;
-  /** Frozen when the entry closed; null means the tech had no rate on file. */
+  /**
+   * What this entry pays at: the rate frozen when it closed, or the tech's
+   * CURRENT rate for entries that closed before a rate existed. Null only when
+   * no rate has ever been set.
+   */
   rateApplied: number | null;
+  /** True when the rate came off the entry, false when it is the current rate. */
+  rateFrozen?: boolean;
   regularMinutes: number;
   overtimeMinutes: number;
   pay: number | null;
@@ -1709,7 +1715,9 @@ export interface PayrollWeek {
   weekEnd: string;
   shiftMinutes: number;
   jobMinutes: number;
-  /** Shift − job: drive, shop, supply house. Company overhead, never job cost. */
+  /** Job time paid with no shift clocked — the payroll floor. Add to shiftMinutes for paid hours. */
+  impliedMinutes: number;
+  /** Paid − job: drive, shop, supply house. Company overhead, never job cost. */
   unbilledMinutes: number;
   regularMinutes: number;
   overtimeMinutes: number;

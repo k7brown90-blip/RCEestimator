@@ -245,6 +245,93 @@ describe("rule 2 — unbilled time is shift minus job", () => {
   });
 });
 
+describe("the payroll floor — job time with no shift is still paid", () => {
+  it("pays job hours the day clock missed, and counts them toward the week", async () => {
+    await prisma.technician.update({ where: { id: technicianId }, data: { hourlyRate: 30 } });
+    const monday = lastMonday();
+    // No shift at all — exactly Kyle's week on 2026-09-11: job clocks, no ShiftEntry rows.
+    await prisma.timeEntry.create({
+      data: {
+        visitId, technicianId,
+        startedAt: new Date(monday.getTime() + HOUR),
+        endedAt: new Date(monday.getTime() + 6.5 * HOUR),
+        minutes: 5.5 * 60,
+        rateApplied: 30,
+        endedReason: "completed",
+      },
+    });
+
+    const week = await payrollForWeek(technicianId, monday);
+    expect(week.shiftMinutes).toBe(0);
+    expect(week.jobMinutes).toBe(5.5 * 60);
+    expect(week.impliedMinutes).toBe(5.5 * 60);
+    expect(week.regularMinutes).toBe(5.5 * 60);
+    expect(week.regularPay).toBe(5.5 * 30);
+    expect(week.unbilledMinutes).toBe(0); // every paid minute was on the job
+  });
+
+  it("does not pay job time twice when a shift already covers it", async () => {
+    await prisma.technician.update({ where: { id: technicianId }, data: { hourlyRate: 30 } });
+    const monday = lastMonday();
+    await createShift({ technicianId, startedAt: monday, endedAt: new Date(monday.getTime() + 8 * HOUR) });
+    await prisma.timeEntry.create({
+      data: {
+        visitId, technicianId,
+        startedAt: new Date(monday.getTime() + HOUR),
+        endedAt: new Date(monday.getTime() + 4 * HOUR),
+        minutes: 3 * 60,
+        endedReason: "completed",
+      },
+    });
+
+    const week = await payrollForWeek(technicianId, monday);
+    expect(week.impliedMinutes).toBe(0);
+    expect(week.regularMinutes).toBe(8 * 60);
+    expect(week.regularPay).toBe(8 * 30);
+  });
+
+  it("pays only the tail of a job that ran past the clock-out", async () => {
+    await prisma.technician.update({ where: { id: technicianId }, data: { hourlyRate: 30 } });
+    const monday = lastMonday();
+    await createShift({ technicianId, startedAt: monday, endedAt: new Date(monday.getTime() + 8 * HOUR) });
+    await prisma.timeEntry.create({
+      data: {
+        visitId, technicianId,
+        startedAt: new Date(monday.getTime() + 6 * HOUR),
+        endedAt: new Date(monday.getTime() + 10 * HOUR), // two hours past clock-out
+        minutes: 4 * 60,
+        endedReason: "completed",
+      },
+    });
+
+    const week = await payrollForWeek(technicianId, monday);
+    expect(week.impliedMinutes).toBe(2 * 60);
+    expect(week.regularMinutes).toBe(10 * 60);
+    expect(week.regularPay).toBe(10 * 30);
+  });
+});
+
+describe("hours closed before a rate existed", () => {
+  it("pays them at the rate set afterwards, and marks the rate as not frozen", async () => {
+    const monday = lastMonday();
+    // Closed with no rate on file — rateApplied lands null.
+    const entry = await createShift({
+      technicianId,
+      startedAt: monday,
+      endedAt: new Date(monday.getTime() + 8 * HOUR),
+    });
+    expect(entry.rateApplied).toBeNull();
+
+    // Kyle sets the rate afterwards. Those hours are not worth nothing forever.
+    await prisma.technician.update({ where: { id: technicianId }, data: { hourlyRate: 30 } });
+
+    const week = await payrollForWeek(technicianId, monday);
+    expect(week.regularPay).toBe(8 * 30);
+    expect(week.shifts[0].rateApplied).toBe(30);
+    expect(week.shifts[0].rateFrozen).toBe(false);
+  });
+});
+
 describe("rule 8 — overtime rides the hours that crossed 40", () => {
   it("splits a 46-hour week into 40 regular and 6 overtime, premium on the later hours", async () => {
     await prisma.technician.update({ where: { id: technicianId }, data: { hourlyRate: 20 } });

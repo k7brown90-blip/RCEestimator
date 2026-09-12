@@ -605,8 +605,16 @@ export interface PayrollEntryView {
   startedAt: string;
   endedAt: string | null;
   minutes: number | null;
-  /** Frozen rate; null when the technician had no rate on file (rule 6). */
+  /**
+   * The rate this entry is paid at. Frozen on the entry when the technician had
+   * a rate at the time it closed; otherwise the technician's CURRENT rate, so
+   * that work recorded before a rate existed is not worth nothing forever
+   * (Kyle, 2026-09-11: "No labor or pay tracked after pay and commissions were
+   * set."). Null only when no rate has ever been set.
+   */
   rateApplied: number | null;
+  /** True when the rate came off the entry, false when it is the current rate. */
+  rateFrozen?: boolean;
   /** How the minutes split once the week crossed 40 (rule 8, in the order worked). */
   regularMinutes: number;
   overtimeMinutes: number;
@@ -629,7 +637,13 @@ export interface PayrollWeek {
   weekEnd: string;
   shiftMinutes: number;
   jobMinutes: number;
-  /** Rule 2: shift − job. Company overhead, never a job cost. */
+  /**
+   * Job minutes that fell outside every shift and are paid anyway (the payroll
+   * floor). Nonzero means the day clock was missed — worth showing so it gets
+   * fixed, but never a reason to withhold pay.
+   */
+  impliedMinutes: number;
+  /** Rule 2: paid time − job time. Company overhead, never a job cost. */
   unbilledMinutes: number;
   regularMinutes: number;
   overtimeMinutes: number;
@@ -650,6 +664,44 @@ export interface PayrollWeek {
     percent: number | null; amount: number; note: string | null; reason: string | null;
     earnedAt: string; paidAt: string | null;
   }>;
+}
+
+/** [fromMs, toMs], half-open, used only for the payroll-floor arithmetic below. */
+type Interval = [number, number];
+
+/** One stretch of payable time: a closed shift, or job time no shift covered. */
+interface PayableSegment {
+  /** The ShiftEntry id, or null when this is job time outside every shift. */
+  shiftId: string | null;
+  startedAt: number;
+  minutes: number;
+  rateApplied: number | null;
+}
+
+function mergeIntervals(spans: Interval[]): Interval[] {
+  const sorted = [...spans].filter(([a, b]) => b > a).sort((a, b) => a[0] - b[0]);
+  const out: Interval[] = [];
+  for (const span of sorted) {
+    const last = out[out.length - 1];
+    if (last && span[0] <= last[1]) last[1] = Math.max(last[1], span[1]);
+    else out.push([...span]);
+  }
+  return out;
+}
+
+/** The parts of `span` that no interval in `covers` (already merged) overlaps. */
+function subtractIntervals(span: Interval, covers: Interval[]): Interval[] {
+  let [cursor, end] = span;
+  const gaps: Interval[] = [];
+  for (const [from, to] of covers) {
+    if (to <= cursor) continue;
+    if (from >= end) break;
+    if (from > cursor) gaps.push([cursor, from]);
+    cursor = Math.max(cursor, to);
+    if (cursor >= end) break;
+  }
+  if (cursor < end) gaps.push([cursor, end]);
+  return gaps;
 }
 
 export async function payrollForWeek(technicianId: string, weekStart: Date): Promise<PayrollWeek> {
@@ -692,44 +744,78 @@ export async function payrollForWeek(technicianId: string, weekStart: Date): Pro
     e.endedAt != null && e.minutes != null && (e.flaggedAt == null || e.confirmedAt != null);
 
   /*
-    Rule 8, the attribution. Walk the week's CLOSED shifts in the order they were
-    worked; everything past the 40-hour line is overtime, so the premium rides
-    the hours that crossed it — the long job carries it, not an average.
-    Each entry pays at ITS OWN frozen rate (rule 3).
+    The payroll floor (2026-09-11). A payable segment is a closed shift, PLUS any
+    job time that fell outside every shift. A tech who works a logged job but
+    never punched the day clock still gets paid for those hours — without the
+    floor his week reads zero pay even with a rate on file, which is exactly what
+    Kyle saw: "No labor or pay tracked after pay and commissions were set."
+  */
+  const shiftWindows = mergeIntervals(
+    shiftRows.filter(counts).map((s) => [s.startedAt.getTime(), s.endedAt!.getTime()] as Interval),
+  );
+  const segments: PayableSegment[] = [
+    ...shiftRows.filter(counts).map((s) => ({
+      shiftId: s.id,
+      startedAt: s.startedAt.getTime(),
+      minutes: s.minutes ?? 0,
+      rateApplied: s.rateApplied ?? tech.hourlyRate,
+    })),
+    ...sessionRows.filter(counts).flatMap((e) =>
+      subtractIntervals([e.startedAt.getTime(), e.endedAt!.getTime()], shiftWindows).map(([from, to]) => ({
+        shiftId: null,
+        startedAt: from,
+        minutes: Math.round((to - from) / 60_000),
+        rateApplied: e.rateApplied ?? tech.hourlyRate,
+      })),
+    ),
+  ]
+    .filter((seg) => seg.minutes > 0)
+    .sort((a, b) => a.startedAt - b.startedAt);
+
+  /*
+    Rule 8, the attribution. Walk the week's payable segments in the order they
+    were worked; everything past the 40-hour line is overtime, so the premium
+    rides the hours that crossed it — the long job carries it, not an average.
+    Each segment pays at ITS OWN frozen rate (rule 3).
   */
   let running = 0;
   let regularMinutes = 0;
   let overtimeMinutes = 0;
   let regularPay = 0;
   let overtimePremium = 0;
-  const shifts: PayrollEntryView[] = shiftRows.map((s) => {
-    let reg = 0;
-    let ot = 0;
-    if (counts(s)) {
-      const mins = s.minutes ?? 0;
-      const beforeLine = Math.max(0, Math.min(mins, OVERTIME_THRESHOLD_MINUTES - running));
-      reg = beforeLine;
-      ot = mins - beforeLine;
-      running += mins;
-      regularMinutes += reg;
-      overtimeMinutes += ot;
-      if (s.rateApplied != null) {
-        regularPay += (reg / 60) * s.rateApplied;
-        overtimePremium += (ot / 60) * s.rateApplied * (OVERTIME_MULTIPLIER - 1);
-      }
+  /** shift id → how that shift's minutes landed either side of the 40-hour line. */
+  const split = new Map<string, { reg: number; ot: number }>();
+
+  for (const seg of segments) {
+    const reg = Math.max(0, Math.min(seg.minutes, OVERTIME_THRESHOLD_MINUTES - running));
+    const ot = seg.minutes - reg;
+    running += seg.minutes;
+    regularMinutes += reg;
+    overtimeMinutes += ot;
+    if (seg.rateApplied != null) {
+      regularPay += (reg / 60) * seg.rateApplied;
+      overtimePremium += (ot / 60) * seg.rateApplied * (OVERTIME_MULTIPLIER - 1);
     }
+    if (seg.shiftId) split.set(seg.shiftId, { reg, ot });
+  }
+
+  /** Job minutes no shift covered — paid, and reported so the gap is visible. */
+  const impliedMinutes = segments.reduce((sum, seg) => sum + (seg.shiftId ? 0 : seg.minutes), 0);
+
+  const shifts: PayrollEntryView[] = shiftRows.map((s) => {
+    const { reg, ot } = split.get(s.id) ?? { reg: 0, ot: 0 };
+    const rate = s.rateApplied ?? tech.hourlyRate;
     return {
       kind: "shift",
       id: s.id,
       startedAt: s.startedAt.toISOString(),
       endedAt: s.endedAt?.toISOString() ?? null,
       minutes: s.minutes,
-      rateApplied: s.rateApplied,
+      rateApplied: rate,
+      rateFrozen: s.rateApplied != null,
       regularMinutes: reg,
       overtimeMinutes: ot,
-      pay: s.rateApplied == null
-        ? null
-        : round2((reg / 60) * s.rateApplied + (ot / 60) * s.rateApplied * OVERTIME_MULTIPLIER),
+      pay: rate == null ? null : round2((reg / 60) * rate + (ot / 60) * rate * OVERTIME_MULTIPLIER),
       source: s.source,
       note: s.note,
       flagged: s.flaggedAt != null,
@@ -744,10 +830,13 @@ export async function payrollForWeek(technicianId: string, weekStart: Date): Pro
     startedAt: e.startedAt.toISOString(),
     endedAt: e.endedAt?.toISOString() ?? null,
     minutes: e.minutes,
-    rateApplied: e.rateApplied,
+    rateApplied: e.rateApplied ?? tech.hourlyRate,
+    rateFrozen: e.rateApplied != null,
     regularMinutes: counts(e) ? e.minutes ?? 0 : 0,
     overtimeMinutes: 0,
-    pay: e.rateApplied != null && e.minutes != null ? round2((e.minutes / 60) * e.rateApplied) : null,
+    pay: (e.rateApplied ?? tech.hourlyRate) != null && e.minutes != null
+      ? round2((e.minutes / 60) * (e.rateApplied ?? tech.hourlyRate)!)
+      : null,
     note: e.note,
     visitId: e.visitId,
     visitLabel: e.visit
@@ -773,9 +862,11 @@ export async function payrollForWeek(technicianId: string, weekStart: Date): Pro
     weekEnd: end.toISOString(),
     shiftMinutes,
     jobMinutes,
-    // Rule 2. Never negative: job time logged outside a shift is a correction to
-    // make on the Team tab, not a negative overhead number on the report.
-    unbilledMinutes: Math.max(0, shiftMinutes - jobMinutes),
+    impliedMinutes,
+    // Rule 2, measured against the payroll floor: paid time minus job time. Job
+    // time outside a shift now raises the floor instead of going unpaid, so this
+    // can no longer go negative on its own.
+    unbilledMinutes: Math.max(0, shiftMinutes + impliedMinutes - jobMinutes),
     regularMinutes,
     overtimeMinutes,
     rate: tech.hourlyRate ?? null,
