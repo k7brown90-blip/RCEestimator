@@ -50,10 +50,11 @@
     // Signed-invoice email backfill by estimate number (Kyle, 2026-09-05).
     "scripts/sendInvoiceFor.ts",
     "scripts/checkGoogleCalendarConnection.ts",
-    // The price-book writer, so the import can run where the database is reachable.
-    // Extraction stays on Kyle's machine; only --from-json runs in here.
-    "scripts/price-book/importKylesTab.ts",
-    "scripts/price-book/kylesTabMapping.ts",
+    // scripts/price-book/* deleted 2026-09-12 on Kyle's instruction — the Excel
+    // workbook path is retired. The price book is authored in the CRM now, and
+    // the importer was a standing hazard to it: its cleanup pass retired every
+    // row absent from the workbook, which as of Unit 1 would have retired every
+    // assembly Kyle builds by hand.
     "shared/**/*.ts"
   ],
   "exclude": ["tests/**", "shared/**/*.test.ts", "node_modules"]
