@@ -11,6 +11,7 @@
     // `railway ssh` — the database is on the private network and is not reachable from
     // a developer machine, so `railway run` cannot connect to it.
     "scripts/readSystemEvents.ts",
+    "scripts/readReceipts.ts",
     "scripts/tailClientLog.ts",
     // Read-only estimate dump for offline what-if re-pricing (Kyle, 2026-08-31).
     "scripts/dumpEstimateForRepricing.ts",
