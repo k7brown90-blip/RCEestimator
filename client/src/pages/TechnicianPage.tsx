@@ -163,14 +163,14 @@ export function TechnicianPage() {
           {week.flagged.length > 0 && (
             <section className="card mt-5 border-red-300 bg-red-50 p-4">
               <h2 className="text-sm font-semibold text-red-800">
-                {week.flagged.length} clock ran past 12 hours and stopped counting
+                {week.flagged.length} clock{week.flagged.length === 1 ? "" : "s"} ran past 12 hours and stopped counting
               </h2>
               <p className="mt-1 text-xs text-red-700">
                 Nothing here counts toward hours or pay until someone says when it really ended.
               </p>
               <div className="mt-2 space-y-2">
                 {week.flagged.map((f) => (
-                  <ConfirmRow key={f.id} kind={f.kind} id={f.id} startedAt={f.startedAt} hoursOpen={f.hoursOpen} onDone={refresh} />
+                  <ConfirmRow key={f.id} kind={f.kind} id={f.id} startedAt={f.startedAt} hoursOpen={f.hoursOpen} jobLabel={f.jobLabel} onDone={refresh} />
                 ))}
               </div>
             </section>
@@ -262,8 +262,8 @@ function Stat({ label, value, note }: { label: string; value: string; note?: str
 
 /** Rule 5's answer from the office: close a flagged clock at the real end time. */
 function ConfirmRow({
-  kind, id, startedAt, hoursOpen, onDone,
-}: { kind: "shift" | "job"; id: string; startedAt: string; hoursOpen: number; onDone: () => void }) {
+  kind, id, startedAt, hoursOpen, jobLabel, onDone,
+}: { kind: "shift" | "job"; id: string; startedAt: string; hoursOpen: number; jobLabel?: string | null; onDone: () => void }) {
   const [endedAt, setEndedAt] = useState(localInput(startedAt));
   const [reason, setReason] = useState("");
   const confirm = useMutation({
@@ -275,7 +275,9 @@ function ConfirmRow({
       className="flex flex-wrap items-end gap-2 rounded-lg border border-red-200 bg-white p-3"
       onSubmit={(e) => { e.preventDefault(); if (reason.trim()) confirm.mutate(); }}
     >
-      <span className="text-xs text-rce-muted">
+      {/* Kyle, 2026-09-11: "it says job started but doesn't say which job." */}
+      <span className="min-w-0 text-xs text-rce-muted">
+        {jobLabel && <span className="block font-medium text-rce-text">{jobLabel}</span>}
         {kind === "shift" ? "Shift" : "Job"} started {new Date(startedAt).toLocaleString()} — {hoursOpen}h open
       </span>
       <label className="text-xs font-medium">

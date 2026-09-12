@@ -838,6 +838,8 @@ export interface FlaggedClock {
   visitId: string | null
   startedAt: string
   hoursOpen: number
+  /** Whose job it was (Kyle, 2026-09-11: "it says job started but doesn't say which job"). */
+  jobLabel: string | null
 }
 
 export interface ShiftStatus {

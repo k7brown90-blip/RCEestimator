@@ -294,6 +294,12 @@ export interface FlaggedEntry {
   visitId: string | null;
   startedAt: string;
   hoursOpen: number;
+  /**
+   * Whose job it was: "Mike Corcoran — Diagnostic, 1007 Alpaca Dr". Kyle,
+   * 2026-09-11: "it says job started but doesn't say which job." Nobody can
+   * remember when they left a site they cannot name.
+   */
+  jobLabel: string | null;
 }
 
 /**
@@ -343,17 +349,31 @@ export async function flaggedFor(technicianId: string, now: Date = new Date()): 
     prisma.timeEntry.findMany({
       where: { technicianId, flaggedAt: { not: null }, confirmedAt: null },
       orderBy: { startedAt: "asc" },
+      include: {
+        visit: {
+          select: {
+            jobType: true, purpose: true,
+            customer: { select: { name: true } },
+            property: { select: { addressLine1: true, city: true } },
+          },
+        },
+      },
     }),
   ]);
   const open = (startedAt: Date) => Math.round(((now.getTime() - startedAt.getTime()) / (60 * MINUTE)) * 10) / 10;
   return [
     ...shifts.map((s): FlaggedEntry => ({
       kind: "shift", id: s.id, technicianId: s.technicianId, visitId: null,
-      startedAt: s.startedAt.toISOString(), hoursOpen: open(s.startedAt),
+      startedAt: s.startedAt.toISOString(), hoursOpen: open(s.startedAt), jobLabel: null,
     })),
     ...sessions.map((s): FlaggedEntry => ({
       kind: "job", id: s.id, technicianId: s.technicianId, visitId: s.visitId,
       startedAt: s.startedAt.toISOString(), hoursOpen: open(s.startedAt),
+      jobLabel: [
+        s.visit?.customer?.name,
+        s.visit?.jobType || s.visit?.purpose,
+        [s.visit?.property?.addressLine1, s.visit?.property?.city].filter(Boolean).join(", ") || null,
+      ].filter(Boolean).join(" — ") || null,
     })),
   ].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 }

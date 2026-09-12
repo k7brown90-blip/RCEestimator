@@ -199,6 +199,7 @@ function ClockBar() {
           <p className="text-sm font-semibold text-red-100">
             A clock ran {f.hoursOpen} hours without stopping.
           </p>
+          {f.jobLabel && <p className="text-sm font-medium text-red-50">{f.jobLabel}</p>}
           <p className="text-xs text-red-200">
             {f.kind === 'shift' ? 'Shift' : 'Job'} started {new Date(f.startedAt).toLocaleString()}. It stopped
             counting at 12 hours and will not count again until you tell us when it really ended.
