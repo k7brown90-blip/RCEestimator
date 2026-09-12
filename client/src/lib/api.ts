@@ -393,6 +393,9 @@ export interface PbCatalogAtomic {
   sellVeryDifficult: number | null;
   source: string | null;
   retiredAt: string | null;
+  /** "E" | "C" | "M" | null — per-unit/hundred/thousand. Needed client-side only for the
+   * assembly component picker's live labour preview (mirrors laborHoursFor's own divisor use). */
+  laborUnitDivisor?: number | null;
 }
 
 export interface PbCatalogEdit {
@@ -434,6 +437,31 @@ export interface PbCatalogCreate {
   laborDifficult?: number | null;
   laborVeryDifficult?: number | null;
   notes?: string | null;
+}
+
+// ─── Assemblies (2026-09-12, barcode/materials plan Unit 1) ─────────────────
+// An assembly IS a PriceBookAtomic row (rowType "ASSEMBLY") plus a component list — see
+// src/services/priceBookAssembly.ts. Cost and (non-overridden) labour are server-derived from
+// components; these types describe that contract, not a separate model.
+
+export type PbLaborTier = "laborNormal" | "laborDifficult" | "laborVeryDifficult";
+
+export interface PbAssemblyComponentInput {
+  childItemId: string;
+  quantity: number;
+}
+
+export interface PbAssemblyCreate {
+  itemId?: string | null;
+  idPrefix?: string | null;
+  description: string;
+  category: string;
+  subCategory?: string | null;
+  unitLabel?: string | null;
+  notes?: string | null;
+  components: PbAssemblyComponentInput[];
+  /** Explicit tier overrides. Absent tiers default to the server's auto-sum. */
+  laborOverrides?: Partial<Record<PbLaborTier, number>>;
 }
 
 async function requestHtml(path: string): Promise<string> {
@@ -989,6 +1017,16 @@ export const api = {
     request<{ id: string; jobId: string | null; amount: number; status: string; purchaseOrderId: string | null }>(`/health-record-admin/receipts/${receiptId}`, { method: "PATCH", body: JSON.stringify(input) }),
   /** Every receipt waiting for review across accounts, with account and job labels (Kyle, 2026-09-08). */
   pendingReceipts: () => request<ReviewReceiptRow[]>("/receipt-review"),
+  /**
+   * Operator-triggered re-parse for a receipt stuck in pending_review with no
+   * vendor/amount (Unit 2, Kyle 2026-09-12 — async Vision needs a retry path).
+   * Safe to call repeatedly: it only fills fields still empty.
+   */
+  reparseReceipt: (receiptId: string) =>
+    request<{ success: boolean; parsed: boolean; data: { id: string; amount: number; vendor: string | null; status: string } }>(
+      `/health-record-admin/receipts/${receiptId}/reparse`,
+      { method: "POST", body: "{}" },
+    ),
   /** Confirmed materials receipts with no PO (Kyle, 2026-09-09: purchasing starts with a PO). */
   receiptsNeedingPo: () => request<ReviewReceiptRow[]>("/receipts-needing-po"),
   /** Remove a receipt (duplicate upload); the server re-rolls the job total. */
@@ -1468,6 +1506,14 @@ export const api = {
     request<{ atomics: Array<{ itemId: string; description: string | null; category: string | null; retiredAt: string }> }>(
       "/price-book/catalog/retired",
     ),
+
+  /** Create an assembly — a PriceBookAtomic (rowType "ASSEMBLY") plus its component list. Cost
+   * and non-overridden labour come back server-computed; nothing here is client-authoritative. */
+  pbCatalogCreateAssembly: (input: PbAssemblyCreate) =>
+    request<{ atomic: PbCatalogAtomic }>("/price-book/catalog/assemblies", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 
   pbIssuedList: (draftId?: string) =>
     request<{ estimates: PbIssuedEstimate[] }>(

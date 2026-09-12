@@ -61,6 +61,13 @@ import {
   updateAtomic,
 } from "./services/priceBookCatalog";
 import { exportPriceBookXlsx } from "./services/priceBookExport";
+import {
+  createAssembly,
+  getAssemblyDetail,
+  setAssemblyComponents,
+  setLaborOverride,
+  LABOR_TIERS,
+} from "./services/priceBookAssembly";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
@@ -79,6 +86,7 @@ import { trucksRouter } from "./routes/trucks";
 import { timeRouter } from "./routes/time";
 import { treasuryRouter } from "./routes/treasury";
 import { inventoryRouter } from "./routes/inventory";
+import { materialsRouter } from "./routes/materials";
 import { matchSpendForReceipt } from "./services/cardSpend";
 // Kyle, 2026-09-11: the office can photograph a receipt straight onto a PO; Vision reads it.
 import { parseReceiptImage } from "./services/receiptVision";
@@ -1851,6 +1859,8 @@ app.use(timeRouter);
 app.use(treasuryRouter);
 // Inventory ledger, landing, tools, restock requests (Kyle, 2026-09-09, Build 3) — /inventory, /tools, /purchase-orders/:id/land.
 app.use(inventoryRouter);
+// The material database (2026-09-12, barcode/materials plan Unit 2) — /materials, link/promote.
+app.use(materialsRouter);
 // Capacity checks run on ordinary service calls with no assessment in progress,
 // so this is its own router rather than a branch of the health record.
 app.use("/health-record/capacity-checks", capacityCheckTechRouter);
@@ -2062,6 +2072,58 @@ app.get("/price-book/catalog/retired", asyncHandler(async (_req, res) => {
     take: 200,
   });
   res.json({ atomics });
+}));
+
+// ─── ASSEMBLIES — a PriceBookAtomic row (rowType "ASSEMBLY") + a component list ──────────────
+// See src/services/priceBookAssembly.ts for why this is not a new top-level model.
+
+const componentInputSchema = z.object({
+  childItemId: z.string().trim().min(1),
+  quantity: z.number().positive(),
+});
+
+app.post("/price-book/catalog/assemblies", asyncHandler(async (req, res) => {
+  const body = z.object({
+    itemId: z.string().trim().nullable().optional(),
+    idPrefix: z.string().trim().nullable().optional(),
+    description: z.string().trim().min(1),
+    category: z.string().trim().min(1),
+    subCategory: z.string().trim().nullable().optional(),
+    unitLabel: z.string().trim().nullable().optional(),
+    notes: z.string().trim().nullable().optional(),
+    components: z.array(componentInputSchema).default([]),
+    laborOverrides: z.object({
+      laborNormal: z.number().nonnegative().optional(),
+      laborDifficult: z.number().nonnegative().optional(),
+      laborVeryDifficult: z.number().nonnegative().optional(),
+    }).optional(),
+  }).parse(req.body ?? {});
+  const result = await createAssembly(prisma, body, "human:crm-session");
+  if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
+  res.status(201).json({ atomic: result.atomic });
+}));
+
+app.get("/price-book/catalog/assemblies/:itemId", asyncHandler(async (req, res) => {
+  const detail = await getAssemblyDetail(prisma, readParam(req, "itemId"));
+  if (!detail) { res.status(404).json({ error: "Assembly not found" }); return; }
+  res.json(detail);
+}));
+
+app.put("/price-book/catalog/assemblies/:itemId/components", asyncHandler(async (req, res) => {
+  const body = z.object({ components: z.array(componentInputSchema) }).parse(req.body ?? {});
+  const result = await setAssemblyComponents(prisma, readParam(req, "itemId"), body.components, "human:crm-session");
+  if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
+  res.json({ atomic: result.atomic, rollup: result.rollup });
+}));
+
+app.put("/price-book/catalog/assemblies/:itemId/labor-override", asyncHandler(async (req, res) => {
+  const body = z.object({
+    tier: z.enum(LABOR_TIERS),
+    value: z.number().nonnegative().nullable(),
+  }).parse(req.body ?? {});
+  const result = await setLaborOverride(prisma, readParam(req, "itemId"), body.tier, body.value, "human:crm-session");
+  if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
+  res.json({ atomic: result.atomic });
 }));
 
 // ─── DRAFTS (human path) ─────────────────────────────────────────────────────

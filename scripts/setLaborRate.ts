@@ -51,6 +51,7 @@
 import { PrismaClient } from "@prisma/client";
 import { RULED_BILLED_RATE } from "../src/services/laborRate";
 import { sellsAtRate } from "../src/services/priceBookCatalog";
+import { isAssemblyRowType } from "../src/services/priceBookAssembly";
 
 const prisma = new PrismaClient();
 const EDITED_BY = "claude:labor-rate-2026-09-01";
@@ -162,8 +163,20 @@ async function main(): Promise<void> {
   console.log("");
 
   const rows = (await prisma.priceBookAtomic.findMany({ orderBy: { itemId: "asc" } })) as unknown as Row[];
-  const flat = rows.filter((r) => SELL_FIELDS.some((f) => r[f] !== null));
-  console.log(`${rows.length} rows in the book, ${flat.length} flat-priced (carry sell columns), ${rows.length - flat.length} supplier-priced (engine bills at the Rate Config cell).`);
+  // Barcode/materials plan Unit 1 guard: an ASSEMBLY row's sell columns are OWNED by the component
+  // rollup (services/priceBookAssembly.ts), not by this rate formula — recomputing them here would
+  // silently desynchronise the assembly's price from its own component list. Skip them, and say so,
+  // rather than let them pass the "carries sell columns" filter below unremarked.
+  const assemblies = rows.filter((r) => isAssemblyRowType(r.rowType) && SELL_FIELDS.some((f) => r[f] !== null));
+  const flat = rows.filter((r) => SELL_FIELDS.some((f) => r[f] !== null) && !isAssemblyRowType(r.rowType));
+  console.log(`${rows.length} rows in the book, ${flat.length} flat-priced (carry sell columns), ${rows.length - flat.length - assemblies.length} supplier-priced (engine bills at the Rate Config cell).`);
+  if (assemblies.length > 0) {
+    console.log(`${assemblies.length} ASSEMBLY row(s) SKIPPED — priced by the component rollup, not this rate formula. Re-run the assembly's labour override (or its components' rates) instead:`);
+    for (const r of assemblies.slice(0, 5)) console.log(`      ${r.itemId.padEnd(56)} ${(r.description ?? "").slice(0, 36)}`);
+    if (assemblies.length > 5) console.log("      …");
+  } else {
+    console.log("0 ASSEMBLY rows found in the book.");
+  }
   console.log("");
 
   const plans: Plan[] = flat.map((row) => {

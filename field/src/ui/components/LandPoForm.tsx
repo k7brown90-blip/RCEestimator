@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { addPurchaseOrderLineFromField, fetchLandingDefaults, landPurchaseOrderFromField, requireSignal, uploadReceiptFromField, type FieldLanding, type FieldLandingReceiptLine } from '../../lib/crmSync'
+import { addPurchaseOrderLineFromField, fetchLandingDefaults, landPurchaseOrderFromField, queueReceiptAndReport, requireSignal, type FieldLanding, type FieldLandingReceiptLine } from '../../lib/crmSync'
 
 const SOURCE_LABEL: Record<FieldLanding['lines'][number]['costSource'], string> = {
   'receipt-line': 'from receipt line',
@@ -85,17 +85,26 @@ export function LandPoForm({ poId, onLanded }: { poId: string; onLanded: (result
     }
   }
 
-  /** The receipt photo, straight onto this PO — the same door the office uses. */
+  /**
+   * The receipt photo, straight onto this PO — the same door the office uses.
+   *
+   * Queued durably before any network call (2026-09-12: four receipts lost on
+   * 2026-09-11 because a failed fetch discarded the File with nothing written
+   * anywhere) — unlike landing itself, this does NOT requireSignal(): a
+   * receipt photo taken with no bars is exactly the case this queue exists
+   * for. When it's still queued, the landing view just won't have parsed
+   * receipt lines to suggest yet; the technician can land off the PO's own
+   * lines and the receipt reconciles once it files.
+   */
   const uploadReceipt = async (file: File) => {
     setBusy(true)
     setMsg(null)
     try {
-      requireSignal()
-      const res = await uploadReceiptFromField({ purchaseOrderId: poId, blob: file })
-      setMsg(`Receipt added — $${res.amount.toFixed(2)}`)
+      const { status } = await queueReceiptAndReport({ purchaseOrderId: poId, blob: file })
+      setMsg(status === 'filed' ? 'Receipt filed.' : 'Receipt queued — will file the moment there is signal.')
       setReloadKey((k) => k + 1)
     } catch (err) {
-      setMsg(`Not uploaded — ${err instanceof Error ? err.message : String(err)}`)
+      setMsg(`Could not queue the photo — ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setBusy(false)
     }

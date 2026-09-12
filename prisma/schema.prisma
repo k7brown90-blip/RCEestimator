@@ -2003,6 +2003,15 @@ model PriceBookSupplier {
 // One row per Item ID x Supplier, mirroring the workbook's normalised `Supplier Prices`
 // tab. `unitCost` is the workbook's own column F arithmetic: /c divides by 100, /m by
 // 1000, otherwise by Pack Qty.
+//
+// GUARD (2026-09-12 barcode/materials plan, Unit 1): an assembly (`PriceBookAtomic.rowType
+// = "ASSEMBLY"`) has no supplier cost — its companyCost is DERIVED from its components, never
+// sourced from a supplier. Any future writer of this table (the Unit 5 monthly price refresh,
+// named here so it is not forgotten) must call `assertNotAssembly()` in
+// src/services/priceBookAssembly.ts before writing a row. The historical workbook import lane
+// (scripts/price-book/importPriceBook.ts) predates assemblies and writes only workbook item
+// IDs, so it cannot collide with an in-app "ASM..." ID today — left unguarded rather than
+// touched, since Kyle's ruling retired that import lane as the source of truth.
 model PriceBookSupplierPrice {
   id               String            @id @default(cuid())
   itemId           String
@@ -2122,9 +2131,115 @@ model PriceBookAtomic {
   draftLines  PriceBookDraftLine[]
   issuedLines IssuedEstimateLine[]
 
+  // ── "Create assembly" (2026-09-12, barcode/materials plan Unit 1) ──────────────────────
+  //
+  // Kyle: "the assembly is its own line item" and "will read the same as the single line
+  // item does today." `PriceBookDraftLine.itemId` / `IssuedEstimateLine.itemId` are FKs to
+  // THIS table and nowhere else in the estimating path — see the P030 comment above for the
+  // identical precedent. So an assembly is a `PriceBookAtomic` row with `rowType = "ASSEMBLY"`
+  // rather than a new model; it inherits quantity, per-line difficulty and unitLabel for free.
+  //
+  // `assemblyItems` is the component list (this row as the PARENT). `partOfAssemblies` is the
+  // reverse — every assembly THIS row is used inside, as a CHILD. A row can be both a parent
+  // and, so long as no assembly contains it, never a child of itself: nesting is rejected at
+  // write time in priceBookAssembly.ts, not merely hidden in the UI.
+  assemblyItems     PriceBookItemComponent[] @relation("AssemblyParent")
+  partOfAssemblies  PriceBookItemComponent[] @relation("AssemblyChild")
+
+  // Labour on an ASSEMBLY row defaults to Σ(component labour × component quantity), computed
+  // per tier independently, and lands in laborNormal/laborDifficult/laborVeryDifficult above —
+  // the same three columns every other row uses, so nothing downstream needs to know an
+  // assembly is different. Kyle can overwrite any tier; the override is its own explicit flag,
+  // never inferred by comparing to the computed sum (an override that happens to equal the sum
+  // would otherwise become invisible and silently resume tracking later — Kyle's ruling,
+  // 2026-09-12). false on every non-assembly row.
+  laborNormalOverridden        Boolean @default(false)
+  laborDifficultOverridden     Boolean @default(false)
+  laborVeryDifficultOverridden Boolean @default(false)
+
   @@index([category])
   @@index([retiredAt])
   @@index([source])
+}
+
+// One row per (assembly, component) pair — Kyle's material list for a sellable product built
+// from already-priced, already-labour-verified price book items ("Hardwired EV Charger" =
+// breaker + raceway + wire + labour). `quantity` is how many of the child one unit of the
+// PARENT assembly consumes; it is multiplied again by the estimate line's own
+// `PriceBookDraftLine.quantity` when a material list is expanded (priceBookAssembly.ts).
+//
+// NOT `PriceBookAssemblyComponent` (that model belongs to the frozen `PriceBookAssembly` /
+// workbook-parity path, `atomic` FK `onDelete: Restrict` against literal, non-live-linked
+// labour). This is the live-linked join for in-app assemblies: correcting a component's
+// labour or cost here updates every assembly containing it, unless that tier is overridden.
+//
+// No FK on `parentItemId`'s row type being "ASSEMBLY" — Prisma cannot express that constraint,
+// so priceBookAssembly.ts rejects a child whose own rowType is "ASSEMBLY" at write time
+// (Kyle: "the assembly is its own line item" — no nesting).
+model PriceBookItemComponent {
+  id           String @id @default(cuid())
+  parentItemId String // the assembly
+  childItemId  String // a material price book item (never itself an assembly)
+  quantity     Float
+
+  parent PriceBookAtomic @relation("AssemblyParent", fields: [parentItemId], references: [itemId], onDelete: Cascade)
+  child  PriceBookAtomic @relation("AssemblyChild", fields: [childItemId], references: [itemId], onDelete: Restrict)
+
+  @@unique([parentItemId, childItemId])
+  @@index([childItemId])
+}
+
+// ── The material database (2026-09-12, barcode/materials plan Unit 2) ────────────────────────
+//
+// THREE LAYERS, NOT TWO. A Material is a purchasable PRODUCT as a supplier sells it — "Leviton
+// 5320-W, 10-pack, UPC 078477123456, $11.97 a pack." It carries NO labour. `PriceBookAtomic` is
+// the ESTIMATING unit — "Duplex receptacle, each, 0.25 hrs." Many materials map to one atomic (a
+// 10-pack and a single receptacle are two products, one estimating unit). Kyle, verbatim: "when I
+// scan a new item it still needs assigned labor units" — a scan gives a price and a pack size,
+// never labour, so a Material is not quotable on its own until it is linked or promoted.
+//
+// COMPLETION IS DERIVED, NEVER STORED. A material is "assigned" when `itemId` names an atomic
+// carrying labour AND the material has a cost; anything else is "unassigned" and drifts back into
+// that state the instant the linked atomic's labour is edited, with no flag to fall out of sync.
+// See services/materials.ts `materialCompletion`.
+model Material {
+  id          String  @id @default(cuid())
+  // The manufacturer's package code. Kyle, 2026-09-12: "We need to pick the upc that doesn't
+  // matter where I buy it. It still gets recognized and checked when I do a P.O." Scanned off the
+  // PACKAGE, not a store shelf tag — a shelf tag encodes the retailer's own number and would be
+  // store-scoped, defeating the point. Globally unique because it names one manufacturer product
+  // across every supplier. Nullable: a material with no code at all still matches by name.
+  upc         String? @unique
+  // A SKU is unique only WITHIN a supplier — Home Depot's number is not SiteOne's, and two
+  // suppliers can land on the same digits. Unique on (supplier, sku) TOGETHER, never on sku
+  // alone — getting this wrong silently merges two different products at the first collision,
+  // surfacing only as a wrong price in a quote weeks later.
+  sku         String?
+  supplier    String?
+  description String?
+  // Pack size does TWO conversions (services/materials.ts): package price ÷ packQty is the
+  // per-unit cost comparable to the book's per-each/per-foot figure; packQty is also the
+  // multiplier applied to StockLevel.qtyOnHand when a pack is purchased — the ledger counts
+  // units, not packages. packUnit is the unit the pack breaks down into ("ea", "ft"), matching
+  // the linked atomic's unitLabel when one exists.
+  packQty     Float?
+  packUnit    String?
+  lastCost    Float? // most recent PACKAGE price seen (pre pack-size division)
+  lastSeenAt  DateTime @updatedAt
+  firstSeenAt DateTime @default(now())
+  // How the code was captured — "UPC-A", "manual", etc. Free text; Unit 3 defines the values it
+  // actually writes.
+  symbology   String?
+  // PriceBookAtomic.itemId — NULLABLE, NO FK, matching the existing StockLevel.itemId precedent
+  // (schema comment above at StockLevel.itemId): the book is editable, and a hard FK would make
+  // deleting an item fail against scan history. This link is what supplies labour units, and it
+  // must never point at an ASSEMBLY row — assertNotAssembly() in priceBookAssembly.ts guards
+  // both link and promote (services/materials.ts), same as StockLevel's guard in inventory.ts.
+  itemId      String?
+
+  @@unique([supplier, sku])
+  @@index([itemId])
+  @@index([supplier])
 }
 
 model PriceBookAssembly {

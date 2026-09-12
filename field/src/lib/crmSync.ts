@@ -8,7 +8,9 @@ import {
   db,
   type AssignmentRecord,
   type FindingRecord,
+  type MaterialCacheRecord,
   type PhotoSyncRecord,
+  type ReceiptSyncRecord,
   type SyncQueueRecord,
 } from '../db/database'
 import type { CrmAssignment, Inspection, JurisdictionProfile, Property } from '../domain/types'
@@ -600,7 +602,10 @@ export type FieldPoPurpose = 'truck_stock' | 'warehouse' | 'tool'
 export interface FieldPoInput {
   supplier: string
   purpose?: FieldPoPurpose
-  items?: { name: string; qty: number; unit?: string; partNumber?: string }[]
+  // itemId/unitCost (barcode/materials plan Unit 3, 2026-09-12): pre-filled by a scan or a
+  // typed SKU that resolved against the material cache (lib/crmSync.ts resolveMaterialCode)
+  // — carried straight through to the PO's first lines instead of being re-typed.
+  items?: { name: string; qty: number; unit?: string; partNumber?: string; itemId?: string; unitCost?: number }[]
 }
 
 export interface FieldPoCreated {
@@ -632,7 +637,7 @@ export interface FieldPurchaseOrder {
   jobLabel: string | null
   truckName: string | null
   receiptCount: number
-  items: { name: string; qty: number; unit?: string; partNumber?: string }[]
+  items: { name: string; qty: number; unit?: string; partNumber?: string; itemId?: string; unitCost?: number }[]
   sentAt: string | null
   openedAt: string
   createdAt: string
@@ -650,6 +655,143 @@ export async function fetchMyPurchaseOrders(): Promise<{ orders: FieldPurchaseOr
 /** Purchased at the counter; verified once the receipt photo is on it. */
 export async function setPurchaseOrderStatus(id: string, to: 'purchased' | 'verified'): Promise<{ id: string; number: string; status: string }> {
   return crmRequest(`/purchase-orders/${id}/status`, { method: 'POST', body: JSON.stringify({ to }) })
+}
+
+// ─── Barcode / SKU materials lookup (2026-09-12, barcode/materials plan Unit 3) ──────────
+//
+// Kyle: "We can't have this turn into a complicated process ... I am in the middle of
+// projects while adding these items in for the job that needs done same day." A known code
+// must resolve with zero typing, offline included — the mapping is cached in IndexedDB
+// (db.materials) and refreshed here, same degrade-to-cache contract as syncAssignments and
+// fetchPropertyFindings. An unknown code must never block the purchase: resolveMaterialCode
+// always returns something usable, either the cached/remote match or a placeholder built
+// from the raw code, never a thrown error.
+
+export interface CachedMaterial {
+  id: string
+  upc: string | null
+  sku: string | null
+  supplier: string | null
+  description: string | null
+  packQty: number | null
+  packUnit: string | null
+  lastCost: number | null
+  itemId: string | null
+}
+
+export interface MaterialsSyncResult {
+  materials: CachedMaterial[]
+  stale: boolean
+  cachedAt: string | null
+  error?: string
+}
+
+/**
+ * Refresh the barcode/SKU→material cache. Called alongside syncAssignments (AssignmentScreen)
+ * so the table is warm before the tech ever opens a purchase screen. On failure this returns
+ * the last cached copy rather than an error — standing in the aisle with no bars, the last
+ * known table beats an empty one.
+ */
+export async function syncMaterials(): Promise<MaterialsSyncResult> {
+  const now = new Date().toISOString()
+  try {
+    const { materials } = await crmRequest<{ materials: CachedMaterial[] }>('/materials')
+    const records: MaterialCacheRecord[] = materials.map((m) => ({ ...m, cachedAt: now }))
+    await db.transaction('rw', db.materials, async () => {
+      // Prune first: a material deleted or re-keyed at the office must disappear here too,
+      // not linger because bulkPut only ever adds — same reasoning as assignments/findings.
+      await db.materials.clear()
+      if (records.length > 0) await db.materials.bulkPut(records)
+    })
+    return { materials, stale: false, cachedAt: now }
+  } catch (error) {
+    const cached = await db.materials.toArray()
+    return {
+      materials: cached,
+      stale: true,
+      cachedAt: cached[0]?.cachedAt ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+/** How the code was captured — carried through to Material.symbology when a new row is created. */
+export type MaterialCodeSource = 'upc' | 'sku' | 'manual'
+
+export interface ResolvedMaterial {
+  /** True when this code was already known (cache or server); false for a brand-new code. */
+  found: boolean
+  /** Where the answer came from. 'unresolved' means neither the cache nor the network had it
+   *  (offline and never seen before) — the caller still gets a usable line, built from the
+   *  raw code, and nothing is blocked or lost. */
+  source: 'cache' | 'remote' | 'unresolved'
+  material: CachedMaterial | null
+}
+
+/**
+ * Resolve a scanned barcode or a typed SKU against the same cached lookup — a typed SKU
+ * must resolve exactly the way a scanning does (Kyle, 2026-09-12), so this is the ONE
+ * function both call.
+ *
+ * Cache first (instant, offline-safe). On a cache miss, tries the server, which both
+ * resolves a known code and CREATES an unassigned material for a brand-new one — so by the
+ * time this returns, a genuinely new code already has a Material row to grow into at the
+ * desk. If that call also fails (no signal and never seen on this device), this still
+ * returns cleanly with `source: 'unresolved'` rather than throwing: the caller uses the raw
+ * code as the line's name/part number and the purchase proceeds regardless.
+ */
+export async function resolveMaterialCode(
+  code: string,
+  opts?: { source?: MaterialCodeSource; price?: number },
+): Promise<ResolvedMaterial> {
+  const trimmed = code.trim()
+  if (!trimmed) return { found: false, source: 'unresolved', material: null }
+
+  const cached = (await db.materials.where('upc').equals(trimmed).first())
+    ?? (await db.materials.where('sku').equals(trimmed).first())
+  if (cached) return { found: true, source: 'cache', material: cached }
+
+  try {
+    const result = await crmRequest<{ found: boolean; material: CachedMaterial }>('/materials/scan', {
+      method: 'POST',
+      body: JSON.stringify({ code: trimmed, source: opts?.source ?? 'manual', price: opts?.price ?? null }),
+    })
+    // Cache it locally so a repeat scan (or another tech's scan, once assignments resync)
+    // resolves instantly next time, cache-first, with no network dependency.
+    await db.materials.put({ ...result.material, cachedAt: new Date().toISOString() })
+    return { found: result.found, source: 'remote', material: result.material }
+  } catch {
+    return { found: false, source: 'unresolved', material: null }
+  }
+}
+
+/** A PO line, built from a resolved (or unresolved) code — never blocks on either outcome. */
+export interface ScannedPoLine {
+  name: string
+  qty: number
+  unit?: string
+  partNumber?: string
+  itemId?: string
+  unitCost?: number
+}
+
+/**
+ * Turn a scan/typed-code result into a PO line. A known material pre-fills name, pack unit,
+ * part number, its price-book item link, and its last-seen pack price — zero typing. An
+ * unresolved code still produces a usable line (the raw code as name and part number) so the
+ * scan is never discarded; Kyle finishes it at a desk once the material is created.
+ */
+export function lineFromScannedCode(code: string, resolved: ResolvedMaterial, qty = 1): ScannedPoLine {
+  const m = resolved.material
+  if (!m) return { name: `Unrecognized item (${code})`, qty, partNumber: code }
+  return {
+    name: m.description ?? code,
+    qty,
+    ...(m.packUnit ? { unit: m.packUnit } : {}),
+    partNumber: m.sku ?? m.upc ?? code,
+    ...(m.itemId ? { itemId: m.itemId } : {}),
+    ...(m.lastCost != null ? { unitCost: m.lastCost } : {}),
+  }
 }
 
 // ─── My truck: stock, tools, restock, landing (Kyle, 2026-09-09, Build 3) ────
@@ -913,8 +1055,14 @@ export async function uploadJobPhoto(visitId: string, blob: Blob, caption?: stri
  * A receipt from the field. Values typed by the tech ride the query string;
  * a photo without values goes through the office's Vision parse and lands in
  * pending review either way.
+ *
+ * `receiptId` comes from the CALLER (queueReceiptUpload mints it at capture
+ * time, not here) — the server upserts on it (health-record.ts), so this is
+ * the entire idempotency story: a retry after a dropped connection lands on
+ * the same row instead of creating a second receipt.
  */
 export async function uploadReceiptFromField(input: {
+  receiptId: string
   /** Optional since 2026-09-09: a receipt for a job-less PO has no visit. */
   visitId?: string
   /** The PO this receipt verifies (Kyle, 2026-09-09) — attaches it and moves an open PO to purchased. */
@@ -928,7 +1076,6 @@ export async function uploadReceiptFromField(input: {
 }): Promise<{ id: string; amount: number; status: string; purchaseOrderNumber?: string | null }> {
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')
-  const receiptId = crypto.randomUUID().replaceAll('-', '')
   const query = new URLSearchParams()
   if (input.visitId) query.set('jobId', input.visitId)
   if (input.purchaseOrderId) query.set('purchaseOrderId', input.purchaseOrderId)
@@ -936,7 +1083,7 @@ export async function uploadReceiptFromField(input: {
   if (input.vendor) query.set('vendor', input.vendor)
   if (input.category) query.set('category', input.category)
   const response = await fetch(
-    `${settings.baseUrl}/api/health-record/receipts/${receiptId}?${query.toString()}`,
+    `${settings.baseUrl}/api/health-record/receipts/${input.receiptId}?${query.toString()}`,
     {
       method: 'PUT',
       headers: {
@@ -953,6 +1100,220 @@ export async function uploadReceiptFromField(input: {
     throw new Error(body?.error?.message ?? `Receipt upload failed (${response.status})`)
   }
   return body!.data!
+}
+
+// ─── Durable receipt queue (2026-09-12) ──────────────────────────────────────
+// Incident, 2026-09-11: six purchases were photographed, but uploadReceiptFromField
+// was a bare fetch that threw on failure, and every call site caught the error,
+// showed text, and discarded the File. Four of six receipt photos were lost
+// permanently — no row, no log, no queue entry, no trace anywhere.
+//
+// Fix: the photo is written to IndexedDB (db.photos) and a queue row
+// (receiptSyncQueue) BEFORE any network call. A queue row is deleted only
+// after a 2xx from the server, so a crash mid-upload — tab close, app kill,
+// phone reboot — leaves the row for the next flush to retry.
+//
+// Compression (Kyle, 2026-09-12): supply-house receipts print SKUs and unit
+// prices in 6-7pt on thermal paper, so blind downscaling is a bad trade. The
+// full-resolution ORIGINAL is queued and kept until the server accepts; a
+// compressed COPY (~2400px long edge, JPEG ~85) is what actually goes over
+// the wire. If compression throws — unsupported HEIC, OOM on a low-end phone
+// — the original is uploaded instead: losing bandwidth is acceptable, losing
+// the receipt is the bug being fixed.
+
+const RECEIPT_COMPRESS_LONG_EDGE = 2400
+const RECEIPT_COMPRESS_QUALITY = 0.85
+
+/**
+ * Derive a compressed upload copy of a receipt photo. Never throws — any
+ * failure (unsupported format, no canvas/createImageBitmap in this runtime,
+ * OOM) falls back to returning the original blob unchanged, because losing
+ * bandwidth is acceptable and losing the receipt is not.
+ */
+export async function compressReceiptImage(blob: Blob): Promise<{ blob: Blob; mimeType: string }> {
+  try {
+    if (typeof createImageBitmap !== 'function') {
+      throw new Error('createImageBitmap unavailable in this runtime')
+    }
+    const bitmap = await createImageBitmap(blob)
+    try {
+      const longEdge = Math.max(bitmap.width, bitmap.height)
+      const scale = Math.min(1, RECEIPT_COMPRESS_LONG_EDGE / longEdge)
+      const width = Math.max(1, Math.round(bitmap.width * scale))
+      const height = Math.max(1, Math.round(bitmap.height * scale))
+
+      const useOffscreen = typeof OffscreenCanvas !== 'undefined'
+      const canvas: OffscreenCanvas | HTMLCanvasElement = useOffscreen
+        ? new OffscreenCanvas(width, height)
+        : document.createElement('canvas')
+      if (!useOffscreen) {
+        ;(canvas as HTMLCanvasElement).width = width
+        ;(canvas as HTMLCanvasElement).height = height
+      }
+      const ctx = canvas.getContext('2d') as (CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null)
+      if (!ctx) throw new Error('2d canvas context unavailable')
+      ctx.drawImage(bitmap, 0, 0, width, height)
+
+      const compressed: Blob | null = useOffscreen
+        ? await (canvas as OffscreenCanvas).convertToBlob({ type: 'image/jpeg', quality: RECEIPT_COMPRESS_QUALITY })
+        : await new Promise<Blob | null>((resolve) =>
+            (canvas as HTMLCanvasElement).toBlob(resolve, 'image/jpeg', RECEIPT_COMPRESS_QUALITY),
+          )
+      if (!compressed) throw new Error('canvas produced no blob')
+      return { blob: compressed, mimeType: 'image/jpeg' }
+    } finally {
+      bitmap.close?.()
+    }
+  } catch {
+    // Fall back to the original — see file header. Not logged as an error:
+    // an unsupported format on a low-end phone is an expected path, not a bug.
+    return { blob, mimeType: blob.type || 'image/jpeg' }
+  }
+}
+
+export interface QueueReceiptInput {
+  visitId?: string
+  purchaseOrderId?: string
+  blob: Blob
+  amount?: number
+  vendor?: string
+  category?: 'materials' | 'gas' | 'maintenance' | 'overhead' | 'permit' | 'inspection'
+}
+
+/**
+ * Queue a receipt photo for upload. Writes BOTH blobs (the untouched original
+ * and a compressed copy) to db.photos and a receiptSyncQueue row BEFORE
+ * attempting any network call — a failed upload from here on leaves a durable
+ * trace instead of silently discarding the File.
+ *
+ * Returns the receiptId immediately so the caller can report "queued" without
+ * waiting on the network.
+ */
+export async function queueReceiptUpload(input: QueueReceiptInput): Promise<{ receiptId: string }> {
+  const receiptId = crypto.randomUUID().replaceAll('-', '')
+  const originalPhotoId = crypto.randomUUID()
+  const { blob: compressedBlob, mimeType: compressedMime } = await compressReceiptImage(input.blob)
+  const photoId = compressedBlob === input.blob ? originalPhotoId : crypto.randomUUID()
+
+  await db.photos.put({ id: originalPhotoId, blob: input.blob, mimeType: input.blob.type || 'image/jpeg' })
+  if (photoId !== originalPhotoId) {
+    await db.photos.put({ id: photoId, blob: compressedBlob, mimeType: compressedMime })
+  }
+
+  const record: ReceiptSyncRecord = {
+    receiptId,
+    photoId,
+    originalPhotoId,
+    ...(input.visitId ? { visitId: input.visitId } : {}),
+    ...(input.purchaseOrderId ? { purchaseOrderId: input.purchaseOrderId } : {}),
+    ...(input.amount != null ? { amount: input.amount } : {}),
+    ...(input.vendor ? { vendor: input.vendor } : {}),
+    ...(input.category ? { category: input.category } : {}),
+    attempts: 0,
+    queuedAt: new Date().toISOString(),
+  }
+  await db.receiptSyncQueue.put(record)
+  void flushReceiptQueue()
+  return { receiptId }
+}
+
+// A flush is triggered from several places that can overlap in time —
+// queueReceiptUpload's own `void flushReceiptQueue()`, main.tsx on startup,
+// the `online` listener, and queueReceiptAndReport's explicit call — and two
+// overlapping passes would both read the same pending row before either
+// deletes it, producing a second PUT (and a second inline OpenAI Vision call
+// server-side) for the same receipt. Harmless to data (the server upserts on
+// receiptId) but not free, so only one pass runs at a time: a flush already
+// in flight is returned to every caller instead of starting a second one.
+let receiptFlushInFlight: Promise<{ pushed: number; remaining: number }> | null = null
+
+/**
+ * Push every queued receipt, oldest first. On success the queue row and BOTH
+ * blobs are deleted. On failure attempts/lastError are recorded and the row
+ * stays queued for the next flush (startup, or the browser `online` event).
+ */
+export function flushReceiptQueue(): Promise<{ pushed: number; remaining: number }> {
+  if (receiptFlushInFlight) return receiptFlushInFlight
+  receiptFlushInFlight = runReceiptFlush().finally(() => {
+    receiptFlushInFlight = null
+  })
+  return receiptFlushInFlight
+}
+
+async function runReceiptFlush(): Promise<{ pushed: number; remaining: number }> {
+  if (!getCrmSettings()) {
+    return { pushed: 0, remaining: await db.receiptSyncQueue.count() }
+  }
+  const pending = await db.receiptSyncQueue.orderBy('queuedAt').toArray()
+  let pushed = 0
+  for (const record of pending) {
+    try {
+      const photo = await db.photos.get(record.photoId)
+      const original = photo ? null : await db.photos.get(record.originalPhotoId)
+      const blobToSend = photo?.blob ?? original?.blob
+      if (!blobToSend) {
+        // Neither blob survives on this device — reachable in practice under
+        // browser storage pressure (IndexedDB eviction). This is exactly the
+        // failure this unit exists to eliminate, so the row is NOT silently
+        // deleted: it stays queued, visible via pendingReceiptCount(), with
+        // an explicit lastError explaining why it can never succeed from
+        // here. Each retry costs only two local IndexedDB reads — cheap — so
+        // leaving it queued rather than deleting it is the safe default; a
+        // human has to notice and decide, not the retry loop.
+        throw new Error('Photo bytes no longer on this device (evicted from local storage) — cannot upload; needs manual attention.')
+      }
+      await uploadReceiptFromField({
+        receiptId: record.receiptId,
+        visitId: record.visitId,
+        purchaseOrderId: record.purchaseOrderId,
+        blob: blobToSend,
+        amount: record.amount,
+        vendor: record.vendor,
+        category: record.category,
+      })
+      await db.receiptSyncQueue.delete(record.receiptId)
+      await db.photos.delete(record.photoId)
+      if (record.originalPhotoId !== record.photoId) await db.photos.delete(record.originalPhotoId)
+      pushed += 1
+    } catch (error) {
+      await db.receiptSyncQueue.update(record.receiptId, {
+        attempts: record.attempts + 1,
+        lastError: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  return { pushed, remaining: await db.receiptSyncQueue.count() }
+}
+
+/** So the technician can SEE what hasn't gone up yet — the point of this queue. */
+export function pendingReceiptCount(): Promise<number> {
+  return db.receiptSyncQueue.count()
+}
+
+/** Whether one specific receipt is still waiting to go up (vs. already filed). */
+export async function isReceiptQueued(receiptId: string): Promise<boolean> {
+  return (await db.receiptSyncQueue.get(receiptId)) != null
+}
+
+/**
+ * Queue a receipt and report which of the two true states it landed in:
+ * 'filed' if a flush attempt (there is one, right here, even on good signal)
+ * got it out the door before this returned; 'queued' otherwise — never a bare
+ * failure that would make the caller discard the File. Call sites use this
+ * instead of queueReceiptUpload directly so all three report the same way.
+ */
+export async function queueReceiptAndReport(
+  input: QueueReceiptInput,
+): Promise<{ receiptId: string; status: 'filed' | 'queued' }> {
+  const { receiptId } = await queueReceiptUpload(input)
+  // The write to IndexedDB above already made this durable regardless of what
+  // happens next. This second flush call is redundant with the one
+  // queueReceiptUpload fires in the background (idempotent, so harmless) —
+  // it exists only so this function can await a real attempt and report
+  // accurately instead of guessing with a timer.
+  await flushReceiptQueue()
+  const stillQueued = await isReceiptQueued(receiptId)
+  return { receiptId, status: stillQueued ? 'queued' : 'filed' }
 }
 
 /**
@@ -1242,5 +1603,6 @@ export function registerSyncListener(): void {
   window.addEventListener('online', () => {
     void flushSyncQueue()
     void flushFindingActions()
+    void flushReceiptQueue()
   })
 }

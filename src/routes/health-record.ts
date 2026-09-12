@@ -29,6 +29,7 @@ import {
   WAREHOUSE_KEY, createStockRequest, landPurchaseOrder, landingDefaults, listTools, moveTool, searchItems, serializeLevel, truckLocationKey,
 } from "../services/inventory";
 import { closeOutMaterialWarning, consumeForJob, jobMaterials, returnForJob } from "../services/jobMaterials";
+import { createMaterial, listMaterials } from "../services/materials";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
 import {
@@ -1415,6 +1416,12 @@ const fieldPoBodySchema = z.object({
     qty: z.number().positive(),
     unit: z.string().trim().max(20).nullable().optional(),
     partNumber: z.string().trim().max(100).nullable().optional(),
+    // Barcode/materials plan Unit 3 (2026-09-12): a scanned line pre-fills these from the
+    // resolved Material — its linked price-book item and its last-seen pack price — so a
+    // known code costs the tech zero typing. Both optional; an unscanned free-text line
+    // (the pre-existing path) simply omits them, same as before.
+    itemId: z.string().trim().max(40).nullable().optional(),
+    unitCost: z.number().nonnegative().nullable().optional(),
   })).optional(),
 });
 
@@ -1424,7 +1431,10 @@ function fieldPoView(po: Parameters<typeof serializePurchaseOrder>[0]) {
   return {
     id: v.id, number: v.number, purpose: v.purpose, status: v.status, supplier: v.supplier,
     jobId: v.jobId, jobLabel: v.jobLabel, truckName: v.truckName, receiptCount: v.receiptCount,
-    items: v.lines.map((l) => ({ name: l.name, qty: l.qty, unit: l.unit ?? undefined, partNumber: l.partNumber ?? undefined })),
+    items: v.lines.map((l) => ({
+      name: l.name, qty: l.qty, unit: l.unit ?? undefined, partNumber: l.partNumber ?? undefined,
+      itemId: l.itemId ?? undefined, unitCost: l.unitCost ?? undefined,
+    })),
     sentAt: v.sentAt?.toISOString() ?? null,
     openedAt: v.openedAt.toISOString(),
     createdAt: v.createdAt.toISOString(),
@@ -1558,6 +1568,97 @@ healthRecordTechRouter.post("/purchase-orders/:id/lines", asyncHandler(async (re
   } catch (err) {
     if (!techServiceError(res, err)) throw err;
   }
+}));
+
+// ─── Barcode / SKU materials lookup (2026-09-12, barcode/materials plan Unit 3) ─────────
+//
+// Kyle: "We can't have this turn into a complicated process ... I am in the middle of
+// projects while adding these items in for the job that needs done same day." A known
+// code must resolve with zero typing; an unknown one must never block the purchase — it
+// still resolves, to a brand-new UNASSIGNED Material carrying the code, so Kyle finishes
+// the labor-unit assignment later at a desk (services/materials.ts handles both cases).
+//
+// Deliberately NOT part of materialsRouter (Unit 2) — that router sits behind
+// pinAuthMiddleware (the CRM operator session), which the field PWA can never reach; it
+// authenticates with a per-technician bearer token instead (technicianAuth.ts). These two
+// tech endpoints are the entire server-side surface Unit 3 needs: one to seed/refresh the
+// IndexedDB cache the app scans against offline, one to resolve (or create) a single code.
+
+interface FieldMaterialView {
+  id: string;
+  upc: string | null;
+  sku: string | null;
+  supplier: string | null;
+  description: string | null;
+  packQty: number | null;
+  packUnit: string | null;
+  lastCost: number | null;
+  itemId: string | null;
+}
+
+function fieldMaterialView(m: {
+  id: string; upc: string | null; sku: string | null; supplier: string | null; description: string | null;
+  packQty: number | null; packUnit: string | null; lastCost: number | null; itemId: string | null;
+}): FieldMaterialView {
+  return {
+    id: m.id, upc: m.upc, sku: m.sku, supplier: m.supplier, description: m.description,
+    packQty: m.packQty, packUnit: m.packUnit, lastCost: m.lastCost, itemId: m.itemId,
+  };
+}
+
+/**
+ * The full barcode/SKU→material table. Cached in IndexedDB by the field app and refreshed
+ * alongside assignment sync (lib/crmSync.ts syncMaterials) — the same degrade-to-cache
+ * contract the assignment queue and finding ledger already use, because Kyle scans in the
+ * aisle, where signal is worst.
+ */
+healthRecordTechRouter.get("/materials", asyncHandler(async (_req: TechRequest, res) => {
+  const rows = await listMaterials(prisma);
+  res.json({ success: true, data: { materials: rows.map((r) => fieldMaterialView(r.material)) } });
+}));
+
+const materialScanSchema = z.object({
+  code: z.string().trim().min(1).max(64),
+  // How the code was captured — Material.symbology's schema comment says "Unit 3 defines
+  // the values it actually writes": "upc" for a scanned package barcode, "sku" for a typed
+  // SKU, "manual" for free text with no known code family.
+  source: z.enum(["upc", "sku", "manual"]).default("manual"),
+  // The pack price, when the tech has it to hand. Optional — a missing price never blocks
+  // the purchase; it just leaves the new material's cost for Kyle to fill in at the desk.
+  price: z.number().nonnegative().nullable().optional(),
+});
+
+/**
+ * Resolve a scanned/typed code against the material database, creating an UNASSIGNED
+ * material when the code has never been seen. Never blocks the purchase: a brand-new code
+ * still returns 201 with a usable (if incomplete) material rather than a 404.
+ */
+healthRecordTechRouter.post("/materials/scan", asyncHandler(async (req: TechRequest, res) => {
+  const body = materialScanSchema.parse(req.body);
+  const existing = await prisma.material.findFirst({ where: { OR: [{ upc: body.code }, { sku: body.code }] } });
+  if (existing) {
+    res.json({ success: true, data: { found: true, material: fieldMaterialView(existing) } });
+    return;
+  }
+  const created = await createMaterial(prisma, {
+    upc: body.source === "upc" ? body.code : null,
+    sku: body.source !== "upc" ? body.code : null,
+    lastCost: body.price ?? null,
+    symbology: body.source,
+  });
+  if (!created.ok) {
+    // Lost a create race against another request for the same code (two techs scanning the
+    // same brand-new item at once) — the row exists now; hand back the winner instead of a
+    // conflict the tech at the counter can do nothing about.
+    const winner = await prisma.material.findFirst({ where: { OR: [{ upc: body.code }, { sku: body.code }] } });
+    if (winner) {
+      res.json({ success: true, data: { found: true, material: fieldMaterialView(winner) } });
+      return;
+    }
+    res.status(409).json({ success: false, error: { code: "conflict", message: created.reason } });
+    return;
+  }
+  res.status(201).json({ success: true, data: { found: false, material: fieldMaterialView(created.material) } });
 }));
 
 // ─── Materials used at close-out (Kyle, 2026-09-09, Build 4) ─────────────────
@@ -1784,10 +1885,61 @@ healthRecordTechRouter.put(
 );
 
 /**
+ * Run the OpenAI Vision parse for an already-persisted receipt and patch in
+ * whatever it finds — vendor, amount, lineItems, and the parsed purchase date
+ * — but only into fields still empty; a value the tech or office already
+ * keyed in is never overwritten. Re-rolls the job's material cost and re-runs
+ * the card-spend matcher afterward, same as the old inline path did.
+ *
+ * Unit 2 (Kyle, 2026-09-12): the photo's safety must never depend on this
+ * completing. Called fire-and-forget after the 201 response, and again by the
+ * operator "re-parse" route below. Never throws — a Vision failure (thrown or
+ * a null/degraded result) leaves the row exactly as it was, still
+ * pending_review, photo bytes untouched.
+ */
+async function applyVisionParse(receiptId: string): Promise<{ parsed: boolean }> {
+  const receipt = await prisma.receipt.findUnique({
+    where: { id: receiptId },
+    select: { id: true, imageData: true, imageMime: true, amount: true, vendor: true, lineItems: true, jobId: true },
+  });
+  if (!receipt || !receipt.imageData) return { parsed: false };
+
+  const { parseReceiptImage } = await import("../services/receiptVision");
+  let parsed;
+  try {
+    parsed = await parseReceiptImage(Buffer.from(receipt.imageData), receipt.imageMime ?? "image/jpeg");
+  } catch (err) {
+    console.error(`[receipts] vision parse threw for ${receiptId}; row stays pending_review:`, err);
+    return { parsed: false };
+  }
+  if (!parsed) return { parsed: false };
+
+  const patch: { vendor?: string; amount?: number; lineItems?: string; receivedAt?: Date } = {};
+  if (!receipt.vendor && parsed.vendor) patch.vendor = parsed.vendor;
+  if (receipt.amount <= 0 && parsed.total != null) patch.amount = parsed.total;
+  if (!receipt.lineItems && parsed.lineItems.length > 0) patch.lineItems = JSON.stringify(parsed.lineItems);
+  if (parsed.purchaseDate) patch.receivedAt = new Date(`${parsed.purchaseDate}T12:00:00Z`);
+
+  if (Object.keys(patch).length > 0) {
+    const updated = await prisma.receipt.update({ where: { id: receiptId }, data: patch, select: { jobId: true } });
+    await rerollJobsMaterialCost([updated.jobId, receipt.jobId]);
+  }
+  // Kyle, 2026-09-09: "photo verifies, card proves" — now that amount/vendor may
+  // be filled in, see if a waiting card transaction matches.
+  await matchSpendForReceipt(receiptId).catch((err) => console.error("[receipts] card match failed:", err));
+  return { parsed: true };
+}
+
+/**
  * PUT /health-record/receipts/:receiptId — receipt photo upload from the tech
  * PWA. Idempotent (client UUID id). Raw image body; metadata via query params
- * (jobId, category, vendor, amount). Missing amount/vendor are extracted from
- * the image via OpenAI Vision; unparseable receipts land in pending_review.
+ * (jobId, category, vendor, amount).
+ *
+ * Unit 2 (Kyle, 2026-09-12): the row is persisted and the response returned
+ * BEFORE any OpenAI Vision call — the photo's safety must not depend on an
+ * external API completing. When amount/vendor are missing, Vision runs after
+ * the response via applyVisionParse() and patches the row in place;
+ * pending_review is the normal state either way until the office confirms.
  */
 healthRecordTechRouter.put(
   "/receipts/:receiptId",
@@ -1831,24 +1983,20 @@ healthRecordTechRouter.put(
       }
     }
 
-    // Vision-parse when the tech didn't key in the details manually
-    const { parseReceiptImage } = await import("../services/receiptVision");
     const mimeType = (req.headers["content-type"] as string | undefined) ?? "image/jpeg";
-    const parsed = query.amount == null || !query.vendor ? await parseReceiptImage(body, mimeType) : null;
+    const needsVision = query.amount == null || !query.vendor;
 
-    const amount = query.amount ?? parsed?.total ?? 0;
     const data = {
       jobId: query.jobId ?? null,
-      category: query.category ?? parsed?.category ?? "materials",
-      vendor: query.vendor ?? parsed?.vendor ?? null,
-      amount,
-      lineItems: parsed && parsed.lineItems.length > 0 ? JSON.stringify(parsed.lineItems) : null,
+      category: query.category ?? "materials",
+      vendor: query.vendor ?? null,
+      amount: query.amount ?? 0,
+      lineItems: null as string | null,
       source: "tech_pwa",
       status: "pending_review",
       technicianId: req.technician!.id,
       imageData: body,
       imageMime: mimeType,
-      ...(parsed?.purchaseDate ? { receivedAt: new Date(`${parsed.purchaseDate}T12:00:00Z`) } : {}),
     };
     const previous = await prisma.receipt.findUnique({ where: { id: receiptId }, select: { jobId: true } });
     const receipt = await prisma.receipt.upsert({
@@ -1875,11 +2023,18 @@ healthRecordTechRouter.put(
         vendor: receipt.vendor,
         category: receipt.category,
         status: receipt.status,
-        parsed: parsed != null,
+        parsed: false,
         purchaseOrderId: query.purchaseOrderId ?? null,
         purchaseOrderNumber,
       },
     });
+
+    // Vision runs AFTER the response — never awaited, never on the request path.
+    if (needsVision) {
+      void applyVisionParse(receipt.id).catch((err) => {
+        console.error(`[receipts] async vision parse failed for ${receipt.id}, row stays pending_review:`, err);
+      });
+    }
   }),
 );
 
@@ -3160,6 +3315,33 @@ healthRecordAdminRouter.get("/receipts", asyncHandler(async (req, res) => {
   const techs = techIds.length > 0 ? await prisma.technician.findMany({ where: { id: { in: techIds } }, select: { id: true, name: true } }) : [];
   const techMap = new Map(techs.map((t) => [t.id, t.name]));
   res.json(receipts.map((r) => ({ ...r, technicianName: r.technicianId ? techMap.get(r.technicianId) ?? null : null })));
+}));
+
+/**
+ * Operator-triggered re-parse for a single receipt stuck in pending_review
+ * (Unit 2, Kyle 2026-09-12 — the binding condition on making pending_review
+ * the normal intermediate state: a stuck receipt must be visible AND
+ * retryable). Reuses applyVisionParse, so it only fills fields still empty
+ * and is safe to call repeatedly — it upserts nothing and can never create a
+ * second row. A Vision failure leaves the receipt exactly as it was.
+ */
+healthRecordAdminRouter.post("/receipts/:id/reparse", asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true, imageData: true } });
+  if (!existing) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Receipt not found" } });
+    return;
+  }
+  if (!existing.imageData) {
+    res.status(409).json({ success: false, error: { code: "conflict", message: "No photo bytes on this receipt to parse." } });
+    return;
+  }
+  const result = await applyVisionParse(id);
+  const after = await prisma.receipt.findUniqueOrThrow({
+    where: { id },
+    select: { id: true, amount: true, vendor: true, category: true, status: true, lineItems: true, purchaseOrderId: true, jobId: true },
+  });
+  res.json({ success: true, parsed: result.parsed, data: after });
 }));
 
 healthRecordAdminRouter.get("/receipts/:id/image", asyncHandler(async (req, res) => {

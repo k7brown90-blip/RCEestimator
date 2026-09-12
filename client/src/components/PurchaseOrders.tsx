@@ -50,14 +50,88 @@ function PurposePill({ purpose }: { purpose: PoPurpose | string }) {
 }
 
 /**
+ * Retry button for a receipt stuck in pending_review with no vendor/amount
+ * (Unit 2, Kyle 2026-09-12 — async Vision parsing needs an operator retry).
+ * Hits the admin-only reparse route; safe to click repeatedly since it only
+ * fills fields still empty and can never create a second receipt.
+ */
+function ReparseReceiptButton({ receiptId }: { receiptId: string }) {
+  const refresh = usePoRefresh();
+  const [error, setError] = useState<string | null>(null);
+  const mutation = useMutation({
+    mutationFn: () => api.reparseReceipt(receiptId),
+    onSuccess: () => { setError(null); refresh(); },
+    onError: (err) => setError((err as Error).message),
+  });
+  return (
+    <span className="flex items-center gap-1">
+      <button
+        type="button"
+        className="rounded border border-red-300 bg-white px-1.5 py-0.5 text-[11px] text-red-800 disabled:opacity-50"
+        disabled={mutation.isPending}
+        onClick={() => mutation.mutate()}
+      >
+        {mutation.isPending ? "Re-parsing…" : "Re-parse"}
+      </button>
+      {error && <span className="text-[11px] text-red-600">{error}</span>}
+    </span>
+  );
+}
+
+/**
  * Open and purchased POs — the live ones. One hook so every reader shares the
  * cache entry (the query-key collision test compares call sites).
+ *
+ * Contract deliberately unchanged (Kyle's ruling 2026-09-12, Unit 4): this is
+ * also the source list for ReceiptPoPicker's attach-target dropdown, and a
+ * verified PO must not be added there — see useRecentlyVerifiedPurchaseOrders
+ * below for the Financials-list-only fix.
  */
 export function useLivePurchaseOrders() {
   return useQuery({
     queryKey: ["purchase-orders", { status: "open,purchased" }],
     queryFn: () => api.purchaseOrders({ status: "open,purchased" }),
   });
+}
+
+const VERIFIED_RECENCY_DAYS = 7;
+
+/**
+ * Verified POs from roughly the last 7 days (Kyle's ruling 2026-09-12, Unit 4).
+ *
+ * A PO moves to "verified" the instant its receipt photo lands — on
+ * 2026-09-11 that made two successful uploads vanish from the "Open and
+ * purchased" list at the exact moment they succeeded, so a partial receipt
+ * loss read as a total one. This is a separate query (not a widened
+ * useLivePurchaseOrders) specifically so ReceiptPoPicker's attach-target list
+ * — which shares that hook — stays untouched; only the Financials display
+ * list gains these rows.
+ */
+function useRecentlyVerifiedPurchaseOrders() {
+  return useQuery({
+    // A string literal here, not `{ status: "verified" }` — the query-key
+    // collision test (tests/queryKeyCollisions.test.ts) compares object-shaped
+    // key segments by property NAME only, so an object with the same `status`
+    // property as useLivePurchaseOrders' key reads as the same cache entry
+    // even though the values differ. The leading "purchase-orders" segment is
+    // kept so usePoRefresh's prefix invalidation still reaches this query.
+    queryKey: ["purchase-orders", "verified"],
+    queryFn: () => api.purchaseOrders({ status: "verified" }),
+    select: (data) => {
+      const cutoff = Date.now() - VERIFIED_RECENCY_DAYS * 24 * 60 * 60 * 1000;
+      return data.filter((po) => po.verifiedAt && new Date(po.verifiedAt).getTime() >= cutoff);
+    },
+  });
+}
+
+const PENDING_REVIEW_STALE_MINUTES = 60;
+
+/**
+ * Every receipt waiting for review (Kyle, 2026-09-08) — same cache entry
+ * FinancialsPage already reads, so this adds no extra request.
+ */
+function usePendingReviewReceipts() {
+  return useQuery({ queryKey: ["receipt-review"], queryFn: api.pendingReceipts });
 }
 
 /** Everything a PO change can move: the PO lists, the receipt queues, and the job/account money. */
@@ -193,13 +267,28 @@ function StartPoForm({ onCreated }: { onCreated: (po: PurchaseOrderSummary) => v
 
 export function PurchasesCard() {
   const { data: orders = [] } = useLivePurchaseOrders();
+  const { data: recentlyVerified = [] } = useRecentlyVerifiedPurchaseOrders();
   const { data: needing = [] } = useQuery({ queryKey: ["receipts-needing-po"], queryFn: api.receiptsNeedingPo });
+  const { data: pendingReview = [] } = usePendingReviewReceipts();
+  // Unit 2 (Kyle, 2026-09-12): receipts uploaded with no vendor/amount wait on an
+  // async Vision parse. Past this many minutes it almost certainly finished (or
+  // died) — a number he cannot miss, not a log line, per the binding condition
+  // on making pending_review the normal state.
+  const stalePending = pendingReview.filter(
+    (r) => !r.vendor && r.amount <= 0 && Date.now() - new Date(r.receivedAt).getTime() > PENDING_REVIEW_STALE_MINUTES * 60 * 1000,
+  );
   const refresh = usePoRefresh();
   const [justCreated, setJustCreated] = useState<PurchaseOrderSummary | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [showAllNeeding, setShowAllNeeding] = useState(false);
-  const visible = showAll ? orders : orders.slice(0, PAGE_SIZE);
+  // Display-only merge: a receipt that just verified stays visible for
+  // VERIFIED_RECENCY_DAYS instead of disappearing the instant it succeeds
+  // (Unit 4). Sorted to match the server's own openedAt-desc ordering.
+  const displayOrders = [...orders, ...recentlyVerified].sort(
+    (a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime(),
+  );
+  const visible = showAll ? displayOrders : displayOrders.slice(0, PAGE_SIZE);
   const visibleNeeding = showAllNeeding ? needing : needing.slice(0, PAGE_SIZE);
 
   // Folded by default (Kyle, 2026-09-10): "N open · M to land" — open = no purchase yet,
@@ -210,6 +299,7 @@ export function PurchasesCard() {
     <>
       {openCount} open · {toLand} to land
       {needing.length > 0 && <span className="text-amber-800"> · {needing.length} receipt{needing.length === 1 ? "" : "s"} need a PO</span>}
+      {stalePending.length > 0 && <span className="text-red-800"> · {stalePending.length} stuck in review</span>}
     </>
   );
 
@@ -232,8 +322,8 @@ export function PurchasesCard() {
         </div>
       )}
 
-      <h3 className="mt-4 text-sm font-semibold text-rce-soft">Open and purchased ({orders.length})</h3>
-      {orders.length === 0 && <p className="text-sm text-rce-muted">No open purchases.</p>}
+      <h3 className="mt-4 text-sm font-semibold text-rce-soft">Open and purchased ({displayOrders.length})</h3>
+      {displayOrders.length === 0 && <p className="text-sm text-rce-muted">No open purchases.</p>}
       <ul className="mt-1 space-y-1">
         {visible.map((po) => (
           <li key={po.id} className="rounded-lg border border-rce-border px-3 py-1.5 text-sm">
@@ -259,8 +349,24 @@ export function PurchasesCard() {
           </li>
         ))}
       </ul>
-      {orders.length > PAGE_SIZE && !showAll && (
-        <button type="button" className="mt-1 text-xs text-rce-accent" onClick={() => setShowAll(true)}>Show more ({orders.length - PAGE_SIZE})</button>
+      {displayOrders.length > PAGE_SIZE && !showAll && (
+        <button type="button" className="mt-1 text-xs text-rce-accent" onClick={() => setShowAll(true)}>Show more ({displayOrders.length - PAGE_SIZE})</button>
+      )}
+
+      {stalePending.length > 0 && (
+        <div className="mt-4 rounded-lg border border-red-300 bg-red-50 p-2">
+          <p className="text-sm font-semibold text-red-800">
+            {stalePending.length} receipt{stalePending.length === 1 ? "" : "s"} stuck in review — no vendor or amount after {PENDING_REVIEW_STALE_MINUTES} minutes
+          </p>
+          <ul className="mt-1 space-y-1">
+            {stalePending.map((r) => (
+              <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 text-xs text-red-900">
+                <span>{shortDate(r.receivedAt)} · {r.jobLabel}</span>
+                <ReparseReceiptButton receiptId={r.id} />
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <h3 className="mt-4 text-sm font-semibold text-amber-800">Receipts needing a PO ({needing.length})</h3>

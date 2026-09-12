@@ -11,6 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@zxing/browser": "^0.2.1",
+    "@zxing/library": "^0.23.0",
     "app": "file:..",
     "dexie": "^4.4.4",
     "react": "^19.2.7",

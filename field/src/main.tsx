@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { registerSW } from 'virtual:pwa-register'
-import { consumeEnrollmentToken, flushSyncQueue, registerSyncListener } from './lib/crmSync'
+import { consumeEnrollmentToken, flushReceiptQueue, flushSyncQueue, registerSyncListener } from './lib/crmSync'
 
 // Before createRoot — PropertyScreen reads the saved token in a useState
 // initializer, so enrolling any later wouldn't take effect until a reload.
@@ -12,6 +12,9 @@ const justEnrolled = consumeEnrollmentToken()
 registerSW({ immediate: true })
 registerSyncListener()
 void flushSyncQueue()
+// Receipts queued while the phone was killed/rebooted mid-flush (2026-09-12
+// durability fix) — retried here alongside the inspection queue.
+void flushReceiptQueue()
 
 // A new service worker taking control means a newer bundle exists than the one
 // running. Announce it instead of running stale silently (Kyle's Caysens walk,

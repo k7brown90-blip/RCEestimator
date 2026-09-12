@@ -92,6 +92,20 @@ const STORES_V6 = {
   findingActionQueue: 'actionId, findingId, kind, queuedAt',
 }
 
+// v7 adds the receipt-photo queue (2026-09-12 durability fix), mirroring
+// src/db/database.ts. Pure store addition — no data migration.
+const STORES_V7 = {
+  ...STORES_V6,
+  receiptSyncQueue: 'receiptId, queuedAt',
+}
+
+// v8 adds the barcode/SKU materials cache (2026-09-12, barcode/materials plan Unit 3),
+// mirroring src/db/database.ts. Pure store addition — no data migration.
+const STORES_V8 = {
+  ...STORES_V7,
+  materials: 'id, upc, sku, itemId',
+}
+
 afterEach(async () => {
   await Dexie.delete(DB_NAME)
 })
@@ -242,6 +256,117 @@ describe('v3 → v4 property migration', () => {
     expect(await v6.table('findings').where('propertyId').equals('prop1').count()).toBe(1)
     expect(await v6.table('findingActionQueue').count()).toBe(1)
     v6.close()
+  })
+
+  it('carries a v6 database up to v7 without losing anything in any store', async () => {
+    // v7 adds only receiptSyncQueue (2026-09-12 durability fix) — no data
+    // migration, so the risk is identical in kind to v5→v6: a version chain
+    // that fails to open and takes every queued store down with it.
+    await seedV3([crmProperty])
+    const v6 = openV4()
+    v6.version(5).stores(STORES_V5)
+    v6.version(6).stores(STORES_V6)
+    await v6.open()
+    await v6.table('syncQueue').put({
+      inspectionId: 'insp-queued', visitId: 'v1', payload: '{}', attempts: 0, queuedAt: 'now',
+    })
+    await v6.table('photoSyncQueue').put({
+      photoId: 'photo-1', inspectionId: 'insp-queued', attempts: 0, queuedAt: 'now',
+    })
+    await v6.table('findings').put({
+      id: 'f1', propertyId: 'prop1', itemId: 'C4', locationKey: '_default', cycle: 1,
+      track: 'defect', title: 'MBJ', section: null, citations: [], citationsAvailable: false,
+      severity: 'FAIL', critical: true, findingText: 'x', resolutionNote: null,
+      expectedEolYear: null, status: 'open', openedAt: 'now', observedCount: 1,
+      declinedByName: null, declinedByRelation: null, declinedVerbatim: null, cachedAt: 'now',
+    })
+    await v6.table('findingActionQueue').put({
+      actionId: 'a1', findingId: 'f1', kind: 'cure_claim', payload: '{}', attempts: 0, queuedAt: 'now',
+    })
+    v6.close()
+
+    const v7 = openV4()
+    v7.version(5).stores(STORES_V5)
+    v7.version(6).stores(STORES_V6)
+    v7.version(7).stores(STORES_V7)
+    await v7.open()
+
+    // Nothing queued in any pre-existing store is lost by the upgrade.
+    expect(await v7.table('syncQueue').count()).toBe(1)
+    expect(await v7.table('photoSyncQueue').count()).toBe(1)
+    expect(await v7.table('findings').count()).toBe(1)
+    expect(await v7.table('findingActionQueue').count()).toBe(1)
+    expect((await v7.table('properties').get('p-crm')).crm.visitId).toBe('v1')
+
+    // And the new store is usable and indexed on receiptId + queuedAt.
+    await v7.table('receiptSyncQueue').put({
+      receiptId: 'r1', photoId: 'photo-r1', originalPhotoId: 'photo-r1-orig',
+      purchaseOrderId: 'po1', category: 'materials', attempts: 0, queuedAt: 'now',
+    })
+    expect(await v7.table('receiptSyncQueue').count()).toBe(1)
+    expect((await v7.table('receiptSyncQueue').get('r1')).purchaseOrderId).toBe('po1')
+    v7.close()
+  })
+
+  it('carries a v7 database up to v8 without losing anything in any store', async () => {
+    // v8 adds only the barcode/SKU materials cache (2026-09-12, barcode/materials plan Unit
+    // 3) — no data migration, same risk in kind as v6→v7: a version chain that fails to
+    // open takes every queued store down with it, mid-job, on a technician's phone.
+    await seedV3([crmProperty])
+    const v7 = openV4()
+    v7.version(5).stores(STORES_V5)
+    v7.version(6).stores(STORES_V6)
+    v7.version(7).stores(STORES_V7)
+    await v7.open()
+    await v7.table('syncQueue').put({
+      inspectionId: 'insp-queued', visitId: 'v1', payload: '{}', attempts: 0, queuedAt: 'now',
+    })
+    await v7.table('photoSyncQueue').put({
+      photoId: 'photo-1', inspectionId: 'insp-queued', attempts: 0, queuedAt: 'now',
+    })
+    await v7.table('findings').put({
+      id: 'f1', propertyId: 'prop1', itemId: 'C4', locationKey: '_default', cycle: 1,
+      track: 'defect', title: 'MBJ', section: null, citations: [], citationsAvailable: false,
+      severity: 'FAIL', critical: true, findingText: 'x', resolutionNote: null,
+      expectedEolYear: null, status: 'open', openedAt: 'now', observedCount: 1,
+      declinedByName: null, declinedByRelation: null, declinedVerbatim: null, cachedAt: 'now',
+    })
+    await v7.table('findingActionQueue').put({
+      actionId: 'a1', findingId: 'f1', kind: 'cure_claim', payload: '{}', attempts: 0, queuedAt: 'now',
+    })
+    await v7.table('receiptSyncQueue').put({
+      receiptId: 'r1', photoId: 'photo-r1', originalPhotoId: 'photo-r1-orig',
+      purchaseOrderId: 'po1', category: 'materials', attempts: 0, queuedAt: 'now',
+    })
+    v7.close()
+
+    const v8 = openV4()
+    v8.version(5).stores(STORES_V5)
+    v8.version(6).stores(STORES_V6)
+    v8.version(7).stores(STORES_V7)
+    v8.version(8).stores(STORES_V8)
+    await v8.open()
+
+    // Nothing queued in any pre-existing store is lost by the upgrade.
+    expect(await v8.table('syncQueue').count()).toBe(1)
+    expect(await v8.table('photoSyncQueue').count()).toBe(1)
+    expect(await v8.table('findings').count()).toBe(1)
+    expect(await v8.table('findingActionQueue').count()).toBe(1)
+    expect(await v8.table('receiptSyncQueue').count()).toBe(1)
+    expect((await v8.table('receiptSyncQueue').get('r1')).purchaseOrderId).toBe('po1')
+    expect((await v8.table('properties').get('p-crm')).crm.visitId).toBe('v1')
+
+    // And the new store is usable and indexed on upc + sku, so a typed SKU resolves exactly
+    // the way a scanned barcode does, against the same cache.
+    await v8.table('materials').put({
+      id: 'm1', upc: '078477123456', sku: '5320-W', supplier: 'Nashville Electric Supply',
+      description: 'Leviton 5320-W duplex receptacle', packQty: 10, packUnit: 'ea',
+      lastCost: 11.97, itemId: null,
+    })
+    expect(await v8.table('materials').count()).toBe(1)
+    expect((await v8.table('materials').where('upc').equals('078477123456').first()).id).toBe('m1')
+    expect((await v8.table('materials').where('sku').equals('5320-W').first()).id).toBe('m1')
+    v8.close()
   })
 
   it('preserves an inspection draft across the upgrade', async () => {

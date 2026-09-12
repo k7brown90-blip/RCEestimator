@@ -31,6 +31,7 @@ import { logSystemEvent } from "./systemEvents";
 import { PO_LIST_INCLUDE, closePurchaseOrderForLanding, serializePurchaseOrder, type PoPurpose } from "./purchaseOrders";
 // Cycle with stockSeed (it imports countStock from here) is benign: both sides only use the other inside function bodies.
 import { MATCH_THRESHOLD, normalizeName, scoreMatch, specTokens } from "./stockSeed";
+import { assertNotAssembly } from "./priceBookAssembly";
 
 type Tx = Prisma.TransactionClient;
 
@@ -184,6 +185,18 @@ export async function applyMovement(tx: Tx, m: MovementInput): Promise<StockMove
   if (!m.itemId.trim()) throw new InventoryError("itemId is required", 400);
   if (!Number.isFinite(m.qty) || m.qty < 0) throw new InventoryError("qty must be a non-negative number", 400);
   if (m.kind !== "count" && m.kind !== "correction" && m.qty <= 0) throw new InventoryError("qty must be positive", 400);
+
+  // Guard: an assembly is a PriceBookAtomic row (rowType "ASSEMBLY") that shares the item ID
+  // space with real materials, but it is not a purchasable thing — it has no supplier cost and
+  // must never appear in inventory (2026-09-12 barcode/materials plan, Unit 1).
+  if (!m.itemId.startsWith("adhoc:")) {
+    try {
+      await assertNotAssembly(tx, m.itemId, "appear in inventory");
+    } catch (err) {
+      if (err instanceof Error && err.name === "AssemblyGuardError") throw new InventoryError(err.message, 409);
+      throw err;
+    }
+  }
 
   if (m.jobId) {
     const job = await tx.visit.findUnique({

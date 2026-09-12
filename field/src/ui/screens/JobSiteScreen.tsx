@@ -19,9 +19,10 @@ import {
   completeVisitFromField,
   fetchJobBrief,
   fetchPurchaseOrders,
+  pendingReceiptCount,
+  queueReceiptAndReport,
   scheduleVisitFromField,
   uploadJobPhoto,
-  uploadReceiptFromField,
   type FieldPurchaseOrder,
   type JobBrief,
 } from '../../lib/crmSync'
@@ -152,11 +153,17 @@ export function JobSiteScreen({
   const [receiptVendor, setReceiptVendor] = useState('')
   const [receiptStatus, setReceiptStatus] = useState<string | null>(null)
   const [receiptBusy, setReceiptBusy] = useState(false)
+  const [pendingReceipts, setPendingReceipts] = useState(0)
+  const refreshPendingReceipts = () => { void pendingReceiptCount().then(setPendingReceipts) }
+  useEffect(() => { refreshPendingReceipts() }, [])
   const sendReceipt = async (file: File) => {
     setReceiptBusy(true)
     setReceiptStatus(null)
     try {
-      const result = await uploadReceiptFromField({
+      // Queued durably before any network call — never a bare failure that
+      // drops the photo (2026-09-12: four receipts lost on 2026-09-11 because
+      // a failed fetch discarded the File with nothing written anywhere).
+      const { status } = await queueReceiptAndReport({
         visitId: assignment.visitId,
         blob: file,
         amount: Number(receiptAmount) > 0 ? Number(receiptAmount) : undefined,
@@ -164,16 +171,19 @@ export function JobSiteScreen({
         category: 'materials',
       })
       setReceiptStatus(
-        result.status === 'pending_review'
-          ? `✓ Receipt filed ($${result.amount.toFixed(2)}) — the office reviews it.`
-          : `✓ Receipt filed ($${result.amount.toFixed(2)}).`,
+        status === 'filed'
+          ? '✓ Receipt filed.'
+          : '✓ Receipt queued — it will file the moment there is signal.',
       )
       setReceiptAmount('')
       setReceiptVendor('')
     } catch (err) {
-      setReceiptStatus(`Upload failed — ${err instanceof Error ? err.message : 'no signal?'}`)
+      // Only a local IndexedDB failure reaches here — the network leg is
+      // retried in the background and never throws out to the caller.
+      setReceiptStatus(`Could not queue the photo — ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setReceiptBusy(false)
+      refreshPendingReceipts()
     }
   }
 
@@ -403,6 +413,13 @@ export function JobSiteScreen({
             {showReceipt ? 'hide' : 'add receipt'}
           </button>
         </div>
+        {/* A silent failure today is indistinguishable from a purchase never
+            photographed (2026-09-11 incident) — this count is the difference. */}
+        {pendingReceipts > 0 && (
+          <p className="rounded bg-amber-950/60 p-2 text-xs text-amber-200">
+            {pendingReceipts} receipt{pendingReceipts === 1 ? '' : 's'} queued, waiting for signal to file.
+          </p>
+        )}
         {showReceipt && (
           <>
             <div className="flex gap-2">
@@ -422,7 +439,7 @@ export function JobSiteScreen({
               />
             </div>
             <PhotoPicker onPick={(f) => void sendReceipt(f)} disabled={receiptBusy} />
-            {receiptBusy && <p className="text-xs text-slate-400">Uploading…</p>}
+            {receiptBusy && <p className="text-xs text-slate-400">Queuing…</p>}
           </>
         )}
         {receiptStatus && <p className="text-xs text-slate-300">{receiptStatus}</p>}

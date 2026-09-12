@@ -22,6 +22,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { markupMultiplierFor, markupTierFor, type MarkupTiers } from "./priceBookPricing";
 import { loadBilledLaborRate } from "./laborRate";
+import { isAssemblyRowType } from "./priceBookAssembly";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -128,6 +129,62 @@ export async function updateAtomic(
   const existing = await prisma.priceBookAtomic.findUnique({ where: { itemId } });
   if (!existing) return { ok: false, reason: `Item ${itemId} not found.` };
 
+  const existingIsAssembly = isAssemblyRowType((existing as { rowType: string | null }).rowType);
+
+  // rowType integrity, both directions:
+  //  - An assembly's rowType is load-bearing for every other guard in this file and in
+  //    priceBookAssembly.ts (component rollup, no-nesting, inventory exclusion). Letting it
+  //    change would silently de-assemble the row — its PriceBookItemComponent rows stay behind,
+  //    orphaned, and its derived cost freezes as a now-typed-editable value. Refuse outright
+  //    rather than let the generic catalog drawer touch it.
+  //  - The mirror case: patching an ordinary row's rowType to "ASSEMBLY" would produce a nominal
+  //    assembly with a stale typed cost/labour and zero components. Assemblies are created
+  //    through POST /price-book/catalog/assemblies, which builds the component list and derives
+  //    cost from it — never through this generic patch path.
+  if (existingIsAssembly && "rowType" in patch) {
+    return {
+      ok: false,
+      reason:
+        `${itemId} is an assembly — rowType cannot be changed through this endpoint. ` +
+        `De-assembling it would orphan its component list (PriceBookItemComponent) and freeze its ` +
+        `derived cost as a stale typed value.`,
+    };
+  }
+  if (!existingIsAssembly && "rowType" in patch && isAssemblyRowType(patch.rowType as string | null)) {
+    return {
+      ok: false,
+      reason:
+        `Cannot set rowType to ASSEMBLY through this endpoint. Assemblies are created through ` +
+        `POST /price-book/catalog/assemblies, which builds the component list and derives cost from it.`,
+    };
+  }
+
+  // An assembly's cost and labour are DERIVED from its components (priceBookAssembly.ts) — never
+  // typed, never patched directly through the generic catalog path. A typed value here would
+  // silently disagree with the assembly's own material list, which is the exact failure this
+  // whole design exists to prevent. Refuse loudly rather than silently dropping the field.
+  if (existingIsAssembly) {
+    if ("companyCost" in patch) {
+      return {
+        ok: false,
+        reason:
+          `${itemId} is an assembly — its companyCost is derived from its components' costs, ` +
+          `not typed directly. Edit the component list (PUT /price-book/catalog/assemblies/${itemId}/components) instead.`,
+      };
+    }
+    const laborFields = ["laborNormal", "laborDifficult", "laborVeryDifficult"] as const;
+    const patchedLaborField = laborFields.find((f) => f in patch);
+    if (patchedLaborField) {
+      return {
+        ok: false,
+        reason:
+          `${itemId} is an assembly — ${patchedLaborField} is auto-summed from its components, ` +
+          `not patched directly. Use PUT /price-book/catalog/assemblies/${itemId}/labor-override ` +
+          `to set an explicit override (it records the override flag so it is never silently inferred).`,
+      };
+    }
+  }
+
   const data: Record<string, unknown> = {};
   const audits: Array<{ field: string; oldValue: string | null; newValue: string | null }> = [];
   for (const field of EDITABLE_FIELDS) {
@@ -199,15 +256,19 @@ export interface CreateAtomicInput {
   notes?: string | null;
 }
 
-export async function createAtomic(
+/**
+ * Resolve the ID an item will be created under: the caller's explicit ID, uppercased, or the
+ * next free number after a prefix (the book's own scheme). Shared with priceBookAssembly.ts so
+ * an assembly's auto ID follows the identical rule rather than a second implementation of it.
+ */
+export async function resolveNewItemId(
   prisma: PrismaClient,
-  input: CreateAtomicInput,
-  editedBy: string,
-): Promise<{ ok: true; atomic: unknown } | { ok: false; reason: string }> {
-  let itemId = (input.itemId ?? "").trim().toUpperCase();
-  if (!itemId) {
-    // Continue the book's own scheme: prefix + zero-padded next number.
-    const prefix = (input.idPrefix ?? "APP").trim().toUpperCase().replace(/[^A-Z]/g, "") || "APP";
+  itemId: string | null | undefined,
+  idPrefix: string | null | undefined,
+): Promise<{ ok: true; itemId: string } | { ok: false; reason: string }> {
+  let id = (itemId ?? "").trim().toUpperCase();
+  if (!id) {
+    const prefix = (idPrefix ?? "APP").trim().toUpperCase().replace(/[^A-Z]/g, "") || "APP";
     const siblings = await prisma.priceBookAtomic.findMany({
       where: { itemId: { startsWith: prefix } },
       select: { itemId: true },
@@ -217,10 +278,33 @@ export async function createAtomic(
       const m = pattern.exec(row.itemId);
       return m ? Math.max(best, Number(m[1])) : best;
     }, 0);
-    itemId = `${prefix}${String(max + 1).padStart(3, "0")}`;
+    id = `${prefix}${String(max + 1).padStart(3, "0")}`;
   }
-  const clash = await prisma.priceBookAtomic.findUnique({ where: { itemId }, select: { itemId: true } });
-  if (clash) return { ok: false, reason: `Item ID ${itemId} already exists.` };
+  const clash = await prisma.priceBookAtomic.findUnique({ where: { itemId: id }, select: { itemId: true } });
+  if (clash) return { ok: false, reason: `Item ID ${id} already exists.` };
+  return { ok: true, itemId: id };
+}
+
+export async function createAtomic(
+  prisma: PrismaClient,
+  input: CreateAtomicInput,
+  editedBy: string,
+): Promise<{ ok: true; atomic: unknown } | { ok: false; reason: string }> {
+  // Assemblies are created through the assembly path (createAssembly / POST
+  // /price-book/catalog/assemblies), which builds the component list and derives cost from it.
+  // A row with rowType "ASSEMBLY" created here would carry a hand-typed cost and zero components,
+  // bypassing the derived-cost design at creation instead of update.
+  if (isAssemblyRowType(input.rowType)) {
+    return {
+      ok: false,
+      reason:
+        "Cannot create a row with rowType ASSEMBLY through createAtomic. Use " +
+        "POST /price-book/catalog/assemblies, which builds the component list and derives cost from it.",
+    };
+  }
+  const resolved = await resolveNewItemId(prisma, input.itemId, input.idPrefix);
+  if (!resolved.ok) return resolved;
+  const itemId = resolved.itemId;
 
   const { tiers, rate } = await loadPricingContext(prisma);
   const computed = computePricing(

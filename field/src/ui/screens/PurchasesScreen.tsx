@@ -11,7 +11,7 @@
 
 import { useEffect, useState } from 'react'
 import { fetchMyPurchaseOrders, type FieldPurchaseOrder } from '../../lib/crmSync'
-import { PoNumberBanner, PurchaseOrderList, StartPurchaseForm, type CreatedPo } from '../components/PurchaseOrderPanel'
+import { PendingReceiptsNotice, PoNumberBanner, PurchaseOrderList, StartPurchaseForm, type CreatedPo } from '../components/PurchaseOrderPanel'
 
 export function PurchasesScreen({ onBack }: { onBack: () => void }) {
   const [orders, setOrders] = useState<FieldPurchaseOrder[]>([])
@@ -41,6 +41,8 @@ export function PurchasesScreen({ onBack }: { onBack: () => void }) {
           Start with a PO number, buy, then photo the receipt. Truck stock by default; warehouse and tool runs are their own thing.
         </p>
       </header>
+
+      <PendingReceiptsNotice />
 
       <section className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
         <div className="flex items-center justify-between">

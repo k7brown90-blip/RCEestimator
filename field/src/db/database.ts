@@ -108,6 +108,56 @@ export interface FindingActionRecord {
   queuedAt: string
 }
 
+/**
+ * A receipt photo queued for upload — the durability fix for the 2026-09-11
+ * incident, where four receipt photos were taken and discarded on failure
+ * because nothing wrote them to IndexedDB first.
+ *
+ * `receiptId` is minted at capture time (queueReceiptUpload), not at send
+ * time — the server upserts on it (health-record.ts), so every retry lands on
+ * the same row and a double-flush cannot create a duplicate.
+ *
+ * `photoId` is the compressed copy actually uploaded; `originalPhotoId` is the
+ * untouched full-resolution capture, kept until the server accepts so a bad
+ * compression pass never loses the only copy.
+ */
+export interface ReceiptSyncRecord {
+  receiptId: string
+  photoId: string
+  originalPhotoId: string
+  visitId?: string
+  purchaseOrderId?: string
+  amount?: number
+  vendor?: string
+  category?: 'materials' | 'gas' | 'maintenance' | 'overhead' | 'permit' | 'inspection'
+  attempts: number
+  lastError?: string
+  queuedAt: string
+}
+
+/**
+ * A cached row of the barcode/SKU→material lookup (barcode/materials plan Unit 3,
+ * 2026-09-12). Kyle scans in the aisle, where signal is worst, so this table must answer a
+ * scan or a typed SKU instantly with no network round trip — refreshed on assignment sync
+ * (lib/crmSync.ts syncMaterials), same degrade-to-cache contract as `assignments` and
+ * `findings`. `upc` and `sku` are both indexed because a typed SKU must resolve exactly the
+ * way a scanned barcode does, against this same cache (Kyle, 2026-09-12: "every one of them
+ * has a SKU... typing a SKU must resolve a material exactly the same way scanning a barcode
+ * does").
+ */
+export interface MaterialCacheRecord {
+  id: string
+  upc: string | null
+  sku: string | null
+  supplier: string | null
+  description: string | null
+  packQty: number | null
+  packUnit: string | null
+  lastCost: number | null
+  itemId: string | null
+  cachedAt: string
+}
+
 export class HealthRecordDatabase extends Dexie {
   properties!: Table<Property, string>
   inspections!: Table<Inspection, string>
@@ -119,6 +169,8 @@ export class HealthRecordDatabase extends Dexie {
   corrupt!: Table<CorruptRecord, string>
   findings!: Table<FindingRecord, string>
   findingActionQueue!: Table<FindingActionRecord, string>
+  receiptSyncQueue!: Table<ReceiptSyncRecord, string>
+  materials!: Table<MaterialCacheRecord, string>
 
   constructor() {
     super('red-cedar-health-record')
@@ -236,6 +288,42 @@ export class HealthRecordDatabase extends Dexie {
       corrupt: 'id, table, quarantinedAt',
       findings: 'id, propertyId, itemId, status, track, [propertyId+status]',
       findingActionQueue: 'actionId, findingId, kind, queuedAt',
+    })
+
+    // v7: the receipt-photo queue (2026-09-12, incident: four receipt photos
+    // taken on 2026-09-11 were lost permanently because a failed upload
+    // discarded the File instead of persisting it). Pure store addition — no
+    // data migration, so there is no .upgrade() and nothing existing to break.
+    this.version(7).stores({
+      properties: 'id, address, jurisdictionId, createdAt, crm.visitId, legacy',
+      inspections: 'id, propertyId, jurisdictionId, date, technician, status, scope, [propertyId+date]',
+      photos: 'id, mimeType',
+      syncQueue: 'inspectionId, queuedAt',
+      photoSyncQueue: 'photoId, inspectionId, queuedAt',
+      assignments: 'visitId, assignmentId, scheduledStart, cachedAt',
+      meta: 'key',
+      corrupt: 'id, table, quarantinedAt',
+      findings: 'id, propertyId, itemId, status, track, [propertyId+status]',
+      findingActionQueue: 'actionId, findingId, kind, queuedAt',
+      receiptSyncQueue: 'receiptId, queuedAt',
+    })
+
+    // v8: the barcode/SKU materials cache (2026-09-12, barcode/materials plan Unit 3). Pure
+    // store addition — no data migration, same shape as v6/v7 — so there is no .upgrade()
+    // and nothing existing to break.
+    this.version(8).stores({
+      properties: 'id, address, jurisdictionId, createdAt, crm.visitId, legacy',
+      inspections: 'id, propertyId, jurisdictionId, date, technician, status, scope, [propertyId+date]',
+      photos: 'id, mimeType',
+      syncQueue: 'inspectionId, queuedAt',
+      photoSyncQueue: 'photoId, inspectionId, queuedAt',
+      assignments: 'visitId, assignmentId, scheduledStart, cachedAt',
+      meta: 'key',
+      corrupt: 'id, table, quarantinedAt',
+      findings: 'id, propertyId, itemId, status, track, [propertyId+status]',
+      findingActionQueue: 'actionId, findingId, kind, queuedAt',
+      receiptSyncQueue: 'receiptId, queuedAt',
+      materials: 'id, upc, sku, itemId',
     })
   }
 }

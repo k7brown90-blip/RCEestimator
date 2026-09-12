@@ -16,12 +16,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
-import type { PbCatalogAtomic, PbCatalogCreate, PbCatalogPatch } from "../lib/api";
+import type { PbCatalogAtomic, PbCatalogCreate, PbCatalogPatch, PbAssemblyCreate, PbLaborTier } from "../lib/api";
 
 const money = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `$${v.toFixed(2)}`);
 const hours = (v: number | null | undefined) => (v === null || v === undefined ? "—" : String(v));
 
 const ROW_TYPES = ["MATERIAL + LABOR", "LABOR ONLY", "MATERIAL ONLY"] as const;
+
+/** The one rowType that isn't a purchasable item — see src/services/priceBookAssembly.ts. */
+const isAssemblyRowType = (rowType: string | null | undefined) => (rowType ?? "").toUpperCase() === "ASSEMBLY";
 
 /** Empty string in a text input means "clear it" — the API wants null for that. */
 const textOrNull = (s: string): string | null => (s.trim() === "" ? null : s.trim());
@@ -37,6 +40,7 @@ export function PriceBookCatalogPage() {
   const [search, setSearch] = useState("");
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [creatingAssembly, setCreatingAssembly] = useState(false);
   const [showRetired, setShowRetired] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -136,6 +140,13 @@ export function PriceBookCatalogPage() {
           className="rounded-lg bg-rce-accent px-3 py-2 text-sm font-medium text-white"
         >
           + New item
+        </button>
+        <button
+          type="button"
+          onClick={() => setCreatingAssembly(true)}
+          className="rounded-lg border border-rce-accent px-3 py-2 text-sm font-medium text-rce-accentDark"
+        >
+          + Create assembly
         </button>
         <button
           type="button"
@@ -291,7 +302,15 @@ export function PriceBookCatalogPage() {
                     <td className="px-2 py-1.5 font-mono text-xs">{it.itemId}</td>
                     <td className="px-2 py-1.5">{it.description}</td>
                     <td className="px-2 py-1.5 text-xs text-rce-muted">{it.unitLabel ?? "—"}</td>
-                    <td className="px-2 py-1.5 text-xs text-rce-muted">{it.rowType ?? "—"}</td>
+                    <td className="px-2 py-1.5 text-xs">
+                      {isAssemblyRowType(it.rowType) ? (
+                        <span className="rounded-full bg-rce-accent/15 px-2 py-0.5 font-medium text-rce-accentDark">
+                          ASSEMBLY
+                        </span>
+                      ) : (
+                        <span className="text-rce-muted">{it.rowType ?? "—"}</span>
+                      )}
+                    </td>
                     <td className="px-2 py-1.5 text-right">{money(it.companyCost)}</td>
                     <td className="px-2 py-1.5 text-right text-xs text-rce-muted">
                       {hours(it.laborNormal)} / {hours(it.laborDifficult)} / {hours(it.laborVeryDifficult)}
@@ -322,6 +341,18 @@ export function PriceBookCatalogPage() {
           onClose={() => setCreating(false)}
           onCreated={(atomic) => {
             setCreating(false);
+            setSelectedCategory(atomic.category ?? selectedCategory);
+            invalidateBook();
+          }}
+        />
+      )}
+      {creatingAssembly && (
+        <CreateAssemblyDrawer
+          defaultCategory={selectedCategory ?? ""}
+          categories={categories.map((c) => c.name)}
+          onClose={() => setCreatingAssembly(false)}
+          onCreated={(atomic) => {
+            setCreatingAssembly(false);
             setSelectedCategory(atomic.category ?? selectedCategory);
             invalidateBook();
           }}
@@ -418,6 +449,11 @@ function ItemDrawer({
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((f) => (f ? { ...f, [k]: e.target.value } : f));
 
+  // An assembly's cost and labour are derived from its components (server: priceBookAssembly.ts)
+  // and must never be typed through this generic drawer — see priceBookCatalog.ts's updateAtomic
+  // guard, which refuses exactly these fields on an ASSEMBLY row.
+  const isAssembly = isAssemblyRowType(atomic.rowType);
+
   const buildPatch = (): PbCatalogPatch => {
     const patch: PbCatalogPatch = {};
     if (form.description.trim() && form.description.trim() !== (atomic.description ?? "")) patch.description = form.description.trim();
@@ -426,11 +462,15 @@ function ItemDrawer({
     if (textOrNull(form.unitLabel) !== (atomic.unitLabel ?? null)) patch.unitLabel = textOrNull(form.unitLabel);
     if (textOrNull(form.sector) !== (atomic.sector ?? null)) patch.sector = textOrNull(form.sector);
     if (textOrNull(form.notes) !== (atomic.notes ?? null)) patch.notes = textOrNull(form.notes);
-    if (form.rowType && form.rowType !== (atomic.rowType ?? "")) patch.rowType = form.rowType;
-    if (numOrNull(form.companyCost) !== (atomic.companyCost ?? null)) patch.companyCost = numOrNull(form.companyCost);
-    if (numOrNull(form.laborNormal) !== (atomic.laborNormal ?? null)) patch.laborNormal = numOrNull(form.laborNormal);
-    if (numOrNull(form.laborDifficult) !== (atomic.laborDifficult ?? null)) patch.laborDifficult = numOrNull(form.laborDifficult);
-    if (numOrNull(form.laborVeryDifficult) !== (atomic.laborVeryDifficult ?? null)) patch.laborVeryDifficult = numOrNull(form.laborVeryDifficult);
+    // rowType is read-only for assemblies (server: updateAtomic refuses the change outright —
+    // it would orphan the component list and freeze the derived cost as a stale typed value).
+    if (!isAssembly && form.rowType && form.rowType !== (atomic.rowType ?? "")) patch.rowType = form.rowType;
+    if (!isAssembly) {
+      if (numOrNull(form.companyCost) !== (atomic.companyCost ?? null)) patch.companyCost = numOrNull(form.companyCost);
+      if (numOrNull(form.laborNormal) !== (atomic.laborNormal ?? null)) patch.laborNormal = numOrNull(form.laborNormal);
+      if (numOrNull(form.laborDifficult) !== (atomic.laborDifficult ?? null)) patch.laborDifficult = numOrNull(form.laborDifficult);
+      if (numOrNull(form.laborVeryDifficult) !== (atomic.laborVeryDifficult ?? null)) patch.laborVeryDifficult = numOrNull(form.laborVeryDifficult);
+    }
     return patch;
   };
 
@@ -459,30 +499,61 @@ function ItemDrawer({
             <input className={inputCls} value={form.unitLabel} onChange={set("unitLabel")} placeholder="e.g. per opening" />
           </Field>
           <Field label="Row type">
-            <select className={inputCls} value={form.rowType} onChange={set("rowType")}>
-              {ROW_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
+            {isAssembly ? (
+              <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{atomic.rowType ?? "ASSEMBLY"}</div>
+            ) : (
+              <select className={inputCls} value={form.rowType} onChange={set("rowType")}>
+                {ROW_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            )}
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <Field label="Company cost ($)">
-            <input className={inputCls} inputMode="decimal" value={form.companyCost} onChange={set("companyCost")} />
+            {isAssembly ? (
+              <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{money(atomic.companyCost)}</div>
+            ) : (
+              <input className={inputCls} inputMode="decimal" value={form.companyCost} onChange={set("companyCost")} />
+            )}
           </Field>
           <Field label="Sector">
             <input className={inputCls} value={form.sector} onChange={set("sector")} placeholder="optional" />
           </Field>
         </div>
+        {isAssembly ? (
+          <p className="-mt-1 text-xs text-rce-muted">
+            Derived from this assembly's components — edit the component list to change it.
+          </p>
+        ) : null}
         <div className="grid grid-cols-3 gap-2">
           <Field label="Hrs normal">
-            <input className={inputCls} inputMode="decimal" value={form.laborNormal} onChange={set("laborNormal")} />
+            {isAssembly ? (
+              <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{form.laborNormal || "0"}</div>
+            ) : (
+              <input className={inputCls} inputMode="decimal" value={form.laborNormal} onChange={set("laborNormal")} />
+            )}
           </Field>
           <Field label="Hrs difficult">
-            <input className={inputCls} inputMode="decimal" value={form.laborDifficult} onChange={set("laborDifficult")} />
+            {isAssembly ? (
+              <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{form.laborDifficult || "0"}</div>
+            ) : (
+              <input className={inputCls} inputMode="decimal" value={form.laborDifficult} onChange={set("laborDifficult")} />
+            )}
           </Field>
           <Field label="Hrs very diff.">
-            <input className={inputCls} inputMode="decimal" value={form.laborVeryDifficult} onChange={set("laborVeryDifficult")} />
+            {isAssembly ? (
+              <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{form.laborVeryDifficult || "0"}</div>
+            ) : (
+              <input className={inputCls} inputMode="decimal" value={form.laborVeryDifficult} onChange={set("laborVeryDifficult")} />
+            )}
           </Field>
         </div>
+        {isAssembly ? (
+          <p className="-mt-1 text-xs text-rce-muted">
+            Auto-summed from this assembly's components, per tier — use the labour override on the
+            assembly to set an explicit value instead.
+          </p>
+        ) : null}
         <Field label="Notes">
           <textarea className={inputCls} rows={2} value={form.notes} onChange={set("notes")} />
         </Field>
@@ -657,6 +728,356 @@ function NewItemDrawer({
             }
           >
             {createMutation.isPending ? "Creating…" : "Create item"}
+          </button>
+        </div>
+      </div>
+    </DrawerShell>
+  );
+}
+
+// ─── Create assembly (2026-09-12, barcode/materials plan Unit 1) ───────────────────────────
+//
+// An assembly is a PriceBookAtomic row (rowType "ASSEMBLY") plus a PriceBookItemComponent list —
+// see src/services/priceBookAssembly.ts. Cost and non-overridden labour are NOT typed here; they
+// are derived from the attached components and recomputed authoritatively by the server on
+// create. The math below duplicates computeComponentRollup() only so Kyle sees a live preview as
+// he builds the list — it is display-only and never sent to the server as a number, only the
+// component list and quantities are (plus any explicit override).
+
+const LABOR_TIER_LIST: Array<{ key: PbLaborTier; label: string }> = [
+  { key: "laborNormal", label: "Normal" },
+  { key: "laborDifficult", label: "Difficult" },
+  { key: "laborVeryDifficult", label: "Very difficult" },
+];
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+const round4 = (n: number) => Math.round(n * 10000) / 10000;
+
+interface PickedComponent {
+  atomic: PbCatalogAtomic;
+  quantity: number;
+}
+
+interface PreviewTier {
+  value: number | null;
+  complete: boolean;
+  missing: PickedComponent[];
+}
+
+interface PreviewRollup {
+  companyCost: number | null;
+  costComplete: boolean;
+  unpriced: PickedComponent[];
+  labor: Record<PbLaborTier, PreviewTier>;
+}
+
+/** Mirrors computeComponentRollup (priceBookAssembly.ts) for a live, client-only preview. A
+ * component missing a cost or a tier's labour (or its unit divisor) makes that figure INCOMPLETE
+ * rather than summed around — never a confident partial number. */
+function previewRollup(picked: PickedComponent[]): PreviewRollup {
+  let costSum = 0;
+  let costComplete = true;
+  const unpriced: PickedComponent[] = [];
+  for (const p of picked) {
+    if (p.atomic.companyCost === null || p.atomic.companyCost === undefined) {
+      costComplete = false;
+      unpriced.push(p);
+    } else {
+      costSum += p.atomic.companyCost * p.quantity;
+    }
+  }
+
+  const labor = {} as Record<PbLaborTier, PreviewTier>;
+  for (const { key: tier } of LABOR_TIER_LIST) {
+    let sum = 0;
+    let complete = true;
+    const missing: PickedComponent[] = [];
+    for (const p of picked) {
+      const value = p.atomic[tier];
+      const divisor = p.atomic.laborUnitDivisor;
+      if (value === null || value === undefined || divisor === null || divisor === undefined || divisor <= 0) {
+        complete = false;
+        missing.push(p);
+      } else {
+        sum += (p.quantity * value) / divisor;
+      }
+    }
+    labor[tier] = { value: complete ? round4(sum) : null, complete, missing };
+  }
+
+  return { companyCost: costComplete ? round2(costSum) : null, costComplete, unpriced, labor };
+}
+
+function CreateAssemblyDrawer({
+  defaultCategory, categories, onClose, onCreated,
+}: {
+  defaultCategory: string;
+  categories: string[];
+  onClose: () => void;
+  onCreated: (atomic: PbCatalogAtomic) => void;
+}) {
+  const [form, setForm] = useState({
+    itemId: "",
+    description: "",
+    category: defaultCategory,
+    subCategory: "",
+    unitLabel: "",
+    notes: "",
+  });
+  const [components, setComponents] = useState<PickedComponent[]>([]);
+  const [overrides, setOverrides] = useState<Partial<Record<PbLaborTier, string>>>({});
+  const [pickerSearch, setPickerSearch] = useState("");
+
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const activePickerSearch = pickerSearch.trim().length >= 2 ? pickerSearch.trim() : "";
+  const { data: pickerData, isFetching: pickerLoading } = useQuery({
+    queryKey: ["pbCatalogAssemblyPicker", activePickerSearch],
+    queryFn: () => api.pbCatalogItems({ search: activePickerSearch }),
+    enabled: Boolean(activePickerSearch),
+  });
+  const pickedIds = useMemo(() => new Set(components.map((c) => c.atomic.itemId)), [components]);
+  // No nesting (server-enforced too — see validateComponents in priceBookAssembly.ts) and never
+  // offer an item already attached.
+  const pickerResults = (pickerData?.atomics ?? [])
+    .filter((a) => !isAssemblyRowType(a.rowType) && !pickedIds.has(a.itemId))
+    .slice(0, 20);
+
+  const addComponent = (atomic: PbCatalogAtomic) => {
+    setComponents((cs) => [...cs, { atomic, quantity: 1 }]);
+    setPickerSearch("");
+  };
+  const updateQuantity = (itemId: string, quantity: number) => {
+    setComponents((cs) => cs.map((c) => (c.atomic.itemId === itemId ? { ...c, quantity } : c)));
+  };
+  const removeComponent = (itemId: string) => {
+    setComponents((cs) => cs.filter((c) => c.atomic.itemId !== itemId));
+  };
+
+  const preview = useMemo(() => previewRollup(components), [components]);
+
+  const createMutation = useMutation({
+    mutationFn: (input: PbAssemblyCreate) => api.pbCatalogCreateAssembly(input),
+    onSuccess: (d) => onCreated(d.atomic),
+  });
+
+  const validQuantities = components.every((c) => Number.isFinite(c.quantity) && c.quantity > 0);
+  const canSave = form.description.trim().length > 0 && form.category.trim().length > 0 && validQuantities;
+
+  const buildLaborOverrides = (): Partial<Record<PbLaborTier, number>> => {
+    const out: Partial<Record<PbLaborTier, number>> = {};
+    for (const { key: tier } of LABOR_TIER_LIST) {
+      const raw = overrides[tier];
+      if (raw !== undefined && raw.trim() !== "") {
+        const n = Number(raw);
+        if (Number.isFinite(n)) out[tier] = n;
+      }
+    }
+    return out;
+  };
+
+  return (
+    <DrawerShell title="New assembly" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Description">
+          <input className={inputCls} value={form.description} onChange={set("description")} placeholder="e.g. Hardwired EV Charger" autoFocus />
+        </Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Category">
+            <input className={inputCls} list="pb-asm-cat-list" value={form.category} onChange={set("category")} />
+          </Field>
+          <Field label="Sub-category">
+            <input className={inputCls} value={form.subCategory} onChange={set("subCategory")} placeholder="optional" />
+          </Field>
+        </div>
+        <datalist id="pb-asm-cat-list">
+          {categories.map((c) => <option key={c} value={c} />)}
+        </datalist>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Item ID (blank = auto)">
+            <input className={inputCls} value={form.itemId} onChange={set("itemId")} placeholder="e.g. ASM007" />
+          </Field>
+          <Field label="Unit label">
+            <input className={inputCls} value={form.unitLabel} onChange={set("unitLabel")} placeholder="e.g. each" />
+          </Field>
+        </div>
+        <Field label="Notes">
+          <textarea className={inputCls} rows={2} value={form.notes} onChange={set("notes")} />
+        </Field>
+
+        {/* Component picker — the heart of an assembly. Search, attach with a quantity, edit,
+            remove. Kyle builds "Hardwired EV Charger" from a breaker, raceway, wire, and so on. */}
+        <div className="rounded-lg border border-rce-border/70 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-rce-muted">Components</div>
+          <input
+            type="search"
+            className={inputCls}
+            value={pickerSearch}
+            onChange={(e) => setPickerSearch(e.target.value)}
+            placeholder="Search by ID or description to attach…"
+          />
+          {activePickerSearch ? (
+            <div className="mt-1 max-h-40 overflow-y-auto rounded-lg border border-rce-border/60">
+              {pickerLoading ? (
+                <p className="p-2 text-xs text-rce-muted">Searching…</p>
+              ) : pickerResults.length === 0 ? (
+                <p className="p-2 text-xs text-rce-soft">No matching, non-assembly items.</p>
+              ) : (
+                pickerResults.map((a) => (
+                  <button
+                    key={a.itemId}
+                    type="button"
+                    className="flex w-full items-center justify-between gap-2 border-t border-rce-border/40 px-2 py-1.5 text-left text-xs first:border-t-0 hover:bg-rce-accentBg/40"
+                    onClick={() => addComponent(a)}
+                  >
+                    <span className="min-w-0 truncate">
+                      <span className="font-mono text-rce-muted">{a.itemId}</span> {a.description}
+                    </span>
+                    <span className="shrink-0 text-rce-muted">{money(a.companyCost)}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          ) : null}
+
+          {components.length === 0 ? (
+            <p className="mt-2 text-xs text-rce-soft">No components attached yet.</p>
+          ) : (
+            <table className="mt-2 w-full text-xs">
+              <thead>
+                <tr className="text-left text-rce-muted">
+                  <th className="py-1">Item</th>
+                  <th className="py-1 text-right">Qty</th>
+                  <th className="py-1 text-right">Cost ea</th>
+                  <th className="py-1 text-right">Hrs N/D/VD</th>
+                  <th className="py-1"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {components.map((c) => (
+                  <tr key={c.atomic.itemId} className="border-t border-rce-border/40">
+                    <td className="py-1">
+                      <span className="font-mono text-rce-muted">{c.atomic.itemId}</span> {c.atomic.description}
+                    </td>
+                    <td className="py-1 text-right">
+                      <input
+                        type="number"
+                        min="0.0001"
+                        step="any"
+                        value={c.quantity}
+                        onChange={(e) => {
+                          const q = Number(e.target.value);
+                          updateQuantity(c.atomic.itemId, Number.isFinite(q) ? q : 0);
+                        }}
+                        className="w-16 rounded border border-rce-border px-1 py-0.5 text-right"
+                      />
+                    </td>
+                    <td className="py-1 text-right">{money(c.atomic.companyCost)}</td>
+                    <td className="py-1 text-right text-rce-muted">
+                      {hours(c.atomic.laborNormal)} / {hours(c.atomic.laborDifficult)} / {hours(c.atomic.laborVeryDifficult)}
+                    </td>
+                    <td className="py-1 text-right">
+                      <button type="button" className="text-red-600" onClick={() => removeComponent(c.atomic.itemId)}>
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {!validQuantities ? (
+            <p className="mt-1 text-xs text-red-600">Every component needs a quantity greater than zero.</p>
+          ) : null}
+        </div>
+
+        {/* Live derived cost — NOT typed. An assembly's cost is Σ(component companyCost × qty);
+            never companyPrice, and never summed around a gap (see file header). */}
+        <div className="rounded-lg border border-rce-border/70 bg-rce-accentBg/30 p-3 text-sm">
+          <div className="mb-1 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-rce-muted">
+            <span>Company cost (derived from components)</span>
+          </div>
+          {preview.costComplete ? (
+            <div className="text-right font-medium">{money(preview.companyCost)}</div>
+          ) : (
+            <div>
+              <div className="text-right font-medium text-amber-700">INCOMPLETE</div>
+              <p className="mt-1 text-xs text-amber-700">
+                No cost on: {preview.unpriced.map((p) => `${p.atomic.itemId} (${p.atomic.description ?? "—"})`).join(", ")}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Labour per tier — auto-summed from components, each overridable. An override is stored
+            explicitly (never inferred from equalling the sum) and its drift from the live
+            component total is shown so a stale override is visible, not silent. */}
+        <div className="space-y-3 rounded-lg border border-rce-border/70 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-rce-muted">Labour hours per tier</div>
+          {LABOR_TIER_LIST.map(({ key, label }) => {
+            const autoSum = preview.labor[key];
+            const overrideRaw = overrides[key];
+            const isOverridden = overrideRaw !== undefined && overrideRaw.trim() !== "";
+            const overrideNum = isOverridden ? Number(overrideRaw) : null;
+            const drift =
+              isOverridden && overrideNum !== null && Number.isFinite(overrideNum) && autoSum.complete && autoSum.value !== null
+                ? round4(overrideNum - autoSum.value)
+                : null;
+            return (
+              <div key={key}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-rce-muted">{label}</span>
+                  <input
+                    className="w-24 rounded border border-rce-border px-2 py-1 text-right text-sm"
+                    inputMode="decimal"
+                    placeholder={autoSum.complete ? String(autoSum.value) : "INCOMPLETE"}
+                    value={overrideRaw ?? ""}
+                    onChange={(e) => setOverrides((o) => ({ ...o, [key]: e.target.value }))}
+                  />
+                </div>
+                <div className="mt-0.5 text-right text-xs">
+                  {!autoSum.complete ? (
+                    <span className="text-amber-700">
+                      INCOMPLETE — no labour on: {autoSum.missing.map((p) => p.atomic.itemId).join(", ")}
+                    </span>
+                  ) : isOverridden ? (
+                    <span className="text-rce-muted">
+                      overridden — components auto-sum to {autoSum.value?.toFixed(4)}
+                      {drift !== null && Math.abs(drift) > 1e-6
+                        ? ` (you set ${overrideNum?.toFixed(2)}; components now total ${autoSum.value?.toFixed(2)})`
+                        : ""}
+                    </span>
+                  ) : (
+                    <span className="text-rce-soft">auto-summed from components</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {createMutation.isError ? <p className="text-sm text-red-600">{(createMutation.error as Error).message}</p> : null}
+
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="rounded-lg bg-rce-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            disabled={!canSave || createMutation.isPending}
+            onClick={() =>
+              createMutation.mutate({
+                itemId: textOrNull(form.itemId),
+                description: form.description.trim(),
+                category: form.category.trim(),
+                subCategory: textOrNull(form.subCategory),
+                unitLabel: textOrNull(form.unitLabel),
+                notes: textOrNull(form.notes),
+                components: components.map((c) => ({ childItemId: c.atomic.itemId, quantity: c.quantity })),
+                laborOverrides: buildLaborOverrides(),
+              })
+            }
+          >
+            {createMutation.isPending ? "Creating…" : "Create assembly"}
           </button>
         </div>
       </div>

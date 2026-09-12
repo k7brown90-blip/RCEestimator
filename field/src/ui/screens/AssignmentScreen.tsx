@@ -12,6 +12,7 @@ import {
   saveCrmSettings,
   startShift,
   syncAssignments,
+  syncMaterials,
   type CrmTechnician,
   type ShiftStatus,
 } from '../../lib/crmSync'
@@ -286,6 +287,12 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
     setCachedAt(result.cachedAt)
     setStatus(null)
     setLoading(false)
+
+    // Barcode/materials plan Unit 3 (2026-09-12): keep the scan cache warm so it's ready
+    // offline before the tech ever opens a purchase screen. Fire-and-forget — a failure here
+    // just leaves the existing cache in place (syncMaterials degrades to it) and must never
+    // hold up the assignment list, which is the thing the tech actually opened this for.
+    void syncMaterials()
   }
 
   // Today first, by clock; everything else after. The tech's question at 7 AM

@@ -12,15 +12,21 @@
  * number the phone made up offline could collide. The failure text says so.
  */
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   createPurchaseOrderFromField,
   createStandalonePurchaseOrder,
+  lineFromScannedCode,
+  pendingReceiptCount,
+  queueReceiptAndReport,
+  resolveMaterialCode,
   setPurchaseOrderStatus,
-  uploadReceiptFromField,
   type FieldPoPurpose,
   type FieldPurchaseOrder,
+  type ScannedPoLine,
 } from '../../lib/crmSync'
+import type { BarcodeDetection } from '../../lib/barcodeScan'
+import { BarcodeScanner } from './BarcodeScanner'
 import { LandPoForm } from './LandPoForm'
 
 export const PO_PURPOSE_LABEL: Record<FieldPoPurpose, string> = {
@@ -105,16 +111,84 @@ export function PoNumberBanner({ po }: { po: CreatedPo }) {
   )
 }
 
+/**
+ * A line in progress. `unit`/`partNumber`/`itemId`/`unitCost` ride along once a scan or a
+ * typed SKU resolves a material — carried straight through to the PO create call, never
+ * re-typed. `unresolved` just flags a line for the status text; it never blocks submission.
+ */
+interface PoLineDraft {
+  name: string
+  qty: string
+  unit?: string
+  partNumber?: string
+  itemId?: string
+  unitCost?: number
+  unresolved?: boolean
+}
+
+const blankLine = (): PoLineDraft => ({ name: '', qty: '1' })
+
+function draftFromScanned(line: ScannedPoLine, unresolved: boolean): PoLineDraft {
+  return { ...line, qty: String(line.qty), unresolved }
+}
+
 export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; onCreated: (po: CreatedPo) => void }) {
   const [purpose, setPurpose] = useState<FieldPoPurpose>('truck_stock')
   const [supplier, setSupplier] = useState('')
-  const [lines, setLines] = useState<{ name: string; qty: string }[]>([{ name: '', qty: '1' }])
+  const [lines, setLines] = useState<PoLineDraft[]>([blankLine()])
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [skuInput, setSkuInput] = useState('')
+  const [resolving, setResolving] = useState(false)
+
+  /**
+   * The one path both a camera scan and a typed SKU go through (Kyle, 2026-09-12: "typing a
+   * SKU must resolve a material exactly the same way scanning a barcode does"). Cache-first,
+   * offline-safe (resolveMaterialCode never throws) — a known code fills in the line with
+   * zero further typing; an unknown one still adds a line, using the raw code, and is
+   * flagged so Kyle can find it again at the desk. Nothing here ever blocks the purchase.
+   */
+  const addScannedLine = async (code: string, source: 'upc' | 'sku') => {
+    setResolving(true)
+    try {
+      const resolved = await resolveMaterialCode(code, { source })
+      const line = lineFromScannedCode(code, resolved)
+      setLines((ls) => {
+        const withoutBlank = ls.filter((l) => l.name.trim() || l.partNumber)
+        return [...withoutBlank, draftFromScanned(line, !resolved.found)]
+      })
+      setStatus(
+        resolved.found
+          ? `✓ Added: ${line.name}`
+          : `✓ Added "${code}" — new item, will need labor units assigned at the desk.`,
+      )
+    } finally {
+      setResolving(false)
+    }
+  }
+
+  const onBarcodeDetected = (detection: BarcodeDetection) => {
+    setScanning(false)
+    void addScannedLine(detection.code, 'upc')
+  }
+
+  const addTypedSku = () => {
+    const code = skuInput.trim()
+    if (!code) return
+    setSkuInput('')
+    void addScannedLine(code, 'sku')
+  }
 
   const submit = async () => {
     const items = lines
-      .map((l) => ({ name: l.name.trim(), qty: Number(l.qty) }))
+      .map((l) => ({
+        name: l.name.trim(), qty: Number(l.qty),
+        ...(l.unit ? { unit: l.unit } : {}),
+        ...(l.partNumber ? { partNumber: l.partNumber } : {}),
+        ...(l.itemId ? { itemId: l.itemId } : {}),
+        ...(l.unitCost != null ? { unitCost: l.unitCost } : {}),
+      }))
       .filter((l) => l.name && Number.isFinite(l.qty) && l.qty > 0)
     if (!supplier.trim()) {
       setStatus('Supplier is needed.')
@@ -127,7 +201,7 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
       const po = visitId ? await createPurchaseOrderFromField(visitId, input) : await createStandalonePurchaseOrder(input)
       onCreated({ ...po, supplier: po.supplier ?? supplier.trim() })
       setSupplier('')
-      setLines([{ name: '', qty: '1' }])
+      setLines([blankLine()])
       setPurpose('truck_stock')
     } catch (err) {
       setStatus(`Failed — ${noSignal(err)}`)
@@ -165,6 +239,39 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
         value={supplier}
         onChange={(e) => setSupplier(e.target.value)}
       />
+
+      {/* Scan / type a code — resolves against the same cached lookup either way, offline
+          included, and never blocks: an unknown code still adds a line. */}
+      {scanning ? (
+        <BarcodeScanner onDetected={onBarcodeDetected} onCancel={() => setScanning(false)} />
+      ) : (
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={resolving}
+            onClick={() => setScanning(true)}
+            className="flex-1 rounded-lg border border-sky-700 p-2 text-xs text-sky-200 disabled:opacity-40"
+          >
+            📷 Scan barcode
+          </button>
+          <input
+            className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
+            placeholder="or type a SKU"
+            value={skuInput}
+            onChange={(e) => setSkuInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') addTypedSku() }}
+          />
+          <button
+            type="button"
+            disabled={resolving || !skuInput.trim()}
+            onClick={addTypedSku}
+            className="rounded-lg border border-slate-600 p-2 text-xs text-slate-200 disabled:opacity-40"
+          >
+            Add
+          </button>
+        </div>
+      )}
+
       {lines.map((line, i) => (
         <div key={i} className="flex gap-2">
           <input
@@ -180,13 +287,16 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
             value={line.name}
             onChange={(e) => setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, name: e.target.value } : l)))}
           />
+          {line.unresolved && (
+            <span className="self-center rounded bg-amber-950/60 px-2 py-1 text-[10px] text-amber-300">new</span>
+          )}
         </div>
       ))}
       <div className="flex gap-2">
         <button
           type="button"
           className="flex-1 rounded-lg border border-slate-600 p-2 text-xs text-slate-200"
-          onClick={() => setLines((ls) => [...ls, { name: '', qty: '1' }])}
+          onClick={() => setLines((ls) => [...ls, blankLine()])}
         >
           ＋ line
         </button>
@@ -228,21 +338,26 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
     setBusy(true)
     setMsg(null)
     try {
-      const result = await uploadReceiptFromField({
+      // Queued durably before any network call — never a bare failure that
+      // drops the photo (2026-09-12: four receipts lost on 2026-09-11 because
+      // a failed fetch discarded the File with nothing written anywhere).
+      const { status } = await queueReceiptAndReport({
         visitId: po.jobId ?? undefined,
         purchaseOrderId: po.id,
         blob: file,
         category: 'materials',
       })
       setMsg(
-        result.status === 'pending_review'
-          ? `✓ Receipt filed on ${po.number} ($${result.amount.toFixed(2)}) — the office reviews it.`
-          : `✓ Receipt filed on ${po.number} ($${result.amount.toFixed(2)}).`,
+        status === 'filed'
+          ? `✓ Receipt filed on ${po.number}.`
+          : `✓ Receipt queued on ${po.number} — will file the moment there is signal.`,
       )
       setShowPhoto(false)
       onChanged()
     } catch (err) {
-      setMsg(`Upload failed — ${noSignal(err)}`)
+      // Only a local IndexedDB failure reaches here — the network leg is
+      // retried in the background and never throws out to the caller.
+      setMsg(`Could not queue the photo — ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setBusy(false)
     }
@@ -322,6 +437,30 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
       {busy && <p className="text-xs text-slate-400">Working…</p>}
       {msg && <p className="text-xs text-slate-300">{msg}</p>}
     </li>
+  )
+}
+
+/**
+ * A count of receipt photos captured but not yet on the server (2026-09-12) —
+ * the fix for the 2026-09-11 incident where a failed upload was silent and
+ * indistinguishable from a purchase never photographed. Polls rather than
+ * pushing an event: cheap (one indexed count) and always current whenever
+ * this list is looked at, which is exactly when it matters.
+ */
+export function PendingReceiptsNotice() {
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    const poll = () => { void pendingReceiptCount().then((n) => { if (!cancelled) setCount(n) }) }
+    poll()
+    const id = setInterval(poll, 5000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  if (count === 0) return null
+  return (
+    <p className="rounded-lg bg-amber-950/60 p-2 text-xs text-amber-200">
+      {count} receipt{count === 1 ? '' : 's'} queued on this device, waiting for signal to file.
+    </p>
   )
 }
 

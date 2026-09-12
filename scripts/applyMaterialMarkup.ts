@@ -36,6 +36,7 @@ import { PrismaClient } from "@prisma/client";
 import { loadBilledLaborRate } from "../src/services/laborRate";
 import { computePricing } from "../src/services/priceBookCatalog";
 import type { MarkupTiers } from "../src/services/priceBookPricing";
+import { isAssemblyRowType } from "../src/services/priceBookAssembly";
 
 const prisma = new PrismaClient();
 const EDITED_BY = "claude:material-markup-30-2026-09-01";
@@ -77,8 +78,20 @@ async function main(): Promise<void> {
   console.log("");
 
   const atomics = await prisma.priceBookAtomic.findMany({ orderBy: { itemId: "asc" } });
-  const withCost = atomics.filter((a) => a.companyCost !== null && !(a.rowType ?? "").toUpperCase().includes("LABOR ONLY"));
+  // Barcode/materials plan Unit 1 guard: an ASSEMBLY row's companyCost is DERIVED — Σ(component
+  // companyCost × quantity) via the rollup in services/priceBookAssembly.ts — never typed and never
+  // this markup formula's to touch. Recomputing companyPrice/sell* here would desynchronise the
+  // assembly's price from its own component list, silently. Skip them, and say so.
+  const assemblies = atomics.filter((a) => isAssemblyRowType(a.rowType) && a.companyCost !== null);
+  const withCost = atomics.filter((a) => a.companyCost !== null && !(a.rowType ?? "").toUpperCase().includes("LABOR ONLY") && !isAssemblyRowType(a.rowType));
   console.log(`${atomics.length} rows in the book; ${withCost.length} carry a material cost and are re-priced; the rest (labour-only, no cost) are untouched.`);
+  if (assemblies.length > 0) {
+    console.log(`${assemblies.length} ASSEMBLY row(s) SKIPPED — cost is derived from components, not this markup formula. Their price follows their components automatically:`);
+    for (const a of assemblies.slice(0, 5)) console.log(`      ${a.itemId.padEnd(48)} ${(a.description ?? "").slice(0, 34)}`);
+    if (assemblies.length > 5) console.log("      …");
+  } else {
+    console.log("0 ASSEMBLY rows found in the book.");
+  }
 
   // Consistency: does the stored material equal cost × the OLD tier today? Information only —
   // the new rule replaces the tiers wholesale — but a row that disagrees is worth a look.
