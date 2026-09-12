@@ -136,6 +136,13 @@ export async function suggestedLinesForJob(jobId: string, truckId: string): Prom
  * the estimate's frozen figure.
  */
 export async function closeOutMaterialWarning(jobId: string): Promise<string | null> {
+  // A test job never uses material, so "you recorded none" is not news.
+  const job = await prisma.visit.findUnique({
+    where: { id: jobId },
+    select: { customer: { select: { isTestAccount: true } } },
+  });
+  if (job?.customer.isTestAccount) return null;
+
   const est = await signedEstimateForJob(jobId);
   if (!est || materialLinesOf(est).length === 0) return null;
   const consumed = await prisma.stockMovement.count({ where: { jobId: { in: [jobId, ...chainOf(jobId, est)] }, kind: "consume" } });

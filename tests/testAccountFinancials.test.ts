@@ -17,6 +17,7 @@ import request from "supertest";
 import { prisma } from "../src/lib/prisma";
 import { app } from "../src/app";
 import { payrollForWeek } from "../src/services/timeTracking";
+import { consumeForJob } from "../src/services/jobMaterials";
 
 const YEAR = 2031; // far from any other fixture's year, so the totals are ours alone
 const JAN = new Date(`${YEAR}-01-15T15:00:00.000Z`);
@@ -126,6 +127,34 @@ describe("a marked test account is absent from every company total", () => {
     expect(marked.impliedMinutes, "no payroll floor off a practice job").toBe(0);
     expect(marked.commissions).toBe(0);
     expect(marked.total).toBe(0);
+  });
+
+  /*
+    Kyle, 2026-09-12: "test jobs should not touch inventory because those jobs
+    are never real installations so material is never used for them." Filtering
+    test material out of the REPORTS would not have been enough — the wire would
+    still have left the shelf and the truck would be short on a real job.
+  */
+  it("takes nothing off the truck for a test job, and still does for a live one", async () => {
+    const line = { itemId: "TESTACCT-WIRE", name: "TESTACCT 14/2 NM-B", unit: "ft", qty: 25 };
+
+    await setTest(true);
+    await expect(
+      consumeForJob({ jobId: visitId, lines: [line], actor: "test", allowNegative: true, reason: "pinning the rule" }),
+    ).rejects.toThrow(/test account/i);
+    expect(await prisma.stockMovement.count({ where: { jobId: visitId } })).toBe(0);
+
+    // The same call on the same job succeeds the moment it is a real account —
+    // so the refusal is the flag talking, not a broken fixture.
+    await setTest(false);
+    const moved = await consumeForJob({
+      jobId: visitId, lines: [line], actor: "test", allowNegative: true, reason: "pinning the rule",
+    });
+    expect(moved).toHaveLength(1);
+    expect(moved[0].kind).toBe("consume");
+
+    await prisma.stockMovement.deleteMany({ where: { jobId: visitId } });
+    await prisma.stockLevel.deleteMany({ where: { itemId: line.itemId } });
   });
 
   it("keeps its commissions out of the company commission ledger", async () => {

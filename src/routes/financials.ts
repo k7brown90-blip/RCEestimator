@@ -471,9 +471,10 @@ export async function materialsByMonth(year: number) {
     const monthEnd = new Date(year, month + 1, 1);
     while (cursor < movements.length && movements[cursor].at < monthEnd) {
       const m = movements[cursor];
-      // The replay sees EVERY movement — inventory value is what is on the shelf,
-      // and a test job really did take material off it. Only the bought/used
-      // money buckets skip the test account.
+      // The replay sees EVERY movement: inventory value is what is on the shelf,
+      // whatever put it there. Since 2026-09-12 a test job cannot move stock at
+      // all (services/inventory.ts refuses it), so this skip only ever catches
+      // rows written before that rule — it is a backstop, not a live path.
       replay.apply(m);
       if (m.at >= yearStart && !(m.jobId && isTestJob.has(m.jobId))) {
         const cost = m.unitCost ?? 0;

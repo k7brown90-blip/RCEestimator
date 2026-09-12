@@ -172,12 +172,31 @@ async function takeOut(tx: Tx, locationKey: string, m: MovementInput, qty: numbe
  *                named; unitCost, if given, resets that level's avg. Reason REQUIRED.
  *
  * Negative on-hand is refused (409) for transfer and consume unless allowNegative.
+ *
+ * A movement toward a TEST-ACCOUNT job is refused outright. Kyle, 2026-09-12:
+ * "test jobs should not touch inventory because those jobs are never real
+ * installations so material is never used for them." Excluding test material
+ * from the money reports would not have been enough — the wire would still have
+ * left the shelf, and the truck would be short on a real job.
  */
 export async function applyMovement(tx: Tx, m: MovementInput): Promise<StockMovement> {
   if (!MOVEMENT_KINDS.includes(m.kind)) throw new InventoryError(`Unknown movement kind "${m.kind}"`, 400);
   if (!m.itemId.trim()) throw new InventoryError("itemId is required", 400);
   if (!Number.isFinite(m.qty) || m.qty < 0) throw new InventoryError("qty must be a non-negative number", 400);
   if (m.kind !== "count" && m.kind !== "correction" && m.qty <= 0) throw new InventoryError("qty must be positive", 400);
+
+  if (m.jobId) {
+    const job = await tx.visit.findUnique({
+      where: { id: m.jobId },
+      select: { customer: { select: { name: true, isTestAccount: true } } },
+    });
+    if (job?.customer.isTestAccount) {
+      throw new InventoryError(
+        `${job.customer.name} is a test account — no material is really used there, so nothing comes off the truck for it.`,
+        409,
+      );
+    }
+  }
 
   let unitCostApplied: number | null = m.unitCost ?? null;
   let delta: number | null = m.delta ?? null;
