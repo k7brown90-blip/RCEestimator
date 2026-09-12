@@ -155,6 +155,7 @@ export function AccountDetailPage() {
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
+  const [editIsTest, setEditIsTest] = useState(false);
 
   const [showAddProperty, setShowAddProperty] = useState(false);
   const [addForm, setAddForm] = useState<AddressForm>(blankAddress());
@@ -172,7 +173,7 @@ export function AccountDetailPage() {
   };
 
   const updateAccount = useMutation({
-    mutationFn: (input: { name: string; email?: string | null; phone?: string | null }) =>
+    mutationFn: (input: { name: string; email?: string | null; phone?: string | null; isTestAccount?: boolean }) =>
       api.updateAccount(accountId, input),
     onSuccess: () => {
       invalidate();
@@ -215,12 +216,18 @@ export function AccountDetailPage() {
     setEditName(summary?.account.name ?? "");
     setEditEmail(summary?.account.email ?? "");
     setEditPhone(summary?.account.phone ?? "");
+    setEditIsTest(summary?.account.isTestAccount ?? false);
     setEditing(true);
   }
 
   function submitEdit(event: FormEvent) {
     event.preventDefault();
-    updateAccount.mutate({ name: editName, email: editEmail || null, phone: editPhone || null });
+    updateAccount.mutate({
+      name: editName,
+      email: editEmail || null,
+      phone: editPhone || null,
+      isTestAccount: editIsTest,
+    });
   }
 
   function submitProperty(event: FormEvent<HTMLFormElement>) {
@@ -270,7 +277,19 @@ export function AccountDetailPage() {
 
   return (
     <div>
-      <PageHeader title={account.name} subtitle="Account record" />
+      <PageHeader
+        title={account.name}
+        subtitle={account.isTestAccount ? "Account record · TEST" : "Account record"}
+      />
+
+      {account.isTestAccount && (
+        <p className="card mb-5 border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          <span className="font-semibold">Test account.</span> The numbers below are real for this
+          account and invisible everywhere else — no revenue, cost, payment, hour or commission from
+          here reaches a company total. Untick "Test account" under Edit Contact to put it back in the
+          books.
+        </p>
+      )}
 
       {/* Kyle, 2026-09-08: "It is not clear where to confirm field inputs" — every receipt
           waiting for review on this account, first thing on the page. */}
@@ -318,6 +337,23 @@ export function AccountDetailPage() {
             <label className="text-sm font-medium">
               Phone
               <input className="field mt-1" type="tel" value={editPhone} onChange={(e) => setEditPhone(e.target.value)} />
+            </label>
+            {/* Kyle, 2026-09-11: "all information in the test account … no
+                incorporation into financial tracking at all." */}
+            <label className="flex items-start gap-2 text-sm font-medium md:col-span-3">
+              <input
+                className="mt-0.5"
+                type="checkbox"
+                checked={editIsTest}
+                onChange={(e) => setEditIsTest(e.target.checked)}
+              />
+              <span>
+                Test account
+                <span className="block text-xs font-normal text-rce-muted">
+                  Practice work. Its revenue, costs, payments, hours and commissions stay out of every
+                  company total — this page still shows its own numbers.
+                </span>
+              </span>
             </label>
             <div className="flex gap-2 md:col-span-3">
               <button className="btn btn-primary" type="submit" disabled={updateAccount.isPending}>Save</button>

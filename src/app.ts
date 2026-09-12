@@ -104,6 +104,7 @@ import {
   ensureTestAccount,
   findTestAccount,
   EXCLUDE_TEST_ACCOUNT,
+  EXCLUDE_TEST_JOB,
 } from "./services/accountSpine";
 import { sendEstimateEmail, sendInvoiceEmail, estimateLink, notifyOwnerSigned } from "./services/issuedEstimateSend";
 // Transactional email delivery tracking (Kyle, 2026-09-09: "very few are actually getting through").
@@ -2851,7 +2852,10 @@ app.get("/issued-estimates", asyncHandler(async (req, res) => {
   // looking at, and guessing which estimate to email a customer is not a guess worth making.
   const draftId = readQuery(req, "draftId")?.trim();
   const rows = await prisma.issuedEstimate.findMany({
-    where: draftId ? { draftId } : {},
+    // Scoped to a draft, answer about that draft. Unscoped, this is the company
+    // estimate list and the test account stays out of it — as it already does in
+    // the chain view. The test account's OWN page still shows its estimates.
+    where: draftId ? { draftId } : { ...EXCLUDE_TEST_ACCOUNT },
     orderBy: { createdAt: "desc" },
     take: 50,
     select: {
@@ -5269,7 +5273,13 @@ app.get("/purchase-orders", asyncHandler(async (req, res) => {
   const truckId = typeof req.query.truckId === "string" && req.query.truckId ? req.query.truckId : undefined;
   const jobId = typeof req.query.jobId === "string" && req.query.jobId ? req.query.jobId : undefined;
   const orders = await prisma.purchaseOrder.findMany({
-    where: { ...(status ? { status: { in: status } } : {}), ...(truckId ? { truckId } : {}), ...(jobId ? { jobId } : {}) },
+    where: {
+      ...(status ? { status: { in: status } } : {}),
+      ...(truckId ? { truckId } : {}),
+      // Asked about one job, answer about that job. The company-wide list leaves
+      // test-account POs out of the purchasing picture.
+      ...(jobId ? { jobId } : EXCLUDE_TEST_JOB),
+    },
     orderBy: { openedAt: "desc" },
     take: 300,
     include: PO_LIST_INCLUDE,
@@ -5697,6 +5707,15 @@ const patchCustomer = asyncHandler(async (req: express.Request, res: express.Res
     name: z.string().min(1).optional(),
     email: z.string().email().nullable().optional(),
     phone: z.string().nullable().optional(),
+    /*
+      Kyle, 2026-09-11: "I want all information in the test account to be
+      considered as a test only. No incorporation into financial tracking at
+      all." The exclusion filters already existed; the account he was testing in
+      simply was never marked, so they all passed it through. This is the switch,
+      and it goes both ways — a real account mis-flagged is a phone call, not a
+      database migration.
+    */
+    isTestAccount: z.boolean().optional(),
   }).parse(req.body);
   const existing = await prisma.customer.findUnique({ where: { id: customerId } });
   if (!existing) {
@@ -5704,6 +5723,15 @@ const patchCustomer = asyncHandler(async (req: express.Request, res: express.Res
     return;
   }
   const updated = await prisma.customer.update({ where: { id: customerId }, data: body });
+  // Flipping this moves money into or out of every company total, so it leaves a trail.
+  if (body.isTestAccount != null && body.isTestAccount !== existing.isTestAccount) {
+    logSystemEvent(
+      "info",
+      "account",
+      `${updated.name} marked ${body.isTestAccount ? "a TEST account — excluded from all financials" : "a live account — included in financials again"}`,
+      { customerId },
+    );
+  }
   res.json(updated);
 });
 app.patch("/customers/:customerId", patchCustomer);
@@ -6188,6 +6216,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       email: account.email,
       phone: account.phone,
       createdAt: account.createdAt,
+      isTestAccount: account.isTestAccount,
     },
     properties: account.properties.map((property) => {
       const propertyJobs = jobsByProperty.get(property.id) ?? [];

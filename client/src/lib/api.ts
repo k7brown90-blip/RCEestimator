@@ -546,7 +546,10 @@ export const api = {
     request<{ archived: true }>(`/crm/visits/${visitId}/archive`, { method: "POST" }),
   createAccount: (input: { name: string; email?: string; phone?: string }) =>
     request<Account>("/accounts", { method: "POST", body: JSON.stringify(input) }),
-  updateAccount: (accountId: string, input: { name?: string; email?: string | null; phone?: string | null }) =>
+  updateAccount: (
+    accountId: string,
+    input: { name?: string; email?: string | null; phone?: string | null; isTestAccount?: boolean },
+  ) =>
     request<Account>(`/accounts/${accountId}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteAccount: (accountId: string) => request<void>(`/accounts/${accountId}`, { method: "DELETE" }),
 

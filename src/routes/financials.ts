@@ -28,6 +28,13 @@ import { readBalances } from "../services/cardSpend";
 import { TreasuryError, executeSweep, readSweep, stripeFeeRows } from "../services/treasury";
 import type { StripeFeeRow } from "../services/treasury";
 import { createLedgerReplay } from "../services/inventory";
+import {
+  EXCLUDE_TEST_ACCOUNT,
+  EXCLUDE_TEST_CARD_SPEND,
+  EXCLUDE_TEST_CUSTOMER,
+  EXCLUDE_TEST_PAYER,
+  testVisitIds,
+} from "../services/accountSpine";
 
 export const financialsRouter = express.Router();
 
@@ -342,23 +349,31 @@ async function yearLedger(year: number): Promise<YearLedger> {
   const from = new Date(`${year}-01-01`);
   const to = new Date(`${year + 1}-01-01`);
 
+  // Receipt.jobId has no relation to Visit, so its exclusion is a list, not a join.
+  const testJobs = await testVisitIds(prisma);
+
   const [estimates, payments, receipts, bills, spend, fees] = await Promise.all([
     prisma.issuedEstimate.findMany({
-      where: { signedAt: { gte: from, lt: to }, status: { not: "void" }, account: { isTestAccount: false } },
+      where: { signedAt: { gte: from, lt: to }, status: { not: "void" }, ...EXCLUDE_TEST_ACCOUNT },
       include: { options: true, account: { select: { name: true } }, lines: { select: { option: true, materialCost: true } } },
     }),
     // Collected = MONEY. Legacy "discount" rows (the retired 3% non-card
     // programme, 2026-08-25 → 08-30) close invoices but were never revenue —
     // they stay out of every collected figure.
-    prisma.payment.findMany({ where: { status: "paid", method: { not: "discount" }, paidAt: { gte: from, lt: to } } }),
+    prisma.payment.findMany({
+      where: { status: "paid", method: { not: "discount" }, paidAt: { gte: from, lt: to }, ...EXCLUDE_TEST_PAYER },
+    }),
     prisma.receipt.findMany({
-      where: { status: "confirmed", receivedAt: { gte: from, lt: to } },
+      where: { status: "confirmed", receivedAt: { gte: from, lt: to }, jobId: { notIn: testJobs } },
       select: { amount: true, category: true, vendor: true, receivedAt: true, jobId: true },
     }),
     prisma.companyBill.findMany(),
     // Once-only rule: receiptId null — a spend with a receipt is counted by the receipt.
     prisma.cardSpend.findMany({
-      where: { status: { not: "ignored" }, receiptId: null, occurredAt: { gte: from, lt: to } },
+      where: {
+        status: { not: "ignored" }, receiptId: null, occurredAt: { gte: from, lt: to },
+        ...EXCLUDE_TEST_CARD_SPEND,
+      },
       select: { amount: true, kind: true, merchantName: true, occurredAt: true, truck: { select: { name: true } } },
     }),
     // Stripe fees for the year — cached 30 minutes in services/treasury.ts; [] + reason when the key lacks scope.
@@ -429,15 +444,20 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 export async function materialsByMonth(year: number) {
   const yearStart = new Date(year, 0, 1);
   const yearEnd = new Date(year + 1, 0, 1);
+  const testJobs = await testVisitIds(prisma);
+  const isTestJob = new Set(testJobs);
   const [movements, receipts] = await Promise.all([
     // Everything up to the end of the year — the replay needs history before January too.
     prisma.stockMovement.findMany({
       where: { at: { lt: yearEnd } },
       orderBy: [{ at: "asc" }, { createdAt: "asc" }],
-      select: { id: true, kind: true, itemId: true, qty: true, delta: true, unitCost: true, fromLocationKey: true, toLocationKey: true, correctsId: true, at: true },
+      select: { id: true, kind: true, itemId: true, qty: true, delta: true, unitCost: true, fromLocationKey: true, toLocationKey: true, correctsId: true, at: true, jobId: true },
     }),
     prisma.receipt.findMany({
-      where: { status: "confirmed", category: "materials", purchaseOrderId: null, receivedAt: { gte: yearStart, lt: yearEnd } },
+      where: {
+        status: "confirmed", category: "materials", purchaseOrderId: null,
+        receivedAt: { gte: yearStart, lt: yearEnd }, jobId: { notIn: testJobs },
+      },
       select: { amount: true, receivedAt: true },
     }),
   ]);
@@ -451,8 +471,11 @@ export async function materialsByMonth(year: number) {
     const monthEnd = new Date(year, month + 1, 1);
     while (cursor < movements.length && movements[cursor].at < monthEnd) {
       const m = movements[cursor];
+      // The replay sees EVERY movement — inventory value is what is on the shelf,
+      // and a test job really did take material off it. Only the bought/used
+      // money buckets skip the test account.
       replay.apply(m);
-      if (m.at >= yearStart) {
+      if (m.at >= yearStart && !(m.jobId && isTestJob.has(m.jobId))) {
         const cost = m.unitCost ?? 0;
         if (m.kind === "purchase_in") bought[month] += m.qty * cost;
         else if (m.kind === "consume") used[month] += m.qty * cost;
@@ -701,6 +724,7 @@ financialsRouter.get("/receipt-insights", asyncHandler(async (req, res) => {
       status: "confirmed",
       lineItems: { not: null },
       receivedAt: { gte: new Date(`${year}-01-01`), lt: new Date(`${year + 1}-01-01`) },
+      jobId: { notIn: await testVisitIds(prisma) },
     },
     select: { lineItems: true, vendor: true },
   });

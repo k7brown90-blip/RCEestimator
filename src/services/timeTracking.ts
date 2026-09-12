@@ -37,6 +37,7 @@ import { prisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
 import { estimateMaterialCost, estimateOptionTotal, materialCostForJobs, type MaterialSource } from "./jobCosting";
 import { fullBillOf } from "./stripePayments";
+import { EXCLUDE_TEST_CUSTOMER_VIA_VISIT, EXCLUDE_TEST_VISIT } from "./accountSpine";
 
 /** Rule 5: a clock still running after this many hours is flagged and stops accruing. */
 export const RUNAWAY_HOURS = 12;
@@ -717,8 +718,11 @@ export async function payrollForWeek(technicianId: string, weekStart: Date): Pro
       where: { technicianId, startedAt: { gte: start, lte: end } },
       orderBy: { startedAt: "asc" },
     }),
+    // Hours on a test job are practice, not payroll — they must not become real
+    // money through the floor below (Kyle, 2026-09-11: "No incorporation into
+    // financial tracking at all.").
     prisma.timeEntry.findMany({
-      where: { technicianId, startedAt: { gte: start, lte: end } },
+      where: { technicianId, startedAt: { gte: start, lte: end }, ...EXCLUDE_TEST_CUSTOMER_VIA_VISIT },
       orderBy: { startedAt: "asc" },
       include: {
         visit: {
@@ -731,7 +735,7 @@ export async function payrollForWeek(technicianId: string, weekStart: Date): Pro
       },
     }),
     prisma.commission.findMany({
-      where: { technicianId, earnedAt: { gte: start, lte: end } },
+      where: { technicianId, earnedAt: { gte: start, lte: end }, ...EXCLUDE_TEST_VISIT },
       orderBy: { earnedAt: "asc" },
       include: {
         visit: { select: { id: true, customer: { select: { name: true } }, property: { select: { addressLine1: true } } } },

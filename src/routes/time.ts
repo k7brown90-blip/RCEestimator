@@ -15,6 +15,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { logSystemEvent } from "../services/systemEvents";
+import { EXCLUDE_TEST_VISIT } from "../services/accountSpine";
 import {
   TimeError,
   commissionForJob,
@@ -195,7 +196,9 @@ timeRouter.get("/time/commissions", guard(async (req, res) => {
   const rows = await prisma.commission.findMany({
     where: {
       ...(q.technicianId ? { technicianId: q.technicianId } : {}),
-      ...(q.visitId ? { visitId: q.visitId } : {}),
+      // Asking for ONE job's commissions answers about that job, test or not.
+      // The company-wide ledger never carries test money.
+      ...(q.visitId ? { visitId: q.visitId } : EXCLUDE_TEST_VISIT),
     },
     orderBy: { earnedAt: "desc" },
     take: 500,

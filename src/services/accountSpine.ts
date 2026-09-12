@@ -230,3 +230,59 @@ export async function deleteTestAccount(prisma: PrismaClient): Promise<TestAccou
  * change rather than seven.
  */
 export const EXCLUDE_TEST_ACCOUNT = { account: { isTestAccount: false } } as const;
+
+/*
+  The same exclusion, said the four other ways the schema needs it. Kyle,
+  2026-09-11: "I want all information in the test account to be considered as a
+  test only. No incorporation into financial tracking at all." One filter per
+  relation shape, so every money query can grep to the same place.
+*/
+
+/** Models with a required `customer` relation: Visit, IssuedEstimate-by-customer. */
+export const EXCLUDE_TEST_CUSTOMER = { customer: { isTestAccount: false } } as const;
+
+/** Models with an OPTIONAL customer (Payment). A row with no customer is company money and stays. */
+export const EXCLUDE_TEST_PAYER = {
+  OR: [{ customerId: null }, { customer: { isTestAccount: false } }],
+};
+
+/** Models hanging off a Visit through an optional `job` (PurchaseOrder, StockMovement). */
+export const EXCLUDE_TEST_JOB = {
+  OR: [{ jobId: null }, { job: { customer: { isTestAccount: false } } }],
+};
+
+/** Models whose `visit` relation is REQUIRED (TimeEntry) — no null branch needed. */
+export const EXCLUDE_TEST_CUSTOMER_VIA_VISIT = {
+  visit: { customer: { isTestAccount: false } },
+} as const;
+
+/** Models hanging off a Visit through an optional `visit` (Commission, CardSpend via PO). */
+export const EXCLUDE_TEST_VISIT = {
+  OR: [{ visitId: null }, { visit: { customer: { isTestAccount: false } } }],
+};
+
+/** CardSpend reaches a customer only through its purchase order. No PO means company spend. */
+export const EXCLUDE_TEST_CARD_SPEND = {
+  OR: [
+    { purchaseOrderId: null },
+    { purchaseOrder: { OR: [{ jobId: null }, { job: { customer: { isTestAccount: false } } }] } },
+  ],
+};
+
+/**
+ * Receipt.jobId is a plain column with NO relation to Visit, so it cannot be
+ * filtered through the graph. This returns the visit ids to exclude by hand:
+ * spread as `jobId: { notIn: await testVisitIds(prisma) }`.
+ *
+ * Returns [] when there is no test account, and `notIn: []` matches everything,
+ * so the empty case is the correct no-op rather than a filter that hides rows.
+ */
+export async function testVisitIds(prisma: PrismaClient): Promise<string[]> {
+  const account = await findTestAccount(prisma);
+  if (!account) return [];
+  const visits = await prisma.visit.findMany({
+    where: { customerId: account.id },
+    select: { id: true },
+  });
+  return visits.map((v) => v.id);
+}

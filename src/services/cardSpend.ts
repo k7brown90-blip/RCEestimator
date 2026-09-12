@@ -41,6 +41,7 @@ import { prisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
 import { stripe, stripeConfigured } from "./stripePayments";
 import { attachReceiptToPurchaseOrder, createPurchaseOrder, transitionPurchaseOrder } from "./purchaseOrders";
+import { EXCLUDE_TEST_CARD_SPEND } from "./accountSpine";
 
 // permit and inspection joined the list on 2026-09-11: they are JOB FEES, the
 // third term in Kyle's commission math (job profit = revenue − material − fees).
@@ -1050,7 +1051,7 @@ export async function truckSpendRollups(now = new Date()) {
   const [mtd, unmatched] = await Promise.all([
     prisma.cardSpend.groupBy({
       by: ["truckId", "kind"],
-      where: { status: { not: "ignored" }, occurredAt: { gte: monthStart } },
+      where: { status: { not: "ignored" }, occurredAt: { gte: monthStart }, ...EXCLUDE_TEST_CARD_SPEND },
       _sum: { amount: true },
     }),
     prisma.cardSpend.groupBy({

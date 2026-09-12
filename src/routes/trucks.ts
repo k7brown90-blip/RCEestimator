@@ -20,6 +20,7 @@ import {
 } from "../services/cardSpend";
 import { PO_LIST_INCLUDE, defaultTruckId, serializePurchaseOrder } from "../services/purchaseOrders";
 import { truckInventoryRollups } from "../services/inventory";
+import { EXCLUDE_TEST_CARD_SPEND, EXCLUDE_TEST_JOB } from "../services/accountSpine";
 
 export const trucksRouter = express.Router();
 
@@ -208,12 +209,12 @@ trucksRouter.get("/trucks/:id", asyncHandler(async (req, res) => {
   if (!truck) { res.status(404).json({ error: "Truck not found" }); return; }
   const [spend, orders, balances, inventory] = await Promise.all([
     prisma.cardSpend.findMany({
-      where: { truckId: id, occurredAt: { gte: from, lt: to } },
+      where: { truckId: id, occurredAt: { gte: from, lt: to }, ...EXCLUDE_TEST_CARD_SPEND },
       orderBy: { occurredAt: "desc" },
       include: CARD_SPEND_INCLUDE,
     }),
     prisma.purchaseOrder.findMany({
-      where: { truckId: id, openedAt: { gte: from, lt: to } },
+      where: { truckId: id, openedAt: { gte: from, lt: to }, ...EXCLUDE_TEST_JOB },
       orderBy: { openedAt: "desc" },
       take: 300,
       include: PO_LIST_INCLUDE,

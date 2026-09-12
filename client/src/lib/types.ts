@@ -1455,6 +1455,8 @@ export type AccountSummary = {
     email: string | null;
     phone: string | null;
     createdAt: string;
+    /** Practice work — kept out of every company financial total. */
+    isTestAccount: boolean;
   };
   properties: AccountProperty[];
   jobs: AccountJob[];
