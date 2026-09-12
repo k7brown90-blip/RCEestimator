@@ -10,7 +10,9 @@ export interface ParsedReceipt {
   vendor: string | null;
   total: number | null;
   purchaseDate: string | null; // YYYY-MM-DD when readable
-  category: "materials" | "gas" | "maintenance" | "overhead";
+  // permit and inspection added 2026-09-11 — job FEES, the third term in the
+  // commission math (job profit = revenue − material − fees).
+  category: "materials" | "gas" | "maintenance" | "overhead" | "permit" | "inspection";
   lineItems: Array<{ name: string; qty: number | null; unit: string | null; unitCost: number | null }>;
 }
 
@@ -20,11 +22,12 @@ Extract the following from the receipt image and reply with ONLY a JSON object (
   "vendor": string | null,          // store/supplier name
   "total": number | null,           // grand total incl. tax
   "purchaseDate": string | null,    // YYYY-MM-DD if visible
-  "category": "materials" | "gas" | "maintenance" | "overhead",
+  "category": "materials" | "gas" | "maintenance" | "overhead" | "permit" | "inspection",
   "lineItems": [{ "name": string, "qty": number | null, "unit": string | null, "unitCost": number | null }]
 }
 Category guidance: electrical supply houses / hardware stores => "materials"; fuel stations => "gas";
-vehicle or tool service => "maintenance"; anything else => "overhead".
+vehicle or tool service => "maintenance"; a city/county permit fee => "permit"; an electrical
+inspection fee => "inspection"; anything else => "overhead".
 If the image is not a receipt, reply with {"vendor":null,"total":null,"purchaseDate":null,"category":"overhead","lineItems":[]}.`;
 
 /**
@@ -80,7 +83,7 @@ export async function parseReceiptImage(imageBuffer: Buffer, mimeType: string): 
     if (!raw) return null;
 
     const parsed = JSON.parse(raw) as Partial<ParsedReceipt>;
-    const category = ["materials", "gas", "maintenance", "overhead"].includes(parsed.category ?? "")
+    const category = ["materials", "gas", "maintenance", "overhead", "permit", "inspection"].includes(parsed.category ?? "")
       ? (parsed.category as ParsedReceipt["category"])
       : "overhead";
 

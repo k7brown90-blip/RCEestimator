@@ -9,6 +9,7 @@ import { JobScheduler } from "../components/JobScheduler";
 import { HealthRecordPanel } from "../components/HealthRecordPanel";
 import { JobCloseoutPanel } from "../components/JobCloseoutPanel";
 import { MaterialsUsedPanel } from "../components/MaterialsUsedPanel";
+import { JobTimePanel } from "../components/JobTimePanel";
 import { PaymentPanel } from "../components/PaymentPanel";
 import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
 import { PhotoGalleryPanel } from "../components/PhotoGalleryPanel";
@@ -162,6 +163,10 @@ export function VisitWorkspacePage() {
             {/* Materials used (Kyle, 2026-09-09, Build 4): the ledger lines that
                 charge this job, their source label, Add / Return with a reason. */}
             <MaterialsUsedPanel visitId={visitId} />
+            {/* The JOB clock's hours (Kyle, 2026-09-11): who was on it, every
+                arrive-to-leave session with its frozen rate, editable with a
+                reason. Unbilled shift time is overhead and lives on the Team tab. */}
+            <JobTimePanel visitId={visitId} />
           </>
         )}
 

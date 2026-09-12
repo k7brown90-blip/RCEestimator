@@ -349,6 +349,7 @@ model Visit {
   healthInspections      HealthInspection[]
   visitPhotos            VisitPhoto[]
   timeEntries            TimeEntry[]
+  commissions            Commission[]
   emailBounces           EmailBounce[]
   emailDeliveries        EmailDelivery[]
 
@@ -360,17 +361,97 @@ model Visit {
 // labor tracking with a clock in button too"). One row per punch; clock-out
 // closes the open row and rolls the sum into Visit.laborHours, which is what
 // job profitability's labor line reads.
+// Since 2026-09-11 this is the JOB clock: Arrive → Complete, or Pause on a
+// multi-day job (Kyle, 2026-09-11). Job hours are the sum of the arrive-to-leave
+// sessions and they sit INSIDE the shift below. rateApplied is FROZEN when the
+// session closes — "a raise changes tomorrow, never last month"; null means the
+// technician has no rate on file, which contributes hours but NO cost.
 model TimeEntry {
   id           String    @id @default(cuid())
   visitId      String
+  // Optional for legacy punches only; every new write sets it.
   technicianId String?
   startedAt    DateTime  @default(now())
   endedAt      DateTime?
   minutes      Float?
+  endedReason  String? // completed | paused | clock_out | manual
+  rateApplied  Float?
+  // Open past 12 hours → flagged, stops accruing, excluded from every total
+  // until the technician confirms the real end time (confirmedAt).
+  flaggedAt    DateTime?
+  confirmedAt  DateTime?
+  note         String?
+  // The shift this session was worked inside. Deliberately not a relation: a
+  // session must survive a shift correction, and payroll reads by tech + date.
+  shiftEntryId String?
   visit        Visit     @relation(fields: [visitId], references: [id], onDelete: Cascade)
 
   @@index([visitId])
   @@index([technicianId, endedAt])
+}
+
+// The SHIFT clock (payroll), Kyle 2026-09-11: "clock in / clock out, on the
+// field app's main screen, working whether or not a job is assigned. Payroll
+// hours are clocked-in to clocked-out." Shift hours minus job hours is UNBILLED
+// time — drive, shop, supply house — company overhead, never a job cost.
+model ShiftEntry {
+  id           String     @id @default(cuid())
+  technicianId String
+  startedAt    DateTime   @default(now())
+  endedAt      DateTime?
+  minutes      Float?
+  /// Frozen at close from Technician.hourlyRate; null = no rate set.
+  rateApplied  Float?
+  source       String     @default("field") // field | office
+  note         String?
+  flaggedAt    DateTime?
+  confirmedAt  DateTime?
+  createdAt    DateTime   @default(now())
+  technician   Technician @relation(fields: [technicianId], references: [id], onDelete: Restrict)
+
+  @@index([technicianId, startedAt])
+  @@index([endedAt])
+}
+
+// The trail behind every hand edit (Kyle, 2026-09-11: "every hour is editable
+// with a reason and a trail"). Payroll hours are edited on the Team tab, job
+// hours on the Jobs tab; both land here with the before and after.
+model TimeEdit {
+  id           String   @id @default(cuid())
+  kind         String // shift | job
+  shiftEntryId String?
+  timeEntryId  String?
+  actor        String
+  reason       String
+  beforeJson   String
+  afterJson    String
+  at           DateTime @default(now())
+
+  @@index([shiftEntryId])
+  @@index([timeEntryId])
+}
+
+// Commission (Kyle, 2026-09-11): a hand-entered PERCENTAGE per technician,
+// calculated on JOB PROFIT = revenue − material cost − fees (permits,
+// inspections). Labor is NOT subtracted. Overridable per job with a reason.
+model Commission {
+  id               String     @id @default(cuid())
+  technicianId     String
+  visitId          String?
+  issuedEstimateId String?
+  basis            String     @default("job_profit") // job_profit | manual
+  percent          Float?
+  amount           Float
+  note             String?
+  reason           String?
+  earnedAt         DateTime   @default(now())
+  paidAt           DateTime?
+  createdAt        DateTime   @default(now())
+  technician       Technician @relation(fields: [technicianId], references: [id], onDelete: Restrict)
+  visit            Visit?     @relation(fields: [visitId], references: [id], onDelete: SetNull)
+
+  @@index([technicianId])
+  @@index([visitId])
 }
 
 // ─── Health Record (field inspection PWA) integration ──────────────────────
@@ -396,11 +477,19 @@ model Technician {
   // freebusy API silently OMITS calendars the token can't read — without this
   // flag an unshared calendar looks identical to a perfectly free one.
   calendarShared    Boolean            @default(false)
+  // Pay (Kyle, 2026-09-11): "rates are typed by Kyle, never defaulted." Null is
+  // honest — the technician contributes hours but NO cost, and every surface
+  // says "rate not set" rather than inventing a number. commissionPercent is
+  // the hand-entered percentage of JOB PROFIT this tech earns.
+  hourlyRate        Float?
+  commissionPercent Float?
   createdAt         DateTime           @default(now())
   assignments       VisitAssignment[]
   healthInspections HealthInspection[]
   visitPhotos       VisitPhoto[]
   trucks            Truck[]
+  shiftEntries      ShiftEntry[]
+  commissions       Commission[]
 }
 
 // Flexible company configuration store — license info, operating territories,

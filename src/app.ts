@@ -76,6 +76,7 @@ import { financialsRouter } from "./routes/financials";
 import { emailBouncesRouter } from "./routes/emailBounces";
 import { emailDeliveriesRouter } from "./routes/emailDeliveries";
 import { trucksRouter } from "./routes/trucks";
+import { timeRouter } from "./routes/time";
 import { treasuryRouter } from "./routes/treasury";
 import { inventoryRouter } from "./routes/inventory";
 import { matchSpendForReceipt } from "./services/cardSpend";
@@ -1212,7 +1213,7 @@ app.post("/receipts", asyncHandler(async (req, res) => {
   }
   const body = z.object({
     jobId: z.string().optional(),
-    category: z.enum(["materials", "gas", "maintenance", "overhead"]),
+    category: z.enum(["materials", "gas", "maintenance", "overhead", "permit", "inspection"]),
     vendor: z.string().optional(),
     amount: z.number(),
     lineItems: z.unknown().optional(),
@@ -1841,6 +1842,10 @@ app.use(emailBouncesRouter);
 app.use(emailDeliveriesRouter);
 // Trucks, cards, card spend (Kyle, 2026-09-09) — /trucks, /card-spend.
 app.use(trucksRouter);
+// Time and payroll (Kyle, 2026-09-11): two clocks kept separate — /time/*.
+// Payroll hours are edited on the Team tab, job hours on the Jobs tab; every
+// edit takes a reason and leaves a TimeEdit trail.
+app.use(timeRouter);
 // Treasury settings (Kyle, 2026-09-09): floats + the Chase destination for the month-end sweep — /settings/treasury. Session-only.
 app.use(treasuryRouter);
 // Inventory ledger, landing, tools, restock requests (Kyle, 2026-09-09, Build 3) — /inventory, /tools, /purchase-orders/:id/land.
@@ -5404,7 +5409,7 @@ app.put(
     const query = z.object({
       vendor: z.string().trim().max(200).optional(),
       amount: z.coerce.number().positive().optional(),
-      category: z.enum(["materials", "gas", "maintenance", "overhead"]).default("materials"),
+      category: z.enum(["materials", "gas", "maintenance", "overhead", "permit", "inspection"]).default("materials"),
     }).parse(req.query);
 
     const po = await prisma.purchaseOrder.findUnique({ where: { id: poId }, select: { id: true, number: true, status: true, supplier: true, jobId: true } });
@@ -5523,7 +5528,7 @@ app.put(
     const query = z.object({
       vendor: z.string().trim().max(200).optional(),
       amount: z.coerce.number().positive(),
-      category: z.enum(["materials", "gas", "maintenance", "overhead"]).default("materials"),
+      category: z.enum(["materials", "gas", "maintenance", "overhead", "permit", "inspection"]).default("materials"),
     }).parse(req.query);
 
     const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { id: true } });

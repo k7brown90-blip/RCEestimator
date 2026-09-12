@@ -26,9 +26,12 @@ const KIND_LABEL: Record<CardSpendKind, string> = {
   fuel: "Fuel",
   maintenance: "Maintenance",
   tool: "Tools",
+  // Job fees (Kyle, 2026-09-11) — subtracted from job profit before commission.
+  permit: "Permit fee",
+  inspection: "Inspection fee",
   other: "Other",
 };
-const KINDS: CardSpendKind[] = ["materials", "fuel", "maintenance", "tool", "other"];
+const KINDS: CardSpendKind[] = ["materials", "fuel", "maintenance", "tool", "permit", "inspection", "other"];
 
 /** Everything a truck or card-spend change can move. */
 function useTruckRefresh() {

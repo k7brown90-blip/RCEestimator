@@ -823,7 +823,63 @@ export function requireSignal(): void {
   }
 }
 
-/** The time clock (Phase 5). One open punch per visit; needs signal on purpose. */
+/*
+  ── TWO CLOCKS, KEPT SEPARATE (Kyle, 2026-09-11) ───────────────────────────────
+  The SHIFT clock is payroll and lives on the MAIN screen — it works whether or
+  not a job is assigned. The JOB clock is Arrive → Pause / Complete on the job
+  site. Job time sits inside the shift: arriving while clocked out starts the
+  shift too, and clocking out pauses a running job first. Both need signal on
+  purpose — a punch is a timestamp, and a queued one would be a lie.
+*/
+
+export interface FlaggedClock {
+  kind: 'shift' | 'job'
+  id: string
+  visitId: string | null
+  startedAt: string
+  hoursOpen: number
+}
+
+export interface ShiftStatus {
+  shiftId: string | null
+  /** Open shift start, or null when clocked out. */
+  clockedInAt: string | null
+  openJob: { visitId: string; startedAt: string } | null
+  todayShiftMinutes: number
+  todayJobMinutes: number
+  /** Rule 5: open past 12 hours — stopped accruing, waiting on a real end time. */
+  flagged: FlaggedClock[]
+}
+
+export async function fetchShiftStatus(): Promise<ShiftStatus> {
+  return crmRequest('/shift')
+}
+export async function startShift(): Promise<{ shiftId: string; clockedInAt: string }> {
+  return crmRequest('/shift/start', { method: 'POST', body: '{}' })
+}
+export async function endShift(): Promise<{
+  minutes: number; endedAt: string | null; pausedJob: { visitId: string; minutes: number } | null; rateSet: boolean
+}> {
+  return crmRequest('/shift/end', { method: 'POST', body: '{}' })
+}
+export async function confirmClock(kind: 'shift' | 'job', id: string, endedAt: string, reason?: string): Promise<{ confirmed: boolean }> {
+  return crmRequest('/shift/confirm', { method: 'POST', body: JSON.stringify({ kind, id, endedAt, reason }) })
+}
+
+/** Arrive on site. startedShift true means the shift clock was started too. */
+export async function arriveAtJob(visitId: string): Promise<{
+  clockedInAt: string; startedShift: boolean; pausedOther: { visitId: string; minutes: number } | null
+}> {
+  return crmRequest(`/visits/${visitId}/arrive`, { method: 'POST', body: '{}' })
+}
+export async function pauseJobClock(visitId: string): Promise<{ minutes: number; laborMinutes: number; laborHours: number }> {
+  return crmRequest(`/visits/${visitId}/pause`, { method: 'POST', body: '{}' })
+}
+export async function completeJobClock(visitId: string): Promise<{ minutes: number; laborMinutes: number; laborHours: number }> {
+  return crmRequest(`/visits/${visitId}/complete-time`, { method: 'POST', body: '{}' })
+}
+
+/** LEGACY aliases, kept so an un-updated phone keeps working (they call arrive/pause). */
 export async function clockIn(visitId: string): Promise<{ clockedInAt: string }> {
   return crmRequest(`/visits/${visitId}/clock-in`, { method: 'POST', body: '{}' })
 }
@@ -864,7 +920,9 @@ export async function uploadReceiptFromField(input: {
   blob: Blob
   amount?: number
   vendor?: string
-  category?: 'materials' | 'gas' | 'maintenance' | 'overhead'
+  // permit / inspection are job FEES (Kyle, 2026-09-11) — the third term in
+  // job profit, which is what commission is calculated on.
+  category?: 'materials' | 'gas' | 'maintenance' | 'overhead' | 'permit' | 'inspection'
 }): Promise<{ id: string; amount: number; status: string; purchaseOrderNumber?: string | null }> {
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')

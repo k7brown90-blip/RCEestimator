@@ -331,6 +331,10 @@ const SPEND_CATEGORY: Record<string, string> = {
   fuel: "gas",
   maintenance: "maintenance",
   tool: "tools",
+  // Job fees (Kyle, 2026-09-11) — they keep their own P&L lines because the
+  // commission math subtracts exactly these from job profit.
+  permit: "permit",
+  inspection: "inspection",
   other: "overhead",
 };
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { TechnicianQr } from "../components/TechnicianQr";
 import { api } from "../lib/api";
@@ -156,7 +157,11 @@ export function TeamPage() {
             <li key={tech.id} className="rounded-lg border border-rce-border bg-white p-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span>
-                  <span className="font-medium">{tech.name}</span>
+                  {/* Selecting a member opens their page — hourly rate, commission
+                      percent, and the pay week (Kyle, 2026-09-11). */}
+                  <Link to={`/team/${tech.id}`} className="font-medium hover:text-rce-accent hover:underline">
+                    {tech.name}
+                  </Link>
                   {tech.employeeNumber ? (
                     <span className="ml-2 rounded bg-rce-accentBg px-1.5 py-0.5 font-mono text-xs text-rce-accentDark">
                       {tech.employeeNumber}
@@ -179,8 +184,18 @@ export function TeamPage() {
                   ) : (
                     <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">no calendar email</span>
                   )}
+                  {/* Rates are typed, never defaulted — an unset rate says so
+                      instead of quietly costing $0 (Kyle, 2026-09-11). */}
+                  {tech.hourlyRate != null ? (
+                    <span className="ml-2 text-xs text-rce-muted">${tech.hourlyRate}/hr</span>
+                  ) : (
+                    <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">rate not set</span>
+                  )}
                 </span>
                 <span className="flex gap-2">
+                  <Link to={`/team/${tech.id}`} className="text-xs font-medium text-rce-accent">
+                    Pay &amp; hours →
+                  </Link>
                   <button
                     type="button"
                     className="text-xs font-medium text-rce-accent"

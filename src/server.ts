@@ -12,6 +12,7 @@ import { sendKyleNotificationEmail } from "./services/confirmationEmail";
 import { sendAlert } from "./services/alerting";
 import { gmailConfigured, pollBounces } from "./services/bounceWatcher";
 import { syncCardSpend } from "./services/cardSpend";
+import { flagRunaways } from "./services/timeTracking";
 import {
   customerSendsEnabled,
   logAutomationGateState,
@@ -330,6 +331,27 @@ async function startServer(): Promise<void> {
   cron.schedule("*/10 * * * *", () => { void runCardSpendSync("cron"); }, { timezone: "America/Chicago" });
   setTimeout(() => { void runCardSpendSync("boot"); }, 90_000).unref();
   console.log(`[Cron] Card spend sync every 10 minutes — ${process.env.STRIPE_SECRET_KEY ? "ENABLED" : "DISABLED (no Stripe key)"}`);
+
+  // Every 30 minutes — runaway clocks (Kyle, 2026-09-11): "a clock still running
+  // after 12 hours is FLAGGED, STOPS ACCRUING, and the technician gets a notice
+  // on the field app's main screen asking them to confirm the real end time. It
+  // cannot count again until someone answers." The sweep only stamps flaggedAt;
+  // every hours total already excludes a flagged, unconfirmed entry, so a
+  // forgotten punch can never inflate payroll or a job's labor line. Also runs
+  // 2 minutes after boot so a deploy does not wait half an hour to notice one.
+  const runRunawaySweep = async (trigger: "boot" | "cron") => {
+    try {
+      const r = await flagRunaways({ hours: 12 });
+      if (r.shifts > 0 || r.sessions > 0) {
+        console.warn(`[TimeClock:${trigger}] flagged ${r.shifts} shift(s), ${r.sessions} job session(s) past 12 hours`);
+      }
+    } catch (err) {
+      console.error(`[TimeClock:${trigger}] runaway sweep failed:`, err);
+    }
+  };
+  cron.schedule("*/30 * * * *", () => { void runRunawaySweep("cron"); }, { timezone: "America/Chicago" });
+  setTimeout(() => { void runRunawaySweep("boot"); }, 120_000).unref();
+  console.log("[Cron] Runaway clock sweep every 30 minutes (12-hour cutoff).");
 
   logAutomationGateState();
 }

@@ -12,6 +12,7 @@ import { PinLoginPage } from "./pages/PinLoginPage";
 import { PropertyDetailPage } from "./pages/PropertyDetailPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TeamPage } from "./pages/TeamPage";
+import { TechnicianPage } from "./pages/TechnicianPage";
 import { PriceBookIntakePage } from "./pages/PriceBookIntakePage";
 import { FinancialsPage } from "./pages/FinancialsPage";
 import { PresentationPage } from "./pages/PresentationPage";
@@ -81,6 +82,8 @@ function App() {
                     categories — edited in place, with the workbook's math. */}
                 <Route path="/price-book" element={<PriceBookCatalogPage />} />
                 <Route path="/team" element={<TeamPage />} />
+                {/* Selecting a member opens their pay week (Kyle, 2026-09-11). */}
+                <Route path="/team/:technicianId" element={<TechnicianPage />} />
                 <Route path="/financials" element={<FinancialsPage />} />
                 <Route path="/trucks" element={<TrucksPage />} />
                 {/* Stock on every truck and in the warehouse, the tool register, POs to land

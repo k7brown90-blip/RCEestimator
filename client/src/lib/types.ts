@@ -960,7 +960,10 @@ export type ReviewReceiptRow = {
 // I will have to set up a financial account for each." Spend routes to a truck
 // by the card; gas and maintenance belong to the truck, never a job.
 
-export type CardSpendKind = "materials" | "fuel" | "maintenance" | "tool" | "other";
+// permit / inspection joined on 2026-09-11: JOB FEES, the third term in the
+// commission math (job profit = revenue − material − fees). They are not truck
+// overhead, so they have no column in TruckMtd.
+export type CardSpendKind = "materials" | "fuel" | "maintenance" | "tool" | "permit" | "inspection" | "other";
 export type CardSpendStatus = "unmatched" | "matched" | "ignored";
 
 export type CardSpendRow = {

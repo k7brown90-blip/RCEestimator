@@ -45,6 +45,10 @@ import { logSystemEvent } from "../services/systemEvents";
 import { sendKyleNotificationEmail } from "../services/confirmationEmail";
 import { resolveJurisdictions } from "../services/jurisdictionResolver";
 import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
+// Two clocks, kept separate (Kyle, 2026-09-11): shift = payroll, job = job time.
+import {
+  TimeError, arrive, completeJob, confirmEntry, endShift, flaggedFor, openJobSession, openShift, pauseJob, startShift,
+} from "../services/timeTracking";
 import { recordInspectionLoadCalc } from "../services/capacityCheckStore";
 import { probeTechCalendar } from "../services/techCalendars";
 import { v2PayloadSchema, validateV2Payload, persistV2, V2IngestError } from "../services/protocolV2Ingest";
@@ -1033,13 +1037,18 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
   });
 
   const taken = new Set(est?.selectedOptions ?? []);
-  // The clock (Phase 5): total minutes banked plus the open punch, if any.
+  // The JOB clock (Kyle, 2026-09-11): hours already on this job, plus the open
+  // arrive-to-leave session if one is running. A flagged session has stopped
+  // accruing and is excluded until the tech confirms the real end time.
   const [openEntry, closedSum] = await Promise.all([
     prisma.timeEntry.findFirst({
-      where: { visitId, technicianId: req.technician!.id, endedAt: null },
+      where: { visitId, technicianId: req.technician!.id, endedAt: null, flaggedAt: null },
       orderBy: { startedAt: "desc" },
     }),
-    prisma.timeEntry.aggregate({ where: { visitId, endedAt: { not: null } }, _sum: { minutes: true } }),
+    prisma.timeEntry.aggregate({
+      where: { visitId, endedAt: { not: null }, OR: [{ flaggedAt: null }, { confirmedAt: { not: null } }] },
+      _sum: { minutes: true },
+    }),
   ]);
   res.json({
     success: true,
@@ -1072,55 +1081,207 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
   });
 }));
 
-/**
- * The time clock (Phase 5). Kyle: "we need to have a time stamp for labor
- * tracking with a clock in button too." One open punch per tech per visit;
- * clock-out closes it and rolls the visit's total into Visit.laborHours —
- * which is exactly what job profitability's labor line reads.
- */
-healthRecordTechRouter.post("/visits/:visitId/clock-in", asyncHandler(async (req: TechRequest, res) => {
-  const visitId = readParam(req, "visitId");
+/*
+  ── TWO CLOCKS, KEPT SEPARATE (Kyle, 2026-09-11) ─────────────────────────────
+
+  The SHIFT clock is payroll and lives on the field app's MAIN screen: it works
+  whether or not a job is assigned, and payroll hours are clocked-in to
+  clocked-out. The JOB clock is job time: Arrive → Complete, or Pause on a
+  multi-day job.
+
+  Job time sits INSIDE the shift. Arriving while clocked out starts the shift
+  too (and the response says so); clocking out while a job clock runs pauses
+  that job first (and the response says so). Shift minus job is unbilled
+  company overhead — reported, never charged to a customer.
+
+  The old /clock-in and /clock-out remain as ALIASES for arrive and pause, in
+  the old response shape, so a phone that has not taken the new build keeps
+  working exactly as it did.
+*/
+
+/** Map a service refusal onto the PWA's error envelope. */
+function sendTimeError(res: express.Response, err: unknown): boolean {
+  if (err instanceof TimeError) {
+    res.status(err.statusCode).json({
+      success: false,
+      error: { code: err.statusCode === 409 ? "conflict" : "invalid", message: err.message },
+    });
+    return true;
+  }
+  return false;
+}
+
+async function requireAssigned(req: TechRequest, res: express.Response, visitId: string): Promise<boolean> {
   const assigned = await prisma.visitAssignment.findFirst({
     where: { visitId, technicianId: req.technician!.id },
     select: { id: true },
   });
   if (!assigned) {
     res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
-    return;
+    return false;
   }
-  const open = await prisma.timeEntry.findFirst({
-    where: { visitId, technicianId: req.technician!.id, endedAt: null },
+  return true;
+}
+
+/** Today's clock, for the main screen's persistent bar. */
+healthRecordTechRouter.get("/shift", asyncHandler(async (req: TechRequest, res) => {
+  const technicianId = req.technician!.id;
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const [shift, session, shiftToday, jobToday, flagged] = await Promise.all([
+    openShift(technicianId),
+    openJobSession(technicianId),
+    prisma.shiftEntry.aggregate({
+      where: {
+        technicianId, startedAt: { gte: dayStart }, endedAt: { not: null },
+        OR: [{ flaggedAt: null }, { confirmedAt: { not: null } }],
+      },
+      _sum: { minutes: true },
+    }),
+    prisma.timeEntry.aggregate({
+      where: {
+        technicianId, startedAt: { gte: dayStart }, endedAt: { not: null },
+        OR: [{ flaggedAt: null }, { confirmedAt: { not: null } }],
+      },
+      _sum: { minutes: true },
+    }),
+    flaggedFor(technicianId),
+  ]);
+  res.json({
+    success: true,
+    data: {
+      shiftId: shift?.id ?? null,
+      // A flagged shift is NOT running — it stopped accruing and is waiting on an answer.
+      clockedInAt: shift && !shift.flaggedAt ? shift.startedAt.toISOString() : null,
+      openJob: session && !session.flaggedAt
+        ? { visitId: session.visitId, startedAt: session.startedAt.toISOString() }
+        : null,
+      todayShiftMinutes: Math.round(shiftToday._sum.minutes ?? 0),
+      todayJobMinutes: Math.round(jobToday._sum.minutes ?? 0),
+      // Rule 5: "a clock still running after 12 hours is flagged, stops
+      // accruing, and the technician gets a notice asking for the real end time."
+      flagged,
+    },
   });
-  if (open) {
-    res.status(409).json({ success: false, error: { code: "conflict", message: `Already clocked in since ${open.startedAt.toISOString()}` } });
-    return;
-  }
-  const entry = await prisma.timeEntry.create({
-    data: { visitId, technicianId: req.technician!.id },
-  });
-  res.status(201).json({ success: true, data: { clockedInAt: entry.startedAt.toISOString() } });
 }));
 
-healthRecordTechRouter.post("/visits/:visitId/clock-out", asyncHandler(async (req: TechRequest, res) => {
-  const visitId = readParam(req, "visitId");
-  const open = await prisma.timeEntry.findFirst({
-    where: { visitId, technicianId: req.technician!.id, endedAt: null },
-    orderBy: { startedAt: "desc" },
-  });
-  if (!open) {
-    res.status(409).json({ success: false, error: { code: "conflict", message: "Not clocked in on this visit." } });
+healthRecordTechRouter.post("/shift/start", asyncHandler(async (req: TechRequest, res) => {
+  try {
+    const shift = await startShift(req.technician!.id, { source: "field" });
+    res.status(201).json({ success: true, data: { shiftId: shift.id, clockedInAt: shift.startedAt.toISOString() } });
+  } catch (err) {
+    if (!sendTimeError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.post("/shift/end", asyncHandler(async (req: TechRequest, res) => {
+  try {
+    const result = await endShift(req.technician!.id);
+    res.json({
+      success: true,
+      data: {
+        minutes: result.shift.minutes ?? 0,
+        endedAt: result.shift.endedAt?.toISOString() ?? null,
+        // Rule 1 — the screen has to SAY the job clock was paused for them.
+        pausedJob: result.pausedJob,
+        rateSet: result.rateSet,
+      },
+    });
+  } catch (err) {
+    if (!sendTimeError(res, err)) throw err;
+  }
+}));
+
+/** Rule 5's answer, from the phone: "confirm when it really ended." */
+healthRecordTechRouter.post("/shift/confirm", asyncHandler(async (req: TechRequest, res) => {
+  const body = z.object({
+    kind: z.enum(["shift", "job"]),
+    id: z.string().min(1),
+    endedAt: z.string().min(1),
+    reason: z.string().trim().max(300).optional(),
+  }).parse(req.body);
+  const endedAt = new Date(body.endedAt);
+  if (Number.isNaN(endedAt.getTime())) {
+    res.status(400).json({ success: false, error: { code: "invalid", message: "That end time could not be read." } });
     return;
   }
-  const endedAt = new Date();
-  const minutes = Math.max(1, Math.round((endedAt.getTime() - open.startedAt.getTime()) / 60_000));
-  await prisma.timeEntry.update({ where: { id: open.id }, data: { endedAt, minutes } });
-  const total = await prisma.timeEntry.aggregate({
-    where: { visitId, endedAt: { not: null } },
-    _sum: { minutes: true },
-  });
-  const laborHours = Math.round(((total._sum.minutes ?? 0) / 60) * 100) / 100;
-  await prisma.visit.update({ where: { id: visitId }, data: { laborHours } });
-  res.json({ success: true, data: { minutes, laborMinutes: Math.round(total._sum.minutes ?? 0), laborHours } });
+  // The entry has to belong to the technician answering for it.
+  const owned = body.kind === "shift"
+    ? await prisma.shiftEntry.findFirst({ where: { id: body.id, technicianId: req.technician!.id }, select: { id: true } })
+    : await prisma.timeEntry.findFirst({ where: { id: body.id, technicianId: req.technician!.id }, select: { id: true } });
+  if (!owned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "That entry is not yours." } });
+    return;
+  }
+  try {
+    await confirmEntry(body.kind, body.id, {
+      endedAt,
+      actor: `tech:${req.technician!.name}`,
+      reason: body.reason?.trim() || "Confirmed the real end time on the field app",
+    });
+    res.json({ success: true, data: { confirmed: true } });
+  } catch (err) {
+    if (!sendTimeError(res, err)) throw err;
+  }
+}));
+
+/** Arrive on site — starts the shift too when the tech is clocked out (rule 1). */
+healthRecordTechRouter.post("/visits/:visitId/arrive", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  try {
+    const result = await arrive(visitId, req.technician!.id);
+    res.status(201).json({
+      success: true,
+      data: {
+        clockedInAt: result.entry.startedAt.toISOString(),
+        startedShift: result.startedShift,
+        pausedOther: result.pausedOther,
+      },
+    });
+  } catch (err) {
+    if (!sendTimeError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.post("/visits/:visitId/pause", asyncHandler(async (req: TechRequest, res) => {
+  try {
+    const result = await pauseJob(readParam(req, "visitId"), req.technician!.id);
+    res.json({ success: true, data: { minutes: result.minutes, laborMinutes: result.laborMinutes, laborHours: result.laborHours } });
+  } catch (err) {
+    if (!sendTimeError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.post("/visits/:visitId/complete-time", asyncHandler(async (req: TechRequest, res) => {
+  try {
+    const result = await completeJob(readParam(req, "visitId"), req.technician!.id);
+    res.json({ success: true, data: { minutes: result.minutes, laborMinutes: result.laborMinutes, laborHours: result.laborHours } });
+  } catch (err) {
+    if (!sendTimeError(res, err)) throw err;
+  }
+}));
+
+/** LEGACY ALIAS — clock-in is arrive. Same response shape as before. */
+healthRecordTechRouter.post("/visits/:visitId/clock-in", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  try {
+    const result = await arrive(visitId, req.technician!.id);
+    res.status(201).json({ success: true, data: { clockedInAt: result.entry.startedAt.toISOString() } });
+  } catch (err) {
+    if (!sendTimeError(res, err)) throw err;
+  }
+}));
+
+/** LEGACY ALIAS — clock-out is pause. Same response shape as before. */
+healthRecordTechRouter.post("/visits/:visitId/clock-out", asyncHandler(async (req: TechRequest, res) => {
+  try {
+    const result = await pauseJob(readParam(req, "visitId"), req.technician!.id);
+    res.json({ success: true, data: { minutes: result.minutes, laborMinutes: result.laborMinutes, laborHours: result.laborHours } });
+  } catch (err) {
+    if (!sendTimeError(res, err)) throw err;
+  }
 }));
 
 /**
@@ -1642,7 +1803,7 @@ healthRecordTechRouter.put(
 
     const query = z.object({
       jobId: z.string().optional(),
-      category: z.enum(["materials", "gas", "maintenance", "overhead"]).optional(),
+      category: z.enum(["materials", "gas", "maintenance", "overhead", "permit", "inspection"]).optional(),
       vendor: z.string().optional(),
       amount: z.coerce.number().positive().optional(),
       // Kyle, 2026-09-09: the receipt photo verifies a PO. When present the
@@ -2119,6 +2280,10 @@ healthRecordAdminRouter.patch("/technicians/:id", asyncHandler(async (req, res) 
     role: z.enum(["technician", "supervisor", "admin"]).optional(),
     isActive: z.boolean().optional(),
     rotateToken: z.boolean().optional(),
+    // Pay (Kyle, 2026-09-11): "rates are typed by Kyle, never defaulted."
+    // Null clears it back to "rate not set" — which is an honest state, not a zero.
+    hourlyRate: z.number().min(0).max(1000).nullable().optional(),
+    commissionPercent: z.number().min(0).max(100).nullable().optional(),
   }).parse(req.body);
 
   const { rotateToken, ...fields } = body;
@@ -3014,7 +3179,7 @@ healthRecordAdminRouter.get("/receipts/:id/image", asyncHandler(async (req, res)
 healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => {
   const body = z.object({
     jobId: z.string().nullable().optional(),
-    category: z.enum(["materials", "gas", "maintenance", "overhead"]).optional(),
+    category: z.enum(["materials", "gas", "maintenance", "overhead", "permit", "inspection"]).optional(),
     vendor: z.string().nullable().optional(),
     amount: z.number().nonnegative().optional(),
     lineItems: z.unknown().optional(),

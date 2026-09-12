@@ -794,7 +794,14 @@ export const api = {
   technicians: () => request<Technician[]>("/health-record-admin/technicians"),
   createTechnician: (input: { name: string; email?: string; phone?: string; employeeNumber?: string; role?: string }) =>
     request<Technician>("/health-record-admin/technicians", { method: "POST", body: JSON.stringify(input) }),
-  updateTechnician: (technicianId: string, input: { name?: string; isActive?: boolean; rotateToken?: boolean; employeeNumber?: string | null }) =>
+  updateTechnician: (
+    technicianId: string,
+    input: {
+      name?: string; isActive?: boolean; rotateToken?: boolean; employeeNumber?: string | null;
+      // Rates are typed by Kyle, never defaulted (2026-09-11). null = "rate not set".
+      hourlyRate?: number | null; commissionPercent?: number | null;
+    },
+  ) =>
     request<Technician>(`/health-record-admin/technicians/${technicianId}`, { method: "PATCH", body: JSON.stringify(input) }),
   verifyTechCalendar: (technicianId: string) =>
     request<{ accessible: boolean; email: string | null }>(`/health-record-admin/technicians/${technicianId}/verify-calendar`, { method: "POST" }),
@@ -1603,7 +1610,153 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
+  // ── Time and payroll (Kyle, 2026-09-11): two clocks, kept separate ─────────
+  // Payroll hours are edited on the Team tab, job hours on the Jobs tab, and
+  // every edit takes a reason that lands on the trail.
+
+  payrollWeek: (technicianId: string, start: string) =>
+    request<PayrollWeek>(`/time/technicians/${technicianId}/week?start=${encodeURIComponent(start)}`),
+
+  createShiftEntry: (input: { technicianId: string; startedAt: string; endedAt?: string | null; note?: string | null }) =>
+    request<{ id: string }>("/time/shifts", { method: "POST", body: JSON.stringify(input) }),
+  updateShiftEntry: (id: string, input: { startedAt?: string; endedAt?: string | null; note?: string | null; reason: string }) =>
+    request<{ id: string }>(`/time/shifts/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteShiftEntry: (id: string, reason: string) =>
+    request<void>(`/time/shifts/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
+
+  jobTime: (visitId: string) => request<JobTimeView>(`/time/jobs/${visitId}`),
+  createJobSession: (visitId: string, input: { technicianId: string; startedAt: string; endedAt?: string | null; note?: string | null }) =>
+    request<{ id: string }>(`/time/jobs/${visitId}/sessions`, { method: "POST", body: JSON.stringify(input) }),
+  updateJobSession: (id: string, input: { startedAt?: string; endedAt?: string | null; note?: string | null; reason: string }) =>
+    request<{ id: string }>(`/time/sessions/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteJobSession: (id: string, reason: string) =>
+    request<void>(`/time/sessions/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
+
+  /** Rule 5: close a flagged clock at the time it really ended. */
+  confirmTimeEntry: (input: { kind: "shift" | "job"; id: string; endedAt: string; reason: string }) =>
+    request<{ id: string }>("/time/confirm", { method: "POST", body: JSON.stringify(input) }),
+
+  commissions: (query: { technicianId?: string; visitId?: string }) => {
+    const params = new URLSearchParams();
+    if (query.technicianId) params.set("technicianId", query.technicianId);
+    if (query.visitId) params.set("visitId", query.visitId);
+    return request<CommissionRow[]>(`/time/commissions?${params.toString()}`);
+  },
+  commissionQuote: (visitId: string, technicianId: string) =>
+    request<CommissionQuote>(`/time/commissions/quote?visitId=${encodeURIComponent(visitId)}&technicianId=${encodeURIComponent(technicianId)}`),
+  createCommission: (input: {
+    technicianId: string; visitId?: string | null; basis: "job_profit" | "manual";
+    percent?: number | null; amount?: number | null; note?: string | null; reason?: string | null;
+  }) => request<{ id: string }>("/time/commissions", { method: "POST", body: JSON.stringify(input) }),
+  deleteCommission: (id: string, reason: string) =>
+    request<void>(`/time/commissions/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
+
 };
+
+// ─── Time and payroll types (Kyle, 2026-09-11) ───────────────────────────────
+
+export interface PayrollEntry {
+  kind: "shift" | "job";
+  id: string;
+  startedAt: string;
+  endedAt: string | null;
+  minutes: number | null;
+  /** Frozen when the entry closed; null means the tech had no rate on file. */
+  rateApplied: number | null;
+  regularMinutes: number;
+  overtimeMinutes: number;
+  pay: number | null;
+  source?: string;
+  note: string | null;
+  visitId?: string;
+  visitLabel?: string | null;
+  endedReason?: string | null;
+  flagged: boolean;
+  confirmed: boolean;
+  open: boolean;
+}
+
+export interface FlaggedClock {
+  kind: "shift" | "job";
+  id: string;
+  technicianId: string | null;
+  visitId: string | null;
+  startedAt: string;
+  hoursOpen: number;
+}
+
+export interface CommissionRow {
+  id: string;
+  technicianId: string;
+  technicianName?: string;
+  visitId: string | null;
+  visitLabel: string | null;
+  basis: string;
+  percent: number | null;
+  amount: number;
+  note: string | null;
+  reason: string | null;
+  earnedAt: string;
+  paidAt: string | null;
+}
+
+export interface PayrollWeek {
+  technicianId: string;
+  technicianName: string;
+  weekStart: string;
+  weekEnd: string;
+  shiftMinutes: number;
+  jobMinutes: number;
+  /** Shift − job: drive, shop, supply house. Company overhead, never job cost. */
+  unbilledMinutes: number;
+  regularMinutes: number;
+  overtimeMinutes: number;
+  rate: number | null;
+  rateSet: boolean;
+  regularPay: number;
+  /** The extra 0.5× riding the hours that crossed 40, in the order worked. */
+  overtimePremium: number;
+  commissions: number;
+  total: number;
+  openEntries: number;
+  flagged: FlaggedClock[];
+  shifts: PayrollEntry[];
+  sessions: PayrollEntry[];
+  commissionRows: CommissionRow[];
+}
+
+export interface JobTimeView {
+  visitId: string;
+  technicians: Array<{
+    technicianId: string;
+    name: string;
+    minutes: number;
+    hours: number;
+    rate: number | null;
+    rateSet: boolean;
+    cost: number | null;
+    assigned: boolean;
+  }>;
+  sessions: PayrollEntry[];
+  totalMinutes: number;
+  totalHours: number;
+  laborCost: number | null;
+  anyRateMissing: boolean;
+}
+
+export interface CommissionQuote {
+  visitId: string;
+  technicianId: string;
+  revenue: number | null;
+  materialCost: number;
+  materialSource: string;
+  fees: number;
+  feeRows: Array<{ kind: "receipt" | "card"; id: string; label: string; category: string; amount: number }>;
+  profit: number | null;
+  percent: number | null;
+  percentSet: boolean;
+  amount: number | null;
+}
 
 // ─── Health Record types ─────────────────────────────────────────────────────
 
@@ -1618,6 +1771,10 @@ export interface Technician {
   isActive: boolean;
   /** Set by the Team page's "verify calendar" probe — Google can read their calendar. */
   calendarShared: boolean;
+  /** Typed by Kyle, never defaulted. Null shows as "rate not set", never as $0. */
+  hourlyRate?: number | null;
+  /** Percentage of JOB PROFIT (revenue − material − fees), hand-entered. */
+  commissionPercent?: number | null;
   createdAt: string;
   _count?: { assignments: number; healthInspections: number };
 }

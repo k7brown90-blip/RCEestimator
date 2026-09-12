@@ -42,7 +42,10 @@ import { logSystemEvent } from "./systemEvents";
 import { stripe, stripeConfigured } from "./stripePayments";
 import { attachReceiptToPurchaseOrder, createPurchaseOrder, transitionPurchaseOrder } from "./purchaseOrders";
 
-export const CARD_SPEND_KINDS = ["materials", "fuel", "maintenance", "tool", "other"] as const;
+// permit and inspection joined the list on 2026-09-11: they are JOB FEES, the
+// third term in Kyle's commission math (job profit = revenue − material − fees).
+// Never auto-assigned from a merchant — Kyle re-kinds the swipe with a reason.
+export const CARD_SPEND_KINDS = ["materials", "fuel", "maintenance", "tool", "permit", "inspection", "other"] as const;
 export type CardSpendKind = (typeof CARD_SPEND_KINDS)[number];
 export const CARD_SPEND_STATUSES = ["unmatched", "matched", "ignored"] as const;
 export type CardSpendStatus = (typeof CARD_SPEND_STATUSES)[number];
@@ -490,6 +493,8 @@ export function receiptCategoriesFor(kind: string): string[] {
     case "materials": return ["materials"];
     case "fuel": return ["gas"];
     case "maintenance": return ["maintenance"];
+    case "permit": return ["permit"];
+    case "inspection": return ["inspection"];
     default: return ["overhead", "materials"];
   }
 }
@@ -500,6 +505,8 @@ function spendKindsFor(category: string): string[] {
     case "materials": return ["materials", "tool", "other"];
     case "gas": return ["fuel"];
     case "maintenance": return ["maintenance"];
+    case "permit": return ["permit"];
+    case "inspection": return ["inspection"];
     default: return ["other", "tool"];
   }
 }
@@ -1052,6 +1059,9 @@ export async function truckSpendRollups(now = new Date()) {
       _count: { _all: true },
     }),
   ]);
+  // Truck overhead only. permit/inspection are JOB fees (Kyle, 2026-09-11) and
+  // deliberately have no truck column — they never belong to a vehicle.
+  type TruckKind = "fuel" | "maintenance" | "materials" | "tool" | "other";
   const byTruck = new Map<string | null, { fuel: number; maintenance: number; materials: number; tool: number; other: number; unmatched: number }>();
   const row = (id: string | null) => {
     const r = byTruck.get(id) ?? { fuel: 0, maintenance: 0, materials: 0, tool: 0, other: 0, unmatched: 0 };
@@ -1060,7 +1070,7 @@ export async function truckSpendRollups(now = new Date()) {
   };
   for (const m of mtd) {
     const r = row(m.truckId);
-    const k = m.kind as CardSpendKind;
+    const k = m.kind as TruckKind;
     if (k in r) r[k] = round2(r[k] + (m._sum.amount ?? 0));
   }
   for (const u of unmatched) row(u.truckId).unmatched = u._count._all;

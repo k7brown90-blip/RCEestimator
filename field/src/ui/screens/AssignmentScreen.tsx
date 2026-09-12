@@ -2,13 +2,18 @@ import { useEffect, useState } from 'react'
 import {
   cachedMe,
   clearCrmSettings,
+  confirmClock,
   defaultBaseUrl,
+  endShift,
   fetchMe,
+  fetchShiftStatus,
   getCrmSettings,
   pendingSyncCount,
   saveCrmSettings,
+  startShift,
   syncAssignments,
   type CrmTechnician,
+  type ShiftStatus,
 } from '../../lib/crmSync'
 import type { CrmAssignment } from '../../domain/types'
 
@@ -72,6 +77,150 @@ function VisitCard({ assignment, onOpen }: { assignment: CrmAssignment; onOpen: 
         <span className="mt-1 block text-xs text-amber-300">⚠ Jurisdiction not set by the office</span>
       )}
     </button>
+  )
+}
+
+const fmtHm = (min: number) => `${Math.floor(min / 60)}h ${String(Math.round(min % 60)).padStart(2, '0')}m`
+
+/** "YYYY-MM-DDTHH:mm" for a datetime-local input, in the phone's own clock. */
+function localInputValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/**
+ * THE SHIFT CLOCK — payroll, on the MAIN screen (Kyle, 2026-09-11): "clock in /
+ * clock out ... working whether or not a job is assigned. Payroll hours are
+ * clocked-in to clocked-out."
+ *
+ * Clocking out while a job clock runs PAUSES that job first, and this bar says
+ * so. A clock left running past 12 hours is flagged: it has STOPPED ACCRUING
+ * and the red banner asks for the real end time before it can count again.
+ */
+function ClockBar() {
+  const [status, setStatus] = useState<ShiftStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [said, setSaid] = useState<string | null>(null)
+  const [answer, setAnswer] = useState<Record<string, string>>({})
+  const [, tick] = useState(0)
+
+  const load = async () => {
+    try {
+      setStatus(await fetchShiftStatus())
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? `Clock needs signal — ${err.message}` : 'Clock needs signal.')
+    }
+  }
+  useEffect(() => { void load() }, [])
+  // Keep the running total honest without hammering the server.
+  useEffect(() => {
+    const timer = setInterval(() => tick((n) => n + 1), 30_000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const punch = async () => {
+    setBusy(true)
+    setError(null)
+    setSaid(null)
+    try {
+      if (status?.clockedInAt) {
+        const result = await endShift()
+        setSaid(
+          result.pausedJob
+            ? `Clocked out — ${fmtHm(result.minutes)}. Your job clock was still running, so it was paused for you.`
+            : `Clocked out — ${fmtHm(result.minutes)} on the shift.`,
+        )
+      } else {
+        await startShift()
+        setSaid('Clocked in. The day is running.')
+      }
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirm = async (kind: 'shift' | 'job', id: string) => {
+    const typed = answer[id]
+    if (!typed) return
+    setBusy(true)
+    setError(null)
+    try {
+      await confirmClock(kind, id, new Date(typed).toISOString())
+      setSaid('Thanks — that clock is squared away.')
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const running = status?.clockedInAt
+    ? Math.max(0, Math.round((Date.now() - new Date(status.clockedInAt).getTime()) / 60_000))
+    : 0
+  const todayTotal = (status?.todayShiftMinutes ?? 0) + running
+
+  return (
+    <section className="space-y-2">
+      <div className={`flex items-center justify-between gap-3 rounded-xl border p-3 ${
+        status?.clockedInAt ? 'border-emerald-700 bg-emerald-950/40' : 'border-slate-700 bg-slate-800/60'
+      }`}>
+        <div>
+          <p className="text-sm font-medium text-white">
+            {status?.clockedInAt ? `Clocked in ${fmtHm(running)}` : 'Clocked out'}
+          </p>
+          <p className="text-xs text-slate-400">
+            {fmtHm(todayTotal)} today
+            {status && status.todayJobMinutes > 0 ? ` · ${fmtHm(status.todayJobMinutes)} on jobs` : ''}
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={busy || !status}
+          onClick={() => void punch()}
+          className={`shrink-0 rounded-lg px-4 py-3 text-sm font-semibold text-white disabled:opacity-40 ${
+            status?.clockedInAt ? 'bg-red-700' : 'bg-emerald-700'
+          }`}
+        >
+          {busy ? '…' : status?.clockedInAt ? 'Clock out' : 'Clock in'}
+        </button>
+      </div>
+
+      {said && <p className="rounded-lg bg-slate-800 p-2 text-xs text-emerald-200">{said}</p>}
+      {error && <p className="rounded-lg bg-red-950/60 p-2 text-xs text-red-200">{error}</p>}
+
+      {(status?.flagged ?? []).map((f) => (
+        <div key={f.id} className="space-y-2 rounded-xl border border-red-600 bg-red-950/60 p-3">
+          <p className="text-sm font-semibold text-red-100">
+            A clock ran {f.hoursOpen} hours without stopping.
+          </p>
+          <p className="text-xs text-red-200">
+            {f.kind === 'shift' ? 'Shift' : 'Job'} started {new Date(f.startedAt).toLocaleString()}. It stopped
+            counting at 12 hours and will not count again until you tell us when it really ended.
+          </p>
+          <input
+            type="datetime-local"
+            className="w-full rounded border border-red-700 bg-slate-900 p-2 text-sm text-white"
+            max={localInputValue(new Date())}
+            value={answer[f.id] ?? ''}
+            onChange={(e) => setAnswer((a) => ({ ...a, [f.id]: e.target.value }))}
+          />
+          <button
+            type="button"
+            disabled={busy || !answer[f.id]}
+            onClick={() => void confirm(f.kind, f.id)}
+            className="w-full rounded-lg bg-red-700 p-2 text-sm font-medium text-white disabled:opacity-40"
+          >
+            That's when I finished
+          </button>
+        </div>
+      ))}
+    </section>
   )
 }
 
@@ -214,6 +363,10 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
         </section>
       ) : (
         <>
+          {/* The shift clock rides the top of the main screen — it works whether
+              or not there is a job on the list (Kyle, 2026-09-11). */}
+          <ClockBar />
+
           <section className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-medium text-slate-300">Today</h2>

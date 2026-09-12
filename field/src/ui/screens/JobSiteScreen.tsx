@@ -13,8 +13,9 @@
 
 import { useEffect, useState } from 'react'
 import {
-  clockIn,
-  clockOut,
+  arriveAtJob,
+  completeJobClock,
+  pauseJobClock,
   completeVisitFromField,
   fetchJobBrief,
   fetchPurchaseOrders,
@@ -62,9 +63,12 @@ export function JobSiteScreen({
     return () => { cancelled = true }
   }, [assignment.visitId])
 
-  // ── The clock (Phase 5): "a time stamp for labor tracking with a clock in
-  // button." One open punch; banked minutes feed job profitability's labor. ──
+  // ── THE JOB CLOCK (Kyle, 2026-09-11): Arrive → Complete, or Pause on a
+  // multi-day job. Job hours are the sum of the arrive-to-leave sessions and
+  // they sit INSIDE the shift — arriving while clocked out starts the shift
+  // too, and the screen says so. ──
   const [clockedInAt, setClockedInAt] = useState<string | null>(null)
+  const [clockSaid, setClockSaid] = useState<string | null>(null)
   // Schedule for later (phase 5): same scheduleJob the office uses — the
   // deposit gate's refusal comes back verbatim and tells the tech what to do.
   const [schedOpen, setSchedOpen] = useState(false)
@@ -88,17 +92,32 @@ export function JobSiteScreen({
     const timer = setInterval(() => forceTick((n) => n + 1), 30_000)
     return () => clearInterval(timer)
   }, [clockedInAt])
-  const punch = async () => {
+  const punch = async (verb: 'arrive' | 'pause' | 'complete') => {
     setClockBusy(true)
     setClockError(null)
+    setClockSaid(null)
     try {
-      if (clockedInAt) {
-        const result = await clockOut(assignment.visitId)
+      if (verb === 'arrive') {
+        const result = await arriveAtJob(assignment.visitId)
+        setClockedInAt(result.clockedInAt)
+        // Rule 1 — when the arrival started the day, the screen has to say so.
+        setClockSaid(
+          [
+            result.startedShift ? 'Shift started too — you were clocked out.' : null,
+            result.pausedOther ? 'Your clock on the other job was paused.' : null,
+          ].filter(Boolean).join(' ') || null,
+        )
+      } else {
+        const result = verb === 'pause'
+          ? await pauseJobClock(assignment.visitId)
+          : await completeJobClock(assignment.visitId)
         setClockedInAt(null)
         setLaborMinutes(result.laborMinutes)
-      } else {
-        const result = await clockIn(assignment.visitId)
-        setClockedInAt(result.clockedInAt)
+        setClockSaid(
+          verb === 'pause'
+            ? `Paused — ${fmtHm(result.minutes)} this session. You are still on the clock for the day.`
+            : `Job time closed — ${fmtHm(result.minutes)} this session.`,
+        )
       }
     } catch (err) {
       setClockError(err instanceof Error ? err.message : String(err))
@@ -188,9 +207,10 @@ export function JobSiteScreen({
     setClosing(true)
     setCloseError(null)
     try {
-      // Leaving means the work stopped — an open punch closes with the job.
+      // Closing the job out completes the job clock too — the work stopped.
+      // The SHIFT clock keeps running: the drive home is still paid time.
       if (clockedInAt) {
-        const punchResult = await clockOut(assignment.visitId)
+        const punchResult = await completeJobClock(assignment.visitId)
         setClockedInAt(null)
         setLaborMinutes(punchResult.laborMinutes)
       }
@@ -229,31 +249,55 @@ export function JobSiteScreen({
 
       {briefError && <p className="rounded-lg bg-red-950/60 p-2 text-xs text-red-200">{briefError}</p>}
 
-      {/* ── The clock ── */}
+      {/* ── The JOB clock: Arrive → Complete, Pause on a multi-day job ── */}
       {brief && (
-        <section className={`flex items-center justify-between gap-3 rounded-xl border p-3 ${
+        <section className={`space-y-2 rounded-xl border p-3 ${
           clockedInAt ? 'border-emerald-700 bg-emerald-950/40' : 'border-slate-700 bg-slate-800/60'
         }`}>
           <div>
             <p className="text-sm font-medium text-white">
-              {clockedInAt ? `On the clock — ${fmtHm(elapsedMin)}` : 'Off the clock'}
+              {clockedInAt ? `On this job — ${fmtHm(elapsedMin)} this session` : 'Not on this job right now'}
             </p>
             <p className="text-xs text-slate-400">
-              {laborMinutes > 0 ? `${fmtHm(laborMinutes)} banked on this job` : 'No time banked yet'}
+              {laborMinutes > 0 ? `${fmtHm(laborMinutes)} already on this job` : 'No hours on this job yet'}
             </p>
           </div>
-          <button
-            type="button"
-            disabled={clockBusy}
-            onClick={() => void punch()}
-            className={`shrink-0 rounded-lg px-4 py-3 text-sm font-semibold text-white disabled:opacity-40 ${
-              clockedInAt ? 'bg-red-700' : 'bg-emerald-700'
-            }`}
-          >
-            {clockBusy ? '…' : clockedInAt ? 'Clock out' : 'Clock in'}
-          </button>
+          {clockedInAt ? (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={clockBusy}
+                onClick={() => void punch('pause')}
+                className="flex-1 rounded-lg bg-slate-600 px-3 py-3 text-sm font-semibold text-white disabled:opacity-40"
+              >
+                {clockBusy ? '…' : 'Pause'}
+              </button>
+              <button
+                type="button"
+                disabled={clockBusy}
+                onClick={() => void punch('complete')}
+                className="flex-1 rounded-lg bg-emerald-700 px-3 py-3 text-sm font-semibold text-white disabled:opacity-40"
+              >
+                {clockBusy ? '…' : 'Complete'}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              disabled={clockBusy}
+              onClick={() => void punch('arrive')}
+              className="w-full rounded-lg bg-emerald-700 px-4 py-3 text-sm font-semibold text-white disabled:opacity-40"
+            >
+              {clockBusy ? '…' : 'Arrive'}
+            </button>
+          )}
+          <p className="text-[10px] text-slate-500">
+            Pause holds the job open for another day. Complete closes your time on it. Either way you stay
+            on the clock for the day until you clock out on the main screen.
+          </p>
         </section>
       )}
+      {clockSaid && <p className="rounded bg-slate-800 p-2 text-xs text-emerald-200">{clockSaid}</p>}
       {clockError && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{clockError}</p>}
 
       {/* ── The scope — what was bought, never hours ── */}
