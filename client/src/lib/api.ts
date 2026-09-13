@@ -78,6 +78,8 @@ import type {
   JobMaterialsView,
   MaterialSource,
   MaterialsByMonth,
+  MaterialRow,
+  MaterialWithCompletion,
   OnHand,
   ScheduleJobResult,
   SupportItem,
@@ -462,6 +464,26 @@ export interface PbAssemblyCreate {
   components: PbAssemblyComponentInput[];
   /** Explicit tier overrides. Absent tiers default to the server's auto-sum. */
   laborOverrides?: Partial<Record<PbLaborTier, number>>;
+}
+
+// ─── The material database (2026-09-12, barcode/materials plan Unit 2/6) ────
+// See src/services/materials.ts. `MaterialPromoteInput` mirrors PromoteMaterialInput there —
+// creating a brand-new price book item for a material with no counterpart in the book.
+
+export interface MaterialPromoteInput {
+  description: string;
+  category: string;
+  subCategory?: string | null;
+  unitLabel?: string | null;
+  sector?: string | null;
+  rowType: string;
+  laborNormal?: number | null;
+  laborDifficult?: number | null;
+  laborVeryDifficult?: number | null;
+  notes?: string | null;
+  itemId?: string | null;
+  idPrefix?: string | null;
+  companyCost?: number | null;
 }
 
 async function requestHtml(path: string): Promise<string> {
@@ -1117,6 +1139,23 @@ export const api = {
     return request<StockMovementView[]>(`/inventory/movements${q ? `?${q}` : ""}`);
   },
   inventoryItems: (q: string) => request<InventoryItem[]>(`/inventory/items?q=${encodeURIComponent(q)}`),
+
+  // ── The material database (2026-09-12, barcode/materials plan Unit 2/6) ────
+  // Completion (assigned vs. unassigned) is derived server-side — never recompute it here.
+  materials: () => request<MaterialWithCompletion[]>("/materials"),
+  unassignedMaterials: () => request<MaterialWithCompletion[]>("/materials/unassigned"),
+  /** Give the material a `lastCost` directly (e.g. clearing a "no cost" gap by hand). */
+  updateMaterialCost: (id: string, lastCost: number) =>
+    request<MaterialRow>(`/materials/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ lastCost }) }),
+  /** LINK — join an existing price book item that already carries labour. */
+  linkMaterial: (id: string, itemId: string) =>
+    request<MaterialRow>(`/materials/${encodeURIComponent(id)}/link`, { method: "POST", body: JSON.stringify({ itemId }) }),
+  /** PROMOTE — create a brand-new price book item for a material with no counterpart in the book. */
+  promoteMaterial: (id: string, input: MaterialPromoteInput) =>
+    request<{ material: MaterialRow; atomic: PbCatalogAtomic }>(`/materials/${encodeURIComponent(id)}/promote`, {
+      method: "POST", body: JSON.stringify(input),
+    }),
+
   /** Warehouse → truck. The from side is always the warehouse (Kyle's rule). */
   transferStock: (input: { itemId: string; qty: number; toTruckId: string; reason?: string | null }) =>
     request<StockMovementView>("/inventory/transfer", { method: "POST", body: JSON.stringify(input) }),

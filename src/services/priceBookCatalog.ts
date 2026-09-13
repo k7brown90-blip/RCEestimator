@@ -120,12 +120,32 @@ const PRICING_FIELDS: ReadonlySet<string> = new Set([
 
 export type AtomicPatch = Partial<Record<EditableField, string | number | null>>;
 
-export async function updateAtomic(
+/** The write side of an update: the row patch and its edit-trail rows, ready for
+ * `tx.priceBookAtomic.update` + `tx.priceBookEdit.createMany`. */
+export interface AtomicUpdatePlan {
+  data: Record<string, unknown>;
+  audits: Array<{ field: string; oldValue: string | null; newValue: string | null }>;
+}
+
+export type AtomicUpdatePlanResult =
+  | { ok: true; noop: true; atomic: unknown }
+  | { ok: true; noop: false; plan: AtomicUpdatePlan }
+  | { ok: false; reason: string };
+
+/**
+ * All of `updateAtomic`'s guards and pricing recomputation, with no write. Split out so a caller
+ * that already holds an open transaction (the price-refresh cascade, priceBookRefresh.ts, which
+ * must update a component and every assembly containing it atomically) can build the identical
+ * plan and apply it inside ITS OWN transaction — a Prisma interactive-transaction client cannot
+ * itself open a nested `$transaction`, so `updateAtomic` opening one internally cannot be reused
+ * as-is from inside another. `updateAtomic` below is unchanged in behavior: build the plan, then
+ * apply it in one `$transaction`, exactly as before this split.
+ */
+export async function planAtomicUpdate(
   prisma: PrismaClient,
   itemId: string,
   patch: AtomicPatch,
-  editedBy: string,
-): Promise<{ ok: true; atomic: unknown } | { ok: false; reason: string }> {
+): Promise<AtomicUpdatePlanResult> {
   const existing = await prisma.priceBookAtomic.findUnique({ where: { itemId } });
   if (!existing) return { ok: false, reason: `Item ${itemId} not found.` };
 
@@ -195,7 +215,7 @@ export async function updateAtomic(
     data[field] = next;
     audits.push({ field, oldValue: prev === null ? null : String(prev), newValue: next === null ? null : String(next) });
   }
-  if (audits.length === 0) return { ok: true, atomic: existing };
+  if (audits.length === 0) return { ok: true, noop: true, atomic: existing };
 
   // Editing hours on a row with no unit basis (in-app items created before the
   // 2026-08-30 fix): heal the basis so laborHoursFor can read what was typed.
@@ -230,13 +250,41 @@ export async function updateAtomic(
     }
   }
 
-  const atomic = await prisma.$transaction(async (tx) => {
-    const updated = await tx.priceBookAtomic.update({ where: { itemId }, data });
-    await tx.priceBookEdit.createMany({
-      data: audits.map((a) => ({ itemId, ...a, editedBy })),
-    });
-    return updated;
+  return { ok: true, noop: false, plan: { data, audits } };
+}
+
+/**
+ * Apply a plan built by `planAtomicUpdate` — the row update plus its `PriceBookEdit` rows — using
+ * whatever client the caller passes (a plain `PrismaClient`, or a `Prisma.TransactionClient` when
+ * this write must be atomic with other writes the caller is making, e.g. the price-refresh
+ * cascade). Does not open a transaction of its own; the caller decides that scope.
+ */
+export async function applyAtomicUpdatePlan(
+  tx: PrismaClient,
+  itemId: string,
+  plan: AtomicUpdatePlan,
+  editedBy: string,
+): Promise<unknown> {
+  const updated = await tx.priceBookAtomic.update({ where: { itemId }, data: plan.data });
+  await tx.priceBookEdit.createMany({
+    data: plan.audits.map((a) => ({ itemId, ...a, editedBy })),
   });
+  return updated;
+}
+
+export async function updateAtomic(
+  prisma: PrismaClient,
+  itemId: string,
+  patch: AtomicPatch,
+  editedBy: string,
+): Promise<{ ok: true; atomic: unknown } | { ok: false; reason: string }> {
+  const planResult = await planAtomicUpdate(prisma, itemId, patch);
+  if (!planResult.ok) return planResult;
+  if (planResult.noop) return { ok: true, atomic: planResult.atomic };
+
+  const atomic = await prisma.$transaction(async (tx) =>
+    applyAtomicUpdatePlan(tx as unknown as PrismaClient, itemId, planResult.plan, editedBy),
+  );
   return { ok: true, atomic };
 }
 

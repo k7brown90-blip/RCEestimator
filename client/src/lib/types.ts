@@ -1288,6 +1288,39 @@ export type ToolView = {
 export type ToolMovementView = { id: string; toolId: string; fromLocationKey: string; toLocationKey: string; actor: string; reason: string | null; at: string };
 export type ToolDetail = ToolView & { movements: ToolMovementView[] };
 
+// ─── The material database (2026-09-12, barcode/materials plan Unit 2/6) ────
+// A Material is a purchasable PRODUCT as a supplier sells it (a scan gives a price and a pack
+// size, never labour) — distinct from PriceBookAtomic, the estimating unit. See
+// src/services/materials.ts for the full design. Completion (assigned vs. unassigned) is DERIVED
+// server-side and returned as `completion` below; the client must never recompute it.
+export type MaterialRow = {
+  id: string;
+  upc: string | null;
+  sku: string | null;
+  supplier: string | null;
+  description: string | null;
+  packQty: number | null;
+  packUnit: string | null;
+  lastCost: number | null;
+  lastSeenAt: string;
+  firstSeenAt: string;
+  symbology: string | null;
+  itemId: string | null;
+};
+
+export type MaterialCompletionReason = "no_link" | "no_labor" | "no_cost";
+
+export type MaterialCompletion = {
+  assigned: boolean;
+  /** Every reason the material is unassigned, empty when `assigned` is true. Server-derived. */
+  missing: MaterialCompletionReason[];
+};
+
+export type MaterialWithCompletion = {
+  material: MaterialRow;
+  completion: MaterialCompletion;
+};
+
 /** The book, picker-shaped (from /inventory/items). */
 export type InventoryItem = {
   itemId: string;

@@ -5,6 +5,8 @@ import { getNextDaySchedule } from "./services/schedule";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { sendPendingSupplierEmails } from "./services/supplierEmail";
 import { generateInspectionRenewalLeads, generateUpgradeFollowUpLeads } from "./services/inspectionRetention";
+import { deleteExpiredObservations } from "./services/materialPriceObservations";
+import { runMonthlyPriceRefresh } from "./services/priceBookRefresh";
 import { sendVisitReminders } from "./services/visitConfirmations";
 import { prisma } from "./lib/prisma";
 import { logSystemEvent } from "./services/systemEvents";
@@ -254,6 +256,17 @@ async function startServer(): Promise<void> {
       console.error("[Cron] Estimate expiry sweep failed:", err);
     }
 
+    // ── Observed-price retention, hard 90-day delete (2026-09-12 barcode/materials plan Unit
+    //    4) — "90 days is enough to keep tabs on items that are high use." No rollup: the PO
+    //    lines, receipts and issued estimates a row was derived from already keep that record,
+    //    so this is a cache eviction, not data loss.
+    try {
+      const r = await deleteExpiredObservations(prisma);
+      if (r.deleted > 0) console.log(`[Cron] Deleted ${r.deleted} price observation(s) past the 90-day retention window.`);
+    } catch (err) {
+      console.error("[Cron] Price observation retention sweep failed:", err);
+    }
+
     // ── Quarterly credential drill (review: "single-credential lifelines") ──
     // First morning of each quarter: exercise the Google Calendar token and
     // the Gmail token, and tell Kyle the result. Both fail silently otherwise.
@@ -283,7 +296,49 @@ async function startServer(): Promise<void> {
         { calendarOk, emailed, calendarErr });
     }
   }, { timezone: "America/Chicago" });
-  console.log("[Cron] Housekeeping scheduled for 8:30 AM CT daily (stale-visit sweep; credential drill on quarter days).");
+  console.log("[Cron] Housekeeping scheduled for 8:30 AM CT daily (stale-visit sweep; price observation retention; credential drill on quarter days).");
+
+  // 9:00 AM CT on the 1st of each month — the observed-price refresh (2026-09-12 barcode/materials
+  // plan Unit 5). Kyle: "Automatic as in it will review and give me a monthly proposal that I
+  // review." THIS JOB NEVER WRITES A PRICE — runMonthlyPriceRefresh only ingests confirmed
+  // receipts into MaterialPriceObservation (the table is not warm on its own) and reads back a
+  // proposal; PriceBookAtomic.companyCost is written ONLY when Kyle accepts a line in the CRM
+  // (POST /price-book/refresh/accept, which also cascades into any assembly using that item).
+  // This cron's entire job is to make sure a proposal is ready and to tell Kyle it's waiting —
+  // never to act on it.
+  cron.schedule("0 9 1 * *", async () => {
+    console.log("[Cron] Running monthly observed-price refresh...");
+    try {
+      const { ingest, proposal } = await runMonthlyPriceRefresh(prisma);
+      const changedLines = proposal.lines.filter((l) => l.changed);
+      console.log(
+        `[Cron] Price refresh: ingested ${ingest.receiptsIngested} receipt(s) (${ingest.observationsCreated} observation(s)); ` +
+          `${proposal.lines.length} item/supplier candidate(s), ${changedLines.length} with a proposed change, ` +
+          `${proposal.skippedAssemblyItemIds.length} assembly itemId(s) skipped.`,
+      );
+      if (changedLines.length > 0) {
+        const windowDaysUsed = Math.round((proposal.windowEnd.getTime() - proposal.windowStart.getTime()) / 86_400_000);
+        const body = [
+          `The monthly price-observation refresh found ${changedLines.length} candidate price change(s) from the last ${windowDaysUsed} days of receipts.`,
+          "Nothing has been changed — review and accept each one in the CRM's price book.",
+          "",
+          ...changedLines.slice(0, 25).map((l) => {
+            const assemblyNote = l.affectedAssemblies.length > 0
+              ? ` — moves ${l.affectedAssemblies.length} assembly(ies)`
+              : "";
+            return `${l.itemId} (${l.supplierName}): ${l.currentCompanyCost ?? "no price yet"} -> ${l.candidateUnitCost} ` +
+              `[${l.observationCount} obs, ${l.matchMethod}]${assemblyNote}`;
+          }),
+        ].join("\n");
+        await sendKyleNotificationEmail("Monthly price-book proposal ready", body).catch((err) => {
+          console.error("[Cron] Price refresh notification email failed:", err);
+        });
+      }
+    } catch (err) {
+      console.error("[Cron] Monthly price refresh failed:", err);
+    }
+  }, { timezone: "America/Chicago" });
+  console.log("[Cron] Monthly observed-price refresh scheduled for 9:00 AM CT on the 1st (proposes only — never writes a price).");
 
   // Every 10 minutes — email bounce watcher (Kyle, 2026-09-09: "My emails are not getting to
   // the clients" / "very few are actually getting through, this is priority number one").

@@ -23,7 +23,7 @@ import { PageHeader } from "../components/PageHeader";
 import { LandingPanel } from "../components/LandingPanel";
 import { PO_PURPOSE_LABEL, PoStatusPill } from "../components/PurchaseOrders";
 import { api } from "../lib/api";
-import type { InventoryItem, InventoryOverview, InventoryTruck, StockLevelView, StockMovementView, StockRequestView, ToolCondition, ToolView } from "../lib/types";
+import type { InventoryItem, InventoryOverview, InventoryTruck, MaterialCompletionReason, MaterialRow, MaterialWithCompletion, StockLevelView, StockMovementView, StockRequestView, ToolCondition, ToolView } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
 const PAGE_SIZE = 12;
@@ -98,6 +98,7 @@ export function InventoryPage() {
         <>
           <PosToLand pos={data.unlandedPos} />
           <RestockRequests requests={data.openRequests} />
+          <MaterialsSection />
           <LocationCard
             title="Warehouse (home)"
             subtitle="Purchases with purpose Warehouse land here. Warehouse items only move out as transfers to truck stock."
@@ -206,6 +207,269 @@ function RequestRow({ row }: { row: StockRequestView }) {
       {mode === "decline" && <ReasonRow label="Decline" busy={decline.isPending} onSubmit={(reason) => decline.mutate(reason)} onCancel={() => setMode("view")} />}
       {error && <span className="w-full text-xs text-red-600">{error}</span>}
     </li>
+  );
+}
+
+// ─── The material database (2026-09-12, barcode/materials plan Unit 6) ───────
+//
+// Kyle: "I want a materials data base in the inventory tab... an assigned list (completed with
+// cost and labor units) and unassigned (not completed or unfilled information)." Completion is
+// derived server-side (services/materials.ts materialCompletion) and returned as `completion` on
+// every row — this file only ever reads that field, never recomputes it. The unassigned list
+// names WHICH piece is missing so it reads as an actionable worklist, not a shrug.
+
+const MISSING_LABEL: Record<MaterialCompletionReason, string> = {
+  no_link: "no link to a price book item",
+  no_labor: "no labor on the linked item",
+  no_cost: "no cost",
+};
+
+/** An assembly is never a purchasable thing and must never be offered as a material's link
+ * target. The real guard is server-side (assertNotAssembly, services/priceBookAssembly.ts); this
+ * just keeps one out of the picker's results, matching the same client-side convention already
+ * used for the assembly-component picker in PriceBookCatalogPage.tsx. */
+const isAssemblyRowType = (rowType: string | null | undefined) => (rowType ?? "").toUpperCase() === "ASSEMBLY";
+
+function useMaterialsRefresh() {
+  const queryClient = useQueryClient();
+  return () => {
+    for (const key of [["materials"], ["materials-unassigned"]]) {
+      void queryClient.invalidateQueries({ queryKey: key });
+    }
+  };
+}
+
+function materialLabel(m: MaterialRow): string {
+  return m.description || m.sku || m.upc || "(no description)";
+}
+
+function packText(m: MaterialRow): string {
+  if (m.packQty == null) return "";
+  return `pack of ${qtyText(m.packQty)}${m.packUnit ? ` ${m.packUnit}` : ""}`;
+}
+
+/** Package price ÷ packQty — the each-price that compares to the book's per-each/per-foot
+ * figure. Display mirror of the server's perUnitCostFromPack (services/materials.ts); this is a
+ * unit conversion for display, not a completion decision, so mirroring it here is fine — the same
+ * distinction the codebase already draws for the assembly-cost preview in PriceBookCatalogPage. */
+function perUnitCost(m: MaterialRow): number | null {
+  if (m.lastCost == null) return null;
+  if (m.packQty != null && m.packQty > 0) return m.lastCost / m.packQty;
+  return m.lastCost;
+}
+
+function MaterialsSection() {
+  const { data: unassigned = [], isLoading: loadingUnassigned } = useQuery({ queryKey: ["materials-unassigned"], queryFn: api.unassignedMaterials });
+  const { data: all = [], isLoading: loadingAll } = useQuery({ queryKey: ["materials"], queryFn: api.materials });
+  const assigned = all.filter((m) => m.completion.assigned);
+  return (
+    <>
+      <UnassignedMaterialsCard rows={unassigned} isLoading={loadingUnassigned} />
+      <AssignedMaterialsCard rows={assigned} isLoading={loadingAll} />
+    </>
+  );
+}
+
+function UnassignedMaterialsCard({ rows, isLoading }: { rows: MaterialWithCompletion[]; isLoading: boolean }) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? rows : rows.slice(0, PAGE_SIZE);
+  return (
+    <section className="card p-4">
+      <h2 className="text-lg font-semibold">Materials to complete ({rows.length})</h2>
+      <p className="mb-2 text-xs text-rce-muted">Scanned or entered but not yet quotable. Link joins an existing price book item that already carries labor; Promote creates a brand new one.</p>
+      {isLoading && <p className="text-sm text-rce-muted">Loading…</p>}
+      {!isLoading && rows.length === 0 && <p className="text-sm text-rce-muted">Nothing waiting — every material has a cost and labor units.</p>}
+      <ul className="space-y-1">
+        {visible.map((r) => <UnassignedMaterialRow key={r.material.id} row={r} />)}
+      </ul>
+      <ShowMore total={rows.length} shown={visible.length} onMore={() => setShowAll(true)} />
+    </section>
+  );
+}
+
+function UnassignedMaterialRow({ row }: { row: MaterialWithCompletion }) {
+  const refresh = useMaterialsRefresh();
+  const { material, completion } = row;
+  const [mode, setMode] = useState<"view" | "link" | "promote" | "cost">("view");
+  const [error, setError] = useState<string | null>(null);
+  const onError = (err: unknown) => setError((err as Error).message);
+  const done = () => { setError(null); setMode("view"); refresh(); };
+
+  const link = useMutation({ mutationFn: (itemId: string) => api.linkMaterial(material.id, itemId), onSuccess: done, onError });
+  const setCost = useMutation({ mutationFn: (cost: number) => api.updateMaterialCost(material.id, cost), onSuccess: done, onError });
+
+  return (
+    <li className="rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-1.5 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="min-w-0">
+          <span className="font-medium">{materialLabel(material)}</span>
+          {material.upc && <span className="text-xs text-rce-muted"> · UPC {material.upc}</span>}
+          {material.sku && <span className="text-xs text-rce-muted"> · SKU {material.sku}{material.supplier ? ` (${material.supplier})` : ""}</span>}
+          {packText(material) && <span className="text-xs text-rce-muted"> · {packText(material)}</span>}
+          <span className="block text-xs">
+            {completion.missing.map((reason) => (
+              <span key={reason} className="mr-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">{MISSING_LABEL[reason]}</span>
+            ))}
+          </span>
+        </span>
+        {mode === "view" && (
+          <span className="flex flex-wrap gap-2 text-xs">
+            <button type="button" className="text-rce-accent" onClick={() => setMode("link")}>Link</button>
+            {!material.itemId && <button type="button" className="text-rce-accent" onClick={() => setMode("promote")}>Promote</button>}
+            {completion.missing.includes("no_cost") && <button type="button" className="text-rce-accent" onClick={() => setMode("cost")}>Set cost</button>}
+          </span>
+        )}
+      </div>
+      {mode === "link" && <LinkPicker busy={link.isPending} onPick={(itemId) => link.mutate(itemId)} onCancel={() => setMode("view")} />}
+      {mode === "promote" && <PromoteForm material={material} onDone={done} onCancel={() => setMode("view")} />}
+      {mode === "cost" && <SetCostRow current={material.lastCost} busy={setCost.isPending} onSubmit={(v) => setCost.mutate(v)} onCancel={() => setMode("view")} />}
+      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+    </li>
+  );
+}
+
+function SetCostRow({ current, busy, onSubmit, onCancel }: { current: number | null; busy: boolean; onSubmit: (v: number) => void; onCancel: () => void }) {
+  const [value, setValue] = useState(current != null ? String(current) : "");
+  const valid = value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0;
+  return (
+    <div className="mt-1 inline-flex flex-wrap items-center gap-1 text-xs">
+      <span>Package price $</span>
+      <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} autoFocus />
+      <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!valid || busy} onClick={() => onSubmit(Number(value))}>Save</button>
+      <button type="button" className="text-rce-muted" onClick={onCancel}>cancel</button>
+    </div>
+  );
+}
+
+function LinkPicker({ busy, onPick, onCancel }: { busy: boolean; onPick: (itemId: string) => void; onCancel: () => void }) {
+  const [q, setQ] = useState("");
+  const active = q.trim().length >= 2 ? q.trim() : "";
+  const { data, isFetching } = useQuery({
+    queryKey: ["materials-link-picker", active],
+    queryFn: () => api.pbCatalogItems({ search: active }),
+    enabled: Boolean(active),
+  });
+  const results = (data?.atomics ?? []).filter((a) => !isAssemblyRowType(a.rowType)).slice(0, 20);
+  return (
+    <div className="mt-1 rounded-md bg-white p-2 text-xs">
+      <div className="flex items-center gap-1">
+        <input className="field w-64 max-w-full px-1 py-0.5 text-xs" placeholder="Search the book (item id or description)…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
+        <button type="button" className="text-rce-muted" onClick={onCancel}>cancel</button>
+      </div>
+      {isFetching && <p className="mt-1 text-rce-muted">Searching…</p>}
+      {active && !isFetching && results.length === 0 && <p className="mt-1 text-rce-muted">No matching item — try Promote instead.</p>}
+      {results.length > 0 && (
+        <ul className="mt-1 max-h-48 overflow-auto">
+          {results.map((a) => (
+            <li key={a.itemId}>
+              <button type="button" className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left hover:bg-rce-bg" disabled={busy} onClick={() => onPick(a.itemId)}>
+                <span><span className="font-medium">{a.itemId}</span> {a.description}</span>
+                <span className="text-rce-muted">{a.laborNormal != null || a.laborDifficult != null || a.laborVeryDifficult != null ? "has labor" : "no labor yet"}{a.companyCost != null ? ` · ${money(a.companyCost)}` : ""}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function PromoteForm({ material, onDone, onCancel }: { material: MaterialRow; onDone: () => void; onCancel: () => void }) {
+  const { data: catData } = useQuery({ queryKey: ["materials-pb-categories"], queryFn: api.pbCatalogCategories });
+  const categories = (catData?.categories ?? []).map((c) => c.name);
+  const derivedCost = material.lastCost != null && material.packQty != null && material.packQty > 0
+    ? Math.round((material.lastCost / material.packQty) * 100) / 100
+    : material.lastCost;
+  const [form, setForm] = useState({
+    description: material.description ?? "",
+    category: "",
+    rowType: "MATERIAL + LABOR",
+    unitLabel: material.packUnit ?? "",
+    companyCost: derivedCost != null ? String(derivedCost) : "",
+    laborNormal: "",
+    laborDifficult: "",
+    laborVeryDifficult: "",
+  });
+  const [error, setError] = useState<string | null>(null);
+  const promote = useMutation({
+    mutationFn: () => api.promoteMaterial(material.id, {
+      description: form.description.trim(),
+      category: form.category.trim(),
+      rowType: form.rowType,
+      unitLabel: form.unitLabel.trim() || null,
+      companyCost: form.companyCost.trim() === "" ? null : Number(form.companyCost),
+      laborNormal: form.laborNormal.trim() === "" ? null : Number(form.laborNormal),
+      laborDifficult: form.laborDifficult.trim() === "" ? null : Number(form.laborDifficult),
+      laborVeryDifficult: form.laborVeryDifficult.trim() === "" ? null : Number(form.laborVeryDifficult),
+    }),
+    onSuccess: onDone,
+    onError: (err) => setError((err as Error).message),
+  });
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const canSave = form.description.trim() !== "" && form.category.trim() !== "" && !promote.isPending;
+  return (
+    <div className="mt-1 rounded-md bg-white p-2 text-xs">
+      <div className="flex flex-wrap items-center gap-1">
+        <input className="field w-52 px-1 py-0.5 text-xs" placeholder="Description" value={form.description} onChange={set("description")} autoFocus />
+        <input className="field w-36 px-1 py-0.5 text-xs" placeholder="Category" list="materials-pb-cat-list" value={form.category} onChange={set("category")} />
+        <datalist id="materials-pb-cat-list">{categories.map((c) => <option key={c} value={c} />)}</datalist>
+        <input className="field w-24 px-1 py-0.5 text-xs" placeholder="Unit (e.g. ea)" value={form.unitLabel} onChange={set("unitLabel")} />
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-1">
+        <span>Cost/ea $</span>
+        <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" value={form.companyCost} onChange={set("companyCost")} />
+        <span>Hrs normal</span>
+        <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={form.laborNormal} onChange={set("laborNormal")} />
+        <span>difficult</span>
+        <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={form.laborDifficult} onChange={set("laborDifficult")} />
+        <span>very diff.</span>
+        <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={form.laborVeryDifficult} onChange={set("laborVeryDifficult")} />
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!canSave} onClick={() => promote.mutate()}>{promote.isPending ? "Creating…" : "Promote"}</button>
+        <button type="button" className="text-rce-muted" onClick={onCancel}>cancel</button>
+      </div>
+      {error && <p className="mt-1 text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+function AssignedMaterialsCard({ rows, isLoading }: { rows: MaterialWithCompletion[]; isLoading: boolean }) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? rows : rows.slice(0, PAGE_SIZE);
+  return (
+    <section className="card p-4">
+      <h2 className="text-lg font-semibold">Materials ({rows.length} assigned)</h2>
+      <p className="mb-2 text-xs text-rce-muted">Cost and labor units both present — ready to quote. Cost/unit is the pack price divided by pack size, the figure that compares to the book.</p>
+      {isLoading && <p className="text-sm text-rce-muted">Loading…</p>}
+      {!isLoading && rows.length === 0 && <p className="text-sm text-rce-muted">Nothing assigned yet.</p>}
+      {rows.length > 0 && (
+        <div className="mt-2 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-left text-[11px] uppercase tracking-wide text-rce-soft">
+            <tr><th className="pr-2">Material</th><th className="pr-2">UPC</th><th className="pr-2">SKU</th><th className="pr-2">Pack</th><th className="pr-2">Linked item</th><th className="pr-2 text-right">Cost/unit</th></tr>
+          </thead>
+          <tbody>
+            {visible.map((r) => <AssignedMaterialRow key={r.material.id} material={r.material} />)}
+          </tbody>
+        </table>
+        </div>
+      )}
+      <ShowMore total={rows.length} shown={visible.length} onMore={() => setShowAll(true)} />
+    </section>
+  );
+}
+
+function AssignedMaterialRow({ material }: { material: MaterialRow }) {
+  return (
+    <tr className="border-t border-rce-border/60">
+      <td className="py-1 pr-2">{materialLabel(material)}</td>
+      <td className="py-1 pr-2 tabular-nums text-xs text-rce-muted">{material.upc ?? "—"}</td>
+      <td className="py-1 pr-2 tabular-nums text-xs text-rce-muted">{material.sku ?? "—"}{material.supplier ? ` (${material.supplier})` : ""}</td>
+      <td className="py-1 pr-2 text-xs text-rce-muted">{packText(material) || "—"}</td>
+      <td className="py-1 pr-2 text-xs">{material.itemId}</td>
+      <td className="py-1 pr-2 text-right tabular-nums">{unitMoney(perUnitCost(material))}</td>
+    </tr>
   );
 }
 

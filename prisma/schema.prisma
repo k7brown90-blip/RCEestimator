@@ -2237,9 +2237,62 @@ model Material {
   // both link and promote (services/materials.ts), same as StockLevel's guard in inventory.ts.
   itemId      String?
 
+  priceObservations MaterialPriceObservation[]
+
   @@unique([supplier, sku])
   @@index([itemId])
   @@index([supplier])
+}
+
+// ── Observed prices, 90-day working set (2026-09-12, barcode/materials plan Unit 4) ──────────
+//
+// "One row per price actually paid." This is NOT a price history archive. Kyle, 2026-09-12,
+// rejecting a rollup he was offered: "I don't see a reason in checking back on pricing year after
+// year. We will have the estimates on file and P.O. history that can be looked at for that
+// information we do not need a duplicate of price history. 90 days is enough to keep tabs on
+// items that are high use." PurchaseOrderLine.unitCost, Receipt.lineItems and the issued estimates
+// already persist what was actually paid and quoted, so a row aging out here loses nothing
+// unrecoverable — services/materialPriceObservations.ts `deleteExpiredObservations` hard-deletes
+// anything older than 90 days on a schedule. No rollup, no summary table, no archive — do not add
+// one; that reopens a question Kyle already closed.
+//
+// `unitCost` is ALREADY divided by packQty (services/materials.ts `perUnitCostFromPack` — reused,
+// never reimplemented) — the per-unit figure, comparable across pack sizes, never the package
+// price actually printed on the receipt or PO.
+//
+// `matchMethod` says how confidently the row was attached to `materialId`. An exact-code match and
+// a substring guess are not equally trustworthy, and Unit 5's monthly proposal must be able to
+// tell them apart: "barcode" (Unit 3's field scan) and "sku" (a receipt SKU verified against the
+// material's own supplier — see recordObservationsForReceipt) rank equally, both above
+// "name_fuzzy" (the pre-existing bidirectional substring match, kept as the fallback for a
+// material with no code yet); "manual" is Kyle's own entry and ranks above all three.
+model MaterialPriceObservation {
+  id         String   @id @default(cuid())
+  materialId String
+  // Denormalised copy of Material.itemId AT OBSERVATION TIME — Unit 5's proposal groups candidate
+  // prices by it. No FK, same reasoning as Material.itemId itself (schema comment above): the book
+  // is editable and a material's link can change after the fact without rewriting history.
+  itemId     String?
+  // The vendor/supplier this price was actually paid to (the receipt's vendor, or the PO's
+  // supplier) — not necessarily identical to today's Material.supplier if the material's usual
+  // source moved since.
+  supplier   String?
+  observedAt DateTime
+  qty        Float
+  unitCost   Float
+  source     String // receipt_line | po_line | manual
+  matchMethod String // barcode | sku | name_fuzzy | manual
+  // Provenance — at most one of these is set, matching `source`. No FK: the same
+  // "provenance, not a relation" precedent as Material.itemId / PurchaseOrderLine.itemId above.
+  receiptId           String?
+  purchaseOrderLineId String?
+  createdAt           DateTime @default(now())
+  material            Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@index([materialId])
+  @@index([itemId])
+  @@index([observedAt])
+  @@index([receiptId])
 }
 
 model PriceBookAssembly {

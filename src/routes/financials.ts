@@ -28,6 +28,7 @@ import { readBalances } from "../services/cardSpend";
 import { TreasuryError, executeSweep, readSweep, stripeFeeRows } from "../services/treasury";
 import type { StripeFeeRow } from "../services/treasury";
 import { createLedgerReplay } from "../services/inventory";
+import { recordObservationsForReceipt, summarizeObservationsByMaterial } from "../services/materialPriceObservations";
 import {
   EXCLUDE_TEST_ACCOUNT,
   EXCLUDE_TEST_CARD_SPEND,
@@ -727,7 +728,7 @@ financialsRouter.get("/receipt-insights", asyncHandler(async (req, res) => {
       receivedAt: { gte: new Date(`${year}-01-01`), lt: new Date(`${year + 1}-01-01`) },
       jobId: { notIn: await testVisitIds(prisma) },
     },
-    select: { lineItems: true, vendor: true },
+    select: { id: true, lineItems: true, vendor: true, receivedAt: true },
   });
 
   interface Seen { name: string; count: number; totalQty: number; unitCosts: number[]; vendors: Set<string> }
@@ -751,21 +752,36 @@ financialsRouter.get("/receipt-insights", asyncHandler(async (req, res) => {
     .sort((a, b) => b.count - a.count)
     .slice(0, 25);
 
-  // Price-drift check: receipt items whose name matches a price-book atomic's
-  // description, compared against that item's stored supplier cost.
-  // Contains-match both directions — "12-2 Romex 250ft" should find "Romex 12-2".
-  const [atomics, supplierPrices] = await Promise.all([
-    prisma.priceBookAtomic.findMany({
-      where: { description: { not: null } },
-      select: { itemId: true, description: true },
-      take: 3000,
-    }),
-    prisma.priceBookSupplierPrice.findMany({
-      where: { unitCost: { not: null } },
-      select: { itemId: true, unitCost: true, supplier: { select: { name: true } } },
-      take: 5000,
-    }),
-  ]);
+  // ── Price-drift check (2026-09-12, barcode/materials plan Unit 4) ──────────────────────────
+  //
+  // Used to re-derive a bidirectional substring match between the receipt line's raw name and a
+  // price-book atomic's description, per request, persisting nothing. Now: every confirmed
+  // receipt in range is ingested into `MaterialPriceObservation` (services/materialPriceObservations.ts;
+  // idempotent — re-ingesting a receipt replaces its own rows rather than duplicating them), which
+  // matches by SKU-against-the-material's-own-supplier when the receipt line carries one, and
+  // still degrades to the same bidirectional-substring name match for a material with no code yet
+  // (matchMethod "name_fuzzy") — so nothing this card showed before stops showing. The drift
+  // comparison then reads those observations back rather than recomputing the match here.
+  await Promise.all(receipts.map((r) => recordObservationsForReceipt(prisma, r)));
+
+  const observations = await prisma.materialPriceObservation.findMany({
+    where: { receiptId: { in: receipts.map((r) => r.id) } },
+    select: { materialId: true, itemId: true, supplier: true, unitCost: true, matchMethod: true, material: { select: { description: true } } },
+  });
+  const materialDescriptions = new Map(observations.map((o) => [o.materialId, o.material.description]));
+  const summaries = summarizeObservationsByMaterial(observations);
+
+  const itemIds = [...new Set(summaries.map((s) => s.itemId).filter((id): id is string => id !== null))];
+  const [atomics, supplierPrices] = itemIds.length
+    ? await Promise.all([
+        prisma.priceBookAtomic.findMany({ where: { itemId: { in: itemIds } }, select: { itemId: true, description: true } }),
+        prisma.priceBookSupplierPrice.findMany({
+          where: { itemId: { in: itemIds }, unitCost: { not: null } },
+          select: { itemId: true, unitCost: true, supplier: { select: { name: true } } },
+        }),
+      ])
+    : [[], []];
+  const descriptionByItem = new Map(atomics.map((a) => [a.itemId, a.description]));
   const priceByItem = new Map<string, { unitCost: number; supplier: string }>();
   for (const p of supplierPrices) {
     if (!priceByItem.has(p.itemId)) priceByItem.set(p.itemId, { unitCost: p.unitCost!, supplier: p.supplier.name });
@@ -773,31 +789,25 @@ financialsRouter.get("/receipt-insights", asyncHandler(async (req, res) => {
 
   const drift: {
     receiptItem: string; bookItem: string; supplier: string;
-    bookCost: number; receiptAvgCost: number; driftPct: number;
+    bookCost: number; receiptAvgCost: number; driftPct: number; matchMethod: string;
   }[] = [];
-  for (const item of top) {
-    if (item.unitCosts.length === 0) continue;
-    const avg = item.unitCosts.reduce((s, c) => s + c, 0) / item.unitCosts.length;
-    const norm = item.name.toLowerCase();
-    const match = atomics.find((a) => {
-      const bookNorm = a.description!.toLowerCase();
-      return bookNorm.includes(norm) || norm.includes(bookNorm);
+  for (const summary of summaries) {
+    if (!summary.itemId) continue; // no link to the price book yet — nothing to compare against
+    const price = priceByItem.get(summary.itemId);
+    if (!price || !(price.unitCost > 0)) continue;
+    const pct = Math.round(((summary.avgUnitCost - price.unitCost) / price.unitCost) * 1000) / 10;
+    if (Math.abs(pct) < 5) continue;
+    drift.push({
+      receiptItem: materialDescriptions.get(summary.materialId) ?? "(unnamed material)",
+      bookItem: descriptionByItem.get(summary.itemId) ?? summary.itemId,
+      supplier: price.supplier,
+      bookCost: price.unitCost,
+      receiptAvgCost: summary.avgUnitCost,
+      driftPct: pct,
+      matchMethod: summary.matchMethod,
     });
-    const price = match ? priceByItem.get(match.itemId) : undefined;
-    if (match && price && price.unitCost > 0) {
-      const pct = Math.round(((avg - price.unitCost) / price.unitCost) * 1000) / 10;
-      if (Math.abs(pct) >= 5) {
-        drift.push({
-          receiptItem: item.name,
-          bookItem: match.description!,
-          supplier: price.supplier,
-          bookCost: price.unitCost,
-          receiptAvgCost: Math.round(avg * 100) / 100,
-          driftPct: pct,
-        });
-      }
-    }
   }
+  drift.sort((a, b) => Math.abs(b.driftPct) - Math.abs(a.driftPct));
 
   res.json({
     year,
@@ -811,7 +821,7 @@ financialsRouter.get("/receipt-insights", asyncHandler(async (req, res) => {
         : null,
       vendors: [...t.vendors],
     })),
-    priceDrift: drift.sort((a, b) => Math.abs(b.driftPct) - Math.abs(a.driftPct)),
+    priceDrift: drift,
   });
 }));
 

@@ -13,7 +13,13 @@ export interface ParsedReceipt {
   // permit and inspection added 2026-09-11 — job FEES, the third term in the
   // commission math (job profit = revenue − material − fees).
   category: "materials" | "gas" | "maintenance" | "overhead" | "permit" | "inspection";
-  lineItems: Array<{ name: string; qty: number | null; unit: string | null; unitCost: number | null }>;
+  // `sku` added 2026-09-12 (barcode/materials plan Unit 4). Home Depot prints the SKU beside
+  // every line, and it's exactly what Kyle scans or types to buy — capturing it turns
+  // receipt-to-material matching from a name substring guess into an exact key lookup, scoped
+  // by the receipt's vendor (services/materialPriceObservations.ts). Nullable and additive: a
+  // receipt parsed before this change, or one where Vision can't read the SKU, still produces a
+  // usable line through the existing name-matching path.
+  lineItems: Array<{ name: string; qty: number | null; unit: string | null; unitCost: number | null; sku?: string | null }>;
 }
 
 const VISION_PROMPT = `You are a receipt-processing assistant for an electrical contractor.
@@ -23,8 +29,11 @@ Extract the following from the receipt image and reply with ONLY a JSON object (
   "total": number | null,           // grand total incl. tax
   "purchaseDate": string | null,    // YYYY-MM-DD if visible
   "category": "materials" | "gas" | "maintenance" | "overhead" | "permit" | "inspection",
-  "lineItems": [{ "name": string, "qty": number | null, "unit": string | null, "unitCost": number | null }]
+  "lineItems": [{ "name": string, "qty": number | null, "unit": string | null, "unitCost": number | null, "sku": string | null }]
 }
+Most box-store receipts (Home Depot, Lowe's) print a SKU or item/model number beside each line —
+capture it in "sku" exactly as printed (digits, may include letters) when visible; use null when
+there is none or it cannot be read reliably. Do not guess a SKU.
 Category guidance: electrical supply houses / hardware stores => "materials"; fuel stations => "gas";
 vehicle or tool service => "maintenance"; a city/county permit fee => "permit"; an electrical
 inspection fee => "inspection"; anything else => "overhead".
@@ -100,6 +109,7 @@ export async function parseReceiptImage(imageBuffer: Buffer, mimeType: string): 
               qty: typeof li.qty === "number" ? li.qty : null,
               unit: typeof li.unit === "string" ? li.unit : null,
               unitCost: typeof li.unitCost === "number" ? li.unitCost : null,
+              sku: typeof (li as { sku?: unknown }).sku === "string" ? (li as { sku: string }).sku : null,
             }))
         : [],
     };

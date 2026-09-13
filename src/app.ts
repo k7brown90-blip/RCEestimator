@@ -68,6 +68,7 @@ import {
   setLaborOverride,
   LABOR_TIERS,
 } from "./services/priceBookAssembly";
+import { acceptPriceProposalLine, runMonthlyPriceRefresh } from "./services/priceBookRefresh";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
@@ -2124,6 +2125,34 @@ app.put("/price-book/catalog/assemblies/:itemId/labor-override", asyncHandler(as
   const result = await setLaborOverride(prisma, readParam(req, "itemId"), body.tier, body.value, "human:crm-session");
   if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
   res.json({ atomic: result.atomic });
+}));
+
+// ─── OBSERVED-PRICE REFRESH (2026-09-12, barcode/materials plan Unit 5) ────────────────────
+// "Automatic as in it will review and give me a monthly proposal that I review." (Kyle,
+// 2026-09-12). GET is always a dry run — it never writes priceBookAtomic, see
+// services/priceBookRefresh.ts. POST /accept is the only write path, and only ONE line at a time,
+// on the operator's explicit say-so. Accepting writes the item's companyCost (2026-09-13 retarget
+// — Kyle's book reads companyCost, not PriceBookSupplierPrice) and cascades that change into every
+// assembly containing the item, in one transaction. Both operator-authenticated only
+// (pinAuthMiddleware, app.use above), same as every other price-book route on this page — no
+// technician access.
+
+app.get("/price-book/refresh/proposal", asyncHandler(async (req, res) => {
+  const windowDays = req.query.windowDays ? Number(req.query.windowDays) : undefined;
+  const result = await runMonthlyPriceRefresh(prisma, {
+    windowDays: windowDays && Number.isFinite(windowDays) && windowDays > 0 ? windowDays : undefined,
+  });
+  res.json(result);
+}));
+
+app.post("/price-book/refresh/accept", asyncHandler(async (req, res) => {
+  const body = z.object({
+    itemId: z.string().trim().min(1),
+    supplierName: z.string().trim().min(1),
+  }).parse(req.body ?? {});
+  const result = await acceptPriceProposalLine(prisma, body, "human:crm-session");
+  if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
+  res.json(result);
 }));
 
 // ─── DRAFTS (human path) ─────────────────────────────────────────────────────
