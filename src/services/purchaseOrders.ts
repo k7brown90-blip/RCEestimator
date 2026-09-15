@@ -319,14 +319,29 @@ export async function removePurchaseOrderLine(id: string, lineId: string, meta: 
   });
 }
 
-/** The status chain, enforced. Refusals are 409s the routes pass straight through. */
+/**
+ * The status chain, enforced. Refusals are 409s the routes pass straight through.
+ *
+ * Re-roll after every transition (Kyle, 2026-09-14, Unit 3): a receipt on a
+ * CANCELLED PO counts as job cost again (receiptCosting.ts:33-46), but nothing
+ * else recomputes the stored Visit.actualMaterialCost when a PO's status
+ * changes. This is the one caller of transitionLoaded that runs outside any
+ * transaction (global `prisma`), so it is the safe place to re-roll — unlike
+ * attachReceiptToPurchaseOrder, which calls transitionLoaded from inside its
+ * own $transaction and already re-rolls itself once that commits (below).
+ * rerollJobsMaterialCost recomputes from scratch, so re-rolling on every
+ * transition (not just cancel) is a safe no-op when nothing changed.
+ */
 export async function transitionPurchaseOrder(
   id: string,
   to: PoStatus,
   meta: { actor: string; reason?: string | null },
 ): Promise<PurchaseOrder> {
   const po = await loadPo(id);
-  return transitionLoaded(prisma, po, to, meta);
+  const updated = await transitionLoaded(prisma, po, to, meta);
+  const receipts = await prisma.receipt.findMany({ where: { purchaseOrderId: po.id }, select: { jobId: true } });
+  await rerollJobsMaterialCost(receipts.map((r) => r.jobId));
+  return updated;
 }
 
 async function transitionLoaded(

@@ -3368,6 +3368,10 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
     status: z.enum(["pending_review", "confirmed"]).optional(),
     // Kyle, 2026-09-09: attach (string) or detach (null) the PO this receipt verifies.
     purchaseOrderId: z.string().nullable().optional(),
+    // 2026-09-14 (legacy purchase close-out, Unit 4): the only correction path for a
+    // Vision year mis-parse (e.g. 2022 instead of 2026) — see receiptVision.ts's
+    // PLAUSIBLE_PURCHASE_DATE_WINDOW. Same convention as app.ts:8039's followUpDate.
+    receivedAt: z.coerce.date().optional(),
   }).parse(req.body);
 
   const id = readParam(req, "id");
@@ -3386,6 +3390,7 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
       ...(body.amount !== undefined ? { amount: body.amount } : {}),
       ...(body.lineItems !== undefined ? { lineItems: body.lineItems ? JSON.stringify(body.lineItems) : null } : {}),
       ...(body.status !== undefined ? { status: body.status } : {}),
+      ...(body.receivedAt !== undefined ? { receivedAt: body.receivedAt } : {}),
     },
     select: { id: true, jobId: true, category: true, vendor: true, amount: true, status: true },
   });
@@ -3400,7 +3405,11 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
   }
   // Kyle, 2026-09-09: a confirmed receipt, or one whose amount was corrected, goes
   // looking for the card transaction it itemizes ("photo verifies, card proves").
-  if (body.status === "confirmed" || body.amount !== undefined || body.category !== undefined) {
+  // receivedAt added 2026-09-14 (Unit 4): a date correction is exactly what lets a
+  // previously-out-of-window card transaction become reachable. matchSpendForReceipt
+  // returns null whenever the receipt is already matched or nothing is in the ±3-day
+  // window — that's a normal outcome, not an error, so it's never awaited for its result.
+  if (body.status === "confirmed" || body.amount !== undefined || body.category !== undefined || body.receivedAt !== undefined) {
     await matchSpendForReceipt(id).catch((err) => console.error("[receipts] card match failed:", err));
   }
   const after = await prisma.receipt.findUniqueOrThrow({ where: { id }, select: { purchaseOrderId: true, jobId: true } });

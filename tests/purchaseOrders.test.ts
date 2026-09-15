@@ -42,6 +42,8 @@ vi.mock("googleapis", () => {
 
 import { app } from "../src/app";
 import { createPurchaseOrder, defaultTruckId } from "../src/services/purchaseOrders";
+import { resolveMaterialCost } from "../src/services/jobCosting";
+import * as receiptCosting from "../src/services/receiptCosting";
 
 const newId = () => crypto.randomUUID().replaceAll("-", "");
 const jpg = Buffer.from("ffd8ffe000104a464946", "hex");
@@ -166,6 +168,47 @@ describe("status chain", () => {
   });
 });
 
+describe("cancelling a PO re-rolls the job's material cost (Unit 3, 2026-09-14)", () => {
+  it("a confirmed materials receipt on a cancelled PO returns to the job's receipt rung", async () => {
+    // A dedicated job — the shared `jobId` above accumulates receipts/POs
+    // across other tests in this file and its running actualMaterialCost
+    // total would make this assertion fragile.
+    const property = await prisma.property.create({
+      data: { customerId, name: "Cancel PO House", addressLine1: "2 Purchase Ln", city: "Smyrna", state: "TN", postalCode: "37167" },
+    });
+    const visit = await prisma.visit.create({
+      data: { customerId, propertyId: property.id, mode: "onsite", purpose: "Cancel PO job", jobType: "Service", status: "in_progress", visitDate: new Date() },
+    });
+    const cancelJobId = visit.id;
+
+    const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test SiteOne", jobId: cancelJobId });
+    expect(created.status).toBe(201);
+    const poId = created.body.id as string;
+
+    const receipt = await prisma.receipt.create({
+      data: { id: newId(), jobId: cancelJobId, category: "materials", vendor: "PO-test SiteOne", amount: 381.9, status: "confirmed", source: "manual" },
+    });
+    // Attach: PO goes open → purchased, and (Build 4) the receipt drops OFF the
+    // job's receipt rung while it rides a live PO.
+    const attach = await request(app).post(`/purchase-orders/${poId}/receipts/${receipt.id}`).send({});
+    expect(attach.status).toBe(200);
+    expect(await stamped(cancelJobId)).toBe(0);
+
+    // Cancel: the PO landed nothing, so receiptCosting.ts's carve-out counts the
+    // receipt as job cost again — and transitionPurchaseOrder must re-roll the
+    // STORED figure, not just leave the READ path to honour it.
+    const cancel = await request(app).post(`/purchase-orders/${poId}/status`).send({ to: "cancelled", reason: "Receipt photo lost" });
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.status).toBe("cancelled");
+
+    expect(await stamped(cancelJobId)).toBe(381.9);
+
+    const resolved = resolveMaterialCost(null, await stamped(cancelJobId), 572.84);
+    expect(resolved.materialSource).toBe("receipts");
+    expect(resolved.materialCost).toBe(381.9);
+  });
+});
+
 describe("attaching a receipt", () => {
   it("copies the PO's job onto a jobless receipt, keeps it OFF the job's receipt rung while on the PO, moves the PO to purchased, and writes the event", async () => {
     const created = await request(app).post("/purchase-orders").send({ supplier: "Lowes", jobId });
@@ -229,6 +272,25 @@ describe("attaching a receipt", () => {
     expect(list.status).toBe(200);
     expect(list.body[0].number).toBe(job.purchaseOrders[0].number);
     expect(list.body[0].receiptCount).toBe(1);
+  });
+
+  it("re-rolls exactly once — the open→purchased hop inside the attach transaction does not also fire transitionPurchaseOrder's re-roll", async () => {
+    // attachReceiptToPurchaseOrder moves an open PO to purchased via
+    // transitionLoaded(tx, ...) directly, bypassing transitionPurchaseOrder —
+    // so the re-roll Unit 3 added there must not also run for this hop, on
+    // top of the one attachReceiptToPurchaseOrder already does after commit.
+    const spy = vi.spyOn(receiptCosting, "rerollJobsMaterialCost");
+    spy.mockClear();
+    const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test Once", jobId });
+    const poId = created.body.id as string;
+    const receipt = await prisma.receipt.create({
+      data: { id: newId(), category: "materials", vendor: "PO-test Once", amount: 42, status: "confirmed", source: "manual" },
+    });
+    const attach = await request(app).post(`/purchase-orders/${poId}/receipts/${receipt.id}`).send({});
+    expect(attach.status).toBe(200);
+    expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: poId } })).status).toBe("purchased");
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });
 
@@ -321,5 +383,83 @@ describe("the field app", () => {
     expect(res.status).toBe(200);
     expect(res.body.completed).toBe(true);
     expect(res.body.warnings.some((w: string) => /materials receipt\(s\) on this job have no PO/.test(w))).toBe(true);
+  });
+});
+
+describe("waiving a receipt off the needs-PO queue (Unit 2, legacy purchase close-out, 2026-09-14)", () => {
+  // A dedicated job, same reasoning as the cancel-reroll tests above: the shared
+  // `jobId` accumulates receipts from other tests in this file, which would make
+  // an exact actualMaterialCost assertion fragile.
+  let waiveJobId: string;
+
+  beforeAll(async () => {
+    const property = await prisma.property.create({
+      data: { customerId, name: "Waive PO House", addressLine1: "3 Purchase Ln", city: "Smyrna", state: "TN", postalCode: "37167" },
+    });
+    const visit = await prisma.visit.create({
+      data: { customerId, propertyId: property.id, mode: "onsite", purpose: "Waive PO job", jobType: "Service", status: "in_progress", visitDate: new Date() },
+    });
+    waiveJobId = visit.id;
+  });
+
+  it("protects the Womack figure: waiving removes the receipt from /receipts-needing-po but leaves purchaseOrderId null and actualMaterialCost unchanged", async () => {
+    const receipt = await prisma.receipt.create({
+      data: { id: newId(), jobId: waiveJobId, category: "materials", vendor: "PO-test Home Depot Womack", amount: 406.74, status: "confirmed", source: "manual" },
+    });
+    // Stamp the job's receipt-rung total the way every real receipt door does.
+    await receiptCosting.rerollJobMaterialCost(waiveJobId);
+
+    const before = await stamped(waiveJobId);
+    expect(before).toBe(406.74);
+
+    const needingBefore = await request(app).get("/receipts-needing-po");
+    expect(needingBefore.body.some((r: { id: string }) => r.id === receipt.id)).toBe(true);
+
+    const waive = await request(app).post(`/receipts/${receipt.id}/waive-po`).send({ reason: "Receipt photo lost in the 9/11 upload failure" });
+    expect(waive.status).toBe(200);
+    expect(waive.body.purchaseOrderId).toBeNull();
+    expect(waive.body.poWaivedReason).toBe("Receipt photo lost in the 9/11 upload failure");
+
+    const needingAfter = await request(app).get("/receipts-needing-po");
+    expect(needingAfter.body.some((r: { id: string }) => r.id === receipt.id)).toBe(false);
+
+    // The entire point of the unit: no attach, no re-roll. purchaseOrderId stays
+    // null and the job's material cost — the Womack $406.74 figure — is untouched.
+    const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
+    expect(row.purchaseOrderId).toBeNull();
+    expect(row.poWaivedAt).not.toBeNull();
+    expect(await stamped(waiveJobId)).toBe(before);
+  });
+
+  it("a waive with no reason, or a whitespace-only reason, is rejected 400 and writes nothing", async () => {
+    const receipt = await prisma.receipt.create({
+      data: { id: newId(), jobId: waiveJobId, category: "materials", vendor: "PO-test no reason", amount: 55, status: "confirmed", source: "manual" },
+    });
+
+    const missing = await request(app).post(`/receipts/${receipt.id}/waive-po`).send({});
+    expect(missing.status).toBe(400);
+    const whitespace = await request(app).post(`/receipts/${receipt.id}/waive-po`).send({ reason: "   " });
+    expect(whitespace.status).toBe(400);
+
+    const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
+    expect(row.poWaivedAt).toBeNull();
+    expect(row.poWaivedReason).toBeNull();
+
+    const needing = await request(app).get("/receipts-needing-po");
+    expect(needing.body.some((r: { id: string }) => r.id === receipt.id)).toBe(true);
+  });
+
+  it("refuses to waive a receipt already attached to a live PO", async () => {
+    const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test Waive Attached", jobId: waiveJobId });
+    const poId = created.body.id as string;
+    const receipt = await prisma.receipt.create({
+      data: { id: newId(), jobId: waiveJobId, category: "materials", vendor: "PO-test attached", amount: 20, status: "confirmed", source: "manual" },
+    });
+    await request(app).post(`/purchase-orders/${poId}/receipts/${receipt.id}`).send({});
+
+    const waive = await request(app).post(`/receipts/${receipt.id}/waive-po`).send({ reason: "Should not work" });
+    expect(waive.status).toBe(409);
+    const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
+    expect(row.poWaivedAt).toBeNull();
   });
 });

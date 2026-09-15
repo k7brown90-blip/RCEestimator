@@ -61,7 +61,7 @@ async function main(): Promise<void> {
       orderBy: { createdAt: "asc" },
       select: {
         id: true, jobId: true, source: true, status: true, category: true, amount: true, vendor: true, receivedAt: true, createdAt: true,
-        purchaseOrderId: true, purchaseOrder: { select: { number: true } },
+        purchaseOrderId: true, purchaseOrder: { select: { number: true, status: true } },
       },
     }),
     stockMaterialByJob(visitIds),
@@ -81,14 +81,20 @@ async function main(): Promise<void> {
     if (!m.jobId) continue;
     movementsByVisit.set(m.jobId, [...(movementsByVisit.get(m.jobId) ?? []), m]);
   }
+  // Mirrors receiptMaterialCost's condition exactly (receiptCosting.ts:33-46,
+  // Kyle 2026-09-11): a receipt with no PO OR on a CANCELLED PO counts as job
+  // cost; a receipt on a live (non-cancelled) PO is inventory value. Classifying
+  // on Boolean(purchaseOrderId) alone — the old bug here — misreported a
+  // cancelled-PO receipt as inventory forever, which is exactly what hid the
+  // Daughdrill $381.90 defect Unit 3 fixes.
+  const countsAsJobCost = (r: (typeof receipts)[number]) =>
+    r.category === "materials" && r.status === "confirmed" && (!r.purchaseOrderId || r.purchaseOrder?.status === "cancelled");
+  const countsAsInventory = (r: (typeof receipts)[number]) =>
+    r.category === "materials" && r.status === "confirmed" && Boolean(r.purchaseOrderId) && r.purchaseOrder?.status !== "cancelled";
   const confirmedNoPo = (visitId: string): number =>
-    r2((receiptsByVisit.get(visitId) ?? [])
-      .filter((r) => r.category === "materials" && r.status === "confirmed" && !r.purchaseOrderId)
-      .reduce((s, r) => s + r.amount, 0));
+    r2((receiptsByVisit.get(visitId) ?? []).filter(countsAsJobCost).reduce((s, r) => s + r.amount, 0));
   const confirmedOnPo = (visitId: string): number =>
-    r2((receiptsByVisit.get(visitId) ?? [])
-      .filter((r) => r.category === "materials" && r.status === "confirmed" && Boolean(r.purchaseOrderId))
-      .reduce((s, r) => s + r.amount, 0));
+    r2((receiptsByVisit.get(visitId) ?? []).filter(countsAsInventory).reduce((s, r) => s + r.amount, 0));
 
   // Never-landed stock: replay the WHOLE ledger in order and note every consume
   // that took more than the truck held at that moment.
@@ -122,14 +128,19 @@ async function main(): Promise<void> {
     if (!id) return "—";
     const v = byId.get(id);
     if (!v) return `${id} (MISSING)`;
-    return `${id.slice(-6)} ${v.status}${v.completedAt ? "/done" : ""} actualMat=${money(v.actualMaterialCost)} receipts(noPO)=${money(confirmedNoPo(id))} receipts(onPO)=${money(confirmedOnPo(id))} stock=${money(stockByVisit.get(id)?.net ?? null)}`;
+    return `${id.slice(-6)} ${v.status}${v.completedAt ? "/done" : ""} actualMat=${money(v.actualMaterialCost)} receipts(jobCost)=${money(confirmedNoPo(id))} receipts(inventory)=${money(confirmedOnPo(id))} stock=${money(stockByVisit.get(id)?.net ?? null)}`;
   };
   const showReceipts = (id: string | null) => {
     if (!id) return;
     for (const r of receiptsByVisit.get(id) ?? []) {
       const when = (r.receivedAt ?? r.createdAt).toISOString().slice(0, 10);
+      const poNote = r.purchaseOrderId
+        ? r.purchaseOrder?.status === "cancelled"
+          ? `  on ${r.purchaseOrder?.number ?? "PO"} (cancelled) → job cost`
+          : `  on ${r.purchaseOrder?.number ?? "PO"} → inventory, not job cost`
+        : "";
       console.log(
-        `         receipt ${r.id.slice(-6)} ${when} ${r.source.padEnd(8)} ${r.status.padEnd(14)} ${r.category.padEnd(11)} $${r.amount.toFixed(2).padStart(9)}  ${r.vendor ?? "(no vendor)"}${r.purchaseOrderId ? `  on ${r.purchaseOrder?.number ?? "PO"} → inventory, not job cost` : ""}`,
+        `         receipt ${r.id.slice(-6)} ${when} ${r.source.padEnd(8)} ${r.status.padEnd(14)} ${r.category.padEnd(11)} $${r.amount.toFixed(2).padStart(9)}  ${r.vendor ?? "(no vendor)"}${poNote}`,
       );
     }
   };
@@ -189,7 +200,7 @@ async function main(): Promise<void> {
           poCounted += 1;
           console.log(`      ⚠ PO-RECEIPT COUNTED: ${id.slice(-6)} actualMat=${money(stamped)} includes ${money(onPo)} of receipts on a PO — should be ${money(expected)}. Run scripts/backfillMaterialRule.ts.`);
         } else {
-          console.log(`      ⚠ STALE: ${id.slice(-6)} actualMat=${money(stamped)} but confirmed materials receipts with no PO total ${money(expected)}. Run scripts/backfillMaterialRule.ts.`);
+          console.log(`      ⚠ STALE: ${id.slice(-6)} actualMat=${money(stamped)} but confirmed materials receipts counting as job cost (no PO, or PO cancelled) total ${money(expected)}. Run scripts/backfillMaterialRule.ts and scripts/backfillCancelledPoMaterialCost.ts.`);
         }
       }
       for (const n of neverLanded.get(id) ?? []) {

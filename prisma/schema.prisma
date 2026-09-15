@@ -1478,6 +1478,17 @@ model Receipt {
   // The card transaction this receipt itemizes (Kyle, 2026-09-09: "photo
   // verifies, card proves"). Set by the matcher or by hand; one spend per receipt.
   cardSpend       CardSpend?
+  // Kyle, 2026-09-14 (legacy purchase close-out, Unit 2): "we are not getting
+  // anywhere trying to attach things that don't exist to them." A confirmed
+  // materials receipt whose PO can never exist (its photo was lost, e.g. the
+  // 9/11 upload failure) must never be attached to a PO just to clear the
+  // "needs PO" queue — attaching would drop it from the job's receipt rung
+  // (services/jobCosting.ts's rung 2) with nothing to pick it back up, silently
+  // erasing real job cost (this is how the Daughdrill $381.90 was lost). So
+  // this receipt leaves the queue by being marked WAIVED, not attached.
+  // purchaseOrderId stays null; the receipt rung keeps counting it.
+  poWaivedAt      DateTime?
+  poWaivedReason  String?
 
   // The account summary pulls receipts by job id across an account's whole history.
   @@index([jobId])

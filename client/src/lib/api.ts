@@ -1035,7 +1035,20 @@ export const api = {
    * capture so it counts toward the job's material, fix its amount/vendor, or
    * move it to another job. The server re-rolls the job total.
    */
-  reviewReceipt: (receiptId: string, input: { status?: "confirmed" | "pending_review"; amount?: number; vendor?: string | null; jobId?: string | null; category?: string; purchaseOrderId?: string | null }) =>
+  reviewReceipt: (
+    receiptId: string,
+    input: {
+      status?: "confirmed" | "pending_review";
+      amount?: number;
+      vendor?: string | null;
+      jobId?: string | null;
+      category?: string;
+      purchaseOrderId?: string | null;
+      // Correction path for a Vision year mis-parse (2026-09-14, legacy purchase
+      // close-out Unit 4) — YYYY-MM-DD, the receipt's actual purchase date.
+      receivedAt?: string;
+    },
+  ) =>
     request<{ id: string; jobId: string | null; amount: number; status: string; purchaseOrderId: string | null }>(`/health-record-admin/receipts/${receiptId}`, { method: "PATCH", body: JSON.stringify(input) }),
   /** Every receipt waiting for review across accounts, with account and job labels (Kyle, 2026-09-08). */
   pendingReceipts: () => request<ReviewReceiptRow[]>("/receipt-review"),
@@ -1091,6 +1104,14 @@ export const api = {
     request<{ receiptId: string; purchaseOrderId: string; jobId: string | null }>(`/purchase-orders/${poId}/receipts/${receiptId}`, { method: "POST", body: "{}" }),
   detachReceiptFromPurchaseOrder: (poId: string, receiptId: string) =>
     request<void>(`/purchase-orders/${poId}/receipts/${receiptId}`, { method: "DELETE" }),
+  /**
+   * "No PO — legacy" (2026-09-14, legacy purchase close-out Unit 2): a receipt
+   * whose PO can never exist leaves "Receipts needing a PO" by being waived,
+   * never attached — attaching would silently erase real job cost. Reason is
+   * required and lands in SystemEvent.
+   */
+  waiveReceiptPo: (receiptId: string, reason: string) =>
+    request<{ id: string; purchaseOrderId: string | null; poWaivedAt: string; poWaivedReason: string }>(`/receipts/${receiptId}/waive-po`, { method: "POST", body: JSON.stringify({ reason }) }),
 
   // ── Trucks, cards, card spend (Kyle, 2026-09-09) ──────────────────────────
   trucks: () => request<TrucksResponse>("/trucks"),

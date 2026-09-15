@@ -46,6 +46,9 @@
     "scripts/auditMaterialCosts.ts",
     // Build 4 backfill: drop receipts on a PO from the receipt rung, dry-run default, --apply (Kyle, 2026-09-09).
     "scripts/backfillMaterialRule.ts",
+    // Unit 3 backfill: re-roll jobs whose receipt sits on a PO that was cancelled before
+    // transitionPurchaseOrder re-rolled on transition, dry-run default, --apply (Kyle, 2026-09-14).
+    "scripts/backfillCancelledPoMaterialCost.ts",
     // Opening truck stock from receipts − completed jobs' estimate lines, dry-run default, --apply (Kyle, 2026-09-10).
     "scripts/seedTruckStockFromHistory.ts",
     // Signed-invoice email backfill by estimate number (Kyle, 2026-09-05).

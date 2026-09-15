@@ -145,6 +145,48 @@ function usePoRefresh() {
 }
 
 /**
+ * Correct a receipt's purchase date (2026-09-14, legacy purchase close-out Unit 4).
+ * The only place this can be fixed by hand — a Vision year mis-parse (e.g. 2022
+ * instead of 2026) silently drops the receipt's amount from the P&L and keeps its
+ * card transaction from ever matching, both of which are date-windowed. Collapsed
+ * to "edit date" by default so the common case (nothing wrong) stays out of the way.
+ */
+function ReceiptDateEditor({ receiptId, receivedAt }: { receiptId: string; receivedAt: string }) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(receivedAt.slice(0, 10));
+  const [error, setError] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: () => api.reviewReceipt(receiptId, { receivedAt: value }),
+    onSuccess: () => { setError(null); setEditing(false); void queryClient.invalidateQueries(); },
+    onError: (err) => setError((err as Error).message),
+  });
+
+  if (!editing) {
+    return (
+      <button type="button" className="text-xs text-rce-accent hover:underline" onClick={() => setEditing(true)}>
+        edit date
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <input
+        type="date"
+        className="field px-1 py-0.5 text-xs"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+      />
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={save.isPending || !value} onClick={() => save.mutate()}>
+        Save
+      </button>
+      <button type="button" className="text-xs text-rce-muted" onClick={() => { setEditing(false); setError(null); }}>cancel</button>
+      {error && <span className="w-full text-red-600">{error}</span>}
+    </span>
+  );
+}
+
+/**
  * The PO picker on a materials receipt that has none (account page and the
  * Financials card). This job's POs first, then every other live PO.
  */
@@ -185,6 +227,41 @@ export function ReceiptPoPicker({ receiptId, jobId }: { receiptId: string; jobId
       >
         Attach
       </button>
+      {error && <span className="w-full text-red-600">{error}</span>}
+    </span>
+  );
+}
+
+/**
+ * "No PO — legacy" (2026-09-14, legacy purchase close-out Unit 2). Kyle: "we
+ * are not getting anywhere trying to attach things that don't exist to them" —
+ * a receipt whose PO can never exist (its photo was lost, e.g. the 9/11 upload
+ * failure) leaves this queue by being WAIVED, never attached. Attaching would
+ * silently drop it from the job's receipt rung with nothing to pick it back up
+ * (this is how the Daughdrill $381.90 was lost). Same required-reason
+ * ReasonRow pattern as the rest of this card; ReasonRow is a hoisted function
+ * declaration further down this file.
+ */
+function WaivePoAction({ receiptId }: { receiptId: string }) {
+  const refresh = usePoRefresh();
+  const [waiving, setWaiving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const waive = useMutation({
+    mutationFn: (reason: string) => api.waiveReceiptPo(receiptId, reason),
+    onSuccess: () => { setError(null); setWaiving(false); refresh(); },
+    onError: (err) => setError((err as Error).message),
+  });
+
+  if (!waiving) {
+    return (
+      <button type="button" className="text-xs text-rce-muted hover:underline" onClick={() => setWaiving(true)}>
+        No PO — legacy
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <ReasonRow label="Waive" busy={waive.isPending} onSubmit={(reason) => waive.mutate(reason)} onCancel={() => setWaiving(false)} />
       {error && <span className="w-full text-red-600">{error}</span>}
     </span>
   );
@@ -382,7 +459,11 @@ export function PurchasesCard() {
                 {r.accountId ? " · " : ""}{r.jobLabel}
               </span>
             </span>
-            <ReceiptPoPicker receiptId={r.id} jobId={r.jobId} />
+            <span className="flex flex-wrap items-center gap-2">
+              <ReceiptDateEditor receiptId={r.id} receivedAt={r.receivedAt} />
+              <ReceiptPoPicker receiptId={r.id} jobId={r.jobId} />
+              <WaivePoAction receiptId={r.id} />
+            </span>
           </li>
         ))}
       </ul>

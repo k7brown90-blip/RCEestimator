@@ -420,4 +420,71 @@ describe("the receipt total is the truth", () => {
     expect(d.balanced).toBe(true);
     vision.result = null;
   });
+
+  // Legacy purchase close-out, Unit 4 (2026-09-14): a Vision year mis-parse
+  // (2022 instead of 2026) hid a $324.33 receipt from the P&L entirely and kept
+  // its card transaction from ever matching. plausiblePurchaseDate/resolvePurchaseDate
+  // in receiptVision.ts reject an implausible date; these tests cover the two write
+  // sites' response to that rejection.
+  it("a normal in-range purchase date is written untouched, and the receipt stays confirmed", async () => {
+    const po = await createPurchaseOrder({
+      supplier: "Home Depot", openedBy: "owner", actor: "test", truckId,
+      lines: [{ itemId: GFCI, name: "20A GFCI breaker", qty: 1, unit: "ea" }],
+    });
+    vision.result = {
+      vendor: VENDOR,
+      total: 24.99,
+      purchaseDate: "2026-09-08",
+      purchaseDateRejected: false,
+      category: "materials",
+      lineItems: [{ name: "20A GFCI breaker", qty: 1, unit: "ea", unitCost: 22.5 }],
+    };
+    const receiptId = newId();
+    const res = await request(app)
+      .put(`/purchase-orders/${po.id}/receipts/${receiptId}`)
+      .set("Content-Type", "image/jpeg")
+      .send(Buffer.from([0xff, 0xd8, 0xff, 0xdb]));
+    expect(res.status).toBe(201);
+
+    const receipt = await prisma.receipt.findUniqueOrThrow({ where: { id: receiptId } });
+    expect(receipt.status).toBe("confirmed");
+    expect(receipt.receivedAt.toISOString().slice(0, 10)).toBe("2026-09-08");
+    vision.result = null;
+  });
+
+  it("a rejected purchase date falls back to the upload time, flags the receipt for review, and keeps the amount and photo", async () => {
+    const po = await createPurchaseOrder({
+      supplier: "Home Depot", openedBy: "owner", actor: "test", truckId,
+      lines: [{ itemId: GFCI, name: "20A GFCI breaker", qty: 1, unit: "ea" }],
+    });
+    // The exact shape of the 2022-09-08 Tran mis-parse: Vision found a date,
+    // resolvePurchaseDate() rejected it, so purchaseDate is null but the rejection
+    // flag is set — the signal a plain "no date read" wouldn't carry.
+    vision.result = {
+      vendor: VENDOR,
+      total: 324.33,
+      purchaseDate: null,
+      purchaseDateRejected: true,
+      category: "materials",
+      lineItems: [{ name: "20A GFCI breaker", qty: 1, unit: "ea", unitCost: 22.5 }],
+    };
+    const receiptId = newId();
+    const before = new Date();
+    const res = await request(app)
+      .put(`/purchase-orders/${po.id}/receipts/${receiptId}`)
+      .set("Content-Type", "image/jpeg")
+      .send(Buffer.from([0xff, 0xd8, 0xff, 0xdb]));
+    expect(res.status).toBe(201);
+    // The amount and photo are never discarded just because the date was untrustworthy.
+    expect(res.body).toMatchObject({ id: receiptId, purchaseOrderId: po.id, amount: 324.33 });
+
+    const receipt = await prisma.receipt.findUniqueOrThrow({ where: { id: receiptId } });
+    expect(receipt.status).toBe("pending_review");
+    expect(receipt.amount).toBe(324.33);
+    expect(receipt.imageMime).toBe("image/jpeg");
+    expect(receipt.imageData).not.toBeNull();
+    // receivedAt falls back to the upload time (Prisma's default now()), not the rejected date.
+    expect(receipt.receivedAt.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
+    vision.result = null;
+  });
 });

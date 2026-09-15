@@ -38,7 +38,8 @@ vi.mock("googleapis", () => {
 
 import { app } from "../src/app";
 import { rollupJobCosts } from "../src/services/jobCosting";
-import { plausiblePurchaseDate } from "../src/services/receiptVision";
+import { plausiblePurchaseDate, resolvePurchaseDate } from "../src/services/receiptVision";
+import { matchSpendForReceipt } from "../src/services/cardSpend";
 
 describe("vision purchase dates are only trusted when plausible", () => {
   const now = new Date("2026-09-08T17:00:00Z");
@@ -50,6 +51,25 @@ describe("vision purchase dates are only trusted when plausible", () => {
     expect(plausiblePurchaseDate("2026-09-20", now)).toBeNull();
     expect(plausiblePurchaseDate("09/08/2026", now)).toBeNull();
     expect(plausiblePurchaseDate(null, now)).toBeNull();
+  });
+});
+
+// Legacy purchase close-out, Unit 4 (2026-09-14): resolvePurchaseDate() is the exact
+// function both Vision write sites (app.ts's PO-receipt PUT and health-record.ts's
+// applyVisionParse) call to decide whether to trust a parsed date and whether to flag
+// the receipt for review. Tested directly (no network call) since it's the real guard,
+// not a caller's mock of it.
+describe("resolvePurchaseDate distinguishes 'no date read' from 'date rejected'", () => {
+  const now = new Date("2026-09-14T17:00:00Z");
+  it("an in-range date is trusted and not flagged", () => {
+    expect(resolvePurchaseDate("2026-09-08", now)).toEqual({ purchaseDate: "2026-09-08", purchaseDateRejected: false });
+  });
+  it("the exact Tran mis-parse (2022 instead of 2026) is rejected AND flagged", () => {
+    expect(resolvePurchaseDate("2022-09-08", now)).toEqual({ purchaseDate: null, purchaseDateRejected: true });
+  });
+  it("Vision simply not reading a date at all is neither trusted nor flagged", () => {
+    expect(resolvePurchaseDate(null, now)).toEqual({ purchaseDate: null, purchaseDateRejected: false });
+    expect(resolvePurchaseDate(undefined, now)).toEqual({ purchaseDate: null, purchaseDateRejected: false });
   });
 });
 
@@ -130,5 +150,67 @@ describe("receipt doors re-roll the job's material cost", () => {
     expect(rollupJobCosts({ ...base, actualMaterialCost: 0 }, null, 100, null).materialSource).toBe("none");
     // The material figure itself is unchanged by the label.
     expect(rollupJobCosts({ ...base, actualMaterialCost: 0 }, null, 100, 572.84).materialCost).toBe(572.84);
+  });
+});
+
+// Legacy purchase close-out, Unit 4 (2026-09-14): the admin PATCH route is the only
+// correction path for a receipt whose receivedAt was written from a mis-parsed Vision
+// year — this mirrors the real production defect (receipt 9f7901d9f3c840318d08688fa0bb5170,
+// $324.33, dated 2022-09-08 instead of 2026-09-08).
+describe("PATCH /health-record-admin/receipts/:id accepts a receivedAt correction", () => {
+  const stripeTxnId = () => `txn_${newId()}`;
+
+  it("updates receivedAt, and a receipt whose date moves into range becomes reachable by the card matcher", async () => {
+    const receipt = await prisma.receipt.create({
+      data: {
+        jobId, category: "materials", vendor: "Home Depot", amount: 324.33,
+        status: "confirmed", source: "tech_pwa",
+        receivedAt: new Date("2022-09-08T12:00:00Z"), // the exact mis-parse: right day/month, wrong year
+      },
+    });
+    const spend = await prisma.cardSpend.create({
+      data: {
+        stripeTransactionId: stripeTxnId(), stripeCardId: "card_test", kind: "materials",
+        amount: 324.33, merchantName: "HOME DEPOT", status: "unmatched",
+        occurredAt: new Date("2026-09-08T18:06:00Z"),
+      },
+    });
+
+    // Before the fix: the card matcher's ±3-day window can't reach a 2026 transaction
+    // from a 2022 receivedAt — this is the mechanism, not a guess.
+    expect(await matchSpendForReceipt(receipt.id)).toBeNull();
+    expect((await prisma.cardSpend.findUniqueOrThrow({ where: { id: spend.id } })).status).toBe("unmatched");
+
+    const patch = await request(app)
+      .patch(`/health-record-admin/receipts/${receipt.id}`)
+      .send({ receivedAt: "2026-09-08" });
+    expect(patch.status).toBe(200);
+
+    const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
+    expect(row.receivedAt.toISOString().slice(0, 10)).toBe("2026-09-08");
+
+    // The route re-runs the matcher itself (health-record.ts's receivedAt !== undefined
+    // branch) — the now-reachable spend links without a second call.
+    const matchedSpend = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spend.id } });
+    expect(matchedSpend.status).toBe("matched");
+    expect(matchedSpend.receiptId).toBe(receipt.id);
+
+    await prisma.cardSpend.delete({ where: { id: spend.id } });
+    await prisma.receipt.delete({ where: { id: receipt.id } });
+  });
+
+  it("a PATCH with no receivedAt leaves the field untouched", async () => {
+    const receipt = await prisma.receipt.create({
+      data: {
+        jobId, category: "materials", vendor: "Home Depot", amount: 46.8,
+        status: "confirmed", source: "tech_pwa", receivedAt: new Date("2026-09-08T12:00:00Z"),
+      },
+    });
+    const patch = await request(app).patch(`/health-record-admin/receipts/${receipt.id}`).send({ vendor: "Home Depot #0776" });
+    expect(patch.status).toBe(200);
+    const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
+    expect(row.receivedAt.toISOString().slice(0, 10)).toBe("2026-09-08");
+    expect(row.vendor).toBe("Home Depot #0776");
+    await prisma.receipt.delete({ where: { id: receipt.id } });
   });
 });

@@ -5534,7 +5534,10 @@ app.put(
       category: query.category,
       lineItems: parsed && parsed.lineItems.length > 0 ? JSON.stringify(parsed.lineItems) : null,
       source: "manual",
-      status: "confirmed",
+      // 2026-09-14 (Unit 4): a Vision date that failed plausiblePurchaseDate() keeps this
+      // receipt in review instead of auto-confirming under a fallback date nobody checked —
+      // see receiptVision.ts's PLAUSIBLE_PURCHASE_DATE_WINDOW comment for why.
+      status: parsed?.purchaseDateRejected ? "pending_review" : "confirmed",
       ...(hasImage ? { imageData: body, imageMime: mimeType } : {}),
       ...(parsed?.purchaseDate ? { receivedAt: new Date(`${parsed.purchaseDate}T12:00:00Z`) } : {}),
     };
@@ -5572,7 +5575,10 @@ app.delete("/purchase-orders/:id/receipts/:receiptId", asyncHandler(async (req, 
  */
 app.get("/receipts-needing-po", asyncHandler(async (_req, res) => {
   const receipts = await prisma.receipt.findMany({
-    where: { status: "confirmed", category: "materials", purchaseOrderId: null },
+    // 2026-09-14 (legacy purchase close-out, Unit 2): a receipt whose PO can
+    // never exist is marked poWaivedAt instead of being attached — it leaves
+    // this queue that way, still with purchaseOrderId null.
+    where: { status: "confirmed", category: "materials", purchaseOrderId: null, poWaivedAt: null },
     orderBy: { receivedAt: "desc" },
     take: 200,
     select: {
@@ -5612,6 +5618,47 @@ app.get("/receipts-needing-po", asyncHandler(async (_req, res) => {
         };
       }),
   );
+}));
+
+/**
+ * "No PO — legacy" (Kyle, 2026-09-14, legacy purchase close-out Unit 2): "we
+ * are not getting anywhere trying to attach things that don't exist to them."
+ * A confirmed materials receipt whose PO can never exist (its photo was lost,
+ * e.g. the 9/11 upload failure) leaves /receipts-needing-po by being marked
+ * waived — NEVER by being attached to a PO it has no real link to. Attaching
+ * would drop it from the job's receipt rung with nothing to pick it back up
+ * (services/jobCosting.ts, services/purchaseOrders.ts:415) — this is how the
+ * Daughdrill $381.90 was silently lost. So this route sets ONLY poWaivedAt and
+ * poWaivedReason: purchaseOrderId stays null and no re-roll runs, because
+ * nothing about the job's material cost is supposed to change.
+ */
+app.post("/receipts/:id/waive-po", asyncHandler(async (req, res) => {
+  const receiptId = readParam(req, "id");
+  const body = z.object({ reason: z.string() }).parse(req.body ?? {});
+  const reason = body.reason.trim();
+  if (!reason) { res.status(400).json({ error: "A reason is required to waive a PO." }); return; }
+
+  const receipt = await prisma.receipt.findUnique({
+    where: { id: receiptId },
+    select: { id: true, jobId: true, vendor: true, amount: true, purchaseOrderId: true },
+  });
+  if (!receipt) { res.status(404).json({ error: "Receipt not found" }); return; }
+  if (receipt.purchaseOrderId) { res.status(409).json({ error: "This receipt is already attached to a PO." }); return; }
+
+  const updated = await prisma.receipt.update({
+    where: { id: receiptId },
+    data: { poWaivedAt: new Date(), poWaivedReason: reason },
+    select: { id: true, purchaseOrderId: true, poWaivedAt: true, poWaivedReason: true },
+  });
+
+  logSystemEvent(
+    "info",
+    "purchase-orders",
+    `Receipt waived off the needs-PO queue — ${receipt.vendor ?? "unknown vendor"} ${receipt.amount}: ${reason}`,
+    { receiptId, jobId: receipt.jobId, amount: receipt.amount, vendor: receipt.vendor },
+  );
+
+  res.json(updated);
 }));
 
 /**
