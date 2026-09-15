@@ -3370,8 +3370,28 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
     purchaseOrderId: z.string().nullable().optional(),
     // 2026-09-14 (legacy purchase close-out, Unit 4): the only correction path for a
     // Vision year mis-parse (e.g. 2022 instead of 2026) — see receiptVision.ts's
-    // PLAUSIBLE_PURCHASE_DATE_WINDOW. Same convention as app.ts:8039's followUpDate.
-    receivedAt: z.coerce.date().optional(),
+    // PLAUSIBLE_PURCHASE_DATE_WINDOW.
+    //
+    // A calendar day arrives as "YYYY-MM-DD" and is anchored at NOON UTC, the
+    // convention every other date door here uses (app.ts:5544,
+    // health-record.ts:1921, inboundSms.ts:122, receiptVision.ts:77,
+    // agent-shared.ts:76 "Noon UTC to avoid date boundary issues"). Fixed
+    // 2026-09-15: z.coerce.date() read a bare date as MIDNIGHT UTC, which is
+    // 7pm the PREVIOUS day in America/Chicago — Kyle typed 2026-09-08 and the
+    // receipt filed itself under 9/7. Mid-month that is only cosmetic; on the
+    // 1st it moves the receipt into the previous month of the P&L, because
+    // yearLedger buckets by receivedAt (routes/financials.ts:367-368).
+    // A full timestamp is passed through untouched.
+    receivedAt: z
+      .union([z.string(), z.date()])
+      .optional()
+      .transform((v) => {
+        if (v === undefined) return undefined;
+        if (v instanceof Date) return v;
+        const day = /^\d{4}-\d{2}-\d{2}$/.exec(v.trim());
+        return day ? new Date(`${v.trim()}T12:00:00Z`) : new Date(v);
+      })
+      .refine((v) => v === undefined || !Number.isNaN(v.getTime()), "receivedAt is not a date"),
   }).parse(req.body);
 
   const id = readParam(req, "id");

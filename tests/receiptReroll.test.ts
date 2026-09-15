@@ -187,7 +187,11 @@ describe("PATCH /health-record-admin/receipts/:id accepts a receivedAt correctio
     expect(patch.status).toBe(200);
 
     const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
-    expect(row.receivedAt.toISOString().slice(0, 10)).toBe("2026-09-08");
+    // NOON UTC, not midnight. Midnight UTC is 7pm the PREVIOUS day in
+    // America/Chicago, which is how Kyle's 2026-09-08 correction filed itself
+    // under 9/7 in production on 2026-09-15. Asserting only the date half of
+    // the ISO string passed while that bug was live, so assert the whole stamp.
+    expect(row.receivedAt.toISOString()).toBe("2026-09-08T12:00:00.000Z");
 
     // The route re-runs the matcher itself (health-record.ts's receivedAt !== undefined
     // branch) — the now-reachable spend links without a second call.
@@ -196,6 +200,28 @@ describe("PATCH /health-record-admin/receipts/:id accepts a receivedAt correctio
     expect(matchedSpend.receiptId).toBe(receipt.id);
 
     await prisma.cardSpend.delete({ where: { id: spend.id } });
+    await prisma.receipt.delete({ where: { id: receipt.id } });
+  });
+
+  // The case that costs real money: yearLedger buckets a receipt into a month by
+  // receivedAt (routes/financials.ts:367-368). A date anchored at midnight UTC
+  // lands in the PREVIOUS month for the 1st of any month, moving the spend to the
+  // wrong month of the P&L. Noon UTC cannot.
+  it("anchors the 1st of a month inside that month, not the last day of the one before", async () => {
+    const receipt = await prisma.receipt.create({
+      data: {
+        jobId, category: "materials", vendor: "Home Depot", amount: 12.5,
+        status: "confirmed", source: "manual", receivedAt: new Date("2026-08-15T12:00:00Z"),
+      },
+    });
+    const patch = await request(app)
+      .patch(`/health-record-admin/receipts/${receipt.id}`)
+      .send({ receivedAt: "2026-09-01" });
+    expect(patch.status).toBe(200);
+    const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
+    expect(row.receivedAt.toISOString()).toBe("2026-09-01T12:00:00.000Z");
+    // September, in Central as well as UTC — the month the P&L will charge it to.
+    expect(row.receivedAt.toLocaleDateString("en-US", { timeZone: "America/Chicago" })).toBe("9/1/2026");
     await prisma.receipt.delete({ where: { id: receipt.id } });
   });
 
