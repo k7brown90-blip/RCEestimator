@@ -61,7 +61,7 @@ async function main(): Promise<void> {
       orderBy: { createdAt: "asc" },
       select: {
         id: true, jobId: true, source: true, status: true, category: true, amount: true, vendor: true, receivedAt: true, createdAt: true,
-        purchaseOrderId: true, purchaseOrder: { select: { number: true, status: true } },
+        purchaseOrderId: true, purchaseOrder: { select: { number: true, status: true, landedAt: true, jobId: true } },
       },
     }),
     stockMaterialByJob(visitIds),
@@ -95,6 +95,16 @@ async function main(): Promise<void> {
     r2((receiptsByVisit.get(visitId) ?? []).filter(countsAsJobCost).reduce((s, r) => s + r.amount, 0));
   const confirmedOnPo = (visitId: string): number =>
     r2((receiptsByVisit.get(visitId) ?? []).filter(countsAsInventory).reduce((s, r) => s + r.amount, 0));
+
+  // Unit 5 (2026-09-15) — STRANDED MATERIAL: a receipt on a job-tagged PO that
+  // has actually landed (landedAt set — the same transaction that wrote the
+  // purchase_in to the truck/warehouse), where the PO's OWN jobId names a job
+  // (not a restock/tool PO whose receipt merely happens to be filed under a
+  // visit). This is what Unit 3's auto-charge-on-landing would have consumed
+  // had the PO landed after 2026-09-15; for POs that landed before that date,
+  // nothing ever drew it off the truck for the job it was bought for.
+  const landedOnJobPo = (r: (typeof receipts)[number]) =>
+    countsAsInventory(r) && Boolean(r.purchaseOrder?.landedAt) && Boolean(r.purchaseOrder?.jobId);
 
   // Never-landed stock: replay the WHOLE ledger in order and note every consume
   // that took more than the truck held at that moment.
@@ -158,6 +168,7 @@ async function main(): Promise<void> {
   let poCounted = 0;
   let neverLandedCount = 0;
   const rungs: Record<string, number> = { stock: 0, receipts: 0, estimate: 0, none: 0 };
+  const stranded: Array<{ number: string; customerName: string; jobLabel: string; amount: number; pos: Array<[string, number]> }> = [];
   for (const est of signed) {
     const mat = estimateMaterialCost({
       selectedOptions: est.selectedOptions.map(String),
@@ -176,6 +187,23 @@ async function main(): Promise<void> {
     const stockNet = stockParts.length ? r2(stockParts.reduce((s, p) => s + p.net, 0)) : null;
     const resolved = resolveMaterialCost(stockNet, card?.actualMaterialCost ?? null, mat);
     rungs[resolved.materialSource] += 1;
+
+    // Unit 5: a chain with NO stock movements at all (stockNet === null) never
+    // had the stock rung fire — automatically (Unit 3) or by hand through the
+    // Materials-used close-out step, which also writes a plain consume. Only
+    // then can PO material that already landed still be sitting uncharged.
+    if (stockNet === null) {
+      const strandedReceipts = chain.flatMap((id) => (receiptsByVisit.get(id) ?? []).filter(landedOnJobPo));
+      if (strandedReceipts.length > 0) {
+        const byPo = new Map<string, number>();
+        for (const r of strandedReceipts) {
+          const num = r.purchaseOrder!.number;
+          byPo.set(num, r2((byPo.get(num) ?? 0) + r.amount));
+        }
+        const amount = r2([...byPo.values()].reduce((s, a) => s + a, 0));
+        stranded.push({ number: est.number, customerName: est.customerName, jobLabel: cardKey ? cardKey.slice(-6) : "—", amount, pos: [...byPo.entries()] });
+      }
+    }
 
     console.log(
       `${problem ? "⚠ " : "  "}${est.number}  ${est.customerName.padEnd(20)} estMaterial=${money(mat)}  → rung: ${resolved.materialSource.toUpperCase()} ${money(resolved.materialCost)}`,
@@ -213,6 +241,29 @@ async function main(): Promise<void> {
     `\n${signed.length} signed estimate(s): rung stock=${rungs.stock} receipts=${rungs.receipts} estimate=${rungs.estimate} none=${rungs.none}; ` +
     `${noCard} with no live card; ${poCounted} with a PO receipt still counted; ${neverLandedCount} consume(s) of never-landed stock.`,
   );
+
+  // ─── Unit 5, 2026-09-15 — STRANDED PO MATERIAL ─────────────────────────────
+  // Read-only list, not a fix. Material bought on a job-tagged PO that landed
+  // into truck/warehouse stock before the automatic charge-on-landing (Unit 3,
+  // 2026-09-15) existed — so it was never drawn for the job it was bought for.
+  // Some of it may genuinely still be on the truck; that judgement call is
+  // Kyle's, job by job. The repair path already exists: the job's own
+  // "Materials used" close-out step, which records a consume and lets the
+  // stock rung take over from the estimate/receipts fallback.
+  const strandedTotal = r2(stranded.reduce((s, j) => s + j.amount, 0));
+  console.log(
+    `\n═══ STRANDED PO MATERIAL — landed for a job, job never drew it (${stranded.length} job(s), ${money(strandedTotal)}) ═══`,
+  );
+  if (stranded.length === 0) {
+    console.log("  none found.");
+  } else {
+    for (const j of stranded) {
+      console.log(`  ${j.number}  ${j.customerName.padEnd(20)} job ${j.jobLabel}  ${money(j.amount)} stranded`);
+      for (const [poNumber, amount] of j.pos) {
+        console.log(`      ${poNumber.padEnd(14)} ${money(amount)}`);
+      }
+    }
+  }
 }
 
 main()
