@@ -16,14 +16,25 @@ import path from "node:path";
 import { prisma } from "../src/lib/prisma";
 import { app } from "../src/app";
 import { proposeLines, createDraft } from "../src/services/atomicEstimateService";
+import { deleteAtomics, ensurePriceBookGates, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
 
 const SRC = (p: string) => readFileSync(path.join(__dirname, "..", p), "utf8");
+
+/** A real, resolvable catalog code — proposeLines() must accept it and resolve-walkthrough must
+ * find it, so it needs to exist and to carry words a "duplex receptacle" search would hit. */
+const REAL_ITEM = "P023_R001";
 
 let draftId: string;
 
 beforeAll(async () => {
-  const catalog = await prisma.priceBookAtomic.count({ where: { retiredAt: null } });
-  expect(catalog, "needs the imported catalog").toBeGreaterThan(100);
+  // Own fixture, not the deleted importer's — see tests/helpers/priceBookFixture.ts and
+  // .claude/plans/2026-09-15-tests-build-their-own-price-data.md. The old guard here only ever
+  // proved "the import ran"; it is meaningless once the catalog is built by hand, and is why it
+  // is deleted below rather than pointed at a bigger number.
+  await ensurePriceBookGates();
+  await seedAtomics([
+    quotableAtomic(REAL_ITEM, { description: "Duplex receptacle, 15A tamper-resistant" }),
+  ]);
   const d = await createDraft(prisma, { title: "P023 wiring fixture", supplierId: "HD" });
   draftId = d.id;
 });
@@ -32,6 +43,7 @@ afterAll(async () => {
   await prisma.priceBookDraftLine.deleteMany({ where: { draftId } });
   await prisma.priceBookDraftQuestion.deleteMany({ where: { draftId } });
   await prisma.priceBookDraftEstimate.deleteMany({ where: { id: draftId } });
+  await deleteAtomics([REAL_ITEM]);
 });
 
 describe("the degraded path is honest", () => {
@@ -69,14 +81,14 @@ describe("a hallucinated itemId cannot become a line", () => {
       prisma,
       draftId,
       [
-        { itemId: "R001", quantity: 2, quantitySource: "COUNT", reasoning: "real code" },
+        { itemId: REAL_ITEM, quantity: 2, quantitySource: "COUNT", reasoning: "real code" },
         { itemId: "TOTALLY-MADE-UP-001", quantity: 3, quantitySource: "COUNT", reasoning: "invented by a model" },
       ],
       [],
       "ai:test",
     );
 
-    expect(result.proposed.map((p) => p.itemId)).toEqual(["R001"]);
+    expect(result.proposed.map((p) => p.itemId)).toEqual([REAL_ITEM]);
     expect(result.rejected.map((r) => r.itemId)).toEqual(["TOTALLY-MADE-UP-001"]);
     expect(result.questions.some((q) => q.question.includes("TOTALLY-MADE-UP-001"))).toBe(true);
 

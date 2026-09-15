@@ -11,8 +11,10 @@ import request from "supertest";
 import { prisma } from "../src/lib/prisma";
 import { app } from "../src/app";
 import { createDraft } from "../src/services/atomicEstimateService";
+import { deleteAtomics, ensurePriceBookGates, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
 
 const MARK = "P024";
+const ITEM = "P024_R001";
 let customerId: string;
 let propertyId: string;
 let visitId: string;
@@ -20,6 +22,11 @@ let leadId: string;
 const draftIds: string[] = [];
 
 beforeAll(async () => {
+  // Own fixture, not the deleted importer's — see tests/helpers/priceBookFixture.ts and
+  // .claude/plans/2026-09-15-tests-build-their-own-price-data.md.
+  await ensurePriceBookGates();
+  await seedAtomics([quotableAtomic(ITEM)]);
+
   const customer = await prisma.customer.create({ data: { name: `${MARK} Customer` } });
   customerId = customer.id;
   const property = await prisma.property.create({
@@ -42,6 +49,7 @@ afterAll(async () => {
   await prisma.property.deleteMany({ where: { id: propertyId } });
   await prisma.customer.deleteMany({ where: { id: customerId } });
   await prisma.lead.deleteMany({ where: { id: leadId } });
+  await deleteAtomics([ITEM]);
 });
 
 describe("a draft created with a visit carries the derivable context", () => {
@@ -104,7 +112,7 @@ describe("deleting the job nulls the link and leaves the draft alone", () => {
     const d = await createDraft(prisma, { title: `${MARK} orphan test`, supplierId: "HD", visitId: throwaway.id });
     draftIds.push(d.id);
     await prisma.priceBookDraftLine.create({
-      data: { draftId: d.id, itemId: "R001", quantity: 1, quantitySource: "COUNT", state: "CONFIRMED" },
+      data: { draftId: d.id, itemId: ITEM, quantity: 1, quantitySource: "COUNT", state: "CONFIRMED" },
     });
 
     await prisma.visit.delete({ where: { id: throwaway.id } });

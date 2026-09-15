@@ -15,6 +15,13 @@
  */
 
 import { TEST_SIGNATURE } from "./helpers/signature";
+import {
+  deleteAtomics,
+  ensurePriceBookGates,
+  noLabourAtomic,
+  quotableAtomic,
+  seedAtomics,
+} from "./helpers/priceBookFixture";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import bcrypt from "bcryptjs";
@@ -54,6 +61,17 @@ async function cleanEstimatesFor(ids: string[]) {
 }
 
 beforeAll(async () => {
+  // Builds its own fixture rather than depending on an imported catalog — the importer that
+  // used to provide GOOD_A/GOOD_B/NO_LABOUR was deleted in eaec200 (2026-09-12), and Kyle's
+  // ruling on 2026-09-15 is that nothing seeds price-book data from disk ever again. See
+  // tests/helpers/priceBookFixture.ts and .claude/plans/2026-09-15-tests-build-their-own-price-data.md.
+  await ensurePriceBookGates();
+  await seedAtomics([
+    quotableAtomic(GOOD_A),
+    quotableAtomic(GOOD_B),
+    noLabourAtomic(NO_LABOUR),
+  ]);
+
   const customer = await prisma.customer.create({
     data: { name: `${MARK} Customer`, email: "p027-customer@example.com", phone: "615-555-0127" },
   });
@@ -83,6 +101,7 @@ afterAll(async () => {
   await prisma.visit.deleteMany({ where: { customerId } });
   await prisma.property.deleteMany({ where: { id: propertyId } });
   await prisma.customer.deleteMany({ where: { id: customerId } });
+  await deleteAtomics([GOOD_A, GOOD_B, NO_LABOUR]);
 });
 
 /** A draft attached to the job, carrying quotable lines. */

@@ -9,11 +9,29 @@
  * Requires the imported catalog in the test database.
  */
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import { app } from "../src/app";
 import { prisma } from "../src/lib/prisma";
 import { singularize } from "../src/services/singularize";
+import { deleteAtomics, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
+
+/*
+  This file matches by NAME against whatever is in PriceBookAtomic — it does not create drafts or
+  price anything, so it needs no supplier and no Rate Config, only a small hand-built catalog
+  carrying the words each fixture line searches for. Ids are prefixed P021_ so they cannot collide
+  with any other file's fixture rows sharing the same base id (fileParallelism: false — files run
+  sequentially against one database).
+*/
+const R001 = "P021_R001"; // duplex receptacle
+const R002 = "P021_R002"; // duplex receptacle, second row — both must surface for "receptacles"
+const R004 = "P021_R004"; // toggle switch
+const R005 = "P021_R005"; // 3-way toggle switch
+const N001 = "P021_N001"; // NM-B 14/2 cable, continuous-length (unit ft)
+const SD004 = "P021_SD004"; // NM-B 14/3 cable, continuous-length (unit ft)
+const LT001 = "P021_LT001"; // LED fixture — deliberately NOT "wafer", so that word stays unknown
+const LT002 = "P021_LT002"; // a second lighting row with no "led", so "light" discriminates
+const ALL_IDS = [R001, R002, R004, R005, N001, SD004, LT001, LT002];
 
 interface ResolvedRow {
   raw: string;
@@ -35,30 +53,46 @@ async function resolve(rows: string[]): Promise<ResolvedRow[]> {
 const ids = (r: ResolvedRow) => r.candidates.map((c) => c.itemId);
 
 beforeAll(async () => {
-  // These assertions are meaningless against an empty catalog — fail loudly rather than pass
-  // vacuously, which is exactly the trap P019 §5 caught me in.
-  const n = await prisma.priceBookAtomic.count({ where: { retiredAt: null } });
-  expect(n, "the test database needs the imported catalog for these fixtures").toBeGreaterThan(100);
+  // Own fixture, not the deleted importer's — see tests/helpers/priceBookFixture.ts and
+  // .claude/plans/2026-09-15-tests-build-their-own-price-data.md. The old guard here only ever
+  // proved "the import ran"; it is meaningless once the catalog is built by hand, so it is
+  // deleted rather than pointed at a bigger number.
+  await seedAtomics([
+    quotableAtomic(R001, { description: "Duplex receptacle, 15A tamper-resistant" }),
+    quotableAtomic(R002, { description: "Duplex receptacle, 20A tamper-resistant" }),
+    quotableAtomic(R004, { description: "Toggle switch, single-pole, 20A" }),
+    quotableAtomic(R005, { description: "3-way toggle switch, single-pole" }),
+    quotableAtomic(N001, { description: "NM-B 14/2 w/Grd cable — per ft", unit: "ft" }),
+    quotableAtomic(SD004, { description: "NM-B 14/3 w/Grd cable — per ft", unit: "ft" }),
+    // Deliberately no "wafer" anywhere in the fixture — F2's point is that one unrecognised word
+    // (the trade word Kyle's book does not use) must not erase an otherwise good match.
+    quotableAtomic(LT001, { description: "LED strip light kit, 16ft" }),
+    quotableAtomic(LT002, { description: "Recessed ceiling light housing, 6-inch, IC-rated" }),
+  ]);
+});
+
+afterAll(async () => {
+  await deleteAtomics(ALL_IDS);
 });
 
 describe("F1 — plurals resolve to the singular catalog entry", () => {
   it('"toggle switches" now finds the toggle switches', async () => {
     const [row] = await resolve(["toggle switches"]);
     expect(row.status, "was UNMATCHED before P021").not.toBe("UNMATCHED");
-    expect(ids(row)).toEqual(expect.arrayContaining(["R004"]));
+    expect(ids(row)).toEqual(expect.arrayContaining([R004]));
   });
 
   it('"5 duplex receptacles" now finds the duplex receptacles', async () => {
     const [row] = await resolve(["5 duplex receptacles"]);
     expect(row.status).not.toBe("UNMATCHED");
-    expect(ids(row)).toEqual(expect.arrayContaining(["R001", "R002"]));
+    expect(ids(row)).toEqual(expect.arrayContaining([R001, R002]));
     expect(row.parsedQuantity).toBe(5);
   });
 
   it('"(2) 3-way switches" now finds the 3-way switch', async () => {
     const [row] = await resolve(["(2) 3-way switches"]);
     expect(row.status).not.toBe("UNMATCHED");
-    expect(ids(row)).toEqual(expect.arrayContaining(["R005"]));
+    expect(ids(row)).toEqual(expect.arrayContaining([R005]));
   });
 
   it("singular and plural give the same candidates — the pair that proved the defect", async () => {
@@ -145,8 +179,8 @@ describe("what Tier 1 must NOT change", () => {
 
   it("cable rows still resolve", async () => {
     const rows = await resolve(["100 ft 14/2 NM", "30 ft 14/3 NM"]);
-    expect(ids(rows[0])).toEqual(expect.arrayContaining(["N001"]));
-    expect(ids(rows[1])).toEqual(expect.arrayContaining(["SD004"]));
+    expect(ids(rows[0])).toEqual(expect.arrayContaining([N001]));
+    expect(ids(rows[1])).toEqual(expect.arrayContaining([SD004]));
     expect(rows[0].parsedQuantity).toBe(100);
     expect(rows[1].parsedQuantity).toBe(30);
   });

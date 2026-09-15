@@ -17,8 +17,10 @@ import request from "supertest";
 import { prisma } from "../src/lib/prisma";
 import { app } from "../src/app";
 import { addLine, createDraft } from "../src/services/atomicEstimateService";
+import { deleteAtomics, ensurePriceBookGates, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
 
 const MARK = "P026-lines";
+const ITEM = "P026_R001";
 const draftIds: string[] = [];
 
 async function newDraft(title: string) {
@@ -28,20 +30,25 @@ async function newDraft(title: string) {
 }
 
 beforeAll(async () => {
-  // Nothing to stand up — drafts are created per test so one test's edits cannot move another's.
+  // Own fixture, not the deleted importer's — see tests/helpers/priceBookFixture.ts and
+  // .claude/plans/2026-09-15-tests-build-their-own-price-data.md. Drafts themselves are still
+  // created per test so one test's edits cannot move another's.
+  await ensurePriceBookGates();
+  await seedAtomics([quotableAtomic(ITEM)]);
 });
 
 afterAll(async () => {
   await prisma.priceBookDraftLine.deleteMany({ where: { draftId: { in: draftIds } } });
   await prisma.priceBookDraftQuestion.deleteMany({ where: { draftId: { in: draftIds } } });
   await prisma.priceBookDraftEstimate.deleteMany({ where: { id: { in: draftIds } } });
+  await deleteAtomics([ITEM]);
 });
 
 describe("PATCH /price-book/lines/:lineId", () => {
   it("edits quantity, difficulty, location and note on a confirmed line", async () => {
     const d = await newDraft("patch");
     const line = await addLine(prisma, d.id, {
-      itemId: "R001",
+      itemId: ITEM,
       quantity: 2,
       quantitySource: "COUNT",
       location: "kitchen",
@@ -65,7 +72,7 @@ describe("PATCH /price-book/lines/:lineId", () => {
 
   it("refuses a zero or negative quantity — that is not a priced line", async () => {
     const d = await newDraft("patch-zero");
-    const line = await addLine(prisma, d.id, { itemId: "R001", quantity: 1, quantitySource: "COUNT" });
+    const line = await addLine(prisma, d.id, { itemId: ITEM, quantity: 1, quantitySource: "COUNT" });
 
     const res = await request(app).patch(`/price-book/lines/${line.id}`).send({ quantity: 0 });
 
@@ -84,7 +91,7 @@ describe("PATCH /price-book/lines/:lineId", () => {
       issuedEstimate.test.ts.
     */
     const d = await newDraft("patch-finalized");
-    const line = await addLine(prisma, d.id, { itemId: "R001", quantity: 3, quantitySource: "COUNT" });
+    const line = await addLine(prisma, d.id, { itemId: ITEM, quantity: 3, quantitySource: "COUNT" });
     await prisma.priceBookDraftEstimate.update({
       where: { id: d.id },
       data: { status: "finalized", finalizedAt: new Date() },
@@ -103,7 +110,7 @@ describe("PATCH /price-book/lines/:lineId", () => {
 describe("DELETE /price-book/lines/:lineId", () => {
   it("removes a confirmed line from a draft", async () => {
     const d = await newDraft("delete");
-    const line = await addLine(prisma, d.id, { itemId: "R001", quantity: 1, quantitySource: "COUNT" });
+    const line = await addLine(prisma, d.id, { itemId: ITEM, quantity: 1, quantitySource: "COUNT" });
 
     const res = await request(app).delete(`/price-book/lines/${line.id}`);
 
@@ -113,7 +120,7 @@ describe("DELETE /price-book/lines/:lineId", () => {
 
   it("reopens on remove too — same rule, same wall at the signature", async () => {
     const d = await newDraft("delete-finalized");
-    const line = await addLine(prisma, d.id, { itemId: "R001", quantity: 4, quantitySource: "COUNT" });
+    const line = await addLine(prisma, d.id, { itemId: ITEM, quantity: 4, quantitySource: "COUNT" });
     await prisma.priceBookDraftEstimate.update({
       where: { id: d.id },
       data: { status: "finalized", finalizedAt: new Date() },

@@ -12,6 +12,7 @@
  */
 
 import { TEST_SIGNATURE } from "./helpers/signature";
+import { deleteAtomics, ensurePriceBookGates, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import bcrypt from "bcryptjs";
@@ -53,6 +54,11 @@ async function issuedEstimate(title: string) {
 }
 
 beforeAll(async () => {
+  // Own fixture, not the deleted importer's — see tests/helpers/priceBookFixture.ts and
+  // .claude/plans/2026-09-15-tests-build-their-own-price-data.md.
+  await ensurePriceBookGates();
+  await seedAtomics([quotableAtomic(GOOD_A), quotableAtomic(GOOD_B)]);
+
   process.env.PIN_HASH = await bcrypt.hash(TEST_PIN, 10);
   ownerToken = jwt.sign({ sub: "owner" }, process.env.JWT_SECRET ?? "rce-dev-secret-change-me", {
     expiresIn: "1h",
@@ -88,6 +94,7 @@ afterAll(async () => {
   await prisma.property.deleteMany({ where: { id: propertyId } });
   await prisma.customer.deleteMany({ where: { id: customerId } });
   delete process.env.PIN_HASH;
+  await deleteAtomics([GOOD_A, GOOD_B]);
 });
 
 // ─── Entering signing mode ──────────────────────────────────────────────────────

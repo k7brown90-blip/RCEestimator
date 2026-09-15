@@ -14,6 +14,7 @@ import { prisma } from "../src/lib/prisma";
 import { computeEstimate } from "../src/services/atomicEstimateEngine";
 import { getFeedbackForDigest } from "../src/services/dailySummary";
 import { createDraft, addLine, finalizeDraft } from "../src/services/atomicEstimateService";
+import { deleteAtomics, ensurePriceBookGates, seedAtomics } from "./helpers/priceBookFixture";
 
 // ─── COMPLETE requires substance (Scope — do 2) ──────────────────────────────────────────────
 
@@ -38,11 +39,36 @@ describe("an empty draft is EMPTY, never COMPLETE", () => {
 
 describe("a blocked finalize still explains itself", () => {
   const SUPPLIER = "HD";
+  const CF001 = "P022_CF001";
   let draftId: string | null = null;
 
   beforeAll(async () => {
-    const catalog = await prisma.priceBookAtomic.count({ where: { retiredAt: null } });
-    expect(catalog, "needs the imported catalog").toBeGreaterThan(100);
+    // Own fixture, not the deleted importer's — see tests/helpers/priceBookFixture.ts and
+    // .claude/plans/2026-09-15-tests-build-their-own-price-data.md. The old guard here only ever
+    // proved "the import ran"; deleted rather than pointed at a bigger number.
+    await ensurePriceBookGates();
+    // Neither a supplier price nor a labour unit basis — the exact shape of Kyle's sunroom
+    // draft, which once produced five 409s. A real labour VALUE is present (0.5 hr) but with no
+    // verified NECA unit basis and no resolved cost, so the engine raises both
+    // NO_LABOUR_UNIT_BASIS and NO_PRICE_AT_SUPPLIER rather than NO_LABOUR_VALUE.
+    await seedAtomics([
+      {
+        itemId: CF001,
+        description: "Fixture item — no unit basis, no supplier price",
+        category: "DEVICES",
+        unit: "ea",
+        rowType: "MATERIAL + LABOR",
+        laborNormal: 0.5,
+        laborDifficult: 0.6,
+        laborVeryDifficult: 0.8,
+        laborUnitBasis: null,
+        laborUnitDivisor: null,
+        costBasisUsed: null,
+        sellNormal: null,
+        sellDifficult: null,
+        sellVeryDifficult: null,
+      },
+    ]);
   });
 
   afterAll(async () => {
@@ -51,6 +77,7 @@ describe("a blocked finalize still explains itself", () => {
       await prisma.priceBookDraftQuestion.deleteMany({ where: { draftId } });
       await prisma.priceBookDraftEstimate.deleteMany({ where: { id: draftId } });
     }
+    await deleteAtomics([CF001]);
   });
 
   it("names the gap-carrying item verbatim, as a warning rather than a refusal", async () => {
@@ -67,7 +94,7 @@ describe("a blocked finalize still explains itself", () => {
     */
     const draft = await createDraft(prisma, { title: "P022 refusal fixture", supplierId: SUPPLIER });
     draftId = draft.id;
-    await addLine(prisma, draft.id, { itemId: "CF001", quantity: 1, quantitySource: "COUNT" });
+    await addLine(prisma, draft.id, { itemId: CF001, quantity: 1, quantitySource: "COUNT" });
 
     const result = await finalizeDraft(prisma, draft.id, "customer");
     expect(result.finalized, "a gap no longer blocks").toBe(true);

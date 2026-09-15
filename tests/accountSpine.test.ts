@@ -11,6 +11,7 @@
  */
 
 import { TEST_SIGNATURE } from "./helpers/signature";
+import { deleteAtomics, ensurePriceBookGates, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import { prisma } from "../src/lib/prisma";
@@ -54,6 +55,11 @@ async function cleanup() {
 }
 
 beforeAll(async () => {
+  // Own fixture, not the deleted importer's — see tests/helpers/priceBookFixture.ts and
+  // .claude/plans/2026-09-15-tests-build-their-own-price-data.md.
+  await ensurePriceBookGates();
+  await seedAtomics([quotableAtomic(GOOD_A), quotableAtomic(GOOD_B)]);
+
   const account = await prisma.customer.create({
     data: { name: `${MARK} Two-Address Account`, email: "p029@example.com" },
   });
@@ -80,6 +86,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await cleanup();
   await deleteTestAccount(prisma).catch(() => undefined);
+  await deleteAtomics([GOOD_A, GOOD_B]);
 });
 
 async function quotableDraft(title: string) {
