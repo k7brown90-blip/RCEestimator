@@ -19,6 +19,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import type { PurchaseOrderLineInput } from "../lib/api";
+import { isActiveJob } from "../lib/types";
 import type { PoPurpose, PoStatus, PurchaseOrderDetail, PurchaseOrderLine, PurchaseOrderSummary, ReviewReceiptRow } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 import { LandingPanel } from "./LandingPanel";
@@ -276,17 +277,30 @@ function StartPoForm({ onCreated }: { onCreated: (po: PurchaseOrderSummary) => v
   const [purpose, setPurpose] = useState<PoPurpose>("truck_stock");
   const [supplier, setSupplier] = useState("");
   const [notes, setNotes] = useState("");
+  const [jobId, setJobId] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([emptyLine()]);
   const [error, setError] = useState<string | null>(null);
+  // Kyle's ruling 2026-09-15: "All items on a P.O. should land automatically on
+  // the job it was bought for." Optional and defaults to none — a truck restock
+  // PO carries no job and never will. Same underlying call JobsPage makes for its
+  // "active" tab (api.jobs({ archived: false })), filtered with the same
+  // isActiveJob helper AccountsPage/AccountDetailPage already use for "current
+  // work" — a job finished or cancelled months ago is not a real target to buy
+  // for. A distinct string key segment, not `{ archived: false }` — that object
+  // shape structurally collides with JobsPage's `{ archived }` key under
+  // tests/queryKeyCollisions.test.ts even though the two call sites agree today,
+  // exactly the trap useRecentlyVerifiedPurchaseOrders' comment above warns about.
+  const { data: jobs = [] } = useQuery({ queryKey: ["jobs", "open-for-po-picker"], queryFn: () => api.jobs({ archived: false }) });
+  const openJobs = jobs.filter((j) => isActiveJob(j.status));
   const create = useMutation({
     mutationFn: () => {
       const cleaned: PurchaseOrderLineInput[] = lines
         .map((l) => ({ name: l.name.trim(), qty: Number(l.qty), unit: l.unit.trim() || null, partNumber: l.partNumber.trim() || null }))
         .filter((l) => l.name && Number.isFinite(l.qty) && l.qty > 0);
-      return api.startPurchaseOrder({ supplier: supplier.trim(), purpose, notes: notes.trim() || null, lines: cleaned });
+      return api.startPurchaseOrder({ supplier: supplier.trim(), purpose, jobId: jobId || null, notes: notes.trim() || null, lines: cleaned });
     },
     onSuccess: (po) => {
-      setError(null); setSupplier(""); setNotes(""); setLines([emptyLine()]); setPurpose("truck_stock");
+      setError(null); setSupplier(""); setNotes(""); setJobId(""); setLines([emptyLine()]); setPurpose("truck_stock");
       onCreated(po);
     },
     onError: (err) => setError((err as Error).message),
@@ -310,13 +324,22 @@ function StartPoForm({ onCreated }: { onCreated: (po: PurchaseOrderSummary) => v
           value={supplier}
           onChange={(e) => setSupplier(e.target.value)}
         />
+        <select className="field min-w-48 flex-1" value={jobId} onChange={(e) => setJobId(e.target.value)}>
+          <option value="">No job (truck/warehouse stock)</option>
+          {openJobs.map((j) => (
+            <option key={j.visitId} value={j.visitId}>{j.customer.name} — {j.property.addressLine1}, {j.property.city}</option>
+          ))}
+        </select>
       </div>
       <p className="mt-1 text-xs text-rce-muted">
         {purpose === "warehouse"
-          ? "Lands in the warehouse (home) — used only to transfer material to truck stock."
+          ? "Lands in the warehouse (home)."
           : purpose === "tool"
-            ? "A tool purchase — tracked separately from material."
-            : "Lands on the truck. Jobs are charged from truck stock — never from a PO."}
+            ? "A tool purchase — tracked separately from material, never charged to a job."
+            : "Lands on the truck."}
+        {purpose !== "tool" && (jobId
+          ? " Tagged to a job: the moment it lands, every line is charged to that job and the stock nets back out. Whatever is left over gets counted back at close-out."
+          : " No job: it stays as stock until a job uses it.")}
       </p>
       <div className="mt-2 space-y-1">
         {lines.map((l, i) => (
@@ -410,6 +433,7 @@ export function PurchasesCard() {
                 <PurposePill purpose={po.purpose} />
                 <span>{po.supplier}</span>
                 {po.truckName && <span className="text-xs text-rce-muted">{po.truckName}</span>}
+                {po.jobLabel && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700">{po.jobLabel}</span>}
                 {/* Kyle, 2026-09-09: "card proves" — the money behind this PO is on a card transaction. */}
                 {po.cardMatched && <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] text-sky-800">card</span>}
                 {po.afterTheFact && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">after the fact</span>}

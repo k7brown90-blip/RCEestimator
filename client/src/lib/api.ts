@@ -1018,8 +1018,8 @@ export const api = {
   /** Truck → job. 409 names the item and on-hand when short unless allowNegative + reason (recorded). */
   consumeForJob: (jobId: string, input: { truckId?: string | null; lines: ConsumeLineInput[]; reason?: string | null; allowNegative?: boolean }) =>
     request<StockMovementView[]>(`/jobs/${jobId}/consume`, { method: "POST", body: JSON.stringify(input) }),
-  /** Job → truck, credited at the cost the job was charged. */
-  returnForJob: (jobId: string, input: { truckId?: string | null; lines: ConsumeLineInput[]; reason?: string | null }) =>
+  /** Job → truck (or, with warehouse: true, the warehouse), credited at the cost the job was charged. */
+  returnForJob: (jobId: string, input: { truckId?: string | null; warehouse?: boolean; lines: ConsumeLineInput[]; reason?: string | null }) =>
     request<StockMovementView[]>(`/jobs/${jobId}/return`, { method: "POST", body: JSON.stringify(input) }),
   /** On-hand for a set of items on one truck (the default truck when none is named). Read-only. */
   inventoryOnHand: (itemIds: string[], truckId?: string | null) => {

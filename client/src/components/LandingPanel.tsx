@@ -34,6 +34,47 @@ const GUESS_SOURCES = new Set<LandingDefaults["lines"][number]["costSource"]>(["
 
 type Row = { lineId: string; qty: string; cost: string };
 
+/**
+ * Delete a landing-table line (Kyle, 2026-09-14 debug console report): "There
+ * needs to always be a way to delete information added… Now I will have to
+ * mark it as $0.00 or a duplicate because I cannot delete it." The delete
+ * already existed in Financials → Purchases (`PoLineRow`'s remove-with-reason
+ * control below); this is the same interaction shape, just reachable from the
+ * landing screen where the line was actually added.
+ */
+function LandingLineRemove({ poId, lineId, disabled, onRemoved }: { poId: string; lineId: string; disabled: boolean; onRemoved: () => void }) {
+  const [removing, setRemoving] = useState(false);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const remove = useMutation({
+    mutationFn: () => api.removePurchaseOrderLine(poId, lineId, reason.trim()),
+    onSuccess: () => { setError(null); setRemoving(false); setReason(""); onRemoved(); },
+    onError: (err) => setError((err as Error).message),
+  });
+  if (!removing) {
+    return (
+      <button
+        type="button"
+        className="text-red-600 hover:underline disabled:cursor-not-allowed disabled:text-rce-muted disabled:no-underline"
+        disabled={disabled}
+        onClick={() => setRemoving(true)}
+      >
+        remove
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <input className="field w-36 px-1 py-0.5 text-xs" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} />
+      <button type="button" className="btn btn-primary px-1.5 py-0 text-[11px]" disabled={disabled || !reason.trim() || remove.isPending} onClick={() => remove.mutate()}>
+        Remove
+      </button>
+      <button type="button" className="text-rce-muted" onClick={() => { setRemoving(false); setReason(""); setError(null); }}>cancel</button>
+      {error && <span className="w-full text-red-600">{error}</span>}
+    </span>
+  );
+}
+
 export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () => void }) {
   const queryClient = useQueryClient();
   const { data, isLoading, error: loadError } = useQuery({ queryKey: ["purchase-order-landing", poId], queryFn: () => api.landingDefaults(poId) });
@@ -155,7 +196,7 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
       <div className="overflow-x-auto">
       <table className="w-full">
         <thead className="text-left text-[11px] uppercase tracking-wide text-rce-soft">
-          <tr><th className="pr-2">Item</th><th className="pr-2 text-right">Expected</th><th className="pr-2">Landed</th><th className="pr-2">Unit cost</th><th className="text-right">Line</th></tr>
+          <tr><th className="pr-2">Item</th><th className="pr-2 text-right">Expected</th><th className="pr-2">Landed</th><th className="pr-2">Unit cost</th><th className="pr-2 text-right">Line</th><th /></tr>
         </thead>
         <tbody>
           {data.lines.map((l, i) => {
@@ -180,7 +221,10 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
                     {l.costSource !== "receipt-line" && l.matchedReceiptLine ? " · receipt line has no price" : ""}
                   </span>
                 </td>
-                <td className="py-0.5 text-right tabular-nums">{money((Number(row.qty) || 0) * (Number(row.cost) || 0))}</td>
+                <td className="py-0.5 pr-2 text-right tabular-nums">{money((Number(row.qty) || 0) * (Number(row.cost) || 0))}</td>
+                <td className="py-0.5 text-right">
+                  <LandingLineRemove poId={poId} lineId={l.lineId} disabled={landed} onRemoved={refreshLanding} />
+                </td>
               </tr>
             );
           })}

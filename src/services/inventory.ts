@@ -767,6 +767,41 @@ export interface LandingOverride {
 }
 
 /**
+ * The job a job-tagged PO charges when it lands (Decision C, Kyle 2026-09-15).
+ *
+ * A PO may be tagged to the visit an estimate was QUOTED on rather than the
+ * job the customer signed for — two Visit rows, and Kyle should not have to
+ * know that ("the job it was bought for"). When a signed, live estimate names
+ * this visit as its `visitId` and a different visit as its `jobVisitId`, the
+ * sold job is the target. Otherwise the tag stands as given: an unsold quote
+ * keeps the consume on its own visit, and the cost chain (GET /jobs, the
+ * account summary, jobMaterials — all keyed visitId → jobVisitId) rolls it
+ * onto the job if the quote sells later. /financials/job-profitability does
+ * NOT chain, which is one reason the hop is done here at write time rather
+ * than left to readers.
+ *
+ * The hop is refused (falls back to the tag) if the job visit named on the
+ * estimate no longer exists — jobVisitId is a plain column with no FK, and a
+ * consume toward a missing Visit would fail the whole landing.
+ */
+async function jobChargedOnLanding(tx: Tx, poJobId: string): Promise<{ jobId: string; viaEstimate: string | null }> {
+  const sold = await tx.issuedEstimate.findFirst({
+    where: {
+      visitId: poJobId,
+      AND: [{ jobVisitId: { not: null } }, { jobVisitId: { not: poJobId } }],
+      signedAt: { not: null }, voidedAt: null, status: { not: "void" },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { number: true, jobVisitId: true },
+  });
+  if (sold?.jobVisitId) {
+    const job = await tx.visit.findUnique({ where: { id: sold.jobVisitId }, select: { id: true } });
+    if (job) return { jobId: job.id, viaEstimate: sold.number };
+  }
+  return { jobId: poJobId, viaEstimate: null };
+}
+
+/**
  * Land a purchased/verified PO: truck_stock and warehouse POs write one
  * purchase_in per line to the PO's destination; a tool PO creates qtyLanded
  * Tool rows there. Lines then carry qtyLanded / unitCost / landedAt, the PO
@@ -777,6 +812,29 @@ export interface LandingOverride {
  * receipt total (tolerance $0.01), with a 'Land anyway' override that REQUIRES
  * a one-line reason." A PO with no receipt attached has nothing to balance
  * against, so the check only runs once a receipt is on it.
+ *
+ * Kyle, 2026-09-15: "All items on a P.O. should land automatically on the job
+ * it was bought for. Left over material gets counted to the truck or warehouse
+ * once the job is marked complete." A PO that carries a job lands as before
+ * and then, line by line IN THE SAME TRANSACTION, consumes the same quantity
+ * from the same location toward that job (jobChargedOnLanding resolves a quote
+ * visit to its sold job). The location nets back to where it was; the job is
+ * charged at the location's moving average after the merge — the landed cost
+ * when the level was empty, otherwise the blend, exactly as any consume (the
+ * average is why material must still land first: services/jobMaterials.ts).
+ *
+ *   - All or nothing: the stock rung beats every other source in
+ *     services/jobCosting.ts, so a half-recorded charge would read as a
+ *     confident, too-low job cost. One transaction, or the landing fails.
+ *   - A PO with no job is a restock and stays as stock. Tool POs create Tool
+ *     rows, not stock, and are never consumed.
+ *   - The consume passes allowNegative: it takes out exactly what this landing
+ *     put in, so the level can never end below where it started; a deficit
+ *     that already sat there (Kyle's manual override) is not this PO's to block.
+ *   - A test-account job is refused by applyMovement (409) and the landing
+ *     rolls back — untag or retag the PO. Nothing lands for a test job.
+ *   - No re-roll: the stock rung reads the ledger live (stockMaterialByJob);
+ *     Visit.actualMaterialCost is the receipt rung and is untouched.
  */
 export async function landPurchaseOrder(
   id: string,
@@ -814,7 +872,19 @@ export async function landPurchaseOrder(
   return prisma.$transaction(async (tx) => {
     await assertLocation(tx, destination);
     const now = new Date();
-    const landed: Array<{ lineId: string; itemId: string; name: string; qtyLanded: number; unitCost: number; movementId?: string; toolIds?: string[] }> = [];
+    // Kyle, 2026-09-15: a job-tagged material PO charges its job as it lands.
+    const chargedJob = po.jobId && purpose !== "tool"
+      ? { poJobId: po.jobId, ...(await jobChargedOnLanding(tx, po.jobId)) }
+      : null;
+    const chargeReason = chargedJob
+      ? [`Bought for the job on ${po.number} — charged as it landed`, chargedJob.viaEstimate ? `via ${chargedJob.viaEstimate}` : null, landReason]
+        .filter(Boolean).join(" · ")
+      : null;
+    const landed: Array<{
+      lineId: string; itemId: string; name: string; qtyLanded: number; unitCost: number; movementId?: string; toolIds?: string[];
+      /** The consume written toward chargedJob for this line, and the moving-average cost it was charged at. */
+      consumeMovementId?: string; chargedUnitCost?: number | null;
+    }> = [];
     for (const input of lines) {
       const line = byLineId.get(input.lineId)!;
       const itemId = line.itemId ?? adhocItemId(line.name);
@@ -852,6 +922,28 @@ export async function landPurchaseOrder(
           at: now,
         });
         entry.movementId = mv.id;
+        if (chargedJob) {
+          // Same item, same quantity, same location, same transaction: the level
+          // nets back to where it stood before this line landed. allowNegative
+          // only matters when it already sat below zero — see the docblock.
+          const consumed = await applyMovement(tx, {
+            kind: "consume",
+            itemId,
+            name: line.name,
+            unit: line.unit,
+            qty: input.qtyLanded,
+            fromLocationKey: destination,
+            jobId: chargedJob.jobId,
+            purchaseOrderId: po.id,
+            purchaseOrderLineId: line.id,
+            reason: chargeReason,
+            actor,
+            allowNegative: true,
+            at: now,
+          });
+          entry.consumeMovementId = consumed.id;
+          entry.chargedUnitCost = consumed.unitCost;
+        }
       }
       await tx.purchaseOrderLine.update({
         where: { id: line.id },
@@ -867,10 +959,17 @@ export async function landPurchaseOrder(
         actor,
         kind: "landed",
         reason: landReason,
-        after: JSON.stringify({ destination, purpose, lines: landed, receiptTotal, landedTotal, ...(override ? { override } : {}) }),
+        after: JSON.stringify({
+          destination, purpose, lines: landed, receiptTotal, landedTotal,
+          ...(override ? { override } : {}),
+          // The trail of the automatic charge: which job, whether it hopped from
+          // a quote visit and through which estimate. Each line above carries its
+          // consumeMovementId and chargedUnitCost.
+          ...(chargedJob ? { chargedJob } : {}),
+        }),
       },
     });
-    return { purchaseOrder: updated, destination, lines: landed, receiptTotal, landedTotal, override };
+    return { purchaseOrder: updated, destination, lines: landed, receiptTotal, landedTotal, override, chargedJob };
   });
 }
 

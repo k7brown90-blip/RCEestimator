@@ -8,8 +8,10 @@
  * cost, and each unit of stock is charged once. A return puts it back and
  * credits the job at the cost it was charged.
  *
- * This file is the writer of consume/return rows for jobs (through
- * applyMovement, the ledger's one writer) and the reader behind the "Materials
+ * This file writes the hand-recorded consume/return rows for jobs (through
+ * applyMovement, the ledger's one writer; since 2026-09-15 landPurchaseOrder in
+ * services/inventory.ts also writes a consume for every line of a job-tagged PO
+ * as it lands) and is the reader behind the "Materials
  * used" step at close-out: the suggested lines off the signed estimate, the
  * truck's on-hand beside each, what has been consumed so far, and the receipts
  * on the job with the ones riding a PO flagged "inventory, not job cost".
@@ -18,7 +20,7 @@
 
 import type { StockMovement } from "@prisma/client";
 import { prisma } from "../lib/prisma";
-import { InventoryError, adhocItemId, applyMovement, serializeMovement, truckLocationKey } from "./inventory";
+import { InventoryError, WAREHOUSE_KEY, adhocItemId, applyMovement, serializeMovement, truckLocationKey } from "./inventory";
 import { defaultTruckId } from "./purchaseOrders";
 import { estimateMaterialCost, materialCostForJobs, type MaterialCostResult } from "./jobCosting";
 
@@ -222,36 +224,65 @@ export async function consumeForJob(input: ConsumeInput): Promise<StockMovement[
 export interface ReturnInput {
   jobId: string;
   truckId?: string | null;
+  /**
+   * True routes the return to the warehouse instead of a truck — Kyle's
+   * ruling 2026-09-15: "counted to the truck or warehouse." Truck stays the
+   * default so every existing caller (the visit-page ReturnForm, the field
+   * app's /visits/:id/return) is unaffected.
+   */
+  warehouse?: boolean;
   lines: ConsumeLineInput[];
   reason?: string | null;
   actor: string;
 }
 
 /**
- * Job → truck. The credit is at the cost the job was CHARGED for that item
- * (the weighted average of its consumes), so a unit taken and put back nets to
- * zero on the job even if the truck's average moved in between; an item the job
- * never consumed returns at the truck's average.
+ * Job → truck (or, since 2026-09-15, the warehouse). The credit is at the
+ * cost the job was CHARGED for that item (the weighted average of its
+ * consumes), so a unit taken and put back nets to zero on the job even if the
+ * truck's average moved in between; an item the job never consumed returns at
+ * the truck's average.
+ *
+ * Guard added 2026-09-15 for the close-out count: an item this job actually
+ * consumed cannot be returned past what is still outstanding (consumed minus
+ * already returned) — the count step lets Kyle type a number, and nothing
+ * downstream re-checks it. An item the job never consumed keeps the older,
+ * permissive behaviour (priced at the truck's average) rather than being
+ * refused outright, since that path predates this guard and nothing here
+ * documented it as wrong.
  */
 export async function returnForJob(input: ReturnInput): Promise<StockMovement[]> {
   validateLines(input.lines);
   const job = await prisma.visit.findUnique({ where: { id: input.jobId }, select: { id: true } });
   if (!job) throw new InventoryError("Job not found", 404);
-  const truck = await resolveTruck(input.truckId);
-  const to = truckLocationKey(truck.id);
+  const truck = input.warehouse ? null : await resolveTruck(input.truckId);
+  const to = input.warehouse ? WAREHOUSE_KEY : truckLocationKey(truck!.id);
   const described = await Promise.all(input.lines.map(async (l) => {
     const itemId = l.itemId?.trim() || adhocItemId(l.name ?? "");
     return { itemId, qty: l.qty, ...(await describe(itemId, l.name, l.unit)) };
   }));
-  const consumes = await prisma.stockMovement.findMany({
-    where: { jobId: input.jobId, kind: "consume", itemId: { in: described.map((d) => d.itemId) } },
-    select: { itemId: true, qty: true, unitCost: true },
+  const priorMovements = await prisma.stockMovement.findMany({
+    where: { jobId: input.jobId, kind: { in: ["consume", "return"] }, itemId: { in: described.map((d) => d.itemId) } },
+    select: { itemId: true, kind: true, qty: true, unitCost: true },
   });
   const chargedAvg = new Map<string, number>();
-  for (const itemId of new Set(consumes.map((c) => c.itemId))) {
-    const mine = consumes.filter((c) => c.itemId === itemId);
-    const qty = mine.reduce((s, c) => s + c.qty, 0);
-    if (qty > 0) chargedAvg.set(itemId, mine.reduce((s, c) => s + c.qty * (c.unitCost ?? 0), 0) / qty);
+  const netOutstanding = new Map<string, number>();
+  for (const itemId of new Set(priorMovements.map((c) => c.itemId))) {
+    const mine = priorMovements.filter((c) => c.itemId === itemId);
+    const consumed = mine.filter((c) => c.kind === "consume");
+    const consumedQty = consumed.reduce((s, c) => s + c.qty, 0);
+    if (consumedQty > 0) {
+      chargedAvg.set(itemId, consumed.reduce((s, c) => s + c.qty * (c.unitCost ?? 0), 0) / consumedQty);
+      const returnedQty = mine.filter((c) => c.kind === "return").reduce((s, c) => s + c.qty, 0);
+      netOutstanding.set(itemId, r4(consumedQty - returnedQty));
+    }
+  }
+  for (const line of described) {
+    if (!chargedAvg.has(line.itemId)) continue; // never consumed by this job — the older, permissive path
+    const available = netOutstanding.get(line.itemId) ?? 0;
+    if (line.qty > available + 1e-9) {
+      throw new InventoryError(`${line.name} — this job only has ${r4(available)} ${line.unit ?? ""} outstanding, can't return ${line.qty}.`, 409);
+    }
   }
   return prisma.$transaction(async (tx) => {
     const out: StockMovement[] = [];

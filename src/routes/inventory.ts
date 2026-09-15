@@ -126,7 +126,7 @@ inventoryRouter.post("/purchase-orders/:id/land", asyncHandler(async (req, res) 
     override: z.object({ reason: reasonSchema }).optional(),
   }).parse(req.body);
   const result = await landPurchaseOrder(readParam(req, "id"), body.lines, "owner", body.reason ?? null, { override: body.override ?? null });
-  res.json({ id: result.purchaseOrder.id, number: result.purchaseOrder.number, status: result.purchaseOrder.status, landedAt: result.purchaseOrder.landedAt, destination: result.destination, lines: result.lines });
+  res.json({ id: result.purchaseOrder.id, number: result.purchaseOrder.number, status: result.purchaseOrder.status, landedAt: result.purchaseOrder.landedAt, destination: result.destination, lines: result.lines, chargedJob: result.chargedJob });
 }));
 
 // ── Tools ────────────────────────────────────────────────────────────────────

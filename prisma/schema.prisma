@@ -1613,7 +1613,15 @@ model PurchaseOrder {
   purpose              String // truck_stock | warehouse | tool
   destinationType      String // truck | warehouse
   truckId              String?
-  // The job the tech was on when opening — context only, never where the material lands.
+  // The job this material was bought for. Kyle, 2026-09-15: "All items on a P.O.
+  // should land automatically on the job it was bought for." Material still lands
+  // on the truck/warehouse first (the moving average needs it), and in the same
+  // transaction services/inventory.ts landPurchaseOrder consumes every landed
+  // line toward this job — or the sold job when this is the visit its estimate
+  // was quoted on — so the location nets back and the job carries the cost.
+  // Until 2026-09-15 this was context only and never moved money. A PO with no
+  // job is a restock and stays as stock; a tool PO creates Tool rows and never
+  // charges a job.
   jobId                String?
   supplier             String
   status               String               @default("open") // open | purchased | verified | closed | cancelled

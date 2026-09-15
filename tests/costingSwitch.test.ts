@@ -199,12 +199,15 @@ describe("THE MATERIAL RULE — precedence", () => {
 
 describe("the roll — land 250 ft @0.72", () => {
   it("lands on the truck through a PO; the receipt on that PO is inventory, not job cost", async () => {
+    // A restock: no job on the PO. Since 2026-09-15 a job-tagged PO charges its
+    // job the moment it lands (tests/poLandsOnJob.test.ts), and this roll has to
+    // STAY on the truck for jobs A, B and C to consume from it below.
     const po = await createPurchaseOrder({
-      supplier: "Home Depot", openedBy: "owner", actor: "test", truckId, jobId: poReceiptJob,
+      supplier: "Home Depot", openedBy: "owner", actor: "test", truckId,
       lines: [{ itemId: WIRE, name: "12-2 NM-B", qty: 250, unit: "ft" }],
     });
     poNumberForReceipt = po.number;
-    // A receipt on the PO, on the job the PO was opened from. Pre-build this was
+    // A receipt filed on a job, then attached to the PO. Pre-build this was
     // stamped straight onto the job; now it is the roll's landing that carries it.
     const receipt = await prisma.receipt.create({
       data: { id: newId(), jobId: poReceiptJob, category: "materials", vendor: "CSW-test Home Depot", amount: 180, status: "confirmed", source: "manual" },

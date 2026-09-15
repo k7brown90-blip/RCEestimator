@@ -196,17 +196,25 @@ export function MaterialsConsumeStep({ visitId, onDone, compact }: { visitId: st
   );
 }
 
+/**
+ * What this job still has outstanding, per item: consumed minus already
+ * returned, positive only. Shared by ReturnForm (one item at a time, from the
+ * visit page) and MaterialsReturnStep (the close-out count, one pass over
+ * everything) so both agree on what "still out there" means.
+ */
+function netConsumedRows(lines: JobMaterialsView["lines"]): Array<{ itemId: string; name: string; unit: string | null; net: number }> {
+  const byItem = new Map<string, { itemId: string; name: string; unit: string | null; net: number }>();
+  for (const l of lines) {
+    const row = byItem.get(l.itemId) ?? { itemId: l.itemId, name: l.name, unit: l.unit, net: 0 };
+    row.net += l.kind === "return" ? -l.qty : l.qty;
+    byItem.set(l.itemId, row);
+  }
+  return [...byItem.values()].filter((r) => r.net > 0);
+}
+
 function ReturnForm({ visitId, view, onDone }: { visitId: string; view: JobMaterialsView; onDone: () => void }) {
   const queryClient = useQueryClient();
-  const consumedItems = useMemo(() => {
-    const byItem = new Map<string, { itemId: string; name: string; unit: string | null; net: number }>();
-    for (const l of view.lines) {
-      const row = byItem.get(l.itemId) ?? { itemId: l.itemId, name: l.name, unit: l.unit, net: 0 };
-      row.net += l.kind === "return" ? -l.qty : l.qty;
-      byItem.set(l.itemId, row);
-    }
-    return [...byItem.values()].filter((r) => r.net > 0);
-  }, [view.lines]);
+  const consumedItems = useMemo(() => netConsumedRows(view.lines), [view.lines]);
   const [itemId, setItemId] = useState(consumedItems[0]?.itemId ?? "");
   const [qty, setQty] = useState("1");
   const [reason, setReason] = useState("");
@@ -234,6 +242,114 @@ function ReturnForm({ visitId, view, onDone }: { visitId: string; view: JobMater
         </button>
       </div>
       {error && <p className="rounded bg-red-50 p-2 text-red-900">{error}</p>}
+    </div>
+  );
+}
+
+/** Default reason for the close-out count — one reason for the whole batch, overridable once (Kyle, 2026-09-15). */
+const CLOSEOUT_RETURN_REASON = "Job close-out count";
+
+/**
+ * The close-out count step — "What came back?" (Kyle, 2026-09-15): "Left over
+ * material gets counted to the truck or warehouse once the job is marked
+ * complete." One pass over everything this job took, quantities editable,
+ * defaulting to nothing returned (most jobs consume what they took). One
+ * Confirm writes every line in a single /return call, credited at the cost
+ * this job was charged — same machinery as ReturnForm, just all the lines at
+ * once and one reason for the batch instead of one per line. Never gates
+ * Mark complete; a job with nothing consumed shows nothing to count.
+ */
+export function MaterialsReturnStep({ visitId, onDone, compact }: { visitId: string; onDone?: () => void; compact?: boolean }) {
+  const queryClient = useQueryClient();
+  const { data, isLoading, error: loadError } = useQuery({ queryKey: jobMaterialsKey(visitId), queryFn: () => api.jobMaterials(visitId) });
+  const rows = useMemo(() => (data ? netConsumedRows(data.lines) : []), [data]);
+  const [qtys, setQtys] = useState<Record<string, string>>({});
+  const [destination, setDestination] = useState<"truck" | "warehouse">("truck");
+  const [reason, setReason] = useState(CLOSEOUT_RETURN_REASON);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const active = rows
+    .map((r) => ({ ...r, qty: Number(qtys[r.itemId] ?? "") || 0 }))
+    .filter((r) => r.qty > 0);
+  const overrun = rows.find((r) => {
+    const v = qtys[r.itemId];
+    return v !== undefined && v.trim() !== "" && Number.isFinite(Number(v)) && Number(v) > r.net;
+  });
+  const valid = active.length > 0 && !overrun && rows.every((r) => {
+    const v = qtys[r.itemId];
+    return v === undefined || v.trim() === "" || (Number.isFinite(Number(v)) && Number(v) >= 0);
+  });
+
+  const ret = useMutation({
+    mutationFn: () => api.returnForJob(visitId, {
+      truckId: destination === "truck" ? (data?.truck.id ?? null) : null,
+      warehouse: destination === "warehouse",
+      lines: active.map((r) => ({ itemId: r.itemId, name: r.name, qty: r.qty, unit: r.unit })),
+      reason: reason.trim() || CLOSEOUT_RETURN_REASON,
+    }),
+    onSuccess: (movements) => {
+      const total = movements.reduce((s, m) => s + m.qty * (m.unitCost ?? 0), 0);
+      const place = destination === "warehouse" ? "the warehouse" : data?.truck.name ?? "the truck";
+      setDone(`Counted ${movements.length} line(s) back onto ${place} — ${money(Math.round(total * 100) / 100)} credited to this job.`);
+      setError(null);
+      setQtys({});
+      invalidateMaterials(queryClient, visitId);
+      onDone?.();
+    },
+    onError: (err) => setError((err as Error).message),
+  });
+
+  if (isLoading) return <p className="text-xs text-rce-muted">Loading materials…</p>;
+  if (loadError || !data) return <p className="text-xs text-red-600">{(loadError as Error | null)?.message ?? "Could not load the job's materials."}</p>;
+  if (rows.length === 0) return <p className="text-xs text-rce-muted">Nothing consumed on this job yet — nothing to count.</p>;
+
+  return (
+    <div className="space-y-2 text-xs">
+      <p className="text-rce-muted">
+        Everything this job took off {data.truck.name}. What came back? Defaults to nothing returned — leave a line blank if it was all used.
+      </p>
+      <table className="w-full">
+        <thead className="text-left text-[11px] uppercase tracking-wide text-rce-soft">
+          <tr><th className="pr-2">Item</th><th className="pr-2 text-right">Taken</th><th className="pr-2 text-right">Came back</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const v = qtys[r.itemId] ?? "";
+            const tooMuch = v.trim() !== "" && Number.isFinite(Number(v)) && Number(v) > r.net;
+            return (
+              <tr key={r.itemId} className="border-t border-rce-border/60">
+                <td className="py-0.5 pr-2">{r.name}<span className="text-rce-muted"> · {r.itemId}</span></td>
+                <td className="py-0.5 pr-2 text-right tabular-nums">{r.net} {r.unit ?? ""}</td>
+                <td className="py-0.5 pr-2 text-right">
+                  <input
+                    className={`field w-20 px-1 py-0.5 text-right text-xs ${tooMuch ? "border-red-400" : ""}`}
+                    inputMode="decimal"
+                    placeholder="0"
+                    value={v}
+                    onChange={(e) => setQtys((q) => ({ ...q, [r.itemId]: e.target.value }))}
+                  />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {overrun && (
+        <p className="rounded bg-red-50 p-2 text-red-900">{overrun.name} — this job only has {overrun.net} {overrun.unit ?? ""} outstanding.</p>
+      )}
+      <div className={`flex flex-wrap items-center gap-2 ${compact ? "" : "justify-between"}`}>
+        <select className="field text-xs" value={destination} onChange={(e) => setDestination(e.target.value as typeof destination)}>
+          <option value="truck">To {data.truck.name}</option>
+          <option value="warehouse">To the warehouse</option>
+        </select>
+        <input className="field w-56 px-1 py-0.5 text-xs" placeholder="Reason for the batch" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!valid || ret.isPending} onClick={() => ret.mutate()}>
+          {ret.isPending ? "Counting…" : "Confirm count"}
+        </button>
+      </div>
+      {error && <p className="rounded bg-red-50 p-2 text-red-900">{error}</p>}
+      {done && <p className="rounded bg-emerald-50 p-2 text-emerald-900">{done}</p>}
     </div>
   );
 }

@@ -5313,15 +5313,17 @@ app.post("/jobs/:jobId/consume", asyncHandler(async (req, res) => {
   res.status(201).json(movements);
 }));
 
-/** Job → truck, credited at the cost the job was charged. */
+/** Job → truck (or, with warehouse: true, the warehouse), credited at the cost the job was charged. */
 app.post("/jobs/:jobId/return", asyncHandler(async (req, res) => {
   const body = z.object({
     truckId: z.string().trim().nullable().optional(),
+    warehouse: z.boolean().optional(),
     lines: z.array(consumeLineSchema).min(1),
     reason: z.string().trim().max(300).nullable().optional(),
   }).parse(req.body);
   const movements = await returnForJob({
-    jobId: readParam(req, "jobId"), truckId: body.truckId ?? null, lines: body.lines, reason: body.reason ?? null, actor: "owner",
+    jobId: readParam(req, "jobId"), truckId: body.truckId ?? null, warehouse: body.warehouse === true,
+    lines: body.lines, reason: body.reason ?? null, actor: "owner",
   });
   res.status(201).json(movements);
 }));

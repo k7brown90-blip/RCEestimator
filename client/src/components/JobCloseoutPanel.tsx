@@ -15,7 +15,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { money } from "../lib/utils";
-import { MaterialsConsumeStep, jobMaterialsKey } from "./MaterialsUsedPanel";
+import { MaterialsConsumeStep, MaterialsReturnStep, jobMaterialsKey } from "./MaterialsUsedPanel";
 
 export function JobCloseoutPanel({ visitId, status }: { visitId: string; status: string }) {
   const queryClient = useQueryClient();
@@ -33,6 +33,10 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
   const { data: materials } = useQuery({ queryKey: jobMaterialsKey(visitId), queryFn: () => api.jobMaterials(visitId) });
   const [showMaterials, setShowMaterials] = useState(false);
   const materialsPending = Boolean(materials && materials.suggested.length > 0 && (materials.stock?.movementCount ?? 0) === 0);
+  // "What came back?" — the close-out count (Kyle, 2026-09-15): leftover material off this job
+  // counted back to the truck or warehouse. Same NO-GATE rule as the materials step above — a
+  // skipped count is never a wall, and returnForJob already refuses anything nothing was consumed.
+  const [showReturns, setShowReturns] = useState(false);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["jobPOs", visitId] });
@@ -145,6 +149,27 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
           {showMaterials && (
             <div className="mt-2 rounded-lg border border-rce-border p-3">
               <MaterialsConsumeStep visitId={visitId} compact />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── What came back? — the close-out count (Kyle, 2026-09-15) ── */}
+      {!isCompleted && (
+        <div className="mt-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-rce-soft">What came back?</h3>
+            <button className="btn btn-secondary text-xs" onClick={() => setShowReturns((s) => !s)}>
+              {showReturns ? "Hide" : "Count what came back"}
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-rce-muted">
+            Leftover material from this job, counted back to the truck or the warehouse — defaults to nothing
+            returned. Closing without this is allowed; nothing came back is the normal case.
+          </p>
+          {showReturns && (
+            <div className="mt-2 rounded-lg border border-rce-border p-3">
+              <MaterialsReturnStep visitId={visitId} compact />
             </div>
           )}
         </div>

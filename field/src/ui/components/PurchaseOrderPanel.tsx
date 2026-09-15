@@ -228,10 +228,13 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
       </div>
       <p className="text-[10px] text-slate-500">
         {purpose === 'warehouse'
-          ? 'Lands in the warehouse — only for moving material to truck stock later.'
+          ? 'Lands in the warehouse.'
           : purpose === 'tool'
-            ? 'A tool purchase — tracked separately from material.'
-            : 'Lands on the truck. Jobs are charged from truck stock, not from the PO.'}
+            ? 'A tool purchase — tracked separately from material, never charged to a job.'
+            : 'Lands on the truck.'}
+        {purpose !== 'tool' && (visitId
+          ? ' Started from this job, so every line is charged to it the moment it lands; leftovers get counted back at close-out.'
+          : ' No job: it stays as stock until a job uses it.')}
       </p>
       <input
         className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
