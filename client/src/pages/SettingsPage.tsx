@@ -16,6 +16,7 @@ const EMPTY_PROFILE: CompanyProfile = {
   insuranceCarrier: "",
   insurancePolicyNumber: "",
   insuranceExpiration: "",
+  financingUrl: "",
 };
 
 const EMPTY_HOURS: OperatingHours = {
@@ -254,6 +255,7 @@ export function SettingsPage() {
           <Field label="Insurance carrier" value={profile.insuranceCarrier} onChange={(v) => setP({ insuranceCarrier: v })} />
           <Field label="Insurance policy #" value={profile.insurancePolicyNumber} onChange={(v) => setP({ insurancePolicyNumber: v })} />
           <Field label="Insurance expiration" value={profile.insuranceExpiration} onChange={(v) => setP({ insuranceExpiration: v })} type="date" />
+          <Field label="Financing link" value={profile.financingUrl} onChange={(v) => setP({ financingUrl: v })} placeholder="https://www.mysynchrony.com/mmc/S6246031300" />
         </div>
         <button
           className="btn btn-primary mt-4"

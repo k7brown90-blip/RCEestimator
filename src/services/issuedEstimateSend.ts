@@ -334,6 +334,7 @@ export async function sendEstimateEmail(
   const link = estimateLink(est.token);
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
   const note = (opts.message ?? "").trim();
+  const profile = await getCompanyProfile();
 
   // Flat total only. The email carries no line detail and — like the page — no hours.
   const bodyHtml = `
@@ -348,6 +349,8 @@ export async function sendEstimateEmail(
         View &amp; accept your estimate
       </a>
     </p>
+    <p style="font-size:15px;">Prefer to pay over time? Financing is available through Synchrony —
+    <a href="${escapeHtml(profile.financingUrl)}">apply here</a>.</p>
     <p style="font-size:13px;color:#666;">Estimate ${escapeHtml(est.number)}${est.revision > 1 ? ` (revision ${est.revision})` : ""}
     &middot; Total ${`$${est.total.toFixed(2)}`} &middot; Valid ${est.validDays} days.</p>
     <p style="font-size:13px;color:#666;">If the button does not work, copy this link into your browser:<br>

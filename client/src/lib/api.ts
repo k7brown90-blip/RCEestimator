@@ -1990,6 +1990,7 @@ export interface CompanyProfile {
   insuranceCarrier: string;
   insurancePolicyNumber: string;
   insuranceExpiration: string;
+  financingUrl: string;
 }
 
 export interface OperatingHours {

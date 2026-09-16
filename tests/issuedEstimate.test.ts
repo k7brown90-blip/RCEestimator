@@ -696,6 +696,67 @@ describe("a successful send stamps the record", () => {
   });
 });
 
+// ─── The financing link (Kyle, 2026-09-16) ──────────────────────────────────────
+
+describe("the financing link in the estimate email", () => {
+  it("carries the default Synchrony link and states no credit terms", async () => {
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const { sendEstimateEmail } = await import("../src/services/issuedEstimateSend");
+      const d = await quotableDraft("financing-default");
+      const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
+      expect(g.ok).toBe(true);
+      if (!g.ok) return;
+
+      const result = await sendEstimateEmail(prisma, g.estimateId, { sentBy: "human:test" });
+      expect(result.ok).toBe(true);
+
+      const html = String(spy.mock.calls[0][0].bodyHtml);
+      expect(html).toContain("https://www.mysynchrony.com/mmc/S6246031300");
+      // Reg Z: stating a credit term (not just linking to Synchrony's own page,
+      // which carries its own terms and disclosures) would trigger required
+      // disclosures in the email itself.
+      expect(html).not.toMatch(/0%/);
+      expect(html).not.toMatch(/\binterest\b/i);
+      expect(html).not.toMatch(/\bAPR\b/i);
+      expect(html).not.toMatch(/\bmonth\b/i);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("refuses an untrusted stored link and falls back to the default", async () => {
+    // Not https:// — must never render in an href (this is why only https:// is accepted).
+    await prisma.companySetting.upsert({
+      where: { key: "companyProfile" },
+      update: { valueJson: JSON.stringify({ financingUrl: "javascript:alert(1)" }) },
+      create: { key: "companyProfile", valueJson: JSON.stringify({ financingUrl: "javascript:alert(1)" }) },
+    });
+
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const { sendEstimateEmail } = await import("../src/services/issuedEstimateSend");
+      const d = await quotableDraft("financing-untrusted");
+      const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
+      expect(g.ok).toBe(true);
+      if (!g.ok) return;
+
+      const result = await sendEstimateEmail(prisma, g.estimateId, { sentBy: "human:test" });
+      expect(result.ok).toBe(true);
+
+      const html = String(spy.mock.calls[0][0].bodyHtml);
+      expect(html).not.toContain("javascript:alert(1)");
+      expect(html).toContain("https://www.mysynchrony.com/mmc/S6246031300");
+    } finally {
+      spy.mockRestore();
+      // Restore the shared settings row so later tests see the default profile.
+      await prisma.companySetting.deleteMany({ where: { key: "companyProfile" } });
+    }
+  });
+});
+
 // ─── The customer sees scope and ONE price (P031, 2026-08-18) ──────────────────
 
 describe("the customer render shows no per-line prices", () => {

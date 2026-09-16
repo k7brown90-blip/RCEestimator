@@ -24,6 +24,8 @@ export interface CompanyProfile {
   /** TN electrician licence number — printed on every attestation. */
   licenseNumber: string | null;
   licenseState: string;
+  /** Synchrony financing application link, pointed to from estimate emails (Kyle, 2026-09-16). */
+  financingUrl: string;
 }
 
 export const DEFAULT_COMPANY_PROFILE: CompanyProfile = {
@@ -36,6 +38,10 @@ export const DEFAULT_COMPANY_PROFILE: CompanyProfile = {
   mailingAddress: "La Vergne, TN",
   licenseNumber: null,
   licenseState: "TN",
+  // Kyle, 2026-09-16: "I want my financing link to be sent with the estimates."
+  // Defaulted here so every estimate carries it the moment this deploys, with
+  // no Settings step required.
+  financingUrl: "https://www.mysynchrony.com/mmc/S6246031300",
 };
 
 const str = (value: unknown, fallback: string): string =>
@@ -61,6 +67,13 @@ export async function getCompanyProfile(): Promise<CompanyProfile> {
     tagline: str(raw.tagline, DEFAULT_COMPANY_PROFILE.tagline),
     licenseNumber: licenseNumber.length > 0 ? licenseNumber : null,
     licenseState: str(raw.licenseState, DEFAULT_COMPANY_PROFILE.licenseState),
+    // A stored value goes into an email href verbatim, so anything that isn't
+    // an https:// URL (e.g. a `javascript:` value) falls back to the default
+    // rather than being trusted.
+    financingUrl: (() => {
+      const candidate = str(raw.financingUrl, DEFAULT_COMPANY_PROFILE.financingUrl);
+      return candidate.startsWith("https://") ? candidate : DEFAULT_COMPANY_PROFILE.financingUrl;
+    })(),
   };
 }
 
