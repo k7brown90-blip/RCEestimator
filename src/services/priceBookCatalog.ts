@@ -445,22 +445,49 @@ export async function renameCategory(prisma: PrismaClient, from: string, to: str
   return { ok: true as const, renamed: count };
 }
 
-/** The category cards, in display order, with live counts. */
+/** The category cards, in display order, with live counts.
+ *
+ * `subCategories` is additive (2026-09-16, Unit 1 of the card-grid plan) — the
+ * existing `{ name, count, sortOrder }` shape, its values, and the array's sort
+ * order are unchanged, since `exportPriceBookXlsx` (priceBookExport.ts) depends
+ * on that contract to build its sheet order. Most items have no sub-category;
+ * that null/blank bucket is real data (not a bug) and is sorted last, never
+ * given a placeholder name that could be mistaken for one. */
 export async function listCategories(prisma: PrismaClient) {
-  const [groups, meta] = await Promise.all([
+  const [groups, subGroups, meta] = await Promise.all([
     prisma.priceBookAtomic.groupBy({
       by: ["category"],
+      where: { retiredAt: null, category: { not: null } },
+      _count: { _all: true },
+    }),
+    prisma.priceBookAtomic.groupBy({
+      by: ["category", "subCategory"],
       where: { retiredAt: null, category: { not: null } },
       _count: { _all: true },
     }),
     prisma.priceBookCategoryMeta.findMany(),
   ]);
   const orderByName = new Map(meta.map((m) => [m.name, m.sortOrder]));
+  const subByCategory = new Map<string, Array<{ name: string | null; count: number }>>();
+  for (const g of subGroups) {
+    const cat = g.category as string;
+    const arr = subByCategory.get(cat) ?? [];
+    arr.push({ name: (g.subCategory as string | null) ?? null, count: g._count._all });
+    subByCategory.set(cat, arr);
+  }
+  for (const arr of subByCategory.values()) {
+    arr.sort((a, b) => {
+      if (a.name === null || a.name === "") return 1;
+      if (b.name === null || b.name === "") return -1;
+      return a.name.localeCompare(b.name);
+    });
+  }
   return groups
     .map((g) => ({
       name: g.category as string,
       count: g._count._all,
       sortOrder: orderByName.get(g.category as string) ?? 9999,
+      subCategories: subByCategory.get(g.category as string) ?? [],
     }))
     .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
 }

@@ -466,6 +466,59 @@ export interface PbAssemblyCreate {
   laborOverrides?: Partial<Record<PbLaborTier, number>>;
 }
 
+// ─── Edit an assembly after it is created (2026-09-16, barcode/materials plan Unit 4) ───────
+// GET .../assemblies/:itemId (getAssemblyDetail, priceBookAssembly.ts:453) returns these shapes.
+// `components[].child` is a NARROWER select than PbCatalogAtomic — only the fields the rollup
+// and the drawer's read-only preview need.
+
+export interface PbAssemblyComponentChild {
+  itemId: string;
+  description: string | null;
+  unitLabel: string | null;
+  companyCost: number | null;
+  laborNormal: number | null;
+  laborDifficult: number | null;
+  laborVeryDifficult: number | null;
+  laborUnitDivisor: number | null;
+  rowType: string | null;
+}
+
+export interface PbAssemblyComponentRow {
+  id: string;
+  parentItemId: string;
+  childItemId: string;
+  quantity: number;
+  child: PbAssemblyComponentChild;
+}
+
+export interface PbTierRollup {
+  /** Null when incomplete — never a summed zero. */
+  value: number | null;
+  complete: boolean;
+  missingItemIds: string[];
+}
+
+export interface PbComponentRollup {
+  companyCost: number | null;
+  costComplete: boolean;
+  unpricedComponentItemIds: string[];
+  labor: Record<PbLaborTier, PbTierRollup>;
+}
+
+export interface PbEffectiveLaborTier {
+  value: number | null;
+  overridden: boolean;
+  /** Only present when overridden AND the live component total differs from the stored value. */
+  driftFromComputed: number | null;
+}
+
+export interface PbAssemblyDetail {
+  atomic: PbCatalogAtomic;
+  components: PbAssemblyComponentRow[];
+  rollup: PbComponentRollup;
+  labor: Record<PbLaborTier, PbEffectiveLaborTier>;
+}
+
 // ─── The material database (2026-09-12, barcode/materials plan Unit 2/6) ────
 // See src/services/materials.ts. `MaterialPromoteInput` mirrors PromoteMaterialInput there —
 // creating a brand-new price book item for a material with no counterpart in the book.
@@ -1520,9 +1573,14 @@ export const api = {
 
   // ─── Price Book editor (2026-08-30 — the app is the book) ─────────────────
   pbCatalogCategories: () =>
-    request<{ categories: Array<{ name: string; count: number; sortOrder: number }> }>(
-      "/price-book/catalog/categories",
-    ),
+    request<{
+      categories: Array<{
+        name: string;
+        count: number;
+        sortOrder: number;
+        subCategories: Array<{ name: string | null; count: number }>;
+      }>;
+    }>("/price-book/catalog/categories"),
   pbCatalogCategoryOrder: (names: string[]) =>
     request<{ ok: true }>("/price-book/catalog/categories/order", {
       method: "PUT",
@@ -1574,6 +1632,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  /** Full detail for the edit drawer — components (with each child's estimating facts), the
+   * live rollup, and each tier's effective (overridden-or-auto) labour value. */
+  pbCatalogAssemblyDetail: (itemId: string) =>
+    request<PbAssemblyDetail>(`/price-book/catalog/assemblies/${encodeURIComponent(itemId)}`),
+
+  /** Full REPLACE, not a delta (priceBookAssembly.ts:377-384) — the server deletes every existing
+   * component and recreates the list from this payload. Always send the COMPLETE list. */
+  pbCatalogSetAssemblyComponents: (itemId: string, components: PbAssemblyComponentInput[]) =>
+    request<{ atomic: PbCatalogAtomic; rollup: PbComponentRollup }>(
+      `/price-book/catalog/assemblies/${encodeURIComponent(itemId)}/components`,
+      { method: "PUT", body: JSON.stringify({ components }) },
+    ),
+
+  /** Set (a number) or clear (null — reverts to the live component auto-sum) one tier's
+   * override. Never inferred from equalling the sum — this is an explicit flag server-side. */
+  pbCatalogSetLaborOverride: (itemId: string, tier: PbLaborTier, value: number | null) =>
+    request<{ atomic: PbCatalogAtomic }>(
+      `/price-book/catalog/assemblies/${encodeURIComponent(itemId)}/labor-override`,
+      { method: "PUT", body: JSON.stringify({ tier, value }) },
+    ),
 
   pbIssuedList: (draftId?: string) =>
     request<{ estimates: PbIssuedEstimate[] }>(
