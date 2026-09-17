@@ -1420,7 +1420,8 @@ const fieldPoBodySchema = z.object({
     // resolved Material — its linked price-book item and its last-seen pack price — so a
     // known code costs the tech zero typing. Both optional; an unscanned free-text line
     // (the pre-existing path) simply omits them, same as before.
-    itemId: z.string().trim().max(40).nullable().optional(),
+    // 200, not 40 — see app.ts poLineSchema for why (Unit P, 2026-09-17).
+    itemId: z.string().trim().max(200).nullable().optional(),
     unitCost: z.number().nonnegative().nullable().optional(),
   })).optional(),
 });
@@ -1553,7 +1554,8 @@ healthRecordTechRouter.post("/purchase-orders/:id/status", asyncHandler(async (r
  */
 healthRecordTechRouter.post("/purchase-orders/:id/lines", asyncHandler(async (req: TechRequest, res) => {
   const body = z.object({
-    itemId: z.string().trim().max(40).nullable().optional(),
+    // 200, not 40 — see app.ts poLineSchema for why (Unit P, 2026-09-17).
+    itemId: z.string().trim().max(200).nullable().optional(),
     name: z.string().trim().min(1).max(300),
     qty: z.number().positive(),
     unit: z.string().trim().max(20).nullable().optional(),
@@ -1903,6 +1905,9 @@ async function applyVisionParse(receiptId: string): Promise<{ parsed: boolean }>
     select: { id: true, imageData: true, imageMime: true, amount: true, vendor: true, lineItems: true, jobId: true },
   });
   if (!receipt || !receipt.imageData) return { parsed: false };
+  // Unit R (2026-09-17): Vision reads an image_url data URL and cannot read a PDF —
+  // never even attempt the (paid) call for one.
+  if (receipt.imageMime === "application/pdf") return { parsed: false };
 
   const { parseReceiptImage } = await import("../services/receiptVision");
   let parsed;
@@ -1943,13 +1948,15 @@ async function applyVisionParse(receiptId: string): Promise<{ parsed: boolean }>
  */
 healthRecordTechRouter.put(
   "/receipts/:receiptId",
-  express.raw({ type: "image/*", limit: "15mb" }),
+  // Unit R (2026-09-17): PDFs accepted alongside images — a saved Home Depot
+  // online-order PDF is a real receipt. Widened from "image/*" only.
+  express.raw({ type: ["image/*", "application/pdf"], limit: "15mb" }),
   asyncHandler(async (req: TechRequest, res) => {
     const receiptId = readParam(req, "receiptId");
     const body = req.body as Buffer;
 
     if (!Buffer.isBuffer(body) || body.length === 0) {
-      res.status(400).json({ success: false, error: { code: "bad_request", message: "Raw image body required (Content-Type: image/*)" } });
+      res.status(400).json({ success: false, error: { code: "bad_request", message: "Raw image or PDF body required (Content-Type: image/* or application/pdf)" } });
       return;
     }
 
@@ -1984,7 +1991,14 @@ healthRecordTechRouter.put(
     }
 
     const mimeType = (req.headers["content-type"] as string | undefined) ?? "image/jpeg";
-    const needsVision = query.amount == null || !query.vendor;
+    const isPdf = mimeType === "application/pdf";
+    // Vision reads an image_url data URL and cannot read a PDF (receiptVision.ts) —
+    // a PDF with no typed amount would otherwise sit pending_review forever.
+    if (isPdf && query.amount == null) {
+      res.status(400).json({ success: false, error: { code: "bad_request", message: "PDF receipts can't be read automatically — type the amount." } });
+      return;
+    }
+    const needsVision = !isPdf && (query.amount == null || !query.vendor);
 
     const data = {
       jobId: query.jobId ?? null,

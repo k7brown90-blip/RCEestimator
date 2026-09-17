@@ -23,6 +23,7 @@ import { prisma } from "../lib/prisma";
 import { InventoryError, WAREHOUSE_KEY, adhocItemId, applyMovement, serializeMovement, truckLocationKey } from "./inventory";
 import { defaultTruckId } from "./purchaseOrders";
 import { estimateMaterialCost, materialCostForJobs, type MaterialCostResult } from "./jobCosting";
+import { aggregateMaterialList, isAssemblyRowType, type ComponentInput, type MaterialListLine } from "./priceBookAssembly";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const r4 = (n: number) => Math.round(n * 10000) / 10000;
@@ -129,6 +130,167 @@ export async function suggestedLinesForJob(jobId: string, truckId: string): Prom
       return { itemId, name: g.name, qty: g.qty, unit: oh?.unit ?? g.unit, onHand: oh?.qty ?? 0, avgUnitCost: oh?.avgUnitCost ?? null, consumedQty: consumedById.get(itemId) ?? 0 };
     }),
   };
+}
+
+// ─── Shortages — what the job still needs, for one complete P.O. (Kyle, 2026-09-16 / Unit P) ──
+//
+// "This should not be line item specific... When the estimate is signed then on the job page and
+// in the field app it will say create a p.o. and be able to add the items to the p.o. from
+// there." A NEW computation, deliberately separate from suggestedLinesForJob above (which also
+// feeds the consume/close-out screens and must keep its existing output byte-for-byte).
+
+export interface ShortageLine {
+  itemId: string;
+  name: string;
+  unit: string | null;
+  /** The signed scope's quantity, assemblies expanded to their real components, summed across
+   *  every signed estimate on the job (the original AND any change order — see below). */
+  neededQty: number;
+  consumedQty: number;
+  /** On the ONE truck this view was built for — same basis as `SuggestedLine.onHand`. */
+  onHand: number;
+  /** This item's quantity on the job's open (not cancelled, not yet landed) purchase orders —
+   *  so a second P.O. does not re-order material already on its way. */
+  qtyOnOpenPOs: number;
+  /** max(0, (neededQty - consumedQty) - onHand - qtyOnOpenPOs). Only positive shortages are
+   *  returned — this list IS the pre-fill for "Create P.O.". */
+  shortBy: number;
+}
+
+/** Open = ordered but not yet landed. Landing closes a PO (purchaseOrders.ts,
+ *  closePurchaseOrderForLanding), and its material is by then already counted in onHand /
+ *  consumedQty, so "closed" is deliberately excluded here alongside "cancelled". */
+const OPEN_PO_STATUSES = ["open", "purchased", "verified"] as const;
+
+/**
+ * Every signed, non-void, non-superseded estimate on this job's chain.
+ *
+ * Unlike `signedEstimateForJob` above (newest only — correct for "what should the tech have
+ * pulled off the truck right now"), a signed CHANGE ORDER is a separate `IssuedEstimate` row from
+ * the original: `POST /issued-estimates/:id/change-order` (app.ts) seeds the new draft's
+ * `visitId` with the original's `jobVisitId ?? visitId` (the job), but the new estimate's own
+ * `jobVisitId` starts null — `createJobFromSignedEstimate` (accountSpine.ts) checks exactly that
+ * column and, finding it empty, creates its OWN new Visit when the change order is signed. So a
+ * change order's signed estimate is linked to this job only through `visitId`, while the
+ * original's is linked through `jobVisitId` — both satisfy the `OR` below, but `findFirst`
+ * (signedEstimateForJob) returns only the newer of the two, silently dropping the other's
+ * material. For the job's total material NEED, both must count. `supersededBy: null` drops a
+ * stale revision of an estimate that has since been re-issued (issuedEstimateService.ts
+ * reviseEstimate — a signed estimate CAN be revised; the old row keeps its signature but is no
+ * longer the live scope), matching the filter `GET /jobs` open-invoice reader already uses
+ * (app.ts:4914).
+ */
+async function allSignedEstimatesForJob(jobId: string) {
+  return prisma.issuedEstimate.findMany({
+    where: { signedAt: { not: null }, voidedAt: null, status: { not: "void" }, supersededBy: null, OR: [{ jobVisitId: jobId }, { visitId: jobId }] },
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true, number: true, title: true, visitId: true, jobVisitId: true, selectedOptions: true,
+      lines: {
+        orderBy: { sortOrder: "asc" },
+        select: { itemId: true, description: true, quantity: true, option: true, materialCost: true, materialSell: true, atomic: { select: { unit: true, unitLabel: true } } },
+      },
+    },
+  });
+}
+
+/**
+ * The job's material shortage: everything the signed scope (every signed estimate on the job,
+ * assemblies expanded to their real components) still needs beyond what a truck already holds,
+ * what has already been consumed, and what is already on order.
+ */
+export async function shortagesForJob(jobId: string, truckId: string): Promise<ShortageLine[]> {
+  const ests = await allSignedEstimatesForJob(jobId);
+  if (ests.length === 0) return [];
+
+  // Every taken material line across every estimate on the job, grouped by item — a change
+  // order's added lines and the original's both count.
+  const grouped = new Map<string, { name: string; qty: number; unit: string | null }>();
+  for (const est of ests) {
+    for (const l of materialLinesOf(est)) {
+      const row = grouped.get(l.itemId) ?? { name: l.description, qty: 0, unit: l.atomic.unitLabel ?? l.atomic.unit ?? null };
+      row.qty = r4(row.qty + l.quantity);
+      grouped.set(l.itemId, row);
+    }
+  }
+  if (grouped.size === 0) return [];
+
+  // Expand assemblies to their real components. `suggestedLinesForJob` groups an assembly line
+  // under the assembly's own itemId, which is never stocked (assertNotAssembly) — it would read
+  // fully short forever and its real components would never appear. An assembly must NEVER reach
+  // a PO line.
+  const lineIds = [...grouped.keys()];
+  const lineAtomics = await prisma.priceBookAtomic.findMany({ where: { itemId: { in: lineIds } }, select: { itemId: true, rowType: true } });
+  const assemblyIds = new Set(lineAtomics.filter((a) => isAssemblyRowType(a.rowType)).map((a) => a.itemId));
+  const componentsByParent = new Map<string, ComponentInput[]>();
+  if (assemblyIds.size > 0) {
+    const componentRows = await prisma.priceBookItemComponent.findMany({
+      where: { parentItemId: { in: [...assemblyIds] } },
+      select: { parentItemId: true, childItemId: true, quantity: true },
+    });
+    for (const r of componentRows) {
+      const list = componentsByParent.get(r.parentItemId) ?? [];
+      list.push({ childItemId: r.childItemId, quantity: r.quantity });
+      componentsByParent.set(r.parentItemId, list);
+    }
+  }
+  const materialListLines: MaterialListLine[] = lineIds.map((itemId) => ({ itemId, quantity: grouped.get(itemId)!.qty }));
+  const expanded = aggregateMaterialList(materialListLines, componentsByParent)
+    // Defensive, not expected to fire: the CRM refuses to save an assembly with an empty
+    // component list (constants.md), which is the only way aggregateMaterialList's "no
+    // components" branch would otherwise pass an assembly's own itemId straight through.
+    .filter((e) => !assemblyIds.has(e.itemId));
+  if (expanded.length === 0) return [];
+
+  const realIds = expanded.map((e) => e.itemId);
+  const bookRows = await prisma.priceBookAtomic.findMany({
+    where: { itemId: { in: realIds } },
+    select: { itemId: true, description: true, unit: true, unitLabel: true },
+  });
+  const bookById = new Map(bookRows.map((b) => [b.itemId, b]));
+
+  const chain = [...new Set(ests.flatMap((est) => chainOf(jobId, est)))];
+  const [onHand, consumedMovements, openPoLines] = await Promise.all([
+    onHandFor(truckId, realIds),
+    prisma.stockMovement.findMany({
+      where: { jobId: { in: [jobId, ...chain] }, kind: { in: ["consume", "return"] }, itemId: { in: realIds } },
+      select: { itemId: true, kind: true, qty: true },
+    }),
+    prisma.purchaseOrderLine.findMany({
+      where: { itemId: { in: realIds }, purchaseOrder: { jobId: { in: [jobId, ...chain] }, status: { in: [...OPEN_PO_STATUSES] } } },
+      select: { itemId: true, qty: true },
+    }),
+  ]);
+  const consumedById = new Map<string, number>();
+  for (const m of consumedMovements) consumedById.set(m.itemId, r4((consumedById.get(m.itemId) ?? 0) + (m.kind === "consume" ? m.qty : -m.qty)));
+  const onOrderById = new Map<string, number>();
+  for (const l of openPoLines) {
+    if (!l.itemId) continue;
+    onOrderById.set(l.itemId, r4((onOrderById.get(l.itemId) ?? 0) + l.qty));
+  }
+
+  const out: ShortageLine[] = [];
+  for (const { itemId, quantity } of expanded) {
+    const book = bookById.get(itemId);
+    const original = grouped.get(itemId); // set only when this itemId was already a plain (unexpanded) estimate line
+    const oh = onHand[itemId];
+    const consumedQty = consumedById.get(itemId) ?? 0;
+    const qtyOnOpenPOs = onOrderById.get(itemId) ?? 0;
+    const onHandQty = oh?.qty ?? 0;
+    const shortBy = r4(Math.max(0, quantity - consumedQty - onHandQty - qtyOnOpenPOs));
+    if (shortBy <= 0) continue;
+    out.push({
+      itemId,
+      name: original?.name ?? book?.description ?? itemId,
+      unit: oh?.unit ?? original?.unit ?? book?.unitLabel ?? book?.unit ?? null,
+      neededQty: quantity,
+      consumedQty,
+      onHand: onHandQty,
+      qtyOnOpenPOs,
+      shortBy,
+    });
+  }
+  return out;
 }
 
 /**
@@ -321,6 +483,9 @@ export interface JobMaterialsView {
   truck: { id: string; name: string };
   estimate: { id: string; number: string; title: string } | null;
   suggested: SuggestedLine[];
+  /** What the job still needs beyond on-hand, consumed, and what's already on order — the
+   *  pre-fill for "Create P.O." (Unit P, 2026-09-17). Only positive shortages. */
+  shortages: ShortageLine[];
   lines: JobMaterialLine[];
   stock: MaterialCostResult["stock"];
   receipts: Array<{
@@ -345,8 +510,9 @@ export async function jobMaterials(jobId: string, truckId?: string | null): Prom
   const truck = await resolveTruck(truckId);
   const est = await signedEstimateForJob(jobId);
   const chain = chainOf(jobId, est);
-  const [suggested, movements, receipts, costs] = await Promise.all([
+  const [suggested, shortages, movements, receipts, costs] = await Promise.all([
     suggestedLinesForJob(jobId, truck.id),
+    shortagesForJob(jobId, truck.id),
     prisma.stockMovement.findMany({
       where: { jobId: { in: [jobId, ...chain] }, kind: { in: ["consume", "return", "correction"] } },
       orderBy: [{ at: "asc" }, { createdAt: "asc" }],
@@ -383,6 +549,7 @@ export async function jobMaterials(jobId: string, truckId?: string | null): Prom
     truck,
     estimate: suggested.estimate,
     suggested: suggested.lines,
+    shortages,
     lines,
     stock: cost.stock,
     receipts: receipts.map((r) => {

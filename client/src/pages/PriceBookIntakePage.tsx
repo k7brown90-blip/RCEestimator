@@ -1196,8 +1196,11 @@ function ReviewTab(props: {
 function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | undefined; onChanged: () => void; onHand?: OnHand }) {
   const { line: l, computed: c, onChanged, onHand } = props;
   // On-hand on the default truck beside a material line (Kyle, 2026-09-09, Build 4).
-  // Read-only: "on truck: 190 ft", and "short 60 ft → add to a PO" when the line
-  // needs more than the truck holds. Only lines that carry material.
+  // Read-only: "on truck: 190 ft", and "short 60 ft" when the line needs more than
+  // the truck holds. Only lines that carry material. Not a PO prompt — Kyle,
+  // 2026-09-16: a per-line "add to a PO" here risked creating single-item POs
+  // instead of one complete material order; a P.O. is built from the job's whole
+  // shortage list instead (jobMaterials.ts, "shortages").
   const carriesMaterial = (c?.materialCost ?? 0) > 0 || (c?.materialSell ?? 0) > 0;
   const shortBy = onHand ? Math.round((l.quantity - onHand.qty) * 10000) / 10000 : 0;
   const [editing, setEditing] = useState(false);
@@ -1258,7 +1261,7 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
           {carriesMaterial && onHand && (
             <div className="text-xs">
               <span className="text-rce-soft">on truck: {onHand.qty} {onHand.unit ?? l.unit ?? ""}</span>
-              {shortBy > 0 && <span className="ml-1 text-amber-800">· short {shortBy} {onHand.unit ?? l.unit ?? ""} → add to a PO</span>}
+              {shortBy > 0 && <span className="ml-1 text-amber-800">· short {shortBy} {onHand.unit ?? l.unit ?? ""}</span>}
             </div>
           )}
         </div>

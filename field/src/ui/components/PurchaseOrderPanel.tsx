@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   createPurchaseOrderFromField,
   createStandalonePurchaseOrder,
+  fetchJobMaterials,
   lineFromScannedCode,
   pendingReceiptCount,
   queueReceiptAndReport,
@@ -141,6 +142,28 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
   const [scanning, setScanning] = useState(false)
   const [skuInput, setSkuInput] = useState('')
   const [resolving, setResolving] = useState(false)
+  const [shortageTruck, setShortageTruck] = useState<string | null>(null)
+
+  /**
+   * "Create P.O." pre-fills the job's whole shortage list (Kyle, 2026-09-16/17, Unit P) — not a
+   * per-item prompt, which risked one single-item PO per short line. Job-scoped only (no visitId
+   * on the Purchases screen's standalone form); a fetch failure (offline) just leaves the blank
+   * line, same as before — PO creation itself stays online-only regardless.
+   */
+  useEffect(() => {
+    if (!visitId) return
+    let cancelled = false
+    fetchJobMaterials(visitId)
+      .then((d) => {
+        if (cancelled || d.shortages.length === 0) return
+        setShortageTruck(d.truck.name)
+        setLines(d.shortages.map((s) => ({ name: s.name, qty: String(s.shortBy), unit: s.unit ?? undefined, itemId: s.itemId })))
+      })
+      .catch(() => {
+        // Offline or the request failed — the tech still has the blank line to type into.
+      })
+    return () => { cancelled = true }
+  }, [visitId])
 
   /**
    * The one path both a camera scan and a typed SKU go through (Kyle, 2026-09-12: "typing a
@@ -203,6 +226,7 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
       setSupplier('')
       setLines([blankLine()])
       setPurpose('truck_stock')
+      setShortageTruck(null)
     } catch (err) {
       setStatus(`Failed — ${noSignal(err)}`)
     } finally {
@@ -275,6 +299,12 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
         </div>
       )}
 
+      {shortageTruck && (
+        <p className="text-[10px] text-slate-500">
+          Pre-filled from what this job is short, checked against {shortageTruck}. Edit quantities or remove a line
+          before starting the P.O. — more than one P.O. on a job is fine.
+        </p>
+      )}
       {lines.map((line, i) => (
         <div key={i} className="flex gap-2">
           <input
@@ -292,6 +322,15 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
           />
           {line.unresolved && (
             <span className="self-center rounded bg-amber-950/60 px-2 py-1 text-[10px] text-amber-300">new</span>
+          )}
+          {lines.length > 1 && (
+            <button
+              type="button"
+              onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))}
+              className="rounded border border-slate-700 px-2 text-xs text-slate-400"
+            >
+              ✕
+            </button>
           )}
         </div>
       ))}

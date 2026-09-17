@@ -73,7 +73,7 @@ import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
-import { rerollJobMaterialCost, rerollJobsMaterialCost } from "./services/receiptCosting";
+import { rerollJobMaterialCost } from "./services/receiptCosting";
 import {
   PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
   defaultTruckId, detachReceiptFromPurchaseOrder, editPurchaseOrderLine, jobLabelOf, parseStatusFilter,
@@ -5255,7 +5255,11 @@ app.post("/jobs/:jobId/reopen", asyncHandler(async (req, res) => {
 // drill-down. The job is context — where the tech was — never the destination.
 
 const poLineSchema = z.object({
-  itemId: z.string().trim().max(40).nullable().optional(),
+  // 200, not 40: real book ids run past 40 chars (e.g. the 48-char
+  // "spd-breaker-style-65ka-siemens-load-centers-only"). A pre-filled shortage
+  // line was 400ing on this cap (Unit P, 2026-09-17). PurchaseOrderLine.itemId
+  // has no length limit in the schema, so this is just the intake cap.
+  itemId: z.string().trim().max(200).nullable().optional(),
   name: z.string().trim().min(1).max(300),
   qty: z.number().positive(),
   unit: z.string().trim().max(20).nullable().optional(),
@@ -5505,7 +5509,12 @@ app.post("/purchase-orders/:id/receipts/:receiptId", asyncHandler(async (req, re
  */
 app.put(
   "/purchase-orders/:id/receipts/:receiptId",
-  express.raw({ type: "image/*", limit: "15mb" }),
+  // Unit R (2026-09-17): capture the raw body regardless of Content-Type — the
+  // old `type: "image/*"` filter silently dropped a PDF (application/pdf isn't
+  // "image/*"), leaving `hasImage` false while still returning 201. Every byte
+  // sent is now captured here; an unsupported Content-Type is then refused
+  // explicitly below instead of being silently discarded.
+  express.raw({ type: () => true, limit: "15mb" }),
   asyncHandler(async (req, res) => {
     const poId = readParam(req, "id");
     const receiptId = readParam(req, "receiptId");
@@ -5525,8 +5534,20 @@ app.put(
     const body = req.body as Buffer;
     const hasImage = Buffer.isBuffer(body) && body.length > 0;
     const mimeType = (req.headers["content-type"] as string | undefined) ?? "image/jpeg";
+    const isPdf = mimeType === "application/pdf";
+    // A file was sent but is not a type this door can store — refuse rather than
+    // silently saving the receipt with no file and a 201 (the 2026-09-17 defect).
+    if (hasImage && !isPdf && !mimeType.startsWith("image/")) {
+      res.status(415).json({ error: `Unsupported file type (${mimeType}) — attach an image or a PDF.` });
+      return;
+    }
+    // Vision reads an image_url data URL and cannot read a PDF — require the typed amount instead.
+    if (hasImage && isPdf && query.amount == null) {
+      res.status(400).json({ error: "PDF receipts can't be read automatically — type the amount." });
+      return;
+    }
     // Read the photo when the amount was not typed — the total AND the lines the landing weights need.
-    const parsed = hasImage && query.amount == null ? await parseReceiptImage(body, mimeType) : null;
+    const parsed = hasImage && !isPdf && query.amount == null ? await parseReceiptImage(body, mimeType) : null;
     const amount = query.amount ?? parsed?.total ?? 0;
     const data = {
       purchaseOrderId: poId,
@@ -5664,51 +5685,15 @@ app.post("/receipts/:id/waive-po", asyncHandler(async (req, res) => {
 }));
 
 /**
- * Receipt upload from the CRM (Kyle, 2026-08-25: "I will upload receipts which
- * will be required"). Same storage as the tech PWA's captures — bytes in
- * Postgres, category, vendor, amount — but entered by the office, so the values
- * are typed rather than Vision-extracted and land confirmed.
+ * RETIRED (Unit R, 2026-09-17). This door let the CRM job page create a
+ * receipt with no P.O. — Kyle: "there should not be an stand alone add a
+ * receipt button. Every receipt should have a P.O. first." It also parsed the
+ * body with `express.raw({ type: "image/*" })`, so a PDF (application/pdf)
+ * silently failed to store while still returning 201 — the root cause of the
+ * 2026-09-17 double-booked $765.74 Home Depot receipt (PO-2026-0021).
+ * `PUT /purchase-orders/:id/receipts/:receiptId` (above) is the only CRM
+ * receipt door now; it requires a live P.O. and accepts PDFs.
  */
-app.put(
-  "/jobs/:jobId/receipts/:receiptId",
-  express.raw({ type: "image/*", limit: "15mb" }),
-  asyncHandler(async (req, res) => {
-    const jobId = readParam(req, "jobId");
-    const receiptId = readParam(req, "receiptId");
-    const query = z.object({
-      vendor: z.string().trim().max(200).optional(),
-      amount: z.coerce.number().positive(),
-      category: z.enum(["materials", "gas", "maintenance", "overhead", "permit", "inspection"]).default("materials"),
-    }).parse(req.query);
-
-    const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { id: true } });
-    if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
-
-    const body = req.body as Buffer;
-    const hasImage = Buffer.isBuffer(body) && body.length > 0;
-    const data = {
-      jobId,
-      vendor: query.vendor ?? null,
-      amount: query.amount,
-      category: query.category,
-      source: "manual",
-      status: "confirmed",
-      ...(hasImage ? { imageData: body, imageMime: req.headers["content-type"] ?? "image/jpeg" } : {}),
-    };
-    const previous = await prisma.receipt.findUnique({ where: { id: receiptId }, select: { jobId: true } });
-    await prisma.receipt.upsert({
-      where: { id: receiptId },
-      create: { id: receiptId, ...data },
-      update: data,
-    });
-    // Kyle, 2026-09-08 (Daughdrill): this door landed receipts confirmed but never
-    // re-rolled the job, so the card kept showing the estimate's material.
-    await rerollJobsMaterialCost([jobId, previous?.jobId]);
-    // Kyle, 2026-09-09: "photo verifies, card proves" — pair it with the card transaction if one is waiting.
-    await matchSpendForReceipt(receiptId).catch((err) => console.error("[receipts] card match failed:", err));
-    res.status(201).json({ id: receiptId, amount: query.amount });
-  }),
-);
 
 /**
  * Every receipt waiting for review, across accounts, with the labels the

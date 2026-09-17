@@ -523,6 +523,19 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
             >
               Back
             </button>
+            {/* Reschedule mode hides the idle row's "Cancel Job" button, and
+                nothing labels "Back" as the way to reach it — Kyle, 2026-09-16:
+                "There is no way to cancel an appointment." Surface cancel
+                directly here too, same red styling as the idle-mode button. */}
+            {mode === "reschedule" && canCancel && (
+              <button
+                type="button"
+                onClick={() => { setMode("cancel"); setSelectedDate(null); setError(null); }}
+                className="rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100"
+              >
+                Cancel Job
+              </button>
+            )}
           </div>
         </div>
       )}

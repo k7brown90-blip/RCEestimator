@@ -294,6 +294,55 @@ describe("attaching a receipt", () => {
   });
 });
 
+describe("PUT /purchase-orders/:id/receipts/:receiptId accepts PDFs (Unit R, 2026-09-17)", () => {
+  // Root cause of the 2026-09-17 double-booked $765.74 Home Depot receipt:
+  // this door parsed the body with express.raw({ type: "image/*" }), so a PDF
+  // (application/pdf) silently failed to parse, hasImage read false, and the
+  // row still saved with a 201 and no file. Fixed to capture every body and
+  // refuse explicitly instead of dropping it.
+  const pdfBytes = Buffer.from("%PDF-1.4\n%mock receipt pdf\n", "utf8");
+
+  it("stores a PDF with imageMime application/pdf when the amount is typed, and skips Vision", async () => {
+    const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test PDF Depot", jobId });
+    const poId = created.body.id as string;
+    const receiptId = newId();
+    const res = await request(app)
+      .put(`/purchase-orders/${poId}/receipts/${receiptId}?vendor=PO-test%20PDF%20Depot&amount=765.74&category=materials`)
+      .set("Content-Type", "application/pdf")
+      .send(pdfBytes);
+    expect(res.status).toBe(201);
+    expect(res.body.amount).toBe(765.74);
+    expect(res.body.parsed).toBe(false);
+    const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receiptId } });
+    expect(row.imageMime).toBe("application/pdf");
+    expect(row.status).toBe("confirmed");
+    expect(Buffer.from(row.imageData!).equals(pdfBytes)).toBe(true);
+  });
+
+  it("refuses a PDF with no typed amount — Vision cannot read a PDF data URL", async () => {
+    const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test PDF No Amount", jobId });
+    const poId = created.body.id as string;
+    const res = await request(app)
+      .put(`/purchase-orders/${poId}/receipts/${newId()}?vendor=PO-test%20PDF%20No%20Amount&category=materials`)
+      .set("Content-Type", "application/pdf")
+      .send(pdfBytes);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/type the amount/i);
+  });
+
+  it("a file this door cannot store is refused (415), never a silent 201 — the 2026-09-17 defect", async () => {
+    const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test Bad File", jobId });
+    const poId = created.body.id as string;
+    const receiptId = newId();
+    const res = await request(app)
+      .put(`/purchase-orders/${poId}/receipts/${receiptId}?vendor=PO-test%20Bad%20File&amount=10&category=materials`)
+      .set("Content-Type", "text/plain")
+      .send(Buffer.from("not a receipt"));
+    expect(res.status).toBe(415);
+    expect(await prisma.receipt.findUnique({ where: { id: receiptId } })).toBeNull();
+  });
+});
+
 describe("the edit trail", () => {
   it("PATCH with a reason writes an edited event with before/after; without a reason is 400", async () => {
     const created = await request(app).post("/purchase-orders").send({

@@ -40,6 +40,8 @@ import { app } from "../src/app";
 import { rollupJobCosts } from "../src/services/jobCosting";
 import { plausiblePurchaseDate, resolvePurchaseDate } from "../src/services/receiptVision";
 import { matchSpendForReceipt } from "../src/services/cardSpend";
+import { createPurchaseOrder, transitionPurchaseOrder } from "../src/services/purchaseOrders";
+import { rerollJobMaterialCost } from "../src/services/receiptCosting";
 
 describe("vision purchase dates are only trusted when plausible", () => {
   const now = new Date("2026-09-08T17:00:00Z");
@@ -105,29 +107,56 @@ afterAll(async () => {
 });
 
 describe("receipt doors re-roll the job's material cost", () => {
-  it("office upload (PUT /jobs/:id/receipts/:id) lands confirmed AND re-rolls the job", async () => {
-    const res = await request(app)
-      .put(`/jobs/${jobId}/receipts/${newId()}?vendor=Home%20Depot&amount=212.40&category=materials`)
-      .set("Content-Type", "image/jpeg")
-      .send(jpg);
-    expect(res.status).toBe(201);
+  // Unit R (2026-09-17) retired PUT /jobs/:jobId/receipts/:receiptId — a CRM
+  // receipt can no longer be created with no P.O. at all. These two setup
+  // rows stand in for what that door used to produce (a confirmed materials
+  // receipt on the job, no purchaseOrderId) so the reroll math below is
+  // unchanged; rerollJobMaterialCost is the exact function every door calls.
+  it("a confirmed materials receipt with no P.O. stamps the job directly", async () => {
+    await prisma.receipt.create({
+      data: { jobId, category: "materials", status: "confirmed", source: "manual", vendor: "Home Depot", amount: 212.4 },
+    });
+    expect(await rerollJobMaterialCost(jobId)).toBe(212.4);
     expect(await stamped(jobId)).toBe(212.4);
 
-    const second = await request(app)
-      .put(`/jobs/${jobId}/receipts/${newId()}?vendor=Lowes&amount=100.10&category=materials`)
-      .set("Content-Type", "image/jpeg")
-      .send(jpg);
-    expect(second.status).toBe(201);
+    await prisma.receipt.create({
+      data: { jobId, category: "materials", status: "confirmed", source: "manual", vendor: "Lowes", amount: 100.1 },
+    });
+    expect(await rerollJobMaterialCost(jobId)).toBe(312.5);
     expect(await stamped(jobId)).toBe(312.5);
   });
 
   it("non-material receipts never count toward material", async () => {
+    await prisma.receipt.create({
+      data: { jobId, category: "gas", status: "confirmed", source: "manual", vendor: "Shell", amount: 60 },
+    });
+    expect(await rerollJobMaterialCost(jobId)).toBe(312.5);
+    expect(await stamped(jobId)).toBe(312.5);
+  });
+
+  // The retired door's replacement (Unit R): every CRM receipt now goes through
+  // a P.O. This still re-rolls the job — through attachReceiptToPurchaseOrder
+  // when the receipt lands, and again through transitionPurchaseOrder if the
+  // P.O. is later cancelled (receiptCosting.ts's cancelled-PO carve-out).
+  it("P.O. receipt upload (PUT /purchase-orders/:id/receipts/:id) re-rolls the job: excluded while the P.O. is live, counted again once cancelled", async () => {
+    const po = await createPurchaseOrder({ supplier: "Home Depot", purpose: "warehouse", jobId, openedBy: "owner", actor: "test" });
     const res = await request(app)
-      .put(`/jobs/${jobId}/receipts/${newId()}?vendor=Shell&amount=60&category=gas`)
+      .put(`/purchase-orders/${po.id}/receipts/${newId()}?vendor=Home%20Depot&amount=88.20&category=materials`)
       .set("Content-Type", "image/jpeg")
       .send(jpg);
     expect(res.status).toBe(201);
+    // Riding a live PO: inventory value, not job cost yet — the 312.5 above is untouched.
     expect(await stamped(jobId)).toBe(312.5);
+
+    const cancelled = await transitionPurchaseOrder(po.id, "cancelled", { actor: "test", reason: "test cleanup — never landed" });
+    expect(cancelled.status).toBe("cancelled");
+    // The PO landed nothing, so the money never became stock — the receipt counts as job cost again.
+    expect(await stamped(jobId)).toBe(400.7);
+
+    // Cleanup so this test's receipt doesn't shift the arithmetic below (the
+    // cancelled, now-empty PO itself is left in place — harmless).
+    await prisma.receipt.deleteMany({ where: { purchaseOrderId: po.id } });
+    expect(await rerollJobMaterialCost(jobId)).toBe(312.5);
   });
 
   it("moving a receipt to another job re-rolls both jobs; deleting re-rolls again", async () => {
@@ -141,6 +170,14 @@ describe("receipt doors re-roll the job's material cost", () => {
     expect(del.status).toBe(204);
     expect(await stamped(otherJobId)).toBe(0);
     expect(await prisma.receipt.findUnique({ where: { id: moved.id } })).toBeNull();
+  });
+
+  it("PUT /jobs/:jobId/receipts/:receiptId is retired — no CRM door can create a P.O.-less receipt", async () => {
+    const res = await request(app)
+      .put(`/jobs/${jobId}/receipts/${newId()}?vendor=Home%20Depot&amount=1&category=materials`)
+      .set("Content-Type", "image/jpeg")
+      .send(jpg);
+    expect(res.status).toBe(404);
   });
 
   it("the card names its material source", () => {

@@ -11,7 +11,7 @@
  * later phase.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { money } from "../lib/utils";
@@ -56,15 +56,26 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
   });
 
   // ── PO form ──
+  // "Create P.O." pre-fills the job's whole shortage list (Kyle, 2026-09-16/17, Unit P) — not a
+  // per-line "add to a PO" on the estimate, which risked one single-item PO per short line instead
+  // of one complete material order. Multiple P.O.s on a job are still fine; this just means the
+  // first one Kyle opens already has everything the job is short, editable before he sends it.
   const [showPoForm, setShowPoForm] = useState(false);
   const [supplier, setSupplier] = useState("");
   const [itemsText, setItemsText] = useState("");
+  const [poLines, setPoLines] = useState<{ itemId: string | null; name: string; unit: string | null; qty: number }[]>([]);
   // Kyle, 2026-09-09: purpose is chosen, never inferred — truck stock by default.
   const [purpose, setPurpose] = useState<"truck_stock" | "warehouse" | "tool">("truck_stock");
   const [justCreated, setJustCreated] = useState<{ number: string } | null>(null);
+  const togglePoForm = () => {
+    if (!showPoForm && poLines.length === 0 && (materials?.shortages.length ?? 0) > 0) {
+      setPoLines(materials!.shortages.map((s) => ({ itemId: s.itemId, name: s.name, unit: s.unit, qty: s.shortBy })));
+    }
+    setShowPoForm((s) => !s);
+  };
   const createPo = useMutation({
     mutationFn: () => {
-      const items = itemsText
+      const freeText = itemsText
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean)
@@ -73,30 +84,12 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
           const m = line.match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(.+)$/i);
           return m ? { name: m[2].trim(), qty: Number(m[1]) } : { name: line, qty: 1 };
         });
-      return api.createPurchaseOrder(visitId, { supplier: supplier.trim(), purpose, items });
+      const structured = poLines
+        .filter((l) => l.qty > 0)
+        .map((l) => ({ itemId: l.itemId ?? undefined, name: l.name, qty: l.qty, unit: l.unit ?? undefined }));
+      return api.createPurchaseOrder(visitId, { supplier: supplier.trim(), purpose, items: [...structured, ...freeText] });
     },
-    onSuccess: (po) => { setJustCreated({ number: po.number }); setSupplier(""); setItemsText(""); setShowPoForm(false); refresh(); },
-    onError: (err) => setError((err as Error).message),
-  });
-
-  // ── Receipt form ──
-  const [showReceiptForm, setShowReceiptForm] = useState(false);
-  const [receiptAmount, setReceiptAmount] = useState("");
-  const [receiptVendor, setReceiptVendor] = useState("");
-  const [receiptCategory, setReceiptCategory] = useState("materials");
-  const [receiptImage, setReceiptImage] = useState<File | null>(null);
-  const uploadReceipt = useMutation({
-    mutationFn: () =>
-      api.uploadJobReceipt(visitId, {
-        amount: Number(receiptAmount),
-        vendor: receiptVendor.trim() || undefined,
-        category: receiptCategory,
-        image: receiptImage,
-      }),
-    onSuccess: () => {
-      setReceiptAmount(""); setReceiptVendor(""); setReceiptImage(null); setShowReceiptForm(false);
-      setError(null); refresh();
-    },
+    onSuccess: (po) => { setJustCreated({ number: po.number }); setSupplier(""); setItemsText(""); setPoLines([]); setShowPoForm(false); refresh(); },
     onError: (err) => setError((err as Error).message),
   });
 
@@ -178,8 +171,15 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
       {/* ── Purchase orders ── */}
       <div className="mt-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-rce-soft">Purchase orders</h3>
-          <button className="btn btn-secondary text-xs" onClick={() => setShowPoForm((s) => !s)}>
+          <h3 className="text-sm font-semibold text-rce-soft">
+            Purchase orders
+            {materials && materials.shortages.length > 0 && (
+              <span className="ml-2 text-xs font-normal text-amber-800">
+                short {materials.shortages.length} item(s) on {materials.truck.name}
+              </span>
+            )}
+          </h3>
+          <button className="btn btn-secondary text-xs" onClick={togglePoForm}>
             {showPoForm ? "Cancel" : "+ New P.O."}
           </button>
         </div>
@@ -198,10 +198,45 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
                 onChange={(e) => setSupplier(e.target.value)}
               />
             </div>
+            {poLines.length > 0 && (
+              <div>
+                <p className="text-xs text-rce-muted">
+                  Pre-filled from the job's shortage — on-hand checked against {materials?.truck.name}. Edit or remove
+                  before creating.
+                </p>
+                <ul className="mt-1 space-y-1">
+                  {poLines.map((l, i) => (
+                    <li key={`${l.itemId ?? l.name}-${i}`} className="flex items-center gap-2">
+                      <input
+                        className="field w-20"
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={l.qty}
+                        onChange={(e) => {
+                          const qty = Number(e.target.value);
+                          setPoLines((prev) => prev.map((p, pi) => (pi === i ? { ...p, qty } : p)));
+                        }}
+                      />
+                      <span className="flex-1 text-sm">
+                        {l.name}
+                        {l.unit ? <span className="text-rce-muted"> {l.unit}</span> : null}
+                      </span>
+                      <button
+                        className="text-xs text-red-600 underline"
+                        onClick={() => setPoLines((prev) => prev.filter((_, pi) => pi !== i))}
+                      >
+                        remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <textarea
               className="field w-full"
               rows={4}
-              placeholder={"One item per line. Quantity first:\n3 x 12-2 Romex 250ft\n1 x 200A panel"}
+              placeholder={"Additional items, one per line. Quantity first:\n3 x 12-2 Romex 250ft\n1 x 200A panel"}
               value={itemsText}
               onChange={(e) => setItemsText(e.target.value)}
             />
@@ -245,63 +280,71 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
               <p className="mt-0.5 text-xs text-rce-soft">
                 {po.items.map((i) => `${i.qty}× ${i.name}`).join(" · ")}
               </p>
+              {po.status !== "closed" && po.status !== "cancelled" && (
+                <PoReceiptUpload poId={po.id} onDone={refresh} />
+              )}
             </li>
           ))}
         </ul>
-      </div>
-
-      {/* ── Receipts ── */}
-      <div className="mt-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-rce-soft">Receipts</h3>
-          <button className="btn btn-secondary text-xs" onClick={() => setShowReceiptForm((s) => !s)}>
-            {showReceiptForm ? "Cancel" : "+ Add receipt"}
-          </button>
-        </div>
-        <p className="text-xs text-rce-muted">
+        <p className="mt-2 text-xs text-rce-muted">
           Actual job spend — feeds the account's job costs, the Financials reports, and (later) the
-          price book. Techs can also send receipts from the field app.
+          price book. Every receipt attaches to a P.O.; techs can also send receipts from the field app.
         </p>
-        {showReceiptForm && (
-          <div className="mt-2 space-y-2 rounded-lg border border-rce-border p-3">
-            <div className="flex flex-wrap gap-2">
-              <input
-                className="field w-28"
-                type="number"
-                step="0.01"
-                placeholder="Amount $"
-                value={receiptAmount}
-                onChange={(e) => setReceiptAmount(e.target.value)}
-              />
-              <input
-                className="field flex-1"
-                placeholder="Vendor"
-                value={receiptVendor}
-                onChange={(e) => setReceiptVendor(e.target.value)}
-              />
-              <select className="field" value={receiptCategory} onChange={(e) => setReceiptCategory(e.target.value)}>
-                <option value="materials">Materials</option>
-                <option value="gas">Gas</option>
-                <option value="maintenance">Maintenance</option>
-                <option value="overhead">Overhead</option>
-              </select>
-            </div>
-            <input
-              type="file"
-              accept="image/*"
-              className="text-xs"
-              onChange={(e) => setReceiptImage(e.target.files?.[0] ?? null)}
-            />
-            <button
-              className="btn btn-primary text-sm"
-              disabled={!(Number(receiptAmount) > 0) || uploadReceipt.isPending}
-              onClick={() => uploadReceipt.mutate()}
-            >
-              {uploadReceipt.isPending ? "Saving…" : "Save receipt"}
-            </button>
-          </div>
-        )}
       </div>
     </article>
+  );
+}
+
+/**
+ * Receipt upload attached to one P.O. (Kyle, 2026-09-17: "there should not be
+ * an stand alone add a receipt button. Every receipt should have a P.O.
+ * first.") Same door as PurchaseOrders.tsx's PoDetailPanel — api.uploadPoReceipt
+ * — so a receipt can only land on a P.O., never loose on the job.
+ */
+function PoReceiptUpload({ poId, onDone }: { poId: string; onDone: () => void }) {
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const upload = useMutation({
+    mutationFn: (file: File) =>
+      api.uploadPoReceipt(poId, { image: file, amount: Number(amount) > 0 ? Number(amount) : undefined }),
+    onSuccess: (res) => {
+      setError(null);
+      setNote(res.note ?? `Receipt saved: ${money(res.amount)}`);
+      setAmount("");
+      onDone();
+    },
+    onError: (err) => { setError((err as Error).message); setNote(null); },
+  });
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*,application/pdf"
+        className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ""; }}
+      />
+      <input
+        className="field w-24 px-1 py-0.5 text-xs"
+        type="number"
+        step="0.01"
+        placeholder="Amount $ (optional)"
+        value={amount}
+        onChange={(ev) => setAmount(ev.target.value)}
+      />
+      <button
+        type="button"
+        className="btn btn-secondary px-2 py-0.5 text-xs"
+        disabled={upload.isPending}
+        onClick={() => fileRef.current?.click()}
+      >
+        {upload.isPending ? "Saving…" : "+ Add receipt"}
+      </button>
+      {note && <span className="text-emerald-700">{note}</span>}
+      {error && <span className="text-red-600">{error}</span>}
+    </div>
   );
 }

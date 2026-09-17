@@ -85,11 +85,27 @@ export type JobMaterialLine = {
   onVisitId: string | null;
 };
 
+export type JobMaterialShortageLine = {
+  itemId: string;
+  name: string;
+  unit: string | null;
+  neededQty: number;
+  consumedQty: number;
+  /** On the ONE truck named at `JobMaterialsView.truck`. */
+  onHand: number;
+  /** Already on this job's open (not cancelled, not yet landed) purchase orders. */
+  qtyOnOpenPOs: number;
+  /** max(0, (neededQty - consumedQty) - onHand - qtyOnOpenPOs). */
+  shortBy: number;
+};
+
 export type JobMaterialsView = {
   jobId: string;
   truck: { id: string; name: string };
   estimate: { id: string; number: string; title: string } | null;
   suggested: SuggestedMaterialLine[];
+  /** The pre-fill for "Create P.O." — only positive shortages. */
+  shortages: JobMaterialShortageLine[];
   lines: JobMaterialLine[];
   stock: { consumed: number; returned: number; net: number; movementCount: number } | null;
   receipts: Array<{

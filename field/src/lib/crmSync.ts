@@ -560,10 +560,26 @@ export interface FieldMaterialLine {
   at: string
 }
 
+export interface FieldShortageLine {
+  itemId: string
+  name: string
+  unit: string | null
+  neededQty: number
+  consumedQty: number
+  /** On the tech's own truck (`FieldJobMaterials.truck`). */
+  onHand: number
+  /** Already on this job's open (not cancelled, not yet landed) purchase orders. */
+  qtyOnOpenPOs: number
+  /** max(0, (neededQty - consumedQty) - onHand - qtyOnOpenPOs). */
+  shortBy: number
+}
+
 export interface FieldJobMaterials {
   truck: { id: string; name: string }
   estimate: { id: string; number: string; title: string } | null
   suggested: FieldSuggestedLine[]
+  /** The pre-fill for "Start PO" — only positive shortages (Unit P, 2026-09-17). */
+  shortages: FieldShortageLine[]
   lines: FieldMaterialLine[]
   stock: { consumed: number; returned: number; net: number; movementCount: number } | null
   materialCost: number

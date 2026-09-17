@@ -1119,7 +1119,7 @@ export const api = {
   receiptsNeedingPo: () => request<ReviewReceiptRow[]>("/receipts-needing-po"),
   /** Remove a receipt (duplicate upload); the server re-rolls the job total. */
   deleteReceipt: (receiptId: string) => request<void>(`/health-record-admin/receipts/${receiptId}`, { method: "DELETE" }),
-  createPurchaseOrder: (jobId: string, input: { supplier: string; purpose?: "truck_stock" | "warehouse" | "tool"; items: { name: string; qty: number; unit?: string; partNumber?: string }[] }) =>
+  createPurchaseOrder: (jobId: string, input: { supplier: string; purpose?: "truck_stock" | "warehouse" | "tool"; items: { itemId?: string | null; name: string; qty: number; unit?: string; partNumber?: string }[] }) =>
     request<{ id: string; number: string; purpose: string; status: string }>(`/jobs/${jobId}/purchase-orders`, { method: "POST", body: JSON.stringify(input) }),
   /** Cancels the PO (the number is never reused; the trail stays). */
   deletePurchaseOrder: (jobId: string, orderId: string) =>
@@ -1280,28 +1280,6 @@ export const api = {
     request<{ request: StockRequestView; movement: StockMovementView }>(`/inventory/requests/${id}/fulfill`, { method: "POST", body: JSON.stringify({ itemId: itemId ?? null }) }),
   declineStockRequest: (id: string, reason: string) =>
     request<StockRequestView>(`/inventory/requests/${id}/decline`, { method: "POST", body: JSON.stringify({ reason }) }),
-  /** Receipt from the office — typed values, optional photo. */
-  uploadJobReceipt: async (jobId: string, input: { amount: number; vendor?: string; category?: string; image?: File | null }) => {
-    const receiptId = crypto.randomUUID().replaceAll("-", "");
-    const query = new URLSearchParams({ amount: String(input.amount) });
-    if (input.vendor) query.set("vendor", input.vendor);
-    if (input.category) query.set("category", input.category);
-    const token = localStorage.getItem("rce_token");
-    const response = await fetch(`/api/jobs/${jobId}/receipts/${receiptId}?${query.toString()}`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": input.image?.type || "image/jpeg",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: input.image ?? new Blob([]),
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => null);
-      throw new Error((body as { error?: string } | null)?.error ?? `Receipt upload failed (${response.status})`);
-    }
-    return (await response.json()) as { id: string; amount: number };
-  },
-
   // ─── The Needs-next-step queue (Phase 4) ───────────────────────────────────
   needsNextStep: () => request<NextStepJob[]>("/jobs/needs-next-step"),
   dispositionJob: (jobId: string, action: "archive" | "book-followup") =>
