@@ -19,7 +19,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, openProtectedPdf } from "../lib/api";
 import { MATERIAL_SOURCE_LABEL, type InventoryItem, type JobMaterialsView, type SuggestedMaterialLine } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
@@ -366,6 +366,15 @@ export function MaterialsUsedPanel({ visitId }: { visitId: string }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">Materials used</h2>
         <div className="flex items-center gap-2">
+          {/* Unit L, 2026-09-17: "should show the materials from the line items used to quote the
+              job" — every signed estimate's taken lines, assemblies expanded, no costs. */}
+          <button
+            type="button"
+            className="btn btn-secondary text-xs"
+            onClick={() => void openProtectedPdf(`/jobs/${visitId}/materials-list.pdf`)}
+          >
+            Materials list
+          </button>
           <button type="button" className="btn btn-secondary text-xs" onClick={() => setMode((m) => (m === "add" ? "none" : "add"))}>{mode === "add" ? "Cancel" : "+ Add"}</button>
           <button type="button" className="btn btn-secondary text-xs" onClick={() => setMode((m) => (m === "return" ? "none" : "return"))}>{mode === "return" ? "Cancel" : "Return"}</button>
         </div>

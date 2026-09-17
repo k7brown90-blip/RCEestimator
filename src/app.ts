@@ -94,7 +94,8 @@ import { parseReceiptImage } from "./services/receiptVision";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
 import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, estimateMaterialCost, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs } from "./services/jobCosting";
-import { closeOutMaterialWarning, consumeForJob, jobMaterials, returnForJob } from "./services/jobMaterials";
+import { closeOutMaterialWarning, consumeForJob, jobMaterials, materialNeedListForJob, returnForJob } from "./services/jobMaterials";
+import { renderMaterialsListPdf } from "./services/materialsListPdf";
 import { parseJsonStringArray } from "./lib/json";
 import { findCustomerMatches } from "./services/customerMatch";
 import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
@@ -5480,6 +5481,44 @@ const consumeLineSchema = z.object({
 app.get("/jobs/:jobId/materials", asyncHandler(async (req, res) => {
   const truckId = typeof req.query.truckId === "string" && req.query.truckId ? req.query.truckId : null;
   res.json(await jobMaterials(readParam(req, "jobId"), truckId));
+}));
+
+/**
+ * The materials list PDF (Kyle, 2026-09-17, Unit L) — "the materials list pdf should show the
+ * materials from the line items used to quote the job." Every signed estimate on the job (original
+ * + change orders), assemblies expanded to their components, no costs, no on-hand/short. Behind the
+ * same operator session as every other PDF in this app (pinAuthMiddleware, app.use above) — not the
+ * one deliberate unauthenticated-document exception (docs/SECURING_THE_AGENT.md).
+ */
+app.get("/jobs/:jobId/materials-list.pdf", asyncHandler(async (req, res) => {
+  const jobId = readParam(req, "jobId");
+  const visit = await prisma.visit.findUnique({
+    where: { id: jobId },
+    select: {
+      jobType: true, purpose: true,
+      customer: { select: { name: true } },
+      property: { select: { addressLine1: true, addressLine2: true, city: true, state: true, postalCode: true } },
+    },
+  });
+  if (!visit) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  const need = await materialNeedListForJob(jobId);
+  const serviceAddress = visit.property
+    ? [visit.property.addressLine1, visit.property.addressLine2, `${visit.property.city}, ${visit.property.state} ${visit.property.postalCode}`]
+        .filter(Boolean).join(", ")
+    : null;
+  const pdf = await renderMaterialsListPdf({
+    customerName: visit.customer?.name ?? null,
+    serviceAddress,
+    jobLabel: visit.jobType || visit.purpose || null,
+    estimateNumbers: need.estimates.map((e) => e.number),
+    lines: need.lines,
+  });
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="materials-list-${jobId}.pdf"`);
+  res.send(pdf);
 }));
 
 /** Truck → job. 409 when the truck is short (names the item and on-hand) unless allowNegative + reason — Kyle's manual override, recorded. */

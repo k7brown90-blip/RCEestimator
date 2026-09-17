@@ -59,6 +59,12 @@ export function JobsPage() {
   // Completed-jobs search (Kyle, 2026-08-25): "organized by account with a
   // search feature that can search by customer address, phone number, or name."
   const [search, setSearch] = useState("");
+  // Mark complete from the card (Kyle, 2026-09-17, Unit K): completing a job
+  // never removes the card from view silently — a completed active job
+  // disappears from this tab on refetch, so the warnings that matter (a
+  // skipped leftover count, missing receipts) are lifted up here instead of
+  // living on the card, or they'd unmount unseen along with it.
+  const [completionNotice, setCompletionNotice] = useState<{ jobLabel: string; warnings: string[] } | null>(null);
 
   const archived = tab === "archived";
   const { data: jobs = [], isLoading, error } = useQuery({
@@ -164,6 +170,32 @@ export function JobsPage() {
         ))}
       </div>
 
+      {completionNotice && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-semibold">{completionNotice.jobLabel} — marked complete</p>
+              {completionNotice.warnings.length > 0 ? (
+                <ul className="mt-1 list-disc pl-5">
+                  {completionNotice.warnings.map((w) => (
+                    <li key={w}>{w}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-amber-800">No warnings.</p>
+              )}
+            </div>
+            <button
+              type="button"
+              className="shrink-0 text-xs font-medium text-amber-700 hover:text-amber-900"
+              onClick={() => setCompletionNotice(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {showNewVisit ? (
         <form className="card mb-5 grid gap-3 p-4 md:grid-cols-4" onSubmit={submitVisit}>
           <label className="text-sm font-medium md:col-span-2">
@@ -243,6 +275,7 @@ export function JobsPage() {
                       job={job}
                       onDeleteEstimate={(estimateId) => deleteEstimate.mutate(estimateId)}
                       deleting={deleteEstimate.isPending}
+                      onCompleted={(jobLabel, warnings) => setCompletionNotice({ jobLabel, warnings })}
                     />
                   ))}
                 </div>
@@ -254,6 +287,7 @@ export function JobsPage() {
                 job={job}
                 onDeleteEstimate={(estimateId) => deleteEstimate.mutate(estimateId)}
                 deleting={deleteEstimate.isPending}
+                onCompleted={(jobLabel, warnings) => setCompletionNotice({ jobLabel, warnings })}
               />
             ))}
         {!isLoading && visibleJobs.length === 0 && (
@@ -336,9 +370,27 @@ function NeedsNextStep() {
 }
 
 function JobCard({
-  job, onDeleteEstimate, deleting,
-}: { job: JobSummary; onDeleteEstimate: (estimateId: string) => void; deleting: boolean }) {
+  job, onDeleteEstimate, deleting, onCompleted,
+}: {
+  job: JobSummary;
+  onDeleteEstimate: (estimateId: string) => void;
+  deleting: boolean;
+  onCompleted: (jobLabel: string, warnings: string[]) => void;
+}) {
+  const queryClient = useQueryClient();
   const hasCostData = job.costs.revenue != null || job.costs.materialCost > 0 || job.costs.laborHours > 0;
+  // Mark complete (Kyle, 2026-09-17, Unit K): "I would like to be able to mark
+  // complete from these cards." Completion is NEVER blocked client-side — the
+  // standing rule (constants.md, close-out) is that a skipped leftover count
+  // or missing receipts come back as warnings, not a wall.
+  const canComplete = job.status !== "completed" && job.status !== "cancelled";
+  const complete = useMutation({
+    mutationFn: () => api.completeJob(job.visitId),
+    onSuccess: (r) => {
+      onCompleted(`${job.property.addressLine1} — ${job.customer.name}`, r.warnings);
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
 
   const scheduleLine = job.scheduledStart
     ? new Date(job.scheduledStart).toLocaleString("en-US", {
@@ -407,22 +459,40 @@ function JobCard({
         </div>
       ) : null}
 
-      {job.estimate && job.estimate.status !== "accepted" ? (
-        <div className="mt-3 flex justify-end">
-          <button
-            type="button"
-            className="btn btn-danger"
-            disabled={deleting}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (window.confirm("Delete this estimate? This cannot be undone.")) {
-                onDeleteEstimate(job.estimate!.id);
-              }
-            }}
-          >
-            Delete Estimate
-          </button>
+      {canComplete || (job.estimate && job.estimate.status !== "accepted") ? (
+        <div className="mt-3 flex justify-end gap-2">
+          {job.estimate && job.estimate.status !== "accepted" ? (
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={deleting}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (window.confirm("Delete this estimate? This cannot be undone.")) {
+                  onDeleteEstimate(job.estimate!.id);
+                }
+              }}
+            >
+              Delete Estimate
+            </button>
+          ) : null}
+          {canComplete ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={complete.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (window.confirm("Mark this job complete?")) {
+                  complete.mutate();
+                }
+              }}
+            >
+              {complete.isPending ? "Completing…" : "Mark complete"}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </Link>

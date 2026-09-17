@@ -23,7 +23,7 @@ import { prisma } from "../lib/prisma";
 import { InventoryError, WAREHOUSE_KEY, adhocItemId, applyMovement, serializeMovement, truckLocationKey } from "./inventory";
 import { defaultTruckId } from "./purchaseOrders";
 import { estimateMaterialCost, materialCostForJobs, type MaterialCostResult } from "./jobCosting";
-import { aggregateMaterialList, isAssemblyRowType, type ComponentInput, type MaterialListLine } from "./priceBookAssembly";
+import { aggregateMaterialList, isAssemblyRowType, type ComponentInput, type MaterialListEntry, type MaterialListLine } from "./priceBookAssembly";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const r4 = (n: number) => Math.round(n * 10000) / 10000;
@@ -195,13 +195,20 @@ async function allSignedEstimatesForJob(jobId: string) {
 }
 
 /**
- * The job's material shortage: everything the signed scope (every signed estimate on the job,
- * assemblies expanded to their real components) still needs beyond what a truck already holds,
- * what has already been consumed, and what is already on order.
+ * The job's material NEED, before stock/consumed/on-order are subtracted: the TAKEN lines of
+ * every signed, non-void, non-superseded estimate on the job (original and change orders),
+ * assemblies expanded to their real components. Shared by `shortagesForJob` (which subtracts
+ * stock to find what's still short) and `materialNeedListForJob` (Unit L, 2026-09-17 — the
+ * materials-list PDF, which shows the need list as-is). Compute this ONCE; do not re-derive it.
  */
-export async function shortagesForJob(jobId: string, truckId: string): Promise<ShortageLine[]> {
+async function materialNeedForJob(jobId: string): Promise<{
+  ests: Awaited<ReturnType<typeof allSignedEstimatesForJob>>;
+  expanded: MaterialListEntry[];
+  grouped: Map<string, { name: string; qty: number; unit: string | null }>;
+  bookById: Map<string, { itemId: string; description: string | null; unit: string | null; unitLabel: string | null }>;
+} | null> {
   const ests = await allSignedEstimatesForJob(jobId);
-  if (ests.length === 0) return [];
+  if (ests.length === 0) return null;
 
   // Every taken material line across every estimate on the job, grouped by item — a change
   // order's added lines and the original's both count.
@@ -213,7 +220,7 @@ export async function shortagesForJob(jobId: string, truckId: string): Promise<S
       grouped.set(l.itemId, row);
     }
   }
-  if (grouped.size === 0) return [];
+  if (grouped.size === 0) return { ests, expanded: [], grouped, bookById: new Map() };
 
   // Expand assemblies to their real components. `suggestedLinesForJob` groups an assembly line
   // under the assembly's own itemId, which is never stocked (assertNotAssembly) — it would read
@@ -240,7 +247,7 @@ export async function shortagesForJob(jobId: string, truckId: string): Promise<S
     // component list (constants.md), which is the only way aggregateMaterialList's "no
     // components" branch would otherwise pass an assembly's own itemId straight through.
     .filter((e) => !assemblyIds.has(e.itemId));
-  if (expanded.length === 0) return [];
+  if (expanded.length === 0) return { ests, expanded: [], grouped, bookById: new Map() };
 
   const realIds = expanded.map((e) => e.itemId);
   const bookRows = await prisma.priceBookAtomic.findMany({
@@ -249,6 +256,60 @@ export async function shortagesForJob(jobId: string, truckId: string): Promise<S
   });
   const bookById = new Map(bookRows.map((b) => [b.itemId, b]));
 
+  return { ests, expanded, grouped, bookById };
+}
+
+export interface MaterialNeedLine {
+  itemId: string;
+  name: string;
+  unit: string | null;
+  qty: number;
+}
+
+export interface MaterialNeedList {
+  estimates: { id: string; number: string; title: string }[];
+  lines: MaterialNeedLine[];
+}
+
+/**
+ * The job's full material need for the materials-list PDF (Kyle, 2026-09-17, Unit L): "should show
+ * the materials from the line items used to quote the job." The TAKEN lines of every signed
+ * estimate on the job, assemblies expanded to their component materials — item, description,
+ * quantity, unit. Deliberately NO cost fields; this is a shopping/reference list, not a priced
+ * document. Built on `materialNeedForJob`, the same pre-stock computation `shortagesForJob` uses —
+ * not a second computation.
+ */
+export async function materialNeedListForJob(jobId: string): Promise<MaterialNeedList> {
+  const need = await materialNeedForJob(jobId);
+  if (!need) return { estimates: [], lines: [] };
+  const { ests, expanded, grouped, bookById } = need;
+  const lines: MaterialNeedLine[] = expanded.map(({ itemId, quantity }) => {
+    const original = grouped.get(itemId);
+    const book = bookById.get(itemId);
+    return {
+      itemId,
+      name: original?.name ?? book?.description ?? itemId,
+      unit: original?.unit ?? book?.unitLabel ?? book?.unit ?? null,
+      qty: quantity,
+    };
+  });
+  return {
+    estimates: ests.map((e) => ({ id: e.id, number: e.number, title: e.title })),
+    lines,
+  };
+}
+
+/**
+ * The job's material shortage: everything the signed scope (every signed estimate on the job,
+ * assemblies expanded to their real components) still needs beyond what a truck already holds,
+ * what has already been consumed, and what is already on order.
+ */
+export async function shortagesForJob(jobId: string, truckId: string): Promise<ShortageLine[]> {
+  const need = await materialNeedForJob(jobId);
+  if (!need || need.expanded.length === 0) return [];
+  const { ests, expanded, grouped, bookById } = need;
+
+  const realIds = expanded.map((e) => e.itemId);
   const chain = [...new Set(ests.flatMap((est) => chainOf(jobId, est)))];
   const [onHand, consumedMovements, openPoLines] = await Promise.all([
     onHandFor(truckId, realIds),
