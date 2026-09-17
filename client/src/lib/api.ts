@@ -1713,6 +1713,26 @@ export const api = {
   deleteIssuedEstimate: (estimateId: string) =>
     request<{ deleted: true }>(`/issued-estimates/${estimateId}`, { method: "DELETE" }),
 
+  /**
+   * Void a SIGNED estimate (2026-09-17 — "There is no way to cancel... a signed estimate which
+   * we need to be able to do"). Cancels the estimate's job too; deposit refunds and open P.O.s
+   * are left for Kyle to handle by hand, which the response reports back.
+   */
+  voidIssuedEstimate: (estimateId: string, reason: string) =>
+    request<{
+      voided: true;
+      jobId: string | null;
+      jobAction: "none" | "already_cancelled" | "left_open_other_estimates" | "cancelled_unscheduled" | "cancelled";
+      customerNotified: boolean;
+      kyleNotified: boolean;
+      payments: { id: string; amount: number; method: string; kind: string; paidAt: string | null }[];
+      paymentsTotal: number;
+      openPurchaseOrders: { number: string; status: string }[];
+    }>(`/issued-estimates/${estimateId}/void`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+
   estimateChain: () => request<{ estimates: PbChainRow[] }>("/issued-estimates/chain"),
 
   pbCreateJob: (id: string) =>

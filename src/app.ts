@@ -3173,6 +3173,186 @@ app.delete("/issued-estimates/:id", asyncHandler(async (req, res) => {
   res.json({ deleted: true });
 }));
 
+/*
+  ── VOID, SIGNED ONLY (Kyle, 2026-09-17) ──────────────────────────────────────────────────────
+
+  Debug report, /calendar: "There is no way to cancel an appointment. Or a signed estimate which
+  we need to be able to do." Kyle: "Yes, it should cancel the job." Deposit refunds stay manual in
+  the Stripe Dashboard under the existing rule (DEPOSIT_NONREFUNDABLE_CAP, stripePayments.ts) and
+  open P.O.s are left for Kyle to cancel himself — this route touches neither. The mirror of the
+  delete guard above: delete refuses a signed estimate and points here.
+
+  ORDER OF OPERATIONS (deliberate): the job is cancelled/updated FIRST, the estimate is voided
+  SECOND. If the job side throws, the whole request aborts before the estimate is touched — an
+  estimate must never read voided while its job is still live and uncancelled. The narrower risk
+  this leaves (job cancelled, then the void transaction itself fails) is the safer failure: the
+  job is really off the calendar either way, and the void can simply be retried.
+*/
+app.post("/issued-estimates/:id/void", asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  const body = z.object({ reason: z.string().trim().min(1) }).parse(req.body ?? {});
+
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id },
+    select: {
+      id: true, number: true, revision: true, signedAt: true, voidedAt: true, status: true,
+      jobVisitId: true, visitId: true,
+    },
+  });
+  if (!est) {
+    res.status(404).json({ voided: false, error: "Estimate not found." });
+    return;
+  }
+  if (!est.signedAt) {
+    res.status(409).json({
+      voided: false,
+      error: "This estimate has not been signed. Delete it instead — void is for signed estimates.",
+    });
+    return;
+  }
+  if (est.voidedAt || est.status === "void") {
+    res.status(409).json({ voided: false, error: "This estimate is already void." });
+    return;
+  }
+
+  /*
+    Resolve the job. `jobVisitId` IS, by the schema's own comment, "the job created when the
+    customer signed" — trust it first. Only fall back to `visitId` when `jobVisitId` was never
+    set AND that visit has actually been promoted past a consultation (status !== "estimate"):
+    `createJobFromSignedEstimate` (accountSpine.ts) is the ONLY code path that ever sets status
+    "contracted", and it writes `jobVisitId` in the very same transaction — so a visit that is
+    genuinely "the job this estimate created" but carries a null `jobVisitId` cannot exist under
+    the current code. A null `jobVisitId` alongside a still-"estimate"-stage `visitId` means job
+    creation simply never ran for this estimate (or failed); that visit is a consultation, never
+    touched here.
+
+    CHANGE ORDERS: a signed change order's own `jobVisitId` starts null on its draft and, per the
+    P029 defect recorded in the 2026-09-17 plan (Unit P), gets pointed at a SEPARATE new Visit
+    `createJobFromSignedEstimate` creates for it — not the original job, which the change order
+    only reaches via `visitId`. So voiding a change order resolves to (and, if nothing else lives
+    on it, cancels) that separate job — never the original job other signed estimates still own.
+    The `otherLiveEstimates` check below is the second half of that guard: even where resolution
+    lands on a shared job, this route refuses to cancel it out from under other live signed work.
+  */
+  let jobId: string | null = est.jobVisitId ?? null;
+  if (!jobId && est.visitId) {
+    const candidate = await prisma.visit.findUnique({ where: { id: est.visitId }, select: { id: true, status: true } });
+    if (candidate && candidate.status !== "estimate") jobId = candidate.id;
+  }
+
+  let job: { id: string; status: string; scheduledStart: Date | null; scheduledEnd: Date | null } | null = null;
+  let otherLiveEstimates: { id: string; number: string }[] = [];
+  if (jobId) {
+    [job, otherLiveEstimates] = await Promise.all([
+      prisma.visit.findUnique({ where: { id: jobId }, select: { id: true, status: true, scheduledStart: true, scheduledEnd: true } }),
+      prisma.issuedEstimate.findMany({
+        where: {
+          id: { not: est.id },
+          signedAt: { not: null },
+          voidedAt: null,
+          status: { not: "void" },
+          OR: [{ jobVisitId: jobId }, { visitId: jobId }],
+        },
+        select: { id: true, number: true },
+      }),
+    ]);
+  }
+
+  // A completed job is closed business — worked, invoiced, done. Void reacts to a cancellation
+  // before or during the work; it is not a way to unwind something already finished.
+  if (job && job.status === "completed") {
+    res.status(409).json({
+      voided: false,
+      error: "This estimate's job has already been completed. Void is not available for a completed job.",
+    });
+    return;
+  }
+
+  let jobAction: "none" | "already_cancelled" | "left_open_other_estimates" | "cancelled_unscheduled" | "cancelled" = "none";
+  let customerNotified = false;
+  let kyleNotified = false;
+
+  if (job) {
+    if (job.status === "cancelled") {
+      // Already cancelled — leave it exactly as it is.
+      jobAction = "already_cancelled";
+    } else if (otherLiveEstimates.length > 0) {
+      // Another signed, live estimate (the original, or a different change order) still belongs
+      // to this job — voiding THIS one must not cancel work the rest of the job still owes.
+      jobAction = "left_open_other_estimates";
+    } else if (job.scheduledStart && job.scheduledEnd) {
+      // Scheduled: go through the real cancel flow so the calendar event, the customer's
+      // cancellation notice, and the tech notice all happen exactly as they do from the calendar.
+      try {
+        const result = await cancelJob(job.id, `Estimate ${est.number} voided: ${body.reason}`);
+        customerNotified = result.customerNotified;
+        kyleNotified = result.kyleNotified;
+        jobAction = "cancelled";
+      } catch (err) {
+        // Never leave the estimate voided with a live, uncancelled job — abort before touching it.
+        res.status(500).json({
+          voided: false,
+          error: `Could not cancel the job — the estimate was not voided. ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+    } else {
+      // Unscheduled: cancelJob() throws "Job is not currently scheduled" for exactly this case.
+      // There is no appointment to tell the customer about, so cancel the job record directly —
+      // no calendar event to delete, no "your appointment is cancelled" message for an
+      // appointment that never existed.
+      await prisma.visit.update({ where: { id: job.id }, data: { status: "cancelled" } });
+      jobAction = "cancelled_unscheduled";
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.issuedEstimate.update({
+      where: { id: est.id },
+      data: { voidedAt: new Date(), voidReason: body.reason, status: "void" },
+    });
+    await tx.issuedEstimateEvent.create({
+      data: { estimateId: est.id, type: "voided", actor: "human:crm-session", detail: body.reason },
+    });
+  });
+
+  logSystemEvent("info", "issued-estimate", `Voided estimate ${est.number} rev ${est.revision}`, {
+    estimateId: est.id,
+    jobId,
+    jobAction,
+    actor: "human:crm-session",
+  });
+
+  // What Kyle still has to do by hand — this route changes neither. Deposit/payments already on
+  // this estimate (refund is a manual Stripe Dashboard action under the existing cap), and the
+  // job's open P.O. numbers (Kyle cancels those himself).
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const [payments, openPurchaseOrders] = await Promise.all([
+    prisma.payment.findMany({
+      where: { estimateId: est.id, status: "paid" },
+      select: { id: true, amount: true, method: true, kind: true, paidAt: true },
+      orderBy: { paidAt: "asc" },
+    }),
+    jobId
+      ? prisma.purchaseOrder.findMany({
+          where: { jobId, status: { in: ["open", "purchased", "verified"] } },
+          select: { number: true, status: true },
+        })
+      : Promise.resolve([] as { number: string; status: string }[]),
+  ]);
+
+  res.json({
+    voided: true,
+    jobId,
+    jobAction,
+    customerNotified,
+    kyleNotified,
+    payments,
+    paymentsTotal: round2(payments.reduce((s, p) => s + p.amount, 0)),
+    openPurchaseOrders,
+  });
+}));
+
 app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
   const body = z.object({ waiveTrip: z.boolean().optional() }).parse(req.body ?? {});
   const result = await reviseEstimate(prisma, String(req.params.id), {

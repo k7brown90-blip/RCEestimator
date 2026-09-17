@@ -20,7 +20,6 @@ import {
   fetchJobBrief,
   fetchPurchaseOrders,
   pendingReceiptCount,
-  queueReceiptAndReport,
   scheduleVisitFromField,
   uploadJobPhoto,
   type FieldPurchaseOrder,
@@ -147,45 +146,15 @@ export function JobSiteScreen({
     }
   }
 
-  // ── Receipts ──
-  const [showReceipt, setShowReceipt] = useState(false)
-  const [receiptAmount, setReceiptAmount] = useState('')
-  const [receiptVendor, setReceiptVendor] = useState('')
-  const [receiptStatus, setReceiptStatus] = useState<string | null>(null)
-  const [receiptBusy, setReceiptBusy] = useState(false)
+  // ── Receipts (2026-09-17: "it is create p.o. -> upload receipt" — the
+  // standalone Receipts section is gone; every receipt now files against a
+  // P.O. from the Purchase orders section below. The durable upload queue
+  // still drains in the background regardless — including receipts queued
+  // before this change with no P.O. — so the pending count stays visible,
+  // now next to Purchase orders.) ──
   const [pendingReceipts, setPendingReceipts] = useState(0)
   const refreshPendingReceipts = () => { void pendingReceiptCount().then(setPendingReceipts) }
   useEffect(() => { refreshPendingReceipts() }, [])
-  const sendReceipt = async (file: File) => {
-    setReceiptBusy(true)
-    setReceiptStatus(null)
-    try {
-      // Queued durably before any network call — never a bare failure that
-      // drops the photo (2026-09-12: four receipts lost on 2026-09-11 because
-      // a failed fetch discarded the File with nothing written anywhere).
-      const { status } = await queueReceiptAndReport({
-        visitId: assignment.visitId,
-        blob: file,
-        amount: Number(receiptAmount) > 0 ? Number(receiptAmount) : undefined,
-        vendor: receiptVendor.trim() || undefined,
-        category: 'materials',
-      })
-      setReceiptStatus(
-        status === 'filed'
-          ? '✓ Receipt filed.'
-          : '✓ Receipt queued — it will file the moment there is signal.',
-      )
-      setReceiptAmount('')
-      setReceiptVendor('')
-    } catch (err) {
-      // Only a local IndexedDB failure reaches here — the network leg is
-      // retried in the background and never throws out to the caller.
-      setReceiptStatus(`Could not queue the photo — ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setReceiptBusy(false)
-      refreshPendingReceipts()
-    }
-  }
 
   // ── Purchase orders (Kyle, 2026-09-05: "allow a P.O. to be made"; 2026-09-09:
   // "start with a P.O. number then the purchase and photo verification of the receipt") ──
@@ -405,47 +374,10 @@ export function JobSiteScreen({
         {photoStatus && <p className="text-xs text-slate-300">{photoStatus}</p>}
       </section>
 
-      {/* ── Receipts ── */}
-      <section className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-white">Receipts</h2>
-          <button type="button" className="text-xs text-sky-300 underline" onClick={() => setShowReceipt((s) => !s)}>
-            {showReceipt ? 'hide' : 'add receipt'}
-          </button>
-        </div>
-        {/* A silent failure today is indistinguishable from a purchase never
-            photographed (2026-09-11 incident) — this count is the difference. */}
-        {pendingReceipts > 0 && (
-          <p className="rounded bg-amber-950/60 p-2 text-xs text-amber-200">
-            {pendingReceipts} receipt{pendingReceipts === 1 ? '' : 's'} queued, waiting for signal to file.
-          </p>
-        )}
-        {showReceipt && (
-          <>
-            <div className="flex gap-2">
-              <input
-                className="w-24 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
-                type="number"
-                step="0.01"
-                placeholder="$ amt"
-                value={receiptAmount}
-                onChange={(e) => setReceiptAmount(e.target.value)}
-              />
-              <input
-                className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
-                placeholder="Vendor (blank = auto-read)"
-                value={receiptVendor}
-                onChange={(e) => setReceiptVendor(e.target.value)}
-              />
-            </div>
-            <PhotoPicker onPick={(f) => void sendReceipt(f)} disabled={receiptBusy} />
-            {receiptBusy && <p className="text-xs text-slate-400">Queuing…</p>}
-          </>
-        )}
-        {receiptStatus && <p className="text-xs text-slate-300">{receiptStatus}</p>}
-      </section>
-
-      {/* ── Purchase orders — number first, then the buy, then the receipt photo (Kyle, 2026-09-09) ── */}
+      {/* ── Purchase orders — number first, then the buy, then the receipt photo
+          (Kyle, 2026-09-09; and 2026-09-17: "it is create p.o. -> upload
+          receipt" — the standalone Receipts section is gone, so this is the
+          only place a receipt gets filed) ── */}
       <section className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-white">Purchase orders</h2>
@@ -453,6 +385,16 @@ export function JobSiteScreen({
             {showPo ? 'hide' : 'new P.O.'}
           </button>
         </div>
+        {/* A silent failure today is indistinguishable from a purchase never
+            photographed (2026-09-11 incident) — this count is the difference.
+            The durable queue keeps draining regardless, including receipts
+            queued before P.O.s were required, so this stays visible even
+            with no P.O.s shown below. */}
+        {pendingReceipts > 0 && (
+          <p className="rounded bg-amber-950/60 p-2 text-xs text-amber-200">
+            {pendingReceipts} receipt{pendingReceipts === 1 ? '' : 's'} queued, waiting for signal to file.
+          </p>
+        )}
         {showPo && (
           <StartPurchaseForm
             visitId={assignment.visitId}

@@ -734,6 +734,34 @@ function AccountEstimates({
     mutationFn: (id: string) => api.deleteIssuedEstimate(id),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["account-estimates", accountId] }),
   });
+  /*
+    Void, for the signed (2026-09-17 debug report, /calendar: "There is no way to cancel an
+    appointment. Or a signed estimate which we need to be able to do"). Cancels the estimate's
+    job too; deposit refunds (manual, Stripe Dashboard, existing cap) and open P.O.s (Kyle cancels
+    those himself) are NOT touched here — the response says what's left to do by hand, and this
+    keeps that message on the row until the list is refetched.
+  */
+  const [voidFollowUp, setVoidFollowUp] = useState<Record<string, string>>({});
+  const voidEstimate = useMutation({
+    mutationFn: (input: { id: string; reason: string }) => api.voidIssuedEstimate(input.id, input.reason),
+    onSuccess: (r, input) => {
+      void queryClient.invalidateQueries({ queryKey: ["account-estimates", accountId] });
+      const parts: string[] = [];
+      if (r.jobAction === "cancelled" || r.jobAction === "cancelled_unscheduled") parts.push("Job cancelled.");
+      else if (r.jobAction === "already_cancelled") parts.push("Job was already cancelled.");
+      else if (r.jobAction === "left_open_other_estimates") {
+        parts.push("Job left open — other signed work still belongs to it.");
+      }
+      if (r.paymentsTotal > 0) {
+        parts.push(`Refund $${r.paymentsTotal.toFixed(2)} in Stripe by hand if owed (non-refundable up to the existing cap).`);
+      }
+      if (r.openPurchaseOrders.length > 0) {
+        parts.push(`Cancel open P.O.(s) by hand: ${r.openPurchaseOrders.map((p) => p.number).join(", ")}.`);
+      }
+      setVoidFollowUp((prev) => ({ ...prev, [input.id]: parts.join(" ") || "Voided." }));
+    },
+    onError: (err, input) => setVoidFollowUp((prev) => ({ ...prev, [input.id]: (err as Error).message })),
+  });
   // New estimate from a sent one (Kyle, 2026-08-31): duplicate the draft behind
   // the row and land in the builder on the copy — the original is untouched.
   const duplicateDraft = useMutation({
@@ -930,7 +958,35 @@ function AccountEstimates({
                     Delete
                   </button>
                 )}
+                {e.signedAt && e.status !== "void" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // A typed reason AND a confirm (2026-09-17) — this cancels the job too, so
+                      // it gets one more step than plain Delete, not fewer.
+                      const reason = window.prompt(`Reason for voiding estimate ${e.number}?`);
+                      if (!reason || !reason.trim()) return;
+                      if (
+                        window.confirm(
+                          `Void estimate ${e.number} and cancel its job? This cannot be undone.\n\nReason: ${reason.trim()}`,
+                        )
+                      ) {
+                        voidEstimate.mutate({ id: e.id, reason: reason.trim() });
+                      }
+                    }}
+                    disabled={voidEstimate.isPending}
+                    className="rounded-lg border border-red-300 px-3 text-sm text-red-700 active:opacity-70 disabled:opacity-50"
+                  >
+                    Void
+                  </button>
+                )}
               </div>
+
+              {/* What's left for Kyle to do by hand after a void — the server touches neither
+                  money nor P.O.s, so this is the only place either gets surfaced. */}
+              {voidFollowUp[e.id] && (
+                <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-900">{voidFollowUp[e.id]}</p>
+              )}
 
               {/* Resend to a chosen address (Kyle, 2026-08-25). Unsigned and already
                   sent once — the same customer link goes out again, to the primary,
