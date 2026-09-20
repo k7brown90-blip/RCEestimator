@@ -4,9 +4,16 @@
  *
  * The daily 6 PM sweep: every signed, unvoided, unsuperseded invoice with a
  * real balance gets a gentle reminder when SEVEN quiet days have passed since
- * the last activity (signing, a payment, or the previous reminder) — at most
- * THREE reminders, then it goes quiet and stays a red row on the Invoices page
- * for Kyle to chase personally. Test-account invoices never remind.
+ * the last activity (signing, a payment, the previous reminder, or the job's
+ * completion) — at most THREE reminders, then it goes quiet and stays a red
+ * row on the Invoices page for Kyle to chase personally. Test-account
+ * invoices never remind.
+ *
+ * "Final Payment depends on the work being done." (Kyle, 2026-09-19, after
+ * the sweep emailed a balance reminder for a signed job that hadn't started.)
+ * An invoice is only a candidate once its job — the Visit named by
+ * `IssuedEstimate.jobVisitId` — is marked `status: "completed"` with a
+ * `completedAt` stamp. No job, or a job still in progress, means no reminder.
  *
  * Gated as a first-class customer-send workflow; the manual button on the
  * Invoices page bypasses pacing (a human pressed it) but still stamps, so the
@@ -54,12 +61,22 @@ export async function sweepInvoiceReminders(prisma: PrismaClient): Promise<{ rem
       paymentRemindersSent: { lt: MAX_REMINDERS },
       ...EXCLUDE_TEST_ACCOUNT,
     },
-    select: { id: true, number: true, signedAt: true, lastPaymentReminderAt: true },
+    select: { id: true, number: true, signedAt: true, lastPaymentReminderAt: true, jobVisitId: true },
   });
+  const jobVisitIds = [...new Set(candidates.map((c) => c.jobVisitId).filter((id): id is string => !!id))];
+  const jobVisits = jobVisitIds.length
+    ? await prisma.visit.findMany({ where: { id: { in: jobVisitIds } }, select: { id: true, status: true, completedAt: true } })
+    : [];
+  const jobVisitById = new Map(jobVisits.map((v) => [v.id, v]));
   const cutoff = Date.now() - QUIET_DAYS * 24 * 3600 * 1000;
   let reminded = 0;
   let skipped = 0;
   for (const est of candidates) {
+    // "Final Payment depends on the work being done" (Kyle, 2026-09-19). No
+    // job, or a job not yet completed, is never a candidate — never sent.
+    const job = est.jobVisitId ? jobVisitById.get(est.jobVisitId) : undefined;
+    if (!job || job.status !== "completed" || !job.completedAt) { skipped += 1; continue; }
+
     // HOMEOWNER balance only (Kyle, 2026-09-10: "the homeowner is never reminded
     // about the warranty share"). paidInFull / balance are the homeowner's
     // figures; the warranty company's open receivable never puts a customer on
@@ -73,6 +90,7 @@ export async function sweepInvoiceReminders(prisma: PrismaClient): Promise<{ rem
       est.signedAt?.getTime() ?? 0,
       lastPaid?.getTime() ?? 0,
       est.lastPaymentReminderAt?.getTime() ?? 0,
+      job.completedAt.getTime(),
     );
     if (anchor > cutoff) { skipped += 1; continue; }
     const result = await sendInvoiceReminder(prisma, est.id);

@@ -255,7 +255,15 @@ describe("customer emails and the warranty payment", () => {
   });
 
   it("invoice reminders read the HOMEOWNER balance — a homeowner-paid estimate with RELY still owing is not reminded", async () => {
-    const est = await issue({ suffix: "6", signedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000) });
+    // A completed job, well past the quiet window, so this proves the warranty
+    // carve-out and not just the job-completion gate.
+    const visit = await prisma.visit.create({
+      data: {
+        customerId, propertyId, mode: "service_diagnostic", purpose: "warranty-pay visit", status: "completed",
+        completedAt: new Date(Date.now() - 25 * 24 * 3600 * 1000),
+      },
+    });
+    const est = await issue({ suffix: "6", signedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000), visitId: visit.id });
     await request(app).post("/financials/payments").send({ amount: 55, method: "zelle", estimateId: est.id, paidAt: new Date(Date.now() - 20 * 24 * 3600 * 1000).toISOString() });
     const s = (await summaryOf(est.id))!;
     expect(s.paidInFull).toBe(true);
@@ -278,6 +286,73 @@ describe("customer emails and the warranty payment", () => {
     expect(row.lastPaymentReminderAt).toBeNull();
     const remindedThis = emailMock.sendBrandedEmail.mock.calls.some((c) => c[0].issuedEstimateId === est.id);
     expect(remindedThis).toBe(false);
+  });
+});
+
+// ─── No reminder before the job is complete (Kyle, 2026-09-19) ───────────────
+
+describe("sweepInvoiceReminders never reminds before the job is marked complete", () => {
+  const runSweep = async () => {
+    process.env.AUTOMATED_CUSTOMER_SENDS_INVOICE_REMINDERS = "on";
+    try {
+      emailMock.sendBrandedEmail.mockClear();
+      await sweepInvoiceReminders(prisma);
+    } finally {
+      delete process.env.AUTOMATED_CUSTOMER_SENDS_INVOICE_REMINDERS;
+    }
+  };
+
+  it("job visit still scheduled → sends nothing, paymentRemindersSent stays 0", async () => {
+    const visit = await prisma.visit.create({
+      data: { customerId, propertyId, mode: "service_diagnostic", purpose: "warranty-pay visit", status: "scheduled" },
+    });
+    const est = await issue({ suffix: "15", warrantyJson: null, signedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000), visitId: visit.id });
+    await runSweep();
+    const row = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: est.id } });
+    expect(row.paymentRemindersSent).toBe(0);
+    expect(row.lastPaymentReminderAt).toBeNull();
+    expect(emailMock.sendBrandedEmail.mock.calls.some((c) => c[0].issuedEstimateId === est.id)).toBe(false);
+  });
+
+  it("no job visit at all → not reminded", async () => {
+    const est = await issue({ suffix: "16", warrantyJson: null, signedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000), visitId: null });
+    await runSweep();
+    const row = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: est.id } });
+    expect(row.paymentRemindersSent).toBe(0);
+    expect(row.lastPaymentReminderAt).toBeNull();
+    expect(emailMock.sendBrandedEmail.mock.calls.some((c) => c[0].issuedEstimateId === est.id)).toBe(false);
+  });
+
+  it("job completed 10 days ago → reminded once, subject starts \"Friendly reminder\"", async () => {
+    const visit = await prisma.visit.create({
+      data: {
+        customerId, propertyId, mode: "service_diagnostic", purpose: "warranty-pay visit", status: "completed",
+        completedAt: new Date(Date.now() - 10 * 24 * 3600 * 1000),
+      },
+    });
+    const est = await issue({ suffix: "17", warrantyJson: null, signedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000), visitId: visit.id });
+    await runSweep();
+    const row = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: est.id } });
+    expect(row.paymentRemindersSent).toBe(1);
+    expect(row.lastPaymentReminderAt).not.toBeNull();
+    const call = emailMock.sendBrandedEmail.mock.calls.find((c) => c[0].issuedEstimateId === est.id);
+    expect(call).toBeTruthy();
+    expect(call![0].subject).toMatch(/^Friendly reminder/);
+  });
+
+  it("job completed 2 days ago → not reminded yet", async () => {
+    const visit = await prisma.visit.create({
+      data: {
+        customerId, propertyId, mode: "service_diagnostic", purpose: "warranty-pay visit", status: "completed",
+        completedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000),
+      },
+    });
+    const est = await issue({ suffix: "18", warrantyJson: null, signedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000), visitId: visit.id });
+    await runSweep();
+    const row = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: est.id } });
+    expect(row.paymentRemindersSent).toBe(0);
+    expect(row.lastPaymentReminderAt).toBeNull();
+    expect(emailMock.sendBrandedEmail.mock.calls.some((c) => c[0].issuedEstimateId === est.id)).toBe(false);
   });
 });
 
