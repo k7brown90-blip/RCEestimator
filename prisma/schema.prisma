@@ -328,7 +328,10 @@ model Visit {
   confirmationChannel    String? // email_link | sms_reply | crm
   reminderSentAt         DateTime?
   estimatedCost          Float?
-  actualMaterialCost     Float?                   @default(0)
+  // actualMaterialCost retired 2026-09-19 ("the P.O. is the money"): a job's
+  // material cost is read live from the P.O.s tagged to it (their card charges
+  // and typed not-on-card amounts — services/jobCosting.ts). Every figure the
+  // old column carried was moved onto a P.O. by that day's migration.
   laborHours             Float?                   @default(0)
   overheadAllocation     Float?                   @default(0)
   revenue                Float?
@@ -1453,42 +1456,52 @@ model Payment {
 }
 
 model Receipt {
-  id              String         @id @default(cuid())
-  jobId           String? // visit ID — null for overhead/gas not tied to a specific job
-  category        String // "materials" | "gas" | "maintenance" | "overhead"
-  vendor          String?
-  amount          Float
-  lineItems       String? // JSON array: [{name, qty, unit, unitCost}]
-  imageUrl        String?
+  id                 String         @id @default(cuid())
+  jobId              String? // visit ID — null for overhead/gas not tied to a specific job
+  category           String // "materials" | "gas" | "maintenance" | "overhead"
+  vendor             String?
+  amount             Float
+  lineItems          String? // JSON array: [{name, qty, unit, unitCost}]
+  imageUrl           String?
   // ── Capture provenance & review workflow ──
-  source          String         @default("webhook") // webhook | tech_pwa | mms | manual
-  status          String         @default("confirmed") // pending_review | confirmed
-  technicianId    String? // who captured it (tech PWA or matched MMS sender)
-  imageData       Bytes? // original receipt photo — rides DB backups like InspectionPhoto
-  imageMime       String?
-  receivedAt      DateTime       @default(now())
-  createdAt       DateTime       @default(now())
+  source             String         @default("webhook") // webhook | tech_pwa | mms | manual
+  status             String         @default("confirmed") // pending_review | confirmed
+  technicianId       String? // who captured it (tech PWA or matched MMS sender)
+  imageData          Bytes? // original receipt photo — rides DB backups like InspectionPhoto
+  imageMime          String?
+  receivedAt         DateTime       @default(now())
+  createdAt          DateTime       @default(now())
   // Kyle, 2026-09-09: "Purchasing needs to start with a P.O. number then the
   // purchase and photo verification of the receipt." The receipt is the
   // verification; this is the PO it verifies. Nullable — gas, overhead, and
   // receipts from before POs were real have none, and a materials receipt
   // without one is flagged "needs PO" rather than refused.
-  purchaseOrderId String?
-  purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
-  // The card transaction this receipt itemizes (Kyle, 2026-09-09: "photo
-  // verifies, card proves"). Set by the matcher or by hand; one spend per receipt.
-  cardSpend       CardSpend?
+  purchaseOrderId    String?
+  purchaseOrder      PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  // Kyle, 2026-09-19 ("the P.O. is the money"): THE CHARGE IS THE MONEY, THE
+  // RECEIPT IS PROOF, NEVER MONEY. `amount` is what the receipt says and feeds
+  // nothing financial — the P&L and job cost read the P.O.'s card charges and
+  // typed not-on-card amount. The penny-and-three-day matcher that paired a
+  // receipt with one CardSpend (Receipt.cardSpend / CardSpend.receiptId) is
+  // gone; a receipt proves the P.O. it sits on, whichever charges are there.
   // Kyle, 2026-09-14 (legacy purchase close-out, Unit 2): "we are not getting
   // anywhere trying to attach things that don't exist to them." A confirmed
-  // materials receipt whose PO can never exist (its photo was lost, e.g. the
-  // 9/11 upload failure) must never be attached to a PO just to clear the
-  // "needs PO" queue — attaching would drop it from the job's receipt rung
-  // (services/jobCosting.ts's rung 2) with nothing to pick it back up, silently
-  // erasing real job cost (this is how the Daughdrill $381.90 was lost). So
-  // this receipt leaves the queue by being marked WAIVED, not attached.
-  // purchaseOrderId stays null; the receipt rung keeps counting it.
-  poWaivedAt      DateTime?
-  poWaivedReason  String?
+  // materials receipt whose PO can never exist leaves the "needs PO" queue by
+  // being marked WAIVED. (Since 2026-09-19 the migration gave every such
+  // legacy receipt a P.O. of its own carrying its money as a typed amount, so
+  // the waiver is only a queue flag now.)
+  poWaivedAt         DateTime?
+  poWaivedReason     String?
+  // 2026-09-18 (receipts read and cost accurately, Unit 2): "the reader must
+  // reconcile, or say it could not" — Σ(line totals) + tax must equal the
+  // printed total to the cent, or this receipt is left in pending_review
+  // with a note on WHAT didn't add up (see receiptVision.ts's
+  // reconcileParsedReceipt). Null when nothing has flagged a mismatch —
+  // either the parse reconciled cleanly or no automated parse ran at all.
+  // Editable/clearable from the same receipt-review queue that edits every
+  // other field here (health-record.ts PATCH /receipts/:id), per the
+  // standing rule that nothing this app creates is permanent.
+  reconciliationNote String?
 
   // The account summary pulls receipts by job id across an account's whole history.
   @@index([jobId])
@@ -1535,9 +1548,14 @@ model Document {
 // verification of the receipt." The PO is the document; it replaced the
 // unnumbered MaterialOrder that floated beside receipts. Materials never land
 // on a job: a PO's destination is a truck or the warehouse ("Warehouse items
-// will only be used to transfer material to truck stock"); jobs are charged by
-// consuming truck stock in a later build. Until then receipts on a job still
-// count as that job's material (services/receiptCosting.ts) — unchanged here.
+// will only be used to transfer material to truck stock").
+//
+// Kyle, 2026-09-19 ("the P.O. is the money"): THE CHARGE IS THE MONEY, THE
+// RECEIPT IS PROOF. A job's material cost is the money on the P.O.s tagged to
+// it — their card charges plus the typed not-on-card amount — read live
+// (services/jobCosting.ts). Not receipts, not the estimate, not stock
+// consumption: the inventory ledger still says what is on the truck, but no
+// longer decides job cost. A P.O. is verified when it has both money and proof.
 
 // A truck is where truck-stock purchases land. Kyle's is "Truck 1" (seeded by
 // the migration); card/financial-account fields come in a later build.
@@ -1562,12 +1580,15 @@ model Truck {
   stockRequests            StockRequest[]
 }
 
-// One Stripe Issuing card transaction (Kyle, 2026-09-09: "photo verifies, card
-// proves"). The receipt photo is the itemized record; this row is the money.
-// amount is DOLLARS, positive for a purchase and negative for a refund. Gas and
-// maintenance sit on the truck ledger; a materials capture with no PO behind it
-// drafts one "after the fact". A spend matched to a receipt is counted by that
-// receipt on the P&L — expenses count once.
+// One Stripe card transaction (Kyle, 2026-09-09: "photo verifies, card
+// proves"). THIS ROW IS THE MONEY (Kyle, 2026-09-19, "the P.O. is the money"):
+// every non-ignored row lands on the P&L once, in the month it occurred, and a
+// row on a P.O. tagged to a job is that job's material cost. amount is DOLLARS,
+// positive for a purchase and negative for a refund. Gas and maintenance sit
+// on the truck ledger; a materials capture with no PO behind it drafts one
+// "after the fact". Many rows may sit on one P.O. — a split transaction is two
+// rows on the same P.O. The only way a charge stops counting is status
+// "ignored" with a reason.
 model CardSpend {
   id                    String         @id @default(cuid())
   stripeTransactionId   String         @unique
@@ -1583,8 +1604,10 @@ model CardSpend {
   merchantCity          String?
   merchantState         String?
   purchaseOrderId       String?
-  receiptId             String?        @unique // one receipt matches one spend
-  status                String         @default("unmatched") // unmatched | matched | ignored
+  // "unmatched" is the live state (the name predates 2026-09-19, when "matched"
+  // — paired with a receipt — was retired). "ignored" takes the row off every
+  // money figure; ignoredReason says why.
+  status                String         @default("unmatched") // unmatched | ignored
   ignoredReason         String?
   note                  String? // the reason behind the last hand edit
   // Kyle, 2026-09-10: the card is issued by Stripe's Financial Accounts product, and its
@@ -1596,7 +1619,6 @@ model CardSpend {
   createdAt             DateTime       @default(now())
   truck                 Truck?         @relation(fields: [truckId], references: [id], onDelete: SetNull)
   purchaseOrder         PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
-  receipt               Receipt?       @relation(fields: [receiptId], references: [id], onDelete: SetNull)
 
   @@index([truckId])
   @@index([status])
@@ -1642,6 +1664,17 @@ model PurchaseOrder {
   // Kyle, 2026-09-09: material lands on a truck or in the warehouse (Build 3).
   // Set once by services/inventory.ts landPurchaseOrder; landing twice is refused.
   landedAt             DateTime?
+  // ── THE MONEY (Kyle, 2026-09-19: "the P.O. is the money") ──
+  // A P.O.'s money is Σ its non-ignored card charges (CardSpend rows, many per
+  // P.O.) plus the amount typed here when the purchase was NOT on the card —
+  // cash, check, a personal card (the 9/3 $406.74 case). offCardAmount null
+  // means "on the card / nothing typed"; a value is money on the P&L in the
+  // month of offCardAt and material cost on the job this P.O. names. Always
+  // editable with a reason (event kind "money_edited"), in any status.
+  offCardAmount        Float?
+  offCardMethod        String? // cash | check | personal_card | other | unknown
+  offCardNote          String?
+  offCardAt            DateTime?
   createdAt            DateTime             @default(now())
   truck                Truck?               @relation(fields: [truckId], references: [id], onDelete: SetNull)
   job                  Visit?               @relation(fields: [jobId], references: [id], onDelete: SetNull)
@@ -1681,7 +1714,7 @@ model PurchaseOrderEvent {
   purchaseOrderId String
   at              DateTime      @default(now())
   actor           String
-  kind            String // created | edited | status | receipt_attached | receipt_detached | line_added | line_edited | line_removed
+  kind            String // created | edited | status | receipt_attached | receipt_detached | line_added | line_edited | line_removed | card_matched | card_detached | landed | money_edited | migrated
   reason          String?
   before          String? // JSON
   after           String? // JSON

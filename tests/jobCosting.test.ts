@@ -63,7 +63,6 @@ async function cleanSignedFixtures() {
 
 const noCosts = {
   estimatedCost: null,
-  actualMaterialCost: null,
   laborHours: null,
   overheadAllocation: null,
   revenue: null,
@@ -84,15 +83,20 @@ describe("rollupJobCosts", () => {
   });
 
   it("computes labor from hours x rate and rolls up total cost", () => {
+    // Material is the money on the job's P.O.s (Kyle, 2026-09-19) — the fourth argument.
     const costs = rollupJobCosts(
-      { ...noCosts, actualMaterialCost: 400, laborHours: 8, overheadAllocation: 100, revenue: 2000 },
+      { ...noCosts, laborHours: 8, overheadAllocation: 100, revenue: 2000 },
       null,
       75,
+      400,
     );
+    expect(costs.materialCost).toBe(400);
+    expect(costs.materialSource).toBe("po");
     expect(costs.laborCost).toBe(600);
     expect(costs.totalCost).toBe(1100);
     expect(costs.grossProfit).toBe(900);
     expect(costs.margin).toBe(45);
+    expect(rollupJobCosts(noCosts, null).materialSource).toBe("none");
   });
 
   it("honours an explicit labor rate over the default", () => {
@@ -113,16 +117,13 @@ describe("rollupJobCosts", () => {
   });
 
   it("reports a negative margin rather than clamping at zero", () => {
-    const costs = rollupJobCosts(
-      { ...noCosts, actualMaterialCost: 1500, revenue: 1000 },
-      null,
-    );
+    const costs = rollupJobCosts({ ...noCosts, revenue: 1000 }, null, DEFAULT_LABOR_RATE, 1500);
     expect(costs.grossProfit).toBe(-500);
     expect(costs.margin).toBe(-50);
   });
 
   it("does not divide by zero when revenue is recorded as 0", () => {
-    const costs = rollupJobCosts({ ...noCosts, revenue: 0, actualMaterialCost: 100 }, null);
+    const costs = rollupJobCosts({ ...noCosts, revenue: 0 }, null, DEFAULT_LABOR_RATE, 100);
     expect(costs.revenue).toBe(0);
     expect(costs.grossProfit).toBe(-100);
     expect(costs.margin).toBeNull();
@@ -158,8 +159,8 @@ describe("estimateOptionTotal", () => {
 describe("sumJobCosts", () => {
   it("skips unknown revenue instead of counting it as zero", () => {
     const totals = sumJobCosts([
-      rollupJobCosts({ ...noCosts, revenue: 1000, actualMaterialCost: 400 }, null),
-      rollupJobCosts({ ...noCosts, actualMaterialCost: 200 }, null), // revenue unknown
+      rollupJobCosts({ ...noCosts, revenue: 1000 }, null, DEFAULT_LABOR_RATE, 400),
+      rollupJobCosts(noCosts, null, DEFAULT_LABOR_RATE, 200), // revenue unknown
     ]);
     expect(totals.lifetimeRevenue).toBe(1000);
     expect(totals.lifetimeCost).toBe(600);
@@ -180,6 +181,7 @@ describe("GET /jobs and GET /accounts/:id/summary agree about money", () => {
 
   beforeEach(async () => {
     await prisma.receipt.deleteMany();
+    await prisma.purchaseOrder.deleteMany({ where: { supplier: "Costing Invariant Supply" } });
     await cleanSignedFixtures();
     await prisma.visit.deleteMany();
     await prisma.property.deleteMany();
@@ -206,18 +208,28 @@ describe("GET /jobs and GET /accounts/:id/summary agree about money", () => {
         propertyId: property.id,
         mode: "service_diagnostic",
         status: "completed",
-        actualMaterialCost: 612.5,
         laborHours: 6.5,
         overheadAllocation: 90,
         revenue: 2400,
       },
     });
     visitId = visit.id;
+    // THE P.O. IS THE MONEY (Kyle, 2026-09-19): $612.50 of material is a
+    // card charge and a typed not-on-card amount on a P.O. tagged to the job.
+    await prisma.purchaseOrder.create({
+      data: {
+        number: `PO-INV-${Math.random().toString(36).slice(2, 8)}`, purpose: "truck_stock", destinationType: "warehouse", jobId: visitId,
+        supplier: "Costing Invariant Supply", status: "closed", openedBy: "owner", offCardAmount: 212.5, offCardMethod: "check", offCardAt: new Date(),
+        cardSpends: { create: { stripeTransactionId: `inv_${Math.random().toString(36).slice(2, 10)}`, stripeCardId: "card_inv", kind: "materials", amount: 400, merchantName: "Costing Invariant Supply", occurredAt: new Date() } },
+      },
+    });
     await signVisit(visit.id, property.id);
   });
 
   afterAll(async () => {
     await prisma.receipt.deleteMany();
+    await prisma.cardSpend.deleteMany({ where: { stripeCardId: "card_inv" } });
+    await prisma.purchaseOrder.deleteMany({ where: { supplier: "Costing Invariant Supply" } });
     await cleanSignedFixtures();
     await prisma.visit.deleteMany();
     await prisma.property.deleteMany();
@@ -235,6 +247,9 @@ describe("GET /jobs and GET /accounts/:id/summary agree about money", () => {
     const fromSummary = summary.body.jobs.find((j: { visitId: string }) => j.visitId === visitId).costs;
     expect(fromSummary).toEqual(fromJobs);
     expect(fromJobs.laborCost).toBe(6.5 * DEFAULT_LABOR_RATE);
+    // The P.O.'s charge + typed amount, and nothing else.
+    expect(fromJobs.materialCost).toBe(612.5);
+    expect(fromJobs.materialSource).toBe("po");
   });
 
   it("both endpoints pick up a labor rate change from company settings", async () => {

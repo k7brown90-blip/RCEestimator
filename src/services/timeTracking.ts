@@ -35,7 +35,7 @@
 import type { ShiftEntry, TimeEntry } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
-import { estimateMaterialCost, estimateOptionTotal, materialCostForJobs, type MaterialSource } from "./jobCosting";
+import { estimateOptionTotal, materialCostForJobs, type MaterialSource } from "./jobCosting";
 import { fullBillOf } from "./stripePayments";
 import { EXCLUDE_TEST_CUSTOMER_VIA_VISIT, EXCLUDE_TEST_VISIT } from "./accountSpine";
 
@@ -1015,7 +1015,7 @@ export interface CommissionBasis {
   materialCost: number;
   materialSource: MaterialSource;
   fees: number;
-  feeRows: Array<{ kind: "receipt" | "card"; id: string; label: string; category: string; amount: number }>;
+  feeRows: Array<{ kind: "card"; id: string; label: string; category: string; amount: number }>;
   /** revenue − material − fees. Labor is NOT subtracted (Kyle's ruling). */
   profit: number | null;
 }
@@ -1032,7 +1032,7 @@ export async function commissionBasisForJob(visitId: string): Promise<Commission
   const visit = await prisma.visit.findUnique({
     where: { id: visitId },
     select: {
-      id: true, revenue: true, actualMaterialCost: true,
+      id: true, revenue: true,
       estimates: { include: { options: true }, orderBy: { createdAt: "desc" } },
     },
   });
@@ -1058,34 +1058,21 @@ export async function commissionBasisForJob(visitId: string): Promise<Commission
     : null;
   const revenue = visit.revenue ?? acceptedTotal ?? signedRevenue ?? null;
 
-  const materials = await materialCostForJobs([{
-    visitId,
-    actualMaterialCost: visit.actualMaterialCost,
-    estimatedMaterialCost: issued ? estimateMaterialCost(issued) : null,
-  }]);
+  const materials = await materialCostForJobs([{ visitId }]);
   const material = materials.get(visitId)!;
 
-  // Fees = permits and inspections on this job, counted once. A card swipe that
-  // is already itemized by a receipt rides that receipt (the card-spend rule).
-  const [receipts, spends] = await Promise.all([
-    prisma.receipt.findMany({
-      where: { jobId: visitId, category: { in: [...FEE_CATEGORIES] } },
-      select: { id: true, vendor: true, amount: true, category: true },
-    }),
-    prisma.cardSpend.findMany({
-      where: {
-        kind: { in: [...FEE_CATEGORIES] },
-        status: { not: "ignored" },
-        receiptId: null,
-        purchaseOrder: { jobId: visitId },
-      },
-      select: { id: true, merchantName: true, amount: true, kind: true },
-    }),
-  ]);
-  const feeRows: CommissionBasis["feeRows"] = [
-    ...receipts.map((r) => ({ kind: "receipt" as const, id: r.id, label: r.vendor ?? "Receipt", category: r.category, amount: r.amount })),
-    ...spends.map((s) => ({ kind: "card" as const, id: s.id, label: s.merchantName, category: s.kind, amount: s.amount })),
-  ];
+  // Fees = permit and inspection card charges on this job's P.O.s, counted
+  // once. The charge is the money (Kyle, 2026-09-19); a permit receipt is proof
+  // of a charge, never a fee of its own.
+  const spends = await prisma.cardSpend.findMany({
+    where: {
+      kind: { in: [...FEE_CATEGORIES] },
+      status: { not: "ignored" },
+      purchaseOrder: { jobId: visitId },
+    },
+    select: { id: true, merchantName: true, amount: true, kind: true },
+  });
+  const feeRows: CommissionBasis["feeRows"] = spends.map((s) => ({ kind: "card" as const, id: s.id, label: s.merchantName, category: s.kind, amount: s.amount }));
   const fees = round2(feeRows.reduce((sum, f) => sum + f.amount, 0));
 
   return {

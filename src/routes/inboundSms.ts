@@ -116,6 +116,10 @@ async function captureReceipts(
         lineItems: parsed && parsed.lineItems.length > 0 ? JSON.stringify(parsed.lineItems) : null,
         source: "mms",
         status: "pending_review",
+        // 2026-09-18 (Unit 2, "the reader must reconcile, or say it could not"): every
+        // MMS capture already lands pending_review regardless, but the note still
+        // records WHAT didn't add up so the reviewer isn't left guessing why.
+        reconciliationNote: parsed?.reconciliationNote ?? null,
         technicianId,
         imageData: media.buffer,
         imageMime: media.contentType,

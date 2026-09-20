@@ -1,8 +1,11 @@
 /**
- * Receipt → job material, one writer (Kyle, 2026-09-08: Daughdrill's office-uploaded
- * receipts landed confirmed but the job's actualMaterialCost stayed 0, so the card kept
- * showing the estimate's material). Every receipt door must leave the job's stamped
- * total equal to its confirmed material receipts.
+ * The receipt is proof, never money (Kyle, 2026-09-19, "the P.O. is the money").
+ *
+ * Every receipt door — the P.O. upload, the admin PATCH (amount, job, date,
+ * status), delete — moves NO cost figure. The job's material is the money on
+ * its P.O.s; the receipt proves the P.O. it sits on. The Vision purchase-date
+ * guards and the receivedAt correction (2026-09-14) are kept here because they
+ * pin rules that still stand: a receipt's date is what the proof says.
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -37,11 +40,9 @@ vi.mock("googleapis", () => {
 });
 
 import { app } from "../src/app";
-import { rollupJobCosts } from "../src/services/jobCosting";
 import { plausiblePurchaseDate, resolvePurchaseDate } from "../src/services/receiptVision";
-import { matchSpendForReceipt } from "../src/services/cardSpend";
-import { createPurchaseOrder, transitionPurchaseOrder } from "../src/services/purchaseOrders";
-import { rerollJobMaterialCost } from "../src/services/receiptCosting";
+import { createPurchaseOrder, setPurchaseOrderMoney, transitionPurchaseOrder } from "../src/services/purchaseOrders";
+import { materialCostForJobs } from "../src/services/jobCosting";
 
 describe("vision purchase dates are only trusted when plausible", () => {
   const now = new Date("2026-09-08T17:00:00Z");
@@ -59,8 +60,7 @@ describe("vision purchase dates are only trusted when plausible", () => {
 // Legacy purchase close-out, Unit 4 (2026-09-14): resolvePurchaseDate() is the exact
 // function both Vision write sites (app.ts's PO-receipt PUT and health-record.ts's
 // applyVisionParse) call to decide whether to trust a parsed date and whether to flag
-// the receipt for review. Tested directly (no network call) since it's the real guard,
-// not a caller's mock of it.
+// the receipt for review.
 describe("resolvePurchaseDate distinguishes 'no date read' from 'date rejected'", () => {
   const now = new Date("2026-09-14T17:00:00Z");
   it("an in-range date is trusted and not flagged", () => {
@@ -82,94 +82,66 @@ let customerId: string;
 let jobId: string;
 let otherJobId: string;
 
-const stamped = async (id: string) =>
-  (await prisma.visit.findUniqueOrThrow({ where: { id }, select: { actualMaterialCost: true } })).actualMaterialCost;
+const costOf = async (id: string) => (await materialCostForJobs([{ visitId: id }])).get(id)!;
 
 beforeAll(async () => {
-  const customer = await prisma.customer.create({ data: { name: "Reroll Customer", phone: "+16155509999" } });
+  const customer = await prisma.customer.create({ data: { name: "Proof Customer", phone: "+16155509999" } });
   customerId = customer.id;
   const property = await prisma.property.create({
-    data: { customerId, name: "Reroll House", addressLine1: "9 Reroll Rd", city: "Smyrna", state: "TN", postalCode: "37167" },
+    data: { customerId, name: "Proof House", addressLine1: "9 Proof Rd", city: "Smyrna", state: "TN", postalCode: "37167" },
   });
   const mk = async (purpose: string) =>
     (await prisma.visit.create({
       data: { customerId, propertyId: property.id, mode: "onsite", purpose, jobType: "Service", status: "completed", visitDate: new Date() },
     })).id;
-  jobId = await mk("Reroll job");
-  otherJobId = await mk("Reroll other job");
+  jobId = await mk("Proof job");
+  otherJobId = await mk("Proof other job");
 });
 
 afterAll(async () => {
   await prisma.receipt.deleteMany({ where: { jobId: { in: [jobId, otherJobId] } } });
+  await prisma.purchaseOrder.deleteMany({ where: { jobId: { in: [jobId, otherJobId] } } });
   await prisma.visit.deleteMany({ where: { customerId } });
   await prisma.property.deleteMany({ where: { customerId } });
   await prisma.customer.delete({ where: { id: customerId } });
 });
 
-describe("receipt doors re-roll the job's material cost", () => {
-  // Unit R (2026-09-17) retired PUT /jobs/:jobId/receipts/:receiptId — a CRM
-  // receipt can no longer be created with no P.O. at all. These two setup
-  // rows stand in for what that door used to produce (a confirmed materials
-  // receipt on the job, no purchaseOrderId) so the reroll math below is
-  // unchanged; rerollJobMaterialCost is the exact function every door calls.
-  it("a confirmed materials receipt with no P.O. stamps the job directly", async () => {
-    await prisma.receipt.create({
-      data: { jobId, category: "materials", status: "confirmed", source: "manual", vendor: "Home Depot", amount: 212.4 },
-    });
-    expect(await rerollJobMaterialCost(jobId)).toBe(212.4);
-    expect(await stamped(jobId)).toBe(212.4);
-
-    await prisma.receipt.create({
-      data: { jobId, category: "materials", status: "confirmed", source: "manual", vendor: "Lowes", amount: 100.1 },
-    });
-    expect(await rerollJobMaterialCost(jobId)).toBe(312.5);
-    expect(await stamped(jobId)).toBe(312.5);
-  });
-
-  it("non-material receipts never count toward material", async () => {
-    await prisma.receipt.create({
-      data: { jobId, category: "gas", status: "confirmed", source: "manual", vendor: "Shell", amount: 60 },
-    });
-    expect(await rerollJobMaterialCost(jobId)).toBe(312.5);
-    expect(await stamped(jobId)).toBe(312.5);
-  });
-
-  // The retired door's replacement (Unit R): every CRM receipt now goes through
-  // a P.O. This still re-rolls the job — through attachReceiptToPurchaseOrder
-  // when the receipt lands, and again through transitionPurchaseOrder if the
-  // P.O. is later cancelled (receiptCosting.ts's cancelled-PO carve-out).
-  it("P.O. receipt upload (PUT /purchase-orders/:id/receipts/:id) re-rolls the job: excluded while the P.O. is live, counted again once cancelled", async () => {
+describe("receipt doors move no money (Kyle, 2026-09-19)", () => {
+  it("the P.O. upload door files the receipt as proof; the job's figure is the P.O.'s typed amount, not the receipt's", async () => {
     const po = await createPurchaseOrder({ supplier: "Home Depot", purpose: "warehouse", jobId, openedBy: "owner", actor: "test" });
+    await setPurchaseOrderMoney(po.id, { offCardAmount: 100, offCardMethod: "check" }, { actor: "test", reason: "Paid by check" });
+    expect(await costOf(jobId)).toMatchObject({ materialCost: 100, materialSource: "po" });
+
+    // The receipt says $88.20 — a different number on purpose. It is proof, not money.
     const res = await request(app)
       .put(`/purchase-orders/${po.id}/receipts/${newId()}?vendor=Home%20Depot&amount=88.20&category=materials`)
       .set("Content-Type", "image/jpeg")
       .send(jpg);
     expect(res.status).toBe(201);
-    // Riding a live PO: inventory value, not job cost yet — the 312.5 above is untouched.
-    expect(await stamped(jobId)).toBe(312.5);
+    expect((await costOf(jobId)).materialCost).toBe(100);
+    // Money (typed) + proof (the photo) → verified, with no amount comparison.
+    expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: po.id } })).status).toBe("verified");
 
-    const cancelled = await transitionPurchaseOrder(po.id, "cancelled", { actor: "test", reason: "test cleanup — never landed" });
-    expect(cancelled.status).toBe("cancelled");
-    // The PO landed nothing, so the money never became stock — the receipt counts as job cost again.
-    expect(await stamped(jobId)).toBe(400.7);
-
-    // Cleanup so this test's receipt doesn't shift the arithmetic below (the
-    // cancelled, now-empty PO itself is left in place — harmless).
-    await prisma.receipt.deleteMany({ where: { purchaseOrderId: po.id } });
-    expect(await rerollJobMaterialCost(jobId)).toBe(312.5);
+    // Cancelling the P.O. moves no money either.
+    await transitionPurchaseOrder(po.id, "cancelled", { actor: "test", reason: "test — never landed" });
+    expect((await costOf(jobId)).materialCost).toBe(100);
   });
 
-  it("moving a receipt to another job re-rolls both jobs; deleting re-rolls again", async () => {
-    const moved = await prisma.receipt.findFirstOrThrow({ where: { jobId, vendor: "Lowes" } });
-    const patch = await request(app).patch(`/health-record-admin/receipts/${moved.id}`).send({ jobId: otherJobId });
+  it("moving a receipt to another job, editing its amount, or deleting it changes neither job", async () => {
+    const before = (await costOf(jobId)).materialCost;
+    const other = (await costOf(otherJobId)).materialCost;
+    const receipt = await prisma.receipt.create({
+      data: { jobId, category: "materials", status: "confirmed", source: "manual", vendor: "Lowes", amount: 100.1 },
+    });
+    const patch = await request(app).patch(`/health-record-admin/receipts/${receipt.id}`).send({ jobId: otherJobId, amount: 999 });
     expect(patch.status).toBe(200);
-    expect(await stamped(jobId)).toBe(212.4);
-    expect(await stamped(otherJobId)).toBe(100.1);
+    expect((await costOf(jobId)).materialCost).toBe(before);
+    expect((await costOf(otherJobId)).materialCost).toBe(other);
 
-    const del = await request(app).delete(`/health-record-admin/receipts/${moved.id}`);
+    const del = await request(app).delete(`/health-record-admin/receipts/${receipt.id}`);
     expect(del.status).toBe(204);
-    expect(await stamped(otherJobId)).toBe(0);
-    expect(await prisma.receipt.findUnique({ where: { id: moved.id } })).toBeNull();
+    expect((await costOf(otherJobId)).materialCost).toBe(other);
+    expect(await prisma.receipt.findUnique({ where: { id: receipt.id } })).toBeNull();
   });
 
   it("PUT /jobs/:jobId/receipts/:receiptId is retired — no CRM door can create a P.O.-less receipt", async () => {
@@ -179,15 +151,6 @@ describe("receipt doors re-roll the job's material cost", () => {
       .send(jpg);
     expect(res.status).toBe(404);
   });
-
-  it("the card names its material source", () => {
-    const base = { estimatedCost: null, laborHours: 0, overheadAllocation: 0, revenue: 1000 };
-    expect(rollupJobCosts({ ...base, actualMaterialCost: 212.4 }, null, 100, 572.84).materialSource).toBe("receipts");
-    expect(rollupJobCosts({ ...base, actualMaterialCost: 0 }, null, 100, 572.84).materialSource).toBe("estimate");
-    expect(rollupJobCosts({ ...base, actualMaterialCost: 0 }, null, 100, null).materialSource).toBe("none");
-    // The material figure itself is unchanged by the label.
-    expect(rollupJobCosts({ ...base, actualMaterialCost: 0 }, null, 100, 572.84).materialCost).toBe(572.84);
-  });
 });
 
 // Legacy purchase close-out, Unit 4 (2026-09-14): the admin PATCH route is the only
@@ -195,9 +158,7 @@ describe("receipt doors re-roll the job's material cost", () => {
 // year — this mirrors the real production defect (receipt 9f7901d9f3c840318d08688fa0bb5170,
 // $324.33, dated 2022-09-08 instead of 2026-09-08).
 describe("PATCH /health-record-admin/receipts/:id accepts a receivedAt correction", () => {
-  const stripeTxnId = () => `txn_${newId()}`;
-
-  it("updates receivedAt, and a receipt whose date moves into range becomes reachable by the card matcher", async () => {
+  it("updates receivedAt at NOON UTC so the day survives the Central offset", async () => {
     const receipt = await prisma.receipt.create({
       data: {
         jobId, category: "materials", vendor: "Home Depot", amount: 324.33,
@@ -205,19 +166,6 @@ describe("PATCH /health-record-admin/receipts/:id accepts a receivedAt correctio
         receivedAt: new Date("2022-09-08T12:00:00Z"), // the exact mis-parse: right day/month, wrong year
       },
     });
-    const spend = await prisma.cardSpend.create({
-      data: {
-        stripeTransactionId: stripeTxnId(), stripeCardId: "card_test", kind: "materials",
-        amount: 324.33, merchantName: "HOME DEPOT", status: "unmatched",
-        occurredAt: new Date("2026-09-08T18:06:00Z"),
-      },
-    });
-
-    // Before the fix: the card matcher's ±3-day window can't reach a 2026 transaction
-    // from a 2022 receivedAt — this is the mechanism, not a guess.
-    expect(await matchSpendForReceipt(receipt.id)).toBeNull();
-    expect((await prisma.cardSpend.findUniqueOrThrow({ where: { id: spend.id } })).status).toBe("unmatched");
-
     const patch = await request(app)
       .patch(`/health-record-admin/receipts/${receipt.id}`)
       .send({ receivedAt: "2026-09-08" });
@@ -226,24 +174,11 @@ describe("PATCH /health-record-admin/receipts/:id accepts a receivedAt correctio
     const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
     // NOON UTC, not midnight. Midnight UTC is 7pm the PREVIOUS day in
     // America/Chicago, which is how Kyle's 2026-09-08 correction filed itself
-    // under 9/7 in production on 2026-09-15. Asserting only the date half of
-    // the ISO string passed while that bug was live, so assert the whole stamp.
+    // under 9/7 in production on 2026-09-15.
     expect(row.receivedAt.toISOString()).toBe("2026-09-08T12:00:00.000Z");
-
-    // The route re-runs the matcher itself (health-record.ts's receivedAt !== undefined
-    // branch) — the now-reachable spend links without a second call.
-    const matchedSpend = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spend.id } });
-    expect(matchedSpend.status).toBe("matched");
-    expect(matchedSpend.receiptId).toBe(receipt.id);
-
-    await prisma.cardSpend.delete({ where: { id: spend.id } });
     await prisma.receipt.delete({ where: { id: receipt.id } });
   });
 
-  // The case that costs real money: yearLedger buckets a receipt into a month by
-  // receivedAt (routes/financials.ts:367-368). A date anchored at midnight UTC
-  // lands in the PREVIOUS month for the 1st of any month, moving the spend to the
-  // wrong month of the P&L. Noon UTC cannot.
   it("anchors the 1st of a month inside that month, not the last day of the one before", async () => {
     const receipt = await prisma.receipt.create({
       data: {
@@ -257,7 +192,6 @@ describe("PATCH /health-record-admin/receipts/:id accepts a receivedAt correctio
     expect(patch.status).toBe(200);
     const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
     expect(row.receivedAt.toISOString()).toBe("2026-09-01T12:00:00.000Z");
-    // September, in Central as well as UTC — the month the P&L will charge it to.
     expect(row.receivedAt.toLocaleDateString("en-US", { timeZone: "America/Chicago" })).toBe("9/1/2026");
     await prisma.receipt.delete({ where: { id: receipt.id } });
   });

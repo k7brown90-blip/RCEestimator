@@ -1015,7 +1015,7 @@ function ResendControl({ estimateId, accountId }: { estimateId: string; accountI
 
   if (!open) {
     return (
-      <button type="button" className="mt-2 text-xs text-rce-accent underline" onClick={() => setOpen(true)}>
+      <button type="button" className="btn btn-secondary mt-2 px-2 py-0.5 text-xs min-h-0" onClick={() => setOpen(true)}>
         Resend estimate…
       </button>
     );
@@ -1081,7 +1081,7 @@ function ContactsCard({ accountId }: { accountId: string }) {
               </span>
             </span>
             <button
-              className="text-xs text-red-600 underline"
+              className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
               onClick={() => void api.deleteAccountContact(accountId, c.id).then(refresh)}
             >
               remove
@@ -1249,7 +1249,7 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
       {hasCostDetail && (
         <button
           type="button"
-          className="mt-2 text-xs font-medium text-rce-accent"
+          className="btn btn-secondary mt-2 px-2 py-0.5 text-xs min-h-0"
           onClick={() => setShowCosts((s) => !s)}
         >
           {showCosts ? "Hide cost detail" : "Cost detail"}
@@ -1296,10 +1296,11 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
                     <span className="min-w-0">
                       {receipt.vendor || "Unknown vendor"} · {receipt.category}
                       {receipt.status === "pending_review" && (
-                        <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">needs review · not counted yet</span>
+                        <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">needs review</span>
                       )}
-                      {receipt.status === "confirmed" && receipt.category === "materials" && (
-                        <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-800">counted</span>
+                      {/* A receipt is proof, never money (Kyle, 2026-09-19): the P.O. it sits on carries the cost. */}
+                      {receipt.status === "confirmed" && receipt.purchaseOrderNumber && (
+                        <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-800">proof</span>
                       )}
                       {/* Kyle, 2026-09-09: the receipt verifies a PO — show which, or offer to attach one. */}
                       {receipt.purchaseOrderNumber ? (
@@ -1322,7 +1323,7 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
                       )}
                       <button
                         type="button"
-                        className="text-xs text-red-600 hover:underline"
+                        className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
                         disabled={deleteReceipt.isPending}
                         onClick={() => {
                           if (window.confirm(`Remove this ${money(receipt.amount)} receipt from the job?`)) deleteReceipt.mutate(receipt.id);
@@ -1365,16 +1366,14 @@ function CostBreakdown({ job }: { job: AccountJob }) {
     <div>
       <p className="font-semibold uppercase tracking-wide text-rce-soft">Cost breakdown</p>
       <ul className="mt-1 space-y-1">
-        {/* Kyle, 2026-09-08: say where the material figure came from. 2026-09-09
-            (Build 4): "from truck stock" — consumed off the truck at its moving average. */}
+        {/* Kyle, 2026-09-08: say where the material figure came from. 2026-09-19:
+            the P.O. is the money — card charges + typed amounts on the job's P.O.s. */}
         <li className="flex justify-between gap-2">
           <span>
             Materials
             <span className="ml-1 text-rce-muted">
-              {costs.materialSource === "stock" && "· from truck stock"}
-              {costs.materialSource === "receipts" && "· from receipts (no PO)"}
-              {costs.materialSource === "estimate" && "· from the signed estimate (nothing consumed, no receipts)"}
-              {costs.materialSource === "none" && "· nothing recorded"}
+              {costs.materialSource === "po" && "· from the job's P.O.s (card charges + typed amounts)"}
+              {costs.materialSource === "none" && "· no P.O. money on this job"}
             </span>
           </span>
           <span>{money(costs.materialCost)}</span>
@@ -1494,7 +1493,7 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                     <span className="ml-2 rounded bg-amber-100 px-1 text-xs text-amber-800">awaiting review</span>
                   )}
                 </span>
-                <Link to={`/visits/${inspection.visitId}`} className="text-xs text-rce-muted hover:text-rce-accent">
+                <Link to={`/visits/${inspection.visitId}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
                   open visit →
                 </Link>
               </div>
@@ -1659,7 +1658,7 @@ function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][nu
           invoice email — per send, ticked by the operator, never assumed. */}
       {canSend && d.propertyId && (
         <div className="mt-2">
-          <button type="button" className="text-xs text-rce-accent underline" onClick={() => setShowPhotos((s) => !s)}>
+          <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setShowPhotos((s) => !s)}>
             {showPhotos ? "Hide photos" : `Attach job photos…${photoIds.length ? ` (${photoIds.length})` : ""}`}
           </button>
           {showPhotos && (
@@ -1676,7 +1675,7 @@ function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][nu
       {/* Charge the card / record the check, right off the invoice (2026-08-25). */}
       {canSend && (
         <div className="mt-2">
-          <button type="button" className="text-xs text-rce-accent underline" onClick={() => setShowPay((s) => !s)}>
+          <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setShowPay((s) => !s)}>
             {showPay ? "Hide payment" : "Take payment…"}
           </button>
           {showPay && d.estimateId && (

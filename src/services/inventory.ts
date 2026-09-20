@@ -597,7 +597,8 @@ function looseScore(receiptName: string, poText: string): number {
  * With no receipt at all the old fallback stands: typed, then book, then 0.
  */
 export async function landingDefaults(id: string) {
-  const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: { ...LANDING_INCLUDE, ...PO_LIST_INCLUDE } });
+  // The landing needs every receipt (lines, amounts); the list shape wants only the ones with a file — so LANDING's receipts win here.
+  const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: { ...PO_LIST_INCLUDE, ...LANDING_INCLUDE } });
   if (!po) throw new InventoryError("Purchase order not found", 404);
   const hasPhoto = po.receipts.some((r) => r.imageMime || r.imageUrl);
   const receiptTotal = r2(po.receipts.reduce((s, r) => s + (r.amount ?? 0), 0));
@@ -734,7 +735,8 @@ export async function landingDefaults(id: string) {
   let destinationKey: string | null = null;
   try { destinationKey = destinationKeyOf(po); } catch { destinationKey = null; }
   return {
-    purchaseOrder: serializePurchaseOrder(po),
+    // proofCount counts files only; this query carried every receipt.
+    purchaseOrder: serializePurchaseOrder({ ...po, receipts: po.receipts.filter((r) => r.imageMime || r.imageUrl) }),
     destinationKey,
     destinationLabel: po.destinationType === "warehouse" ? "Warehouse (home)" : po.truck?.name ?? "truck",
     receiptTotal,
@@ -823,9 +825,8 @@ async function jobChargedOnLanding(tx: Tx, poJobId: string): Promise<{ jobId: st
  * when the level was empty, otherwise the blend, exactly as any consume (the
  * average is why material must still land first: services/jobMaterials.ts).
  *
- *   - All or nothing: the stock rung beats every other source in
- *     services/jobCosting.ts, so a half-recorded charge would read as a
- *     confident, too-low job cost. One transaction, or the landing fails.
+ *   - All or nothing: a half-recorded landing would leave the truck count
+ *     wrong with no trail saying so. One transaction, or the landing fails.
  *   - A PO with no job is a restock and stays as stock. Tool POs create Tool
  *     rows, not stock, and are never consumed.
  *   - The consume passes allowNegative: it takes out exactly what this landing
@@ -833,8 +834,10 @@ async function jobChargedOnLanding(tx: Tx, poJobId: string): Promise<{ jobId: st
  *     that already sat there (Kyle's manual override) is not this PO's to block.
  *   - A test-account job is refused by applyMovement (409) and the landing
  *     rolls back — untag or retag the PO. Nothing lands for a test job.
- *   - No re-roll: the stock rung reads the ledger live (stockMaterialByJob);
- *     Visit.actualMaterialCost is the receipt rung and is untouched.
+ *   - INVENTORY ONLY (Kyle, 2026-09-19, "the P.O. is the money"): the landing
+ *     and the consume move the ledger — what is on the truck. The job's COST
+ *     is the money on this PO (its card charges and typed not-on-card amount,
+ *     services/jobCosting.ts), which the landing neither reads nor writes.
  */
 export async function landPurchaseOrder(
   id: string,

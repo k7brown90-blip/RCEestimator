@@ -19,12 +19,10 @@ import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
-import { rerollJobsMaterialCost } from "../services/receiptCosting";
 import {
   PO_LIST_INCLUDE, PO_PURPOSES, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder, detachReceiptFromPurchaseOrder,
   serializePurchaseOrder, transitionPurchaseOrder, truckIdForTechnician,
 } from "../services/purchaseOrders";
-import { matchSpendForReceipt } from "../services/cardSpend";
 import {
   WAREHOUSE_KEY, createStockRequest, landPurchaseOrder, landingDefaults, listTools, moveTool, searchItems, serializeLevel, truckLocationKey,
 } from "../services/inventory";
@@ -1432,6 +1430,8 @@ function fieldPoView(po: Parameters<typeof serializePurchaseOrder>[0]) {
   return {
     id: v.id, number: v.number, purpose: v.purpose, status: v.status, supplier: v.supplier,
     jobId: v.jobId, jobLabel: v.jobLabel, truckName: v.truckName, receiptCount: v.receiptCount,
+    // THE MONEY and the proof (Kyle, 2026-09-19) — what the phone prompts for.
+    proofCount: v.proofCount, cardTotal: v.cardTotal, offCardAmount: v.offCardAmount, moneyTotal: v.moneyTotal,
     items: v.lines.map((l) => ({
       name: l.name, qty: l.qty, unit: l.unit ?? undefined, partNumber: l.partNumber ?? undefined,
       itemId: l.itemId ?? undefined, unitCost: l.unitCost ?? undefined,
@@ -1905,9 +1905,9 @@ async function applyVisionParse(receiptId: string): Promise<{ parsed: boolean }>
     select: { id: true, imageData: true, imageMime: true, amount: true, vendor: true, lineItems: true, jobId: true },
   });
   if (!receipt || !receipt.imageData) return { parsed: false };
-  // Unit R (2026-09-17): Vision reads an image_url data URL and cannot read a PDF —
-  // never even attempt the (paid) call for one.
-  if (receipt.imageMime === "application/pdf") return { parsed: false };
+  // 2026-09-18 (Unit 1, "receipts must be read, not guessed"): PDFs are read by
+  // parseReceiptImage exactly like photos now — the old application/pdf early
+  // return that skipped the (paid) call is gone.
 
   const { parseReceiptImage } = await import("../services/receiptVision");
   let parsed;
@@ -1919,19 +1919,18 @@ async function applyVisionParse(receiptId: string): Promise<{ parsed: boolean }>
   }
   if (!parsed) return { parsed: false };
 
-  const patch: { vendor?: string; amount?: number; lineItems?: string; receivedAt?: Date } = {};
+  const patch: { vendor?: string; amount?: number; lineItems?: string; receivedAt?: Date; reconciliationNote?: string | null } = {};
   if (!receipt.vendor && parsed.vendor) patch.vendor = parsed.vendor;
   if (receipt.amount <= 0 && parsed.total != null) patch.amount = parsed.total;
   if (!receipt.lineItems && parsed.lineItems.length > 0) patch.lineItems = JSON.stringify(parsed.lineItems);
   if (parsed.purchaseDate) patch.receivedAt = new Date(`${parsed.purchaseDate}T12:00:00Z`);
+  // Unit 2 (2026-09-18): record WHAT didn't reconcile — or clear a stale note when
+  // a re-parse (the operator "reparse" route below) now reconciles cleanly.
+  if (parsed.lineItems.length > 0) patch.reconciliationNote = parsed.reconciliationNote;
 
   if (Object.keys(patch).length > 0) {
-    const updated = await prisma.receipt.update({ where: { id: receiptId }, data: patch, select: { jobId: true } });
-    await rerollJobsMaterialCost([updated.jobId, receipt.jobId]);
+    await prisma.receipt.update({ where: { id: receiptId }, data: patch });
   }
-  // Kyle, 2026-09-09: "photo verifies, card proves" — now that amount/vendor may
-  // be filled in, see if a waiting card transaction matches.
-  await matchSpendForReceipt(receiptId).catch((err) => console.error("[receipts] card match failed:", err));
   return { parsed: true };
 }
 
@@ -1991,14 +1990,9 @@ healthRecordTechRouter.put(
     }
 
     const mimeType = (req.headers["content-type"] as string | undefined) ?? "image/jpeg";
-    const isPdf = mimeType === "application/pdf";
-    // Vision reads an image_url data URL and cannot read a PDF (receiptVision.ts) —
-    // a PDF with no typed amount would otherwise sit pending_review forever.
-    if (isPdf && query.amount == null) {
-      res.status(400).json({ success: false, error: { code: "bad_request", message: "PDF receipts can't be read automatically — type the amount." } });
-      return;
-    }
-    const needsVision = !isPdf && (query.amount == null || !query.vendor);
+    // 2026-09-18 (Unit 1, "receipts must be read, not guessed"): PDFs are read by
+    // Vision the same as photos now — no more "type the amount" refusal.
+    const needsVision = query.amount == null || !query.vendor;
 
     const data = {
       jobId: query.jobId ?? null,
@@ -2012,22 +2006,18 @@ healthRecordTechRouter.put(
       imageData: body,
       imageMime: mimeType,
     };
-    const previous = await prisma.receipt.findUnique({ where: { id: receiptId }, select: { jobId: true } });
     const receipt = await prisma.receipt.upsert({
       where: { id: receiptId },
       create: { id: receiptId, ...data },
       update: data,
     });
-    // A re-upload resets the row to pending_review; if it had been confirmed the
-    // job's stamped total must drop it again (Kyle, 2026-09-08).
-    await rerollJobsMaterialCost([receipt.jobId, previous?.jobId]);
+    // The receipt is proof, never money (Kyle, 2026-09-19): nothing to re-roll.
+    // On a PO it proves the PO's charges and can verify it.
     let purchaseOrderNumber: string | null = null;
     if (query.purchaseOrderId) {
       await attachReceiptToPurchaseOrder(receipt.id, query.purchaseOrderId, `tech:${req.technician!.name}`);
       purchaseOrderNumber = (await prisma.purchaseOrder.findUnique({ where: { id: query.purchaseOrderId }, select: { number: true } }))?.number ?? null;
     }
-    // Kyle, 2026-09-09: "photo verifies, card proves" — pair the photo with its card transaction if one is waiting.
-    await matchSpendForReceipt(receipt.id).catch((err) => console.error("[receipts] card match failed:", err));
 
     res.status(201).json({
       success: true,
@@ -3322,6 +3312,7 @@ healthRecordAdminRouter.get("/receipts", asyncHandler(async (req, res) => {
     select: {
       id: true, jobId: true, category: true, vendor: true, amount: true, lineItems: true,
       source: true, status: true, technicianId: true, imageMime: true, receivedAt: true, createdAt: true,
+      reconciliationNote: true,
     },
   });
   // Attach tech names without dragging image bytes along
@@ -3353,7 +3344,7 @@ healthRecordAdminRouter.post("/receipts/:id/reparse", asyncHandler(async (req, r
   const result = await applyVisionParse(id);
   const after = await prisma.receipt.findUniqueOrThrow({
     where: { id },
-    select: { id: true, amount: true, vendor: true, category: true, status: true, lineItems: true, purchaseOrderId: true, jobId: true },
+    select: { id: true, amount: true, vendor: true, category: true, status: true, lineItems: true, purchaseOrderId: true, jobId: true, reconciliationNote: true },
   });
   res.json({ success: true, parsed: result.parsed, data: after });
 }));
@@ -3380,6 +3371,11 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
     amount: z.number().nonnegative().optional(),
     lineItems: z.unknown().optional(),
     status: z.enum(["pending_review", "confirmed"]).optional(),
+    // 2026-09-18 (Unit 2): the office's exit from a reconciliation flag — clear it
+    // (null) once they've checked the receipt by hand, or edit the text. Standing
+    // rule: nothing this app creates is permanent without a way out from where
+    // it's shown, and this queue is where the note is shown.
+    reconciliationNote: z.string().nullable().optional(),
     // Kyle, 2026-09-09: attach (string) or detach (null) the PO this receipt verifies.
     purchaseOrderId: z.string().nullable().optional(),
     // 2026-09-14 (legacy purchase close-out, Unit 4): the only correction path for a
@@ -3425,45 +3421,34 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
       ...(body.lineItems !== undefined ? { lineItems: body.lineItems ? JSON.stringify(body.lineItems) : null } : {}),
       ...(body.status !== undefined ? { status: body.status } : {}),
       ...(body.receivedAt !== undefined ? { receivedAt: body.receivedAt } : {}),
+      ...(body.reconciliationNote !== undefined ? { reconciliationNote: body.reconciliationNote } : {}),
     },
     select: { id: true, jobId: true, category: true, vendor: true, amount: true, status: true },
   });
 
-  // Re-roll material cost for any job the receipt touched (old and new) — the
-  // one shared writer (Kyle, 2026-09-08).
-  await rerollJobsMaterialCost([existing.jobId, receipt.jobId]);
-
+  // A receipt is proof, never money (Kyle, 2026-09-19): editing its amount,
+  // category, date or status moves no cost figure anywhere.
   if (body.purchaseOrderId !== undefined && body.purchaseOrderId !== existing.purchaseOrderId) {
     if (body.purchaseOrderId) await attachReceiptToPurchaseOrder(id, body.purchaseOrderId, "owner");
     else await detachReceiptFromPurchaseOrder(id, "owner");
-  }
-  // Kyle, 2026-09-09: a confirmed receipt, or one whose amount was corrected, goes
-  // looking for the card transaction it itemizes ("photo verifies, card proves").
-  // receivedAt added 2026-09-14 (Unit 4): a date correction is exactly what lets a
-  // previously-out-of-window card transaction become reachable. matchSpendForReceipt
-  // returns null whenever the receipt is already matched or nothing is in the ±3-day
-  // window — that's a normal outcome, not an error, so it's never awaited for its result.
-  if (body.status === "confirmed" || body.amount !== undefined || body.category !== undefined || body.receivedAt !== undefined) {
-    await matchSpendForReceipt(id).catch((err) => console.error("[receipts] card match failed:", err));
   }
   const after = await prisma.receipt.findUniqueOrThrow({ where: { id }, select: { purchaseOrderId: true, jobId: true } });
   res.json({ ...receipt, jobId: after.jobId, purchaseOrderId: after.purchaseOrderId });
 }));
 
 /**
- * Remove a receipt (Kyle, 2026-09-08 — the account page now confirms and
- * removes receipts in place; a duplicate upload from the truck and the office
- * would otherwise double-count the job's material). Re-rolls the job it was on.
+ * Remove a receipt (Kyle, 2026-09-08 — the account page confirms and removes
+ * receipts in place). Since 2026-09-19 a receipt is proof, never money, so
+ * removing one changes no cost figure.
  */
 healthRecordAdminRouter.delete("/receipts/:id", asyncHandler(async (req, res) => {
   const id = readParam(req, "id");
-  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true, jobId: true } });
+  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true } });
   if (!existing) {
     res.status(404).json({ error: "Receipt not found" });
     return;
   }
   await prisma.receipt.delete({ where: { id } });
-  await rerollJobsMaterialCost([existing.jobId]);
   res.status(204).end();
 }));
 

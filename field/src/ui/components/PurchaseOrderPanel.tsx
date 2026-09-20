@@ -52,15 +52,26 @@ const noSignal = (err: unknown) =>
  * gallery for upload along with the take photo option"). Two inputs on
  * purpose: `capture` forces the camera and locks the gallery out, so each
  * door gets its own input instead of one ambiguous chooser.
+ *
+ * The gallery/files door can also take a PDF (Kyle, 2026-09-19: "or upload of
+ * a pdf (for online orders)") when the caller opts in via `galleryAccept` — a
+ * camera can only ever produce a photo, so that input always stays
+ * image-only. Left at its default ("image/*") this is unchanged for every
+ * other caller (job-evidence photos on JobSiteScreen included); only the P.O.
+ * receipt picker below widens it.
  */
 export function PhotoPicker({
   onPick,
   disabled,
   cameraLabel = '📷 Take photo',
+  galleryLabel = '🖼 From gallery',
+  galleryAccept = 'image/*',
 }: {
   onPick: (file: File) => void
   disabled?: boolean
   cameraLabel?: string
+  galleryLabel?: string
+  galleryAccept?: string
 }) {
   const cameraRef = useRef<HTMLInputElement>(null)
   const galleryRef = useRef<HTMLInputElement>(null)
@@ -72,7 +83,7 @@ export function PhotoPicker({
   return (
     <div className="flex gap-2">
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handle} />
-      <input ref={galleryRef} type="file" accept="image/*" className="hidden" onChange={handle} />
+      <input ref={galleryRef} type="file" accept={galleryAccept} className="hidden" onChange={handle} />
       <button
         type="button"
         disabled={disabled}
@@ -87,7 +98,7 @@ export function PhotoPicker({
         onClick={() => galleryRef.current?.click()}
         className="flex-1 rounded-lg border border-slate-600 p-2 text-xs text-slate-200 disabled:opacity-40"
       >
-        🖼 From gallery
+        {galleryLabel}
       </button>
     </div>
   )
@@ -356,10 +367,17 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
   )
 }
 
+/** THE MONEY on the card, no proof yet (Kyle, 2026-09-19) — the prompt. */
+const poNeedsProof = (po: FieldPurchaseOrder) => po.moneyTotal > 0 && po.proofCount === 0
+const money = (n: number) => `$${n.toFixed(2)}`
+
 function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
-  const [showPhoto, setShowPhoto] = useState(false)
+  // One tap, not two (Kyle, 2026-09-19: "prompts for a picture ... or upload of
+  // a pdf"): a purchased PO with money and no proof opens the picker already
+  // showing instead of waiting for the tech to find the toggle first.
+  const [showPhoto, setShowPhoto] = useState(() => po.status === 'purchased' && poNeedsProof(po))
   const [showLand, setShowLand] = useState(false)
 
   const move = async (to: 'purchased' | 'verified') => {
@@ -427,6 +445,16 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
           <p className="mt-1 text-[10px] text-slate-500">{po.receiptCount} receipt{po.receiptCount === 1 ? '' : 's'}</p>
         </div>
       </div>
+      {/*
+        The prompt (Kyle, 2026-09-19): "PO-XXXX, $651.73 at Home Depot — attach
+        the receipt." Only once the P.O. actually has money on it — an open PO
+        with nothing bought yet has nothing to prove.
+      */}
+      {poNeedsProof(po) && (
+        <p className="rounded-lg bg-amber-950/50 p-2 text-xs text-amber-200">
+          {money(po.moneyTotal)} at {po.supplier} — attach the receipt photo or PDF.
+        </p>
+      )}
       {live && (
         <div className="flex gap-2">
           {po.status === 'open' && (
@@ -439,7 +467,9 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
               Purchased
             </button>
           )}
-          {po.status === 'purchased' && po.receiptCount > 0 && (
+          {/* Proof, not just any receipt row (Kyle, 2026-09-19) — a receipt with
+              no file attached does not verify the P.O. */}
+          {po.status === 'purchased' && po.proofCount > 0 && (
             <button
               type="button"
               disabled={busy}
@@ -460,7 +490,13 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
         </div>
       )}
       {live && showPhoto && (
-        <PhotoPicker onPick={(f) => void receiptPhoto(f)} disabled={busy} cameraLabel="📷 Take receipt photo" />
+        <PhotoPicker
+          onPick={(f) => void receiptPhoto(f)}
+          disabled={busy}
+          cameraLabel="📷 Take receipt photo"
+          galleryLabel="🖼 Gallery / PDF"
+          galleryAccept="image/*,application/pdf"
+        />
       )}
       {/* Kyle, 2026-09-09 (Build 3): bought and back at the truck — land it. Material goes on the truck / in the warehouse; the PO closes. */}
       {po.status === 'purchased' && (

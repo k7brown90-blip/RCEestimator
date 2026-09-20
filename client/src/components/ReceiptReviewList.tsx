@@ -27,8 +27,6 @@ export type ReviewableReceipt = {
   /** The PO this receipt verifies (Kyle, 2026-09-09); needsPo flags a materials receipt without one. */
   purchaseOrderNumber?: string | null;
   needsPo?: boolean;
-  /** Kyle, 2026-09-09: "card proves" — this receipt is paired with a card transaction. */
-  cardMatched?: boolean;
 };
 
 export function PendingReceiptFields({
@@ -108,7 +106,6 @@ export function ReceiptReviewList({ rows, title = "Receipts to review", collapsi
               <span className="text-rce-muted"> · {r.category} · read as {money(r.amount)} · {shortDate(r.receivedAt)}</span>
               {r.purchaseOrderNumber && <span className="ml-1 rounded bg-slate-100 px-1 text-xs tabular-nums text-slate-700">{r.purchaseOrderNumber}</span>}
               {r.needsPo && <span className="ml-1 rounded bg-amber-100 px-1 text-xs text-amber-800">needs PO</span>}
-              {r.cardMatched && <span className="ml-1 rounded bg-sky-100 px-1 text-xs text-sky-800">card</span>}
               <span className="block text-xs text-rce-muted">
                 {r.accountId ? (
                   <Link to={`/accounts/${r.accountId}`} className="text-rce-accent hover:underline">{r.accountName}</Link>
@@ -125,7 +122,7 @@ export function ReceiptReviewList({ rows, title = "Receipts to review", collapsi
               />
               <button
                 type="button"
-                className="text-xs text-red-600 hover:underline"
+                className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
                 disabled={remove.isPending}
                 onClick={() => {
                   if (window.confirm(`Remove this ${money(r.amount)} receipt?`)) remove.mutate(r.id);

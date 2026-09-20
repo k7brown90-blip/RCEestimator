@@ -22,13 +22,13 @@
  *   with no PO behind it drafts a PO on its own, flagged "PO after the fact"
  *   (purpose truck_stock for that card's truck), which cannot close until a
  *   receipt photo is attached and the purpose confirmed.
- * - Photo verifies, card proves: the receipt photo is the itemized record; the
- *   card transaction is the money. A PO is verified when it has both and they
- *   agree.
- * - Expenses count ONCE: a spend matched to a receipt is counted by that
- *   receipt on the P&L (routes/financials.ts reads only unmatched spend).
- * - Job costing is unchanged: receipts on a job still count as that job's
- *   material. Nothing here touches jobCosting.ts / receiptCosting.ts.
+ * - THE CHARGE IS THE MONEY, THE RECEIPT IS PROOF (Kyle, 2026-09-19, "the P.O.
+ *   is the money"). Every non-ignored row here lands on the P&L once, in the
+ *   month it occurred (routes/financials.ts), and a row on a PO tagged to a job
+ *   is that job's material cost (services/jobCosting.ts). Many rows may sit on
+ *   one PO — a split transaction is two rows on the same PO. A PO is verified
+ *   when it has money and a receipt file; nothing compares the two amounts.
+ *   The penny-and-three-day receipt matcher that used to live here is gone.
  *
  * Every Stripe read degrades gracefully: the restricted key on Railway gets its
  * Issuing/Treasury read scope from Kyle in the Dashboard, and until then the
@@ -40,7 +40,7 @@ import type { CardSpend, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
 import { stripe, stripeConfigured } from "./stripePayments";
-import { attachReceiptToPurchaseOrder, createPurchaseOrder, transitionPurchaseOrder } from "./purchaseOrders";
+import { RECEIPT_HAS_FILE, createPurchaseOrder, transitionPurchaseOrder, verifyPurchaseOrderIfComplete } from "./purchaseOrders";
 import { EXCLUDE_TEST_CARD_SPEND } from "./accountSpine";
 
 // permit and inspection joined the list on 2026-09-11: they are JOB FEES, the
@@ -48,7 +48,9 @@ import { EXCLUDE_TEST_CARD_SPEND } from "./accountSpine";
 // Never auto-assigned from a merchant — Kyle re-kinds the swipe with a reason.
 export const CARD_SPEND_KINDS = ["materials", "fuel", "maintenance", "tool", "permit", "inspection", "other"] as const;
 export type CardSpendKind = (typeof CARD_SPEND_KINDS)[number];
-export const CARD_SPEND_STATUSES = ["unmatched", "matched", "ignored"] as const;
+// "unmatched" is simply LIVE (the name predates 2026-09-19, when "matched" — paired
+// with a receipt — was retired). "ignored" takes the row off every money figure.
+export const CARD_SPEND_STATUSES = ["unmatched", "ignored"] as const;
 export type CardSpendStatus = (typeof CARD_SPEND_STATUSES)[number];
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -224,7 +226,6 @@ export async function ingestIssuingTransaction(
   }
 
   await routeCardSpend(spend.id);
-  await matchReceipt(spend.id);
   const fresh = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spend.id } });
   return { spend: fresh, created: !existing };
 }
@@ -357,7 +358,6 @@ export async function ingestFinancialAccountTransaction(
   }
 
   await routeCardSpend(spend.id);
-  await matchReceipt(spend.id);
   const fresh = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spend.id } });
   return { spend: fresh, created: !existing, voided };
 }
@@ -385,11 +385,15 @@ function spendPayload(spend: CardSpend) {
 }
 
 /**
- * Materials spend goes looking for its PO: an open/purchased PO on the same
- * truck, same supplier, opened within 48 hours before the swipe, not already
- * backed by a card transaction. None found → the PO is drafted after the fact.
- * Refunds never draft a PO; they ride the PO of the prior spend at that store.
- * Fuel, maintenance, tool and other just sit on the truck ledger.
+ * Materials spend goes looking for its PO: a live PO on the same truck at the
+ * same supplier, opened within 7 days before the swipe (the feed can lag a day
+ * or two) — the most recently opened one wins. MANY CHARGES MAY ATTACH TO ONE
+ * PO (Kyle, 2026-09-19): the 9/17 Home Depot buy rang up as $651.73 + $114.01,
+ * and both belong on the one PO for that trip. A PO drafted after the fact from
+ * an earlier swipe catches the rest of the same trip (same store, within a
+ * day) so a split never drafts twice. None found → the PO is drafted after the
+ * fact. Refunds never draft a PO; they ride the PO of the prior spend at that
+ * store. Fuel, maintenance, tool and other just sit on the truck ledger.
  */
 export async function routeCardSpend(spendId: string): Promise<CardSpend> {
   const spend = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spendId } });
@@ -419,41 +423,31 @@ export async function routeCardSpend(spendId: string): Promise<CardSpend> {
 
   // Kyle, 2026-09-11 (the duplicate POs 0005–0008): the card feed only became
   // readable a day after the purchases, by which time the office POs for them
-  // had been verified by their receipts or landed and closed — and this search
-  // only looked at "open"/"purchased", so it drafted a second PO for money that
-  // already had one. Two fixes, strongest signal first:
-  //  1. A receipt for exactly this amount, near this date, already sitting on a
-  //     PO that has no card money yet → that PO is the one. Nothing beats the
-  //     receipt that was photographed against it.
-  //  2. Supplier match across every live status (open, purchased, verified,
-  //     closed) within 7 days before the swipe, because the feed can lag.
-  // A PO still takes one swipe only (cardSpends: none), so nothing doubles up.
-  const byReceipt = await prisma.receipt.findFirst({
-    where: {
-      purchaseOrderId: { not: null },
-      amount: { gte: spend.amount - 0.01, lte: spend.amount + 0.01 },
-      receivedAt: { gte: new Date(spend.occurredAt.getTime() - 3 * DAY), lte: new Date(spend.occurredAt.getTime() + 3 * DAY) },
-      purchaseOrder: { status: { not: "cancelled" }, cardSpends: { none: {} }, ...(spend.truckId ? { OR: [{ truckId: spend.truckId }, { truckId: null }] } : {}) },
-    },
-    orderBy: { receivedAt: "desc" },
-    select: { purchaseOrderId: true },
-  });
-  const receiptPo = byReceipt?.purchaseOrderId
-    ? await prisma.purchaseOrder.findUnique({ where: { id: byReceipt.purchaseOrderId } })
-    : null;
-
-  const candidates = receiptPo ? [] : await prisma.purchaseOrder.findMany({
+  // had been verified or landed and closed — so every live status is searched,
+  // 7 days back, because the feed can lag. Kyle, 2026-09-19: no receipt-amount
+  // lookup and no "one swipe per PO" — the most recently opened PO at that
+  // store on that truck takes the charge, and takes the next one of the same
+  // trip too. An after-the-fact PO only catches charges within a day of the
+  // swipe that drafted it, so two separate trips do not collapse into one.
+  const candidates = await prisma.purchaseOrder.findMany({
     where: {
       status: { in: ["open", "purchased", "verified", "closed"] },
       ...(spend.truckId ? { truckId: spend.truckId } : {}),
-      openedAt: { gte: new Date(spend.occurredAt.getTime() - 7 * DAY), lte: new Date(spend.occurredAt.getTime() + DAY) },
-      cardSpends: { none: {} },
-      afterTheFact: false,
+      OR: [
+        { afterTheFact: false, openedAt: { gte: new Date(spend.occurredAt.getTime() - 7 * DAY), lte: new Date(spend.occurredAt.getTime() + DAY) } },
+        { afterTheFact: true, openedAt: { gte: new Date(spend.occurredAt.getTime() - DAY), lte: new Date(spend.occurredAt.getTime() + DAY) } },
+      ],
     },
     orderBy: { openedAt: "desc" },
     take: 50,
   });
-  const po = receiptPo ?? candidates.find((c) => merchantMatches(c.supplier, spend.merchantName));
+  // A PO someone OPENED (office or tech) beats one the feed drafted: the
+  // office PO is the document for the trip, whatever state it reached before
+  // the feed caught up. Among drafted POs the one nearest the swipe wins.
+  const distance = (c: { openedAt: Date }) => Math.abs(c.openedAt.getTime() - spend.occurredAt.getTime());
+  const po = [...candidates]
+    .sort((a, b) => (a.afterTheFact === b.afterTheFact ? (a.afterTheFact ? distance(a) - distance(b) : 0) : a.afterTheFact ? 1 : -1))
+    .find((c) => merchantMatches(c.supplier, spend.merchantName));
 
   if (po) {
     const updated = await prisma.$transaction(async (tx) => {
@@ -464,6 +458,7 @@ export async function routeCardSpend(spendId: string): Promise<CardSpend> {
     if (po.status === "open") {
       await transitionPurchaseOrder(po.id, "purchased", { actor: "system", reason: "Card transaction landed" });
     }
+    await verifyPurchaseOrderIfComplete(po.id, "system");
     return updated;
   }
 
@@ -484,153 +479,6 @@ export async function routeCardSpend(spendId: string): Promise<CardSpend> {
     await poEvent(tx, drafted.id, "card_matched", "system", "PO drafted after the fact from this card transaction", spendPayload(row));
     return row;
   });
-}
-
-// ─── Receipt matching: photo verifies, card proves ───────────────────────────
-
-/** Receipt categories that can itemize a spend of this kind. */
-export function receiptCategoriesFor(kind: string): string[] {
-  switch (kind) {
-    case "materials": return ["materials"];
-    case "fuel": return ["gas"];
-    case "maintenance": return ["maintenance"];
-    case "permit": return ["permit"];
-    case "inspection": return ["inspection"];
-    default: return ["overhead", "materials"];
-  }
-}
-
-/** Spend kinds a receipt of this category can prove. */
-function spendKindsFor(category: string): string[] {
-  switch (category) {
-    case "materials": return ["materials", "tool", "other"];
-    case "gas": return ["fuel"];
-    case "maintenance": return ["maintenance"];
-    case "permit": return ["permit"];
-    case "inspection": return ["inspection"];
-    default: return ["other", "tool"];
-  }
-}
-
-const RECEIPT_MATCH_SELECT = {
-  id: true, jobId: true, purchaseOrderId: true, amount: true, category: true, receivedAt: true, imageMime: true, imageUrl: true,
-} satisfies Prisma.ReceiptSelect;
-type MatchableReceipt = Prisma.ReceiptGetPayload<{ select: typeof RECEIPT_MATCH_SELECT }>;
-
-/**
- * Link one spend to one receipt: the spend is "matched", a receipt with no PO
- * joins the spend's PO (through the one attach path, so the job keeps rolling
- * and the trail gets its receipt_attached event), a spend with no PO takes the
- * receipt's, and a purchased PO that now has both photo and card — and they
- * agree on the amount — is verified.
- */
-export async function linkSpendToReceipt(spendId: string, receiptId: string, actor: string, reason?: string | null): Promise<CardSpend> {
-  const spend = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spendId } });
-  const receipt = await prisma.receipt.findUnique({ where: { id: receiptId }, select: { ...RECEIPT_MATCH_SELECT, cardSpend: { select: { id: true } } } });
-  if (!receipt) throw new CardSpendError("Receipt not found", 404);
-  if (receipt.cardSpend && receipt.cardSpend.id !== spend.id) throw new CardSpendError("That receipt already matches another card transaction.", 409);
-
-  let purchaseOrderId = spend.purchaseOrderId;
-  if (!purchaseOrderId && receipt.purchaseOrderId) purchaseOrderId = receipt.purchaseOrderId;
-
-  const updated = await prisma.$transaction(async (tx) => {
-    const row = await tx.cardSpend.update({
-      where: { id: spend.id },
-      data: { receiptId: receipt.id, status: "matched", purchaseOrderId, ...(reason ? { note: reason } : {}) },
-    });
-    if (purchaseOrderId && purchaseOrderId !== spend.purchaseOrderId) {
-      await poEvent(tx, purchaseOrderId, "card_matched", actor, reason ?? "Card transaction matched through its receipt", spendPayload(row));
-    }
-    return row;
-  });
-
-  if (purchaseOrderId && !receipt.purchaseOrderId) {
-    await attachReceiptToPurchaseOrder(receipt.id, purchaseOrderId, actor);
-  }
-  if (purchaseOrderId) {
-    const po = await prisma.purchaseOrder.findUnique({ where: { id: purchaseOrderId }, select: { status: true } });
-    const agree = Math.abs(receipt.amount - spend.amount) <= 0.01;
-    const photo = Boolean(receipt.imageMime || receipt.imageUrl);
-    if (po?.status === "purchased" && agree && photo) {
-      await transitionPurchaseOrder(purchaseOrderId, "verified", { actor, reason: "Receipt photo and card transaction agree" });
-    }
-  }
-  return updated;
-}
-
-/** Detach the receipt; the spend goes back to unmatched (an ignored spend stays ignored). */
-export async function unlinkSpendFromReceipt(spendId: string, reason: string): Promise<CardSpend> {
-  const spend = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spendId } });
-  return prisma.cardSpend.update({
-    where: { id: spendId },
-    data: { receiptId: null, note: reason, ...(spend.status === "matched" ? { status: "unmatched" } : {}) },
-  });
-}
-
-function closestInTime<T extends { receivedAt: Date }>(rows: T[], at: Date): T | undefined {
-  return [...rows].sort((a, b) => Math.abs(a.receivedAt.getTime() - at.getTime()) - Math.abs(b.receivedAt.getTime() - at.getTime()))[0];
-}
-
-/**
- * Find the receipt that itemizes this spend: first the receipts already on the
- * linked PO, else any receipt with no card match, of a category this kind can
- * have, within a cent and three days. Closest in time wins.
- */
-export async function matchReceipt(spendId: string): Promise<CardSpend> {
-  const spend = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spendId } });
-  if (spend.receiptId || spend.status === "ignored" || spend.amount <= 0) return spend;
-
-  const amountWindow = { gte: spend.amount - 0.011, lte: spend.amount + 0.011 };
-  let candidates: MatchableReceipt[] = [];
-  if (spend.purchaseOrderId) {
-    candidates = await prisma.receipt.findMany({
-      where: { purchaseOrderId: spend.purchaseOrderId, cardSpend: null, amount: amountWindow },
-      select: RECEIPT_MATCH_SELECT,
-    });
-  }
-  if (candidates.length === 0) {
-    candidates = await prisma.receipt.findMany({
-      where: {
-        cardSpend: null,
-        category: { in: receiptCategoriesFor(spend.kind) },
-        amount: amountWindow,
-        receivedAt: { gte: new Date(spend.occurredAt.getTime() - 3 * DAY), lte: new Date(spend.occurredAt.getTime() + 3 * DAY) },
-      },
-      select: RECEIPT_MATCH_SELECT,
-    });
-  }
-  const pick = closestInTime(candidates.filter((r) => Math.abs(r.amount - spend.amount) <= 0.01), spend.occurredAt);
-  if (!pick) return spend;
-  return linkSpendToReceipt(spend.id, pick.id, "system", null);
-}
-
-/**
- * The receipt side of the same match — called after a receipt is confirmed,
- * its amount edited, or uploaded from the CRM/tech app. Same rule, mirrored:
- * an unmatched spend of a kind this receipt's category can prove, within a
- * cent and three days; a spend on the receipt's own PO wins, then closest.
- */
-export async function matchSpendForReceipt(receiptId: string): Promise<CardSpend | null> {
-  const receipt = await prisma.receipt.findUnique({
-    where: { id: receiptId },
-    select: { ...RECEIPT_MATCH_SELECT, cardSpend: { select: { id: true } } },
-  });
-  if (!receipt || receipt.cardSpend || receipt.amount <= 0) return null;
-  const spends = await prisma.cardSpend.findMany({
-    where: {
-      status: "unmatched",
-      receiptId: null,
-      kind: { in: spendKindsFor(receipt.category) },
-      amount: { gte: receipt.amount - 0.011, lte: receipt.amount + 0.011 },
-      occurredAt: { gte: new Date(receipt.receivedAt.getTime() - 3 * DAY), lte: new Date(receipt.receivedAt.getTime() + 3 * DAY) },
-    },
-  });
-  const close = spends.filter((s) => Math.abs(s.amount - receipt.amount) <= 0.01);
-  if (close.length === 0) return null;
-  const onPo = receipt.purchaseOrderId ? close.find((s) => s.purchaseOrderId === receipt.purchaseOrderId) : undefined;
-  const pick = onPo ?? [...close].sort((a, b) =>
-    Math.abs(a.occurredAt.getTime() - receipt.receivedAt.getTime()) - Math.abs(b.occurredAt.getTime() - receipt.receivedAt.getTime()))[0];
-  return linkSpendToReceipt(pick.id, receipt.id, "system", null);
 }
 
 // ─── Stripe reads (graceful when the key lacks scope) ────────────────────────
@@ -1007,8 +855,8 @@ export async function readBalances(): Promise<Balances> {
 
 export const CARD_SPEND_INCLUDE = {
   truck: { select: { id: true, name: true } },
-  purchaseOrder: { select: { id: true, number: true, status: true, afterTheFact: true } },
-  receipt: { select: { id: true, vendor: true, amount: true, category: true, status: true, receivedAt: true, jobId: true, imageMime: true } },
+  // The proof lives on the PO (Kyle, 2026-09-19): any receipt file on it proves the charge.
+  purchaseOrder: { select: { id: true, number: true, status: true, afterTheFact: true, jobId: true, receipts: { where: RECEIPT_HAS_FILE, select: { id: true }, take: 1 } } },
 } satisfies Prisma.CardSpendInclude;
 type CardSpendRow = Prisma.CardSpendGetPayload<{ include: typeof CARD_SPEND_INCLUDE }>;
 
@@ -1030,10 +878,11 @@ export function serializeCardSpend(row: CardSpendRow) {
     purchaseOrderNumber: row.purchaseOrder?.number ?? null,
     purchaseOrderStatus: row.purchaseOrder?.status ?? null,
     purchaseOrderAfterTheFact: row.purchaseOrder?.afterTheFact ?? false,
-    receiptId: row.receiptId,
-    receipt: row.receipt
-      ? { id: row.receipt.id, vendor: row.receipt.vendor, amount: row.receipt.amount, category: row.receipt.category, status: row.receipt.status, receivedAt: row.receipt.receivedAt, jobId: row.receipt.jobId, hasImage: Boolean(row.receipt.imageMime) }
-      : null,
+    purchaseOrderJobId: row.purchaseOrder?.jobId ?? null,
+    /** A receipt photo/PDF sits on this charge's PO — the proof (Kyle, 2026-09-19). */
+    proven: (row.purchaseOrder?.receipts.length ?? 0) > 0,
+    /** A live materials charge with no proof on its PO (or no PO) — the prompt for the photo. */
+    needsProof: needsProof(row),
     status: row.status,
     ignoredReason: row.ignoredReason,
     note: row.note,
@@ -1045,21 +894,33 @@ export function serializeCardSpend(row: CardSpendRow) {
 }
 export type CardSpendView = ReturnType<typeof serializeCardSpend>;
 
-/** Month-to-date and unmatched rollups per truck, one query each. */
+/**
+ * "PO-XXXX, $651.73 at Home Depot — attach the receipt" (Kyle, 2026-09-19):
+ * a live materials purchase whose PO carries no receipt file yet, or that
+ * has no PO at all. Fuel, maintenance and refunds never prompt.
+ */
+export function needsProof(row: Pick<CardSpendRow, "kind" | "status" | "amount" | "purchaseOrder">): boolean {
+  return row.kind === "materials" && row.status !== "ignored" && row.amount > 0 && (row.purchaseOrder?.receipts.length ?? 0) === 0;
+}
+
+/** Month-to-date and needs-proof rollups per truck. */
 export async function truckSpendRollups(now = new Date()) {
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const [mtd, unmatched] = await Promise.all([
+  const [mtd, materials] = await Promise.all([
     prisma.cardSpend.groupBy({
       by: ["truckId", "kind"],
       where: { status: { not: "ignored" }, occurredAt: { gte: monthStart }, ...EXCLUDE_TEST_CARD_SPEND },
       _sum: { amount: true },
     }),
-    prisma.cardSpend.groupBy({
-      by: ["truckId"],
-      where: { status: "unmatched", kind: "materials", receiptId: null, amount: { gt: 0 } },
-      _count: { _all: true },
+    prisma.cardSpend.findMany({
+      where: { status: { not: "ignored" }, kind: "materials", amount: { gt: 0 } },
+      select: { truckId: true, kind: true, status: true, amount: true, purchaseOrder: { select: { receipts: { where: RECEIPT_HAS_FILE, select: { id: true }, take: 1 } } } },
     }),
   ]);
+  const unmatched = new Map<string | null, number>();
+  for (const m of materials) {
+    if (needsProof(m as Pick<CardSpendRow, "kind" | "status" | "amount" | "purchaseOrder">)) unmatched.set(m.truckId, (unmatched.get(m.truckId) ?? 0) + 1);
+  }
   // Truck overhead only. permit/inspection are JOB fees (Kyle, 2026-09-11) and
   // deliberately have no truck column — they never belong to a vehicle.
   type TruckKind = "fuel" | "maintenance" | "materials" | "tool" | "other";
@@ -1074,7 +935,7 @@ export async function truckSpendRollups(now = new Date()) {
     const k = m.kind as TruckKind;
     if (k in r) r[k] = round2(r[k] + (m._sum.amount ?? 0));
   }
-  for (const u of unmatched) row(u.truckId).unmatched = u._count._all;
+  for (const [truckId, count] of unmatched) row(truckId).unmatched = count;
   return byTruck;
 }
 
@@ -1084,13 +945,13 @@ export interface CardSpendPatch {
   kind?: CardSpendKind;
   truckId?: string | null;
   purchaseOrderId?: string | null;
-  receiptId?: string | null;
   status?: "ignored" | "unmatched";
 }
 
 /**
  * Kyle's one-line-reason edits. A PO link/unlink writes a PurchaseOrderEvent
- * (card_matched / card_detached); everything else keeps the reason on the row.
+ * (card_matched / card_detached) — the standing rule's way OUT for a charge
+ * that landed on the wrong PO; everything else keeps the reason on the row.
  */
 export async function updateCardSpend(id: string, patch: CardSpendPatch, meta: { actor: string; reason: string }): Promise<CardSpend> {
   let spend = await prisma.cardSpend.findUnique({ where: { id } });
@@ -1122,22 +983,15 @@ export async function updateCardSpend(id: string, patch: CardSpendPatch, meta: {
     if (patch.purchaseOrderId) {
       const po = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: patch.purchaseOrderId }, select: { status: true } });
       if (po.status === "open") await transitionPurchaseOrder(patch.purchaseOrderId, "purchased", { actor: meta.actor, reason: meta.reason });
+      await verifyPurchaseOrderIfComplete(patch.purchaseOrderId, meta.actor);
     }
-  }
-  if (patch.receiptId !== undefined && patch.receiptId !== spend.receiptId) {
-    spend = patch.receiptId
-      ? await linkSpendToReceipt(id, patch.receiptId, meta.actor, meta.reason)
-      : await unlinkSpendFromReceipt(id, meta.reason);
   }
   if (patch.status !== undefined && patch.status !== spend.status) {
     if (patch.status === "ignored") {
       spend = await prisma.cardSpend.update({ where: { id }, data: { status: "ignored", ignoredReason: meta.reason, note: meta.reason } });
     } else {
-      // Back from ignored: matched if a receipt is on it, else unmatched.
-      spend = await prisma.cardSpend.update({
-        where: { id },
-        data: { status: spend.receiptId ? "matched" : "unmatched", ignoredReason: null, note: meta.reason },
-      });
+      spend = await prisma.cardSpend.update({ where: { id }, data: { status: "unmatched", ignoredReason: null, note: meta.reason } });
+      if (spend.purchaseOrderId) await verifyPurchaseOrderIfComplete(spend.purchaseOrderId, meta.actor);
     }
   }
   return spend;

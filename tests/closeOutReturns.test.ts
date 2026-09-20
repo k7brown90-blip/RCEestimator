@@ -107,13 +107,14 @@ afterAll(async () => {
 });
 
 describe("the close-out count", () => {
-  it("counting leftovers back to the truck credits the job at the charged cost", async () => {
+  it("counting leftovers back to the truck credits the ledger at the charged cost — the job's cost is its P.O. money, untouched", async () => {
     const consume = await request(app).post(`/jobs/${jobTruckReturn}/consume`).send({
       lines: [{ itemId: WIRE, name: "12-2 NM-B", qty: 50, unit: "ft" }], reason: "Materials used",
     });
     expect(consume.status).toBe(201);
     const before = await request(app).get(`/jobs/${jobTruckReturn}/materials`);
-    expect(before.body.materialCost).toBe(100); // 50 * 2.00
+    expect(before.body.stock.net).toBe(100); // 50 * 2.00 off the truck — inventory, not cost (2026-09-19)
+    expect(before.body.materialCost).toBe(0); // no P.O. money on this job
 
     const ret = await request(app).post(`/jobs/${jobTruckReturn}/return`).send({
       lines: [{ itemId: WIRE, qty: 20, unit: "ft" }], reason: "Job close-out count",
@@ -125,8 +126,8 @@ describe("the close-out count", () => {
 
     expect((await level(truckKey, WIRE))!.qtyOnHand).toBeGreaterThanOrEqual(20);
     const after = await request(app).get(`/jobs/${jobTruckReturn}/materials`);
-    expect(after.body.materialCost).toBe(60); // 100 − (20 * 2.00)
-    expect(after.body.stock).toEqual({ consumed: 100, returned: 40, net: 60, movementCount: 2 });
+    expect(after.body.stock).toEqual({ consumed: 100, returned: 40, net: 60, movementCount: 2 }); // 100 − (20 * 2.00)
+    expect(after.body.materialCost).toBe(0);
   });
 
   it("counting leftovers back to the warehouse puts them in the warehouse, not the truck, and credits the job identically", async () => {
@@ -149,7 +150,7 @@ describe("the close-out count", () => {
     expect((await level(truckKey, WIRE))!.qtyOnHand).toBe(truckAfterConsume); // the truck did not move
 
     const after = await request(app).get(`/jobs/${jobWarehouseReturn}/materials`);
-    expect(after.body.materialCost).toBe(40); // 60 − (10 * 2.00), same formula as the truck case
+    expect(after.body.stock.net).toBe(40); // 60 − (10 * 2.00), same formula as the truck case
   });
 
   it("marking a job complete with an un-done count still succeeds — a warning at most, never a block", async () => {
@@ -180,6 +181,6 @@ describe("the close-out count", () => {
     // Refused — nothing moved.
     expect((await level(truckKey, WIRE))!.qtyOnHand).toBe(truckBefore);
     const after = await request(app).get(`/jobs/${jobOverrun}/materials`);
-    expect(after.body.materialCost).toBe(10); // unchanged: 5 * 2.00
+    expect(after.body.stock.net).toBe(10); // unchanged: 5 * 2.00
   });
 });

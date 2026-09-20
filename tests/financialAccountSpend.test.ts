@@ -186,16 +186,23 @@ describe("the rest of the feed", () => {
 // Kyle, 2026-09-11 — the duplicate POs 0005–0008. The office opened a PO,
 // photographed the receipt against it, and it was verified (or landed and
 // closed) BEFORE the card feed caught up a day later. The swipe must join that
-// PO, not draft a second one.
+// PO, not draft a second one. Since 2026-09-19 ("the P.O. is the money") the
+// receipt's amount plays no part: the office PO at that store on that truck,
+// opened within the week, is the one — ahead of any PO the feed drafted.
 describe("a swipe that arrives after the office PO is already verified or landed", () => {
-  it("joins the PO that holds the exact-amount receipt instead of drafting a duplicate", async () => {
+  it("joins the office PO at the same store — closed or not — instead of drafting a duplicate", async () => {
     const { createPurchaseOrder, transitionPurchaseOrder } = await import("../src/services/purchaseOrders");
     const dayAgo = new Date(Date.now() - 24 * 3600e3);
     const office = await createPurchaseOrder({
       supplier: "Home Depot", truckId, openedBy: "owner", actor: "owner", openedAt: new Date(Date.now() - 2 * 24 * 3600e3),
     } as Parameters<typeof createPurchaseOrder>[0]);
     await prisma.receipt.create({
-      data: { purchaseOrderId: office.id, category: "materials", status: "confirmed", vendor: "The Home Depot", amount: 30.8, source: "tech_pwa", receivedAt: dayAgo },
+      data: {
+        purchaseOrderId: office.id, category: "materials", status: "confirmed", vendor: "The Home Depot", amount: 30.8,
+        source: "tech_pwa", receivedAt: dayAgo,
+        // "photographed the receipt against it" — the file is what makes it proof.
+        imageMime: "image/jpeg", imageData: Buffer.from([1]),
+      },
     });
     for (const to of ["purchased", "verified", "closed"] as const) {
       await transitionPurchaseOrder(office.id, to, { actor: "test", reason: "office flow" });

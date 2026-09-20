@@ -138,6 +138,10 @@ beforeAll(async () => {
 
   const closedPo = await createPurchaseOrder({ supplier: "Test Supply", openedBy: "owner", actor: "test", truckId, jobId: job, lines: [{ itemId: BREAKER, name: "20A breaker", qty: 5 }] });
   await transitionPurchaseOrder(closedPo.id, "purchased", { actor: "test" });
+  // Verified means the money is proved (2026-09-19): the receipt file is what proves it.
+  await prisma.receipt.create({
+    data: { purchaseOrderId: closedPo.id, category: "materials", vendor: "Test Supply", amount: 5, imageMime: "image/jpeg", imageData: Buffer.from([1]) },
+  });
   await transitionPurchaseOrder(closedPo.id, "verified", { actor: "test" });
   await transitionPurchaseOrder(closedPo.id, "closed", { actor: "test" });
 

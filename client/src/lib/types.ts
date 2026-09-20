@@ -37,21 +37,19 @@ export type JobCosts = {
   grossProfit: number | null;
   margin: number | null;
   /**
-   * Where materialCost came from (Kyle, 2026-09-09, Build 4 — THE MATERIAL RULE):
-   * stock consumed off a truck, confirmed receipts not on a PO, the signed
-   * estimate's frozen material, or nothing.
+   * Where materialCost came from (Kyle, 2026-09-19, "the P.O. is the money"):
+   * the money on the P.O.s tagged to the job — card charges plus typed
+   * not-on-card amounts — or nothing.
    */
   materialSource?: MaterialSource;
 };
 
-export type MaterialSource = "stock" | "receipts" | "estimate" | "none";
+export type MaterialSource = "po" | "none";
 
 /** The label every money surface prints beside a material figure. */
 export const MATERIAL_SOURCE_LABEL: Record<MaterialSource, string> = {
-  stock: "from truck stock",
-  receipts: "from receipts",
-  estimate: "from the signed estimate",
-  none: "nothing recorded",
+  po: "from the job's P.O.s",
+  none: "no P.O. money on this job",
 };
 
 // ─── Materials used on a job (Kyle, 2026-09-09, Build 4) ─────────────────────
@@ -107,17 +105,20 @@ export type JobMaterialsView = {
   /** The pre-fill for "Create P.O." — only positive shortages. */
   shortages: JobMaterialShortageLine[];
   lines: JobMaterialLine[];
+  /** What the ledger says the job drew off the truck — inventory, not cost. */
   stock: { consumed: number; returned: number; net: number; movementCount: number } | null;
   receipts: Array<{
     id: string; vendor: string | null; amount: number; category: string; status: string; receivedAt: string;
     purchaseOrderId: string | null; purchaseOrderNumber: string | null;
-    countsTowardJob: boolean;
+    hasFile: boolean;
     note: string | null;
   }>;
+  /** THE MONEY: card charges + typed not-on-card amounts on the job's P.O.s. */
   materialCost: number;
   materialSource: MaterialSource;
+  po: { card: number; typed: number; net: number; poCount: number } | null;
+  /** The signed estimate's frozen material — display only, never cost. */
   estimateMaterial: number | null;
-  receiptMaterial: number | null;
 };
 
 export type ConsumeLineInput = { itemId?: string; name?: string | null; qty: number; unit?: string | null };
@@ -259,7 +260,6 @@ export type Visit = {
   /** Set when the visit (a consultation, or later a job) was closed out. */
   completedAt?: string | null;
   estimatedCost?: number | null;
-  actualMaterialCost?: number | null;
   laborHours?: number | null;
   overheadAllocation?: number | null;
   revenue?: number | null;
@@ -914,9 +914,17 @@ export type PurchaseOrderSummary = {
   landedAt: string | null;
   createdAt: string;
   receiptCount: number;
-  /** Kyle, 2026-09-09: "card proves" — a linked Issuing transaction is the money behind this PO. */
+  /** Receipts carrying a photo or PDF — the proof (Kyle, 2026-09-19). */
+  proofCount: number;
   cardSpendCount: number;
   cardMatched: boolean;
+  /** THE MONEY (Kyle, 2026-09-19): Σ live card charges + the typed not-on-card amount. */
+  cardTotal: number;
+  offCardAmount: number | null;
+  offCardMethod: OffCardMethod | null;
+  offCardNote: string | null;
+  offCardAt: string | null;
+  moneyTotal: number;
   /** Drafted from a card transaction with no PO behind it; cannot close without a receipt photo. */
   afterTheFact: boolean;
   lines: PurchaseOrderLine[];
@@ -926,7 +934,7 @@ export type PurchaseOrderEvent = {
   id: string;
   at: string;
   actor: string;
-  kind: "created" | "edited" | "status" | "receipt_attached" | "receipt_detached" | "line_added" | "line_edited" | "line_removed" | "card_matched" | "card_detached" | "landed";
+  kind: "created" | "edited" | "status" | "receipt_attached" | "receipt_detached" | "line_added" | "line_edited" | "line_removed" | "card_matched" | "card_detached" | "landed" | "money_edited" | "migrated";
   reason: string | null;
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
@@ -947,8 +955,13 @@ export type PurchaseOrderReceipt = {
 export type PurchaseOrderDetail = PurchaseOrderSummary & {
   events: PurchaseOrderEvent[];
   receipts: PurchaseOrderReceipt[];
-  /** The card transactions behind this PO (Kyle, 2026-09-09). */
-  cardSpends: { id: string; merchantName: string; amount: number; kind: string; status: string; occurredAt: string; receiptId: string | null }[];
+  /** THE MONEY: every card transaction on this PO, ignored ones included (Kyle, 2026-09-19). */
+  cardSpends: { id: string; merchantName: string; amount: number; kind: string; status: string; occurredAt: string; ignoredReason: string | null; note: string | null }[];
+};
+
+export type OffCardMethod = "cash" | "check" | "personal_card" | "other" | "unknown";
+export const OFF_CARD_METHOD_LABEL: Record<OffCardMethod, string> = {
+  cash: "cash", check: "check", personal_card: "personal card", other: "other", unknown: "not on the card",
 };
 
 /** A receipt row from /receipt-review or /receipts-needing-po. */
@@ -966,9 +979,6 @@ export type ReviewReceiptRow = {
   purchaseOrderId: string | null;
   purchaseOrderNumber: string | null;
   needsPo: boolean;
-  /** Kyle, 2026-09-09: "card proves" — the card transaction this receipt itemizes, if matched. */
-  cardSpendId?: string | null;
-  cardMatched?: boolean;
 };
 
 // ── Trucks, cards, card spend (Kyle, 2026-09-09) ─────────────────────────────
@@ -980,7 +990,8 @@ export type ReviewReceiptRow = {
 // commission math (job profit = revenue − material − fees). They are not truck
 // overhead, so they have no column in TruckMtd.
 export type CardSpendKind = "materials" | "fuel" | "maintenance" | "tool" | "permit" | "inspection" | "other";
-export type CardSpendStatus = "unmatched" | "matched" | "ignored";
+/** "unmatched" is simply live (the name predates 2026-09-19); "ignored" is off every money figure. */
+export type CardSpendStatus = "unmatched" | "ignored";
 
 export type CardSpendRow = {
   id: string;
@@ -1002,8 +1013,11 @@ export type CardSpendRow = {
   purchaseOrderNumber: string | null;
   purchaseOrderStatus: string | null;
   purchaseOrderAfterTheFact: boolean;
-  receiptId: string | null;
-  receipt: { id: string; vendor: string | null; amount: number; category: string; status: string; receivedAt: string; jobId: string | null; hasImage: boolean } | null;
+  purchaseOrderJobId: string | null;
+  /** A receipt photo/PDF sits on this charge's PO — the proof (Kyle, 2026-09-19). */
+  proven: boolean;
+  /** A live materials charge with no proof on its PO (or no PO) — the prompt for the photo. */
+  needsProof: boolean;
   status: CardSpendStatus;
   ignoredReason: string | null;
   note: string | null;
@@ -1115,20 +1129,6 @@ export type SweepView = {
   canSweep: boolean;
   reason: string | null;
   recent: TreasurySweepRow[];
-};
-
-export type ReceiptCandidate = {
-  id: string;
-  vendor: string | null;
-  amount: number;
-  category: string;
-  status: string;
-  receivedAt: string;
-  jobId: string | null;
-  purchaseOrderId: string | null;
-  purchaseOrderNumber: string | null;
-  hasImage: boolean;
-  exact: boolean;
 };
 
 // ─── Inventory ledger and tool register (Kyle, 2026-09-09, Build 3) ──────────

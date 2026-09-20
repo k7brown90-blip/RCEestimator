@@ -26,10 +26,8 @@ import { money, shortDate } from "../lib/utils";
 type Row = { key: string; itemId: string; name: string; unit: string | null; qty: string; onHand: number | null; avgUnitCost: number | null; fromEstimate: boolean };
 
 const SOURCE_NOTE: Record<JobMaterialsView["materialSource"], string> = {
-  stock: "consume − return off the truck, at its moving average",
-  receipts: "confirmed materials receipts with no PO — nothing consumed from stock yet",
-  estimate: "the signed estimate's frozen material — no stock consumed, no receipts",
-  none: "nothing recorded anywhere",
+  po: "card charges + typed not-on-card amounts on the P.O.s tagged to this job",
+  none: "no P.O. tagged to this job carries money yet",
 };
 
 /** Query key names the endpoint: /jobs/:id/materials. Invalidated by every consume/return. */
@@ -383,12 +381,11 @@ export function MaterialsUsedPanel({ visitId }: { visitId: string }) {
         <span className="font-semibold tabular-nums">{money(data.materialCost)}</span>
         <span className="ml-2 text-rce-muted">· {MATERIAL_SOURCE_LABEL[data.materialSource]} — {SOURCE_NOTE[data.materialSource]}</span>
       </p>
-      {data.stock && (
-        <p className="text-xs text-rce-muted">
-          Consumed {money(data.stock.consumed)} · returned {money(data.stock.returned)} · {data.stock.movementCount} ledger row(s)
-          {data.estimateMaterial !== null && ` · estimate carried ${money(data.estimateMaterial)}`}
-        </p>
-      )}
+      <p className="text-xs text-rce-muted">
+        {data.po && `${data.po.poCount} P.O.(s) · card ${money(data.po.card)} · typed ${money(data.po.typed)}`}
+        {data.stock && `${data.po ? " · " : ""}off the truck ${money(data.stock.net)} in ${data.stock.movementCount} ledger row(s) — inventory only, not cost`}
+        {data.estimateMaterial !== null && ` · estimate carried ${money(data.estimateMaterial)} (an estimate, never cost)`}
+      </p>
 
       {mode === "add" && <div className="mt-3 rounded-lg border border-rce-border p-3"><MaterialsConsumeStep visitId={visitId} onDone={() => setMode("none")} compact /></div>}
       {mode === "return" && <div className="mt-3 rounded-lg border border-rce-border p-3"><ReturnForm visitId={visitId} view={data} onDone={() => setMode("none")} /></div>}
@@ -430,7 +427,8 @@ export function MaterialsUsedPanel({ visitId }: { visitId: string }) {
                   {shortDate(r.receivedAt)} · {r.vendor ?? "(no vendor)"} · {r.category}{r.purchaseOrderNumber ? ` · ${r.purchaseOrderNumber}` : ""}
                   {r.note && <span className="ml-1 text-amber-800">— {r.note}</span>}
                 </span>
-                <span className={`tabular-nums ${r.countsTowardJob ? "" : "text-rce-muted line-through"}`}>{money(r.amount)}</span>
+                {/* A receipt is proof, never money (Kyle, 2026-09-19): its amount is what it says, not what the job is charged. */}
+                <span className="tabular-nums text-rce-muted">{money(r.amount)}{r.hasFile ? "" : " · no file"}</span>
               </li>
             ))}
           </ul>

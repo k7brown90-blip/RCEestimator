@@ -73,11 +73,10 @@ import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
-import { rerollJobMaterialCost } from "./services/receiptCosting";
 import {
-  PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
+  OFF_CARD_METHODS, PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
   defaultTruckId, detachReceiptFromPurchaseOrder, editPurchaseOrderLine, jobLabelOf, parseStatusFilter,
-  removePurchaseOrderLine, serializePurchaseOrder, transitionPurchaseOrder, updatePurchaseOrder,
+  removePurchaseOrderLine, serializePurchaseOrder, setPurchaseOrderMoney, transitionPurchaseOrder, updatePurchaseOrder,
 } from "./services/purchaseOrders";
 import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
@@ -88,12 +87,11 @@ import { timeRouter } from "./routes/time";
 import { treasuryRouter } from "./routes/treasury";
 import { inventoryRouter } from "./routes/inventory";
 import { materialsRouter } from "./routes/materials";
-import { matchSpendForReceipt } from "./services/cardSpend";
 // Kyle, 2026-09-11: the office can photograph a receipt straight onto a PO; Vision reads it.
 import { parseReceiptImage } from "./services/receiptVision";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
-import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, estimateMaterialCost, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs } from "./services/jobCosting";
+import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs } from "./services/jobCosting";
 import { closeOutMaterialWarning, consumeForJob, jobMaterials, materialNeedListForJob, returnForJob } from "./services/jobMaterials";
 import { renderMaterialsListPdf } from "./services/materialsListPdf";
 import { parseJsonStringArray } from "./lib/json";
@@ -1242,11 +1240,7 @@ app.post("/receipts", asyncHandler(async (req, res) => {
     },
   });
 
-  // If tied to a job, re-roll the job's actualMaterialCost — confirmed
-  // material receipts only (ruled 2026-09-06), through the one writer
-  // every receipt door shares (Kyle, 2026-09-08).
-  if (body.jobId) await rerollJobMaterialCost(body.jobId);
-
+  // A receipt is proof, never money (Kyle, 2026-09-19): nothing to re-roll.
   res.status(201).json(receipt);
 }));
 
@@ -4621,7 +4615,7 @@ app.get("/jobs", asyncHandler(async (req, res) => {
       voidedAt: null,
       OR: [{ visitId: { in: visitIds } }, { jobVisitId: { in: visitIds } }],
     },
-    include: { options: true, lines: { select: { option: true, materialCost: true } } },
+    include: { options: true },
     orderBy: { createdAt: "desc" },
   });
 
@@ -4702,25 +4696,20 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     status === "signed" ? "accepted" : status === "viewed" ? "sent" : status;
 
   /*
-    THE MATERIAL RULE (Kyle, 2026-09-09, Build 4). Stock consumed off a truck
-    charges the job first; receipts (not on a PO) second; the signed estimate's
-    frozen material third. ONE grouped query for every job on the tab through
+    THE MATERIAL RULE (Kyle, 2026-09-19, "the P.O. is the money"): a job's
+    material is the money on the P.O.s tagged to it — card charges plus typed
+    not-on-card amounts. ONE grouped query for every job on the tab through
     materialCostForJobs — the same helper the account summary and the
     Financials job-profitability report call, so the three can never disagree.
-    Movements on the chain's other visit (the appointment the job was quoted
-    on) count toward the job, like its hours and receipts do.
+    P.O.s on the chain's other visit (the appointment the job was quoted on)
+    count toward the job, like its hours do.
   */
   const jobsChildrenOf = new Map<string, string[]>();
   for (const [child, jobV] of jobsChildToJob) jobsChildrenOf.set(jobV, [...(jobsChildrenOf.get(jobV) ?? []), child]);
   const materialByJob = await materialCostForJobs(
     jobVisits
       .filter((v) => !jobsChildToJob.has(v.id))
-      .map((v) => ({
-        visitId: v.id,
-        chainVisitIds: jobsChildrenOf.get(v.id) ?? [],
-        actualMaterialCost: v.actualMaterialCost,
-        estimatedMaterialCost: signedQualifies.has(v.id) ? estimateMaterialCost(signedQualifies.get(v.id)!) : null,
-      })),
+      .map((v) => ({ visitId: v.id, chainVisitIds: jobsChildrenOf.get(v.id) ?? [] })),
   );
 
   const jobs = jobVisits.map((visit: typeof visits[number]) => {
@@ -4826,11 +4815,8 @@ app.get("/jobs", asyncHandler(async (req, res) => {
                   })
                 : null),
             laborRate,
-            // The signed estimate's frozen material cost backfills jobs where
-            // no actuals were typed — the invoice's own numbers, never $0.
-            signedQualifies.has(visit.id) ? estimateMaterialCost(signedQualifies.get(visit.id)!) : null,
-            // The stock rung: consume − return off the truck (Build 4).
-            materialByJob.get(visit.id)?.stockMaterial ?? null,
+            // THE MONEY (Kyle, 2026-09-19): the P.O.s tagged to this job.
+            materialByJob.get(visit.id)?.poMaterial ?? null,
           ),
     };
   });
@@ -5394,7 +5380,7 @@ app.post("/jobs/:jobId/complete", asyncHandler(async (req, res) => {
     warnings.push("No invoice has been emailed for this job.");
   }
   // Build 4 (Kyle, 2026-09-09): a signed estimate with material lines and no
-  // consume recorded — a warning, never a wall; the P&L falls back to receipts/estimate.
+  // consume recorded — a warning, never a wall; the truck count is what is off (cost is the P.O.s, 2026-09-19).
   const materialWarning = await closeOutMaterialWarning(jobId);
   if (materialWarning) warnings.push(materialWarning);
 
@@ -5639,17 +5625,22 @@ app.get("/purchase-orders/:id", asyncHandler(async (req, res) => {
         orderBy: { receivedAt: "desc" },
         select: { id: true, jobId: true, vendor: true, category: true, amount: true, status: true, source: true, receivedAt: true, imageMime: true },
       },
-      // Kyle, 2026-09-09: "card proves" — the Issuing transactions behind this PO.
+      // THE MONEY (Kyle, 2026-09-19): every card transaction on this PO, ignored ones included so they can be un-ignored.
       cardSpends: {
         orderBy: { occurredAt: "desc" },
-        select: { id: true, merchantName: true, amount: true, kind: true, status: true, occurredAt: true, receiptId: true },
+        select: { id: true, merchantName: true, amount: true, kind: true, status: true, occurredAt: true, ignoredReason: true, note: true },
       },
     },
   });
   if (!po) { res.status(404).json({ error: "Purchase order not found" }); return; }
+  // The detail selects EVERY charge and receipt; the list shape only counts live charges and files.
+  const live = po.cardSpends.filter((s) => s.status !== "ignored");
+  const cardTotal = Math.round(live.reduce((s, c) => s + c.amount, 0) * 100) / 100;
   res.json({
-    ...serializePurchaseOrder(po),
+    ...serializePurchaseOrder({ ...po, cardSpends: live, receipts: po.receipts.filter((r) => r.imageMime) }),
     cardSpends: po.cardSpends,
+    cardTotal,
+    moneyTotal: Math.round((cardTotal + (po.offCardAmount ?? 0)) * 100) / 100,
     events: po.events.map((e) => ({
       id: e.id, at: e.at, actor: e.actor, kind: e.kind, reason: e.reason,
       before: (() => { try { return e.before ? JSON.parse(e.before) : null; } catch { return null; } })(),
@@ -5700,6 +5691,27 @@ app.delete("/purchase-orders/:id/lines/:lineId", asyncHandler(async (req, res) =
   const body = z.object({ reason: poReasonSchema }).parse(req.body ?? {});
   await removePurchaseOrderLine(readParam(req, "id"), readParam(req, "lineId"), { actor: "owner", reason: body.reason });
   res.status(204).end();
+}));
+
+/**
+ * THE MONEY typed by hand (Kyle, 2026-09-19): the amount when the purchase was
+ * NOT on the card — cash, check, a personal card. Reason required; any status
+ * (a legacy P.O. is closed from birth); null puts the P.O. back on the card.
+ */
+app.patch("/purchase-orders/:id/money", asyncHandler(async (req, res) => {
+  const body = z.object({
+    reason: poReasonSchema,
+    offCardAmount: z.number().nonnegative().nullable().optional(),
+    offCardMethod: z.enum(OFF_CARD_METHODS).nullable().optional(),
+    offCardNote: z.string().trim().max(500).nullable().optional(),
+    offCardAt: z.string().nullable().optional(),
+  }).parse(req.body);
+  const { reason, offCardAt, ...patch } = body;
+  const at = offCardAt === undefined ? undefined : offCardAt === null ? null : new Date(/^\d{4}-\d{2}-\d{2}$/.test(offCardAt) ? `${offCardAt}T12:00:00Z` : offCardAt);
+  if (at && Number.isNaN(at.getTime())) { res.status(400).json({ error: "offCardAt is not a date." }); return; }
+  await setPurchaseOrderMoney(readParam(req, "id"), { ...patch, ...(at !== undefined ? { offCardAt: at } : {}) }, { actor: "owner", reason });
+  const full = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: readParam(req, "id") }, include: PO_LIST_INCLUDE });
+  res.json(serializePurchaseOrder(full));
 }));
 
 app.post("/purchase-orders/:id/status", asyncHandler(async (req, res) => {
@@ -5760,14 +5772,20 @@ app.put(
       res.status(415).json({ error: `Unsupported file type (${mimeType}) — attach an image or a PDF.` });
       return;
     }
-    // Vision reads an image_url data URL and cannot read a PDF — require the typed amount instead.
-    if (hasImage && isPdf && query.amount == null) {
-      res.status(400).json({ error: "PDF receipts can't be read automatically — type the amount." });
-      return;
-    }
-    // Read the photo when the amount was not typed — the total AND the lines the landing weights need.
-    const parsed = hasImage && !isPdf && query.amount == null ? await parseReceiptImage(body, mimeType) : null;
+    // 2026-09-18 (Unit 1, "receipts must be read, not guessed"): PDFs are read by
+    // parseReceiptImage exactly like photos — no more "type the amount" refusal.
+    // Read whenever the amount was not typed — the total AND the lines the landing weights need.
+    const parsed = hasImage && query.amount == null ? await parseReceiptImage(body, mimeType) : null;
     const amount = query.amount ?? parsed?.total ?? 0;
+    // 2026-09-18 (Unit 2 correction — coordinator, "the null/failed parse still
+    // lands amount: 0, status: confirmed is a real defect"): when nobody typed
+    // an amount AND Vision returned nothing usable (no key, an API error, an
+    // unreadable image/PDF, or a non-receipt), `amount` above just fell back
+    // to the literal 0 — that must never become a CONFIRMED $0 job cost with
+    // no human ever having looked at it. `parsed?.total != null` is Vision's
+    // own signal that it actually read a number; its absence, with no typed
+    // amount either, means nothing on this receipt backs the $0.
+    const amountUnverified = query.amount == null && parsed?.total == null;
     const data = {
       purchaseOrderId: poId,
       jobId: po.jobId ?? null,
@@ -5779,15 +5797,22 @@ app.put(
       // 2026-09-14 (Unit 4): a Vision date that failed plausiblePurchaseDate() keeps this
       // receipt in review instead of auto-confirming under a fallback date nobody checked —
       // see receiptVision.ts's PLAUSIBLE_PURCHASE_DATE_WINDOW comment for why.
-      status: parsed?.purchaseDateRejected ? "pending_review" : "confirmed",
+      // 2026-09-18 (Unit 2): same for a parse whose own arithmetic doesn't add up —
+      // reconciled === false (never simply "unknown"; that's null-safe via ?.) — or
+      // for an amount nothing on the receipt backs (amountUnverified) — keeps it in
+      // review too, with reconciliationNote recording what didn't reconcile or why
+      // the amount can't be trusted yet. Always editable/clearable via the receipt
+      // review queue's PATCH (health-record.ts), per the standing rule.
+      status: parsed?.purchaseDateRejected || parsed?.reconciled === false || amountUnverified ? "pending_review" : "confirmed",
+      reconciliationNote:
+        parsed?.reconciliationNote ??
+        (amountUnverified ? "The receipt could not be read and no amount was typed — needs manual entry before this can be a confirmed cost." : null),
       ...(hasImage ? { imageData: body, imageMime: mimeType } : {}),
       ...(parsed?.purchaseDate ? { receivedAt: new Date(`${parsed.purchaseDate}T12:00:00Z`) } : {}),
     };
     await prisma.receipt.upsert({ where: { id: receiptId }, create: { id: receiptId, ...data }, update: data });
-    // The PO moves to purchased/verified exactly as it does for an already-uploaded receipt.
+    // The PO moves to purchased — and to verified once it has money and this proof (Kyle, 2026-09-19).
     await attachReceiptToPurchaseOrder(receiptId, poId, "owner");
-    // Kyle, 2026-09-09: "photo verifies, card proves" — pair it with the card transaction if one is waiting.
-    await matchSpendForReceipt(receiptId).catch((err) => console.error("[receipts] card match failed:", err));
 
     res.status(201).json({
       id: receiptId,
@@ -5796,9 +5821,12 @@ app.put(
       vendor: data.vendor,
       parsed: parsed != null,
       lineCount: parsed?.lineItems.length ?? 0,
-      note: query.amount == null && parsed == null
-        ? "The photo could not be read — type the amount on the receipt and the lines can be added by hand."
-        : null,
+      reconciled: parsed?.reconciled ?? null,
+      note: amountUnverified
+        ? "The receipt could not be read and no amount was typed — flagged for review; type the amount on the receipt and the lines can be added by hand."
+        : parsed?.reconciled === false
+          ? `The parsed lines don't add up to the receipt total — flagged for review: ${parsed.reconciliationNote}`
+          : null,
     });
   }),
 );
@@ -5825,7 +5853,6 @@ app.get("/receipts-needing-po", asyncHandler(async (_req, res) => {
     take: 200,
     select: {
       id: true, jobId: true, vendor: true, category: true, amount: true, source: true, receivedAt: true, createdAt: true,
-      cardSpend: { select: { id: true } },
     },
   });
   const jobIds = [...new Set(receipts.map((r) => r.jobId).filter((v): v is string => Boolean(v)))];
@@ -5854,9 +5881,6 @@ app.get("/receipts-needing-po", asyncHandler(async (_req, res) => {
           purchaseOrderId: null,
           purchaseOrderNumber: null,
           needsPo: true,
-          // Kyle, 2026-09-09: "card proves" — the card transaction this receipt itemizes, if matched.
-          cardSpendId: r.cardSpend?.id ?? null,
-          cardMatched: Boolean(r.cardSpend),
         };
       }),
   );
@@ -5867,12 +5891,11 @@ app.get("/receipts-needing-po", asyncHandler(async (_req, res) => {
  * are not getting anywhere trying to attach things that don't exist to them."
  * A confirmed materials receipt whose PO can never exist (its photo was lost,
  * e.g. the 9/11 upload failure) leaves /receipts-needing-po by being marked
- * waived — NEVER by being attached to a PO it has no real link to. Attaching
- * would drop it from the job's receipt rung with nothing to pick it back up
- * (services/jobCosting.ts, services/purchaseOrders.ts:415) — this is how the
- * Daughdrill $381.90 was silently lost. So this route sets ONLY poWaivedAt and
- * poWaivedReason: purchaseOrderId stays null and no re-roll runs, because
- * nothing about the job's material cost is supposed to change.
+ * waived — never by being attached to a PO it has no real link to. This route
+ * sets ONLY poWaivedAt and poWaivedReason; purchaseOrderId stays null. Since
+ * 2026-09-19 a receipt is proof, never money, so a waiver is a queue flag and
+ * nothing more — the job's cost lives on its P.O.s (the migration gave every
+ * legacy receipt's figure a P.O. of its own).
  */
 app.post("/receipts/:id/waive-po", asyncHandler(async (req, res) => {
   const receiptId = readParam(req, "id");
@@ -5928,7 +5951,6 @@ app.get("/receipt-review", asyncHandler(async (_req, res) => {
     select: {
       id: true, jobId: true, vendor: true, category: true, amount: true, source: true, receivedAt: true, createdAt: true,
       purchaseOrderId: true, purchaseOrder: { select: { number: true } },
-      cardSpend: { select: { id: true } },
     },
   });
   const jobIds = [...new Set(receipts.map((r) => r.jobId).filter((v): v is string => Boolean(v)))];
@@ -5965,9 +5987,6 @@ app.get("/receipt-review", asyncHandler(async (_req, res) => {
           purchaseOrderId: r.purchaseOrderId,
           purchaseOrderNumber: r.purchaseOrder?.number ?? null,
           needsPo: r.category === "materials" && !r.purchaseOrderId,
-          // Kyle, 2026-09-09: "card proves" — the card transaction this receipt itemizes, if matched.
-          cardSpendId: r.cardSpend?.id ?? null,
-          cardMatched: Boolean(r.cardSpend),
         };
       }),
   );
@@ -5986,7 +6005,7 @@ app.get("/jobs/:jobId/receipts", asyncHandler(async (req, res) => {
     orderBy: { receivedAt: "desc" },
     select: {
       id: true, vendor: true, category: true, amount: true, status: true, source: true,
-      receivedAt: true, imageMime: true, lineItems: true,
+      receivedAt: true, imageMime: true, lineItems: true, reconciliationNote: true,
     },
   });
   res.json(receipts.map((r) => ({
@@ -6000,6 +6019,7 @@ app.get("/jobs/:jobId/receipts", asyncHandler(async (req, res) => {
     hasImage: Boolean(r.imageMime),
     imageMime: r.imageMime,
     lineItems: (() => { try { return r.lineItems ? JSON.parse(r.lineItems) : []; } catch { return []; } })(),
+    reconciliationNote: r.reconciliationNote,
   })));
 }));
 
@@ -6382,9 +6402,9 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
   for (const [child, jobV] of childToJob) {
     childrenOfJob.set(jobV, [...(childrenOfJob.get(jobV) ?? []), child]);
   }
-  // The signed estimate's frozen material cost, per job (newest signed wins) —
-  // the same fallback GET /jobs applies, kept in lockstep by the money
-  // invariant test. Keyed by the job side of the chain.
+  // The signed estimate, per job (newest signed wins), keyed by the job side of
+  // the chain — for the revenue rung below. (Its frozen material is DISPLAY
+  // only since 2026-09-19: an estimate never counts toward job cost.)
   const signedForCosts = await prisma.issuedEstimate.findMany({
     where: { customerId, signedAt: { not: null }, voidedAt: null, status: { not: "void" } },
     orderBy: { createdAt: "desc" },
@@ -6392,10 +6412,8 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       visitId: true, jobVisitId: true, selectedOptions: true,
       total: true, tripCharge: true, comboCapJson: true, discountJson: true, warrantyJson: true,
       options: { select: { option: true, subtotal: true } },
-      lines: { select: { option: true, materialCost: true } },
     },
   });
-  const estMaterialByJob = new Map<string, number | null>();
   // The FULL bill of the signed estimate, per job — homeowner share + warranty
   // share (Kyle, 2026-09-10) — the revenue rung that backfills estimate-sold
   // jobs (Kyle, 2026-09-06), kept in lockstep with GET /jobs by the
@@ -6403,7 +6421,6 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
   const estRevenueByJob = new Map<string, number>();
   for (const est of signedForCosts) {
     const key = est.jobVisitId ?? est.visitId;
-    if (key && !estMaterialByJob.has(key)) estMaterialByJob.set(key, estimateMaterialCost(est));
     if (key && !estRevenueByJob.has(key)) {
       estRevenueByJob.set(key, fullBillOf({
         total: est.total,
@@ -6417,20 +6434,12 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
     }
   }
   const visitById = new Map(account.visits.map((v) => [v.id, v]));
-  // The material rule, one grouped query (Build 4) — the same helper GET /jobs
+  // THE MONEY (Kyle, 2026-09-19), one grouped query — the same helper GET /jobs
   // and /financials/job-profitability call. Kept in lockstep by the invariant test.
   const materialByJob = await materialCostForJobs(
     account.visits
       .filter((v) => !childToJob.has(v.id))
-      .map((v) => ({
-        visitId: v.id,
-        chainVisitIds: childrenOfJob.get(v.id) ?? [],
-        actualMaterialCost: mergeCostableChain(
-          v,
-          (childrenOfJob.get(v.id) ?? []).map((id) => visitById.get(id)!).filter(Boolean),
-        ).actualMaterialCost,
-        estimatedMaterialCost: estMaterialByJob.get(v.id) ?? null,
-      })),
+      .map((v) => ({ visitId: v.id, chainVisitIds: childrenOfJob.get(v.id) ?? [] })),
   );
   const [receipts, laborRate, findings] = await Promise.all([
     visitIds.length
@@ -6496,8 +6505,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
             ),
             acceptedTotal ?? estRevenueByJob.get(visit.id) ?? null,
             laborRate,
-            estMaterialByJob.get(visit.id) ?? null,
-            materialByJob.get(visit.id)?.stockMaterial ?? null,
+            materialByJob.get(visit.id)?.poMaterial ?? null,
           ),
       purchaseOrders: visit.purchaseOrders.map((order) => ({
         id: order.id,

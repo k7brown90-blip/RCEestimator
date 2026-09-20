@@ -64,10 +64,14 @@ beforeAll(async () => {
     prisma.payment.create({
       data: { customerId, amount: 900, status: "paid", method: "check", paidAt: JAN },
     }),
-    prisma.receipt.create({
+    // THE P.O. IS THE MONEY (2026-09-19): the practice job's spend is a typed
+    // not-on-card amount on a P.O. tagged to it, and a card charge on the same P.O.
+    prisma.purchaseOrder.create({
       data: {
-        jobId: visitId, amount: 150, status: "confirmed", category: "materials",
-        vendor: "TESTACCT Supply", receivedAt: JAN, source: "test",
+        number: `PO-${YEAR}-TESTACCT`, purpose: "truck_stock", destinationType: "warehouse", jobId: visitId,
+        supplier: "TESTACCT Supply", status: "closed", openedBy: "owner", openedAt: JAN,
+        offCardAmount: 100, offCardMethod: "cash", offCardAt: JAN,
+        cardSpends: { create: { stripeTransactionId: "tx_testacct", stripeCardId: "card_testacct", kind: "materials", amount: 50, merchantName: "TESTACCT Supply", occurredAt: JAN } },
       },
     }),
     prisma.commission.create({
@@ -89,7 +93,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.commission.deleteMany({ where: { technicianId } });
   await prisma.timeEntry.deleteMany({ where: { technicianId } });
-  await prisma.receipt.deleteMany({ where: { jobId: visitId } });
+  await prisma.cardSpend.deleteMany({ where: { stripeTransactionId: "tx_testacct" } });
+  await prisma.purchaseOrder.deleteMany({ where: { jobId: visitId } });
   await prisma.payment.deleteMany({ where: { customerId } });
   await prisma.visit.deleteMany({ where: { customerId } });
   await prisma.property.deleteMany({ where: { id: propertyId } });
@@ -98,11 +103,11 @@ afterAll(async () => {
 });
 
 describe("a marked test account is absent from every company total", () => {
-  it("keeps its payments and receipts out of the year ledger, and puts them back when unmarked", async () => {
+  it("keeps its payments and P.O. money out of the year ledger, and puts them back when unmarked", async () => {
     await setTest(false);
     const live = await summary();
     expect(live.collected, "the fixture's payment should be visible while live").toBeGreaterThanOrEqual(900);
-    expect(live.expenses, "the fixture's receipt should be visible while live").toBeGreaterThanOrEqual(150);
+    expect(live.expenses, "the fixture's charge and typed amount should be visible while live").toBeGreaterThanOrEqual(150);
 
     await setTest(true);
     const marked = await summary();

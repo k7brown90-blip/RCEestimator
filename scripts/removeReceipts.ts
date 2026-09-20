@@ -1,19 +1,17 @@
 /**
- * Remove duplicate receipts from a job and re-roll its material (Kyle,
- * 2026-09-08, "do both": Daughdrill 2026-1057 carried six copies of one
- * $381.90 SiteOne receipt after the office-upload door failed to re-roll and
- * he kept re-uploading).
+ * Remove duplicate receipts from a job (Kyle, 2026-09-08: Daughdrill 2026-1057
+ * carried six copies of one $381.90 SiteOne receipt after he kept re-uploading).
  *
  *   railway ssh "node dist/scripts/removeReceipts.js --job <visitId> --ids 9f1f94,4bc26d"
  *   railway ssh "node dist/scripts/removeReceipts.js --job <visitId> --ids 9f1f94,4bc26d --apply"
  *
- * Ids may be the 6-character suffixes the audit prints; each must match exactly
- * one receipt ON THAT JOB or the run refuses. Dry run unless --apply. Goes
- * through the same writer every receipt door uses.
+ * Ids may be 6-character suffixes; each must match exactly one receipt ON THAT
+ * JOB or the run refuses. Dry run unless --apply. Since 2026-09-19 a receipt is
+ * proof, never money, so removing one changes no cost figure — the P.O.'s
+ * charges and typed amount are the money.
  */
 
 import { PrismaClient } from "@prisma/client";
-import { rerollJobMaterialCost } from "../src/services/receiptCosting";
 
 const prisma = new PrismaClient();
 const argv = process.argv.slice(2);
@@ -62,8 +60,7 @@ async function main(): Promise<void> {
     return;
   }
   await prisma.receipt.deleteMany({ where: { id: { in: targets.map((t) => t.id) } } });
-  const total = await rerollJobMaterialCost(jobId);
-  console.log(`\nRemoved ${targets.length}. Job ${jobId.slice(-6)} actualMaterialCost re-rolled to $${total.toFixed(2)}.`);
+  console.log(`\nRemoved ${targets.length} from job ${jobId.slice(-6)}. No cost figure changed — the P.O. is the money.`);
 }
 
 main()

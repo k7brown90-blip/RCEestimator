@@ -15,7 +15,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import {
-  CARD_SPEND_INCLUDE, CARD_SPEND_KINDS, listIssuingCards, readBalances, receiptCategoriesFor, serializeCardSpend,
+  CARD_SPEND_INCLUDE, CARD_SPEND_KINDS, listIssuingCards, readBalances, serializeCardSpend,
   syncCardSpend, truckSpendRollups, updateCardSpend,
 } from "../services/cardSpend";
 import { PO_LIST_INCLUDE, defaultTruckId, serializePurchaseOrder } from "../services/purchaseOrders";
@@ -233,7 +233,8 @@ trucksRouter.get("/trucks/:id", asyncHandler(async (req, res) => {
     truck,
     year,
     ledger: byKind,
-    needingReceipt: rows.filter((r) => r.kind === "materials" && r.status === "unmatched" && !r.receiptId && r.amount > 0),
+    // "PO-XXXX, $651.73 at Home Depot — attach the receipt" (Kyle, 2026-09-19): the proof lives on the PO.
+    needingReceipt: rows.filter((r) => r.needsProof),
     purchaseOrders: orders.map(serializePurchaseOrder),
     balance: fa ? { cashUsd: fa.cashUsd, inboundPending: fa.inboundPending, outboundPending: fa.outboundPending, status: fa.status } : null,
     balancesAvailable: balances.available,
@@ -247,7 +248,7 @@ trucksRouter.get("/trucks/:id", asyncHandler(async (req, res) => {
 
 trucksRouter.get("/card-spend", asyncHandler(async (req, res) => {
   const q = z.object({
-    status: z.enum(["unmatched", "matched", "ignored"]).optional(),
+    status: z.enum(["unmatched", "ignored"]).optional(),
     kind: z.enum(CARD_SPEND_KINDS).optional(),
     truckId: z.string().optional(),
     year: z.string().optional(),
@@ -274,7 +275,6 @@ trucksRouter.patch("/card-spend/:id", asyncHandler(async (req, res) => {
     kind: z.enum(CARD_SPEND_KINDS).optional(),
     truckId: z.string().nullable().optional(),
     purchaseOrderId: z.string().nullable().optional(),
-    receiptId: z.string().nullable().optional(),
     status: z.enum(["ignored", "unmatched"]).optional(),
   }).parse(req.body);
   const { reason, ...patch } = body;
@@ -282,40 +282,6 @@ trucksRouter.patch("/card-spend/:id", asyncHandler(async (req, res) => {
   await updateCardSpend(id, patch, { actor: "owner", reason });
   const full = await prisma.cardSpend.findUniqueOrThrow({ where: { id }, include: CARD_SPEND_INCLUDE });
   res.json(serializeCardSpend(full));
-}));
-
-/**
- * Receipts that could itemize this spend, for the "Attach receipt" picker:
- * no card match yet, a category this kind can have, within two weeks of the
- * swipe, closest amount first. Any status — a photo waiting for review still
- * proves the purchase.
- */
-trucksRouter.get("/card-spend/:id/receipt-candidates", asyncHandler(async (req, res) => {
-  const spend = await prisma.cardSpend.findUnique({ where: { id: readParam(req, "id") } });
-  if (!spend) { res.status(404).json({ error: "Card transaction not found" }); return; }
-  const day = 24 * 60 * 60 * 1000;
-  const receipts = await prisma.receipt.findMany({
-    where: {
-      cardSpend: null,
-      category: { in: receiptCategoriesFor(spend.kind) },
-      receivedAt: { gte: new Date(spend.occurredAt.getTime() - 14 * day), lte: new Date(spend.occurredAt.getTime() + 14 * day) },
-    },
-    select: {
-      id: true, vendor: true, amount: true, category: true, status: true, receivedAt: true, jobId: true, imageMime: true,
-      purchaseOrderId: true, purchaseOrder: { select: { number: true } },
-    },
-    take: 100,
-  });
-  res.json(
-    receipts
-      .sort((a, b) => Math.abs(a.amount - spend.amount) - Math.abs(b.amount - spend.amount))
-      .slice(0, 25)
-      .map((r) => ({
-        id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, status: r.status, receivedAt: r.receivedAt,
-        jobId: r.jobId, purchaseOrderId: r.purchaseOrderId, purchaseOrderNumber: r.purchaseOrder?.number ?? null,
-        hasImage: Boolean(r.imageMime), exact: Math.abs(r.amount - spend.amount) <= 0.01,
-      })),
-  );
 }));
 
 trucksRouter.post("/card-spend/sync", asyncHandler(async (req, res) => {

@@ -3,9 +3,13 @@
  *
  * "Each tech will have their own card for material and gas through stripe."
  * Spend routes to a truck BY THE CARD. Gas and maintenance sit on the truck;
- * a materials swipe with no PO behind it drafts one after the fact; "photo
- * verifies, card proves" pairs the receipt with the money; and the P&L counts
- * every expense ONCE — a spend matched to a receipt rides that receipt.
+ * a materials swipe with no PO behind it drafts one after the fact.
+ *
+ * Kyle, 2026-09-19 ("the P.O. is the money"): THE CHARGE IS THE MONEY, THE
+ * RECEIPT IS PROOF. Every live charge lands on the P&L once; many charges may
+ * sit on one PO (the $651.73 + $114.01 split); a PO is verified when it has
+ * money and a receipt file, with no amount comparison; a receipt's amount
+ * changes nothing.
  *
  * No Stripe call is made anywhere in here: transactions are hand-built
  * objects, and STRIPE_SECRET_KEY is deleted so every Stripe read degrades to
@@ -46,7 +50,7 @@ vi.mock("googleapis", () => {
 });
 
 import { app } from "../src/app";
-import { ingestIssuingTransaction, kindForCategory, matchReceipt, merchantMatches } from "../src/services/cardSpend";
+import { ingestIssuingTransaction, kindForCategory, merchantMatches } from "../src/services/cardSpend";
 import { createPurchaseOrder, defaultTruckId } from "../src/services/purchaseOrders";
 import { dispatchStripeEvent } from "../src/services/stripePayments";
 
@@ -262,79 +266,85 @@ describe("ingesting Issuing transactions", () => {
   });
 });
 
-describe("photo verifies, card proves", () => {
-  it("a receipt off by 17 cents does NOT match; the exact one links, joins the spend's PO, and verifies it", async () => {
-    const spend = await spendFor("ipi_hd_1");
-    await prisma.receipt.create({
-      // pending_review, so it also stays out of the P&L check below — only the match is under test here.
-      data: { id: newId(), category: "materials", vendor: "CS-test Home Depot wrong", amount: 324.5, status: "pending_review", source: "tech_pwa", receivedAt: at(30) },
-    });
-    const miss = await matchReceipt(spend.id);
-    expect(miss.receiptId).toBeNull();
-    expect(miss.status).toBe("unmatched");
+describe("many charges on one PO; verified when money and proof are both there (Kyle, 2026-09-19)", () => {
+  let splitPoId: string;
 
-    const receipt = await prisma.receipt.create({
-      data: {
-        id: newId(), category: "materials", vendor: "CS-test Home Depot", amount: 324.33, status: "confirmed", source: "manual",
-        receivedAt: at(30), imageData: jpg, imageMime: "image/jpeg",
-      },
-    });
-    const hit = await matchReceipt(spend.id);
-    expect(hit.receiptId).toBe(receipt.id);
-    expect(hit.status).toBe("matched");
-    const after = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
-    expect(after.purchaseOrderId).toBe(spend.purchaseOrderId);
-    // Photo + card agree → the after-the-fact PO is verified.
-    const po = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: spend.purchaseOrderId! } });
-    expect(po.status).toBe("verified");
+  it("the 9/17 split: a second swipe at the same store minutes later joins the first swipe's after-the-fact PO", async () => {
+    const pos = await poCount();
+    const a = await ingestIssuingTransaction(tx({
+      id: "ipi_ces_split_a", amount: -65173, merchant: "CITY ELECTRIC SUPPLY 689", category: "electrical_parts_and_equipment", created: at(400),
+    }));
+    expect(await poCount()).toBe(pos + 1);
+    const b = await ingestIssuingTransaction(tx({
+      id: "ipi_ces_split_b", amount: -11401, merchant: "CITY ELECTRIC SUPPLY 689", category: "electrical_parts_and_equipment", created: at(403),
+    }));
+    expect(b.spend.purchaseOrderId).toBe(a.spend.purchaseOrderId);
+    expect(await poCount()).toBe(pos + 1);
+    splitPoId = a.spend.purchaseOrderId!;
 
-    // The review queues carry the link.
-    const needing = await request(app).get("/receipts-needing-po");
-    expect(needing.status).toBe(200);
-    expect(needing.body.find((r: { id: string }) => r.id === receipt.id)).toBeUndefined(); // it is on a PO now
+    const detail = await request(app).get(`/purchase-orders/${splitPoId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.cardSpends).toHaveLength(2);
+    expect(detail.body.cardTotal).toBe(765.74);
+    expect(detail.body.moneyTotal).toBe(765.74);
+    expect(detail.body.proofCount).toBe(0);
+    expect(detail.body.status).toBe("purchased");
   });
 
-  it("confirming a receipt through the admin PATCH pairs it with the waiting spend", async () => {
-    const spend = await spendFor("ipi_hd_2");
-    expect(spend.receiptId).toBeNull();
-    const receipt = await prisma.receipt.create({
-      data: { id: newId(), category: "materials", vendor: "CS-test HD second", amount: 50, status: "pending_review", source: "tech_pwa", receivedAt: at(40) },
-    });
-    // Unconfirmed and untouched: nothing has matched yet.
-    expect((await spendFor("ipi_hd_2")).receiptId).toBeNull();
-    const res = await request(app).patch(`/health-record-admin/receipts/${receipt.id}`).send({ status: "confirmed" });
-    expect(res.status).toBe(200);
-    const matched = await spendFor("ipi_hd_2");
-    expect(matched.receiptId).toBe(receipt.id);
-    expect(matched.status).toBe("matched");
-    expect(res.body.purchaseOrderId).toBe(matched.purchaseOrderId);
+  it("a receipt file on the PO verifies it — the receipt's amount is not compared to the money", async () => {
+    // The photo says $700.00, deliberately not $765.74: proof is proof.
+    const res = await request(app)
+      .put(`/purchase-orders/${splitPoId}/receipts/${newId()}?vendor=CS-test%20CES&amount=700&category=materials`)
+      .set("Content-Type", "image/jpeg")
+      .send(jpg);
+    expect(res.status).toBe(201);
+    const detail = await request(app).get(`/purchase-orders/${splitPoId}`);
+    expect(detail.body.status).toBe("verified");
+    expect(detail.body.proofCount).toBe(1);
+    expect(detail.body.moneyTotal).toBe(765.74);
+    expect(detail.body.events.map((e: { kind: string }) => e.kind)).toContain("status");
+  });
 
-    const review = await request(app).get("/receipt-review");
-    expect(review.status).toBe(200);
-    expect(review.body.every((r: { cardMatched: boolean }) => typeof r.cardMatched === "boolean")).toBe(true);
+  it("the typed not-on-card amount is the other money: it moves an open PO to purchased and lands on the P&L", async () => {
+    const open = await createPurchaseOrder({ supplier: "CS-test Cash Supply", truckId, openedBy: "owner", actor: "test", openedAt: at(500) });
+    const noReason = await request(app).patch(`/purchase-orders/${open.id}/money`).send({ offCardAmount: 40 });
+    expect(noReason.status).toBe(400);
+    const typed = await request(app).patch(`/purchase-orders/${open.id}/money`).send({
+      offCardAmount: 40, offCardMethod: "cash", offCardAt: at(500).toISOString(), reason: "Paid cash at the counter",
+    });
+    expect(typed.status).toBe(200);
+    expect(typed.body.offCardAmount).toBe(40);
+    expect(typed.body.offCardMethod).toBe("cash");
+    expect(typed.body.moneyTotal).toBe(40);
+    expect(typed.body.status).toBe("purchased");
+    const ev = await prisma.purchaseOrderEvent.findFirst({ where: { purchaseOrderId: open.id, kind: "money_edited" } });
+    expect(ev?.reason).toBe("Paid cash at the counter");
+    expect(JSON.parse(ev!.after!)).toMatchObject({ offCardAmount: 40 });
   });
 });
 
-describe("the P&L counts every expense once", () => {
-  it("matched spend rides its receipt; unmatched fuel / other / refund land on their own", async () => {
+describe("the P&L counts every charge once, and a receipt never", () => {
+  it("expenses = live charges + typed amounts; the $700 receipt on the split PO adds nothing", async () => {
     const now = await summary();
-    // Receipts: 324.33 + 50.00 (both matched — their spends are NOT added again).
-    // Unmatched spend: fuel 60.12 + 30.00, other 20.00, materials refund −15.00.
-    expect(r2(catMonth(now, "materials") - catMonth(before, "materials"))).toBe(r2(324.33 + 50 - 15));
+    // Materials: 324.33 + 50.00 − 15.00 + 651.73 + 114.01 (charges) + 40.00 (typed cash).
+    expect(r2(catMonth(now, "materials") - catMonth(before, "materials"))).toBe(r2(324.33 + 50 - 15 + 651.73 + 114.01 + 40));
     expect(r2(catMonth(now, "gas") - catMonth(before, "gas"))).toBe(r2(60.12 + 30));
     expect(r2(catMonth(now, "overhead") - catMonth(before, "overhead"))).toBe(20);
     const delta = now.months[month].expenses - before.months[month].expenses;
-    expect(r2(delta)).toBe(r2(324.33 + 50 + 60.12 + 30 + 20 - 15));
+    expect(r2(delta)).toBe(r2(324.33 + 50 - 15 + 651.73 + 114.01 + 40 + 60.12 + 30 + 20));
 
     const csv = await request(app).get(`/financials/export?year=${year}`);
     expect(csv.status).toBe(200);
     expect(csv.text).toContain("Card — SHELL OIL 57442");
-    expect(csv.text).not.toContain("Card — THE HOME DEPOT #0776 (Truck 1)\",324.33");
+    expect(csv.text).toContain("Card — CITY ELECTRIC SUPPLY 689 (Truck 1)\",651.73");
+    expect(csv.text).toContain("Card — CITY ELECTRIC SUPPLY 689 (Truck 1)\",114.01");
+    expect(csv.text).toContain("— CS-test Cash Supply (cash)\",40.00");
+    expect(csv.text).not.toContain("700.00");
   });
 });
 
 describe("the truck ledger and hand edits", () => {
-  it("GET /trucks rolls up MTD by kind and the unmatched count; GET /trucks/:id is the ledger", async () => {
+  it("GET /trucks rolls up MTD by kind and the charges still needing proof; GET /trucks/:id is the ledger", async () => {
     const list = await request(app).get("/trucks");
     expect(list.status).toBe(200);
     const truck = list.body.trucks.find((t: { id: string }) => t.id === truckId);
@@ -343,7 +353,8 @@ describe("the truck ledger and hand edits", () => {
     expect(list.body.balancesAvailable).toBe(false);
     // MTD only when `base` is this month (it always is — base is the 15th of the current month).
     expect(truck.mtd.fuel).toBe(r2(60.12 + 30));
-    expect(truck.unmatchedMaterials).toBe(0);
+    // hd_1 and hd_2 ride POs with no receipt file yet; the split PO is proven; the refund never prompts.
+    expect(truck.unmatchedMaterials).toBe(2);
     expect(list.body.unassigned.other).toBe(20);
 
     const detail = await request(app).get(`/trucks/${truckId}?year=${year}`);
@@ -352,11 +363,15 @@ describe("the truck ledger and hand edits", () => {
     expect(fuel.total).toBe(r2(60.12 + 30));
     expect(fuel.rows.map((r: { merchantName: string }) => r.merchantName).sort()).toEqual(["EXXON", "SHELL OIL 57442"]);
     const materials = detail.body.ledger.find((k: { kind: string }) => k.kind === "materials");
-    expect(materials.rows.find((r: { stripeTransactionId: string }) => r.stripeTransactionId === "ipi_hd_1").purchaseOrderNumber).toMatch(/^PO-\d{4}-\d{4}$/);
+    const hd1 = materials.rows.find((r: { stripeTransactionId: string }) => r.stripeTransactionId === "ipi_hd_1");
+    expect(hd1.purchaseOrderNumber).toMatch(/^PO-\d{4}-\d{4}$/);
+    expect(hd1.needsProof).toBe(true);
+    expect(materials.rows.find((r: { stripeTransactionId: string }) => r.stripeTransactionId === "ipi_ces_split_a").proven).toBe(true);
+    expect(detail.body.needingReceipt.map((r: { stripeTransactionId: string }) => r.stripeTransactionId).sort()).toEqual(["ipi_hd_1", "ipi_hd_2"]);
     expect(detail.body.purchaseOrders.some((p: { afterTheFact: boolean; cardMatched: boolean }) => p.afterTheFact && p.cardMatched)).toBe(true);
   });
 
-  it("PATCH /card-spend/:id needs a reason; ignore, re-kind, and PO link leave a trail", async () => {
+  it("PATCH /card-spend/:id needs a reason; ignore, re-kind, PO link and unlink leave a trail", async () => {
     const stray = await spendFor("ipi_stray");
     const noReason = await request(app).patch(`/card-spend/${stray.id}`).send({ status: "ignored" });
     expect(noReason.status).toBe(400);
@@ -385,22 +400,35 @@ describe("the truck ledger and hand edits", () => {
     const attached = await prisma.purchaseOrderEvent.findFirst({ where: { purchaseOrderId: newPo.id, kind: "card_matched" } });
     expect(attached).not.toBeNull();
     expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: newPo.id } })).status).toBe("purchased");
+
+    // The way OUT (the standing rule): off the PO with a reason; the charge still counts on the P&L.
+    const unlink = await request(app).patch(`/card-spend/${hd2.id}`).send({ purchaseOrderId: null, reason: "Belongs to no PO" });
+    expect(unlink.status).toBe(200);
+    expect(unlink.body.purchaseOrderId).toBeNull();
+    const after = await summary();
+    expect(r2(catMonth(after, "materials") - catMonth(now, "materials"))).toBe(0);
   });
 
-  it("an after-the-fact PO cannot close without a receipt photo", async () => {
+  it("an after-the-fact PO cannot reach verified or closed without a receipt photo", async () => {
     const { spend } = await ingestIssuingTransaction(tx({
-      id: "ipi_lowes_1", amount: -1200, merchant: "LOWES #1234", category: "hardware_stores", created: at(300),
+      id: "ipi_menards_1", amount: -1200, merchant: "MENARDS #77", category: "hardware_stores", created: at(300),
     }));
     const poId = spend.purchaseOrderId!;
+    expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: poId } })).afterTheFact).toBe(true);
+
+    // Since 2026-09-19 the photo is required a step earlier: verified means the
+    // money is proved, so a PO with a charge and no receipt cannot get there.
     const verify = await request(app).post(`/purchase-orders/${poId}/status`).send({ to: "verified" });
-    expect(verify.status).toBe(200);
+    expect(verify.status).toBe(409);
+    expect(verify.body.error).toMatch(/no receipt yet/i);
     const close = await request(app).post(`/purchase-orders/${poId}/status`).send({ to: "closed" });
     expect(close.status).toBe(409);
-    expect(close.body.error).toMatch(/receipt photo/);
 
-    // Candidate receipts for the picker: none matched, right category, near in amount.
-    const candidates = await request(app).get(`/card-spend/${spend.id}/receipt-candidates`);
-    expect(candidates.status).toBe(200);
-    expect(candidates.body.some((r: { vendor: string }) => r.vendor === "CS-test Home Depot wrong")).toBe(true);
+    // With the photo on it, the same PO verifies and closes.
+    await prisma.receipt.create({
+      data: { purchaseOrderId: poId, category: "materials", vendor: "MENARDS #77", amount: 12, imageMime: "image/jpeg", imageData: Buffer.from([1]) },
+    });
+    expect((await request(app).post(`/purchase-orders/${poId}/status`).send({ to: "verified" })).status).toBe(200);
+    expect((await request(app).post(`/purchase-orders/${poId}/status`).send({ to: "closed" })).status).toBe(200);
   });
 });

@@ -90,7 +90,7 @@ export function FinancialsPage() {
         rows={(pendingReceipts ?? []).map((r) => ({
           id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, receivedAt: r.receivedAt,
           jobLabel: r.jobLabel, accountId: r.accountId ?? undefined, accountName: r.accountName ?? undefined,
-          purchaseOrderNumber: r.purchaseOrderNumber, needsPo: r.needsPo, cardMatched: r.cardMatched,
+          purchaseOrderNumber: r.purchaseOrderNumber, needsPo: r.needsPo,
         }))}
       />
 
@@ -144,9 +144,9 @@ export function FinancialsPage() {
         <p className="mb-2 text-xs text-rce-muted">
           Invoiced lands in the month the estimate was <b>signed</b> (accrual). Collected lands in the month the
           payment was <b>received</b> (cash) — a job signed in August and paid in September shows in both months, once each.
-          Expenses land in the month on the receipt or bill. Net = invoiced − expenses.
+          Expenses = card charges (the month of the swipe) + amounts typed on a P.O. marked not-on-card + company bills + Stripe fees.
+          A receipt is proof, never money — it changes nothing here. Net = invoiced − expenses.
           Stripe fees are the processing fees Stripe took that month — their own column, and already inside Expenses; Collected is the gross amount the customer paid.
-          Est. materials = frozen material on signed jobs with no confirmed receipts yet; Projected net subtracts it.
           Money still owed is per invoice (billed − paid), not per month — see Outstanding below.
         </p>
         {summary && summary.feesAvailable === false && (
@@ -163,9 +163,7 @@ export function FinancialsPage() {
                 <th className="py-1 pr-2 text-right">Collected</th>
                 <th className="py-1 pr-2 text-right">Stripe fees</th>
                 <th className="py-1 pr-2 text-right">Expenses</th>
-                <th className="py-1 pr-2 text-right">Net</th>
-                <th className="py-1 pr-2 text-right">Est. materials</th>
-                <th className="py-1 text-right">Projected net</th>
+                <th className="py-1 text-right">Net</th>
               </tr>
             </thead>
             <tbody>
@@ -176,12 +174,8 @@ export function FinancialsPage() {
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.collected)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(m.stripeFees ?? 0)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.expenses)}</td>
-                  <td className={`py-1 pr-2 text-right font-medium tabular-nums ${m.net < 0 ? "text-red-600" : ""}`}>
+                  <td className={`py-1 text-right font-medium tabular-nums ${m.net < 0 ? "text-red-600" : ""}`}>
                     {money(m.net)}
-                  </td>
-                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(m.estMaterials)}</td>
-                  <td className={`py-1 text-right font-medium tabular-nums ${m.projectedNet < 0 ? "text-red-600" : ""}`}>
-                    {money(m.projectedNet)}
                   </td>
                 </tr>
               ))}
@@ -192,12 +186,8 @@ export function FinancialsPage() {
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.collected)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(summary.totals.stripeFees ?? 0)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.expenses)}</td>
-                  <td className={`py-1 pr-2 text-right tabular-nums ${summary.totals.net < 0 ? "text-red-600" : ""}`}>
+                  <td className={`py-1 text-right tabular-nums ${summary.totals.net < 0 ? "text-red-600" : ""}`}>
                     {money(summary.totals.net)}
-                  </td>
-                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(summary.totals.estMaterials)}</td>
-                  <td className={`py-1 text-right tabular-nums ${summary.totals.projectedNet < 0 ? "text-red-600" : ""}`}>
-                    {money(summary.totals.projectedNet)}
                   </td>
                 </tr>
               )}
@@ -453,7 +443,7 @@ function WarrantyReceivablesCard() {
         })}
       </ul>
       {paidCount > 0 && (
-        <button type="button" className="mt-2 text-xs font-medium text-rce-accent hover:underline" onClick={() => setShowPaid((v) => !v)}>
+        <button type="button" className="btn btn-secondary mt-2 px-2 py-0.5 text-xs min-h-0" onClick={() => setShowPaid((v) => !v)}>
           {showPaid ? "Hide" : "Show"} paid claims ({paidCount})
         </button>
       )}
@@ -880,7 +870,7 @@ function BillsCard({ bills, onChange }: { bills: CompanyBillRow[]; onChange: () 
             <span className="flex items-center gap-2">
               <span className="font-medium tabular-nums">{money(b.amount)}</span>
               <button
-                className="text-xs text-red-600 underline"
+                className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
                 onClick={() => void api.deleteCompanyBill(b.id).then(onChange)}
               >
                 remove
@@ -1144,7 +1134,7 @@ function PaymentsCard({
       {/* ── Ledger ── */}
       <button
         type="button"
-        className="mt-4 text-xs font-medium text-rce-accent hover:underline"
+        className="btn btn-secondary mt-4 px-2 py-0.5 text-xs min-h-0"
         onClick={() => setShowLedger((v) => !v)}
       >
         {showLedger ? "Hide" : "Show"} {year} payment ledger ({payments.length})

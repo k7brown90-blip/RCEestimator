@@ -19,8 +19,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import type { PurchaseOrderLineInput } from "../lib/api";
-import { isActiveJob } from "../lib/types";
-import type { PoPurpose, PoStatus, PurchaseOrderDetail, PurchaseOrderLine, PurchaseOrderSummary, ReviewReceiptRow } from "../lib/types";
+import { OFF_CARD_METHOD_LABEL, isActiveJob } from "../lib/types";
+import type { OffCardMethod, PoPurpose, PoStatus, PurchaseOrderDetail, PurchaseOrderLine, PurchaseOrderSummary, ReviewReceiptRow } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 import { LandingPanel } from "./LandingPanel";
 import { CollapsibleCard } from "./CollapsibleCard";
@@ -44,6 +44,14 @@ const STATUS_CLASS: Record<PoStatus, string> = {
 export function PoStatusPill({ status }: { status: PoStatus | string }) {
   const cls = STATUS_CLASS[status as PoStatus] ?? "bg-slate-100 text-slate-700";
   return <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${cls}`}>{status}</span>;
+}
+
+/**
+ * "The P.O. is the money, the receipt is proof" (Kyle, 2026-09-19): a P.O. that
+ * has money and no proof needs its receipt attached before it can verify.
+ */
+function poNeedsProof(po: Pick<PurchaseOrderSummary, "moneyTotal" | "proofCount">): boolean {
+  return po.moneyTotal > 0 && po.proofCount === 0;
 }
 
 function PurposePill({ purpose }: { purpose: PoPurpose | string }) {
@@ -135,11 +143,16 @@ function usePendingReviewReceipts() {
   return useQuery({ queryKey: ["receipt-review"], queryFn: api.pendingReceipts });
 }
 
-/** Everything a PO change can move: the PO lists, the receipt queues, and the job/account money. */
+/**
+ * Everything a PO change can move: the PO lists, the receipt queues, the
+ * job/account money, and (AttachProofButton is used from TrucksPage's
+ * "needing a receipt" queue too, 2026-09-19) the truck ledger and its card
+ * spend.
+ */
 function usePoRefresh() {
   const queryClient = useQueryClient();
   return () => {
-    for (const key of [["purchase-orders"], ["purchase-order"], ["receipts-needing-po"], ["receipt-review"], ["account-summary"], ["jobPOs"], ["jobReceipts"], ["jobProfitability"], ["financials"], ["inventory"], ["tools"], ["trucks"]]) {
+    for (const key of [["purchase-orders"], ["purchase-order"], ["receipts-needing-po"], ["receipt-review"], ["account-summary"], ["jobPOs"], ["jobReceipts"], ["jobProfitability"], ["financials"], ["inventory"], ["tools"], ["trucks"], ["truck"], ["card-spend"]]) {
       void queryClient.invalidateQueries({ queryKey: key });
     }
   };
@@ -165,7 +178,7 @@ function ReceiptDateEditor({ receiptId, receivedAt }: { receiptId: string; recei
 
   if (!editing) {
     return (
-      <button type="button" className="text-xs text-rce-accent hover:underline" onClick={() => setEditing(true)}>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setEditing(true)}>
         edit date
       </button>
     );
@@ -181,7 +194,7 @@ function ReceiptDateEditor({ receiptId, receivedAt }: { receiptId: string; recei
       <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={save.isPending || !value} onClick={() => save.mutate()}>
         Save
       </button>
-      <button type="button" className="text-xs text-rce-muted" onClick={() => { setEditing(false); setError(null); }}>cancel</button>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => { setEditing(false); setError(null); }}>cancel</button>
       {error && <span className="w-full text-red-600">{error}</span>}
     </span>
   );
@@ -255,7 +268,7 @@ function WaivePoAction({ receiptId }: { receiptId: string }) {
 
   if (!waiving) {
     return (
-      <button type="button" className="text-xs text-rce-muted hover:underline" onClick={() => setWaiving(true)}>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setWaiving(true)}>
         No PO — legacy
       </button>
     );
@@ -264,6 +277,46 @@ function WaivePoAction({ receiptId }: { receiptId: string }) {
     <span className="inline-flex flex-wrap items-center gap-1">
       <ReasonRow label="Waive" busy={waive.isPending} onSubmit={(reason) => waive.mutate(reason)} onCancel={() => setWaiving(false)} />
       {error && <span className="w-full text-red-600">{error}</span>}
+    </span>
+  );
+}
+
+/**
+ * Attach a receipt photo or PDF straight onto a P.O. — the one uploader, reused
+ * everywhere a P.O. needs its proof (Kyle, 2026-09-19: "prompts for a picture
+ * of the receipt or upload of a pdf"). Attaching fires
+ * verifyPurchaseOrderIfComplete server-side, so a P.O. that already has its
+ * money moves to verified the moment this succeeds — no second step.
+ */
+export function AttachProofButton({ poId, label = "Attach receipt" }: { poId: string; label?: string }) {
+  const refresh = usePoRefresh();
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const upload = useMutation({
+    mutationFn: (file: File) => api.uploadPoReceipt(poId, { image: file }),
+    onSuccess: (res) => {
+      setError(null);
+      setNote(res.note ?? `Receipt read: ${money(res.amount)}${res.lineCount > 0 ? ` · ${res.lineCount} line${res.lineCount === 1 ? "" : "s"}` : " · no lines read — type them or land by hand"}`);
+      refresh();
+    },
+    onError: (err) => setError((err as Error).message),
+  });
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*,application/pdf"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ""; }}
+      />
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={upload.isPending} onClick={() => fileRef.current?.click()}>
+        {upload.isPending ? "Reading…" : label}
+      </button>
+      {note && <span className="text-rce-muted">{note}</span>}
+      {error && <span className="text-red-600">{error}</span>}
     </span>
   );
 }
@@ -350,7 +403,7 @@ function StartPoForm({ onCreated }: { onCreated: (po: PurchaseOrderSummary) => v
             <input className="field w-28 px-1 py-0.5 text-sm" placeholder="Part #" value={l.partNumber} onChange={(e) => setLine(i, { partNumber: e.target.value })} />
           </div>
         ))}
-        <button type="button" className="text-xs text-rce-accent" onClick={() => setLines((ls) => [...ls, emptyLine()])}>+ add line</button>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setLines((ls) => [...ls, emptyLine()])}>+ add line</button>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <input className="field flex-1" placeholder="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
@@ -395,9 +448,11 @@ export function PurchasesCard() {
   // to land = bought but the material has not landed on its truck / in the warehouse.
   const openCount = orders.filter((po) => po.status === "open").length;
   const toLand = orders.filter((po) => po.status === "purchased" && !po.landedAt).length;
+  const needsProofCount = orders.filter(poNeedsProof).length;
   const summary = (
     <>
       {openCount} open · {toLand} to land
+      {needsProofCount > 0 && <span className="text-amber-800"> · {needsProofCount} need{needsProofCount === 1 ? "s" : ""} proof</span>}
       {needing.length > 0 && <span className="text-amber-800"> · {needing.length} receipt{needing.length === 1 ? "" : "s"} need a PO</span>}
       {stalePending.length > 0 && <span className="text-red-800"> · {stalePending.length} stuck in review</span>}
     </>
@@ -437,6 +492,7 @@ export function PurchasesCard() {
                 {/* Kyle, 2026-09-09: "card proves" — the money behind this PO is on a card transaction. */}
                 {po.cardMatched && <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] text-sky-800">card</span>}
                 {po.afterTheFact && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">after the fact</span>}
+                {poNeedsProof(po) && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">needs proof</span>}
                 {po.landedAt && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-800">landed {shortDate(po.landedAt)}</span>}
               </span>
               <span className="flex flex-wrap items-center gap-2 text-xs text-rce-muted">
@@ -446,12 +502,23 @@ export function PurchasesCard() {
                 <span className="text-rce-accent">{openId === po.id ? "Hide" : "Open"}</span>
               </span>
             </button>
+            {/*
+              Kyle, 2026-09-19: "the system prompts for proof" — right on the row, no
+              need to expand the panel first. "PO-XXXX, $651.73 at Home Depot —
+              attach the receipt."
+            */}
+            {poNeedsProof(po) && (
+              <div className="mt-1 flex flex-wrap items-center gap-2 rounded bg-amber-50/60 px-2 py-1 text-xs text-amber-900">
+                <span>{money(po.moneyTotal)} at {po.supplier} — attach the receipt</span>
+                <AttachProofButton poId={po.id} />
+              </div>
+            )}
             {openId === po.id && <PoDetailPanel id={po.id} needing={needing} />}
           </li>
         ))}
       </ul>
       {displayOrders.length > PAGE_SIZE && !showAll && (
-        <button type="button" className="mt-1 text-xs text-rce-accent" onClick={() => setShowAll(true)}>Show more ({displayOrders.length - PAGE_SIZE})</button>
+        <button type="button" className="btn btn-secondary mt-1 px-2 py-0.5 text-xs min-h-0" onClick={() => setShowAll(true)}>Show more ({displayOrders.length - PAGE_SIZE})</button>
       )}
 
       {stalePending.length > 0 && (
@@ -492,7 +559,7 @@ export function PurchasesCard() {
         ))}
       </ul>
       {needing.length > PAGE_SIZE && !showAllNeeding && (
-        <button type="button" className="mt-1 text-xs text-rce-accent" onClick={() => setShowAllNeeding(true)}>Show more ({needing.length - PAGE_SIZE})</button>
+        <button type="button" className="btn btn-secondary mt-1 px-2 py-0.5 text-xs min-h-0" onClick={() => setShowAllNeeding(true)}>Show more ({needing.length - PAGE_SIZE})</button>
       )}
     </CollapsibleCard>
   );
@@ -506,7 +573,7 @@ function ReasonRow({ label, busy, onSubmit, onCancel }: { label: string; busy: b
     <span className="inline-flex flex-wrap items-center gap-1">
       <input className="field w-56 max-w-full px-1 py-0.5 text-xs" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} />
       <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!reason.trim() || busy} onClick={() => onSubmit(reason.trim())}>{label}</button>
-      <button type="button" className="text-xs text-rce-muted" onClick={onCancel}>cancel</button>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onCancel}>cancel</button>
     </span>
   );
 }
@@ -524,17 +591,6 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
   });
   const attach = useMutation({ mutationFn: (receiptId: string) => api.attachReceiptToPurchaseOrder(id, receiptId), onSuccess: () => { setLinking(false); onDone(); }, onError });
   const detach = useMutation({ mutationFn: (receiptId: string) => api.detachReceiptFromPurchaseOrder(id, receiptId), onSuccess: onDone, onError });
-  // Kyle, 2026-09-11: the receipt arrives as a photo from the phone or the computer.
-  const [uploadNote, setUploadNote] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
-  const upload = useMutation({
-    mutationFn: (file: File) => api.uploadPoReceipt(id, { image: file }),
-    onSuccess: (res) => {
-      setUploadNote(res.note ?? `Receipt read: ${money(res.amount)}${res.lineCount > 0 ? ` · ${res.lineCount} line${res.lineCount === 1 ? "" : "s"}` : " · no lines read — type them or land by hand"}`);
-      onDone();
-    },
-    onError,
-  });
   const [cancelling, setCancelling] = useState(false);
   const [linking, setLinking] = useState(false);
   const [attachChoice, setAttachChoice] = useState("");
@@ -562,7 +618,7 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
             <li key={r.id} className="flex flex-wrap items-center justify-between gap-2">
               <span>{r.vendor || "Unknown vendor"} · {money(r.amount)} · {shortDate(r.receivedAt)}{r.status !== "confirmed" ? " · needs review" : ""}</span>
               {editable && (
-                <button type="button" className="text-red-600 hover:underline" disabled={detach.isPending} onClick={() => detach.mutate(r.id)}>detach</button>
+                <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" disabled={detach.isPending} onClick={() => detach.mutate(r.id)}>detach</button>
               )}
             </li>
           ))}
@@ -575,23 +631,12 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
         */}
         {editable && (
           <div className="mt-1 space-y-1">
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ""; }}
-            />
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={upload.isPending} onClick={() => fileRef.current?.click()}>
-                {upload.isPending ? "Reading the photo…" : "Upload receipt photo"}
-              </button>
+              <AttachProofButton poId={id} label="Upload receipt photo/PDF" />
               {loose.length > 0 && !linking && (
-                <button type="button" className="text-rce-accent hover:underline" onClick={() => setLinking(true)}>or link one already uploaded</button>
+                <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setLinking(true)}>or link one already uploaded</button>
               )}
             </div>
-            {uploadNote && <p className="text-rce-muted">{uploadNote}</p>}
             {linking && loose.length > 0 && (
               <div className="flex flex-wrap items-center gap-1">
                 <select className="field px-1 py-0.5 text-xs" value={attachChoice} onChange={(e) => setAttachChoice(e.target.value)}>
@@ -601,28 +646,19 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
                   ))}
                 </select>
                 <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={!attachChoice || attach.isPending} onClick={() => { attach.mutate(attachChoice); setAttachChoice(""); }}>Link</button>
-                <button type="button" className="text-rce-muted" onClick={() => { setLinking(false); setAttachChoice(""); }}>cancel</button>
+                <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => { setLinking(false); setAttachChoice(""); }}>cancel</button>
               </div>
             )}
           </div>
         )}
       </div>
 
-      <div>
-        <p className="font-semibold uppercase tracking-wide text-rce-soft">Card transactions ({po.cardSpends.length})</p>
-        {po.cardSpends.length === 0 && <p className="text-rce-muted">No card transaction behind this PO yet — the card is the money; it lands here on its own.</p>}
-        <ul className="mt-1 space-y-0.5">
-          {po.cardSpends.map((s) => (
-            <li key={s.id}>
-              {s.merchantName} · <span className="tabular-nums">{money(s.amount)}</span> · {shortDate(s.occurredAt)} · {s.kind}
-              {s.receiptId ? <span className="text-emerald-700"> · receipt matched</span> : s.status === "ignored" ? " · ignored" : <span className="text-amber-800"> · no receipt matched</span>}
-            </li>
-          ))}
-        </ul>
-        {po.afterTheFact && (
-          <p className="mt-1 text-amber-800">Drafted after the fact from the card — attach the receipt photo and confirm the purpose before closing.</p>
-        )}
-      </div>
+      {/* THE MONEY (Kyle, 2026-09-19: "the P.O. is the money") — the charges and the typed not-on-card amount; the receipts above are the proof. */}
+      <PoMoney po={po} />
+
+      {po.afterTheFact && (
+        <p className="text-amber-800">Drafted after the fact from the card — attach the receipt photo and confirm the purpose before closing.</p>
+      )}
 
       {/* Kyle, 2026-09-09 (Build 3): material lands on the truck or in the warehouse; a tool PO lands on the register. Landing closes the PO. */}
       {(po.status === "purchased" || po.status === "verified") && !po.landedAt && (
@@ -634,7 +670,7 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
       {po.landedAt && (
         <p className="rounded bg-emerald-50 px-2 py-1 text-emerald-800">
           Landed {shortDate(po.landedAt)} — {po.purpose === "tool" ? "on the tool register" : po.destinationType === "warehouse" ? "in the warehouse" : `on ${po.truckName ?? "the truck"}`}.
-          {" "}<Link to="/inventory" className="text-rce-accent hover:underline">Inventory →</Link>
+          {" "}<Link to="/inventory" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">Inventory →</Link>
         </p>
       )}
 
@@ -642,7 +678,7 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
         {po.status === "open" && <button type="button" className="btn btn-primary text-xs" disabled={transition.isPending} onClick={() => transition.mutate({ to: "purchased" })}>Mark purchased</button>}
         {po.status === "purchased" && <button type="button" className="btn btn-primary text-xs" disabled={transition.isPending} onClick={() => transition.mutate({ to: "verified" })}>Verify</button>}
         {po.status === "verified" && <button type="button" className="btn btn-primary text-xs" disabled={transition.isPending} onClick={() => transition.mutate({ to: "closed" })}>Close</button>}
-        {live && !cancelling && <button type="button" className="text-red-600 hover:underline" onClick={() => setCancelling(true)}>Cancel PO</button>}
+        {live && !cancelling && <button type="button" className="btn btn-danger text-xs" onClick={() => setCancelling(true)}>Cancel PO</button>}
         {live && cancelling && (
           <ReasonRow label="Cancel PO" busy={transition.isPending} onSubmit={(reason) => { transition.mutate({ to: "cancelled", reason }); setCancelling(false); }} onCancel={() => setCancelling(false)} />
         )}
@@ -671,6 +707,87 @@ function describeDiff(before: Record<string, unknown>, after: Record<string, unk
   return Object.keys(after).map((k) => `${k}: ${String(before[k] ?? "—")} → ${String(after[k] ?? "—")}`).join(", ");
 }
 
+/**
+ * The money on the P.O. (Kyle, 2026-09-19): every card charge (many per P.O. —
+ * a split is two rows here), each with its way OUT (unlink with a reason, or
+ * ignore), plus the typed not-on-card amount — editable in any status, reason
+ * required, null = "it was on the card after all".
+ */
+function PoMoney({ po }: { po: PurchaseOrderDetail }) {
+  const refresh = usePoRefresh();
+  const [error, setError] = useState<string | null>(null);
+  const [typing, setTyping] = useState(false);
+  const [amount, setAmount] = useState(po.offCardAmount != null ? String(po.offCardAmount) : "");
+  const [method, setMethod] = useState<OffCardMethod>(po.offCardMethod ?? "cash");
+  const [at, setAt] = useState(po.offCardAt ? po.offCardAt.slice(0, 10) : "");
+  const [note, setNote] = useState(po.offCardNote ?? "");
+  const onError = (err: unknown) => setError((err as Error).message);
+  const save = useMutation({
+    mutationFn: (input: { reason: string; clear?: boolean }) => api.setPurchaseOrderMoney(po.id, input.clear
+      ? { reason: input.reason, offCardAmount: null }
+      : { reason: input.reason, offCardAmount: Number(amount), offCardMethod: method, offCardNote: note.trim() || null, ...(at ? { offCardAt: at } : {}) }),
+    onSuccess: () => { setError(null); setTyping(false); refresh(); },
+    onError,
+  });
+  const charge = useMutation({
+    mutationFn: (input: { id: string; reason: string; purchaseOrderId?: null; status?: "ignored" | "unmatched" }) => api.updateCardSpend(input.id, input),
+    onSuccess: () => { setError(null); refresh(); },
+    onError,
+  });
+  const ask = (prompt: string) => { const reason = window.prompt(prompt); return reason?.trim() ? reason.trim() : null; };
+  return (
+    <div>
+      <p className="font-semibold uppercase tracking-wide text-rce-soft">Money — {money(po.moneyTotal)}</p>
+      <ul className="mt-1 space-y-0.5">
+        {po.cardSpends.map((s) => (
+          <li key={s.id} className={`flex flex-wrap items-center justify-between gap-2 ${s.status === "ignored" ? "text-rce-muted line-through" : ""}`}>
+            <span>
+              Card · {s.merchantName} · <span className="tabular-nums">{money(s.amount)}</span> · {shortDate(s.occurredAt)} · {s.kind}
+              {s.status === "ignored" && <span className="ml-1 no-underline"> · ignored{s.ignoredReason ? ` — ${s.ignoredReason}` : ""}</span>}
+            </span>
+            <span className="flex gap-1">
+              {s.status === "ignored"
+                ? <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => { const reason = ask("Reason for counting this charge again?"); if (reason) charge.mutate({ id: s.id, status: "unmatched", reason }); }}>count again</button>
+                : <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => { const reason = ask("Reason for ignoring this charge (it leaves every money figure)?"); if (reason) charge.mutate({ id: s.id, status: "ignored", reason }); }}>ignore</button>}
+              <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => { const reason = ask(`Reason for taking this charge off ${po.number}?`); if (reason) charge.mutate({ id: s.id, purchaseOrderId: null, reason }); }}>unlink</button>
+            </span>
+          </li>
+        ))}
+        {po.cardSpends.length === 0 && <li className="text-rce-muted">No card charge on this P.O. — a swipe at {po.supplier} lands here on its own.</li>}
+        <li className="flex flex-wrap items-center justify-between gap-2">
+          <span>
+            {po.offCardAmount != null
+              ? <>Not on the card · <span className="tabular-nums">{money(po.offCardAmount)}</span> · {OFF_CARD_METHOD_LABEL[po.offCardMethod ?? "unknown"]}{po.offCardAt ? ` · ${shortDate(po.offCardAt)}` : ""}{po.offCardNote ? <span className="text-rce-muted"> — {po.offCardNote}</span> : null}</>
+              : <span className="text-rce-muted">Paid cash, check or a personal card? Type the amount — it is the money when there is no charge.</span>}
+          </span>
+          {!typing && (
+            <span className="flex gap-1">
+              <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setTyping(true)}>{po.offCardAmount != null ? "edit" : "type amount"}</button>
+              {po.offCardAmount != null && (
+                <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => { const reason = ask("Reason for removing the typed amount (it was on the card after all)?"); if (reason) save.mutate({ reason, clear: true }); }}>remove</button>
+              )}
+            </span>
+          )}
+        </li>
+      </ul>
+      {typing && (
+        <div className="mt-1 flex flex-wrap items-center gap-1">
+          <input className="field w-24 px-1 py-0.5 text-xs" inputMode="decimal" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          <select className="field px-1 py-0.5 text-xs" value={method} onChange={(e) => setMethod(e.target.value as OffCardMethod)}>
+            {(Object.keys(OFF_CARD_METHOD_LABEL) as OffCardMethod[]).map((m) => <option key={m} value={m}>{OFF_CARD_METHOD_LABEL[m]}</option>)}
+          </select>
+          <input className="field px-1 py-0.5 text-xs" type="date" value={at} onChange={(e) => setAt(e.target.value)} title="When it was paid — the P&L month" />
+          <input className="field w-44 px-1 py-0.5 text-xs" placeholder="Note" value={note} onChange={(e) => setNote(e.target.value)} />
+          {Number(amount) >= 0 && amount.trim() !== ""
+            ? <ReasonRow label="Save" busy={save.isPending} onSubmit={(reason) => save.mutate({ reason })} onCancel={() => setTyping(false)} />
+            : <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setTyping(false)}>cancel</button>}
+        </div>
+      )}
+      {error && <p className="text-red-600">{error}</p>}
+    </div>
+  );
+}
+
 function PoHeader({ po, editable }: { po: PurchaseOrderDetail; editable: boolean }) {
   const refresh = usePoRefresh();
   const [editing, setEditing] = useState(false);
@@ -691,7 +808,7 @@ function PoHeader({ po, editable }: { po: PurchaseOrderDetail; editable: boolean
           {po.jobLabel && <span className="text-rce-muted"> · opened on {po.accountId ? <Link to={`/accounts/${po.accountId}`} className="text-rce-accent hover:underline">{po.accountName}</Link> : null} {po.jobLabel}</span>}
           <span className="text-rce-muted"> · opened by {po.openedBy}{po.sentAt ? ` · emailed ${shortDate(po.sentAt)}` : ""}</span>
         </span>
-        {editable && !editing && <button type="button" className="text-rce-accent" onClick={() => setEditing(true)}>Edit</button>}
+        {editable && !editing && <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setEditing(true)}>Edit</button>}
       </div>
       {po.notes && !editing && <p className="text-rce-muted">Notes: {po.notes}</p>}
       {editing && (
@@ -782,8 +899,8 @@ function PoLineRow({ poId, line, editable, onError }: { poId: string; line: Purc
       </span>
       {editable && mode === "view" && (
         <span className="flex gap-2">
-          <button type="button" className="text-rce-accent" onClick={() => setMode("edit")}>edit</button>
-          <button type="button" className="text-red-600" onClick={() => setMode("remove")}>remove</button>
+          <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode("edit")}>edit</button>
+          <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => setMode("remove")}>remove</button>
         </span>
       )}
       {editable && mode === "remove" && (

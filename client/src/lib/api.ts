@@ -60,7 +60,7 @@ import type {
   CardSpendRow,
   CardSpendSyncResult,
   IssuingCardsResponse,
-  ReceiptCandidate,
+  OffCardMethod,
   TruckDetail,
   TruckRecord,
   TrucksResponse,
@@ -162,8 +162,9 @@ export interface FinancialsSummary {
   feesAvailable?: boolean;
   feesReason?: string | null;
   /** stripeFees is Stripe's processing fee for the month — its own column, and inside expenses. Collected stays gross. */
-  months: { month: number; invoiced: number; collected: number; stripeFees: number; expenses: number; net: number; estMaterials: number; projectedNet: number }[];
-  totals: { invoiced: number; collected: number; stripeFees: number; expenses: number; net: number; estMaterials: number; projectedNet: number };
+  /** Expenses = card charges + typed not-on-card P.O. amounts + bills + Stripe fees (Kyle, 2026-09-19). Net is the number. */
+  months: { month: number; invoiced: number; collected: number; stripeFees: number; expenses: number; net: number }[];
+  totals: { invoiced: number; collected: number; stripeFees: number; expenses: number; net: number };
   expensesByCategory: { category: string; monthly: number[]; total: number }[];
   /** The Materials card (Kyle, 2026-09-09, Build 4): bought / used / inventory value per month. */
   materials?: Omit<MaterialsByMonth, "year">;
@@ -180,7 +181,7 @@ export interface JobProfitRow {
   completedAt: string | null;
   quoted: number | null;
   materialSpend: number;
-  /** Which rung of THE MATERIAL RULE materialSpend came from (Build 4). */
+  /** "po" when the job's P.O.s carry money, else "none" (Kyle, 2026-09-19). */
   materialSource?: MaterialSource;
   laborHours: number;
   laborCost: number;
@@ -1153,6 +1154,9 @@ export const api = {
     request<void>(`/purchase-orders/${id}/lines/${lineId}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
   transitionPurchaseOrder: (id: string, to: "purchased" | "verified" | "closed" | "cancelled", reason?: string) =>
     request<{ id: string; number: string; status: string }>(`/purchase-orders/${id}/status`, { method: "POST", body: JSON.stringify({ to, reason }) }),
+  /** THE MONEY typed by hand (Kyle, 2026-09-19): the not-on-card amount. Reason required; null = on the card after all. */
+  setPurchaseOrderMoney: (id: string, input: { reason: string; offCardAmount?: number | null; offCardMethod?: OffCardMethod | null; offCardNote?: string | null; offCardAt?: string | null }) =>
+    request<PurchaseOrderSummary>(`/purchase-orders/${id}/money`, { method: "PATCH", body: JSON.stringify(input) }),
   attachReceiptToPurchaseOrder: (poId: string, receiptId: string) =>
     request<{ receiptId: string; purchaseOrderId: string; jobId: string | null }>(`/purchase-orders/${poId}/receipts/${receiptId}`, { method: "POST", body: "{}" }),
   detachReceiptFromPurchaseOrder: (poId: string, receiptId: string) =>
@@ -1189,9 +1193,8 @@ export const api = {
   },
   /** Reason required — every edit leaves a trail. */
   updateCardSpend: (id: string, input: {
-    reason: string; kind?: CardSpendKind; truckId?: string | null; purchaseOrderId?: string | null; receiptId?: string | null; status?: "ignored" | "unmatched";
+    reason: string; kind?: CardSpendKind; truckId?: string | null; purchaseOrderId?: string | null; status?: "ignored" | "unmatched";
   }) => request<CardSpendRow>(`/card-spend/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
-  cardSpendReceiptCandidates: (id: string) => request<ReceiptCandidate[]>(`/card-spend/${id}/receipt-candidates`),
   syncCardSpend: (days: number) => request<CardSpendSyncResult>("/card-spend/sync", { method: "POST", body: JSON.stringify({ days }) }),
   financialsBalances: () => request<Balances>("/financials/balances"),
   // ── Treasury: floats + the month-end sweep (Kyle, 2026-09-09, Build 5). The POST is the click; nothing schedules it. ──

@@ -25,10 +25,8 @@ import {
 type Row = { itemId: string; name: string; unit: string | null; qty: string; onHand: number | null; avgUnitCost: number | null; fromEstimate: boolean }
 
 const SOURCE_LABEL: Record<FieldJobMaterials['materialSource'], string> = {
-  stock: 'from truck stock',
-  receipts: 'from receipts',
-  estimate: 'from the signed estimate',
-  none: 'nothing recorded',
+  po: "on the job's P.O.s",
+  none: 'no P.O. money yet',
 }
 
 export function MaterialsUsedStep({ visitId, onRecorded }: { visitId: string; onRecorded?: () => void }) {
@@ -111,7 +109,7 @@ export function MaterialsUsedStep({ visitId, onRecorded }: { visitId: string; on
       </p>
       {data.stock && (
         <p className="text-[11px] text-emerald-300">
-          Already on this job: ${data.stock.net.toFixed(2)} {SOURCE_LABEL[data.materialSource]} ({data.stock.movementCount} line(s)).
+          Already off the truck for this job: ${data.stock.net.toFixed(2)} ({data.stock.movementCount} line(s)). Job cost ${data.materialCost.toFixed(2)} {SOURCE_LABEL[data.materialSource]}.
         </p>
       )}
       {rows.map((r, i) => {

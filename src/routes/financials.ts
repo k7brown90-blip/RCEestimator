@@ -10,9 +10,11 @@
  * - REVENUE: signed invoices (IssuedEstimate, billed totals — accrual view) and
  *   Payment rows (Stripe webhook + hand-recorded cash/checks — cash view).
  *   Both are shown; they answer different questions.
- * - EXPENSES: Receipt rows (job materials, gas, overhead one-offs — already
- *   captured from the tech PWA, MMS, and now the CRM) and CompanyBill rows
- *   (recurring bills expanded month by month).
+ * - EXPENSES (Kyle, 2026-09-19, "the P.O. is the money" — THE CHARGE IS THE
+ *   MONEY, THE RECEIPT IS PROOF): card charges (CardSpend), amounts typed on a
+ *   P.O. marked not-on-card, CompanyBill rows (recurring bills expanded month
+ *   by month), and Stripe fees. Receipt.amount contributes nothing; no figure
+ *   is counted twice because nothing decides between a receipt and a charge.
  *
  * All four reports Kyle asked for: monthly P&L, expenses by category, job
  * profitability, and the tax-year CSV export.
@@ -23,7 +25,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { fullBillOf, stripeConfigured } from "../services/stripePayments";
-import { estimateMaterialCost, getLaborRate, materialCostForJobs } from "../services/jobCosting";
+import { getLaborRate, materialCostForJobs } from "../services/jobCosting";
 import { readBalances } from "../services/cardSpend";
 import { TreasuryError, executeSweep, readSweep, stripeFeeRows } from "../services/treasury";
 import type { StripeFeeRow } from "../services/treasury";
@@ -303,24 +305,21 @@ export function billMonthsInYear(
 
 interface YearLedger {
   /** Signed invoices: { month, amount, number, customer, estimateId, signedAt } */
-  invoiced: {
-    month: number; amount: number; number: string; customer: string; estimateId: string; date: Date;
-    /** Frozen taken-scope material on the signed estimate — the committed spend. */
-    estMaterial: number | null;
-    /** The visits this estimate's receipts would land on. */
-    jobIds: string[];
-  }[];
+  invoiced: { month: number; amount: number; number: string; customer: string; estimateId: string; date: Date }[];
   /** Every paid row, both payers — money is money (Kyle, 2026-09-10); `payer` says whose. */
   collected: { month: number; amount: number; method: string; payer: string; date: Date; note: string | null }[];
-  receiptRows: { month: number; amount: number; category: string; vendor: string | null; date: Date; jobId: string | null }[];
   billRows: { month: number; amount: number; category: string; name: string }[];
   /**
-   * Card transactions with NO receipt behind them (Kyle, 2026-09-09: "photo
-   * verifies, card proves"). Expenses count ONCE: a spend matched to a receipt
-   * is already counted by that receipt, so only unmatched, non-ignored spend
-   * lands here. Refunds are negative rows.
+   * THE MONEY (Kyle, 2026-09-19): every non-ignored card transaction, in the
+   * month it occurred. Refunds are negative rows. A receipt never changes this.
    */
   spendRows: { month: number; amount: number; category: string; merchant: string; date: Date; truck: string | null }[];
+  /**
+   * The other money: amounts Kyle typed on a P.O. marked not-on-card (cash,
+   * check, a personal card), in the month of offCardAt. Category follows the
+   * P.O.'s purpose — a tool run is tools, everything else is materials.
+   */
+  typedRows: { month: number; amount: number; category: string; poNumber: string; supplier: string; method: string | null; date: Date }[];
   /**
    * Stripe processing fees (Kyle, 2026-09-09: shown nowhere until now — "they
    * belong in the P&L as their own expense line"). One row per charge/payment
@@ -333,7 +332,7 @@ interface YearLedger {
   feesReason: string | null;
 }
 
-/** CardSpend.kind → the P&L expense category receipts already use. */
+/** CardSpend.kind → the P&L expense category. */
 const SPEND_CATEGORY: Record<string, string> = {
   materials: "materials",
   fuel: "gas",
@@ -350,13 +349,10 @@ async function yearLedger(year: number): Promise<YearLedger> {
   const from = new Date(`${year}-01-01`);
   const to = new Date(`${year + 1}-01-01`);
 
-  // Receipt.jobId has no relation to Visit, so its exclusion is a list, not a join.
-  const testJobs = await testVisitIds(prisma);
-
-  const [estimates, payments, receipts, bills, spend, fees] = await Promise.all([
+  const [estimates, payments, bills, spend, typed, fees] = await Promise.all([
     prisma.issuedEstimate.findMany({
       where: { signedAt: { gte: from, lt: to }, status: { not: "void" }, ...EXCLUDE_TEST_ACCOUNT },
-      include: { options: true, account: { select: { name: true } }, lines: { select: { option: true, materialCost: true } } },
+      include: { options: true, account: { select: { name: true } } },
     }),
     // Collected = MONEY. Legacy "discount" rows (the retired 3% non-card
     // programme, 2026-08-25 → 08-30) close invoices but were never revenue —
@@ -364,18 +360,20 @@ async function yearLedger(year: number): Promise<YearLedger> {
     prisma.payment.findMany({
       where: { status: "paid", method: { not: "discount" }, paidAt: { gte: from, lt: to }, ...EXCLUDE_TEST_PAYER },
     }),
-    prisma.receipt.findMany({
-      where: { status: "confirmed", receivedAt: { gte: from, lt: to }, jobId: { notIn: testJobs } },
-      select: { amount: true, category: true, vendor: true, receivedAt: true, jobId: true },
-    }),
     prisma.companyBill.findMany(),
-    // Once-only rule: receiptId null — a spend with a receipt is counted by the receipt.
+    // THE CHARGE IS THE MONEY: every live card transaction, once, in its month.
     prisma.cardSpend.findMany({
-      where: {
-        status: { not: "ignored" }, receiptId: null, occurredAt: { gte: from, lt: to },
-        ...EXCLUDE_TEST_CARD_SPEND,
-      },
+      where: { status: { not: "ignored" }, occurredAt: { gte: from, lt: to }, ...EXCLUDE_TEST_CARD_SPEND },
       select: { amount: true, kind: true, merchantName: true, occurredAt: true, truck: { select: { name: true } } },
+    }),
+    // The typed not-on-card amounts, in the month they were spent. A test
+    // account's P.O.s stay out (the same shape EXCLUDE_TEST_CARD_SPEND uses).
+    prisma.purchaseOrder.findMany({
+      where: {
+        offCardAmount: { not: null }, offCardAt: { gte: from, lt: to },
+        OR: [{ jobId: null }, { job: { customer: { isTestAccount: false } } }],
+      },
+      select: { number: true, supplier: true, purpose: true, offCardAmount: true, offCardMethod: true, offCardAt: true },
     }),
     // Stripe fees for the year — cached 30 minutes in services/treasury.ts; [] + reason when the key lacks scope.
     stripeFeeRows(year, { from, to }),
@@ -400,17 +398,9 @@ async function yearLedger(year: number): Promise<YearLedger> {
       customer: est.account.name,
       estimateId: est.id,
       date: est.signedAt!,
-      estMaterial: estimateMaterialCost({
-        selectedOptions: est.selectedOptions.map(String),
-        lines: est.lines.map((l) => ({ option: String(l.option), materialCost: l.materialCost })),
-      }),
-      jobIds: [est.jobVisitId, est.visitId].filter((v): v is string => Boolean(v)),
     })),
     collected: payments.map((p) => ({
       month: p.paidAt!.getMonth(), amount: p.amount, method: p.method, payer: p.payer, date: p.paidAt!, note: p.note,
-    })),
-    receiptRows: receipts.map((r) => ({
-      month: r.receivedAt.getMonth(), amount: r.amount, category: r.category, vendor: r.vendor, date: r.receivedAt, jobId: r.jobId,
     })),
     billRows: bills.flatMap((bill) =>
       billMonthsInYear(bill, year).map((hit) => ({
@@ -421,6 +411,10 @@ async function yearLedger(year: number): Promise<YearLedger> {
       month: s.occurredAt.getMonth(), amount: s.amount, category: SPEND_CATEGORY[s.kind] ?? "overhead",
       merchant: s.merchantName, date: s.occurredAt, truck: s.truck?.name ?? null,
     })),
+    typedRows: typed.map((po) => ({
+      month: po.offCardAt!.getMonth(), amount: po.offCardAmount!, category: po.purpose === "tool" ? "tools" : "materials",
+      poNumber: po.number, supplier: po.supplier, method: po.offCardMethod, date: po.offCardAt!,
+    })),
     feeRows: fees.rows,
     feesAvailable: fees.available,
     feesReason: fees.reason ?? null,
@@ -430,13 +424,15 @@ async function yearLedger(year: number): Promise<YearLedger> {
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
- * The Materials card (Kyle, 2026-09-09, Build 4). Three rows per month:
+ * The Materials card (Kyle, 2026-09-09, Build 4) — the INVENTORY view, from the
+ * ledger only. Three rows per month:
  *
- *   bought          — cash view: purchase_in movements (a PO landing on a truck or
- *                     in the warehouse, at the landed cost) plus confirmed materials
- *                     receipts NOT on a PO (the pre-PO way of buying). A receipt on
- *                     a PO is represented by its landing, so it is not added again.
- *   used            — cost view: consume − return off trucks, at the moving average
+ *   bought          — purchase_in movements (a PO landing on a truck or in the
+ *                     warehouse, at the landed cost). Since 2026-09-19 receipts
+ *                     add nothing here: a receipt is proof, never money, and the
+ *                     money itself is on the P&L as card charges and typed P.O.
+ *                     amounts.
+ *   used            — consume − return off trucks, at the moving average
  *                     (corrections to either included, signed).
  *   inventoryValue  — Σ qty × avg over every location at the END of the month,
  *                     replayed from the ledger (services/inventory.ts
@@ -445,23 +441,13 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 export async function materialsByMonth(year: number) {
   const yearStart = new Date(year, 0, 1);
   const yearEnd = new Date(year + 1, 0, 1);
-  const testJobs = await testVisitIds(prisma);
-  const isTestJob = new Set(testJobs);
-  const [movements, receipts] = await Promise.all([
-    // Everything up to the end of the year — the replay needs history before January too.
-    prisma.stockMovement.findMany({
-      where: { at: { lt: yearEnd } },
-      orderBy: [{ at: "asc" }, { createdAt: "asc" }],
-      select: { id: true, kind: true, itemId: true, qty: true, delta: true, unitCost: true, fromLocationKey: true, toLocationKey: true, correctsId: true, at: true, jobId: true },
-    }),
-    prisma.receipt.findMany({
-      where: {
-        status: "confirmed", category: "materials", purchaseOrderId: null,
-        receivedAt: { gte: yearStart, lt: yearEnd }, jobId: { notIn: testJobs },
-      },
-      select: { amount: true, receivedAt: true },
-    }),
-  ]);
+  const isTestJob = new Set(await testVisitIds(prisma));
+  // Everything up to the end of the year — the replay needs history before January too.
+  const movements = await prisma.stockMovement.findMany({
+    where: { at: { lt: yearEnd } },
+    orderBy: [{ at: "asc" }, { createdAt: "asc" }],
+    select: { id: true, kind: true, itemId: true, qty: true, delta: true, unitCost: true, fromLocationKey: true, toLocationKey: true, correctsId: true, at: true, jobId: true },
+  });
   const bought = Array(12).fill(0) as number[];
   const used = Array(12).fill(0) as number[];
   const inventoryValue = Array(12).fill(0) as number[];
@@ -493,7 +479,6 @@ export async function materialsByMonth(year: number) {
     }
     inventoryValue[month] = replay.value();
   }
-  for (const r of receipts) bought[r.receivedAt.getMonth()] += r.amount;
   return {
     months: Array.from({ length: 12 }, (_, month) => ({
       month, bought: round2(bought[month]), used: round2(used[month]), inventoryValue: round2(inventoryValue[month]),
@@ -515,33 +500,20 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
   const [ledger, materials] = await Promise.all([yearLedger(year), materialsByMonth(year)]);
 
   /*
-    Estimated materials (Kyle, 2026-09-05: "I do not see materials compiling on
-    the P&L report. Even from the sold jobs.") — the frozen material cost on
-    each signed job whose receipts haven't landed yet. Kept OUT of Expenses on
-    purpose: Expenses is real money (receipts + bills, the Schedule C shape),
-    and estimated material is committed-but-unspent. It gets its own column,
-    attributed to the sign month, and Projected net subtracts it — so Net can
-    never overstate a month just because the supply-house run hasn't happened.
-    A job with any materials receipt is "covered": its real spend is already in
-    Expenses, and counting the estimate too would double it.
+    EXPENSES (Kyle, 2026-09-19) = card charges + typed not-on-card P.O. amounts
+    + company bills + Stripe fees. Nothing else: not receipts, not the signed
+    estimate's material. The "Est. materials / Projected net" columns that let
+    the estimate act as cost retired with the rule — Net is the number.
   */
-  const jobsWithReceipts = new Set(ledger.receiptRows.map((r) => r.jobId).filter(Boolean));
-  const uncommittedMaterial = (month: number) =>
-    ledger.invoiced
-      .filter((r) => r.month === month && !r.jobIds.some((id) => jobsWithReceipts.has(id)))
-      .reduce((s, r) => s + (r.estMaterial ?? 0), 0);
-
   const months = Array.from({ length: 12 }, (_, month) => {
     const invoiced = ledger.invoiced.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     const collected = ledger.collected.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
-    const receiptExp = ledger.receiptRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     const billExp = ledger.billRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
-    // Card spend with no receipt (a spend matched to a receipt is already in receiptExp — counted once).
     const spendExp = ledger.spendRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
+    const typedExp = ledger.typedRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     // Stripe processing fees — their own column AND inside Expenses (Kyle, 2026-09-09). Collected above stays gross.
     const stripeFees = ledger.feeRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
-    const expenses = receiptExp + billExp + spendExp + stripeFees;
-    const estMaterials = round2(uncommittedMaterial(month));
+    const expenses = spendExp + typedExp + billExp + stripeFees;
     return {
       month,
       invoiced: round2(invoiced),
@@ -549,12 +521,10 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
       stripeFees: round2(stripeFees),
       expenses: round2(expenses),
       net: round2(invoiced - expenses),
-      estMaterials,
-      projectedNet: round2(invoiced - expenses - estMaterials),
     };
   });
 
-  // Expenses by category — receipts and bills merged, per month + YTD.
+  // Expenses by category — charges, typed amounts and bills merged, per month + YTD.
   const categories = new Map<string, { monthly: number[]; total: number }>();
   const addExpense = (category: string, month: number, amount: number) => {
     const row = categories.get(category) ?? { monthly: Array(12).fill(0), total: 0 };
@@ -562,8 +532,8 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
     row.total += amount;
     categories.set(category, row);
   };
-  for (const r of ledger.receiptRows) addExpense(r.category, r.month, r.amount);
   for (const s of ledger.spendRows) addExpense(s.category, s.month, s.amount);
+  for (const t of ledger.typedRows) addExpense(t.category, t.month, t.amount);
   for (const b of ledger.billRows) addExpense(`bill:${b.category}`, b.month, b.amount);
   for (const f of ledger.feeRows) addExpense("stripe_fees", f.month, f.amount);
 
@@ -580,8 +550,6 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
       stripeFees: round2(months.reduce((s, m) => s + m.stripeFees, 0)),
       expenses: round2(months.reduce((s, m) => s + m.expenses, 0)),
       net: round2(months.reduce((s, m) => s + m.net, 0)),
-      estMaterials: round2(months.reduce((s, m) => s + m.estMaterials, 0)),
-      projectedNet: round2(months.reduce((s, m) => s + m.projectedNet, 0)),
     },
     expensesByCategory: [...categories.entries()].map(([category, row]) => ({
       category,
@@ -634,7 +602,7 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       signedAt: { not: null },
       OR: [{ jobVisitId: { in: visitIds } }, { visitId: { in: visitIds } }],
     },
-    include: { options: true, lines: { select: { option: true, materialCost: true } } },
+    include: { options: true },
   });
 
   const laborRate = await getLaborRate();
@@ -655,37 +623,16 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       if (key && !estimateByJob.has(key)) estimateByJob.set(key, amount);
     }
   }
-  // The signed estimate's frozen taken-scope material - the SAME rule the
-  // Jobs tab and account summary apply (Kyle, 2026-09-04, third report:
-  // "Both Mike Corcoran jobs are not reporting material" - this route read
-  // receipts only, so a job with no receipts showed \$0.00 forever).
-  const estMaterialByJob = new Map<string, number | null>();
-  for (const est of estimates) {
-    const mat = estimateMaterialCost({
-      selectedOptions: est.selectedOptions.map(String),
-      lines: est.lines.map((l) => ({ option: String(l.option), materialCost: l.materialCost })),
-    });
-    for (const key of [est.jobVisitId, est.visitId]) {
-      if (key && !estMaterialByJob.has(key)) estMaterialByJob.set(key, mat);
-    }
-  }
-
   // An open visit earns a row only when a signed estimate backs it - stray
   // contracted rows without a sale are pipeline, not financials.
   const rows = visits.filter((v) => v.status === "completed" || estimateByJob.has(v.id));
   /*
-    THE MATERIAL RULE (Build 4, Kyle 2026-09-09): stock consumed off the truck,
-    else receipts not on a PO (Visit.actualMaterialCost), else the signed
-    estimate's frozen material — through the SAME helper GET /jobs and the
-    account summary call, so this report and the job card show one number.
-    (Before this build the report summed every confirmed receipt on its own,
-    which is how a roll on a PO could be counted here and nowhere else.)
+    THE MATERIAL RULE (Kyle, 2026-09-19): the money on the P.O.s tagged to the
+    job — through the SAME helper GET /jobs and the account summary call, so
+    this report and the job card show one number. The helper follows the
+    signed estimate from the sold job back to its quote visit on its own.
   */
-  const materialByJob = await materialCostForJobs(rows.map((v) => ({
-    visitId: v.id,
-    actualMaterialCost: v.actualMaterialCost,
-    estimatedMaterialCost: estMaterialByJob.get(v.id) ?? null,
-  })));
+  const materialByJob = await materialCostForJobs(rows.map((v) => ({ visitId: v.id })));
   res.json(rows.map((visit) => {
     const quoted = estimateByJob.get(visit.id) ?? null;
     const material = materialByJob.get(visit.id)!;
@@ -894,12 +841,12 @@ financialsRouter.get("/export", asyncHandler(async (req, res) => {
   for (const c of ledger.collected) {
     rows.push(`${c.date.toISOString().slice(0, 10)},income,collected,${esc(`Payment (${c.method}${c.payer === "warranty" ? ", warranty company" : ""})${c.note ? ` — ${c.note}` : ""}`)},${c.amount.toFixed(2)}`);
   }
-  for (const r of ledger.receiptRows) {
-    rows.push(`${r.date.toISOString().slice(0, 10)},expense,${r.category},${esc(r.vendor ?? "receipt")},${r.amount.toFixed(2)}`);
-  }
-  // Card spend with no receipt behind it — counted once (a matched spend rides its receipt above).
+  // THE MONEY (Kyle, 2026-09-19): every card charge once, and every typed not-on-card P.O. amount.
   for (const s of ledger.spendRows) {
     rows.push(`${s.date.toISOString().slice(0, 10)},expense,${s.category},${esc(`Card — ${s.merchant}${s.truck ? ` (${s.truck})` : ""}`)},${s.amount.toFixed(2)}`);
+  }
+  for (const t of ledger.typedRows) {
+    rows.push(`${t.date.toISOString().slice(0, 10)},expense,${t.category},${esc(`${t.poNumber} — ${t.supplier} (${t.method ?? "not on card"})`)},${t.amount.toFixed(2)}`);
   }
   for (const b of ledger.billRows) {
     rows.push(`${year}-${String(b.month + 1).padStart(2, "0")}-01,expense,${b.category},${esc(`Bill — ${b.name}`)},${b.amount.toFixed(2)}`);

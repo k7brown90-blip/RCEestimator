@@ -283,20 +283,20 @@ describe("tech PWA receipt capture", () => {
     expect(receipt.imageData).not.toBeNull();
   });
 
-  it("rolls confirmed material receipts into the job's actualMaterialCost via admin review", async () => {
+  it("confirming a receipt through admin review is proof, never money: the job's cost does not move (Kyle, 2026-09-19)", async () => {
     const receipt = await prisma.receipt.findFirstOrThrow({ where: { technicianId, jobId: visitId } });
 
     // PIN auth is disabled in test mode (no PIN_HASH), so the admin router is
-    // reachable — exercise the review flow: confirm the receipt and check the
-    // material cost roll-up onto the job.
+    // reachable — exercise the review flow: confirm the receipt.
     const res = await request(app)
       .patch(`/health-record-admin/receipts/${receipt.id}`)
       .send({ status: "confirmed", amount: 150.0 });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("confirmed");
 
-    const visit = await prisma.visit.findUniqueOrThrow({ where: { id: visitId } });
-    expect(visit.actualMaterialCost).toBe(150.0);
+    const { materialCostForJobs } = await import("../src/services/jobCosting");
+    const cost = (await materialCostForJobs([{ visitId }])).get(visitId)!;
+    expect(cost).toMatchObject({ materialCost: 0, materialSource: "none", po: null });
   });
 });
 

@@ -22,7 +22,7 @@ import type { StockMovement } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { InventoryError, WAREHOUSE_KEY, adhocItemId, applyMovement, serializeMovement, truckLocationKey } from "./inventory";
 import { defaultTruckId } from "./purchaseOrders";
-import { estimateMaterialCost, materialCostForJobs, type MaterialCostResult } from "./jobCosting";
+import { estimateMaterialCost, materialCostForJobs, stockMaterialByJob, type MaterialCostResult, type StockMaterial } from "./jobCosting";
 import { aggregateMaterialList, isAssemblyRowType, type ComponentInput, type MaterialListEntry, type MaterialListLine } from "./priceBookAssembly";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -357,8 +357,9 @@ export async function shortagesForJob(jobId: string, truckId: string): Promise<S
 /**
  * The close-out warning (never a block — Kyle: "We do not want to lock
  * ourselves out of closing a job"): a signed estimate with material lines and
- * no consume recorded means the job's material will fall back to receipts or
- * the estimate's frozen figure.
+ * no consume recorded means the truck count is still carrying what the job
+ * used. (Since 2026-09-19 this is about the inventory count only — the job's
+ * cost comes from its P.O.s, not from what was consumed.)
  */
 export async function closeOutMaterialWarning(jobId: string): Promise<string | null> {
   // A test job never uses material, so "you recorded none" is not news.
@@ -372,7 +373,7 @@ export async function closeOutMaterialWarning(jobId: string): Promise<string | n
   if (!est || materialLinesOf(est).length === 0) return null;
   const consumed = await prisma.stockMovement.count({ where: { jobId: { in: [jobId, ...chainOf(jobId, est)] }, kind: "consume" } });
   if (consumed > 0) return null;
-  return "No materials recorded from truck stock — job material will fall back to receipts/estimate.";
+  return "No materials recorded from truck stock — the truck count still carries what this job used.";
 }
 
 // ─── Consume / return ────────────────────────────────────────────────────────
@@ -548,30 +549,31 @@ export interface JobMaterialsView {
    *  pre-fill for "Create P.O." (Unit P, 2026-09-17). Only positive shortages. */
   shortages: ShortageLine[];
   lines: JobMaterialLine[];
-  stock: MaterialCostResult["stock"];
+  /** What the ledger says the job drew off the truck — inventory, not cost (Kyle, 2026-09-19). */
+  stock: StockMaterial | null;
   receipts: Array<{
     id: string; vendor: string | null; amount: number; category: string; status: string; receivedAt: Date;
     purchaseOrderId: string | null; purchaseOrderNumber: string | null;
-    /** Confirmed materials receipt with no PO — the receipt rung counts it. */
-    countsTowardJob: boolean;
-    /** Why it does not count, when it does not. */
+    /** A photo or PDF is on it — it proves its P.O. */
+    hasFile: boolean;
+    /** What the receipt is doing here; a receipt is never money. */
     note: string | null;
   }>;
+  /** THE MONEY: card charges + typed not-on-card amounts on the P.O.s tagged to this job (and its quote visit). */
   materialCost: number;
   materialSource: MaterialCostResult["materialSource"];
-  /** The signed estimate's frozen taken-scope material — the estimate rung. */
+  po: MaterialCostResult["po"];
+  /** The signed estimate's frozen taken-scope material — display only, never cost. */
   estimateMaterial: number | null;
-  /** Visit.actualMaterialCost — the receipt rung. */
-  receiptMaterial: number | null;
 }
 
 export async function jobMaterials(jobId: string, truckId?: string | null): Promise<JobMaterialsView> {
-  const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { id: true, actualMaterialCost: true } });
+  const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { id: true } });
   if (!visit) throw new InventoryError("Job not found", 404);
   const truck = await resolveTruck(truckId);
   const est = await signedEstimateForJob(jobId);
   const chain = chainOf(jobId, est);
-  const [suggested, shortages, movements, receipts, costs] = await Promise.all([
+  const [suggested, shortages, movements, receipts, costs, stockByVisit] = await Promise.all([
     suggestedLinesForJob(jobId, truck.id),
     shortagesForJob(jobId, truck.id),
     prisma.stockMovement.findMany({
@@ -581,14 +583,21 @@ export async function jobMaterials(jobId: string, truckId?: string | null): Prom
     prisma.receipt.findMany({
       where: { jobId: { in: [jobId, ...chain] } },
       orderBy: { receivedAt: "desc" },
-      select: { id: true, vendor: true, amount: true, category: true, status: true, receivedAt: true, purchaseOrderId: true, purchaseOrder: { select: { number: true } } },
+      select: { id: true, vendor: true, amount: true, category: true, status: true, receivedAt: true, imageMime: true, imageUrl: true, purchaseOrderId: true, purchaseOrder: { select: { number: true } } },
     }),
-    materialCostForJobs([{
-      visitId: jobId, chainVisitIds: chain, actualMaterialCost: visit.actualMaterialCost,
-      estimatedMaterialCost: est ? estimateMaterialCost({ selectedOptions: est.selectedOptions.map(String), lines: est.lines.map((l) => ({ option: String(l.option), materialCost: l.materialCost })) }) : null,
-    }]),
+    materialCostForJobs([{ visitId: jobId, chainVisitIds: chain }]),
+    stockMaterialByJob([jobId, ...chain]),
   ]);
   const cost = costs.get(jobId)!;
+  const stockParts = [jobId, ...chain].map((id) => stockByVisit.get(id)).filter((s): s is StockMaterial => Boolean(s));
+  const stock: StockMaterial | null = stockParts.length === 0
+    ? null
+    : {
+      consumed: round2(stockParts.reduce((s, p) => s + p.consumed, 0)),
+      returned: round2(stockParts.reduce((s, p) => s + p.returned, 0)),
+      net: round2(stockParts.reduce((s, p) => s + p.net, 0)),
+      movementCount: stockParts.reduce((s, p) => s + p.movementCount, 0),
+    };
   const byId = new Map(movements.map((m) => [m.id, m]));
   const lines: JobMaterialLine[] = movements.flatMap((m) => {
     let signed: number;
@@ -612,25 +621,21 @@ export async function jobMaterials(jobId: string, truckId?: string | null): Prom
     suggested: suggested.lines,
     shortages,
     lines,
-    stock: cost.stock,
+    stock,
     receipts: receipts.map((r) => {
-      const materials = r.category === "materials";
-      const onPo = Boolean(r.purchaseOrderId);
-      const confirmed = r.status === "confirmed";
-      const counts = materials && confirmed && !onPo;
+      const hasFile = Boolean(r.imageMime || r.imageUrl);
       return {
         id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, status: r.status, receivedAt: r.receivedAt,
         purchaseOrderId: r.purchaseOrderId, purchaseOrderNumber: r.purchaseOrder?.number ?? null,
-        countsTowardJob: counts,
-        note: counts ? null
-          : onPo && materials ? `On ${r.purchaseOrder?.number ?? "a PO"} — inventory, not job cost (the job pays when stock is consumed)`
-          : !materials ? `${r.category} — not material`
-          : "needs review — not counted yet",
+        hasFile,
+        note: r.purchaseOrderId
+          ? `proof on ${r.purchaseOrder?.number ?? "its PO"}${hasFile ? "" : " — no photo or PDF attached"}`
+          : "no PO — proves nothing yet",
       };
     }),
     materialCost: cost.materialCost,
     materialSource: cost.materialSource,
+    po: cost.po,
     estimateMaterial: est ? estimateMaterialCost({ selectedOptions: est.selectedOptions.map(String), lines: est.lines.map((l) => ({ option: String(l.option), materialCost: l.materialCost })) }) : null,
-    receiptMaterial: visit.actualMaterialCost,
   };
 }

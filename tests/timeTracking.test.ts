@@ -400,34 +400,54 @@ describe("rule 4 — every hour is editable with a reason and a trail", () => {
   });
 });
 
+/**
+ * THE P.O. IS THE MONEY (Kyle, 2026-09-19): a job's material is the money on
+ * the P.O.s tagged to it. These fixtures put it there — a typed not-on-card
+ * amount for material, and card charges of kind permit/inspection for fees.
+ */
+async function moneyOnJob(visit: string, input: { typed: number; charges?: Array<{ kind: string; amount: number; merchant: string }> }) {
+  await prisma.cardSpend.deleteMany({ where: { purchaseOrder: { jobId: visit } } });
+  await prisma.purchaseOrder.deleteMany({ where: { jobId: visit } });
+  const po = await prisma.purchaseOrder.create({
+    data: {
+      number: `PO-TT-${Math.random().toString(36).slice(2, 8)}`, purpose: "truck_stock", destinationType: "warehouse", jobId: visit,
+      supplier: "TT money", status: "closed", openedBy: "owner", offCardAmount: input.typed, offCardMethod: "check", offCardAt: new Date(),
+    },
+  });
+  for (const c of input.charges ?? []) {
+    await prisma.cardSpend.create({
+      data: { stripeTransactionId: `tt_${Math.random().toString(36).slice(2, 10)}`, stripeCardId: "card_tt", kind: c.kind, amount: c.amount, merchantName: c.merchant, purchaseOrderId: po.id, occurredAt: new Date() },
+    });
+  }
+}
+
 describe("rule 7 — commission on job profit", () => {
   it("is percent × (revenue − material − permit/inspection fees); labor is NOT subtracted", async () => {
     await prisma.technician.update({ where: { id: technicianId }, data: { commissionPercent: 10, hourlyRate: 30 } });
-    await prisma.visit.update({
-      where: { id: visitId },
-      data: { revenue: 5000, actualMaterialCost: 1200, laborHours: 20 },
-    });
-    await prisma.receipt.deleteMany({ where: { jobId: visitId } });
-    await prisma.receipt.createMany({
-      data: [
-        { jobId: visitId, category: "permit", vendor: "Rutherford County", amount: 150 },
-        { jobId: visitId, category: "inspection", vendor: "State Inspector", amount: 100 },
-        // Materials must NOT be double-counted as a fee.
-        { jobId: visitId, category: "materials", vendor: "CES", amount: 400 },
+    await prisma.visit.update({ where: { id: visitId }, data: { revenue: 5000, laborHours: 20 } });
+    await moneyOnJob(visitId, {
+      typed: 1200,
+      charges: [
+        { kind: "permit", amount: 150, merchant: "Rutherford County" },
+        { kind: "inspection", amount: 100, merchant: "State Inspector" },
       ],
     });
 
     const quote = await commissionForJob(visitId, technicianId);
     expect(quote.revenue).toBe(5000);
+    // A permit charge on the job's P.O. is a FEE, never material — counted once.
     expect(quote.materialCost).toBe(1200);
+    expect(quote.materialSource).toBe("po");
     expect(quote.fees).toBe(250);
+    expect(quote.feeRows.map((f) => [f.kind, f.category, f.amount])).toEqual([["card", "permit", 150], ["card", "inspection", 100]]);
     expect(quote.profit).toBe(3550);       // labor's $600 is deliberately absent
     expect(quote.percent).toBe(10);
     expect(quote.amount).toBe(355);
   });
 
   it("invents no percentage when none was typed", async () => {
-    await prisma.visit.update({ where: { id: visitId }, data: { revenue: 5000, actualMaterialCost: 1200 } });
+    await prisma.visit.update({ where: { id: visitId }, data: { revenue: 5000 } });
+    await moneyOnJob(visitId, { typed: 1200 });
     const quote = await commissionForJob(visitId, technicianId);
     expect(quote.percentSet).toBe(false);
     expect(quote.amount).toBeNull();
@@ -541,8 +561,8 @@ describe("the office routes", () => {
 
   it("records a commission from job profit and lists it", async () => {
     await prisma.technician.update({ where: { id: technicianId }, data: { commissionPercent: 5 } });
-    await prisma.visit.update({ where: { id: visitId }, data: { revenue: 2000, actualMaterialCost: 500 } });
-    await prisma.receipt.deleteMany({ where: { jobId: visitId } });
+    await prisma.visit.update({ where: { id: visitId }, data: { revenue: 2000 } });
+    await moneyOnJob(visitId, { typed: 500 });
 
     const created = await request(app)
       .post("/time/commissions")

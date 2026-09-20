@@ -116,8 +116,14 @@ async function main() {
       // Bytes are never selected — only whether they are there, via a second
       // narrow query below. Pulling image blobs through here would move
       // megabytes per row for no diagnostic gain.
-      purchaseOrder: { select: { number: true, status: true, purpose: true, afterTheFact: true } },
-      cardSpend: { select: { id: true, amount: true, occurredAt: true, merchantName: true } },
+      // THE P.O. IS THE MONEY (2026-09-19): the card charges and the typed
+      // not-on-card amount live on the PO the receipt proves, not on the receipt.
+      purchaseOrder: {
+        select: {
+          number: true, status: true, purpose: true, afterTheFact: true, offCardAmount: true, offCardMethod: true,
+          cardSpends: { where: { status: { not: "ignored" } }, select: { amount: true, occurredAt: true, merchantName: true } },
+        },
+      },
     },
   });
 
@@ -153,10 +159,16 @@ async function main() {
     );
     if (showDetails) {
       console.log(`  id=${r.id}  uploaded=${ct(r.createdAt)} CT  technician=${r.technicianId ?? "none"}`);
-      console.log(
-        `  card=${r.cardSpend ? `${money(r.cardSpend.amount)} ${r.cardSpend.merchantName} ${ct(r.cardSpend.occurredAt)} CT` : "unmatched"}`,
-      );
-      if (r.purchaseOrder) console.log(`  po purpose=${r.purchaseOrder.purpose}`);
+      if (r.purchaseOrder) {
+        const charges = r.purchaseOrder.cardSpends;
+        console.log(
+          `  po money: ${charges.length === 0 ? "no card charge" : charges.map((c) => `${money(c.amount)} ${c.merchantName} ${ct(c.occurredAt)} CT`).join(" + ")}` +
+            `${r.purchaseOrder.offCardAmount != null ? ` + typed ${money(r.purchaseOrder.offCardAmount)} (${r.purchaseOrder.offCardMethod ?? "not on card"})` : ""}`,
+        );
+        console.log(`  po purpose=${r.purchaseOrder.purpose}`);
+      } else {
+        console.log("  po money: none — a receipt on no PO proves nothing and counts nothing");
+      }
       if (r.lineItems) {
         try {
           const lines = JSON.parse(r.lineItems) as { name: string; qty: number | null; unitCost: number | null }[];

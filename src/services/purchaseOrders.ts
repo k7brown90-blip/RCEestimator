@@ -8,14 +8,16 @@
  * never a job — and an edit trail ("We need to be able to edit manually in
  * case there are errors found").
  *
- * Job costing is NOT changed by this build: a receipt attached to a PO still
- * counts toward the job it sits on (services/receiptCosting.ts). Consuming
- * truck stock onto jobs is a later build.
+ * THE P.O. IS THE MONEY (Kyle, 2026-09-19). A P.O.'s money is Σ its non-ignored
+ * card charges (many per P.O. — a split transaction is two rows here) plus the
+ * amount typed on it when the purchase was not on the card. Its receipts are
+ * proof. It is VERIFIED when it has both money and proof; the amounts are not
+ * compared to the cent — that penny matcher was the failure point. A P.O.
+ * tagged to a job is that job's material cost (services/jobCosting.ts).
  */
 
 import type { Prisma, PurchaseOrder } from "@prisma/client";
 import { prisma } from "../lib/prisma";
-import { rerollJobsMaterialCost } from "./receiptCosting";
 
 export const PO_PURPOSES = ["truck_stock", "warehouse", "tool"] as const;
 export type PoPurpose = (typeof PO_PURPOSES)[number];
@@ -321,16 +323,9 @@ export async function removePurchaseOrderLine(id: string, lineId: string, meta: 
 
 /**
  * The status chain, enforced. Refusals are 409s the routes pass straight through.
- *
- * Re-roll after every transition (Kyle, 2026-09-14, Unit 3): a receipt on a
- * CANCELLED PO counts as job cost again (receiptCosting.ts:33-46), but nothing
- * else recomputes the stored Visit.actualMaterialCost when a PO's status
- * changes. This is the one caller of transitionLoaded that runs outside any
- * transaction (global `prisma`), so it is the safe place to re-roll — unlike
- * attachReceiptToPurchaseOrder, which calls transitionLoaded from inside its
- * own $transaction and already re-rolls itself once that commits (below).
- * rerollJobsMaterialCost recomputes from scratch, so re-rolling on every
- * transition (not just cancel) is a safe no-op when nothing changed.
+ * A transition moves no money: a charge on a cancelled P.O. still happened and
+ * still counts (services/jobCosting.ts) — move it to another P.O. or ignore it
+ * with a reason to take it off.
  */
 export async function transitionPurchaseOrder(
   id: string,
@@ -338,10 +333,115 @@ export async function transitionPurchaseOrder(
   meta: { actor: string; reason?: string | null },
 ): Promise<PurchaseOrder> {
   const po = await loadPo(id);
-  const updated = await transitionLoaded(prisma, po, to, meta);
-  const receipts = await prisma.receipt.findMany({ where: { purchaseOrderId: po.id }, select: { jobId: true } });
-  await rerollJobsMaterialCost(receipts.map((r) => r.jobId));
-  return updated;
+  return transitionLoaded(prisma, po, to, meta);
+}
+
+// ─── The money (Kyle, 2026-09-19: "the P.O. is the money") ────────────────────
+
+export const OFF_CARD_METHODS = ["cash", "check", "personal_card", "other", "unknown"] as const;
+export type OffCardMethod = (typeof OFF_CARD_METHODS)[number];
+
+/** Does this file prove a purchase — a photo or a PDF on a receipt row. */
+export const RECEIPT_HAS_FILE: Prisma.ReceiptWhereInput = { OR: [{ imageMime: { not: null } }, { imageUrl: { not: null } }] };
+
+export interface PoMoney {
+  /** Σ non-ignored card charges on the P.O. (refunds negative). */
+  cardTotal: number;
+  /** The typed not-on-card amount, or null when the purchase was on the card. */
+  offCardAmount: number | null;
+  /** cardTotal + offCardAmount — what the P.O. spent. */
+  total: number;
+  /** Receipts on the P.O. that carry a photo or PDF. */
+  proofCount: number;
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+export async function purchaseOrderMoney(db: Tx | typeof prisma, poId: string): Promise<PoMoney> {
+  const [po, charges, proofCount] = await Promise.all([
+    db.purchaseOrder.findUniqueOrThrow({ where: { id: poId }, select: { offCardAmount: true } }),
+    db.cardSpend.aggregate({ where: { purchaseOrderId: poId, status: { not: "ignored" } }, _sum: { amount: true } }),
+    db.receipt.count({ where: { purchaseOrderId: poId, ...RECEIPT_HAS_FILE } }),
+  ]);
+  const cardTotal = r2(charges._sum.amount ?? 0);
+  return { cardTotal, offCardAmount: po.offCardAmount, total: r2(cardTotal + (po.offCardAmount ?? 0)), proofCount };
+}
+
+/**
+ * Verified when the P.O. has both money and proof (Kyle, 2026-09-19) — no
+ * amount comparison. Called after a charge lands or is linked by hand, after
+ * a receipt is attached, and after a typed amount is set. Only a PURCHASED
+ * P.O. moves; anything else (open with nothing bought yet, already verified,
+ * closed, cancelled) is left alone. Never throws for a P.O. that is not ready.
+ */
+export async function verifyPurchaseOrderIfComplete(poId: string, actor: string): Promise<PurchaseOrder | null> {
+  const po = await prisma.purchaseOrder.findUnique({ where: { id: poId } });
+  if (!po || po.status !== "purchased") return null;
+  const money = await purchaseOrderMoney(prisma, poId);
+  if (money.total === 0 || money.proofCount === 0) return null;
+  return transitionLoaded(prisma, po, "verified", { actor, reason: "Money and proof are both on the P.O." });
+}
+
+export interface PoMoneyPatch {
+  offCardAmount?: number | null;
+  offCardMethod?: OffCardMethod | null;
+  offCardNote?: string | null;
+  /** When the off-card purchase happened — the P&L month. Defaults to purchasedAt/openedAt when an amount is first typed. */
+  offCardAt?: Date | null;
+}
+
+/**
+ * The typed not-on-card amount — the one place money enters the system that is
+ * not a card charge or a company bill. Editable in ANY status (a legacy P.O. is
+ * closed the moment it is created), reason required, "money_edited" event with
+ * before/after. Setting the amount to null says "this was on the card after all".
+ */
+export async function setPurchaseOrderMoney(
+  id: string,
+  patch: PoMoneyPatch,
+  meta: { actor: string; reason: string },
+): Promise<PurchaseOrder> {
+  const po = await loadPo(id);
+  const data: Prisma.PurchaseOrderUpdateInput = {};
+  const before: Record<string, unknown> = {};
+  const after: Record<string, unknown> = {};
+  if (patch.offCardAmount !== undefined && patch.offCardAmount !== po.offCardAmount) {
+    if (patch.offCardAmount != null && !(Number.isFinite(patch.offCardAmount) && patch.offCardAmount >= 0)) {
+      throw new PoError("The not-on-card amount must be zero or more.", 400);
+    }
+    before.offCardAmount = po.offCardAmount; after.offCardAmount = patch.offCardAmount; data.offCardAmount = patch.offCardAmount;
+    if (patch.offCardAmount == null) {
+      // On the card after all: the method, note and date go with the amount.
+      if (po.offCardMethod !== null) { before.offCardMethod = po.offCardMethod; after.offCardMethod = null; data.offCardMethod = null; }
+      if (po.offCardAt !== null) { before.offCardAt = po.offCardAt; after.offCardAt = null; data.offCardAt = null; }
+    } else if (po.offCardAt === null && patch.offCardAt === undefined) {
+      const at = po.purchasedAt ?? po.openedAt;
+      before.offCardAt = null; after.offCardAt = at; data.offCardAt = at;
+    }
+  }
+  if (patch.offCardMethod !== undefined && patch.offCardMethod !== po.offCardMethod && (patch.offCardAmount ?? po.offCardAmount) != null) {
+    before.offCardMethod = po.offCardMethod; after.offCardMethod = patch.offCardMethod; data.offCardMethod = patch.offCardMethod;
+  }
+  if (patch.offCardNote !== undefined && (patch.offCardNote?.trim() || null) !== po.offCardNote) {
+    before.offCardNote = po.offCardNote; after.offCardNote = patch.offCardNote?.trim() || null; data.offCardNote = patch.offCardNote?.trim() || null;
+  }
+  if (patch.offCardAt !== undefined && (patch.offCardAt?.getTime() ?? null) !== (po.offCardAt?.getTime() ?? null) && (patch.offCardAmount ?? po.offCardAmount) != null) {
+    before.offCardAt = po.offCardAt; after.offCardAt = patch.offCardAt; data.offCardAt = patch.offCardAt;
+  }
+  if (Object.keys(after).length === 0) return po;
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.purchaseOrder.update({ where: { id }, data });
+    await tx.purchaseOrderEvent.create({
+      data: { purchaseOrderId: id, actor: meta.actor, kind: "money_edited", reason: meta.reason, before: JSON.stringify(before), after: JSON.stringify(after) },
+    });
+    return row;
+  });
+  // Money typed on an open P.O. means the purchase happened.
+  if (updated.status === "open" && (updated.offCardAmount ?? 0) > 0) {
+    await transitionLoaded(prisma, updated, "purchased", { actor: meta.actor, reason: "Not-on-card amount typed" });
+  }
+  await verifyPurchaseOrderIfComplete(id, meta.actor);
+  return prisma.purchaseOrder.findUniqueOrThrow({ where: { id } });
 }
 
 async function transitionLoaded(
@@ -363,6 +463,16 @@ async function transitionLoaded(
     });
     if (photos === 0) {
       throw new PoError(`${po.number} was drafted after the fact from a card transaction — attach the receipt photo before closing it.`, 409);
+    }
+  }
+  // Kyle, 2026-09-19 ("the P.O. is the money"): verified means the money is
+  // PROVED. verifyPurchaseOrderIfComplete already checks before it calls here;
+  // this closes the manual click, which could reach verified with no receipt at
+  // all — the one door left open on the rule.
+  if (to === "verified") {
+    const proof = await db.receipt.count({ where: { purchaseOrderId: po.id, ...RECEIPT_HAS_FILE } });
+    if (proof === 0) {
+      throw new PoError(`${po.number} has no receipt yet — attach the photo or PDF before marking it verified.`, 409);
     }
   }
   const stamp = STATUS_STAMP[to];
@@ -423,12 +533,11 @@ export async function closePurchaseOrderForLanding(tx: Tx, po: PurchaseOrder, me
 }
 
 /**
- * The receipt is the verification. Attaching sets receipt.purchaseOrderId; a
- * receipt with no job inherits the PO's job (context — the PO's job); an open
- * PO moves to purchased — a receipt means the purchase happened. Build 4
- * (Kyle, 2026-09-09): once on a PO the receipt is inventory value, not job
- * cost, so the re-roll below drops it from the job's receipt rung — the job is
- * charged when the material is consumed off the truck.
+ * The receipt is the proof. Attaching sets receipt.purchaseOrderId; a receipt
+ * with no job inherits the PO's job (context — the PO's job); an open PO moves
+ * to purchased — a receipt means the purchase happened — and a purchased PO
+ * that now has money and proof is verified. No cost figure moves: the receipt
+ * is never money (Kyle, 2026-09-19).
  */
 export async function attachReceiptToPurchaseOrder(receiptId: string, poId: string, actor: string) {
   const receipt = await prisma.receipt.findUnique({
@@ -456,7 +565,7 @@ export async function attachReceiptToPurchaseOrder(receiptId: string, poId: stri
     });
     if (po.status === "open") await transitionLoaded(tx, po, "purchased", { actor, reason: "Receipt attached" });
   });
-  await rerollJobsMaterialCost([receipt.jobId, newJobId]);
+  await verifyPurchaseOrderIfComplete(poId, actor);
   return { receiptId, purchaseOrderId: poId, jobId: newJobId };
 }
 
@@ -479,9 +588,6 @@ export async function detachReceiptFromPurchaseOrder(receiptId: string, actor: s
       },
     });
   });
-  // Build 4 (Kyle, 2026-09-09): a receipt on a PO is inventory value, not job
-  // cost — so leaving the PO puts it back on the job's receipt rung. Re-roll.
-  await rerollJobsMaterialCost([receipt.jobId]);
 }
 
 // ─── Read shapes shared by the CRM and field routes ──────────────────────────
@@ -497,6 +603,9 @@ export const PO_LIST_INCLUDE = {
     },
   },
   _count: { select: { receipts: true, cardSpends: true } },
+  // The money and the proof (Kyle, 2026-09-19) — light enough for the 300-row list.
+  cardSpends: { where: { status: { not: "ignored" } }, select: { amount: true } },
+  receipts: { where: RECEIPT_HAS_FILE, select: { id: true } },
 } satisfies Prisma.PurchaseOrderInclude;
 
 type PoListRow = Prisma.PurchaseOrderGetPayload<{ include: typeof PO_LIST_INCLUDE }>;
@@ -507,6 +616,7 @@ export function jobLabelOf(job: PoListRow["job"]): string | null {
 }
 
 export function serializePurchaseOrder(po: PoListRow) {
+  const cardTotal = r2(po.cardSpends.reduce((s, c) => s + c.amount, 0));
   return {
     id: po.id,
     number: po.number,
@@ -533,9 +643,17 @@ export function serializePurchaseOrder(po: PoListRow) {
     landedAt: po.landedAt,
     createdAt: po.createdAt,
     receiptCount: po._count.receipts,
-    // Kyle, 2026-09-09: "card proves" — a linked Issuing transaction is the money behind this PO.
+    /** Receipts carrying a photo or PDF — the proof (Kyle, 2026-09-19). */
+    proofCount: po.receipts.length,
     cardSpendCount: po._count.cardSpends,
     cardMatched: po._count.cardSpends > 0,
+    // THE MONEY (Kyle, 2026-09-19): Σ live card charges + the typed not-on-card amount.
+    cardTotal,
+    offCardAmount: po.offCardAmount,
+    offCardMethod: po.offCardMethod,
+    offCardNote: po.offCardNote,
+    offCardAt: po.offCardAt,
+    moneyTotal: r2(cardTotal + (po.offCardAmount ?? 0)),
     afterTheFact: po.afterTheFact,
     lines: po.lines.map((l) => ({
       id: l.id, itemId: l.itemId, name: l.name, qty: l.qty, unit: l.unit, partNumber: l.partNumber,

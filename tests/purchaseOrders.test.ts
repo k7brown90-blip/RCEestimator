@@ -3,10 +3,11 @@
  * with a P.O. number then the purchase and photo verification of the receipt").
  *
  * Numbers are PO-YYYY-NNNN, unique, assigned at creation, never reused; the
- * status chain is enforced; attaching a receipt is the verification; every edit
- * leaves a reason in the trail. Build 4 (Kyle, 2026-09-09): a receipt on a PO
- * is inventory value, not job cost — the job's receipt rung drops it while it
- * rides the PO and picks it back up if it is detached.
+ * status chain is enforced; attaching a receipt is the proof; every edit
+ * leaves a reason in the trail. Kyle, 2026-09-19 ("the P.O. is the money"):
+ * the charge is the money, the receipt is proof — attaching or detaching a
+ * receipt moves no cost figure; a charge on a P.O. tagged to a job is the
+ * job's material, cancelled or not.
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -42,8 +43,7 @@ vi.mock("googleapis", () => {
 
 import { app } from "../src/app";
 import { createPurchaseOrder, defaultTruckId } from "../src/services/purchaseOrders";
-import { resolveMaterialCost } from "../src/services/jobCosting";
-import * as receiptCosting from "../src/services/receiptCosting";
+import { materialCostForJobs } from "../src/services/jobCosting";
 
 const newId = () => crypto.randomUUID().replaceAll("-", "");
 const jpg = Buffer.from("ffd8ffe000104a464946", "hex");
@@ -54,8 +54,8 @@ let technicianId: string;
 let techToken: string;
 let truckId: string;
 
-const stamped = async (id: string) =>
-  (await prisma.visit.findUniqueOrThrow({ where: { id }, select: { actualMaterialCost: true } })).actualMaterialCost;
+/** THE MONEY on the job (Kyle, 2026-09-19): the P.O.s tagged to it. */
+const costOf = async (id: string) => (await materialCostForJobs([{ visitId: id }])).get(id)!;
 
 beforeAll(async () => {
   // A clean counter and no leftover POs — numbering assertions need a known start.
@@ -84,6 +84,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.receipt.deleteMany({ where: { OR: [{ jobId }, { vendor: { startsWith: "PO-test" } }] } });
+  await prisma.cardSpend.deleteMany({ where: { stripeCardId: "card_po_test" } });
   await prisma.purchaseOrder.deleteMany();
   await prisma.purchaseOrderCounter.deleteMany();
   await prisma.visitAssignment.deleteMany({ where: { visitId: jobId } });
@@ -138,6 +139,11 @@ describe("status chain", () => {
   it("open → purchased → verified → closed; closed is terminal", async () => {
     const created = await request(app).post("/purchase-orders").send({ supplier: "Chain" });
     const id = created.body.id as string;
+    // Verified means the money is PROVED (Kyle, 2026-09-19) — the chain needs a
+    // receipt with a file on it before it can reach verified.
+    await prisma.receipt.create({
+      data: { purchaseOrderId: id, category: "materials", vendor: "Chain", amount: 10, imageMime: "image/jpeg", imageData: Buffer.from([1]) },
+    });
     for (const to of ["purchased", "verified", "closed"]) {
       const r = await request(app).post(`/purchase-orders/${id}/status`).send({ to });
       expect(r.status, to).toBe(200);
@@ -155,6 +161,30 @@ describe("status chain", () => {
     expect(po.closedAt).not.toBeNull();
   });
 
+  it("verified is refused until a receipt with a file is on the P.O. (the charge is the money, the receipt is proof)", async () => {
+    const created = await request(app).post("/purchase-orders").send({ supplier: "No proof yet" });
+    const id = created.body.id as string;
+    expect((await request(app).post(`/purchase-orders/${id}/status`).send({ to: "purchased" })).status).toBe(200);
+
+    const bare = await request(app).post(`/purchase-orders/${id}/status`).send({ to: "verified" });
+    expect(bare.status).toBe(409);
+    expect(bare.body.error).toMatch(/no receipt yet/i);
+
+    // An amount with no photo is not proof either.
+    const amountOnly = await prisma.receipt.create({
+      data: { purchaseOrderId: id, category: "materials", vendor: "No proof yet", amount: 25 },
+    });
+    expect((await request(app).post(`/purchase-orders/${id}/status`).send({ to: "verified" })).status).toBe(409);
+
+    await prisma.receipt.update({
+      where: { id: amountOnly.id },
+      data: { imageMime: "application/pdf", imageData: Buffer.from([1]) },
+    });
+    const proved = await request(app).post(`/purchase-orders/${id}/status`).send({ to: "verified" });
+    expect(proved.status).toBe(200);
+    expect(proved.body.status).toBe("verified");
+  });
+
   it("cancel from open works (reason required); skipping steps is refused", async () => {
     const created = await request(app).post("/purchase-orders").send({ supplier: "Cancel me" });
     const id = created.body.id as string;
@@ -168,11 +198,10 @@ describe("status chain", () => {
   });
 });
 
-describe("cancelling a PO re-rolls the job's material cost (Unit 3, 2026-09-14)", () => {
-  it("a confirmed materials receipt on a cancelled PO returns to the job's receipt rung", async () => {
-    // A dedicated job — the shared `jobId` above accumulates receipts/POs
-    // across other tests in this file and its running actualMaterialCost
-    // total would make this assertion fragile.
+describe("the charge is the money, cancelled or not (Kyle, 2026-09-19)", () => {
+  it("a card charge on a P.O. tagged to the job is the job's material; cancelling the P.O. moves no money (the Daughdrill $381.90)", async () => {
+    // A dedicated job — the shared `jobId` above accumulates POs across other
+    // tests in this file and its running total would make this fragile.
     const property = await prisma.property.create({
       data: { customerId, name: "Cancel PO House", addressLine1: "2 Purchase Ln", city: "Smyrna", state: "TN", postalCode: "37167" },
     });
@@ -184,39 +213,38 @@ describe("cancelling a PO re-rolls the job's material cost (Unit 3, 2026-09-14)"
     const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test SiteOne", jobId: cancelJobId });
     expect(created.status).toBe(201);
     const poId = created.body.id as string;
+    expect((await costOf(cancelJobId)).materialSource).toBe("none");
 
+    await prisma.cardSpend.create({
+      data: { stripeTransactionId: `po_test_${newId()}`, stripeCardId: "card_po_test", kind: "materials", amount: 381.9, merchantName: "SiteOne Landscape Supp", purchaseOrderId: poId, occurredAt: new Date() },
+    });
+    expect(await costOf(cancelJobId)).toMatchObject({ materialCost: 381.9, materialSource: "po", po: { card: 381.9, typed: 0, net: 381.9, poCount: 1 } });
+
+    // The receipt is proof: attaching it changes nothing about the figure.
     const receipt = await prisma.receipt.create({
       data: { id: newId(), jobId: cancelJobId, category: "materials", vendor: "PO-test SiteOne", amount: 381.9, status: "confirmed", source: "manual" },
     });
-    // Attach: PO goes open → purchased, and (Build 4) the receipt drops OFF the
-    // job's receipt rung while it rides a live PO.
     const attach = await request(app).post(`/purchase-orders/${poId}/receipts/${receipt.id}`).send({});
     expect(attach.status).toBe(200);
-    expect(await stamped(cancelJobId)).toBe(0);
+    expect((await costOf(cancelJobId)).materialCost).toBe(381.9);
 
-    // Cancel: the PO landed nothing, so receiptCosting.ts's carve-out counts the
-    // receipt as job cost again — and transitionPurchaseOrder must re-roll the
-    // STORED figure, not just leave the READ path to honour it.
+    // Cancel: the charge still happened. The only way off the job is to move
+    // the charge to another P.O. or ignore it with a reason.
     const cancel = await request(app).post(`/purchase-orders/${poId}/status`).send({ to: "cancelled", reason: "Receipt photo lost" });
     expect(cancel.status).toBe(200);
     expect(cancel.body.status).toBe("cancelled");
-
-    expect(await stamped(cancelJobId)).toBe(381.9);
-
-    const resolved = resolveMaterialCost(null, await stamped(cancelJobId), 572.84);
-    expect(resolved.materialSource).toBe("receipts");
-    expect(resolved.materialCost).toBe(381.9);
+    expect((await costOf(cancelJobId)).materialCost).toBe(381.9);
   });
 });
 
 describe("attaching a receipt", () => {
-  it("copies the PO's job onto a jobless receipt, keeps it OFF the job's receipt rung while on the PO, moves the PO to purchased, and writes the event", async () => {
+  it("copies the PO's job onto a jobless receipt, moves no money, moves the PO to purchased, and writes the event", async () => {
     const created = await request(app).post("/purchase-orders").send({ supplier: "Lowes", jobId });
     expect(created.status).toBe(201);
     const poId = created.body.id as string;
     expect(created.body.jobId).toBe(jobId);
 
-    const before = await stamped(jobId);
+    const before = (await costOf(jobId)).materialCost;
     const receipt = await prisma.receipt.create({
       data: { id: newId(), category: "materials", vendor: "PO-test Lowes", amount: 150.25, status: "confirmed", source: "manual" },
     });
@@ -227,10 +255,8 @@ describe("attaching a receipt", () => {
     const after = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
     expect(after.purchaseOrderId).toBe(poId);
     expect(after.jobId).toBe(jobId);
-    // Build 4 (Kyle, 2026-09-09): a receipt on a PO is inventory value, not job
-    // cost — the job is charged when the material is consumed off the truck.
-    // So attaching does NOT add it to the job's receipt rung.
-    expect(await stamped(jobId)).toBe(before ?? 0);
+    // The receipt is proof, never money (Kyle, 2026-09-19).
+    expect((await costOf(jobId)).materialCost).toBe(before);
 
     const po = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: poId } });
     expect(po.status).toBe("purchased");
@@ -249,14 +275,14 @@ describe("attaching a receipt", () => {
     const needing = await request(app).get("/receipts-needing-po");
     expect(needing.status).toBe(200);
     expect(needing.body.some((r: { id: string; needsPo: boolean }) => r.id === receipt.id && r.needsPo)).toBe(true);
-    // Off the PO it is a plain confirmed materials receipt again — the receipt rung counts it.
-    expect(await stamped(jobId)).toBe(Math.round(((before ?? 0) + 150.25) * 100) / 100);
+    // Off the PO it still counts nothing — it never did.
+    expect((await costOf(jobId)).materialCost).toBe(before);
 
     // And the admin receipt PATCH routes purchaseOrderId through the same attach.
     const patched = await request(app).patch(`/health-record-admin/receipts/${receipt.id}`).send({ purchaseOrderId: poId });
     expect(patched.status).toBe(200);
     expect(patched.body.purchaseOrderId).toBe(poId);
-    expect(await stamped(jobId)).toBe(before ?? 0);
+    expect((await costOf(jobId)).materialCost).toBe(before);
   });
 
   it("the account summary and job PO list carry number, purpose and status", async () => {
@@ -274,24 +300,6 @@ describe("attaching a receipt", () => {
     expect(list.body[0].receiptCount).toBe(1);
   });
 
-  it("re-rolls exactly once — the open→purchased hop inside the attach transaction does not also fire transitionPurchaseOrder's re-roll", async () => {
-    // attachReceiptToPurchaseOrder moves an open PO to purchased via
-    // transitionLoaded(tx, ...) directly, bypassing transitionPurchaseOrder —
-    // so the re-roll Unit 3 added there must not also run for this hop, on
-    // top of the one attachReceiptToPurchaseOrder already does after commit.
-    const spy = vi.spyOn(receiptCosting, "rerollJobsMaterialCost");
-    spy.mockClear();
-    const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test Once", jobId });
-    const poId = created.body.id as string;
-    const receipt = await prisma.receipt.create({
-      data: { id: newId(), category: "materials", vendor: "PO-test Once", amount: 42, status: "confirmed", source: "manual" },
-    });
-    const attach = await request(app).post(`/purchase-orders/${poId}/receipts/${receipt.id}`).send({});
-    expect(attach.status).toBe(200);
-    expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: poId } })).status).toBe("purchased");
-    expect(spy).toHaveBeenCalledTimes(1);
-    spy.mockRestore();
-  });
 });
 
 describe("PUT /purchase-orders/:id/receipts/:receiptId accepts PDFs (Unit R, 2026-09-17)", () => {
@@ -319,15 +327,34 @@ describe("PUT /purchase-orders/:id/receipts/:receiptId accepts PDFs (Unit R, 202
     expect(Buffer.from(row.imageData!).equals(pdfBytes)).toBe(true);
   });
 
-  it("refuses a PDF with no typed amount — Vision cannot read a PDF data URL", async () => {
+  it("no longer refuses a PDF with no typed amount — it attempts to read it like a photo (Unit 1, 2026-09-18)", async () => {
+    // OPENAI_API_KEY is deleted for this whole test file, so parseReceiptImage
+    // degrades to null exactly as it does for an unreadable photo — this test
+    // pins that the PDF is no longer rejected outright with a 400. The actual
+    // PDF-shape call to OpenAI and reconciliation logic are covered by
+    // tests/receiptVisionPdf.test.ts, which stubs the HTTP call.
+    //
+    // Unit 2 correction (coordinator, 2026-09-18): when nothing on the receipt
+    // backs the amount (no typed amount, and Vision read nothing), the row
+    // must NOT land as a CONFIRMED $0 cost — it must be pending_review with a
+    // reason, never silently a $0 that nobody looked at.
     const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test PDF No Amount", jobId });
     const poId = created.body.id as string;
+    const receiptId = newId();
     const res = await request(app)
-      .put(`/purchase-orders/${poId}/receipts/${newId()}?vendor=PO-test%20PDF%20No%20Amount&category=materials`)
+      .put(`/purchase-orders/${poId}/receipts/${receiptId}?vendor=PO-test%20PDF%20No%20Amount&category=materials`)
       .set("Content-Type", "application/pdf")
       .send(pdfBytes);
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/type the amount/i);
+    expect(res.status).toBe(201);
+    expect(res.body.parsed).toBe(false);
+    expect(res.body.amount).toBe(0);
+    expect(res.body.note).toMatch(/could not be read/i);
+    const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receiptId } });
+    expect(row.imageMime).toBe("application/pdf");
+    expect(Buffer.from(row.imageData!).equals(pdfBytes)).toBe(true);
+    expect(row.status).toBe("pending_review");
+    expect(row.amount).toBe(0);
+    expect(row.reconciliationNote).toMatch(/could not be read/i);
   });
 
   it("a file this door cannot store is refused (415), never a silent 201 — the 2026-09-17 defect", async () => {
@@ -436,9 +463,7 @@ describe("the field app", () => {
 });
 
 describe("waiving a receipt off the needs-PO queue (Unit 2, legacy purchase close-out, 2026-09-14)", () => {
-  // A dedicated job, same reasoning as the cancel-reroll tests above: the shared
-  // `jobId` accumulates receipts from other tests in this file, which would make
-  // an exact actualMaterialCost assertion fragile.
+  // A dedicated job so the shared `jobId`'s receipts from other tests stay out of the queue assertions.
   let waiveJobId: string;
 
   beforeAll(async () => {
@@ -451,15 +476,11 @@ describe("waiving a receipt off the needs-PO queue (Unit 2, legacy purchase clos
     waiveJobId = visit.id;
   });
 
-  it("protects the Womack figure: waiving removes the receipt from /receipts-needing-po but leaves purchaseOrderId null and actualMaterialCost unchanged", async () => {
+  it("waiving removes the receipt from /receipts-needing-po but leaves purchaseOrderId null; no cost figure is involved", async () => {
     const receipt = await prisma.receipt.create({
       data: { id: newId(), jobId: waiveJobId, category: "materials", vendor: "PO-test Home Depot Womack", amount: 406.74, status: "confirmed", source: "manual" },
     });
-    // Stamp the job's receipt-rung total the way every real receipt door does.
-    await receiptCosting.rerollJobMaterialCost(waiveJobId);
-
-    const before = await stamped(waiveJobId);
-    expect(before).toBe(406.74);
+    const before = (await costOf(waiveJobId)).materialCost;
 
     const needingBefore = await request(app).get("/receipts-needing-po");
     expect(needingBefore.body.some((r: { id: string }) => r.id === receipt.id)).toBe(true);
@@ -472,12 +493,12 @@ describe("waiving a receipt off the needs-PO queue (Unit 2, legacy purchase clos
     const needingAfter = await request(app).get("/receipts-needing-po");
     expect(needingAfter.body.some((r: { id: string }) => r.id === receipt.id)).toBe(false);
 
-    // The entire point of the unit: no attach, no re-roll. purchaseOrderId stays
-    // null and the job's material cost — the Womack $406.74 figure — is untouched.
+    // No attach: purchaseOrderId stays null. (The Womack $406.74 itself lives on
+    // a legacy P.O. as a typed amount since the 2026-09-19 migration.)
     const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receipt.id } });
     expect(row.purchaseOrderId).toBeNull();
     expect(row.poWaivedAt).not.toBeNull();
-    expect(await stamped(waiveJobId)).toBe(before);
+    expect((await costOf(waiveJobId)).materialCost).toBe(before);
   });
 
   it("a waive with no reason, or a whitespace-only reason, is rejected 400 and writes nothing", async () => {

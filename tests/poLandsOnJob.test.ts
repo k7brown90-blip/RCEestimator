@@ -1,24 +1,25 @@
 /**
- * A job-tagged PO charges its job as it lands (Kyle, 2026-09-15).
+ * A job-tagged PO lands on its job (Kyle, 2026-09-15) — and since 2026-09-19
+ * THE P.O. IS THE MONEY.
  *
  * "All items on a P.O. should land automatically on the job it was bought for.
  * Left over material gets counted to the truck or warehouse once the job is
- * marked complete." Before this, material bought for a job landed on the truck
- * and stopped — Patricia Copeland's $186.97 across three POs read $0.00 on her
- * job. Now landPurchaseOrder lands as before and, in the SAME transaction,
+ * marked complete." landPurchaseOrder lands and, in the SAME transaction,
  * consumes every landed line from that location toward the job, so the truck
- * nets back to where it stood and the job carries the cost through the stock
- * rung of THE MATERIAL RULE (services/jobCosting.ts).
+ * nets back to where it stood. That is the INVENTORY side and it is unchanged.
+ * The COST side (Kyle, 2026-09-19): the job's material is the money on the
+ * P.O. — its card charges and typed not-on-card amount — not the landed
+ * lines, not the consume. A P.O. with no money charges nothing yet.
  *
  * What these tests hold to:
  *   - a PO with no job is a restock and behaves exactly as before;
- *   - a tool PO never charges a job, tagged or not;
+ *   - a tool PO never charges a job, tagged or not — its money is overhead;
  *   - Decision C: a PO tagged to the visit an estimate was quoted on charges
- *     the SOLD job; an unsold quote keeps the charge on its own visit;
+ *     the SOLD job (materialCostForJobs follows the signed estimate on its
+ *     own); an unsold quote keeps the charge on its own visit;
  *   - all or nothing: a job that may not touch inventory (a test account)
  *     refuses the whole landing, and nothing lands;
- *   - a location already below zero does not block the landing, and the job
- *     is still charged the landed cost.
+ *   - a location already below zero does not block the landing.
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -80,6 +81,7 @@ let negativeJob: string;
 let testJob: string;
 
 async function wipeInventory() {
+  await prisma.cardSpend.deleteMany({ where: { stripeCardId: "card_plj" } });
   await prisma.stockMovement.deleteMany();
   await prisma.stockLevel.deleteMany();
   await prisma.toolMovement.deleteMany();
@@ -125,7 +127,14 @@ async function purchasedPo(input: Parameters<typeof createPurchaseOrder>[0]) {
 }
 
 const costOf = async (visitId: string, chainVisitIds: string[] = []) =>
-  (await materialCostForJobs([{ visitId, chainVisitIds, actualMaterialCost: null, estimatedMaterialCost: 999 }])).get(visitId)!;
+  (await materialCostForJobs([{ visitId, chainVisitIds }])).get(visitId)!;
+
+/** THE MONEY on a PO: a card charge of this kind. */
+async function chargeOn(purchaseOrderId: string, amount: number, kind = "materials") {
+  await prisma.cardSpend.create({
+    data: { stripeTransactionId: `plj_${newId()}`, stripeCardId: "card_plj", kind, amount, merchantName: "PLJ store", purchaseOrderId, occurredAt: new Date() },
+  });
+}
 
 beforeAll(async () => {
   await wipeInventory();
@@ -203,10 +212,12 @@ describe("a job-tagged PO charges its job as it lands", () => {
         { itemId: BREAKER, name: "20A breaker", qty: 2, unit: "ea" },
       ],
     });
+    // The money: the card rang up $95.00 for this trip.
+    await chargeOn(po.id, 95);
     const result = await landPurchaseOrder(po.id, [
       { lineId: lines[0].id, qtyLanded: 100, unitCost: 0.8 },
       { lineId: lines[1].id, qtyLanded: 10, unitCost: 2 },
-      { lineId: lines[2].id, qtyLanded: 0, unitCost: 9.5 }, // short-shipped: nothing landed, nothing charged
+      { lineId: lines[2].id, qtyLanded: 0, unitCost: 9.5 }, // short-shipped: nothing landed
     ], "owner", "Copeland parts");
 
     // The truck is back where it stood: no wire, the same ten boxes.
@@ -233,9 +244,9 @@ describe("a job-tagged PO charges its job as it lands", () => {
     expect(consumeOf(WIRE).purchaseOrderLineId).toBe(lines[0].id);
     expect(consumeOf(BOX).purchaseOrderLineId).toBe(lines[1].id);
 
-    // The stock rung fires and it is the ONLY number used now: 80.00 + 15.00.
+    // The job's cost is the PO's money — the $95.00 charge — not the landed lines.
     const cost = await costOf(job);
-    expect(cost).toMatchObject({ materialSource: "stock", materialCost: 95, stock: { consumed: 95, returned: 0, net: 95, movementCount: 2 } });
+    expect(cost).toMatchObject({ materialSource: "po", materialCost: 95, po: { card: 95, typed: 0, net: 95, poCount: 1 } });
 
     // The trail: the landed event says which job, and each line names its consume.
     expect(result.chargedJob).toEqual({ poJobId: job, jobId: job, viaEstimate: null });
@@ -248,11 +259,12 @@ describe("a job-tagged PO charges its job as it lands", () => {
     ]);
     expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: po.id } })).status).toBe("closed");
 
-    // The job's materials panel shows the two automatic lines.
+    // The job's materials panel shows the two automatic lines (inventory) beside the money.
     const view = await request(app).get(`/jobs/${job}/materials`);
     expect(view.status).toBe(200);
-    expect(view.body.materialSource).toBe("stock");
+    expect(view.body.materialSource).toBe("po");
     expect(view.body.materialCost).toBe(95);
+    expect(view.body.stock).toEqual({ consumed: 95, returned: 0, net: 95, movementCount: 2 });
     expect(view.body.lines.map((l: { kind: string; cost: number }) => [l.kind, l.cost]).sort((a: [string, number], b: [string, number]) => a[1] - b[1])).toEqual([["consume", 15], ["consume", 80]]);
   });
 
@@ -271,16 +283,18 @@ describe("a job-tagged PO charges its job as it lands", () => {
     expect(await prisma.stockMovement.count({ where: { kind: "consume", jobId: restockNeighbour } })).toBe(0);
   });
 
-  it("a tool PO with a job creates tools and charges nothing", async () => {
+  it("a tool PO with a job creates tools and charges nothing — its money is overhead, not job material", async () => {
     const { po, lines } = await purchasedPo({
       supplier: "Harbor Freight", purpose: "tool", openedBy: "owner", actor: "test", truckId, jobId: toolJob,
       lines: [{ name: "Cordless drill", qty: 1, unit: "ea" }],
     });
+    await chargeOn(po.id, 129, "tool");
+    await prisma.purchaseOrder.update({ where: { id: po.id }, data: { offCardAmount: 20, offCardMethod: "cash", offCardAt: new Date() } });
     const result = await landPurchaseOrder(po.id, [{ lineId: lines[0].id, qtyLanded: 1, unitCost: 129 }], "owner");
     expect(await prisma.tool.count({ where: { purchaseOrderId: po.id, locationKey: truckKey } })).toBe(1);
     expect(await movementsOn(po.id)).toEqual([]);
     expect(result.chargedJob).toBeNull();
-    expect((await costOf(toolJob)).materialSource).toBe("estimate");
+    expect(await costOf(toolJob)).toMatchObject({ materialSource: "none", materialCost: 0 });
   });
 
   it("a warehouse PO with a job lands in the warehouse and charges the job from there", async () => {
@@ -288,6 +302,7 @@ describe("a job-tagged PO charges its job as it lands", () => {
       supplier: "ASD", purpose: "warehouse", openedBy: "owner", actor: "test", jobId: restockNeighbour,
       lines: [{ itemId: BREAKER, name: "20A breaker", qty: 4, unit: "ea" }],
     });
+    await chargeOn(po.id, 40);
     await landPurchaseOrder(po.id, [{ lineId: lines[0].id, qtyLanded: 4, unitCost: 10 }], "owner");
     expect((await level(WAREHOUSE_KEY, BREAKER))!.qtyOnHand).toBe(0);
     const mvs = await movementsOn(po.id);
@@ -295,7 +310,7 @@ describe("a job-tagged PO charges its job as it lands", () => {
       ["purchase_in", WAREHOUSE_KEY, null, null],
       ["consume", null, WAREHOUSE_KEY, restockNeighbour],
     ]);
-    expect(await costOf(restockNeighbour)).toMatchObject({ materialSource: "stock", materialCost: 40 });
+    expect(await costOf(restockNeighbour)).toMatchObject({ materialSource: "po", materialCost: 40 });
   });
 });
 
@@ -305,6 +320,7 @@ describe("Decision C — a PO tagged to the quote follows the signed estimate to
       supplier: "NES", openedBy: "tech", actor: "test", truckId, jobId: quoteVisit,
       lines: [{ itemId: WIRE, name: "12-2 NM-B", qty: 50, unit: "ft" }],
     });
+    await chargeOn(po.id, 45);
     const result = await landPurchaseOrder(po.id, [{ lineId: lines[0].id, qtyLanded: 50, unitCost: 0.9 }], "tech:PLJ");
     expect(result.chargedJob).toEqual({ poJobId: quoteVisit, jobId: soldJob, viaEstimate: "0000-PLJ-SOLD" });
     const consume = (await movementsOn(po.id)).find((m) => m.kind === "consume")!;
@@ -312,10 +328,11 @@ describe("Decision C — a PO tagged to the quote follows the signed estimate to
     expect(consume.reason).toBe(`Bought for the job on ${po.number} — charged as it landed · via 0000-PLJ-SOLD`);
     expect((await level(truckKey, WIRE))!.qtyOnHand).toBe(0);
 
-    // The job costs on its own id — no chain needed, which is what
-    // /financials/job-profitability relies on. The quote visit carries nothing.
-    expect(await costOf(soldJob)).toMatchObject({ materialSource: "stock", materialCost: 45 });
-    expect((await costOf(quoteVisit)).materialSource).toBe("estimate");
+    // The sold job costs on its own id — materialCostForJobs follows the signed
+    // estimate back to the quote visit's P.O.s — which is what
+    // /financials/job-profitability relies on.
+    expect(await costOf(soldJob)).toMatchObject({ materialSource: "po", materialCost: 45 });
+    expect(await costOf(quoteVisit)).toMatchObject({ materialSource: "po", materialCost: 45 });
     expect((await landedEvent(po.id)).chargedJob).toEqual({ poJobId: quoteVisit, jobId: soldJob, viaEstimate: "0000-PLJ-SOLD" });
   });
 
@@ -324,12 +341,13 @@ describe("Decision C — a PO tagged to the quote follows the signed estimate to
       supplier: "NES", openedBy: "owner", actor: "test", truckId, jobId: unsoldQuote,
       lines: [{ itemId: BREAKER, name: "20A breaker", qty: 1, unit: "ea" }],
     });
+    await chargeOn(po.id, 12);
     const result = await landPurchaseOrder(po.id, [{ lineId: lines[0].id, qtyLanded: 1, unitCost: 12 }], "owner");
     expect(result.chargedJob).toEqual({ poJobId: unsoldQuote, jobId: unsoldQuote, viaEstimate: null });
     expect((await movementsOn(po.id)).find((m) => m.kind === "consume")!.jobId).toBe(unsoldQuote);
-    expect(await costOf(unsoldQuote)).toMatchObject({ materialSource: "stock", materialCost: 12 });
-    // Once it sells, the job reads the quote visit's rows through its chain (GET /jobs, the account summary).
-    expect(await costOf(soldJob, [unsoldQuote])).toMatchObject({ materialSource: "stock", materialCost: r2(45 + 12) });
+    expect(await costOf(unsoldQuote)).toMatchObject({ materialSource: "po", materialCost: 12 });
+    // Once it sells, the job reads the quote visit's P.O.s through its chain (GET /jobs, the account summary).
+    expect(await costOf(soldJob, [unsoldQuote])).toMatchObject({ materialSource: "po", materialCost: r2(45 + 12) });
   });
 });
 
@@ -352,7 +370,7 @@ describe("all or nothing", () => {
     expect(await prisma.purchaseOrderEvent.count({ where: { purchaseOrderId: po.id, kind: "landed" } })).toBe(0);
   });
 
-  it("a truck already below zero does not block the landing; the job is charged the landed cost and the deficit stays as it was", async () => {
+  it("a truck already below zero does not block the landing; the consume is written and the deficit stays as it was", async () => {
     // Kyle's manual override drove the truck to −3 breakers before this purchase.
     await applyMovement(prisma, { kind: "consume", itemId: BREAKER, name: "20A breaker", unit: "ea", qty: 3, fromLocationKey: truckKey, jobId: negativeJob, reason: "count is behind", actor: "owner", allowNegative: true });
     expect((await level(truckKey, BREAKER))!.qtyOnHand).toBe(-3);

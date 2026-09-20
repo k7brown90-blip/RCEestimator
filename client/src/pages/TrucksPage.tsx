@@ -17,8 +17,9 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { AttachProofButton } from "../components/PurchaseOrders";
 import { api } from "../lib/api";
-import type { CardSpendKind, CardSpendRow, ReceiptCandidate, TruckRow } from "../lib/types";
+import type { CardSpendKind, CardSpendRow, TruckRow } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
 const KIND_LABEL: Record<CardSpendKind, string> = {
@@ -49,7 +50,7 @@ function ReasonRow({ label, busy, onSubmit, onCancel }: { label: string; busy: b
     <span className="inline-flex flex-wrap items-center gap-1">
       <input className="field w-52 max-w-full px-1 py-0.5 text-xs" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} />
       <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!reason.trim() || busy} onClick={() => onSubmit(reason.trim())}>{label}</button>
-      <button type="button" className="text-xs text-rce-muted" onClick={onCancel}>cancel</button>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onCancel}>cancel</button>
     </span>
   );
 }
@@ -204,7 +205,7 @@ function TruckDetailPanel({ truck, year, technicians }: { truck: TruckRow; year:
           ))}
         </ul>
         {detail.purchaseOrders.length > 12 && (
-          <Link to="/financials" className="text-rce-accent hover:underline">All POs live on Financials → Purchases</Link>
+          <Link to="/financials" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">All POs live on Financials → Purchases</Link>
         )}
       </div>
     </div>
@@ -259,7 +260,7 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
           {truck.stripeFinancialAccountId ? ` account ${truck.stripeFinancialAccountId}` : " no financial account"}
           {truck.notes ? <span className="block text-rce-muted">{truck.notes}</span> : null}
         </span>
-        <button type="button" className="text-rce-accent" onClick={() => setEditing(true)}>Edit</button>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setEditing(true)}>Edit</button>
       </div>
     );
   }
@@ -288,7 +289,7 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
         )}
         <button
           type="button"
-          className="text-xs text-red-600 hover:underline"
+          className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
           disabled={remove.isPending}
           onClick={() => { if (window.confirm(`Delete ${truck.name}? Only works when nothing in the books points at it.`)) remove.mutate(); }}
         >
@@ -309,7 +310,7 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
           <input className="field w-52 max-w-full px-1 py-0.5 text-xs" value={stripeCardId} onChange={(e) => setStripeCardId(e.target.value)} placeholder="Issuing card id (ic_…)" />
         )}
         {cards && cards.available && (
-          <button type="button" className="text-rce-accent" onClick={() => setManualCard((m) => !m)}>{manualCard ? "pick from Stripe" : "type the id"}</button>
+          <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setManualCard((m) => !m)}>{manualCard ? "pick from Stripe" : "type the id"}</button>
         )}
         {cards && !cards.available && <span className="text-amber-800">This card is issued by your Financial Account, not classic Issuing — enter the last 4 and pick the financial account below; spend routes by the account.</span>}
         <input className="field w-16 px-1 py-0.5 text-xs" value={cardLast4} onChange={(e) => setCardLast4(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="last4" />
@@ -318,7 +319,7 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
       <div className="flex flex-wrap items-center gap-1">
         <input className="field w-72 max-w-full px-1 py-0.5 text-xs" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes" />
         <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!name.trim() || save.isPending} onClick={() => save.mutate()}>Save</button>
-        <button type="button" className="text-rce-muted" onClick={() => setEditing(false)}>cancel</button>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setEditing(false)}>cancel</button>
         {save.error && <span className="w-full text-red-600">{(save.error as Error).message}</span>}
       </div>
     </div>
@@ -341,21 +342,13 @@ function NeedingReceipt({ rows }: { rows: CardSpendRow[] }) {
 
 function NeedingRow({ row }: { row: CardSpendRow }) {
   const refresh = useTruckRefresh();
-  const [mode, setMode] = useState<"view" | "attach" | "ignore">("view");
-  const [choice, setChoice] = useState("");
+  const [mode, setMode] = useState<"view" | "ignore">("view");
   const [error, setError] = useState<string | null>(null);
-  const { data: candidates = [] } = useQuery({
-    queryKey: ["card-spend-receipt-candidates", row.id],
-    queryFn: () => api.cardSpendReceiptCandidates(row.id),
-    enabled: mode === "attach",
-  });
   const patch = useMutation({
-    mutationFn: (input: { receiptId?: string; status?: "ignored"; reason: string }) => api.updateCardSpend(row.id, input),
-    onSuccess: () => { setError(null); setMode("view"); setChoice(""); refresh(); },
+    mutationFn: (input: { status?: "ignored"; reason: string }) => api.updateCardSpend(row.id, input),
+    onSuccess: () => { setError(null); setMode("view"); refresh(); },
     onError: (err) => setError((err as Error).message),
   });
-  const label = (c: ReceiptCandidate) =>
-    `${c.vendor || "Unknown vendor"} · ${money(c.amount)}${c.exact ? " ✓" : ""} · ${shortDate(c.receivedAt)}${c.purchaseOrderNumber ? ` · ${c.purchaseOrderNumber}` : ""}${c.status !== "confirmed" ? " · needs review" : ""}`;
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-200 bg-amber-50/40 px-2 py-1">
       <span className="min-w-0">
@@ -364,21 +357,15 @@ function NeedingRow({ row }: { row: CardSpendRow }) {
         {row.purchaseOrderAfterTheFact && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">after the fact</span>}
         {/* Kyle, 2026-09-10: a swipe shows up pending and posts a day or two later. */}
         {row.settlement === "pending" && <span className="ml-1 rounded bg-slate-100 px-1 text-slate-600">pending</span>}
+        {/* Kyle, 2026-09-19: the proof lives on the P.O. — the photo is uploaded there, never paired to the swipe. */}
+        <span className="ml-1 text-rce-muted">{row.purchaseOrderNumber ? `— attach the receipt on ${row.purchaseOrderNumber}` : "— no P.O.; link one below"}</span>
       </span>
       {mode === "view" && (
         <span className="flex gap-2">
-          <button type="button" className="text-rce-accent" onClick={() => setMode("attach")}>Attach receipt</button>
-          <button type="button" className="text-red-600" onClick={() => setMode("ignore")}>Ignore</button>
-        </span>
-      )}
-      {mode === "attach" && (
-        <span className="inline-flex flex-wrap items-center gap-1">
-          <select className="field px-1 py-0.5 text-xs" value={choice} onChange={(e) => setChoice(e.target.value)}>
-            <option value="">Receipt…</option>
-            {candidates.map((c) => <option key={c.id} value={c.id}>{label(c)}</option>)}
-          </select>
-          {candidates.length === 0 && <span className="text-rce-muted">no unmatched receipts near this date — upload the photo first</span>}
-          <ReasonRow label="Attach" busy={patch.isPending} onSubmit={(reason) => patch.mutate({ receiptId: choice, reason })} onCancel={() => setMode("view")} />
+          {/* Kyle, 2026-09-19: the prompt, right here — no detour through Financials to attach it. */}
+          {row.purchaseOrderId && <AttachProofButton poId={row.purchaseOrderId} label="Attach receipt" />}
+          {row.purchaseOrderId && <Link to="/financials" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">Open P.O.</Link>}
+          <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => setMode("ignore")}>Ignore</button>
         </span>
       )}
       {mode === "ignore" && (
@@ -408,7 +395,7 @@ function LedgerKind({ kind, total, rows }: { kind: CardSpendKind; total: number;
       </table>
       </div>
       {rows.length > 8 && !showAll && (
-        <button type="button" className="text-rce-accent" onClick={() => setShowAll(true)}>Show more ({rows.length - 8})</button>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setShowAll(true)}>Show more ({rows.length - 8})</button>
       )}
     </div>
   );
@@ -420,7 +407,7 @@ function LedgerRow({ row }: { row: CardSpendRow }) {
   const [kind, setKind] = useState<CardSpendKind>(row.kind);
   const [error, setError] = useState<string | null>(null);
   const patch = useMutation({
-    mutationFn: (input: { kind?: CardSpendKind; status?: "unmatched"; receiptId?: null; reason: string }) => api.updateCardSpend(row.id, input),
+    mutationFn: (input: { kind?: CardSpendKind; status?: "unmatched"; purchaseOrderId?: null; reason: string }) => api.updateCardSpend(row.id, input),
     onSuccess: () => { setError(null); setEditing(false); refresh(); },
     onError: (err) => setError((err as Error).message),
   });
@@ -431,10 +418,10 @@ function LedgerRow({ row }: { row: CardSpendRow }) {
       <td className="py-0.5 pr-2 text-right tabular-nums">{money(row.amount)}</td>
       <td className="py-0.5 pr-2 tabular-nums">{row.purchaseOrderNumber ?? <span className="text-rce-muted">—</span>}{row.purchaseOrderAfterTheFact ? <span className="ml-1 rounded bg-amber-100 px-1 text-[11px] text-amber-800">after the fact</span> : null}</td>
       <td className="py-0.5 pr-2">
-        {row.receiptId ? <span className="text-emerald-700">receipt ✓</span> : row.status === "ignored" ? `ignored — ${row.ignoredReason ?? ""}` : row.kind === "materials" && row.amount > 0 ? <span className="text-amber-800">no receipt</span> : <span className="text-rce-muted">—</span>}
+        {row.status === "ignored" ? `ignored — ${row.ignoredReason ?? ""}` : row.proven ? <span className="text-emerald-700">receipt on P.O. ✓</span> : row.needsProof ? <span className="text-amber-800">no receipt on P.O.</span> : <span className="text-rce-muted">—</span>}
       </td>
       <td className="py-0.5 text-right">
-        {!editing && <button type="button" className="text-rce-accent" onClick={() => setEditing(true)}>edit</button>}
+        {!editing && <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setEditing(true)}>edit</button>}
         {editing && (
           <span className="inline-flex flex-wrap items-center justify-end gap-1">
             <select className="field px-1 py-0.5 text-xs" value={kind} onChange={(e) => setKind(e.target.value as CardSpendKind)}>
@@ -446,8 +433,9 @@ function LedgerRow({ row }: { row: CardSpendRow }) {
               onSubmit={(reason) => patch.mutate({ kind, ...(row.status === "ignored" ? { status: "unmatched" as const } : {}), reason })}
               onCancel={() => setEditing(false)}
             />
-            {row.receiptId && (
-              <button type="button" className="text-red-600" onClick={() => { const reason = window.prompt("Reason for detaching the receipt?"); if (reason?.trim()) patch.mutate({ receiptId: null, reason: reason.trim() }); }}>detach receipt</button>
+            {/* The way out (Kyle's standing rule): a charge that landed on the wrong P.O. leaves it with a reason. */}
+            {row.purchaseOrderId && (
+              <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => { const reason = window.prompt(`Reason for taking this charge off ${row.purchaseOrderNumber ?? "its P.O."}?`); if (reason?.trim()) patch.mutate({ purchaseOrderId: null, reason: reason.trim() }); }}>unlink from P.O.</button>
             )}
           </span>
         )}

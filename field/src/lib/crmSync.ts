@@ -582,8 +582,9 @@ export interface FieldJobMaterials {
   shortages: FieldShortageLine[]
   lines: FieldMaterialLine[]
   stock: { consumed: number; returned: number; net: number; movementCount: number } | null
+  /** THE MONEY (2026-09-19): card charges + typed not-on-card amounts on the job's P.O.s. `stock` above is inventory only. */
   materialCost: number
-  materialSource: 'stock' | 'receipts' | 'estimate' | 'none'
+  materialSource: 'po' | 'none'
 }
 
 export interface FieldConsumeLine {
@@ -653,6 +654,12 @@ export interface FieldPurchaseOrder {
   jobLabel: string | null
   truckName: string | null
   receiptCount: number
+  // THE MONEY and the proof (Kyle, 2026-09-19) — what the phone prompts for.
+  /** Receipts on this P.O. that carry a photo or PDF — the proof, not just any receipt row. */
+  proofCount: number
+  cardTotal: number
+  offCardAmount: number | null
+  moneyTotal: number
   items: { name: string; qty: number; unit?: string; partNumber?: string; itemId?: string; unitCost?: number }[]
   sentAt: string | null
   openedAt: string
