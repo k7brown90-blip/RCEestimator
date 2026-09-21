@@ -92,7 +92,8 @@ async function main(): Promise<void> {
       const flow = raw.flow as Record<string, unknown> | undefined;
       console.log([
         `   ${r.occurredAt.toISOString()}`, `$${r.amount.toFixed(2)}`, r.merchantName, `kind=${r.kind}`, `status=${r.status}`,
-        `settlement=${r.settlement}`, `po=${r.purchaseOrderId ?? "-"}`, `txn=${r.stripeTransactionId}`, `auth=${r.stripeAuthorizationId ?? "-"}`,
+        `settlement=${r.settlement}`, `ignoredReason=${JSON.stringify(r.ignoredReason ?? "-")}`, `note=${JSON.stringify(r.note ?? "-")}`,
+        `truck=${r.truckId ?? "-"}`, `card=${r.stripeCardId}`, `po=${r.purchaseOrderId ?? "-"}`, `txn=${r.stripeTransactionId}`, `auth=${r.stripeAuthorizationId ?? "-"}`,
         `raw.status=${String(raw.status ?? "-")}`, `raw.flow=${flow ? JSON.stringify(flow) : "-"}`,
         `raw.transitions=${raw.status_transitions ? JSON.stringify(raw.status_transitions) : "-"}`,
         `raw.counterparty=${raw.counterparty ? JSON.stringify(raw.counterparty) : "-"}`, `created=${r.createdAt.toISOString()}`,
