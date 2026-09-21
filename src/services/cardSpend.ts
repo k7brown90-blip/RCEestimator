@@ -12,8 +12,16 @@
  * v2 money-management transaction feed (category received_debit, no merchant
  * category code). Those rows route BY THE FINANCIAL ACCOUNT
  * (Truck.stripeFinancialAccountId) through the same CardSpend upsert, kind
- * from the merchant name, settlement pending → posted (or void). Issuing
- * ingest stays for an account that has it.
+ * from the merchant name, settlement pending → posted (or void).
+ *
+ * ONE CARD CHARGE, ONE EXPENSE (Kyle, 2026-09-21, PUNCHLIST N9): the classic
+ * Issuing WEBHOOK still delivers events on this account even though the
+ * Issuing LIST call is refused, and every one of those events duplicated a v2
+ * row that had already recorded the same swipe — no id is shared between the
+ * two feeds, so dedup-by-stripeTransactionId let both live. THE V2 FEED IS
+ * THE ONE SOURCE OF CARD SPEND. `ingestIssuingTransaction` and
+ * `syncIssuingTransactions` are gone; the webhook (stripePayments.ts) now
+ * acknowledges `issuing_transaction.*` events without creating anything.
  *
  * The rulings this file enforces:
  * - Gas and maintenance belong to the truck, never a job (per-truck overhead).
@@ -57,33 +65,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 
-// ─── Merchant category → kind ────────────────────────────────────────────────
-
-const FUEL_CATEGORIES = new Set(["service_stations", "automated_fuel_dispensers", "fuel_dealers_non_automotive"]);
-const MAINTENANCE_CATEGORIES = new Set([
-  "automotive_service_shops", "auto_parts_and_accessories_stores", "car_washes", "automotive_tire_stores",
-  "towing_services", "auto_body_repair_shops",
-]);
-const MATERIALS_CATEGORIES = new Set([
-  "hardware_stores", "electrical_parts_and_equipment", "home_supply_warehouse_stores", "building_materials_lumber",
-  "lumber_building_materials_stores", "plumbing_heating_equipment_and_supplies", "glass_paint_and_wallpaper_stores",
-  // SiteOne is coded as a nursery.
-  "nurseries_lawn_and_garden_supply_stores", "wholesale_clubs", "electronics_stores",
-]);
-
-/**
- * Stripe's merchant category slug → what the spend is. Explicit map, no
- * guessing: fuel and maintenance are truck overhead, materials go looking for
- * a PO, everything else is "other" until Kyle says otherwise. The MCC is
- * accepted for callers that only have the code, but the slug decides.
- */
-export function kindForCategory(category: string | null | undefined, _mcc?: string | null): CardSpendKind {
-  const slug = (category ?? "").trim().toLowerCase();
-  if (FUEL_CATEGORIES.has(slug)) return "fuel";
-  if (MAINTENANCE_CATEGORIES.has(slug)) return "maintenance";
-  if (MATERIALS_CATEGORIES.has(slug)) return "materials";
-  return "other";
-}
+// ─── Merchant name → kind ─────────────────────────────────────────────────────
 
 /**
  * Kind from the merchant NAME, for feeds that carry no merchant category
@@ -161,73 +143,6 @@ class CardSpendError extends Error {
     super(message);
     this.name = "CardSpendError";
   }
-}
-
-function cardIdOf(tx: Stripe.Issuing.Transaction): string {
-  return typeof tx.card === "string" ? tx.card : tx.card.id;
-}
-
-function authorizationIdOf(tx: Stripe.Issuing.Transaction): string | null {
-  if (!tx.authorization) return null;
-  return typeof tx.authorization === "string" ? tx.authorization : tx.authorization.id;
-}
-
-/**
- * Upsert the CardSpend for one Issuing transaction, then route it. Stripe
- * sends captures NEGATIVE in cents, so `-amount / 100` makes a purchase
- * positive and a refund negative. On an update event only the money fields
- * are refreshed — kind, truck, PO, receipt and status are Kyle's once he has
- * touched them.
- */
-export async function ingestIssuingTransaction(
-  tx: Stripe.Issuing.Transaction,
-): Promise<{ spend: CardSpend; created: boolean }> {
-  const cardId = cardIdOf(tx);
-  const amount = round2(-(tx.amount ?? 0) / 100);
-  const merchant = tx.merchant_data;
-  const occurredAt = new Date((tx.created ?? Math.floor(Date.now() / 1000)) * 1000);
-  const truck = await prisma.truck.findUnique({ where: { stripeCardId: cardId }, select: { id: true } });
-  const existing = await prisma.cardSpend.findUnique({ where: { stripeTransactionId: tx.id } });
-
-  const money = {
-    stripeAuthorizationId: authorizationIdOf(tx),
-    stripeCardId: cardId,
-    amount,
-    currency: tx.currency ?? "usd",
-    merchantName: merchant?.name?.trim() || "Unknown merchant",
-    merchantCategory: merchant?.category ?? null,
-    merchantCategoryCode: merchant?.category_code ?? null,
-    merchantCity: merchant?.city ?? null,
-    merchantState: merchant?.state ?? null,
-    occurredAt,
-    rawJson: JSON.stringify(tx),
-  };
-
-  let spend: CardSpend;
-  if (existing) {
-    spend = await prisma.cardSpend.update({
-      where: { id: existing.id },
-      data: { ...money, ...(existing.truckId === null && truck ? { truckId: truck.id } : {}) },
-    });
-  } else {
-    spend = await prisma.cardSpend.create({
-      data: {
-        stripeTransactionId: tx.id,
-        ...money,
-        truckId: truck?.id ?? null,
-        kind: kindForCategory(merchant?.category, merchant?.category_code),
-      },
-    });
-    if (!truck) {
-      logSystemEvent("warn", "card-spend", `Card ${cardId} is not assigned to a truck — ${money.merchantName} $${amount.toFixed(2)} is sitting unrouted`, {
-        stripeTransactionId: tx.id, cardId, amount, merchant: money.merchantName,
-      });
-    }
-  }
-
-  await routeCardSpend(spend.id);
-  const fresh = await prisma.cardSpend.findUniqueOrThrow({ where: { id: spend.id } });
-  return { spend: fresh, created: !existing };
 }
 
 // ─── Ingest: v2 money-management transactions (Financial Accounts card) ──────
@@ -499,38 +414,6 @@ export function describeStripeError(err: unknown): { permission: boolean; reason
   };
 }
 
-/**
- * Pull every Issuing transaction from the last `sinceDays` days and ingest it.
- * Idempotent (upsert by transaction id) — safe to run on a schedule or by hand.
- */
-export async function syncIssuingTransactions(
-  sinceDays: number,
-  opts: { dry?: boolean } = {},
-): Promise<{ available: true; seen: number; created: number; updated: number; dry: boolean; transactions: { id: string; merchant: string; amount: number; category: string | null; card: string; occurredAt: Date }[] } | Unavailable> {
-  if (!stripeConfigured()) return { available: false, reason: "STRIPE_SECRET_KEY is not set." };
-  const days = Number.isFinite(sinceDays) && sinceDays > 0 ? Math.min(sinceDays, 365) : 30;
-  const gte = Math.floor((Date.now() - days * DAY) / 1000);
-  let seen = 0, created = 0, updated = 0;
-  const transactions: { id: string; merchant: string; amount: number; category: string | null; card: string; occurredAt: Date }[] = [];
-  try {
-    for await (const tx of stripe().issuing.transactions.list({ created: { gte }, limit: 100 })) {
-      seen += 1;
-      transactions.push({
-        id: tx.id, merchant: tx.merchant_data?.name ?? "?", amount: round2(-(tx.amount ?? 0) / 100),
-        category: tx.merchant_data?.category ?? null, card: cardIdOf(tx), occurredAt: new Date(tx.created * 1000),
-      });
-      if (opts.dry) continue;
-      const result = await ingestIssuingTransaction(tx);
-      if (result.created) created += 1; else updated += 1;
-    }
-  } catch (err) {
-    const { permission, reason } = describeStripeError(err);
-    logSystemEvent(permission ? "warn" : "error", "card-spend", `Issuing sync stopped: ${reason}`, { seen, created, updated });
-    return { available: false, reason };
-  }
-  return { available: true, seen, created, updated, dry: Boolean(opts.dry), transactions };
-}
-
 // ─── v2 money-management sync (Kyle, 2026-09-10) ─────────────────────────────
 //
 // "Your account is not set up to use Issuing" — the Field Expenses card
@@ -645,52 +528,39 @@ export async function syncFinancialAccountTransactions(
   return { available: true, seen, created, updated, voided, dry: Boolean(dry), transactions };
 }
 
-/** Per-process memory of "Your account is not set up to use Issuing" — probed once, not every ten minutes. */
-let issuingProbe: "unknown" | "unavailable" = "unknown";
-/** Test hook: forget the Issuing answer. */
-export function resetIssuingProbe(): void {
-  issuingProbe = "unknown";
-}
-export function issuingUnavailableCached(): boolean {
-  return issuingProbe === "unavailable";
-}
-
 export interface CardSpendSyncSummary extends SyncCounts {
   available: boolean;
   reason?: string;
   dry: boolean;
   transactions: SyncedTransaction[];
-  /** What each feed said, for the script and the log. */
-  feeds: { financialAccounts: SyncResult; issuing: SyncResult | null };
+  /** What the feed said, for the script and the log. Kept as an object (not
+   * flattened) so scripts/syncCardSpend.ts's existing destructuring shape
+   * survives — issuing is gone (2026-09-21, "one card charge, one expense"):
+   * the classic Issuing webhook is acknowledged and creates nothing, and its
+   * LIST call has always been refused on this account. */
+  feeds: { financialAccounts: SyncResult };
 }
 
 /**
- * The one sync: v2 money-management first (that is where the ••••3805 card
- * lives), then classic Issuing only while the account has it. "Not set up to
- * use Issuing" is remembered for the life of the process and logged once.
- * The route, the script and the cron all call this.
+ * The one sync: the v2 money-management feed — the ONE source of card spend
+ * (Kyle, 2026-09-21). Classic Issuing is never polled here: this account's
+ * Issuing LIST call is refused ("not set up to use Issuing"), and even where
+ * Issuing events reach the account they arrive only as webhooks, which
+ * stripePayments.ts now acknowledges without creating a row. The route, the
+ * script and the cron all call this.
  */
 export async function syncCardSpend(sinceDays: number, opts: { dry?: boolean } = {}): Promise<CardSpendSyncSummary> {
   const v2 = await syncFinancialAccountTransactions({ sinceDays, dry: opts.dry });
-  let issuing: SyncResult | null = null;
-  if (issuingProbe !== "unavailable") {
-    const raw = await syncIssuingTransactions(sinceDays, opts);
-    issuing = raw.available ? { ...raw, voided: 0 } : raw;
-    if (!raw.available && /not set up to use Issuing/i.test(raw.reason)) {
-      issuingProbe = "unavailable";
-      logSystemEvent("info", "card-spend", "Issuing is not enabled on this Stripe account — card spend is read from the v2 money-management feed only (remembered for this process)");
-    }
-  }
-  const feeds = [v2, issuing].filter((f): f is Extract<SyncResult, { available: true }> => Boolean(f?.available));
-  const sum = (k: keyof SyncCounts) => feeds.reduce((s, f) => s + f[k], 0);
-  const available = feeds.length > 0;
   return {
-    available,
-    reason: available ? undefined : (v2.available ? undefined : v2.reason),
-    seen: sum("seen"), created: sum("created"), updated: sum("updated"), voided: sum("voided"),
+    available: v2.available,
+    reason: v2.available ? undefined : v2.reason,
+    seen: v2.available ? v2.seen : 0,
+    created: v2.available ? v2.created : 0,
+    updated: v2.available ? v2.updated : 0,
+    voided: v2.available ? v2.voided : 0,
     dry: Boolean(opts.dry),
-    transactions: feeds.flatMap((f) => f.transactions),
-    feeds: { financialAccounts: v2, issuing },
+    transactions: v2.available ? v2.transactions : [],
+    feeds: { financialAccounts: v2 },
   };
 }
 

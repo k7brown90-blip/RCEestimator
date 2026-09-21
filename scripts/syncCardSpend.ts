@@ -27,8 +27,6 @@ async function main(): Promise<void> {
   const result = await syncCardSpend(days, { dry });
   const feed = result.feeds.financialAccounts;
   console.log(`  financial accounts: ${feed.available ? `${feed.seen} seen · ${feed.created} new · ${feed.updated} refreshed · ${feed.voided} voided` : `not readable — ${feed.reason}`}`);
-  const issuing = result.feeds.issuing;
-  console.log(`  issuing: ${issuing == null ? "skipped (not enabled on this account)" : issuing.available ? `${issuing.seen} seen · ${issuing.created} new` : `not readable — ${issuing.reason}`}`);
   if (!result.available) return;
   for (const t of result.transactions) {
     console.log(`  ${t.occurredAt.toISOString().slice(0, 16).replace("T", " ")}  ${t.id.slice(0, 14)}…  ${t.card.slice(0, 14)}…  ${t.merchant}  ${t.category ?? "—"}  $${t.amount.toFixed(2)}${t.settlement && t.settlement !== "posted" ? `  (${t.settlement})` : ""}`);

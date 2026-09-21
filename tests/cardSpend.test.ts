@@ -11,6 +11,14 @@
  * money and a receipt file, with no amount comparison; a receipt's amount
  * changes nothing.
  *
+ * Kyle, 2026-09-21 ("one card charge, one expense", PUNCHLIST N9): classic
+ * Issuing is not enabled on this account and its webhook events now create
+ * NOTHING — the v2 money-management feed (`ingestFinancialAccountTransaction`)
+ * is the ONE source of card spend. This file used to build its fixtures with
+ * `ingestIssuingTransaction` (now deleted); every ingest below goes through
+ * the v2 path instead, matching production. `tests/oneCardChargeOneExpense.test.ts`
+ * pins that the Issuing webhook itself creates no row.
+ *
  * No Stripe call is made anywhere in here: transactions are hand-built
  * objects, and STRIPE_SECRET_KEY is deleted so every Stripe read degrades to
  * { available: false }.
@@ -19,7 +27,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import crypto from "node:crypto";
-import type Stripe from "stripe";
 import { prisma } from "../src/lib/prisma";
 
 process.env.GOOGLE_CLIENT_ID = "test_id";
@@ -50,14 +57,17 @@ vi.mock("googleapis", () => {
 });
 
 import { app } from "../src/app";
-import { ingestIssuingTransaction, kindForCategory, merchantMatches } from "../src/services/cardSpend";
+import { ingestFinancialAccountTransaction, merchantMatches } from "../src/services/cardSpend";
 import { createPurchaseOrder, defaultTruckId } from "../src/services/purchaseOrders";
-import { dispatchStripeEvent } from "../src/services/stripePayments";
 
 const newId = () => crypto.randomUUID().replaceAll("-", "");
 const jpg = Buffer.from("ffd8ffe000104a464946", "hex");
-const CARD = "ic_test_truck1";
-const STRAY_CARD = "ic_test_nobody";
+// The v2 feed routes by FINANCIAL ACCOUNT id, but `truckForFinancialAccount`
+// falls back to Truck.stripeCardId when no truck claims the account directly
+// (services/cardSpend.ts) — so mapping the truck's stripeCardId to this
+// string, same as production's Trucks page, is enough to route these rows.
+const CARD = "fa_test_truck1";
+const STRAY_CARD = "fa_test_nobody";
 
 let truckId: string;
 // Mid current month, noon local — every row in this file lands in one P&L column.
@@ -68,27 +78,21 @@ const at = (minutes: number) => new Date(base.getTime() + minutes * 60_000);
 const year = base.getFullYear();
 const month = base.getMonth();
 
-function tx(input: {
-  id: string; amount: number; merchant: string; category: string; created: Date; card?: string; type?: "capture" | "refund";
-}): Stripe.Issuing.Transaction {
+/** A v2 money-management transaction row, shaped like production (Kyle, 2026-09-10). */
+function txn(input: { id: string; amount: number; merchant: string; created: Date; card?: string }) {
   return {
     id: input.id,
-    object: "issuing.transaction",
-    amount: input.amount,
-    authorization: `iauth_${input.id}`,
-    card: input.card ?? CARD,
-    created: Math.floor(input.created.getTime() / 1000),
-    currency: "usd",
+    object: "v2.money_management.transaction",
+    amount: { value: input.amount, currency: "usd" },
+    category: "received_debit",
+    counterparty: { name: input.merchant },
+    created: input.created.toISOString(),
+    description: input.merchant,
+    financial_account: input.card ?? CARD,
+    flow: { received_debit: `rd_${input.id}`, type: "received_debit" },
+    status: "posted",
     livemode: false,
-    merchant_amount: input.amount,
-    merchant_currency: "usd",
-    merchant_data: {
-      category: input.category, category_code: "5200", city: "Smyrna", country: "US", name: input.merchant,
-      network_id: "n", postal_code: "37167", state: "TN", terminal_id: null, url: null,
-    },
-    metadata: {},
-    type: input.type ?? "capture",
-  } as unknown as Stripe.Issuing.Transaction;
+  };
 }
 
 const poCount = () => prisma.purchaseOrder.count();
@@ -123,18 +127,8 @@ afterAll(async () => {
 
 let before: Summary;
 
-describe("merchant category → kind", () => {
-  it("pins the explicit map", () => {
-    expect(kindForCategory("service_stations")).toBe("fuel");
-    expect(kindForCategory("automated_fuel_dispensers")).toBe("fuel");
-    expect(kindForCategory("hardware_stores")).toBe("materials");
-    expect(kindForCategory("nurseries_lawn_and_garden_supply_stores")).toBe("materials");
-    expect(kindForCategory("automotive_service_shops")).toBe("maintenance");
-    expect(kindForCategory("some_new_category")).toBe("other");
-    expect(kindForCategory(null)).toBe("other");
-  });
-
-  it("supplier ~ merchant: contains or first five alphanumerics", () => {
+describe("supplier ~ merchant matching", () => {
+  it("contains or first five alphanumerics", () => {
     expect(merchantMatches("Home Depot", "THE HOME DEPOT #0776")).toBe(true);
     expect(merchantMatches("homedepot", "HOMEDEPOT0776")).toBe(true);
     expect(merchantMatches("City Electric", "CES 689")).toBe(false);
@@ -170,11 +164,11 @@ describe("the card maps to the truck", () => {
   });
 });
 
-describe("ingesting Issuing transactions", () => {
-  it("a materials capture with no PO behind it drafts a PO after the fact, purchased, on the card's truck", async () => {
+describe("ingesting v2 financial-account transactions", () => {
+  it("a materials swipe with no PO behind it drafts a PO after the fact, purchased, on the card's truck", async () => {
     const pos = await poCount();
-    const { spend, created } = await ingestIssuingTransaction(tx({
-      id: "ipi_hd_1", amount: -32433, merchant: "THE HOME DEPOT #0776", category: "home_supply_warehouse_stores", created: at(0),
+    const { spend, created } = await ingestFinancialAccountTransaction(txn({
+      id: "trxn_hd_1", amount: -32433, merchant: "THE HOME DEPOT #0776", created: at(0),
     }));
     expect(created).toBe(true);
     expect(spend.amount).toBe(324.33);
@@ -195,22 +189,22 @@ describe("ingesting Issuing transactions", () => {
     expect(events.map((e) => e.kind)).toEqual(["created", "status", "card_matched"]);
 
     // Re-delivery of the same transaction is an update, not a second row or a second PO.
-    const again = await ingestIssuingTransaction(tx({
-      id: "ipi_hd_1", amount: -32433, merchant: "THE HOME DEPOT #0776", category: "home_supply_warehouse_stores", created: at(0),
+    const again = await ingestFinancialAccountTransaction(txn({
+      id: "trxn_hd_1", amount: -32433, merchant: "THE HOME DEPOT #0776", created: at(0),
     }));
     expect(again.created).toBe(false);
     expect(again.spend.purchaseOrderId).toBe(po.id);
     expect(await poCount()).toBe(pos + 1);
   });
 
-  it("a capture at the same store with an OPEN PO on the truck links to it — no new PO — and the PO becomes purchased", async () => {
+  it("a swipe at the same store with an OPEN PO on the truck links to it — no new PO — and the PO becomes purchased", async () => {
     const open = await createPurchaseOrder({
       supplier: "Home Depot", truckId, openedBy: "owner", actor: "test", openedAt: at(5),
       lines: [{ name: "12-2 NM-B 250ft", qty: 1 }],
     });
     const pos = await poCount();
-    const { spend } = await ingestIssuingTransaction(tx({
-      id: "ipi_hd_2", amount: -5000, merchant: "THE HOME DEPOT #0776", category: "home_supply_warehouse_stores", created: at(10),
+    const { spend } = await ingestFinancialAccountTransaction(txn({
+      id: "trxn_hd_2", amount: -5000, merchant: "THE HOME DEPOT #0776", created: at(10),
     }));
     expect(spend.amount).toBe(50);
     expect(spend.purchaseOrderId).toBe(open.id);
@@ -220,10 +214,10 @@ describe("ingesting Issuing transactions", () => {
     expect(po.afterTheFact).toBe(false);
   });
 
-  it("a fuel capture sits on the truck ledger: kind fuel, no PO", async () => {
+  it("a fuel swipe sits on the truck ledger: kind fuel, no PO", async () => {
     const pos = await poCount();
-    const { spend } = await ingestIssuingTransaction(tx({
-      id: "ipi_shell_1", amount: -6012, merchant: "SHELL OIL 57442", category: "service_stations", created: at(60),
+    const { spend } = await ingestFinancialAccountTransaction(txn({
+      id: "trxn_shell_1", amount: -6012, merchant: "SHELL OIL 57442", created: at(60),
     }));
     expect(spend.kind).toBe("fuel");
     expect(spend.amount).toBe(60.12);
@@ -234,35 +228,23 @@ describe("ingesting Issuing transactions", () => {
 
   it("a refund is a negative spend that never drafts a PO; it rides the prior spend's PO at that store", async () => {
     const pos = await poCount();
-    const { spend } = await ingestIssuingTransaction(tx({
-      id: "ipi_hd_refund", amount: 1500, type: "refund", merchant: "THE HOME DEPOT #0776", category: "home_supply_warehouse_stores", created: at(24 * 60),
+    const { spend } = await ingestFinancialAccountTransaction(txn({
+      id: "trxn_hd_refund", amount: 1500, merchant: "THE HOME DEPOT #0776", created: at(24 * 60),
     }));
     expect(spend.amount).toBe(-15);
     expect(spend.kind).toBe("materials");
     expect(await poCount()).toBe(pos);
-    const prior = await spendFor("ipi_hd_2");
+    const prior = await spendFor("trxn_hd_2");
     expect(spend.purchaseOrderId).toBe(prior.purchaseOrderId);
   });
 
-  it("a card no truck claims leaves truckId null (and never guesses)", async () => {
-    const { spend } = await ingestIssuingTransaction(tx({
-      id: "ipi_stray", amount: -2000, merchant: "SOME OTHER STORE", category: "misc", created: at(90), card: STRAY_CARD,
+  it("an account no truck claims leaves truckId null (and never guesses)", async () => {
+    const { spend } = await ingestFinancialAccountTransaction(txn({
+      id: "trxn_stray", amount: -2000, merchant: "SOME OTHER STORE", created: at(90), card: STRAY_CARD,
     }));
     expect(spend.truckId).toBeNull();
     expect(spend.kind).toBe("other");
     expect(spend.purchaseOrderId).toBeNull();
-  });
-
-  it("the webhook dispatcher routes issuing_transaction.created into the same ingest", async () => {
-    const event = {
-      id: "evt_test_issuing", object: "event", type: "issuing_transaction.created",
-      data: { object: tx({ id: "ipi_webhook_fuel", amount: -3000, merchant: "EXXON", category: "automated_fuel_dispensers", created: at(120) }) },
-    } as unknown as Stripe.Event;
-    await dispatchStripeEvent(prisma, event);
-    const spend = await spendFor("ipi_webhook_fuel");
-    expect(spend.kind).toBe("fuel");
-    expect(spend.amount).toBe(30);
-    expect(spend.truckId).toBe(truckId);
   });
 });
 
@@ -271,12 +253,12 @@ describe("many charges on one PO; verified when money and proof are both there (
 
   it("the 9/17 split: a second swipe at the same store minutes later joins the first swipe's after-the-fact PO", async () => {
     const pos = await poCount();
-    const a = await ingestIssuingTransaction(tx({
-      id: "ipi_ces_split_a", amount: -65173, merchant: "CITY ELECTRIC SUPPLY 689", category: "electrical_parts_and_equipment", created: at(400),
+    const a = await ingestFinancialAccountTransaction(txn({
+      id: "trxn_ces_split_a", amount: -65173, merchant: "CITY ELECTRIC SUPPLY 689", created: at(400),
     }));
     expect(await poCount()).toBe(pos + 1);
-    const b = await ingestIssuingTransaction(tx({
-      id: "ipi_ces_split_b", amount: -11401, merchant: "CITY ELECTRIC SUPPLY 689", category: "electrical_parts_and_equipment", created: at(403),
+    const b = await ingestFinancialAccountTransaction(txn({
+      id: "trxn_ces_split_b", amount: -11401, merchant: "CITY ELECTRIC SUPPLY 689", created: at(403),
     }));
     expect(b.spend.purchaseOrderId).toBe(a.spend.purchaseOrderId);
     expect(await poCount()).toBe(pos + 1);
@@ -328,10 +310,12 @@ describe("the P&L counts every charge once, and a receipt never", () => {
     const now = await summary();
     // Materials: 324.33 + 50.00 − 15.00 + 651.73 + 114.01 (charges) + 40.00 (typed cash).
     expect(r2(catMonth(now, "materials") - catMonth(before, "materials"))).toBe(r2(324.33 + 50 - 15 + 651.73 + 114.01 + 40));
-    expect(r2(catMonth(now, "gas") - catMonth(before, "gas"))).toBe(r2(60.12 + 30));
+    // Gas: SHELL only — the classic-Issuing webhook (Kyle, 2026-09-21) creates
+    // no second EXXON row any more.
+    expect(r2(catMonth(now, "gas") - catMonth(before, "gas"))).toBe(60.12);
     expect(r2(catMonth(now, "overhead") - catMonth(before, "overhead"))).toBe(20);
     const delta = now.months[month].expenses - before.months[month].expenses;
-    expect(r2(delta)).toBe(r2(324.33 + 50 - 15 + 651.73 + 114.01 + 40 + 60.12 + 30 + 20));
+    expect(r2(delta)).toBe(r2(324.33 + 50 - 15 + 651.73 + 114.01 + 40 + 60.12 + 20));
 
     const csv = await request(app).get(`/financials/export?year=${year}`);
     expect(csv.status).toBe(200);
@@ -352,7 +336,7 @@ describe("the truck ledger and hand edits", () => {
     expect(truck.balance).toBeNull();
     expect(list.body.balancesAvailable).toBe(false);
     // MTD only when `base` is this month (it always is — base is the 15th of the current month).
-    expect(truck.mtd.fuel).toBe(r2(60.12 + 30));
+    expect(truck.mtd.fuel).toBe(60.12);
     // hd_1 and hd_2 ride POs with no receipt file yet; the split PO is proven; the refund never prompts.
     expect(truck.unmatchedMaterials).toBe(2);
     expect(list.body.unassigned.other).toBe(20);
@@ -360,19 +344,19 @@ describe("the truck ledger and hand edits", () => {
     const detail = await request(app).get(`/trucks/${truckId}?year=${year}`);
     expect(detail.status).toBe(200);
     const fuel = detail.body.ledger.find((k: { kind: string }) => k.kind === "fuel");
-    expect(fuel.total).toBe(r2(60.12 + 30));
-    expect(fuel.rows.map((r: { merchantName: string }) => r.merchantName).sort()).toEqual(["EXXON", "SHELL OIL 57442"]);
+    expect(fuel.total).toBe(60.12);
+    expect(fuel.rows.map((r: { merchantName: string }) => r.merchantName).sort()).toEqual(["SHELL OIL 57442"]);
     const materials = detail.body.ledger.find((k: { kind: string }) => k.kind === "materials");
-    const hd1 = materials.rows.find((r: { stripeTransactionId: string }) => r.stripeTransactionId === "ipi_hd_1");
+    const hd1 = materials.rows.find((r: { stripeTransactionId: string }) => r.stripeTransactionId === "trxn_hd_1");
     expect(hd1.purchaseOrderNumber).toMatch(/^PO-\d{4}-\d{4}$/);
     expect(hd1.needsProof).toBe(true);
-    expect(materials.rows.find((r: { stripeTransactionId: string }) => r.stripeTransactionId === "ipi_ces_split_a").proven).toBe(true);
-    expect(detail.body.needingReceipt.map((r: { stripeTransactionId: string }) => r.stripeTransactionId).sort()).toEqual(["ipi_hd_1", "ipi_hd_2"]);
+    expect(materials.rows.find((r: { stripeTransactionId: string }) => r.stripeTransactionId === "trxn_ces_split_a").proven).toBe(true);
+    expect(detail.body.needingReceipt.map((r: { stripeTransactionId: string }) => r.stripeTransactionId).sort()).toEqual(["trxn_hd_1", "trxn_hd_2"]);
     expect(detail.body.purchaseOrders.some((p: { afterTheFact: boolean; cardMatched: boolean }) => p.afterTheFact && p.cardMatched)).toBe(true);
   });
 
   it("PATCH /card-spend/:id needs a reason; ignore, re-kind, PO link and unlink leave a trail", async () => {
-    const stray = await spendFor("ipi_stray");
+    const stray = await spendFor("trxn_stray");
     const noReason = await request(app).patch(`/card-spend/${stray.id}`).send({ status: "ignored" });
     expect(noReason.status).toBe(400);
     const ignored = await request(app).patch(`/card-spend/${stray.id}`).send({ status: "ignored", reason: "Personal — reimbursed" });
@@ -383,13 +367,13 @@ describe("the truck ledger and hand edits", () => {
     const now = await summary();
     expect(r2(catMonth(now, "overhead") - catMonth(before, "overhead"))).toBe(0);
 
-    const shell = await spendFor("ipi_shell_1");
+    const shell = await spendFor("trxn_shell_1");
     const rekind = await request(app).patch(`/card-spend/${shell.id}`).send({ kind: "maintenance", truckId, reason: "It was an oil change at the station" });
     expect(rekind.status).toBe(200);
     expect(rekind.body.kind).toBe("maintenance");
     expect(rekind.body.note).toBe("It was an oil change at the station");
 
-    const hd2 = await spendFor("ipi_hd_2");
+    const hd2 = await spendFor("trxn_hd_2");
     const oldPo = hd2.purchaseOrderId!;
     const newPo = await createPurchaseOrder({ supplier: "Lowes", truckId, openedBy: "owner", actor: "test", openedAt: at(200) });
     const relink = await request(app).patch(`/card-spend/${hd2.id}`).send({ purchaseOrderId: newPo.id, reason: "Rang up on the wrong PO" });
@@ -410,8 +394,8 @@ describe("the truck ledger and hand edits", () => {
   });
 
   it("an after-the-fact PO cannot reach verified or closed without a receipt photo", async () => {
-    const { spend } = await ingestIssuingTransaction(tx({
-      id: "ipi_menards_1", amount: -1200, merchant: "MENARDS #77", category: "hardware_stores", created: at(300),
+    const { spend } = await ingestFinancialAccountTransaction(txn({
+      id: "trxn_menards_1", amount: -1200, merchant: "MENARDS #77", created: at(300),
     }));
     const poId = spend.purchaseOrderId!;
     expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: poId } })).afterTheFact).toBe(true);

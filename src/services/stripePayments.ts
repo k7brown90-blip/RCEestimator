@@ -582,11 +582,19 @@ export async function handleStripeWebhook(
   return { received: true };
 }
 
+/** Per-process memory: the Issuing-webhook-is-a-duplicate-feed notice logs once, not per event. */
+let issuingWebhookNoticeLogged = false;
+/** Test hook: forget the notice was logged. */
+export function resetIssuingWebhookNotice(): void {
+  issuingWebhookNoticeLogged = false;
+}
+
 /**
  * The event switch, separated from signature verification so it can be
  * exercised with a hand-built event. Checkout fulfilment stays exactly as it
- * was; Issuing card transactions (Kyle, 2026-09-09: "card proves") land in
- * services/cardSpend.ts.
+ * was; Issuing webhook events are acknowledged and create nothing (Kyle,
+ * 2026-09-21 — the v2 money-management feed in services/cardSpend.ts is the
+ * one source of card spend).
  */
 export async function dispatchStripeEvent(prisma: PrismaClient, event: Stripe.Event): Promise<void> {
   const recordPaid = async (session: Stripe.Checkout.Session) => {
@@ -664,13 +672,25 @@ export async function dispatchStripeEvent(prisma: PrismaClient, event: Stripe.Ev
       });
       break;
     }
-    // Kyle, 2026-09-09: each tech's Issuing card — "photo verifies, card
-    // proves". Every capture/refund becomes a CardSpend routed to the truck
-    // that owns the card. Dynamic import: cardSpend.ts imports stripe() from here.
+    // One card charge, one expense (Kyle, 2026-09-21, PUNCHLIST N9): classic
+    // Issuing is not enabled on this account ("not set up to use Issuing" —
+    // the LIST call is refused) but these webhook EVENTS still arrive, and
+    // used to create a second CardSpend for every swipe the v2 money-
+    // management feed (services/cardSpend.ts syncFinancialAccountTransactions)
+    // already recorded, with no shared id to dedup on. The v2 feed is now the
+    // ONE source of card spend — these events are acknowledged (so Stripe
+    // stops retrying) and create nothing. One INFO SystemEvent per process,
+    // not one per event.
     case "issuing_transaction.created":
     case "issuing_transaction.updated": {
-      const { ingestIssuingTransaction } = await import("./cardSpend");
-      await ingestIssuingTransaction(event.data.object as Stripe.Issuing.Transaction);
+      if (!issuingWebhookNoticeLogged) {
+        issuingWebhookNoticeLogged = true;
+        logSystemEvent(
+          "info", "card-spend",
+          "Issuing webhook event received and ignored — the v2 money-management feed is the one source of card spend (Kyle, 2026-09-21)",
+          { eventType: event.type },
+        );
+      }
       break;
     }
     default:
