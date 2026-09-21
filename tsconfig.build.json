@@ -13,6 +13,8 @@
     "scripts/readSystemEvents.ts",
     "scripts/readReceipts.ts",
     "scripts/readPayments.ts",
+    // Read-only data checks for the punch-list fix plan (2026-09-21): Q1, stale jobs, legacy Estimate count.
+    "scripts/readDataChecks.ts",
     "scripts/tailClientLog.ts",
     // Read-only estimate dump for offline what-if re-pricing (Kyle, 2026-08-31).
     "scripts/dumpEstimateForRepricing.ts",
