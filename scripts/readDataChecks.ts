@@ -15,7 +15,8 @@
  *      listed here for Kyle to cancel by hand.
  *   3. Plan Q5 — are there any legacy `Estimate` rows left? Zero means the /estimates/* family
  *      can retire (PUNCHLIST K5).
- *   4. Live card charges with no P.O., by kind — every card charge should be on a P.O.
+ *   4. Live card charges with no P.O., by kind — only MATERIALS must be on a P.O.
+ *   5. With --cards: every card row with its Stripe ids and raw v2 status fields.
  */
 
 import { PrismaClient } from "@prisma/client";
@@ -78,6 +79,26 @@ async function main(): Promise<void> {
     console.log(`   ${c.occurredAt.toISOString().slice(0, 10)}  ${c.kind.padEnd(11)} $${c.amount.toFixed(2).padStart(9)}  ${c.merchantName}  id=${c.id}`);
   }
   if (unlinked.length > 40) console.log(`   ... ${unlinked.length - 40} more`);
+
+  // 5. --cards: every card row with the Stripe identifiers, to find what a double-imported charge
+  //    looks like (Kyle, 2026-09-21: RaceTrac, Smyrna, the permit, biBERK and Sunbelt were each ONE
+  //    charge but sit on the ledger twice). Read-only; prints the v2 row's own status fields.
+  if (process.argv.includes("--cards")) {
+    const rows = await prisma.cardSpend.findMany({ orderBy: { occurredAt: "asc" } });
+    console.log(`5. All card rows (${rows.length}):`);
+    for (const r of rows) {
+      let raw: Record<string, unknown> = {};
+      try { raw = r.rawJson ? JSON.parse(r.rawJson) : {}; } catch { /* unparseable rawJson is reported as {} */ }
+      const flow = raw.flow as Record<string, unknown> | undefined;
+      console.log([
+        `   ${r.occurredAt.toISOString()}`, `$${r.amount.toFixed(2)}`, r.merchantName, `kind=${r.kind}`, `status=${r.status}`,
+        `settlement=${r.settlement}`, `po=${r.purchaseOrderId ?? "-"}`, `txn=${r.stripeTransactionId}`, `auth=${r.stripeAuthorizationId ?? "-"}`,
+        `raw.status=${String(raw.status ?? "-")}`, `raw.flow=${flow ? JSON.stringify(flow) : "-"}`,
+        `raw.transitions=${raw.status_transitions ? JSON.stringify(raw.status_transitions) : "-"}`,
+        `raw.counterparty=${raw.counterparty ? JSON.stringify(raw.counterparty) : "-"}`, `created=${r.createdAt.toISOString()}`,
+      ].join("  "));
+    }
+  }
 }
 
 main()
