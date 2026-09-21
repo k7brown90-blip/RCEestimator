@@ -209,7 +209,8 @@ export async function materialCostForJobs(jobs: MaterialCostInput[]): Promise<Ma
   const jobIds = [...new Set(jobs.map((j) => j.visitId).filter(Boolean))];
   const quoteVisits = jobIds.length
     ? await prisma.issuedEstimate.findMany({
-      where: { jobVisitId: { in: jobIds }, visitId: { not: null }, signedAt: { not: null }, voidedAt: null, status: { not: "void" } },
+      // signed, live — the allow-list (2026-09-21, PUNCHLIST A9), same as services/invoiceGroup.ts LIVE_SIGNED.
+      where: { jobVisitId: { in: jobIds }, visitId: { not: null }, signedAt: { not: null }, voidedAt: null, status: "signed" },
       select: { visitId: true, jobVisitId: true },
     })
     : [];

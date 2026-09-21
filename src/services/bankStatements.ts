@@ -62,7 +62,7 @@ import crypto from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
-import { billMonthsInYear } from "./companyBills";
+import { adjacentMonthKeys, billMonthsInYear, cents, monthKeyOf, nameTokens } from "./companyBills";
 import { EXCLUDE_TEST_JOB, EXCLUDE_TEST_PAYER } from "./accountSpine";
 
 // ─── Vocabulary ──────────────────────────────────────────────────────────────
@@ -94,7 +94,6 @@ export class BankError extends Error {
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
-const cents = (n: number) => Math.round(n * 100);
 const DAY = 24 * 60 * 60 * 1000;
 /** How far a bank line may sit from the P.O.'s offCardAt / the payment's paidAt and still match. */
 const MATCH_WINDOW_DAYS = 21;
@@ -103,14 +102,8 @@ const MATCH_WINDOW_DAYS = 21;
 export function monthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
-function monthKeyOf(year: number, month: number): string {
-  return `${year}-${String(month + 1).padStart(2, "0")}`;
-}
-function adjacentMonthKeys(d: Date): string[] {
-  const prev = new Date(d.getFullYear(), d.getMonth() - 1, 1);
-  const next = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-  return [monthKey(d), monthKey(prev), monthKey(next)];
-}
+// monthKeyOf / adjacentMonthKeys / nameTokens / cents live in services/companyBills.ts since 2026-09-21 —
+// the card ledger matches a charge to a bill-month with the same vocabulary (PUNCHLIST M6).
 
 // ─── Parsing ─────────────────────────────────────────────────────────────────
 
@@ -414,10 +407,6 @@ export interface ClassifyContext {
   memory: Map<string, Memory>;
 }
 
-const STOP_WORDS = new Set(["THE", "AND", "INC", "LLC", "CO", "COMPANY", "PAYMENT", "PAYMENTS", "BILL", "AUTOPAY", "SERVICE", "SERVICES", "MONTHLY"]);
-function nameTokens(name: string): string[] {
-  return name.toUpperCase().split(/[^A-Z0-9]+/).filter((t) => t.length >= 3 && !STOP_WORDS.has(t));
-}
 
 function transferKindFor(here: RegistryAccount, other: RegistryAccount, amount: number): TransferKind {
   const landing = amount < 0 ? other : here;

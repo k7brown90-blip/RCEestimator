@@ -35,10 +35,10 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { fullBillOf, stripeConfigured } from "../services/stripePayments";
-import { groupSignedRows, INVOICE_DOC_SELECT, invoiceRootId, rollupInvoice, type InvoiceDocRow } from "../services/invoiceGroup";
+import { groupSignedRows, INVOICE_DOC_SELECT, invoiceRootId, LIVE_SIGNED, rollupInvoice, type InvoiceDocRow } from "../services/invoiceGroup";
 import { getLaborRate, materialCostForJobs } from "../services/jobCosting";
 import { payrollForYear, type PayrollYear } from "../services/payrollLedger";
-import { billMonthsInYear } from "../services/companyBills";
+import { billMonthKey, billMonthsInYear, cardConfirmedBillMonths, monthKeyOf } from "../services/companyBills";
 import { bankExpenseRowsForYear, bankQueueSummary, type BankExpenseRow, type BankQueueSummary } from "../services/bankLedger";
 import { readBalances } from "../services/cardSpend";
 import { TreasuryError, executeSweep, readSweep, stripeFeeRows } from "../services/treasury";
@@ -299,6 +299,13 @@ interface YearLedger {
   invoiced: { month: number; amount: number; number: string; customer: string; estimateId: string; date: Date }[];
   /** Every paid row, both payers — money is money (Kyle, 2026-09-10); `payer` says whose. */
   collected: { month: number; amount: number; method: string; payer: string; date: Date; note: string | null }[];
+  /**
+   * The scheduled bill-months that are still the money. A bill-month a CARD CHARGE paid is NOT
+   * here (Kyle, 2026-09-21, "the actual charge is the source of truth" — PUNCHLIST M6): that
+   * charge is already in `spendRows` at its own amount, and the scheduled figure would count
+   * the same payment twice. A bill-month a BANK line confirmed stays — the line adds nothing.
+   * services/companyBills.ts cardConfirmedBillMonths is the one matcher.
+   */
   billRows: { month: number; amount: number; category: string; name: string }[];
   /**
    * THE MONEY (Kyle, 2026-09-19): every non-ignored card transaction, in the
@@ -354,9 +361,12 @@ async function yearLedger(year: number): Promise<YearLedger> {
   const from = new Date(`${year}-01-01`);
   const to = new Date(`${year + 1}-01-01`);
 
-  const [estimates, payments, bills, spend, typed, fees, payroll, bankRows, bankQueue] = await Promise.all([
+  const [estimates, payments, bills, spend, typed, fees, payroll, bankRows, bankQueue, paidOnCard] = await Promise.all([
+    // INVOICED = signed, live. `status: "signed"` is an allow-list (2026-09-21, PUNCHLIST A9): a
+    // signed row only ever moves to "void" (every writer of IssuedEstimate.status was audited),
+    // and `not: "void"` would let any status nobody has thought of yet count as revenue.
     prisma.issuedEstimate.findMany({
-      where: { signedAt: { gte: from, lt: to }, status: { not: "void" }, ...EXCLUDE_TEST_ACCOUNT },
+      where: { signedAt: { gte: from, lt: to }, status: "signed", ...EXCLUDE_TEST_ACCOUNT },
       include: { options: true, account: { select: { name: true } } },
     }),
     // Collected = MONEY. Legacy "discount" rows (the retired 3% non-card
@@ -387,6 +397,8 @@ async function yearLedger(year: number): Promise<YearLedger> {
     // Bank lines classified as expenses — the fifth source (2026-09-21). Nothing else from the statements.
     bankExpenseRowsForYear(year),
     bankQueueSummary(),
+    // Which bill-months a card charge paid — those leave billRows (the charge is the money).
+    cardConfirmedBillMonths(prisma),
   ]);
 
   return {
@@ -413,9 +425,11 @@ async function yearLedger(year: number): Promise<YearLedger> {
       month: p.paidAt!.getMonth(), amount: p.amount, method: p.method, payer: p.payer, date: p.paidAt!, note: p.note,
     })),
     billRows: bills.flatMap((bill) =>
-      billMonthsInYear(bill, year).map((hit) => ({
-        month: hit.month, amount: hit.amount, category: bill.category, name: bill.name,
-      })),
+      billMonthsInYear(bill, year)
+        .filter((hit) => !paidOnCard.has(billMonthKey(bill.id, monthKeyOf(year, hit.month))))
+        .map((hit) => ({
+          month: hit.month, amount: hit.amount, category: bill.category, name: bill.name,
+        })),
     ),
     spendRows: spend.map((s) => ({
       month: s.occurredAt.getMonth(), amount: s.amount, category: SPEND_CATEGORY[s.kind] ?? "overhead",
@@ -514,7 +528,9 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
 
   /*
     EXPENSES (Kyle, 2026-09-19) = card charges + typed not-on-card P.O. amounts
-    + company bills + Stripe fees + PAYROLL (Kyle, 2026-09-20 — wages and
+    + company bills (minus any bill-month a card charge paid — Kyle, 2026-09-21,
+    "the actual charge is the source of truth": the charge is the expense, the
+    scheduled amount would be the same money twice) + Stripe fees + PAYROLL (Kyle, 2026-09-20 — wages and
     commissions from the hours ledger, once; see services/payrollLedger.ts for
     when they count) + BANK LINES CLASSIFIED AS EXPENSES (Kyle, 2026-09-20 —
     the statements he uploads; only `expense` lines, services/bankLedger.ts).
@@ -644,11 +660,13 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
   const visitIds = visits.map((v) => v.id);
   const estimates = await prisma.issuedEstimate.findMany({
     where: {
-      signedAt: { not: null },
-      voidedAt: null,
-      status: { not: "void" },
+      ...LIVE_SIGNED,
       OR: [{ jobVisitId: { in: visitIds } }, { visitId: { in: visitIds } }],
     },
+    // Newest first: groupSignedRows keeps the first root it meets per job, and a signed revision
+    // that replaced an older one is the newer row (the older is void — issuedEstimateService.ts
+    // adoptSupersededInvoice — but the order makes the choice explicit rather than lucky).
+    orderBy: { createdAt: "desc" },
     select: INVOICE_DOC_SELECT,
   }) as InvoiceDocRow[];
 

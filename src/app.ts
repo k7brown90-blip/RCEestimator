@@ -75,7 +75,7 @@ import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
-import { groupSignedRows, INVOICE_DOC_SELECT, LIVE_SIGNED_CHANGE_ORDER, rollupInvoice, signedRootForJob, type InvoiceDocRow } from "./services/invoiceGroup";
+import { groupSignedRows, INVOICE_DOC_SELECT, isLiveSigned, LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER, rollupInvoice, rootFirst, signedRootForJob, type InvoiceDocRow } from "./services/invoiceGroup";
 import { LOSABLE_STATUSES, LOST_REASONS as SHARED_LOST_REASONS } from "../shared/estimateStatus";
 import { reopenedStatusOf } from "./services/estimateExpiry";
 import {
@@ -3381,9 +3381,7 @@ app.post("/issued-estimates/:id/void", asyncHandler(async (req, res) => {
       prisma.issuedEstimate.findMany({
         where: {
           id: { not: est.id },
-          signedAt: { not: null },
-          voidedAt: null,
-          status: { not: "void" },
+          ...LIVE_SIGNED,
           OR: [{ jobVisitId: jobId }, { visitId: jobId }],
         },
         select: { id: true, number: true },
@@ -4286,7 +4284,7 @@ app.patch("/issued-estimates/:id/warranty/tracking", asyncHandler(async (req, re
  */
 app.get("/warranty-receivables", asyncHandler(async (_req, res) => {
   const estimates = await prisma.issuedEstimate.findMany({
-    where: { signedAt: { not: null }, voidedAt: null, status: { not: "void" }, warrantyJson: { not: null }, account: { isTestAccount: false } },
+    where: { ...LIVE_SIGNED, warrantyJson: { not: null }, account: { isTestAccount: false } },
     include: {
       options: { select: { option: true, subtotal: true } },
       account: { select: { id: true, name: true } },
@@ -5002,15 +5000,19 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     ("add to current job") is the newest signed document on it; it must not stand in for the
     invoice. Roots first; the change orders' money is rolled into their root's group below.
   */
-  const signedQualifies = new Map<string, typeof issued[number]>();
+  // `issued` is newest first; per job key, the newest ROOT wins (services/invoiceGroup.ts
+  // rootFirst — the same rule signedRootForJob applies, so the card and the payment panel agree).
+  // isLiveSigned is the allow-list (2026-09-21, PUNCHLIST A9): signed, not void, status "signed".
+  const liveSignedByKey = new Map<string, typeof issued>();
   for (const est of issued) {
-    if (!est.signedAt || est.status === "void") continue;
+    if (!isLiveSigned(est)) continue;
     const key = est.jobVisitId ?? est.visitId;
     if (!key) continue;
-    const current = signedQualifies.get(key);
-    if (!current || (current.changeOrderForId && !est.changeOrderForId)) signedQualifies.set(key, est);
+    liveSignedByKey.set(key, [...(liveSignedByKey.get(key) ?? []), est]);
   }
-  const groups = groupSignedRows(issued.filter((e): e is typeof e & InvoiceDocRow => Boolean(e.signedAt) && e.status !== "void"));
+  const signedQualifies = new Map<string, typeof issued[number]>();
+  for (const [key, rows] of liveSignedByKey) signedQualifies.set(key, rootFirst(rows)!);
+  const groups = groupSignedRows(issued.filter((e): e is typeof e & InvoiceDocRow => isLiveSigned(e)));
   const groupOf = (est: typeof issued[number]) =>
     groups.get(est.changeOrderForId ?? est.id) ?? { root: est as typeof est & InvoiceDocRow, changeOrders: [] as (typeof est & InvoiceDocRow)[] };
   const signedEstIds = [...new Set([...signedQualifies.values()].flatMap((e) => {
@@ -5048,7 +5050,14 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     return visit.estimates.some((est) => est.acceptance !== null);
   });
 
-  /** Newest issued estimate per visit, keyed by whichever side links it. */
+  /**
+   * Newest issued estimate per visit, keyed by whichever side links it — the CARD's fallback
+   * only. A sold job's card shows its signed ROOT (signedQualifies, below); this map is what
+   * an unsold visit, or a job that qualifies only through a legacy Estimate acceptance, falls
+   * back to. Until 2026-09-21 the card read this for every job, so a change order marked lost
+   * or void — the newest row on a sold job — badged the job DECLINED and offered "Delete
+   * Estimate" on a sale (PUNCHLIST A11).
+   */
   const issuedByVisit = new Map<string, typeof issued[number]>();
   for (const est of issued) {
     for (const key of [est.jobVisitId, est.visitId]) {
@@ -5090,7 +5099,9 @@ app.get("/jobs", asyncHandler(async (req, res) => {
   const jobs = jobVisits.map((visit: typeof visits[number]) => {
     const latestEstimate = visit.estimates[0] ?? null;
     const { acceptedTotal, displayTotal } = estimateOptionTotal(latestEstimate?.options ?? []);
-    const latestIssued = issuedByVisit.get(visit.id) ?? null;
+    // THE ROOT INVOICE IS THE JOB'S ESTIMATE (2026-09-21, PUNCHLIST A11) — the same document
+    // /jobs/:id/payment-info names. The newest row is the fallback for a visit with no signed root.
+    const latestIssued = signedQualifies.get(visit.id) ?? issuedByVisit.get(visit.id) ?? null;
 
     return {
       visitId: visit.id,
@@ -5458,10 +5469,17 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     // Test-account rows are excluded like the estimate chain — practice
     // invoices must not mix into the money Kyle reads off this page.
     // Kyle, 2026-09-07 (invoices merged into Financials): a signed revision that
-    // has been superseded is not an open invoice — the newer revision is.
+    // has been superseded BY A SIGNED REVISION is not an open invoice — the newer
+    // revision is. Since 2026-09-21 that is a fact about the row itself: signing the
+    // revision voids the one it replaced and moves its change orders and payments
+    // (issuedEstimateService.ts adoptSupersededInvoice), so `voidedAt: null` is the
+    // whole filter. The old `supersededBy: null` hid the signed root the moment a
+    // revision was CREATED — while the revision was still an unsigned draft the
+    // customer's only signed agreement, its deposit and its change orders were
+    // listed nowhere (PUNCHLIST A1).
     // 2026-09-20: a signed CHANGE ORDER is not an invoice of its own either — it
     // rides the row of the invoice it joined, listed beneath it.
-    where: { signedAt: { not: null }, voidedAt: null, supersededBy: null, changeOrderForId: null, ...EXCLUDE_TEST_ACCOUNT },
+    where: { ...LIVE_SIGNED, changeOrderForId: null, ...EXCLUDE_TEST_ACCOUNT },
     include: {
       options: true,
       account: { select: { id: true, name: true, phone: true, email: true } },
@@ -6804,7 +6822,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
   // the chain — for the revenue rung below. (Its frozen material is DISPLAY
   // only since 2026-09-19: an estimate never counts toward job cost.)
   const signedForCosts = await prisma.issuedEstimate.findMany({
-    where: { customerId, signedAt: { not: null }, voidedAt: null, status: { not: "void" } },
+    where: { customerId, ...LIVE_SIGNED },
     orderBy: { createdAt: "desc" },
     select: INVOICE_DOC_SELECT,
   }) as InvoiceDocRow[];

@@ -209,7 +209,7 @@ describe("FinancialsPage", () => {
       : []));
     vi.spyOn(api, "bankConfirmations").mockResolvedValue({
       year: 2026, coveredMonths: ["2026-09"], unconfirmedBillMonths: 1, purchaseOrders: [],
-      bills: [{ billId: "bill-sw", name: "Software Co", month: "2026-09", scheduled: 49, status: "unconfirmed", line: null }],
+      bills: [{ billId: "bill-sw", name: "Software Co", month: "2026-09", scheduled: 49, status: "unconfirmed", line: null, card: null }],
     });
 
     renderWithProviders(<FinancialsPage />);

@@ -2328,8 +2328,12 @@ export type BankConfirmations = {
     name: string;
     month: string;
     scheduled: number;
+    /** "confirmed" when a bank line OR a card charge paid it. */
     status: Exclude<BankConfirmationStatus, "not_on_bank">;
+    /** The bank line that confirmed it; the scheduled amount stays the money. */
     line: { id: string; postedAt: string; amount: number; description: string; variance: number } | null;
+    /** The card charge that paid it (2026-09-21): then the charge is the expense and the scheduled amount is OFF the P&L. */
+    card: { spendId: string; occurredAt: string; amount: number; merchant: string } | null;
   }[];
   purchaseOrders: {
     purchaseOrderId: string;

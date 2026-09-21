@@ -569,13 +569,17 @@ export function BillConfirmationNote({ billId, confirmations }: { billId: string
   if (!confirmations) return null;
   const rows = confirmations.bills.filter((b) => b.billId === billId);
   if (rows.length === 0) return null;
-  const confirmed = rows.filter((r) => r.status === "confirmed");
+  // A month a CARD charge paid is off the P&L as a bill — the charge is the expense (Kyle,
+  // 2026-09-21). Said here so the Bills card explains why that month's amount is not in Expenses.
+  const onCard = rows.filter((r) => r.card);
+  const confirmed = rows.filter((r) => r.status === "confirmed" && !r.card);
   const missing = rows.filter((r) => r.status === "unconfirmed");
   const variance = confirmed.filter((r) => r.line && Math.abs(r.line.variance) > 0.009);
-  if (confirmed.length === 0 && missing.length === 0) return <span className="text-[11px] text-rce-muted">no statement covers it yet</span>;
+  if (confirmed.length === 0 && missing.length === 0 && onCard.length === 0) return <span className="text-[11px] text-rce-muted">no statement covers it yet</span>;
   return (
     <span className="text-[11px]">
-      {confirmed.length > 0 && <span className="text-emerald-700">confirmed {confirmed.map((r) => r.month.slice(5)).join(", ")}</span>}
+      {onCard.length > 0 && <span className="text-emerald-700">paid on the card {onCard.map((r) => r.month.slice(5)).join(", ")} — the charge is the expense, not this amount</span>}
+      {confirmed.length > 0 && <span className="text-emerald-700">{onCard.length > 0 ? " · " : ""}confirmed {confirmed.map((r) => r.month.slice(5)).join(", ")}</span>}
       {variance.length > 0 && <span className="text-amber-800"> · bank paid {variance.map((r) => `${money(-r.line!.amount)} in ${r.month.slice(5)}`).join(", ")} — edit the amount if it stuck</span>}
       {missing.length > 0 && <span className="text-red-700"> · not on the statement: {missing.map((r) => r.month.slice(5)).join(", ")} — stopped paying it?</span>}
     </span>

@@ -32,7 +32,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { computeDraft, finalizeDraft } from "./atomicEstimateService";
 import { rowTypeSells } from "./atomicEstimateEngine";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
@@ -878,23 +878,46 @@ async function applySignature(
     boughtSubtotals + (issuedWith?.tripCharge ?? 0) - (comboCap.applied ? comboCap.reduction : 0),
   );
 
-  const result = await prisma.issuedEstimate.updateMany({
-    where: { id: estimateId, signedAt: null },
-    data: {
-      selectedOptions: bought as never,
-      comboCapJson: JSON.stringify(comboCap),
-      discountJson: discount ? JSON.stringify(discount) : null,
-      signedAt: new Date(),
-      signatureImage: drawn.dataUrl,
-      signerName: name,
-      signerIp: input.ip ?? null,
-      signerUserAgent: input.userAgent ?? null,
-      consentText: CONSENT_TEXT,
-      signedChannel: channel,
-      status: "signed",
-    },
+  /*
+    The signature and the invoice it takes over are ONE transaction (2026-09-21, PUNCHLIST A1):
+    if this row is the signed revision of an estimate the customer had already signed, the old
+    signed row's change orders, payments and job move here before anyone can read the new
+    signature — see adoptSupersededInvoice. Either both happen or the customer sees an error and
+    signs again; a signature recorded with the money left behind on a row nothing lists would be
+    the defect this exists to remove.
+  */
+  const signed = await prisma.$transaction(async (tx) => {
+    const result = await tx.issuedEstimate.updateMany({
+      where: { id: estimateId, signedAt: null },
+      data: {
+        selectedOptions: bought as never,
+        comboCapJson: JSON.stringify(comboCap),
+        discountJson: discount ? JSON.stringify(discount) : null,
+        signedAt: new Date(),
+        signatureImage: drawn.dataUrl,
+        signerName: name,
+        signerIp: input.ip ?? null,
+        signerUserAgent: input.userAgent ?? null,
+        consentText: CONSENT_TEXT,
+        signedChannel: channel,
+        status: "signed",
+      },
+    });
+    if (result.count === 0) return { signed: false as const, adopted: null };
+    const adopted = await adoptSupersededInvoice(tx, estimateId, channel === "in_person" ? "customer:in-person" : "customer");
+    return { signed: true as const, adopted };
   });
-  if (result.count === 0) return { ok: false, reason: "This estimate has already been signed." };
+  if (!signed.signed) return { ok: false, reason: "This estimate has already been signed." };
+  if (signed.adopted) {
+    const a = signed.adopted;
+    logSystemEvent("info", "issued-estimate", `Estimate ${number} rev ${revision} signed — took over the invoice from rev ${a.replaced.map((r) => r.revision).join(", ")}: ${a.changeOrders} change order(s), ${a.payments} payment(s), ${a.jobVisitId ? "same job" : "no job to inherit"}`, {
+      estimateId,
+      replacedEstimateIds: a.replaced.map((r) => r.id),
+      changeOrders: a.changeOrders,
+      payments: a.payments,
+      jobVisitId: a.jobVisitId,
+    });
+  }
 
   const where = channel === "in_person" ? "in person on the operator's device" : "from the emailed link";
   await prisma.issuedEstimateEvent.create({
@@ -979,6 +1002,114 @@ async function fileSignedCopies(prisma: PrismaClient, estimateId: string, number
 }
 
 // ─── Revision ───────────────────────────────────────────────────────────────────
+
+export interface AdoptedInvoice {
+  /** The signed, live revisions this one replaced — normally exactly one. */
+  replaced: { id: string; number: string; revision: number }[];
+  changeOrders: number;
+  payments: number;
+  /** The job inherited from the replaced revision, when it had a live one. */
+  jobVisitId: string | null;
+}
+
+/**
+ * A SIGNED revision takes over the invoice of the signed revision it replaces (2026-09-21,
+ * PUNCHLIST A1 — and the larger form of it: the old signed root vanished from /invoices the
+ * moment a revision was created, and if the revision was then signed the P&L counted both).
+ *
+ * WHEN: at the new revision's signature, inside the signature's own transaction — never at
+ * revise time. Until the revision is signed the OLD row is the only agreement the customer has
+ * signed: it stays the invoice, its change orders stay on it, its deposit stays on it, and the
+ * job stays its job. Re-pointing anything at an unsigned draft would hide it all behind a row
+ * /invoices does not list — and if the draft were never signed, hang real money off a document
+ * nobody agreed to.
+ *
+ * WHAT MOVES, all by the same rule ("the invoice is the newest SIGNED revision of the number"):
+ *   - change orders: `changeOrderForId` now names this row, which is the ROOT (constants: the
+ *     column always names the root — and the root changed);
+ *   - payments: `Payment.estimateId` now names this row, the way a new payment recorded against
+ *     a change order is written on the root — the money sits on the live root by construction,
+ *     so every reader (paymentSummary, /invoices, GET /jobs, the account, the receipts) sees it
+ *     without knowing about revisions;
+ *   - the job: this row takes the old revision's `jobVisitId` when that job is still live, and
+ *     the job's "contracted for" figure moves by the difference between the two totals. A
+ *     completed or cancelled job is not inherited — createJobFromSignedEstimate then mints a
+ *     fresh one, exactly as it does for a change order whose parent's job is gone.
+ *   - the old revision is VOIDED with the reason written down. Void is the one status a signed
+ *     row may move to (PUNCHLIST A9's allow-list rests on that), it is already excluded from
+ *     every money surface, and a superseded signed document is a dead document — the vocabulary
+ *     the lost migration wrote down ("void is ... wrong price, superseded, job cancelled").
+ *
+ * Unsigned revisions between the two (a draft re-issued several times before it was sent) are
+ * walked through; a replaced revision that is already void (Kyle voided it, then revised it)
+ * has nothing live to hand over and is left alone. Idempotent per signature: a row is signed
+ * once, so this runs once for it.
+ */
+export async function adoptSupersededInvoice(
+  tx: Prisma.TransactionClient,
+  estimateId: string,
+  actor: string,
+): Promise<AdoptedInvoice | null> {
+  const select = { id: true, number: true, revision: true, total: true, signedAt: true, voidedAt: true, status: true, jobVisitId: true, supersedesId: true } as const;
+  const me = await tx.issuedEstimate.findUnique({ where: { id: estimateId }, select });
+  if (!me?.supersedesId) return null;
+
+  const chain: (typeof me)[] = [];
+  let cursor = me;
+  for (let hop = 0; cursor.supersedesId && hop < 25; hop += 1) {
+    const prev = await tx.issuedEstimate.findUnique({ where: { id: cursor.supersedesId }, select });
+    if (!prev) break;
+    chain.push(prev);
+    cursor = prev;
+  }
+  const replaced = chain.filter((r) => r.signedAt && !r.voidedAt && r.status === "signed");
+  if (replaced.length === 0) return null;
+  const replacedIds = replaced.map((r) => r.id);
+
+  const [changeOrders, payments] = await Promise.all([
+    tx.issuedEstimate.updateMany({ where: { changeOrderForId: { in: replacedIds } }, data: { changeOrderForId: me.id } }),
+    tx.payment.updateMany({ where: { estimateId: { in: replacedIds } }, data: { estimateId: me.id } }),
+  ]);
+
+  // The job: the nearest replaced revision's, if it is still live.
+  let jobVisitId: string | null = null;
+  const donor = replaced.find((r) => r.jobVisitId);
+  if (donor?.jobVisitId) {
+    const job = await tx.visit.findUnique({ where: { id: donor.jobVisitId }, select: { id: true, status: true, estimatedCost: true } });
+    if (job && job.status !== "cancelled" && job.status !== "completed") {
+      await tx.issuedEstimate.update({ where: { id: me.id }, data: { jobVisitId: job.id } });
+      await tx.visit.update({
+        where: { id: job.id },
+        data: { estimatedCost: Math.round(((job.estimatedCost ?? 0) - donor.total + me.total) * 100) / 100 },
+      });
+      jobVisitId = job.id;
+    }
+  }
+
+  const now = new Date();
+  const summary = `${changeOrders.count} change order(s), ${payments.count} payment(s)${jobVisitId ? ", the job" : ""}`;
+  await tx.issuedEstimate.updateMany({
+    where: { id: { in: replacedIds } },
+    data: { status: "void", voidedAt: now, voidReason: `Replaced by signed revision ${me.revision} — its ${summary} moved there.` },
+  });
+  await tx.issuedEstimateEvent.createMany({
+    data: [
+      ...replaced.map((r) => ({
+        estimateId: r.id,
+        type: "voided",
+        actor,
+        detail: `Rev ${me.revision} was signed and took over this invoice: ${summary} now sit on rev ${me.revision}.`,
+      })),
+      {
+        estimateId: me.id,
+        type: "invoice_taken_over",
+        actor,
+        detail: `Took over the invoice from rev ${replaced.map((r) => r.revision).join(", ")}: ${summary}.`,
+      },
+    ],
+  });
+  return { replaced: replaced.map((r) => ({ id: r.id, number: r.number, revision: r.revision })), changeOrders: changeOrders.count, payments: payments.count, jobVisitId };
+}
 
 /**
  * Supersede an issued estimate with a new revision built from the draft as it stands now.

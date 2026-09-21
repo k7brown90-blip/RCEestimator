@@ -9,7 +9,9 @@
  *      and payroll) and the once-only rule tests/bankImport.test.ts pins.
  *
  *   2. What is still provisional?  `confirmationsForYear` — every scheduled bill-month and
- *      every typed not-on-card P.O. amount, with whether a bank line confirmed it. A
+ *      every typed not-on-card P.O. amount, with whether a bank line confirmed it — or, for a
+ *      bill-month, whether a CARD charge paid it (then the charge is the expense and the
+ *      scheduled amount is off the P&L; Kyle, 2026-09-21). A
  *      bill-month a statement COVERS but nothing confirms is the prize Kyle asked for: "a
  *      bill you may have stopped paying, and now it is visible" (PUNCHLIST A6).
  *
@@ -20,7 +22,7 @@
  */
 
 import { prisma } from "../lib/prisma";
-import { billMonthsInYear } from "./companyBills";
+import { billMonthKey, billMonthsInYear, cardConfirmedBillMonths, monthKeyOf } from "./companyBills";
 import { EXCLUDE_TEST_JOB } from "./accountSpine";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -112,9 +114,16 @@ export interface BillMonthConfirmation {
   /** "YYYY-MM" */
   month: string;
   scheduled: number;
+  /** "confirmed" when a bank line OR a card charge paid it. */
   status: Exclude<ConfirmationStatus, "not_on_bank">;
-  /** The confirming line, when confirmed — and how far the bank's figure sat from the scheduled amount. */
+  /** The confirming bank line, when one did — and how far the bank's figure sat from the scheduled amount. The scheduled amount stays the money. */
   line: { id: string; postedAt: Date; amount: number; description: string; variance: number } | null;
+  /**
+   * The card charge that paid it, when one did (Kyle, 2026-09-21, "the actual charge is the
+   * source of truth" — PUNCHLIST M6). When this is set the scheduled amount is NOT on the P&L:
+   * the charge is, at its own amount, as card spend. services/companyBills.ts is the matcher.
+   */
+  card: { spendId: string; occurredAt: Date; amount: number; merchant: string } | null;
 }
 
 export interface PoConfirmation {
@@ -141,7 +150,7 @@ export interface Confirmations {
 export async function confirmationsForYear(year: number): Promise<Confirmations> {
   const from = new Date(`${year}-01-01`);
   const to = new Date(`${year + 1}-01-01`);
-  const [bills, pos, lines, covered] = await Promise.all([
+  const [bills, pos, lines, covered, paidOnCard] = await Promise.all([
     prisma.companyBill.findMany({ orderBy: { name: "asc" } }),
     prisma.purchaseOrder.findMany({
       where: { AND: [EXCLUDE_TEST_JOB, { offCardAmount: { not: null }, offCardAt: { gte: from, lt: to } }] },
@@ -153,6 +162,7 @@ export async function confirmationsForYear(year: number): Promise<Confirmations>
       select: { id: true, postedAt: true, amount: true, description: true, matchedKind: true, matchedId: true, matchedMonth: true },
     }),
     coveredMonths(year),
+    cardConfirmedBillMonths(prisma),
   ]);
   const byBillMonth = new Map(lines.filter((l) => l.matchedKind === "company_bill").map((l) => [`${l.matchedId}:${l.matchedMonth}`, l]));
   const byPo = new Map(lines.filter((l) => l.matchedKind === "po_off_card").map((l) => [l.matchedId!, l]));
@@ -160,15 +170,17 @@ export async function confirmationsForYear(year: number): Promise<Confirmations>
   const billRows: BillMonthConfirmation[] = [];
   for (const bill of bills) {
     for (const hit of billMonthsInYear(bill, year)) {
-      const month = `${year}-${String(hit.month + 1).padStart(2, "0")}`;
-      const line = byBillMonth.get(`${bill.id}:${month}`);
+      const month = monthKeyOf(year, hit.month);
+      const line = byBillMonth.get(billMonthKey(bill.id, month));
+      const card = paidOnCard.get(billMonthKey(bill.id, month));
       billRows.push({
         billId: bill.id,
         name: bill.name,
         month,
         scheduled: hit.amount,
-        status: line ? "confirmed" : covered.has(month) ? "unconfirmed" : "not_imported",
+        status: line || card ? "confirmed" : covered.has(month) ? "unconfirmed" : "not_imported",
         line: line ? { id: line.id, postedAt: line.postedAt, amount: line.amount, description: line.description, variance: round2(-line.amount - hit.amount) } : null,
+        card: card ? { spendId: card.spendId, occurredAt: card.occurredAt, amount: card.amount, merchant: card.merchant } : null,
       });
     }
   }

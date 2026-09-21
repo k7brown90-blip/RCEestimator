@@ -791,7 +791,8 @@ async function jobChargedOnLanding(tx: Tx, poJobId: string): Promise<{ jobId: st
     where: {
       visitId: poJobId,
       AND: [{ jobVisitId: { not: null } }, { jobVisitId: { not: poJobId } }],
-      signedAt: { not: null }, voidedAt: null, status: { not: "void" },
+      // signed, live — the allow-list (2026-09-21, PUNCHLIST A9), same as services/invoiceGroup.ts LIVE_SIGNED.
+      signedAt: { not: null }, voidedAt: null, status: "signed",
     },
     orderBy: { createdAt: "desc" },
     select: { number: true, jobVisitId: true },

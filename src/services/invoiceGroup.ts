@@ -141,15 +141,44 @@ export function documentOf(row: InvoiceDocRow): InvoiceDocument {
 }
 
 /**
- * A change order that counts: signed, not void, not superseded. `status` is an ALLOW-LIST
- * (2026-09-20): `not: "void"` let every status nobody had thought of — lost was the first — roll
- * into the invoice and the technician's brief. A signed row's status is "signed"; anything else
- * is not agreed work.
+ * A signed row that is still agreed work: signed, not void. `status` is an ALLOW-LIST
+ * (2026-09-20, extended to every money site 2026-09-21 — PUNCHLIST A9): `not: "void"` let every
+ * status nobody had thought of — lost was the first — roll into the invoice and the technician's
+ * brief. A signed row's status is "signed" and the only status it can ever move to is "void"
+ * (every writer of IssuedEstimate.status was audited: the send path keeps it, the view path
+ * returns early, the expiry sweep and the lost route refuse a signed row, and a revision never
+ * touches the row it supersedes). Anything else is not agreed work.
  */
-export const LIVE_SIGNED_CHANGE_ORDER = {
+export const LIVE_SIGNED = {
   signedAt: { not: null },
   voidedAt: null,
   status: "signed",
+} as const;
+
+/** The in-memory twin of LIVE_SIGNED, for rows a list route already loaded. */
+export function isLiveSigned(row: { signedAt: Date | null; voidedAt: Date | null; status: string }): boolean {
+  return Boolean(row.signedAt) && !row.voidedAt && row.status === "signed";
+}
+
+/**
+ * ROOT FIRST (2026-09-20; shared in-memory form 2026-09-21, PUNCHLIST A11): among a job's live
+ * signed rows, NEWEST FIRST, the estimate that owns the job is the newest ROOT — never a change
+ * order, however recent. A change order stands in only when the job has no root at all (legacy
+ * data). `signedRootForJob` and GET /jobs both apply this so the payment panel and the job card
+ * cannot name different documents.
+ */
+export function rootFirst<T extends { changeOrderForId: string | null }>(rowsNewestFirst: readonly T[]): T | null {
+  return rowsNewestFirst.find((r) => !r.changeOrderForId) ?? rowsNewestFirst[0] ?? null;
+}
+
+/**
+ * A change order that counts: signed, not void, not superseded (a change order revised into an
+ * unsigned revision keeps counting until that revision is signed — then the old row is void,
+ * see issuedEstimateService.ts adoptSupersededInvoice — so `supersededBy: null` here only ever
+ * hides a row that is void anyway; it is kept as belt and braces).
+ */
+export const LIVE_SIGNED_CHANGE_ORDER = {
+  ...LIVE_SIGNED,
   supersededBy: null,
 } as const;
 
@@ -199,6 +228,24 @@ export async function loadInvoiceGroup(prisma: PrismaClient, estimateId: string)
     if (!parent || parent.voidedAt || parent.status === "void" || parent.status === "lost") break;
     row = parent as InvoiceDocRow;
   }
+  /*
+    FORWARD, too (2026-09-21, PUNCHLIST A1): a signed root that was revised and whose revision
+    has since been SIGNED is history — its change orders, its payments and its job moved onto the
+    revision the moment that was signed (issuedEstimateService.ts adoptSupersededInvoice), and
+    it was voided with that reason. Asked about the old row (a stale tab, a receipt's provenance
+    column), this answers about the newest SIGNED revision in its chain, where the money now is.
+    Unsigned revisions in between are stepped over; while NO later revision is signed, the old
+    row is still the invoice and this loop changes nothing.
+  */
+  let cursor: { id: string } = row;
+  let live = row;
+  for (let hop = 0; hop < 25; hop += 1) {
+    const next = await prisma.issuedEstimate.findUnique({ where: { supersedesId: cursor.id }, select: INVOICE_DOC_SELECT });
+    if (!next) break;
+    cursor = next;
+    if (next.signedAt) live = next as InvoiceDocRow;
+  }
+  row = live;
   const changeOrders = await prisma.issuedEstimate.findMany({
     where: { changeOrderForId: row.id, ...LIVE_SIGNED_CHANGE_ORDER },
     orderBy: { signedAt: "asc" },
@@ -227,21 +274,15 @@ export async function signedRootForJob(
   prisma: PrismaClient,
   jobId: string,
 ): Promise<InvoiceDocRow | null> {
-  const where = {
-    signedAt: { not: null },
-    voidedAt: null,
-    status: "signed",
-    OR: [{ jobVisitId: jobId }, { visitId: jobId }],
-  };
-  const root = await prisma.issuedEstimate.findFirst({
-    where: { ...where, changeOrderForId: null },
+  const rows = await prisma.issuedEstimate.findMany({
+    where: { ...LIVE_SIGNED, OR: [{ jobVisitId: jobId }, { visitId: jobId }] },
     orderBy: { createdAt: "desc" },
     select: INVOICE_DOC_SELECT,
-  });
-  if (root) return root as InvoiceDocRow;
-  const any = await prisma.issuedEstimate.findFirst({ where, orderBy: { createdAt: "desc" }, select: { id: true } });
-  if (!any) return null;
-  const group = await loadInvoiceGroup(prisma, any.id);
+  }) as InvoiceDocRow[];
+  const pick = rootFirst(rows);
+  if (!pick) return null;
+  if (!pick.changeOrderForId) return pick;
+  const group = await loadInvoiceGroup(prisma, pick.id);
   return group?.root ?? null;
 }
 
@@ -257,7 +298,7 @@ export function groupSignedRows<T extends InvoiceDocRow>(rows: T[]): Map<string,
     if (!r.changeOrderForId || !byId.has(r.changeOrderForId)) out.set(r.id, { root: r, changeOrders: [] });
   }
   for (const r of rows) {
-    if (r.changeOrderForId && out.has(r.changeOrderForId) && r.signedAt && !r.voidedAt && r.status === "signed") {
+    if (r.changeOrderForId && out.has(r.changeOrderForId) && isLiveSigned(r)) {
       out.get(r.changeOrderForId)!.changeOrders.push(r);
     }
   }
