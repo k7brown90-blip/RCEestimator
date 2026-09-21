@@ -254,7 +254,17 @@ describe("the legacy catalog itself is untouched", () => {
   it("AtomicUnit is still a model with its EstimateItem relation", () => {
     const schema = SRC("prisma/schema.prisma");
     expect(schema).toContain("model AtomicUnit");
-    expect(schema).toContain("estimateItems        EstimateItem[]");
+    /*
+      Matched with a whitespace-tolerant pattern, not an exact string (changed
+      2026-09-21). This asserted `"estimateItems        EstimateItem[]"` with
+      eight literal spaces, which pinned prisma's COLUMN ALIGNMENT rather than
+      the relation. `prisma format` re-aligns a model whenever its longest field
+      or type name changes — a routine, meaningless edit anywhere else in
+      AtomicUnit would fail this test while the relation it is about stayed
+      exactly where it is. What the test is for is that the legacy catalog still
+      has its EstimateItem relation; that is what it checks now.
+    */
+    expect(schema).toMatch(/model AtomicUnit \{[\s\S]*?\n\s*estimateItems\s+EstimateItem\[\][\s\S]*?\n\}/);
   });
 
   it("its rows still exist and are still readable directly", async () => {

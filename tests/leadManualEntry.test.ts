@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
 vi.mock("../src/services/twilio");
@@ -21,6 +21,9 @@ const PHONE_STORED = "(615) 555-0142"; // deliberately punctuated — see below
 const PHONE_TYPED = "615-555-0142";     // a third formatting of the same number
 
 async function wipe() {
+  await prisma.emailListMember.deleteMany({ where: { email: { contains: "lme-" } } });
+  await prisma.emailSuppression.deleteMany({ where: { email: { contains: "lme-" } } });
+  await prisma.systemEvent.deleteMany({ where: { source: "leads-won" } });
   await prisma.lead.deleteMany({ where: { name: { startsWith: TAG } } });
   await prisma.visit.deleteMany({ where: { customer: { name: { startsWith: TAG } } } });
   await prisma.systemSnapshot.deleteMany({ where: { property: { customer: { name: { startsWith: TAG } } } } });
@@ -152,6 +155,21 @@ describe("PATCH /leads/:leadId", () => {
       .patch(`/leads/${created.body.lead.id}`)
       .send({ status: "lost", lostReason: "vibes" })
       .expect(400);
+  });
+
+  it("refuses status:\"converted\" — conversion is its own endpoint", async () => {
+    // Dashboard's old "Mark Won" button PATCHed status:"converted" directly here,
+    // minting a converted lead with no account/property/job behind it — and a
+    // converted lead can never be deleted (2026-09-20 drawers plan).
+    const created = await request(app).post("/crm/leads").send(newLead()).expect(201);
+    const res = await request(app)
+      .patch(`/leads/${created.body.lead.id}`)
+      .send({ status: "converted" })
+      .expect(400);
+    expect(res.body.error).toMatch(/convert/i);
+
+    const after = await prisma.lead.findUniqueOrThrow({ where: { id: created.body.lead.id } });
+    expect(after.status).not.toBe("converted");
   });
 });
 
@@ -343,5 +361,211 @@ describe("PATCH /leads/:leadId/convert", () => {
     });
     expect(snapshot.deficienciesJson).toBe("[]");
     expect(snapshot.changeLogJson).toBe("[]");
+  });
+});
+
+/**
+ * CONVERTING A LEAD MAKES AN OPPORTUNITY (Kyle, 2026-09-20, the four-phase funnel).
+ *
+ * "When a lead gets converted it should be considered an opportunity." Two of his three rulings
+ * land here: the platform is carried onto the Customer at convert (ruling 1 — without it phase 4
+ * of the funnel can never be read by phase 1's dimension), and converting enrols the account on
+ * the newsletter list (ruling 2 — that enrolment is part of what MAKES it an opportunity).
+ */
+describe("converting a lead makes an opportunity", () => {
+  const defaultListMember = (email: string) =>
+    prisma.emailListMember.findFirst({ where: { email } });
+
+  it("carries the platform onto a NEW account", async () => {
+    const created = await request(app)
+      .post("/crm/leads")
+      .send(newLead({ name: `${TAG} Google Lead`, platform: "google" }))
+      .expect(201);
+    expect(created.body.lead.platform).toBe("google");
+
+    const res = await request(app)
+      .patch(`/leads/${created.body.lead.id}/convert`)
+      .send({ createNewAccount: true })
+      .expect(200);
+
+    expect(res.body.customer.platform).toBe("google");
+  });
+
+  it("leaves an existing account's platform alone — it is an acquisition fact, not the latest lead's", async () => {
+    // An account that already exists was acquired earlier, by definition. Stamping it with this
+    // lead's platform (most often "repeat_customer") would make phase 4 read its own output.
+    const tagged = await prisma.customer.create({
+      data: { name: `${TAG} Tagged`, phone: "615-555-0301", platform: "yelp" },
+    });
+    const untagged = await prisma.customer.create({
+      data: { name: `${TAG} Untagged`, phone: "615-555-0302" },
+    });
+
+    for (const account of [tagged, untagged]) {
+      const created = await request(app)
+        .post("/crm/leads")
+        .send(newLead({ name: `${TAG} Repeat ${account.id}`, platform: "repeat_customer" }))
+        .expect(201);
+      await request(app)
+        .patch(`/leads/${created.body.lead.id}/convert`)
+        .send({ customerId: account.id })
+        .expect(200);
+    }
+
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: tagged.id } })).platform).toBe("yelp");
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: untagged.id } })).platform).toBeNull();
+  });
+
+  it("adds the account to the newsletter list", async () => {
+    const created = await request(app)
+      .post("/crm/leads")
+      .send(newLead({ name: `${TAG} Newsletter`, email: "lme-newsletter@example.com" }))
+      .expect(201);
+
+    const res = await request(app)
+      .patch(`/leads/${created.body.lead.id}/convert`)
+      .send({ createNewAccount: true })
+      .expect(200);
+
+    expect(res.body.newsletter.enrolled).toBe(true);
+    const member = await defaultListMember("lme-newsletter@example.com");
+    expect(member).not.toBeNull();
+    expect(member!.leadId).toBe(created.body.lead.id);
+  });
+
+  it("never re-adds an address that unsubscribed, and converts anyway", async () => {
+    await prisma.emailSuppression.create({ data: { email: "lme-gone@example.com" } });
+    const created = await request(app)
+      .post("/crm/leads")
+      .send(newLead({ name: `${TAG} Unsubscribed`, email: "lme-gone@example.com" }))
+      .expect(201);
+
+    const res = await request(app)
+      .patch(`/leads/${created.body.lead.id}/convert`)
+      .send({ createNewAccount: true })
+      .expect(200);
+
+    // The opportunity is real; only the mailing list declined.
+    expect(res.body.visit.id).toBeTruthy();
+    expect(res.body.newsletter).toEqual(expect.objectContaining({ enrolled: false, reason: "unsubscribed" }));
+    expect(await defaultListMember("lme-gone@example.com")).toBeNull();
+  });
+
+  it("says there was no email rather than implying it enrolled", async () => {
+    const created = await request(app)
+      .post("/crm/leads")
+      .send(newLead({ name: `${TAG} No Email`, email: null }))
+      .expect(201);
+
+    const res = await request(app)
+      .patch(`/leads/${created.body.lead.id}/convert`)
+      .send({ createNewAccount: true })
+      .expect(200);
+
+    expect(res.body.newsletter).toEqual({ enrolled: false, reason: "no_email" });
+  });
+});
+
+/**
+ * PATCH /leads/:id/won — the automation door (PUNCHLIST A2).
+ *
+ * It used to write `status: "converted"` with no account, property or job behind it: the same
+ * orphan-lead bug the Dashboard's "Mark Won" had, on a webhook-secret route with no consumer in
+ * this repo. Kyle's ruling 3: make it CONVERT, return a clear error when it cannot, and log every
+ * call so the closing audit can see whether anything calls it at all.
+ */
+describe("PATCH /leads/:id/won", () => {
+  const SECRET = "lme-webhook-secret";
+  let previousSecret: string | undefined;
+
+  beforeAll(() => {
+    previousSecret = process.env.WEBHOOK_SECRET;
+    process.env.WEBHOOK_SECRET = SECRET;
+  });
+  afterAll(() => {
+    if (previousSecret === undefined) delete process.env.WEBHOOK_SECRET;
+    else process.env.WEBHOOK_SECRET = previousSecret;
+  });
+
+  /** logSystemEvent is fire-and-forget, so the row lands just after the response. */
+  const wonEvents = async () => {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const rows = await prisma.systemEvent.findMany({ where: { source: "leads-won" } });
+      if (rows.length > 0) return rows;
+      await new Promise((resolve) => { setTimeout(resolve, 25); });
+    }
+    return prisma.systemEvent.findMany({ where: { source: "leads-won" } });
+  };
+
+  it("still requires the webhook secret", async () => {
+    const created = await request(app).post("/crm/leads").send(newLead({ name: `${TAG} NoSecret` })).expect(201);
+    await request(app).patch(`/leads/${created.body.lead.id}/won`).send({}).expect(401);
+  });
+
+  it("converts the lead instead of stamping a status onto nothing", async () => {
+    const created = await request(app)
+      .post("/crm/leads")
+      .send(newLead({ name: `${TAG} Automation`, platform: "angi" }))
+      .expect(201);
+
+    const res = await request(app)
+      .patch(`/leads/${created.body.lead.id}/won`)
+      .set("webhook_secret", SECRET)
+      .send({})
+      .expect(200);
+
+    // The lead row is still the response, so an external caller reads the same fields.
+    expect(res.body.id).toBe(created.body.lead.id);
+    expect(res.body.status).toBe("converted");
+    // And an account, an address and a job now exist behind it.
+    expect(res.body.opportunity.customer.platform).toBe("angi");
+    expect(res.body.opportunity.property.addressLine1).toBe("220 Oak St");
+    expect(res.body.opportunity.visit.id).toBeTruthy();
+    const lead = await prisma.lead.findUniqueOrThrow({ where: { id: created.body.lead.id } });
+    expect(lead.customerId).toBe(res.body.opportunity.customer.id);
+    expect(lead.visitId).toBe(res.body.opportunity.visit.id);
+  });
+
+  it("refuses with a clear error when there is no address, writing nothing", async () => {
+    const created = await request(app)
+      .post("/crm/leads")
+      .send({ name: `${TAG} Addressless`, phone: "615-555-0303" })
+      .expect(201);
+    const before = await countCustomers();
+
+    const res = await request(app)
+      .patch(`/leads/${created.body.lead.id}/won`)
+      .set("webhook_secret", SECRET)
+      .send({})
+      .expect(400);
+
+    expect(res.body.needs).toBe("address");
+    expect(await countCustomers()).toBe(before);
+    // Nothing was written, so the lead is still fixable and still deletable.
+    await request(app).delete(`/leads/${created.body.lead.id}`).expect(204);
+  });
+
+  it("refuses when the account might already exist", async () => {
+    await prisma.customer.create({ data: { name: `${TAG} Existing`, phone: PHONE_STORED } });
+    const created = await request(app).post("/crm/leads").send(newLead({ name: `${TAG} Duplicate` })).expect(201);
+
+    const res = await request(app)
+      .patch(`/leads/${created.body.lead.id}/won`)
+      .set("webhook_secret", SECRET)
+      .send({})
+      .expect(409);
+
+    expect(res.body.error).toBe("Possible duplicate account");
+    expect(res.body.matches[0].name).toBe(`${TAG} Existing`);
+  });
+
+  it("logs every call, so the closing audit can see whether anything calls it", async () => {
+    const created = await request(app).post("/crm/leads").send(newLead({ name: `${TAG} Logged` })).expect(201);
+    await request(app).patch(`/leads/${created.body.lead.id}/won`).set("webhook_secret", SECRET).send({}).expect(200);
+
+    const events = await wonEvents();
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0].route).toBe("PATCH /leads/:id/won");
+    expect(events[0].detailsJson).toContain(created.body.lead.id);
   });
 });

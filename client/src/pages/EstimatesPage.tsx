@@ -24,27 +24,40 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { AttentionStrip } from "../components/AttentionStrip";
 import { BounceBadge } from "../components/BounceBadge";
 import { DeliveryChip } from "../components/DeliveryChip";
+import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api } from "../lib/api";
+import { useDrawerParams } from "../lib/drawers";
 import type { PbChainRow } from "../lib/types";
 import { money } from "../lib/utils";
 
 /** Rows shown per card before "Show more" — the page never grows on its own. */
 const PAGE_SIZE = 8;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * A quote out this long with no signature is stale (the attention strip, 2026-09-20). A week
+ * is the strip's threshold, not a business rule: `validDays` (30) is when a quote EXPIRES;
+ * this is when it deserves a call.
+ */
+const STALE_DAYS = 7;
 
 /** Where a row lives on this page. `gone` rows belong to the Jobs tab and are not shown at all. */
-type Bucket = "sent" | "viewed" | "sold" | "hidden" | "gone";
+type Bucket = "sent" | "viewed" | "sold" | "lost" | "hidden" | "gone";
 
 /**
  * The funnel position this row has reached, in Kyle's own sequence, and which card it lands in.
- * `hidden` rows (drafts, expired, void, superseded) sit behind the Sent card's toggle.
+ * `hidden` rows (drafts, expired, void, superseded) sit behind the Sent card's toggle. `lost`
+ * (Kyle, 2026-09-20) is its own VISIBLE card, not hidden: these are the quotes the customer
+ * turned down — the other half of the win rate — and until they had a home the Sent card was
+ * silently accumulating dead quotes.
  */
 function classify(row: PbChainRow, now: number): { bucket: Bucket; label: string; tone: string } {
   const quiet = "bg-rce-border/50 text-rce-soft";
   if (row.supersededBy) return { bucket: "hidden", label: "superseded", tone: quiet };
   if (row.status === "void") return { bucket: "hidden", label: "void", tone: quiet };
+  if (row.status === "lost") return { bucket: "lost", label: row.lostReason ? `lost — ${row.lostReason}` : "lost", tone: "bg-zinc-200 text-zinc-700" };
   if (row.signedAt) {
     // Sold = signed and NOT yet on the schedule. Once the job has a start (or is already
     // finished), it is the Jobs tab's row, not this page's.
@@ -64,13 +77,21 @@ function classify(row: PbChainRow, now: number): { bucket: Bucket; label: string
 
 type Classified = { row: PbChainRow; label: string; tone: string };
 
+/** The last email about this estimate bounced and nothing has been delivered since. */
+function bounceUnresolved(row: PbChainRow): boolean {
+  if (!row.lastBounceAt) return false;
+  const delivered = row.lastDelivery?.status === "delivered" ? row.lastDelivery.createdAt : null;
+  return !(delivered && new Date(delivered) > new Date(row.lastBounceAt));
+}
+
 export function EstimatesPage() {
   const { data, isLoading } = useQuery({ queryKey: ["estimate-chain"], queryFn: api.estimateChain });
   const rows = data?.estimates ?? [];
+  const drawers = useDrawerParams();
 
   const sections = useMemo(() => {
     const now = Date.now();
-    const out: Record<Exclude<Bucket, "gone">, Classified[]> = { sent: [], viewed: [], sold: [], hidden: [] };
+    const out: Record<Exclude<Bucket, "gone">, Classified[]> = { sent: [], viewed: [], sold: [], lost: [], hidden: [] };
     for (const row of rows) {
       const c = classify(row, now);
       if (c.bucket === "gone") continue;
@@ -79,11 +100,48 @@ export function EstimatesPage() {
     return out;
   }, [rows]);
 
+  /**
+   * The tab's question (attention strip, 2026-09-20): which quotes are stuck? A quote whose
+   * email bounced never reached the customer — that comes first. Then anything sent or opened
+   * more than STALE_DAYS ago with no signature. Derived from the chain this page already has;
+   * the strip is the page's own data read the other way round.
+   */
+  const attention = useMemo(() => {
+    const now = Date.now();
+    const out = [...sections.sent, ...sections.viewed];
+    const bounced = out.filter(({ row }) => bounceUnresolved(row));
+    const isStale = ({ row }: Classified) => !bounceUnresolved(row) && row.sentAt != null && now - new Date(row.sentAt).getTime() > STALE_DAYS * DAY_MS;
+    const staleSent = sections.sent.filter(isStale);
+    const staleViewed = sections.viewed.filter(isStale);
+    return { bounced, staleSent, staleViewed };
+  }, [sections]);
+
+  const attentionRow = ({ row, label }: Classified, why: string) => ({
+    key: row.id,
+    text: <>{row.account.name} — {money(row.billedTotal ?? row.total)}, {why}</>,
+    detail: `${row.number} · ${row.title} · ${label}${row.sentAt ? ` · sent ${new Date(row.sentAt).toLocaleDateString()}` : ""}`,
+    action: <OpenDrawerButton kind="estimate" id={row.id} onOpen={drawers.open} />,
+  });
+
   return (
     <div className="space-y-4 pb-24">
       <PageHeader
         title="Estimates"
-        subtitle="What has been sent, what the customer has opened, and what is sold but not yet scheduled"
+        subtitle="What has been sent, what the customer has opened, what is sold but not yet scheduled, and what was lost"
+      />
+
+      <AttentionStrip
+        chips={[
+          { key: "bounced", label: `${attention.bounced.length} never arrived (email bounced)`, count: attention.bounced.length, tone: "red" },
+          { key: "sent", label: `${attention.staleSent.length} sent, not opened in ${STALE_DAYS}+ days`, count: attention.staleSent.length },
+          { key: "viewed", label: `${attention.staleViewed.length} opened, unsigned ${STALE_DAYS}+ days`, count: attention.staleViewed.length },
+        ]}
+        rows={[
+          ...attention.bounced.map((c) => attentionRow(c, "email bounced")),
+          ...attention.staleSent.map((c) => attentionRow(c, `not opened in ${STALE_DAYS}+ days`)),
+          ...attention.staleViewed.map((c) => attentionRow(c, `opened, unsigned ${STALE_DAYS}+ days`)),
+        ]}
+        moreText="the rest are in the Sent and Viewed cards"
       />
 
       <div className="card p-3 text-xs text-rce-muted">
@@ -112,6 +170,12 @@ export function EstimatesPage() {
         subtitle="Signed, waiting to be put on the schedule"
         rows={sections.sold}
         emptyText="Nothing sold is waiting on a schedule date."
+      />
+      <SectionCard
+        title="Lost"
+        subtitle="The customer hired someone else or is not moving forward — open the estimate to reopen it"
+        rows={sections.lost}
+        emptyText="No estimates marked lost."
       />
     </div>
   );
@@ -207,15 +271,21 @@ function SectionCard({
   );
 }
 
-/** One estimate. Clicks through to the account, the same as the page always has. */
+/**
+ * One estimate. The body still clicks through to the account, the same as the page always
+ * has; the Open button beside the money opens the ESTIMATE's own drawer (2026-09-20) — view,
+ * resend, void, delete, its invoice — over this list. Two siblings, not a button in a link:
+ * an interactive element inside an anchor is invalid HTML.
+ */
 function EstimateRow({ row, label, tone }: Classified) {
   const addr = row.serviceAddress;
+  const drawers = useDrawerParams();
   return (
-    <Link
-      to={`/accounts/${row.account.id}`}
-      className="block rounded-lg border border-rce-border p-3 active:opacity-70 hover:border-rce-accent"
-    >
-      <div className="flex items-start justify-between gap-3">
+    <div className="flex items-start justify-between gap-3 rounded-lg border border-rce-border p-3 hover:border-rce-accent">
+      <Link
+        to={`/accounts/${row.account.id}`}
+        className="block min-w-0 flex-1 active:opacity-70"
+      >
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold">{row.account.name}</span>
@@ -242,16 +312,19 @@ function EstimateRow({ row, label, tone }: Classified) {
             </div>
           )}
         </div>
-        <div className="shrink-0 text-right">
-          <div className="font-semibold">{money(row.billedTotal ?? row.total)}</div>
-          {(row.warrantyCovered ?? 0) > 0 && (
-            <div className="text-[11px] text-green-700">warranty −{money(row.warrantyCovered ?? 0)}</div>
-          )}
-          <div className="text-xs text-rce-soft">
-            {new Date(row.createdAt).toLocaleDateString()}
-          </div>
+      </Link>
+      <div className="shrink-0 text-right">
+        <div className="font-semibold">{money(row.billedTotal ?? row.total)}</div>
+        {(row.warrantyCovered ?? 0) > 0 && (
+          <div className="text-[11px] text-green-700">warranty −{money(row.warrantyCovered ?? 0)}</div>
+        )}
+        <div className="text-xs text-rce-soft">
+          {new Date(row.createdAt).toLocaleDateString()}
+        </div>
+        <div className="mt-1">
+          <OpenDrawerButton kind="estimate" id={row.id} onOpen={drawers.open} label="Open" />
         </div>
       </div>
-    </Link>
+    </div>
   );
 }

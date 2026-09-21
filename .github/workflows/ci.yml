@@ -42,6 +42,16 @@ jobs:
       - name: Run test suite (pushes schema + seeds via globalSetup)
         run: npm run test
 
+      # The client CRM is a separate npm package with its own vitest project
+      # (Phase A, 2026-09-20 "drawers and tab purpose" plan) — before this the
+      # client had zero rendering tests: no jsdom, no testing-library, no test
+      # runner at all. It needs no database; API responses are mocked.
+      - name: Install client dependencies
+        run: npm --prefix client ci
+
+      - name: Run client render test suite
+        run: npm --prefix client run test
+
       # The field PWA is a separate npm package with its own vitest config, so the
       # root suite never covered it — the load-calc, scoring and schema tests were
       # running nowhere. It needs no database.
@@ -50,6 +60,15 @@ jobs:
 
       - name: Run field PWA test suite
         run: npm --prefix field run test
+
+      # Reporting only, not gating: `npm run lint` (client + field) currently has
+      # 44 + 17 = 61 pre-existing errors (mostly react-hooks/set-state-in-effect),
+      # none from this change. Phase A adds this step so lint runs in CI for the
+      # first time instead of never; failing the build on 61 pre-existing errors
+      # is a separate cleanup this plan explicitly did not authorize.
+      - name: Lint (client + field) — reporting only, see comment above
+        run: npm run lint
+        continue-on-error: true
 
       - name: Build (client + prisma generate + server tsc)
         run: npm run build

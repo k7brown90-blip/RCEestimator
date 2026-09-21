@@ -55,7 +55,7 @@ function LandingLineRemove({ poId, lineId, disabled, onRemoved }: { poId: string
     return (
       <button
         type="button"
-        className="text-red-600 hover:underline disabled:cursor-not-allowed disabled:text-rce-muted disabled:no-underline"
+        className="btn btn-danger px-2 py-0.5 text-xs min-h-0 disabled:cursor-not-allowed disabled:opacity-50"
         disabled={disabled}
         onClick={() => setRemoving(true)}
       >
@@ -69,7 +69,7 @@ function LandingLineRemove({ poId, lineId, disabled, onRemoved }: { poId: string
       <button type="button" className="btn btn-primary px-1.5 py-0 text-[11px]" disabled={disabled || !reason.trim() || remove.isPending} onClick={() => remove.mutate()}>
         Remove
       </button>
-      <button type="button" className="text-rce-muted" onClick={() => { setRemoving(false); setReason(""); setError(null); }}>cancel</button>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => { setRemoving(false); setReason(""); setError(null); }}>cancel</button>
       {error && <span className="w-full text-red-600">{error}</span>}
     </span>
   );
@@ -269,12 +269,12 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
         <span className="inline-flex flex-wrap items-center gap-1">
           <input className="field w-48 max-w-full px-1 py-0.5 text-xs" placeholder="Note (optional)" value={reason} onChange={(e) => setReason(e.target.value)} />
           {!inBalance && !overriding && (
-            <button type="button" className="text-amber-800 hover:underline" onClick={() => setOverriding(true)}>Land anyway</button>
+            <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => setOverriding(true)}>Land anyway</button>
           )}
           {!inBalance && overriding && (
             <>
               <input className="field w-52 max-w-full px-1 py-0.5 text-xs" placeholder="Why land out of balance? (required)" value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} />
-              <button type="button" className="text-rce-muted" onClick={() => { setOverriding(false); setOverrideReason(""); }}>cancel</button>
+              <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => { setOverriding(false); setOverrideReason(""); }}>cancel</button>
             </>
           )}
           <button

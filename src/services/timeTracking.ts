@@ -651,8 +651,9 @@ export interface PayrollWeek {
   /** The technician's CURRENT rate, or null (rule 6). */
   rate: number | null;
   rateSet: boolean;
+  /** Straight time on every hour worked, at each entry's own rate. */
   regularPay: number;
-  /** The extra 0.5× on the hours past 40 only. */
+  /** The extra 0.5× on the hours past 40 only (1.5× = regularPay's straight time + this). */
   overtimePremium: number;
   commissions: number;
   total: number;
@@ -671,12 +672,133 @@ export interface PayrollWeek {
 type Interval = [number, number];
 
 /** One stretch of payable time: a closed shift, or job time no shift covered. */
-interface PayableSegment {
+export interface PayableSegment {
   /** The ShiftEntry id, or null when this is job time outside every shift. */
   shiftId: string | null;
   startedAt: number;
   minutes: number;
   rateApplied: number | null;
+}
+
+/** The fields the payroll math reads off a ShiftEntry or TimeEntry row. */
+export interface PayableEntry {
+  id: string;
+  startedAt: Date;
+  endedAt: Date | null;
+  minutes: number | null;
+  rateApplied: number | null;
+  flaggedAt: Date | null;
+  confirmedAt: Date | null;
+}
+
+/**
+ * Rule 5 as a predicate on a loaded row (the Prisma-filter twin is COUNTS
+ * above): closed, with minutes, and either never flagged or answered for.
+ */
+export function entryCounts(e: Pick<PayableEntry, "flaggedAt" | "confirmedAt" | "endedAt" | "minutes">): boolean {
+  return e.endedAt != null && e.minutes != null && (e.flaggedAt == null || e.confirmedAt != null);
+}
+
+/**
+ * The payroll floor (2026-09-11). A payable segment is a closed shift, PLUS any
+ * job time that fell outside every shift. A tech who works a logged job but
+ * never punched the day clock still gets paid for those hours — without the
+ * floor his week reads zero pay even with a rate on file, which is exactly what
+ * Kyle saw: "No labor or pay tracked after pay and commissions were set."
+ *
+ * Job time INSIDE a shift adds nothing: it is already paid by the shift (rule 1
+ * — job time sits inside the shift). Shift hours + job hours would pay the same
+ * minutes twice; this is the one place that arithmetic lives, and the Team week
+ * and the P&L (services/payrollLedger.ts) both read it.
+ *
+ * `fallbackRate` is the technician's CURRENT rate, used only for an entry that
+ * closed before any rate existed (Kyle, 2026-09-11) — a frozen rate always wins.
+ */
+export function payableSegments(
+  shiftRows: PayableEntry[],
+  sessionRows: PayableEntry[],
+  fallbackRate: number | null,
+): PayableSegment[] {
+  const shiftWindows = mergeIntervals(
+    shiftRows.filter(entryCounts).map((s) => [s.startedAt.getTime(), s.endedAt!.getTime()] as Interval),
+  );
+  return [
+    ...shiftRows.filter(entryCounts).map((s) => ({
+      shiftId: s.id,
+      startedAt: s.startedAt.getTime(),
+      minutes: s.minutes ?? 0,
+      rateApplied: s.rateApplied ?? fallbackRate,
+    })),
+    ...sessionRows.filter(entryCounts).flatMap((e) =>
+      subtractIntervals([e.startedAt.getTime(), e.endedAt!.getTime()], shiftWindows).map(([from, to]) => ({
+        shiftId: null,
+        startedAt: from,
+        minutes: Math.round((to - from) / 60_000),
+        rateApplied: e.rateApplied ?? fallbackRate,
+      })),
+    ),
+  ]
+    .filter((seg) => seg.minutes > 0)
+    .sort((a, b) => a.startedAt - b.startedAt);
+}
+
+/** A segment after the 40-hour walk: how its minutes split, and what it pays. */
+export interface AttributedSegment extends PayableSegment {
+  regularMinutes: number;
+  overtimeMinutes: number;
+  /** regular pay + the 0.5× premium on this segment's overtime minutes; 0 when no rate is set. */
+  pay: number;
+  /** The premium alone, so a caller can report it apart from straight time. */
+  overtimePremium: number;
+}
+
+export interface WorkweekAttribution {
+  regularMinutes: number;
+  overtimeMinutes: number;
+  /** Straight time on EVERY minute worked, at each segment's own rate — UNROUNDED; callers round at the edge. */
+  regularPay: number;
+  /** The extra 0.5× on the minutes past 40 only — UNROUNDED. */
+  overtimePremium: number;
+  segments: AttributedSegment[];
+}
+
+/**
+ * Rule 8, the attribution. Walk ONE WORKWEEK's payable segments in the order
+ * they were worked; everything past the 40-hour line is overtime, so the premium
+ * rides the hours that crossed it — the long job carries it, not an average.
+ * Each segment pays at ITS OWN frozen rate (rule 3). Pure: the caller decides
+ * which week's segments these are, and the week must be whole — a week cut at a
+ * month or year boundary would put the 40-hour line in the wrong place.
+ */
+export function attributeWorkweek(segments: PayableSegment[]): WorkweekAttribution {
+  let running = 0;
+  let regularMinutes = 0;
+  let overtimeMinutes = 0;
+  let regularPay = 0;
+  let overtimePremium = 0;
+  const out: AttributedSegment[] = [];
+  for (const seg of [...segments].sort((a, b) => a.startedAt - b.startedAt)) {
+    const reg = Math.max(0, Math.min(seg.minutes, OVERTIME_THRESHOLD_MINUTES - running));
+    const ot = seg.minutes - reg;
+    running += seg.minutes;
+    regularMinutes += reg;
+    overtimeMinutes += ot;
+    let pay = 0;
+    let premium = 0;
+    if (seg.rateApplied != null) {
+      // 1.5× on an overtime hour is its straight time PLUS the 0.5× premium.
+      // Before 2026-09-21 the straight time on the hours past 40 was dropped
+      // (regularPay covered the first 40 only), so a 46-hour week at $20 read
+      // $860 while its own shift rows summed to $980.
+      const straight = ((reg + ot) / 60) * seg.rateApplied;
+      premium = (ot / 60) * seg.rateApplied * (OVERTIME_MULTIPLIER - 1);
+      pay = straight + premium;
+      regularPay += straight;
+      overtimePremium += premium;
+    }
+    out.push({ ...seg, regularMinutes: reg, overtimeMinutes: ot, pay, overtimePremium: premium });
+  }
+  return { regularMinutes, overtimeMinutes, regularPay, overtimePremium, segments: out };
 }
 
 function mergeIntervals(spans: Interval[]): Interval[] {
@@ -744,63 +866,20 @@ export async function payrollForWeek(technicianId: string, weekStart: Date): Pro
     flaggedFor(technicianId),
   ]);
 
-  const counts = (e: { flaggedAt: Date | null; confirmedAt: Date | null; endedAt: Date | null; minutes: number | null }) =>
-    e.endedAt != null && e.minutes != null && (e.flaggedAt == null || e.confirmedAt != null);
+  const counts = entryCounts;
 
-  /*
-    The payroll floor (2026-09-11). A payable segment is a closed shift, PLUS any
-    job time that fell outside every shift. A tech who works a logged job but
-    never punched the day clock still gets paid for those hours — without the
-    floor his week reads zero pay even with a rate on file, which is exactly what
-    Kyle saw: "No labor or pay tracked after pay and commissions were set."
-  */
-  const shiftWindows = mergeIntervals(
-    shiftRows.filter(counts).map((s) => [s.startedAt.getTime(), s.endedAt!.getTime()] as Interval),
-  );
-  const segments: PayableSegment[] = [
-    ...shiftRows.filter(counts).map((s) => ({
-      shiftId: s.id,
-      startedAt: s.startedAt.getTime(),
-      minutes: s.minutes ?? 0,
-      rateApplied: s.rateApplied ?? tech.hourlyRate,
-    })),
-    ...sessionRows.filter(counts).flatMap((e) =>
-      subtractIntervals([e.startedAt.getTime(), e.endedAt!.getTime()], shiftWindows).map(([from, to]) => ({
-        shiftId: null,
-        startedAt: from,
-        minutes: Math.round((to - from) / 60_000),
-        rateApplied: e.rateApplied ?? tech.hourlyRate,
-      })),
-    ),
-  ]
-    .filter((seg) => seg.minutes > 0)
-    .sort((a, b) => a.startedAt - b.startedAt);
-
-  /*
-    Rule 8, the attribution. Walk the week's payable segments in the order they
-    were worked; everything past the 40-hour line is overtime, so the premium
-    rides the hours that crossed it — the long job carries it, not an average.
-    Each segment pays at ITS OWN frozen rate (rule 3).
-  */
-  let running = 0;
-  let regularMinutes = 0;
-  let overtimeMinutes = 0;
-  let regularPay = 0;
-  let overtimePremium = 0;
+  // The payroll floor and the 40-hour walk — the SAME two functions the P&L's
+  // payroll line runs (services/payrollLedger.ts), so the Team week and the
+  // company total can never disagree about what a week pays.
+  const segments = payableSegments(shiftRows, sessionRows, tech.hourlyRate);
+  const walk = attributeWorkweek(segments);
+  const { regularMinutes, overtimeMinutes } = walk;
+  let regularPay = walk.regularPay;
+  let overtimePremium = walk.overtimePremium;
   /** shift id → how that shift's minutes landed either side of the 40-hour line. */
   const split = new Map<string, { reg: number; ot: number }>();
-
-  for (const seg of segments) {
-    const reg = Math.max(0, Math.min(seg.minutes, OVERTIME_THRESHOLD_MINUTES - running));
-    const ot = seg.minutes - reg;
-    running += seg.minutes;
-    regularMinutes += reg;
-    overtimeMinutes += ot;
-    if (seg.rateApplied != null) {
-      regularPay += (reg / 60) * seg.rateApplied;
-      overtimePremium += (ot / 60) * seg.rateApplied * (OVERTIME_MULTIPLIER - 1);
-    }
-    if (seg.shiftId) split.set(seg.shiftId, { reg, ot });
+  for (const seg of walk.segments) {
+    if (seg.shiftId) split.set(seg.shiftId, { reg: seg.regularMinutes, ot: seg.overtimeMinutes });
   }
 
   /** Job minutes no shift covered — paid, and reported so the gap is visible. */

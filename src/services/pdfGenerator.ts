@@ -16,6 +16,13 @@ import {
   type CompanyProfile,
 } from "./companyProfile";
 import { findingCitations } from "./findingLedger";
+import { serializeDiagnosticReport } from "./diagnosticReport";
+import {
+  DEVICE_LABEL,
+  DIFFICULTY_LABEL,
+  type DiagnosticDeviceType,
+  type DiagnosticDifficulty,
+} from "../../shared/diagnostics";
 import {
   groundingMethodLanguage,
   energizedTerminationLanguage,
@@ -1819,6 +1826,176 @@ export async function generateFindingDeclination(input: {
     data: { declinationDocId: docId },
   });
 
+  return { documentId: docId, pdfPath };
+}
+
+// ─── CIRCUIT DIAGNOSTIC REPORT (Kyle, 2026-09-20) ───────────────────────────
+
+/**
+ * The homeowner's diagnostic report.
+ *
+ * Kyle: "The homeowner gets the diagnostics report that documents all wiring
+ * fixes made during the diagnostics, a review of what was wrong/what was fixed,
+ * and the resolutions for any issues that were because of faulty or damaged
+ * equipment/devices."
+ *
+ * THE COVERAGE STATEMENT PRINTS FIRST, IN A BOX, BEFORE ANY OUTLET. That is the
+ * warranty defence and it is not a footnote: on a callback a week later, this
+ * page is what says the whole circuit was opened and tested rather than just the
+ * outlet that failed. `shared/diagnostics.ts coverageStatement()` composes it,
+ * and a partial walk says so in the same box rather than being quietly softer.
+ *
+ * The three sections after it are Kyle's three, in his order: what was FIXED
+ * (included in what he paid), what is DEFECTIVE (the resolutions change order),
+ * then the full outlet-by-outlet record with its readings and photos.
+ */
+export async function generateDiagnosticReport(
+  reportId: string,
+): Promise<{ documentId: string; pdfPath: string }> {
+  const report = await prisma.diagnosticReport.findUnique({
+    where: { id: reportId },
+    include: {
+      outlets: { orderBy: { sequence: "asc" } },
+      technician: { select: { name: true } },
+      _count: { select: { deliveries: true } },
+      customer: { select: { name: true } },
+      property: { select: { addressLine1: true, city: true, state: true, postalCode: true } },
+      photos: { select: { id: true, data: true } },
+    },
+  });
+  if (!report) throw new Error(`Diagnostic report ${reportId} not found`);
+
+  const view = serializeDiagnosticReport(report);
+  const profile = await getCompanyProfile();
+
+  const photoById = new Map<string, PreparedPhoto>();
+  for (const photo of report.photos) {
+    const prepared = await preparePhoto(photo.data);
+    if (prepared) photoById.set(photo.id, prepared);
+  }
+
+  const docId = uuidv4();
+  const doc = new PDFDocument({ margin: 36 });
+  addHeader(doc, "Circuit Diagnostic Report", profile);
+
+  const dateStr = report.reportDate.toLocaleDateString("en-US", { timeZone: "America/Chicago" });
+  doc.fontSize(11).fillColor(BRAND.text);
+  doc.text(`Customer: ${report.customer.name}`);
+  doc.text(
+    `Property: ${report.property.addressLine1}, ${report.property.city}, ${report.property.state} ${report.property.postalCode}`,
+  );
+  doc.text(`Diagnostic performed: ${dateStr}${report.technician ? ` by ${report.technician.name}` : ""}`);
+  doc.text(
+    `Circuit: ${report.circuitLabel}` +
+      (report.circuitNumber ? ` (breaker ${report.circuitNumber}` + (report.breakerRating ? `, ${report.breakerRating}` : "") + ")" : "") +
+      (report.panelLocation ? ` · Panel: ${report.panelLocation}` : ""),
+  );
+  doc.moveDown(0.6);
+
+  doc.fillColor(BRAND.cedar).fontSize(11).text("What we were called for");
+  doc.fillColor(BRAND.text).fontSize(10).text(report.complaint);
+  doc.moveDown(0.6);
+
+  // ── THE COVERAGE BOX. The whole reason the document exists. ──
+  {
+    const margin = 36;
+    const width = doc.page.width - margin * 2;
+    const top = doc.y;
+    doc.fillColor(BRAND.cedar).fontSize(10);
+    const textHeight = doc.heightOfString(view.coverageStatement, { width: width - 16 });
+    doc.rect(margin, top, width, textHeight + 16).lineWidth(1.5).stroke(BRAND.copper);
+    doc.text(view.coverageStatement, margin + 8, top + 8, { width: width - 16 });
+    doc.y = top + textHeight + 22;
+    doc.x = margin;
+    doc.fillColor(BRAND.text);
+  }
+
+  doc.fillColor(BRAND.muted).fontSize(9).text(
+    `${view.money.examinedTotal} outlet${view.money.examinedTotal === 1 ? "" : "s"} examined` +
+      (view.money.quotedTotal > 0 ? ` · ${view.money.quotedTotal} quoted` : "") +
+      (view.money.overageTotal > 0
+        ? ` · ${view.money.overageTotal} beyond the quote, at ${view.money.overageTotal === 1 ? "its own" : "their own"} access tier`
+        : ""),
+  );
+  doc.fillColor(BRAND.text);
+  doc.moveDown(0.8);
+
+  if (report.summary) {
+    doc.fillColor(BRAND.cedar).fontSize(11).text("What was wrong, and what we did");
+    doc.fillColor(BRAND.text).fontSize(10).text(report.summary);
+    doc.moveDown(0.8);
+  }
+
+  // ── Fixed during the diagnostic — INCLUDED in what was paid. ──
+  const fixed = report.outlets.filter((o) => (o.fixed ?? "").trim().length > 0);
+  doc.fillColor(BRAND.cedar).fontSize(11).text("Wiring repairs made during this diagnostic");
+  doc.fillColor(BRAND.muted).fontSize(8).text("Included in the diagnostic price — there is nothing further to pay for these.");
+  doc.fillColor(BRAND.text).fontSize(10);
+  if (fixed.length === 0) {
+    doc.text("No wiring repairs were needed on this circuit.");
+  } else {
+    for (const o of fixed) doc.text(`· ${o.locationLabel} — ${(o.fixed ?? "").trim()}`);
+  }
+  doc.moveDown(0.8);
+
+  // ── Defective equipment — the resolutions, NOT included. ──
+  const defective = report.outlets.filter((o) => o.equipmentDefective);
+  doc.fillColor(BRAND.cedar).fontSize(11).text("Damaged or defective equipment — recommended resolutions");
+  doc.fillColor(BRAND.muted).fontSize(8).text(
+    "These are devices, fixtures or equipment that failed on their own account rather than a wiring fault. " +
+      "They are not part of the diagnostic price; we will quote them separately so you can decide.",
+  );
+  doc.fillColor(BRAND.text).fontSize(10);
+  if (defective.length === 0) {
+    doc.text("None found. Everything on this circuit is serviceable equipment.");
+  } else {
+    for (const o of defective) doc.text(`· ${o.locationLabel} — ${(o.defectDescription ?? "").trim()}`);
+  }
+  doc.moveDown(1);
+
+  // ── The record, outlet by outlet. ──
+  doc.fillColor(BRAND.cedar).fontSize(12).text("The record — every box we opened");
+  doc.moveDown(0.3);
+  for (const o of report.outlets) {
+    if (doc.y > doc.page.height - 160) doc.addPage();
+    const device = o.deviceType === "other" ? (o.deviceLabel ?? "Other") : DEVICE_LABEL[o.deviceType as DiagnosticDeviceType] ?? o.deviceType;
+    doc.fillColor(BRAND.cedar).fontSize(10).text(`${o.sequence}. ${o.locationLabel} — ${device}`);
+    doc.fillColor(BRAND.text).fontSize(9);
+    const box = [
+      o.enclosure,
+      o.gangs != null ? `${o.gangs}-gang` : null,
+      o.circuitNumber ? `circuit ${o.circuitNumber}` : null,
+      DIFFICULTY_LABEL[o.difficulty as DiagnosticDifficulty],
+    ].filter(Boolean).join(" · ");
+    if (box) doc.text(box);
+    const readings = [
+      o.vPhaseGround != null ? `${o.vPhaseGround} V phase-to-ground` : null,
+      o.vPhaseNeutral != null ? `${o.vPhaseNeutral} V phase-to-neutral` : null,
+      o.vPhasePhase != null ? `${o.vPhasePhase} V phase-to-phase` : null,
+    ].filter(Boolean).join(" · ");
+    doc.text(readings || "No voltage recorded at this box.");
+    doc.text(
+      `Terminations tightened: ${o.terminationsTightened ? "yes" : "no"} · ` +
+        `Corrosion or rust: ${o.corrosion ? `yes${o.corrosionNote ? ` — ${o.corrosionNote}` : ""}` : "none seen"}`,
+    );
+    if (o.findings) doc.text(`Found: ${o.findings}`);
+    if (o.fixed) doc.text(`Fixed: ${o.fixed}`);
+    if (o.equipmentDefective) doc.text(`Defective equipment: ${o.defectDescription ?? ""}`);
+    const photos = o.photoIds.map((id) => photoById.get(id)).filter((p): p is PreparedPhoto => Boolean(p));
+    if (photos.length > 0) {
+      doc.moveDown(0.2);
+      drawPhotos(doc, photos);
+    }
+    doc.moveDown(0.5);
+  }
+
+  addLimitations(doc);
+  addFooter(doc);
+
+  const pdfPath = await savePdf(doc, `diagnostic-report-${docId}.pdf`);
+  await prisma.document.create({
+    data: { id: docId, jobId: report.visitId, type: "diagnostic_report", pdfUrl: pdfPath },
+  });
   return { documentId: docId, pdfPath };
 }
 

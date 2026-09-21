@@ -348,10 +348,13 @@ describe("rule 8 — overtime rides the hours that crossed 40", () => {
     expect(week.shiftMinutes).toBe(46 * 60);
     expect(week.regularMinutes).toBe(40 * 60);
     expect(week.overtimeMinutes).toBe(6 * 60);
-    expect(week.regularPay).toBe(40 * 20);
-    // The premium is the EXTRA half, on six hours only.
+    // Straight time on all 46 hours; the premium is the EXTRA half, on six hours only.
+    // (Before 2026-09-21 regularPay covered the first 40 only and the week totalled
+    // $860 while its own shift rows summed to $980.)
+    expect(week.regularPay).toBe(46 * 20);
     expect(week.overtimePremium).toBe(6 * 20 * 0.5);
-    expect(week.total).toBe(40 * 20 + 60);
+    expect(week.total).toBe(46 * 20 + 60);
+    expect(week.shifts.reduce((s, r) => s + (r.pay ?? 0), 0)).toBe(week.total);
 
     // In the order worked: Monday carries none of it, Saturday carries all of it.
     const saturdayRow = week.shifts.find((s) => new Date(s.startedAt).getTime() === saturday.getTime())!;

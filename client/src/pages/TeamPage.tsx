@@ -193,12 +193,12 @@ export function TeamPage() {
                   )}
                 </span>
                 <span className="flex gap-2">
-                  <Link to={`/team/${tech.id}`} className="text-xs font-medium text-rce-accent">
+                  <Link to={`/team/${tech.id}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
                     Pay &amp; hours →
                   </Link>
                   <button
                     type="button"
-                    className="text-xs font-medium text-rce-accent"
+                    className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
                     disabled={verifyCalendarMutation.isPending}
                     onClick={() => verifyCalendarMutation.mutate(tech.id)}
                   >
@@ -206,7 +206,7 @@ export function TeamPage() {
                   </button>
                   <button
                     type="button"
-                    className="text-xs font-medium text-rce-accent"
+                    className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
                     onClick={() => {
                       setEditingId(editingId === tech.id ? null : tech.id);
                       setEditEmployeeNumber(tech.employeeNumber ?? "");
@@ -216,28 +216,28 @@ export function TeamPage() {
                   </button>
                   <button
                     type="button"
-                    className="text-xs font-medium text-rce-accent"
+                    className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
                     onClick={() => setRevealedTokenId(revealedTokenId === tech.id ? null : tech.id)}
                   >
                     {revealedTokenId === tech.id ? "Hide token" : "Show token"}
                   </button>
                   <button
                     type="button"
-                    className="text-xs font-medium text-rce-accent"
+                    className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
                     onClick={() => setQrTokenId(qrTokenId === tech.id ? null : tech.id)}
                   >
                     {qrTokenId === tech.id ? "Hide QR" : "Show QR"}
                   </button>
                   <button
                     type="button"
-                    className="text-xs font-medium text-rce-accent"
+                    className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
                     onClick={() => updateMutation.mutate({ technicianId: tech.id, rotateToken: true })}
                   >
                     Rotate token
                   </button>
                   <button
                     type="button"
-                    className={`text-xs font-medium ${tech.isActive ? "text-red-600" : "text-emerald-600"}`}
+                    className={`btn px-2 py-0.5 text-xs min-h-0 ${tech.isActive ? "btn-danger" : "btn-secondary"}`}
                     onClick={() => updateMutation.mutate({ technicianId: tech.id, isActive: !tech.isActive })}
                   >
                     {tech.isActive ? "Deactivate" : "Reactivate"}

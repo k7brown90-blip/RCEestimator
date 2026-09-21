@@ -224,34 +224,11 @@ async function startServer(): Promise<void> {
     }
 
     // ── Expired estimates get labeled (Kyle, 2026-09-06: estimates are good
-    //    for 30 days). The signature path already refuses by date math; this
-    //    relabel is for the EYES — expired rows read EXPIRED on the tracker
-    //    and drop out of the sent/viewed working set. validDays is frozen per
-    //    document, so the few pre-ruling 14-day estimates keep their printed
-    //    promise. Re-issuing at current prices is the existing revise door.
+    //    for 30 days). The rule and the reasons live in services/estimateExpiry.ts
+    //    (moved 2026-09-20 so tests can run it — a LOST estimate is never swept).
     try {
-      const candidates = await prisma.issuedEstimate.findMany({
-        where: {
-          status: { in: ["sent", "viewed"] },
-          signedAt: null,
-          voidedAt: null,
-          supersededBy: null,
-          createdAt: { lt: new Date(Date.now() - 14 * 86_400_000) },
-        },
-        select: { id: true, number: true, createdAt: true, validDays: true },
-      });
-      const expired = candidates.filter(
-        (e) => Date.now() > e.createdAt.getTime() + e.validDays * 86_400_000,
-      );
-      if (expired.length > 0) {
-        await prisma.issuedEstimate.updateMany({
-          where: { id: { in: expired.map((e) => e.id) } },
-          data: { status: "expired" },
-        });
-        logSystemEvent("info", "issued-estimate",
-          `Marked ${expired.length} unsigned estimate(s) expired past their validity: ${expired.map((e) => e.number).join(", ")}`,
-          { estimateIds: expired.map((e) => e.id) });
-      }
+      const { sweepExpiredEstimates } = await import("./services/estimateExpiry");
+      await sweepExpiredEstimates(prisma);
     } catch (err) {
       console.error("[Cron] Estimate expiry sweep failed:", err);
     }

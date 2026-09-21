@@ -110,6 +110,19 @@ export interface PdfEstimate {
    * the header. Null when no claim is on the estimate.
    */
   warranty?: WarrantyClaim | null;
+  /**
+   * The INVOICE this signed document is part of (Kyle, 2026-09-20): the root estimate plus the
+   * signed change orders that joined it. Printed as an appendix beneath the signature — the
+   * frozen document above it does not change; this says what the whole job now comes to. Null
+   * when the invoice is just this one document.
+   */
+  invoice?: {
+    number: string;
+    documents: Array<{ number: string; title: string; kind: "invoice" | "change_order"; billedTotal: number; signedAt: Date | null }>;
+    billedTotal: number;
+    totalPaid: number;
+    balance: number;
+  } | null;
 }
 
 const OPTIONS: PriceBookOption[] = ["A", "B", "C"];
@@ -556,6 +569,38 @@ export async function renderEstimatePdf(
         doc.fontSize(8).fillColor("#a15c00")
           .text("(the signature image could not be rendered)").fillColor("#000");
       }
+    }
+  }
+
+  /*
+    ── THE INVOICE THIS DOCUMENT JOINED (Kyle, 2026-09-20) ────────────────────────────────────
+    "The change order should reopen that estimate with the existing items still frozen, add the
+    change order items, get signature, then the total updates." The items above are the frozen
+    document. This is the updated total: every signed document on the invoice, one line each, and
+    what is paid and still due — the same figures the pay page and the bill email carry.
+  */
+  if (estimate.invoice && estimate.signedAt) {
+    doc.moveDown(1.2);
+    doc.fontSize(11).text(`Invoice ${estimate.invoice.number} — what it now includes`);
+    doc.moveDown(0.3);
+    doc.fontSize(9);
+    for (const d of estimate.invoice.documents) {
+      const y = doc.y;
+      doc.text(`${d.kind === "change_order" ? "Change order" : "Invoice"} ${d.number} — ${d.title}`, 50, y, { width: 380 });
+      doc.text(money(d.billedTotal), 430, y, { width: 120, align: "right" });
+    }
+    doc.moveDown(0.3);
+    const yTotal = doc.y;
+    doc.font("Helvetica-Bold").text("Invoice total", 50, yTotal, { width: 380 });
+    doc.text(money(estimate.invoice.billedTotal), 430, yTotal, { width: 120, align: "right" });
+    doc.font("Helvetica");
+    if (estimate.invoice.totalPaid > 0) {
+      const yPaid = doc.y;
+      doc.text("Paid to date", 50, yPaid, { width: 380 });
+      doc.text(money(estimate.invoice.totalPaid), 430, yPaid, { width: 120, align: "right" });
+      const yBal = doc.y;
+      doc.text("Balance due", 50, yBal, { width: 380 });
+      doc.text(money(estimate.invoice.balance), 430, yBal, { width: 120, align: "right" });
     }
   }
 

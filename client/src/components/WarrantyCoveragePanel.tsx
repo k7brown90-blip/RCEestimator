@@ -331,7 +331,7 @@ export function WarrantyCoveragePanel({
 
   if (!open) {
     return (
-      <button type="button" className="text-xs text-rce-accent underline" onClick={() => setOpen(true)}>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setOpen(true)}>
         Add home-warranty coverage (claim + amount the warranty company pays)…
       </button>
     );
@@ -385,7 +385,7 @@ export function WarrantyCoveragePanel({
           </button>
         )}
         {!existing && (
-          <button type="button" className="text-xs text-rce-soft underline" onClick={() => setOpen(false)}>cancel</button>
+          <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setOpen(false)}>cancel</button>
         )}
       </div>
       {result && (

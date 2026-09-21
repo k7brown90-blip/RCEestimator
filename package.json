@@ -10,6 +10,7 @@
     "start": "npx prisma migrate deploy && node dist/scripts/seedAtomicUnits.js && node dist/src/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "lint": "npm --prefix client run lint && npm --prefix field run lint",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "seed:assemblies": "tsx scripts/seedAssemblyTemplates.ts"

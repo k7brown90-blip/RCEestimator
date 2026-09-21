@@ -44,7 +44,7 @@ export function BalancesStrip() {
           Truck accounts not connected — add Issuing and Treasury <b>read</b> scope to the restricted Stripe key.
         </span>
       )}
-      <Link to="/trucks" className="ml-auto text-xs text-rce-accent hover:underline">Trucks →</Link>
+      <Link to="/trucks" className="btn btn-secondary ml-auto px-2 py-0.5 text-xs min-h-0">Trucks →</Link>
     </section>
   );
 }
@@ -56,7 +56,7 @@ export function TrucksCard() {
     <section className="card p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">Trucks</h2>
-        <Link to="/trucks" className="text-xs text-rce-accent hover:underline">Open the ledger →</Link>
+        <Link to="/trucks" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">Open the ledger →</Link>
       </div>
       <p className="mb-2 text-xs text-rce-muted">
         This month on each truck's card. Gas and maintenance belong to the truck, never a job; materials on the card go looking for their PO and receipt.

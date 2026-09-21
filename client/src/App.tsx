@@ -22,7 +22,7 @@ import { VisitWorkspacePage } from "./pages/VisitWorkspacePage";
 import { PriceBookCatalogPage } from "./pages/PriceBookCatalogPage";
 import { SigningModePage } from "./pages/SigningModePage";
 import { TrucksPage } from "./pages/TrucksPage";
-import { InventoryPage } from "./pages/InventoryPage";
+import { PurchasingPage } from "./pages/PurchasingPage";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -37,6 +37,16 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 function RedirectCustomerToAccount() {
   const { customerId } = useParams();
   return <Navigate to={`/accounts/${customerId}`} replace />;
+}
+
+/**
+ * Inventory became Purchasing & Stock (tab separation, 2026-09-20). The query string rides
+ * along: a bookmarked `/inventory?po=…` is an open P.O. drawer, and a redirect that dropped it
+ * would land on the page with the drawer closed.
+ */
+function RedirectInventoryToPurchasing() {
+  const { search } = useLocation();
+  return <Navigate to={{ pathname: "/purchasing", search }} replace />;
 }
 
 function App() {
@@ -86,9 +96,12 @@ function App() {
                 <Route path="/team/:technicianId" element={<TechnicianPage />} />
                 <Route path="/financials" element={<FinancialsPage />} />
                 <Route path="/trucks" element={<TrucksPage />} />
-                {/* Stock on every truck and in the warehouse, the tool register, POs to land
+                {/* Buying and what is on hand (tab separation, 2026-09-20): the Purchases card
+                    and receipt review moved here from Financials, beside the stock on every
+                    truck and in the warehouse, the tool register and the POs to land
                     (Kyle, 2026-09-09: "We need an inventory tab"). */}
-                <Route path="/inventory" element={<InventoryPage />} />
+                <Route path="/purchasing" element={<PurchasingPage />} />
+                <Route path="/inventory" element={<RedirectInventoryToPurchasing />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
               </CrashBoundary>

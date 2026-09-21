@@ -19,6 +19,7 @@ import { ReportScreen } from './ui/screens/ReportScreen'
 import { ReviewScreen } from './ui/screens/ReviewScreen'
 import { V2CaptureScreen } from './ui/screens/V2CaptureScreen'
 import { JobSiteScreen } from './ui/screens/JobSiteScreen'
+import { DiagnosticScreen } from './ui/screens/DiagnosticScreen'
 import { MyAccountsScreen } from './ui/screens/MyAccountsScreen'
 import { QuoteScreen } from './ui/screens/QuoteScreen'
 import { PurchasesScreen } from './ui/screens/PurchasesScreen'
@@ -29,6 +30,7 @@ import { checkCapture } from './domain/v2Rules'
 type Screen =
   | 'assignment' | 'jobsite' | 'jurisdiction' | 'checklist' | 'item' | 'review' | 'report'
   | 'findings' | 'capacity' | 'v2capture' | 'accounts' | 'quote' | 'purchases' | 'mytruck'
+  | 'diagnostics'
 
 interface Session {
   inspectionId: string
@@ -100,6 +102,13 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
   const [capacityAssignment, setCapacityAssignment] = useState<CrmAssignment | null>(null)
   /** The visit whose job site is open (Phase 2). */
   const [activeAssignment, setActiveAssignment] = useState<CrmAssignment | null>(null)
+  /**
+   * The resolutions change order raised off a diagnostic (2026-09-20). Held
+   * here so the quote screen opens THAT draft rather than the visit's working
+   * quote — a change order describes the change and must never be reached by
+   * "Build the quote".
+   */
+  const [quoteDraftId, setQuoteDraftId] = useState<string | null>(null)
 
   // Pull the ledger once when a job starts, so every item card can show what was
   // already documented here without another round trip on a phone.
@@ -170,7 +179,8 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
           setCapacityAssignment(activeAssignment)
           setScreen('capacity')
         }}
-        onBuildQuote={() => setScreen('quote')}
+        onBuildQuote={() => { setQuoteDraftId(null); setScreen('quote') }}
+        onRunDiagnostics={() => setScreen('diagnostics')}
         onRunAssessment={() => {
           void (async () => {
             const property = await propertyForAssignment(activeAssignment)
@@ -189,6 +199,21 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
     )
   }
 
+  // Run diagnostics (Kyle, 2026-09-20) — one circuit, breaker to last outlet.
+  // Before the session guard like the job site: a diagnostic is its own report
+  // type and never needs an assessment open.
+  if (screen === 'diagnostics' && activeAssignment) {
+    return (
+      <DiagnosticScreen
+        visitId={activeAssignment.visitId}
+        customerName={activeAssignment.customerName}
+        jobPurpose={activeAssignment.purpose ?? null}
+        onBack={() => setScreen('jobsite')}
+        onOpenDraft={(draftId) => { setQuoteDraftId(draftId); setScreen('quote') }}
+      />
+    )
+  }
+
   // Quote in the field (2026-09-01, step 4) — built off the active visit.
   if (screen === 'quote' && activeAssignment) {
     return (
@@ -196,7 +221,8 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
         visitId={activeAssignment.visitId}
         propertyId={activeAssignment.propertyId}
         customerName={activeAssignment.customerName}
-        onBack={() => setScreen('jobsite')}
+        draftId={quoteDraftId}
+        onBack={() => setScreen(quoteDraftId ? 'diagnostics' : 'jobsite')}
       />
     )
   }

@@ -8,11 +8,10 @@ import type {
   CampaignBlock,
   CampaignOverview,
   CompanionSuggestion,
-  CrmCycleTimeMetrics,
   CrmFollowUpsMetrics,
   CrmFunnelMetrics,
   CrmOverview,
-  CrmWinLossMetrics,
+  CrmFunnelReport,
   Customer,
   CustomerMatch,
   EmailBouncePollResult,
@@ -21,7 +20,6 @@ import type {
   EmailStatus,
   Estimate,
   EstimateAssembly,
-  EstimateItem,
   FindingEvent,
   InvoiceSummary,
   JobSummary,
@@ -51,8 +49,16 @@ import type {
   PurchaseOrderDetail,
   PurchaseOrderLine,
   PurchaseOrderSummary,
+  ReceiptRecord,
+  SearchResponse,
   ReviewReceiptRow,
   Balances,
+  BankAccountView,
+  BankClassifyInput,
+  BankConfirmations,
+  BankImportResult,
+  BankLineView,
+  BankStatementView,
   TreasurySettings,
   TreasurySweepRow,
   SweepView,
@@ -82,7 +88,6 @@ import type {
   MaterialWithCompletion,
   OnHand,
   ScheduleJobResult,
-  SupportItem,
   TechDayAvailability,
   Visit,
   WeekSchedule,
@@ -143,6 +148,17 @@ export interface PurchaseOrderRow {
   sentAt: string | null;
   createdAt: string;
   receiptCount: number;
+  /**
+   * The money (Kyle, 2026-09-20). Same rule as jobCosting.ts's poMaterialByJob
+   * — material/other card spend, non-ignored, plus the typed not-on-card
+   * amount (null for a tool PO) — NOT PurchaseOrderSummary.cardTotal, which
+   * sums every live charge regardless of kind.
+   */
+  cardTotal: number;
+  offCardAmount: number | null;
+  moneyTotal: number;
+  /** Receipts carrying a photo or PDF — the proof. */
+  proofCount: number;
   items: { name: string; qty: number; unit?: string; partNumber?: string }[];
 }
 
@@ -161,11 +177,24 @@ export interface FinancialsSummary {
   /** Stripe fees (Build 5): false + reason when the key cannot read balance transactions. */
   feesAvailable?: boolean;
   feesReason?: string | null;
+  /** Hours counted in payroll with no rate on file — they cost $0 and the P&L says so (rule 6). */
+  payrollUnratedHours?: number;
   /** stripeFees is Stripe's processing fee for the month — its own column, and inside expenses. Collected stays gross. */
-  /** Expenses = card charges + typed not-on-card P.O. amounts + bills + Stripe fees (Kyle, 2026-09-19). Net is the number. */
-  months: { month: number; invoiced: number; collected: number; stripeFees: number; expenses: number; net: number }[];
-  totals: { invoiced: number; collected: number; stripeFees: number; expenses: number; net: number };
+  /**
+   * Expenses = card charges + typed not-on-card P.O. amounts + bills + Stripe fees (Kyle, 2026-09-19)
+   * + payroll (Kyle, 2026-09-20: wages + commissions from the hours ledger, in the month worked). Net is the number.
+   * payroll is its own column AND inside expenses, like stripeFees.
+   */
+  /**
+   * bank (2026-09-21): statement lines Kyle classified as expenses — ACH, autopay, checks out of
+   * Chase. Its own column AND inside expenses, like stripeFees and payroll. A transfer or an
+   * already-counted line is not here.
+   */
+  months: { month: number; invoiced: number; collected: number; stripeFees: number; payroll: number; bank: number; expenses: number; net: number }[];
+  totals: { invoiced: number; collected: number; stripeFees: number; payroll: number; bank: number; expenses: number; net: number };
   expensesByCategory: { category: string; monthly: number[]; total: number }[];
+  /** The bank queue: lines nobody has classified are NOT in Expenses yet, and the P&L says so. */
+  bank?: { accounts: number; unclassified: number; unclassifiedOut: number; lastImportAt: string | null };
   /** The Materials card (Kyle, 2026-09-09, Build 4): bought / used / inventory value per month. */
   materials?: Omit<MaterialsByMonth, "year">;
 }
@@ -210,13 +239,6 @@ export interface ReceiptInsights {
   priceDrift: { receiptItem: string; bookItem: string; supplier: string; bookCost: number; receiptAvgCost: number; driftPct: number }[];
 }
 
-export interface StripeStatus {
-  configured: boolean;
-  keyMode: "live" | "test" | "none";
-  restrictedKey: boolean;
-  webhookSecretSet: boolean;
-}
-
 export interface CompanyBillRow {
   id: string;
   name: string;
@@ -242,10 +264,15 @@ export interface NextStepJob {
 }
 
 export interface PaymentInfo {
+  /** The ROOT invoice (2026-09-20) — a change order's money answers about the invoice it joined. */
   estimateId: string;
   number: string;
   billedTotal: number;
   depositDue: number;
+  /** False = no deposit on this invoice; nothing gates scheduling (Kyle, 2026-09-20). */
+  depositRequired: boolean;
+  /** The root first, then its signed change orders — listed beneath the total. */
+  documents: { id: string; number: string; revision: number; title: string; kind: "invoice" | "change_order"; signedAt: string | null; billedTotal: number; depositRequired: boolean }[];
   depositPaid: number;
   totalPaid: number;
   balance: number;
@@ -628,15 +655,26 @@ export const api = {
   // ── Transactional email delivery (Kyle, 2026-09-09: Resend first, Gmail fallback) ──
   /** Which pipe customer email leaves through, whether the webhook is verified, the last 24 h by status. */
   emailStatus: () => request<EmailStatus>("/email-status"),
-  /** Every customer email about an estimate or a visit, newest first. */
-  emailDeliveries: (q: { estimateId?: string; visitId?: string; limit?: number } = {}) => {
+  /** Every customer email about an estimate, a visit, a lead, or an account, newest first. */
+  emailDeliveries: (q: { estimateId?: string; visitId?: string; leadId?: string; customerId?: string; limit?: number } = {}) => {
     const p = new URLSearchParams();
     if (q.estimateId) p.set("estimateId", q.estimateId);
     if (q.visitId) p.set("visitId", q.visitId);
+    if (q.leadId) p.set("leadId", q.leadId);
+    if (q.customerId) p.set("customerId", q.customerId);
     if (q.limit) p.set("limit", String(q.limit));
     const qs = p.toString();
     return request<EmailDeliveryRow[]>(`/email-deliveries${qs ? `?${qs}` : ""}`);
   },
+  /**
+   * The single free-form send (2026-09-20 communications build): "Follow ups can be done by
+   * sending an email straight from the CRM." `to: null` uses the record's own primary email.
+   */
+  sendRecordEmail: (input: { target: "lead" | "account" | "job"; id: string; to?: string | null; subject: string; body: string }) =>
+    request<{ sent: true; to: string; suppressed: boolean }>("/communications/email", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 
   // ─── Accounts ─────────────────────────────────────────────────────────────
   // The server exposes these under both /accounts and /customers (same handlers,
@@ -775,36 +813,6 @@ export const api = {
   },
   presets: () => request<Array<{ id: string; name: string; description?: string | null; category?: string | null; itemsJson: string }>>("/presets"),
   jobTypes: () => request<Array<{ id: string; name: string; description?: string | null }>>("/job-types"),
-  createItem: (
-    estimateId: string,
-    optionId: string,
-    input: {
-      atomicUnitCode: string;
-      quantity: number;
-      location?: string;
-      circuitVoltage?: number;
-      circuitAmperage?: number;
-      environment?: string;
-      exposure?: string;
-      cableLength?: number;
-      modifiers?: Array<{ modifierType: string; modifierValue: string; laborMultiplier: number; materialMult: number }>;
-    }
-  ) => request<{ item: EstimateItem; suggestEndpoint: boolean; resolvedWiringMethod: { method: string; code: string } | null }>(
-    `/estimates/${estimateId}/options/${optionId}/items`,
-    { method: "POST", body: JSON.stringify(input) }
-  ),
-  items: (estimateId: string, optionId: string) =>
-    request<EstimateItem[]>(`/estimates/${estimateId}/options/${optionId}/items`),
-  deleteItem: (estimateId: string, optionId: string, itemId: string) =>
-    request<void>(`/estimates/${estimateId}/options/${optionId}/items/${itemId}`, { method: "DELETE" }),
-  generateSupportItems: (estimateId: string) =>
-    request<{ supportItems: SupportItem[] }>(`/estimates/${estimateId}/support-items/generate`, { method: "POST", body: JSON.stringify({}) }),
-  supportItems: (estimateId: string) =>
-    request<SupportItem[]>(`/estimates/${estimateId}/support-items`),
-  patchSupportItem: (estimateId: string, itemId: string, input: { laborHrs?: number; laborRate?: number; otherCost?: number; isOverridden?: boolean; overrideNote?: string }) =>
-    request<SupportItem>(`/estimates/${estimateId}/support-items/${itemId}`, { method: "PATCH", body: JSON.stringify(input) }),
-  deleteSupportItem: (estimateId: string, itemId: string) =>
-    request<void>(`/estimates/${estimateId}/support-items/${itemId}`, { method: "DELETE" }),
   // ─── Leads ────────────────────────────────────────────────────────────────
   // `pipeline` is the funnel filter behind the Leads tab; `status` is the older
   // per-lead state, kept because several callers still filter on it directly.
@@ -817,6 +825,8 @@ export const api = {
     const query = search.toString();
     return request<Lead[]>(`/leads${query ? `?${query}` : ""}`);
   },
+  /** One lead, for editing a single row instead of pulling the whole collection. */
+  lead: (leadId: string) => request<Lead>(`/leads/${leadId}`),
   /**
    * Manual lead entry. `POST /crm/leads`, not `POST /leads` — the latter is the
    * intake webhook and is gated on a shared secret the browser cannot hold.
@@ -874,10 +884,14 @@ export const api = {
   crmFunnel: (range?: { startDate?: string; endDate?: string }) =>
     request<CrmFunnelMetrics>(withDateRange("/crm/analytics/funnel", range)),
   crmFollowUps: () => request<CrmFollowUpsMetrics>("/crm/analytics/follow-ups"),
-  crmWinLoss: (range?: { startDate?: string; endDate?: string }) =>
-    request<CrmWinLossMetrics>(withDateRange("/crm/analytics/win-loss", range)),
-  crmCycleTime: (range?: { startDate?: string; endDate?: string }) =>
-    request<CrmCycleTimeMetrics>(withDateRange("/crm/analytics/cycle-time", range)),
+  /**
+   * The four-phase funnel on its own (2026-09-20) — the same payload as `crmOverview().phases`.
+   * The path still reads "win-loss" because that is the route that existed; what it returns is
+   * no longer won-leads-over-lost-leads. `/crm/analytics/cycle-time` is gone with the legacy
+   * Estimate model it read.
+   */
+  crmPhases: (range?: { startDate?: string; endDate?: string }) =>
+    request<CrmFunnelReport>(withDateRange("/crm/analytics/win-loss", range)),
   // ─── Job Scheduling ──────────────────────────────────────────────────────
   scheduleJob: (jobId: string, input: { startDate: string; startTime?: string; endDate?: string; endTime?: string; technicianId?: string }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/schedule`, { method: "POST", body: JSON.stringify(input) }),
@@ -936,8 +950,6 @@ export const api = {
     request<PropertyPhotos>(`/health-record-admin/properties/${propertyId}/photos`),
   customerInspections: (customerId: string) =>
     request<HealthInspectionSummary[]>(`/health-record-admin/customers/${customerId}/inspections`),
-  propertyInspections: (propertyId: string) =>
-    request<HealthInspectionSummary[]>(`/health-record-admin/properties/${propertyId}/inspections`),
   visitInspections: (visitId: string) =>
     request<HealthInspectionSummary[]>(`/health-record-admin/visits/${visitId}/inspections`),
   healthInspection: (inspectionId: string) =>
@@ -1101,6 +1113,8 @@ export const api = {
       // Correction path for a Vision year mis-parse (2026-09-14, legacy purchase
       // close-out Unit 4) — YYYY-MM-DD, the receipt's actual purchase date.
       receivedAt?: string;
+      // The reader's "could not reconcile" flag (2026-09-18) — null clears it once checked by hand.
+      reconciliationNote?: string | null;
     },
   ) =>
     request<{ id: string; jobId: string | null; amount: number; status: string; purchaseOrderId: string | null }>(`/health-record-admin/receipts/${receiptId}`, { method: "PATCH", body: JSON.stringify(input) }),
@@ -1118,10 +1132,10 @@ export const api = {
     ),
   /** Confirmed materials receipts with no PO (Kyle, 2026-09-09: purchasing starts with a PO). */
   receiptsNeedingPo: () => request<ReviewReceiptRow[]>("/receipts-needing-po"),
+  /** One receipt, for the receipt drawer (2026-09-20). */
+  receipt: (receiptId: string) => request<ReceiptRecord>(`/health-record-admin/receipts/${receiptId}`),
   /** Remove a receipt (duplicate upload); the server re-rolls the job total. */
   deleteReceipt: (receiptId: string) => request<void>(`/health-record-admin/receipts/${receiptId}`, { method: "DELETE" }),
-  createPurchaseOrder: (jobId: string, input: { supplier: string; purpose?: "truck_stock" | "warehouse" | "tool"; items: { itemId?: string | null; name: string; qty: number; unit?: string; partNumber?: string }[] }) =>
-    request<{ id: string; number: string; purpose: string; status: string }>(`/jobs/${jobId}/purchase-orders`, { method: "POST", body: JSON.stringify(input) }),
   /** Cancels the PO (the number is never reused; the trail stays). */
   deletePurchaseOrder: (jobId: string, orderId: string) =>
     request<void>(`/jobs/${jobId}/purchase-orders/${orderId}`, { method: "DELETE" }),
@@ -1204,6 +1218,46 @@ export const api = {
   financialsSweep: (fresh = false) => request<SweepView>(`/financials/sweep${fresh ? "?fresh=1" : ""}`),
   runSweep: (input: { amount: number; confirm: string }) =>
     request<{ sweep: TreasurySweepRow; excessAtClick: number | null }>("/financials/sweep", { method: "POST", body: JSON.stringify(input) }),
+  // ── Bank statements (Kyle, 2026-09-20): the registry, uploads, the queue, confirmations ──
+  bankAccounts: () => request<BankAccountView[]>("/bank/accounts"),
+  createBankAccount: (input: { name: string; institution?: string; last4?: string | null; kind: BankAccountView["kind"]; purpose: BankAccountView["purpose"] }) =>
+    request<BankAccountView>("/bank/accounts", { method: "POST", body: JSON.stringify(input) }),
+  updateBankAccount: (id: string, input: Partial<{ name: string; institution: string; last4: string | null; kind: BankAccountView["kind"]; purpose: BankAccountView["purpose"]; isActive: boolean }>) =>
+    request<BankAccountView>(`/bank/accounts/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  /** Refused (409) while the account still has statements — deleting those is the explicit undo. */
+  deleteBankAccount: (id: string) => request<void>(`/bank/accounts/${id}`, { method: "DELETE" }),
+  bankStatements: (accountId?: string) => request<BankStatementView[]>(`/bank/statements${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ""}`),
+  /** The file as the raw body — the server sniffs CSV vs OFX from the bytes. Same bytes twice = duplicate, nothing imported. */
+  importBankStatement: async (accountId: string, file: File): Promise<BankImportResult> => {
+    const token = localStorage.getItem("rce_token");
+    const response = await fetch(`/api/bank/accounts/${accountId}/statements?fileName=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: file,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error((body as { error?: string } | null)?.error ?? `Import failed (${response.status})`);
+    }
+    return (await response.json()) as BankImportResult;
+  },
+  /** Undoes the import: the statement, its lines, and every confirmation those lines made. */
+  deleteBankStatement: (id: string) => request<void>(`/bank/statements/${id}`, { method: "DELETE" }),
+  bankLines: (params: { classification?: BankLineView["classification"]; year?: number; accountId?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.classification) q.set("classification", params.classification);
+    if (params.year) q.set("year", String(params.year));
+    if (params.accountId) q.set("accountId", params.accountId);
+    const qs = q.toString();
+    return request<BankLineView[]>(`/bank/lines${qs ? `?${qs}` : ""}`);
+  },
+  classifyBankLine: (id: string, input: BankClassifyInput) =>
+    request<BankLineView>(`/bank/lines/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteBankLine: (id: string, reason?: string) =>
+    request<void>(`/bank/lines/${id}${reason ? `?reason=${encodeURIComponent(reason)}` : ""}`, { method: "DELETE" }),
+  /** Run the rules again over every line no human has touched. */
+  autoClassifyBankLines: () => request<{ classified: number; unclassified: number }>("/bank/lines/auto", { method: "POST", body: "{}" }),
+  bankConfirmations: (year: number) => request<BankConfirmations>(`/bank/confirmations?year=${year}`),
   // ── Inventory ledger, landing, tools, restock (Kyle, 2026-09-09, Build 3) ──
   inventory: () => request<InventoryOverview>("/inventory"),
   inventoryMovements: (params: { itemId?: string; locationKey?: string; purchaseOrderId?: string; limit?: number } = {}) => {
@@ -1298,6 +1352,9 @@ export const api = {
   campaignOverview: () => request<CampaignOverview>(`/email-campaigns/overview`),
   addLeadToCampaign: (leadId: string) =>
     request<{ added: true; listName: string }>(`/leads/${leadId}/add-to-campaign`, { method: "POST" }),
+  /** The standing rule's exit for the button above: same drawer, removes what it added. */
+  removeLeadFromCampaign: (leadId: string) =>
+    request<{ removed: number }>(`/leads/${leadId}/campaign`, { method: "DELETE" }),
   campaignLeadMembership: () => request<{ leadIds: string[] }>(`/email-campaigns/lead-membership`),
   campaignArticles: () => request<{ articles: CampaignArticle[] }>(`/email-campaigns/articles`),
   createCampaign: (input: { name: string; subject: string; blocks: CampaignBlock[]; listId?: string }) =>
@@ -1328,7 +1385,6 @@ export const api = {
   // ─── Financials (2026-08-25) ───────────────────────────────────────────────
   financialsSummary: (year: number) => request<FinancialsSummary>(`/financials/summary?year=${year}`),
   receiptInsights: (year: number) => request<ReceiptInsights>(`/financials/receipt-insights?year=${year}`),
-  stripeStatus: () => request<StripeStatus>("/financials/stripe-status"),
   jobProfitability: (year: number) => request<JobProfitRow[]>(`/financials/job-profitability?year=${year}`),
   companyBills: () => request<CompanyBillRow[]>("/financials/bills"),
   createCompanyBill: (input: Omit<CompanyBillRow, "id" | "createdAt">) =>
@@ -1545,12 +1601,23 @@ export const api = {
       waiveTrip?: boolean;
       /** P031: attach the generator sizing one-pager from this address's field assessment. */
       includeGenerator?: boolean;
+      /** The deposit checkbox (Kyle, 2026-09-20). Absent = on for an estimate, off for a change order. */
+      depositRequired?: boolean;
+      /** Change orders only: attach to the parent's current job when signed. */
+      addToCurrentJob?: boolean;
     }
   ) =>
     request<{ issued: true; estimateId: string; number: string; revision: number; unpriced?: string[] }>(
       `/price-book/drafts/${draftId}/issue`,
       { method: "POST", body: JSON.stringify(input) }
     ),
+
+  /** The terms Kyle can change after issue (2026-09-20): the deposit flag, and — until it has a job — "add to current job". */
+  pbSetTerms: (estimateId: string, input: { depositRequired?: boolean; addToCurrentJob?: boolean }) =>
+    request<{ ok: true; depositRequired: boolean; addToCurrentJob: boolean }>(`/issued-estimates/${estimateId}/terms`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
 
   // ─── Price Book editor (2026-08-30 — the app is the book) ─────────────────
   pbCatalogCategories: () =>
@@ -1671,7 +1738,8 @@ export const api = {
     // the signature itself is already durable either way.
     // selectedOptions: what was ticked on the presentation screen — required to be exactly
     // one on a one-or-the-other estimate (server-enforced).
-    request<{ signed: true; estimateId: string; jobVisitId: string | null }>(
+    // jobJoined (2026-09-20): a change order attached to the parent's current job — nothing new to schedule.
+    request<{ signed: true; estimateId: string; jobVisitId: string | null; jobJoined?: boolean }>(
       `/issued-estimates/${id}/sign-in-person`,
       {
         method: "POST",
@@ -1736,7 +1804,40 @@ export const api = {
       body: JSON.stringify({ reason }),
     }),
 
+  /**
+   * Mark a sent/viewed/expired estimate LOST (Kyle, 2026-09-20) — the customer hired someone
+   * else or is not moving forward. Not void: this is what the win rate reads. Reason from
+   * LEAD_LOST_REASONS, the same list leads use.
+   */
+  markEstimateLost: (estimateId: string, input: { reason: string; notes?: string | null }) =>
+    request<{ lost: true; reason: string; notes: string | null }>(`/issued-estimates/${estimateId}/lost`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  /** The way back: a lost estimate returns to sent / viewed / expired, whichever it really is. */
+  reopenEstimate: (estimateId: string) =>
+    request<{ reopened: true; status: "sent" | "viewed" | "expired" }>(`/issued-estimates/${estimateId}/reopen`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+
   estimateChain: () => request<{ estimates: PbChainRow[] }>("/issued-estimates/chain"),
+
+  /**
+   * One issued estimate in the account-row projection, for the estimate drawer (2026-09-20).
+   * Not `pbIssuedDetail`: that route returns the customer's capability link, which must never
+   * enter a drawer payload (PUNCHLIST B4).
+   */
+  estimateRecord: (estimateId: string) =>
+    request<{ estimate: PbIssuedEstimate }>(`/issued-estimates/${estimateId}/record`),
+
+  /**
+   * Global search (2026-09-20): one call, six record kinds, ranked numbers-first and capped per
+   * kind. A result carries the drawer to open (or `href` for an account). Never a capability
+   * token (PUNCHLIST B4) — the server selects explicit fields.
+   */
+  search: (q: string, per?: number) =>
+    request<SearchResponse>(`/search?q=${encodeURIComponent(q)}${per ? `&per=${per}` : ""}`),
 
   pbCreateJob: (id: string) =>
     request<{ created: boolean; visitId: string }>(`/issued-estimates/${id}/create-job`, {
@@ -1825,12 +1926,6 @@ export const api = {
   confirmTimeEntry: (input: { kind: "shift" | "job"; id: string; endedAt: string; reason: string }) =>
     request<{ id: string }>("/time/confirm", { method: "POST", body: JSON.stringify(input) }),
 
-  commissions: (query: { technicianId?: string; visitId?: string }) => {
-    const params = new URLSearchParams();
-    if (query.technicianId) params.set("technicianId", query.technicianId);
-    if (query.visitId) params.set("visitId", query.visitId);
-    return request<CommissionRow[]>(`/time/commissions?${params.toString()}`);
-  },
   commissionQuote: (visitId: string, technicianId: string) =>
     request<CommissionQuote>(`/time/commissions/quote?visitId=${encodeURIComponent(visitId)}&technicianId=${encodeURIComponent(technicianId)}`),
   createCommission: (input: {

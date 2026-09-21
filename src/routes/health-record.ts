@@ -39,7 +39,21 @@ import {
 } from "../services/pdfGenerator";
 import { notifyTechnicianOfAssignment } from "../services/visitConfirmations";
 import { sendHealthReportEmail } from "../services/healthReportEmail";
+import { COVERAGE_VALUES, DEVICE_TYPES, DIFFICULTY_TIERS } from "../../shared/diagnostics";
+import {
+  DiagnosticError,
+  REPORT_INCLUDE,
+  buildResolutionsChangeOrder,
+  deleteDiagnosticReport,
+  diagnosticQuoteContext,
+  loadDiagnosticReport,
+  pushDiagnosticReport,
+  serializeDiagnosticReport,
+  voidDiagnosticReport,
+} from "../services/diagnosticReport";
+import { sendDiagnosticReportEmail } from "../services/diagnosticReportEmail";
 import { paymentSummary } from "../services/stripePayments";
+import { LIVE_SIGNED_CHANGE_ORDER, signedRootForJob } from "../services/invoiceGroup";
 import { logSystemEvent } from "../services/systemEvents";
 import { sendKyleNotificationEmail } from "../services/confirmationEmail";
 import { resolveJurisdictions } from "../services/jurisdictionResolver";
@@ -589,6 +603,266 @@ healthRecordTechRouter.post("/inspections/:id/email", asyncHandler(async (req: T
   res.json({ success: true, data: { sentTo: result.sentTo, documentId: result.documentId } });
 }));
 
+/* ─── CIRCUIT DIAGNOSTICS (Kyle, 2026-09-20) ───────────────────────────────────
+
+   "The tech quotes 3 normal outlets at $25, 2 ceiling outlets at $35, and 1 hard
+   to reach outlet at $50 ... The quote gets signed and then in the field app he
+   pulls up the diagnostics or run diagnostics, and can click and add outlet
+   button. This adds an outlet systematically as he is doing the diagnostics,
+   does the measurements at the outlet, takes the pictures, notes if anything was
+   fixed, and moves onto the next one."
+
+   THE RCE STANDARD is the scope rule: breaker to last outlet, every box, always.
+   The quoted count sizes the circuit; the examined count is what it held. The
+   rules live in services/diagnosticReport.ts and shared/diagnostics.ts — these
+   routes are the doors, and the only thing they add is WHO may open them.
+
+   Auth model, same as every other tech route: a technician may touch a
+   diagnostic on a visit assigned to them, or one they made themselves.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+const outletPushSchema = z.object({
+  id: z.string().min(1),
+  sequence: z.number().int().nonnegative(),
+  locationLabel: z.string().trim().min(1).max(200),
+  deviceType: z.enum(DEVICE_TYPES),
+  deviceLabel: z.string().trim().max(120).nullable().default(null),
+  enclosure: z.string().trim().max(120).nullable().default(null),
+  gangs: z.number().int().min(0).max(20).nullable().default(null),
+  circuitNumber: z.string().trim().max(40).nullable().default(null),
+  difficulty: z.enum(DIFFICULTY_TIERS).default("NORMAL"),
+  vPhaseGround: z.number().nullable().default(null),
+  vPhaseNeutral: z.number().nullable().default(null),
+  vPhasePhase: z.number().nullable().default(null),
+  terminationsTightened: z.boolean().default(false),
+  corrosion: z.boolean().default(false),
+  corrosionNote: z.string().trim().max(500).nullable().default(null),
+  findings: z.string().trim().max(2000).nullable().default(null),
+  fixed: z.string().trim().max(2000).nullable().default(null),
+  equipmentDefective: z.boolean().default(false),
+  defectDescription: z.string().trim().max(2000).nullable().default(null),
+  photoIds: z.array(z.string().min(1)).default([]),
+});
+
+const diagnosticPushSchema = z.object({
+  reportId: z.string().min(1),
+  visitId: z.string().min(1),
+  reportDate: z.string().min(1),
+  complaint: z.string().trim().min(1).max(1000),
+  circuitLabel: z.string().trim().min(1).max(200),
+  circuitNumber: z.string().trim().max(40).nullable().default(null),
+  panelLocation: z.string().trim().max(200).nullable().default(null),
+  breakerRating: z.string().trim().max(40).nullable().default(null),
+  breakerInspected: z.boolean().default(false),
+  coverage: z.enum(COVERAGE_VALUES),
+  coverageNote: z.string().trim().max(1000).nullable().default(null),
+  summary: z.string().trim().max(5000).nullable().default(null),
+  diagnosticItemId: z.string().nullable().default(null),
+  quotedNormal: z.number().int().min(0).default(0),
+  quotedDifficult: z.number().int().min(0).default(0),
+  quotedVeryDifficult: z.number().int().min(0).default(0),
+  status: z.enum(["in_progress", "complete"]).default("in_progress"),
+  outlets: z.array(outletPushSchema).default([]),
+  appVersion: z.string().max(120).optional(),
+});
+
+/** Map a diagnostic refusal onto the PWA's error envelope, unchanged. */
+function sendDiagnosticError(res: express.Response, err: unknown): boolean {
+  if (err instanceof DiagnosticError) {
+    res.status(err.statusCode).json({ success: false, error: { code: err.code, message: err.message } });
+    return true;
+  }
+  return false;
+}
+
+/** The report, if this technician is allowed to touch it. Null means no. */
+async function diagnosticForTech(reportId: string, technicianId: string) {
+  const report = await loadDiagnosticReport(prisma, reportId);
+  if (!report) return null;
+  if (report.technicianId === technicianId) return report;
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId: report.visitId, technicianId },
+    select: { id: true },
+  });
+  return assigned ? report : null;
+}
+
+/**
+ * What the signed estimate bought, per access tier — the PRE-FILL for a new
+ * diagnostic, never the authority. The technician confirms or corrects the three
+ * counts before the first outlet and the report freezes what he confirmed,
+ * because `IssuedEstimateLine` does not carry `difficulty` and the derivation
+ * behind these numbers can come up empty without anyone noticing on a phone.
+ */
+healthRecordTechRouter.get("/visits/:visitId/diagnostic-context", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  const context = await diagnosticQuoteContext(prisma, visitId);
+  res.json({ success: true, data: context });
+}));
+
+/** Every diagnostic on this visit — so a tech resumes one instead of starting a second. */
+healthRecordTechRouter.get("/visits/:visitId/diagnostic-reports", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  const rows = await prisma.diagnosticReport.findMany({
+    where: { visitId },
+    orderBy: { reportDate: "desc" },
+    include: REPORT_INCLUDE,
+  });
+  res.json({ success: true, data: { reports: rows.map(serializeDiagnosticReport) } });
+}));
+
+/**
+ * The push. Idempotent on the PWA's own report id, and its outlets sync by their
+ * own ids — a retry off the durable queue lands on the same rows, and an outlet
+ * deleted on the phone disappears here. Sent repeatedly as the walk progresses,
+ * which is the whole point: a diagnostic half-done in a basement with no signal
+ * is already on the phone and flushes whole when the bars come back.
+ */
+healthRecordTechRouter.post("/diagnostic-reports", asyncHandler(async (req: TechRequest, res) => {
+  const body = diagnosticPushSchema.parse(req.body);
+  const visit = await prisma.visit.findUnique({
+    where: { id: body.visitId },
+    select: { id: true, propertyId: true, customerId: true },
+  });
+  if (!visit) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: `Visit ${body.visitId} not found` } });
+    return;
+  }
+  if (!(await requireAssigned(req, res, visit.id))) return;
+
+  try {
+    const report = await pushDiagnosticReport(prisma, body, {
+      visitId: visit.id,
+      propertyId: visit.propertyId,
+      customerId: visit.customerId,
+      technicianId: req.technician!.id,
+    });
+    res.status(201).json({ success: true, data: serializeDiagnosticReport(report) });
+  } catch (err) {
+    if (sendDiagnosticError(res, err)) return;
+    throw err;
+  }
+}));
+
+/**
+ * Photo evidence, raw bytes, idempotent on the phone's own photo UUID — the same
+ * contract as inspection photos, and for the same reason (2026-09-11: four
+ * receipt photos taken and lost because nothing wrote them down first). The
+ * phone queues the bytes in IndexedDB BEFORE it ever calls this.
+ */
+healthRecordTechRouter.put(
+  "/diagnostic-reports/:reportId/photos/:photoId",
+  express.raw({ type: "image/*", limit: "15mb" }),
+  asyncHandler(async (req: TechRequest, res) => {
+    const reportId = readParam(req, "reportId");
+    const photoId = readParam(req, "photoId");
+    const body = req.body as Buffer;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      res.status(400).json({ success: false, error: { code: "bad_request", message: "Raw image body required (Content-Type: image/*)" } });
+      return;
+    }
+    const report = await diagnosticForTech(reportId, req.technician!.id);
+    if (!report) {
+      res.status(404).json({
+        success: false,
+        error: { code: "not_found", message: `Diagnostic ${reportId} not found — push the report before its photos` },
+      });
+      return;
+    }
+    const data = {
+      reportId,
+      mimeType: req.headers["content-type"] ?? "image/jpeg",
+      sizeBytes: body.length,
+      data: body,
+    };
+    await prisma.diagnosticPhoto.upsert({ where: { id: photoId }, create: { id: photoId, ...data }, update: data });
+    res.status(201).json({ success: true, data: { id: photoId, sizeBytes: body.length } });
+  }),
+);
+
+/** A photo's exit, from the surface that shows it (Kyle's standing rule). */
+healthRecordTechRouter.delete("/diagnostic-reports/:reportId/photos/:photoId", asyncHandler(async (req: TechRequest, res) => {
+  const report = await diagnosticForTech(readParam(req, "reportId"), req.technician!.id);
+  if (!report) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Diagnostic not found" } });
+    return;
+  }
+  await prisma.diagnosticPhoto.deleteMany({ where: { id: readParam(req, "photoId"), reportId: report.id } });
+  res.json({ success: true, data: { deleted: true } });
+}));
+
+/** The report's exit while it is still ours: void with a reason. */
+healthRecordTechRouter.post("/diagnostic-reports/:id/void", asyncHandler(async (req: TechRequest, res) => {
+  const reportId = readParam(req, "id");
+  if (!(await diagnosticForTech(reportId, req.technician!.id))) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Diagnostic not found" } });
+    return;
+  }
+  const body = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body ?? {});
+  try {
+    const voided = await voidDiagnosticReport(prisma, reportId, body.reason);
+    res.json({ success: true, data: serializeDiagnosticReport(voided) });
+  } catch (err) {
+    if (sendDiagnosticError(res, err)) return;
+    throw err;
+  }
+}));
+
+/** And the harder exit: delete one the homeowner never received. */
+healthRecordTechRouter.delete("/diagnostic-reports/:id", asyncHandler(async (req: TechRequest, res) => {
+  const reportId = readParam(req, "id");
+  if (!(await diagnosticForTech(reportId, req.technician!.id))) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Diagnostic not found" } });
+    return;
+  }
+  try {
+    await deleteDiagnosticReport(prisma, reportId);
+    res.json({ success: true, data: { deleted: true } });
+  } catch (err) {
+    if (sendDiagnosticError(res, err)) return;
+    throw err;
+  }
+}));
+
+/** Hand the homeowner the report, from the driveway. Same gate as the CRM door. */
+healthRecordTechRouter.post("/diagnostic-reports/:id/email", asyncHandler(async (req: TechRequest, res) => {
+  const reportId = readParam(req, "id");
+  if (!(await diagnosticForTech(reportId, req.technician!.id))) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Diagnostic not found" } });
+    return;
+  }
+  const result = await sendDiagnosticReportEmail(reportId, { sentBy: `tech:${req.technician!.id}` });
+  if (!result.sent) {
+    res.status(409).json({ success: false, error: { code: "not_sent", message: result.reason } });
+    return;
+  }
+  res.json({ success: true, data: { sentTo: result.sentTo, documentId: result.documentId } });
+}));
+
+/**
+ * The resolutions estimate — "which will always be a change order from a
+ * diagnostics" (Kyle). Seeds the diagnostic overage at each tier's own price and
+ * writes every defective device into the draft's scope for a human to price;
+ * wiring fixes made during the diagnostic appear nowhere on it, because they
+ * were already paid for.
+ */
+healthRecordTechRouter.post("/diagnostic-reports/:id/resolutions", asyncHandler(async (req: TechRequest, res) => {
+  const reportId = readParam(req, "id");
+  if (!(await diagnosticForTech(reportId, req.technician!.id))) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Diagnostic not found" } });
+    return;
+  }
+  try {
+    const result = await buildResolutionsChangeOrder(prisma, reportId, `tech:${req.technician!.id}`);
+    res.status(result.resumed ? 200 : 201).json({ success: true, data: result });
+  } catch (err) {
+    if (sendDiagnosticError(res, err)) return;
+    throw err;
+  }
+}));
+
 /**
  * GET /health-record/visits/:visitId/payment-info — where the money stands on
  * the tech's assigned visit (Kyle, 2026-08-25: "no way of charging a card on
@@ -616,7 +890,8 @@ healthRecordTechRouter.post("/visits/:visitId/email-payment-request", asyncHandl
     return;
   }
   const est = await prisma.issuedEstimate.findFirst({
-    where: { signedAt: { not: null }, status: { not: "void" }, OR: [{ jobVisitId: visitId }, { visitId }] },
+    // Allow-list, not `not: "void"` (2026-09-20) — see jobMaterials.ts signedEstimateForJob.
+    where: { signedAt: { not: null }, status: "signed", OR: [{ jobVisitId: visitId }, { visitId }] },
     orderBy: { createdAt: "desc" },
     select: { id: true, customerEmail: true },
   });
@@ -693,8 +968,16 @@ healthRecordTechRouter.post("/visits/:visitId/quote", asyncHandler(async (req: T
     res.status(404).json({ success: false, error: { code: "not_found", message: "Visit not found" } });
     return;
   }
+  /*
+    `changeOrderForId: null` is load-bearing, not tidiness (found 2026-09-21
+    building the diagnostics report). A change order raised on this job — from
+    the CRM, or by this build's resolutions button — is ALSO a draft on this
+    visit with status "draft", so without this filter "Build the quote" would
+    silently resume the change order and the tech would add new-work lines to a
+    document that only describes the change. Never widen this back.
+  */
   const existing = await prisma.priceBookDraftEstimate.findFirst({
-    where: { visitId, status: "draft" },
+    where: { visitId, status: "draft", changeOrderForId: null },
     orderBy: { createdAt: "desc" },
     select: { id: true },
   });
@@ -966,15 +1249,8 @@ healthRecordTechRouter.get("/visits/:visitId/payment-info", asyncHandler(async (
     res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
     return;
   }
-  const est = await prisma.issuedEstimate.findFirst({
-    where: {
-      signedAt: { not: null },
-      status: { not: "void" },
-      OR: [{ jobVisitId: visitId }, { visitId }],
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
-  });
+  // The ROOT invoice (2026-09-20) — its summary rolls the signed change orders in.
+  const est = await signedRootForJob(prisma, visitId);
   if (!est) { res.json({ success: true, data: null }); return; }
   const origin = `${req.protocol}://${req.get("host")}`;
   const summary = await paymentSummary(prisma, est.id, origin);
@@ -1025,17 +1301,33 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
   });
   if (!visit) { res.status(404).json({ success: false, error: { code: "not_found", message: "Visit not found" } }); return; }
 
-  const est = await prisma.issuedEstimate.findFirst({
-    where: {
-      signedAt: { not: null },
-      status: { not: "void" },
-      OR: [{ jobVisitId: visitId }, { visitId }],
-    },
-    orderBy: { createdAt: "desc" },
-    include: { lines: { orderBy: { sortOrder: "asc" } } },
-  });
-
-  const taken = new Set(est?.selectedOptions ?? []);
+  /*
+    THE BRIEF IS THE WHOLE INVOICE (2026-09-20). The root signed estimate is the job; every
+    signed, live change order on it is scope the tech must see too — a change order that joined
+    the job ("add to current job") is exactly the extra work he is standing there to do. A tech
+    working from the root alone works from a stale brief.
+  */
+  const root = await signedRootForJob(prisma, visitId);
+  const est = root
+    ? await prisma.issuedEstimate.findUnique({
+      where: { id: root.id },
+      include: { lines: { orderBy: { sortOrder: "asc" } } },
+    })
+    : null;
+  const changeOrders = est
+    ? await prisma.issuedEstimate.findMany({
+      where: { changeOrderForId: est.id, ...LIVE_SIGNED_CHANGE_ORDER },
+      orderBy: { signedAt: "asc" },
+      include: { lines: { orderBy: { sortOrder: "asc" } } },
+    })
+    : [];
+  const linesOf = (doc: { selectedOptions: string[]; lines: { description: string; quantity: number; option: string }[] }) => {
+    const chosen = new Set(doc.selectedOptions ?? []);
+    // Taken options only, when a choice was made — the tech works what was bought.
+    return doc.lines
+      .filter((l) => chosen.size === 0 || chosen.has(l.option))
+      .map((l) => ({ description: l.description, quantity: l.quantity, option: l.option }));
+  };
   // The JOB clock (Kyle, 2026-09-11): hours already on this job, plus the open
   // arrive-to-leave session if one is running. A flagged session has stopped
   // accruing and is excluded until the tech confirms the real end time.
@@ -1070,10 +1362,15 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
           number: est.number,
           title: est.title,
           scopeText: est.scopeText,
-          // Taken options only, when a choice was made — the tech works what was bought.
-          lines: est.lines
-            .filter((l) => taken.size === 0 || taken.has(l.option))
-            .map((l) => ({ description: l.description, quantity: l.quantity, option: l.option })),
+          lines: linesOf(est),
+          // Signed change orders that joined this invoice (2026-09-20) — added scope, same job.
+          changeOrders: changeOrders.map((co) => ({
+            number: co.number,
+            title: co.title,
+            scopeText: co.scopeText,
+            signedAt: co.signedAt?.toISOString() ?? null,
+            lines: linesOf(co),
+          })),
         }
         : null,
     },
@@ -2608,36 +2905,6 @@ healthRecordAdminRouter.get("/inspections/:id", asyncHandler(async (req, res) =>
   res.json(inspection);
 }));
 
-/**
- * Structured protocol-v2 capture for an inspection — enclosures, items with
- * measurements and bus visuals, GFCI coverage by location, and the sampling
- * disclosure. This is what the v2 report template reads.
- */
-healthRecordAdminRouter.get("/inspections/:id/v2", asyncHandler(async (req, res) => {
-  const inspectionId = readParam(req, "id");
-  const inspection = await prisma.healthInspection.findUnique({
-    where: { id: inspectionId },
-    select: { id: true, propertyId: true },
-  });
-  if (!inspection) {
-    res.status(404).json({ error: "Inspection not found" });
-    return;
-  }
-
-  const [items, gfciCoverage, samplingRecords, enclosures] = await Promise.all([
-    prisma.inspectionItem.findMany({
-      where: { inspectionId },
-      include: { measurements: true, busVisual: true, enclosure: true },
-      orderBy: { createdAt: "asc" },
-    }),
-    prisma.gfciCoverage.findMany({ where: { inspectionId }, orderBy: { locationDescriptor: "asc" } }),
-    prisma.samplingRecord.findMany({ where: { inspectionId } }),
-    prisma.enclosure.findMany({ where: { propertyId: inspection.propertyId, retiredAt: null } }),
-  ]);
-
-  res.json({ inspectionId, items, gfciCoverage, samplingRecords, enclosures });
-}));
-
 /** Photo evidence bytes for the CRM detail view. */
 healthRecordAdminRouter.get("/photos/:photoId", asyncHandler(async (req, res) => {
   const photo = await prisma.inspectionPhoto.findUnique({
@@ -2650,6 +2917,78 @@ healthRecordAdminRouter.get("/photos/:photoId", asyncHandler(async (req, res) =>
   res.setHeader("Content-Type", photo.mimeType);
   res.setHeader("Cache-Control", "private, max-age=86400");
   res.send(Buffer.from(photo.data));
+}));
+
+/* ── Circuit diagnostics, from the office (2026-09-20) ────────────────────────
+   The field app is where a diagnostic is made and where its exits live, but the
+   office has to be able to read one, re-send it and void one — a record only
+   the phone can reach is a record Kyle cannot answer a phone call about. Same
+   service, same gates; the only difference is who is asking. */
+
+healthRecordAdminRouter.get("/visits/:visitId/diagnostic-reports", asyncHandler(async (req, res) => {
+  const rows = await prisma.diagnosticReport.findMany({
+    where: { visitId: readParam(req, "visitId") },
+    orderBy: { reportDate: "desc" },
+    include: REPORT_INCLUDE,
+  });
+  res.json({ reports: rows.map(serializeDiagnosticReport) });
+}));
+
+healthRecordAdminRouter.get("/diagnostic-reports/:id", asyncHandler(async (req, res) => {
+  const report = await loadDiagnosticReport(prisma, readParam(req, "id"));
+  if (!report) {
+    res.status(404).json({ error: "Diagnostic report not found" });
+    return;
+  }
+  res.json(serializeDiagnosticReport(report));
+}));
+
+healthRecordAdminRouter.get("/diagnostic-photos/:photoId", asyncHandler(async (req, res) => {
+  const photo = await prisma.diagnosticPhoto.findUnique({ where: { id: readParam(req, "photoId") } });
+  if (!photo) {
+    res.status(404).json({ error: "Photo not found" });
+    return;
+  }
+  res.setHeader("Content-Type", photo.mimeType);
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  res.send(Buffer.from(photo.data));
+}));
+
+healthRecordAdminRouter.post("/diagnostic-reports/:id/email", asyncHandler(async (req, res) => {
+  const body = z.object({ to: z.string().email().optional() }).parse(req.body ?? {});
+  const result = await sendDiagnosticReportEmail(readParam(req, "id"), { to: body.to ?? null, sentBy: "owner:crm" });
+  if (!result.sent) {
+    res.status(409).json({ error: result.reason });
+    return;
+  }
+  res.json({ sentTo: result.sentTo, documentId: result.documentId });
+}));
+
+healthRecordAdminRouter.post("/diagnostic-reports/:id/void", asyncHandler(async (req, res) => {
+  const body = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body ?? {});
+  try {
+    const voided = await voidDiagnosticReport(prisma, readParam(req, "id"), body.reason);
+    res.json(serializeDiagnosticReport(voided));
+  } catch (err) {
+    if (err instanceof DiagnosticError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+}));
+
+healthRecordAdminRouter.delete("/diagnostic-reports/:id", asyncHandler(async (req, res) => {
+  try {
+    await deleteDiagnosticReport(prisma, readParam(req, "id"));
+    res.json({ deleted: true });
+  } catch (err) {
+    if (err instanceof DiagnosticError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
 }));
 
 /**
@@ -3347,6 +3686,68 @@ healthRecordAdminRouter.post("/receipts/:id/reparse", asyncHandler(async (req, r
     select: { id: true, amount: true, vendor: true, category: true, status: true, lineItems: true, purchaseOrderId: true, jobId: true, reconciliationNote: true },
   });
   res.json({ success: true, parsed: result.parsed, data: after });
+}));
+
+/**
+ * One receipt, for the receipt DRAWER (2026-09-20, drawers plan Phase 1: "the record carries
+ * its own actions"). Every other receipt read is a list (the review queue, the needs-a-PO queue,
+ * a job's receipts); a drawer keyed by `?receipt=<id>` needs the one row. Never the image bytes —
+ * `hasImage` says whether to offer the viewer, and the bytes come from /receipts/:id/image on
+ * demand, same as the job list does. Same account/job label as the review queue so the drawer
+ * reads like the row that opened it.
+ */
+healthRecordAdminRouter.get("/receipts/:id", asyncHandler(async (req, res) => {
+  const r = await prisma.receipt.findUnique({
+    where: { id: readParam(req, "id") },
+    select: {
+      id: true, jobId: true, category: true, vendor: true, amount: true, lineItems: true, source: true, status: true,
+      technicianId: true, imageMime: true, receivedAt: true, createdAt: true,
+      purchaseOrderId: true, purchaseOrder: { select: { number: true, status: true } },
+      poWaivedAt: true, poWaivedReason: true, reconciliationNote: true,
+    },
+  });
+  if (!r) {
+    res.status(404).json({ error: "Receipt not found" });
+    return;
+  }
+  const job = r.jobId
+    ? await prisma.visit.findUnique({
+        where: { id: r.jobId },
+        select: {
+          id: true, jobType: true, purpose: true,
+          customer: { select: { id: true, name: true } },
+          property: { select: { addressLine1: true, city: true } },
+        },
+      })
+    : null;
+  res.json({
+    id: r.id,
+    jobId: r.jobId,
+    category: r.category,
+    vendor: r.vendor,
+    amount: r.amount,
+    lineItems: (() => { try { return r.lineItems ? JSON.parse(r.lineItems) : []; } catch { return []; } })(),
+    source: r.source,
+    status: r.status,
+    technicianId: r.technicianId,
+    receivedAt: r.receivedAt,
+    createdAt: r.createdAt,
+    hasImage: Boolean(r.imageMime),
+    imageMime: r.imageMime,
+    purchaseOrderId: r.purchaseOrderId,
+    purchaseOrderNumber: r.purchaseOrder?.number ?? null,
+    purchaseOrderStatus: r.purchaseOrder?.status ?? null,
+    poWaivedAt: r.poWaivedAt,
+    poWaivedReason: r.poWaivedReason,
+    reconciliationNote: r.reconciliationNote,
+    accountId: job?.customer.id ?? null,
+    accountName: job?.customer.name ?? null,
+    jobLabel: job
+      ? `${job.jobType || job.purpose || "Job"} — ${job.property.addressLine1}, ${job.property.city}`
+      : "Not tied to a job",
+    // Kyle, 2026-09-09: purchasing starts with a PO; a materials receipt without one is flagged.
+    needsPo: r.category === "materials" && !r.purchaseOrderId && !r.poWaivedAt,
+  });
 }));
 
 healthRecordAdminRouter.get("/receipts/:id/image", asyncHandler(async (req, res) => {

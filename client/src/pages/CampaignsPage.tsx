@@ -215,9 +215,9 @@ function Composer({ campaign, lists, onDone }: { campaign: Campaign | null; list
                 {b.kind === "text" ? "Your words" : b.kind === "article" ? "Article card" : "Promotion"}
               </span>
               <span className="flex gap-2 text-xs">
-                <button type="button" className="underline" onClick={() => move(i, -1)}>↑</button>
-                <button type="button" className="underline" onClick={() => move(i, 1)}>↓</button>
-                <button type="button" className="text-red-600 underline" onClick={() => remove(i)}>remove</button>
+                <button type="button" className="btn btn-secondary px-1.5 py-0.5 text-xs min-h-0" onClick={() => move(i, -1)}>↑</button>
+                <button type="button" className="btn btn-secondary px-1.5 py-0.5 text-xs min-h-0" onClick={() => move(i, 1)}>↓</button>
+                <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => remove(i)}>remove</button>
               </span>
             </div>
             {b.kind === "text" && (

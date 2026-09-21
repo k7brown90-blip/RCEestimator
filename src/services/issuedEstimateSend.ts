@@ -36,7 +36,8 @@ import { logSystemEvent } from "./systemEvents";
 // reason the filed copies are rendered on demand: nothing to drift, nothing lost to a deploy.
 import { renderEstimatePdf } from "./issuedEstimatePdf";
 import { getCompanyProfile } from "./companyProfile";
-import { billedTotalOf, parseWarrantyJson, stripeConfigured, warrantyCoverageOf } from "./stripePayments";
+import { billedTotalOf, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf } from "./stripePayments";
+import { invoiceDocumentRows } from "./paymentReceipts";
 import { warrantyEmailLine } from "./warrantyNotice";
 // Kyle, 2026-09-09 ("My emails are not getting to the clients"): a send that lands at a
 // DIFFERENT address than the one that bounced clears the estimate's bounce flag.
@@ -160,6 +161,22 @@ export async function sendInvoiceEmail(
   }
 
   const profile = await getCompanyProfile();
+  /*
+    THE INVOICE IS THE GROUP (Kyle, 2026-09-20). The attached PDF stays this frozen document;
+    the email's figures — and the appendix printed under the document — are the whole invoice:
+    root plus every signed change order, one total, one paid-to-date, one balance, one pay link
+    (the ROOT's, so a change order's copy pays the same invoice).
+  */
+  const summary = (await paymentSummary(prisma, est.id, publicBaseUrl()))!;
+  const invoiceAppendix = summary.documents.length > 1
+    ? {
+      number: summary.number,
+      documents: summary.documents.map((d) => ({ number: d.number, title: d.title, kind: d.kind, billedTotal: d.billedTotal, signedAt: d.signedAt })),
+      billedTotal: summary.billedTotal,
+      totalPaid: summary.totalPaid,
+      balance: summary.balance,
+    }
+    : null;
   const pdf = await renderEstimatePdf(
     {
       number: est.number,
@@ -174,6 +191,7 @@ export async function sendInvoiceEmail(
       signedByName: est.signerName,
       signatureImage: est.signatureImage,
       createdAt: est.createdAt,
+      invoice: invoiceAppendix,
       options: est.options,
       selectedOptions: est.selectedOptions,
       // The frozen working of the job-level material check, for the company copy (2026-08-21).
@@ -216,22 +234,34 @@ export async function sendInvoiceEmail(
   const warrantyLine = coverage
     ? `<p style="font-size:14px;color:#1a5c2e;margin:0 0 4px;">${escapeHtml(warrantyEmailLine(coverage.claim, coverage.applied))}</p>`
     : "";
+  const isChangeOrder = Boolean(est.changeOrderForId);
+  const rolledUp = invoiceAppendix
+    ? `<table style="width:100%;font-size:14px;border-collapse:collapse;margin:8px 0;">
+        ${invoiceDocumentRows(summary)}
+        <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td>
+          <td style="text-align:right;font-weight:700;">$${summary.billedTotal.toFixed(2)}</td></tr>
+        ${summary.totalPaid > 0 ? `<tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>
+        <tr><td style="padding:4px 0;font-weight:600;">Balance</td><td style="text-align:right;font-weight:600;">$${summary.balance.toFixed(2)}</td></tr>` : ""}
+      </table>`
+    : "";
 
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
   const note = (opts.message ?? "").trim();
   // Pay online (Stripe, 2026-08-25): the link is OUR durable /pay route, which
   // mints a fresh Checkout session per click — a raw session URL would expire
-  // in a day. Only rendered while Stripe is configured on the service.
-  const payUrl = stripeConfigured() ? `${publicBaseUrl()}/pay/${est.token}` : null;
+  // in a day. Only rendered while Stripe is configured on the service. The
+  // ROOT invoice's link (2026-09-20) — one pay link for the whole job.
+  const payUrl = stripeConfigured() ? summary.payUrl : null;
   const bodyHtml = `
     <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
     <p style="font-size:15px;">Thank you for approving <strong>${escapeHtml(est.title)}</strong>.
-    Your signed invoice is attached.</p>
+    Your signed ${isChangeOrder ? "change order" : "invoice"} is attached.</p>
     ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
     ${warrantyLine}
-    <p style="font-size:15px;">Invoice <strong>${escapeHtml(est.number)}</strong>${
+    <p style="font-size:15px;">${isChangeOrder ? `Change order <strong>${escapeHtml(est.number)}</strong> &middot; ${coverage ? "your share" : "amount"} <strong>$${billed.toFixed(2)}</strong> &middot; added to invoice <strong>${escapeHtml(summary.number)}</strong>` : `Invoice <strong>${escapeHtml(est.number)}</strong>${
       est.revision > 1 ? ` (revision ${est.revision})` : ""
-    } &middot; ${coverage ? "Your total" : "Total"} <strong>${`$${billed.toFixed(2)}`}</strong></p>
+    } &middot; ${coverage ? "Your total" : "Total"} <strong>${`$${(invoiceAppendix ? summary.billedTotal : billed).toFixed(2)}`}</strong>`}</p>
+    ${rolledUp}
     ${payUrl ? `
     <p style="margin:24px 0;">
       <a href="${escapeHtml(payUrl)}"
@@ -319,6 +349,10 @@ export async function sendEstimateEmail(
     return { ok: false, reason: "This estimate has been superseded by a newer revision. Send that one instead." };
   }
   if (est.status === "void") return { ok: false, reason: "This estimate is void." };
+  // Sending IS re-opening the conversation (2026-09-20). Reopen first so the funnel reads the
+  // truth — a quote out with the customer is not a lost one — and so a resend cannot quietly
+  // put a lost estimate back on the Sent card with its lost record still attached.
+  if (est.status === "lost") return { ok: false, reason: "This estimate is marked lost. Reopen it first, then send it again." };
   if (est.signedAt) return { ok: false, reason: "This estimate is already signed." };
 
   const to = (opts.toOverride ?? est.customerEmail ?? "").trim();

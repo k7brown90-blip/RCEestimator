@@ -4,6 +4,7 @@ import './index.css'
 import App from './App.tsx'
 import { registerSW } from 'virtual:pwa-register'
 import { consumeEnrollmentToken, flushReceiptQueue, flushSyncQueue, registerSyncListener } from './lib/crmSync'
+import { flushDiagnosticQueue, registerDiagnosticSyncListener } from './lib/diagnosticSync'
 
 // Before createRoot — PropertyScreen reads the saved token in a useState
 // initializer, so enrolling any later wouldn't take effect until a reload.
@@ -15,6 +16,11 @@ void flushSyncQueue()
 // Receipts queued while the phone was killed/rebooted mid-flush (2026-09-12
 // durability fix) — retried here alongside the inspection queue.
 void flushReceiptQueue()
+// And a circuit diagnostic walked in a basement with no signal (2026-09-20).
+// Its own listener rather than a call inside registerSyncListener: crmSync must
+// not import diagnosticSync, which imports crmSync for the session settings.
+registerDiagnosticSyncListener()
+void flushDiagnosticQueue()
 
 // A new service worker taking control means a newer bundle exists than the one
 // running. Announce it instead of running stale silently (Kyle's Caysens walk,

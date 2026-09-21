@@ -18,7 +18,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { AttachProofButton } from "../components/PurchaseOrders";
+import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api } from "../lib/api";
+import { useDrawerParams } from "../lib/drawers";
 import type { CardSpendKind, CardSpendRow, TruckRow } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
@@ -164,6 +166,7 @@ export function TrucksPage() {
 
 function TruckDetailPanel({ truck, year, technicians }: { truck: TruckRow; year: number; technicians: { id: string; name: string }[] }) {
   const { data: detail } = useQuery({ queryKey: ["truck", truck.id, year], queryFn: () => api.truck(truck.id, year) });
+  const drawers = useDrawerParams();
   if (!detail) return <p className="mt-2 text-xs text-rce-muted">Loading…</p>;
   return (
     <div className="mt-2 space-y-3 rounded-md bg-rce-bg p-3 text-xs">
@@ -196,7 +199,8 @@ function TruckDetailPanel({ truck, year, technicians }: { truck: TruckRow; year:
         <ul className="mt-1 space-y-0.5">
           {detail.purchaseOrders.slice(0, 12).map((po) => (
             <li key={po.id} className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold tabular-nums">{po.number}</span>
+              {/* The P.O. carries its own actions (2026-09-20): the number opens its drawer. */}
+              <OpenDrawerButton kind="po" id={po.id} onOpen={drawers.open} className="font-semibold tabular-nums hover:underline">{po.number}</OpenDrawerButton>
               <span>{po.supplier}</span>
               <span className="text-rce-muted">{po.status} · opened {shortDate(po.openedAt)}</span>
               {po.cardMatched && <span className="rounded bg-sky-100 px-1 text-[11px] text-sky-800">card</span>}
@@ -205,7 +209,7 @@ function TruckDetailPanel({ truck, year, technicians }: { truck: TruckRow; year:
           ))}
         </ul>
         {detail.purchaseOrders.length > 12 && (
-          <Link to="/financials" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">All POs live on Financials → Purchases</Link>
+          <Link to="/purchasing" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">All POs live on Purchasing &amp; Stock → Purchases</Link>
         )}
       </div>
     </div>
@@ -342,6 +346,7 @@ function NeedingReceipt({ rows }: { rows: CardSpendRow[] }) {
 
 function NeedingRow({ row }: { row: CardSpendRow }) {
   const refresh = useTruckRefresh();
+  const drawers = useDrawerParams();
   const [mode, setMode] = useState<"view" | "ignore">("view");
   const [error, setError] = useState<string | null>(null);
   const patch = useMutation({
@@ -364,7 +369,8 @@ function NeedingRow({ row }: { row: CardSpendRow }) {
         <span className="flex gap-2">
           {/* Kyle, 2026-09-19: the prompt, right here — no detour through Financials to attach it. */}
           {row.purchaseOrderId && <AttachProofButton poId={row.purchaseOrderId} label="Attach receipt" />}
-          {row.purchaseOrderId && <Link to="/financials" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">Open P.O.</Link>}
+          {/* Was a link to Financials that landed on the whole Purchases card (2026-09-20): now the P.O. itself, here. */}
+          {row.purchaseOrderId && <OpenDrawerButton kind="po" id={row.purchaseOrderId} onOpen={drawers.open} label="Open P.O." />}
           <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => setMode("ignore")}>Ignore</button>
         </span>
       )}

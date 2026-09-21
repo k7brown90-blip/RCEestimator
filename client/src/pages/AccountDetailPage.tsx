@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { InspectionResultChip } from "../components/InspectionResultChip";
 import { FindingLedger } from "../components/FindingLedger";
+import { SendEmailPanel } from "../components/SendEmailPanel";
 import { SendToPicker } from "../components/SendToPicker";
 import { PaymentPanel } from "../components/PaymentPanel";
 import { PhotoAttachPicker, PropertyPhotoSection } from "../components/PhotoGalleryPanel";
@@ -18,6 +19,8 @@ import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
 import type { AccountJob, AccountSummary } from "../lib/types";
 import { PendingReceiptFields, ReceiptReviewList } from "../components/ReceiptReviewList";
 import { PO_PURPOSE_LABEL, PoStatusPill, ReceiptPoPicker } from "../components/PurchaseOrders";
+import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
+import { useDrawerParams } from "../lib/drawers";
 import { money, shortDate } from "../lib/utils";
 
 const JOB_STATUS_CLASS: Record<string, string> = {
@@ -304,9 +307,22 @@ export function AccountDetailPage() {
         )}
       />
 
-      {/* ── Lifetime totals ─────────────────────────────────────────────── */}
-      <div className="card mb-5 grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-5">
-        <Stat label="Lifetime revenue" value={money(totals.lifetimeRevenue)} />
+      {/* ── Lifetime totals ───────────────────────────────────────────────
+          COLLECTED comes first and is the account's LIFETIME SPEND — the one definition
+          (services/lifetimeCollected.ts), the same number the Accounts list and the Dashboard's
+          phase 4 show (Kyle, 2026-09-20; PUNCHLIST E5). "Contracted" beside it is what the
+          signed invoices say, which is what pairs with cost to make a margin. They are
+          different questions and this used to call both of them "lifetime revenue". */}
+      <div className="card mb-5 grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-6">
+        <Stat
+          label="Lifetime collected"
+          value={money(totals.lifetimeCollected)}
+          hint={totals.lifetimePaymentCount > 0
+            ? `${totals.lifetimePaymentCount} payment${totals.lifetimePaymentCount === 1 ? "" : "s"}`
+              + (totals.lifetimeWarrantyPaid > 0 ? ` · ${money(totals.lifetimeWarrantyPaid)} from warranty` : "")
+            : "Nothing collected yet"}
+        />
+        <Stat label="Contracted revenue" value={money(totals.lifetimeRevenue)} />
         <Stat label="Lifetime cost" value={money(totals.lifetimeCost)} />
         <Stat
           label="Lifetime profit"
@@ -381,6 +397,11 @@ export function AccountDetailPage() {
         )}
         {deleteAccount.error && (
           <p className="mt-2 text-sm text-red-600">{(deleteAccount.error as Error).message}</p>
+        )}
+        {!editing && (
+          <div className="mt-3 border-t border-rce-border/70 pt-3">
+            <SendEmailPanel target="account" id={accountId} primaryEmail={account.email ?? null} accountIdForContacts={accountId} />
+          </div>
         )}
       </div>
 
@@ -722,59 +743,18 @@ function AccountEstimates({
   properties: AccountSummary["properties"];
 }) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
+  const drawers = useDrawerParams();
   const [addressId, setAddressId] = useState("");
   /*
-    Delete, for the unsigned only (Kyle, 2026-08-22): "These estimates were made during a past
-    test... I need a way to delete the duplicates." He chose true delete over void for unsigned;
-    the server refuses a signed one regardless of what this UI does, so the guard here is
-    convenience, not the protection.
+    THE ROW SHOWS; THE DRAWER ACTS (2026-09-21, drawers plan Phase 6). Delete (unsigned — Kyle,
+    2026-08-22: "I need a way to delete the duplicates"), Void (signed, 2026-09-17 — cancels the
+    job, says what is left to refund and cancel by hand), Copy to new (Kyle, 2026-08-31) and
+    Resend to a chosen address (Kyle, 2026-08-25) all live in the estimate's drawer
+    (`EstimateDrawer`), which Open raises over this page. They used to be buttons on this row
+    too, shipped beside the drawer in build #2; Kyle chose the drawer. What stays on the row is
+    Kyle's 2026-08-20 pair — View (the company PDF) and Edit (a draft, in the builder) — and
+    "Start work" on this page, because quoting begins on the account (Kyle, 2026-08-18).
   */
-  const deleteEstimate = useMutation({
-    mutationFn: (id: string) => api.deleteIssuedEstimate(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["account-estimates", accountId] }),
-  });
-  /*
-    Void, for the signed (2026-09-17 debug report, /calendar: "There is no way to cancel an
-    appointment. Or a signed estimate which we need to be able to do"). Cancels the estimate's
-    job too; deposit refunds (manual, Stripe Dashboard, existing cap) and open P.O.s (Kyle cancels
-    those himself) are NOT touched here — the response says what's left to do by hand, and this
-    keeps that message on the row until the list is refetched.
-  */
-  const [voidFollowUp, setVoidFollowUp] = useState<Record<string, string>>({});
-  const voidEstimate = useMutation({
-    mutationFn: (input: { id: string; reason: string }) => api.voidIssuedEstimate(input.id, input.reason),
-    onSuccess: (r, input) => {
-      void queryClient.invalidateQueries({ queryKey: ["account-estimates", accountId] });
-      const parts: string[] = [];
-      if (r.jobAction === "cancelled" || r.jobAction === "cancelled_unscheduled") parts.push("Job cancelled.");
-      else if (r.jobAction === "already_cancelled") parts.push("Job was already cancelled.");
-      else if (r.jobAction === "left_open_other_estimates") {
-        parts.push("Job left open — other signed work still belongs to it.");
-      }
-      if (r.paymentsTotal > 0) {
-        parts.push(`Refund $${r.paymentsTotal.toFixed(2)} in Stripe by hand if owed (non-refundable up to the existing cap).`);
-      }
-      if (r.openPurchaseOrders.length > 0) {
-        parts.push(`Cancel open P.O.(s) by hand: ${r.openPurchaseOrders.map((p) => p.number).join(", ")}.`);
-      }
-      setVoidFollowUp((prev) => ({ ...prev, [input.id]: parts.join(" ") || "Voided." }));
-    },
-    onError: (err, input) => setVoidFollowUp((prev) => ({ ...prev, [input.id]: (err as Error).message })),
-  });
-  // New estimate from a sent one (Kyle, 2026-08-31): duplicate the draft behind
-  // the row and land in the builder on the copy — the original is untouched.
-  const duplicateDraft = useMutation({
-    mutationFn: (e: { draftId: string; customerId: string; serviceAddressId: string }) =>
-      api.pbDuplicateDraft(e.draftId),
-    onSuccess: (copy, e) => {
-      navigate(
-        `/estimate-intake?account=${encodeURIComponent(e.customerId)}` +
-          `&address=${encodeURIComponent(e.serviceAddressId)}` +
-          `&draft=${encodeURIComponent(copy.id)}&tab=review`,
-      );
-    },
-  });
   const { data } = useQuery({
     queryKey: ["account-estimates", accountId, addressId],
     queryFn: () => api.accountEstimates(accountId, addressId || undefined),
@@ -891,6 +871,10 @@ function AccountEstimates({
                     warranty company's credit is shown beside it so the numbers read right. */}
                 <div className="shrink-0 text-right">
                   <p className="font-semibold">${(e.billedTotal ?? e.total).toFixed(2)}</p>
+                  {/* A change order joins its invoice (Kyle, 2026-09-20) — say which one. */}
+                  {e.changeOrderForId && (
+                    <p className="text-[11px] text-rce-soft">change order{e.changeOrderForNumber ? ` → invoice ${e.changeOrderForNumber}` : ""}</p>
+                  )}
                   {(e.warrantyCovered ?? 0) > 0 && (
                     <p className="text-[11px] text-green-700">
                       warranty ${(e.warrantyCovered ?? 0).toFixed(2)}
@@ -907,6 +891,8 @@ function AccountEstimates({
               </div>
 
               <div className="mt-2 flex flex-wrap gap-2">
+                {/* The estimate's drawer (2026-09-20) — the same actions, over this page. */}
+                <OpenDrawerButton kind="estimate" id={e.id} onOpen={drawers.open} label="Open" className="btn btn-secondary flex-1 text-sm" />
                 <button
                   type="button"
                   onClick={() => void openProtectedPdf(`/issued-estimates/${e.id}/pdf?audience=company`)}
@@ -929,110 +915,12 @@ function AccountEstimates({
                     Edit
                   </button>
                 )}
-                {/* New estimate from this one (Kyle, 2026-08-31): "take one, have it
-                    copied exactly the way it is into the estimate builder, and begin
-                    editing it to send it as a new estimate." Duplicates the draft —
-                    lines, options, photos, discount — and opens the builder on the copy;
-                    the sent estimate itself is untouched. */}
-                <button
-                  type="button"
-                  disabled={duplicateDraft.isPending}
-                  onClick={() => duplicateDraft.mutate(e)}
-                  className="btn btn-secondary flex-1 text-sm"
-                >
-                  {duplicateDraft.isPending ? "Copying…" : "Copy to new"}
-                </button>
-                {!e.signedAt && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // window.confirm rather than a custom dialog: deletion is rare, final, and
-                      // a native blocking prompt is the hardest thing on this page to fat-finger.
-                      if (window.confirm(`Delete estimate ${e.number}? This cannot be undone.`)) {
-                        deleteEstimate.mutate(e.id);
-                      }
-                    }}
-                    disabled={deleteEstimate.isPending}
-                    className="rounded-lg border border-red-300 px-3 text-sm text-red-700 active:opacity-70 disabled:opacity-50"
-                  >
-                    Delete
-                  </button>
-                )}
-                {e.signedAt && e.status !== "void" && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // A typed reason AND a confirm (2026-09-17) — this cancels the job too, so
-                      // it gets one more step than plain Delete, not fewer.
-                      const reason = window.prompt(`Reason for voiding estimate ${e.number}?`);
-                      if (!reason || !reason.trim()) return;
-                      if (
-                        window.confirm(
-                          `Void estimate ${e.number} and cancel its job? This cannot be undone.\n\nReason: ${reason.trim()}`,
-                        )
-                      ) {
-                        voidEstimate.mutate({ id: e.id, reason: reason.trim() });
-                      }
-                    }}
-                    disabled={voidEstimate.isPending}
-                    className="rounded-lg border border-red-300 px-3 text-sm text-red-700 active:opacity-70 disabled:opacity-50"
-                  >
-                    Void
-                  </button>
-                )}
               </div>
-
-              {/* What's left for Kyle to do by hand after a void — the server touches neither
-                  money nor P.O.s, so this is the only place either gets surfaced. */}
-              {voidFollowUp[e.id] && (
-                <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-900">{voidFollowUp[e.id]}</p>
-              )}
-
-              {/* Resend to a chosen address (Kyle, 2026-08-25). Unsigned and already
-                  sent once — the same customer link goes out again, to the primary,
-                  a stored contact, or a typed one-off. */}
-              {e.sentAt && !e.signedAt && e.status !== "void" && (
-                <ResendControl estimateId={e.id} accountId={accountId} />
-              )}
             </div>
           );
         })}
       </div>
     </section>
-  );
-}
-
-/** Inline resend with the send-to picker. */
-function ResendControl({ estimateId, accountId }: { estimateId: string; accountId: string }) {
-  const [open, setOpen] = useState(false);
-  const [to, setTo] = useState<string | null>(null);
-  const [result, setResult] = useState<string | null>(null);
-  const resend = useMutation({
-    mutationFn: () => api.pbIssuedSend(estimateId, { to }),
-    onSuccess: (r) => setResult(`Re-sent to ${r.to}.`),
-    onError: (err) => setResult((err as Error).message),
-  });
-
-  if (!open) {
-    return (
-      <button type="button" className="btn btn-secondary mt-2 px-2 py-0.5 text-xs min-h-0" onClick={() => setOpen(true)}>
-        Resend estimate…
-      </button>
-    );
-  }
-  return (
-    <div className="mt-2 flex flex-wrap items-center gap-2">
-      <SendToPicker accountId={accountId} onChange={setTo} />
-      <button
-        type="button"
-        className="btn btn-primary text-xs"
-        disabled={resend.isPending}
-        onClick={() => resend.mutate()}
-      >
-        {resend.isPending ? "Sending…" : "Resend"}
-      </button>
-      {result && <span className="text-xs text-rce-muted">{result}</span>}
-    </div>
   );
 }
 
@@ -1156,6 +1044,7 @@ function JobSection({
 function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTargets?: AccountJob[] }) {
   const [showCosts, setShowCosts] = useState(false);
   const queryClient = useQueryClient();
+  const drawers = useDrawerParams();
   const [rideError, setRideError] = useState<string | null>(null);
   const rideAlong = useMutation({
     mutationFn: (withJobId: string) => api.coScheduleJob(job.visitId, withJobId),
@@ -1197,6 +1086,8 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
         <div className="flex flex-wrap items-center gap-2">
           <JobStatusPill status={job.status} />
           {job.latestEstimate && <StatusBadge status={job.latestEstimate.status} />}
+          {/* The job's drawer (2026-09-20): schedule, payment, close-out, over this account. */}
+          <OpenDrawerButton kind="job" id={job.visitId} onOpen={drawers.open} label="Quick view" />
         </div>
       </div>
 
@@ -1271,10 +1162,11 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
                 {/* Kyle, 2026-09-09: the PO is a numbered document — number, purpose, status. */}
                 {job.purchaseOrders.map((order) => (
                   <li key={order.id} className="flex flex-wrap items-center justify-between gap-2">
-                    <span>
+                    {/* Was a read-only echo (2026-09-20): the number now opens the P.O.'s drawer. */}
+                    <OpenDrawerButton kind="po" id={order.id} onOpen={drawers.open} className="text-left hover:underline">
                       <span className="font-medium tabular-nums">{order.number}</span> · {order.supplier} · {PO_PURPOSE_LABEL[order.purpose] ?? order.purpose}
                       {" · "}{order.itemCount} item{order.itemCount === 1 ? "" : "s"}
-                    </span>
+                    </OpenDrawerButton>
                     <span className="flex items-center gap-2 text-rce-muted">
                       <PoStatusPill status={order.status} />
                       {order.sentAt ? `sent ${shortDate(order.sentAt)}` : shortDate(order.createdAt)}
@@ -1294,7 +1186,9 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
                 {job.receipts.map((receipt) => (
                   <li key={receipt.id} className="flex flex-wrap items-center justify-between gap-2">
                     <span className="min-w-0">
-                      {receipt.vendor || "Unknown vendor"} · {receipt.category}
+                      <OpenDrawerButton kind="receipt" id={receipt.id} onOpen={drawers.open} className="text-left hover:underline">
+                        {receipt.vendor || "Unknown vendor"} · {receipt.category}
+                      </OpenDrawerButton>
                       {receipt.status === "pending_review" && (
                         <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">needs review</span>
                       )}

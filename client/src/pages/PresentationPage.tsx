@@ -213,7 +213,7 @@ export function PresentationPage() {
               onClick={() => setAudience(a)}
               className={
                 audience === a
-                  ? "rounded-full bg-rce-accent px-4 py-2 text-sm font-semibold text-white"
+                  ? "rounded-full bg-rce-accent px-4 py-2 text-sm font-semibold text-rce-text"
                   : "rounded-full border border-rce-border px-4 py-2 text-sm text-rce-soft"
               }
             >

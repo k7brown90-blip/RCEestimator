@@ -134,7 +134,11 @@ describe("schema defaults fail closed", () => {
 });
 
 describe("the UI no longer states things that are untrue", () => {
-  const ui = SRC("client/src/components/EstimateIntake.tsx");
+  // Pinned on the estimate builder — the surface Kyle actually quotes from. It was pinned on
+  // `components/EstimateIntake.tsx` until 2026-09-21; that file had no importer left (the
+  // retired chatkit intake) and was deleted, so the invariant moved to the live page rather
+  // than going with it.
+  const ui = SRC("client/src/pages/PriceBookIntakePage.tsx");
 
   it("does not claim an 82-unit catalog", () => {
     // The phrase may only survive inside the comment recording its removal.

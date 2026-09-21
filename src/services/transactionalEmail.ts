@@ -36,7 +36,7 @@ import { logSystemEvent } from "./systemEvents";
 
 export type EmailKind =
   | "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt"
-  | "health_record" | "document" | "campaign" | "other";
+  | "health_record" | "document" | "campaign" | "communication" | "other";
 
 export type EmailProvider = "resend" | "gmail";
 
@@ -61,6 +61,10 @@ export interface CustomerEmailInput {
   estimateNumber?: string | null;
   issuedEstimateId?: string | null;
   visitId?: string | null;
+  /** Which lead/account this send is about, for the communications build (2026-09-20) — lets the
+   *  lead/account drawer render its own thread. Optional; every existing caller is unchanged. */
+  leadId?: string | null;
+  customerId?: string | null;
   replyTo?: string;
 }
 
@@ -207,6 +211,8 @@ export async function sendCustomerEmail(
     estimateNumber: input.estimateNumber ?? null,
     issuedEstimateId: input.issuedEstimateId ?? null,
     visitId: input.visitId ?? null,
+    leadId: input.leadId ?? null,
+    customerId: input.customerId ?? null,
   };
   const record = async (data: { provider: EmailProvider; providerMessageId?: string | null; status: DeliveryStatus; error?: string | null }) => {
     try {

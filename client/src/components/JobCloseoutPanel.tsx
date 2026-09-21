@@ -11,14 +11,18 @@
  * later phase.
  */
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { money } from "../lib/utils";
+import { money, shortDate } from "../lib/utils";
+import { useDrawerParams } from "../lib/drawers";
 import { MaterialsConsumeStep, MaterialsReturnStep, jobMaterialsKey } from "./MaterialsUsedPanel";
+import { AttachProofButton, usePurchaseOrderDetail } from "./PurchaseOrders";
+import { OpenDrawerButton } from "./drawers/OpenDrawerButton";
 
 export function JobCloseoutPanel({ visitId, status }: { visitId: string; status: string }) {
   const queryClient = useQueryClient();
+  const drawers = useDrawerParams();
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -87,7 +91,9 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
       const structured = poLines
         .filter((l) => l.qty > 0)
         .map((l) => ({ itemId: l.itemId ?? undefined, name: l.name, qty: l.qty, unit: l.unit ?? undefined }));
-      return api.createPurchaseOrder(visitId, { supplier: supplier.trim(), purpose, items: [...structured, ...freeText] });
+      // The one create door (2026-09-21): the same POST /purchase-orders the Purchases card
+      // uses, with this job in the body — the job-scoped route was a second shape of the same thing.
+      return api.startPurchaseOrder({ supplier: supplier.trim(), purpose, jobId: visitId, lines: [...structured, ...freeText] });
     },
     onSuccess: (po) => { setJustCreated({ number: po.number }); setSupplier(""); setItemsText(""); setPoLines([]); setShowPoForm(false); refresh(); },
     onError: (err) => setError((err as Error).message),
@@ -120,8 +126,13 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
       ))}
       {error && <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{error}</p>}
 
-      {/* ── Materials used — the costing switch (Kyle, 2026-09-09, Build 4) ── */}
-      {!isCompleted && (
+      {/* ── Materials used — the costing switch (Kyle, 2026-09-09, Build 4) ──
+          Shown in every close-out status, completed included (2026-09-21): this is now the ONE
+          place the consume and return forms live on the job (the visit page's own copies were
+          the duplicate, punch list C10), and the standing rule is that what a job records must
+          stay editable from where it is shown — the same ruling the P.O. section below already
+          follows ("any status, including closed and cancelled", Kyle 2026-09-20). */}
+      {(
         <div className="mt-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-rce-soft">
@@ -147,8 +158,8 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
         </div>
       )}
 
-      {/* ── What came back? — the close-out count (Kyle, 2026-09-15) ── */}
-      {!isCompleted && (
+      {/* ── What came back? — the close-out count (Kyle, 2026-09-15) — same rule as above ── */}
+      {(
         <div className="mt-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-rce-soft">What came back?</h3>
@@ -223,7 +234,7 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
                         {l.unit ? <span className="text-rce-muted"> {l.unit}</span> : null}
                       </span>
                       <button
-                        className="text-xs text-red-600 underline"
+                        className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
                         onClick={() => setPoLines((prev) => prev.filter((_, pi) => pi !== i))}
                       >
                         remove
@@ -262,12 +273,16 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
           {(orders ?? []).map((po) => (
             <li key={po.id} className="rounded-lg border border-rce-border p-2 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-medium"><span className="tabular-nums">{po.number}</span> · {po.supplier}</span>
+                {/* The P.O. carries its own actions (2026-09-20): the number opens its drawer —
+                    lines, money, receipts, landing, the trail — over this screen. */}
+                <OpenDrawerButton kind="po" id={po.id} onOpen={drawers.open} className="font-medium hover:underline">
+                  <span className="tabular-nums">{po.number}</span> · {po.supplier}
+                </OpenDrawerButton>
                 <span className="flex items-center gap-2 text-xs text-rce-muted">
                   {po.purpose.replaceAll("_", " ")} · {po.status} · {po.items.length} item(s) · {new Date(po.createdAt).toLocaleDateString()}
                   {(po.status === "open" || po.status === "purchased") && (
                     <button
-                      className="text-red-600 underline"
+                      className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
                       onClick={() => {
                         if (window.confirm(`Cancel ${po.number}? The number is never reused.`)) void api.deletePurchaseOrder(visitId, po.id).then(refresh);
                       }}
@@ -280,9 +295,21 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
               <p className="mt-0.5 text-xs text-rce-soft">
                 {po.items.map((i) => `${i.qty}× ${i.name}`).join(" · ")}
               </p>
-              {po.status !== "closed" && po.status !== "cancelled" && (
-                <PoReceiptUpload poId={po.id} onDone={refresh} />
-              )}
+              {/* THE MONEY (Kyle, 2026-09-19) and its proof — Kyle, 2026-09-20:
+                  "I need each job's P.O. to show up on the job specific screen." */}
+              <p className="mt-0.5 text-xs">
+                <span className="font-medium tabular-nums">{money(po.moneyTotal)}</span>
+                {po.offCardAmount != null && po.offCardAmount > 0 && (
+                  <span className="text-rce-muted"> (card {money(po.cardTotal)} + typed {money(po.offCardAmount)})</span>
+                )}
+                <span className={po.moneyTotal > 0 && po.proofCount === 0 ? "ml-2 text-amber-800" : "ml-2 text-rce-muted"}>
+                  {po.proofCount > 0 ? `${po.proofCount} receipt(s) on file` : po.moneyTotal > 0 ? "needs a receipt" : "no receipts yet"}
+                </span>
+              </p>
+              {/* Any status, including closed and cancelled (Kyle, 2026-09-20) —
+                  a P.O. can go on being edited after it lands. Same uploader as
+                  the Financials Purchasing card, never a third one. */}
+              <PoReceiptsOnJob poId={po.id} onDone={refresh} />
             </li>
           ))}
         </ul>
@@ -296,55 +323,59 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
 }
 
 /**
- * Receipt upload attached to one P.O. (Kyle, 2026-09-17: "there should not be
- * an stand alone add a receipt button. Every receipt should have a P.O.
- * first.") Same door as PurchaseOrders.tsx's PoDetailPanel — api.uploadPoReceipt
- * — so a receipt can only land on a P.O., never loose on the job.
+ * Receipts on one P.O., from the job screen (Kyle, 2026-09-20: "I have several
+ * receipt photos to add to this job and need to edit/add to the P.O. currently
+ * assigned to it"). Attach reuses AttachProofButton — the one uploader,
+ * everywhere a P.O. needs its proof — rather than a third upload control. The
+ * list itself is lazy: the job's P.O. list carries only a proof COUNT, so the
+ * per-receipt detail (and the way OUT of it, per the standing rule that
+ * anything attached must be removable from the surface that shows it) loads
+ * on request instead of on every job page view.
  */
-function PoReceiptUpload({ poId, onDone }: { poId: string; onDone: () => void }) {
-  const [amount, setAmount] = useState("");
-  const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
-  const upload = useMutation({
-    mutationFn: (file: File) =>
-      api.uploadPoReceipt(poId, { image: file, amount: Number(amount) > 0 ? Number(amount) : undefined }),
-    onSuccess: (res) => {
-      setError(null);
-      setNote(res.note ?? `Receipt saved: ${money(res.amount)}`);
-      setAmount("");
+function PoReceiptsOnJob({ poId, onDone }: { poId: string; onDone: () => void }) {
+  const queryClient = useQueryClient();
+  const drawers = useDrawerParams();
+  const [expanded, setExpanded] = useState(false);
+  // Same hook (and so the same cache entry) PurchaseOrders.tsx's PoDetailPanel
+  // uses — shares the cache and picks up usePoRefresh's invalidation from that
+  // surface too.
+  const { data: po } = usePurchaseOrderDetail(poId, expanded);
+  const detach = useMutation({
+    mutationFn: (receiptId: string) => api.detachReceiptFromPurchaseOrder(poId, receiptId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["purchase-order", poId] });
       onDone();
     },
-    onError: (err) => { setError((err as Error).message); setNote(null); },
   });
 
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*,application/pdf"
-        className="hidden"
-        onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ""; }}
-      />
-      <input
-        className="field w-24 px-1 py-0.5 text-xs"
-        type="number"
-        step="0.01"
-        placeholder="Amount $ (optional)"
-        value={amount}
-        onChange={(ev) => setAmount(ev.target.value)}
-      />
-      <button
-        type="button"
-        className="btn btn-secondary px-2 py-0.5 text-xs"
-        disabled={upload.isPending}
-        onClick={() => fileRef.current?.click()}
-      >
-        {upload.isPending ? "Saving…" : "+ Add receipt"}
-      </button>
-      {note && <span className="text-emerald-700">{note}</span>}
-      {error && <span className="text-red-600">{error}</span>}
+    <div className="mt-1 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <AttachProofButton poId={poId} label="+ Add receipt" />
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setExpanded((e) => !e)}>
+          {expanded ? "Hide receipts" : "Show receipts"}
+        </button>
+      </div>
+      {expanded && (
+        <ul className="mt-1 space-y-0.5">
+          {po && po.receipts.length === 0 && <li className="text-rce-muted">No receipts attached yet.</li>}
+          {(po?.receipts ?? []).map((r) => (
+            <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-rce-border/60 px-2 py-1">
+              <OpenDrawerButton kind="receipt" id={r.id} onOpen={drawers.open} className="text-left hover:underline">
+                {r.vendor || "Unknown vendor"} · {money(r.amount)} · {shortDate(r.receivedAt)}{!r.hasImage ? " · no file" : ""}
+              </OpenDrawerButton>
+              <button
+                type="button"
+                className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
+                disabled={detach.isPending}
+                onClick={() => { if (window.confirm("Remove this receipt from the P.O.?")) detach.mutate(r.id); }}
+              >
+                remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

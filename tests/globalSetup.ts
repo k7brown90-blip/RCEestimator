@@ -8,6 +8,13 @@ const TEST_DB_ENV = {
 };
 
 export default async function globalSetup() {
+  // schema.prisma declares trigram GIN indexes for global search (2026-09-20), and `db push`
+  // creates them straight from the schema — which fails unless pg_trgm is already installed.
+  // Production gets the extension from the migration (which survives a role that cannot
+  // install it); the test database has no migration path, so it is installed here first. Local
+  // and CI both run as the `postgres` superuser, so this cannot be refused there.
+  await ensureExtensions(TEST_DB_ENV.DATABASE_URL);
+
   // Push schema to test DB. --accept-data-loss: test.db is throwaway, and a
   // retired model (e.g. NECRule) lingering in an old test.db otherwise makes
   // Prisma prompt interactively and hang under stdio:"ignore".
@@ -45,6 +52,17 @@ async function applyHandWrittenIndexes(databaseUrl: string) {
         ON "PropertyFinding"("propertyId", "itemId", "locationKey")
         WHERE "status" IN ('open', 'scheduled')
     `);
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+/** pg_trgm, before `db push` asks for the GIN indexes that need it. See globalSetup above. */
+async function ensureExtensions(databaseUrl: string) {
+  const { PrismaClient } = await import("@prisma/client");
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  try {
+    await prisma.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
   } finally {
     await prisma.$disconnect();
   }

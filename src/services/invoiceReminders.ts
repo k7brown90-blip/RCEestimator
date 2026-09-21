@@ -27,6 +27,7 @@ import { customerSendsEnabled, logCustomerSendSkipped } from "./automationGate";
 import { logSystemEvent } from "./systemEvents";
 import { EXCLUDE_TEST_ACCOUNT } from "./accountSpine";
 import { publicBaseUrl } from "./issuedEstimateSend";
+import { invoiceRootId } from "./invoiceGroup";
 
 const QUIET_DAYS = 7;
 const MAX_REMINDERS = 3;
@@ -35,6 +36,8 @@ export async function sendInvoiceReminder(
   prisma: PrismaClient,
   estimateId: string,
 ): Promise<{ ok: true; to: string; amount: number } | { ok: false; reason: string }> {
+  // ONE rolled-up balance (2026-09-20): a change order's id chases — and stamps — its root.
+  estimateId = await invoiceRootId(prisma, estimateId);
   const result = await sendBalanceRequestEmail(prisma, estimateId, publicBaseUrl(), { reminder: true });
   if (result.ok) {
     await prisma.issuedEstimate.update({
@@ -56,8 +59,14 @@ export async function sweepInvoiceReminders(prisma: PrismaClient): Promise<{ rem
   const candidates = await prisma.issuedEstimate.findMany({
     where: {
       signedAt: { not: null },
+      // Positive, not `not: "void"` (2026-09-20): a status this sweep has never heard of — lost
+      // was the first — must fall OUT of the candidate list, never into it.
+      status: "signed",
       voidedAt: null,
       supersededBy: null,
+      // A change order is not an invoice of its own (2026-09-20): its balance rides its root's
+      // reminder, its root's clock, its root's three-strike count. Never a second reminder.
+      changeOrderForId: null,
       paymentRemindersSent: { lt: MAX_REMINDERS },
       ...EXCLUDE_TEST_ACCOUNT,
     },

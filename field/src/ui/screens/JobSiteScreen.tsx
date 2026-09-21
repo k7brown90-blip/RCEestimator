@@ -41,12 +41,19 @@ const JOB_STATUSES = new Set(['contracted', 'scheduled', 'in_progress', 'complet
 export function JobSiteScreen({
   assignment,
   onRunAssessment,
+  onRunDiagnostics,
   onCapacityCheck,
   onBuildQuote,
   onBack,
 }: {
   assignment: CrmAssignment
   onRunAssessment: () => void
+  /**
+   * Run diagnostics (Kyle, 2026-09-20) — a second report TYPE on this visit, not
+   * a second app. The assessment walks the HOUSE; the diagnostic walks one
+   * CIRCUIT, breaker to last outlet, at $25-$50 an outlet by access.
+   */
+  onRunDiagnostics?: () => void
   onCapacityCheck?: () => void
   /** Quote in the field (2026-09-01): same book and gates as the office. */
   onBuildQuote?: () => void
@@ -291,6 +298,21 @@ export function JobSiteScreen({
               <li key={i}>· {line.quantity}× {line.description}</li>
             ))}
           </ul>
+          {/* Change orders that joined this job (2026-09-20) — added scope, same visit. A tech
+              who only sees the original estimate works from a stale brief. */}
+          {(brief.estimate.changeOrders ?? []).map((co) => (
+            <div key={co.number} className="mt-2 border-t border-slate-700 pt-2">
+              <h3 className="text-sm font-semibold text-amber-200">
+                Change order — {co.title} <span className="text-xs font-normal text-slate-400">({co.number})</span>
+              </h3>
+              {co.scopeText && <p className="text-xs text-slate-400">{co.scopeText}</p>}
+              <ul className="space-y-0.5 pt-1 text-sm text-slate-300">
+                {co.lines.map((line, i) => (
+                  <li key={i}>· {line.quantity}× {line.description}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </section>
       )}
       {brief && !brief.estimate && (
@@ -308,6 +330,15 @@ export function JobSiteScreen({
       >
         ⚡ Run electrical assessment
       </button>
+      {onRunDiagnostics && (
+        <button
+          type="button"
+          onClick={onRunDiagnostics}
+          className="w-full rounded-lg bg-indigo-600 p-3 text-sm font-medium text-white"
+        >
+          🔌 Run diagnostics — one circuit, breaker to last outlet
+        </button>
+      )}
       <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-800/60 p-2">
         <button type="button" onClick={() => setSchedOpen((o) => !o)} className="w-full text-left text-xs text-sky-200">
           📅 {schedOpen ? 'Hide scheduling' : 'Schedule for a later date'}

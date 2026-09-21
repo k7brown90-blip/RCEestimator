@@ -4,7 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
+import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api, type VisitMode } from "../lib/api";
+import { useDrawerParams } from "../lib/drawers";
 import { MATERIAL_SOURCE_LABEL, type JobSummary } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
@@ -82,10 +84,10 @@ export function JobsPage() {
     },
   });
 
-  const deleteEstimate = useMutation({
-    mutationFn: (estimateId: string) => api.deleteEstimate(estimateId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-  });
+  // "Delete Estimate" left this page on 2026-09-21 (the plan's "Jobs loses estimate lifecycle").
+  // The estimate on each card opens its drawer, where Delete / Void / Mark lost / Resend live;
+  // the old button called the retired legacy `DELETE /estimates/:id` and silently 404'd on
+  // every price-book estimate. A legacy row's exit is on the visit page's record card.
 
   const visibleJobs = useMemo(() => {
     const atAddress = addressFilter ? jobs.filter((j) => j.property.id === addressFilter) : jobs;
@@ -162,7 +164,7 @@ export function JobsPage() {
             type="button"
             onClick={() => setTab(value)}
             className={`rounded-md px-4 py-1.5 text-sm font-medium capitalize transition ${
-              tab === value ? "bg-rce-accent text-white" : "text-rce-muted hover:bg-rce-border/40"
+              tab === value ? "bg-rce-accent text-rce-text" : "text-rce-muted hover:bg-rce-border/40"
             }`}
           >
             {value}
@@ -187,7 +189,7 @@ export function JobsPage() {
             </div>
             <button
               type="button"
-              className="shrink-0 text-xs font-medium text-amber-700 hover:text-amber-900"
+              className="btn btn-secondary shrink-0 px-2 py-0.5 text-xs min-h-0"
               onClick={() => setCompletionNotice(null)}
             >
               Dismiss
@@ -246,7 +248,7 @@ export function JobsPage() {
           />
           <button
             type="button"
-            className="text-sm font-medium text-rce-accent"
+            className="btn btn-secondary text-sm"
             onClick={() => setSortNewestFirst((s) => !s)}
           >
             {sortNewestFirst ? "Newest first ↓" : "Oldest first ↑"}
@@ -273,8 +275,6 @@ export function JobsPage() {
                     <JobCard
                       key={job.visitId}
                       job={job}
-                      onDeleteEstimate={(estimateId) => deleteEstimate.mutate(estimateId)}
-                      deleting={deleteEstimate.isPending}
                       onCompleted={(jobLabel, warnings) => setCompletionNotice({ jobLabel, warnings })}
                     />
                   ))}
@@ -285,8 +285,6 @@ export function JobsPage() {
               <JobCard
                 key={job.visitId}
                 job={job}
-                onDeleteEstimate={(estimateId) => deleteEstimate.mutate(estimateId)}
-                deleting={deleteEstimate.isPending}
                 onCompleted={(jobLabel, warnings) => setCompletionNotice({ jobLabel, warnings })}
               />
             ))}
@@ -313,6 +311,7 @@ export function JobsPage() {
 function NeedsNextStep() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const drawers = useDrawerParams();
   const { data: queue } = useQuery({
     queryKey: ["needsNextStep"],
     queryFn: () => api.needsNextStep(),
@@ -347,6 +346,7 @@ function NeedsNextStep() {
               </p>
             </div>
             <div className="flex shrink-0 gap-2">
+              <OpenDrawerButton kind="job" id={job.visitId} onOpen={drawers.open} label="Open" className="btn btn-secondary text-xs" />
               <button
                 className="btn btn-primary text-xs"
                 disabled={disposition.isPending}
@@ -370,14 +370,13 @@ function NeedsNextStep() {
 }
 
 function JobCard({
-  job, onDeleteEstimate, deleting, onCompleted,
+  job, onCompleted,
 }: {
   job: JobSummary;
-  onDeleteEstimate: (estimateId: string) => void;
-  deleting: boolean;
   onCompleted: (jobLabel: string, warnings: string[]) => void;
 }) {
   const queryClient = useQueryClient();
+  const drawers = useDrawerParams();
   const hasCostData = job.costs.revenue != null || job.costs.materialCost > 0 || job.costs.laborHours > 0;
   // Mark complete (Kyle, 2026-09-17, Unit K): "I would like to be able to mark
   // complete from these cards." Completion is NEVER blocked client-side — the
@@ -409,6 +408,12 @@ function JobCard({
             {job.status.replaceAll("_", " ")}
           </span>
           {job.estimate ? <StatusBadge status={job.estimate.status} /> : <span className="text-xs text-rce-soft">NO ESTIMATE YET</span>}
+          {/* The estimate carries its own actions (2026-09-21): its drawer, over this list —
+              the quote lifecycle is the Estimates tab's and the drawer's, not this page's. */}
+          {job.estimate && <OpenDrawerButton kind="estimate" id={job.estimate.id} onOpen={drawers.open} label="Estimate" />}
+          {/* The job's drawer (2026-09-20) — schedule, payment, close-out — without leaving
+              this list or its filters. The card itself still opens the full page. */}
+          <OpenDrawerButton kind="job" id={job.visitId} onOpen={drawers.open} label="Quick view" />
         </div>
       </div>
 
@@ -459,40 +464,22 @@ function JobCard({
         </div>
       ) : null}
 
-      {canComplete || (job.estimate && job.estimate.status !== "accepted") ? (
+      {canComplete ? (
         <div className="mt-3 flex justify-end gap-2">
-          {job.estimate && job.estimate.status !== "accepted" ? (
-            <button
-              type="button"
-              className="btn btn-danger"
-              disabled={deleting}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                if (window.confirm("Delete this estimate? This cannot be undone.")) {
-                  onDeleteEstimate(job.estimate!.id);
-                }
-              }}
-            >
-              Delete Estimate
-            </button>
-          ) : null}
-          {canComplete ? (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={complete.isPending}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                if (window.confirm("Mark this job complete?")) {
-                  complete.mutate();
-                }
-              }}
-            >
-              {complete.isPending ? "Completing…" : "Mark complete"}
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={complete.isPending}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (window.confirm("Mark this job complete?")) {
+                complete.mutate();
+              }
+            }}
+          >
+            {complete.isPending ? "Completing…" : "Mark complete"}
+          </button>
         </div>
       ) : null}
     </Link>

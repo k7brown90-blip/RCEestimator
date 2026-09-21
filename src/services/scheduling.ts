@@ -137,19 +137,15 @@ export interface ScheduleEnd {
  * opens it; a job with no signed estimate is not gated.
  */
 async function assertProductionDepositGate(jobId: string): Promise<void> {
-  const est = await prisma.issuedEstimate.findFirst({
-    where: {
-      signedAt: { not: null },
-      status: { not: "void" },
-      OR: [{ jobVisitId: jobId }, { visitId: jobId }],
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
-  });
+  // The ROOT invoice (2026-09-20): the gate reads the whole invoice's deposit, which is zero —
+  // and therefore open — when no document on it requires one (Kyle: "for smaller ones and for
+  // change orders I do not have to go through that to be able to schedule").
+  const { signedRootForJob } = await import("./invoiceGroup");
+  const est = await signedRootForJob(prisma, jobId);
   if (!est) return;
   const { paymentSummary } = await import("./stripePayments");
   const summary = await paymentSummary(prisma, est.id, "https://unused.invalid");
-  if (summary && !summary.depositSatisfied) {
+  if (summary && summary.depositRequired && !summary.depositSatisfied) {
     throw new ConflictError(
       `Deposit required before scheduling: $${(summary.depositDue - summary.depositPaid).toFixed(2)} of the ` +
       `$${summary.depositDue.toFixed(2)} deposit (1/3 of $${summary.billedTotal.toFixed(2)}) is still unpaid. ` +

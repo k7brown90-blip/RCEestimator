@@ -78,7 +78,7 @@ function PhotoCard(props: { photo: VisitPhotoMeta; onChanged: () => void }) {
       <div className="space-y-1.5 p-2">
         <div className="flex items-center justify-between gap-2">
           <select
-            className="rounded border border-rce-border bg-white px-1.5 py-0.5 text-xs text-rce-muted"
+            className="rounded border border-rce-soft bg-white px-1.5 py-0.5 text-xs text-rce-muted"
             value={photo.tag ?? ""}
             onChange={(e) => update.mutate({ tag: (e.target.value || null) as PhotoTag | null })}
           >
@@ -89,7 +89,7 @@ function PhotoCard(props: { photo: VisitPhotoMeta; onChanged: () => void }) {
           </select>
           <button
             type="button"
-            className="text-xs text-red-500 hover:text-red-700"
+            className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
             disabled={remove.isPending}
             onClick={() => {
               if (window.confirm("Delete this photo? This cannot be undone.")) remove.mutate();
@@ -99,7 +99,7 @@ function PhotoCard(props: { photo: VisitPhotoMeta; onChanged: () => void }) {
           </button>
         </div>
         <input
-          className="w-full rounded border border-rce-border/60 px-1.5 py-1 text-xs"
+          className="w-full rounded border border-rce-soft bg-white px-1.5 py-1 text-xs"
           placeholder="Caption…"
           value={caption}
           onChange={(e) => setCaption(e.target.value)}
@@ -185,7 +185,7 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
         </div>
         <div className="flex items-center gap-2">
           <select
-            className="rounded-lg border border-rce-border bg-white px-2 py-1.5 text-xs text-rce-muted"
+            className="rounded-lg border border-rce-soft bg-white px-2 py-1.5 text-xs text-rce-muted"
             value={uploadTag}
             onChange={(e) => setUploadTag(e.target.value as PhotoTag | "")}
             title="Tag applied to new uploads"
@@ -213,7 +213,7 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
             type="button"
             className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
               filter === value
-                ? "border-rce-accent bg-rce-accent text-white"
+                ? "border-rce-accent bg-rce-accent text-rce-text"
                 : "border-rce-border bg-white text-rce-muted hover:border-rce-accent/50"
             }`}
             onClick={() => setFilter(value as PhotoTag | "all")}
@@ -240,7 +240,7 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
       <div className="mt-5 border-t border-rce-border/60 pt-3">
         <button
           type="button"
-          className="text-sm font-medium text-rce-accent hover:underline"
+          className="btn btn-secondary px-3 py-1 text-sm min-h-0"
           onClick={() => setShowHistory((s) => !s)}
         >
           {showHistory ? "Hide history at this address" : "History at this address…"}
@@ -468,7 +468,7 @@ export function PhotoAttachPicker(props: {
               className="h-16 w-full object-cover"
             />
             {props.selected.includes(p.id) && (
-              <span className="absolute right-0.5 top-0.5 rounded bg-rce-accent px-1 text-[10px] font-bold text-white">✓</span>
+              <span className="absolute right-0.5 top-0.5 rounded bg-rce-accent px-1 text-[10px] font-bold text-rce-text">✓</span>
             )}
           </button>
         ))}

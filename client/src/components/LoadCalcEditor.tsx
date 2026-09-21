@@ -81,7 +81,7 @@ export function LoadCalcEditor({ inspectionId, onClose, onRevised }: {
     <div className="mt-2 space-y-3 rounded-lg border border-rce-border p-3">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold">Edit load calculation</h4>
-        <button type="button" className="text-xs underline" onClick={onClose}>close</button>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onClose}>close</button>
       </div>
       <p className="rounded bg-amber-50 p-2 text-xs text-amber-900">
         Saving creates a <b>correction</b>: this record is superseded and the corrected report
@@ -117,7 +117,7 @@ export function LoadCalcEditor({ inspectionId, onClose, onRevised }: {
                 <td className="p-1"><input className="field w-16" type="number" value={l.amps ?? ""} onChange={(e) => patchLoad(i, { amps: num(e.target.value) })} /></td>
                 <td className="p-1"><input className="field w-16" type="number" value={l.volts ?? ""} onChange={(e) => patchLoad(i, { volts: num(e.target.value) })} /></td>
                 <td className="p-1 text-center"><input type="checkbox" checked={Boolean(l.nameplateRead)} onChange={(e) => patchLoad(i, { nameplateRead: e.target.checked })} /></td>
-                <td className="p-1"><button type="button" className="text-red-700 underline" onClick={() => setLoads((ls) => ls.filter((_, idx) => idx !== i))}>✕</button></td>
+                <td className="p-1"><button type="button" className="btn btn-danger px-1.5 py-0.5 text-xs min-h-0" onClick={() => setLoads((ls) => ls.filter((_, idx) => idx !== i))}>✕</button></td>
               </tr>
             ))}
           </tbody>

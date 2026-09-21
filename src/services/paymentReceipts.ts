@@ -14,8 +14,21 @@
 import type { PrismaClient } from "@prisma/client";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { logSystemEvent } from "./systemEvents";
-import { paymentSummary } from "./stripePayments";
+import { paymentSummary, type PaymentSummary } from "./stripePayments";
 import { warrantyEmailLine } from "./warrantyNotice";
+import { invoiceRootId } from "./invoiceGroup";
+
+/**
+ * What the invoice is made of (Kyle, 2026-09-20): the root estimate and every signed change
+ * order that joined it, one row each, above the total. Empty when the invoice is one document —
+ * an ordinary bill reads exactly as it did.
+ */
+export function invoiceDocumentRows(summary: Pick<PaymentSummary, "documents">): string {
+  if (summary.documents.length < 2) return "";
+  return summary.documents.map((d) =>
+    `<tr><td style="padding:4px 0;color:#666;">${d.kind === "change_order" ? "Change order" : "Invoice"} ${escapeHtml(d.number)} — ${escapeHtml(d.title)}</td>
+     <td style="text-align:right;">$${d.billedTotal.toFixed(2)}</td></tr>`).join("");
+}
 
 /**
  * Home-warranty coverage (Kyle, 2026-09-09): the credit the warranty company
@@ -72,6 +85,9 @@ export async function sendDepositRequestEmail(
   estimateId: string,
   payBaseUrl: string,
 ): Promise<void> {
+  // The deposit belongs to the INVOICE (2026-09-20): a change order's id resolves to its root,
+  // and the ask, the number and the pay link are the root's.
+  estimateId = await invoiceRootId(prisma, estimateId);
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
     select: { number: true, title: true, token: true, customerName: true, customerEmail: true, signedAt: true },
@@ -79,7 +95,8 @@ export async function sendDepositRequestEmail(
   if (!est?.customerEmail || !est.signedAt) return;
 
   const summary = await paymentSummary(prisma, estimateId, payBaseUrl);
-  if (!summary || summary.depositSatisfied || summary.paidInFull) return;
+  // No deposit required (Kyle, 2026-09-20) means no deposit email — not a $0.00 ask.
+  if (!summary || !summary.depositRequired || summary.depositSatisfied || summary.paidInFull) return;
 
   const due = Math.round((summary.depositDue - summary.depositPaid) * 100) / 100;
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
@@ -130,6 +147,8 @@ export async function sendBalanceRequestEmail(
   payBaseUrl: string,
   opts: { reminder?: boolean } = {},
 ): Promise<{ ok: true; to: string; amount: number } | { ok: false; reason: string }> {
+  // One balance, one bill (2026-09-20): a change order's id bills its whole invoice.
+  estimateId = await invoiceRootId(prisma, estimateId);
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
     select: { number: true, title: true, token: true, customerName: true, customerEmail: true, signedAt: true, serviceAddress: true },
@@ -163,6 +182,7 @@ export async function sendBalanceRequestEmail(
         : `Here is the bill for <strong>${escapeHtml(est.title)}</strong> (invoice ${escapeHtml(est.number)}).`}</p>
       <table style="width:100%;font-size:15px;border-collapse:collapse;margin:12px 0;">
         ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
+        ${invoiceDocumentRows(summary)}
         ${warrantyRow(summary)}
         <tr><td style="padding:4px 0;color:#666;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
         ${discountRows(summary)}
@@ -202,6 +222,12 @@ export async function sendPaymentReceiptEmail(
 
   const summary = await paymentSummary(prisma, payment.estimateId, "https://unused.invalid");
   if (!summary) return;
+  // The receipt names the INVOICE (2026-09-20) — the root's number and title, whichever
+  // document the payment row happens to sit on.
+  if (summary.estimateId !== payment.estimateId) {
+    const root = await prisma.issuedEstimate.findUnique({ where: { id: summary.estimateId }, select: { number: true, title: true } });
+    if (root) { est.number = root.number; est.title = root.title; }
+  }
 
   // The warranty company's check (Kyle, 2026-09-10) is not the homeowner's payment: the
   // homeowner is never written to about the warranty share — EXCEPT when that check settles
@@ -227,6 +253,7 @@ export async function sendPaymentReceiptEmail(
       ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
       <tr><td style="padding:4px 0;color:#666;">${paymentLabel}</td>
         <td style="text-align:right;font-weight:600;">$${payment.amount.toFixed(2)} ${METHOD_LABEL[payment.method] ?? "paid"} on ${dateStr}</td></tr>
+      ${invoiceDocumentRows(summary)}
       ${warrantyRow(summary)}
       <tr><td style="padding:4px 0;color:#666;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
       ${discountRows(summary)}

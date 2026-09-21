@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma";
+import { getFunnelReport, type FunnelReport } from "./leadFunnel";
 
 const LEAD_STATUS_ORDER = [
   "new",
@@ -10,6 +11,8 @@ const LEAD_STATUS_ORDER = [
   "lost",
 ] as const;
 
+// "won" is the column value; it MEANS "became an opportunity" (Kyle, 2026-09-20) and is never
+// presented as a win — a win is a signed estimate, measured in services/leadFunnel.ts.
 const OPEN_LEAD_STATUSES = LEAD_STATUS_ORDER.filter((status) => status !== "won" && status !== "lost");
 
 export type AnalyticsRange = {
@@ -59,14 +62,14 @@ export async function getLeadFunnelMetrics(range: AnalyticsRange) {
   });
 
   const openCount = OPEN_LEAD_STATUSES.reduce((sum, status) => sum + (counts.get(status) ?? 0), 0);
-  const wonCount = counts.get("won") ?? 0;
+  const opportunityCount = counts.get("won") ?? 0;
   const lostCount = counts.get("lost") ?? 0;
 
   return {
     range,
     total,
     openCount,
-    wonCount,
+    opportunityCount,
     lostCount,
     stages,
   };
@@ -139,136 +142,26 @@ export async function getLeadFollowUpMetrics() {
   };
 }
 
-export async function getWinLossMetrics(range: AnalyticsRange) {
-  const outcomes = await prisma.lead.findMany({
-    where: {
-      leadStatus: { in: ["won", "lost"] },
-      updatedAt: {
-        gte: range.start,
-        lte: range.end,
-      },
-    },
-    select: {
-      leadStatus: true,
-      lostReason: true,
-      source: true,
-    },
-  });
-
-  const won = outcomes.filter((lead) => lead.leadStatus === "won").length;
-  const lost = outcomes.filter((lead) => lead.leadStatus === "lost").length;
-  const totalClosed = won + lost;
-
-  const lossReasons: Record<string, number> = {};
-  const sourceSummary: Record<string, { won: number; lost: number }> = {};
-
-  for (const lead of outcomes) {
-    const source = lead.source || "unknown";
-    sourceSummary[source] = sourceSummary[source] ?? { won: 0, lost: 0 };
-
-    if (lead.leadStatus === "won") {
-      sourceSummary[source].won += 1;
-      continue;
-    }
-
-    sourceSummary[source].lost += 1;
-
-    if (lead.lostReason) {
-      lossReasons[lead.lostReason] = (lossReasons[lead.lostReason] ?? 0) + 1;
-    }
-  }
-
-  return {
-    range,
-    totalClosed,
-    won,
-    lost,
-    winRate: totalClosed > 0 ? Math.round((won / totalClosed) * 100) : 0,
-    lossReasons,
-    sourceSummary,
-  };
-}
-
-export async function getCycleTimeMetrics(range: AnalyticsRange) {
-  const wonLeads = await prisma.lead.findMany({
-    where: {
-      leadStatus: "won",
-      updatedAt: {
-        gte: range.start,
-        lte: range.end,
-      },
-    },
-    select: {
-      id: true,
-      name: true,
-      source: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  });
-
-  const cycleTimes = wonLeads
-    .map((lead) => ({
-      id: lead.id,
-      name: lead.name,
-      source: lead.source,
-      daysToClose: Math.max(0, Math.round((lead.updatedAt.getTime() - lead.createdAt.getTime()) / (24 * 60 * 60 * 1000))),
-    }))
-    .sort((a, b) => a.daysToClose - b.daysToClose);
-
-  const averageDaysToClose =
-    cycleTimes.length > 0
-      ? Number((cycleTimes.reduce((sum, item) => sum + item.daysToClose, 0) / cycleTimes.length).toFixed(1))
-      : null;
-
-  const medianDaysToClose =
-    cycleTimes.length > 0
-      ? cycleTimes[Math.floor(cycleTimes.length / 2)]?.daysToClose ?? null
-      : null;
-
-  const estimateStatusCounts = await prisma.estimate.groupBy({
-    by: ["status"],
-    where: {
-      createdAt: {
-        gte: range.start,
-        lte: range.end,
-      },
-    },
-    _count: { _all: true },
-  });
-
-  const estimateCounts = Object.fromEntries(
-    estimateStatusCounts.map((row) => [row.status, row._count._all]),
-  ) as Record<string, number>;
-
-  const sentEstimateCount = estimateCounts.sent ?? 0;
-  const acceptedEstimateCount = estimateCounts.accepted ?? 0;
-
-  return {
-    range,
-    wonLeadCount: cycleTimes.length,
-    averageDaysToClose,
-    medianDaysToClose,
-    cycleTimes,
-    estimateCounts,
-    estimateAcceptanceRateFromSent:
-      sentEstimateCount > 0 ? Math.round((acceptedEstimateCount / sentEstimateCount) * 100) : 0,
-  };
+/**
+ * The four-phase funnel (Kyle, 2026-09-20). Replaces `getWinLossMetrics` — whose "win rate" was
+ * won leads / (won + lost leads), phase 1 data wearing a phase 3 label — and `getCycleTimeMetrics`,
+ * whose acceptance rate read the retired legacy Estimate model. Both deleted with this.
+ */
+export async function getFourPhaseFunnel(range: AnalyticsRange): Promise<FunnelReport> {
+  return getFunnelReport(prisma, range);
 }
 
 export async function getCrmOverview(range: AnalyticsRange) {
-  const [funnel, followUps, winLoss, cycleTime] = await Promise.all([
+  const [funnel, followUps, phases] = await Promise.all([
     getLeadFunnelMetrics(range),
     getLeadFollowUpMetrics(),
-    getWinLossMetrics(range),
-    getCycleTimeMetrics(range),
+    getFourPhaseFunnel(range),
   ]);
 
   return {
     generatedAt: new Date().toISOString(),
     funnel,
     followUps,
-    winLoss,
-    cycleTime,
+    phases,
   };
 }

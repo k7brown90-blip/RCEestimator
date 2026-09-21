@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { JobScheduler } from "../components/JobScheduler";
-import { Modal } from "../components/Modal";
 import { PageHeader } from "../components/PageHeader";
+import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api } from "../lib/api";
+import { useDrawerParams } from "../lib/drawers";
 import type {
   AvailabilityResponse,
   CalendarAppointment,
@@ -55,11 +56,20 @@ export function CalendarPage() {
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [rescheduling, setRescheduling] = useState<CalendarAppointment | UnscheduledJob | null>(null);
+  /**
+   * ONE MONTH GRID (tab separation, 2026-09-20 — PUNCHLIST C9). The scheduler used to open
+   * in a modal with its own month grid drawn over this page's month grid — two calendars
+   * against two endpoints, one on top of the other. Now the page's grid IS the picker:
+   * while a job is being scheduled, tapping a day sets `pickedDate`, and the scheduler
+   * renders inline beneath the grid with no grid of its own (`JobScheduler pickedDate`).
+   */
+  const [pickedDate, setPickedDate] = useState<string | null>(null);
   // What the booking just did — so "did the customer get a confirmation?" is answered on
   // screen instead of being invisible (Kyle, 2026-08-24: "Scheduling should also send a
   // confirmation to the customer").
   const [lastBooking, setLastBooking] = useState<ScheduleJobResult | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
+  const drawers = useDrawerParams();
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const rangeStart = `${year}-${pad(month)}-01`;
@@ -78,8 +88,12 @@ export function CalendarPage() {
 
   // Arrived from the signed screen with ?schedule=<jobId>: open the scheduler for that job
   // straight away. The param is consumed once — clearing it keeps back/refresh from
-  // reopening a modal the user already dismissed.
+  // reopening a picker the user already dismissed. Only ITS OWN key is cleared (PUNCHLIST
+  // C11, fixed 2026-09-20): `setSearchParams({})` wiped every param, including an open
+  // drawer's `?po=`/`?job=`.
   useEffect(() => {
+    const consumeScheduleParam = () =>
+      setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete("schedule"); return next; }, { replace: true });
     const scheduleId = searchParams.get("schedule");
     if (!scheduleId || !schedule) return;
     const job =
@@ -87,7 +101,8 @@ export function CalendarPage() {
       schedule.appointments.find((a) => a.visitId === scheduleId);
     if (job) {
       setRescheduling(job);
-      setSearchParams({}, { replace: true });
+      setPickedDate(null);
+      consumeScheduleParam();
     } else if (!scheduleParamRetried.current) {
       // A just-created visit (Book consultation -> here) can beat the rail:
       // react-query serves the cached month first, the visit isn't in it, and
@@ -97,9 +112,19 @@ export function CalendarPage() {
       scheduleParamRetried.current = true;
       void refetchSchedule();
     } else {
-      setSearchParams({}, { replace: true });
+      consumeScheduleParam();
     }
   }, [searchParams, schedule, setSearchParams, refetchSchedule]);
+
+  /** Start scheduling `job` against the page's own grid. */
+  function startScheduling(job: CalendarAppointment | UnscheduledJob) {
+    setRescheduling(job);
+    setPickedDate(null);
+  }
+  function stopScheduling() {
+    setRescheduling(null);
+    setPickedDate(null);
+  }
 
   /** Appointments and unlinked Google events bucketed by Central calendar day. */
   const byDay = useMemo(() => {
@@ -141,6 +166,20 @@ export function CalendarPage() {
     else if (next > 12) { setYear(year + 1); setMonth(1); }
     else setMonth(next);
     setSelectedDate(null);
+    // The picked start date belongs to the month it was tapped in; moving months (to look
+    // for a free week) keeps the job open for scheduling but drops the day.
+    setPickedDate(null);
+  }
+
+  /** A grid day was tapped: pick a start date while scheduling, otherwise open the day. */
+  function tapDay(dateKey: string) {
+    if (rescheduling) {
+      // Past days are not bookable — the same lock the scheduler's own grid had.
+      if (dateKey < todayKey) return;
+      setPickedDate(dateKey === pickedDate ? null : dateKey);
+      return;
+    }
+    setSelectedDate(dateKey === selectedDate ? null : dateKey);
   }
 
   return (
@@ -162,13 +201,19 @@ export function CalendarPage() {
 
       {error ? <p className="text-sm text-red-500">Error loading calendar: {error.message}</p> : null}
 
+      {rescheduling && (
+        <p data-scheduling-hint className="rounded-md border border-rce-accent bg-rce-accentBg/40 p-3 text-sm">
+          <strong>Scheduling {rescheduling.customerName}</strong> — tap a start date on the calendar; the details are below the grid.
+        </p>
+      )}
+
       {lastBooking && (
         <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
           <strong>Scheduled.</strong>{" "}
           {lastBooking.customerNotified
             ? "A confirmation went to the customer."
             : "No confirmation went out — the customer has no email or phone on file."}
-          <button className="ml-2 text-xs underline" onClick={() => setLastBooking(null)}>
+          <button className="btn btn-secondary ml-2 px-2 py-0.5 text-xs min-h-0" onClick={() => setLastBooking(null)}>
             Dismiss
           </button>
         </div>
@@ -198,18 +243,25 @@ export function CalendarPage() {
                   const dayOfMonth = Number(dateKey.slice(-2));
                   const weekday = new Date(year, month - 1, dayOfMonth).getDay();
                   const isWeekend = weekday === 0 || weekday === 6;
+                  const unpickable = Boolean(rescheduling) && dateKey < todayKey;
+                  const isPicked = Boolean(rescheduling) && dateKey === pickedDate;
+                  const isOpenDay = !rescheduling && dateKey === selectedDate;
 
                   return (
                     <button
                       key={dateKey}
-                      onClick={() => setSelectedDate(dateKey === selectedDate ? null : dateKey)}
-                      className={`relative min-h-[86px] border-b border-r border-rce-border p-1.5 text-left align-top transition hover:bg-rce-accentBg/30 ${
-                        dateKey === selectedDate ? "bg-rce-accentBg/40 ring-2 ring-inset ring-rce-accent" : ""
+                      onClick={() => tapDay(dateKey)}
+                      disabled={unpickable}
+                      aria-pressed={isPicked || isOpenDay}
+                      className={`relative min-h-[86px] border-b border-r border-rce-border p-1.5 text-left align-top transition ${
+                        unpickable ? "cursor-not-allowed opacity-40" : "hover:bg-rce-accentBg/30"
+                      } ${isOpenDay ? "bg-rce-accentBg/40 ring-2 ring-inset ring-rce-accent" : ""} ${
+                        isPicked ? "bg-rce-accentBg/60 ring-2 ring-inset ring-rce-warning" : ""
                       } ${isWeekend ? "bg-rce-bg/40" : ""}`}
                     >
                       <span
                         className={`inline-flex h-7 w-7 items-center justify-center rounded-full text-sm font-medium ${
-                          dateKey === todayKey ? "bg-rce-accent text-white" : isWeekend ? "text-rce-muted" : "text-rce-text"
+                          dateKey === todayKey ? "bg-rce-accent text-rce-text" : isWeekend ? "text-rce-muted" : "text-rce-text"
                         }`}
                       >
                         {dayOfMonth}
@@ -250,8 +302,36 @@ export function CalendarPage() {
             </div>
           )}
 
+          {/* The scheduler, inline under the grid it picks from (C9) — never a modal over it. */}
+          {rescheduling && (
+            <section data-scheduling-panel className="rounded-lg border border-rce-accent bg-rce-bg p-4">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h3 className="text-base font-semibold">{rescheduling.customerName}</h3>
+                  <p className="text-sm text-rce-muted">{rescheduling.address}</p>
+                </div>
+                <button type="button" className="btn btn-secondary text-xs" onClick={stopScheduling}>
+                  Close
+                </button>
+              </div>
+              <JobScheduler
+                autoOpen
+                jobId={rescheduling.visitId}
+                status={rescheduling.status}
+                scheduledStart={"scheduledStart" in rescheduling ? rescheduling.scheduledStart : null}
+                scheduledEnd={"scheduledEnd" in rescheduling ? rescheduling.scheduledEnd : null}
+                durationDays={rescheduling.estimatedDurationDays}
+                pickedDate={pickedDate}
+                onScheduled={(result) => {
+                  stopScheduling();
+                  setLastBooking(result ?? null);
+                }}
+              />
+            </section>
+          )}
+
           {/* Day detail */}
-          {selectedDate && (
+          {selectedDate && !rescheduling && (
             <section className="rounded-lg border border-rce-border bg-rce-bg p-4">
               <h3 className="mb-3 text-base font-semibold">{dateCT(`${selectedDate}T12:00:00Z`)}</h3>
 
@@ -297,9 +377,11 @@ export function CalendarPage() {
                       </p>
 
                       <div className="mt-2 flex gap-2">
-                        <button type="button" className="btn btn-secondary text-xs" onClick={() => setRescheduling(appointment)}>
+                        <button type="button" className="btn btn-secondary text-xs" onClick={() => startScheduling(appointment)}>
                           Reschedule / Cancel
                         </button>
+                        {/* The job's drawer (2026-09-20): payment, close-out, P.O.s — without leaving the month. */}
+                        <OpenDrawerButton kind="job" id={appointment.visitId} onOpen={drawers.open} label="Open job" className="btn btn-secondary text-xs" />
                       </div>
                     </li>
                   ))}
@@ -338,10 +420,11 @@ export function CalendarPage() {
               <button
                 type="button"
                 className="btn btn-primary mt-2 w-full text-xs"
-                onClick={() => setRescheduling(job)}
+                onClick={() => startScheduling(job)}
               >
                 Schedule
               </button>
+              <OpenDrawerButton kind="job" id={job.visitId} onOpen={drawers.open} label="Open job" className="btn btn-secondary mt-1 w-full text-xs" />
             </div>
           ))}
           {(schedule?.unscheduled ?? []).filter((j) => j.status === "contracted" && j.depositSatisfied).length === 0 && !isLoading && (
@@ -379,7 +462,7 @@ export function CalendarPage() {
                 <button
                   type="button"
                   className="btn btn-secondary flex-1 text-xs"
-                  onClick={() => setRescheduling(job)}
+                  onClick={() => startScheduling(job)}
                 >
                   Book the visit
                 </button>
@@ -434,26 +517,6 @@ export function CalendarPage() {
         )}
       </section>
 
-      {rescheduling && (
-        <Modal
-          title={rescheduling.customerName}
-          subtitle={rescheduling.address}
-          onClose={() => setRescheduling(null)}
-        >
-          <JobScheduler
-            autoOpen
-            jobId={rescheduling.visitId}
-            status={rescheduling.status}
-            scheduledStart={"scheduledStart" in rescheduling ? rescheduling.scheduledStart : null}
-            scheduledEnd={"scheduledEnd" in rescheduling ? rescheduling.scheduledEnd : null}
-            durationDays={rescheduling.estimatedDurationDays}
-            onScheduled={(result) => {
-              setRescheduling(null);
-              setLastBooking(result ?? null);
-            }}
-          />
-        </Modal>
-      )}
     </div>
   );
 }

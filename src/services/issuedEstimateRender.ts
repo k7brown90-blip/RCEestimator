@@ -225,7 +225,43 @@ export interface RenderOpts {
    * before scheduling). Null/absent = not signed yet, or nothing due. The page
    * a customer revisits after signing is the natural place the deposit lives.
    */
-  deposit?: { due: number; satisfied: boolean; paidInFull: boolean; payUrl: string } | null;
+  deposit?: {
+    due: number;
+    /** False = no deposit on this invoice (Kyle, 2026-09-20); nothing gates the schedule. */
+    required?: boolean;
+    satisfied: boolean;
+    paidInFull: boolean;
+    payUrl: string;
+    /** The whole invoice when signed change orders have joined it (2026-09-20). */
+    invoice?: {
+      number: string;
+      documents: { number: string; title: string; kind: "invoice" | "change_order"; billedTotal: number }[];
+      billedTotal: number;
+      totalPaid: number;
+      balance: number;
+    } | null;
+  } | null;
+}
+
+/**
+ * What the invoice now includes (Kyle, 2026-09-20): the frozen document above stays as signed;
+ * this block, on a signed page, lists every signed document on the invoice and the updated
+ * total, paid-to-date and balance. Empty when the invoice is one document.
+ */
+function invoiceSummaryBlock(deposit: RenderOpts["deposit"]): string {
+  const inv = deposit?.invoice;
+  if (!inv) return "";
+  return `<div style="margin-top:14px;padding:12px 14px;border:1px solid #cfd8cf;border-radius:8px;background:#fafcfa;">
+    <p style="font-size:14px;margin:0 0 6px;"><strong>Invoice ${escapeHtml(inv.number)} now includes</strong></p>
+    <table style="width:100%;font-size:14px;border-collapse:collapse;">
+      ${inv.documents.map((d) =>
+        `<tr><td style="padding:3px 0;color:#444;">${d.kind === "change_order" ? "Change order" : "Invoice"} ${escapeHtml(d.number)} — ${escapeHtml(d.title)}</td>
+         <td style="text-align:right;padding:3px 0;">$${d.billedTotal.toFixed(2)}</td></tr>`).join("")}
+      <tr style="border-top:1px solid #1a5c2e;"><td style="padding:4px 0;font-weight:600;">Invoice total</td><td style="text-align:right;padding:4px 0;font-weight:600;">$${inv.billedTotal.toFixed(2)}</td></tr>
+      ${inv.totalPaid > 0 ? `<tr><td style="padding:3px 0;color:#444;">Paid to date</td><td style="text-align:right;padding:3px 0;">$${inv.totalPaid.toFixed(2)}</td></tr>
+      <tr><td style="padding:3px 0;font-weight:600;">Balance</td><td style="text-align:right;padding:3px 0;font-weight:600;">$${inv.balance.toFixed(2)}</td></tr>` : ""}
+    </table>
+  </div>`;
 }
 
 export function renderEstimatePage(
@@ -554,8 +590,9 @@ export function renderEstimatePage(
                      style="display:block;margin:10px 0 0;max-width:280px;height:auto;border-bottom:1px solid #999;padding-bottom:4px;">`
              : ""
          }
+         ${invoiceSummaryBlock(opts.deposit)}
          ${
-           opts.deposit && !opts.deposit.satisfied
+           opts.deposit && opts.deposit.required !== false && !opts.deposit.satisfied
              ? `<div style="margin-top:16px;padding:14px;border:2px solid #1a5c2e;border-radius:8px;background:#f4f8f4;">
                   <p style="font-size:15px;margin:0 0 8px;"><strong>Next step — your deposit:</strong>
                   $${opts.deposit.due.toFixed(2)} (one third of the total) reserves your spot on the
@@ -571,6 +608,10 @@ export function renderEstimatePage(
              : opts.deposit?.paidInFull
              ? `<p style="font-size:14px;color:#1a5c2e;font-weight:600;margin:10px 0 0;">✓ Paid in full — thank you.</p>
                 <p style="font-size:13px;color:#555;margin:6px 0 0;">Questions? Call ${BUSINESS_PHONE}.</p>`
+             : opts.deposit && opts.deposit.required === false
+             ? `<p style="font-size:14px;color:#1a5c2e;font-weight:600;margin:10px 0 0;">✓ Thank you — no deposit is needed. We'll be in touch to schedule the work.</p>
+                <p style="font-size:13px;color:#555;margin:6px 0 0;">The balance is due at completion.
+                Questions? Call ${BUSINESS_PHONE}.</p>`
              : opts.deposit
              ? `<p style="font-size:14px;color:#1a5c2e;font-weight:600;margin:10px 0 0;">✓ Deposit received — we'll be in touch to schedule the work.</p>
                 <p style="font-size:13px;color:#555;margin:6px 0 0;">The balance is due at completion.

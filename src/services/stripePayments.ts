@@ -226,6 +226,22 @@ export function billedTotalOf(est: BilledTotalInput): number {
   return Math.round(Math.max(0, pre - coverage.applied) * 100) / 100;
 }
 
+/** The frozen arithmetic inputs of one issued row. */
+function moneyOfRow(row: {
+  total: number; tripCharge: number; selectedOptions: string[]; comboCapJson: string | null;
+  discountJson: string | null; warrantyJson: string | null; options: { option: string; subtotal: number }[];
+}): BilledTotalInput {
+  return {
+    total: row.total,
+    tripCharge: row.tripCharge,
+    selectedOptions: row.selectedOptions,
+    comboCapJson: row.comboCapJson,
+    discountJson: row.discountJson,
+    warrantyJson: row.warrantyJson,
+    optionsSubtotals: row.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+  };
+}
+
 const randomSuffix = () =>
   Array.from({ length: 8 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join("");
 
@@ -236,11 +252,17 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
  * required before it can be scheduled. This is different from estimates.").
  *
  * His rulings, same day: exact third rounded to the cent; every job, no
- * small-job floor; change orders carry their own ⅓ (each signed estimate —
- * original or change order — computes its own deposit); and deposits are
- * NON-REFUNDABLE UP TO $300 — "a $1200 deposit will refund $900, the $300 is
- * kept for labor and processing." The keep amount is disclosed on the payment
- * page (below); refunds themselves run through the Stripe Dashboard.
+ * small-job floor; and deposits are NON-REFUNDABLE UP TO $300 — "a $1200
+ * deposit will refund $900, the $300 is kept for labor and processing." The
+ * keep amount is disclosed on the payment page (below); refunds themselves run
+ * through the Stripe Dashboard.
+ *
+ * SUPERSEDED 2026-09-20 (Kyle, after the Godwin job): "change orders carry
+ * their own ⅓" is gone. The deposit is OPTIONAL per document
+ * (IssuedEstimate.depositRequired — on by default for an estimate, OFF for a
+ * change order) and is ⅓ of the homeowner shares of the documents that
+ * require one, across the whole invoice group (services/invoiceGroup.ts). The
+ * cap and the deposit emails apply only when a deposit is actually due.
  */
 export const DEPOSIT_NONREFUNDABLE_CAP = 300;
 
@@ -266,9 +288,25 @@ export function depositKeptOnCancel(depositPaid: number): number {
 export interface PaymentSummary {
   estimateId: string;
   number: string;
-  /** The HOMEOWNER share — coverage already off. */
+  /**
+   * The HOMEOWNER share — coverage already off — of the WHOLE INVOICE: the root
+   * estimate plus every signed, live change order on it (Kyle, 2026-09-20).
+   */
   billedTotal: number;
+  /** ⅓ of the shares that require a deposit; 0 when none does. */
   depositDue: number;
+  /** Some document on this invoice requires a deposit (depositDue > 0). */
+  depositRequired: boolean;
+  /**
+   * The documents the invoice is made of — the root first, then its signed
+   * change orders — each with its own frozen billed share. What every
+   * "the invoice" surface lists beneath the total.
+   */
+  documents: {
+    id: string; number: string; revision: number; title: string;
+    kind: "invoice" | "change_order"; signedAt: Date | null;
+    billedTotal: number; depositRequired: boolean;
+  }[];
   /** Paid rows only — customer (homeowner) rows. */
   depositPaid: number;
   /** Homeowner money only (payer "customer"); a warranty check never lands here. */
@@ -325,33 +363,35 @@ export function splitPaidByPayer<T extends { amount: number; payer?: string | nu
   };
 }
 
-/** One place that answers "where does the money on this estimate stand?" */
+/**
+ * One place that answers "where does the money on this INVOICE stand?"
+ *
+ * Since 2026-09-20 the invoice is the GROUP: the root estimate plus every signed, live change
+ * order pointing at it (services/invoiceGroup.ts). Asked about a change order's id, this
+ * answers about its root — `estimateId`, `number` and the pay links in the result are the
+ * ROOT's, because a change order has no invoice, deposit or pay link of its own any more.
+ */
 export async function paymentSummary(
   prisma: PrismaClient,
   estimateId: string,
   origin: string,
 ): Promise<PaymentSummary | null> {
-  const est = await prisma.issuedEstimate.findUnique({
-    where: { id: estimateId },
-    include: { options: true },
-  });
-  if (!est) return null;
+  // Dynamic: invoiceGroup imports the arithmetic from this module.
+  const { loadInvoiceGroup } = await import("./invoiceGroup");
+  const group = await loadInvoiceGroup(prisma, estimateId);
+  if (!group) return null;
+  const est = group.root;
 
-  const money = {
-    total: est.total,
-    tripCharge: est.tripCharge,
-    selectedOptions: est.selectedOptions,
-    comboCapJson: est.comboCapJson,
-    discountJson: est.discountJson,
-    warrantyJson: est.warrantyJson,
-    optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
-  };
-  // The homeowner share: coverage already off. depositDueOf divides THIS —
-  // the ⅓ is a third of what the homeowner owes, not of the whole job.
-  const billedTotal = billedTotalOf(money);
-  const coverage = warrantyCoverageOf(money);
+  // The homeowner share of the whole invoice: coverage already off, every
+  // live document summed. The ⅓ is a third of the shares that REQUIRE a
+  // deposit (depositBase), not of the whole job — and zero when none does.
+  const billedTotal = group.billedTotal;
+  const rootCoverage = warrantyCoverageOf(moneyOfRow(est));
+  const coverage = group.warrantyCovered > 0
+    ? { applied: group.warrantyCovered, claim: rootCoverage?.claim ?? group.documents.find((d) => d.warrantyClaim)!.warrantyClaim! }
+    : null;
   const payments = await prisma.payment.findMany({
-    where: { estimateId },
+    where: { estimateId: { in: group.ids } },
     orderBy: { createdAt: "desc" },
   });
   const paid = payments.filter((p) => p.status === "paid");
@@ -361,7 +401,7 @@ export async function paymentSummary(
   const split = splitPaidByPayer(paid);
   const totalPaid = split.customerPaid;
   const depositPaid = round2(split.customer.filter((p) => p.kind === "deposit").reduce((s, p) => s + p.amount, 0));
-  const depositDue = depositDueOf(billedTotal);
+  const depositDue = group.depositDue;
   const homeownerBalance = round2(billedTotal - totalPaid);
   const warranty = coverage
     ? {
@@ -377,11 +417,17 @@ export async function paymentSummary(
     number: est.number,
     billedTotal,
     depositDue,
+    depositRequired: group.depositRequired,
+    documents: group.documents.map((d) => ({
+      id: d.id, number: d.number, revision: d.revision, title: d.title, kind: d.kind,
+      signedAt: d.signedAt, billedTotal: d.billedTotal, depositRequired: d.depositRequired,
+    })),
     depositPaid,
     totalPaid,
     balance: homeownerBalance,
     // Any money at or past the deposit satisfies the gate — a customer who paid
-    // in full up front did not fail to pay a deposit.
+    // in full up front did not fail to pay a deposit. No deposit required
+    // (depositDue 0) satisfies it outright: nothing gates scheduling.
     depositSatisfied: totalPaid >= depositDue - 0.01,
     paidInFull: homeownerBalance <= 0.01,
     fullyPaid: homeownerBalance <= 0.01 && (!warranty || warranty.balance <= 0.01),
@@ -410,7 +456,8 @@ export async function chargeableAmount(
   payType: "balance" | "deposit",
 ): Promise<
   // amount = what's due right now, the same figure for every payment method.
-  | { ok: true; estimateId: string; number: string; title: string; amount: number }
+  // estimateId/number/title are the ROOT invoice's; documents lists what it is made of.
+  | { ok: true; estimateId: string; number: string; title: string; amount: number; documents: PaymentSummary["documents"] }
   | { ok: false; reason: string }
 > {
   const est = await prisma.issuedEstimate.findUnique({
@@ -418,11 +465,21 @@ export async function chargeableAmount(
     select: { id: true, signedAt: true, status: true, title: true },
   });
   if (!est) return { ok: false, reason: "Invoice not found." };
+  // A lost estimate is unsigned, so the next line would already refuse it — but it would say
+  // "not signed yet", which invites a customer to go sign a quote the office has closed. Named
+  // first, with the honest answer (2026-09-20). /pay/:token and /checkout both come through here.
+  if (est.status === "lost") return { ok: false, reason: "This estimate has been closed and is not open for payment. Call Red Cedar Electric if you would like to move forward." };
   if (!est.signedAt) return { ok: false, reason: "This estimate has not been signed yet." };
   if (est.status === "void") return { ok: false, reason: "This invoice is void." };
 
+  // A change order's link pays the WHOLE invoice — the summary resolves to
+  // the root, and the root is what the session and the payment are recorded
+  // against (Kyle, 2026-09-20: "allow a single payment once its all finished").
   const summary = (await paymentSummary(prisma, est.id, "https://unused.invalid"))!;
   if (summary.paidInFull) return { ok: false, reason: "This invoice has already been paid — thank you!" };
+  if (payType === "deposit" && !summary.depositRequired) {
+    return { ok: false, reason: "No deposit is required on this invoice — the balance is due at completion." };
+  }
   if (payType === "deposit" && summary.depositSatisfied) {
     return { ok: false, reason: "The deposit on this job has already been paid — thank you!" };
   }
@@ -430,7 +487,10 @@ export async function chargeableAmount(
     ? round2(Math.min(summary.depositDue - summary.depositPaid, summary.balance))
     : summary.balance;
   if (!(amount > 0)) return { ok: false, reason: "Nothing is due on this invoice." };
-  return { ok: true, estimateId: est.id, number: summary.number, title: est.title, amount };
+  const root = summary.estimateId === est.id
+    ? est
+    : (await prisma.issuedEstimate.findUnique({ where: { id: summary.estimateId }, select: { id: true, title: true } }))!;
+  return { ok: true, estimateId: root.id, number: summary.number, title: root.title, amount, documents: summary.documents };
 }
 
 export async function createInvoiceCheckoutSession(

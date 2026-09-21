@@ -308,6 +308,8 @@ export async function sendBrandedEmail(input: {
   estimateNumber?: string | null;
   issuedEstimateId?: string | null;
   visitId?: string | null;
+  leadId?: string | null;
+  customerId?: string | null;
 }): Promise<boolean> {
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
@@ -338,6 +340,8 @@ export async function sendBrandedEmail(input: {
     estimateNumber: input.estimateNumber ?? null,
     issuedEstimateId: input.issuedEstimateId ?? null,
     visitId: input.visitId ?? null,
+    leadId: input.leadId ?? null,
+    customerId: input.customerId ?? null,
   });
   if (result.ok) {
     console.log(`[BrandedEmail] Sent "${input.subject}" to ${input.to} via ${result.provider}`);

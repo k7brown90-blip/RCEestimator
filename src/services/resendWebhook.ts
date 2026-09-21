@@ -239,6 +239,8 @@ export async function applyResendEvent(prisma: PrismaClient, event: ResendEvent)
         estimateNumber,
         issuedEstimateId,
         visitId: delivery?.visitId ?? null,
+        leadId: delivery?.leadId ?? null,
+        customerId: delivery?.customerId ?? null,
         bouncedAt: at,
       },
     });

@@ -13,8 +13,18 @@
  * - EXPENSES (Kyle, 2026-09-19, "the P.O. is the money" — THE CHARGE IS THE
  *   MONEY, THE RECEIPT IS PROOF): card charges (CardSpend), amounts typed on a
  *   P.O. marked not-on-card, CompanyBill rows (recurring bills expanded month
- *   by month), and Stripe fees. Receipt.amount contributes nothing; no figure
- *   is counted twice because nothing decides between a receipt and a charge.
+ *   by month), Stripe fees, and — since 2026-09-21 — PAYROLL: wages from the
+ *   hours ledger (shift + uncovered job time × frozen rates, overtime included)
+ *   plus commissions, in the month the hours were worked / the commission was
+ *   earned (services/payrollLedger.ts says why), and — since 2026-09-21 — BANK
+ *   LINES classified as expenses (ACH, autopay, checks and debit-card money out
+ *   of Chase, from the statements Kyle uploads; services/bankStatements.ts).
+ *   A bank line classified as a transfer (a set-aside, the Stripe sweep) or as
+ *   already counted (payroll, a typed P.O. amount, a scheduled bill, a recorded
+ *   payment) adds NOTHING — that is how the same dollar cannot land twice.
+ *   Receipt.amount contributes nothing; no figure is counted twice because
+ *   nothing decides between a receipt and a charge, and job profitability's
+ *   per-job labour line is a view of the same hours, never added here.
  *
  * All four reports Kyle asked for: monthly P&L, expenses by category, job
  * profitability, and the tax-year CSV export.
@@ -25,7 +35,11 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { fullBillOf, stripeConfigured } from "../services/stripePayments";
+import { groupSignedRows, INVOICE_DOC_SELECT, invoiceRootId, rollupInvoice, type InvoiceDocRow } from "../services/invoiceGroup";
 import { getLaborRate, materialCostForJobs } from "../services/jobCosting";
+import { payrollForYear, type PayrollYear } from "../services/payrollLedger";
+import { billMonthsInYear } from "../services/companyBills";
+import { bankExpenseRowsForYear, bankQueueSummary, type BankExpenseRow, type BankQueueSummary } from "../services/bankLedger";
 import { readBalances } from "../services/cardSpend";
 import { TreasuryError, executeSweep, readSweep, stripeFeeRows } from "../services/treasury";
 import type { StripeFeeRow } from "../services/treasury";
@@ -243,6 +257,10 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
     return;
   }
 
+  // ONE INVOICE, ONE PAYMENT (Kyle, 2026-09-20): money named against a change order is
+  // recorded on the ROOT invoice it joined, so a later void of that change order never carries
+  // the invoice's money away with it.
+  const rootEstimateId = body.estimateId ? await invoiceRootId(prisma, body.estimateId) : null;
   const payment = await prisma.payment.create({
     data: {
       amount: body.amount,
@@ -252,7 +270,7 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
       checkNumber: body.checkNumber?.trim() || null,
       status: "paid",
       customerId: body.customerId ?? null,
-      estimateId: body.estimateId ?? null,
+      estimateId: rootEstimateId,
       visitId: body.visitId ?? null,
       note: body.note ?? null,
       paidAt: body.paidAt ? new Date(body.paidAt) : new Date(),
@@ -270,38 +288,11 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
 
 // ── Report machinery ─────────────────────────────────────────────────────────
 
-/** Which months (0-11) of `year` a bill lands in, and at what amount. */
-export function billMonthsInYear(
-  bill: { cadence: string; amount: number; billDate: Date | null; startDate: Date | null; endDate: Date | null },
-  year: number,
-): { month: number; amount: number }[] {
-  if (bill.cadence === "one_time") {
-    if (!bill.billDate || bill.billDate.getFullYear() !== year) return [];
-    return [{ month: bill.billDate.getMonth(), amount: bill.amount }];
-  }
-  if (!bill.startDate) return [];
-  const start = bill.startDate;
-  const end = bill.endDate;
-  const out: { month: number; amount: number }[] = [];
-  for (let month = 0; month < 12; month++) {
-    const monthStart = new Date(year, month, 1);
-    const monthEnd = new Date(year, month + 1, 0);
-    if (monthEnd < start) continue;
-    if (end && monthStart > end) continue;
-    if (bill.cadence === "monthly") out.push({ month, amount: bill.amount });
-    else if (bill.cadence === "weekly") {
-      // Monthly equivalent — 52 weeks across 12 months. Approximate by design;
-      // the report labels it as a weekly bill's monthly share.
-      out.push({ month, amount: Math.round((bill.amount * 52) / 12 * 100) / 100 });
-    } else if (bill.cadence === "quarterly") {
-      const monthsSinceStart = (year - start.getFullYear()) * 12 + (month - start.getMonth());
-      if (monthsSinceStart >= 0 && monthsSinceStart % 3 === 0) out.push({ month, amount: bill.amount });
-    } else if (bill.cadence === "annual") {
-      if (month === start.getMonth()) out.push({ month, amount: bill.amount });
-    }
-  }
-  return out;
-}
+/**
+ * The bill schedule rule lives in services/companyBills.ts since 2026-09-21 (the bank ledger
+ * needs it too); re-exported here so its old import path still resolves.
+ */
+export { billMonthsInYear };
 
 interface YearLedger {
   /** Signed invoices: { month, amount, number, customer, estimateId, signedAt } */
@@ -330,6 +321,20 @@ interface YearLedger {
   /** False (with feesReason) when the key cannot read balance transactions — the column is then honestly empty. */
   feesAvailable: boolean;
   feesReason: string | null;
+  /**
+   * PAYROLL (Kyle, 2026-09-20): wages and commissions from the hours ledger,
+   * in the month worked / earned. Counted here ONCE; job profitability's labour
+   * line is the per-job view of the same hours and is never added to Expenses.
+   */
+  payroll: PayrollYear;
+  /**
+   * BANK LINES (Kyle, 2026-09-20): ONLY the lines classified `expense`, in the month
+   * posted. Transfers, already-counted lines, ignored and unclassified lines are not
+   * here — services/bankLedger.ts bankExpenseRowsForYear is the one door.
+   */
+  bankRows: BankExpenseRow[];
+  /** How much sits unclassified (and so is NOT in Expenses yet) — the P&L says so rather than hiding it. */
+  bankQueue: BankQueueSummary;
 }
 
 /** CardSpend.kind → the P&L expense category. */
@@ -349,7 +354,7 @@ async function yearLedger(year: number): Promise<YearLedger> {
   const from = new Date(`${year}-01-01`);
   const to = new Date(`${year + 1}-01-01`);
 
-  const [estimates, payments, bills, spend, typed, fees] = await Promise.all([
+  const [estimates, payments, bills, spend, typed, fees, payroll, bankRows, bankQueue] = await Promise.all([
     prisma.issuedEstimate.findMany({
       where: { signedAt: { gte: from, lt: to }, status: { not: "void" }, ...EXCLUDE_TEST_ACCOUNT },
       include: { options: true, account: { select: { name: true } } },
@@ -377,6 +382,11 @@ async function yearLedger(year: number): Promise<YearLedger> {
     }),
     // Stripe fees for the year — cached 30 minutes in services/treasury.ts; [] + reason when the key lacks scope.
     stripeFeeRows(year, { from, to }),
+    // Payroll: the hours ledger, the same floor-and-walk the Team week runs.
+    payrollForYear(year),
+    // Bank lines classified as expenses — the fifth source (2026-09-21). Nothing else from the statements.
+    bankExpenseRowsForYear(year),
+    bankQueueSummary(),
   ]);
 
   return {
@@ -418,6 +428,9 @@ async function yearLedger(year: number): Promise<YearLedger> {
     feeRows: fees.rows,
     feesAvailable: fees.available,
     feesReason: fees.reason ?? null,
+    payroll,
+    bankRows,
+    bankQueue,
   };
 }
 
@@ -501,9 +514,17 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
 
   /*
     EXPENSES (Kyle, 2026-09-19) = card charges + typed not-on-card P.O. amounts
-    + company bills + Stripe fees. Nothing else: not receipts, not the signed
-    estimate's material. The "Est. materials / Projected net" columns that let
-    the estimate act as cost retired with the rule — Net is the number.
+    + company bills + Stripe fees + PAYROLL (Kyle, 2026-09-20 — wages and
+    commissions from the hours ledger, once; see services/payrollLedger.ts for
+    when they count) + BANK LINES CLASSIFIED AS EXPENSES (Kyle, 2026-09-20 —
+    the statements he uploads; only `expense` lines, services/bankLedger.ts).
+    Nothing else: not receipts, not the signed estimate's material, not job
+    profitability's per-job labour (the same hours, seen per job), and not a
+    bank line that is a transfer or already counted — a Chase line paying
+    Stripe, payroll, a typed P.O. amount or a scheduled bill adds nothing here,
+    because the P&L already has that money by the other route. The "Est.
+    materials / Projected net" columns that let the estimate act as cost retired
+    with the rule — Net is the number.
   */
   const months = Array.from({ length: 12 }, (_, month) => {
     const invoiced = ledger.invoiced.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
@@ -513,12 +534,20 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
     const typedExp = ledger.typedRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     // Stripe processing fees — their own column AND inside Expenses (Kyle, 2026-09-09). Collected above stays gross.
     const stripeFees = ledger.feeRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
-    const expenses = spendExp + typedExp + billExp + stripeFees;
+    // Payroll — its own column AND inside Expenses, the same way as the fees.
+    const wages = ledger.payroll.wageRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
+    const commissions = ledger.payroll.commissionRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
+    const payroll = wages + commissions;
+    // Bank expenses — the statements' new money out. Its own column too, so Kyle can see what the import added.
+    const bank = ledger.bankRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
+    const expenses = spendExp + typedExp + billExp + stripeFees + payroll + bank;
     return {
       month,
       invoiced: round2(invoiced),
       collected: round2(collected),
       stripeFees: round2(stripeFees),
+      payroll: round2(payroll),
+      bank: round2(bank),
       expenses: round2(expenses),
       net: round2(invoiced - expenses),
     };
@@ -536,6 +565,11 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
   for (const t of ledger.typedRows) addExpense(t.category, t.month, t.amount);
   for (const b of ledger.billRows) addExpense(`bill:${b.category}`, b.month, b.amount);
   for (const f of ledger.feeRows) addExpense("stripe_fees", f.month, f.amount);
+  // Payroll, two rows so Kyle can see wages apart from commissions (Kyle, 2026-09-20).
+  for (const w of ledger.payroll.wageRows) addExpense("payroll:wages", w.month, w.amount);
+  for (const c of ledger.payroll.commissionRows) addExpense("payroll:commissions", c.month, c.amount);
+  // Bank expenses by the category Kyle gave each line — the same words as bills and card kinds.
+  for (const b of ledger.bankRows) addExpense(`bank:${b.category}`, b.month, b.amount);
 
   res.json({
     year,
@@ -543,11 +577,22 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
     // Stripe fees: false + reason when the key cannot read balance transactions (the column is then empty, not zero-by-guess).
     feesAvailable: ledger.feesAvailable,
     feesReason: ledger.feesReason,
+    // Rule 6: hours with no rate on file count as $0 and the P&L says so rather than hiding it.
+    payrollUnratedHours: round2(ledger.payroll.unratedMinutes.reduce((s, m) => s + m, 0) / 60),
+    // The bank queue: lines nobody has classified are NOT in Expenses — say so (every year, not just this one).
+    bank: {
+      accounts: ledger.bankQueue.accounts,
+      unclassified: ledger.bankQueue.unclassified,
+      unclassifiedOut: ledger.bankQueue.unclassifiedOut,
+      lastImportAt: ledger.bankQueue.lastImportAt,
+    },
     months,
     totals: {
       invoiced: round2(months.reduce((s, m) => s + m.invoiced, 0)),
       collected: round2(months.reduce((s, m) => s + m.collected, 0)),
       stripeFees: round2(months.reduce((s, m) => s + m.stripeFees, 0)),
+      payroll: round2(months.reduce((s, m) => s + m.payroll, 0)),
+      bank: round2(months.reduce((s, m) => s + m.bank, 0)),
       expenses: round2(months.reduce((s, m) => s + m.expenses, 0)),
       net: round2(months.reduce((s, m) => s + m.net, 0)),
     },
@@ -600,26 +645,20 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
   const estimates = await prisma.issuedEstimate.findMany({
     where: {
       signedAt: { not: null },
+      voidedAt: null,
+      status: { not: "void" },
       OR: [{ jobVisitId: { in: visitIds } }, { visitId: { in: visitIds } }],
     },
-    include: { options: true },
-  });
+    select: INVOICE_DOC_SELECT,
+  }) as InvoiceDocRow[];
 
   const laborRate = await getLaborRate();
   const estimateByJob = new Map<string, number>();
-  for (const est of estimates) {
-    // The full bill, both payers (Kyle, 2026-09-10) — the same revenue rung GET /jobs
-    // and the account summary use.
-    const amount = fullBillOf({
-      total: est.total,
-      tripCharge: est.tripCharge,
-      selectedOptions: est.selectedOptions,
-      comboCapJson: est.comboCapJson,
-      discountJson: est.discountJson,
-      warrantyJson: est.warrantyJson,
-      optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
-    });
-    for (const key of [est.jobVisitId, est.visitId]) {
+  for (const g of groupSignedRows(estimates).values()) {
+    // The full bill of the whole INVOICE — the root plus its signed change orders (2026-09-20),
+    // both payers (Kyle, 2026-09-10) — the same revenue rung GET /jobs and the account summary use.
+    const amount = rollupInvoice(g.root, g.changeOrders).fullBill;
+    for (const key of [g.root.jobVisitId, g.root.visitId]) {
       if (key && !estimateByJob.has(key)) estimateByJob.set(key, amount);
     }
   }
@@ -854,6 +893,22 @@ financialsRouter.get("/export", asyncHandler(async (req, res) => {
   // Stripe processing fees, one per charge (Kyle, 2026-09-09). Collected rows above are gross.
   for (const f of ledger.feeRows) {
     rows.push(`${f.date.toISOString().slice(0, 10)},expense,stripe_fees,${esc(`Stripe fee — ${f.chargeId} (net ${f.net.toFixed(2)})`)},${f.amount.toFixed(2)}`);
+  }
+  // PAYROLL (Kyle, 2026-09-20): one wage row per technician per workweek (split
+  // at a month boundary), in the month worked; one row per commission, at
+  // earnedAt. The export must carry what the screen shows, or the two disagree.
+  const hours = (minutes: number) => (Math.round((minutes / 60) * 100) / 100).toString();
+  for (const w of ledger.payroll.wageRows) {
+    const ot = w.overtimeMinutes > 0 ? `, ${hours(w.overtimeMinutes)}h overtime` : "";
+    rows.push(`${w.date.toISOString().slice(0, 10)},expense,payroll:wages,${esc(`Wages — ${w.technicianName}, week of ${w.weekStart.toISOString().slice(0, 10)} (${hours(w.minutes)}h${ot})`)},${w.amount.toFixed(2)}`);
+  }
+  for (const c of ledger.payroll.commissionRows) {
+    const basis = c.basis === "job_profit" && c.percent != null ? `${c.percent}% of job profit` : c.basis;
+    rows.push(`${c.earnedAt.toISOString().slice(0, 10)},expense,payroll:commissions,${esc(`Commission — ${c.technicianName} (${basis})${c.note ? ` — ${c.note}` : ""}`)},${c.amount.toFixed(2)}`);
+  }
+  // BANK LINES (Kyle, 2026-09-20): every statement line classified as an expense, once, in the month posted.
+  for (const b of ledger.bankRows) {
+    rows.push(`${b.date.toISOString().slice(0, 10)},expense,bank:${b.category},${esc(`Bank — ${b.description} (${b.accountName})`)},${b.amount.toFixed(2)}`);
   }
 
   res.setHeader("Content-Type", "text/csv");

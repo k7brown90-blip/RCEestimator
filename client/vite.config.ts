@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import ts from "typescript";
@@ -92,5 +93,17 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
+  },
+  // Phase A (2026-09-20, "drawers and tab purpose" plan) — the client had zero
+  // rendering tests: no jsdom, no testing-library, no test runner. This is the
+  // safety net later phases (a drawer-per-record rewrite across every page) land
+  // in. Mirrors field/vite.config.ts's precedent: test config lives in the Vite
+  // config, package.json gets its own `test` script, and CI runs it as its own
+  // step — never folded into the root `npm test` (that suite is Postgres-backed
+  // and serialized; only one may run at a time).
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
   },
 });

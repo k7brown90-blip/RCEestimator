@@ -99,7 +99,7 @@ export function SignaturePad(props: {
     <div>
       <div className="flex items-baseline justify-between">
         <label className="text-sm font-semibold text-rce-text">Sign here</label>
-        <button type="button" className="text-xs text-rce-soft underline" onClick={clear}>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={clear}>
           Clear
         </button>
       </div>

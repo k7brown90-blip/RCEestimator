@@ -54,6 +54,8 @@ export function SigningModePage() {
   // scheduling (Kyle, 2026-08-24); Kyle re-ordered it 2026-09-02: "We need to get the
   // payment and scheduling in the right priority" — deposit first, THEN the calendar.
   const [jobVisitId, setJobVisitId] = useState<string | null>(null);
+  // A change order that joined the current job (Kyle, 2026-09-20): no second visit to schedule.
+  const [jobJoined, setJobJoined] = useState(false);
   // Same query key/fn the PaymentPanel uses, so the two share one cache entry.
   // Polls while the signed sheet is up — a QR payment flips the gate live.
   const { data: payInfo } = useQuery({
@@ -98,6 +100,7 @@ export function SigningModePage() {
     try {
       const result = await api.pbSignInPerson(estimateId, signerName.trim(), signature, selectedOptions);
       setJobVisitId(result.jobVisitId ?? null);
+      setJobJoined(Boolean(result.jobJoined));
       await load();
       setPhase("signed");
     } catch (err) {
@@ -192,7 +195,14 @@ export function SigningModePage() {
               <PaymentPanel estimateId={estimateId} />
             </div>
           )}
-          {jobVisitId ? (
+          {jobVisitId && jobJoined ? (
+            <>
+              <p className="mt-3 text-sm text-rce-muted">Added to the current job — its total joined that invoice. Nothing new to schedule.</p>
+              <button className="btn btn-primary mt-2 w-full py-3" onClick={() => navigate(-1)}>
+                Done
+              </button>
+            </>
+          ) : jobVisitId ? (
             <>
               <button
                 className="btn btn-primary mt-3 w-full py-3"

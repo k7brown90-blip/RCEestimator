@@ -1,3 +1,7 @@
+import { LOST_REASONS, type IssuedEstimateStatus } from "../../../shared/estimateStatus";
+import { LEAD_PLATFORMS, type LeadPlatform } from "../../../shared/leadPlatform";
+
+export type { IssuedEstimateStatus };
 export type EstimateStatus = "draft" | "review" | "sent" | "accepted" | "declined" | "expired" | "revised";
 
 /** Visit.status — the job's own lifecycle, distinct from its estimate's status. */
@@ -181,6 +185,18 @@ export type Customer = {
   phone?: string | null;
   /** The price-book practice account — kept out of every money report. */
   isTestAccount?: boolean;
+  /**
+   * WHICH PLATFORM brought this account (Kyle, 2026-09-20) — copied from the lead when a NEW
+   * account is created at convert, and never overwritten afterwards. Null on every account that
+   * predates the field or came in another door; the funnel reads that as "unknown".
+   */
+  platform?: LeadPlatform | null;
+  /**
+   * LIFETIME MONEY COLLECTED — the ONE definition (services/lifetimeCollected.ts): payments that
+   * are paid, not the retired "discount" rows, either payer, test account excluded. Served by the
+   * accounts list so no surface computes its own answer (PUNCHLIST E5).
+   */
+  lifetimeCollected?: number;
   properties?: Property[];
 };
 
@@ -627,6 +643,14 @@ export type Lead = {
   email?: string | null;
   phone?: string | null;
   source: LeadSource;
+  /**
+   * WHICH PLATFORM sent the lead (Kyle, 2026-09-20) — google | yelp | nextdoor | angi |
+   * referral | repeat_customer | other, from shared/leadPlatform.ts. Separate from `source`,
+   * which is the CHANNEL it arrived on. `null` = never tagged; the funnel reads that as
+   * "unknown" rather than guessing, and it is editable after the fact because a phone lead
+   * arrives untagged.
+   */
+  platform?: LeadPlatform | null;
   status: LeadStatus;
   leadStatus?: LeadPipelineStatus;
   notes?: string | null;
@@ -656,6 +680,14 @@ export type Lead = {
   visitId?: string | null;
   existingVisitId?: string | null;
   linkedVisit?: LeadLinkedVisit | null;
+  /**
+   * TRI-STATE, READ-ONLY IN THE CRM (PUNCHLIST E1). `true` = ticked the consent box on the
+   * website form, `false` = shown the box and left it unticked, `null` = never asked (phone,
+   * email, manual leads). This is what the A2P registration attests to and only `true` opens
+   * the SMS gate — so no CRM surface renders it as a checkbox, and `LeadWriteInput` below
+   * deliberately has no such field: a plain checkbox would collapse `null` to `false`.
+   */
+  smsConsent?: boolean | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -666,6 +698,7 @@ export type LeadWriteInput = {
   email?: string | null;
   phone?: string | null;
   source?: LeadSource;
+  platform?: LeadPlatform | null;
   status?: LeadStatus;
   leadStatus?: LeadPipelineStatus;
   notes?: string | null;
@@ -713,7 +746,12 @@ export type CustomerMatch = {
   lastVisitAt: string | null;
 };
 
-export const LEAD_LOST_REASONS = ["price", "timing", "referral", "trust", "scope", "other"] as const;
+/** WHICH PLATFORM sent the lead — shared/leadPlatform.ts owns it, the CRM only renders it. */
+export const LEAD_PLATFORM_OPTIONS = LEAD_PLATFORMS;
+export type { LeadPlatform };
+
+// ONE list for leads AND estimates (Kyle, 2026-09-20) — shared/estimateStatus.ts owns it.
+export const LEAD_LOST_REASONS = LOST_REASONS;
 export const LEAD_FOLLOW_UP_REASONS = [
   "comparing_estimates", "still_planning", "consulting_partner", "no_answer",
 ] as const;
@@ -979,6 +1017,20 @@ export type ReviewReceiptRow = {
   purchaseOrderId: string | null;
   purchaseOrderNumber: string | null;
   needsPo: boolean;
+};
+
+/** One receipt, from GET /health-record-admin/receipts/:id — the receipt drawer's record. Never the image bytes. */
+export type ReceiptRecord = ReviewReceiptRow & {
+  status: string;
+  technicianId: string | null;
+  createdAt: string;
+  hasImage: boolean;
+  imageMime: string | null;
+  lineItems: { name?: string; qty?: number; unit?: string; unitCost?: number }[];
+  purchaseOrderStatus: string | null;
+  poWaivedAt: string | null;
+  poWaivedReason: string | null;
+  reconciliationNote: string | null;
 };
 
 // ── Trucks, cards, card spend (Kyle, 2026-09-09) ─────────────────────────────
@@ -1433,6 +1485,10 @@ export type InvoiceSummary = {
   sentTo: string | null;
   billedTotal: number;
   depositDue: number;
+  /** False = no document on this invoice requires a deposit (Kyle, 2026-09-20). */
+  depositRequired?: boolean;
+  /** Signed change orders that joined this invoice — their shares are inside billedTotal. */
+  changeOrders?: { id: string; number: string; revision: number; title: string; billedTotal: number; signedAt: string | null }[];
   totalPaid: number;
   discountTotal: number;
   collected: number;
@@ -1510,6 +1566,11 @@ export type AccountSummary = {
   properties: AccountProperty[];
   jobs: AccountJob[];
   totals: {
+    /**
+     * CONTRACTED revenue — the full bill of this account's signed invoices. It is what pairs
+     * with `lifetimeCost` to make a margin, so it stays; it is NOT what Kyle means by lifetime
+     * spend. `lifetimeCollected` below is that (PUNCHLIST E5).
+     */
     lifetimeRevenue: number;
     lifetimeCost: number;
     lifetimeProfit: number;
@@ -1517,6 +1578,12 @@ export type AccountSummary = {
     activeJobCount: number;
     completedJobCount: number;
     propertyCount: number;
+    /** MONEY COLLECTED, by the one rule in services/lifetimeCollected.ts. Either payer. */
+    lifetimeCollected: number;
+    lifetimeCustomerPaid: number;
+    lifetimeWarrantyPaid: number;
+    lifetimePaymentCount: number;
+    lastPaidAt: string | null;
   };
   /** Signed agreements filed against any of this account's addresses (2026-08-20). */
   documents: Array<{
@@ -1553,7 +1620,11 @@ export type CrmFunnelMetrics = {
   range: AnalyticsRange;
   total: number;
   openCount: number;
-  wonCount: number;
+  /**
+   * Leads that became an OPPORTUNITY (the `leadStatus` value is still "won" — Savannah's
+   * call-disposition tool outside this repo writes it — but it is never shown as a win).
+   */
+  opportunityCount: number;
   lostCount: number;
   stages: FunnelStage[];
 };
@@ -1588,37 +1659,72 @@ export type CrmFollowUpsMetrics = {
   contactPreference?: string | null;
 };
 
-export type CrmWinLossMetrics = {
-  range: AnalyticsRange;
-  totalClosed: number;
-  won: number;
+/**
+ * THE FOUR-PHASE FUNNEL (Kyle, 2026-09-20) — the server's `services/leadFunnel.ts` FunnelReport.
+ *
+ * It replaces `CrmWinLossMetrics` (won leads / won + lost leads — phase 1 data wearing a phase 3
+ * label) and `CrmCycleTimeMetrics` (an acceptance rate read off the retired legacy Estimate
+ * model). Every numerator and denominator is named, because the whole point of the rebuild is
+ * that "win rate" meant four different things.
+ */
+export type FunnelPlatformRow = {
+  platform: string;
+  leads: number;
+  opportunities: number;
   lost: number;
-  winRate: number;
-  lossReasons: Record<string, number>;
-  sourceSummary: Record<string, { won: number; lost: number }>;
+  quoted: number;
+  opportunityRate: number | null;
 };
 
-export type CrmCycleTimeMetrics = {
+export type CrmFunnelReport = {
   range: AnalyticsRange;
-  wonLeadCount: number;
-  averageDaysToClose: number | null;
-  medianDaysToClose: number | null;
-  cycleTimes: Array<{
-    id: string;
-    name: string;
-    source: string;
-    daysToClose: number;
-  }>;
-  estimateCounts: Record<string, number>;
-  estimateAcceptanceRateFromSent: number;
+  /** Phase 1 — Lead -> Account. A lead becomes an OPPORTUNITY or it is lost; nothing is won here. */
+  opportunity: {
+    leads: number;
+    opportunities: number;
+    lost: number;
+    open: number;
+    /** Wrong number, solicitation, vendor — shown, never counted in either half of the rate. */
+    notLeads: number;
+    rate: number | null;
+    byPlatform: FunnelPlatformRow[];
+    /** Why a LEAD never became an opportunity. A different question from a lost quote. */
+    lostReasons: Record<string, number>;
+  };
+  /** Phase 2 — Lead -> Estimate. */
+  quoted: { leads: number; quoted: number; rate: number | null };
+  /** Phase 3 — Estimate -> Job. THE win rate: contracted / issued, documents not revisions. */
+  winRate: {
+    issued: number;
+    contracted: number;
+    lost: number;
+    open: number;
+    /** Issued but never presented (draft) — outside the rate. */
+    unsent: number;
+    /** Dead documents — outside the rate. */
+    voided: number;
+    rate: number | null;
+    /** Why a QUOTE was lost. Same vocabulary as the lead reasons, a separate population. */
+    lostReasons: Record<string, number>;
+  };
+  /** Phase 4 — Account -> repeat. Lifetime, ignores the date range. */
+  retention: {
+    accounts: number;
+    payingAccounts: number;
+    repeatAccounts: number;
+    lifetimeCollected: number;
+    averagePerPayingAccount: number | null;
+    newsletter: { reachable: number; unsubscribed: number; noEmail: number };
+    byPlatform: Array<{ platform: string; accounts: number; payingAccounts: number; repeatAccounts: number; collected: number }>;
+    topAccounts: Array<{ id: string; name: string; platform: string | null; collected: number; signedInvoices: number }>;
+  };
 };
 
 export type CrmOverview = {
   generatedAt: string;
   funnel: CrmFunnelMetrics;
   followUps: CrmFollowUpsMetrics;
-  winLoss: CrmWinLossMetrics;
-  cycleTime: CrmCycleTimeMetrics;
+  phases: CrmFunnelReport;
 };
 
 // ─── PRICE BOOK INTAKE (P012) ────────────────────────────────────────────────
@@ -1666,6 +1772,8 @@ export interface PbDraft {
   title: string;
   supplierId: string;
   status: string;
+  /** Set when this draft is a change order on a signed estimate (Kyle, 2026-08-19). */
+  changeOrderForId?: string | null;
   /** Context (P024, Option A). All nullable — an unattached draft is the working default. */
   leadId?: string | null;
   customerId?: string | null;
@@ -1883,7 +1991,8 @@ export interface PbIssuedEstimate {
   serviceAddressId: string;
   number: string;
   revision: number;
-  status: "draft" | "sent" | "viewed" | "signed" | "void";
+  /** The shared vocabulary (PUNCHLIST E2 closed 2026-09-20): one union, not two copies. */
+  status: IssuedEstimateStatus;
   title: string;
   customerName: string;
   customerEmail: string | null;
@@ -1903,6 +2012,10 @@ export interface PbIssuedEstimate {
   signerName: string | null;
   /** "in_person" (P028) or "email" (P027); null on estimates issued before P028. */
   signedChannel?: "in_person" | "email" | null;
+  /** Lost (Kyle, 2026-09-20): the customer's decision, reason from LEAD_LOST_REASONS. All null unless status is "lost". */
+  lostAt?: string | null;
+  lostReason?: string | null;
+  lostNotes?: string | null;
   supersededBy?: { id: string; revision: number } | null;
   lines?: PbIssuedLine[];
   events?: PbIssuedEvent[];
@@ -1918,6 +2031,16 @@ export interface PbIssuedEstimate {
   lastBounceReason?: string | null;
   /** The last email's real delivery state — Resend's report, or "sent via Gmail" (Kyle, 2026-09-09). Additive. */
   lastDelivery?: EmailLastDelivery | null;
+  /** The ROOT invoice this change order joins (2026-09-20); null on an ordinary estimate. */
+  changeOrderForId?: string | null;
+  /** That invoice's number, from the account-estimates route. */
+  changeOrderForNumber?: string | null;
+  /** The deposit is optional (Kyle, 2026-09-20): on = ⅓ before scheduling, today's rule. */
+  depositRequired?: boolean;
+  /** Change orders only: signing attaches to the parent's current job instead of a new one. */
+  addToCurrentJob?: boolean;
+  /** The job created (or joined) at signing — the estimate drawer's door to the job drawer (2026-09-20). */
+  jobVisitId?: string | null;
 }
 
 /**
@@ -1957,7 +2080,7 @@ export type EmailBouncePollResult =
 
 export type EmailKind =
   | "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt"
-  | "health_record" | "document" | "campaign" | "other";
+  | "health_record" | "document" | "campaign" | "communication" | "other";
 
 export type EmailDeliveryStatus = "sent" | "delivered" | "delayed" | "bounced" | "complained" | "failed";
 
@@ -1984,6 +2107,9 @@ export type EmailDeliveryRow = EmailLastDelivery & {
   estimateNumber: string | null;
   issuedEstimateId: string | null;
   visitId: string | null;
+  /** Added 2026-09-20 (communications build) — which lead/account a free-form follow-up was about. */
+  leadId: string | null;
+  customerId: string | null;
   estimate: { id: string; number: string; revision: number; title: string } | null;
 };
 
@@ -2005,7 +2131,7 @@ export interface PbChainRow {
   id: string;
   number: string;
   revision: number;
-  status: "draft" | "sent" | "viewed" | "signed" | "void";
+  status: IssuedEstimateStatus;
   title: string;
   total: number;
   /** Sell price (taken options + trip − caps − discount); equals `total` when nothing is selected. */
@@ -2014,6 +2140,10 @@ export interface PbChainRow {
   sentAt: string | null;
   signedAt: string | null;
   signedChannel: "in_person" | "email" | null;
+  /** Lost (2026-09-20) — the Lost card reads these. */
+  lostAt?: string | null;
+  lostReason?: string | null;
+  lostNotes?: string | null;
   /** Days the quote stays open after sending (Kyle, 2026-09-07 — "expired" is derived from this). */
   validDays?: number;
   account: { id: string; name: string; isTestAccount: boolean };
@@ -2051,3 +2181,166 @@ export type CampaignOverview = {
   suppressedCount: number;
 };
 
+// ─── Global search (2026-09-20, drawers plan Phase 5) ────────────────────────────────────────
+// Mirrors src/services/globalSearch.ts. `drawer` names one of lib/drawers.ts's DRAWER_KINDS;
+// an account has no drawer and carries `href` instead.
+
+export type SearchKind = "account" | "property" | "lead" | "job" | "estimate" | "po";
+export type SearchMatch = "number" | "number_prefix" | "text" | "number_part";
+
+export interface SearchResult {
+  kind: SearchKind;
+  id: string;
+  title: string;
+  subtitle: string | null;
+  status: string | null;
+  match: SearchMatch;
+  drawer: { kind: "po" | "job" | "estimate" | "lead"; id: string } | null;
+  href: string | null;
+  at: string;
+}
+
+export interface SearchResponse {
+  q: string;
+  per: number;
+  /** False when the server is searching without its trigram indexes (pg_trgm missing). */
+  indexed: boolean;
+  results: SearchResult[];
+  more: Partial<Record<SearchKind, boolean>>;
+}
+
+// ─── Bank statements (Kyle, 2026-09-20): manual monthly upload per Chase account ────────────
+// "I can manually upload the bank statements each month from each account. Plaid can be used
+// at a later date." Every line is exactly one classification; only `expense` reaches the P&L.
+// Shapes mirror routes/bank.ts and services/bankLedger.ts.
+
+export type BankAccountKind = "checking" | "savings";
+/** PURPOSE decides classification: money into capital / overhead / tax savings is a set-aside, never an expense. */
+export type BankAccountPurpose = "operating" | "capital" | "overhead_savings" | "tax";
+export type BankLineClassification = "unclassified" | "expense" | "transfer" | "already_counted" | "ignored";
+export type BankTransferKind = "stripe" | "set_aside" | "set_aside_return" | "own_accounts";
+export type BankCountedKind = "payroll" | "po_off_card" | "company_bill" | "payment";
+
+export const BANK_EXPENSE_CATEGORIES = [
+  "overhead", "insurance", "vehicle", "software", "marketing", "materials", "tools", "gas",
+  "maintenance", "permit", "inspection", "tax", "bank_fees", "other",
+] as const;
+
+export type BankAccountView = {
+  id: string;
+  name: string;
+  institution: string;
+  last4: string | null;
+  kind: BankAccountKind;
+  purpose: BankAccountPurpose;
+  isActive: boolean;
+  createdAt: string;
+  /** The running balance after the newest imported statement — null until one is imported. AS OF that statement, never live. */
+  balance: { amount: number; asOf: string; statementId: string; fileName: string; importedAt: string } | null;
+  statementCount: number;
+  lineCount: number;
+  unclassified: number;
+};
+
+export type BankStatementView = {
+  id: string;
+  accountId: string;
+  accountName: string;
+  fileName: string;
+  format: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  closingBalance: number | null;
+  balanceAsOf: string | null;
+  lineCount: number;
+  unclassified: number;
+  importedAt: string;
+};
+
+export type BankImportResult = {
+  duplicate: boolean;
+  statementId: string;
+  fileName: string;
+  format: string;
+  imported: number;
+  skipped: number;
+  autoClassified: number;
+  unclassified: number;
+};
+
+export type BankLineCandidates = {
+  bills: { id: string; name: string; amount: number; month: string }[];
+  purchaseOrders: { id: string; number: string; supplier: string; amount: number; date: string; method: string | null }[];
+  payments: { id: string; amount: number; date: string; method: string; customerName: string | null }[];
+};
+
+export type BankLineView = {
+  id: string;
+  accountId: string;
+  accountName: string;
+  accountPurpose: BankAccountPurpose;
+  statementId: string;
+  postedAt: string;
+  /** Signed dollars: negative is money out. */
+  amount: number;
+  description: string;
+  bankRef: string | null;
+  bankType: string | null;
+  runningBalance: number | null;
+  payeeKey: string;
+  classification: BankLineClassification;
+  category: string | null;
+  transferKind: BankTransferKind | null;
+  counterpartyAccountId: string | null;
+  counterpartyName: string | null;
+  matchedKind: BankCountedKind | null;
+  matchedId: string | null;
+  matchedMonth: string | null;
+  /** "PO-2026-0021 — Home Depot ($495.24 typed)" / "Verizon Wireless ($85.00)" */
+  matchedLabel: string | null;
+  reason: string | null;
+  hint: string | null;
+  classifiedBy: "rule" | "owner" | null;
+  classifiedAt: string | null;
+  /** Only on unclassified lines: what fits the amount and the date. */
+  candidates: BankLineCandidates | null;
+};
+
+export type BankClassifyInput = {
+  classification: BankLineClassification;
+  category?: string | null;
+  transferKind?: BankTransferKind | null;
+  counterpartyAccountId?: string | null;
+  matchedKind?: BankCountedKind | null;
+  matchedId?: string | null;
+  matchedMonth?: string | null;
+  note?: string | null;
+};
+
+export type BankConfirmationStatus = "confirmed" | "unconfirmed" | "not_imported" | "not_on_bank";
+
+export type BankConfirmations = {
+  year: number;
+  /** "YYYY-MM" months an operating-account statement fully covers. */
+  coveredMonths: string[];
+  bills: {
+    billId: string;
+    name: string;
+    month: string;
+    scheduled: number;
+    status: Exclude<BankConfirmationStatus, "not_on_bank">;
+    line: { id: string; postedAt: string; amount: number; description: string; variance: number } | null;
+  }[];
+  purchaseOrders: {
+    purchaseOrderId: string;
+    number: string;
+    supplier: string;
+    typed: number;
+    method: string | null;
+    offCardAt: string;
+    status: BankConfirmationStatus;
+    line: { id: string; postedAt: string; amount: number; description: string } | null;
+  }[];
+  /** Bill-months a statement covers and nothing confirms — the "stopped paying?" list. */
+  unconfirmedBillMonths: number;
+};

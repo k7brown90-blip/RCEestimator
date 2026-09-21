@@ -67,6 +67,15 @@ export function VisitWorkspacePage() {
     mutationFn: () => api.deleteVisit(visitId),
     onSuccess: () => navigate("/"),
   });
+  // The legacy record's exit (2026-09-21). It used to be the Jobs card's "Delete Estimate",
+  // which the Jobs tab no longer carries (it lost the estimate lifecycle to the Estimates tab
+  // and the estimate drawer). A legacy row is not a price-book estimate, so no drawer can show
+  // it; the standing rule puts its way out here, on the card that shows it. Unaccepted only —
+  // the same guard the Jobs card had, and the server refuses the rest regardless.
+  const deleteLegacyEstimate = useMutation({
+    mutationFn: () => api.deleteEstimate(String(estimateId)),
+    onSuccess: refreshVisit,
+  });
 
   if (isLoading || !visit) {
     return <p className="text-sm text-rce-muted">Loading visit...</p>;
@@ -198,8 +207,25 @@ export function VisitWorkspacePage() {
           <article className="card rounded-2xl border border-rce-border/70 p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">{estimate.title} <span className="text-sm font-normal text-rce-soft">(legacy estimate — record only)</span></h2>
-              <StatusBadge status={estimate.status} />
+              <div className="flex items-center gap-2">
+                <StatusBadge status={estimate.status} />
+                {!hasAcceptedEstimate && (
+                  <button
+                    type="button"
+                    className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
+                    disabled={deleteLegacyEstimate.isPending}
+                    onClick={() => {
+                      if (window.confirm("Delete this legacy estimate? This cannot be undone.")) deleteLegacyEstimate.mutate();
+                    }}
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
             </div>
+            {deleteLegacyEstimate.error && (
+              <p className="mt-1 text-xs text-red-600">{(deleteLegacyEstimate.error as Error).message}</p>
+            )}
             <p className="mt-1 text-sm text-rce-muted">Revision {estimate.revision}</p>
             {estimate.options.length > 0 && (
               <div className="mt-3 grid gap-3 md:grid-cols-2">

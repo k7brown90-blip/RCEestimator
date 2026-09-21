@@ -97,6 +97,17 @@ export interface GraduateInput {
   includeGenerator?: boolean;
   /** Revision path only: carry the previous estimate's snapshot forward verbatim. */
   generatorJson?: string | null;
+  /**
+   * THE DEPOSIT IS OPTIONAL (Kyle, 2026-09-20: "a deposit required check box for a manual
+   * override"). Absent = the default: ON for an estimate, OFF for a change order. On = this
+   * document's homeowner share counts toward the invoice's ⅓ and gates scheduling.
+   */
+  depositRequired?: boolean;
+  /**
+   * "Add to current job" (Kyle, 2026-09-20) — change orders only. Absent = ON when the parent
+   * has a live job. Ignored on an ordinary estimate.
+   */
+  addToCurrentJob?: boolean;
 }
 
 export type GraduateResult =
@@ -364,6 +375,28 @@ export async function graduateDraft(
   const number = await nextNumber(prisma);
   const token = newToken();
 
+  /*
+    ── A CHANGE ORDER JOINS ITS INVOICE (Kyle, 2026-09-20) ────────────────────────────────────
+    The draft's `changeOrderForId` is FROZEN onto the issued row — the draft can be edited or
+    unlinked later; the document cannot. It always names the ROOT invoice (the change-order route
+    flattens a change order raised against a change order), so the money group is one level deep.
+    The deposit defaults OFF for a change order and ON otherwise; "add to current job" defaults ON
+    when the parent already has a job that is still live.
+  */
+  const parent = draft.changeOrderForId
+    ? await prisma.issuedEstimate.findUnique({
+        where: { id: draft.changeOrderForId },
+        select: { id: true, changeOrderForId: true, jobVisitId: true },
+      })
+    : null;
+  const changeOrderForId = parent ? (parent.changeOrderForId ?? parent.id) : null;
+  const parentJob = parent?.jobVisitId
+    ? await prisma.visit.findUnique({ where: { id: parent.jobVisitId }, select: { status: true } })
+    : null;
+  const parentJobLive = Boolean(parentJob && parentJob.status !== "cancelled" && parentJob.status !== "completed");
+  const depositRequired = input.depositRequired ?? !changeOrderForId;
+  const addToCurrentJob = changeOrderForId ? (input.addToCurrentJob ?? parentJobLive) : false;
+
   const created = await prisma.$transaction(async (tx) => {
     const est = await tx.issuedEstimate.create({
       data: {
@@ -389,6 +422,9 @@ export async function graduateDraft(
         tripWaived: Boolean(input.waiveTrip),
         total,
         createdBy: input.createdBy ?? "human:crm-session",
+        changeOrderForId,
+        depositRequired,
+        addToCurrentJob,
         /*
           ── THE MATERIAL CHECK'S WORKING, AND THE SHORTER CLOCK (2026-08-21) ────────────────────
 
@@ -557,10 +593,16 @@ export async function getEstimateByToken(
   return { ok: true, estimate: est };
 }
 
-/** First view flips sent → viewed. Idempotent: only the FIRST view is recorded. */
+/**
+ * First view flips sent → viewed. Idempotent: only the FIRST view is recorded.
+ *
+ * A LOST estimate records nothing (2026-09-20): the link still reads, but a customer re-opening
+ * an old quote must not un-lose it, write a "viewed" event on a closed decision, or page Kyle to
+ * call about a price they already turned down. Reopen is the office's door, not the customer's.
+ */
 export async function recordFirstView(prisma: PrismaClient, estimateId: string): Promise<void> {
   const est = await prisma.issuedEstimate.findUnique({ where: { id: estimateId } });
-  if (!est || est.firstViewedAt || est.signedAt) return;
+  if (!est || est.firstViewedAt || est.signedAt || est.status === "lost") return;
   await prisma.$transaction(async (tx) => {
     await tx.issuedEstimate.update({
       where: { id: estimateId },
@@ -713,8 +755,17 @@ async function applySignature(
   */
   const validity = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
-    select: { createdAt: true, validDays: true },
+    select: { createdAt: true, validDays: true, status: true },
   });
+  // LOST is checked at the same shared write path, for the same reason as the 30 days (2026-09-20):
+  // both doors — the emailed link and the operator's device — must refuse it, and the office
+  // reopens it before anyone signs so the record reads "lost, then reopened, then signed".
+  if (validity?.status === "lost") {
+    return {
+      ok: false,
+      reason: "This estimate has been closed. Call Red Cedar Electric if you would like to move forward — we will reopen it for you.",
+    };
+  }
   if (validity) {
     const expiresAt = new Date(validity.createdAt.getTime() + validity.validDays * 86_400_000);
     if (Date.now() > expiresAt.getTime()) {
@@ -964,6 +1015,10 @@ export async function reviseEstimate(
     // generator one-pager the customer already saw (P031).
     generatorJson: prev.generatorJson,
     waiveTrip: opts.waiveTrip ?? prev.tripWaived,
+    // The deposit flag and "add to current job" ride the revision too (2026-09-20) — a
+    // revision changes the work, not the terms Kyle set when he issued it.
+    depositRequired: prev.depositRequired,
+    addToCurrentJob: prev.addToCurrentJob,
     createdBy: opts.actor ?? "human:crm-session",
   });
   if (!graduated.ok) return graduated;

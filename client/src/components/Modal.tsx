@@ -1,5 +1,5 @@
-import { useEffect } from "react";
 import type { PropsWithChildren } from "react";
+import { useBodyScrollLock, useDialogStack } from "../lib/dialogStack";
 
 interface Props {
   title: string;
@@ -11,21 +11,16 @@ interface Props {
  * Minimal overlay dialog. Used where an action belongs to a row rather than to a
  * page — scheduling a lead, rescheduling from the calendar — so the operator
  * doesn't lose their place in the list.
+ *
+ * Escape and the body-scroll lock go through lib/dialogStack (2026-09-20): a
+ * Modal now also opens from inside a Drawer, and two overlays each owning
+ * `window` keydown and `body.style.overflow` closed both on one keypress and
+ * left the page unscrollable on the way out. See that file for the order bug.
  */
 export function Modal({ title, subtitle, onClose, children }: PropsWithChildren<Props>) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    // Stop the list behind the overlay from scrolling under the pointer.
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [onClose]);
+  useDialogStack(onClose);
+  // Stop the list behind the overlay from scrolling under the pointer.
+  useBodyScrollLock();
 
   return (
     <div

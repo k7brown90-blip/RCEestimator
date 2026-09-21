@@ -81,13 +81,20 @@ estimatePageRouter.get(
  */
 async function depositState(estimate: { id: string; signedAt: Date | null; token: string }) {
   if (!estimate.signedAt) return null;
+  // The INVOICE's money (2026-09-20): a change order's page reads its root's deposit, balance
+  // and pay link — one invoice, one payment.
   const summary = await paymentSummary(prisma, estimate.id, publicBaseUrl());
   if (!summary) return null;
   return {
     due: Math.round((summary.depositDue - summary.depositPaid) * 100) / 100,
+    // No deposit required (Kyle, 2026-09-20) — the page says so instead of "deposit received".
+    required: summary.depositRequired,
     satisfied: summary.depositSatisfied,
     paidInFull: summary.paidInFull,
-    payUrl: `${publicBaseUrl()}/pay/${estimate.token}?type=deposit`,
+    payUrl: summary.depositPayUrl,
+    invoice: summary.documents.length > 1
+      ? { number: summary.number, documents: summary.documents, billedTotal: summary.billedTotal, totalPaid: summary.totalPaid, balance: summary.balance }
+      : null,
   };
 }
 

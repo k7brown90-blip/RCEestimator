@@ -238,7 +238,7 @@ export function PriceBookIntakePage() {
                 onClick={() => setActiveOption(o)}
                 className={
                   activeOption === o
-                    ? "rounded-full bg-rce-accent px-3 py-1.5 text-sm font-semibold text-white"
+                    ? "rounded-full bg-rce-accent px-3 py-1.5 text-sm font-semibold text-rce-text"
                     : "rounded-full border border-rce-border px-3 py-1.5 text-sm text-rce-soft"
                 }
               >
@@ -305,6 +305,7 @@ export function PriceBookIntakePage() {
             <ReviewTab
               draftId={draftId}
               review={review}
+              isChangeOrder={Boolean(review?.draft.changeOrderForId)}
               computed={computed?.computed}
               options={computed?.options}
               optionMeta={optionMeta}
@@ -998,6 +999,8 @@ function ReviewTab(props: {
    */
   optionMeta: PbOptionMeta[] | undefined;
   onChanged: () => void;
+  /** A change-order draft (2026-09-20): the deposit defaults off and "add to current job" is offered. */
+  isChangeOrder?: boolean;
 }) {
   const { draftId, review, computed, options, optionMeta, onChanged, accountId, serviceAddressId, onAttached } = props;
   // finalizeMsg went with the Check / Finalize buttons — nothing sets it now, and a
@@ -1178,7 +1181,7 @@ function ReviewTab(props: {
         <AttachDraftPanel draftId={draftId} onAttached={onAttached} />
       )}
 
-      <IssueAndSendPanel draftId={draftId} accountId={accountId} serviceAddressId={serviceAddressId} />
+      <IssueAndSendPanel draftId={draftId} accountId={accountId} serviceAddressId={serviceAddressId} isChangeOrder={Boolean(props.isChangeOrder)} />
 
       <PhotoAttach draftId={draftId} />
     </div>
@@ -1748,8 +1751,8 @@ function AttachDraftPanel(props: {
  * customer. Nothing else in the app may call that endpoint — no cron, no trigger, no retry
  * queue — and `AUTOMATED_CUSTOMER_SENDS` is untouched by this lane.
  */
-function IssueAndSendPanel(props: { draftId: string; accountId: string | null; serviceAddressId: string | null }) {
-  const { draftId, accountId, serviceAddressId } = props;
+function IssueAndSendPanel(props: { draftId: string; accountId: string | null; serviceAddressId: string | null; isChangeOrder: boolean }) {
+  const { draftId, accountId, serviceAddressId, isChangeOrder } = props;
   const queryClient = useQueryClient();
   const [reasons, setReasons] = useState<string[]>([]);
   // No setter: the waive-trip control was removed 2026-08-22 (no trip charge is configured).
@@ -1760,6 +1763,11 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   // human approval on the field tech's proposal), and the issue call refuses
   // with a plain reason when nothing is on file.
   const [includeGenerator, setIncludeGenerator] = useState(false);
+  // The deposit checkbox (Kyle, 2026-09-20: "deposit optional with a deposit required check box
+  // for a manual override") — on for an estimate, OFF for a change order. And "add to current
+  // job" for a change order, so signing it does not schedule a second visit.
+  const [depositRequired, setDepositRequired] = useState(!isChangeOrder);
+  const [addToCurrentJob, setAddToCurrentJob] = useState(true);
   const [sendTo, setSendTo] = useState("");
   const [sendMsg, setSendMsg] = useState("");
   // Photo gallery (2026-08-28): job photos ticked to ride the estimate email.
@@ -1872,6 +1880,8 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
         serviceAddressId: serviceAddressId as string,
         waiveTrip,
         includeGenerator,
+        depositRequired,
+        addToCurrentJob: isChangeOrder ? addToCurrentJob : undefined,
       }),
     onSuccess: (r) => {
       setReasons([]);
@@ -1951,6 +1961,13 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
 
   const est = detail?.estimate;
 
+  // The terms after issue (2026-09-20) — editable from where the document is shown.
+  const setTerms = useMutation({
+    mutationFn: (input: { depositRequired?: boolean; addToCurrentJob?: boolean }) => api.pbSetTerms(activeId as string, input),
+    onSuccess: () => { setReasons([]); refresh(); },
+    onError: (err) => setReasons([(err as Error).message]),
+  });
+
   return (
     <div className="card p-3">
       <h3 className="text-sm font-semibold">Send to the customer</h3>
@@ -2018,7 +2035,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                   type="button"
                   disabled={setDiscount.isPending}
                   onClick={() => { setDiscount.mutate({ type: null }); setCustomPct(""); }}
-                  className="text-xs text-rce-soft underline"
+                  className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
                 >
                   clear
                 </button>
@@ -2059,12 +2076,24 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
             />
             Attach generator sizing recommendation (from this address's field assessment)
           </label>
+          {/* The deposit is optional (Kyle, 2026-09-20). On: the ⅓ is asked and gates the
+              schedule — today's rule. Off: nothing gates it; the balance is due at completion. */}
+          <label className="mt-1 flex items-center gap-2 text-xs text-rce-soft">
+            <input type="checkbox" checked={depositRequired} onChange={(e) => setDepositRequired(e.target.checked)} />
+            Deposit required (⅓ before scheduling){isChangeOrder ? " — off by default for a change order" : ""}
+          </label>
+          {isChangeOrder && (
+            <label className="mt-1 flex items-center gap-2 text-xs text-rce-soft">
+              <input type="checkbox" checked={addToCurrentJob} onChange={(e) => setAddToCurrentJob(e.target.checked)} />
+              Add to the current job when signed (no separate scheduling)
+            </label>
+          )}
           <button
             className="btn btn-primary mt-2 w-full"
             disabled={issue.isPending}
             onClick={() => issue.mutate()}
           >
-            {issue.isPending ? "Creating…" : "Create customer estimate"}
+            {issue.isPending ? "Creating…" : isChangeOrder ? "Create change order" : "Create customer estimate"}
           </button>
           <p className="mt-1 text-xs text-rce-muted">
             Freezes the prices as they are now. Nothing goes to the customer until you tap Send.
@@ -2104,6 +2133,34 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                   Open / print the estimate
                 </a>
               </>
+            )}
+          </div>
+
+          {/* The terms (2026-09-20): the deposit override, and — on an unsigned change order —
+              whether signing adds it to the current job. */}
+          <div className="rounded-lg border border-rce-border/70 p-2 text-xs text-rce-soft">
+            {est.changeOrderForNumber || est.changeOrderForId ? (
+              <p className="mb-1 font-medium text-rce-muted">Change order{est.changeOrderForNumber ? ` to invoice ${est.changeOrderForNumber}` : ""} — its total joins that invoice when signed.</p>
+            ) : null}
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={Boolean(est.depositRequired)}
+                disabled={setTerms.isPending}
+                onChange={(e) => setTerms.mutate({ depositRequired: e.target.checked })}
+              />
+              Deposit required (⅓ before scheduling)
+            </label>
+            {est.changeOrderForId && !est.signedAt && (
+              <label className="mt-1 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={Boolean(est.addToCurrentJob)}
+                  disabled={setTerms.isPending}
+                  onChange={(e) => setTerms.mutate({ addToCurrentJob: e.target.checked })}
+                />
+                Add to the current job when signed
+              </label>
             )}
           </div>
 
@@ -2479,7 +2536,7 @@ function OptionNaming(props: {
           maxLength={120}
           placeholder={hint}
           aria-label={`Name for option ${props.option}`}
-          className="min-w-0 flex-1 border-0 border-b border-transparent bg-transparent px-0 py-0
+          className="min-w-0 flex-1 rounded border border-rce-soft bg-white px-1.5 py-0.5
                      text-sm font-semibold outline-none hover:border-rce-border
                      focus:border-rce-accent"
         />
@@ -2491,7 +2548,7 @@ function OptionNaming(props: {
         maxLength={400}
         placeholder="Short description for the customer (optional)"
         aria-label={`Description for option ${props.option}`}
-        className="mt-0.5 w-full border-0 border-b border-transparent bg-transparent px-0 py-0
+        className="mt-0.5 w-full rounded border border-rce-soft bg-white px-1.5 py-0.5
                    text-[11px] text-rce-muted outline-none hover:border-rce-border
                    focus:border-rce-accent"
       />

@@ -533,3 +533,96 @@ describe("waiving a receipt off the needs-PO queue (Unit 2, legacy purchase clos
     expect(row.poWaivedAt).toBeNull();
   });
 });
+
+/**
+ * GET /jobs/:jobId/purchase-orders (Kyle, 2026-09-20: "I need each job's P.O.
+ * to show up on the job specific screen"). Money must agree with
+ * jobCosting.ts's poMaterialByJob — a non-materials/other card charge (a
+ * permit fee, say) must NOT show up here, and a tool P.O.'s typed amount must
+ * read null, exactly like the job's aggregate.
+ */
+describe("GET /jobs/:jobId/purchase-orders — the money", () => {
+  it("sums card spend of kind materials/other only, matches the job's poMaterialByJob aggregate, and excludes a tool PO's typed amount", async () => {
+    const property = await prisma.property.create({
+      data: { customerId, name: "Job PO Money House", addressLine1: "3 Purchase Ln", city: "Smyrna", state: "TN", postalCode: "37167" },
+    });
+    const visit = await prisma.visit.create({
+      data: { customerId, propertyId: property.id, mode: "onsite", purpose: "Job PO money job", jobType: "Service", status: "in_progress", visitDate: new Date() },
+    });
+    const moneyJobId = visit.id;
+
+    const materialPo = await request(app).post("/purchase-orders").send({ supplier: "PO-test Money Depot", jobId: moneyJobId });
+    const materialPoId = materialPo.body.id as string;
+    // Materials — counts.
+    await prisma.cardSpend.create({
+      data: { stripeTransactionId: `po_test_${newId()}`, stripeCardId: "card_po_test", kind: "materials", amount: 100, merchantName: "PO-test Money Depot", purchaseOrderId: materialPoId, occurredAt: new Date() },
+    });
+    // A permit fee on the SAME PO — must not count as material money
+    // (jobCosting.ts: "only MATERIAL money is material" — a permit charge is a
+    // job FEE, not material).
+    await prisma.cardSpend.create({
+      data: { stripeTransactionId: `po_test_${newId()}`, stripeCardId: "card_po_test", kind: "permit", amount: 45, merchantName: "PO-test Permit Office", purchaseOrderId: materialPoId, occurredAt: new Date() },
+    });
+
+    const toolPo = await request(app).post("/purchase-orders").send({ supplier: "PO-test Tool Supply", jobId: moneyJobId, purpose: "tool" });
+    const toolPoId = toolPo.body.id as string;
+    await request(app).patch(`/purchase-orders/${toolPoId}/money`).send({ reason: "Typed for a tool", offCardAmount: 250 });
+
+    const res = await request(app).get(`/jobs/${moneyJobId}/purchase-orders`);
+    expect(res.status).toBe(200);
+    const materialRow = res.body.find((r: { id: string }) => r.id === materialPoId);
+    const toolRow = res.body.find((r: { id: string }) => r.id === toolPoId);
+
+    expect(materialRow.cardTotal).toBe(100);
+    expect(materialRow.offCardAmount).toBeNull();
+    expect(materialRow.moneyTotal).toBe(100);
+    expect(materialRow.proofCount).toBe(0);
+
+    // Tool POs never charge a job — the typed amount reads null here too.
+    expect(toolRow.cardTotal).toBe(0);
+    expect(toolRow.offCardAmount).toBeNull();
+    expect(toolRow.moneyTotal).toBe(0);
+
+    // Must agree with the job's own aggregate (jobCosting.ts poMaterialByJob) —
+    // the same rule, so the job screen and the Materials-used panel never show
+    // two different totals for the same job.
+    expect((await costOf(moneyJobId)).materialCost).toBe(100);
+  });
+
+  it("attaching a receipt to a closed or cancelled PO is allowed (Kyle, 2026-09-20: \"edit/add to the P.O. currently assigned to it\")", async () => {
+    const property = await prisma.property.create({
+      data: { customerId, name: "Closed PO Receipt House", addressLine1: "4 Purchase Ln", city: "Smyrna", state: "TN", postalCode: "37167" },
+    });
+    const visit = await prisma.visit.create({
+      data: { customerId, propertyId: property.id, mode: "onsite", purpose: "Closed PO receipt job", jobType: "Service", status: "in_progress", visitDate: new Date() },
+    });
+    const closedJobId = visit.id;
+
+    const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test Already Closed", jobId: closedJobId });
+    const poId = created.body.id as string;
+    const cancel = await request(app).post(`/purchase-orders/${poId}/status`).send({ to: "cancelled", reason: "PO-test setup" });
+    expect(cancel.status).toBe(200);
+
+    const receiptId = newId();
+    const res = await request(app)
+      .put(`/purchase-orders/${poId}/receipts/${receiptId}?vendor=PO-test%20Already%20Closed&amount=42.50&category=materials`)
+      .set("Content-Type", "image/jpeg")
+      .send(jpg);
+    // Before 2026-09-20 this 409'd: "is cancelled; attach the receipt to a live PO."
+    expect(res.status).toBe(201);
+
+    const row = await prisma.receipt.findUniqueOrThrow({ where: { id: receiptId } });
+    expect(row.purchaseOrderId).toBe(poId);
+
+    const list = await request(app).get(`/jobs/${closedJobId}/purchase-orders`);
+    const poRow = list.body.find((r: { id: string }) => r.id === poId);
+    expect(poRow.proofCount).toBe(1);
+
+    // And it can be taken back off — the standing rule that anything attached
+    // is removable from the surface that shows it.
+    const detach = await request(app).delete(`/purchase-orders/${poId}/receipts/${receiptId}`);
+    expect(detach.status).toBe(204);
+    const after = await prisma.receipt.findUniqueOrThrow({ where: { id: receiptId } });
+    expect(after.purchaseOrderId).toBeNull();
+  });
+});

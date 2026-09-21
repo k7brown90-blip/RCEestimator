@@ -280,12 +280,12 @@ export function PriceBookCatalogPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search the whole book — ID or description"
-          className="w-full max-w-sm rounded-lg border border-rce-border bg-rce-surface px-3 py-2 text-sm"
+          className="w-full max-w-sm rounded-lg border border-rce-soft bg-white px-3 py-2 text-sm"
         />
         <button
           type="button"
           onClick={() => setCreating(true)}
-          className="rounded-lg bg-rce-accent px-3 py-2 text-sm font-medium text-white"
+          className="btn btn-primary rounded-lg px-3 py-2 text-sm font-medium min-h-0"
         >
           + New item
         </button>
@@ -413,18 +413,18 @@ export function PriceBookCatalogPage() {
               <input
                 value={renameText}
                 onChange={(e) => setRenameText(e.target.value)}
-                className="rounded border border-rce-border bg-rce-surface px-2 py-1 text-sm"
+                className="rounded border border-rce-soft bg-white px-2 py-1 text-sm"
                 placeholder="New category name"
               />
               <button
                 type="button"
-                className="rounded bg-rce-accent px-2 py-1 font-medium text-white"
+                className="btn btn-primary rounded px-2 py-1 font-medium min-h-0"
                 disabled={renameMutation.isPending || renameText.trim().length === 0}
                 onClick={() => renameMutation.mutate({ from: selectedCategory, to: renameText.trim() })}
               >
                 Save name
               </button>
-              <button type="button" className="px-1" onClick={() => setRenaming(false)}>Cancel</button>
+              <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setRenaming(false)}>Cancel</button>
               {renameMutation.isError ? (
                 <span className="text-red-600">{(renameMutation.error as Error).message}</span>
               ) : null}
@@ -579,7 +579,7 @@ function DrawerShell({ title, onClose, children }: { title: string; onClose: () 
       >
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-heading text-lg font-semibold">{title}</h2>
-          <button type="button" onClick={onClose} className="rounded px-2 py-1 text-sm text-rce-muted">Close</button>
+          <button type="button" onClick={onClose} className="btn btn-secondary px-2 py-1 text-sm min-h-0">Close</button>
         </div>
         {children}
       </div>
@@ -911,7 +911,7 @@ function ItemDrawer({
                             const q = Number(e.target.value);
                             updateAssemblyQuantity(c.atomic.itemId, Number.isFinite(q) ? q : 0);
                           }}
-                          className="w-16 rounded border border-rce-border px-1 py-0.5 text-right"
+                          className="w-16 rounded border border-rce-soft bg-white px-1 py-0.5 text-right"
                         />
                       </td>
                       <td className="py-1 text-right">{money(c.atomic.companyCost)}</td>
@@ -919,7 +919,7 @@ function ItemDrawer({
                         {hours(c.atomic.laborNormal)} / {hours(c.atomic.laborDifficult)} / {hours(c.atomic.laborVeryDifficult)}
                       </td>
                       <td className="py-1 text-right">
-                        <button type="button" className="text-red-600" onClick={() => removeAssemblyComponent(c.atomic.itemId)}>
+                        <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => removeAssemblyComponent(c.atomic.itemId)}>
                           Remove
                         </button>
                       </td>
@@ -950,7 +950,7 @@ function ItemDrawer({
             <div className="flex justify-end">
               <button
                 type="button"
-                className="rounded-lg bg-rce-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                className="btn btn-primary rounded-lg px-3 py-1.5 text-xs font-medium min-h-0 disabled:opacity-50"
                 disabled={!canSaveComponents || saveComponentsMutation.isPending}
                 onClick={() =>
                   assemblyComponents &&
@@ -1001,7 +1001,7 @@ function ItemDrawer({
                     </div>
                     <div className="mt-1 flex items-center gap-2">
                       <input
-                        className="w-24 rounded border border-rce-border px-2 py-1 text-right text-sm"
+                        className="w-24 rounded border border-rce-soft bg-white px-2 py-1 text-right text-sm"
                         inputMode="decimal"
                         placeholder="new override"
                         disabled={componentsDirty}
@@ -1074,7 +1074,7 @@ function ItemDrawer({
           </button>
           <button
             type="button"
-            className="rounded-lg bg-rce-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="btn btn-primary rounded-lg px-4 py-2 text-sm font-medium min-h-0 disabled:opacity-50"
             disabled={!dirty || saveMutation.isPending}
             onClick={() => saveMutation.mutate(patch)}
           >
@@ -1193,7 +1193,7 @@ function NewItemDrawer({
         <div className="flex justify-end">
           <button
             type="button"
-            className="rounded-lg bg-rce-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="btn btn-primary rounded-lg px-4 py-2 text-sm font-medium min-h-0 disabled:opacity-50"
             disabled={!canSave || createMutation.isPending}
             onClick={() =>
               createMutation.mutate({
@@ -1368,7 +1368,7 @@ function CreateAssemblyDrawer({
                           const q = Number(e.target.value);
                           updateQuantity(c.atomic.itemId, Number.isFinite(q) ? q : 0);
                         }}
-                        className="w-16 rounded border border-rce-border px-1 py-0.5 text-right"
+                        className="w-16 rounded border border-rce-soft bg-white px-1 py-0.5 text-right"
                       />
                     </td>
                     <td className="py-1 text-right">{money(c.atomic.companyCost)}</td>
@@ -1376,7 +1376,7 @@ function CreateAssemblyDrawer({
                       {hours(c.atomic.laborNormal)} / {hours(c.atomic.laborDifficult)} / {hours(c.atomic.laborVeryDifficult)}
                     </td>
                     <td className="py-1 text-right">
-                      <button type="button" className="text-red-600" onClick={() => removeComponent(c.atomic.itemId)}>
+                      <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => removeComponent(c.atomic.itemId)}>
                         Remove
                       </button>
                     </td>
@@ -1427,7 +1427,7 @@ function CreateAssemblyDrawer({
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs text-rce-muted">{label}</span>
                   <input
-                    className="w-24 rounded border border-rce-border px-2 py-1 text-right text-sm"
+                    className="w-24 rounded border border-rce-soft bg-white px-2 py-1 text-right text-sm"
                     inputMode="decimal"
                     placeholder={autoSum.complete ? String(autoSum.value) : "INCOMPLETE"}
                     value={overrideRaw ?? ""}
@@ -1460,7 +1460,7 @@ function CreateAssemblyDrawer({
         <div className="flex justify-end">
           <button
             type="button"
-            className="rounded-lg bg-rce-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="btn btn-primary rounded-lg px-4 py-2 text-sm font-medium min-h-0 disabled:opacity-50"
             disabled={!canSave || createMutation.isPending}
             onClick={() =>
               createMutation.mutate({

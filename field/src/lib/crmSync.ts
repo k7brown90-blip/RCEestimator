@@ -514,6 +514,17 @@ export interface JobBrief {
     title: string
     scopeText: string | null
     lines: { description: string; quantity: number; option: string }[]
+    /**
+     * Signed change orders that joined this invoice (2026-09-20) — added scope on the SAME job.
+     * Optional: a server from before this field still parses, and the brief just shows the root.
+     */
+    changeOrders?: {
+      number: string
+      title: string
+      scopeText: string | null
+      signedAt: string | null
+      lines: { description: string; quantity: number; option: string }[]
+    }[]
   } | null
 }
 

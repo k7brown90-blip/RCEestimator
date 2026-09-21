@@ -16,7 +16,8 @@ import { logSystemEvent } from "./systemEvents";
 // ─── Signed quote → job ─────────────────────────────────────────────────────────
 
 export type CreateJobResult =
-  | { ok: true; visitId: string; created: boolean }
+  /** `joined`: a change order attached to its parent's existing job instead of minting one. */
+  | { ok: true; visitId: string; created: boolean; joined?: boolean }
   | { ok: false; reason: string };
 
 /**
@@ -52,6 +53,55 @@ export async function createJobFromSignedEstimate(
     if (existing) return { ok: true, visitId: existing.id, created: false };
     // The job was deleted out from under the link — fall through and make a new one rather than
     // handing back a dangling id.
+  }
+
+  /*
+    ── "ADD TO CURRENT JOB" (Kyle, 2026-09-20) ──────────────────────────────────────────────────
+    "The change order will also have to have the option to 'add to current job' so we avoid
+    wasting time scheduling if we are already there doing the work."
+
+    A signed change order with the flag on attaches to its parent's existing job — the SAME
+    `jobVisitId` — and this function mints nothing. The job's contracted figure grows by the
+    change order's total so the job card reads the whole agreement. If the parent's job is gone,
+    cancelled or already completed there is no "current job" to add to, so it falls through to
+    the ordinary path and gets a job of its own (logged, never silent).
+  */
+  if (est.changeOrderForId && est.addToCurrentJob) {
+    const parent = await prisma.issuedEstimate.findUnique({
+      where: { id: est.changeOrderForId },
+      select: { id: true, number: true, jobVisitId: true },
+    });
+    const parentJob = parent?.jobVisitId
+      ? await prisma.visit.findUnique({ where: { id: parent.jobVisitId }, select: { id: true, status: true, estimatedCost: true } })
+      : null;
+    if (parentJob && parentJob.status !== "cancelled" && parentJob.status !== "completed") {
+      await prisma.$transaction(async (tx) => {
+        await tx.issuedEstimate.update({ where: { id: est.id }, data: { jobVisitId: parentJob.id } });
+        await tx.visit.update({
+          where: { id: parentJob.id },
+          data: { estimatedCost: Math.round(((parentJob.estimatedCost ?? 0) + est.total) * 100) / 100 },
+        });
+        await tx.issuedEstimateEvent.create({
+          data: {
+            estimateId: est.id,
+            type: "job_joined",
+            actor: opts.actor ?? "human:crm-session",
+            detail: `Added to the current job of ${parent!.number} — no new visit; $${est.total.toFixed(2)} joins that invoice.`,
+          },
+        });
+      });
+      logSystemEvent("info", "issued-estimate", `Change order ${est.number} added to the current job of ${parent!.number}`, {
+        estimateId: est.id,
+        visitId: parentJob.id,
+        parentEstimateId: parent!.id,
+      });
+      return { ok: true, visitId: parentJob.id, created: false, joined: true };
+    }
+    logSystemEvent("warn", "issued-estimate", `Change order ${est.number} asked to join the current job, but ${parent?.number ?? "its parent"} has no live job — creating its own`, {
+      estimateId: est.id,
+      parentEstimateId: est.changeOrderForId,
+      parentJobStatus: parentJob?.status ?? null,
+    });
   }
 
   const visit = await prisma.$transaction(async (tx) => {

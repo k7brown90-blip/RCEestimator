@@ -24,10 +24,17 @@ export const emailDeliveriesRouter = express.Router();
 
 const STATUSES = ["sent", "delivered", "delayed", "bounced", "complained", "failed"] as const;
 
-/** GET /email-deliveries?estimateId=&visitId=&limit= — newest first, capped at 200. */
+/**
+ * GET /email-deliveries?estimateId=&visitId=&leadId=&customerId=&limit= — newest first, capped
+ * at 200. leadId/customerId added 2026-09-20 (communications build) so the lead and account
+ * drawers can render their own thread of free-form follow-up emails the same way the estimate
+ * drawer already renders its delivery chip.
+ */
 emailDeliveriesRouter.get("/email-deliveries", asyncHandler(async (req, res) => {
   const estimateId = typeof req.query.estimateId === "string" ? req.query.estimateId.trim() : "";
   const visitId = typeof req.query.visitId === "string" ? req.query.visitId.trim() : "";
+  const leadId = typeof req.query.leadId === "string" ? req.query.leadId.trim() : "";
+  const customerId = typeof req.query.customerId === "string" ? req.query.customerId.trim() : "";
   const limitRaw = Number(req.query.limit ?? 50);
   const limit = Number.isFinite(limitRaw) ? Math.min(200, Math.max(1, Math.floor(limitRaw))) : 50;
 
@@ -35,6 +42,8 @@ emailDeliveriesRouter.get("/email-deliveries", asyncHandler(async (req, res) => 
     where: {
       ...(estimateId ? { issuedEstimateId: estimateId } : {}),
       ...(visitId ? { visitId } : {}),
+      ...(leadId ? { leadId } : {}),
+      ...(customerId ? { customerId } : {}),
     },
     orderBy: { createdAt: "desc" },
     take: limit,
@@ -52,6 +61,8 @@ emailDeliveriesRouter.get("/email-deliveries", asyncHandler(async (req, res) => 
     estimateNumber: r.estimateNumber,
     issuedEstimateId: r.issuedEstimateId,
     visitId: r.visitId,
+    leadId: r.leadId,
+    customerId: r.customerId,
     status: r.status,
     statusAt: r.statusAt,
     error: r.error,

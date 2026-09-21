@@ -12,9 +12,14 @@
  *     from the signed estimate's taken lines with the truck's on-hand beside
  *     each, editable quantities, add a line from the book, Confirm → consume.
  *     Kyle's override (allow negative, reason required) lives here too.
+ *   MaterialsReturnStep — the close-out count: every line the job took, what
+ *     came back, one reason for the batch.
  *   MaterialsUsedPanel — the visit page's card: the source label and figure,
- *     every consume/return line with its cost, Add / Return with a reason, and
+ *     every consume/return line with its cost, the materials-list PDF, and
  *     the receipts with the ones riding a PO flagged "inventory, not job cost".
+ *     It READS; the consume and return forms live on JobCloseoutPanel (and so
+ *     in the job drawer) — this card used to mount its own copies of both,
+ *     which was the duplicate punch list C10 named (deleted 2026-09-21).
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -196,9 +201,7 @@ export function MaterialsConsumeStep({ visitId, onDone, compact }: { visitId: st
 
 /**
  * What this job still has outstanding, per item: consumed minus already
- * returned, positive only. Shared by ReturnForm (one item at a time, from the
- * visit page) and MaterialsReturnStep (the close-out count, one pass over
- * everything) so both agree on what "still out there" means.
+ * returned, positive only — what MaterialsReturnStep offers to count back.
  */
 function netConsumedRows(lines: JobMaterialsView["lines"]): Array<{ itemId: string; name: string; unit: string | null; net: number }> {
   const byItem = new Map<string, { itemId: string; name: string; unit: string | null; net: number }>();
@@ -208,40 +211,6 @@ function netConsumedRows(lines: JobMaterialsView["lines"]): Array<{ itemId: stri
     byItem.set(l.itemId, row);
   }
   return [...byItem.values()].filter((r) => r.net > 0);
-}
-
-function ReturnForm({ visitId, view, onDone }: { visitId: string; view: JobMaterialsView; onDone: () => void }) {
-  const queryClient = useQueryClient();
-  const consumedItems = useMemo(() => netConsumedRows(view.lines), [view.lines]);
-  const [itemId, setItemId] = useState(consumedItems[0]?.itemId ?? "");
-  const [qty, setQty] = useState("1");
-  const [reason, setReason] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const picked = consumedItems.find((r) => r.itemId === itemId) ?? null;
-  const ret = useMutation({
-    mutationFn: () => api.returnForJob(visitId, {
-      truckId: view.truck.id, lines: [{ itemId, name: picked?.name ?? null, qty: Number(qty), unit: picked?.unit ?? null }], reason: reason.trim(),
-    }),
-    onSuccess: () => { setError(null); invalidateMaterials(queryClient, visitId); onDone(); },
-    onError: (err) => setError((err as Error).message),
-  });
-  if (consumedItems.length === 0) return <p className="text-xs text-rce-muted">Nothing consumed on this job yet — nothing to return.</p>;
-  return (
-    <div className="space-y-2 text-xs">
-      <p className="text-rce-muted">Back onto {view.truck.name}, credited at the cost this job was charged. A reason is required — it rides the ledger row.</p>
-      <div className="flex flex-wrap items-center gap-2">
-        <select className="field text-xs" value={itemId} onChange={(e) => setItemId(e.target.value)}>
-          {consumedItems.map((r) => <option key={r.itemId} value={r.itemId}>{r.name} · {r.net} {r.unit ?? ""} on the job</option>)}
-        </select>
-        <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} />
-        <input className="field w-56 px-1 py-0.5 text-xs" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} />
-        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs" disabled={!(Number(qty) > 0) || !reason.trim() || !itemId || ret.isPending} onClick={() => ret.mutate()}>
-          {ret.isPending ? "Returning…" : "Return to truck"}
-        </button>
-      </div>
-      {error && <p className="rounded bg-red-50 p-2 text-red-900">{error}</p>}
-    </div>
-  );
 }
 
 /** Default reason for the close-out count — one reason for the whole batch, overridable once (Kyle, 2026-09-15). */
@@ -354,7 +323,6 @@ export function MaterialsReturnStep({ visitId, onDone, compact }: { visitId: str
 
 export function MaterialsUsedPanel({ visitId }: { visitId: string }) {
   const { data, isLoading } = useQuery({ queryKey: jobMaterialsKey(visitId), queryFn: () => api.jobMaterials(visitId) });
-  const [mode, setMode] = useState<"none" | "add" | "return">("none");
 
   if (isLoading) return <article className="card rounded-2xl border border-rce-border/70 p-5 text-sm text-rce-muted">Loading materials…</article>;
   if (!data) return null;
@@ -373,8 +341,6 @@ export function MaterialsUsedPanel({ visitId }: { visitId: string }) {
           >
             Materials list
           </button>
-          <button type="button" className="btn btn-secondary text-xs" onClick={() => setMode((m) => (m === "add" ? "none" : "add"))}>{mode === "add" ? "Cancel" : "+ Add"}</button>
-          <button type="button" className="btn btn-secondary text-xs" onClick={() => setMode((m) => (m === "return" ? "none" : "return"))}>{mode === "return" ? "Cancel" : "Return"}</button>
         </div>
       </div>
       <p className="mt-1 text-sm">
@@ -387,8 +353,8 @@ export function MaterialsUsedPanel({ visitId }: { visitId: string }) {
         {data.estimateMaterial !== null && ` · estimate carried ${money(data.estimateMaterial)} (an estimate, never cost)`}
       </p>
 
-      {mode === "add" && <div className="mt-3 rounded-lg border border-rce-border p-3"><MaterialsConsumeStep visitId={visitId} onDone={() => setMode("none")} compact /></div>}
-      {mode === "return" && <div className="mt-3 rounded-lg border border-rce-border p-3"><ReturnForm visitId={visitId} view={data} onDone={() => setMode("none")} /></div>}
+      {/* Recording what came off the truck, and what came back, is in "Job close-out" above
+          (and in the job's drawer) — one form each, not a second copy here (2026-09-21). */}
 
       <div className="mt-3">
         {data.lines.length === 0 ? (

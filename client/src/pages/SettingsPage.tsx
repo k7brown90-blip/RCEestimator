@@ -296,7 +296,7 @@ export function SettingsPage() {
                   {territory.zip || "New territory"}
                   {territory.area ? ` — ${territory.area}` : ""}
                 </span>
-                <button type="button" className="text-xs font-medium text-red-600" onClick={() => removeTerritory(index)}>
+                <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => removeTerritory(index)}>
                   Remove
                 </button>
               </div>

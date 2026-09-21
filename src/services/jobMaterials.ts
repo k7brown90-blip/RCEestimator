@@ -68,10 +68,14 @@ export interface SuggestedLine {
   consumedQty: number;
 }
 
-/** The signed estimate behind a job (either side of the chain), newest first. */
+/**
+ * The signed estimate behind a job (either side of the chain), newest first.
+ * `status: "signed"` is an ALLOW-LIST (2026-09-20): with `not: "void"`, any status this filter had
+ * never heard of — lost was the first — became the technician's job brief with no error anywhere.
+ */
 async function signedEstimateForJob(jobId: string) {
   return prisma.issuedEstimate.findFirst({
-    where: { signedAt: { not: null }, voidedAt: null, status: { not: "void" }, OR: [{ jobVisitId: jobId }, { visitId: jobId }] },
+    where: { signedAt: { not: null }, voidedAt: null, status: "signed", OR: [{ jobVisitId: jobId }, { visitId: jobId }] },
     orderBy: { createdAt: "desc" },
     select: {
       id: true, number: true, title: true, visitId: true, jobVisitId: true, selectedOptions: true,
@@ -182,7 +186,8 @@ const OPEN_PO_STATUSES = ["open", "purchased", "verified"] as const;
  */
 async function allSignedEstimatesForJob(jobId: string) {
   return prisma.issuedEstimate.findMany({
-    where: { signedAt: { not: null }, voidedAt: null, status: { not: "void" }, supersededBy: null, OR: [{ jobVisitId: jobId }, { visitId: jobId }] },
+    // status is an allow-list, same reason as signedEstimateForJob above (2026-09-20).
+    where: { signedAt: { not: null }, voidedAt: null, status: "signed", supersededBy: null, OR: [{ jobVisitId: jobId }, { visitId: jobId }] },
     orderBy: { createdAt: "asc" },
     select: {
       id: true, number: true, title: true, visitId: true, jobVisitId: true, selectedOptions: true,

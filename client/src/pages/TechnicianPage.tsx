@@ -96,7 +96,7 @@ export function TechnicianPage() {
           <h2 className="text-lg font-semibold">Pay</h2>
           <button
             type="button"
-            className="text-xs font-medium text-rce-accent"
+            className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
             onClick={() => {
               setRate(tech?.hourlyRate != null ? String(tech.hourlyRate) : "");
               setPercent(tech?.commissionPercent != null ? String(tech.commissionPercent) : "");
@@ -319,7 +319,7 @@ function EntryTable({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">{title}</h2>
         {!readOnlyAdd && (
-          <button type="button" className="text-xs font-medium text-rce-accent" onClick={() => setAdding((v) => !v)}>
+          <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setAdding((v) => !v)}>
             {adding ? "Cancel" : "+ Add hours"}
           </button>
         )}
@@ -365,7 +365,7 @@ function EntryTable({
                 </span>
                 <button
                   type="button"
-                  className="text-xs font-medium text-rce-accent"
+                  className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
                   onClick={() => setEditingId(editingId === e.id ? null : e.id)}
                 >
                   {editingId === e.id ? "Cancel" : "Edit"}

@@ -112,7 +112,9 @@ describe("a marked test account is absent from every company total", () => {
     await setTest(true);
     const marked = await summary();
     expect(marked.collected).toBe(live.collected - 900);
-    expect(marked.expenses).toBe(Math.round((live.expenses - 150) * 100) / 100);
+    // $150 of P.O. money, and — since payroll joined the P&L (2026-09-21) — the
+    // practice job's 4h × $40 floor session and its $75 commission leave too.
+    expect(marked.expenses).toBe(Math.round((live.expenses - 150 - 160 - 75) * 100) / 100);
 
     // The flag is the only difference — unmarking restores the same numbers.
     await setTest(false);

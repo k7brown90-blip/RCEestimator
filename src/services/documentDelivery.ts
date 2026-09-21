@@ -30,6 +30,7 @@ export function humanizeDocType(type: string): string {
     case "change_order": return "Change Order";
     case "signed": return "Signed Agreement";
     case "health_report": return "Electrical Health Record";
+    case "diagnostic_report": return "Circuit Diagnostic Report";
     case "cure_certificate": return "Certificate of Correction";
     case "upgrade_record": return "Record of Upgrade";
     case "finding_declination": return "Acknowledgment of Declined Work";

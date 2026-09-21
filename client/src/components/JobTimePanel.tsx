@@ -49,7 +49,7 @@ export function JobTimePanel({ visitId }: { visitId: string }) {
     <article className="card rounded-2xl border border-rce-border/70 p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">Time on this job</h2>
-        <button type="button" className="text-xs font-medium text-rce-accent" onClick={() => setAdding((v) => !v)}>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setAdding((v) => !v)}>
           {adding ? "Cancel" : "+ Add hours"}
         </button>
       </div>
@@ -120,7 +120,7 @@ export function JobTimePanel({ visitId }: { visitId: string }) {
                 </span>
                 <button
                   type="button"
-                  className="text-xs font-medium text-rce-accent"
+                  className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
                   onClick={() => setEditingId(editingId === s.id ? null : s.id)}
                 >
                   {editingId === s.id ? "Cancel" : "Edit"}

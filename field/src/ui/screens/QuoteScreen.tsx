@@ -32,6 +32,13 @@ interface Props {
   visitId: string
   propertyId: string
   customerName: string
+  /**
+   * Open THIS draft instead of the visit's working quote (2026-09-20). The
+   * resolutions change order raised off a diagnostic is a draft on the same
+   * visit, and `openQuoteForVisit` deliberately will not return it — a change
+   * order describes the CHANGE, so it must be opened by id or not at all.
+   */
+  draftId?: string | null
   onBack: () => void
 }
 
@@ -99,8 +106,8 @@ function LineRow({ line, busy, onPatch, onRemove }: {
   )
 }
 
-export function QuoteScreen({ visitId, propertyId, customerName, onBack }: Props) {
-  const [draftId, setDraftId] = useState<string | null>(null)
+export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedDraftId, onBack }: Props) {
+  const [draftId, setDraftId] = useState<string | null>(fixedDraftId ?? null)
   const [quote, setQuote] = useState<QuoteState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -127,11 +134,16 @@ export function QuoteScreen({ visitId, propertyId, customerName, onBack }: Props
   const refresh = async (id: string) => setQuote(await fetchQuote(id))
 
   useEffect(() => {
+    if (fixedDraftId) {
+      setDraftId(fixedDraftId)
+      refresh(fixedDraftId).catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      return
+    }
     openQuoteForVisit(visitId)
       .then(async ({ draftId }) => { setDraftId(draftId); await refresh(draftId) })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visitId])
+  }, [visitId, fixedDraftId])
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current)

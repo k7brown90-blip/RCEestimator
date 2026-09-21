@@ -1,28 +1,47 @@
 /**
- * Inventory (Kyle, 2026-09-09, Build 3).
+ * Purchasing & Stock — buying, and what is on hand. (Tab separation, 2026-09-20; this was
+ * the Inventory tab.)
  *
- * "We need an inventory tab that tracks what is on the truck and what is at
- * the warehouse so on future jobs I can label some stock as truckstock and it
- * won't double count the cost." "Warehouse items will only be used to
- * transfer material to truck stock." "There is only one warehouse for now it
- * is my home location."
+ * Kyle, 2026-09-20: "we need to review what can be separated so each tab is very clear
+ * what its for and what information is there." Financials was the grab bag — the P&L and
+ * invoices, but also purchasing, receipt review and stock landing. Financials is MONEY ONLY
+ * now, and everything about BUYING lives here: the Purchases card (start a P.O., attach the
+ * receipt, land it), the receipts waiting for review, the P.O.s waiting to land, restock
+ * requests, the materials database, the stock on every truck and in the warehouse, and the
+ * tool register. The Purchases card and the review list are the same components they were
+ * on Financials — moved, not rewritten — and Financials carries a pointer here for one
+ * release so muscle memory has somewhere to land.
  *
- * Top: POs waiting to land and restock requests from the trucks. Then one card
- * per location — the warehouse first, then each truck — with on hand, moving-
- * average unit cost, value, an editable par, and a low-stock flag. Row actions:
- * Transfer to truck (warehouse rows only — Kyle's rule), Adjust (a count with a
- * reason), history (the movements, each correctable with a reason). The tool
- * register sits at the bottom. Everything in-card; rows cap at 12 with Show
- * more (Kyle's no-endless-list rule). Nothing here charges a job — Build 4.
+ * The inventory half is unchanged (Kyle, 2026-09-09, Build 3): "We need an inventory tab
+ * that tracks what is on the truck and what is at the warehouse so on future jobs I can
+ * label some stock as truckstock and it won't double count the cost." "Warehouse items will
+ * only be used to transfer material to truck stock." "There is only one warehouse for now
+ * it is my home location." One card per location — the warehouse first, then each truck —
+ * with on hand, moving-average unit cost, value, an editable par, and a low-stock flag. Row
+ * actions: Transfer to truck (warehouse rows only — Kyle's rule), Adjust (a count with a
+ * reason), history (the movements, each correctable with a reason). Everything in-card;
+ * rows cap at 12 with Show more (Kyle's no-endless-list rule). Nothing here charges a job
+ * — a job is charged when its P.O. lands (services/inventory.ts).
  */
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { LandingPanel } from "../components/LandingPanel";
-import { PO_PURPOSE_LABEL, PoStatusPill } from "../components/PurchaseOrders";
+import {
+  AttachProofButton,
+  PO_PURPOSE_LABEL,
+  PoStatusPill,
+  PurchasesCard,
+  poNeedsProof,
+  useLivePurchaseOrders,
+  usePendingReviewReceipts,
+  useReceiptsNeedingPo,
+} from "../components/PurchaseOrders";
+import { ReceiptReviewList } from "../components/ReceiptReviewList";
+import { AttentionStrip } from "../components/AttentionStrip";
+import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api } from "../lib/api";
+import { useDrawerParams } from "../lib/drawers";
 import type { InventoryItem, InventoryOverview, InventoryTruck, MaterialCompletionReason, MaterialRow, MaterialWithCompletion, StockLevelView, StockMovementView, StockRequestView, ToolCondition, ToolView } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
@@ -69,29 +88,52 @@ function ReasonRow({ label, busy, onSubmit, onCancel, placeholder = "Reason (req
     <span className="inline-flex flex-wrap items-center gap-1">
       <input className="field w-52 max-w-full px-1 py-0.5 text-xs" placeholder={placeholder} value={reason} onChange={(e) => setReason(e.target.value)} />
       <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!reason.trim() || busy} onClick={() => onSubmit(reason.trim())}>{label}</button>
-      <button type="button" className="text-xs text-rce-muted" onClick={onCancel}>cancel</button>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onCancel}>cancel</button>
     </span>
   );
 }
 
 function ShowMore({ total, shown, onMore }: { total: number; shown: number; onMore: () => void }) {
   if (total <= shown) return null;
-  return <button type="button" className="mt-1 text-xs text-rce-accent" onClick={onMore}>Show more ({total - shown})</button>;
+  return <button type="button" className="btn btn-secondary mt-1 px-2 py-0.5 text-xs min-h-0" onClick={onMore}>Show more ({total - shown})</button>;
 }
 
 // ─── The page ────────────────────────────────────────────────────────────────
 
-export function InventoryPage() {
+export function PurchasingPage() {
   const { data, isLoading, error } = useQuery({ queryKey: ["inventory"], queryFn: api.inventory });
+  // The receipts waiting for review, every account (Kyle, 2026-09-08: "It is not clear
+  // where to confirm field inputs") — they were the first thing on Financials; now here.
+  const { data: pendingReceipts = [] } = usePendingReviewReceipts();
   const locations = locationsOf(data);
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Inventory"
-        subtitle="What is on each truck and in the warehouse, at moving-average cost. The warehouse only feeds the trucks; jobs are charged from truck stock."
-        actions={<Link to="/financials" className="btn btn-secondary text-sm">Start PO → Financials</Link>}
+        title="Purchasing & Stock"
+        subtitle="Buying, and what is on hand. A purchase starts with a P.O. and ends when its material lands on a truck or in the warehouse; jobs are charged from truck stock."
+        actions={<a href="#purchases" className="btn btn-primary text-sm">Start a P.O.</a>}
       />
+
+      <PurchasingAttention overview={data} pendingReceipts={pendingReceipts} />
+
+      {/* ── Purchases (Kyle, 2026-09-09): the PO is the document — number, purchase, receipt
+          photo. Moved here from Financials (2026-09-20). The wrapper's id is the page's own
+          "Start a P.O." anchor. ── */}
+      <div id="purchases">
+        <PurchasesCard />
+      </div>
+
+      <ReceiptReviewList
+        collapsible
+        title="Receipts to review (all accounts)"
+        rows={pendingReceipts.map((r) => ({
+          id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, receivedAt: r.receivedAt,
+          jobLabel: r.jobLabel, accountId: r.accountId ?? undefined, accountName: r.accountName ?? undefined,
+          purchaseOrderNumber: r.purchaseOrderNumber, needsPo: r.needsPo,
+        }))}
+      />
+
       {isLoading && <p className="text-sm text-rce-muted">Loading…</p>}
       {error && <p className="text-sm text-red-600">{(error as Error).message}</p>}
       {data && (
@@ -126,21 +168,70 @@ export function InventoryPage() {
   );
 }
 
+// ─── The tab's question: which money has no proof? ───────────────────────────
+
+/**
+ * Purchasing & Stock's attention strip (2026-09-20). "THE CHARGE IS THE MONEY. THE RECEIPT IS
+ * PROOF" (Kyle, 2026-09-19) — so the thing this tab must never let slide is money on a P.O.
+ * with no receipt behind it. Those P.O.s are the rows, with the attach button right there;
+ * the chips count the rest of the queues this page already fetches: receipts with no P.O.,
+ * receipts waiting for review, P.O.s waiting to land, restock requests. Same hooks as the
+ * Purchases card, so this adds no request.
+ */
+function PurchasingAttention({ overview, pendingReceipts }: { overview: InventoryOverview | undefined; pendingReceipts: { id: string }[] }) {
+  const { data: live = [] } = useLivePurchaseOrders();
+  const { data: needing = [] } = useReceiptsNeedingPo();
+  const drawers = useDrawerParams();
+  const needsProof = live.filter(poNeedsProof);
+  const unproved = needsProof.reduce((sum, po) => sum + po.moneyTotal, 0);
+  const toLand = overview?.unlandedPos.length ?? 0;
+  const requests = overview?.openRequests.length ?? 0;
+  return (
+    <AttentionStrip
+      chips={[
+        { key: "proof", label: `${needsProof.length} P.O.${needsProof.length === 1 ? "" : "s"} with money and no receipt (${money(unproved)})`, count: needsProof.length, tone: "red" },
+        { key: "needs-po", label: `${needing.length} receipt${needing.length === 1 ? "" : "s"} with no P.O.`, count: needing.length },
+        { key: "review", label: `${pendingReceipts.length} receipt${pendingReceipts.length === 1 ? "" : "s"} to review`, count: pendingReceipts.length },
+        { key: "land", label: `${toLand} to land`, count: toLand },
+        { key: "requests", label: `${requests} restock request${requests === 1 ? "" : "s"}`, count: requests },
+      ]}
+      rows={needsProof.map((po) => ({
+        key: po.id,
+        text: <><span className="tabular-nums">{po.number}</span> · {po.supplier} — {money(po.moneyTotal)}, no receipt</>,
+        detail: `${PO_PURPOSE_LABEL[po.purpose] ?? po.purpose}${po.truckName ? ` · ${po.truckName}` : ""}${po.jobLabel ? ` · ${po.jobLabel}` : ""} · opened ${shortDate(po.openedAt)}`,
+        action: (
+          <>
+            <AttachProofButton poId={po.id} />
+            <OpenDrawerButton kind="po" id={po.id} onOpen={drawers.open} />
+          </>
+        ),
+      }))}
+      moreText="the rest are in the Purchases card"
+    />
+  );
+}
+
 // ─── POs to land ─────────────────────────────────────────────────────────────
 
+/**
+ * The queue of P.O.s waiting to land. A row opens the P.O.'s drawer, whose "Land" section is
+ * `LandingPanel` — the one landing surface. Until 2026-09-21 this list also expanded its own
+ * `LandingPanel` in place, which put two landing forms for the same P.O. on one page (punch
+ * list H3); the drawer's copy is the one that survives.
+ */
 function PosToLand({ pos }: { pos: InventoryOverview["unlandedPos"] }) {
-  const [openId, setOpenId] = useState<string | null>(null);
+  const drawers = useDrawerParams();
   const [showAll, setShowAll] = useState(false);
   const visible = showAll ? pos : pos.slice(0, PAGE_SIZE);
   return (
     <section className="card p-4">
       <h2 className="text-lg font-semibold">POs to land ({pos.length})</h2>
-      <p className="mb-2 text-xs text-rce-muted">Purchased and verified POs whose material has not landed yet. Landing puts it on the truck or in the warehouse (a tool PO onto the register) and closes the PO.</p>
+      <p className="mb-2 text-xs text-rce-muted">Purchased and verified POs whose material has not landed yet. Landing puts it on the truck or in the warehouse (a tool PO onto the register) and closes the PO. Open a row to land it.</p>
       {pos.length === 0 && <p className="text-sm text-rce-muted">Nothing waiting to land.</p>}
       <ul className="space-y-1">
         {visible.map((po) => (
           <li key={po.id} className="rounded-lg border border-rce-border px-3 py-1.5 text-sm">
-            <button type="button" className="flex w-full flex-wrap items-center justify-between gap-2 text-left" onClick={() => setOpenId(openId === po.id ? null : po.id)}>
+            <button type="button" className="flex w-full flex-wrap items-center justify-between gap-2 text-left" title="Open this P.O. to land it" onClick={() => drawers.open("po", po.id)}>
               <span className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold tabular-nums">{po.number}</span>
                 <span>{po.supplier}</span>
@@ -151,14 +242,9 @@ function PosToLand({ pos }: { pos: InventoryOverview["unlandedPos"] }) {
                 <PoStatusPill status={po.status} />
                 {po.purchasedAt && <span>purchased {shortDate(po.purchasedAt)}</span>}
                 <span>{po.lineCount} line{po.lineCount === 1 ? "" : "s"} · {po.receiptCount} receipt{po.receiptCount === 1 ? "" : "s"}</span>
-                <span className="text-rce-accent">{openId === po.id ? "Hide" : "Land"}</span>
+                <span className="text-rce-accent">Land</span>
               </span>
             </button>
-            {openId === po.id && (
-              <div className="mt-2 rounded-md bg-rce-bg p-3">
-                <LandingPanel poId={po.id} onLanded={() => setOpenId(null)} />
-              </div>
-            )}
           </li>
         ))}
       </ul>
@@ -201,7 +287,7 @@ function RequestRow({ row }: { row: StockRequestView }) {
       {mode === "view" && (
         <span className="flex gap-2 text-xs">
           <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={fulfill.isPending} onClick={() => fulfill.mutate()}>Fulfill</button>
-          <button type="button" className="text-red-600 hover:underline" onClick={() => setMode("decline")}>Decline</button>
+          <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => setMode("decline")}>Decline</button>
         </span>
       )}
       {mode === "decline" && <ReasonRow label="Decline" busy={decline.isPending} onSubmit={(reason) => decline.mutate(reason)} onCancel={() => setMode("view")} />}
@@ -314,9 +400,9 @@ function UnassignedMaterialRow({ row }: { row: MaterialWithCompletion }) {
         </span>
         {mode === "view" && (
           <span className="flex flex-wrap gap-2 text-xs">
-            <button type="button" className="text-rce-accent" onClick={() => setMode("link")}>Link</button>
-            {!material.itemId && <button type="button" className="text-rce-accent" onClick={() => setMode("promote")}>Promote</button>}
-            {completion.missing.includes("no_cost") && <button type="button" className="text-rce-accent" onClick={() => setMode("cost")}>Set cost</button>}
+            <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode("link")}>Link</button>
+            {!material.itemId && <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode("promote")}>Promote</button>}
+            {completion.missing.includes("no_cost") && <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode("cost")}>Set cost</button>}
           </span>
         )}
       </div>
@@ -336,7 +422,7 @@ function SetCostRow({ current, busy, onSubmit, onCancel }: { current: number | n
       <span>Package price $</span>
       <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} autoFocus />
       <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!valid || busy} onClick={() => onSubmit(Number(value))}>Save</button>
-      <button type="button" className="text-rce-muted" onClick={onCancel}>cancel</button>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onCancel}>cancel</button>
     </div>
   );
 }
@@ -354,7 +440,7 @@ function LinkPicker({ busy, onPick, onCancel }: { busy: boolean; onPick: (itemId
     <div className="mt-1 rounded-md bg-white p-2 text-xs">
       <div className="flex items-center gap-1">
         <input className="field w-64 max-w-full px-1 py-0.5 text-xs" placeholder="Search the book (item id or description)…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
-        <button type="button" className="text-rce-muted" onClick={onCancel}>cancel</button>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onCancel}>cancel</button>
       </div>
       {isFetching && <p className="mt-1 text-rce-muted">Searching…</p>}
       {active && !isFetching && results.length === 0 && <p className="mt-1 text-rce-muted">No matching item — try Promote instead.</p>}
@@ -427,7 +513,7 @@ function PromoteForm({ material, onDone, onCancel }: { material: MaterialRow; on
       </div>
       <div className="mt-1 flex items-center gap-2">
         <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!canSave} onClick={() => promote.mutate()}>{promote.isPending ? "Creating…" : "Promote"}</button>
-        <button type="button" className="text-rce-muted" onClick={onCancel}>cancel</button>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onCancel}>cancel</button>
       </div>
       {error && <p className="mt-1 text-red-600">{error}</p>}
     </div>
@@ -491,7 +577,7 @@ function LocationCard({ title, subtitle, locationKey, levels, value, trucks, isW
         </div>
         <span className="flex flex-wrap items-center gap-2">
           <button type="button" className="btn btn-secondary text-xs" onClick={() => setCounting((c) => !c)}>{counting ? "Hide count" : "Count"}</button>
-          <Link to="/financials" className="btn btn-secondary text-xs">Start PO</Link>
+          <a href="#purchases" className="btn btn-secondary text-xs">Start PO</a>
         </span>
       </div>
       {counting && <CountForm locationKey={locationKey} onDone={() => setCounting(false)} />}
@@ -542,18 +628,18 @@ function LevelRow({ level, locationKey, trucks, isWarehouse }: { level: StockLev
           {parEditing ? (
             <span className="inline-flex items-center gap-1">
               <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={par} onChange={(e) => setPar(e.target.value)} />
-              <button type="button" className="text-xs text-rce-accent" disabled={setParLevel.isPending} onClick={() => setParLevel.mutate(par.trim() === "" ? null : Number(par))}>save</button>
-              <button type="button" className="text-xs text-rce-muted" onClick={() => setParEditing(false)}>cancel</button>
+              <button type="button" className="btn btn-primary px-2 py-0.5 text-xs min-h-0" disabled={setParLevel.isPending} onClick={() => setParLevel.mutate(par.trim() === "" ? null : Number(par))}>save</button>
+              <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setParEditing(false)}>cancel</button>
             </span>
           ) : (
-            <button type="button" className="text-rce-accent hover:underline" title="Set the restock threshold" onClick={() => setParEditing(true)}>{level.parLevel == null ? "set" : qtyText(level.parLevel)}</button>
+            <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" title="Set the restock threshold" onClick={() => setParEditing(true)}>{level.parLevel == null ? "set" : qtyText(level.parLevel)}</button>
           )}
         </td>
         <td className="py-1 text-right text-xs">
           <span className="inline-flex gap-2 whitespace-nowrap">
-            {isWarehouse && <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "transfer" ? "view" : "transfer")}>Transfer to truck</button>}
-            <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "adjust" ? "view" : "adjust")}>Adjust</button>
-            <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "history" ? "view" : "history")}>{mode === "history" ? "hide history" : "history"}</button>
+            {isWarehouse && <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode(mode === "transfer" ? "view" : "transfer")}>Transfer to truck</button>}
+            <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode(mode === "adjust" ? "view" : "adjust")}>Adjust</button>
+            <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode(mode === "history" ? "view" : "history")}>{mode === "history" ? "hide history" : "history"}</button>
           </span>
         </td>
       </tr>
@@ -629,7 +715,7 @@ function MovementRow({ m, here }: { m: StockMovementView; here: string }) {
         {m.correctsId ? " · corrects an earlier movement" : ""}
         <span className="text-rce-muted"> · {m.actor}{m.reason ? ` — ${m.reason}` : ""}</span>
       </span>
-      {!correcting && <button type="button" className="text-rce-accent" onClick={() => setCorrecting(true)}>correct</button>}
+      {!correcting && <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setCorrecting(true)}>correct</button>}
       {correcting && (
         <span className="inline-flex flex-wrap items-center gap-1">
           <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" placeholder="±qty" value={delta} onChange={(e) => setDelta(e.target.value)} />
@@ -695,14 +781,14 @@ function CountForm({ locationKey, onDone }: { locationKey: string; onDone: () =>
             <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" placeholder="Counted" value={l.qty} onChange={(e) => setLines((ls) => ls.map((x, idx) => (idx === i ? { ...x, qty: e.target.value } : x)))} />
             <span className="text-rce-muted">{l.unit ?? ""}</span>
             <input className="field w-24 px-1 py-0.5 text-xs" inputMode="decimal" placeholder="Unit cost" value={l.unitCost} onChange={(e) => setLines((ls) => ls.map((x, idx) => (idx === i ? { ...x, unitCost: e.target.value } : x)))} />
-            <button type="button" className="text-red-600" onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))}>remove</button>
+            <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))}>remove</button>
           </li>
         ))}
       </ul>
       <div className="mt-2 flex flex-wrap items-center gap-1">
         <input className="field w-64 max-w-full px-1 py-0.5 text-xs" placeholder="Reason (required) — e.g. Friday count" value={reason} onChange={(e) => setReason(e.target.value)} />
         <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!valid || count.isPending} onClick={() => count.mutate()}>{count.isPending ? "Saving…" : `Record count (${lines.length})`}</button>
-        <button type="button" className="text-rce-muted" onClick={onDone}>cancel</button>
+        <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onDone}>cancel</button>
       </div>
       {error && <p className="mt-1 text-red-600">{error}</p>}
     </div>
@@ -727,7 +813,7 @@ function ToolsCard({ locations }: { locations: Location[] }) {
           <p className="text-xs text-rce-muted">Tool POs land here. Tools live in the warehouse or on a truck and move as the jobs demand — every move leaves a trail.</p>
         </div>
         <span className="flex flex-wrap items-center gap-2">
-          {retired > 0 && <button type="button" className="text-xs text-rce-accent" onClick={() => setShowRetired((s) => !s)}>{showRetired ? "hide retired" : `show retired (${retired})`}</button>}
+          {retired > 0 && <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setShowRetired((s) => !s)}>{showRetired ? "hide retired" : `show retired (${retired})`}</button>}
           <button type="button" className="btn btn-secondary text-xs" onClick={() => setAdding((a) => !a)}>{adding ? "Hide" : "Add tool"}</button>
         </span>
       </div>
@@ -774,7 +860,7 @@ function AddToolForm({ locations, onDone }: { locations: Location[]; onDone: () 
       </select>
       <input className="field w-48 px-1 py-0.5 text-xs" placeholder="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
       <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>Add</button>
-      <button type="button" className="text-rce-muted" onClick={onDone}>cancel</button>
+      <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onDone}>cancel</button>
       {error && <span className="w-full text-red-600">{error}</span>}
     </div>
   );
@@ -810,8 +896,8 @@ function ToolRow({ tool, locations }: { tool: ToolView; locations: Location[] })
         <td className="py-1 pr-2">{label(tool.locationKey)}</td>
         <td className="py-1 text-right text-xs">
           <span className="inline-flex gap-2 whitespace-nowrap">
-            <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "move" ? "view" : "move")}>Move</button>
-            <button type="button" className="text-rce-accent" onClick={() => setMode(mode === "edit" ? "view" : "edit")}>Edit</button>
+            <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode(mode === "move" ? "view" : "move")}>Move</button>
+            <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode(mode === "edit" ? "view" : "edit")}>Edit</button>
           </span>
         </td>
       </tr>

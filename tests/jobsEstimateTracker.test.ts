@@ -50,6 +50,12 @@ describe("issued estimate status maps onto the tracker's buttons", () => {
     expect(map("draft")).toBe("draft");
   });
 
+  it("a LOST estimate reads as declined — the badge word the tracker already has (2026-09-20)", () => {
+    // Lost is the customer's decision, not void; rendered raw, "lost" had no badge class at all.
+    expect(map("lost")).toBe("declined");
+    expect(map("void")).not.toBe("declined");
+  });
+
   it("never invents a status for one it does not recognise", () => {
     // An unknown stage passes through as itself rather than being coerced into "accepted".
     // Guessing here would file unsold work as sold.

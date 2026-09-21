@@ -16,6 +16,14 @@ interface Props {
   onScheduled?: (result?: ScheduleJobResult) => void;
   /** Open straight into the date picker — used when launched from Leads or Calendar. */
   autoOpen?: boolean;
+  /**
+   * ONE MONTH GRID (tab separation, 2026-09-20 — PUNCHLIST C9). On the Calendar page the
+   * picker IS the page's own month grid: the host passes the day Kyle tapped and this
+   * component draws no grid of its own (and never fetches its own month). Leave it
+   * undefined everywhere else — a job page, a drawer, a lead card has no grid, so the
+   * built-in one stays. `null` means "external mode, nothing picked yet".
+   */
+  pickedDate?: string | null;
 }
 
 /** Everything a booking touches. Kept in one place so no call site forgets one. */
@@ -57,8 +65,11 @@ function busyDuringBusinessHours(busy: TechDayAvailability["busy"]): TechDayAvai
   });
 }
 
-export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, completedAt, onScheduled, autoOpen }: Props) {
+export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, completedAt, onScheduled, autoOpen, pickedDate }: Props) {
   const queryClient = useQueryClient();
+  // The host owns the date (Calendar page). Every `setSelectedDate` below still writes the
+  // internal state — harmless in this mode, and it keeps the two modes on one code path.
+  const externalDate = pickedDate !== undefined;
   // Consultations get marked completed and archived — signed estimates are
   // what become active jobs (Kyle, 2026-08-29).
   const completeConsultation = useMutation({
@@ -71,7 +82,8 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [internalDate, setSelectedDate] = useState<string | null>(null);
+  const selectedDate = externalDate ? (pickedDate ?? null) : internalDate;
   // Estimates default to the first fixed block; production still uses a 7am
   // crew-start default because the durations aren't slot-shaped.
   const isEstimateVisit = status === "estimate";
@@ -99,7 +111,8 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   } = useQuery<MonthSchedule>({
     queryKey: ["schedule", "month", year, month],
     queryFn: () => api.monthSchedule(year, month),
-    enabled: mode === "schedule" || mode === "reschedule",
+    // Only the built-in grid needs the month; on the Calendar page the page has it (C9).
+    enabled: !externalDate && (mode === "schedule" || mode === "reschedule"),
   });
 
   // Per-tech availability for the chosen date + time. Estimates block exactly
@@ -305,27 +318,39 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
             </p>
           )}
 
+          {/* The host's grid is the picker (Calendar page, C9): say what to do and what
+              was picked, and draw nothing that competes with the month above. */}
+          {externalDate && (
+            <p data-picked-date className={`rounded border px-3 py-2 text-sm ${selectedDate ? "border-rce-accent bg-rce-accentBg/40" : "border-dashed border-rce-border text-rce-muted"}`}>
+              {selectedDate
+                ? <>Start date: <strong>{new Date(`${selectedDate}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</strong> — tap another day on the calendar to change it.</>
+                : "Tap a day on the calendar above to pick the start date."}
+            </p>
+          )}
+
           {/* Month nav */}
+          {!externalDate && (
           <div className="flex items-center justify-between">
             <button onClick={prevMonth} className="rounded px-2 py-1 text-xs hover:bg-rce-surface">&larr;</button>
             <span className="text-sm font-semibold">{MONTHS[month - 1]} {year}</span>
             <button onClick={nextMonth} className="rounded px-2 py-1 text-xs hover:bg-rce-surface">&rarr;</button>
           </div>
+          )}
 
           {/* Grid — an empty month is always a failure, never a valid state, so
               say what happened instead of rendering headers over nothing. */}
-          {scheduleFailed && (
+          {!externalDate && scheduleFailed && (
             <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
               Couldn't load the calendar.{" "}
-              <button onClick={() => refetchSchedule()} className="font-medium underline">
+              <button onClick={() => refetchSchedule()} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
                 Try again
               </button>
             </div>
           )}
-          {!scheduleFailed && scheduleLoading && (
+          {!externalDate && !scheduleFailed && scheduleLoading && (
             <p className="text-xs text-rce-muted animate-pulse">Loading calendar…</p>
           )}
-          {!scheduleFailed && !scheduleLoading && (
+          {!externalDate && !scheduleFailed && !scheduleLoading && (
           <div className="grid grid-cols-7 gap-px rounded border border-rce-border bg-rce-border overflow-hidden">
             {DAYS.map((d) => (
               <div key={d} className="bg-rce-surface py-1 text-center text-[10px] font-semibold text-rce-muted">{d}</div>
@@ -345,7 +370,7 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
                   onClick={() => setSelectedDate(isSel ? null : cell.date)}
                   className={`min-h-[32px] text-xs font-medium transition bg-white
                     ${isPast ? "text-rce-muted/40 cursor-not-allowed" : "hover:bg-rce-accentBg/30 cursor-pointer"}
-                    ${isSel ? "!bg-rce-accent text-white" : ""}
+                    ${isSel ? "!bg-rce-accent text-rce-text" : ""}
                     ${isToday && !isSel ? "ring-1 ring-inset ring-rce-accent" : ""}
                   `}
                 >
@@ -376,7 +401,7 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
                         onClick={() => setStartTime(b.start)}
                         className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
                           active
-                            ? "border-rce-accent bg-rce-accent text-white"
+                            ? "border-rce-accent bg-rce-accent text-rce-text"
                             : "border-rce-border bg-white text-rce-fg hover:border-rce-accent/50"
                         }`}
                       >

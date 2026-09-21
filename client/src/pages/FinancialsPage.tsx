@@ -17,6 +17,18 @@
  * the card and doesn't open a new window or tab." Payments received works the
  * same way, with the outstanding invoices pinned above the search — and the
  * Invoices tab folded in here ("merging invoices into the financials tab").
+ *
+ * MONEY ONLY (tab separation, 2026-09-20). Kyle: "No more merging, instead we need to
+ * review what can be separated so each tab is very clear what its for." This tab had
+ * become the grab bag — P&L, invoices, payments and bills, but also purchasing, receipt
+ * review and stock landing. Those three left for Purchasing & Stock (`PurchasingPage`);
+ * a pointer sits where the cards were, for one release. What stays is money: balances,
+ * the sweep, the P&L, materials by month, expenses, job profitability, what the receipts
+ * say about prices, bills, payments and invoices, warranty receivables — and, since
+ * 2026-09-21, the BANK STATEMENTS (Kyle, 2026-09-20: "I can manually upload the bank
+ * statements each month from each account"): the four Chase balances beside Stripe's on the
+ * Balances card, the queue of statement lines to classify, and the imports themselves. A
+ * statement is money — cash on hand and what left it — so it lives here, not on Purchasing.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -29,13 +41,25 @@ import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type { CompanyBillRow, JobProfitRow, JobReceiptRow, PaymentRow, WarrantyReceivableRow } from "../lib/api";
 import { MATERIAL_SOURCE_LABEL, type InvoiceSummary, type MaterialsByMonth } from "../lib/types";
 import { money } from "../lib/utils";
-import { ReceiptReviewList } from "../components/ReceiptReviewList";
+import { AttentionStrip } from "../components/AttentionStrip";
 import { BounceBadge } from "../components/BounceBadge";
 import { DeliveryChip } from "../components/DeliveryChip";
-import { PurchasesCard } from "../components/PurchaseOrders";
+import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
+import { useDrawerParams } from "../lib/drawers";
 import { BalancesStrip, TrucksCard } from "../components/TrucksCards";
 import { MonthEndSweepCard } from "../components/MonthEndSweepCard";
 import { CollapsibleCard } from "../components/CollapsibleCard";
+import { BankQueueCard, BankStatementsCard, BillConfirmationNote, CashPanel } from "../components/BankCards";
+import type { BankConfirmations } from "../lib/types";
+
+/** Expenses-by-category row labels: bill:x -> "bills — x", payroll:x -> "payroll — x", bank:x -> "bank — x", stripe_fees -> "Stripe fees". */
+function categoryLabel(category: string): string {
+  if (category === "stripe_fees") return "Stripe fees";
+  if (category.startsWith("bill:")) return category.replace("bill:", "bills — ");
+  if (category.startsWith("payroll:")) return category.replace("payroll:", "payroll — ");
+  if (category.startsWith("bank:")) return category.replace("bank:", "bank — ").replace("_", " ");
+  return category;
+}
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -66,13 +90,14 @@ export function FinancialsPage() {
   // Every signed invoice with its money rolled up server-side (Kyle, 2026-09-07:
   // the Invoices tab now lives inside the Payments received card).
   const { data: invoices } = useQuery({ queryKey: ["invoices"], queryFn: api.invoices });
-  // Kyle, 2026-09-08: "It is not clear where to confirm field inputs" — every account's
-  // receipts waiting for review, first thing on Financials.
-  const { data: pendingReceipts } = useQuery({ queryKey: ["receipt-review"], queryFn: api.pendingReceipts });
+  // What the bank statements confirm — and which scheduled bill-months they should have and did not (2026-09-21).
+  const { data: bankConfirmations } = useQuery({ queryKey: ["bank-confirmations", year], queryFn: () => api.bankConfirmations(year) });
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Financials" subtitle="Bills, revenue, invoices, and the company's accounting reports" />
+      <PageHeader title="Financials" subtitle="Money only — the P&L, invoices and payments, bills, fees, and the accounting reports" />
+
+      <FinancialsAttention invoices={invoices ?? []} confirmations={bankConfirmations} />
 
       {/* Kyle, 2026-09-10: "I like the collapsible idea it will be easier to keep the clutter
           down." Every card above the year selector folds to a header + one-line summary
@@ -84,18 +109,13 @@ export function FinancialsPage() {
       {/* ── Month-end sweep (Kyle, 2026-09-09): excess over the float → Chase, on a click, never scheduled ── */}
       <MonthEndSweepCard />
 
-      <ReceiptReviewList
-        collapsible
-        title="Receipts to review (all accounts)"
-        rows={(pendingReceipts ?? []).map((r) => ({
-          id: r.id, vendor: r.vendor, amount: r.amount, category: r.category, receivedAt: r.receivedAt,
-          jobLabel: r.jobLabel, accountId: r.accountId ?? undefined, accountName: r.accountName ?? undefined,
-          purchaseOrderNumber: r.purchaseOrderNumber, needsPo: r.needsPo,
-        }))}
-      />
-
-      {/* ── Purchases (Kyle, 2026-09-09): the PO is the document — number, purchase, receipt photo ── */}
-      <PurchasesCard />
+      {/* The Purchases card and "Receipts to review" stood here until 2026-09-20. A pointer for
+          one release — Kyle is the only user and his thumb knows where they were. Delete this
+          block once he has landed on the new tab a few times. */}
+      <p data-moved-pointer className="rounded-lg border border-dashed border-rce-border px-3 py-2 text-xs text-rce-muted">
+        Purchases, receipts to review and P.O. landing moved to{" "}
+        <Link to="/purchasing" className="font-medium text-rce-accent hover:underline">Purchasing &amp; Stock →</Link>
+      </p>
 
       {/* ── Trucks (Kyle, 2026-09-09): per-truck card spend this month; the ledger lives at /trucks ── */}
       <TrucksSection />
@@ -144,11 +164,26 @@ export function FinancialsPage() {
         <p className="mb-2 text-xs text-rce-muted">
           Invoiced lands in the month the estimate was <b>signed</b> (accrual). Collected lands in the month the
           payment was <b>received</b> (cash) — a job signed in August and paid in September shows in both months, once each.
-          Expenses = card charges (the month of the swipe) + amounts typed on a P.O. marked not-on-card + company bills + Stripe fees.
+          Expenses = card charges (the month of the swipe) + amounts typed on a P.O. marked not-on-card + company bills + Stripe fees + payroll + bank lines classified as expenses.
           A receipt is proof, never money — it changes nothing here. Net = invoiced − expenses.
           Stripe fees are the processing fees Stripe took that month — their own column, and already inside Expenses; Collected is the gross amount the customer paid.
+          Payroll = every technician's hours at the rate they were paid (shift time plus any job time the day clock missed, overtime past 40 hours in a Monday–Sunday week) + commissions,
+          in the month the hours were <b>worked</b> and the commission was <b>earned</b> — not a pay date. It is its own column and already inside Expenses.
+          A flagged clock nobody has confirmed counts nothing until it is answered. Job profitability below shows the same hours per job; they are never added here twice.
+          Bank = statement lines you classified as new money out (ACH, autopay, checks, debit card out of Chase), in the month posted — its own column and already inside Expenses.
+          A statement line that is a transfer (a set-aside into savings, anything to or from Stripe) or already counted (payroll, a P.O.'s typed amount, a scheduled bill, a payment you recorded) adds nothing here: the P&L has that money by the other route.
           Money still owed is per invoice (billed − paid), not per month — see Outstanding below.
         </p>
+        {summary && (summary.bank?.unclassified ?? 0) > 0 && (
+          <p className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            {summary.bank!.unclassified} bank line{summary.bank!.unclassified === 1 ? "" : "s"} ({money(summary.bank!.unclassifiedOut)} out) {summary.bank!.unclassified === 1 ? "is" : "are"} not classified yet and {summary.bank!.unclassified === 1 ? "is" : "are"} not in Expenses — classify {summary.bank!.unclassified === 1 ? "it" : "them"} in the Bank lines card below.
+          </p>
+        )}
+        {summary && (summary.payrollUnratedHours ?? 0) > 0 && (
+          <p className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            {summary.payrollUnratedHours}h of payroll time in {year} has no hourly rate on file and counts as $0 — set the rate on the Team tab.
+          </p>
+        )}
         {summary && summary.feesAvailable === false && (
           <p className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
             Stripe fees are not in this table yet — {summary.feesReason ?? "Stripe could not be read."}
@@ -162,6 +197,8 @@ export function FinancialsPage() {
                 <th className="py-1 pr-2 text-right">Invoiced</th>
                 <th className="py-1 pr-2 text-right">Collected</th>
                 <th className="py-1 pr-2 text-right">Stripe fees</th>
+                <th className="py-1 pr-2 text-right">Payroll</th>
+                <th className="py-1 pr-2 text-right">Bank</th>
                 <th className="py-1 pr-2 text-right">Expenses</th>
                 <th className="py-1 text-right">Net</th>
               </tr>
@@ -173,6 +210,8 @@ export function FinancialsPage() {
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.invoiced)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.collected)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(m.stripeFees ?? 0)}</td>
+                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(m.payroll ?? 0)}</td>
+                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(m.bank ?? 0)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(m.expenses)}</td>
                   <td className={`py-1 text-right font-medium tabular-nums ${m.net < 0 ? "text-red-600" : ""}`}>
                     {money(m.net)}
@@ -185,6 +224,8 @@ export function FinancialsPage() {
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.invoiced)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.collected)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(summary.totals.stripeFees ?? 0)}</td>
+                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(summary.totals.payroll ?? 0)}</td>
+                  <td className="py-1 pr-2 text-right tabular-nums text-rce-muted">{money(summary.totals.bank ?? 0)}</td>
                   <td className="py-1 pr-2 text-right tabular-nums">{money(summary.totals.expenses)}</td>
                   <td className={`py-1 text-right tabular-nums ${summary.totals.net < 0 ? "text-red-600" : ""}`}>
                     {money(summary.totals.net)}
@@ -196,6 +237,11 @@ export function FinancialsPage() {
         </div>
       </section>
 
+      {/* ── Bank statements (Kyle, 2026-09-20): the queue is the product — what the importer could not
+          classify is what keeps the P&L from being "everything that touched the Stripe card". ── */}
+      <BankQueueCard year={year} />
+      <BankStatementsCard />
+
       {/* ── Materials: bought / used / inventory value (Kyle, 2026-09-09, Build 4) ── */}
       <MaterialsCard year={year} materials={summary?.materials} />
 
@@ -203,7 +249,7 @@ export function FinancialsPage() {
       <section className="card p-4">
         <h2 className="text-lg font-semibold">Expenses by category</h2>
         <p className="mb-2 text-xs text-rce-muted">
-          Receipts (materials, gas, maintenance, overhead), card spend, Stripe processing fees, and company bills — the Schedule C shape.
+          Card charges and typed P.O. amounts by kind (materials, gas, maintenance, tools, permits), company bills, Stripe processing fees, payroll (wages and commissions), and bank lines classified as expenses — the Schedule C shape.
         </p>
         {(summary?.expensesByCategory ?? []).length === 0 && (
           <p className="text-sm text-rce-muted">No expenses recorded for {year} yet.</p>
@@ -211,7 +257,7 @@ export function FinancialsPage() {
         <ul className="space-y-1">
           {(summary?.expensesByCategory ?? []).map((c) => (
             <li key={c.category} className="flex items-center justify-between gap-3 rounded-lg border border-rce-border px-3 py-2 text-sm">
-              <span className="capitalize">{c.category === "stripe_fees" ? "Stripe fees" : c.category.replace("bill:", "bills — ")}</span>
+              <span className="capitalize">{categoryLabel(c.category)}</span>
               <span className="font-medium tabular-nums">{money(c.total)}</span>
             </li>
           ))}
@@ -270,9 +316,11 @@ export function FinancialsPage() {
       </section>
 
       {/* ── Company bills ── */}
-      <BillsCard bills={bills ?? []} onChange={() => {
+      <BillsCard bills={bills ?? []} confirmations={bankConfirmations} onChange={() => {
         void queryClient.invalidateQueries({ queryKey: ["companyBills"] });
         void queryClient.invalidateQueries({ queryKey: ["financials", year] });
+        void queryClient.invalidateQueries({ queryKey: ["bank-confirmations"] });
+        void queryClient.invalidateQueries({ queryKey: ["bank-lines"] });
       }} />
 
       {/* ── Payments + invoices (Kyle, 2026-09-07: outstanding list, then search → account → property → job) ── */}
@@ -280,7 +328,6 @@ export function FinancialsPage() {
         year={year}
         payments={payments ?? []}
         invoices={invoices ?? []}
-        stripeConfigured={summary?.stripeConfigured ?? true}
         onChange={() => {
           void queryClient.invalidateQueries({ queryKey: ["payments", year] });
           void queryClient.invalidateQueries({ queryKey: ["financials", year] });
@@ -297,6 +344,65 @@ export function FinancialsPage() {
   );
 }
 
+// ─── The tab's question: which money is owed, and which can't arrive? ─────────
+
+/** An invoice email that bounced and has not been delivered since. */
+function invoiceBounced(inv: InvoiceSummary): boolean {
+  if (!inv.lastBounceAt) return false;
+  const delivered = inv.lastDelivery?.status === "delivered" ? inv.lastDelivery.createdAt : null;
+  return !(delivered && new Date(delivered) > new Date(inv.lastBounceAt));
+}
+
+/**
+ * Financials' attention strip (2026-09-20). Money owed is this tab's normal state, so it is a
+ * count, not a row. The rows are money that CANNOT arrive as things stand: an invoice whose
+ * email bounced (the customer never got the bill) and a warranty company's share past due.
+ * Both queues are ones this page already fetches — `/invoices` and `/warranty-receivables`.
+ */
+function FinancialsAttention({ invoices, confirmations }: { invoices: InvoiceSummary[]; confirmations: BankConfirmations | undefined }) {
+  const { data: warranty } = useQuery({ queryKey: ["warrantyReceivables"], queryFn: api.warrantyReceivables });
+  // The bank queue (2026-09-21): lines the importer could not classify are not in Expenses until Kyle rules on them.
+  const { data: bankQueue = [] } = useQuery({ queryKey: ["bank-lines", "unclassified"], queryFn: () => api.bankLines({ classification: "unclassified" }) });
+  const drawers = useDrawerParams();
+  const outstanding = invoices.filter((inv) => inv.balance > 0.009);
+  const owed = outstanding.reduce((sum, inv) => sum + inv.balance, 0);
+  const bounced = outstanding.filter(invoiceBounced);
+  const overdue = (warranty?.rows ?? []).filter((r) => r.status === "overdue");
+  // The prize (PUNCHLIST A6): a scheduled bill a statement covers but never shows — a bill you may have stopped paying.
+  const missingBills = (confirmations?.bills ?? []).filter((b) => b.status === "unconfirmed");
+  return (
+    <AttentionStrip
+      chips={[
+        { key: "owed", label: `${outstanding.length} invoice${outstanding.length === 1 ? "" : "s"} outstanding · ${money(owed)} owed`, count: outstanding.length },
+        { key: "bounced", label: `${bounced.length} invoice email${bounced.length === 1 ? "" : "s"} bounced`, count: bounced.length, tone: "red" },
+        { key: "warranty", label: `${overdue.length} warranty claim${overdue.length === 1 ? "" : "s"} overdue`, count: overdue.length, tone: "red" },
+        { key: "bank-queue", label: `${bankQueue.length} bank line${bankQueue.length === 1 ? "" : "s"} to classify`, count: bankQueue.length },
+        { key: "bills-missing", label: `${missingBills.length} bill${missingBills.length === 1 ? "" : "s"} not seen on a statement`, count: missingBills.length, tone: "red" },
+      ]}
+      rows={[
+        ...missingBills.map((b) => ({
+          key: `bill-${b.billId}-${b.month}`,
+          text: <>{b.name} — {money(b.scheduled)} scheduled for {b.month}, not on the bank statement</>,
+          detail: "Stopped paying it, paid it another way, or the amount changed? Confirm the line in the bank queue, or edit the bill.",
+        })),
+        ...bounced.map((inv) => ({
+          key: `inv-${inv.id}`,
+          text: <>{inv.customer.name} — owes {money(inv.balance)}, invoice email bounced</>,
+          detail: `${inv.number} · ${inv.title}${inv.customerEmail ? ` · ${inv.customerEmail}` : " · no email on file"}`,
+          action: <OpenDrawerButton kind="invoice" id={inv.id} onOpen={drawers.open} />,
+        })),
+        ...overdue.map((r) => ({
+          key: `wty-${r.estimateId}`,
+          text: <>{r.company} owes {money(r.balance)} on {r.account.name} — {r.daysOutstanding}d outstanding</>,
+          detail: `${r.number} · claim ${r.claimNumber}`,
+          action: <Link to={`/accounts/${r.account.id}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">Account</Link>,
+        })),
+      ]}
+      moreText="the rest are in the cards below"
+    />
+  );
+}
+
 // ─── Folded wrappers for the two TrucksCards.tsx cards ────────────────────────
 
 /**
@@ -308,15 +414,21 @@ export function FinancialsPage() {
  */
 function BalancesSection() {
   const { data } = useQuery({ queryKey: ["financials-balances"], queryFn: api.financialsBalances });
+  // The bank side (2026-09-21): each Chase account's balance AS OF its newest statement — beside Stripe's live figures.
+  const { data: bankAccounts = [] } = useQuery({ queryKey: ["bank-accounts"], queryFn: api.bankAccounts });
   // The strip itself renders nothing until the balances load — same here.
   if (!data) return null;
   const truckCash = data.financialAccounts.reduce((sum, fa) => sum + fa.cashUsd, 0);
-  const summary = data.payments
+  const inBank = bankAccounts.filter((a) => a.isActive && a.balance).reduce((sum, a) => sum + (a.balance?.amount ?? 0), 0);
+  const withBalance = bankAccounts.filter((a) => a.isActive && a.balance).length;
+  const summary = (data.payments
     ? `Payments ${money(data.payments.available)} available${data.available && data.financialAccounts.length > 0 ? ` · trucks ${money(truckCash)}` : ""}`
-    : "Payments balance not readable";
+    : "Payments balance not readable")
+    + (withBalance > 0 ? ` · bank ${money(inBank)} as of the statements` : "");
   return (
     <CollapsibleCard id="balances" title="Balances" summary={summary} defaultOpen compact nested>
       <BalancesStrip />
+      <CashPanel />
     </CollapsibleCard>
   );
 }
@@ -683,6 +795,7 @@ function JobProfitabilityCard({ year, rows }: { year: number; rows: JobProfitRow
 /** Exact details, receipts, and purchase orders for one job — all inside the card. */
 function JobDetail({ job }: { job: JobProfitRow }) {
   const { visitId } = job;
+  const drawers = useDrawerParams();
   const { data: receipts = [] } = useQuery({
     queryKey: ["jobReceipts", visitId],
     queryFn: () => api.jobReceipts(visitId),
@@ -740,7 +853,8 @@ function JobDetail({ job }: { job: JobProfitRow }) {
           {receipts.map((r) => (
             <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rce-border px-3 py-1.5 text-sm">
               <span>
-                <span className="font-medium">{r.vendor ?? "unknown vendor"}</span>
+                {/* The receipt carries its own actions (2026-09-20): the vendor opens its drawer. */}
+                <OpenDrawerButton kind="receipt" id={r.id} onOpen={drawers.open} className="font-medium hover:underline">{r.vendor ?? "unknown vendor"}</OpenDrawerButton>
                 <span className="ml-2 text-xs text-rce-muted">
                   {new Date(r.receivedAt).toLocaleDateString()} · {r.category}
                   {r.status !== "confirmed" ? ` · ${r.status.replaceAll("_", " ")}` : ""}
@@ -772,7 +886,7 @@ function JobDetail({ job }: { job: JobProfitRow }) {
           {orders.map((o) => (
             <li key={o.id} className="rounded-lg border border-rce-border px-3 py-1.5 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-medium"><span className="tabular-nums">{o.number}</span> · {o.supplier}</span>
+                <OpenDrawerButton kind="po" id={o.id} onOpen={drawers.open} className="font-medium hover:underline"><span className="tabular-nums">{o.number}</span> · {o.supplier}</OpenDrawerButton>
                 <span className="text-xs text-rce-muted">
                   {o.purpose.replaceAll("_", " ")} · {o.status} · {new Date(o.createdAt).toLocaleDateString()}
                   {o.receiptCount > 0 ? ` · ${o.receiptCount} receipt(s)` : ""}
@@ -830,7 +944,7 @@ function ProtectedFrame({ path, title }: { path: string; title: string }) {
 
 // ─── Company bills ────────────────────────────────────────────────────────────
 
-function BillsCard({ bills, onChange }: { bills: CompanyBillRow[]; onChange: () => void }) {
+function BillsCard({ bills, confirmations, onChange }: { bills: CompanyBillRow[]; confirmations: BankConfirmations | undefined; onChange: () => void }) {
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("overhead");
@@ -856,7 +970,11 @@ function BillsCard({ bills, onChange }: { bills: CompanyBillRow[]; onChange: () 
       <h2 className="text-lg font-semibold">Company bills &amp; rolling costs</h2>
       <p className="mb-2 text-xs text-rce-muted">
         Insurance, truck payment, phone, software — recurring bills land in every period's expenses
-        automatically. One-off spends belong on a job's receipts instead.
+        automatically, at the amount here. A bill is a FIXED standing amount: an imported bank statement
+        line for it confirms the month (the bill stays the money, once); a month a statement covers with
+        no line for the bill is flagged — a bill you may have stopped paying. A bill whose amount changes
+        every month does not belong here: leave it to the statement, where its line is the expense.
+        One-off spends belong on a job's receipts instead.
       </p>
       <ul className="space-y-1">
         {bills.map((b) => (
@@ -866,6 +984,7 @@ function BillsCard({ bills, onChange }: { bills: CompanyBillRow[]; onChange: () 
               <span className="ml-2 text-xs text-rce-muted">
                 {b.cadence.replace("_", " ")} · {b.category}
               </span>
+              <span className="ml-2"><BillConfirmationNote billId={b.id} confirmations={confirmations} /></span>
             </span>
             <span className="flex items-center gap-2">
               <span className="font-medium tabular-nums">{money(b.amount)}</span>
@@ -928,13 +1047,19 @@ const STATUS_META: Record<InvoiceSummary["paymentStatus"], { label: string; tone
  * Every dollar here comes from GET /invoices, which rolls money up server-side
  * (billedTotalOf / paymentSummary) — nothing on this card computes money from an estimate total.
  */
+/**
+ * Payments received & invoices. Every invoice row opens the invoice's DRAWER (`InvoiceDrawer`:
+ * PaymentPanel — email the deposit / the final bill, the QR, record cash/check/Zelle, the
+ * deposit override, the warranty split — plus the reminder, the PDFs and emailing the invoice).
+ * Until 2026-09-21 a row also expanded in place into its own `InvoicePanel` with the same
+ * buttons; that was the duplicate the drawers plan's Phase 6 deleted.
+ */
 function PaymentsCard({
-  year, payments, invoices, stripeConfigured, onChange,
+  year, payments, invoices, onChange,
 }: {
   year: number;
   payments: PaymentRow[];
   invoices: InvoiceSummary[];
-  stripeConfigured: boolean;
   onChange: () => void;
 }) {
   const totals = useMemo(() => ({
@@ -945,14 +1070,12 @@ function PaymentsCard({
   // ── Outstanding: signed, unvoided, unsuperseded, balance still owed ──
   const outstanding = useMemo(() => invoices.filter((inv) => inv.balance > 0.009), [invoices]);
   const [outstandingLimit, setOutstandingLimit] = useState(PAGE_SIZE);
-  const [openOutstandingId, setOpenOutstandingId] = useState<string | null>(null);
 
   // ── Search → account → property → job → invoices ──
   const [search, setSearch] = useState("");
   const [accountId, setAccountId] = useState<string | null>(null);
   const [propertyId, setPropertyId] = useState<string | null>(null);
   const [jobKey, setJobKey] = useState<string | null>(null);
-  const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
 
   // Accounts are derived from the invoices themselves — only accounts with signed work
   // have anything to show here, and the rows already carry name, phone, email, address.
@@ -1008,7 +1131,7 @@ function PaymentsCard({
   const jobRow = jobs.find((j) => j.key === jobKey) ?? null;
   const jobInvoices = useMemo(() => propertyInvoices.filter((inv) => jobKeyOf(inv) === jobKey), [propertyInvoices, jobKey]);
 
-  const reset = () => { setAccountId(null); setPropertyId(null); setJobKey(null); setOpenInvoiceId(null); };
+  const reset = () => { setAccountId(null); setPropertyId(null); setJobKey(null); };
 
   // ── The year's payment ledger + the untied cash/check form, folded away by default ──
   const [showLedger, setShowLedger] = useState(false);
@@ -1042,14 +1165,7 @@ function PaymentsCard({
       {outstanding.length === 0 && <p className="text-sm text-rce-muted">Nothing is owed. Every signed invoice is paid in full.</p>}
       <ul className="mt-1 space-y-1">
         {outstanding.slice(0, outstandingLimit).map((inv) => (
-          <InvoiceRow
-            key={inv.id}
-            inv={inv}
-            open={openOutstandingId === inv.id}
-            onToggle={() => setOpenOutstandingId(openOutstandingId === inv.id ? null : inv.id)}
-            stripeConfigured={stripeConfigured}
-            onChange={onChange}
-          />
+          <InvoiceRow key={inv.id} inv={inv} />
         ))}
       </ul>
       {outstanding.length > outstandingLimit && (
@@ -1062,8 +1178,8 @@ function PaymentsCard({
       <h3 className="mt-4 text-sm font-semibold text-rce-soft">Find an invoice</h3>
       <Breadcrumb crumbs={[
         { label: "Search", onClick: account ? reset : undefined },
-        ...(account ? [{ label: account.name, onClick: property ? () => { setPropertyId(null); setJobKey(null); setOpenInvoiceId(null); } : undefined }] : []),
-        ...(property ? [{ label: property.label, onClick: jobRow ? () => { setJobKey(null); setOpenInvoiceId(null); } : undefined }] : []),
+        ...(account ? [{ label: account.name, onClick: property ? () => { setPropertyId(null); setJobKey(null); } : undefined }] : []),
+        ...(property ? [{ label: property.label, onClick: jobRow ? () => { setJobKey(null); } : undefined }] : []),
         ...(jobRow ? [{ label: jobRow.label }] : []),
       ]} />
 
@@ -1119,14 +1235,7 @@ function PaymentsCard({
       {jobRow && (
         <ul className="mt-2 space-y-1">
           {jobInvoices.map((inv) => (
-            <InvoiceRow
-              key={inv.id}
-              inv={inv}
-              open={openInvoiceId === inv.id}
-              onToggle={() => setOpenInvoiceId(openInvoiceId === inv.id ? null : inv.id)}
-              stripeConfigured={stripeConfigured}
-              onChange={onChange}
-            />
+            <InvoiceRow key={inv.id} inv={inv} />
           ))}
         </ul>
       )}
@@ -1176,20 +1285,13 @@ function PaymentsCard({
   );
 }
 
-/** One invoice, collapsed to a line; opens in place into the full panel. */
-function InvoiceRow({
-  inv, open, onToggle, stripeConfigured, onChange,
-}: {
-  inv: InvoiceSummary;
-  open: boolean;
-  onToggle: () => void;
-  stripeConfigured: boolean;
-  onChange: () => void;
-}) {
+/** One invoice, as a line; the row opens the invoice's drawer. */
+function InvoiceRow({ inv }: { inv: InvoiceSummary }) {
   const s = STATUS_META[inv.paymentStatus];
+  const drawers = useDrawerParams();
   return (
-    <li className={`rounded-lg border ${open ? "border-rce-accent" : "border-rce-border"}`}>
-      <button type="button" onClick={onToggle} className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left text-sm">
+    <li className="rounded-lg border border-rce-border">
+      <button type="button" title="Open this invoice" onClick={() => drawers.open("invoice", inv.id)} className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left text-sm">
         <span className="min-w-0">
           <span className="flex flex-wrap items-center gap-2">
             <span className="font-medium">{inv.customer.name}</span>
@@ -1197,6 +1299,7 @@ function InvoiceRow({
           </span>
           <span className="block text-xs text-rce-muted">
             {inv.number}{inv.revision > 1 ? ` rev ${inv.revision}` : ""} · {inv.title} · {inv.serviceAddress}
+            {(inv.changeOrders?.length ?? 0) > 0 && ` · + ${inv.changeOrders!.length} change order${inv.changeOrders!.length > 1 ? "s" : ""}`}
           </span>
           {/* Kyle, 2026-09-09: the invoice email came back — say so on the row; and when Resend
               says it was delivered, say that too. */}
@@ -1225,164 +1328,7 @@ function InvoiceRow({
           )}
         </span>
       </button>
-      {open && <InvoicePanel inv={inv} stripeConfigured={stripeConfigured} onChange={onChange} />}
     </li>
-  );
-}
-
-/**
- * The expanded invoice: job details, the customer's contact info, and the ways to bill.
- * The email buttons call the SAME routes the visit's payment panel uses — they send the
- * request in writing; nobody's session ever opens the customer's /pay page (Kyle, 2026-09-01).
- */
-function InvoicePanel({ inv, stripeConfigured, onChange }: { inv: InvoiceSummary; stripeConfigured: boolean; onChange: () => void }) {
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState<"cash" | "check" | "zelle" | "other">("check");
-  const [kind, setKind] = useState<"deposit" | "final" | "other">("final");
-  const [note, setNote] = useState("");
-
-  const paid = inv.paymentStatus === "paid";
-  const depositOpen = inv.paymentStatus === "unpaid" || inv.paymentStatus === "partial";
-  const depositRemaining = Math.max(0, Math.round((inv.depositDue - inv.totalPaid) * 100) / 100);
-
-  const emailRequest = useMutation({
-    mutationFn: (which: "deposit" | "balance") =>
-      which === "deposit" ? api.emailDepositRequest(inv.id) : api.emailBalanceRequest(inv.id),
-    onSuccess: (r, which) => {
-      setError(null);
-      setNotice(`${which === "deposit" ? "Deposit request" : "Final bill"} emailed to ${r.to} — ${money(r.amount)} due.`);
-      onChange();
-    },
-    onError: (err) => { setNotice(null); setError((err as Error).message); },
-  });
-  const remind = useMutation({
-    mutationFn: () => api.sendPaymentReminder(inv.id),
-    onSuccess: (r) => { setError(null); setNotice(`Reminder emailed to ${r.to} — ${money(r.amount)} open.`); onChange(); },
-    onError: (err) => { setNotice(null); setError((err as Error).message); },
-  });
-  const record = useMutation({
-    mutationFn: () => api.recordPayment({
-      amount: Number(amount), method, kind, estimateId: inv.id, customerId: inv.customer.id, note: note.trim() || undefined,
-    }),
-    onSuccess: () => { setRecording(false); setAmount(""); setNote(""); setError(null); setNotice("Payment recorded."); onChange(); },
-    onError: (err) => { setNotice(null); setError((err as Error).message); },
-  });
-
-  return (
-    <div className="border-t border-rce-border px-3 py-3 text-sm">
-      <div className="grid gap-2 md:grid-cols-2">
-        <div>
-          <div className="text-xs text-rce-soft">Account</div>
-          <div className="font-medium">{inv.customer.name}</div>
-          <div className="break-words text-xs text-rce-muted">{inv.customerPhone ?? "no phone on file"} · {inv.customerEmail ?? "no email on file"}</div>
-          <div className="text-xs text-rce-muted">{inv.serviceAddress}</div>
-        </div>
-        <div>
-          <div className="text-xs text-rce-soft">Invoice</div>
-          <div className="font-medium">{inv.number}{inv.revision > 1 ? ` rev ${inv.revision}` : ""} — {inv.title}</div>
-          <div className="text-xs text-rce-muted">
-            signed {new Date(inv.signedAt).toLocaleDateString()}
-            {inv.signedChannel === "in_person" ? " in person" : inv.signedChannel === "email" ? " from the emailed link" : ""}
-            {inv.sentTo ? ` · sent to ${inv.sentTo}` : " · not emailed"}
-            {inv.job ? ` · job ${inv.job.status.replaceAll("_", " ")}` : " · job not created yet"}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-2 grid gap-2 md:grid-cols-4">
-        <div><span className="text-xs text-rce-soft">Billed</span><p className="font-semibold tabular-nums">{money(inv.billedTotal)}</p></div>
-        <div><span className="text-xs text-rce-soft">Paid</span><p className="font-semibold tabular-nums">{money(inv.totalPaid)}</p></div>
-        <div><span className="text-xs text-rce-soft">Balance</span><p className={`font-semibold tabular-nums ${inv.balance > 0.009 ? "text-red-700" : ""}`}>{money(inv.balance)}</p></div>
-        <div>
-          <span className="text-xs text-rce-soft">Deposit (⅓)</span>
-          <p className="font-semibold tabular-nums">
-            {money(inv.depositDue)} <span className={`ml-1 rounded px-1.5 py-0.5 text-[11px] font-normal ${STATUS_META[inv.paymentStatus].tone}`}>{STATUS_META[inv.paymentStatus].label}</span>
-          </p>
-        </div>
-      </div>
-      {/* One account, two payers (Kyle, 2026-09-10): the homeowner's money and the warranty
-          company's money on their own lines — a RELY check never touches the homeowner's balance. */}
-      {(inv.warrantyCovered ?? 0) > 0 && (
-        <div className="mt-1 text-xs">
-          <p>
-            <span className="font-medium">Homeowner:</span> billed {money(inv.billedTotal)} · paid {money(inv.totalPaid)} · balance {money(inv.balance)}
-          </p>
-          <p className="text-green-700">
-            <span className="font-medium">{inv.warrantyClaim?.company ?? "Warranty company"}:</span> covered {money(inv.warrantyCovered ?? 0)}
-            {" · "}paid {money(inv.warrantyPaid ?? 0)} · balance {money(inv.warrantyBalance ?? inv.warrantyCovered ?? 0)}
-            {inv.warrantyClaim ? ` · claim ${inv.warrantyClaim.claimNumber}${inv.warrantyClaim.authNumber ? `, auth ${inv.warrantyClaim.authNumber}` : ""}` : ""}
-            {inv.warrantyStatus ? ` · ${inv.warrantyStatus}` : ""}
-          </p>
-          <p className="text-rce-muted">Record the warranty company's check on the estimate (account page) — it posts against the claim, not the homeowner.</p>
-        </div>
-      )}
-      {inv.discountTotal > 0 && (
-        <p className="mt-1 text-xs text-emerald-700">includes {money(inv.discountTotal)} discount credit (retired 3% programme)</p>
-      )}
-      {inv.remindersSent > 0 && (
-        <p className="mt-1 text-xs text-rce-muted">
-          reminded {inv.remindersSent}x{inv.lastReminderAt ? ` · last ${new Date(inv.lastReminderAt).toLocaleDateString()}` : ""}
-        </p>
-      )}
-
-      {!paid && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {stripeConfigured && depositOpen && depositRemaining > 0 && (
-            <button className="btn btn-primary text-sm" disabled={emailRequest.isPending} onClick={() => emailRequest.mutate("deposit")}>
-              Email deposit request — {money(depositRemaining)}
-            </button>
-          )}
-          {stripeConfigured && (
-            <button className="btn btn-primary text-sm" disabled={emailRequest.isPending} onClick={() => emailRequest.mutate("balance")}>
-              Email balance request — {money(inv.balance)}
-            </button>
-          )}
-          <button className="btn btn-secondary text-sm" disabled={remind.isPending} onClick={() => remind.mutate()}>
-            {remind.isPending ? "Sending…" : "Send reminder"}
-          </button>
-          <button
-            className="btn btn-secondary text-sm"
-            onClick={() => {
-              setRecording((v) => !v);
-              setKind(depositOpen ? "deposit" : "final");
-              setAmount((depositOpen ? depositRemaining : inv.balance).toFixed(2));
-            }}
-          >
-            Record payment (cash/check/Zelle)
-          </button>
-        </div>
-      )}
-      {!stripeConfigured && !paid && (
-        <p className="mt-2 text-xs text-amber-900">Stripe isn't configured — the email buttons are off; cash/check recording still works.</p>
-      )}
-
-      {recording && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-rce-border p-3">
-          <input className="field w-28" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
-          <select className="field" value={method} onChange={(e) => setMethod(e.target.value as typeof method)}>
-            <option value="check">check</option>
-            <option value="cash">cash</option>
-            <option value="zelle">Zelle</option>
-            <option value="other">other</option>
-          </select>
-          <select className="field" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
-            <option value="deposit">deposit</option>
-            <option value="final">final</option>
-            <option value="other">other</option>
-          </select>
-          <input className="field min-w-0 flex-1" placeholder="Note (check #, etc.)" value={note} onChange={(e) => setNote(e.target.value)} />
-          <button className="btn btn-primary text-sm" disabled={!(Number(amount) > 0) || record.isPending} onClick={() => record.mutate()}>
-            {record.isPending ? "Recording…" : "Record"}
-          </button>
-          <button className="btn text-sm" onClick={() => { setRecording(false); setError(null); }}>Cancel</button>
-        </div>
-      )}
-      {notice && <p className="mt-2 text-xs text-green-700">{notice}</p>}
-      {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
-    </div>
   );
 }
 

@@ -79,11 +79,11 @@ body {
 .field {
   width: 100%;
   min-height: 44px;
-  border: 1px solid var(--rce-border);
+  border: 1px solid var(--rce-soft);
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
-  background: var(--rce-surface);
+  background: #ffffff;
 }
 
 .field:focus {
@@ -109,22 +109,23 @@ body {
 
 .btn-primary {
   background: var(--rce-accent);
-  color: #fff;
+  color: var(--rce-text);
 }
 
 .btn-primary:hover {
   background: var(--rce-accent-dark);
-}
-
-.btn-secondary {
-  background: var(--rce-surface);
-  border-color: var(--rce-border);
   color: var(--rce-text);
 }
 
+.btn-secondary {
+  background: #ffffff;
+  border-color: var(--rce-nav-bg);
+  color: var(--rce-nav-bg);
+}
+
 .btn-danger {
-  background: var(--rce-surface);
+  background: #ffffff;
   color: var(--rce-danger);
-  border-color: rgba(220, 38, 38, 0.25);
+  border-color: var(--rce-danger);
 }
 }

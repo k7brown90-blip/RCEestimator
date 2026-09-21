@@ -1,6 +1,7 @@
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { rateLimit } from "express-rate-limit";
 import { prisma } from "./lib/prisma";
@@ -18,15 +19,16 @@ import { logSystemEvent } from "./services/systemEvents";
 import { applyCallDisposition } from "./services/callDisposition";
 import { truncate } from "./routes/agent-helpers";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
-import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail } from "./services/confirmationEmail";
+import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail, escapeHtml } from "./services/confirmationEmail";
 import {
   getCrmOverview,
-  getCycleTimeMetrics,
+  getFourPhaseFunnel,
   getLeadFollowUpMetrics,
   getLeadFunnelMetrics,
-  getWinLossMetrics,
   resolveAnalyticsRange,
 } from "./services/crmAnalytics";
+import { collectedByCustomer, lifetimeCollectedFor } from "./services/lifetimeCollected";
+import { LEAD_PLATFORMS, normalizeLeadPlatform } from "../shared/leadPlatform";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { accessLogMiddleware } from "./middleware/accessLog";
@@ -73,8 +75,11 @@ import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
+import { groupSignedRows, INVOICE_DOC_SELECT, LIVE_SIGNED_CHANGE_ORDER, rollupInvoice, signedRootForJob, type InvoiceDocRow } from "./services/invoiceGroup";
+import { LOSABLE_STATUSES, LOST_REASONS as SHARED_LOST_REASONS } from "../shared/estimateStatus";
+import { reopenedStatusOf } from "./services/estimateExpiry";
 import {
-  OFF_CARD_METHODS, PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
+  OFF_CARD_METHODS, PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, RECEIPT_HAS_FILE, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
   defaultTruckId, detachReceiptFromPurchaseOrder, editPurchaseOrderLine, jobLabelOf, parseStatusFilter,
   removePurchaseOrderLine, serializePurchaseOrder, setPurchaseOrderMoney, transitionPurchaseOrder, updatePurchaseOrder,
 } from "./services/purchaseOrders";
@@ -82,16 +87,19 @@ import QRCode from "qrcode";
 import { financialsRouter } from "./routes/financials";
 import { emailBouncesRouter } from "./routes/emailBounces";
 import { emailDeliveriesRouter } from "./routes/emailDeliveries";
+import { communicationsRouter } from "./routes/communications";
+import { searchRouter } from "./routes/search";
 import { trucksRouter } from "./routes/trucks";
 import { timeRouter } from "./routes/time";
 import { treasuryRouter } from "./routes/treasury";
+import { bankRouter } from "./routes/bank";
 import { inventoryRouter } from "./routes/inventory";
 import { materialsRouter } from "./routes/materials";
 // Kyle, 2026-09-11: the office can photograph a receipt straight onto a PO; Vision reads it.
 import { parseReceiptImage } from "./services/receiptVision";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
-import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs } from "./services/jobCosting";
+import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs, MATERIAL_SPEND_KINDS } from "./services/jobCosting";
 import { closeOutMaterialWarning, consumeForJob, jobMaterials, materialNeedListForJob, returnForJob } from "./services/jobMaterials";
 import { renderMaterialsListPdf } from "./services/materialsListPdf";
 import { parseJsonStringArray } from "./lib/json";
@@ -114,7 +122,7 @@ import {
   EXCLUDE_TEST_ACCOUNT,
   EXCLUDE_TEST_JOB,
 } from "./services/accountSpine";
-import { sendEstimateEmail, sendInvoiceEmail, estimateLink, notifyOwnerSigned } from "./services/issuedEstimateSend";
+import { sendEstimateEmail, sendInvoiceEmail, estimateLink, notifyOwnerSigned, publicBaseUrl } from "./services/issuedEstimateSend";
 // Transactional email delivery tracking (Kyle, 2026-09-09: "very few are actually getting through").
 import { lastDeliveriesForEstimates } from "./services/transactionalEmail";
 import { handleResendWebhook } from "./services/resendWebhook";
@@ -874,10 +882,21 @@ app.post("/leads", asyncHandler(async (req, res) => {
     return;
   }
 
-  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; notes?: string; address?: string; jobType?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string; contactPreference?: string; leadStatus?: string; bestTimeToReach?: string; customerId?: string; propertyId?: string; smsConsent?: boolean };
+  const body = req.body as { name?: string; email?: string; phone?: string; source?: string; platform?: string; notes?: string; address?: string; jobType?: string; callType?: string; referredBy?: string; urgentFlag?: boolean; warrantyCall?: boolean; warrantyNote?: string; estimateId?: string; existingVisitId?: string; contactPreference?: string; leadStatus?: string; bestTimeToReach?: string; customerId?: string; propertyId?: string; smsConsent?: boolean };
   if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
     res.status(400).json({ error: "name is required" });
     return;
+  }
+
+  // WHICH PLATFORM sent it (Kyle, 2026-09-20): the website form sends it where it knows it.
+  // Normalised loosely and never refused — the site is outside this repo and a misspelt value
+  // must not cost a lead. Unrecognised -> null ("unknown" in the funnel), logged so the site
+  // can be corrected.
+  const platform = normalizeLeadPlatform(body.platform);
+  if (body.platform && !platform) {
+    logSystemEvent("warn", "leads", `Intake sent an unrecognised platform "${String(body.platform)}" — stored as unknown`, {
+      route: "POST /leads", name: body.name.trim(), source: body.source ?? "email",
+    });
   }
 
   const lead = await prisma.lead.create({
@@ -886,6 +905,7 @@ app.post("/leads", asyncHandler(async (req, res) => {
       email: body.email?.trim() || null,
       phone: body.phone?.trim() || null,
       source: body.source || "email",
+      platform,
       notes: body.notes?.trim() || null,
       address: body.address?.trim() || null,
       jobType: body.jobType?.trim() || null,
@@ -1320,9 +1340,21 @@ app.get("/pay/:token", asyncHandler(async (req, res) => {
   }
   const typeParam = payType === "deposit" ? "?type=deposit" : "";
   const btn = "display:block;margin:10px 0;padding:16px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:600;";
+  // One invoice, one payment (Kyle, 2026-09-20): when signed change orders have joined this
+  // invoice, the customer sees what the total is made of before they pay it.
+  const documentsHtml = chargeable.documents.length > 1
+    ? `<table style="width:100%;font-size:13px;border-collapse:collapse;margin:8px 0 12px;text-align:left;">
+        ${chargeable.documents.map((d) =>
+          `<tr><td style="padding:3px 0;color:#444;">${d.kind === "change_order" ? "Change order" : "Invoice"} ${escapeHtml(d.number)} — ${escapeHtml(d.title)}</td>
+           <td style="text-align:right;padding:3px 0;">$${d.billedTotal.toFixed(2)}</td></tr>`).join("")}
+        <tr style="border-top:1px solid #1a5c2e;"><td style="padding:4px 0;font-weight:600;">Invoice total</td>
+          <td style="text-align:right;padding:4px 0;font-weight:600;">$${chargeable.documents.reduce((n, d) => n + d.billedTotal, 0).toFixed(2)}</td></tr>
+      </table>`
+    : "";
   res.send(page(`
     <p style="font-size:15px;">${payType === "deposit" ? "Deposit (1/3)" : "Payment"} on invoice
     <b>${chargeable.number}</b> — ${chargeable.title}</p>
+    ${documentsHtml}
     <p style="font-size:14px;">Amount due: <b>$${chargeable.amount.toFixed(2)}</b></p>
     <a style="${btn}background:#1a5c2e;color:#fff;" href="/pay/${token}/checkout${typeParam}">
       Pay now — $${chargeable.amount.toFixed(2)}
@@ -1416,6 +1448,20 @@ app.patch("/leads/:id/lost", asyncHandler(async (req, res) => {
   res.json(lead);
 }));
 
+/**
+ * PATCH /leads/:id/won — the automation door's "this lead came through" (webhook secret; no
+ * consumer in this repo, PUNCHLIST A2).
+ *
+ * Until 2026-09-20 this stamped `status: "converted"` with no account, property or job behind
+ * it — the same orphan-lead bug Phase 0 fixed on the Dashboard: an undeletable lead and a false
+ * count. Kyle's ruling: a lead-stage success IS the opportunity, so this now CONVERTS through the
+ * same path the CRM uses (account + address + job + newsletter) and answers with a clear error
+ * when it cannot — no usable address, or a possible duplicate account (it never adopts a match
+ * on its own). Nothing is written on a refusal, so the lead stays fixable.
+ *
+ * EVERY call is logged as a SystemEvent (source "leads-won") so the closing audit can see
+ * whether anything calls this at all; if nothing does, the route is deleted then.
+ */
 app.patch("/leads/:id/won", asyncHandler(async (req, res) => {
   const secret = req.headers["webhook_secret"];
   if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
@@ -1423,15 +1469,28 @@ app.patch("/leads/:id/won", asyncHandler(async (req, res) => {
     return;
   }
 
-  const lead = await prisma.lead.update({
-    where: { id: readParam(req, "id") },
-    data: {
-      leadStatus: "won",
-      status: "converted",
-    },
-  });
-
-  res.json(lead);
+  const leadId = readParam(req, "id");
+  const outcome = await convertLeadToOpportunity(leadId, {});
+  logSystemEvent(outcome.ok ? "info" : "warn", "leads-won",
+    outcome.ok
+      ? `PATCH /leads/${leadId}/won converted the lead into an opportunity (account ${outcome.result.customer.id})`
+      : `PATCH /leads/${leadId}/won could not convert: ${String(outcome.body.error)}`,
+    {
+      route: "PATCH /leads/:id/won",
+      leadId,
+      status: outcome.ok ? 200 : outcome.status,
+      customerId: outcome.ok ? outcome.result.customer.id : null,
+      visitId: outcome.ok ? outcome.result.visit?.id ?? null : null,
+      userAgent: req.headers["user-agent"] ?? null,
+    });
+  if (!outcome.ok) {
+    res.status(outcome.status).json(outcome.body);
+    return;
+  }
+  // The lead row is what this route always returned, so whatever calls it still reads the same
+  // fields; the account, address and job it created ride alongside under `opportunity`.
+  const { lead, ...opportunity } = outcome.result;
+  res.json({ ...lead, opportunity });
 }));
 
 app.get("/leads/loss-report", asyncHandler(async (req, res) => {
@@ -1453,9 +1512,11 @@ app.get("/leads/loss-report", asyncHandler(async (req, res) => {
     },
   });
 
-  const won = allLeads.filter((l) => l.leadStatus === "won").length;
+  // "won" at the lead stage means BECAME AN OPPORTUNITY (Kyle, 2026-09-20) — this report is
+  // phase 1 of the funnel, never a win rate. The win rate is estimate -> job, on the Dashboard.
+  const opportunities = allLeads.filter((l) => l.leadStatus === "won").length;
   const lost = allLeads.filter((l) => l.leadStatus === "lost").length;
-  const total = won + lost;
+  const total = opportunities + lost;
 
   // Group lost reasons
   const reasonCounts: Record<string, number> = {};
@@ -1467,11 +1528,33 @@ app.get("/leads/loss-report", asyncHandler(async (req, res) => {
 
   res.json({
     total,
-    won,
+    opportunities,
     lost,
-    winRate: total > 0 ? Math.round((won / total) * 100) : 0,
+    opportunityRate: total > 0 ? Math.round((opportunities / total) * 100) : 0,
     lossReasons: reasonCounts,
   });
+}));
+
+/**
+ * GET /leads/:leadId — one lead, for editing a single row (LeadFormPage.tsx
+ * used to fetch the entire `GET /leads` collection and `.find()` the one it
+ * wanted, Kyle 2026-09-20 drawers plan).
+ *
+ * Registered AFTER /leads/follow-ups-due and /leads/loss-report above — both
+ * are literal paths and webhook-authenticated automation pulls; a :leadId
+ * route registered before them would shadow both silently (trap 5 in the
+ * drawers plan). This route requires a normal session like GET /leads does
+ * and is deliberately absent from publicRoutes.ts.
+ *
+ * Returns the SAME shape GET /leads returns — post-processed through
+ * attachLinkedVisits, so a single-lead fetch is not a differently-shaped Lead
+ * than the list the client already types.
+ */
+app.get("/leads/:leadId", asyncHandler(async (req, res) => {
+  const lead = await prisma.lead.findUnique({ where: { id: readParam(req, "leadId") } });
+  if (!lead) { res.status(404).json({ error: "Lead not found" }); return; }
+  const [withLinkedVisit] = await attachLinkedVisits([lead]);
+  res.json(withLinkedVisit);
 }));
 
 // ─── E-SIGNATURE FLOW (no auth — public signing page) ──────────────────────
@@ -1839,12 +1922,24 @@ app.use("/agent/calendar", sharedAgentRouter);
 // ─── HEALTH RECORD PWA (per-technician bearer auth, not the CRM session) ─────
 app.use("/health-record", healthRecordTechRouter);
 app.use("/financials", financialsRouter);
+// Bank statements (Kyle, 2026-09-20): the account registry, manual statement uploads, the
+// classification queue and the confirmations — /bank/*. Session-only; money, so it sits with
+// Financials (routes/bank.ts says why not Purchasing).
+app.use(bankRouter);
 // Bounced customer emails (Kyle, 2026-09-09: "very few are actually getting through") — the
 // list, the resolve door, and the manual poll. Session-only, like everything after pinAuth.
 app.use(emailBouncesRouter);
 // Email deliveries + transport status (Kyle, 2026-09-09: Resend-first transactional email) —
 // /email-deliveries, /email-status. Session-only.
 app.use(emailDeliveriesRouter);
+// Free-form single-recipient follow-up email, for the lead/account/job drawers (2026-09-20
+// communications build) — /communications/email. Session-only, same as everything above.
+app.use(communicationsRouter);
+// Global search (2026-09-20, drawers plan Phase 5) — GET /search: names, addresses, phone digits,
+// estimate and P.O. numbers across six record kinds, ranked numbers-first, capped per kind; each
+// result names the drawer to open. Session-only, NOT in publicRoutes.ts (it returns the whole
+// customer base's contact details). services/globalSearch.ts.
+app.use(searchRouter);
 // Trucks, cards, card spend (Kyle, 2026-09-09) — /trucks, /card-spend.
 app.use(trucksRouter);
 // Time and payroll (Kyle, 2026-09-11): two clocks kept separate — /time/*.
@@ -2760,6 +2855,9 @@ app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
       status: review.draft.status,
       rateProvisional: review.draft.rateProvisional,
       provisionalReason: review.draft.provisionalReason,
+      // A change-order draft (2026-09-20): the issue panel defaults its deposit off and offers
+      // "add to current job" only when this is set.
+      changeOrderForId: review.draft.changeOrderForId,
     },
     proposedLines: review.proposedLines.map((l) => ({
       id: l.id, itemId: l.itemId, description: l.atomic?.description ?? null,
@@ -2880,6 +2978,10 @@ app.post("/price-book/drafts/:draftId/issue", asyncHandler(async (req, res) => {
     waiveTrip: z.boolean().optional(),
     // P031: operator's explicit choice to attach the generator one-pager.
     includeGenerator: z.boolean().optional(),
+    // The deposit checkbox (Kyle, 2026-09-20) — absent means the default: on for an estimate,
+    // off for a change order. And "add to current job", change orders only.
+    depositRequired: z.boolean().optional(),
+    addToCurrentJob: z.boolean().optional(),
   }).parse(req.body ?? {});
 
   const draftId = String(req.params.draftId);
@@ -2920,6 +3022,8 @@ app.post("/price-book/drafts/:draftId/issue", asyncHandler(async (req, res) => {
         // P031: operator chose to attach the generator one-pager (the human
         // approval; the field tech's include flag proposed it).
         includeGenerator: body.includeGenerator ?? false,
+        depositRequired: body.depositRequired,
+        addToCurrentJob: body.addToCurrentJob,
         createdBy: "human:crm-session",
       });
 
@@ -3024,6 +3128,10 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
       sentAt: r.sentAt,
       signedAt: r.signedAt,
       signedChannel: r.signedChannel,
+      // Lost (2026-09-20): when and why the customer said no — the Estimates page's Lost card.
+      lostAt: r.lostAt,
+      lostReason: r.lostReason,
+      lostNotes: r.lostNotes,
       // Kyle, 2026-09-07 (Estimates sectioned into Sent / Viewed / Sold): the page derives
       // "expired" from sentAt + validDays, so the window rides along. Additive — nothing
       // that read this payload before is changed.
@@ -3052,6 +3160,8 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
       events: { orderBy: { at: "asc" } },
       supersededBy: { select: { id: true, number: true, revision: true } },
       supersedes: { select: { id: true, number: true, revision: true } },
+      // The invoice a change order joins (2026-09-20) — its number, for the panel.
+      changeOrderFor: { select: { id: true, number: true } },
     },
   });
   if (!est) {
@@ -3059,7 +3169,8 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
     return;
   }
   // The operator DOES get the link — it is how Kyle previews what the customer will see.
-  res.json({ estimate: est, customerLink: estimateLink(est.token) });
+  const { changeOrderFor, ...row } = est;
+  res.json({ estimate: { ...row, changeOrderForNumber: changeOrderFor?.number ?? null }, customerLink: estimateLink(est.token) });
 }));
 
 app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
@@ -3191,7 +3302,7 @@ app.post("/issued-estimates/:id/void", asyncHandler(async (req, res) => {
     where: { id },
     select: {
       id: true, number: true, revision: true, signedAt: true, voidedAt: true, status: true,
-      jobVisitId: true, visitId: true,
+      jobVisitId: true, visitId: true, changeOrderForId: true,
     },
   });
   if (!est) {
@@ -3208,6 +3319,33 @@ app.post("/issued-estimates/:id/void", asyncHandler(async (req, res) => {
   if (est.voidedAt || est.status === "void") {
     res.status(409).json({ voided: false, error: "This estimate is already void." });
     return;
+  }
+
+  /*
+    ── A ROOT WITH LIVE CHANGE ORDERS IS REFUSED (2026-09-20) ────────────────────────────────────
+    A signed change order's money lives on this invoice (services/invoiceGroup.ts). Voiding the
+    root out from under it would either strand the change order as an invoice of its own — the
+    exact defect the roll-up removed — or void documents Kyle never named with a reason he typed
+    for a different one. So: void the change orders first, each with its own reason on its own
+    trail, then the root. Voiding ONE change order out of several is the ordinary path below — its
+    share leaves the invoice, the job stays open for the rest (`otherLiveEstimates`).
+  */
+  if (!est.changeOrderForId) {
+    const liveChangeOrders = await prisma.issuedEstimate.findMany({
+      where: { changeOrderForId: est.id, ...LIVE_SIGNED_CHANGE_ORDER },
+      select: { id: true, number: true },
+      orderBy: { signedAt: "asc" },
+    });
+    if (liveChangeOrders.length > 0) {
+      res.status(409).json({
+        voided: false,
+        error:
+          `Signed change order${liveChangeOrders.length > 1 ? "s" : ""} ${liveChangeOrders.map((c) => c.number).join(", ")} ` +
+          `still belong${liveChangeOrders.length > 1 ? "" : "s"} to this invoice. Void ${liveChangeOrders.length > 1 ? "them" : "it"} first, then this estimate.`,
+        changeOrders: liveChangeOrders,
+      });
+      return;
+    }
   }
 
   /*
@@ -3348,6 +3486,105 @@ app.post("/issued-estimates/:id/void", asyncHandler(async (req, res) => {
   });
 }));
 
+/*
+  ── LOST, THE CUSTOMER'S DECISION (Kyle, 2026-09-20) ──────────────────────────────────────────
+
+  "The mark lost would also live with an estimate for when we give an estimate but they either
+  hire someone else or end up not moving forward with the job."
+
+  This is the row the WIN RATE reads (Estimate -> Job, the third funnel phase). Until it existed a
+  quote lost to another contractor was indistinguishable from one still sitting out, so the rate
+  could not be computed at all. LOST IS NOT VOID: void is a dead document (wrong price, cancelled
+  job) and leaves the denominator; lost is a real quote the customer turned down and stays in it.
+
+  Reachable from sent, viewed or expired only. A draft never went out — delete it. A signed
+  estimate is a sale — void it. Each refusal names the door to use. The reason comes from the SAME
+  list leads use (shared/estimateStatus.ts LOST_REASONS), so the loss report is one report.
+
+  Nothing else moves: an unsigned estimate has no job, no invoice, no payments. What changes for
+  the customer is that the link still READS but no longer signs, and nothing about it is sent,
+  nudged, swept or handed to a technician until it is reopened.
+*/
+app.post("/issued-estimates/:id/lost", asyncHandler(async (req, res) => {
+  const body = z.object({
+    reason: z.enum(LOST_REASONS),
+    notes: z.string().trim().max(2000).nullable().optional(),
+  }).parse(req.body ?? {});
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: readParam(req, "id") },
+    select: { id: true, number: true, revision: true, status: true, signedAt: true, voidedAt: true, lostAt: true, supersededBy: { select: { revision: true } } },
+  });
+  if (!est) { res.status(404).json({ lost: false, error: "Estimate not found." }); return; }
+  if (est.status === "lost" || est.lostAt) {
+    res.status(409).json({ lost: false, error: "This estimate is already marked lost." });
+    return;
+  }
+  if (est.status === "void" || est.voidedAt) {
+    res.status(409).json({ lost: false, error: "This estimate is void — a void document is not a lost quote." });
+    return;
+  }
+  if (est.signedAt || est.status === "signed") {
+    res.status(409).json({ lost: false, error: "This estimate is signed — it is a sale, not a lost quote. Void it instead if the job is off." });
+    return;
+  }
+  if (est.supersededBy) {
+    res.status(409).json({ lost: false, error: `This revision was replaced by rev ${est.supersededBy.revision} — mark that one lost.` });
+    return;
+  }
+  if (!(LOSABLE_STATUSES as readonly string[]).includes(est.status)) {
+    // Only "draft" reaches here today; written as an allow-list so a future status is refused
+    // rather than silently accepted.
+    res.status(409).json({ lost: false, error: "This estimate was never sent to the customer — delete it instead, or send it first." });
+    return;
+  }
+  const notes = body.notes?.trim() || null;
+  await prisma.$transaction(async (tx) => {
+    await tx.issuedEstimate.update({
+      where: { id: est.id },
+      data: { status: "lost", lostAt: new Date(), lostReason: body.reason, lostNotes: notes },
+    });
+    await tx.issuedEstimateEvent.create({
+      data: { estimateId: est.id, type: "lost", actor: "human:crm-session", detail: `${body.reason}${notes ? `: ${notes}` : ""} (was ${est.status})` },
+    });
+  });
+  logSystemEvent("info", "issued-estimate", `Estimate ${est.number} rev ${est.revision} marked lost: ${body.reason}`, {
+    estimateId: est.id, reason: body.reason, from: est.status, actor: "human:crm-session",
+  });
+  res.json({ lost: true, reason: body.reason, notes });
+}));
+
+/*
+  The way back out (Kyle's standing rule: nothing is made that cannot be adjusted). A quote marked
+  lost by mistake — or a customer who comes back — returns to where it was: viewed if they had
+  opened it, sent if not, expired if its window has since closed (the same date arithmetic the
+  sweep uses, so it does not read "sent" for a day and then flip overnight).
+*/
+app.post("/issued-estimates/:id/reopen", asyncHandler(async (req, res) => {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: readParam(req, "id") },
+    select: { id: true, number: true, revision: true, status: true, lostAt: true, lostReason: true, firstViewedAt: true, createdAt: true, validDays: true },
+  });
+  if (!est) { res.status(404).json({ reopened: false, error: "Estimate not found." }); return; }
+  if (est.status !== "lost" && !est.lostAt) {
+    res.status(409).json({ reopened: false, error: "This estimate is not marked lost — nothing to reopen." });
+    return;
+  }
+  const status = reopenedStatusOf(est);
+  await prisma.$transaction(async (tx) => {
+    await tx.issuedEstimate.update({
+      where: { id: est.id },
+      data: { status, lostAt: null, lostReason: null, lostNotes: null },
+    });
+    await tx.issuedEstimateEvent.create({
+      data: { estimateId: est.id, type: "reopened", actor: "human:crm-session", detail: `back to ${status}${est.lostReason ? ` (had been lost: ${est.lostReason})` : ""}` },
+    });
+  });
+  logSystemEvent("info", "issued-estimate", `Estimate ${est.number} rev ${est.revision} reopened — back to ${status}`, {
+    estimateId: est.id, status, actor: "human:crm-session",
+  });
+  res.json({ reopened: true, status });
+}));
+
 app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
   const body = z.object({ waiveTrip: z.boolean().optional() }).parse(req.body ?? {});
   const result = await reviseEstimate(prisma, String(req.params.id), {
@@ -3416,6 +3653,23 @@ app.get("/issued-estimates/:id/customer-view", asyncHandler(async (req, res) => 
  * never reaches this route: their document is the token-scoped page in routes/estimatePage.ts.
  */
 /**
+ * The invoice a signed document belongs to, for the PDF's appendix (2026-09-20). Null when the
+ * invoice is just this one document — an ordinary estimate with no change orders prints as it
+ * always has.
+ */
+async function invoiceAppendixFor(estimateId: string) {
+  const summary = await paymentSummary(prisma, estimateId, publicBaseUrl());
+  if (!summary || summary.documents.length < 2) return null;
+  return {
+    number: summary.number,
+    documents: summary.documents.map((d) => ({ number: d.number, title: d.title, kind: d.kind, billedTotal: d.billedTotal, signedAt: d.signedAt })),
+    billedTotal: summary.billedTotal,
+    totalPaid: summary.totalPaid,
+    balance: summary.balance,
+  };
+}
+
+/**
  * Raise a change order against a SIGNED estimate.
  *
  * Kyle, 2026-08-19: *"Nothing will revise the already signed quote. If a change is deemed
@@ -3443,14 +3697,18 @@ app.post("/issued-estimates/:id/change-order", asyncHandler(async (req, res) => 
     return;
   }
 
+  // Always the ROOT invoice (2026-09-20): a change order raised against a change order joins
+  // the same invoice as its parent, so the money group stays one level deep.
+  const rootId = est.changeOrderForId ?? est.id;
+  const root = rootId === est.id ? est : (await prisma.issuedEstimate.findUnique({ where: { id: rootId } })) ?? est;
   const draft = await prisma.priceBookDraftEstimate.create({
     data: {
-      title: `Change order — ${est.number}`,
-      changeOrderForId: est.id,
+      title: `Change order — ${root.number}`,
+      changeOrderForId: root.id,
       // The draft's spine mirrors the estimate's: same account, same job. The address lives on
       // the issued estimate rather than the draft, and graduation re-derives it there.
-      customerId: est.customerId,
-      visitId: est.jobVisitId ?? est.visitId,
+      customerId: root.customerId,
+      visitId: root.jobVisitId ?? root.visitId ?? est.jobVisitId ?? est.visitId,
       // Same default the ordinary create-draft route uses: the configured active supplier,
       // falling back to HD. A change order prices against today's supplier, not the one that was
       // active when the original was signed — the material is bought now.
@@ -3464,7 +3722,7 @@ app.post("/issued-estimates/:id/change-order", asyncHandler(async (req, res) => 
     draftId: draft.id,
   });
 
-  res.status(201).json({ draftId: draft.id, changeOrderFor: est.number });
+  res.status(201).json({ draftId: draft.id, changeOrderFor: root.number });
 }));
 
 app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
@@ -3481,6 +3739,9 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
     return;
   }
 
+  // The invoice this document is part of (2026-09-20): printed beneath a signed document when
+  // change orders have joined it, so the PDF says what the whole invoice comes to.
+  const invoiceAppendix = est.signedAt ? await invoiceAppendixFor(est.id) : null;
   const pdf = await renderEstimatePdf(
     {
       number: est.number,
@@ -3495,6 +3756,7 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       signedByName: est.signerName,
       signatureImage: est.signatureImage,
       createdAt: est.createdAt,
+      invoice: invoiceAppendix,
       // The named options, so the PDF prints "Option B — Exterior pathway lights" rather than a
       // bare letter, and drops what the customer declined once it is signed.
       options: est.options,
@@ -3568,11 +3830,14 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
   // door manual (his ruling, same date). Idempotent, and never able to fail the signature:
   // if job creation breaks, the client just falls back to the old Done button.
   let jobVisitId: string | null = null;
+  // A change order that joined the CURRENT job (Kyle, 2026-09-20) — the signed screen then has
+  // nothing new to schedule and says so instead of offering the calendar.
+  let jobJoined = false;
   try {
     const job = await createJobFromSignedEstimate(prisma, result.estimateId, {
       actor: "system:sign-in-person",
     });
-    if (job.ok) jobVisitId = job.visitId;
+    if (job.ok) { jobVisitId = job.visitId; jobJoined = Boolean(job.joined); }
     else console.error("[IssuedEstimate] job creation after in-person sign refused:", job.reason);
   } catch (err) {
     console.error("[IssuedEstimate] job creation after in-person sign failed:", err);
@@ -3605,7 +3870,7 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
     }, 10 * 60_000);
   }
 
-  res.json({ signed: true, estimateId: result.estimateId, jobVisitId });
+  res.json({ signed: true, estimateId: result.estimateId, jobVisitId, jobJoined });
 }));
 
 // ─── THE ACCOUNT SPINE (P029) ────────────────────────────────────────────────
@@ -3618,20 +3883,27 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
  *
  * Read-only. Creation lives on the account and the visit, never here (the full-move ruling).
  */
-app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
-  const accountId = String(req.params.accountId);
-  const addressId = readQuery(req, "serviceAddressId")?.trim();
+/** The include every account-row projection of an issued estimate needs. */
+const ACCOUNT_ESTIMATE_INCLUDE = {
+  serviceProperty: { select: { id: true, name: true, addressLine1: true, city: true } },
+  supersededBy: { select: { id: true, revision: true } },
+  options: { select: { option: true, subtotal: true } },
+} satisfies Prisma.IssuedEstimateInclude;
 
-  const estimates = await prisma.issuedEstimate.findMany({
-    where: { customerId: accountId, ...(addressId ? { serviceAddressId: addressId } : {}) },
-    orderBy: { createdAt: "desc" },
-    include: {
-      serviceProperty: { select: { id: true, name: true, addressLine1: true, city: true } },
-      supersededBy: { select: { id: true, revision: true } },
-      options: { select: { option: true, subtotal: true } },
-    },
-  });
+type AccountEstimateRow = Prisma.IssuedEstimateGetPayload<{ include: typeof ACCOUNT_ESTIMATE_INCLUDE }>;
 
+/**
+ * The account-page row for issued estimates — shared by the per-account list and the
+ * single-record read the estimate DRAWER uses (2026-09-20, drawers plan Phase 1), so the two can
+ * never disagree on money.
+ *
+ * NO CAPABILITY TOKEN LEAVES HERE. `IssuedEstimate.token` is the customer's unrevokable
+ * read-and-sign link (PUNCHLIST B4); the list used to spread the whole row and so shipped it to
+ * every account page. Nothing in the client ever read it, so it is stripped, not moved. The one
+ * route that deliberately hands the operator the link is GET /issued-estimates/:id (its
+ * `customerLink`), for previewing what the customer sees — the drawer does not call that route.
+ */
+async function serializeAccountEstimateRows(estimates: AccountEstimateRow[]) {
   /*
     ── THE ROW SHOWS WHAT THE DOCUMENT BILLS (Kyle, 2026-08-22) ────────────────────────────────
 
@@ -3657,7 +3929,16 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
       if (r.estimateId) warrantyPaidById.set(r.estimateId, Math.round(((warrantyPaidById.get(r.estimateId) ?? 0) + r.amount) * 100) / 100);
     }
   }
-  const rows = estimates.map((e) => {
+  // A change order names the invoice it joins (2026-09-20). Usually on the same account list;
+  // looked up when the parent sits at another address.
+  const numberById = new Map(estimates.map((e) => [e.id, e.number]));
+  const missingParents = [...new Set(estimates.map((e) => e.changeOrderForId).filter((id): id is string => Boolean(id) && !numberById.has(id!)))];
+  if (missingParents.length > 0) {
+    for (const p of await prisma.issuedEstimate.findMany({ where: { id: { in: missingParents } }, select: { id: true, number: true } })) {
+      numberById.set(p.id, p.number);
+    }
+  }
+  return estimates.map((e) => {
     // Same arithmetic as before — an unsigned row bills its quoted total, a signed one what was
     // taken — routed through billedTotalOf so the home-warranty credit (Kyle, 2026-09-09) comes
     // off here exactly as it does on the invoice, the Jobs tab, and the account summary.
@@ -3671,8 +3952,11 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
       optionsSubtotals: e.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
     };
     const coverage = warrantyCoverageOf(money);
+    // The capability link stays on the server (see the function comment).
+    const { token, ...safe } = e;
+    void token;
     return {
-      ...e,
+      ...safe,
       billedTotal: billedTotalOf(money),
       // What the warranty company is credited (already off billedTotal) — the row reads
       // "billed $55 · warranty −$370" so the numbers add up on the page.
@@ -3682,10 +3966,89 @@ app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
       warrantyPaid: coverage ? (warrantyPaidById.get(e.id) ?? 0) : 0,
       // The last email's delivery state (Kyle, 2026-09-09). Additive.
       lastDelivery: lastDeliveryById.get(e.id) ?? null,
+      // The invoice this change order joins (2026-09-20). Null on an ordinary estimate.
+      changeOrderForNumber: e.changeOrderForId ? (numberById.get(e.changeOrderForId) ?? null) : null,
     };
   });
+}
 
-  res.json({ estimates: rows });
+app.get("/accounts/:accountId/estimates", asyncHandler(async (req, res) => {
+  const accountId = String(req.params.accountId);
+  const addressId = readQuery(req, "serviceAddressId")?.trim();
+
+  const estimates = await prisma.issuedEstimate.findMany({
+    where: { customerId: accountId, ...(addressId ? { serviceAddressId: addressId } : {}) },
+    orderBy: { createdAt: "desc" },
+    include: ACCOUNT_ESTIMATE_INCLUDE,
+  });
+
+  res.json({ estimates: await serializeAccountEstimateRows(estimates) });
+}));
+
+/**
+ * One issued estimate in the ACCOUNT-ROW projection — what the estimate drawer reads
+ * (2026-09-20, drawers plan Phase 1: "the record carries its own actions").
+ *
+ * Not GET /issued-estimates/:id: that one returns `customerLink` and the raw row's `token` for
+ * the operator's preview, and a drawer payload must never carry a capability link (PUNCHLIST
+ * B4). This is the same serializer as the per-account list, minus nothing the drawer needs.
+ */
+app.get("/issued-estimates/:id/record", asyncHandler(async (req, res) => {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: String(req.params.id) },
+    include: ACCOUNT_ESTIMATE_INCLUDE,
+  });
+  if (!est) {
+    res.status(404).json({ error: "Estimate not found." });
+    return;
+  }
+  const [row] = await serializeAccountEstimateRows([est]);
+  res.json({ estimate: row });
+}));
+
+/*
+  ── THE TERMS KYLE CAN CHANGE AFTER ISSUE (2026-09-20) ────────────────────────────────────────
+  Kyle's standing rule: everything the app creates is editable from where it is shown. The
+  deposit flag ("a deposit required check box for a manual override") is a TERM, not the price —
+  it moves after signing like the warranty tracking dates do, with an event on the trail; the
+  frozen document does not change. "Add to current job" decides what signing does, so it is
+  changeable only until the change order has a job.
+*/
+app.patch("/issued-estimates/:id/terms", asyncHandler(async (req, res) => {
+  const body = z.object({
+    depositRequired: z.boolean().optional(),
+    addToCurrentJob: z.boolean().optional(),
+  }).parse(req.body ?? {});
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: readParam(req, "id") },
+    select: { id: true, number: true, status: true, voidedAt: true, changeOrderForId: true, jobVisitId: true, depositRequired: true, addToCurrentJob: true },
+  });
+  if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
+  if (est.status === "void" || est.voidedAt) { res.status(409).json({ error: "This estimate is void." }); return; }
+  // A lost quote is frozen except for reopen (2026-09-20): its terms only matter once it is live again.
+  if (est.status === "lost") { res.status(409).json({ error: "This estimate is marked lost — reopen it before changing its terms." }); return; }
+  const changes: string[] = [];
+  const data: { depositRequired?: boolean; addToCurrentJob?: boolean } = {};
+  if (body.depositRequired !== undefined && body.depositRequired !== est.depositRequired) {
+    data.depositRequired = body.depositRequired;
+    changes.push(`deposit ${body.depositRequired ? "required" : "not required"}`);
+  }
+  if (body.addToCurrentJob !== undefined && body.addToCurrentJob !== est.addToCurrentJob) {
+    if (!est.changeOrderForId) { res.status(400).json({ error: "Only a change order can be added to the current job." }); return; }
+    if (est.jobVisitId) { res.status(409).json({ error: "This change order already has its job — that cannot be changed here." }); return; }
+    data.addToCurrentJob = body.addToCurrentJob;
+    changes.push(body.addToCurrentJob ? "adds to the current job when signed" : "schedules as its own job when signed");
+  }
+  if (changes.length === 0) { res.json({ ok: true, depositRequired: est.depositRequired, addToCurrentJob: est.addToCurrentJob }); return; }
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.issuedEstimate.update({ where: { id: est.id }, data, select: { depositRequired: true, addToCurrentJob: true } });
+    await tx.issuedEstimateEvent.create({
+      data: { estimateId: est.id, type: "terms_changed", actor: "human:crm-session", detail: changes.join("; ") },
+    });
+    return row;
+  });
+  logSystemEvent("info", "issued-estimate", `Estimate ${est.number}: ${changes.join("; ")}`, { estimateId: est.id });
+  res.json({ ok: true, ...updated });
 }));
 
 /*
@@ -3739,6 +4102,10 @@ app.patch("/issued-estimates/:id/warranty", asyncHandler(async (req, res) => {
   if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
   if (est.status === "void" || est.voidedAt) {
     res.status(409).json({ error: "This estimate is void — warranty coverage cannot be changed on it." });
+    return;
+  }
+  if (est.status === "lost") {
+    res.status(409).json({ error: "This estimate is marked lost — reopen it before changing warranty coverage." });
     return;
   }
   if (est.signedAt) {
@@ -3854,6 +4221,10 @@ app.patch("/issued-estimates/:id/warranty/tracking", asyncHandler(async (req, re
   if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
   if (est.status === "void" || est.voidedAt) {
     res.status(409).json({ error: "This estimate is void — the claim cannot be tracked on it." });
+    return;
+  }
+  if (est.status === "lost") {
+    res.status(409).json({ error: "This estimate is marked lost — reopen it before tracking a claim on it." });
     return;
   }
   const claim = parseWarrantyJson(est.warrantyJson);
@@ -4025,6 +4396,10 @@ app.post("/issued-estimates/:id/email-deposit-request", asyncHandler(async (req,
   if (!est.signedAt) { res.status(400).json({ error: "This estimate has not been signed yet." }); return; }
   if (!est.customerEmail) { res.status(400).json({ error: "No customer email on file — add one to the account first." }); return; }
   const summary = await paymentSummary(prisma, estimateId, publicBaseUrl());
+  if (summary && !summary.depositRequired) {
+    res.status(400).json({ error: "No deposit is required on this invoice — turn the deposit on first if you want one." });
+    return;
+  }
   if (!summary || summary.depositSatisfied || summary.paidInFull) {
     res.status(400).json({ error: "The deposit on this job is already in." });
     return;
@@ -4049,18 +4424,10 @@ app.post("/issued-estimates/:id/email-balance-request", asyncHandler(async (req,
   res.json(result);
 }));
 
-/** Same summary, addressed by the JOB — what the visit workspace shows. */
+/** Same summary, addressed by the JOB — what the visit workspace shows. The ROOT invoice (2026-09-20). */
 app.get("/jobs/:jobId/payment-info", asyncHandler(async (req, res) => {
   const jobId = readParam(req, "jobId");
-  const est = await prisma.issuedEstimate.findFirst({
-    where: {
-      signedAt: { not: null },
-      status: { not: "void" },
-      OR: [{ jobVisitId: jobId }, { visitId: jobId }],
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
-  });
+  const est = await signedRootForJob(prisma, jobId);
   if (!est) { res.json(null); return; }
   const origin = `${req.protocol}://${req.get("host")}`;
   const summary = await paymentSummary(prisma, est.id, origin);
@@ -4217,15 +4584,15 @@ app.get("/crm/analytics/follow-ups", asyncHandler(async (_req, res) => {
   res.json(data);
 }));
 
+/**
+ * The four-phase funnel (Kyle, 2026-09-20): lead -> opportunity by platform, lead -> estimate,
+ * estimate -> job (THE win rate), account -> repeat. Replaces the old /win-loss (won leads over
+ * won + lost leads — phase 1 data labelled phase 3) and /cycle-time (an acceptance rate off the
+ * retired legacy Estimate model). Same payload as `overview.phases`.
+ */
 app.get("/crm/analytics/win-loss", asyncHandler(async (req, res) => {
   const range = readAnalyticsRange(req);
-  const data = await getWinLossMetrics(range);
-  res.json(data);
-}));
-
-app.get("/crm/analytics/cycle-time", asyncHandler(async (req, res) => {
-  const range = readAnalyticsRange(req);
-  const data = await getCycleTimeMetrics(range);
+  const data = await getFourPhaseFunnel(range);
   res.json(data);
 }));
 
@@ -4350,11 +4717,8 @@ app.get("/crm/schedule/calendar", asyncHandler(async (req, res) => {
   const depositByVisit = new Map<string, boolean>();
   for (const v of railVisits) {
     if (v.status !== "contracted") continue;
-    const est = await prisma.issuedEstimate.findFirst({
-      where: { signedAt: { not: null }, status: { not: "void" }, OR: [{ jobVisitId: v.id }, { visitId: v.id }] },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-    });
+    // The ROOT invoice (2026-09-20) — its summary already rolls the change orders in.
+    const est = await signedRootForJob(prisma, v.id);
     if (!est) { depositByVisit.set(v.id, false); continue; }
     const summary = await paymentSummary(prisma, est.id, "https://unused.invalid");
     depositByVisit.set(v.id, Boolean(summary?.depositSatisfied));
@@ -4633,13 +4997,26 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     have no jobVisitId and qualify their origin visit instead. Legacy Estimate rows with a signed
     acceptance predate the deposit system entirely and count as satisfied — history stays.
   */
+  /*
+    THE ROOT INVOICE QUALIFIES A JOB (2026-09-20). A signed change order that joined the job
+    ("add to current job") is the newest signed document on it; it must not stand in for the
+    invoice. Roots first; the change orders' money is rolled into their root's group below.
+  */
   const signedQualifies = new Map<string, typeof issued[number]>();
   for (const est of issued) {
-    if (!est.signedAt) continue;
+    if (!est.signedAt || est.status === "void") continue;
     const key = est.jobVisitId ?? est.visitId;
-    if (key && !signedQualifies.has(key)) signedQualifies.set(key, est);
+    if (!key) continue;
+    const current = signedQualifies.get(key);
+    if (!current || (current.changeOrderForId && !est.changeOrderForId)) signedQualifies.set(key, est);
   }
-  const signedEstIds = [...new Set([...signedQualifies.values()].map((e) => e.id))];
+  const groups = groupSignedRows(issued.filter((e): e is typeof e & InvoiceDocRow => Boolean(e.signedAt) && e.status !== "void"));
+  const groupOf = (est: typeof issued[number]) =>
+    groups.get(est.changeOrderForId ?? est.id) ?? { root: est as typeof est & InvoiceDocRow, changeOrders: [] as (typeof est & InvoiceDocRow)[] };
+  const signedEstIds = [...new Set([...signedQualifies.values()].flatMap((e) => {
+    const g = groupOf(e);
+    return [g.root.id, ...g.changeOrders.map((c) => c.id)];
+  }))];
   const paidRows = signedEstIds.length === 0 ? [] : await prisma.payment.findMany({
     // The homeowner's money only (Kyle, 2026-09-10): a warranty company's check
     // is against the covered amount and never opens the homeowner's deposit gate.
@@ -4652,17 +5029,13 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     paidByEstimate.set(row.estimateId, (paidByEstimate.get(row.estimateId) ?? 0) + row.amount);
   }
   const depositSatisfiedFor = (est: typeof issued[number]): boolean => {
-    const billed = billedTotalOf({
-      total: est.total,
-      tripCharge: est.tripCharge,
-      selectedOptions: est.selectedOptions,
-      comboCapJson: est.comboCapJson,
-      discountJson: est.discountJson,
-      warrantyJson: est.warrantyJson,
-      optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
-    });
-    // Mirrors paymentSummary: any money at or past the deposit satisfies the gate.
-    return (paidByEstimate.get(est.id) ?? 0) >= depositDueOf(billed) - 0.01;
+    // The whole invoice (2026-09-20): ⅓ of the shares that require a deposit — zero when none
+    // does, which satisfies the gate outright — against every payment on the group. Mirrors
+    // paymentSummary: any money at or past the deposit satisfies the gate.
+    const g = groupOf(est);
+    const rolled = rollupInvoice(g.root, g.changeOrders);
+    const paid = rolled.ids.reduce((n, id) => n + (paidByEstimate.get(id) ?? 0), 0);
+    return paid >= rolled.depositDue - 0.01;
   };
   const isArchivedStatus = (status: string) => (ARCHIVED_JOB_STATUSES as readonly string[]).includes(status);
   const jobVisits = visits.filter((visit) => {
@@ -4687,13 +5060,15 @@ app.get("/jobs", asyncHandler(async (req, res) => {
    * Issued lifecycle -> the tracker's buttons.
    *
    * `viewed` maps to `sent` rather than to a button of its own: it means the customer opened the
-   * link, which is a fact about a SENT estimate, not a separate stage. Kyle asked for Review,
+   * link, which is a fact about a SENT estimate, not a separate stage. `lost` (2026-09-20) maps
+   * to `declined` — the word the tracker's badge vocabulary already has for exactly this (the
+   * retired legacy Estimate enum carried it); rendered raw, "lost" would have had no badge class. Kyle asked for Review,
    * Sent and Accepted; "review" has no counterpart here at all now that estimates are not saved
    * until they are sent or presented, so that button matches only legacy rows and is flagged in
    * the report rather than quietly repurposed.
    */
   const trackerStatus = (status: string): string =>
-    status === "signed" ? "accepted" : status === "viewed" ? "sent" : status;
+    status === "signed" ? "accepted" : status === "viewed" ? "sent" : status === "lost" ? "declined" : status;
 
   /*
     THE MATERIAL RULE (Kyle, 2026-09-19, "the P.O. is the money"): a job's
@@ -4802,17 +5177,10 @@ app.get("/jobs", asyncHandler(async (req, res) => {
               costs against null revenue and the account read negative
               lifetime profit.
             */
+            // The whole invoice (2026-09-20): the root's full bill plus its signed change orders'.
             acceptedTotal ??
               (signedQualifies.has(visit.id)
-                ? fullBillOf({
-                    total: signedQualifies.get(visit.id)!.total,
-                    tripCharge: signedQualifies.get(visit.id)!.tripCharge,
-                    selectedOptions: signedQualifies.get(visit.id)!.selectedOptions,
-                    comboCapJson: signedQualifies.get(visit.id)!.comboCapJson,
-                    discountJson: signedQualifies.get(visit.id)!.discountJson,
-                    warrantyJson: signedQualifies.get(visit.id)!.warrantyJson,
-                    optionsSubtotals: signedQualifies.get(visit.id)!.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
-                  })
+                ? (() => { const g = groupOf(signedQualifies.get(visit.id)!); return rollupInvoice(g.root, g.changeOrders).fullBill; })()
                 : null),
             laborRate,
             // THE MONEY (Kyle, 2026-09-19): the P.O.s tagged to this job.
@@ -4884,6 +5252,19 @@ app.post("/leads/:leadId/add-to-campaign", asyncHandler(async (req, res) => {
     update: { name: lead.name, leadId: lead.id },
   });
   res.json({ added: true, listName: list.name });
+}));
+
+/**
+ * The standing rule (CLAUDE.md: "nothing should be added that cannot be adjusted, edited,
+ * deleted, voided, or canceled") applied to campaign membership (2026-09-20 communications
+ * build): whatever add-to-campaign can add, this removes, from the same lead drawer surface.
+ * Removes every EmailListMember row tied to this lead — in practice always the one row the
+ * button above created, since that is the only door that sets `leadId`.
+ */
+app.delete("/leads/:leadId/campaign", asyncHandler(async (req, res) => {
+  const leadId = String(req.params.leadId);
+  const { count } = await prisma.emailListMember.deleteMany({ where: { leadId } });
+  res.json({ removed: count });
 }));
 
 /** Which leads are already on a list — the card shows a check instead of a button. */
@@ -5078,7 +5459,9 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     // invoices must not mix into the money Kyle reads off this page.
     // Kyle, 2026-09-07 (invoices merged into Financials): a signed revision that
     // has been superseded is not an open invoice — the newer revision is.
-    where: { signedAt: { not: null }, voidedAt: null, supersededBy: null, ...EXCLUDE_TEST_ACCOUNT },
+    // 2026-09-20: a signed CHANGE ORDER is not an invoice of its own either — it
+    // rides the row of the invoice it joined, listed beneath it.
+    where: { signedAt: { not: null }, voidedAt: null, supersededBy: null, changeOrderForId: null, ...EXCLUDE_TEST_ACCOUNT },
     include: {
       options: true,
       account: { select: { id: true, name: true, phone: true, email: true } },
@@ -5086,6 +5469,16 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     },
     orderBy: { signedAt: "desc" },
   });
+  // The signed, live change orders on those invoices — one query, never N.
+  const changeOrderRows = estimates.length === 0 ? [] : await prisma.issuedEstimate.findMany({
+    where: { changeOrderForId: { in: estimates.map((e) => e.id) }, ...LIVE_SIGNED_CHANGE_ORDER },
+    select: INVOICE_DOC_SELECT,
+    orderBy: { signedAt: "asc" },
+  });
+  const changeOrdersByRoot = new Map<string, InvoiceDocRow[]>();
+  for (const co of changeOrderRows as InvoiceDocRow[]) {
+    changeOrdersByRoot.set(co.changeOrderForId!, [...(changeOrdersByRoot.get(co.changeOrderForId!) ?? []), co]);
+  }
 
   // Kyle, 2026-09-07: the Financials drill-down goes account → property → job → invoices,
   // so each row names its job. One query for the lot, never N.
@@ -5099,15 +5492,18 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
   const invoiceJobById = new Map(invoiceJobs.map((j) => [j.id, j]));
 
   const paidRows = estimates.length === 0 ? [] : await prisma.payment.findMany({
-    where: { estimateId: { in: estimates.map((e) => e.id) }, status: "paid" },
+    where: { estimateId: { in: [...estimates.map((e) => e.id), ...changeOrderRows.map((c) => c.id)] }, status: "paid" },
     select: { estimateId: true, amount: true, method: true, paidAt: true, payer: true },
   });
+  // Keyed by the ROOT: money that history left on a change order's own row counts on its invoice.
+  const rootOfId = new Map<string, string>(changeOrderRows.map((c) => [c.id, c.changeOrderForId!]));
   const paymentsByEstimate = new Map<string, typeof paidRows>();
   for (const row of paidRows) {
     if (!row.estimateId) continue;
-    const list = paymentsByEstimate.get(row.estimateId) ?? [];
+    const key = rootOfId.get(row.estimateId) ?? row.estimateId;
+    const list = paymentsByEstimate.get(key) ?? [];
     list.push(row);
-    paymentsByEstimate.set(row.estimateId, list);
+    paymentsByEstimate.set(key, list);
   }
   // The newest customer email about each invoice and what became of it (Kyle, 2026-09-09).
   const lastDeliveryById = await lastDeliveriesForEstimates(prisma, estimates.map((e) => e.id));
@@ -5123,9 +5519,14 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       warrantyJson: est.warrantyJson,
       optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
     };
-    // The homeowner share — a home-warranty credit (Kyle, 2026-09-09) is already off.
-    const billedTotal = billedTotalOf(money);
-    const coverage = warrantyCoverageOf(money);
+    // The whole invoice (2026-09-20): the homeowner share of the root plus its signed change
+    // orders — a home-warranty credit (Kyle, 2026-09-09) is already off each document.
+    const group = rollupInvoice(est as unknown as InvoiceDocRow, changeOrdersByRoot.get(est.id) ?? []);
+    const billedTotal = group.billedTotal;
+    const rootCoverage = warrantyCoverageOf(money);
+    const coverage = group.warrantyCovered > 0
+      ? { applied: group.warrantyCovered, claim: (rootCoverage?.claim ?? group.documents.find((d) => d.warrantyClaim)!.warrantyClaim)! }
+      : null;
     // Two payers, two ledgers (Kyle, 2026-09-10): totalPaid / balance / paymentStatus are
     // the HOMEOWNER's; the warranty company's money sits on its own lines below.
     const split = splitPaidByPayer(paymentsByEstimate.get(est.id) ?? []);
@@ -5135,13 +5536,14 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     const lastPaidAt = rows.reduce<Date | null>(
       (latest, r) => (r.paidAt && (!latest || r.paidAt > latest) ? r.paidAt : latest), null,
     );
-    const depositDue = depositDueOf(billedTotal);
+    const depositDue = group.depositDue;
     const paidInFull = totalPaid >= billedTotal - 0.01;
     const warrantyPaid = coverage ? split.warrantyPaid : 0;
     const warrantyBalance = coverage ? round2(coverage.applied - warrantyPaid) : 0;
+    // "deposit_paid" only means something when a deposit is required (2026-09-20).
     const paymentStatus = paidInFull
       ? "paid"
-      : totalPaid >= depositDue - 0.01
+      : group.depositRequired && totalPaid >= depositDue - 0.01
         ? "deposit_paid"
         : totalPaid > 0.009
           ? "partial"
@@ -5182,10 +5584,19 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       lastDelivery: lastDeliveryById.get(est.id) ?? null,
       billedTotal,
       depositDue,
+      // The deposit is optional now (Kyle, 2026-09-20); false = nothing gates scheduling.
+      depositRequired: group.depositRequired,
+      // The signed change orders that joined this invoice — listed beneath the total.
+      changeOrders: group.documents.filter((d) => d.kind === "change_order").map((d) => ({
+        id: d.id, number: d.number, revision: d.revision, title: d.title, billedTotal: d.billedTotal, signedAt: d.signedAt,
+      })),
       totalPaid,
       discountTotal,
       // Collected is MONEY from either payer (Kyle, 2026-09-10: "money is money") — the
-      // homeowner's real cash plus whatever the warranty company has paid.
+      // homeowner's real cash plus whatever the warranty company has paid. This is the SAME rule
+      // as services/lifetimeCollected.ts (paid, method != "discount", either payer), stated per
+      // invoice rather than per account: `totalPaid` above is a SETTLEMENT figure and keeps the
+      // legacy 3% "discount" rows in, because those rows are what closed those invoices.
       collected: round2(totalPaid - discountTotal + warrantyPaid),
       balance: round2(billedTotal - totalPaid),
       lastPaidAt,
@@ -5222,7 +5633,21 @@ const listCustomers = asyncHandler(async (_req: express.Request, res: express.Re
     orderBy: { createdAt: "desc" },
   });
 
-  res.json(customers);
+  /*
+    ONE DEFINITION OF LIFETIME SPEND (Kyle, 2026-09-20, funnel phase 4; PUNCHLIST E5).
+
+    The Accounts list used to sum `visit.revenue` in the browser and call the result "lifetime" —
+    contracted revenue, not money, and a third answer beside the account page's job-cost totals
+    and the Financials invoice list. `services/lifetimeCollected.ts` is now the single rule
+    (paid, non-`discount`, either payer, test account excluded) and every surface reads it.
+    One batched query for the whole list, not one per row.
+  */
+  const collected = await collectedByCustomer(prisma);
+
+  res.json(customers.map((c) => ({
+    ...c,
+    lifetimeCollected: collected.get(c.id)?.collected ?? 0,
+  })));
 });
 app.get("/customers", listCustomers);
 // ─── ACCOUNT CONTACTS (Kyle, 2026-08-25) ─────────────────────────────────────
@@ -5437,16 +5862,37 @@ const poPurposeSchema = z.enum(PO_PURPOSES);
 const poReasonSchema = z.string().trim().min(1, "A reason is required").max(300);
 
 app.get("/jobs/:jobId/purchase-orders", asyncHandler(async (req, res) => {
+  const round2 = (n: number) => Math.round(n * 100) / 100;
   const orders = await prisma.purchaseOrder.findMany({
     where: { jobId: readParam(req, "jobId") },
     orderBy: { createdAt: "desc" },
-    include: { lines: { orderBy: { sortOrder: "asc" } }, _count: { select: { receipts: true } } },
+    include: {
+      lines: { orderBy: { sortOrder: "asc" } },
+      _count: { select: { receipts: true } },
+      // THE MONEY (Kyle, 2026-09-20: "I need each job's P.O. to show up on the
+      // job screen"). Same rule as poMaterialByJob (jobCosting.ts) — card
+      // spend of kind materials/other, non-ignored — NOT serializePurchaseOrder's
+      // cardTotal, which sums every live charge regardless of kind and would
+      // print a different total than the Materials-used panel's aggregate on
+      // the same screen.
+      cardSpends: { where: { status: { not: "ignored" }, kind: { in: [...MATERIAL_SPEND_KINDS] } }, select: { amount: true } },
+      // Receipts carrying a photo or PDF — the proof (Kyle, 2026-09-19).
+      receipts: { where: RECEIPT_HAS_FILE, select: { id: true } },
+    },
   });
-  res.json(orders.map((o) => ({
-    id: o.id, number: o.number, purpose: o.purpose, status: o.status, supplier: o.supplier,
-    sentAt: o.sentAt, createdAt: o.createdAt, receiptCount: o._count.receipts,
-    items: o.lines.map((l) => ({ name: l.name, qty: l.qty, unit: l.unit ?? undefined, partNumber: l.partNumber ?? undefined })),
-  })));
+  res.json(orders.map((o) => {
+    const cardTotal = round2(o.cardSpends.reduce((s, c) => s + c.amount, 0));
+    // Tool P.O.s never charge a job (jobCosting.ts poMaterialByJob) — their
+    // typed amount is overhead, never job material money.
+    const offCardAmount = o.purpose === "tool" ? null : o.offCardAmount;
+    const moneyTotal = round2(cardTotal + (offCardAmount ?? 0));
+    return {
+      id: o.id, number: o.number, purpose: o.purpose, status: o.status, supplier: o.supplier,
+      sentAt: o.sentAt, createdAt: o.createdAt, receiptCount: o._count.receipts,
+      cardTotal, offCardAmount, moneyTotal, proofCount: o.receipts.length,
+      items: o.lines.map((l) => ({ name: l.name, qty: l.qty, unit: l.unit ?? undefined, partNumber: l.partNumber ?? undefined })),
+    };
+  }));
 }));
 
 /*
@@ -5537,23 +5983,9 @@ app.post("/jobs/:jobId/return", asyncHandler(async (req, res) => {
   res.status(201).json(movements);
 }));
 
-app.post("/jobs/:jobId/purchase-orders", asyncHandler(async (req, res) => {
-  const body = z.object({
-    supplier: z.string().trim().min(1).max(200),
-    purpose: poPurposeSchema.default("truck_stock"),
-    notes: z.string().trim().max(1000).nullable().optional(),
-    items: z.array(poLineSchema).optional(),
-    lines: z.array(poLineSchema).optional(),
-  }).parse(req.body);
-  const jobId = readParam(req, "jobId");
-  const visit = await prisma.visit.findUnique({ where: { id: jobId }, select: { id: true } });
-  if (!visit) { res.status(404).json({ error: "Job not found" }); return; }
-  const po = await createPurchaseOrder({
-    supplier: body.supplier, purpose: body.purpose, jobId, notes: body.notes ?? null,
-    lines: body.lines ?? body.items ?? [], openedBy: "owner", actor: "owner",
-  });
-  res.status(201).json({ id: po.id, number: po.number, purpose: po.purpose, status: po.status, supplier: po.supplier, createdAt: po.createdAt });
-}));
+// `POST /jobs/:jobId/purchase-orders` was folded into `POST /purchase-orders` (2026-09-21, punch
+// list D5): one create door, `jobId` in the body. The job screen calls the same route the
+// Purchases card does. The field app's own create lives under /health-record and is untouched.
 
 /** "Delete" from the job screen CANCELS — a number is never reused and the trail stays. */
 app.delete("/jobs/:jobId/purchase-orders/:orderId", asyncHandler(async (req, res) => {
@@ -5757,10 +6189,8 @@ app.put(
 
     const po = await prisma.purchaseOrder.findUnique({ where: { id: poId }, select: { id: true, number: true, status: true, supplier: true, jobId: true } });
     if (!po) { res.status(404).json({ error: "Purchase order not found" }); return; }
-    if (po.status === "closed" || po.status === "cancelled") {
-      res.status(409).json({ error: `${po.number} is ${po.status}; attach the receipt to a live PO.` });
-      return;
-    }
+    // A closed or cancelled PO can still take proof (Kyle, 2026-09-20) — see
+    // attachReceiptToPurchaseOrder's comment. Status never gates the money.
 
     const body = req.body as Buffer;
     const hasImage = Buffer.isBuffer(body) && body.length > 0;
@@ -6286,40 +6716,6 @@ app.get("/visits/:visitId", asyncHandler(async (req, res) => {
 }));
 
 
-app.get("/proposals/:deliveryId/download", asyncHandler(async (req, res) => {
-  const deliveryId = readParam(req, "deliveryId");
-  const delivery = await prisma.proposalDelivery.findUnique({
-    where: { id: deliveryId },
-  });
-
-  if (!delivery) {
-    res.status(404).json({ error: "Proposal delivery not found" });
-    return;
-  }
-
-  const resolvedPath = path.isAbsolute(delivery.pdfPath)
-    ? delivery.pdfPath
-    : path.resolve(process.cwd(), delivery.pdfPath);
-
-  if (!fs.existsSync(resolvedPath)) {
-    res.status(404).json({ error: "Proposal file not found" });
-    return;
-  }
-
-  const safeName = path.basename(resolvedPath).replace(/"/g, "");
-  res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `attachment; filename="${safeName || `proposal-${delivery.id}.pdf`}"`);
-
-  const stream = fs.createReadStream(resolvedPath);
-  stream.on("error", () => {
-    if (!res.headersSent) {
-      res.status(500).json({ error: "Failed to read proposal file" });
-      return;
-    }
-    res.end();
-  });
-  stream.pipe(res);
-}));
 
 const createCustomer = asyncHandler(async (req: express.Request, res: express.Response) => {
   const schema = z.object({
@@ -6402,36 +6798,24 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
   for (const [child, jobV] of childToJob) {
     childrenOfJob.set(jobV, [...(childrenOfJob.get(jobV) ?? []), child]);
   }
+  // What this account has actually PAID, by the one rule (services/lifetimeCollected.ts).
+  const collectedLifetime = await lifetimeCollectedFor(prisma, customerId);
   // The signed estimate, per job (newest signed wins), keyed by the job side of
   // the chain — for the revenue rung below. (Its frozen material is DISPLAY
   // only since 2026-09-19: an estimate never counts toward job cost.)
   const signedForCosts = await prisma.issuedEstimate.findMany({
     where: { customerId, signedAt: { not: null }, voidedAt: null, status: { not: "void" } },
     orderBy: { createdAt: "desc" },
-    select: {
-      visitId: true, jobVisitId: true, selectedOptions: true,
-      total: true, tripCharge: true, comboCapJson: true, discountJson: true, warrantyJson: true,
-      options: { select: { option: true, subtotal: true } },
-    },
-  });
-  // The FULL bill of the signed estimate, per job — homeowner share + warranty
-  // share (Kyle, 2026-09-10) — the revenue rung that backfills estimate-sold
-  // jobs (Kyle, 2026-09-06), kept in lockstep with GET /jobs by the
-  // money-invariant test.
+    select: INVOICE_DOC_SELECT,
+  }) as InvoiceDocRow[];
+  // The FULL bill of the signed INVOICE, per job — the root plus its signed
+  // change orders (2026-09-20), homeowner share + warranty share (Kyle,
+  // 2026-09-10) — the revenue rung that backfills estimate-sold jobs (Kyle,
+  // 2026-09-06), kept in lockstep with GET /jobs by the money-invariant test.
   const estRevenueByJob = new Map<string, number>();
-  for (const est of signedForCosts) {
-    const key = est.jobVisitId ?? est.visitId;
-    if (key && !estRevenueByJob.has(key)) {
-      estRevenueByJob.set(key, fullBillOf({
-        total: est.total,
-        tripCharge: est.tripCharge,
-        selectedOptions: est.selectedOptions,
-        comboCapJson: est.comboCapJson,
-        discountJson: est.discountJson,
-        warrantyJson: est.warrantyJson,
-        optionsSubtotals: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
-      }));
-    }
+  for (const g of groupSignedRows(signedForCosts).values()) {
+    const key = g.root.jobVisitId ?? g.root.visitId;
+    if (key && !estRevenueByJob.has(key)) estRevenueByJob.set(key, rollupInvoice(g.root, g.changeOrders).fullBill);
   }
   const visitById = new Map(account.visits.map((v) => [v.id, v]));
   // THE MONEY (Kyle, 2026-09-19), one grouped query — the same helper GET /jobs
@@ -6644,6 +7028,20 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       activeJobCount: jobs.filter((j) => ACTIVE_JOB_STATUSES.includes(j.status as (typeof ACTIVE_JOB_STATUSES)[number])).length, // signed work only (Kyle, 2026-08-29)
       completedJobCount: jobs.filter((j) => j.archived).length,
       propertyCount: account.properties.length,
+      /*
+        LIFETIME SPEND = MONEY COLLECTED (Kyle, 2026-09-20, funnel phase 4; PUNCHLIST E5).
+
+        `lifetimeRevenue` beside it is CONTRACTED revenue — the signed invoices' full bill — and
+        it is what pairs with `lifetimeCost` to make a margin, so it stays and the account page
+        now labels it as contracted. This is the other number, and it is the one Kyle means by
+        "the life time spend of each account": what the account has actually paid, either payer,
+        by the one rule in services/lifetimeCollected.ts.
+      */
+      lifetimeCollected: collectedLifetime.collected,
+      lifetimeCustomerPaid: collectedLifetime.customerPaid,
+      lifetimeWarrantyPaid: collectedLifetime.warrantyPaid,
+      lifetimePaymentCount: collectedLifetime.paymentCount,
+      lastPaidAt: collectedLifetime.lastPaidAt,
     },
     inspections: account.healthInspections.map((inspection) => ({
       id: inspection.id,
@@ -7948,54 +8346,6 @@ app.post("/chatkit/message", asyncHandler(async (req, res) => {
   }
 }));
 
-// ─── CHATKIT HISTORY ──────────────────────────────────────────────────────
-
-app.get("/chatkit/history", asyncHandler(async (req, res) => {
-  const sessionId = readQuery(req, "sessionId");
-  const visitId = readQuery(req, "visitId");
-  if (!sessionId && !visitId) {
-    return res.status(400).json({ error: "Provide sessionId or visitId" });
-  }
-  const where: Record<string, string> = {};
-  if (sessionId) where.sessionId = sessionId;
-  if (visitId) where.visitId = visitId;
-  const messages = await prisma.chatMessage.findMany({
-    where,
-    orderBy: { createdAt: "asc" },
-  });
-  res.json({ messages });
-}));
-
-// ─── CHATKIT SESSIONS (list distinct sessions for a visit) ────────────────
-
-app.get("/chatkit/sessions", asyncHandler(async (req, res) => {
-  const visitId = readQuery(req, "visitId");
-  if (!visitId) {
-    return res.status(400).json({ error: "visitId is required" });
-  }
-  // Group by sessionId to surface one row per conversation
-  const grouped = await prisma.chatMessage.groupBy({
-    by: ["sessionId"],
-    where: { visitId },
-    _count: { _all: true },
-    _min: { createdAt: true },
-    _max: { createdAt: true },
-  });
-  const sessions = grouped
-    .map((g) => ({
-      sessionId: g.sessionId,
-      messageCount: g._count._all,
-      firstMessageAt: g._min.createdAt,
-      lastMessageAt: g._max.createdAt,
-    }))
-    .sort((a, b) => {
-      const aT = a.lastMessageAt?.getTime() ?? 0;
-      const bT = b.lastMessageAt?.getTime() ?? 0;
-      return bT - aT;
-    });
-  res.json({ sessions });
-}));
-
 // ─── CHATKIT EXPORT (JSON / Markdown / TXT) ───────────────────────────────
 
 app.get("/chatkit/export", asyncHandler(async (req, res) => {
@@ -8144,7 +8494,8 @@ export const LEAD_STATUSES = ["new", "contacted", "converted", "lost"] as const;
 export const LEAD_PIPELINE_STATUSES = [
   "new", "booked", "unresolved", "planning", "no_answer", "lost", "won",
 ] as const;
-export const LOST_REASONS = ["price", "timing", "referral", "trust", "scope", "other"] as const;
+// ONE list for leads AND estimates (Kyle, 2026-09-20) — defined in shared/estimateStatus.ts.
+export const LOST_REASONS = SHARED_LOST_REASONS;
 export const FOLLOW_UP_REASONS = [
   "comparing_estimates", "still_planning", "consulting_partner", "no_answer",
 ] as const;
@@ -8284,6 +8635,10 @@ app.post("/crm/leads", asyncHandler(async (req, res) => {
     email: z.string().trim().email().nullable().optional(),
     phone: z.string().trim().nullable().optional(),
     source: z.enum(LEAD_SOURCES).default("manual"),
+    // WHICH PLATFORM sent it (Kyle, 2026-09-20) — the thing the marketing spend goes to, tagged
+    // at intake and kept separate from `source` (the channel). Optional: a lead nobody tagged
+    // reads "unknown" in the funnel, which is honest, and refusing the lead would be worse.
+    platform: z.enum(LEAD_PLATFORMS).nullable().optional(),
     // A lead being entered by hand is by definition not yet converted —
     // conversion is a transition that creates records, not an initial state.
     status: z.enum(["new", "contacted", "lost"]).default("new"),
@@ -8429,6 +8784,12 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     contactPreference?: string | null;
     // ── Added for manual editing ──
     source?: string;
+    /**
+     * WHICH PLATFORM sent the lead (Kyle, 2026-09-20). Editable after the fact on purpose: a
+     * phone lead arrives untagged and Kyle or Savannah picks it once the caller says where they
+     * found Red Cedar. `null` clears it back to "unknown".
+     */
+    platform?: string | null;
     addressLine1?: string | null;
     addressLine2?: string | null;
     city?: string | null;
@@ -8449,6 +8810,19 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
   const existing = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!existing) { res.status(404).json({ error: "Lead not found" }); return; }
 
+  // Conversion creates the account, property and job — it is its own endpoint
+  // (PATCH /leads/:leadId/convert), never a plain status write here. Dashboard's
+  // old "Mark Won" button PATCHed status:"converted" directly and minted a
+  // converted lead with no job behind it, and a converted lead can never be
+  // deleted (Kyle, 2026-09-20 drawers plan).
+  if (body.status === "converted") {
+    res.status(400).json({
+      error: "A lead becomes converted only through PATCH /leads/:leadId/convert, which creates the account, "
+        + "property and job together. This endpoint cannot set that status directly.",
+    });
+    return;
+  }
+
   const oneOf = (value: string | null | undefined, allowed: readonly string[], field: string) => {
     if (value === undefined || value === null) return null;
     return allowed.includes(value) ? null : `Invalid ${field}. Must be one of: ${allowed.join(", ")}`;
@@ -8457,6 +8831,7 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     oneOf(body.status, LEAD_STATUSES, "status") ??
     oneOf(body.leadStatus, LEAD_PIPELINE_STATUSES, "leadStatus") ??
     oneOf(body.source, LEAD_SOURCES, "source") ??
+    oneOf(body.platform, LEAD_PLATFORMS, "platform") ??
     oneOf(body.lostReason, LOST_REASONS, "lostReason") ??
     oneOf(body.followUpReason, FOLLOW_UP_REASONS, "followUpReason") ??
     oneOf(body.contactPreference, CONTACT_PREFERENCES, "contactPreference") ??
@@ -8498,6 +8873,7 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
 
   const data: Record<string, unknown> = {};
   if (body.source !== undefined) data.source = body.source;
+  if (body.platform !== undefined) data.platform = body.platform || null;
   if (body.addressLine1 !== undefined) data.addressLine1 = body.addressLine1?.trim() || null;
   if (body.addressLine2 !== undefined) data.addressLine2 = body.addressLine2?.trim() || null;
   if (body.city !== undefined) data.city = body.city?.trim() || null;
@@ -8579,55 +8955,104 @@ app.delete("/leads/:leadId", asyncHandler(async (req, res) => {
  * 3. **No empty-string addresses.** `resolveLeadAddress` returns a complete
  *    address or none at all.
  */
-app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
-  const leadId = readParam(req, "leadId");
-  const body = z.object({
-    customerId: z.string().min(1).optional(),
-    propertyId: z.string().min(1).optional(),
-    propertyName: z.string().trim().min(1).optional(),
-    jurisdictionId: z.enum(KNOWN_JURISDICTION_IDS).optional(),
-    /** Explicit acknowledgement that a duplicate-looking account is intended. */
-    createNewAccount: z.boolean().optional(),
-  }).merge(leadAddressSchema).parse(req.body ?? {});
+const leadConvertSchema = z.object({
+  customerId: z.string().min(1).optional(),
+  propertyId: z.string().min(1).optional(),
+  propertyName: z.string().trim().min(1).optional(),
+  jurisdictionId: z.enum(KNOWN_JURISDICTION_IDS).optional(),
+  /** Explicit acknowledgement that a duplicate-looking account is intended. */
+  createNewAccount: z.boolean().optional(),
+}).merge(leadAddressSchema);
 
-  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
-  if (!lead) {
-    res.status(404).json({ error: "Lead not found" });
-    return;
+export type ConvertLeadInput = z.infer<typeof leadConvertSchema>;
+
+/** What happened to the newsletter enrolment — reported, never a reason to fail the conversion. */
+export type NewsletterEnrolment =
+  | { enrolled: true; listName: string; alreadyOnList: boolean }
+  | { enrolled: false; reason: "no_email" | "unsubscribed" | "failed"; listName?: string; detail?: string };
+
+export type ConvertLeadOutcome =
+  | {
+    ok: true;
+    result: {
+      customer: Awaited<ReturnType<typeof prisma.customer.findUniqueOrThrow>>;
+      property: { id: string } | null;
+      visit: { id: string } | null;
+      lead: Awaited<ReturnType<typeof prisma.lead.update>>;
+      /** Kyle, 2026-09-20: converting enrols the account on the newsletter. This says whether it did. */
+      newsletter: NewsletterEnrolment;
+    };
   }
+  | { ok: false; status: number; body: Record<string, unknown> };
+
+/**
+ * CONVERTING A LEAD MAKES AN OPPORTUNITY — account + address + job + newsletter (Kyle, 2026-09-20:
+ * "When a lead gets converted it should be considered an opportunity"). Nothing is WON here; a win
+ * is a signed estimate (phase 3 of the funnel, services/leadFunnel.ts).
+ *
+ * Extracted from `PATCH /leads/:leadId/convert` so the automation door `PATCH /leads/:id/won` can
+ * run the SAME path instead of stamping `status: "converted"` on a lead with nothing behind it
+ * (PUNCHLIST A2 — an orphan lead that can then never be deleted). Both callers get the same
+ * refusals, so the two doors cannot drift.
+ *
+ * It answers with an outcome rather than throwing, because the two callers report differently: the
+ * CRM shows the duplicate picker, the webhook writes a SystemEvent.
+ *
+ * Three refusals, all of them writing NOTHING so the lead stays editable and deletable:
+ *
+ * 1. **The duplicate guard rail.** If it is about to mint an account and a match exists, it
+ *    refuses with 409 and the matches. It never adopts a match on its own, even a perfect one:
+ *    that is a merge decision and merges are hard to undo. One flag (`createNewAccount`) says
+ *    "yes, genuinely new".
+ * 2. **No half-conversions.** An unparseable or missing address used to produce a Customer, no
+ *    Property and no Visit — and the lead was marked converted anyway, so `DELETE` 409'd on it
+ *    forever. That is now a 400 with nothing written.
+ * 3. **No empty-string addresses.** `resolveLeadAddress` returns a complete address or none.
+ *
+ * PLATFORM (Kyle's ruling 2): a NEW account takes the lead's platform. An EXISTING account is
+ * never overwritten and never back-filled, because `Customer.platform` means "which marketing
+ * brought this account" and this lead is by definition not the one that did — an account that
+ * already exists was acquired earlier, and stamping it with a later lead's platform (most often
+ * `repeat_customer`) would make phase 4 read its own output.
+ */
+async function convertLeadToOpportunity(leadId: string, input: ConvertLeadInput): Promise<ConvertLeadOutcome> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!lead) return { ok: false, status: 404, body: { error: "Lead not found" } };
   if (lead.status === "converted") {
     // 409, matching DELETE's vocabulary for the same state conflict.
-    res.status(409).json({ error: "Lead already converted" });
-    return;
+    return { ok: false, status: 409, body: { error: "Lead already converted" } };
   }
 
   // An address supplied on the request beats the lead's own — this is the picker
   // saying "actually, put it here".
-  const address = addressCompleteness(body) === "complete"
+  const address = addressCompleteness(input) === "complete"
     ? resolveLeadAddress({
-      address: null, addressLine1: body.addressLine1!, addressLine2: body.addressLine2 ?? null,
-      city: body.city!, state: body.state!, postalCode: body.postalCode!,
+      address: null, addressLine1: input.addressLine1!, addressLine2: input.addressLine2 ?? null,
+      city: input.city!, state: input.state!, postalCode: input.postalCode!,
     })
     : resolveLeadAddress(lead);
 
-  const customerId = body.customerId ?? lead.customerId;
-  const propertyId = body.propertyId ?? lead.propertyId;
+  const customerId = input.customerId ?? lead.customerId;
+  const propertyId = input.propertyId ?? lead.propertyId;
 
   if (customerId) {
     const exists = await prisma.customer.findUnique({ where: { id: customerId }, select: { id: true } });
-    if (!exists) { res.status(400).json({ error: "Linked account not found" }); return; }
-  } else if (!body.createNewAccount) {
+    if (!exists) return { ok: false, status: 400, body: { error: "Linked account not found" } };
+  } else if (!input.createNewAccount) {
     // About to mint an account. Check first — this is the whole point.
     const matches = await findCustomerMatches({ phone: lead.phone, email: lead.email, name: lead.name });
     if (matches.length > 0) {
-      res.status(409).json({
-        error: "Possible duplicate account",
-        message:
-          "This lead's contact details match an account you already have. Link it to that " +
-          "account and choose an address, or confirm you want a new account.",
-        matches,
-      });
-      return;
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "Possible duplicate account",
+          message:
+            "This lead's contact details match an account you already have. Link it to that " +
+            "account and choose an address, or confirm you want a new account.",
+          matches,
+        },
+      };
     }
   }
 
@@ -8635,28 +9060,37 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
     const property = await prisma.property.findUnique({
       where: { id: propertyId }, select: { id: true, customerId: true },
     });
-    if (!property) { res.status(400).json({ error: "Linked address not found" }); return; }
+    if (!property) return { ok: false, status: 400, body: { error: "Linked address not found" } };
     if (customerId && property.customerId !== customerId) {
-      res.status(400).json({ error: "That address belongs to a different account" });
-      return;
+      return { ok: false, status: 400, body: { error: "That address belongs to a different account" } };
     }
   } else if (address.kind === "none") {
     // Nothing is written. The lead stays unconverted, so it remains editable and
     // deletable rather than becoming a permanent orphan.
-    res.status(400).json({
-      error: "This lead has no usable address",
-      message:
-        "Add a street address, city, state and ZIP before converting — a job has to belong " +
-        "to somewhere. Nothing was created.",
-      needs: "address",
-    });
-    return;
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        error: "This lead has no usable address",
+        message:
+          "Add a street address, city, state and ZIP before converting — a job has to belong " +
+          "to somewhere. Nothing was created.",
+        needs: "address",
+      },
+    };
   }
 
   const result = await prisma.$transaction(async (tx) => {
     const customer = customerId
       ? (await tx.customer.findUniqueOrThrow({ where: { id: customerId } }))
-      : await tx.customer.create({ data: { name: lead.name, email: lead.email, phone: lead.phone, smsConsent: lead.smsConsent } });
+      : await tx.customer.create({
+        data: {
+          name: lead.name, email: lead.email, phone: lead.phone, smsConsent: lead.smsConsent,
+          // WHICH PLATFORM brought the account (Kyle, 2026-09-20). Set only here, at the moment
+          // the account is created — see the note above on why an existing account is left alone.
+          platform: lead.platform,
+        },
+      });
 
     let property: { id: string } | null = propertyId
       ? await tx.property.findUnique({ where: { id: propertyId }, select: { id: true } })
@@ -8665,11 +9099,11 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
     if (!property && address.kind !== "none") {
       property = await createPropertyWithSnapshot(tx, {
         customerId: customer.id,
-        name: body.propertyName ?? address.parts.addressLine1,
+        name: input.propertyName ?? address.parts.addressLine1,
         ...address.parts,
         // Left null unless the office said otherwise, so jurisdictionResolver
         // derives it from the ZIP — which now actually exists.
-        jurisdictionId: body.jurisdictionId ?? null,
+        jurisdictionId: input.jurisdictionId ?? null,
       });
     }
 
@@ -8703,7 +9137,66 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
     return { customer, property, visit, lead: updatedLead };
   });
 
-  res.json(result);
+  const newsletter = await enrolAccountInNewsletter(
+    { id: result.customer.id, name: result.customer.name, email: result.customer.email ?? lead.email },
+    leadId,
+  );
+
+  return { ok: true, result: { ...result, newsletter } };
+}
+
+/**
+ * "Converting a lead automatically adds the account to the newsletter list — that is what makes it
+ * an opportunity in Kyle's words" (2026-09-20 plan, ruling 2). The unsubscribe link is already in
+ * every campaign email, so this needs no second consent step.
+ *
+ * Deliberately OUTSIDE the conversion transaction and deliberately unable to fail it: a mailing
+ * list that is momentarily unreachable must not cost Kyle an account, an address and a job. The
+ * outcome is returned so the caller can say what happened instead of implying it worked.
+ *
+ * It writes a real `EmailListMember` row rather than leaning on the default list's
+ * `includeAllAccounts` flag: that flag is editable, and an enrolment Kyle can SEE (and remove —
+ * the standing rule) is the thing the ruling asked for.
+ *
+ * An address that has unsubscribed is never re-added. That is the same refusal
+ * `POST /leads/:leadId/add-to-campaign` makes and it is not negotiable.
+ */
+async function enrolAccountInNewsletter(
+  account: { id: string; name: string; email: string | null },
+  leadId: string,
+): Promise<NewsletterEnrolment> {
+  if (!account.email) return { enrolled: false, reason: "no_email" };
+  try {
+    const { ensureDefaultList, isSuppressed } = await import("./services/emailCampaigns");
+    const list = await ensureDefaultList(prisma);
+    if (await isSuppressed(prisma, account.email)) {
+      return { enrolled: false, reason: "unsubscribed", listName: list.name };
+    }
+    const existing = await prisma.emailListMember.findUnique({
+      where: { listId_email: { listId: list.id, email: account.email } },
+      select: { id: true },
+    });
+    await prisma.emailListMember.upsert({
+      where: { listId_email: { listId: list.id, email: account.email } },
+      create: { listId: list.id, email: account.email, name: account.name, leadId },
+      update: { name: account.name, leadId },
+    });
+    return { enrolled: true, listName: list.name, alreadyOnList: Boolean(existing) };
+  } catch (err) {
+    logSystemEvent("warn", "leads", "Converted the lead but could not add the account to the newsletter list", {
+      leadId, customerId: account.id, error: err instanceof Error ? err.message : String(err),
+    });
+    return { enrolled: false, reason: "failed", detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
+  const outcome = await convertLeadToOpportunity(
+    readParam(req, "leadId"),
+    leadConvertSchema.parse(req.body ?? {}),
+  );
+  if (!outcome.ok) { res.status(outcome.status).json(outcome.body); return; }
+  res.json(outcome.result);
 }));
 
 // ─── FEEDBACK (authenticated CRM UI) ───────────────────────────────────────

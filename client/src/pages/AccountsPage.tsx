@@ -225,7 +225,14 @@ export function AccountsPage() {
           // Signed work only — a booked consultation is not an "active job"
           // (Kyle, 2026-08-29).
           const activeCount = visits.filter((visit) => isActiveJob(visit.status ?? "")).length;
-          const lifetimeRevenue = visits.reduce((sum, visit) => sum + (visit.revenue ?? 0), 0);
+          /*
+            LIFETIME = MONEY COLLECTED, and the SERVER says what that is (Kyle, 2026-09-20;
+            PUNCHLIST E5). This line used to sum `visit.revenue` here in the browser and call the
+            result "lifetime" — contracted revenue, and a third answer beside the account page
+            and Financials. The one rule now lives in services/lifetimeCollected.ts and every
+            surface reads it.
+          */
+          const lifetimeCollected = account.lifetimeCollected ?? 0;
 
           return (
             <Link
@@ -235,9 +242,9 @@ export function AccountsPage() {
             >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="text-lg font-semibold">{account.name}</h2>
-                {lifetimeRevenue > 0 && (
+                {lifetimeCollected > 0 && (
                   <span className="text-sm font-medium text-rce-muted">
-                    {money(lifetimeRevenue)} lifetime
+                    {money(lifetimeCollected)} collected
                   </span>
                 )}
               </div>

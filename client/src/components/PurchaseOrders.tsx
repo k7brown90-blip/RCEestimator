@@ -5,13 +5,15 @@
  * verification of the receipt." The Purchases card on Financials starts a PO
  * (purpose chosen: Truck stock default / Warehouse / Tool — "Tool purchases
  * will be done separately"), shows the number big enough to read at the
- * counter, lists open and purchased POs with an expand-in-place detail panel
- * (lines, trail, receipts, actions), and pairs loose materials receipts with
- * a PO. "We need to be able to edit manually in case there are errors found"
- * — every edit here asks for a one-line reason that lands in the trail.
+ * counter, lists open and purchased POs, and pairs loose materials receipts
+ * with a PO. "We need to be able to edit manually in case there are errors
+ * found" — every edit asks for a one-line reason that lands in the trail.
  *
- * Everything stays in the card (Kyle: no new windows or tabs, no endless
- * lists — rows cap at 8 with Show more).
+ * A row opens the P.O.'s DRAWER (`PoDetailPanel` — lines, money, receipts,
+ * landing, status, the trail) over this list. Until 2026-09-21 the same panel
+ * also expanded in place under the row; that was the duplicate the drawers
+ * plan's Phase 6 deleted ("drawers win", Kyle). No new windows or tabs, no
+ * endless lists — rows cap at 8 with Show more.
  */
 
 import { useRef, useState } from "react";
@@ -22,8 +24,10 @@ import type { PurchaseOrderLineInput } from "../lib/api";
 import { OFF_CARD_METHOD_LABEL, isActiveJob } from "../lib/types";
 import type { OffCardMethod, PoPurpose, PoStatus, PurchaseOrderDetail, PurchaseOrderLine, PurchaseOrderSummary, ReviewReceiptRow } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
+import { useDrawerParams } from "../lib/drawers";
 import { LandingPanel } from "./LandingPanel";
 import { CollapsibleCard } from "./CollapsibleCard";
+import { OpenDrawerButton } from "./drawers/OpenDrawerButton";
 
 const PAGE_SIZE = 8;
 
@@ -50,7 +54,7 @@ export function PoStatusPill({ status }: { status: PoStatus | string }) {
  * "The P.O. is the money, the receipt is proof" (Kyle, 2026-09-19): a P.O. that
  * has money and no proof needs its receipt attached before it can verify.
  */
-function poNeedsProof(po: Pick<PurchaseOrderSummary, "moneyTotal" | "proofCount">): boolean {
+export function poNeedsProof(po: Pick<PurchaseOrderSummary, "moneyTotal" | "proofCount">): boolean {
   return po.moneyTotal > 0 && po.proofCount === 0;
 }
 
@@ -64,7 +68,7 @@ function PurposePill({ purpose }: { purpose: PoPurpose | string }) {
  * Hits the admin-only reparse route; safe to click repeatedly since it only
  * fills fields still empty and can never create a second receipt.
  */
-function ReparseReceiptButton({ receiptId }: { receiptId: string }) {
+export function ReparseReceiptButton({ receiptId }: { receiptId: string }) {
   const refresh = usePoRefresh();
   const [error, setError] = useState<string | null>(null);
   const mutation = useMutation({
@@ -136,10 +140,11 @@ function useRecentlyVerifiedPurchaseOrders() {
 const PENDING_REVIEW_STALE_MINUTES = 60;
 
 /**
- * Every receipt waiting for review (Kyle, 2026-09-08) — same cache entry
- * FinancialsPage already reads, so this adds no extra request.
+ * Every receipt waiting for review (Kyle, 2026-09-08) — one hook, one cache entry,
+ * read by the Purchases card and the Purchasing & Stock page's review list and strip
+ * (tab separation, 2026-09-20; it used to be FinancialsPage that read it).
  */
-function usePendingReviewReceipts() {
+export function usePendingReviewReceipts() {
   return useQuery({ queryKey: ["receipt-review"], queryFn: api.pendingReceipts });
 }
 
@@ -149,13 +154,24 @@ function usePendingReviewReceipts() {
  * "needing a receipt" queue too, 2026-09-19) the truck ledger and its card
  * spend.
  */
-function usePoRefresh() {
+export function usePoRefresh() {
   const queryClient = useQueryClient();
   return () => {
-    for (const key of [["purchase-orders"], ["purchase-order"], ["receipts-needing-po"], ["receipt-review"], ["account-summary"], ["jobPOs"], ["jobReceipts"], ["jobProfitability"], ["financials"], ["inventory"], ["tools"], ["trucks"], ["truck"], ["card-spend"]]) {
+    // ["receipt"] is the receipt drawer's own record (2026-09-20) — attaching, detaching or
+    // waiving from either side must redraw the other.
+    for (const key of [["purchase-orders"], ["purchase-order"], ["receipts-needing-po"], ["receipt-review"], ["receipt"], ["account-summary"], ["jobPOs"], ["jobReceipts"], ["jobProfitability"], ["financials"], ["inventory"], ["tools"], ["trucks"], ["truck"], ["card-spend"]]) {
       void queryClient.invalidateQueries({ queryKey: key });
     }
   };
+}
+
+/**
+ * Confirmed materials receipts with no P.O. — one hook, because the Purchases card and the
+ * P.O. drawer (2026-09-20) both feed it to PoDetailPanel's "link one already uploaded" list,
+ * and the query-key collision test compares call sites by text.
+ */
+export function useReceiptsNeedingPo() {
+  return useQuery({ queryKey: ["receipts-needing-po"], queryFn: api.receiptsNeedingPo });
 }
 
 /**
@@ -165,7 +181,7 @@ function usePoRefresh() {
  * card transaction from ever matching, both of which are date-windowed. Collapsed
  * to "edit date" by default so the common case (nothing wrong) stays out of the way.
  */
-function ReceiptDateEditor({ receiptId, receivedAt }: { receiptId: string; receivedAt: string }) {
+export function ReceiptDateEditor({ receiptId, receivedAt }: { receiptId: string; receivedAt: string }) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(receivedAt.slice(0, 10));
@@ -256,7 +272,7 @@ export function ReceiptPoPicker({ receiptId, jobId }: { receiptId: string; jobId
  * ReasonRow pattern as the rest of this card; ReasonRow is a hoisted function
  * declaration further down this file.
  */
-function WaivePoAction({ receiptId }: { receiptId: string }) {
+export function WaivePoAction({ receiptId }: { receiptId: string }) {
   const refresh = usePoRefresh();
   const [waiving, setWaiving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -421,8 +437,9 @@ function StartPoForm({ onCreated }: { onCreated: (po: PurchaseOrderSummary) => v
 export function PurchasesCard() {
   const { data: orders = [] } = useLivePurchaseOrders();
   const { data: recentlyVerified = [] } = useRecentlyVerifiedPurchaseOrders();
-  const { data: needing = [] } = useQuery({ queryKey: ["receipts-needing-po"], queryFn: api.receiptsNeedingPo });
+  const { data: needing = [] } = useReceiptsNeedingPo();
   const { data: pendingReview = [] } = usePendingReviewReceipts();
+  const drawers = useDrawerParams();
   // Unit 2 (Kyle, 2026-09-12): receipts uploaded with no vendor/amount wait on an
   // async Vision parse. Past this many minutes it almost certainly finished (or
   // died) — a number he cannot miss, not a log line, per the binding condition
@@ -432,7 +449,6 @@ export function PurchasesCard() {
   );
   const refresh = usePoRefresh();
   const [justCreated, setJustCreated] = useState<PurchaseOrderSummary | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [showAllNeeding, setShowAllNeeding] = useState(false);
   // Display-only merge: a receipt that just verified stays visible for
@@ -465,7 +481,9 @@ export function PurchasesCard() {
         truck or in the warehouse — never on a job. Every edit asks for a reason and keeps a trail.
       </p>
 
-      <StartPoForm onCreated={(po) => { setJustCreated(po); setOpenId(po.id); refresh(); }} />
+      {/* The new P.O. opens in its drawer straight away — the number is the drawer's title, so
+          it is still the big thing on screen at the counter. */}
+      <StartPoForm onCreated={(po) => { setJustCreated(po); drawers.open("po", po.id); refresh(); }} />
 
       {justCreated && (
         <div className="mt-3 rounded-lg border border-emerald-300 bg-emerald-50 p-3">
@@ -482,7 +500,7 @@ export function PurchasesCard() {
       <ul className="mt-1 space-y-1">
         {visible.map((po) => (
           <li key={po.id} className="rounded-lg border border-rce-border px-3 py-1.5 text-sm">
-            <button type="button" className="flex w-full flex-wrap items-center justify-between gap-2 text-left" onClick={() => setOpenId(openId === po.id ? null : po.id)}>
+            <button type="button" className="flex w-full flex-wrap items-center justify-between gap-2 text-left" title="Open this P.O." onClick={() => drawers.open("po", po.id)}>
               <span className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold tabular-nums">{po.number}</span>
                 <PurposePill purpose={po.purpose} />
@@ -499,7 +517,7 @@ export function PurchasesCard() {
                 <PoStatusPill status={po.status} />
                 <span>opened {shortDate(po.openedAt)}</span>
                 <span>{po.receiptCount} receipt{po.receiptCount === 1 ? "" : "s"}</span>
-                <span className="text-rce-accent">{openId === po.id ? "Hide" : "Open"}</span>
+                <span className="text-rce-accent">Open</span>
               </span>
             </button>
             {/*
@@ -513,7 +531,6 @@ export function PurchasesCard() {
                 <AttachProofButton poId={po.id} />
               </div>
             )}
-            {openId === po.id && <PoDetailPanel id={po.id} needing={needing} />}
           </li>
         ))}
       </ul>
@@ -578,9 +595,21 @@ function ReasonRow({ label, busy, onSubmit, onCancel }: { label: string; busy: b
   );
 }
 
-function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[] }) {
-  const { data: po } = useQuery({ queryKey: ["purchase-order", id], queryFn: () => api.purchaseOrder(id) });
+/**
+ * One PO's full detail — shared so every reader is the same cache entry
+ * (queryKeyCollisions.test.ts compares call sites by exact text; two
+ * differently-named local params calling the same endpoint would otherwise
+ * read as two different shapes under one key). JobCloseoutPanel.tsx's
+ * job-screen receipt list reads this too.
+ */
+export function usePurchaseOrderDetail(id: string, enabled = true) {
+  return useQuery({ queryKey: ["purchase-order", id], queryFn: () => api.purchaseOrder(id), enabled });
+}
+
+export function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[] }) {
+  const { data: po } = usePurchaseOrderDetail(id);
   const refresh = usePoRefresh();
+  const drawers = useDrawerParams();
   const [error, setError] = useState<string | null>(null);
   const onError = (err: unknown) => setError((err as Error).message);
   const onDone = () => { setError(null); refresh(); };
@@ -616,7 +645,10 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
         <ul className="mt-1 space-y-1">
           {po.receipts.map((r) => (
             <li key={r.id} className="flex flex-wrap items-center justify-between gap-2">
-              <span>{r.vendor || "Unknown vendor"} · {money(r.amount)} · {shortDate(r.receivedAt)}{r.status !== "confirmed" ? " · needs review" : ""}</span>
+              {/* The receipt carries its own actions (2026-09-20): the row opens its drawer. */}
+              <OpenDrawerButton kind="receipt" id={r.id} onOpen={drawers.open} className="text-left hover:underline">
+                {r.vendor || "Unknown vendor"} · {money(r.amount)} · {shortDate(r.receivedAt)}{r.status !== "confirmed" ? " · needs review" : ""}
+              </OpenDrawerButton>
               {editable && (
                 <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" disabled={detach.isPending} onClick={() => detach.mutate(r.id)}>detach</button>
               )}
@@ -670,7 +702,7 @@ function PoDetailPanel({ id, needing }: { id: string; needing: ReviewReceiptRow[
       {po.landedAt && (
         <p className="rounded bg-emerald-50 px-2 py-1 text-emerald-800">
           Landed {shortDate(po.landedAt)} — {po.purpose === "tool" ? "on the tool register" : po.destinationType === "warehouse" ? "in the warehouse" : `on ${po.truckName ?? "the truck"}`}.
-          {" "}<Link to="/inventory" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">Inventory →</Link>
+          {" "}<Link to="/purchasing" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">Stock on hand →</Link>
         </p>
       )}
 

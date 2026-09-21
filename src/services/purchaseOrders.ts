@@ -538,6 +538,13 @@ export async function closePurchaseOrderForLanding(tx: Tx, po: PurchaseOrder, me
  * to purchased — a receipt means the purchase happened — and a purchased PO
  * that now has money and proof is verified. No cost figure moves: the receipt
  * is never money (Kyle, 2026-09-19).
+ *
+ * Allowed on a closed or cancelled PO too (Kyle, 2026-09-20: "I have several
+ * receipt photos to add to this job and need to edit/add to the P.O. currently
+ * assigned to it"). Safe: `verifyPurchaseOrderIfComplete` below only acts on
+ * status "purchased" and no-ops otherwise, and status never gates the money
+ * (THE P.O. IS THE MONEY, 2026-09-19) — this only adds proof to a record that
+ * already exists.
  */
 export async function attachReceiptToPurchaseOrder(receiptId: string, poId: string, actor: string) {
   const receipt = await prisma.receipt.findUnique({
@@ -546,8 +553,6 @@ export async function attachReceiptToPurchaseOrder(receiptId: string, poId: stri
   });
   if (!receipt) throw new PoError("Receipt not found", 404);
   const po = await loadPo(poId);
-  if (po.status === "cancelled") throw new PoError(`${po.number} is cancelled; attach the receipt to a live PO.`, 409);
-  if (po.status === "closed") throw new PoError(`${po.number} is closed; attach the receipt to a live PO.`, 409);
 
   const newJobId = receipt.jobId ?? po.jobId ?? null;
   await prisma.$transaction(async (tx) => {

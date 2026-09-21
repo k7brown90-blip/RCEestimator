@@ -30,8 +30,14 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
   const [showQr, setShowQr] = useState<"deposit" | "balance" | null>(null);
   const [recording, setRecording] = useState<"deposit" | "final" | null>(null);
   const [amount, setAmount] = useState("");
-  // Methods the system can't detect (Kyle, 2026-08-25): cash, check, Zelle.
-  const [method, setMethod] = useState<"cash" | "check" | "zelle">("check");
+  // Methods the system can't detect (Kyle, 2026-08-25): cash, check, Zelle — or other.
+  const [method, setMethod] = useState<"cash" | "check" | "zelle" | "other">("check");
+  // Which payment this is, defaulted by the button pressed and changeable; and the note (a check
+  // number, what it was for) the ledger shows. Both came here from the Financials invoice panel
+  // when that panel was retired for the invoice drawer (2026-09-21) — this is now the one place
+  // a payment against an invoice is recorded by hand.
+  const [kind, setKind] = useState<"deposit" | "final" | "other">("final");
+  const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -47,16 +53,29 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
     onError: (err) => { setNotice(null); setError((err as Error).message); },
   });
 
+  // The deposit is optional (Kyle, 2026-09-20): the manual override lives where the money is shown.
+  const setDeposit = useMutation({
+    mutationFn: (depositRequired: boolean) => api.pbSetTerms(info!.estimateId, { depositRequired }),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["schedule"] });
+    },
+    onError: (err) => setError((err as Error).message),
+  });
+
   const record = useMutation({
     mutationFn: () =>
       api.recordPayment({
         amount: Number(amount),
         method,
-        kind: recording ?? "other",
+        kind,
         estimateId: info?.estimateId,
+        note: note.trim() || undefined,
       }),
     onSuccess: () => {
-      setRecording(null); setAmount(""); setError(null);
+      setRecording(null); setAmount(""); setNote(""); setError(null);
       void queryClient.invalidateQueries({ queryKey });
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
@@ -77,6 +96,8 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         <h2 className="text-lg font-semibold">Take payment — Invoice {info.number}</h2>
         {info.paidInFull ? (
           <span className="rounded bg-green-100 px-2 py-0.5 text-xs font-semibold uppercase text-green-800">Paid in full</span>
+        ) : !info.depositRequired ? (
+          <span className="rounded bg-rce-accentBg px-2 py-0.5 text-xs font-semibold uppercase text-rce-accentDark">No deposit</span>
         ) : info.depositSatisfied ? (
           <span className="rounded bg-rce-accentBg px-2 py-0.5 text-xs font-semibold uppercase text-rce-accentDark">Deposit paid</span>
         ) : (
@@ -84,13 +105,26 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         )}
       </div>
 
+      {/* One invoice, one payment (Kyle, 2026-09-20): what the total is made of when signed
+          change orders have joined it. Each document stays its own frozen record. */}
+      {info.documents.length > 1 && (
+        <ul className="mt-2 space-y-0.5 text-xs text-rce-muted">
+          {info.documents.map((d) => (
+            <li key={d.id} className="flex justify-between gap-2">
+              <span>{d.kind === "change_order" ? "Change order" : "Invoice"} {d.number} — {d.title}</span>
+              <span className="tabular-nums">{money(d.billedTotal)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
       {info.warranty ? (
         /* One account, two payers (Kyle, 2026-09-10): the homeowner's line and the warranty
            company's line. Every button on this panel is the HOMEOWNER's money; the warranty
            company's check is recorded on the estimate's warranty panel and never lands here. */
         <div className="mt-1 text-sm text-rce-muted">
           <p>
-            <span className="font-medium text-rce-soft">Homeowner:</span> billed {money(info.billedTotal)} · Deposit (⅓) {money(info.depositDue)}
+            <span className="font-medium text-rce-soft">Homeowner:</span> billed {money(info.billedTotal)} · {info.depositRequired ? `Deposit (⅓) ${money(info.depositDue)}` : "no deposit"}
             {info.totalPaid > 0 && ` · paid ${money(info.totalPaid)}`}
             {" · "}balance <b>{money(info.balance)}</b>
           </p>
@@ -103,15 +137,28 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         </div>
       ) : (
         <p className="mt-1 text-sm text-rce-muted">
-          Total {money(info.billedTotal)} · Deposit (⅓) {money(info.depositDue)}
+          Total {money(info.billedTotal)} · {info.depositRequired ? `Deposit (⅓) ${money(info.depositDue)}` : "no deposit"}
           {info.totalPaid > 0 && ` · Paid ${money(info.totalPaid)}`}
           {" · "}Balance <b>{money(info.balance)}</b>
         </p>
       )}
-      {!info.depositSatisfied && (
+      {info.depositRequired && !info.depositSatisfied && (
         <p className="mt-1 text-xs text-amber-800">
           This job can't be scheduled until the deposit is in — charge it below or record the cash/check.
         </p>
+      )}
+      {/* The manual override (Kyle, 2026-09-20: "a deposit required check box for a manual
+          override"). Turning it off opens scheduling; turning it on asks the ⅓ before. */}
+      {!info.paidInFull && (
+        <label className="mt-1 flex items-center gap-2 text-xs text-rce-soft">
+          <input
+            type="checkbox"
+            checked={info.depositRequired}
+            disabled={setDeposit.isPending}
+            onChange={(e) => setDeposit.mutate(e.target.checked)}
+          />
+          Deposit required (⅓ before scheduling)
+        </label>
       )}
 
       {!info.stripeConfigured && (
@@ -121,7 +168,7 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
-        {info.stripeConfigured && !info.depositSatisfied && depositRemaining > 0 && (
+        {info.stripeConfigured && info.depositRequired && !info.depositSatisfied && depositRemaining > 0 && (
           <>
             <button
               className="btn btn-primary text-sm"
@@ -151,15 +198,17 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         )}
         {!info.paidInFull && (
           <>
+            {info.depositRequired && depositRemaining > 0 && (
+              <button
+                className="btn btn-secondary text-sm"
+                onClick={() => { setRecording("deposit"); setKind("deposit"); setAmount(depositRemaining.toFixed(2)); }}
+              >
+                Record deposit (cash/check/Zelle)
+              </button>
+            )}
             <button
               className="btn btn-secondary text-sm"
-              onClick={() => { setRecording("deposit"); setAmount(depositRemaining.toFixed(2)); }}
-            >
-              Record deposit (cash/check/Zelle)
-            </button>
-            <button
-              className="btn btn-secondary text-sm"
-              onClick={() => { setRecording("final"); setAmount(info.balance.toFixed(2)); }}
+              onClick={() => { setRecording("final"); setKind("final"); setAmount(info.balance.toFixed(2)); }}
             >
               Record payment (cash/check/Zelle)
             </button>
@@ -180,11 +229,18 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-rce-border p-3">
           <span className="text-sm font-medium">{recording === "deposit" ? "Deposit" : "Payment"} received:</span>
           <input className="field w-28" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
-          <select className="field" value={method} onChange={(e) => setMethod(e.target.value as "cash" | "check" | "zelle")}>
+          <select className="field" value={method} onChange={(e) => setMethod(e.target.value as typeof method)}>
             <option value="check">check</option>
             <option value="cash">cash</option>
             <option value="zelle">Zelle</option>
+            <option value="other">other</option>
           </select>
+          <select className="field" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)} title="Which payment this is">
+            <option value="deposit">deposit</option>
+            <option value="final">final</option>
+            <option value="other">other</option>
+          </select>
+          <input className="field min-w-0 flex-1" placeholder="Note (check #, etc.)" value={note} onChange={(e) => setNote(e.target.value)} />
           <button
             className="btn btn-primary text-sm"
             disabled={!(Number(amount) > 0) || record.isPending}

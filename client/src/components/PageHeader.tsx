@@ -14,7 +14,7 @@ export function PageHeader({ title, subtitle, actions, children, backTo, backLab
   return (
     <header className="mb-6 space-y-3">
       {backTo && (
-        <Link to={backTo} className="inline-block text-sm text-rce-accent hover:underline">
+        <Link to={backTo} className="btn btn-secondary inline-flex px-3 py-1 text-sm min-h-0">
           ← {backLabel ?? "Back"}
         </Link>
       )}

@@ -24,6 +24,12 @@ model Customer {
   // Customer/Lead when this is true — null and false are both "not opted in"
   // (the website checkbox is the only opt-in channel) — see services/twilio.ts.
   smsConsent        Boolean?
+  // WHICH PLATFORM brought this account (Kyle, 2026-09-20): copied from Lead.platform when the
+  // lead converts (a new account takes it; an existing account keeps the one it already has).
+  // This is the link that lets phase 4 of the funnel (lifetime spend, repeat work) be read by
+  // phase 1's dimension — "which marketing brings customers who come back". Vocabulary in
+  // shared/leadPlatform.ts. Null = the account predates the field or came in another door.
+  platform          String?
   createdAt         DateTime                 @default(now())
   updatedAt         DateTime                 @updatedAt
   properties        Property[]
@@ -35,10 +41,24 @@ model Customer {
   // and the whole account deletes in one action — on Kyle's word, never on a schedule.
   isTestAccount     Boolean                  @default(false)
   healthInspections HealthInspection[]
+  diagnosticReports DiagnosticReport[]
   contacts          CustomerContact[]
   payments          Payment[]
+  /// Free-form follow-up emails sent from the account drawer/page (2026-09-20 communications
+  /// build) — the thread rendered on the record. Separate from the campaign-mail relations
+  /// because a campaign send targets an EmailListMember, not a Customer directly.
+  emailDeliveries   EmailDelivery[]
+  emailBounces      EmailBounce[]
 
   @@index([phone])
+  // ── GLOBAL SEARCH (2026-09-20, drawers plan Phase 5) ──
+  // Trigram GIN indexes, one per column the search endpoint (services/globalSearch.ts) matches
+  // with `contains` — a btree cannot serve `ILIKE '%x%'`. They need the pg_trgm extension; the
+  // migration that creates them survives a role that cannot install it (see
+  // migrations/20260921120000_global_search_finds_every_record) — search still works, unindexed.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Customer_name_trgm_idx")
+  @@index([email(ops: raw("gin_trgm_ops"))], type: Gin, map: "Customer_email_trgm_idx")
+  @@index([phone(ops: raw("gin_trgm_ops"))], type: Gin, map: "Customer_phone_trgm_idx")
 }
 
 // Additional labeled emails/phones on an account (Kyle, 2026-08-25: "the
@@ -94,6 +114,7 @@ model Property {
   estimates                Estimate[]
   issuedEstimates          IssuedEstimate[]
   healthInspections        HealthInspection[]
+  diagnosticReports        DiagnosticReport[]
   findings                 PropertyFinding[]
   documents                Document[]
   enclosures               Enclosure[]
@@ -108,6 +129,10 @@ model Property {
   // duplex or an ADU, which is exactly the multi-address case this supports.
   // Near-duplicates are surfaced as a client-side warning instead.
   @@index([customerId])
+  // Global search (2026-09-20): the address columns Kyle types. See Customer.
+  @@index([addressLine1(ops: raw("gin_trgm_ops"))], type: Gin, map: "Property_addressLine1_trgm_idx")
+  @@index([city(ops: raw("gin_trgm_ops"))], type: Gin, map: "Property_city_trgm_idx")
+  @@index([postalCode(ops: raw("gin_trgm_ops"))], type: Gin, map: "Property_postalCode_trgm_idx")
 }
 
 // ─── Finding ledger ────────────────────────────────────────────────────────
@@ -350,6 +375,7 @@ model Visit {
   stockMovements         StockMovement[]
   assignments            VisitAssignment[]
   healthInspections      HealthInspection[]
+  diagnosticReports      DiagnosticReport[]
   visitPhotos            VisitPhoto[]
   timeEntries            TimeEntry[]
   commissions            Commission[]
@@ -489,6 +515,7 @@ model Technician {
   createdAt         DateTime           @default(now())
   assignments       VisitAssignment[]
   healthInspections HealthInspection[]
+  diagnosticReports DiagnosticReport[]
   visitPhotos       VisitPhoto[]
   trucks            Truck[]
   shiftEntries      ShiftEntry[]
@@ -638,6 +665,182 @@ model InspectionPhoto {
   inspection   HealthInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
 
   @@index([inspectionId])
+}
+
+// ─── CIRCUIT DIAGNOSTIC REPORT (Kyle, 2026-09-20) ───────────────────────────
+//
+// "I need the field app to have its own diagnostics report. I am going to charge
+// $25 - $50 for each outlet that is reviewed rather than a flat fee."
+//
+// A second report TYPE in the field-inspection machinery, not a second machine:
+// PWA-minted ids (idempotent upsert, a retry never duplicates), photo bytes in
+// Postgres keyed by the phone's UUID, the same durable IndexedDB queues, the
+// same pdfkit generator and branded-email delivery log.
+//
+// THE RCE STANDARD is the scope rule and the reason the report exists: "inspect
+// the breaker to the last outlet... We check every one to ensure the integrity
+// of that circuit and to protect us." Scope is the CIRCUIT, never a count agreed
+// in advance. The quoted count estimates how big the circuit is; the examined
+// count is what it actually held. `coverage` is the report's own statement of
+// whether the whole circuit was walked, printed on the face of the document —
+// that is the warranty defence on a callback.
+//
+// THE LINE THAT DECIDES THE MONEY: wiring fixes made during the diagnostic are
+// INCLUDED in the diagnostic price (`DiagnosticOutlet.fixed` records them);
+// faulty or damaged EQUIPMENT is not (`equipmentDefective` + `defectDescription`)
+// — that becomes the resolutions change order, quoted from this record.
+model DiagnosticReport {
+  id                  String                     @id // PWA-generated UUID — the idempotency key
+  visitId             String
+  propertyId          String
+  customerId          String
+  technicianId        String?
+  reportDate          DateTime
+  // What the customer called about — the report opens with it.
+  complaint           String
+  // The circuit, named the way the homeowner and the panel directory name it.
+  circuitLabel        String
+  circuitNumber       String?
+  panelLocation       String?
+  breakerRating       String?
+  // The breaker end of the standard. False means the report says so.
+  breakerInspected    Boolean                    @default(false)
+  // whole_circuit | partial. Partial REQUIRES coverageNote — a report that stopped
+  // short says where and why, on its face; it never implies coverage it lacks.
+  coverage            String
+  coverageNote        String?
+  // The technician's review: what was wrong, what was fixed, what remains.
+  summary             String?
+  // Which price-book item the outlets were quoted under, when the signed estimate
+  // carries one. Null when the diagnostic was not quoted per outlet (a walk-in
+  // service call); the report still stands, only the overage math is skipped.
+  //
+  // onDelete: SetNull, deliberately. The MONEY record of what was quoted is the
+  // three frozen counts below, not this link — the link only seeds the change
+  // order's overage lines. If the catalog row is ever deleted the report keeps
+  // its counts and degrades to "no overage math", which is honest; a Restrict
+  // here would let a years-old report block a catalog edit.
+  diagnosticItemId    String?
+  diagnosticItem      PriceBookAtomic?           @relation(fields: [diagnosticItemId], references: [itemId], onDelete: SetNull)
+  // Per-tier counts from the signed estimate at the time the diagnostic started —
+  // frozen here so the report can print "quoted 6 / examined 9" forever.
+  quotedNormal        Int                        @default(0)
+  quotedDifficult     Int                        @default(0)
+  quotedVeryDifficult Int                        @default(0)
+  // The resolutions change order raised from this report, so a second tap
+  // resumes it instead of raising a second draft.
+  changeOrderDraftId  String?
+  // in_progress | complete | void. IN_PROGRESS IS THE DEFAULT AND THAT MATTERS:
+  // the report is built one outlet at a time in the field and pushed as it goes
+  // (durable queue), so the server row exists long before the walk is finished.
+  // Only a `complete` report is customer-facing — sending is refused otherwise.
+  status              String                     @default("in_progress")
+  completedAt         DateTime?
+  voidedAt            DateTime?
+  voidReason          String?
+  appVersion          String?
+  syncedAt            DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
+  visit               Visit                      @relation(fields: [visitId], references: [id], onDelete: Restrict)
+  property            Property                   @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  customer            Customer                   @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  technician          Technician?                @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+  outlets             DiagnosticOutlet[]
+  photos              DiagnosticPhoto[]
+  deliveries          DiagnosticReportDelivery[]
+
+  @@index([visitId])
+  @@index([propertyId, reportDate])
+  @@index([customerId, reportDate])
+}
+
+// One outlet on the circuit — every box opened, breaker to last. Added ONE AT A
+// TIME in the field as the work happens (Kyle: "click and add outlet button"),
+// never pre-built to the quoted count.
+//
+// A re-push SYNCS this set by the phone's own ids: rows in the push are upserted,
+// rows absent from it are deleted. Not a blind delete-and-recreate — a queued
+// retry must not churn every row's identity, and an outlet the tech deleted on
+// the phone must actually disappear here.
+model DiagnosticOutlet {
+  id                    String              @id // PWA-generated
+  reportId              String
+  sequence              Int
+  locationLabel         String // "Kitchen, east wall by the fridge"
+  // receptacle | switch | light_fixture | splice_only | disconnect | junction_box |
+  // breaker | smoke_alarm | appliance | other. Validated at the door against
+  // shared/diagnostics.ts, which the phone builds its picker from.
+  deviceType            String
+  // What it actually is, when deviceType is `other` — "doorbell transformer".
+  deviceLabel           String?
+  // "single-gang plastic", "4-square metal", "ceiling pan"…
+  enclosure             String?
+  gangs                 Int?
+  circuitNumber         String?
+  // The money tier for THIS outlet, a FIELD OBSERVATION per Kyle's 2026-08-11
+  // ruling — the same enum the price book and every draft line use, not a
+  // parallel string, so an overage line carries the tier straight through to
+  // `PriceBookDraftLine.difficulty` with nothing to translate.
+  difficulty            PriceBookDifficulty @default(NORMAL)
+  // The checklist. Phase-to-phase only where applicable (a 240 V device).
+  vPhaseGround          Float?
+  vPhaseNeutral         Float?
+  vPhasePhase           Float?
+  terminationsTightened Boolean             @default(false)
+  corrosion             Boolean             @default(false)
+  corrosionNote         String?
+  // What was found here.
+  findings              String?
+  // What was FIXED here during the diagnostic — included in the diagnostic price.
+  fixed                 String?
+  // Damaged or defective device/fixture/equipment — NOT included; this is what the
+  // resolutions change order quotes.
+  equipmentDefective    Boolean             @default(false)
+  defectDescription     String?
+  // Photo ids (DiagnosticPhoto.id) taken at this outlet. At least one is required
+  // by the phone and by the push validator: an outlet without a photo is a claim.
+  //
+  // Held as ids rather than a FK from DiagnosticPhoto BECAUSE of the sync above:
+  // any parent-child relation here would put photo bytes one cascade away from a
+  // re-push, and losing photo evidence is the one failure this whole capture path
+  // exists to prevent (2026-09-11, four receipt photos). Same shape as
+  // InspectionPhoto / ItemResult.photoIds, and the PDF resolves ids the same way.
+  photoIds              String[]
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  report                DiagnosticReport    @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, sequence])
+}
+
+// Photo evidence from the phone, same posture as InspectionPhoto: bytes in
+// Postgres so they ride the managed backups; id is the PWA UUID so the upload
+// is idempotent through the durable queue.
+model DiagnosticPhoto {
+  id         String           @id
+  reportId   String
+  mimeType   String
+  sizeBytes  Int
+  data       Bytes
+  uploadedAt DateTime         @default(now())
+  report     DiagnosticReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+}
+
+// Delivery proof, same reason as HealthReportDelivery: a report that exists but
+// was never demonstrably received is Kyle's word against the customer's — on a
+// warranty callback, exactly the scenario this record exists for.
+model DiagnosticReportDelivery {
+  id         String           @id @default(cuid())
+  reportId   String
+  documentId String
+  sentTo     String
+  sentBy     String // "owner:crm" | "tech:<technicianId>"
+  sentAt     DateTime         @default(now())
+  report     DiagnosticReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, sentAt])
 }
 
 // ─── HEALTH ASSESSMENT PROTOCOL v2 (master protocol 2026-08-02) ────────────
@@ -1216,7 +1419,8 @@ model AtomicUnit {
   sortOrder           Int            @default(0)
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
-  estimateItems        EstimateItem[]
+  estimateItems       EstimateItem[]
+
   @@unique([catalog, code])
 }
 
@@ -1341,7 +1545,18 @@ model Lead {
   email             String?
   phone             String?
   source            String                   @default("email") // email | phone | web | manual | referral | savannah_text | retention
-  status            String                   @default("new") // "new" | "contacted" | "converted" | "lost"
+  // WHICH PLATFORM sent the lead (Kyle, 2026-09-20, the four-phase funnel) — google | yelp |
+  // nextdoor | angi | referral | repeat_customer | other, ONE definition in shared/leadPlatform.ts.
+  // Separate from `source` on purpose: source is the CHANNEL (how it arrived) and keeps its
+  // history; platform is WHO SENT IT, the thing the marketing spend goes to. Tagged at intake
+  // (web form where known, Kyle or Savannah on a phone lead), carried onto the Customer at
+  // convert. Null = never recorded; reports bucket that as "unknown".
+  platform          String?
+  // "new" | "contacted" | "converted" | "lost". CONVERTED = an OPPORTUNITY (Kyle, 2026-09-20:
+  // "When a lead gets converted it should be considered an opportunity"): account + address +
+  // job created and the account enrolled on the newsletter list. Nothing is WON at the lead
+  // stage — a win is a signed estimate (phase 3 of the funnel, services/leadFunnel.ts).
+  status            String                   @default("new")
   notes             String?
   // ── Address, two tracks ──
   // `address` is free text the phone/email intake fills. Conversion parses it
@@ -1372,7 +1587,10 @@ model Lead {
   // attests to — the website checkbox is the only opt-in channel, so only
   // `true` clears the send gate in services/twilio.ts; null does NOT.
   smsConsent        Boolean?
-  leadStatus        String                   @default("new") // "new" | "booked" | "unresolved" | "planning" | "no_answer" | "lost" | "won"
+  // "new" | "booked" | "unresolved" | "planning" | "no_answer" | "lost" | "won". The VALUE "won"
+  // stays (Savannah's call-disposition tool outside this repo writes it) but it MEANS
+  // "became an opportunity" and is never presented as a win — see `status` above.
+  leadStatus        String                   @default("new")
   followUpDate      DateTime?
   followUpReason    String? // "comparing_estimates" | "still_planning" | "consulting_partner" | "no_answer"
   followUpCount     Int                      @default(0)
@@ -1387,11 +1605,23 @@ model Lead {
   visitId           String?
   createdAt         DateTime                 @default(now())
   updatedAt         DateTime                 @updatedAt
+  /// Free-form follow-up emails sent from the lead drawer (2026-09-20 communications build) —
+  /// the thread rendered on the record, before this lead has an account to carry it instead.
+  emailDeliveries   EmailDelivery[]
+  emailBounces      EmailBounce[]
 
   @@index([customerId])
   @@index([leadStatus, followUpDate])
   @@index([phone])
   @@index([createdAt])
+  // Global search (2026-09-20): both address tracks — free text from the phone/email intake and
+  // the structured columns the CRM form fills. See Customer.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_name_trgm_idx")
+  @@index([email(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_email_trgm_idx")
+  @@index([phone(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_phone_trgm_idx")
+  @@index([address(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_address_trgm_idx")
+  @@index([addressLine1(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_addressLine1_trgm_idx")
+  @@index([city(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_city_trgm_idx")
 }
 
 // ─── PHASE 1 DATA MODEL — NEW MODELS ────────────────────────────────────────
@@ -1515,7 +1745,7 @@ model Document {
   // the Jobs list and every calendar and revenue rollup built on it.
   jobId            String? // visit ID
   propertyId       String? // set when the document belongs to an address, not a job
-  type             String // "work_order" | "material_list" | "contract" | "change_order" | "signed" | "cure_certificate" | "upgrade_record" | "finding_declination"
+  type             String // "work_order" | "material_list" | "contract" | "change_order" | "signed" | "cure_certificate" | "upgrade_record" | "finding_declination" | "health_report" | "diagnostic_report"
   pdfUrl           String
   signedAt         DateTime?
   signedByIp       String?
@@ -1688,6 +1918,10 @@ model PurchaseOrder {
   @@index([status])
   @@index([jobId])
   @@index([truckId])
+  // Global search (2026-09-20): the number (typed whole, as a prefix, or as its last digits) and
+  // the supplier. `number` is already unique — that btree serves equality, not `ILIKE`.
+  @@index([number(ops: raw("gin_trgm_ops"))], type: Gin, map: "PurchaseOrder_number_trgm_idx")
+  @@index([supplier(ops: raw("gin_trgm_ops"))], type: Gin, map: "PurchaseOrder_supplier_trgm_idx")
 }
 
 model PurchaseOrderLine {
@@ -2195,8 +2429,8 @@ model PriceBookAtomic {
   // reverse — every assembly THIS row is used inside, as a CHILD. A row can be both a parent
   // and, so long as no assembly contains it, never a child of itself: nesting is rejected at
   // write time in priceBookAssembly.ts, not merely hidden in the UI.
-  assemblyItems     PriceBookItemComponent[] @relation("AssemblyParent")
-  partOfAssemblies  PriceBookItemComponent[] @relation("AssemblyChild")
+  assemblyItems    PriceBookItemComponent[] @relation("AssemblyParent")
+  partOfAssemblies PriceBookItemComponent[] @relation("AssemblyChild")
 
   // Labour on an ASSEMBLY row defaults to Σ(component labour × component quantity), computed
   // per tier independently, and lands in laborNormal/laborDifficult/laborVeryDifficult above —
@@ -2208,6 +2442,9 @@ model PriceBookAtomic {
   laborNormalOverridden        Boolean @default(false)
   laborDifficultOverridden     Boolean @default(false)
   laborVeryDifficultOverridden Boolean @default(false)
+
+  // The per-outlet diagnostic item, when a report was quoted under one.
+  diagnosticReports DiagnosticReport[]
 
   @@index([category])
   @@index([retiredAt])
@@ -2255,13 +2492,13 @@ model PriceBookItemComponent {
 // that state the instant the linked atomic's labour is edited, with no flag to fall out of sync.
 // See services/materials.ts `materialCompletion`.
 model Material {
-  id          String  @id @default(cuid())
+  id          String   @id @default(cuid())
   // The manufacturer's package code. Kyle, 2026-09-12: "We need to pick the upc that doesn't
   // matter where I buy it. It still gets recognized and checked when I do a P.O." Scanned off the
   // PACKAGE, not a store shelf tag — a shelf tag encodes the retailer's own number and would be
   // store-scoped, defeating the point. Globally unique because it names one manufacturer product
   // across every supplier. Nullable: a material with no code at all still matches by name.
-  upc         String? @unique
+  upc         String?  @unique
   // A SKU is unique only WITHIN a supplier — Home Depot's number is not SiteOne's, and two
   // suppliers can land on the same digits. Unique on (supplier, sku) TOGETHER, never on sku
   // alone — getting this wrong silently merges two different products at the first collision,
@@ -2319,21 +2556,21 @@ model Material {
 // "name_fuzzy" (the pre-existing bidirectional substring match, kept as the fallback for a
 // material with no code yet); "manual" is Kyle's own entry and ranks above all three.
 model MaterialPriceObservation {
-  id         String   @id @default(cuid())
-  materialId String
+  id                  String   @id @default(cuid())
+  materialId          String
   // Denormalised copy of Material.itemId AT OBSERVATION TIME — Unit 5's proposal groups candidate
   // prices by it. No FK, same reasoning as Material.itemId itself (schema comment above): the book
   // is editable and a material's link can change after the fact without rewriting history.
-  itemId     String?
+  itemId              String?
   // The vendor/supplier this price was actually paid to (the receipt's vendor, or the PO's
   // supplier) — not necessarily identical to today's Material.supplier if the material's usual
   // source moved since.
-  supplier   String?
-  observedAt DateTime
-  qty        Float
-  unitCost   Float
-  source     String // receipt_line | po_line | manual
-  matchMethod String // barcode | sku | name_fuzzy | manual
+  supplier            String?
+  observedAt          DateTime
+  qty                 Float
+  unitCost            Float
+  source              String // receipt_line | po_line | manual
+  matchMethod         String // barcode | sku | name_fuzzy | manual
   // Provenance — at most one of these is set, matching `source`. No FK: the same
   // "provenance, not a relation" precedent as Material.itemId / PurchaseOrderLine.itemId above.
   receiptId           String?
@@ -2714,7 +2951,11 @@ model IssuedEstimate {
   // same estimate; `revision` is what distinguishes them.
   number   String
   revision Int    @default(1)
-  // draft | sent | viewed | signed | void
+  // draft | sent | viewed | signed | expired | lost | void — ONE definition in shared/estimateStatus.ts.
+  // `expired` is the nightly sweep's relabel (server.ts). `lost` (2026-09-20) is the customer's
+  // decision — hired someone else or not moving forward — and is NOT void: void is a dead
+  // document and leaves the win rate; lost stays in it. Reachable only from sent/viewed/expired,
+  // reversible through /reopen; the three lost* columns below carry what the funnel reads.
   status   String @default("draft")
   // The customer's ONLY credential: 32 random bytes, hex. Not a cuid — cuids embed a counter
   // and a timestamp, so one issued link would narrow the search space for the next.
@@ -2808,6 +3049,12 @@ model IssuedEstimate {
   signedChannel   String?
   voidedAt        DateTime?
   voidReason      String?
+  // Lost (Kyle, 2026-09-20: "when we give an estimate but they either hire someone else or end up
+  // not moving forward"). `lostReason` is one of shared/estimateStatus.ts LOST_REASONS — the SAME
+  // vocabulary leads use, so the loss report never has two lists. All three clear on reopen.
+  lostAt          DateTime?
+  lostReason      String?
+  lostNotes       String?
 
   lines  IssuedEstimateLine[]
   events IssuedEstimateEvent[]
@@ -2822,6 +3069,45 @@ model IssuedEstimate {
 
   /// Drafts raised to change this estimate after it was signed.
   changeOrders PriceBookDraftEstimate[] @relation("ChangeOrders")
+
+  /// ── THE CHANGE ORDER JOINS THE INVOICE (Kyle, 2026-09-20) ──
+  ///
+  /// "Apply a change order to an already signed invoice. This will add to the cost of the job and
+  ///  allow a single payment once its all finished... the existing items still frozen, add the
+  ///  change order items, get signature, then the total updates."
+  ///
+  /// The signed document never unfreezes; what changes is the MONEY. A signed change order rolls
+  /// its billed share into the invoice of the estimate it points at — one billed total, one
+  /// balance, one pay link — instead of becoming its own invoice with its own deposit and charge
+  /// (the Godwin job: three estimates, three deposits, three charges for one visit).
+  ///
+  /// Carried HERE, on the issued row, and not only on the draft (PriceBookDraftEstimate
+  /// .changeOrderForId): the draft is editable and its link is SetNull, while this row is the
+  /// frozen business record — "change order to invoice 2026-1010" is a customer-facing fact that
+  /// must not move once the document is issued. Copied from the draft at graduation; always
+  /// points at the ROOT invoice (a change order raised against a change order flattens to the
+  /// root), so the invoice group is one level deep. SetNull mirrors the revision chain — a signed
+  /// parent is never deleted through the app anyway (delete refuses signed rows).
+  changeOrderForId   String?
+  changeOrderFor     IssuedEstimate?  @relation("IssuedChangeOrders", fields: [changeOrderForId], references: [id], onDelete: SetNull)
+  issuedChangeOrders IssuedEstimate[] @relation("IssuedChangeOrders")
+
+  /// The deposit is OPTIONAL, with a manual override (Kyle, 2026-09-20: "I want the deposit
+  /// optional with a deposit required check box for a manual override too. This way I can get a
+  /// deposit for bigger jobs but for smaller ones and for change orders I do not have to go
+  /// through that to be able to schedule."). ON = today's behaviour exactly: this document's
+  /// homeowner share counts toward the invoice's ⅓ deposit, the deposit gates scheduling, the
+  /// deposit request is emailed, and the $300 non-refundable cap applies. OFF = this document
+  /// adds nothing to the deposit. Default ON for an ordinary estimate, OFF for a change order
+  /// (set at issue; editable afterwards from the payment panel, with an event on the trail).
+  depositRequired Boolean @default(true)
+
+  /// "Add to current job" (Kyle, 2026-09-20: "so we avoid wasting time scheduling if we are
+  /// already there doing the work"). Change orders only. When ON, signing this change order
+  /// attaches it to the parent's existing job (`jobVisitId` = the parent's) instead of minting
+  /// and scheduling a second one. Default ON when the parent has a live job at issue; the
+  /// alternative is scheduling the change order as its own visit.
+  addToCurrentJob Boolean @default(false)
 
   /// The named options presented to the customer, frozen at issue (2026-08-20).
   options IssuedEstimateOption[]
@@ -2913,6 +3199,13 @@ model IssuedEstimate {
   // drift the next diff will try to drop.
   @@index([customerId])
   @@index([serviceAddressId])
+  @@index([changeOrderForId])
+  // Global search (2026-09-20): the number and the three frozen strings the search matches.
+  // The unique (number, revision) btree serves equality on `number`, not `ILIKE`. See Customer.
+  @@index([number(ops: raw("gin_trgm_ops"))], type: Gin, map: "IssuedEstimate_number_trgm_idx")
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "IssuedEstimate_title_trgm_idx")
+  @@index([customerName(ops: raw("gin_trgm_ops"))], type: Gin, map: "IssuedEstimate_customerName_trgm_idx")
+  @@index([serviceAddress(ops: raw("gin_trgm_ops"))], type: Gin, map: "IssuedEstimate_serviceAddress_trgm_idx")
 }
 
 /// One option as it was presented to the customer — the thing they tick.
@@ -3143,37 +3436,51 @@ model EmailSuppression {
 /// polls those every 10 minutes through the Gmail REST API (same OAuth refresh token as SMTP) and
 /// files one row per DSN here. gmailMessageId is unique so a re-poll is idempotent.
 model EmailBounce {
-  id               String          @id @default(cuid())
+  id                String          @id @default(cuid())
   /// Which pipe reported it (Kyle, 2026-09-09: Resend-first transactional email). "gmail" rows
   /// come from the DSN watcher and carry gmailMessageId; "resend" rows come from the
   /// email.bounced / email.complained webhook and carry providerMessageId (the Resend email id).
-  provider          String         @default("gmail")
-  providerMessageId String?        @unique
-  gmailMessageId   String?         @unique
-  gmailThreadId    String?
-  recipient        String
+  provider          String          @default("gmail")
+  providerMessageId String?         @unique
+  gmailMessageId    String?         @unique
+  gmailThreadId     String?
+  recipient         String
   /// The enhanced status code from the DSN, e.g. "5.7.0" / "5.1.1".
-  status           String?
+  status            String?
   /// The Diagnostic-Code line ("smtp; 554 ..."), capped at 500 chars.
-  diagnostic       String?
-  action           String?
-  remoteMta        String?
-  originalSubject  String?
-  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | other
-  kind             String
-  estimateNumber   String?
-  issuedEstimateId String?
-  issuedEstimate   IssuedEstimate? @relation(fields: [issuedEstimateId], references: [id], onDelete: SetNull)
-  visitId          String?
-  visit            Visit?          @relation(fields: [visitId], references: [id], onDelete: SetNull)
-  bouncedAt        DateTime
-  resolvedAt       DateTime?
-  resolvedNote     String?
-  createdAt        DateTime        @default(now())
+  diagnostic        String?
+  action            String?
+  remoteMta         String?
+  originalSubject   String?
+  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | communication | other
+  kind              String
+  estimateNumber    String?
+  issuedEstimateId  String?
+  issuedEstimate    IssuedEstimate? @relation(fields: [issuedEstimateId], references: [id], onDelete: SetNull)
+  visitId           String?
+  visit             Visit?          @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  /// The lead this bounce belongs to, for a free-form follow-up sent before conversion
+  /// (2026-09-20 communications build) — copied across from the matched EmailDelivery row the
+  /// same way issuedEstimateId/visitId already are. Only the Resend path (providerMessageId
+  /// match) can populate this; the Gmail DSN path classifies by subject text and has no reliable
+  /// way to recover it for a free-form subject, so a Gmail-routed bounce on this kind of send
+  /// files with leadId/customerId null — same gap that already exists for any Gmail bounce whose
+  /// subject doesn't match a known pattern.
+  leadId            String?
+  lead              Lead?           @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  /// The account this bounce belongs to, same reasoning and same caveat as leadId above.
+  customerId        String?
+  customer          Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  bouncedAt         DateTime
+  resolvedAt        DateTime?
+  resolvedNote      String?
+  createdAt         DateTime        @default(now())
 
   @@index([resolvedAt, bouncedAt])
   @@index([issuedEstimateId])
   @@index([visitId])
+  @@index([leadId])
+  @@index([customerId])
 }
 
 /// One customer email as it left the building, and what became of it (Kyle, 2026-09-09: "I need
@@ -3191,13 +3498,21 @@ model EmailDelivery {
   providerMessageId String?         @unique
   to                String
   subject           String
-  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | other
+  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | communication | other
   kind              String
   estimateNumber    String?
   issuedEstimateId  String?
   issuedEstimate    IssuedEstimate? @relation(fields: [issuedEstimateId], references: [id], onDelete: SetNull)
   visitId           String?
   visit             Visit?          @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  /// The lead a free-form follow-up email was sent about (2026-09-20 communications build,
+  /// services/recordEmail.ts). Null for every other kind of send. Lets the lead drawer render
+  /// its own thread without scanning every delivery for a matching `to` address.
+  leadId            String?
+  lead              Lead?           @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  /// The account a free-form follow-up email was sent about. Same reasoning as leadId.
+  customerId        String?
+  customer          Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
   /// sent | delivered | delayed | bounced | complained | failed
   status            String
   statusAt          DateTime?
@@ -3206,6 +3521,8 @@ model EmailDelivery {
 
   @@index([issuedEstimateId])
   @@index([visitId])
+  @@index([leadId])
+  @@index([customerId])
   @@index([status])
   @@index([createdAt])
 }
@@ -3234,4 +3551,124 @@ model TreasurySweep {
 
   @@index([createdAt])
   @@index([status])
+}
+
+// ─── Bank statements (Kyle, 2026-09-20): "I can manually upload the bank statements each
+// month from each account. Plaid can be used at a later date when its established." ──────
+//
+// Until 2026-09-21 the P&L knew only money that touched the Stripe card, bills Kyle typed,
+// and payroll from the hours ledger. Everything paid by ACH or autopay out of Chase was
+// invisible. These three tables are the manual-upload SOURCE; Plaid later is a second source
+// writing the same BankLine rows (services/bankStatements.ts says how a line is keyed).
+//
+// THE WHOLE DESIGN IS THE CLASSIFICATION. Every imported line is exactly one of:
+//   expense         — new money out (checking → a vendor by ACH, autopay, check, debit card)
+//   transfer        — between our own accounts: a set-aside into capital / overhead / tax
+//                     savings, the same money coming back, or anything to/from Stripe (the
+//                     card balance being funded, the month-end sweep landing)
+//   already_counted — the P&L has this money by another route: payroll (the hours ledger),
+//                     a typed not-on-card amount on a P.O., a company bill's scheduled month,
+//                     or a customer payment already recorded
+//   ignored         — not the business's money, with a reason
+//   unclassified    — the queue Kyle works
+// ONLY `expense` lines reach Expenses (routes/financials.ts yearLedger). A transfer, an
+// already-counted line and an unclassified line add nothing — that is the once-only rule
+// tests/bankImport.test.ts pins with the worked example.
+
+/// One bank account in the registry. PURPOSE decides classification (Kyle, 2026-09-20: Chase
+/// has FOUR — one checking plus capital, overhead savings and tax savings): money moved INTO a
+/// set-aside account is a transfer, never an expense; a payment OUT of the tax account is
+/// Kyle's ruling, never the importer's. Stripe is not registered here — it is read live.
+model BankAccount {
+  id             String          @id @default(cuid())
+  name           String
+  institution    String          @default("Chase")
+  last4          String?
+  kind           String // checking | savings
+  purpose        String // operating | capital | overhead_savings | tax
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  statements     BankStatement[]
+  lines          BankLine[]
+  /// Transfers whose other side is this account.
+  counterpartyOf BankLine[]      @relation("BankLineCounterparty")
+}
+
+/// One uploaded file. IDEMPOTENT ON THE FILE: the same bytes (sha256) for the same account
+/// import nothing a second time; an overlapping export skips lines whose identity already
+/// exists on the account. Deleting a statement deletes its lines — and with them every
+/// confirmation those lines made, so a wrong import is undone in one action.
+model BankStatement {
+  id             String      @id @default(cuid())
+  accountId      String
+  fileName       String
+  fileHash       String
+  format         String // chase_csv | csv | ofx
+  periodStart    DateTime?
+  periodEnd      DateTime?
+  /// The running balance after the statement's last line — the "AS OF" figure on the cash panel.
+  closingBalance Float?
+  balanceAsOf    DateTime?
+  lineCount      Int         @default(0)
+  importedAt     DateTime    @default(now())
+  account        BankAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  lines          BankLine[]
+
+  @@unique([accountId, fileHash])
+  @@index([accountId])
+}
+
+/// One statement line. `amount` is SIGNED dollars: negative is money out, positive money in.
+/// `lineKey` is the line's identity on its account (services/bankStatements.ts lineKeyOf):
+/// the bank's own FITID when the file carries one (OFX), else the posted date + cents +
+/// normalised description + reference + its occurrence index within the file.
+model BankLine {
+  id                    String        @id @default(cuid())
+  accountId             String
+  statementId           String
+  lineKey               String
+  postedAt              DateTime
+  amount                Float
+  description           String
+  /// Check number, slip number, or the bank's transaction id.
+  bankRef               String?
+  /// Chase's Type column (ACH_DEBIT, ACCT_XFER, …) or the OFX TRNTYPE.
+  bankType              String?
+  runningBalance        Float?
+  /// The payee, normalised (services/bankStatements.ts payeeKey) — how a classification Kyle
+  /// made once is applied to the same payee next month.
+  payeeKey              String
+  classification        String        @default("unclassified") // unclassified | expense | transfer | already_counted | ignored
+  /// expense: the P&L category (overhead, insurance, vehicle, software, marketing, materials,
+  /// tools, gas, maintenance, permit, inspection, tax, bank_fees, other).
+  category              String?
+  /// transfer: stripe | set_aside | set_aside_return | own_accounts
+  transferKind          String?
+  counterpartyAccountId String?
+  /// already_counted: payroll | po_off_card | company_bill | payment
+  matchedKind           String?
+  /// The PurchaseOrder / CompanyBill / Payment id the line confirms (plain column — a deleted
+  /// record leaves the line's history intact; the confirmation simply stops resolving).
+  matchedId             String?
+  /// company_bill: which scheduled month this line paid, "YYYY-MM".
+  matchedMonth          String?
+  /// Why — the rule that decided, or Kyle's own note.
+  reason                String?
+  /// What the importer could not decide, in words, for the queue.
+  hint                  String?
+  /// rule | owner. Rules never touch a line Kyle has classified (or reset) himself.
+  classifiedBy          String?
+  classifiedAt          DateTime?
+  createdAt             DateTime      @default(now())
+  account               BankAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  statement             BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  counterparty          BankAccount?  @relation("BankLineCounterparty", fields: [counterpartyAccountId], references: [id], onDelete: SetNull)
+
+  @@unique([accountId, lineKey])
+  @@index([statementId])
+  @@index([postedAt])
+  @@index([classification])
+  @@index([matchedKind, matchedId])
+  @@index([payeeKey])
 }

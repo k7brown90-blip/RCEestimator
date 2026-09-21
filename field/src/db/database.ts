@@ -2,6 +2,7 @@ import Dexie, { type Table } from 'dexie'
 import type { CrmAssignment, Inspection, ItemResult, Property } from '../domain/types'
 import { inspectionSchema, propertySchema } from '../domain/schemas'
 import { mergeLegacyGroundingItems, normalizeResultState } from '../domain/compat'
+import type { DiagnosticCoverage, DiagnosticOutletPayload } from '../../../shared/diagnostics'
 
 export interface PhotoRecord {
   id: string
@@ -158,6 +159,64 @@ export interface MaterialCacheRecord {
   cachedAt: string
 }
 
+/**
+ * A circuit diagnostic, held on the phone while the walk happens (2026-09-20).
+ *
+ * The whole report — head plus every outlet — lives in ONE row because that is
+ * how it is pushed: one idempotent POST whose outlets sync by their own ids. A
+ * technician in a basement with no signal keeps adding outlets to this row; the
+ * queue drains when the bars come back. Nothing about the capture depends on
+ * being online, which is the point.
+ */
+export interface DiagnosticRecord {
+  reportId: string
+  visitId: string
+  reportDate: string
+  complaint: string
+  circuitLabel: string
+  circuitNumber: string | null
+  panelLocation: string | null
+  breakerRating: string | null
+  breakerInspected: boolean
+  coverage: DiagnosticCoverage
+  coverageNote: string | null
+  summary: string | null
+  diagnosticItemId: string | null
+  quotedNormal: number
+  quotedDifficult: number
+  quotedVeryDifficult: number
+  status: 'in_progress' | 'complete'
+  outlets: DiagnosticOutletPayload[]
+  /** Set once the server has accepted this exact revision — drives "saved / waiting". */
+  syncedAt: string | null
+  updatedAt: string
+}
+
+/** Pending diagnostic push — retried until the backend accepts it (idempotent by reportId). */
+export interface DiagnosticSyncRecord {
+  reportId: string
+  visitId: string
+  payload: string
+  attempts: number
+  lastError?: string
+  queuedAt: string
+}
+
+/**
+ * A diagnostic photo queued for upload. Same durability contract as the receipt
+ * queue and for the same reason (2026-09-11): the blob is written to db.photos
+ * and this row BEFORE any network call, and the row is deleted only on a 2xx.
+ * An outlet cannot be recorded without a photo, so losing one loses the proof
+ * that the box was ever opened.
+ */
+export interface DiagnosticPhotoRecord {
+  photoId: string
+  reportId: string
+  attempts: number
+  lastError?: string
+  queuedAt: string
+}
+
 export class HealthRecordDatabase extends Dexie {
   properties!: Table<Property, string>
   inspections!: Table<Inspection, string>
@@ -171,6 +230,9 @@ export class HealthRecordDatabase extends Dexie {
   findingActionQueue!: Table<FindingActionRecord, string>
   receiptSyncQueue!: Table<ReceiptSyncRecord, string>
   materials!: Table<MaterialCacheRecord, string>
+  diagnostics!: Table<DiagnosticRecord, string>
+  diagnosticSyncQueue!: Table<DiagnosticSyncRecord, string>
+  diagnosticPhotoQueue!: Table<DiagnosticPhotoRecord, string>
 
   constructor() {
     super('red-cedar-health-record')
@@ -324,6 +386,28 @@ export class HealthRecordDatabase extends Dexie {
       findingActionQueue: 'actionId, findingId, kind, queuedAt',
       receiptSyncQueue: 'receiptId, queuedAt',
       materials: 'id, upc, sku, itemId',
+    })
+
+    // v9: the circuit diagnostic (2026-09-20). Three store additions — the
+    // report itself, its push queue and its photo queue. Pure addition, same
+    // shape as v6/v7/v8, so there is no .upgrade() and nothing existing to
+    // break: an app that never opens a diagnostic behaves exactly as it did.
+    this.version(9).stores({
+      properties: 'id, address, jurisdictionId, createdAt, crm.visitId, legacy',
+      inspections: 'id, propertyId, jurisdictionId, date, technician, status, scope, [propertyId+date]',
+      photos: 'id, mimeType',
+      syncQueue: 'inspectionId, queuedAt',
+      photoSyncQueue: 'photoId, inspectionId, queuedAt',
+      assignments: 'visitId, assignmentId, scheduledStart, cachedAt',
+      meta: 'key',
+      corrupt: 'id, table, quarantinedAt',
+      findings: 'id, propertyId, itemId, status, track, [propertyId+status]',
+      findingActionQueue: 'actionId, findingId, kind, queuedAt',
+      receiptSyncQueue: 'receiptId, queuedAt',
+      materials: 'id, upc, sku, itemId',
+      diagnostics: 'reportId, visitId, status, updatedAt',
+      diagnosticSyncQueue: 'reportId, queuedAt',
+      diagnosticPhotoQueue: 'photoId, reportId, queuedAt',
     })
   }
 }
