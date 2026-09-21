@@ -15,6 +15,7 @@
  *      listed here for Kyle to cancel by hand.
  *   3. Plan Q5 — are there any legacy `Estimate` rows left? Zero means the /estimates/* family
  *      can retire (PUNCHLIST K5).
+ *   4. Live card charges with no P.O., by kind — every card charge should be on a P.O.
  */
 
 import { PrismaClient } from "@prisma/client";
@@ -56,6 +57,27 @@ async function main(): Promise<void> {
   // 3. Legacy Estimate rows.
   const legacy = await prisma.estimate.count();
   console.log(`3. Legacy Estimate rows: ${legacy}`);
+
+  // 4. Card charges that count as money but sit on no P.O. (Kyle, 2026-09-21: "each card spend is
+  //    still linked to a PO"). routeCardSpend links or drafts a P.O. for MATERIALS charges only;
+  //    the count per kind shows what the rule leaves unlinked. Ignored charges are not money.
+  const unlinked = await prisma.cardSpend.findMany({
+    where: { purchaseOrderId: null, status: { not: "ignored" } },
+    select: { id: true, kind: true, amount: true, merchantName: true, occurredAt: true },
+    orderBy: { occurredAt: "desc" },
+  });
+  const totalLive = await prisma.cardSpend.count({ where: { status: { not: "ignored" } } });
+  console.log(`4. Live card charges with no P.O.: ${unlinked.length} of ${totalLive}`);
+  const byKind = new Map<string, { n: number; sum: number }>();
+  for (const c of unlinked) {
+    const k = byKind.get(c.kind) ?? { n: 0, sum: 0 };
+    byKind.set(c.kind, { n: k.n + 1, sum: k.sum + c.amount });
+  }
+  for (const [kind, k] of byKind) console.log(`   ${kind}: ${k.n} charge(s), $${k.sum.toFixed(2)}`);
+  for (const c of unlinked.slice(0, 40)) {
+    console.log(`   ${c.occurredAt.toISOString().slice(0, 10)}  ${c.kind.padEnd(11)} $${c.amount.toFixed(2).padStart(9)}  ${c.merchantName}  id=${c.id}`);
+  }
+  if (unlinked.length > 40) console.log(`   ... ${unlinked.length - 40} more`);
 }
 
 main()
