@@ -390,6 +390,16 @@ function JobCard({
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
   });
+  // Pause JOB (Kyle, 2026-09-21): a job underway goes back to the unscheduled rail with
+  // everything on it. Wherever a job in progress is shown, its way back is shown too.
+  const canPause = job.status === "in_progress" || job.status === "scheduled";
+  const pause = useMutation({
+    mutationFn: (reason: string | null) => api.pauseJobForLater(job.visitId, reason),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["calendar"] });
+    },
+  });
 
   const scheduleLine = job.scheduledStart
     ? new Date(job.scheduledStart).toLocaleString("en-US", {
@@ -466,6 +476,24 @@ function JobCard({
 
       {canComplete ? (
         <div className="mt-3 flex justify-end gap-2">
+          {canPause && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={pause.isPending}
+              title="Send this job back to scheduling, keeping everything on it. The customer is sent nothing."
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const reason = window.prompt("Pause this job and send it back to scheduling? Reason (optional):", "");
+                if (reason === null) return;
+                pause.mutate(reason.trim() || null);
+              }}
+            >
+              {pause.isPending ? "Pausing…" : "Pause job"}
+            </button>
+          )}
+          {pause.error && <span className="text-xs text-red-600">{(pause.error as Error).message}</span>}
           <button
             type="button"
             className="btn btn-secondary"

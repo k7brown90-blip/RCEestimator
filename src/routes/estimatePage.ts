@@ -36,7 +36,7 @@ import {
 import { renderEstimatePage, renderUnavailable } from "../services/issuedEstimateRender";
 import { notifyOwnerSigned, publicBaseUrl, sendInvoiceEmail } from "../services/issuedEstimateSend";
 import { paymentSummary } from "../services/stripePayments";
-import { sendDepositRequestEmail } from "../services/paymentReceipts";
+import { holdOrSendDepositRequest } from "../services/sameDayJob";
 import { createJobFromSignedEstimate } from "../services/accountSpine";
 
 export const estimatePageRouter = express.Router();
@@ -141,11 +141,6 @@ estimatePageRouter.post(
       return;
     }
 
-    // Kyle's notification is internal and must never be able to fail the customer's signature —
-    // the signature is already durably recorded by this point.
-    notifyOwnerSigned(prisma, result.estimateId).catch((err) =>
-      console.error("[EstimatePage] owner notification failed:", err)
-    );
     /*
       THE SOLD JOB EXISTS THE MOMENT THEY SIGN (Kyle, 2026-09-02: "Mabel signed
       and payed the deposit and there is no way to schedule her"). The in-person
@@ -160,11 +155,30 @@ estimatePageRouter.post(
         if (!job.ok) console.error("[EstimatePage] job creation after email sign refused:", job.reason);
       })
       .catch((err) => console.error("[EstimatePage] job creation after email sign failed:", err));
-    // The deposit request (Kyle, 2026-08-25): a customer signing from home has
-    // no other way to hear the deposit gate exists. Fire-and-forget.
-    sendDepositRequestEmail(prisma, result.estimateId, publicBaseUrl()).catch((err) =>
-      console.error("[EstimatePage] deposit request email failed:", err)
-    );
+    /*
+      The deposit request (Kyle, 2026-08-25): a customer signing from home has
+      no other way to hear the deposit gate exists. HELD, not sent, when a
+      technician's consultation on this estimate is still open (Kyle,
+      2026-09-21: "No notifications should be sent on the same day jobs") — the
+      field signs through this very page, so the tech's Complete work now /
+      Schedule for later choice comes AFTER this point. services/sameDayJob.ts
+      owns the rule; the hold is an event on the estimate, released or
+      cancelled by the tech's choice. Kyle's own notification (internal, must
+      never be able to fail the signature) says which happened.
+    */
+    holdOrSendDepositRequest(prisma, result.estimateId, publicBaseUrl())
+      .catch((err): "sent" | "held" | "failed" => {
+        console.error("[EstimatePage] deposit request step failed:", err);
+        return "failed";
+      })
+      .then((outcome) =>
+        notifyOwnerSigned(prisma, result.estimateId, {
+          note: outcome === "held"
+            ? "Deposit request HELD — the technician's consultation is still open. Complete work now sends the customer nothing; Schedule for later sends the deposit request then."
+            : null,
+        }),
+      )
+      .catch((err) => console.error("[EstimatePage] owner notification failed:", err));
     // The customer's signed copy (Kyle, 2026-09-05: "The emails are not going
     // out after the customer signs and pays the deposit on site") — the signed
     // invoice, PDF attached, pay link included, the moment they sign. Existed

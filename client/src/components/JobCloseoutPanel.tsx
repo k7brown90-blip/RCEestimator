@@ -58,6 +58,21 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
     onSuccess: () => { setWarnings([]); setError(null); refresh(); },
     onError: (err) => setError((err as Error).message),
   });
+  // Pause JOB (Kyle, 2026-09-21): a job underway goes back to the unscheduled rail, keeping
+  // everything on it. The exit for a mistaken "Complete work now" from the field, and for work
+  // that did not finish. Not the job clock's pause — that only stops a time session.
+  const canPause = status === "in_progress" || status === "scheduled";
+  const [pauseNote, setPauseNote] = useState<string | null>(null);
+  const pause = useMutation({
+    mutationFn: (reason: string | null) => api.pauseJobForLater(visitId, reason),
+    onSuccess: (r) => {
+      setPauseNote(`Paused — back on the unscheduled rail. ${r.sessionsClosed > 0 ? `${r.sessionsClosed} running clock session(s) closed; ` : ""}${r.laborHours}h on the job stays on it.${r.calendarEventDeleted ? " Its calendar block was released." : ""}`);
+      setError(null);
+      refresh();
+      void queryClient.invalidateQueries({ queryKey: ["calendar"] });
+    },
+    onError: (err) => setError((err as Error).message),
+  });
 
   // ── PO form ──
   // "Create P.O." pre-fills the job's whole shortage list (Kyle, 2026-09-16/17, Unit P) — not a
@@ -110,11 +125,29 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
             Reopen job
           </button>
         ) : (
-          <button className="btn btn-primary" disabled={complete.isPending} onClick={() => complete.mutate()}>
-            {complete.isPending ? "Completing…" : "Mark job complete"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {canPause && (
+              <button
+                type="button"
+                className="btn btn-secondary text-xs"
+                disabled={pause.isPending}
+                title="Send this job back to scheduling. Its estimate, payments, P.O.s, time and materials stay on it; the customer is sent nothing."
+                onClick={() => {
+                  const reason = window.prompt("Pause this job and send it back to scheduling? Reason (optional):", "");
+                  if (reason === null) return;
+                  pause.mutate(reason.trim() || null);
+                }}
+              >
+                {pause.isPending ? "Pausing…" : "Pause job — back to scheduling"}
+              </button>
+            )}
+            <button className="btn btn-primary" disabled={complete.isPending} onClick={() => complete.mutate()}>
+              {complete.isPending ? "Completing…" : "Mark job complete"}
+            </button>
+          </div>
         )}
       </div>
+      {pauseNote && <p className="mt-2 rounded bg-sky-50 p-2 text-sm text-sky-900">{pauseNote}</p>}
 
       {isCompleted && (
         <p className="mt-2 rounded bg-emerald-50 p-2 text-sm text-emerald-800">

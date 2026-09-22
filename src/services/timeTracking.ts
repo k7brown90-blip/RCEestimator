@@ -35,7 +35,7 @@
 import type { ShiftEntry, TimeEntry } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
-import { estimateOptionTotal, materialCostForJobs, type MaterialSource } from "./jobCosting";
+import { costChainVisitIds, estimateOptionTotal, materialCostForJobs, type MaterialSource } from "./jobCosting";
 import { fullBillOf } from "./stripePayments";
 import { EXCLUDE_TEST_CUSTOMER_VIA_VISIT, EXCLUDE_TEST_VISIT } from "./accountSpine";
 
@@ -1001,8 +1001,11 @@ export interface JobTimeView {
 }
 
 export async function jobTime(visitId: string): Promise<JobTimeView> {
+  // The consultation's sessions count on the job it won (Kyle, 2026-09-21) — the one chain
+  // rule (jobCosting.costChainVisitIds); with Complete work now the chain is the job alone.
+  const chain = await costChainVisitIds(visitId);
   const [rows, assignments] = await Promise.all([
-    prisma.timeEntry.findMany({ where: { visitId }, orderBy: { startedAt: "asc" } }),
+    prisma.timeEntry.findMany({ where: { visitId: { in: chain } }, orderBy: { startedAt: "asc" } }),
     prisma.visitAssignment.findMany({
       where: { visitId },
       include: { technician: { select: { id: true, name: true, hourlyRate: true } } },
@@ -1142,12 +1145,13 @@ export async function commissionBasisForJob(visitId: string): Promise<Commission
 
   // Fees = permit and inspection card charges on this job's P.O.s, counted
   // once. The charge is the money (Kyle, 2026-09-19); a permit receipt is proof
-  // of a charge, never a fee of its own.
+  // of a charge, never a fee of its own. The consultation's P.O.s are the
+  // job's too (Kyle, 2026-09-21) — the same chain materialCostForJobs walks.
   const spends = await prisma.cardSpend.findMany({
     where: {
       kind: { in: [...FEE_CATEGORIES] },
       status: { not: "ignored" },
-      purchaseOrder: { jobId: visitId },
+      purchaseOrder: { jobId: { in: await costChainVisitIds(visitId) } },
     },
     select: { id: true, merchantName: true, amount: true, kind: true },
   });

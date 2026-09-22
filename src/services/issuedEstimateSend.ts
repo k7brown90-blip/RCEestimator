@@ -546,7 +546,12 @@ export async function notifyOwnerViewed(prisma: PrismaClient, estimateId: string
   });
 }
 
-export async function notifyOwnerSigned(prisma: PrismaClient, estimateId: string): Promise<boolean> {
+export async function notifyOwnerSigned(
+  prisma: PrismaClient,
+  estimateId: string,
+  /** An extra line for Kyle — e.g. that the deposit request was held for the technician's choice (2026-09-21). */
+  opts: { note?: string | null } = {},
+): Promise<boolean> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
     include: { options: true },
@@ -588,7 +593,8 @@ export async function notifyOwnerSigned(prisma: PrismaClient, estimateId: string
       <tr><td style="padding:3px 12px 3px 0;color:#666;">IP</td><td>${escapeHtml(est.signerIp ?? "unknown")}</td></tr>
     </table>
     <p style="font-size:14px;margin-top:18px;">The estimate is now locked. Any change needs a new
-    revision, which voids the customer's current link.</p>`;
+    revision, which voids the customer's current link.</p>
+    ${opts.note ? `<p style="font-size:14px;margin-top:12px;padding:10px 12px;background:#fff7e6;border:1px solid #f0d9a8;border-radius:6px;">${escapeHtml(opts.note)}</p>` : ""}`;
 
   return sendBrandedEmail({
     to,

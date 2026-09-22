@@ -72,6 +72,32 @@ describe("JobCloseoutPanel", () => {
     expect(screen.getByText("needs a receipt")).toBeInTheDocument();
   });
 
+  // Pause JOB (Kyle, 2026-09-21): shown wherever a job in progress is shown; it is the way back
+  // to scheduling for a mistaken "Complete work now" and for unfinished work.
+  it("offers Pause job on a job underway, and calls the pause route with the typed reason", async () => {
+    vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
+    vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([]);
+    const pause = vi.spyOn(api, "pauseJobForLater").mockResolvedValue({ paused: true, sessionsClosed: 1, calendarEventDeleted: false, laborHours: 2.5 });
+    vi.spyOn(window, "prompt").mockReturnValue("ran out of daylight");
+
+    renderWithProviders(<JobCloseoutPanel visitId="visit-1" status="in_progress" />);
+
+    const button = screen.getByRole("button", { name: /pause job/i });
+    button.click();
+    await screen.findByText(/back on the unscheduled rail/i);
+    expect(pause).toHaveBeenCalledWith("visit-1", "ran out of daylight");
+  });
+
+  it("does not offer Pause job on a contracted job — it is already waiting to be scheduled", async () => {
+    vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
+    vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([]);
+
+    renderWithProviders(<JobCloseoutPanel visitId="visit-1" status="contracted" />);
+
+    expect(screen.getByRole("button", { name: /mark job complete/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pause job/i })).not.toBeInTheDocument();
+  });
+
   it("shows Reopen job instead of the completion button once the job is completed", async () => {
     vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
     vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([]);

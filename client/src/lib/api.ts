@@ -1072,6 +1072,14 @@ export const api = {
     }),
   reopenJob: (jobId: string) =>
     request<{ reopened: true }>(`/jobs/${jobId}/reopen`, { method: "POST", body: JSON.stringify({}) }),
+  /**
+   * Pause JOB (Kyle, 2026-09-21): a job underway goes back to scheduling, keeping its estimate,
+   * payments, P.O.s, time and materials. Not the job clock's pause.
+   */
+  pauseJobForLater: (jobId: string, reason?: string | null) =>
+    request<{ paused: true; sessionsClosed: number; calendarEventDeleted: boolean; laborHours: number }>(`/jobs/${jobId}/pause-for-later`, {
+      method: "POST", body: JSON.stringify({ reason: reason ?? null }),
+    }),
   jobPurchaseOrders: (jobId: string) =>
     request<PurchaseOrderRow[]>(`/jobs/${jobId}/purchase-orders`),
   // ─── Materials used — the costing switch (Kyle, 2026-09-09, Build 4) ─────────

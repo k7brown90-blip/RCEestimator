@@ -207,18 +207,7 @@ export interface MaterialCostResult {
  */
 export async function materialCostForJobs(jobs: MaterialCostInput[]): Promise<Map<string, MaterialCostResult>> {
   const jobIds = [...new Set(jobs.map((j) => j.visitId).filter(Boolean))];
-  const quoteVisits = jobIds.length
-    ? await prisma.issuedEstimate.findMany({
-      // signed, live — the allow-list (2026-09-21, PUNCHLIST A9), same as services/invoiceGroup.ts LIVE_SIGNED.
-      where: { jobVisitId: { in: jobIds }, visitId: { not: null }, signedAt: { not: null }, voidedAt: null, status: "signed" },
-      select: { visitId: true, jobVisitId: true },
-    })
-    : [];
-  const quoteByJob = new Map<string, string[]>();
-  for (const link of quoteVisits) {
-    if (!link.visitId || !link.jobVisitId || link.visitId === link.jobVisitId) continue;
-    quoteByJob.set(link.jobVisitId, [...(quoteByJob.get(link.jobVisitId) ?? []), link.visitId]);
-  }
+  const quoteByJob = await costChainByJob(jobIds);
   const chainOf = (job: MaterialCostInput) => [...new Set([job.visitId, ...(job.chainVisitIds ?? []), ...(quoteByJob.get(job.visitId) ?? [])])];
   const allIds = jobs.flatMap(chainOf);
   const poByVisit = await poMaterialByJob(allIds);
@@ -237,6 +226,72 @@ export async function materialCostForJobs(jobs: MaterialCostInput[]): Promise<Ma
       };
     const poMaterial = po ? po.net : null;
     out.set(job.visitId, { ...resolveMaterialCost(poMaterial), poMaterial, po });
+  }
+  return out;
+}
+
+/*
+  ── THE COST CHAIN — ONE RULE (Kyle, 2026-09-21) ────────────────────────────────────────────────
+  "It should all then fall under that one job when it goes from consultation to job ... for each
+  job that is won during a consultation. That would show the real cost of labor and validate the
+  estimated hours."
+
+  A job's chain = the job's own visit + every visit a LIVE SIGNED estimate was quoted on whose
+  `jobVisitId` is this job (visitId ≠ jobVisitId). With "Complete work now" the consultation IS
+  the job (one Visit), so the chain is the job alone; with "Schedule for later" the consultation
+  is the child and its hours, P.O.s and fees roll onto the job. Until 2026-09-21 four readers each
+  had their own version of this (the account page merged hours, GET /jobs and job profitability
+  dropped them, commission fees never looked): every reader now calls one of the three helpers
+  below and none re-derives the link.
+*/
+
+/** The LIVE_SIGNED allow-list (services/invoiceGroup.ts), spelled here to avoid an import cycle. */
+const LIVE_SIGNED_LINK = { signedAt: { not: null }, voidedAt: null, status: "signed" } as const;
+
+/**
+ * job visit id → the OTHER visits whose costs roll onto it (never includes the job itself).
+ * One grouped query; a job with no consultation child is simply absent from the map.
+ */
+export async function costChainByJob(jobIds: string[]): Promise<Map<string, string[]>> {
+  const ids = [...new Set(jobIds.filter(Boolean))];
+  const out = new Map<string, string[]>();
+  if (ids.length === 0) return out;
+  const links = await prisma.issuedEstimate.findMany({
+    where: { jobVisitId: { in: ids }, visitId: { not: null }, ...LIVE_SIGNED_LINK },
+    select: { visitId: true, jobVisitId: true },
+  });
+  for (const link of links) {
+    if (!link.visitId || !link.jobVisitId || link.visitId === link.jobVisitId) continue;
+    const list = out.get(link.jobVisitId) ?? [];
+    if (!list.includes(link.visitId)) list.push(link.visitId);
+    out.set(link.jobVisitId, list);
+  }
+  return out;
+}
+
+/** The whole chain for one job, job first: the visit ids whose time, P.O.s and fees are this job's. */
+export async function costChainVisitIds(jobId: string): Promise<string[]> {
+  const byJob = await costChainByJob([jobId]);
+  return [jobId, ...(byJob.get(jobId) ?? [])];
+}
+
+/**
+ * The chain's CHILD visits per job, as the rows mergeCostableChain reads — for the list surfaces
+ * (GET /jobs, the account page) that already hold the job's own row. Fetched, not looked up in
+ * the caller's list: a consultation that was closed and archived may not be on the list at all.
+ */
+export async function chainChildrenByJob(jobIds: string[]): Promise<Map<string, CostableVisit[]>> {
+  const byJob = await costChainByJob(jobIds);
+  const childIds = [...new Set([...byJob.values()].flat())];
+  const out = new Map<string, CostableVisit[]>();
+  if (childIds.length === 0) return out;
+  const rows = await prisma.visit.findMany({
+    where: { id: { in: childIds } },
+    select: { id: true, estimatedCost: true, laborHours: true, overheadAllocation: true, revenue: true },
+  });
+  const rowById = new Map(rows.map((r) => [r.id, r]));
+  for (const [jobId, children] of byJob) {
+    out.set(jobId, children.map((id) => rowById.get(id)).filter((r): r is NonNullable<typeof r> => Boolean(r)));
   }
   return out;
 }

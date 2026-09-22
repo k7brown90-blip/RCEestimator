@@ -36,7 +36,7 @@ import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import { fullBillOf, stripeConfigured } from "../services/stripePayments";
 import { groupSignedRows, INVOICE_DOC_SELECT, invoiceRootId, LIVE_SIGNED, rollupInvoice, type InvoiceDocRow } from "../services/invoiceGroup";
-import { getLaborRate, materialCostForJobs } from "../services/jobCosting";
+import { chainChildrenByJob, getLaborRate, materialCostForJobs, mergeCostableChain } from "../services/jobCosting";
 import { payrollForYear, type PayrollYear } from "../services/payrollLedger";
 import { billMonthKey, billMonthsInYear, cardConfirmedBillMonths, monthKeyOf } from "../services/companyBills";
 import { bankExpenseRowsForYear, bankQueueSummary, type BankExpenseRow, type BankQueueSummary } from "../services/bankLedger";
@@ -689,14 +689,20 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
     this report and the job card show one number. The helper follows the
     signed estimate from the sold job back to its quote visit on its own.
   */
-  const materialByJob = await materialCostForJobs(rows.map((v) => ({ visitId: v.id })));
+  const [materialByJob, chainChildren] = await Promise.all([
+    materialCostForJobs(rows.map((v) => ({ visitId: v.id }))),
+    // The consultation's hours count on the job it won (Kyle, 2026-09-21) — the same chain
+    // GET /jobs and the account page merge; until this date the report dropped them.
+    chainChildrenByJob(rows.map((v) => v.id)),
+  ]);
   res.json(rows.map((visit) => {
     const quoted = estimateByJob.get(visit.id) ?? null;
     const material = materialByJob.get(visit.id)!;
     const materialSpend = round2(material.materialCost);
     // Real labor now (Phase 5): the time clock rolls punches into
-    // Visit.laborHours; the rate is the company labor rate.
-    const laborHours = visit.laborHours ?? 0;
+    // Visit.laborHours; the rate is the company labor rate. The job's own
+    // hours plus its consultation's, through the one chain rule.
+    const laborHours = mergeCostableChain(visit, chainChildren.get(visit.id) ?? []).laborHours ?? 0;
     const laborCost = round2(laborHours * laborRate);
     return {
       visitId: visit.id,

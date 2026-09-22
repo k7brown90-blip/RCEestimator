@@ -9,18 +9,28 @@
  * the job out from the driveway — which notifies the office to schedule
  * whatever comes next. The assessment is one module a visit can include, not
  * the identity of the app.
+ *
+ * AFTER THE SIGNATURE (Kyle, 2026-09-21) the screen offers exactly two
+ * choices — "Complete work now" (this consultation becomes the job; nothing
+ * booked, the customer sent nothing) and "Schedule for later" (the job goes to
+ * the office). The field's own booking ("Schedule for a later date") is gone:
+ * scheduling is admin-only. "Pause job" sends any job underway back to the
+ * office to reschedule, keeping everything on it — a different thing from the
+ * job CLOCK's "Pause clock", which only stops a time session.
  */
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   arriveAtJob,
   completeJobClock,
+  completeWorkNow,
   pauseJobClock,
+  pauseJobForLater,
   completeVisitFromField,
   fetchJobBrief,
   fetchPurchaseOrders,
   pendingReceiptCount,
-  scheduleVisitFromField,
+  scheduleForLater,
   uploadJobPhoto,
   type FieldPurchaseOrder,
   type JobBrief,
@@ -37,6 +47,8 @@ import {
 import type { CrmAssignment } from '../../domain/types'
 
 const JOB_STATUSES = new Set(['contracted', 'scheduled', 'in_progress', 'completed'])
+/** A job can be PAUSED (sent back to scheduling) from these — work underway or booked. */
+const PAUSABLE_STATUSES = new Set(['in_progress', 'scheduled'])
 
 export function JobSiteScreen({
   assignment,
@@ -62,6 +74,14 @@ export function JobSiteScreen({
   const [brief, setBrief] = useState<JobBrief | null>(null)
   const [briefError, setBriefError] = useState<string | null>(null)
 
+  const reloadBrief = useCallback(async () => {
+    try {
+      setBrief(await fetchJobBrief(assignment.visitId))
+      setBriefError(null)
+    } catch (err) {
+      setBriefError(err instanceof Error ? err.message : String(err))
+    }
+  }, [assignment.visitId])
   useEffect(() => {
     let cancelled = false
     fetchJobBrief(assignment.visitId)
@@ -76,15 +96,6 @@ export function JobSiteScreen({
   // too, and the screen says so. ──
   const [clockedInAt, setClockedInAt] = useState<string | null>(null)
   const [clockSaid, setClockSaid] = useState<string | null>(null)
-  // Schedule for later (phase 5): same scheduleJob the office uses — the
-  // deposit gate's refusal comes back verbatim and tells the tech what to do.
-  const [schedOpen, setSchedOpen] = useState(false)
-  const [schedDate, setSchedDate] = useState('')
-  const [schedTime, setSchedTime] = useState('08:00')
-  const [schedEndDate, setSchedEndDate] = useState('')
-  const [schedEndTime, setSchedEndTime] = useState('16:00')
-  const [schedBusy, setSchedBusy] = useState(false)
-  const [schedMsg, setSchedMsg] = useState<string | null>(null)
   const [laborMinutes, setLaborMinutes] = useState(0)
   const [clockBusy, setClockBusy] = useState(false)
   const [clockError, setClockError] = useState<string | null>(null)
@@ -122,7 +133,7 @@ export function JobSiteScreen({
         setLaborMinutes(result.laborMinutes)
         setClockSaid(
           verb === 'pause'
-            ? `Paused — ${fmtHm(result.minutes)} this session. You are still on the clock for the day.`
+            ? `Clock paused — ${fmtHm(result.minutes)} this session. You are still on the clock for the day.`
             : `Job time closed — ${fmtHm(result.minutes)} this session.`,
         )
       }
@@ -134,6 +145,64 @@ export function JobSiteScreen({
   }
   const elapsedMin = clockedInAt ? Math.max(0, Math.round((Date.now() - new Date(clockedInAt).getTime()) / 60_000)) : 0
   const fmtHm = (min: number) => `${Math.floor(min / 60)}h ${min % 60}m`
+
+  // ── After the signature: Complete work now / Schedule for later (2026-09-21) ──
+  const [choiceBusy, setChoiceBusy] = useState(false)
+  const [choiceSaid, setChoiceSaid] = useState<string | null>(null)
+  const [choiceError, setChoiceError] = useState<string | null>(null)
+  const [handedToOffice, setHandedToOffice] = useState(false)
+  const choose = async (choice: 'now' | 'later') => {
+    const ok = window.confirm(
+      choice === 'now'
+        ? 'Complete the work now? This visit becomes the job — no scheduling, and the customer is sent nothing. You can pause it later if the work does not finish.'
+        : 'Schedule for later? This visit closes and the job goes to the office to schedule. Nothing is booked here.',
+    )
+    if (!ok) return
+    setChoiceBusy(true)
+    setChoiceError(null)
+    setChoiceSaid(null)
+    try {
+      if (choice === 'now') {
+        await completeWorkNow(assignment.visitId)
+        setChoiceSaid('This visit is the job now. Clock your time, file P.O.s and materials here, and mark it complete when the work is done.')
+        await reloadBrief()
+      } else {
+        await scheduleForLater(assignment.visitId)
+        setChoiceSaid('Handed to the office to schedule. This visit leaves your Today list.')
+        setHandedToOffice(true)
+        await reloadBrief()
+      }
+    } catch (err) {
+      setChoiceError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setChoiceBusy(false)
+    }
+  }
+
+  // ── Pause JOB — back to the office to reschedule (2026-09-21) ──
+  const [pauseReason, setPauseReason] = useState('')
+  const [pauseOpen, setPauseOpen] = useState(false)
+  const [pauseBusy, setPauseBusy] = useState(false)
+  const [pauseSaid, setPauseSaid] = useState<string | null>(null)
+  const [pauseError, setPauseError] = useState<string | null>(null)
+  const pauseJob = async () => {
+    if (!window.confirm('Pause this job and send it back to the office to reschedule? Its estimate, payments, P.O.s, time and materials stay on it. The customer is sent nothing.')) return
+    setPauseBusy(true)
+    setPauseError(null)
+    setPauseSaid(null)
+    try {
+      const result = await pauseJobForLater(assignment.visitId, pauseReason.trim() || null)
+      setClockedInAt(null)
+      setPauseSaid(`Paused — the office will reschedule it. ${fmtHm(Math.round(result.laborHours * 60))} on the job so far stays on it.`)
+      setPauseOpen(false)
+      setPauseReason('')
+      await reloadBrief()
+    } catch (err) {
+      setPauseError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPauseBusy(false)
+    }
+  }
 
   // ── Photos ──
   const [photoCaption, setPhotoCaption] = useState('')
@@ -209,8 +278,12 @@ export function JobSiteScreen({
     }
   }
 
-  const isJob = JOB_STATUSES.has(brief?.status ?? assignment.visitStatus ?? '')
-  const alreadyDone = brief?.status === 'completed' || Boolean(brief?.completedAt) || Boolean(closed)
+  const status = brief?.status ?? assignment.visitStatus ?? ''
+  const isJob = JOB_STATUSES.has(status)
+  const alreadyDone = brief?.status === 'completed' || Boolean(brief?.completedAt) || Boolean(closed) || handedToOffice
+  const choicePending = Boolean(brief?.choicePending) && !alreadyDone
+  const canPauseJob = Boolean(brief) && PAUSABLE_STATUSES.has(status) && !alreadyDone
+  const waitingOnOffice = isJob && status === 'contracted' && !brief?.scheduledStart
 
   return (
     <div className="mx-auto max-w-xl space-y-4 p-6 pb-16">
@@ -222,7 +295,7 @@ export function JobSiteScreen({
         <span className={`inline-block rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
           isJob ? 'bg-amber-600 text-amber-50' : 'bg-sky-700 text-sky-100'
         }`}>
-          {isJob ? 'Job' : 'Estimate visit'}
+          {isJob ? (waitingOnOffice ? 'Job — waiting on the office to schedule' : 'Job') : 'Estimate visit'}
         </span>
         <h1 className="text-xl font-semibold text-white">{assignment.customerName}</h1>
         <p className="text-sm text-slate-300">{assignment.address.formatted}</p>
@@ -235,7 +308,7 @@ export function JobSiteScreen({
 
       {briefError && <p className="rounded-lg bg-red-950/60 p-2 text-xs text-red-200">{briefError}</p>}
 
-      {/* ── The JOB clock: Arrive → Complete, Pause on a multi-day job ── */}
+      {/* ── The JOB clock: Arrive → Complete, Pause clock on a multi-day job ── */}
       {brief && (
         <section className={`space-y-2 rounded-xl border p-3 ${
           clockedInAt ? 'border-emerald-700 bg-emerald-950/40' : 'border-slate-700 bg-slate-800/60'
@@ -256,7 +329,7 @@ export function JobSiteScreen({
                 onClick={() => void punch('pause')}
                 className="flex-1 rounded-lg bg-slate-600 px-3 py-3 text-sm font-semibold text-white disabled:opacity-40"
               >
-                {clockBusy ? '…' : 'Pause'}
+                {clockBusy ? '…' : 'Pause clock'}
               </button>
               <button
                 type="button"
@@ -278,8 +351,8 @@ export function JobSiteScreen({
             </button>
           )}
           <p className="text-[10px] text-slate-500">
-            Pause holds the job open for another day. Complete closes your time on it. Either way you stay
-            on the clock for the day until you clock out on the main screen.
+            Pause clock stops your time on this job and holds it open for another day. Complete closes your time on it.
+            Either way you stay on the clock for the day until you clock out on the main screen.
           </p>
         </section>
       )}
@@ -322,6 +395,39 @@ export function JobSiteScreen({
       )}
       {brief?.notes && <p className="rounded-lg bg-slate-800/60 p-3 text-xs text-slate-300">Office notes: {brief.notes}</p>}
 
+      {/* ── Signed. What happens now? Exactly two choices (Kyle, 2026-09-21). ── */}
+      {choicePending && (
+        <section className="space-y-2 rounded-xl border border-emerald-700 bg-emerald-950/30 p-4">
+          <h2 className="text-sm font-semibold text-emerald-100">
+            Signed — {brief?.estimate?.number}. What happens now?
+          </h2>
+          <button
+            type="button"
+            disabled={choiceBusy}
+            onClick={() => void choose('now')}
+            className="w-full rounded-lg bg-emerald-700 p-3 text-left text-sm font-semibold text-white disabled:opacity-40"
+          >
+            {choiceBusy ? '…' : 'Complete work now'}
+            <span className="block text-[11px] font-normal text-emerald-100/80">
+              This visit becomes the job. Same calendar block, nothing to schedule, the customer is sent nothing.
+            </span>
+          </button>
+          <button
+            type="button"
+            disabled={choiceBusy}
+            onClick={() => void choose('later')}
+            className="w-full rounded-lg border border-slate-500 bg-slate-800 p-3 text-left text-sm font-semibold text-white disabled:opacity-40"
+          >
+            {choiceBusy ? '…' : 'Schedule for later'}
+            <span className="block text-[11px] font-normal text-slate-300">
+              Bigger than today. The job goes to the office to schedule; this visit closes.
+            </span>
+          </button>
+        </section>
+      )}
+      {choiceSaid && <p className="rounded bg-emerald-900/50 p-2 text-xs text-emerald-200">{choiceSaid}</p>}
+      {choiceError && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{choiceError}</p>}
+
       {/* ── The assessment, one module of the visit ── */}
       <button
         type="button"
@@ -339,39 +445,6 @@ export function JobSiteScreen({
           🔌 Run diagnostics — one circuit, breaker to last outlet
         </button>
       )}
-      <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-800/60 p-2">
-        <button type="button" onClick={() => setSchedOpen((o) => !o)} className="w-full text-left text-xs text-sky-200">
-          📅 {schedOpen ? 'Hide scheduling' : 'Schedule for a later date'}
-        </button>
-        {schedOpen && (
-          <div className="space-y-2">
-            <div className="flex gap-2">
-              <input type="date" value={schedDate} onChange={(e) => setSchedDate(e.target.value)} className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
-              <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)} className="w-28 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
-            </div>
-            <p className="text-[10px] text-slate-500">Multi-day? Set the end below — hours per day come from the times.</p>
-            <div className="flex gap-2">
-              <input type="date" value={schedEndDate || schedDate} min={schedDate || undefined} onChange={(e) => setSchedEndDate(e.target.value)} className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
-              <input type="time" value={schedEndTime} onChange={(e) => setSchedEndTime(e.target.value)} className="w-28 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white" />
-            </div>
-            <button
-              type="button"
-              disabled={schedBusy || !schedDate}
-              onClick={() => {
-                setSchedBusy(true); setSchedMsg(null)
-                scheduleVisitFromField(assignment.visitId, schedDate, schedTime || null, schedEndDate || schedDate, schedEndTime || null)
-                  .then((r) => setSchedMsg(r.scheduledStart ? `Scheduled — ${new Date(r.scheduledStart).toLocaleString()}. It's on your list under that day.` : 'Scheduled.'))
-                  .catch((err) => setSchedMsg(err instanceof Error ? err.message : String(err)))
-                  .finally(() => setSchedBusy(false))
-              }}
-              className="w-full rounded-lg bg-sky-700 p-2 text-xs font-medium text-white disabled:opacity-50"
-            >
-              {schedBusy ? 'Scheduling…' : 'Book it'}
-            </button>
-            {schedMsg && <p className="rounded bg-slate-900 p-2 text-[11px] text-slate-200">{schedMsg}</p>}
-          </div>
-        )}
-      </div>
       {onBuildQuote && (
         <button
           type="button"
@@ -445,13 +518,57 @@ export function JobSiteScreen({
       {/* ── Payment ── */}
       <CollectPayment visitId={assignment.visitId} />
 
+      {/* ── Pause JOB — back to the office to reschedule (Kyle, 2026-09-21).
+          The exit for a mistaken Complete work now and for work that will not
+          finish today. Not the clock's pause above. ── */}
+      {canPauseJob && (
+        <section className="space-y-2 rounded-xl border border-slate-600 bg-slate-800/60 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-100">Not finishing this job today?</h2>
+            <button type="button" className="text-xs text-sky-300 underline" onClick={() => setPauseOpen((o) => !o)}>
+              {pauseOpen ? 'hide' : 'Pause job'}
+            </button>
+          </div>
+          {pauseOpen && (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-400">
+                Pause job sends it back to the office to reschedule. Its estimate, payments, P.O.s, time and materials
+                stay on it; your clock on it stops. The customer is sent nothing. Also the way out if Complete work now
+                was a mistake.
+              </p>
+              <input
+                className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
+                placeholder="Why? (optional — ran out of daylight, parts, mistake…)"
+                value={pauseReason}
+                onChange={(e) => setPauseReason(e.target.value)}
+                maxLength={300}
+              />
+              <button
+                type="button"
+                disabled={pauseBusy}
+                onClick={() => void pauseJob()}
+                className="w-full rounded-lg bg-slate-600 p-3 text-sm font-semibold text-white disabled:opacity-40"
+              >
+                {pauseBusy ? 'Pausing…' : 'Pause job — back to the office to reschedule'}
+              </button>
+            </div>
+          )}
+          {pauseSaid && <p className="rounded bg-slate-900 p-2 text-xs text-emerald-200">{pauseSaid}</p>}
+          {pauseError && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{pauseError}</p>}
+        </section>
+      )}
+
       {/* ── Close-out — every visit ends when the TECH says so (Kyle, 2026-09-05) ── */}
       {(
         <section className="space-y-2 rounded-xl border border-amber-800 bg-amber-950/20 p-4">
           <h2 className="text-sm font-semibold text-amber-200">{isJob ? 'Close the job out' : 'Close this visit out'}</h2>
           {alreadyDone ? (
             <p className="rounded bg-emerald-900/50 p-2 text-sm text-emerald-200">
-              ✓ Closed. The office has been notified{isJob ? ' to schedule what comes next' : ''}.
+              ✓ Closed. The office has been notified{isJob ? ' to schedule what comes next' : handedToOffice ? ' to schedule the job' : ''}.
+            </p>
+          ) : choicePending ? (
+            <p className="text-xs text-slate-400">
+              The estimate is signed — choose Complete work now or Schedule for later above. That is what closes this visit.
             </p>
           ) : (
             <>
@@ -477,7 +594,7 @@ export function JobSiteScreen({
                 onClick={() => void closeOut()}
                 className="w-full rounded-lg bg-amber-600 p-3 text-sm font-medium text-white disabled:opacity-40"
               >
-                {closing ? 'Closing…' : 'Mark job complete'}
+                {closing ? 'Closing…' : isJob ? 'Mark job complete' : 'Close this visit'}
               </button>
             </>
           )}

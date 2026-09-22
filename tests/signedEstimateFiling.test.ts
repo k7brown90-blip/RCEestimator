@@ -129,9 +129,12 @@ describe("the notification, which already existed", () => {
 
   it("is called by both doors", () => {
     // A rule enforced at one door is a rule that does not exist. Same for a notification.
-    expect(app).toContain("notifyOwnerSigned(prisma, result.estimateId)");
+    // The public door passes a third argument since 2026-09-21 (the held-deposit note for Kyle);
+    // the pin is the CALL at each door, not its arity.
+    const calledAtDoor = /notifyOwnerSigned\(prisma, result\.estimateId[,)]/;
+    expect(app).toMatch(calledAtDoor);
     const page = fs.readFileSync(path.join(APP, "src/routes/estimatePage.ts"), "utf8");
-    expect(page).toContain("notifyOwnerSigned(prisma, result.estimateId)");
+    expect(page).toMatch(calledAtDoor);
   });
 
   it("is not duplicated inside the filing", () => {
