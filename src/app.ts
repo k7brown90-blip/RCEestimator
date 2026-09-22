@@ -99,7 +99,7 @@ import { materialsRouter } from "./routes/materials";
 import { parseReceiptImage } from "./services/receiptVision";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
-import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs, MATERIAL_SPEND_KINDS } from "./services/jobCosting";
+import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs, MATERIAL_SPEND_KINDS, costChainByJob, chainChildrenByJob } from "./services/jobCosting";
 import { closeOutMaterialWarning, consumeForJob, jobMaterials, materialNeedListForJob, returnForJob } from "./services/jobMaterials";
 import { renderMaterialsListPdf } from "./services/materialsListPdf";
 import { parseJsonStringArray } from "./lib/json";
@@ -3601,7 +3601,7 @@ app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
 // Kyle's ruling: "I want them to be able to view the quote in app and sign there as the first
 // option email is the second." The customer is handed the operator's phone at the job.
 //
-// The lock is the SESSION, not the screen — see middleware/signingScope.ts. Entering signing mode
+// The lock is the SESSION, not the screen. Entering signing mode
 // swaps the full owner session for a token scoped to one estimate; while it is in play, this app
 // answers exactly two routes and 403s everything else, including the same two routes for any
 // other estimate. Hiding navigation would leave every URL reachable from the address bar of the
@@ -4914,15 +4914,6 @@ app.post("/visits/:id/complete-consultation", asyncHandler(async (req, res) => {
 }));
 
 app.get("/jobs", asyncHandler(async (req, res) => {
-  // The cost chain (Kyle, 2026-09-02) — see /accounts/:id/summary for the rule.
-  const jobsChainLinks = await prisma.issuedEstimate.findMany({
-    where: { jobVisitId: { not: null }, visitId: { not: null } },
-    select: { visitId: true, jobVisitId: true },
-  });
-  const jobsChildToJob = new Map<string, string>();
-  for (const l of jobsChainLinks) {
-    if (l.visitId && l.jobVisitId && l.visitId !== l.jobVisitId) jobsChildToJob.set(l.visitId, l.jobVisitId);
-  }
   // Absent ?archived returns every job, so existing callers are unaffected.
   const archivedParam = readQuery(req, "archived");
   const statusFilter =
@@ -5044,11 +5035,25 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     const signedIssued = signedQualifies.get(visit.id);
     if (signedIssued) {
       // Archived jobs are history — a completed job is never hidden over a
-      // deposit technicality; the active list holds the full rule.
-      return isArchivedStatus(visit.status) || depositSatisfiedFor(signedIssued);
+      // deposit technicality; the active list holds the full rule. Work that
+      // is UNDERWAY (Complete work now, 2026-09-21) is past the point the
+      // deposit gate guards — scheduling — and is a job whether or not the
+      // optional deposit was ticked and collected.
+      return isArchivedStatus(visit.status) || visit.status === "in_progress" || depositSatisfiedFor(signedIssued);
     }
     return visit.estimates.some((est) => est.acceptance !== null);
   });
+
+  /*
+    THE COST CHAIN (Kyle, 2026-09-02; one rule for every reader 2026-09-21) —
+    services/jobCosting.ts costChainByJob: hours, P.O.s and fees on the
+    consultation a job was quoted on belong to the job. Read here for every
+    listed visit so a consultation's card can say whose card carries its costs.
+  */
+  const jobsChain = await costChainByJob(visits.map((v) => v.id));
+  const jobsChildToJob = new Map<string, string>();
+  for (const [jobV, children] of jobsChain) for (const child of children) jobsChildToJob.set(child, jobV);
+  const jobsChainChildren = await chainChildrenByJob(jobVisits.map((v) => v.id));
 
   /**
    * Newest issued estimate per visit, keyed by whichever side links it — the CARD's fallback
@@ -5088,12 +5093,10 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     P.O.s on the chain's other visit (the appointment the job was quoted on)
     count toward the job, like its hours do.
   */
-  const jobsChildrenOf = new Map<string, string[]>();
-  for (const [child, jobV] of jobsChildToJob) jobsChildrenOf.set(jobV, [...(jobsChildrenOf.get(jobV) ?? []), child]);
   const materialByJob = await materialCostForJobs(
     jobVisits
       .filter((v) => !jobsChildToJob.has(v.id))
-      .map((v) => ({ visitId: v.id, chainVisitIds: jobsChildrenOf.get(v.id) ?? [] })),
+      .map((v) => ({ visitId: v.id, chainVisitIds: jobsChain.get(v.id) ?? [] })),
   );
 
   const jobs = jobVisits.map((visit: typeof visits[number]) => {
@@ -5176,7 +5179,9 @@ app.get("/jobs", asyncHandler(async (req, res) => {
       costs: jobsChildToJob.has(visit.id)
         ? rollupJobCosts(ROLLED_UP_COSTS, null, laborRate)
         : rollupJobCosts(
-            visit,
+            // The consultation's hours count on the job it won (Kyle, 2026-09-21) — the same
+            // merge the account page has always done; until this date the card dropped them.
+            mergeCostableChain(visit, jobsChainChildren.get(visit.id) ?? []),
             /*
               Revenue precedence (Kyle, 2026-09-06: "incorrect job cost
               calculations" on Brady's completed job): typed Visit.revenue,
@@ -5842,6 +5847,25 @@ app.post("/jobs/:jobId/complete", asyncHandler(async (req, res) => {
       console.error("[jobs] review request failed:", err));
   }
   res.json({ completed: true, completedAt: updated.completedAt, warnings });
+}));
+
+/**
+ * PAUSE JOB (Kyle, 2026-09-21) — any job underway goes back to scheduling, keeping its estimate,
+ * payments, P.O.s, time and materials. The exit for a mistaken Complete work now and for work
+ * that did not finish. Not the job CLOCK's pause (routes/time.ts), which only closes a session.
+ * services/sameDayJob.ts owns the rule; the field's twin is POST /health-record/visits/:id/pause-job.
+ */
+app.post("/jobs/:jobId/pause-for-later", asyncHandler(async (req, res) => {
+  const jobId = readParam(req, "jobId");
+  const body = z.object({ reason: z.string().trim().max(300).nullable().optional() }).parse(req.body ?? {});
+  const { pauseJobForLater, SameDayError } = await import("./services/sameDayJob");
+  try {
+    const result = await pauseJobForLater(prisma, { visitId: jobId, actor: "human:crm-session", reason: body.reason ?? null });
+    res.json({ paused: true, sessionsClosed: result.sessionsClosed, calendarEventDeleted: result.calendarEventDeleted, laborHours: result.laborHours });
+  } catch (err) {
+    if (err instanceof SameDayError) { res.status(err.status).json({ error: err.message }); return; }
+    throw err;
+  }
 }));
 
 /** Undo — a job closed by mistake reopens to in_progress, keeping its history. */
@@ -6804,18 +6828,10 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
     belong to the second. childToJob maps appointment → sold job so the job's
     P&L is whole and nothing is counted twice.
   */
-  const chainLinks = await prisma.issuedEstimate.findMany({
-    where: { customerId, jobVisitId: { not: null }, visitId: { not: null } },
-    select: { visitId: true, jobVisitId: true },
-  });
+  // ONE rule for every reader since 2026-09-21: services/jobCosting.ts costChainByJob.
+  const childrenOfJob = await costChainByJob(visitIds);
   const childToJob = new Map<string, string>();
-  for (const l of chainLinks) {
-    if (l.visitId && l.jobVisitId && l.visitId !== l.jobVisitId) childToJob.set(l.visitId, l.jobVisitId);
-  }
-  const childrenOfJob = new Map<string, string[]>();
-  for (const [child, jobV] of childToJob) {
-    childrenOfJob.set(jobV, [...(childrenOfJob.get(jobV) ?? []), child]);
-  }
+  for (const [jobV, children] of childrenOfJob) for (const child of children) childToJob.set(child, jobV);
   // What this account has actually PAID, by the one rule (services/lifetimeCollected.ts).
   const collectedLifetime = await lifetimeCollectedFor(prisma, customerId);
   // The signed estimate, per job (newest signed wins), keyed by the job side of

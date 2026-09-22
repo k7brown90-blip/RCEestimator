@@ -462,6 +462,142 @@ describe("the field app", () => {
   });
 });
 
+describe("field fix batch (2026-09-21) items 6 & 7 — cancel and receipt edits from the field", () => {
+  let ffbVisitId: string;
+
+  beforeAll(async () => {
+    const property = await prisma.property.findFirstOrThrow({ where: { customerId } });
+    const visit = await prisma.visit.create({
+      data: { customerId, propertyId: property.id, mode: "onsite", purpose: "FFB PO test", jobType: "Service", status: "in_progress", visitDate: new Date() },
+    });
+    ffbVisitId = visit.id;
+    await prisma.visitAssignment.create({ data: { visitId: ffbVisitId, technicianId } });
+  });
+
+  afterAll(async () => {
+    await prisma.receipt.deleteMany({ where: { jobId: ffbVisitId } });
+    await prisma.purchaseOrder.deleteMany({ where: { jobId: ffbVisitId } });
+    await prisma.visitAssignment.deleteMany({ where: { visitId: ffbVisitId } });
+    await prisma.visit.deleteMany({ where: { id: ffbVisitId } });
+  });
+
+  it("item 6 — cancels a PO from the field with a required reason", async () => {
+    const created = await request(app)
+      .post(`/health-record/visits/${ffbVisitId}/purchase-orders`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({ supplier: "PO-test FFB Cancel", items: [{ name: "Breaker", qty: 1 }] });
+    expect(created.status).toBe(201);
+    const poId = created.body.data.id as string;
+
+    const noReason = await request(app)
+      .post(`/health-record/purchase-orders/${poId}/status`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({ to: "cancelled" });
+    expect(noReason.status).toBe(400);
+    expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: poId } })).status).toBe("open");
+
+    const cancelled = await request(app)
+      .post(`/health-record/purchase-orders/${poId}/status`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({ to: "cancelled", reason: "Wrong supplier" });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.data.status).toBe("cancelled");
+    expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: poId } })).status).toBe("cancelled");
+  });
+
+  it("item 6 — a PO opened by one tech is not another tech's to cancel", async () => {
+    const other = await prisma.technician.create({ data: { name: "PO Test FFB Other Tech", accessToken: `po-test-ffb-other-${newId()}` } });
+    const created = await request(app)
+      .post(`/health-record/visits/${ffbVisitId}/purchase-orders`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({ supplier: "PO-test FFB Scope", items: [{ name: "Wire", qty: 1 }] });
+    const poId = created.body.data.id as string;
+
+    const res = await request(app)
+      .post(`/health-record/purchase-orders/${poId}/status`)
+      .set("Authorization", `Bearer ${other.accessToken}`)
+      .send({ to: "cancelled", reason: "not mine to cancel" });
+    expect(res.status).toBe(403);
+    expect((await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: poId } })).status).toBe("open");
+
+    await prisma.technician.deleteMany({ where: { id: other.id } });
+  });
+
+  it("item 7 — edits and removes a receipt on the field PO; a receipt is proof, never money", async () => {
+    const created = await request(app)
+      .post(`/health-record/visits/${ffbVisitId}/purchase-orders`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({ supplier: "PO-test FFB Receipt Edit", items: [{ name: "Panel", qty: 1 }] });
+    const poId = created.body.data.id as string;
+
+    const upload = await request(app)
+      .put(`/health-record/receipts/${newId()}?purchaseOrderId=${poId}&amount=88.10&vendor=PO-test%20FFB&category=materials`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .set("Content-Type", "image/jpeg")
+      .send(jpg);
+    expect(upload.status).toBe(201);
+    const receiptId = upload.body.data.id as string;
+
+    const list = await request(app)
+      .get(`/health-record/purchase-orders/${poId}/receipts`)
+      .set("Authorization", `Bearer ${techToken}`);
+    expect(list.status).toBe(200);
+    expect(list.body.data).toHaveLength(1);
+    expect(list.body.data[0].amount).toBe(88.1);
+
+    const costBefore = await costOf(ffbVisitId);
+
+    const edited = await request(app)
+      .patch(`/health-record/receipts/${receiptId}`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({ vendor: "PO-test FFB Edited Vendor", amount: 91.5 });
+    expect(edited.status).toBe(200);
+    expect(edited.body.data.vendor).toBe("PO-test FFB Edited Vendor");
+    expect(edited.body.data.amount).toBe(91.5);
+
+    // A receipt is proof, never money: editing it moves no job-cost figure
+    // (materialCostForJobs derives from card charges / typed off-card amounts
+    // on the P.O., never the receipt row).
+    expect(await costOf(ffbVisitId)).toEqual(costBefore);
+
+    const removed = await request(app)
+      .delete(`/health-record/receipts/${receiptId}`)
+      .set("Authorization", `Bearer ${techToken}`);
+    expect(removed.status).toBe(204);
+    expect(await prisma.receipt.findUnique({ where: { id: receiptId } })).toBeNull();
+    expect(await costOf(ffbVisitId)).toEqual(costBefore);
+  });
+
+  it("item 7 — a receipt on someone else's PO/visit is not this tech's to edit or remove", async () => {
+    const other = await prisma.technician.create({ data: { name: "PO Test FFB Receipt Other Tech", accessToken: `po-test-ffb-recv-other-${newId()}` } });
+    const created = await request(app)
+      .post(`/health-record/visits/${ffbVisitId}/purchase-orders`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .send({ supplier: "PO-test FFB Receipt Scope", items: [{ name: "Conduit", qty: 1 }] });
+    const poId = created.body.data.id as string;
+    const upload = await request(app)
+      .put(`/health-record/receipts/${newId()}?purchaseOrderId=${poId}&amount=10&vendor=PO-test%20FFB&category=materials`)
+      .set("Authorization", `Bearer ${techToken}`)
+      .set("Content-Type", "image/jpeg")
+      .send(jpg);
+    const receiptId = upload.body.data.id as string;
+
+    const patch = await request(app)
+      .patch(`/health-record/receipts/${receiptId}`)
+      .set("Authorization", `Bearer ${other.accessToken}`)
+      .send({ amount: 5 });
+    expect(patch.status).toBe(403);
+
+    const del = await request(app)
+      .delete(`/health-record/receipts/${receiptId}`)
+      .set("Authorization", `Bearer ${other.accessToken}`);
+    expect(del.status).toBe(403);
+    expect(await prisma.receipt.findUnique({ where: { id: receiptId } })).not.toBeNull();
+
+    await prisma.technician.deleteMany({ where: { id: other.id } });
+  });
+});
+
 describe("waiving a receipt off the needs-PO queue (Unit 2, legacy purchase close-out, 2026-09-14)", () => {
   // A dedicated job so the shared `jobId`'s receipts from other tests stay out of the queue assertions.
   let waiveJobId: string;

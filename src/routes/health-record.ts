@@ -10,10 +10,9 @@
  */
 
 import express from "express";
-import { techAvailabilityForDate } from "../services/techCalendars";
-import { scheduleJob } from "../services/scheduling";
 import { summarizeOptions } from "../services/atomicEstimateEngine";
-import { graduateDraft } from "../services/issuedEstimateService";
+import { SameDayError, completeWorkNow, fieldChoicePending, pauseJobForLater, scheduleForLater } from "../services/sameDayJob";
+import { graduateDraft, reviseEstimate } from "../services/issuedEstimateService";
 import { addLine, browseAtomics, computeDraft, createDraft, editLine, loadRateContext, removeLine } from "../services/atomicEstimateService";
 import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
@@ -939,7 +938,7 @@ healthRecordTechRouter.post("/visits/:visitId/email-payment-request", asyncHandl
 async function quoteDraftForTech(draftId: string, technicianId: string) {
   const draft = await prisma.priceBookDraftEstimate.findUnique({
     where: { id: draftId },
-    select: { id: true, visitId: true, status: true, customerId: true },
+    select: { id: true, visitId: true, status: true, customerId: true, changeOrderForId: true },
   });
   if (!draft || !draft.visitId) return null;
   const assigned = await prisma.visitAssignment.findFirst({
@@ -1023,22 +1022,38 @@ healthRecordTechRouter.get("/quotes/:draftId", asyncHandler(async (req: TechRequ
     success: true,
     data: {
       draftId: draft.id,
+      // Change orders are the one place a negative quantity is legal
+      // (assertQuantityAllowed, atomicEstimateService.ts) — the phone needs
+      // to know which draft this is before it decides whether to let a
+      // negative quantity through the UI.
+      isChangeOrder: Boolean(draft.changeOrderForId),
       lines: rows.map((l) => {
         const c = priced.get(l.id);
         return {
           ...l,
           description: c?.description ?? l.itemId,
-          laborHours: c?.laborHours ?? null,
           lineTotal: c ? Math.round(((c.laborDollars ?? 0) + (c.materialSell ?? 0)) * 100) / 100 : null,
           gaps: c?.gaps.map((g) => g.message) ?? [],
         };
       }),
-      options: summarizeOptions(computed),
+      // Hours (and the labor dollars they price out to) never leave the office — the same
+      // standing rule the job-brief route already applies (~1280). materialSell/subtotal are
+      // the price the customer sees, not the labor cost of getting there.
+      options: summarizeOptions(computed).map(({ laborHours: _laborHours, laborDollars: _laborDollars, ...rest }) => rest),
       total: computed.total,
       rateProvisional: rate.provisional,
     },
   });
 }));
+
+/**
+ * A quantity is non-zero here, full stop — positive OR negative reaches the
+ * service. `assertQuantityAllowed` (atomicEstimateService.ts) is the actual
+ * rule (negative only on a change order); the route only stops blocking a
+ * change order's credit line, it does not re-decide the rule. Zero stays
+ * invalid everywhere.
+ */
+const nonZeroQuantity = z.number().refine((n) => n !== 0, { message: "Quantity cannot be zero." });
 
 healthRecordTechRouter.post("/quotes/:draftId/lines", asyncHandler(async (req: TechRequest, res) => {
   const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
@@ -1048,15 +1063,19 @@ healthRecordTechRouter.post("/quotes/:draftId/lines", asyncHandler(async (req: T
   }
   const body = z.object({
     itemId: z.string().min(1),
-    quantity: z.number().positive(),
+    quantity: nonZeroQuantity,
     quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).default("COUNT"),
     difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).default("NORMAL"),
     option: z.enum(["A", "B", "C"]).default("A"),
     note: z.string().nullable().optional(),
     location: z.string().nullable().optional(),
   }).parse(req.body ?? {});
-  const line = await addLine(prisma, draft.id, { ...body, confirmedBy: `tech:${req.technician!.id}` });
-  res.status(201).json({ success: true, data: { lineId: line.id } });
+  try {
+    const line = await addLine(prisma, draft.id, { ...body, confirmedBy: `tech:${req.technician!.id}` });
+    res.status(201).json({ success: true, data: { lineId: line.id } });
+  } catch (err) {
+    res.status(400).json({ success: false, error: { code: "bad_request", message: err instanceof Error ? err.message : String(err) } });
+  }
 }));
 
 healthRecordTechRouter.patch("/quote-lines/:lineId", asyncHandler(async (req: TechRequest, res) => {
@@ -1067,7 +1086,7 @@ healthRecordTechRouter.patch("/quote-lines/:lineId", asyncHandler(async (req: Te
     return;
   }
   const body = z.object({
-    quantity: z.number().positive().optional(),
+    quantity: nonZeroQuantity.optional(),
     quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).optional(),
     difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
     option: z.enum(["A", "B", "C"]).optional(),
@@ -1099,6 +1118,14 @@ healthRecordTechRouter.delete("/quote-lines/:lineId", asyncHandler(async (req: T
  * reasons); account and address come from the visit, which is exactly "the
  * address that we are working at". Returns the customer-page link so the
  * customer signs on their own phone or the tech's, and payment follows.
+ *
+ * RE-ISSUE IS A REVISION, NOT A SECOND ESTIMATE — same rule as the CRM's
+ * POST /price-book/drafts/:draftId/issue (app.ts). Editing a quote in the
+ * driveway reopens the draft (reopenForEditIfUnsigned); pressing Issue again
+ * without this branch would mint a brand-new estimate number for the same
+ * job. The guard lives HERE, not inside graduateDraft, because reviseEstimate
+ * calls graduateDraft — a check inside it would recurse forever. The refusal
+ * for a signed live row is already enforced inside reviseEstimate/graduateDraft.
  */
 healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: TechRequest, res) => {
   const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
@@ -1106,16 +1133,29 @@ healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: T
     res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
     return;
   }
+  // The deposit is the EXISTING optional checkbox, at the tech's discretion (Kyle, 2026-09-21) —
+  // same `depositRequired` the CRM's issue route passes; absent = the service's default (ON for
+  // an estimate, OFF for a change order). First issue only, like the CRM: a re-issue revises and
+  // carries the previous document's flag; the office's PATCH /terms is the override after that.
+  const body = z.object({ depositRequired: z.boolean().optional() }).parse(req.body ?? {});
   const visit = await prisma.visit.findUnique({
     where: { id: draft.visitId! },
     select: { customerId: true, propertyId: true },
   });
-  const result = await graduateDraft(prisma, {
-    draftId: draft.id,
-    accountId: visit!.customerId,
-    serviceAddressId: visit!.propertyId,
-    createdBy: `tech:${req.technician!.id}`,
+  const live = await prisma.issuedEstimate.findFirst({
+    where: { draftId: draft.id, supersededBy: null, status: { not: "void" } },
+    orderBy: { revision: "desc" },
+    select: { id: true, number: true, revision: true },
   });
+  const result = live
+    ? await reviseEstimate(prisma, live.id, { actor: `tech:${req.technician!.name}` })
+    : await graduateDraft(prisma, {
+        draftId: draft.id,
+        accountId: visit!.customerId,
+        serviceAddressId: visit!.propertyId,
+        depositRequired: body.depositRequired,
+        createdBy: `tech:${req.technician!.id}`,
+      });
   if (!result.ok) {
     res.status(409).json({ success: false, error: { code: "not_ready", message: result.reasons.join(" ") }, reasons: result.reasons });
     return;
@@ -1134,13 +1174,13 @@ healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: T
 }));
 
 
-// ─── SELF-SERVE VISITS & SCHEDULING FROM THE FIELD (Kyle, 2026-09-01, phase 5) ─
+// ─── SELF-SERVE VISITS FROM THE FIELD (Kyle, 2026-09-01, phase 5) ────────────
 //
-// "If scheduled for a later date. The job shows up on the techs schedule and is
-//  available to clock into on that date/time (this needs to be flexible)." And
-//  the ratified My-accounts option: the tech can START a service call at an
-//  address they service, without waiting for the office to create the visit.
-//  The office is notified of every self-created visit — self-serve, not silent.
+// The ratified My-accounts option: the tech can START a service call at an
+// address they service, without waiting for the office to create the visit.
+// The office is notified of every self-created visit — self-serve, not silent.
+// (Phase 5's "schedule for a later date" booking from the field was removed
+// 2026-09-21 — scheduling is admin-only; see the same-day routes below.)
 
 healthRecordTechRouter.post("/properties/:propertyId/service-call", asyncHandler(async (req: TechRequest, res) => {
   const propertyId = readParam(req, "propertyId");
@@ -1182,61 +1222,75 @@ healthRecordTechRouter.post("/properties/:propertyId/service-call", asyncHandler
   res.status(201).json({ success: true, data: { visitId: visit.id } });
 }));
 
-/** The tech's own free/busy for a candidate slot — so scheduling from the driveway isn't blind. */
-healthRecordTechRouter.get("/schedule-availability", asyncHandler(async (req: TechRequest, res) => {
-  const date = typeof req.query.date === "string" ? req.query.date : "";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    res.status(400).json({ success: false, error: { code: "bad_request", message: "date must be YYYY-MM-DD" } });
-    return;
+/*
+  ── AFTER THE SIGNATURE: TWO CHOICES, AND THE WAY BACK (Kyle, 2026-09-21) ────
+  "The field app should only have a 'complete work now' option that ties the
+  accepted estimate to the consultation ... Bigger projects that cannot be done
+  same day would be labeled schedule for later and that would then go back to
+  the admin side." SCHEDULING IS ADMIN-ONLY: the field's own booking
+  (POST /visits/:visitId/schedule, phase 5) and its availability read are GONE,
+  not gated. services/sameDayJob.ts owns the three verbs; these are the
+  technician-authorised doors, assignment-scoped like every other tech route.
+*/
+
+function sendSameDayError(res: express.Response, err: unknown): boolean {
+  if (err instanceof SameDayError) {
+    res.status(err.status).json({ success: false, error: { code: err.status === 404 ? "not_found" : "conflict", message: err.message } });
+    return true;
   }
-  const techs = await techAvailabilityForDate(date);
-  const mine = techs.find((t) => (t as { technicianId?: string }).technicianId === req.technician!.id) ?? null;
-  res.json({ success: true, data: { date, me: mine, techs } });
+  return false;
+}
+
+/** Complete work now — the consultation becomes the job; nothing is booked, the customer hears nothing. */
+healthRecordTechRouter.post("/visits/:visitId/complete-work-now", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  try {
+    const result = await completeWorkNow(prisma, { visitId, actor: `tech:${req.technician!.name}`, technicianName: req.technician!.name });
+    res.json({ success: true, data: { jobVisitId: result.jobVisitId, removedVisitId: result.removedVisitId, alreadyDone: result.alreadyDone } });
+  } catch (err) {
+    if (!sendSameDayError(res, err)) throw err;
+  }
+}));
+
+/** Schedule for later — closes the consultation; the contracted job waits for the office. Books nothing. */
+healthRecordTechRouter.post("/visits/:visitId/schedule-for-later", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  const { publicBaseUrl } = await import("../services/issuedEstimateSend");
+  try {
+    const result = await scheduleForLater(prisma, {
+      visitId,
+      actor: `tech:${req.technician!.name}`,
+      technicianId: req.technician!.id,
+      technicianName: req.technician!.name,
+      payBaseUrl: publicBaseUrl(),
+    });
+    res.json({ success: true, data: { jobVisitId: result.jobVisitId, depositRequestReleased: result.depositRequestReleased } });
+  } catch (err) {
+    if (!sendSameDayError(res, err)) throw err;
+  }
 }));
 
 /**
- * Schedule (or reschedule) a visit from the field. The SAME scheduleJob the
- * CRM uses — deposit gate, calendar event, confirmation machinery — with this
- * technician on the booking. Gate refusals (unpaid deposit) return their real
- * wording; the tech collects the deposit and taps again.
+ * Pause JOB — back to the office to be scheduled again, keeping everything on it. Not the
+ * clock's pause (POST /visits/:visitId/pause below), which only closes a time session.
  */
-healthRecordTechRouter.post("/visits/:visitId/schedule", asyncHandler(async (req: TechRequest, res) => {
+healthRecordTechRouter.post("/visits/:visitId/pause-job", asyncHandler(async (req: TechRequest, res) => {
   const visitId = readParam(req, "visitId");
-  const body = z.object({
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    time: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
-    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-    endTime: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
-  }).parse(req.body ?? {});
-  const assigned = await prisma.visitAssignment.findFirst({
-    where: { visitId, technicianId: req.technician!.id },
-    select: { id: true },
-  });
-  if (!assigned) {
-    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
-    return;
-  }
+  if (!(await requireAssigned(req, res, visitId))) return;
+  const body = z.object({ reason: z.string().trim().max(300).nullable().optional() }).parse(req.body ?? {});
   try {
-    await scheduleJob(
-      visitId, body.date, body.time ?? null, req.technician!.id,
-      body.endDate ? { date: body.endDate, time: body.endTime ?? null } : null,
-    );
+    const result = await pauseJobForLater(prisma, {
+      visitId,
+      actor: `tech:${req.technician!.name}`,
+      reason: body.reason ?? null,
+      technicianName: req.technician!.name,
+    });
+    res.json({ success: true, data: { paused: true, sessionsClosed: result.sessionsClosed, laborHours: result.laborHours } });
   } catch (err) {
-    res.status(409).json({ success: false, error: { code: "not_scheduled", message: err instanceof Error ? err.message : String(err) } });
-    return;
+    if (!sendSameDayError(res, err)) throw err;
   }
-  const visit = await prisma.visit.findUnique({
-    where: { id: visitId },
-    select: { scheduledStart: true, scheduledEnd: true, status: true },
-  });
-  res.json({
-    success: true,
-    data: {
-      scheduledStart: visit?.scheduledStart?.toISOString() ?? null,
-      scheduledEnd: visit?.scheduledEnd?.toISOString() ?? null,
-      status: visit?.status ?? null,
-    },
-  });
 }));
 
 healthRecordTechRouter.get("/visits/:visitId/payment-info", asyncHandler(async (req: TechRequest, res) => {
@@ -1341,6 +1395,9 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
       _sum: { minutes: true },
     }),
   ]);
+  // The signature landed and the technician has not yet chosen Complete work now / Schedule for
+  // later (2026-09-21): the screen offers exactly those two, and nothing else closes the visit.
+  const choicePending = est ? await fieldChoicePending(prisma, est) : false;
   res.json({
     success: true,
     data: {
@@ -1348,6 +1405,7 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
       clockedInAt: openEntry?.startedAt.toISOString() ?? null,
       visitId: visit.id,
       status: visit.status,
+      choicePending,
       jobType: visit.jobType,
       purpose: visit.purpose,
       notes: visit.notes,
@@ -1362,6 +1420,7 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
           number: est.number,
           title: est.title,
           scopeText: est.scopeText,
+          signedAt: est.signedAt?.toISOString() ?? null,
           lines: linesOf(est),
           // Signed change orders that joined this invoice (2026-09-20) — added scope, same job.
           changeOrders: changeOrders.map((co) => ({
@@ -1610,6 +1669,29 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
     return;
   }
   if (visit.status === "estimate") {
+    /*
+      A SIGNED estimate is waiting for the technician's choice (2026-09-21): closing the
+      consultation without choosing IS "Schedule for later" — the non-destructive choice, the
+      one that leaves the contracted job for the office and releases the held deposit request.
+      Never the old "quote follow-up" wording, which described an unsigned estimate.
+    */
+    const signedRoot = await signedRootForJob(prisma, visitId);
+    if (signedRoot?.signedAt && signedRoot.visitId === visitId && signedRoot.jobVisitId !== visitId) {
+      const { publicBaseUrl } = await import("../services/issuedEstimateSend");
+      try {
+        const result = await scheduleForLater(prisma, {
+          visitId,
+          actor: `tech:${req.technician!.name}`,
+          technicianId: req.technician!.id,
+          technicianName: req.technician!.name,
+          payBaseUrl: publicBaseUrl(),
+        });
+        res.json({ success: true, data: { completed: true, warnings: [], scheduledForLater: true, jobVisitId: result.jobVisitId } });
+      } catch (err) {
+        if (!sendSameDayError(res, err)) throw err;
+      }
+      return;
+    }
     // Manual close for an estimate visit (Kyle, 2026-09-05): assessment done,
     // report sent, maybe a quote issued — the TECH says when the visit is
     // over, and the office hears about it. Mirrors the CRM's
@@ -1832,11 +1914,45 @@ healthRecordTechRouter.post("/purchase-orders", asyncHandler(async (req: TechReq
   res.status(201).json({ success: true, data: { id: po.id, number: po.number, purpose: po.purpose, status: po.status, supplier: po.supplier, createdAt: po.createdAt } });
 }));
 
-/** Purchased at the counter / verified — the two transitions a tech makes. */
+/**
+ * Same ownership rule the tech's PO list uses (GET /purchase-orders above):
+ * a PO this tech opened, one the office opened (openedByTechnicianId null —
+ * Kyle at the desk), or one on this tech's own truck.
+ */
+async function poForTech(poId: string, technicianId: string) {
+  const po = await prisma.purchaseOrder.findUnique({
+    where: { id: poId },
+    select: { id: true, openedByTechnicianId: true, truck: { select: { technicianId: true } } },
+  });
+  if (!po) return null;
+  const owned = po.openedByTechnicianId === technicianId || po.openedByTechnicianId === null || po.truck?.technicianId === technicianId;
+  return owned ? po : null;
+}
+
+/**
+ * Purchased at the counter / verified / cancelled — the transitions a tech
+ * makes. Cancelling requires a reason, the same rule as the CRM route
+ * (app.ts POST /purchase-orders/:id/status) — a PO's status never moves
+ * money (THE P.O. IS THE MONEY), so cancelling changes no cost figure, only
+ * takes the PO off the live list.
+ */
 healthRecordTechRouter.post("/purchase-orders/:id/status", asyncHandler(async (req: TechRequest, res) => {
-  const body = z.object({ to: z.enum(["purchased", "verified"]) }).parse(req.body);
+  const body = z.object({
+    to: z.enum(["purchased", "verified", "cancelled"]),
+    reason: z.string().trim().min(1).max(300).optional(),
+  }).parse(req.body);
+  if (body.to === "cancelled" && !body.reason) {
+    res.status(400).json({ success: false, error: { code: "bad_request", message: "A reason is required to cancel a PO." } });
+    return;
+  }
+  const poId = readParam(req, "id");
+  const owned = await poForTech(poId, req.technician!.id);
+  if (!owned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your purchase order" } });
+    return;
+  }
   try {
-    const po = await transitionPurchaseOrder(readParam(req, "id"), body.to, { actor: `tech:${req.technician!.name}` });
+    const po = await transitionPurchaseOrder(poId, body.to, { actor: `tech:${req.technician!.name}`, reason: body.reason ?? null });
     res.json({ success: true, data: { id: po.id, number: po.number, status: po.status } });
   } catch (err) {
     if (!techServiceError(res, err)) throw err;
@@ -2338,6 +2454,107 @@ healthRecordTechRouter.put(
     }
   }),
 );
+
+/**
+ * Is this receipt the tech's to touch — uploaded by them, on a PO they own
+ * (poForTech, above), or tied to a visit assigned to them. Mirrors "scoped to
+ * receipts on the tech's own P.O.s/visits" rather than uploader identity
+ * alone, so a receipt someone else on the same truck/PO filed is still
+ * reachable.
+ */
+async function receiptOwnedByTech(receiptId: string, technicianId: string) {
+  const r = await prisma.receipt.findUnique({
+    where: { id: receiptId },
+    select: { id: true, technicianId: true, jobId: true, purchaseOrderId: true },
+  });
+  if (!r) return null;
+  if (r.technicianId === technicianId) return r;
+  if (r.purchaseOrderId && (await poForTech(r.purchaseOrderId, technicianId))) return r;
+  if (r.jobId) {
+    const assigned = await prisma.visitAssignment.findFirst({ where: { visitId: r.jobId, technicianId }, select: { id: true } });
+    if (assigned) return r;
+  }
+  return null;
+}
+
+/**
+ * The receipts on a PO, for the field P.O. panel's edit/remove controls
+ * (standing rule: nothing this app creates is permanent without an exit from
+ * where it's shown). Amount/vendor only — the office's fuller receipt drawer
+ * stays at /health-record-admin/receipts/:id.
+ */
+healthRecordTechRouter.get("/purchase-orders/:id/receipts", asyncHandler(async (req: TechRequest, res) => {
+  const poId = readParam(req, "id");
+  if (!(await poForTech(poId, req.technician!.id))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your purchase order" } });
+    return;
+  }
+  const receipts = await prisma.receipt.findMany({
+    where: { purchaseOrderId: poId },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, vendor: true, amount: true, category: true, imageMime: true, createdAt: true },
+  });
+  res.json({
+    success: true,
+    data: receipts.map((r) => ({
+      id: r.id,
+      vendor: r.vendor,
+      amount: r.amount,
+      category: r.category,
+      hasImage: Boolean(r.imageMime),
+      createdAt: r.createdAt.toISOString(),
+    })),
+  });
+}));
+
+/**
+ * Edit a receipt from the field — same write as the office's
+ * PATCH /health-record-admin/receipts/:id (applyReceiptEdit, below), scoped
+ * to a receipt on the tech's own P.O. or visit. Narrower than the office
+ * door on purpose: no job reassignment, no "confirmed" bookkeeping status, no
+ * back-dating — those stay office moves. A receipt is proof, never money
+ * (2026-09-19): none of these fields move a cost figure.
+ */
+healthRecordTechRouter.patch("/receipts/:id", asyncHandler(async (req: TechRequest, res) => {
+  const id = readParam(req, "id");
+  if (!(await receiptOwnedByTech(id, req.technician!.id))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your receipt" } });
+    return;
+  }
+  const body = z.object({
+    vendor: z.string().nullable().optional(),
+    amount: z.number().nonnegative().optional(),
+    category: z.enum(["materials", "gas", "maintenance", "overhead", "permit", "inspection"]).optional(),
+    purchaseOrderId: z.string().nullable().optional(),
+  }).parse(req.body ?? {});
+  const updated = await applyReceiptEdit(id, body, `tech:${req.technician!.name}`);
+  if (!updated) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Receipt not found" } });
+    return;
+  }
+  res.json({ success: true, data: updated });
+}));
+
+/**
+ * Remove a receipt from the field — same write as the office's
+ * DELETE /health-record-admin/receipts/:id (removeReceiptRecord, below). A
+ * receipt is proof, never money (2026-09-19): removing one changes no cost
+ * figure; it can un-verify its PO under the existing RECEIPT_HAS_FILE gate,
+ * since proofCount is derived live, never stored.
+ */
+healthRecordTechRouter.delete("/receipts/:id", asyncHandler(async (req: TechRequest, res) => {
+  const id = readParam(req, "id");
+  if (!(await receiptOwnedByTech(id, req.technician!.id))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your receipt" } });
+    return;
+  }
+  const removed = await removeReceiptRecord(id);
+  if (!removed) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Receipt not found" } });
+    return;
+  }
+  res.status(204).end();
+}));
 
 // ─── FINDING LEDGER (technician) ───────────────────────────────────────────────
 
@@ -3764,6 +3981,69 @@ healthRecordAdminRouter.get("/receipts/:id/image", asyncHandler(async (req, res)
   res.send(Buffer.from(receipt.imageData));
 }));
 
+/**
+ * The write behind PATCH /receipts/:id, shared by the office door
+ * (healthRecordAdminRouter, below) and the tech twin
+ * (healthRecordTechRouter.patch("/receipts/:id"), above) — one place that
+ * moves the PO link, so the two doors can never disagree about what
+ * attaching/detaching does. A receipt is proof, never money (2026-09-19):
+ * none of these fields move a cost figure anywhere. Returns null when the
+ * receipt does not exist.
+ */
+async function applyReceiptEdit(
+  id: string,
+  patch: {
+    jobId?: string | null;
+    category?: "materials" | "gas" | "maintenance" | "overhead" | "permit" | "inspection";
+    vendor?: string | null;
+    amount?: number;
+    lineItems?: unknown;
+    status?: "pending_review" | "confirmed";
+    reconciliationNote?: string | null;
+    purchaseOrderId?: string | null;
+    receivedAt?: Date;
+  },
+  actor: string,
+) {
+  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true, jobId: true, purchaseOrderId: true } });
+  if (!existing) return null;
+
+  const receipt = await prisma.receipt.update({
+    where: { id },
+    data: {
+      ...(patch.jobId !== undefined ? { jobId: patch.jobId } : {}),
+      ...(patch.category !== undefined ? { category: patch.category } : {}),
+      ...(patch.vendor !== undefined ? { vendor: patch.vendor } : {}),
+      ...(patch.amount !== undefined ? { amount: patch.amount } : {}),
+      ...(patch.lineItems !== undefined ? { lineItems: patch.lineItems ? JSON.stringify(patch.lineItems) : null } : {}),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.receivedAt !== undefined ? { receivedAt: patch.receivedAt } : {}),
+      ...(patch.reconciliationNote !== undefined ? { reconciliationNote: patch.reconciliationNote } : {}),
+    },
+    select: { id: true, jobId: true, category: true, vendor: true, amount: true, status: true },
+  });
+
+  if (patch.purchaseOrderId !== undefined && patch.purchaseOrderId !== existing.purchaseOrderId) {
+    if (patch.purchaseOrderId) await attachReceiptToPurchaseOrder(id, patch.purchaseOrderId, actor);
+    else await detachReceiptFromPurchaseOrder(id, actor);
+  }
+  const after = await prisma.receipt.findUniqueOrThrow({ where: { id }, select: { purchaseOrderId: true, jobId: true } });
+  return { ...receipt, jobId: after.jobId, purchaseOrderId: after.purchaseOrderId };
+}
+
+/**
+ * The write behind DELETE /receipts/:id, shared the same way as
+ * applyReceiptEdit above. Since 2026-09-19 a receipt is proof, never money,
+ * so removing one changes no cost figure. Returns false when the receipt
+ * does not exist.
+ */
+async function removeReceiptRecord(id: string): Promise<boolean> {
+  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true } });
+  if (!existing) return false;
+  await prisma.receipt.delete({ where: { id } });
+  return true;
+}
+
 healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => {
   const body = z.object({
     jobId: z.string().nullable().optional(),
@@ -3805,36 +4085,12 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
       .refine((v) => v === undefined || !Number.isNaN(v.getTime()), "receivedAt is not a date"),
   }).parse(req.body);
 
-  const id = readParam(req, "id");
-  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true, jobId: true, purchaseOrderId: true } });
-  if (!existing) {
+  const updated = await applyReceiptEdit(readParam(req, "id"), body, "owner");
+  if (!updated) {
     res.status(404).json({ error: "Receipt not found" });
     return;
   }
-
-  const receipt = await prisma.receipt.update({
-    where: { id },
-    data: {
-      ...(body.jobId !== undefined ? { jobId: body.jobId } : {}),
-      ...(body.category !== undefined ? { category: body.category } : {}),
-      ...(body.vendor !== undefined ? { vendor: body.vendor } : {}),
-      ...(body.amount !== undefined ? { amount: body.amount } : {}),
-      ...(body.lineItems !== undefined ? { lineItems: body.lineItems ? JSON.stringify(body.lineItems) : null } : {}),
-      ...(body.status !== undefined ? { status: body.status } : {}),
-      ...(body.receivedAt !== undefined ? { receivedAt: body.receivedAt } : {}),
-      ...(body.reconciliationNote !== undefined ? { reconciliationNote: body.reconciliationNote } : {}),
-    },
-    select: { id: true, jobId: true, category: true, vendor: true, amount: true, status: true },
-  });
-
-  // A receipt is proof, never money (Kyle, 2026-09-19): editing its amount,
-  // category, date or status moves no cost figure anywhere.
-  if (body.purchaseOrderId !== undefined && body.purchaseOrderId !== existing.purchaseOrderId) {
-    if (body.purchaseOrderId) await attachReceiptToPurchaseOrder(id, body.purchaseOrderId, "owner");
-    else await detachReceiptFromPurchaseOrder(id, "owner");
-  }
-  const after = await prisma.receipt.findUniqueOrThrow({ where: { id }, select: { purchaseOrderId: true, jobId: true } });
-  res.json({ ...receipt, jobId: after.jobId, purchaseOrderId: after.purchaseOrderId });
+  res.json(updated);
 }));
 
 /**
@@ -3843,13 +4099,11 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
  * removing one changes no cost figure.
  */
 healthRecordAdminRouter.delete("/receipts/:id", asyncHandler(async (req, res) => {
-  const id = readParam(req, "id");
-  const existing = await prisma.receipt.findUnique({ where: { id }, select: { id: true } });
-  if (!existing) {
+  const removed = await removeReceiptRecord(readParam(req, "id"));
+  if (!removed) {
     res.status(404).json({ error: "Receipt not found" });
     return;
   }
-  await prisma.receipt.delete({ where: { id } });
   res.status(204).end();
 }));
 

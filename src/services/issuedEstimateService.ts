@@ -693,7 +693,7 @@ export async function signEstimate(
 /**
  * Sign an estimate the customer is reading on the operator's own device. (P028)
  *
- * Reached only from a route inside a SIGNING-SCOPED session — see middleware/signingScope.ts —
+ * Reached only from a route inside a SIGNING-SCOPED session —
  * so there is no token here: the capability is the narrowed session itself, and it names this one
  * estimate. Everything after the lookup is the SAME code path the email signature takes, which is
  * the point: one signature model, one lock, one audit shape, two doors.

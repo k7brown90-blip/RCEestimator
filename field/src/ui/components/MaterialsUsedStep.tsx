@@ -17,8 +17,10 @@ import {
   consumeFromField,
   fetchJobMaterials,
   requireSignal,
+  returnFromField,
   searchStockItems,
   type FieldJobMaterials,
+  type FieldMaterialLine,
   type FieldStockItem,
 } from '../../lib/crmSync'
 
@@ -38,6 +40,7 @@ export function MaterialsUsedStep({ visitId, onRecorded }: { visitId: string; on
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [undoingId, setUndoingId] = useState<string | null>(null)
 
   // Rows seed from the suggested lines: the estimate's quantity less what this
   // job already consumed, so a second pass never doubles up.
@@ -98,6 +101,33 @@ export function MaterialsUsedStep({ visitId, onRecorded }: { visitId: string; on
     }
   }
 
+  /**
+   * Undo (Kyle: nothing this app creates is permanent without a way out from
+   * where it's shown) — a consumed line goes back to the truck at the same
+   * cost it was charged, via the existing returnFromField/POST
+   * /visits/:id/return door. Online only, same as consume: a return replayed
+   * later could double-credit.
+   */
+  const undo = async (line: FieldMaterialLine) => {
+    setUndoingId(line.movementId)
+    setMsg(null)
+    try {
+      requireSignal()
+      await returnFromField(
+        visitId,
+        [{ itemId: line.itemId, name: line.name, qty: line.qty, unit: line.unit }],
+        'Undo from the field',
+      )
+      setMsg(`✓ Undone — ${line.name} returned to ${data?.truck.name ?? 'the truck'}.`)
+      load()
+      onRecorded?.()
+    } catch (err) {
+      setMsg(`Not undone — ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setUndoingId(null)
+    }
+  }
+
   if (loadError) return <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{loadError}</p>
   if (!data) return <p className="text-xs text-slate-400">Loading materials…</p>
 
@@ -111,6 +141,24 @@ export function MaterialsUsedStep({ visitId, onRecorded }: { visitId: string; on
         <p className="text-[11px] text-emerald-300">
           Already off the truck for this job: ${data.stock.net.toFixed(2)} ({data.stock.movementCount} line(s)). Job cost ${data.materialCost.toFixed(2)} {SOURCE_LABEL[data.materialSource]}.
         </p>
+      )}
+      {data.lines.filter((l) => l.kind === 'consume').length > 0 && (
+        <div className="space-y-1 rounded border border-slate-800 bg-slate-900/40 p-2">
+          <p className="text-[10px] uppercase tracking-wide text-slate-500">Recorded for this job — tap undo to put it back on the truck</p>
+          {data.lines.filter((l) => l.kind === 'consume').map((l) => (
+            <div key={l.movementId} className="flex items-center justify-between gap-2 text-xs text-slate-300">
+              <span>{l.qty} {l.unit ?? ''} {l.name} — ${l.cost.toFixed(2)}</span>
+              <button
+                type="button"
+                disabled={undoingId === l.movementId}
+                onClick={() => void undo(l)}
+                className="shrink-0 text-red-300 underline disabled:opacity-40"
+              >
+                {undoingId === l.movementId ? 'undoing…' : 'undo'}
+              </button>
+            </div>
+          ))}
+        </div>
       )}
       {rows.map((r, i) => {
         const qty = Number(r.qty) || 0

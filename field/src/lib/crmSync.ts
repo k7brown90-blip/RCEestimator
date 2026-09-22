@@ -86,6 +86,21 @@ export function consumeEnrollmentToken(): boolean {
   return true
 }
 
+/**
+ * A CRM request that failed with a parsed JSON body — carries it through so a
+ * caller that needs more than `.message` (e.g. QuoteScreen's issue-refusal
+ * list, which reads `err.body.reasons`) can read it. `body` is whatever the
+ * server sent (`{ success: false, error, reasons? }` etc.), verbatim.
+ */
+export class CrmRequestError extends Error {
+  readonly body: unknown
+  constructor(message: string, body: unknown) {
+    super(message)
+    this.name = 'CrmRequestError'
+    this.body = body
+  }
+}
+
 async function crmRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')
@@ -101,7 +116,7 @@ async function crmRequest<T>(path: string, init?: RequestInit): Promise<T> {
     | { success?: boolean; data?: T; error?: { message?: string } }
     | null
   if (!response.ok || body?.success === false) {
-    throw new Error(body?.error?.message ?? `CRM request failed (${response.status})`)
+    throw new CrmRequestError(body?.error?.message ?? `CRM request failed (${response.status})`, body)
   }
   return body?.data as T
 }
@@ -500,6 +515,11 @@ export interface JobBrief {
   clockedInAt: string | null
   visitId: string
   status: string
+  /**
+   * The estimate is signed and the technician has not yet chosen Complete work now / Schedule
+   * for later (2026-09-21). Optional: an older server leaves it out and the screen shows neither.
+   */
+  choicePending?: boolean
   jobType: string | null
   purpose: string | null
   notes: string | null
@@ -513,6 +533,8 @@ export interface JobBrief {
     number: string
     title: string
     scopeText: string | null
+    /** When the customer signed; null on an unsigned root. Optional for an older server. */
+    signedAt?: string | null
     lines: { description: string; quantity: number; option: string }[]
     /**
      * Signed change orders that joined this invoice (2026-09-20) — added scope on the SAME job.
@@ -686,9 +708,47 @@ export async function fetchMyPurchaseOrders(): Promise<{ orders: FieldPurchaseOr
   return crmRequest('/purchase-orders', { method: 'GET' })
 }
 
-/** Purchased at the counter; verified once the receipt photo is on it. */
-export async function setPurchaseOrderStatus(id: string, to: 'purchased' | 'verified'): Promise<{ id: string; number: string; status: string }> {
-  return crmRequest(`/purchase-orders/${id}/status`, { method: 'POST', body: JSON.stringify({ to }) })
+/**
+ * Purchased at the counter; verified once the receipt photo is on it;
+ * cancelled with a required reason — the same rule the CRM enforces (a PO's
+ * status never moves money, THE P.O. IS THE MONEY).
+ */
+export async function setPurchaseOrderStatus(
+  id: string,
+  to: 'purchased' | 'verified' | 'cancelled',
+  reason?: string,
+): Promise<{ id: string; number: string; status: string }> {
+  return crmRequest(`/purchase-orders/${id}/status`, { method: 'POST', body: JSON.stringify({ to, reason }) })
+}
+
+// ─── Receipts on a P.O. — edit / remove from the field (2026-09-21) ─────────
+// "Nothing this app creates is permanent without a way out from where it's
+// shown" — the same office logic (attach/detach, then update or delete),
+// scoped to a receipt on the tech's own P.O. or visit. A receipt is proof,
+// never money: none of this moves a job-cost figure.
+
+export interface FieldReceipt {
+  id: string
+  vendor: string | null
+  amount: number
+  category: string
+  hasImage: boolean
+  createdAt: string
+}
+
+export async function fetchPoReceipts(poId: string): Promise<FieldReceipt[]> {
+  return crmRequest(`/purchase-orders/${poId}/receipts`, { method: 'GET' })
+}
+
+export async function editPoReceipt(
+  receiptId: string,
+  patch: { vendor?: string | null; amount?: number; category?: string; purchaseOrderId?: string | null },
+): Promise<{ id: string; jobId: string | null; category: string; vendor: string | null; amount: number; status: string; purchaseOrderId: string | null }> {
+  return crmRequest(`/receipts/${receiptId}`, { method: 'PATCH', body: JSON.stringify(patch) })
+}
+
+export async function removePoReceipt(receiptId: string): Promise<void> {
+  await crmRequest(`/receipts/${receiptId}`, { method: 'DELETE' })
 }
 
 // ─── Barcode / SKU materials lookup (2026-09-12, barcode/materials plan Unit 3) ──────────
@@ -1518,18 +1578,25 @@ export async function createServiceCall(propertyId: string, purpose: string): Pr
   return crmRequest(`/properties/${propertyId}/service-call`, { method: 'POST', body: JSON.stringify({ purpose }) })
 }
 
-/** Schedule (or move) an assigned visit — same gates as the office, deposit included. */
-export async function scheduleVisitFromField(
-  visitId: string,
-  date: string,
-  time: string | null,
-  endDate?: string | null,
-  endTime?: string | null,
-): Promise<{ scheduledStart: string | null; scheduledEnd: string | null; status: string | null }> {
-  return crmRequest(`/visits/${visitId}/schedule`, {
-    method: 'POST',
-    body: JSON.stringify({ date, time, endDate: endDate ?? null, endTime: endTime ?? null }),
-  })
+// ─── After the signature: two choices, and the way back (Kyle, 2026-09-21) ──
+//    "Complete work now" ties the accepted estimate to the consultation, which
+//    becomes the job — nothing booked, the customer sent nothing. "Schedule for
+//    later" hands the job to the office. The field's own booking
+//    (scheduleVisitFromField -> POST /visits/:id/schedule) is GONE: scheduling
+//    is admin-only. "Pause job" sends any job underway back to the office to
+//    reschedule, keeping everything on it — NOT the job clock's pause
+//    (pauseJobClock), which only stops a time session.
+
+export async function completeWorkNow(visitId: string): Promise<{ jobVisitId: string; removedVisitId: string | null; alreadyDone: boolean }> {
+  return crmRequest(`/visits/${visitId}/complete-work-now`, { method: 'POST', body: '{}' })
+}
+
+export async function scheduleForLater(visitId: string): Promise<{ jobVisitId: string; depositRequestReleased: boolean }> {
+  return crmRequest(`/visits/${visitId}/schedule-for-later`, { method: 'POST', body: '{}' })
+}
+
+export async function pauseJobForLater(visitId: string, reason?: string | null): Promise<{ paused: true; sessionsClosed: number; laborHours: number }> {
+  return crmRequest(`/visits/${visitId}/pause-job`, { method: 'POST', body: JSON.stringify({ reason: reason ?? null }) })
 }
 
 // ─── Quote in the field (Kyle, 2026-09-01, step 4) ──────────────────────────
@@ -1559,15 +1626,20 @@ export interface QuoteLine {
   option: 'A' | 'B' | 'C'
   note: string | null
   location: string | null
-  laborHours: number | null
+  // No laborHours here (2026-09-21): hours never leave the office, same
+  // standing rule as the job-brief's scope-only lines.
   lineTotal: number | null
   gaps: string[]
 }
 
 export interface QuoteState {
   draftId: string
+  // A change order is the one draft where a negative quantity is legal
+  // (assertQuantityAllowed, server-side) — the quantity input reads this to
+  // decide whether to let a negative value through.
+  isChangeOrder: boolean
   lines: QuoteLine[]
-  options: Array<{ option: 'A' | 'B' | 'C'; lineCount: number; laborHours: number; laborDollars: number; materialSell: number; subtotal: number | null; complete: boolean }>
+  options: Array<{ option: 'A' | 'B' | 'C'; lineCount: number; materialSell: number; subtotal: number | null; complete: boolean }>
   total: number | null
   rateProvisional: boolean
 }
@@ -1599,8 +1671,19 @@ export async function removeQuoteLine(lineId: string): Promise<void> {
   await crmRequest(`/quote-lines/${lineId}`, { method: 'DELETE' })
 }
 
-export async function issueQuote(draftId: string): Promise<{ estimateId: string; number: string; unpriced: string[]; customerUrl: string }> {
-  return crmRequest(`/quotes/${draftId}/issue`, { method: 'POST', body: '{}' })
+/**
+ * Issue. `depositRequired` is the EXISTING optional deposit checkbox, at the tech's discretion
+ * (Kyle, 2026-09-21) — passed through the same issue path the CRM uses; omitted = the service's
+ * default (on for an estimate, off for a change order).
+ */
+export async function issueQuote(
+  draftId: string,
+  opts: { depositRequired?: boolean } = {},
+): Promise<{ estimateId: string; number: string; unpriced: string[]; customerUrl: string }> {
+  return crmRequest(`/quotes/${draftId}/issue`, {
+    method: 'POST',
+    body: JSON.stringify(opts.depositRequired === undefined ? {} : { depositRequired: opts.depositRequired }),
+  })
 }
 
 // ─── Capacity checks ────────────────────────────────────────────────────────

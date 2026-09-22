@@ -46,9 +46,11 @@ const money = (n: number | null | undefined) => (n === null || n === undefined ?
 const DIFFS = ['NORMAL', 'DIFFICULT', 'VERY_DIFFICULT'] as const
 const DIFF_LABEL = { NORMAL: 'Normal', DIFFICULT: 'Difficult', VERY_DIFFICULT: 'Very difficult' } as const
 
-function LineRow({ line, busy, onPatch, onRemove }: {
+function LineRow({ line, busy, allowNegative, onPatch, onRemove }: {
   line: QuoteLine
   busy: boolean
+  /** Only a change order's lines may carry a negative quantity (a credit) — assertQuantityAllowed, server-side. */
+  allowNegative: boolean
   onPatch: (patch: Parameters<typeof editQuoteLine>[1]) => void
   onRemove: () => void
 }) {
@@ -65,13 +67,14 @@ function LineRow({ line, busy, onPatch, onRemove }: {
           className="w-20 rounded border border-slate-600 bg-slate-900 p-2 text-white"
           type="number"
           inputMode="decimal"
-          min={0.01}
+          min={allowNegative ? undefined : 0.01}
           value={qty}
           disabled={busy}
           onChange={(e) => setQty(e.target.value)}
           onBlur={() => {
             const n = Number(qty)
-            if (Number.isFinite(n) && n > 0 && n !== line.quantity) onPatch({ quantity: n })
+            const valid = Number.isFinite(n) && n !== 0 && (n > 0 || allowNegative)
+            if (valid && n !== line.quantity) onPatch({ quantity: n })
             else setQty(String(line.quantity))
           }}
         />
@@ -115,6 +118,9 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
   const [results, setResults] = useState<QuoteCatalogRow[] | null>(null)
   const [issued, setIssued] = useState<{ number: string; customerUrl: string; unpriced: string[] } | null>(null)
   const [issueReasons, setIssueReasons] = useState<string[]>([])
+  // The EXISTING optional deposit checkbox, at the tech's discretion (Kyle, 2026-09-21). null =
+  // the service's default (on for an estimate, off for a change order) until the tech touches it.
+  const [depositRequired, setDepositRequired] = useState<boolean | null>(null)
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /*
     Open item 2 (2026-09-01): what the assessment found offers itself while
@@ -306,6 +312,7 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
             key={l.id}
             line={l}
             busy={busy}
+            allowNegative={quote.isChangeOrder}
             onPatch={(patch) => void act(() => editQuoteLine(l.id, patch))}
             onRemove={() => void act(() => removeQuoteLine(l.id))}
           />
@@ -316,7 +323,7 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
         <section className="space-y-1 rounded-lg border border-slate-700 bg-slate-800/70 p-3 text-sm">
           {quote.options.filter((o) => o.lineCount > 0).map((o) => (
             <p key={o.option} className="flex justify-between text-slate-300">
-              <span>Option {o.option} · {o.lineCount} line{o.lineCount > 1 ? 's' : ''} · {o.laborHours.toFixed(2)} hr</span>
+              <span>Option {o.option} · {o.lineCount} line{o.lineCount > 1 ? 's' : ''}</span>
               <span className={o.complete ? '' : 'text-amber-300'}>{o.complete ? money(o.subtotal) : 'incomplete'}</span>
             </p>
           ))}
@@ -335,13 +342,29 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
       )}
 
       {quote && quote.lines.length > 0 && (
+        <label className="flex items-start gap-3 rounded-lg border border-slate-700 bg-slate-800/60 p-3 text-sm text-slate-200">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-5 w-5"
+            checked={depositRequired ?? !quote.isChangeOrder}
+            onChange={(e) => setDepositRequired(e.target.checked)}
+          />
+          <span>
+            Deposit required — one third up front before the job is scheduled.
+            <span className="block text-[11px] text-slate-400">
+              Your call. Off means no deposit ask and nothing gates scheduling. The office can change it after issue.
+            </span>
+          </span>
+        </label>
+      )}
+      {quote && quote.lines.length > 0 && (
         <button
           type="button"
           disabled={busy}
           onClick={() => {
             setBusy(true)
             setIssueReasons([])
-            issueQuote(draftId!)
+            issueQuote(draftId!, depositRequired === null ? {} : { depositRequired })
               .then((r) => setIssued(r))
               .catch((err) => {
                 const body = (err as { body?: { reasons?: string[] } }).body

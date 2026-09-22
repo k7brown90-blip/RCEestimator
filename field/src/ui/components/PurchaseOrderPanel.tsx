@@ -16,14 +16,18 @@ import { useEffect, useRef, useState } from 'react'
 import {
   createPurchaseOrderFromField,
   createStandalonePurchaseOrder,
+  editPoReceipt,
   fetchJobMaterials,
+  fetchPoReceipts,
   lineFromScannedCode,
   pendingReceiptCount,
   queueReceiptAndReport,
+  removePoReceipt,
   resolveMaterialCode,
   setPurchaseOrderStatus,
   type FieldPoPurpose,
   type FieldPurchaseOrder,
+  type FieldReceipt,
   type ScannedPoLine,
 } from '../../lib/crmSync'
 import type { BarcodeDetection } from '../../lib/barcodeScan'
@@ -371,6 +375,113 @@ export function StartPurchaseForm({ visitId, onCreated }: { visitId?: string; on
 const poNeedsProof = (po: FieldPurchaseOrder) => po.moneyTotal > 0 && po.proofCount === 0
 const money = (n: number) => `$${n.toFixed(2)}`
 
+/**
+ * A receipt is proof, never money (2026-09-19) — editing or removing one from
+ * here moves no cost figure. Same office logic
+ * (health-record.ts applyReceiptEdit / removeReceiptRecord), reached through
+ * a tech-scoped twin door. Standing rule: nothing this app creates is
+ * permanent without a way out from where it's shown — this is that exit for
+ * a receipt filed from the field.
+ */
+function ReceiptsOnPo({ poId, onChanged }: { poId: string; onChanged: () => void }) {
+  const [receipts, setReceipts] = useState<FieldReceipt[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [vendor, setVendor] = useState('')
+  const [amount, setAmount] = useState('')
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const load = () => {
+    fetchPoReceipts(poId)
+      .then(setReceipts)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+  }
+  useEffect(load, [poId])
+
+  const startEdit = (r: FieldReceipt) => {
+    setEditingId(r.id)
+    setVendor(r.vendor ?? '')
+    setAmount(String(r.amount))
+  }
+
+  const save = async (id: string) => {
+    setBusyId(id)
+    try {
+      const n = Number(amount)
+      await editPoReceipt(id, { vendor: vendor.trim() || null, ...(Number.isFinite(n) ? { amount: n } : {}) })
+      setEditingId(null)
+      load()
+      onChanged()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const remove = async (id: string) => {
+    setBusyId(id)
+    try {
+      await removePoReceipt(id)
+      load()
+      onChanged()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  if (error) return <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{error}</p>
+  if (!receipts) return <p className="text-xs text-slate-500">Loading receipts…</p>
+  if (receipts.length === 0) return <p className="text-xs text-slate-500">No receipts on this PO.</p>
+
+  return (
+    <ul className="space-y-1 rounded-lg border border-slate-700 bg-slate-900/40 p-2">
+      {receipts.map((r) => (
+        <li key={r.id} className="text-xs text-slate-300">
+          {editingId === r.id ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                className="w-28 rounded border border-slate-600 bg-slate-900 p-1 text-white"
+                placeholder="Vendor"
+                value={vendor}
+                onChange={(e) => setVendor(e.target.value)}
+              />
+              <input
+                className="w-20 rounded border border-slate-600 bg-slate-900 p-1 text-white"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+              />
+              <button type="button" disabled={busyId === r.id} onClick={() => void save(r.id)} className="text-emerald-300 underline disabled:opacity-40">
+                save
+              </button>
+              <button type="button" disabled={busyId === r.id} onClick={() => setEditingId(null)} className="text-slate-400 underline disabled:opacity-40">
+                cancel
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <span>{r.vendor ?? 'No vendor'} · {money(r.amount)}{r.hasImage ? '' : ' · no photo'}</span>
+              <span className="flex shrink-0 gap-2">
+                <button type="button" disabled={busyId === r.id} onClick={() => startEdit(r)} className="text-sky-300 underline disabled:opacity-40">
+                  edit
+                </button>
+                <button type="button" disabled={busyId === r.id} onClick={() => void remove(r.id)} className="text-red-300 underline disabled:opacity-40">
+                  remove
+                </button>
+              </span>
+            </div>
+          )}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
@@ -379,6 +490,9 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
   // showing instead of waiting for the tech to find the toggle first.
   const [showPhoto, setShowPhoto] = useState(() => po.status === 'purchased' && poNeedsProof(po))
   const [showLand, setShowLand] = useState(false)
+  const [showReceipts, setShowReceipts] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelReason, setCancelReason] = useState('')
 
   const move = async (to: 'purchased' | 'verified') => {
     setBusy(true)
@@ -386,6 +500,32 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
     try {
       await setPurchaseOrderStatus(po.id, to)
       setMsg(`✓ ${po.number} marked ${to}.`)
+      onChanged()
+    } catch (err) {
+      setMsg(`Failed — ${noSignal(err)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * Cancel — a required, typed reason, the same rule as the CRM (a PO's
+   * status never moves money; THE P.O. IS THE MONEY). Every PO gets an exit
+   * from where it's shown, whichever office or field opened it.
+   */
+  const cancel = async () => {
+    const reason = cancelReason.trim()
+    if (!reason) {
+      setMsg('A reason is required to cancel a PO.')
+      return
+    }
+    setBusy(true)
+    setMsg(null)
+    try {
+      await setPurchaseOrderStatus(po.id, 'cancelled', reason)
+      setMsg(`✓ ${po.number} cancelled — ${reason}`)
+      setCancelling(false)
+      setCancelReason('')
       onChanged()
     } catch (err) {
       setMsg(`Failed — ${noSignal(err)}`)
@@ -498,6 +638,64 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
           galleryAccept="image/*,application/pdf"
         />
       )}
+      {/*
+        Cancel — every PO gets a way out from where it's shown (standing rule:
+        nothing this app creates is permanent). A reason is required, same as
+        the office; PO status never moves money, so cancelling changes no cost
+        figure.
+      */}
+      {live && !cancelling && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setCancelling(true)}
+          className="w-full rounded-lg border border-red-800 p-2 text-xs text-red-300 disabled:opacity-40"
+        >
+          Cancel this PO
+        </button>
+      )}
+      {live && cancelling && (
+        <div className="space-y-2 rounded-lg border border-red-900 bg-red-950/30 p-2">
+          <input
+            className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white placeholder:text-slate-500"
+            placeholder="Reason (required) — e.g. opened by mistake, store was out"
+            value={cancelReason}
+            onChange={(e) => setCancelReason(e.target.value)}
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={busy || !cancelReason.trim()}
+              onClick={() => void cancel()}
+              className="flex-1 rounded-lg bg-red-800 p-2 text-xs font-medium text-white disabled:opacity-40"
+            >
+              Confirm cancel
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => { setCancelling(false); setCancelReason('') }}
+              className="flex-1 rounded-lg border border-slate-600 p-2 text-xs text-slate-300 disabled:opacity-40"
+            >
+              Never mind
+            </button>
+          </div>
+        </div>
+      )}
+      {/* Receipts on this PO — edit or remove any of them (standing rule: nothing
+          this app creates is permanent). Available regardless of status: a
+          receipt is proof, never money, so it stays correctable after the PO closes. */}
+      {po.receiptCount > 0 && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setShowReceipts((s) => !s)}
+          className="w-full rounded-lg border border-slate-600 p-2 text-xs text-slate-300 disabled:opacity-40"
+        >
+          {showReceipts ? 'hide receipts' : `Receipts on this PO (${po.receiptCount})`}
+        </button>
+      )}
+      {showReceipts && <ReceiptsOnPo poId={po.id} onChanged={onChanged} />}
       {/* Kyle, 2026-09-09 (Build 3): bought and back at the truck — land it. Material goes on the truck / in the warehouse; the PO closes. */}
       {po.status === 'purchased' && (
         <button
