@@ -231,6 +231,29 @@ describe("the parsers and the identity", () => {
     expect(lineKeyOf(csv, 0)).toBe(lineKeyOf({ ...csv, description: "  check   1042 " }, 0));
   });
 
+  it("leaves a pending row out and takes the balance from the newest posted line (Kyle's checking export, 2026-09-21)", () => {
+    // The real shape: Chase gives a not-yet-posted row a BLANK Balance (" "), and each data row carries a trailing comma.
+    const pending = [
+      "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #",
+      'DEBIT,09/21/2033,"POS DEBIT                QUEENSBORO INDUSTRIES     910-2511251  NC",-125.83,MISC_DEBIT, ,,',
+      'DEBIT,09/16/2033,"ETC Gymnastics Smyrna TN                     09/16",-47.19,DEBIT_CARD,389.41,,',
+      'DEBIT,09/14/2033,"SHELL OIL 57527465108 NASHVILLE TN           09/11",-76.68,DEBIT_CARD,436.60,,',
+      'CREDIT,09/10/2033,"ORIG CO NAME:American Classic       ORIG ID:1204895317",467.83,ACH_CREDIT,525.55,,',
+    ].join("\n");
+    const parsed = parseStatement(Buffer.from(pending));
+    expect(parsed.pendingSkipped).toBe(1);
+    expect(parsed.lines).toHaveLength(3);
+    expect(parsed.lines.some((l) => l.description.includes("QUEENSBORO"))).toBe(false);
+    expect(parsed.closingBalance).toBe(389.41);
+    expect(parsed.balanceAsOf!.toISOString().slice(0, 10)).toBe("2033-09-16");
+    expect(parsed.periodEnd!.toISOString().slice(0, 10)).toBe("2033-09-16");
+    // A file with no balances at all keeps every row — only a blank among balances means pending.
+    const noBalances = parseStatement(Buffer.from("Date,Description,Amount\n09/02/2033,COFFEE,-4.50\n09/03/2033,TOOLS,-20.00\n"));
+    expect(noBalances.pendingSkipped).toBe(0);
+    expect(noBalances.lines).toHaveLength(2);
+    expect(noBalances.closingBalance).toBeNull();
+  });
+
   it("refuses a file with no statement columns", async () => {
     const res = await upload(checkingId, "hello,world\n1,2\n", "junk.csv");
     expect(res.status).toBe(400);

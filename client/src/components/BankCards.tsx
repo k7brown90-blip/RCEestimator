@@ -103,44 +103,6 @@ function lineMeaning(l: BankLineView): string {
   return "not classified";
 }
 
-// ─── The cash panel ──────────────────────────────────────────────────────────
-
-/** Every registered account, its balance labelled AS OF the statement it came from. Renders nothing until the registry loads. */
-export function CashPanel() {
-  const { data } = useQuery({ queryKey: ["bank-accounts"], queryFn: api.bankAccounts });
-  if (!data) return null;
-  const active = data.filter((a) => a.isActive);
-  if (active.length === 0) {
-    return (
-      <p className="mt-2 text-xs text-rce-muted">
-        No bank accounts registered yet — add Chase's four (checking, capital, overhead savings, tax) in the Bank statements card below, then import a statement for each.
-      </p>
-    );
-  }
-  return (
-    <div className="mt-2 flex flex-wrap gap-2" data-cash-panel>
-      {active.map((a) => (
-        <div key={a.id} className="min-w-[10rem] rounded-lg border border-rce-border px-3 py-1.5 text-sm">
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="font-medium">{a.name}</span>
-            {a.last4 && <span className="text-xs text-rce-muted">…{a.last4}</span>}
-          </div>
-          <div className="text-[11px] text-rce-muted">{PURPOSE_LABEL[a.purpose]}</div>
-          {a.balance ? (
-            <>
-              <div className="text-lg font-semibold tabular-nums">{money(a.balance.amount)}</div>
-              <div className="text-[11px] text-rce-muted">as of {shortDate(a.balance.asOf)} — from the statement, not live</div>
-            </>
-          ) : (
-            <div className="text-xs text-amber-800">No statement imported yet</div>
-          )}
-          {a.unclassified > 0 && <div className="text-[11px] text-amber-800">{a.unclassified} line{a.unclassified === 1 ? "" : "s"} to classify</div>}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ─── The queue ───────────────────────────────────────────────────────────────
 
 /**
@@ -413,7 +375,7 @@ export function BankStatementsCard() {
     onSuccess: (r) => {
       setMessage(r.duplicate
         ? <>{r.fileName} was already imported — nothing changed.</>
-        : <>{r.fileName}: {r.imported} new line{r.imported === 1 ? "" : "s"}{r.skipped > 0 ? `, ${r.skipped} already held` : ""}, {r.autoClassified} classified by the rules, <b>{r.unclassified} to classify</b>.</>);
+        : <>{r.fileName}: {r.imported} new line{r.imported === 1 ? "" : "s"}{r.skipped > 0 ? `, ${r.skipped} already held` : ""}{r.pendingSkipped > 0 ? `, ${r.pendingSkipped} pending left for the next export` : ""}, {r.autoClassified} classified by the rules, <b>{r.unclassified} to classify</b>.</>);
       refresh();
     },
     onError: (e: Error) => setMessage(<span className="text-red-700">{e.message}</span>),
@@ -439,26 +401,44 @@ export function BankStatementsCard() {
     <CollapsibleCard id="bank-statements" title="Bank statements" summary={summary} defaultOpen={accountsLoaded && accounts.length === 0}>
       <p className="mb-2 text-xs text-rce-muted">
         Once a month, export each Chase account's activity (CSV, or OFX/QFX) and import it here. The same file twice imports
-        nothing; an export that overlaps one you already imported adds only its new lines. Each account's balance on the
-        Balances card is the running balance after its newest statement. A wrong import is undone by removing the statement.
+        nothing; an export that overlaps one you already imported adds only its new lines, and a pending line (Chase leaves
+        its balance blank) waits for the export after it posts. Each account's balance below is the running balance after
+        its newest posted line. A wrong import is undone by removing the statement.
         Plaid can replace the upload later without changing anything else.
       </p>
 
       <h3 className="text-sm font-semibold text-rce-soft">Accounts</h3>
       {accounts.length === 0 && <p className="text-sm text-rce-muted">Add the four Chase accounts — the purpose decides how transfers between them are read.</p>}
-      <ul className="mt-1 space-y-1">
+      {/*
+        One tile per account, in an even grid (Kyle, 2026-09-21: "I also do not understand why these
+        accounts are here rather than in the section where you upload the statements ... organized in
+        a grid"). The balance each account's statements give lives here with its import and edit —
+        the Balances card keeps only the total in its header.
+      */}
+      <ul className="mt-1 grid gap-2 sm:grid-cols-2 xl:grid-cols-4" data-bank-accounts>
         {accounts.map((a) => (
-          <li key={a.id} className="rounded-lg border border-rce-border px-3 py-2 text-sm">
+          <li key={a.id} className="flex flex-col rounded-lg border border-rce-border px-3 py-2 text-sm">
             {editingId === a.id ? (
               <AccountForm account={a} onDone={() => { setEditingId(null); refresh(); }} onCancel={() => setEditingId(null)} />
             ) : (
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span>
+              <>
+                <div className="flex items-baseline justify-between gap-2">
                   <span className="font-medium">{a.name}</span>
-                  {a.last4 && <span className="ml-1 text-xs text-rce-muted">…{a.last4}</span>}
-                  <span className="ml-2 text-xs text-rce-muted">{a.institution} · {PURPOSE_LABEL[a.purpose]}{!a.isActive ? " · inactive" : ""}</span>
-                </span>
-                <span className="flex flex-wrap items-center gap-2">
+                  {a.last4 && <span className="text-xs text-rce-muted">…{a.last4}</span>}
+                </div>
+                <div className="text-xs text-rce-muted">{a.institution} · {PURPOSE_LABEL[a.purpose]}{!a.isActive ? " · inactive" : ""}</div>
+                {a.balance ? (
+                  <>
+                    <div className="mt-1 text-lg font-semibold tabular-nums">{money(a.balance.amount)}</div>
+                    <div className="text-[11px] text-rce-muted">as of {shortDate(a.balance.asOf)} — from the statement, not live</div>
+                  </>
+                ) : (
+                  <div className="mt-1 text-xs text-amber-800">
+                    {a.statementCount > 0 ? "Imported — the file carried no balance" : "No statement imported yet"}
+                  </div>
+                )}
+                {a.unclassified > 0 && <div className="text-[11px] text-amber-800">{a.unclassified} line{a.unclassified === 1 ? "" : "s"} to classify</div>}
+                <div className="mt-auto flex flex-wrap items-center gap-2 pt-2">
                   <label className="btn btn-primary cursor-pointer px-2 py-0.5 text-xs">
                     {importFile.isPending && importFile.variables?.accountId === a.id ? "Importing…" : "Import statement"}
                     <input
@@ -484,8 +464,8 @@ export function BankStatementsCard() {
                   >
                     remove
                   </button>
-                </span>
-              </div>
+                </div>
+              </>
             )}
           </li>
         ))}

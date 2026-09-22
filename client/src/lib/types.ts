@@ -2264,6 +2264,8 @@ export type BankImportResult = {
   format: string;
   imported: number;
   skipped: number;
+  /** Pending rows left out of the file; each imports once it posts. */
+  pendingSkipped: number;
   autoClassified: number;
   unclassified: number;
 };

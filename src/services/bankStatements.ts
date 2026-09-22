@@ -125,6 +125,8 @@ export interface ParsedStatement {
   balanceAsOf: Date | null;
   /** Last four of the account id when the file names it (OFX ACCTID). */
   accountLast4: string | null;
+  /** Pending rows left out — a Chase activity export gives them a blank Balance (see parseCsvStatement). */
+  pendingSkipped: number;
 }
 
 /** A date-only value at UTC noon: the same calendar day in every zone this business runs in. */
@@ -241,20 +243,32 @@ function parseCsvStatement(text: string): ParsedStatement {
     });
   }
   if (lines.length === 0) throw new BankError("No statement lines could be read from the file.", 400);
+  /*
+    PENDING ROWS (Kyle's checking export, 2026-09-21): Chase's activity CSV lists a transaction
+    that has not posted yet with a BLANK Balance (" "). Taking the closing balance from that row
+    stored none — the Balances card then read "No statement imported yet" for an account that had
+    one — and importing it as a line risks counting it twice, because Chase can change its date or
+    wording when it posts and the line key follows both. So when the file carries balances at all,
+    a row without one is pending: it is left out here and imports once it posts, in the next export.
+  */
+  const hasBalances = lines.some((l) => l.runningBalance !== null);
+  const kept = hasBalances ? lines.filter((l) => l.runningBalance !== null) : lines;
+  const pendingSkipped = lines.length - kept.length;
   // Newest-first is Chase's order; the running balance after the newest line is the closing figure.
-  const newestFirst = lines[0].postedAt.getTime() >= lines[lines.length - 1].postedAt.getTime();
-  const latest = lines.reduce((best, l) => (l.postedAt.getTime() > best.postedAt.getTime() ? l : best), lines[0]);
-  const latestOnDay = lines.filter((l) => l.postedAt.getTime() === latest.postedAt.getTime());
+  const newestFirst = kept[0].postedAt.getTime() >= kept[kept.length - 1].postedAt.getTime();
+  const latest = kept.reduce((best, l) => (l.postedAt.getTime() > best.postedAt.getTime() ? l : best), kept[0]);
+  const latestOnDay = kept.filter((l) => l.postedAt.getTime() === latest.postedAt.getTime());
   const closing = newestFirst ? latestOnDay[0] : latestOnDay[latestOnDay.length - 1];
-  const times = lines.map((l) => l.postedAt.getTime());
+  const times = kept.map((l) => l.postedAt.getTime());
   return {
     format: isChase ? "chase_csv" : "csv",
-    lines,
+    lines: kept,
     periodStart: new Date(Math.min(...times)),
     periodEnd: new Date(Math.max(...times)),
     closingBalance: closing.runningBalance,
     balanceAsOf: closing.runningBalance === null ? null : closing.postedAt,
     accountLast4: null,
+    pendingSkipped,
   };
 }
 
@@ -300,6 +314,8 @@ function parseOfx(text: string): ParsedStatement {
     closingBalance: parseMoney(tag(ledger, "BALAMT") ?? ""),
     balanceAsOf: ofxDate(tag(ledger, "DTASOF")),
     accountLast4: acctId && acctId.length >= 4 ? acctId.slice(-4) : null,
+    // OFX lists posted transactions only.
+    pendingSkipped: 0,
   };
 }
 
@@ -662,6 +678,8 @@ export interface ImportResult {
   format: string;
   imported: number;
   skipped: number;
+  /** Pending rows left out of this file; each imports once it posts. */
+  pendingSkipped: number;
   autoClassified: number;
   unclassified: number;
 }
@@ -692,7 +710,7 @@ export async function importStatement(accountId: string, file: Buffer, fileName:
   const fileHash = fileHashOf(file);
   const existing = await prisma.bankStatement.findUnique({ where: { accountId_fileHash: { accountId, fileHash } } });
   if (existing) {
-    return { duplicate: true, statementId: existing.id, fileName: existing.fileName, format: existing.format, imported: 0, skipped: existing.lineCount, autoClassified: 0, unclassified: 0 };
+    return { duplicate: true, statementId: existing.id, fileName: existing.fileName, format: existing.format, imported: 0, skipped: existing.lineCount, pendingSkipped: 0, autoClassified: 0, unclassified: 0 };
   }
   const parsed = parseStatement(file);
   if (parsed.accountLast4 && account.last4 && parsed.accountLast4 !== account.last4) {
@@ -734,12 +752,12 @@ export async function importStatement(accountId: string, file: Buffer, fileName:
   });
 
   const { classified, unclassified } = await autoClassify({ statementId: statement.id });
-  logSystemEvent("info", "bank", `Imported ${fileName} for ${account.name}: ${fresh.length} new line${fresh.length === 1 ? "" : "s"}, ${keyed.length - fresh.length} already held, ${classified} classified by rule, ${unclassified} to classify.`, {
+  logSystemEvent("info", "bank", `Imported ${fileName} for ${account.name}: ${fresh.length} new line${fresh.length === 1 ? "" : "s"}, ${keyed.length - fresh.length} already held, ${parsed.pendingSkipped} pending left out, ${classified} classified by rule, ${unclassified} to classify.`, {
     statementId: statement.id, accountId, format: parsed.format,
   });
   return {
     duplicate: false, statementId: statement.id, fileName: statement.fileName, format: statement.format,
-    imported: fresh.length, skipped: keyed.length - fresh.length, autoClassified: classified, unclassified,
+    imported: fresh.length, skipped: keyed.length - fresh.length, pendingSkipped: parsed.pendingSkipped, autoClassified: classified, unclassified,
   };
 }
 

@@ -2,8 +2,8 @@
  * Bank statements on Financials (Kyle, 2026-09-20) — the three cards render against the real
  * payload shapes, and the queue's classify form sends the ruling the server expects.
  *
- *  - CashPanel: each account's balance is labelled AS OF its statement; an account with no
- *    statement says so instead of showing a number.
+ *  - The account tiles (in BankStatementsCard since 2026-09-21): each balance is labelled AS OF
+ *    its statement; an account with no statement, or one whose file gave no balance, says so.
  *  - BankStatementsCard: the registry with its edit/remove, an import control per account, and
  *    every statement with its remove (the undo of a wrong import).
  *  - BankQueueCard: an unclassified line shows its hint and the rules' candidates; saving an
@@ -13,7 +13,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
-import { BankQueueCard, BankStatementsCard, CashPanel } from "./BankCards";
+import { BankQueueCard, BankStatementsCard } from "./BankCards";
 import { api } from "../lib/api";
 import type { BankAccountView, BankLineView, BankStatementView } from "../lib/types";
 
@@ -51,26 +51,27 @@ const statement: BankStatementView = {
   lineCount: 9, unclassified: 1, importedAt: "2026-10-01T12:00:00.000Z",
 };
 
-describe("CashPanel", () => {
-  it("shows each account's balance AS OF its statement, and says when there is no statement yet", async () => {
-    vi.spyOn(api, "bankAccounts").mockResolvedValue([account({}), taxAccount]);
+describe("the account tiles (Bank statements card, 2026-09-21 — moved out of Balances)", () => {
+  it("shows each account's balance AS OF its statement in a grid, and tells 'never imported' apart from 'imported with no balance'", async () => {
+    // Kyle's checking, 2026-09-21: a statement imported, but the file's newest row was pending with a blank balance.
+    const savings = account({ id: "acct-sav", name: "Chase Capital", last4: "2222", kind: "savings", purpose: "capital", balance: null, statementCount: 1, lineCount: 4, unclassified: 0 });
+    vi.spyOn(api, "bankAccounts").mockResolvedValue([account({}), taxAccount, savings]);
+    vi.spyOn(api, "bankStatements").mockResolvedValue([statement]);
 
-    renderWithProviders(<CashPanel />);
+    const { container } = renderWithProviders(<BankStatementsCard />);
+    fireEvent.click(await screen.findByRole("button", { name: /bank statements/i }));
 
-    expect(await screen.findByText("Chase Checking")).toBeInTheDocument();
-    expect(screen.getByText("$9,558.26")).toBeInTheDocument();
+    expect(await screen.findByText("$9,558.26")).toBeInTheDocument();
     expect(screen.getByText(new RegExp(`as of ${new Date("2026-09-30T12:00:00.000Z").toLocaleDateString()} — from the statement, not live`))).toBeInTheDocument();
     expect(screen.getByText("1 line to classify")).toBeInTheDocument();
     // The tax account: registered, never imported — no number invented.
-    expect(screen.getByText("Chase Tax")).toBeInTheDocument();
-    expect(screen.getByText("tax savings")).toBeInTheDocument();
     expect(screen.getByText("No statement imported yet")).toBeInTheDocument();
-  });
-
-  it("points at the registry when nothing is registered", async () => {
-    vi.spyOn(api, "bankAccounts").mockResolvedValue([]);
-    renderWithProviders(<CashPanel />);
-    expect(await screen.findByText(/No bank accounts registered yet/)).toBeInTheDocument();
+    // The capital account: imported, but the file gave no balance — say that, not "no statement".
+    expect(screen.getByText("Imported — the file carried no balance")).toBeInTheDocument();
+    // One even grid, a tile per account.
+    const grid = container.querySelector("[data-bank-accounts]");
+    expect(grid?.className).toMatch(/grid/);
+    expect(grid?.children).toHaveLength(3);
   });
 });
 

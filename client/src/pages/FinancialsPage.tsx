@@ -49,7 +49,7 @@ import { useDrawerParams } from "../lib/drawers";
 import { BalancesStrip, TrucksCard } from "../components/TrucksCards";
 import { MonthEndSweepCard } from "../components/MonthEndSweepCard";
 import { CollapsibleCard } from "../components/CollapsibleCard";
-import { BankQueueCard, BankStatementsCard, BillConfirmationNote, CashPanel } from "../components/BankCards";
+import { BankQueueCard, BankStatementsCard, BillConfirmationNote } from "../components/BankCards";
 import type { BankConfirmations } from "../lib/types";
 
 /** Expenses-by-category row labels: bill:x -> "bills — x", payroll:x -> "payroll — x", bank:x -> "bank — x", stripe_fees -> "Stripe fees". */
@@ -414,7 +414,8 @@ function FinancialsAttention({ invoices, confirmations }: { invoices: InvoiceSum
  */
 function BalancesSection() {
   const { data } = useQuery({ queryKey: ["financials-balances"], queryFn: api.financialsBalances });
-  // The bank side (2026-09-21): each Chase account's balance AS OF its newest statement — beside Stripe's live figures.
+  // The bank side (2026-09-21): the Chase accounts' total AS OF their newest statements, in the header only —
+  // each account's own tile lives in the Bank statements card beside its import (Kyle, 2026-09-21).
   const { data: bankAccounts = [] } = useQuery({ queryKey: ["bank-accounts"], queryFn: api.bankAccounts });
   // The strip itself renders nothing until the balances load — same here.
   if (!data) return null;
@@ -428,7 +429,6 @@ function BalancesSection() {
   return (
     <CollapsibleCard id="balances" title="Balances" summary={summary} defaultOpen compact nested>
       <BalancesStrip />
-      <CashPanel />
     </CollapsibleCard>
   );
 }
