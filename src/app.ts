@@ -3168,9 +3168,12 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
     res.status(404).json({ error: "Estimate not found." });
     return;
   }
-  // The operator DOES get the link — it is how Kyle previews what the customer will see.
-  const { changeOrderFor, ...row } = est;
-  res.json({ estimate: { ...row, changeOrderForNumber: changeOrderFor?.number ?? null }, customerLink: estimateLink(est.token) });
+  // The operator DOES get the link (customerLink) — it is how Kyle previews what the customer
+  // will see. The raw `token` itself never leaves the server (PUNCHLIST B5): it is the
+  // customer's unrevokable read-and-sign capability, and customerLink is the only thing built
+  // from it that a caller needs.
+  const { changeOrderFor, token, ...row } = est;
+  res.json({ estimate: { ...row, changeOrderForNumber: changeOrderFor?.number ?? null }, customerLink: estimateLink(token) });
 }));
 
 app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
@@ -5624,7 +5627,8 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       balance: round2(billedTotal - totalPaid),
       lastPaidAt,
       paymentStatus,
-      payToken: est.token,
+      // No payToken: the raw estimate token is the customer's unrevokable sign/pay link and no screen
+      // renders it (security review, 2026-09-22 — same class as B5). Never send it to the browser.
       // Home-warranty coverage (Kyle, 2026-09-09): what the warranty company is credited,
       // already off billedTotal, and the claim it rides on — so the row reads right.
       warrantyCovered: coverage?.applied ?? 0,

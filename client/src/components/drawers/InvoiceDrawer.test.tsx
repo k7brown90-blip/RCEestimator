@@ -20,7 +20,7 @@ const inv: InvoiceSummary = {
   job: { id: "visit-1", jobType: "Panel upgrade", purpose: null, status: "scheduled", scheduledStart: "2026-09-22T13:00:00.000Z" },
   serviceAddress: "12 Main St, Smyrna", signedAt: "2026-09-12T12:00:00.000Z", signedChannel: "email", sentAt: "2026-09-12T12:00:00.000Z",
   sentTo: "jane@example.com", billedTotal: 4200, depositDue: 1400, totalPaid: 1400, discountTotal: 0, collected: 1400, balance: 2800,
-  lastPaidAt: "2026-09-13T12:00:00.000Z", paymentStatus: "deposit_paid", payToken: "never-rendered",
+  lastPaidAt: "2026-09-13T12:00:00.000Z", paymentStatus: "deposit_paid",
 };
 
 describe("InvoiceDrawer", () => {

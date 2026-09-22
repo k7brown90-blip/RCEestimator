@@ -117,6 +117,11 @@ describe("GET /accounts/:accountId/estimates — the list the drawer's projectio
     const res = await request(app).get(`/issued-estimates/${estimateId}`);
     expect(res.status).toBe(200);
     expect(typeof res.body.customerLink).toBe("string");
+    // PUNCHLIST B5: the same preview route used to spread the raw row, so `token` — the
+    // capability the customerLink is built from — rode along beside it. customerLink is the
+    // only thing a caller should ever get.
+    expect(res.body.estimate).not.toHaveProperty("token");
+    expect(JSON.stringify(res.body)).not.toMatch(/"token":"/);
   });
 });
 

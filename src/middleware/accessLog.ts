@@ -46,7 +46,9 @@ export type AuthOutcome =
   /** A surface that has been withdrawn from operations — 410, refused unread (P017 rev 2). */
   | "channel-disabled"
   /** The gate did not run — dev/test only, where PIN_HASH is unset. */
-  | "gate-disabled";
+  | "gate-disabled"
+  /** Production, PIN_HASH unset, protected route: refused rather than let through (PUNCHLIST B3). */
+  | "unconfigured";
 
 /** The complete set of fields a line may contain. Adding one is a deliberate edit here. */
 export interface AccessLogLine {

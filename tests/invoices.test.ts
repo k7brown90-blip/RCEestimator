@@ -143,6 +143,9 @@ describe("GET /invoices", () => {
     expect(mine.map((r: { number: string }) => r.number).sort()).toEqual([
       "0000-INV1", "0000-INV2", "0000-INV3",
     ]);
+    // The customer's raw sign/pay token never reaches the browser (security review, 2026-09-22).
+    for (const row of mine) expect(row).not.toHaveProperty("payToken");
+    expect(JSON.stringify(res.body)).not.toMatch(/"(payToken|token)":"/);
   });
 
   it("rolls the money up per invoice, splitting collected cash from discount rows", async () => {

@@ -16,7 +16,7 @@
  * entry in middleware/publicRoutes.ts, which is the visible diff the whole design is for.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import request from "supertest";
 import bcrypt from "bcryptjs";
 import { readFileSync } from "node:fs";
@@ -245,5 +245,86 @@ describe("public surfaces still answer", () => {
     expect(entry, "the entry should still be declared").toBeDefined();
     expect(entryCovers(entry!, "POST", "/sms/inbound")).toBe(true);
     expect(publicRouteFor("POST", "/sms/inbound"), "but it must not grant access while closed").toBeNull();
+  });
+});
+
+/**
+ * PUNCHLIST B3 — the gate fails closed on its own in production, rather than relying solely on
+ * server.ts refusing to boot. Before this, an unset PIN_HASH meant "let everything through" in
+ * EVERY environment; the boot check was the only thing standing between that and a wide-open
+ * production CRM. Anything that reached pinAuthMiddleware without going through server.ts's
+ * startServer() — a script, a test harness, a future entry point — would have reopened it.
+ *
+ * Scoped to this file's own PIN_HASH lifecycle: every other test here relies on PIN_HASH being
+ * set (see the top-level beforeAll/afterAll), so this block sets NODE_ENV to "production" and
+ * deletes PIN_HASH only for its own cases, and restores both to what the rest of the suite
+ * expects afterward.
+ */
+describe("B3: pinAuthMiddleware fails closed in production when PIN_HASH is unset", () => {
+  const realNodeEnv = process.env.NODE_ENV;
+
+  beforeEach(() => {
+    delete process.env.PIN_HASH;
+    process.env.NODE_ENV = "production";
+  });
+
+  afterEach(async () => {
+    process.env.NODE_ENV = realNodeEnv;
+    // Put back what the rest of this file's tests depend on.
+    process.env.PIN_HASH = await bcrypt.hash(TEST_PIN, 10);
+  });
+
+  it("refuses a protected route with 503 instead of letting it through", async () => {
+    const res = await request(app).get("/accounts");
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/misconfigured/i);
+  });
+
+  it("refuses at both spellings", async () => {
+    expect((await request(app).get("/accounts")).status).toBe(503);
+    expect((await request(app).get("/api/accounts")).status).toBe(503);
+  });
+
+  it("still serves a genuinely public route", async () => {
+    expect((await request(app).get("/healthz")).status).toBe(200);
+  });
+
+  it("does not grant access — a garbage or missing token still cannot reach data", async () => {
+    // The refusal is 503 (misconfigured), not a bypass into 200 with no session at all.
+    const res = await request(app).get("/accounts").set("Authorization", "Bearer whatever");
+    expect(res.status).toBe(503);
+  });
+});
+
+describe("B3: dev/test convenience only when NODE_ENV says development or test", () => {
+  const realNodeEnv = process.env.NODE_ENV;
+
+  beforeEach(() => {
+    delete process.env.PIN_HASH;
+  });
+
+  afterEach(async () => {
+    process.env.NODE_ENV = realNodeEnv;
+    process.env.PIN_HASH = await bcrypt.hash(TEST_PIN, 10);
+  });
+
+  it("still passes every request through when NODE_ENV is not production (test)", async () => {
+    process.env.NODE_ENV = "test";
+    expect((await request(app).get("/accounts")).status).toBe(200);
+  });
+
+  it("still passes every request through when NODE_ENV is development (local dev)", async () => {
+    process.env.NODE_ENV = "development";
+    expect((await request(app).get("/accounts")).status).toBe(200);
+  });
+
+  // Security review 2026-09-22: an unset or misspelled NODE_ENV must NOT count as dev — on the
+  // host that is exactly the case that would otherwise switch off the boot check AND this gate.
+  it("fails CLOSED when NODE_ENV is unset or misspelled", async () => {
+    delete process.env.NODE_ENV;
+    expect((await request(app).get("/accounts")).status).toBe(503);
+    process.env.NODE_ENV = "Production";
+    expect((await request(app).get("/accounts")).status).toBe(503);
+    expect((await request(app).get("/healthz")).status).toBe(200);
   });
 });

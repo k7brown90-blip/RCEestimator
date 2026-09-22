@@ -1495,7 +1495,6 @@ export type InvoiceSummary = {
   balance: number;
   lastPaidAt: string | null;
   paymentStatus: "unpaid" | "partial" | "deposit_paid" | "paid";
-  payToken: string;
   /** Home-warranty coverage (Kyle, 2026-09-09) — already off billedTotal; shown beside it. */
   warrantyCovered?: number;
   warrantyClaim?: WarrantyClaimRef | null;

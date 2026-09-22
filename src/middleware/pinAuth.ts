@@ -36,11 +36,35 @@ const SESSION_HOURS = 8;
  * The middleware is now installed ahead of every route, and the only exemption is the allowlist.
  */
 export function pinAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Dev/test only. `server.ts` refuses to boot in production without PIN_HASH, so this branch is
-  // unreachable in production by construction — the fail-open lives behind a fail-closed boot
-  // check rather than behind nothing. (If that boot check is ever loosened, this becomes the
-  // hole again; they are a pair.)
+  // Dev/test convenience ONLY, and gated on NODE_ENV so the convenience cannot leak into
+  // production by itself (PUNCHLIST B3).
+  //
+  // Before this, "no PIN_HASH" meant "let everything through" in every environment — server.ts
+  // refusing to boot in production without PIN_HASH was the ONLY thing standing between an unset
+  // var and a wide-open CRM ("a pair", the old comment said). A pair is two single points of
+  // failure, not one: any way past the boot check — a redeploy that dropped the env var, a
+  // process that never went through server.ts's startServer() (a script, a test harness, a
+  // future entry point) — reopened the whole app with nothing else in the way.
+  //
+  // Now the gate fails CLOSED on its own unless NODE_ENV says, explicitly, "development" or
+  // "test" — a DENY-list of convenience, not an allow-list of danger (security review,
+  // 2026-09-22). Keying on `=== "production"` would share server.ts's boot check's one trigger: a
+  // NODE_ENV that is unset or spelled differently on the host would switch BOTH layers off at
+  // once. Vitest runs with NODE_ENV=test; local dev sets NODE_ENV=development or a PIN_HASH.
+  // The boot check stays as the first line of defence (never even start), and this is the second
+  // (never serve, even if something started anyway).
   if (!process.env.PIN_HASH) {
+    const devOrTest = process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+    if (!devOrTest) {
+      if (isPublicRoute(req.method, req.path)) {
+        mark(req, "public");
+        next();
+        return;
+      }
+      mark(req, "unconfigured");
+      res.status(503).json({ error: "Server misconfigured: authentication is not set up." });
+      return;
+    }
     mark(req, "gate-disabled");
     next();
     return;
