@@ -206,9 +206,14 @@ export async function getFunnelReport(prisma: PrismaClient, range: FunnelRange):
       customerId: true, visitId: true, existingVisitId: true, createdAt: true,
     },
   });
-  const notLeads = arrivals.filter((l) => (NOT_A_LEAD_CALL_TYPES as readonly string[]).includes(l.callType ?? "")).length;
-  const leads: LeadRow[] = arrivals.filter(
-    (l) => !(NOT_A_LEAD_CALL_TYPES as readonly string[]).includes(l.callType ?? "") && !(l.customerId && testIds.has(l.customerId)),
+  // PUNCHLIST G5: the test-account exclusion must apply BEFORE notLeads is counted, not only in
+  // the `leads` filter below — a practice lead with a wrong-number/solicitation/vendor call type
+  // was inflating this display-only figure by one. `Lead` has no `customer` relation (constants
+  // "Two Prisma traps"), so this stays a plain in-memory check against the test ids fetched above.
+  const liveArrivals = arrivals.filter((l) => !(l.customerId && testIds.has(l.customerId)));
+  const notLeads = liveArrivals.filter((l) => (NOT_A_LEAD_CALL_TYPES as readonly string[]).includes(l.callType ?? "")).length;
+  const leads: LeadRow[] = liveArrivals.filter(
+    (l) => !(NOT_A_LEAD_CALL_TYPES as readonly string[]).includes(l.callType ?? ""),
   );
 
   const isOpportunity = (l: LeadRow) => l.status === "converted";

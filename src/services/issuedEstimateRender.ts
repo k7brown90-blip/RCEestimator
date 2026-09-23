@@ -575,6 +575,18 @@ export function renderEstimatePage(
   // In-person: the document ends at the totals; the React shell renders the signature panel.
   const inPerson = opts.channel === "in_person";
 
+  // A LOST estimate (PUNCHLIST A12): the customer's own signature door already refuses this at
+  // submit (applySignature, issuedEstimateService.ts) with "This estimate has been closed" — but
+  // until now the page rendered the live sign form right up to that point, so a customer who
+  // filled it in only learned it was closed after drawing a signature. VOID has no equivalent gap:
+  // `getEstimateByToken` refuses a void row before it ever reaches this function (renderUnavailable
+  // instead), so there is nothing to branch on here for void.
+  const closedBlock = `<div class="sign">
+         <h2 style="margin-top:0;">This estimate has been closed</h2>
+         <p style="font-size:15px;">Call Red Cedar Electric at ${BUSINESS_PHONE} if you would like to
+         move forward — we can reopen it for you.</p>
+       </div>`;
+
   const signBlock = inPerson && !est.signedAt
     ? ""
     : est.signedAt
@@ -620,6 +632,8 @@ export function renderEstimatePage(
                 schedule the work. Questions? Call ${BUSINESS_PHONE}.</p>`
          }
        </div>`
+    : est.status === "lost"
+    ? closedBlock
     : `<div class="sign">
          <h2 style="margin-top:0;">Accept this estimate</h2>
          ${opts.error ? `<div class="err">${escapeHtml(opts.error)}</div>` : ""}

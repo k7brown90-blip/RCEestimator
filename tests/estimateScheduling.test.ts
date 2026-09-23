@@ -123,6 +123,7 @@ afterAll(async () => {
   await prisma.visit.deleteMany();
   await prisma.property.deleteMany();
   await prisma.customer.deleteMany();
+  await prisma.technician.deleteMany({ where: { name: { startsWith: "C8 Test Tech" } } });
 });
 
 describe("appointmentKindFor", () => {
@@ -318,5 +319,78 @@ describe("GET /crm/schedule/calendar", () => {
     const res = await request(app).get("/crm/schedule/calendar?start=2026-08-01&end=2026-08-31");
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.googleOnlyEvents)).toBe(true);
+  });
+});
+
+// PUNCHLIST C8: the tech picker used to render only at first booking (JobScheduler.tsx,
+// schedule mode only) — there was no way to change who was assigned on a reschedule short of
+// editing the database. Reschedule now accepts the same `technicianId` field.
+describe("Reassigning a technician on reschedule (PUNCHLIST C8)", () => {
+  async function makeTech(suffix: string) {
+    return prisma.technician.create({
+      data: { name: `C8 Test Tech ${suffix}`, accessToken: `c8-test-${suffix}-${Date.now()}-${Math.random()}` },
+    });
+  }
+
+  it("releases the old tech's assignment and creates the new tech's when a reschedule names one", async () => {
+    const techA = await makeTech("A");
+    const techB = await makeTech("B");
+    const visit = await makeVisit("estimate");
+
+    await request(app)
+      .post(`/crm/jobs/${visit.id}/schedule`)
+      .send({ startDate: "2026-08-04", startTime: "09:00", technicianId: techA.id })
+      .expect(200);
+    expect(
+      await prisma.visitAssignment.findUnique({ where: { visitId_technicianId: { visitId: visit.id, technicianId: techA.id } } }),
+    ).not.toBeNull();
+
+    const res = await request(app)
+      .post(`/crm/jobs/${visit.id}/reschedule`)
+      .send({ newStartDate: "2026-08-06", newStartTime: "13:00", reason: "tech unavailable", technicianId: techB.id });
+
+    expect(res.status).toBe(200);
+    // The old tech's row is gone, not merely marked something else — a stale "primary" from a
+    // different tech would otherwise leave two techs both reading as assigned to this job.
+    expect(
+      await prisma.visitAssignment.findUnique({ where: { visitId_technicianId: { visitId: visit.id, technicianId: techA.id } } }),
+    ).toBeNull();
+    const newAssignment = await prisma.visitAssignment.findUnique({
+      where: { visitId_technicianId: { visitId: visit.id, technicianId: techB.id } },
+    });
+    expect(newAssignment?.role).toBe("primary");
+    expect(newAssignment?.status).toBe("assigned");
+  });
+
+  it("leaves the current assignment alone when the reschedule names no technician", async () => {
+    const techA = await makeTech("Unchanged");
+    const visit = await makeVisit("estimate");
+    await request(app)
+      .post(`/crm/jobs/${visit.id}/schedule`)
+      .send({ startDate: "2026-08-04", startTime: "09:00", technicianId: techA.id })
+      .expect(200);
+
+    const res = await request(app)
+      .post(`/crm/jobs/${visit.id}/reschedule`)
+      .send({ newStartDate: "2026-08-06", newStartTime: "13:00", reason: "customer request" });
+
+    expect(res.status).toBe(200);
+    expect(
+      await prisma.visitAssignment.findUnique({ where: { visitId_technicianId: { visitId: visit.id, technicianId: techA.id } } }),
+    ).not.toBeNull();
+  });
+
+  it("refuses an unknown technician rather than silently booking without one", async () => {
+    const visit = await makeVisit("estimate");
+    await request(app)
+      .post(`/crm/jobs/${visit.id}/schedule`)
+      .send({ startDate: "2026-08-04", startTime: "09:00" })
+      .expect(200);
+
+    const res = await request(app)
+      .post(`/crm/jobs/${visit.id}/reschedule`)
+      .send({ newStartDate: "2026-08-06", newStartTime: "13:00", reason: "x", technicianId: "does-not-exist" });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
   });
 });

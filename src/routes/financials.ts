@@ -495,11 +495,15 @@ export async function materialsByMonth(year: number) {
         if (m.kind === "purchase_in") bought[month] += m.qty * cost;
         else if (m.kind === "consume") used[month] += m.qty * cost;
         else if (m.kind === "return") used[month] -= m.qty * cost;
+        // supplier_return is un-buying, not consuming: the material was never used, it
+        // went back to the store, so it comes off `bought`, never `used`.
+        else if (m.kind === "supplier_return") bought[month] -= m.qty * cost;
         else if (m.kind === "correction" && m.correctsId) {
           const original = byId.get(m.correctsId);
           if (original?.kind === "consume") used[month] += (m.delta ?? 0) * (m.unitCost ?? original.unitCost ?? 0);
           else if (original?.kind === "return") used[month] -= (m.delta ?? 0) * (m.unitCost ?? original.unitCost ?? 0);
           else if (original?.kind === "purchase_in") bought[month] += (m.delta ?? 0) * (m.unitCost ?? original.unitCost ?? 0);
+          else if (original?.kind === "supplier_return") bought[month] -= (m.delta ?? 0) * (m.unitCost ?? original.unitCost ?? 0);
         }
       }
       cursor += 1;

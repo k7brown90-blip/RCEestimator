@@ -32,6 +32,7 @@ import { api } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
 import type { PbChainRow } from "../lib/types";
 import { money } from "../lib/utils";
+import { isPastValidity } from "../../../shared/estimateExpiry";
 
 /** Rows shown per card before "Show more" — the page never grows on its own. */
 const PAGE_SIZE = 8;
@@ -40,6 +41,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * A quote out this long with no signature is stale (the attention strip, 2026-09-20). A week
  * is the strip's threshold, not a business rule: `validDays` (30) is when a quote EXPIRES;
  * this is when it deserves a call.
+ *
+ * PUNCHLIST A10/H4 (2026-09-22): both this clock and the "expired" bucket below now count from
+ * `createdAt` — when the document was ISSUED — never `sentAt`. Before this fix they measured from
+ * `sentAt`, so a quote could read "expired" here while the server's own signature refusal (which
+ * measures from `createdAt`, see shared/estimateExpiry.ts) still let the customer sign it, or the
+ * reverse. `sentAt` remains correct for display text ("sent 9/10") — only the elapsed-time math
+ * moved.
  */
 const STALE_DAYS = 7;
 
@@ -66,9 +74,11 @@ function classify(row: PbChainRow, now: number): { bucket: Bucket; label: string
     if (onSchedule) return { bucket: "gone", label: "scheduled", tone: quiet };
     return { bucket: "sold", label: "sold", tone: "bg-emerald-100 text-emerald-900" };
   }
-  if (row.sentAt && row.validDays) {
-    const expiresAt = new Date(row.sentAt).getTime() + row.validDays * DAY_MS;
-    if (expiresAt < now) return { bucket: "hidden", label: "expired", tone: "bg-amber-100 text-amber-900" };
+  // The precondition (has this ever gone out?) still reads sentAt — a draft that was never sent
+  // can't be "expired", matching the server's EXPIRABLE_STATUSES (sent/viewed only). The MATH is
+  // shared/estimateExpiry.ts's isPastValidity, anchored on createdAt like the signature refusal.
+  if (row.sentAt && row.validDays && isPastValidity({ createdAt: row.createdAt, validDays: row.validDays }, now)) {
+    return { bucket: "hidden", label: "expired", tone: "bg-amber-100 text-amber-900" };
   }
   if (row.status === "viewed") return { bucket: "viewed", label: "viewed", tone: "bg-sky-100 text-sky-900" };
   if (row.status === "sent") return { bucket: "sent", label: "sent", tone: "bg-sky-100 text-sky-900" };
@@ -110,7 +120,9 @@ export function EstimatesPage() {
     const now = Date.now();
     const out = [...sections.sent, ...sections.viewed];
     const bounced = out.filter(({ row }) => bounceUnresolved(row));
-    const isStale = ({ row }: Classified) => !bounceUnresolved(row) && row.sentAt != null && now - new Date(row.sentAt).getTime() > STALE_DAYS * DAY_MS;
+    // PUNCHLIST H4: anchored on createdAt (issued), not sentAt (emailed) — the same clock the
+    // "expired" bucket above uses, so the two never disagree about how long a quote has been out.
+    const isStale = ({ row }: Classified) => !bounceUnresolved(row) && row.sentAt != null && now - new Date(row.createdAt).getTime() > STALE_DAYS * DAY_MS;
     const staleSent = sections.sent.filter(isStale);
     const staleViewed = sections.viewed.filter(isStale);
     return { bounced, staleSent, staleViewed };

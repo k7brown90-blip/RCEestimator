@@ -147,6 +147,10 @@ beforeAll(async () => {
   await makeLead("N1", { platform: "google", status: "lost", leadStatus: "lost", callType: "wrong_number", createdAt: at("2031-03-10") });
   // The practice account. EXCLUDE_TEST_ACCOUNT must hold in every new figure.
   await makeLead("T1", { platform: "google", status: "converted", leadStatus: "won", customerId: t.customerId, createdAt: at("2031-03-11") });
+  // PUNCHLIST G5: a practice "not a lead" call (wrong number, solicitation, vendor) must not
+  // inflate notLeads either — the test-account exclusion has to apply BEFORE that count, not
+  // only in the `leads` filter. Before the fix this pushed notLeads from 1 to 2.
+  await makeLead("T2", { platform: "google", status: "lost", leadStatus: "lost", callType: "wrong_number", customerId: t.customerId, createdAt: at("2031-03-11") });
   // On account E but OUTSIDE the window — the ranking lead for the May quote below.
   await makeLead("W2", { platform: "google", status: "new", leadStatus: "new", customerId: e.customerId, createdAt: at("2031-04-05") });
 
@@ -211,8 +215,14 @@ describe("phase 1 — lead to account (the OPPORTUNITY)", () => {
     expect(report.opportunity.leads + report.opportunity.notLeads).toBe(9);
   });
 
+  it("PUNCHLIST G5: a practice account's not-a-lead call never reaches notLeads either", () => {
+    // T2 is a test-account "wrong_number" call in the same window — the fix filters test
+    // accounts out before counting notLeads, so it stays 1 (real N1), not 2.
+    expect(report.opportunity.notLeads).toBe(1);
+  });
+
   it("never counts the test account", () => {
-    // 10 leads with a customer or not were created in the window; the practice one is not here.
+    // 11 leads with a customer or not were created in the window; neither practice one is here.
     const google = report.opportunity.byPlatform.find((row) => row.platform === "google")!;
     expect(google.leads).toBe(5);
     expect(google.opportunities).toBe(3);

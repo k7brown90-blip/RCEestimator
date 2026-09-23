@@ -11,11 +11,11 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { PurchasingPage } from "./PurchasingPage";
 import { api } from "../lib/api";
-import type { InventoryOverview, PurchaseOrderSummary, ReviewReceiptRow } from "../lib/types";
+import type { InventoryOverview, PurchaseOrderSummary, ReviewReceiptRow, StockLevelView, StockMovementView } from "../lib/types";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -79,6 +79,20 @@ function po(overrides: Partial<PurchaseOrderSummary>): PurchaseOrderSummary {
     ...overrides,
   };
 }
+
+const warehouseLevel: StockLevelView = {
+  id: "level-1",
+  locationKey: "warehouse",
+  itemId: "hd-12-2-nmb",
+  name: "12-2 NM-B",
+  unit: "ft",
+  qtyOnHand: 100,
+  avgUnitCost: 0.42,
+  value: 42,
+  parLevel: null,
+  low: false,
+  updatedAt: "2026-09-20T12:00:00.000Z",
+};
 
 const pendingReceipt: ReviewReceiptRow = {
   id: "rcpt-1", jobId: "visit-1", vendor: "Lowe's", category: "materials", amount: 88.4, source: "field",
@@ -154,5 +168,73 @@ describe("PurchasingPage", () => {
 
     expect(await screen.findByRole("heading", { name: "POs to land (0)" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: /needs attention/i })).not.toBeInTheDocument();
+  });
+
+  // Supplier returns (2026-09-22, plan Unit 3): "Returned to store" on a stock row.
+  it("records a supplier return, optionally on a P.O., and never labels it like a job return", async () => {
+    // The "Returned to store" picker offers LANDED POs only (defect fix, 2026-09-22) — stock
+    // on the truck/warehouse got there by landing, so po-1 needs a landedAt to show up here.
+    mockEverything({ live: [po({ id: "po-1", number: "PO-2026-0040", supplier: "Home Depot", status: "closed", landedAt: "2026-09-20T10:00:00.000Z" })] });
+    vi.spyOn(api, "inventory").mockResolvedValue({ ...overview, warehouse: { locationKey: "warehouse", levels: [warehouseLevel], value: warehouseLevel.value } });
+    const supplierReturn = vi.spyOn(api, "supplierReturn").mockResolvedValue({
+      id: "mv-1", kind: "supplier_return", itemId: "hd-12-2-nmb", name: "12-2 NM-B", unit: "ft",
+      qty: 20, delta: null, unitCost: 0.42, fromLocationKey: "warehouse", toLocationKey: null,
+      purchaseOrderId: "po-1", purchaseOrderLineId: null, jobId: null, correctsId: null,
+      reason: "restocking excess", actor: "owner", at: "2026-09-22T12:00:00.000Z",
+    });
+
+    renderWithProviders(<PurchasingPage />);
+
+    expect(await screen.findByText("12-2 NM-B")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Returned to store" }));
+
+    fireEvent.change(screen.getByPlaceholderText("100"), { target: { value: "20" } });
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "po-1" } });
+    fireEvent.change(screen.getByPlaceholderText("Reason (required)"), { target: { value: "restocking excess" } });
+    fireEvent.click(screen.getByRole("button", { name: "Return to store" }));
+
+    await waitFor(() => expect(supplierReturn).toHaveBeenCalledWith({
+      itemId: "hd-12-2-nmb", qty: 20, fromLocationKey: "warehouse", purchaseOrderId: "po-1", reason: "restocking excess",
+    }));
+  });
+
+  // Unit 5, 2026-09-23: the assertion that would have caught the picker defect — a PO
+  // that has not landed must never be offered as a stock-return target, only one that has.
+  it("offers only landed P.O.s in the Returned to store picker", async () => {
+    mockEverything({
+      live: [
+        po({ id: "po-landed", number: "PO-2026-0040", supplier: "Home Depot", status: "closed", landedAt: "2026-09-20T10:00:00.000Z" }),
+        po({ id: "po-unlanded", number: "PO-2026-0099", supplier: "Lowe's", status: "purchased", landedAt: null }),
+      ],
+    });
+    vi.spyOn(api, "inventory").mockResolvedValue({ ...overview, warehouse: { locationKey: "warehouse", levels: [warehouseLevel], value: warehouseLevel.value } });
+
+    renderWithProviders(<PurchasingPage />);
+
+    expect(await screen.findByText("12-2 NM-B")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Returned to store" }));
+
+    const picker = screen.getByRole("combobox");
+    expect(within(picker).getByRole("option", { name: /PO-2026-0040/ })).toBeInTheDocument();
+    expect(within(picker).queryByRole("option", { name: /PO-2026-0099/ })).not.toBeInTheDocument();
+  });
+
+  it("labels a supplier_return movement 'returned to store', distinct from a job return", async () => {
+    mockEverything();
+    vi.spyOn(api, "inventory").mockResolvedValue({ ...overview, warehouse: { locationKey: "warehouse", levels: [warehouseLevel], value: warehouseLevel.value } });
+    const movement: StockMovementView = {
+      id: "mv-2", kind: "supplier_return", itemId: "hd-12-2-nmb", name: "12-2 NM-B", unit: "ft",
+      qty: 15, delta: null, unitCost: 0.42, fromLocationKey: "warehouse", toLocationKey: null,
+      purchaseOrderId: null, purchaseOrderLineId: null, jobId: null, correctsId: null,
+      reason: "damaged spool", actor: "owner", at: "2026-09-22T12:00:00.000Z",
+    };
+    vi.spyOn(api, "inventoryMovements").mockResolvedValue([movement]);
+
+    renderWithProviders(<PurchasingPage />);
+
+    expect(await screen.findByText("12-2 NM-B")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "history" }));
+
+    expect(await screen.findByText(/returned to store/)).toBeInTheDocument();
   });
 });

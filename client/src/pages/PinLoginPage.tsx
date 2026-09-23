@@ -1,11 +1,18 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 export function PinLoginPage() {
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  // PUNCHLIST C5: `RequireAuth` (App.tsx) hands the page it bounced FROM as
+  // `state.from` — a bookmarked or shared link should return the operator to
+  // it, not always to Jobs. No `from` (a plain visit to /login) still lands
+  // on "/", the one home `/` -> /dashboard already redirects to.
+  const location = useLocation();
+  const from = (location.state as { from?: { pathname: string; search: string; hash: string } } | null)?.from;
+  const redirectTo = from ? `${from.pathname}${from.search}${from.hash}` : "/";
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -27,7 +34,7 @@ export function PinLoginPage() {
 
       const { token } = (await res.json()) as { token: string };
       localStorage.setItem("rce_token", token);
-      navigate("/jobs", { replace: true });
+      navigate(redirectTo, { replace: true });
     } catch {
       setError("Connection failed");
     } finally {

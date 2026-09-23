@@ -15,13 +15,14 @@
 import type { PrismaClient } from "@prisma/client";
 import { EXPIRABLE_STATUSES, type IssuedEstimateStatus } from "../../shared/estimateStatus";
 import { logSystemEvent } from "./systemEvents";
+// PUNCHLIST A10/H4 (2026-09-22): the arithmetic itself now lives in shared/ so the client's
+// EstimatesPage reads the SAME definition instead of its own `sentAt`-based one. Re-exported here
+// so every existing server import of `isPastValidity` from this module is unchanged.
+import { isPastValidity } from "../../shared/estimateExpiry";
 
 const DAY_MS = 86_400_000;
 
-/** Past its printed validity window — the same arithmetic the signature refusal uses. */
-export function isPastValidity(est: { createdAt: Date; validDays: number }, now = Date.now()): boolean {
-  return now > est.createdAt.getTime() + est.validDays * DAY_MS;
-}
+export { isPastValidity };
 
 /**
  * Where a reopened (un-lost) estimate goes back to. The customer's first view is a durable fact

@@ -23,7 +23,7 @@ import {
   serializePurchaseOrder, transitionPurchaseOrder, truckIdForTechnician,
 } from "../services/purchaseOrders";
 import {
-  WAREHOUSE_KEY, createStockRequest, landPurchaseOrder, landingDefaults, listTools, moveTool, searchItems, serializeLevel, truckLocationKey,
+  WAREHOUSE_KEY, createStockRequest, landPurchaseOrder, landingDefaults, listTools, moveTool, searchItems, serializeLevel, supplierReturnStock, truckLocationKey,
 } from "../services/inventory";
 import { closeOutMaterialWarning, consumeForJob, jobMaterials, returnForJob } from "../services/jobMaterials";
 import { createMaterial, listMaterials } from "../services/materials";
@@ -2162,7 +2162,7 @@ healthRecordTechRouter.get("/my-truck", asyncHandler(async (req: TechRequest, re
   const tech = req.technician!;
   const truckId = await truckIdForTechnician(tech.id);
   const key = truckLocationKey(truckId);
-  const [truck, levels, tools, requests, trucks, orders] = await Promise.all([
+  const [truck, levels, tools, requests, trucks, orders, landedOrders] = await Promise.all([
     prisma.truck.findUniqueOrThrow({ where: { id: truckId }, select: { id: true, name: true } }),
     prisma.stockLevel.findMany({ where: { locationKey: key }, orderBy: { name: "asc" } }),
     listTools({ locationKey: key }),
@@ -2172,6 +2172,15 @@ healthRecordTechRouter.get("/my-truck", asyncHandler(async (req: TechRequest, re
       where: { truckId, status: { in: ["purchased", "verified"] }, landedAt: null },
       orderBy: { openedAt: "desc" },
       take: 50,
+      include: PO_LIST_INCLUDE,
+    }),
+    // Returns-desk picker (2026-09-22 defect fix): stock on this truck got there by LANDING,
+    // not by being unlanded — so the "Returned to store" P.O. dropdown needs THIS list, never
+    // unlandedPos. Scoped to this tech's own truck, same as unlandedPos above.
+    prisma.purchaseOrder.findMany({
+      where: { truckId, landedAt: { not: null } },
+      orderBy: { landedAt: "desc" },
+      take: 20,
       include: PO_LIST_INCLUDE,
     }),
   ]);
@@ -2186,8 +2195,37 @@ healthRecordTechRouter.get("/my-truck", asyncHandler(async (req: TechRequest, re
       // Where a tool can go from here: the warehouse, or any other active truck.
       locations: [{ key: WAREHOUSE_KEY, label: "Warehouse (home)" }, ...trucks.filter((t) => t.id !== truckId).map((t) => ({ key: truckLocationKey(t.id), label: t.name }))],
       unlandedPos: orders.map(fieldPoView),
+      recentLandedPos: landedOrders.map(fieldPoView),
     },
   });
+}));
+
+/**
+ * POST /my-truck/supplier-return — material going back to the store, off THIS
+ * tech's own truck only (resolved server-side from truckIdForTechnician, never
+ * named by the body — a tech cannot return against another truck or the
+ * warehouse). Online only, like the rest of My Truck (health-record.ts, Build
+ * 3) — it does not ride the offline queue. Reason required; priced at the
+ * truck's own moving average.
+ */
+healthRecordTechRouter.post("/my-truck/supplier-return", asyncHandler(async (req: TechRequest, res) => {
+  const body = z.object({
+    itemId: z.string().trim().min(1),
+    qty: z.number().positive(),
+    purchaseOrderId: z.string().trim().min(1).nullable().optional(),
+    reason: z.string().trim().min(1).max(300),
+  }).parse(req.body);
+  const tech = req.technician!;
+  try {
+    const truckId = await truckIdForTechnician(tech.id);
+    const movement = await supplierReturnStock({
+      itemId: body.itemId, qty: body.qty, fromLocationKey: truckLocationKey(truckId),
+      purchaseOrderId: body.purchaseOrderId ?? null, reason: body.reason, actor: `tech:${tech.name}`,
+    });
+    res.status(201).json({ success: true, data: movement });
+  } catch (err) {
+    if (!techServiceError(res, err)) throw err;
+  }
 }));
 
 /** The book, picker-shaped, for the restock form. */

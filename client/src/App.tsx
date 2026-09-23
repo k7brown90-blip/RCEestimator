@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { CrashBoundary } from "./components/CrashBoundary";
 import { AccountDetailPage } from "./pages/AccountDetailPage";
@@ -23,6 +23,19 @@ import { PriceBookCatalogPage } from "./pages/PriceBookCatalogPage";
 import { SigningModePage } from "./pages/SigningModePage";
 import { TrucksPage } from "./pages/TrucksPage";
 import { PurchasingPage } from "./pages/PurchasingPage";
+
+/** PUNCHLIST C6: the shell's catch-all — an unknown path inside the app said nothing before this. */
+function NotFoundPage() {
+  return (
+    <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 text-center">
+      <h1 className="text-lg font-semibold text-rce-text">Page not found</h1>
+      <p className="text-sm text-rce-muted">There's nothing here. The link may be old or mistyped.</p>
+      <Link to="/" className="btn btn-primary text-sm">
+        Go home
+      </Link>
+    </div>
+  );
+}
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -103,6 +116,9 @@ function App() {
                 <Route path="/purchasing" element={<PurchasingPage />} />
                 <Route path="/inventory" element={<RedirectInventoryToPurchasing />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                {/* PUNCHLIST C6: an unknown path inside the shell used to render an empty card —
+                    nothing said the URL was wrong or offered a way back. */}
+                <Route path="*" element={<NotFoundPage />} />
               </Routes>
               </CrashBoundary>
             </AppShell>

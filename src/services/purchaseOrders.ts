@@ -406,8 +406,10 @@ export async function setPurchaseOrderMoney(
   const before: Record<string, unknown> = {};
   const after: Record<string, unknown> = {};
   if (patch.offCardAmount !== undefined && patch.offCardAmount !== po.offCardAmount) {
-    if (patch.offCardAmount != null && !(Number.isFinite(patch.offCardAmount) && patch.offCardAmount >= 0)) {
-      throw new PoError("The not-on-card amount must be zero or more.", 400);
+    // A cash/store-credit refund on a supplier return is negative money (2026-09-22) — only
+    // reject a non-number, not the sign.
+    if (patch.offCardAmount != null && !Number.isFinite(patch.offCardAmount)) {
+      throw new PoError("The not-on-card amount must be a number.", 400);
     }
     before.offCardAmount = po.offCardAmount; after.offCardAmount = patch.offCardAmount; data.offCardAmount = patch.offCardAmount;
     if (patch.offCardAmount == null) {

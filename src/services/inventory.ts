@@ -66,7 +66,7 @@ export class InventoryError extends Error {
   }
 }
 
-export const MOVEMENT_KINDS = ["purchase_in", "transfer", "consume", "return", "count", "correction"] as const;
+export const MOVEMENT_KINDS = ["purchase_in", "transfer", "consume", "return", "supplier_return", "count", "correction"] as const;
 export type MovementKind = (typeof MOVEMENT_KINDS)[number];
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000;
@@ -167,6 +167,9 @@ async function takeOut(tx: Tx, locationKey: string, m: MovementInput, qty: numbe
  *                transfer material to truck stock").
  *   consume      from (a truck) −= qty at its avg, toward jobId. No job costing here.
  *   return       to (a truck) += qty from jobId at unitCost ?? the truck's avg.
+ *   supplier_return  from −= qty at its avg — stock going back to the store. No jobId:
+ *                the money is on the P.O. (services/jobCosting.ts), never this ledger.
+ *                Reason REQUIRED. Never confuse with "return" (job → truck) above.
  *   count        sets the location's on-hand to qty; delta = qty − old; avg unchanged
  *                (a NEW level takes unitCost ?? the book's last purchase price).
  *   correction   references correctsId; applies the signed delta to the location(s)
@@ -241,6 +244,15 @@ export async function applyMovement(tx: Tx, m: MovementInput): Promise<StockMove
     }
     case "consume": {
       if (!from) throw new InventoryError("consume needs a fromLocationKey", 400);
+      await assertLocation(tx, from);
+      const out = await takeOut(tx, from, m, m.qty);
+      unitCostApplied = out.unitCost;
+      delta = -m.qty;
+      break;
+    }
+    case "supplier_return": {
+      if (!from) throw new InventoryError("supplier_return needs a fromLocationKey", 400);
+      if (!m.reason?.trim()) throw new InventoryError("A reason is required for a supplier return", 400);
       await assertLocation(tx, from);
       const out = await takeOut(tx, from, m, m.qty);
       unitCostApplied = out.unitCost;
@@ -383,6 +395,7 @@ export function createLedgerReplay() {
           if (m.toLocationKey) mergeIn(m.toLocationKey, m.itemId, m.qty, cost);
           break;
         case "consume": if (m.fromLocationKey) takeOut(m.fromLocationKey, m.itemId, m.qty, cost); break;
+        case "supplier_return": if (m.fromLocationKey) takeOut(m.fromLocationKey, m.itemId, m.qty, cost); break;
         case "return": if (m.toLocationKey) mergeIn(m.toLocationKey, m.itemId, m.qty, cost); break;
         case "count": {
           if (!m.toLocationKey) break;
@@ -1120,6 +1133,23 @@ export async function transferStock(input: { itemId: string; qty: number; fromLo
     return applyMovement(tx, {
       kind: "transfer", itemId: input.itemId, name, unit, qty: input.qty,
       fromLocationKey: from, toLocationKey: input.toLocationKey, reason: input.reason ?? null, actor: input.actor,
+    });
+  });
+}
+
+/**
+ * Stock going back to the supplier — priced at the location's own moving
+ * average (what takeOut returns), never the P.O. line's unitCost. No jobId:
+ * the money side is the P.O./refund, not this ledger. Reason required.
+ */
+export async function supplierReturnStock(input: { itemId: string; qty: number; fromLocationKey: string; purchaseOrderId?: string | null; reason: string; actor: string }) {
+  if (!input.reason?.trim()) throw new InventoryError("A reason is required for a supplier return", 400);
+  return prisma.$transaction(async (tx) => {
+    const { name, unit } = await describeItem(tx, input.itemId);
+    return applyMovement(tx, {
+      kind: "supplier_return", itemId: input.itemId, name, unit, qty: input.qty,
+      fromLocationKey: input.fromLocationKey, purchaseOrderId: input.purchaseOrderId ?? null,
+      reason: input.reason, actor: input.actor,
     });
   });
 }

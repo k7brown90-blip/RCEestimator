@@ -306,6 +306,17 @@ describe("the customer's link on a lost estimate", () => {
     expect(await prisma.issuedEstimateEvent.count({ where: { estimateId: est.id, type: "viewed" } })).toBe(0);
   });
 
+  it("PUNCHLIST A12: renders 'closed', not the live sign form, so a customer never fills it in only to be refused at submit", async () => {
+    const est = await issue("link-closed-render");
+    await put(est.id, "sent");
+    await markLost(est.id);
+    const page = await request(app).get(`/e/${est.token}`);
+    expect(page.status).toBe(200);
+    expect(page.text).toContain("This estimate has been closed");
+    expect(page.text).not.toContain('id="signForm"');
+    expect(page.text).not.toContain("Accept &amp; Sign");
+  });
+
   it("refuses the signature through BOTH doors, in the customer's words", async () => {
     const est = await issue("link-sign");
     await put(est.id, "viewed");

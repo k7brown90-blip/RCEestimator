@@ -937,10 +937,38 @@ export interface FieldMyTruck {
   locations: { key: string; label: string }[]
   /** Purchased / verified POs on this truck that have not landed. */
   unlandedPos: FieldPurchaseOrder[]
+  /** This truck's most recently landed POs — what a "Returned to store" pick should offer. */
+  recentLandedPos: FieldPurchaseOrder[]
 }
 
 export async function fetchMyTruck(): Promise<FieldMyTruck> {
   return crmRequest('/my-truck', { method: 'GET' })
+}
+
+export interface FieldSupplierReturn {
+  id: string
+  qty: number
+  unitCost: number | null
+  name: string
+}
+
+/**
+ * Truck → the store (2026-09-22): takes stock OFF this tech's own truck at its
+ * moving average — never job-charged, never the P.O.'s unitCost. The body
+ * carries no location: the truck is resolved server-side from the logged-in
+ * tech, so a return can never be aimed at another truck or the warehouse.
+ * Reason required. A return that would take a level below zero is refused
+ * with the server's own message (names the item and what's on hand) — do not
+ * invent client-side wording for that case. Online only, same as the rest of
+ * My Truck (health-record.ts) — does not ride the offline sync queue.
+ */
+export async function supplierReturnFromField(input: {
+  itemId: string
+  qty: number
+  purchaseOrderId?: string | null
+  reason: string
+}): Promise<FieldSupplierReturn> {
+  return crmRequest('/my-truck/supplier-return', { method: 'POST', body: JSON.stringify(input) })
 }
 
 export interface FieldStockItem {

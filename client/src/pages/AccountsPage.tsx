@@ -47,8 +47,10 @@ export function AccountsPage() {
    */
   const createAccountWithAddresses = useMutation({
     mutationFn: async () => {
+      // Trimmed (Kyle, 2026-09-22): a trailing space in the email box was a "Validation failed"
+      // with nothing to act on. A space either side of a name, email or phone is a typo, not data.
       const account = await api.createAccount({
-        name, email: email || undefined, phone: phone || undefined,
+        name: name.trim(), email: email.trim() || undefined, phone: phone.trim() || undefined,
       });
       for (const [index, draft] of addresses.entries()) {
         if (!draft.addressLine1.trim()) continue;

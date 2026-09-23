@@ -142,6 +142,12 @@ export function MaterialsUsedStep({ visitId, onRecorded }: { visitId: string; on
           Already off the truck for this job: ${data.stock.net.toFixed(2)} ({data.stock.movementCount} line(s)). Job cost ${data.materialCost.toFixed(2)} {SOURCE_LABEL[data.materialSource]}.
         </p>
       )}
+      {/* Job → truck (undo, above) is step one of two. Step two — truck → the
+          supplier — lives on My Truck, not here (Kyle: two honest movements,
+          no job → store shortcut). */}
+      {data.stock && data.stock.returned > 0 && (
+        <p className="text-[11px] text-slate-500">Sending it back to the supplier? Use "Returned to store" on My Truck.</p>
+      )}
       {data.lines.filter((l) => l.kind === 'consume').length > 0 && (
         <div className="space-y-1 rounded border border-slate-800 bg-slate-900/40 p-2">
           <p className="text-[10px] uppercase tracking-wide text-slate-500">Recorded for this job — tap undo to put it back on the truck</p>

@@ -14,7 +14,7 @@ import { asyncHandler, readParam } from "./agent-helpers";
 import {
   TOOL_CONDITIONS, WAREHOUSE_KEY, correctMovement, countStock, createStockRequest, createTool, declineStockRequest, fulfillStockRequest,
   inventoryOverview, landPurchaseOrder, landingDefaults, listMovements, listStockRequests, listTools, moveTool, searchItems, setParLevel,
-  toolDetail, transferStock, truckLocationKey, updateTool,
+  supplierReturnStock, toolDetail, transferStock, truckLocationKey, updateTool,
 } from "../services/inventory";
 import { onHandFor } from "../services/jobMaterials";
 import { defaultTruckId } from "../services/purchaseOrders";
@@ -73,6 +73,27 @@ inventoryRouter.post("/inventory/transfer", asyncHandler(async (req, res) => {
   const movement = await transferStock({
     itemId: body.itemId, qty: body.qty, fromLocationKey: WAREHOUSE_KEY, toLocationKey: truckLocationKey(body.toTruckId),
     reason: body.reason ?? null, actor: "owner",
+  });
+  res.status(201).json(movement);
+}));
+
+/**
+ * Material going back to the supplier — office side, any location. Priced at
+ * that location's own moving average, never the P.O. line's cost. Reason
+ * required; the "return" endpoint above/elsewhere means job → truck, this
+ * means location → supplier and never touches a jobId.
+ */
+inventoryRouter.post("/inventory/supplier-return", asyncHandler(async (req, res) => {
+  const body = z.object({
+    itemId: z.string().trim().min(1),
+    qty: z.number().positive(),
+    fromLocationKey: locationKeySchema,
+    purchaseOrderId: z.string().trim().min(1).nullable().optional(),
+    reason: reasonSchema,
+  }).parse(req.body);
+  const movement = await supplierReturnStock({
+    itemId: body.itemId, qty: body.qty, fromLocationKey: body.fromLocationKey,
+    purchaseOrderId: body.purchaseOrderId ?? null, reason: body.reason, actor: "owner",
   });
   res.status(201).json(movement);
 }));

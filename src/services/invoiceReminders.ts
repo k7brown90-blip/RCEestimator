@@ -63,7 +63,11 @@ export async function sweepInvoiceReminders(prisma: PrismaClient): Promise<{ rem
       // was the first — must fall OUT of the candidate list, never into it.
       status: "signed",
       voidedAt: null,
-      supersededBy: null,
+      // PUNCHLIST N3 (2026-09-22): NO `supersededBy: null` here. Since "A signed revision takes
+      // over its invoice" (2026-09-21), a signed root superseded by a still-UNSIGNED revision is
+      // still the live invoice — `/invoices` dropped this same filter for the same reason. Kept
+      // here it silently paused every balance reminder for the entire window between "revise" and
+      // "the revision is signed", which can be indefinite.
       // A change order is not an invoice of its own (2026-09-20): its balance rides its root's
       // reminder, its root's clock, its root's three-strike count. Never a second reminder.
       changeOrderForId: null,

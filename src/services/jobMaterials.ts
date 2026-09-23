@@ -178,16 +178,19 @@ const OPEN_PO_STATUSES = ["open", "purchased", "verified"] as const;
  * change order's signed estimate is linked to this job only through `visitId`, while the
  * original's is linked through `jobVisitId` — both satisfy the `OR` below, but `findFirst`
  * (signedEstimateForJob) returns only the newer of the two, silently dropping the other's
- * material. For the job's total material NEED, both must count. `supersededBy: null` drops a
- * stale revision of an estimate that has since been re-issued (issuedEstimateService.ts
- * reviseEstimate — a signed estimate CAN be revised; the old row keeps its signature but is no
- * longer the live scope), matching the filter `GET /jobs` open-invoice reader already uses
- * (app.ts:4914).
+ * material. For the job's total material NEED, both must count.
+ *
+ * PUNCHLIST N3 (2026-09-22): NO `supersededBy: null` here, on purpose. Since "A signed revision
+ * takes over its invoice" (2026-09-21), a signed root superseded by a still-UNSIGNED revision is
+ * still the live invoice — /invoices dropped this same filter for the same reason, and
+ * `signedEstimateForJob` just above never had it. This function still had it, which meant the
+ * moment Kyle started a revision, the job's material-need list stopped counting the very estimate
+ * whose materials the tech was working from, until the revision was signed.
  */
 async function allSignedEstimatesForJob(jobId: string) {
   return prisma.issuedEstimate.findMany({
     // status is an allow-list, same reason as signedEstimateForJob above (2026-09-20).
-    where: { signedAt: { not: null }, voidedAt: null, status: "signed", supersededBy: null, OR: [{ jobVisitId: jobId }, { visitId: jobId }] },
+    where: { signedAt: { not: null }, voidedAt: null, status: "signed", OR: [{ jobVisitId: jobId }, { visitId: jobId }] },
     orderBy: { createdAt: "asc" },
     select: {
       id: true, number: true, title: true, visitId: true, jobVisitId: true, selectedOptions: true,

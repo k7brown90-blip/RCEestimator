@@ -17,7 +17,7 @@ import { api } from "../lib/api";
 import { money, shortDate } from "../lib/utils";
 import { useDrawerParams } from "../lib/drawers";
 import { MaterialsConsumeStep, MaterialsReturnStep, jobMaterialsKey } from "./MaterialsUsedPanel";
-import { AttachProofButton, usePurchaseOrderDetail } from "./PurchaseOrders";
+import { AttachProofButton, ReasonRow, usePurchaseOrderDetail } from "./PurchaseOrders";
 import { OpenDrawerButton } from "./drawers/OpenDrawerButton";
 
 export function JobCloseoutPanel({ visitId, status }: { visitId: string; status: string }) {
@@ -71,6 +71,17 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
       refresh();
       void queryClient.invalidateQueries({ queryKey: ["calendar"] });
     },
+    onError: (err) => setError((err as Error).message),
+  });
+
+  // PUNCHLIST K3: this used to be `DELETE /jobs/:jobId/purchase-orders/:orderId` with a canned
+  // reason ("Removed from the job screen") behind a window.confirm — the P.O. drawer's own
+  // Cancel asks for a typed reason through `POST /purchase-orders/:id/status`. One route, one
+  // required reason, wherever a P.O. is cancelled.
+  const [cancellingPoId, setCancellingPoId] = useState<string | null>(null);
+  const cancelPo = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) => api.transitionPurchaseOrder(id, "cancelled", reason),
+    onSuccess: () => { setCancellingPoId(null); setError(null); refresh(); },
     onError: (err) => setError((err as Error).message),
   });
 
@@ -313,15 +324,21 @@ export function JobCloseoutPanel({ visitId, status }: { visitId: string; status:
                 </OpenDrawerButton>
                 <span className="flex items-center gap-2 text-xs text-rce-muted">
                   {po.purpose.replaceAll("_", " ")} · {po.status} · {po.items.length} item(s) · {new Date(po.createdAt).toLocaleDateString()}
-                  {(po.status === "open" || po.status === "purchased") && (
+                  {(po.status === "open" || po.status === "purchased") && cancellingPoId !== po.id && (
                     <button
                       className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
-                      onClick={() => {
-                        if (window.confirm(`Cancel ${po.number}? The number is never reused.`)) void api.deletePurchaseOrder(visitId, po.id).then(refresh);
-                      }}
+                      onClick={() => setCancellingPoId(po.id)}
                     >
                       cancel
                     </button>
+                  )}
+                  {cancellingPoId === po.id && (
+                    <ReasonRow
+                      label="Cancel PO"
+                      busy={cancelPo.isPending}
+                      onSubmit={(reason) => cancelPo.mutate({ id: po.id, reason })}
+                      onCancel={() => setCancellingPoId(null)}
+                    />
                   )}
                 </span>
               </div>

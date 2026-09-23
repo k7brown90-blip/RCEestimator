@@ -283,6 +283,84 @@ describe("transfers", () => {
   });
 });
 
+describe("supplier returns", () => {
+  it("lowers the truck's level, prices at the truck's own moving average, and touches no job", async () => {
+    const before = (await level(truckKey, WIRE))!;
+    const res = await request(app).post("/inventory/supplier-return").send({
+      itemId: WIRE, qty: 50, fromLocationKey: truckKey, reason: "Bought too much, taking it back to Home Depot",
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.kind).toBe("supplier_return");
+    expect(res.body.fromLocationKey).toBe(truckKey);
+    expect(res.body.toLocationKey).toBeNull();
+    expect(res.body.jobId).toBeNull();
+    expect(res.body.delta).toBe(-50);
+    // Priced at the location's own moving average — never a PO line's unitCost.
+    expect(res.body.unitCost).toBe(before.avgUnitCost);
+    const after = (await level(truckKey, WIRE))!;
+    expect(after.qtyOnHand).toBe(r4(before.qtyOnHand - 50));
+    // Taking stock out never moves the average.
+    expect(after.avgUnitCost).toBe(before.avgUnitCost);
+  });
+
+  it("refuses without a reason", async () => {
+    const res = await request(app).post("/inventory/supplier-return").send({ itemId: WIRE, qty: 5, fromLocationKey: truckKey });
+    expect(res.status).toBe(400);
+  });
+
+  it("a correction reverses a supplier_return with no new code in correctMovement", async () => {
+    const before = (await level(truckKey, WIRE))!;
+    const sr = await request(app).post("/inventory/supplier-return").send({
+      itemId: WIRE, qty: 20, fromLocationKey: truckKey, reason: "Wrong gauge, sending back",
+    });
+    expect(sr.status).toBe(201);
+    expect((await level(truckKey, WIRE))!.qtyOnHand).toBe(r4(before.qtyOnHand - 20));
+
+    const corrected = await request(app).post("/inventory/correction").send({
+      correctsId: sr.body.id, delta: -20, reason: "Actually none of it went back — it's still on the truck",
+    });
+    expect(corrected.status).toBe(201);
+    expect(corrected.body.kind).toBe("correction");
+    expect(corrected.body.correctsId).toBe(sr.body.id);
+    expect((await level(truckKey, WIRE))!.qtyOnHand).toBe(before.qtyOnHand);
+  });
+
+  it("a tech's supplier-return always lands on their own truck, even if the body names another", async () => {
+    const t1Before = (await level(truckKey, WIRE))!;
+    const t2Before = (await level(truckLocationKey(truck2Id), WIRE))!;
+    const whBefore = (await level(WAREHOUSE_KEY, WIRE))!;
+    const res = await request(app)
+      .post("/health-record/my-truck/supplier-return")
+      .set("Authorization", `Bearer ${techToken}`)
+      // The endpoint takes no location field at all — this proves a body that tries to
+      // name another truck (or the warehouse) is simply ignored, not honored.
+      .send({ itemId: WIRE, qty: 5, reason: "Extra spool, sending back", fromLocationKey: truckLocationKey(truck2Id), truckId: truck2Id, locationKey: WAREHOUSE_KEY });
+    expect(res.status).toBe(201);
+    expect(res.body.data.fromLocationKey).toBe(truckKey);
+    expect(res.body.data.actor).toBe("tech:INV Test Tech");
+    expect((await level(truckKey, WIRE))!.qtyOnHand).toBe(r4(t1Before.qtyOnHand - 5));
+    expect((await level(truckLocationKey(truck2Id), WIRE))!.qtyOnHand).toBe(t2Before.qtyOnHand);
+    expect((await level(WAREHOUSE_KEY, WIRE))!.qtyOnHand).toBe(whBefore.qtyOnHand);
+  });
+});
+
+describe("a credit can be negative money on a P.O.", () => {
+  it("a negative offCardAmount saves with a reason and shows up in the P.O.'s money total", async () => {
+    const po = await createPurchaseOrder({ supplier: "INV-test Home Depot", openedBy: "owner", actor: "test", truckId });
+    const noReason = await request(app).patch(`/purchase-orders/${po.id}/money`).send({ offCardAmount: -42.5 });
+    expect(noReason.status).toBe(400);
+    const typed = await request(app).patch(`/purchase-orders/${po.id}/money`).send({
+      offCardAmount: -42.5, offCardMethod: "cash", reason: "Store credit for the supplier return",
+    });
+    expect(typed.status).toBe(200);
+    expect(typed.body.offCardAmount).toBe(-42.5);
+    expect(typed.body.moneyTotal).toBe(-42.5);
+    const fetched = await request(app).get(`/purchase-orders/${po.id}`);
+    expect(fetched.body.offCardAmount).toBe(-42.5);
+    expect(fetched.body.moneyTotal).toBe(-42.5);
+  });
+});
+
 describe("counts and corrections", () => {
   it("a count sets on-hand and records the delta; avg is untouched", async () => {
     const before = (await level(truckLocationKey(truck2Id), WIRE))!;
@@ -434,5 +512,62 @@ describe("the rollup", () => {
     expect(items.status).toBe(200);
     expect(items.body.map((i: { itemId: string }) => i.itemId).sort()).toEqual([BOX, WIRE]);
     expect(items.body.find((i: { itemId: string }) => i.itemId === WIRE).lastCost).toBe(0.72);
+  });
+});
+
+describe("/my-truck's recentLandedPos (defect fix, 2026-09-22)", () => {
+  it("returns this truck's LANDED POs newest-first, still returns unlandedPos, and never leaks another truck's landed POs", async () => {
+    // Two landed POs on the tech's own truck (truckId) — force distinct landedAt so
+    // "newest landed first" is unambiguous rather than a same-millisecond coin flip.
+    const poOld = await createPurchaseOrder({
+      supplier: "INV-test Landed Old", openedBy: "owner", actor: "test", truckId,
+      lines: [{ itemId: WIRE, name: "12-2 NM-B", qty: 10, unit: "ft" }],
+    });
+    await transitionPurchaseOrder(poOld.id, "purchased", { actor: "test" });
+    const oldLineId = (await prisma.purchaseOrderLine.findFirstOrThrow({ where: { purchaseOrderId: poOld.id } })).id;
+    await landPurchaseOrder(poOld.id, [{ lineId: oldLineId, qtyLanded: 10, unitCost: 0.72 }], "test");
+
+    const poNew = await createPurchaseOrder({
+      supplier: "INV-test Landed New", openedBy: "owner", actor: "test", truckId,
+      lines: [{ itemId: WIRE, name: "12-2 NM-B", qty: 5, unit: "ft" }],
+    });
+    await transitionPurchaseOrder(poNew.id, "purchased", { actor: "test" });
+    const newLineId = (await prisma.purchaseOrderLine.findFirstOrThrow({ where: { purchaseOrderId: poNew.id } })).id;
+    await landPurchaseOrder(poNew.id, [{ lineId: newLineId, qtyLanded: 5, unitCost: 0.72 }], "test");
+
+    await prisma.purchaseOrder.update({ where: { id: poOld.id }, data: { landedAt: new Date(Date.now() - 60 * 60 * 1000) } });
+    await prisma.purchaseOrder.update({ where: { id: poNew.id }, data: { landedAt: new Date() } });
+
+    // An unlanded PO on the same truck, and a landed one on a DIFFERENT truck (truck2Id) —
+    // neither should show up in this tech's recentLandedPos.
+    const poUnlanded = await createPurchaseOrder({
+      supplier: "INV-test Still Unlanded", openedBy: "owner", actor: "test", truckId,
+      lines: [{ itemId: WIRE, name: "12-2 NM-B", qty: 1, unit: "ft" }],
+    });
+    await transitionPurchaseOrder(poUnlanded.id, "purchased", { actor: "test" });
+
+    const poOtherTruck = await createPurchaseOrder({
+      supplier: "INV-test Other Truck Landed", openedBy: "owner", actor: "test", truckId: truck2Id,
+      lines: [{ itemId: WIRE, name: "12-2 NM-B", qty: 1, unit: "ft" }],
+    });
+    await transitionPurchaseOrder(poOtherTruck.id, "purchased", { actor: "test" });
+    const otherLineId = (await prisma.purchaseOrderLine.findFirstOrThrow({ where: { purchaseOrderId: poOtherTruck.id } })).id;
+    await landPurchaseOrder(poOtherTruck.id, [{ lineId: otherLineId, qtyLanded: 1, unitCost: 0.72 }], "test");
+
+    const mine = await request(app).get("/health-record/my-truck").set("Authorization", `Bearer ${techToken}`);
+    expect(mine.status).toBe(200);
+
+    const landedIds = mine.body.data.recentLandedPos.map((p: { id: string }) => p.id);
+    expect(landedIds).toContain(poOld.id);
+    expect(landedIds).toContain(poNew.id);
+    expect(landedIds).not.toContain(poUnlanded.id);
+    expect(landedIds).not.toContain(poOtherTruck.id); // scoped to THIS truck only
+    expect(landedIds.indexOf(poNew.id)).toBeLessThan(landedIds.indexOf(poOld.id)); // newest landed first
+    expect(mine.body.data.recentLandedPos.every((p: { status: string }) => p.status !== "cancelled")).toBe(true);
+
+    const unlandedIds = mine.body.data.unlandedPos.map((p: { id: string }) => p.id);
+    expect(unlandedIds).toContain(poUnlanded.id); // the landing flow's own list still works
+    expect(unlandedIds).not.toContain(poOld.id);
+    expect(unlandedIds).not.toContain(poNew.id);
   });
 });

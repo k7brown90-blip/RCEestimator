@@ -370,6 +370,21 @@ export class ApiError extends Error {
   body?: Record<string, unknown>;
 }
 
+/**
+ * "Email: Invalid email" out of a Zod `flatten()` body, or null when the refusal is not a
+ * field-level one. `formErrors` (whole-body complaints) ride along after the fields.
+ */
+function fieldMessage(body: Record<string, unknown> | undefined): string | null {
+  const details = body?.details as { fieldErrors?: Record<string, string[]>; formErrors?: string[] } | undefined;
+  if (!details) return null;
+  const label = (field: string) => field.charAt(0).toUpperCase() + field.slice(1).replace(/([A-Z])/g, " $1").toLowerCase();
+  const parts = Object.entries(details.fieldErrors ?? {})
+    .filter(([, messages]) => messages?.length)
+    .map(([field, messages]) => `${label(field)}: ${messages[0]}`);
+  for (const formError of details.formErrors ?? []) parts.push(formError);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 const sessionToken = () =>
   (typeof localStorage !== "undefined" ? localStorage.getItem("rce_token") : null);
 
@@ -614,7 +629,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       // Some refusals carry data the UI needs to act on rather than just
       // display — the duplicate-account 409 returns the matching accounts so the
       // picker can open. The message alone would throw that away.
-      throw Object.assign(new ApiError(parsedError || text), { status: response.status, body });
+      //
+      // A validation refusal names the boxes that failed (2026-09-22): "Validation failed" on its
+      // own is unactionable, so the fields ride in the message — "Email: Invalid email".
+      throw Object.assign(new ApiError(fieldMessage(body) ?? parsedError ?? text), {
+        status: response.status,
+        body,
+      });
     }
     throw Object.assign(new ApiError(`Request failed: ${response.status}`), { status: response.status });
   }
@@ -904,7 +925,7 @@ export const api = {
     if (opts?.durationMinutes) query.set("durationMinutes", String(opts.durationMinutes));
     return request<{ date: string; techs: TechDayAvailability[] }>(`/crm/schedule/tech-availability?${query.toString()}`);
   },
-  rescheduleJob: (jobId: string, input: { newStartDate: string; newStartTime?: string; endDate?: string; endTime?: string; reason: string }) =>
+  rescheduleJob: (jobId: string, input: { newStartDate: string; newStartTime?: string; endDate?: string; endTime?: string; reason: string; technicianId?: string }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/reschedule`, { method: "POST", body: JSON.stringify(input) }),
   /** Ride along on an already-scheduled visit at the same account (Kyle, 2026-09-06). */
   coScheduleJob: (jobId: string, withJobId: string) =>
@@ -1144,10 +1165,6 @@ export const api = {
   receipt: (receiptId: string) => request<ReceiptRecord>(`/health-record-admin/receipts/${receiptId}`),
   /** Remove a receipt (duplicate upload); the server re-rolls the job total. */
   deleteReceipt: (receiptId: string) => request<void>(`/health-record-admin/receipts/${receiptId}`, { method: "DELETE" }),
-  /** Cancels the PO (the number is never reused; the trail stays). */
-  deletePurchaseOrder: (jobId: string, orderId: string) =>
-    request<void>(`/jobs/${jobId}/purchase-orders/${orderId}`, { method: "DELETE" }),
-
   // ─── Purchase orders — the document (Kyle, 2026-09-09) ─────────────────────
   purchaseOrders: (params: { status?: string; truckId?: string; jobId?: string } = {}) => {
     const q = new URLSearchParams();
@@ -1298,6 +1315,12 @@ export const api = {
   /** Warehouse → truck. The from side is always the warehouse (Kyle's rule). */
   transferStock: (input: { itemId: string; qty: number; toTruckId: string; reason?: string | null }) =>
     request<StockMovementView>("/inventory/transfer", { method: "POST", body: JSON.stringify(input) }),
+  /**
+   * Material going back to the supplier — office side, any location (2026-09-22, supplier
+   * returns Unit 3). Priced at that location's own moving average; reason required, PO optional.
+   */
+  supplierReturn: (input: { itemId: string; qty: number; fromLocationKey: string; purchaseOrderId?: string | null; reason: string }) =>
+    request<StockMovementView>("/inventory/supplier-return", { method: "POST", body: JSON.stringify(input) }),
   countStock: (input: { locationKey: string; reason: string; lines: { itemId: string; name?: string | null; unit?: string | null; qty: number; unitCost?: number | null }[] }) =>
     request<StockMovementView[]>("/inventory/count", { method: "POST", body: JSON.stringify(input) }),
   correctMovement: (input: { correctsId: string; delta: number; unitCost?: number | null; reason: string }) =>

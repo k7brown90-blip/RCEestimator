@@ -17,7 +17,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { AttachProofButton } from "../components/PurchaseOrders";
+import { AttachProofButton, useLivePurchaseOrders } from "../components/PurchaseOrders";
 import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
@@ -184,6 +184,7 @@ function TruckDetailPanel({ truck, year, technicians }: { truck: TruckRow; year:
       )}
 
       <NeedingReceipt rows={detail.needingReceipt} />
+      <RefundsNotOnPo rows={detail.ledger.find((k) => k.kind === "materials")?.rows ?? []} />
 
       <div>
         <p className="font-semibold uppercase tracking-wide text-rce-soft">Ledger {year}</p>
@@ -330,6 +331,62 @@ function TruckSettings({ truck, technicians }: { truck: TruckRow; technicians: {
   );
 }
 
+/**
+ * Put a card-spend row on a P.O. by hand (2026-09-22, supplier returns Unit 3). Kyle
+ * choosing the P.O., never a guess at ingest — used both by the ledger row's edit form
+ * (a row with no P.O. yet) and by the "Refunds not on a P.O." queue below, so the queue
+ * can be emptied from wherever it is shown. The 30-day/same-merchant matcher
+ * (cardSpend.ts:310-335) is untouched; this is only the hand path for what it misses.
+ */
+function AttachToPo({ row }: { row: CardSpendRow }) {
+  const refresh = useTruckRefresh();
+  const { data: orders = [] } = useLivePurchaseOrders();
+  const [poId, setPoId] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const attach = useMutation({
+    mutationFn: (reason: string) => api.updateCardSpend(row.id, { purchaseOrderId: poId, reason }),
+    onSuccess: () => { setError(null); setPoId(""); refresh(); },
+    onError: (err) => setError((err as Error).message),
+  });
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <select className="field px-1 py-0.5 text-xs" value={poId} onChange={(e) => setPoId(e.target.value)}>
+        <option value="">Attach to P.O.…</option>
+        {orders.map((o) => <option key={o.id} value={o.id}>{o.number} · {o.supplier}</option>)}
+      </select>
+      <ReasonRow label="Attach" busy={attach.isPending || !poId} onSubmit={(reason) => attach.mutate(reason)} onCancel={() => setPoId("")} />
+      {error && <span className="w-full text-red-600">{error}</span>}
+    </span>
+  );
+}
+
+// ─── Refunds not on a P.O. ─────────────────────────────────────────────────────
+
+/**
+ * A negative materials swipe (a refund) that missed the 30-day/same-merchant matcher and
+ * has no P.O. — `needsProof` deliberately skips negative amounts (cardSpend.ts:772), so
+ * without this list a stranded refund sits in no queue and silently credits nothing.
+ */
+function RefundsNotOnPo({ rows }: { rows: CardSpendRow[] }) {
+  const refunds = rows.filter((r) => r.kind === "materials" && r.amount < 0 && r.status !== "ignored" && !r.purchaseOrderId);
+  return (
+    <div>
+      <p className="font-semibold uppercase tracking-wide text-amber-800">Refunds not on a P.O. ({refunds.length})</p>
+      {refunds.length === 0 && <p className="text-rce-muted">Every refund is on a P.O.</p>}
+      <ul className="mt-1 space-y-1">
+        {refunds.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-200 bg-amber-50/40 px-2 py-1">
+            <span className="min-w-0">
+              <span className="font-medium">{r.merchantName}</span> · <span className="tabular-nums">{money(r.amount)}</span> · {shortDate(r.occurredAt)}
+            </span>
+            <AttachToPo row={r} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ─── Card spend needing a receipt ─────────────────────────────────────────────
 
 function NeedingReceipt({ rows }: { rows: CardSpendRow[] }) {
@@ -443,6 +500,9 @@ function LedgerRow({ row }: { row: CardSpendRow }) {
             {row.purchaseOrderId && (
               <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => { const reason = window.prompt(`Reason for taking this charge off ${row.purchaseOrderNumber ?? "its P.O."}?`); if (reason?.trim()) patch.mutate({ purchaseOrderId: null, reason: reason.trim() }); }}>unlink from P.O.</button>
             )}
+            {/* Setting a P.O. (2026-09-22, supplier returns Unit 3): a refund that missed the
+                auto-matcher gets put on one by hand, right here, not only cleared. */}
+            {!row.purchaseOrderId && <AttachToPo row={row} />}
           </span>
         )}
         {error && <span className="block text-red-600">{error}</span>}

@@ -4838,12 +4838,17 @@ app.post("/crm/jobs/:jobId/reschedule", asyncHandler(async (req, res) => {
     endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     endTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     reason: z.string().min(1),
+    // PUNCHLIST C8: the tech picker used to render only at first booking — rescheduling could
+    // change the date but never who was assigned. Optional and undefined means "leave the
+    // assignment alone", the same convention scheduleJob's technicianId already uses.
+    technicianId: z.string().min(1).optional(),
   }).parse(req.body);
 
   try {
     const result = await rescheduleJob(
       jobId, body.newStartDate, body.newStartTime ?? null, body.reason,
       body.endDate ? { date: body.endDate, time: body.endTime ?? null } : null,
+      body.technicianId ?? null,
     );
     res.json(result);
   } catch (err) {
@@ -6033,15 +6038,11 @@ app.post("/jobs/:jobId/return", asyncHandler(async (req, res) => {
 // list D5): one create door, `jobId` in the body. The job screen calls the same route the
 // Purchases card does. The field app's own create lives under /health-record and is untouched.
 
-/** "Delete" from the job screen CANCELS — a number is never reused and the trail stays. */
-app.delete("/jobs/:jobId/purchase-orders/:orderId", asyncHandler(async (req, res) => {
-  const po = await prisma.purchaseOrder.findFirst({
-    where: { id: readParam(req, "orderId"), jobId: readParam(req, "jobId") }, select: { id: true },
-  });
-  if (!po) { res.status(404).json({ error: "Purchase order not found on this job" }); return; }
-  await transitionPurchaseOrder(po.id, "cancelled", { actor: "owner", reason: "Removed from the job screen" });
-  res.status(204).end();
-}));
+// `DELETE /jobs/:jobId/purchase-orders/:orderId` was retired (PUNCHLIST K3, 2026-09-22): it
+// cancelled with a canned reason ("Removed from the job screen") behind a client-side
+// window.confirm, duplicating `POST /purchase-orders/:id/status` — which the P.O. drawer already
+// used and which requires a TYPED reason. The job screen now calls that one route too; nothing
+// else called the DELETE door.
 
 // ─── PURCHASE ORDERS (Kyle, 2026-09-09) ─────────────────────────────────────
 //
@@ -6179,7 +6180,8 @@ app.delete("/purchase-orders/:id/lines/:lineId", asyncHandler(async (req, res) =
 app.patch("/purchase-orders/:id/money", asyncHandler(async (req, res) => {
   const body = z.object({
     reason: poReasonSchema,
-    offCardAmount: z.number().nonnegative().nullable().optional(),
+    // A cash/store-credit refund on a supplier return is negative money (2026-09-22).
+    offCardAmount: z.number().nullable().optional(),
     offCardMethod: z.enum(OFF_CARD_METHODS).nullable().optional(),
     offCardNote: z.string().trim().max(500).nullable().optional(),
     offCardAt: z.string().nullable().optional(),
@@ -9309,10 +9311,11 @@ app.use((err: unknown, req: express.Request, res: express.Response, _next: expre
   const includeDetails = process.env.NODE_ENV !== "production";
 
   if (err instanceof z.ZodError) {
-    res.status(400).json({
-      error: "Validation failed",
-      details: includeDetails ? err.flatten() : undefined,
-    });
+    // Details ALWAYS, production included (Kyle, 2026-09-22: "validation failed" with nothing else
+    // left him unable to create an account and with no way to find out why). A Zod error describes
+    // the caller's OWN payload — field names and "Invalid email" — so it leaks nothing about the
+    // system; hiding it only hides which box to fix.
+    res.status(400).json({ error: "Validation failed", details: err.flatten() });
     return;
   }
 

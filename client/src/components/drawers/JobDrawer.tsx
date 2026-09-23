@@ -19,6 +19,7 @@ import { shortDate } from "../../lib/utils";
 import { Drawer } from "../Drawer";
 import { JobCloseoutPanel } from "../JobCloseoutPanel";
 import { JobScheduler } from "../JobScheduler";
+import { OpenDrawerButton } from "./OpenDrawerButton";
 import { PaymentPanel } from "../PaymentPanel";
 import { SendEmailPanel } from "../SendEmailPanel";
 import { StatusBadge } from "../StatusBadge";
@@ -39,6 +40,19 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
     enabled: Boolean(estimateId),
   });
   const hasAcceptedEstimate = estimate?.status === "accepted";
+  // The SIGNED invoice that owns this job (root, not the legacy record above) — same
+  // ["paymentInfo", visitId] cache PaymentPanel already fills below, so this costs no second
+  // fetch. PUNCHLIST K7: the estimate drawer already opens the job (its "Job" button); nothing
+  // opened the estimate from here.
+  // A variable key, like PaymentPanel's own ["paymentInfo", jobId ?? estimateId] — both read the
+  // SAME PaymentInfo shape off either id (tests/queryKeyCollisions.test.ts only flags a shape
+  // mismatch under one literal key; jobPaymentInfo/estimatePaymentInfo share a return type).
+  const paymentInfoKey = ["paymentInfo", visitId];
+  const { data: paymentInfo } = useQuery({
+    queryKey: paymentInfoKey,
+    queryFn: () => api.jobPaymentInfo(visitId),
+    enabled: Boolean(visitId),
+  });
 
   const refreshVisit = () => {
     void queryClient.invalidateQueries({ queryKey: ["visit", visitId] });
@@ -96,6 +110,9 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
               <Link to={`/accounts/${visit.customerId}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
                 {visit.customer?.name ?? "Account"} →
               </Link>
+            )}
+            {paymentInfo?.estimateId && (
+              <OpenDrawerButton kind="estimate" id={paymentInfo.estimateId} onOpen={drawers.open} label="Estimate" />
             )}
             {!hasAcceptedEstimate && !editing && (
               <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={startEdit}>Edit details</button>

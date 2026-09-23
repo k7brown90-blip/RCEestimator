@@ -33,6 +33,7 @@ import {
   PoStatusPill,
   PurchasesCard,
   poNeedsProof,
+  useLandedPurchaseOrders,
   useLivePurchaseOrders,
   usePendingReviewReceipts,
   useReceiptsNeedingPo,
@@ -57,6 +58,9 @@ const KIND_LABEL: Record<StockMovementView["kind"], string> = {
   transfer: "transfer",
   consume: "consume",
   return: "return",
+  // Truck/warehouse → the store (2026-09-22, supplier returns). NOT "return" — that kind
+  // means job → truck and the two must never read alike in the ledger.
+  supplier_return: "returned to store",
   count: "count",
   correction: "correction",
 };
@@ -601,18 +605,30 @@ function LocationCard({ title, subtitle, locationKey, levels, value, trucks, isW
 
 function LevelRow({ level, locationKey, trucks, isWarehouse }: { level: StockLevelView; locationKey: string; trucks: InventoryTruck[]; isWarehouse: boolean }) {
   const refresh = useInventoryRefresh();
-  const [mode, setMode] = useState<"view" | "transfer" | "adjust" | "history">("view");
+  const [mode, setMode] = useState<"view" | "transfer" | "adjust" | "return" | "history">("view");
   const [error, setError] = useState<string | null>(null);
   const [parEditing, setParEditing] = useState(false);
   const [par, setPar] = useState(level.parLevel == null ? "" : String(level.parLevel));
   const [truckId, setTruckId] = useState(trucks[0]?.truck.id ?? "");
   const [qty, setQty] = useState("");
+  const [returnPoId, setReturnPoId] = useState("");
+  // Recent P.O.s for the optional "put this refund on a P.O." pick — stock here got here
+  // by LANDING, so this needs the landed list (components/PurchaseOrders.tsx), never the
+  // open+purchased list the receipt/refund pickers use — those are close to the exact
+  // complement of what a returns desk needs (defect fix, 2026-09-22).
+  const { data: recentPos = [] } = useLandedPurchaseOrders();
   const onError = (err: unknown) => setError((err as Error).message);
-  const done = () => { setError(null); setMode("view"); setQty(""); refresh(); };
+  const done = () => { setError(null); setMode("view"); setQty(""); setReturnPoId(""); refresh(); };
   const setParLevel = useMutation({ mutationFn: (value: number | null) => api.setParLevel(level.id, value), onSuccess: () => { setError(null); setParEditing(false); refresh(); }, onError });
   const transfer = useMutation({ mutationFn: (reason: string) => api.transferStock({ itemId: level.itemId, qty: Number(qty), toTruckId: truckId, reason }), onSuccess: done, onError });
   const adjust = useMutation({ mutationFn: (reason: string) => api.countStock({ locationKey, reason, lines: [{ itemId: level.itemId, name: level.name, unit: level.unit, qty: Number(qty) }] }), onSuccess: done, onError });
+  const supplierReturn = useMutation({
+    mutationFn: (reason: string) => api.supplierReturn({ itemId: level.itemId, qty: Number(qty), fromLocationKey: locationKey, purchaseOrderId: returnPoId || null, reason }),
+    onSuccess: done,
+    onError,
+  });
   const qtyOk = Number.isFinite(Number(qty)) && Number(qty) >= 0 && qty.trim() !== "";
+  const returnQtyOk = Number.isFinite(Number(qty)) && Number(qty) > 0 && qty.trim() !== "";
   return (
     <>
       <tr className={`border-t border-rce-border/60 ${level.low ? "bg-amber-50/60" : ""}`}>
@@ -638,6 +654,7 @@ function LevelRow({ level, locationKey, trucks, isWarehouse }: { level: StockLev
         <td className="py-1 text-right text-xs">
           <span className="inline-flex gap-2 whitespace-nowrap">
             {isWarehouse && <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode(mode === "transfer" ? "view" : "transfer")}>Transfer to truck</button>}
+            <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode(mode === "return" ? "view" : "return")}>Returned to store</button>
             <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode(mode === "adjust" ? "view" : "adjust")}>Adjust</button>
             <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setMode(mode === "history" ? "view" : "history")}>{mode === "history" ? "hide history" : "history"}</button>
           </span>
@@ -664,6 +681,18 @@ function LevelRow({ level, locationKey, trucks, isWarehouse }: { level: StockLev
                 <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" placeholder={qtyText(level.qtyOnHand)} value={qty} onChange={(e) => setQty(e.target.value)} />
                 <span>{level.unit ?? ""} (book says {qtyText(level.qtyOnHand)}) — a count movement; the average cost stays</span>
                 <ReasonRow label="Adjust" busy={adjust.isPending || !qtyOk} onSubmit={(reason) => adjust.mutate(reason)} onCancel={() => setMode("view")} />
+              </span>
+            )}
+            {mode === "return" && (
+              <span className="inline-flex flex-wrap items-center gap-1">
+                <span>Returned</span>
+                <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" placeholder={qtyText(level.qtyOnHand)} value={qty} onChange={(e) => setQty(e.target.value)} />
+                <span>{level.unit ?? ""} to the store at {unitMoney(level.avgUnitCost)} · {qtyText(level.qtyOnHand)} on hand</span>
+                <select className="field px-1 py-0.5 text-xs" value={returnPoId} onChange={(e) => setReturnPoId(e.target.value)}>
+                  <option value="">No P.O. (refund unattached)</option>
+                  {recentPos.map((po) => <option key={po.id} value={po.id}>{po.number} · {po.supplier}</option>)}
+                </select>
+                <ReasonRow label="Return to store" busy={supplierReturn.isPending || !returnQtyOk} onSubmit={(reason) => supplierReturn.mutate(reason)} onCancel={() => setMode("view")} />
               </span>
             )}
             {mode === "history" && <History itemId={level.itemId} locationKey={locationKey} />}

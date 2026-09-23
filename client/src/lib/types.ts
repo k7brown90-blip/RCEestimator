@@ -1188,7 +1188,7 @@ export type SweepView = {
 // I can label some stock as truckstock and it won't double count the cost."
 // Locations are string keys: "warehouse" | "truck:<truckId>".
 
-export type MovementKind = "purchase_in" | "transfer" | "consume" | "return" | "count" | "correction";
+export type MovementKind = "purchase_in" | "transfer" | "consume" | "return" | "supplier_return" | "count" | "correction";
 
 export type StockLevelView = {
   id: string;

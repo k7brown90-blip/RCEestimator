@@ -107,6 +107,28 @@ export function useLivePurchaseOrders() {
   });
 }
 
+/**
+ * Landed POs — what a "Returned to store" picker should offer (defect fix,
+ * 2026-09-22). Stock sitting on a truck or in the warehouse got there by
+ * LANDING, not by being "live" in the open/purchased sense: `useLivePurchaseOrders`
+ * is close to the exact complement of what a returns desk needs. `landedAt != null`
+ * is the test for "this material was received" — a closed PO that landed is a
+ * perfectly good return target; an open PO never is. Own queryKey so this never
+ * collides with useLivePurchaseOrders' cache entry (ReceiptPoPicker and the
+ * refund-attach picker on TrucksPage keep using that one, untouched, per the
+ * 2026-09-12 ruling above).
+ */
+export function useLandedPurchaseOrders() {
+  return useQuery({
+    queryKey: ["purchase-orders", "landed"],
+    queryFn: () => api.purchaseOrders({ status: "purchased,verified,closed" }),
+    select: (data) =>
+      data
+        .filter((po) => po.landedAt)
+        .sort((a, b) => new Date(b.landedAt as string).getTime() - new Date(a.landedAt as string).getTime()),
+  });
+}
+
 const VERIFIED_RECENCY_DAYS = 7;
 
 /**
@@ -584,7 +606,9 @@ export function PurchasesCard() {
 
 // ─── Detail panel: lines, trail, receipts, actions ────────────────────────────
 
-function ReasonRow({ label, busy, onSubmit, onCancel }: { label: string; busy: boolean; onSubmit: (reason: string) => void; onCancel: () => void }) {
+/** Exported (PUNCHLIST K3) so the job screen's own P.O. cancel can ask for a typed reason
+    through the same widget the P.O. drawer uses, instead of carrying a second, canned one. */
+export function ReasonRow({ label, busy, onSubmit, onCancel }: { label: string; busy: boolean; onSubmit: (reason: string) => void; onCancel: () => void }) {
   const [reason, setReason] = useState("");
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
@@ -810,7 +834,7 @@ function PoMoney({ po }: { po: PurchaseOrderDetail }) {
           </select>
           <input className="field px-1 py-0.5 text-xs" type="date" value={at} onChange={(e) => setAt(e.target.value)} title="When it was paid — the P&L month" />
           <input className="field w-44 px-1 py-0.5 text-xs" placeholder="Note" value={note} onChange={(e) => setNote(e.target.value)} />
-          {Number(amount) >= 0 && amount.trim() !== ""
+          {Number.isFinite(Number(amount)) && amount.trim() !== ""
             ? <ReasonRow label="Save" busy={save.isPending} onSubmit={(reason) => save.mutate({ reason })} onCancel={() => setTyping(false)} />
             : <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setTyping(false)}>cancel</button>}
         </div>

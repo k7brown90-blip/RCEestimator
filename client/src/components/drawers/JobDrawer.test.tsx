@@ -9,7 +9,8 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../../test/renderWithProviders";
 import { DrawerHost } from "./DrawerHost";
 import { api } from "../../lib/api";
-import type { JobMaterialsView, Visit } from "../../lib/types";
+import type { PaymentInfo } from "../../lib/api";
+import type { JobMaterialsView, PbIssuedEstimate, Visit } from "../../lib/types";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -34,6 +35,12 @@ const materials = {
   jobId: "visit-1", truck: { id: "truck-1", name: "Truck 12" }, estimate: null, suggested: [], shortages: [], lines: [],
   stock: null, receipts: [], materialCost: 0, materialSource: "none", po: null, estimateMaterial: null,
 } as unknown as JobMaterialsView;
+
+const paymentInfo = {
+  estimateId: "est-1", number: "EST-2026-0001", billedTotal: 4200, depositDue: 0, depositRequired: false,
+  documents: [], depositPaid: 0, totalPaid: 0, balance: 4200, depositSatisfied: true, paidInFull: false,
+  payUrl: "", depositPayUrl: "", stripeConfigured: false, payments: [],
+} as unknown as PaymentInfo;
 
 describe("JobDrawer", () => {
   it("shows a consultation-stage visit with its scheduler and no close-out", async () => {
@@ -103,5 +110,32 @@ describe("JobDrawer", () => {
     await waitFor(() => expect(api.purchaseOrder).toHaveBeenCalledWith("po-1"));
     expect(screen.getByTestId("location")).toHaveTextContent("?job=visit-1&po=po-1");
     expect(await screen.findByRole("dialog", { name: "PO-2026-0001" })).toBeInTheDocument();
+  });
+
+  it("PUNCHLIST K7: opens the invoice's estimate drawer from the job — the door the estimate drawer already had in reverse", async () => {
+    vi.spyOn(api, "visit").mockResolvedValue(visit("contracted"));
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paymentInfo);
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
+    vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([]);
+    vi.spyOn(api, "receiptsNeedingPo").mockResolvedValue([]);
+    vi.spyOn(api, "landingDefaults").mockRejectedValue(new Error("not in this test"));
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({
+      estimate: { id: "est-1", draftId: "draft-1", customerId: "cust-1", serviceAddressId: "prop-1", number: "EST-2026-0001", revision: 1,
+        status: "signed", title: "Panel upgrade", customerName: "Jane Homeowner", customerEmail: "jane@example.com",
+        serviceAddress: "12 Main St, Smyrna", billedTotal: 4200, total: 4200, createdAt: "2026-09-10T12:00:00.000Z",
+        sentAt: "2026-09-10T12:00:00.000Z", sentTo: "jane@example.com", firstViewedAt: null,
+        signedAt: "2026-09-12T12:00:00.000Z", signerName: "Jane", jobVisitId: "visit-1",
+      } as PbIssuedEstimate,
+    });
+
+    renderWithProviders(<><DrawerHost /><LocationProbe /></>, { route: "/jobs?job=visit-1" });
+
+    const estimateDoor = await screen.findByRole("button", { name: "Estimate" });
+    fireEvent.click(estimateDoor);
+
+    await waitFor(() => expect(api.estimateRecord).toHaveBeenCalledWith("est-1"));
+    expect(screen.getByTestId("location")).toHaveTextContent("?job=visit-1&estimate=est-1");
+    expect(await screen.findByRole("dialog", { name: "Panel upgrade" })).toBeInTheDocument();
   });
 });

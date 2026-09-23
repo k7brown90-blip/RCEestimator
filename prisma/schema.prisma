@@ -2001,7 +2001,7 @@ model StockLevel {
 
 model StockMovement {
   id                  String         @id @default(cuid())
-  kind                String // purchase_in | transfer | consume | return | count | correction
+  kind                String // purchase_in | transfer | consume | return | supplier_return | count | correction
   itemId              String
   name                String
   unit                String?

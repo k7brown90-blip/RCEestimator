@@ -81,23 +81,26 @@ describe("EstimatesPage", () => {
   it("opens with its own attention strip: bounced first, then quotes stale for 7+ days (2026-09-20)", async () => {
     const day = 24 * 60 * 60 * 1000;
     const daysAgo = (n: number) => new Date(Date.now() - n * day).toISOString();
+    // PUNCHLIST H4: staleness is measured from createdAt now, not sentAt — these fixtures set
+    // both to the same age (issued and sent the same day) so the scenario is unaffected by the
+    // fix; the divergent case (issued long before it was sent) is its own test below.
     vi.spyOn(api, "estimateChain").mockResolvedValue({
       estimates: [
         // Fresh — sent yesterday. Not stale.
-        row({ id: "e-fresh", number: "EST-2026-0001", status: "sent", sentAt: daysAgo(1), account: { id: "a1", name: "Fresh Sent", isTestAccount: false } }),
+        row({ id: "e-fresh", number: "EST-2026-0001", status: "sent", createdAt: daysAgo(1), sentAt: daysAgo(1), account: { id: "a1", name: "Fresh Sent", isTestAccount: false } }),
         // Stale — sent 10 days ago, never opened.
-        row({ id: "e-stale", number: "EST-2026-0002", status: "sent", sentAt: daysAgo(10), account: { id: "a2", name: "Stale Sent", isTestAccount: false } }),
+        row({ id: "e-stale", number: "EST-2026-0002", status: "sent", createdAt: daysAgo(10), sentAt: daysAgo(10), account: { id: "a2", name: "Stale Sent", isTestAccount: false } }),
         // Opened 12 days ago, unsigned.
-        row({ id: "e-viewed", number: "EST-2026-0003", status: "viewed", sentAt: daysAgo(12), account: { id: "a3", name: "Stale Viewed", isTestAccount: false } }),
+        row({ id: "e-viewed", number: "EST-2026-0003", status: "viewed", createdAt: daysAgo(12), sentAt: daysAgo(12), account: { id: "a3", name: "Stale Viewed", isTestAccount: false } }),
         // Bounced — never arrived, whatever its age.
         row({
-          id: "e-bounced", number: "EST-2026-0004", status: "sent", sentAt: daysAgo(2),
+          id: "e-bounced", number: "EST-2026-0004", status: "sent", createdAt: daysAgo(2), sentAt: daysAgo(2),
           account: { id: "a4", name: "Bounced Bob", isTestAccount: false },
           lastBounceAt: daysAgo(2), lastBounceReason: "mailbox full",
         }),
         // Bounced once, delivered since — resolved, not in the strip.
         row({
-          id: "e-redelivered", number: "EST-2026-0005", status: "sent", sentAt: daysAgo(3),
+          id: "e-redelivered", number: "EST-2026-0005", status: "sent", createdAt: daysAgo(3), sentAt: daysAgo(3),
           account: { id: "a5", name: "Redelivered Rita", isTestAccount: false },
           lastBounceAt: daysAgo(3),
           lastDelivery: { provider: "resend", status: "delivered", statusAt: daysAgo(1), to: "rita@example.com", error: null, createdAt: daysAgo(1) },
@@ -122,7 +125,7 @@ describe("EstimatesPage", () => {
 
   it("shows no strip when every quote is fresh and delivered", async () => {
     vi.spyOn(api, "estimateChain").mockResolvedValue({
-      estimates: [row({ id: "e-fresh", status: "sent", sentAt: new Date().toISOString() })],
+      estimates: [row({ id: "e-fresh", status: "sent", createdAt: new Date().toISOString(), sentAt: new Date().toISOString() })],
     });
 
     renderWithProviders(<EstimatesPage />);
@@ -148,5 +151,27 @@ describe("EstimatesPage", () => {
     expect(await screen.findByRole("heading", { name: "Sent (0)" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Sold (0)" })).toBeInTheDocument();
     expect(screen.queryByText("Jane Homeowner")).not.toBeInTheDocument();
+  });
+
+  it("PUNCHLIST A10: reads 'expired' from createdAt, the same clock the server's signature refusal uses — not sentAt", async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const daysAgo = (n: number) => new Date(Date.now() - n * day).toISOString();
+    vi.spyOn(api, "estimateChain").mockResolvedValue({
+      estimates: [
+        // Issued 31 days ago but only emailed 2 days ago — validDays 30. The OLD sentAt-based
+        // rule read this as good for 28 more days; the server's createdAt-based rule (and the
+        // signature refusal it backs) already considers it expired. The tracker must agree.
+        row({ id: "e-stale-draft", number: "EST-2026-0009", status: "sent", createdAt: daysAgo(31), sentAt: daysAgo(2), validDays: 30 }),
+        // A normal, still-live quote for contrast — issued and sent together, well inside 30 days.
+        row({ id: "e-live", number: "EST-2026-0010", status: "sent", createdAt: daysAgo(5), sentAt: daysAgo(5), validDays: 30, account: { id: "a-live", name: "Live Sent", isTestAccount: false } }),
+      ],
+    });
+
+    renderWithProviders(<EstimatesPage />);
+
+    // Expired leaves the Sent count and sits behind the hidden toggle instead.
+    expect(await screen.findByRole("heading", { name: "Sent (1)" })).toBeInTheDocument();
+    expect(screen.getByText(/Show drafts \/ expired \/ void \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText("Live Sent")).toBeInTheDocument();
   });
 });

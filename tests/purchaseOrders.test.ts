@@ -300,6 +300,22 @@ describe("attaching a receipt", () => {
     expect(list.body[0].receiptCount).toBe(1);
   });
 
+  it("PUNCHLIST K3: DELETE /jobs/:jobId/purchase-orders/:orderId is retired — cancel goes through POST /purchase-orders/:id/status with a typed reason", async () => {
+    const created = await request(app).post("/purchase-orders").send({ supplier: "PO-test K3 Depot", jobId });
+    expect(created.status).toBe(201);
+    const poId = created.body.id as string;
+
+    const gone = await request(app).delete(`/jobs/${jobId}/purchase-orders/${poId}`);
+    expect(gone.status).toBe(404);
+
+    const noReason = await request(app).post(`/purchase-orders/${poId}/status`).send({ to: "cancelled" });
+    expect(noReason.status).toBe(400);
+
+    const cancelled = await request(app).post(`/purchase-orders/${poId}/status`).send({ to: "cancelled", reason: "Job screen test cancel" });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.status).toBe("cancelled");
+  });
+
 });
 
 describe("PUT /purchase-orders/:id/receipts/:receiptId accepts PDFs (Unit R, 2026-09-17)", () => {

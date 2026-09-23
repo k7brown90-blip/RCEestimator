@@ -322,6 +322,7 @@ export function CalendarPage() {
                 scheduledEnd={"scheduledEnd" in rescheduling ? rescheduling.scheduledEnd : null}
                 durationDays={rescheduling.estimatedDurationDays}
                 pickedDate={pickedDate}
+                onClose={stopScheduling}
                 onScheduled={(result) => {
                   stopScheduling();
                   setLastBooking(result ?? null);

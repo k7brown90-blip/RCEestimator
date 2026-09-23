@@ -330,6 +330,40 @@ describe("the roll — land 250 ft @0.72", () => {
     expect(summary.body.materials.months[now.getMonth()]).toEqual(month);
   });
 
+  it("a supplier_return moves `bought` down, never `used`, and the replay's inventory value drops with it", async () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const before = await request(app).get(`/financials/materials?year=${year}`);
+    const beforeMonth = before.body.months[now.getMonth()];
+
+    const sr = await request(app).post("/inventory/supplier-return").send({
+      itemId: WIRE, qty: 20, fromLocationKey: truckKey, reason: "Extra spool going back to the supplier",
+    });
+    expect(sr.status).toBe(201);
+    expect(sr.body.kind).toBe("supplier_return");
+    expect(sr.body.unitCost).toBe(0.72); // the truck's own moving average, not a PO line's cost
+    expect((await level(truckKey, WIRE))!.qtyOnHand).toBe(80);
+
+    const after = await request(app).get(`/financials/materials?year=${year}`);
+    const month = after.body.months[now.getMonth()];
+    expect(month.used).toBe(beforeMonth.used); // material was un-bought, never consumed — `used` does not move
+    expect(r2(beforeMonth.bought - month.bought)).toBe(14.4); // 20 ft × 0.72 comes off `bought`
+    expect(r2(beforeMonth.inventoryValue - month.inventoryValue)).toBe(14.4); // the replay learns the new kind too
+
+    // Undo it: this file's later tests ("the truck is short") assume the truck fixture is
+    // back at exactly 100 ft of WIRE. A correction reverses a supplier_return with no new
+    // code, and pins that the correction lands back on `bought` too (financials.ts).
+    const undo = await request(app).post("/inventory/correction").send({
+      correctsId: sr.body.id, delta: -20, reason: "Test cleanup — keep the shared truck fixture at 100 ft for later tests",
+    });
+    expect(undo.status).toBe(201);
+    expect((await level(truckKey, WIRE))!.qtyOnHand).toBe(100);
+    const restored = await request(app).get(`/financials/materials?year=${year}`);
+    const restoredMonth = restored.body.months[now.getMonth()];
+    expect(restoredMonth.bought).toBe(beforeMonth.bought); // the correction lands on `bought` too
+    expect(restoredMonth.inventoryValue).toBe(beforeMonth.inventoryValue);
+  });
+
   it("GET /jobs, the account summary and job-profitability agree on a P.O.-costed job", async () => {
     const year = new Date().getFullYear();
     const [jobs, summary, profit] = await Promise.all([

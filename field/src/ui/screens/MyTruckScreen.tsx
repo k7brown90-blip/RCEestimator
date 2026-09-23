@@ -17,8 +17,11 @@ import {
   requestRestock,
   requireSignal,
   searchStockItems,
+  supplierReturnFromField,
   type FieldMyTruck,
+  type FieldPurchaseOrder,
   type FieldStockItem,
+  type FieldStockLevel,
   type FieldTool,
 } from '../../lib/crmSync'
 import { LandPoForm } from '../components/LandPoForm'
@@ -109,14 +112,16 @@ export function MyTruckScreen({ onBack }: { onBack: () => void }) {
         {levels.length > 0 && (
           <table className="w-full text-xs">
             <thead className="text-left text-[10px] uppercase text-slate-500">
-              <tr><th>Item</th><th className="text-right">On hand</th></tr>
+              <tr><th>Item</th><th className="text-right">On hand</th><th /></tr>
             </thead>
             <tbody>
               {visibleStock.map((l) => (
-                <tr key={l.id} className={`border-t border-slate-700 ${l.low ? 'text-amber-200' : 'text-slate-200'}`}>
-                  <td className="py-1 pr-2">{l.name}{l.low ? ' · low' : ''}</td>
-                  <td className="py-1 text-right tabular-nums">{qtyText(l.qtyOnHand)} {l.unit ?? ''}</td>
-                </tr>
+                <StockRow
+                  key={l.id}
+                  level={l}
+                  pos={data?.recentLandedPos ?? []}
+                  onReturned={(msg) => { setBanner(msg); load() }}
+                />
               ))}
             </tbody>
           </table>
@@ -248,6 +253,96 @@ function RestockForm({ onSent }: { onSent: () => void }) {
       </div>
       {msg && <p className="text-xs text-slate-300">{msg}</p>}
     </div>
+  )
+}
+
+/**
+ * "Returned to store" (2026-09-22): truck → the supplier, off THIS truck only
+ * — the request carries no location, so it can never be aimed elsewhere.
+ * Reason required; P.O. optional, offered from this truck's recently LANDED
+ * POs (`recentLandedPos`) — stock on the truck got there by landing, not by
+ * being unlanded, so `unlandedPos` (purchased-but-not-received) is the wrong
+ * list here; that one still feeds the landing flow above. Copies the
+ * tool-move row's expand/collapse shape.
+ */
+function StockRow({ level, pos, onReturned }: { level: FieldStockLevel; pos: FieldPurchaseOrder[]; onReturned: (msg: string) => void }) {
+  const [returning, setReturning] = useState(false)
+  const [qty, setQty] = useState('1')
+  const [reason, setReason] = useState('')
+  const [poId, setPoId] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const submit = async () => {
+    if (!(Number(qty) > 0)) { setMsg('Quantity is needed.'); return }
+    if (!reason.trim()) { setMsg('A reason is required.'); return }
+    setBusy(true)
+    setMsg(null)
+    try {
+      requireSignal()
+      const r = await supplierReturnFromField({ itemId: level.itemId, qty: Number(qty), reason: reason.trim(), purchaseOrderId: poId || null })
+      onReturned(`✓ ${qtyText(r.qty)} ${level.unit ?? ''} ${level.name} returned to the store.`)
+      setReturning(false); setQty('1'); setReason(''); setPoId('')
+    } catch (err) {
+      // Show the server's own refusal (e.g. "Only 80 ft ... on hand") verbatim — never a guessed message.
+      setMsg(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <tr className={`border-t border-slate-700 ${level.low ? 'text-amber-200' : 'text-slate-200'}`}>
+        <td className="py-1 pr-2">{level.name}{level.low ? ' · low' : ''}</td>
+        <td className="py-1 text-right tabular-nums">{qtyText(level.qtyOnHand)} {level.unit ?? ''}</td>
+        <td className="py-1 pl-2 text-right">
+          <button type="button" className="text-[11px] text-sky-300 underline" onClick={() => setReturning((v) => !v)}>
+            {returning ? 'hide' : 'Return'}
+          </button>
+        </td>
+      </tr>
+      {returning && (
+        <tr className="border-t border-slate-800 bg-slate-900/40">
+          <td colSpan={3} className="p-2">
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  className="w-20 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white"
+                  inputMode="decimal"
+                  value={qty}
+                  onChange={(e) => setQty(e.target.value)}
+                />
+                <span className="self-center text-xs text-slate-400">{level.unit ?? ''}</span>
+                <select
+                  className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white"
+                  value={poId}
+                  onChange={(e) => setPoId(e.target.value)}
+                >
+                  <option value="">No P.O.</option>
+                  {pos.map((po) => <option key={po.id} value={po.id}>{po.number} · {po.supplier}</option>)}
+                </select>
+              </div>
+              <input
+                className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
+                placeholder="Reason (required)"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void submit()}
+                className="rounded-lg bg-amber-800 px-3 py-2 text-xs font-medium text-white disabled:opacity-40"
+              >
+                {busy ? 'Sending…' : 'Returned to store'}
+              </button>
+              {msg && <p className="text-xs text-red-200">{msg}</p>}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 

@@ -24,10 +24,27 @@ interface Props {
    * built-in one stays. `null` means "external mode, nothing picked yet".
    */
   pickedDate?: string | null;
+  /**
+   * PUNCHLIST H6: some hosts (the Calendar page's inline panel) render this component already
+   * open (`autoOpen`) inside their own bordered section with their own "Close" button above it.
+   * Without this, that section's "Back" fell through to `mode: "idle"`, which redraws THIS
+   * component's own idle action buttons inside that same panel — a second, different-looking
+   * exit next to the host's Close, neither of which agreed on what leaving meant. When a host
+   * passes `onClose`, every "Back"/"Cancel" affordance below calls it instead of going idle, so
+   * the panel has exactly one exit.
+   */
+  onClose?: () => void;
 }
 
-/** Everything a booking touches. Kept in one place so no call site forgets one. */
-const SCHEDULE_QUERY_KEYS = [["jobs"], ["visit"], ["leads"], ["calendar"], ["account"]];
+/**
+ * Everything a booking touches. Kept in one place so no call site forgets one.
+ *
+ * PUNCHLIST C13: this carried `["account"]` but the account page's own read is cached under
+ * `["account-summary"]` (AccountDetailPage.tsx) — scheduling from a drawer left that page
+ * showing the stale date until an unrelated refetch. `["account"]` is kept too since some
+ * callers may still read under it.
+ */
+const SCHEDULE_QUERY_KEYS = [["jobs"], ["visit"], ["leads"], ["calendar"], ["account"], ["account-summary"]];
 
 // Fixed 2-hour estimate blocks — same set Savannah's check_availability offers
 // so a slot picked in the CRM matches a slot picked over the phone. Kyle wants
@@ -65,7 +82,7 @@ function busyDuringBusinessHours(busy: TechDayAvailability["busy"]): TechDayAvai
   });
 }
 
-export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, completedAt, onScheduled, autoOpen, pickedDate }: Props) {
+export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, completedAt, onScheduled, autoOpen, pickedDate, onClose }: Props) {
   const queryClient = useQueryClient();
   // The host owns the date (Calendar page). Every `setSelectedDate` below still writes the
   // internal state — harmless in this mode, and it keeps the two modes on one code path.
@@ -150,12 +167,17 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   const rescheduleMutation = useMutation({
     mutationFn: () => api.rescheduleJob(jobId, {
       newStartDate: selectedDate!, newStartTime: startTime, reason,
+      // PUNCHLIST C8: rescheduling can change who does the work, not just when — the picker
+      // below now renders in this mode too. Omitted (not sent as null) when nothing was
+      // picked, which the service reads as "leave the current assignment alone".
+      technicianId: technicianId ?? undefined,
       ...(isEstimateVisit ? {} : { endDate: endDate ?? selectedDate!, endTime }),
     }),
     onSuccess: () => {
       invalidateAll();
       setMode("idle");
       setSelectedDate(null);
+      setTechnicianId(null);
       setReason("");
       setError(null);
       onScheduled?.();
@@ -298,7 +320,10 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
             >
               {cancelMutation.isPending ? "Cancelling..." : "Confirm Cancel"}
             </button>
-            <button onClick={() => { setMode("idle"); setReason(""); setError(null); }} className="btn text-sm">
+            <button
+              onClick={() => { if (onClose) onClose(); else setMode("idle"); setReason(""); setError(null); }}
+              className="btn text-sm"
+            >
               Back
             </button>
           </div>
@@ -471,11 +496,16 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
             )}
           </div>
 
-          {/* Tech picker — who actually takes this appointment. Availability
-              comes from each tech's own Google Calendar for the chosen date. */}
-          {mode === "schedule" && selectedDate && (
+          {/* Tech picker — who actually takes this appointment. Availability comes from each
+              tech's own Google Calendar for the chosen date. PUNCHLIST C8: this used to render
+              only in schedule mode, so a technician could not be changed after the first
+              booking — reschedule offers it too, and it's optional there ("leave it alone"
+              unless picked, service-side). */}
+          {(mode === "schedule" || mode === "reschedule") && selectedDate && (
             <div>
-              <p className="mb-1 text-xs font-medium text-rce-muted">Assign technician</p>
+              <p className="mb-1 text-xs font-medium text-rce-muted">
+                {mode === "reschedule" ? "Reassign technician (leave blank to keep as-is)" : "Assign technician"}
+              </p>
               {techQuery.isPending && <p className="text-xs text-rce-muted animate-pulse">Checking tech calendars…</p>}
               {techQuery.isError && (
                 <p className="text-xs text-red-600">Couldn't read tech calendars — you can still book without an assignment.</p>
@@ -543,7 +573,13 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
                 : "Reschedule"}
             </button>
             <button
-              onClick={() => { setMode("idle"); setSelectedDate(null); setReason(""); setError(null); }}
+              onClick={() => {
+                if (onClose) onClose();
+                else setMode("idle");
+                setSelectedDate(null);
+                setReason("");
+                setError(null);
+              }}
               className="btn text-sm"
             >
               Back

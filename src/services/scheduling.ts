@@ -509,6 +509,9 @@ export async function rescheduleJob(
   newStartTime: string | null,
   reason: string,
   end?: ScheduleEnd | null,
+  // PUNCHLIST C8: undefined/null means "leave the assignment alone" — the deposit gate and
+  // every customer-facing notification below are unchanged by this; only VisitAssignment moves.
+  technicianId?: string | null,
 ): Promise<ScheduleJobResult> {
   const job = await prisma.visit.findUnique({
     where: { id: jobId },
@@ -517,6 +520,12 @@ export async function rescheduleJob(
   if (!job) throw new Error("Job not found");
   if (!job.scheduledStart || !job.scheduledEnd) throw new Error("Job is not currently scheduled");
   if (!job.googleEventId) throw new Error("Job has no calendar event to reschedule");
+
+  // Resolved up front, same as scheduleJob — a bad id refuses before anything else moves.
+  const technician = technicianId
+    ? await prisma.technician.findUnique({ where: { id: technicianId }, select: { id: true, email: true, name: true } })
+    : null;
+  if (technicianId && !technician) throw new Error("Technician not found");
 
   // Preserve the original shape of the appointment — an estimate stays a 2-hour
   // block with its travel leeway; production work keeps its day count.
@@ -656,6 +665,29 @@ export async function rescheduleJob(
       reminderSentAt: null,
     },
   });
+
+  // Reassign, if a technician was named (PUNCHLIST C8: the picker used to appear only at first
+  // booking). VisitAssignment is unique per (visit, tech), so switching techs means releasing
+  // whoever else held the "primary" role before upserting the new one — otherwise the old tech
+  // stays listed as assigned alongside the new one instead of being replaced by them.
+  if (technician) {
+    const previousPrimaries = await prisma.visitAssignment.findMany({
+      where: { visitId: jobId, role: "primary", technicianId: { not: technician.id } },
+      select: { id: true, technicianId: true },
+    });
+    if (previousPrimaries.length > 0) {
+      await prisma.visitAssignment.deleteMany({ where: { id: { in: previousPrimaries.map((p) => p.id) } } });
+      for (const prev of previousPrimaries) {
+        notifyTechnicianOfAssignment(prev.technicianId, jobId, "cancelled")
+          .catch((err) => console.error("[rescheduleJob] Released tech notify failed:", err));
+      }
+    }
+    await prisma.visitAssignment.upsert({
+      where: { visitId_technicianId: { visitId: jobId, technicianId: technician.id } },
+      create: { visitId: jobId, technicianId: technician.id, role: "primary" },
+      update: { status: "assigned", completedAt: null },
+    });
+  }
 
   // Re-request confirmation for the new time + tech notifications (fire-and-forget)
   //

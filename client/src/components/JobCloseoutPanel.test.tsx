@@ -16,7 +16,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { JobCloseoutPanel } from "./JobCloseoutPanel";
 import { api } from "../lib/api";
@@ -96,6 +96,30 @@ describe("JobCloseoutPanel", () => {
 
     expect(screen.getByRole("button", { name: /mark job complete/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /pause job/i })).not.toBeInTheDocument();
+  });
+
+  it("PUNCHLIST K3: cancels a P.O. by asking for a typed reason, through the same status route the P.O. drawer uses", async () => {
+    vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
+    vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([
+      {
+        id: "po-1", number: "PO-2026-0007", supplier: "Home Depot", purpose: "truck_stock", status: "purchased",
+        createdAt: "2026-09-18T12:00:00.000Z", cardTotal: 245.5, offCardAmount: null, moneyTotal: 245.5, proofCount: 0,
+        items: [{ name: "12-2 NM-B", qty: 250, unit: "ft" }],
+      } as never,
+    ]);
+    const transition = vi.spyOn(api, "transitionPurchaseOrder").mockResolvedValue({ id: "po-1", number: "PO-2026-0007", status: "cancelled" });
+
+    renderWithProviders(<JobCloseoutPanel visitId="visit-1" status="in_progress" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "cancel" }));
+    // The reason is required — no canned "Removed from the job screen" and no window.confirm.
+    const submit = screen.getByRole("button", { name: "Cancel PO" });
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText("Reason (required)"), { target: { value: "Wrong material ordered" } });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(transition).toHaveBeenCalledWith("po-1", "cancelled", "Wrong material ordered"));
   });
 
   it("shows Reopen job instead of the completion button once the job is completed", async () => {
