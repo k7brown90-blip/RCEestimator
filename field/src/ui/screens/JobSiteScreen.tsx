@@ -282,6 +282,10 @@ export function JobSiteScreen({
   const isJob = JOB_STATUSES.has(status)
   const alreadyDone = brief?.status === 'completed' || Boolean(brief?.completedAt) || Boolean(closed) || handedToOffice
   const choicePending = Boolean(brief?.choicePending) && !alreadyDone
+  // Before the signature (2026-09-23): an estimate is issued but the customer has not signed yet
+  // (choicePending only ever turns true once signedAt is set), so today NOTHING renders here,
+  // which reads as "this cannot be done." Show both choices, disabled, with why.
+  const awaitingSignature = Boolean(brief?.estimate) && !brief?.estimate?.signedAt && !choicePending && !alreadyDone
   const canPauseJob = Boolean(brief) && PAUSABLE_STATUSES.has(status) && !alreadyDone
   const waitingOnOffice = isJob && status === 'contracted' && !brief?.scheduledStart
 
@@ -423,6 +427,31 @@ export function JobSiteScreen({
               Bigger than today. The job goes to the office to schedule; this visit closes.
             </span>
           </button>
+        </section>
+      )}
+      {/* ── Issued, not signed yet. Both choices shown, disabled, with why (Kyle, 2026-09-23). ── */}
+      {awaitingSignature && (
+        <section className="space-y-2 rounded-xl border border-slate-600 bg-slate-800/40 p-4">
+          <h2 className="text-sm font-semibold text-slate-200">
+            Estimate {brief?.estimate?.number} issued — not signed yet
+          </h2>
+          <button
+            type="button"
+            disabled
+            className="w-full cursor-not-allowed rounded-lg border border-slate-600 bg-slate-800 p-3 text-left text-sm font-semibold text-slate-500 opacity-60"
+          >
+            Complete work now
+          </button>
+          <button
+            type="button"
+            disabled
+            className="w-full cursor-not-allowed rounded-lg border border-slate-600 bg-slate-800 p-3 text-left text-sm font-semibold text-slate-500 opacity-60"
+          >
+            Schedule for later
+          </button>
+          <p className="text-[11px] text-slate-400">
+            The customer signs first — then you can do the work now in this block.
+          </p>
         </section>
       )}
       {choiceSaid && <p className="rounded bg-emerald-900/50 p-2 text-xs text-emerald-200">{choiceSaid}</p>}

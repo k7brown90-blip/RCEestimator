@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import {
+  addPurchaseOrderLineFromField,
   createPurchaseOrderFromField,
   createStandalonePurchaseOrder,
   editPoReceipt,
@@ -493,6 +494,15 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
   const [showReceipts, setShowReceipts] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
+  const [showAddItem, setShowAddItem] = useState(false)
+  const [itemName, setItemName] = useState('')
+  const [itemQty, setItemQty] = useState('1')
+  const [itemUnit, setItemUnit] = useState('')
+  const [itemCost, setItemCost] = useState('')
+
+  // Same rule the server enforces (services/purchaseOrders.ts assertEditable): "reopen is not a
+  // thing; open a new PO." Everything else (open, purchased, verified) can still take a line.
+  const editable = po.status !== 'closed' && po.status !== 'cancelled'
 
   const move = async (to: 'purchased' | 'verified') => {
     setBusy(true)
@@ -558,6 +568,45 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
       // Only a local IndexedDB failure reaches here — the network leg is
       // retried in the background and never throws out to the caller.
       setMsg(`Could not queue the photo — ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * "Add an item" (Kyle, 2026-09-23) — the counter call that used to have no button. The only
+   * visible action before this was "Start a purchase", which minted a second P.O. for one trip.
+   * Reason is honest ("added at the counter"), never the server's landing-time default, which
+   * would be a lie on this path. Unit cost is offered up front: since 0902845 each line prices
+   * itself, so a line added with none lands unpriced and has to be typed in later.
+   */
+  const addItem = async () => {
+    const qty = Number(itemQty)
+    const name = itemName.trim()
+    if (!name || !Number.isFinite(qty) || qty <= 0) {
+      setMsg('An item name and a quantity greater than 0 are required.')
+      return
+    }
+    const cost = itemCost.trim() ? Number(itemCost) : null
+    setBusy(true)
+    setMsg(null)
+    try {
+      await addPurchaseOrderLineFromField(po.id, {
+        name,
+        qty,
+        unit: itemUnit.trim() || null,
+        unitCost: cost != null && Number.isFinite(cost) ? cost : null,
+        reason: 'added at the counter',
+      })
+      setMsg(`✓ Added ${name} to ${po.number}.`)
+      setItemName('')
+      setItemQty('1')
+      setItemUnit('')
+      setItemCost('')
+      setShowAddItem(false)
+      onChanged()
+    } catch (err) {
+      setMsg(`Not added — ${noSignal(err)}`)
     } finally {
       setBusy(false)
     }
@@ -637,6 +686,86 @@ function PoRow({ po, onChanged }: { po: FieldPurchaseOrder; onChanged: () => voi
           galleryLabel="🖼 Gallery / PDF"
           galleryAccept="image/*,application/pdf"
         />
+      )}
+      {/*
+        Add an item (Kyle, 2026-09-23) — the counter call. On a closed/cancelled PO this stays
+        VISIBLE and disabled with the reason showing (standing rule: greyed with a reason beats
+        hidden) — a hidden button here is what caused the 2026-09-23 duplicate PO.
+      */}
+      {editable ? (
+        <>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setShowAddItem((s) => !s)}
+            className="w-full rounded-lg border border-sky-700 p-2 text-xs text-sky-200 disabled:opacity-40"
+          >
+            {showAddItem ? 'hide' : '＋ Add an item to this PO'}
+          </button>
+          {showAddItem && (
+            <div className="space-y-2 rounded-lg border border-sky-900 bg-sky-950/20 p-2">
+              <input
+                className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
+                placeholder="Item name (required)"
+                value={itemName}
+                onChange={(e) => setItemName(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <input
+                  className="w-20 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white"
+                  type="number"
+                  min="0.01"
+                  step="1"
+                  placeholder="Qty"
+                  value={itemQty}
+                  onChange={(e) => setItemQty(e.target.value)}
+                />
+                <input
+                  className="flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
+                  placeholder="Unit (optional)"
+                  value={itemUnit}
+                  onChange={(e) => setItemUnit(e.target.value)}
+                />
+              </div>
+              <input
+                className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white placeholder:text-slate-500"
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                placeholder="Unit cost (optional — leave blank if you don't know it yet)"
+                value={itemCost}
+                onChange={(e) => setItemCost(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={busy || !itemName.trim()}
+                  onClick={() => void addItem()}
+                  className="flex-1 rounded-lg bg-sky-700 p-2 text-xs font-medium text-white disabled:opacity-40"
+                >
+                  Add item
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => { setShowAddItem(false); setItemName(''); setItemQty('1'); setItemUnit(''); setItemCost('') }}
+                  className="flex-1 rounded-lg border border-slate-600 p-2 text-xs text-slate-300 disabled:opacity-40"
+                >
+                  Never mind
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <button
+          type="button"
+          disabled
+          className="w-full rounded-lg border border-slate-700 p-2 text-xs text-slate-500 opacity-60"
+        >
+          ＋ Add an item — {po.number} is {po.status}: reopen is not a thing, open a new PO
+        </button>
       )}
       {/*
         Cancel — every PO gets a way out from where it's shown (standing rule:

@@ -185,6 +185,16 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
           Hand the customer your phone or share the link — they review and sign on their own screen.
           The deposit QR is on the job screen the moment it&apos;s signed.
         </p>
+        {/*
+          The pointer down the path (Kyle, 2026-09-23): issuing used to be a dead end on screen —
+          nothing said the JOB screen is where the next step lives, so a tech standing in the
+          driveway after issuing had no way to find "Complete work now" / "Schedule for later".
+        */}
+        <p className="rounded-lg border border-slate-700 bg-slate-800/60 p-3 text-xs text-slate-300">
+          Next: the customer signs. Once signed, go back to the <span className="font-semibold text-white">Job site</span> screen
+          — it offers <span className="font-semibold text-white">Complete work now</span> (keeps this calendar block)
+          or <span className="font-semibold text-white">Schedule for later</span>.
+        </p>
         <a
           href={issued.customerUrl}
           target="_blank"

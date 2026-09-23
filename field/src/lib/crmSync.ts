@@ -1061,10 +1061,19 @@ export interface FieldLanding {
   lines: FieldLandingLine[]
 }
 
-/** A receipt line that is not on the PO becomes a PO line (Kyle, 2026-09-10) — so it lands at the receipt's price. */
+/**
+ * A receipt line that is not on the PO becomes a PO line (Kyle, 2026-09-10) — so it lands at the
+ * receipt's price. Also the door for adding an item at the counter to a P.O. already open
+ * (2026-09-23) — a tech wanting more material on a trip they already started a PO for otherwise
+ * has only "Start a purchase", which mints a duplicate P.O.
+ *
+ * `reason` defaults server-side to "added from the receipt at landing" (health-record.ts), which
+ * is a lie for any OTHER caller — every caller besides LandPoForm's landing-time calls must pass
+ * its own true reason.
+ */
 export async function addPurchaseOrderLineFromField(
   poId: string,
-  line: { name: string; qty: number; unit?: string | null; unitCost?: number | null },
+  line: { name: string; qty: number; unit?: string | null; unitCost?: number | null; reason?: string },
 ): Promise<{ id: string }> {
   return crmRequest(`/purchase-orders/${poId}/lines`, { method: 'POST', body: JSON.stringify(line) })
 }
