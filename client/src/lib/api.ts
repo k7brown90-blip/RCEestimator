@@ -2147,11 +2147,18 @@ export interface LegalInfo {
   insuranceNotes: string;
 }
 
+/** Kyle, 2026-09-23: "Get the direct cost and apply TN tax rate." salesTaxRate is a
+ * DECIMAL FRACTION (0.0975), never a percent — the Settings field converts on save/load. */
+export interface PurchasingSettings {
+  salesTaxRate: number;
+}
+
 export interface CompanySettings {
   companyProfile?: CompanyProfile | null;
   operatingHours?: OperatingHours | null;
   territories?: Territory[] | null;
   legal?: LegalInfo | null;
+  purchasing?: PurchasingSettings | null;
 }
 
 export interface VisitAssignment {

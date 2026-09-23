@@ -147,7 +147,9 @@ describe("landing a PO", () => {
     expect(defaults.body.destinationKey).toBe(truckKey);
     expect(defaults.body.lines).toHaveLength(2);
     expect(defaults.body.lines[0].qtyLandedDefault).toBe(250);
-    expect(defaults.body.lines[0].unitCostDefault).toBe(0.72); // the book
+    // Book price 0.72 × 250 = 180 direct + 9.75% (17.55) = 197.55 / 250 = 0.7902 (Kyle,
+    // 2026-09-23: a book cost is a pre-tax price too, taxed at the rate like any other).
+    expect(defaults.body.lines[0].unitCostDefault).toBe(0.7902);
     expect(defaults.body.lines[0].costSource).toBe("book");
     expect(defaults.body.lines[1].costSource).toBe("none");
 
@@ -197,13 +199,15 @@ describe("landing a PO", () => {
     expect(defaults.status).toBe(200);
     expect(defaults.body.receiptTotal).toBe(90);
     // No lines on the receipt at all, so neither PO line has a receipt line to price it — each
-    // lands at its own book price, exactly as it reads: 0.72 (WIRE) and 1.10 (BOX).
+    // lands at its own book price, exactly as it reads: 0.72 (WIRE) and 1.10 (BOX) — plus each
+    // one's own 9.75% tax, since a book cost is a pre-tax price too (Kyle, 2026-09-23).
     expect(defaults.body.lines[0].costSource).toBe("book");
-    expect(defaults.body.taxTotal).toBe(0);
-    expect(defaults.body.lines[0].unitCostDefault).toBe(0.72);
-    expect(defaults.body.lines[1].unitCostDefault).toBe(1.1);
-    // 100 × 0.72 + 10 × 1.10 = 83 — not the $90 receipt, and the landing is not held for it.
-    expect(defaults.body.linesTotal).toBe(83);
+    // WIRE: 100 × 0.72 = 72 + 9.75% (7.02) = 0.7902/ft. BOX: 10 × 1.10 = 11 + 9.75% (1.07) = 1.207/ea.
+    expect(defaults.body.taxTotal).toBe(8.09);
+    expect(defaults.body.lines[0].unitCostDefault).toBe(0.7902);
+    expect(defaults.body.lines[1].unitCostDefault).toBe(1.207);
+    // 100 × 0.7902 + 10 × 1.207 = 91.09 — not the $90 receipt, and the landing is not held for it.
+    expect(defaults.body.linesTotal).toBe(91.09);
     expect(defaults.body.balanced).toBe(false);
   });
 

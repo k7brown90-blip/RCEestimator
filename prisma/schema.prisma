@@ -527,7 +527,7 @@ model Technician {
 // value is a JSON document owned by the Settings UI. Key-value keeps schema
 // churn out of company-profile edits.
 model CompanySetting {
-  key       String   @id // companyProfile | operatingHours | territories | legal
+  key       String   @id // companyProfile | operatingHours | territories | legal | purchasing
   valueJson String
   updatedAt DateTime @updatedAt
 }

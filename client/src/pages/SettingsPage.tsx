@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
-import type { CompanyProfile, LegalInfo, OperatingHours, Territory } from "../lib/api";
+import type { CompanyProfile, LegalInfo, OperatingHours, PurchasingSettings, Territory } from "../lib/api";
 import type { TreasurySettings } from "../lib/types";
 
 const EMPTY_PROFILE: CompanyProfile = {
@@ -31,6 +31,12 @@ const EMPTY_LEGAL: LegalInfo = {
   policiesText: "",
   insuranceNotes: "",
 };
+
+/** Kyle, 2026-09-23: "Get the direct cost and apply TN tax rate." 9.75% = TN state 7% +
+ * the full 2.75% local option — the default until Settings says otherwise. Stored as the
+ * DECIMAL FRACTION 0.0975; this field shows and edits it as a percent. */
+const DEFAULT_SALES_TAX_RATE = 0.0975;
+const EMPTY_PURCHASING: PurchasingSettings = { salesTaxRate: DEFAULT_SALES_TAX_RATE };
 
 /**
  * Treasury (Kyle, 2026-09-09): "At the end of each month I will take whatever
@@ -190,6 +196,11 @@ export function SettingsPage() {
   const [hours, setHours] = useState<OperatingHours>(EMPTY_HOURS);
   const [territories, setTerritories] = useState<Territory[]>([]);
   const [legal, setLegal] = useState<LegalInfo>(EMPTY_LEGAL);
+  const [purchasing, setPurchasing] = useState<PurchasingSettings>(EMPTY_PURCHASING);
+  // Edited as a percent string ("9.75"); converted to the stored decimal fraction (0.0975)
+  // only on save (Kyle, 2026-09-23: "Store the DECIMAL FRACTION, display a percent.").
+  const [taxRatePercent, setTaxRatePercent] = useState<string>(String(DEFAULT_SALES_TAX_RATE * 100));
+  const [purchasingError, setPurchasingError] = useState<string | null>(null);
   const [savedKey, setSavedKey] = useState<string | null>(null);
 
   useEffect(() => {
@@ -198,6 +209,10 @@ export function SettingsPage() {
     if (settings.operatingHours) setHours({ ...EMPTY_HOURS, ...settings.operatingHours });
     if (settings.territories) setTerritories(settings.territories);
     if (settings.legal) setLegal({ ...EMPTY_LEGAL, ...settings.legal });
+    if (settings.purchasing) {
+      setPurchasing({ ...EMPTY_PURCHASING, ...settings.purchasing });
+      setTaxRatePercent(String((settings.purchasing.salesTaxRate ?? DEFAULT_SALES_TAX_RATE) * 100));
+    }
   }, [settings]);
 
   const saveMutation = useMutation({
@@ -212,6 +227,18 @@ export function SettingsPage() {
   const setP = (patch: Partial<CompanyProfile>) => setProfile((p) => ({ ...p, ...patch }));
   const setH = (patch: Partial<OperatingHours>) => setHours((h) => ({ ...h, ...patch }));
   const setL = (patch: Partial<LegalInfo>) => setLegal((l) => ({ ...l, ...patch }));
+
+  const saveTaxRate = () => {
+    const percent = Number(taxRatePercent);
+    if (!Number.isFinite(percent) || percent < 0 || percent >= 100) {
+      setPurchasingError("Enter a percent, 0 or more and under 100 (e.g. 9.75).");
+      return;
+    }
+    setPurchasingError(null);
+    const salesTaxRate = percent / 100;
+    setPurchasing({ ...purchasing, salesTaxRate });
+    saveMutation.mutate({ key: "purchasing", value: { ...purchasing, salesTaxRate } });
+  };
 
   const updateTerritory = (index: number, patch: Partial<Territory>) =>
     setTerritories((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
@@ -380,6 +407,30 @@ export function SettingsPage() {
           onClick={() => saveMutation.mutate({ key: "legal", value: legal })}
         >
           {savedKey === "legal" ? "Saved ✓" : "Save legal"}
+        </button>
+      </SectionCard>
+
+      <SectionCard
+        title="Purchasing"
+        subtitle="The sales tax rate applied to every landed line's own direct cost (Kyle, 2026-09-23: 'Get the direct cost and apply TN tax rate.'). Changing it takes effect on the next landing — nothing already landed is touched."
+      >
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field
+            label="Sales tax rate (%)"
+            value={taxRatePercent}
+            type="number"
+            placeholder="9.75"
+            onChange={(v) => setTaxRatePercent(v)}
+          />
+        </div>
+        {purchasingError && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{purchasingError}</p>}
+        <button
+          className="btn btn-primary mt-4"
+          type="button"
+          disabled={saveMutation.isPending}
+          onClick={saveTaxRate}
+        >
+          {savedKey === "purchasing" ? "Saved ✓" : "Save purchasing"}
         </button>
       </SectionCard>
 

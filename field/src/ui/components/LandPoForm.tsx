@@ -233,7 +233,7 @@ export function LandPoForm({ poId, onLanded }: { poId: string; onLanded: (result
             </div>
           ))}
           {data.taxTotal > 0 && (
-            <p className="text-[11px] text-slate-400">${data.taxTotal.toFixed(2)} of the receipt is past its printed lines (sales tax) — spread across the lines, so each cost is what was paid.</p>
+            <p className="text-[11px] text-slate-400">${data.taxTotal.toFixed(2)} of the landed total above is sales tax, applied to each line's own direct cost at the rate set in Purchasing settings.</p>
           )}
         </div>
       )}

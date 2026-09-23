@@ -4523,7 +4523,7 @@ app.use("/health-record-admin", healthRecordAdminRouter);
 app.use("/health-record-admin/capacity-checks", capacityCheckAdminRouter);
 
 // ─── COMPANY SETTINGS (key-value config store — PIN/JWT protected) ────────────
-const SETTING_KEYS = ["companyProfile", "operatingHours", "territories", "legal"] as const;
+const SETTING_KEYS = ["companyProfile", "operatingHours", "territories", "legal", "purchasing"] as const;
 
 app.get("/crm/settings", asyncHandler(async (_req, res) => {
   const rows = await prisma.companySetting.findMany();

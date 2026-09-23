@@ -260,7 +260,7 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
             </div>
           ))}
           {data.taxTotal > 0 && (
-            <p className="text-rce-muted">{money(data.taxTotal)} of the receipt is past its printed lines (sales tax) — spread across the lines, so each unit cost is what was paid.</p>
+            <p className="text-rce-muted">{money(data.taxTotal)} of the landed total above is sales tax, applied to each line's own direct cost at the rate set in Purchasing settings.</p>
           )}
         </div>
       )}

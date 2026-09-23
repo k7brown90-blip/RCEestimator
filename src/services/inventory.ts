@@ -32,6 +32,7 @@ import { PO_LIST_INCLUDE, closePurchaseOrderForLanding, serializePurchaseOrder, 
 // Cycle with stockSeed (it imports countStock from here) is benign: both sides only use the other inside function bodies.
 import { MATCH_THRESHOLD, normalizeName, scoreMatch, specTokens } from "./stockSeed";
 import { assertNotAssembly } from "./priceBookAssembly";
+import { getSalesTaxRate } from "./purchasingSettings";
 
 type Tx = Prisma.TransactionClient;
 
@@ -511,7 +512,7 @@ export interface LandingLineDefault {
   /** Display only, 2026-09-23: what this line's own cost is based on (its receipt line's total, the typed cost, or the book price) and a phrase for the label. Never used to scale or split anything. */
   weight: number;
   weightBasis: string;
-  /** This line's own share of the receipt's tax, apportioned only across lines that matched a receipt line — never a line with no receipt line of its own. */
+  /** This line's own tax: its direct cost × the sales tax rate (CompanySetting.purchasing). Never a share of anyone else's — a line with no cost has none. */
   taxShare: number;
   bookPurchasePrice: number | null;
   /** The receipt line that priced (or at least named) this PO line. */
@@ -614,12 +615,10 @@ function looseScore(receiptName: string, poText: string): number {
  * Match receipt lines to PO lines exactly as before (explicit itemId, else the
  * loosened stockSeed matcher against the PO line's name AND its book
  * description), many receipt lines allowed under one PO line, each receipt
- * line claimed once. Then, per PO line, in order:
+ * line claimed once. Then, per PO line, in order, find its DIRECT (pre-tax)
+ * cost:
  *   1. Matched to its own receipt line(s) with a price → that line's own total
- *      ÷ qty, plus its own proportional share of the receipt's tax (tax is
- *      apportioned only across lines that matched, in proportion to each
- *      one's own matched subtotal — never spread onto a line with no receipt
- *      line of its own).
+ *      ÷ qty.
  *   2. No receipt line (or a matched line with no price) → the typed P.O.
  *      unitCost, exactly as typed.
  *   3. No typed cost → the book's purchase price, exactly as it reads.
@@ -628,11 +627,33 @@ function looseScore(receiptName: string, poText: string): number {
  * force Σ(landed lines) to equal the receipt — a receipt legitimately carries
  * items never on this P.O. and never consumed on the job, so that will never
  * balance and is no longer asked to.
+ *
+ * TAX COMES FROM THE RATE, NOT FROM THE RECEIPT'S LEFTOVER (Kyle, 2026-09-23:
+ * "Get the direct cost and apply TN tax rate. This allows us to read each
+ * line and avoid miscalculation."). The prior design (this morning's d57aabf)
+ * still computed tax as `receiptTotal − parsedTotal` and spread it across the
+ * matched lines — miss one line in the parse and the gap is wrong, so every
+ * line's tax is wrong. Now every priced line, whatever its cost source, gets
+ * `taxShare = directCost × qty × CompanySetting.purchasing.salesTaxRate`
+ * (read fresh per landing, never cached) — a typed or book cost is a pre-tax
+ * price too, and the landed cost of an item includes the tax paid on it. A
+ * line with no cost stays at 0, source "none" — tax on nothing is nothing.
+ *
+ * The ONE surviving use of the receipt total is a yes/no guard: when a
+ * receipt's total equals its parsed lines to the penny, that receipt
+ * evidently charged no tax, so lines PRICED FROM IT (costSource
+ * "receipt-line") get none — a typed/book cost isn't priced from this
+ * receipt at all, so that guard never touches it; the rate always applies to
+ * a typed or book line. Computed tax will not always equal a given receipt's
+ * printed tax — nothing needs it to; the receipt is proof of purchase and
+ * price-book input, never the money (see "TWO SYSTEMS" in constants.md).
  */
 export async function landingDefaults(id: string) {
   // The landing needs every receipt (lines, amounts); the list shape wants only the ones with a file — so LANDING's receipts win here.
   const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: { ...PO_LIST_INCLUDE, ...LANDING_INCLUDE } });
   if (!po) throw new InventoryError("Purchase order not found", 404);
+  // Read per landing, never cached — a Settings change is live on the very next call.
+  const taxRate = await getSalesTaxRate();
   const hasPhoto = po.receipts.some((r) => r.imageMime || r.imageUrl);
   const receiptTotal = r2(po.receipts.reduce((s, r) => s + (r.amount ?? 0), 0));
   const itemIds = po.lines.map((l) => l.itemId).filter((x): x is string => Boolean(x));
@@ -678,15 +699,14 @@ export async function landingDefaults(id: string) {
 
   // (2) Each line's OWN cost — never a share of anyone else's.
   const parsedTotal = r2(receiptLines.reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
-  // Σ of every matched receipt line's own total — the base the tax is apportioned over (rung 1 lines only).
+  // Σ of every matched receipt line's own total — display only (Kyle, 2026-09-23: "matched
+  // X of the receipt's printed lines"). No longer a tax-apportionment base — see below.
   const matchedTotal = r2([...matched.values()].flat().reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
-  // What the receipt carries past its printed lines: sales tax. Apportioned only across
-  // lines that matched a priced receipt line — a line with no receipt line of its own
-  // never receives a share (Kyle, 2026-09-23: the receipt is not money's job).
-  // With no parsed lines there is nothing to compare, so the whole receipt is not "tax"
-  // — it is simply unread (Kyle, 2026-09-11: PO-2026-0012, a SiteOne receipt with no
-  // photo, was reporting $381.90 of tax).
-  const taxTotal = receiptTotal > 0 && parsedTotal > 0 ? Math.max(0, r2(receiptTotal - parsedTotal)) : 0;
+  // The ONE yes/no signal the receipt total is still allowed to give (Kyle, 2026-09-23): when
+  // a receipt's total equals its own parsed lines to the penny, it evidently charged no tax at
+  // all, so a line PRICED FROM IT gets none. Never an amount, never apportioned — a typed or
+  // book cost isn't priced from this receipt, so this guard never touches those lines.
+  const receiptChargedNoTax = receiptTotal > 0 && parsedTotal > 0 && Math.abs(receiptTotal - parsedTotal) <= 0.02;
   const qtyOf = (l: (typeof po.lines)[number]) => {
     const q = l.qtyLanded ?? l.qty;
     return Number.isFinite(q) && q > 0 ? q : 0;
@@ -698,31 +718,42 @@ export async function landingDefaults(id: string) {
     const hit = hits[0] ?? null;
     const qty = qtyOf(l);
     const hitTotal = r2(hits.reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
-    let unitCostDefault = 0;
     let costSource: LandingCostSource;
     let weight = 0;
     let weightBasis: string;
-    let taxShare = 0;
+    // The line's own DIRECT (pre-tax) cost for qty units — null when nothing priced it.
+    let directTotal: number | null = null;
+    // Whether the receipt's own no-tax evidence can zero this line's tax — true only when
+    // this line's cost came FROM that receipt. A typed or book cost is unconditionally taxed.
+    let guardApplies = false;
     if (hitTotal > 0) {
       costSource = "receipt-line";
       weight = hitTotal;
       weightBasis = hits.length > 1 ? `${hits.length} receipt lines` : "its receipt line";
-      if (taxTotal > 0 && matchedTotal > 0) taxShare = r2((taxTotal * hitTotal) / matchedTotal);
-      unitCostDefault = qty > 0 ? r6((hitTotal + taxShare) / qty) : 0;
+      directTotal = hitTotal;
+      guardApplies = true;
     } else if (l.unitCost != null) {
-      unitCostDefault = r4(l.unitCost);
       costSource = "po-line";
       weight = r2(l.unitCost * qty);
       weightBasis = "the cost typed on the PO";
+      directTotal = qty > 0 ? l.unitCost * qty : 0;
     } else if (price != null) {
-      unitCostDefault = r4(price);
       costSource = "book";
       weight = r2(price * qty);
       weightBasis = "the book's purchase price";
+      directTotal = qty > 0 ? price * qty : 0;
     } else {
-      unitCostDefault = 0;
       costSource = "none";
       weightBasis = "no receipt line and no typed cost — type one";
+    }
+    // Tax on nothing is nothing: a line with no cost source (directTotal null) or no qty
+    // stays at 0, never guessed at.
+    let taxShare = 0;
+    let unitCostDefault = 0;
+    if (directTotal != null && qty > 0) {
+      const applyTax = !(guardApplies && receiptChargedNoTax);
+      taxShare = applyTax ? r2(directTotal * taxRate) : 0;
+      unitCostDefault = r6((directTotal + taxShare) / qty);
     }
     return {
       lineId: l.id,
@@ -743,8 +774,12 @@ export async function landingDefaults(id: string) {
   });
 
   const linesTotal = r2(lines.reduce((s, l) => s + l.qtyLandedDefault * l.unitCostDefault, 0));
+  // Σ of every line's own taxShare — informational only now that tax comes from the rate,
+  // never the receipt-total gap this field used to hold (Kyle, 2026-09-23).
+  const taxTotal = r2(lines.reduce((s, l) => s + l.taxShare, 0));
   // Display only (Kyle, 2026-09-23) — a receipt legitimately carries items never on this
-  // P.O., so this will often read false. It gates nothing; landPurchaseOrder never checks it.
+  // P.O., and computed tax will not always equal a receipt's own printed tax, so this will
+  // often read false. It gates nothing; landPurchaseOrder never checks it.
   const balanced = receiptTotal <= 0 || Math.abs(linesTotal - receiptTotal) <= 0.01;
 
   // A PO with no lines has nothing to land (PO-0009, PO-0012) — offer the receipt's own lines.
@@ -767,9 +802,9 @@ export async function landingDefaults(id: string) {
     matchedTotal,
     /** Σ of the receipts' printed lines — what the photo reader could price. */
     parsedTotal,
-    /** receiptTotal − parsedTotal, when positive: the sales tax, spread over the lines. */
+    /** Σ of every line's own taxShare (rate × its direct cost) — informational, not a gap. */
     taxTotal,
-    /** Σ qtyLandedDefault × unitCostDefault — equals receiptTotal when it balances. */
+    /** Σ qtyLandedDefault × unitCostDefault — need not equal receiptTotal (tax comes from the rate). */
     linesTotal,
     balanced,
     suggestedLines,

@@ -11,22 +11,32 @@
  * fail… The receipt being read and reported is not about money tracking. It
  * is about building the price book." Landing is inventory, not money:
  *   1. A line matched to its own receipt line(s) prices at THAT line's own
- *      total ÷ qty, plus its own share of the receipt's tax — tax apportioned
- *      only across lines that matched, never onto a line with no receipt line
- *      of its own.
- *   2. No receipt line → the typed P.O. cost, exactly as typed. No typed cost
- *      → the book's purchase price, exactly as it reads. Neither exists →
- *      cost 0, source "none": a human has to type one.
- *   3. Landing is NEVER refused because the lines do not add up to the
+ *      total ÷ qty. No receipt line → the typed P.O. cost, exactly as typed.
+ *      No typed cost → the book's purchase price, exactly as it reads.
+ *      Neither exists → cost 0, source "none": a human has to type one.
+ *   2. Landing is NEVER refused because the lines do not add up to the
  *      receipt total — a receipt legitimately carries items never on this
  *      P.O. and never consumed on the job, so that will not always balance,
  *      and is not asked to. `balanced` is display-only.
- * The first test below ("two breakers…") is the PIN: when every line matches,
- * this arithmetic was already correct before 2026-09-23 and must read exactly
- * the same after.
+ *
+ * SUPERSEDED AGAIN, SAME DAY (Kyle, 2026-09-23: "Get the direct cost and apply
+ * TN tax rate. This allows us to read each line and avoid miscalculation.").
+ * The morning's fix above still computed tax as `receiptTotal − parsedTotal`
+ * and spread it across matched lines by their own weight — so a single
+ * missed line in the parse still poisoned every OTHER line's tax. Tax now
+ * comes from `CompanySetting.purchasing.salesTaxRate` (default 9.75%)
+ * applied to each line's own direct cost, whatever its source — a typed or
+ * book cost is taxed too. The receipt total's only remaining job is a
+ * yes/no guard: a receipt whose total equals its own parsed lines to the
+ * penny evidently charged no tax, so a line PRICED FROM IT gets none.
+ *
+ * THE NUMBERS IN THIS FILE MOVED ON PURPOSE (2026-09-23): every fully-matched
+ * case below now reads direct-cost × 1.0975 instead of direct-cost + a share
+ * of the receipt's leftover. Each line's DIRECT cost (its own weight) is
+ * unchanged — only the tax component moves.
  */
 
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import crypto from "node:crypto";
 import { prisma } from "../src/lib/prisma";
@@ -127,7 +137,7 @@ afterAll(async () => {
 });
 
 describe("landing prices come from the receipt, line by line", () => {
-  it("two breakers on one receipt each land at THEIR receipt line's price plus its tax share", async () => {
+  it("two breakers on one receipt each land at THEIR receipt line's own cost plus 9.75% tax — never a share of the other's", async () => {
     const po = await createPurchaseOrder({
       supplier: "Home Depot", openedBy: "owner", actor: "test", truckId,
       lines: [{ itemId: GFCI, name: "20A GFCI breaker", qty: 2, unit: "ea" }, { itemId: AFCI, name: "20A AFCI breaker", qty: 1, unit: "ea" }],
@@ -139,16 +149,23 @@ describe("landing prices come from the receipt, line by line", () => {
     await attach(po.id, receipt.id);
     const d = await defaultsOf(po.id);
     expect(d.receiptTotal).toBe(170);
-    // Weights 109.94 and 47.50 → the $170 swipe splits 118.71 / 51.29, tax included.
-    expect(d.lines.map((l: { unitCostDefault: number; costSource: string }) => [l.unitCostDefault, l.costSource])).toEqual([[59.355, "receipt-line"], [51.29, "receipt-line"]]);
+    // GFCI: 109.94 direct + 9.75% (10.72) = 120.66 / 2 = 60.33. AFCI: 47.50 + 4.63 = 52.13 / 1.
+    // (Was [59.355, 51.29] under the gap model, which spread the $170 swipe's $12.56 leftover
+    // proportionally instead of taxing each line's own cost at the rate — 2026-09-23.)
+    expect(d.lines.map((l: { unitCostDefault: number; costSource: string }) => [l.unitCostDefault, l.costSource])).toEqual([[60.33, "receipt-line"], [52.13, "receipt-line"]]);
     expect(d.lines[0].matchedReceiptLine).toMatchObject({ receiptId: receipt.id, name: "SQ D 20A GFCI breaker", qty: 2, unitCost: 54.97 });
     expect(d.lines[1].matchedReceiptLine).toMatchObject({ name: "SQ D 20A AFCI breaker", unitCost: 47.5 });
+    // The lines' own direct-cost basis (weight) is untouched by the tax-model change.
     expect(d.matchedTotal).toBe(157.44);
-    // Kyle, 2026-09-11: the $12.56 past the printed lines is SALES TAX — spread, never left over.
-    expect(d.taxTotal).toBe(12.56);
-    expect(d.lines.map((l: { taxShare: number }) => l.taxShare)).toEqual([8.77, 3.79]);
-    expect(d.linesTotal).toBe(170);
-    expect(d.balanced).toBe(true);
+    // taxTotal is now Σ of each line's own taxShare (15.35), not the receipt's $12.56 leftover.
+    expect(d.taxTotal).toBe(15.35);
+    // Was [8.77, 3.79] (each line's share of the $12.56 gap); now each line's own 9.75%.
+    expect(d.lines.map((l: { taxShare: number }) => l.taxShare)).toEqual([10.72, 4.63]);
+    // Was 170 (forced to equal the receipt by the gap model); now 172.79 — the rate (9.75%)
+    // does not exactly match this receipt's own effective tax (12.56 / 157.44 ≈ 7.98%), and
+    // nothing requires it to (Kyle, 2026-09-23: "nothing needs it to").
+    expect(d.linesTotal).toBe(172.79);
+    expect(d.balanced).toBe(false);
     expect(d.receiptLines).toHaveLength(1);
     expect(d.receiptLines[0].vendor).toBe(VENDOR);
     expect(d.receiptLines[0].lines.map((rl: { matchedLineId: string | null }) => rl.matchedLineId)).toEqual([d.lines[0].lineId, d.lines[1].lineId]);
@@ -161,11 +178,11 @@ describe("landing prices come from the receipt, line by line", () => {
     expect(land.status).toBe(200);
     const moves = await prisma.stockMovement.findMany({ where: { purchaseOrderId: po.id }, orderBy: { unitCost: "desc" } });
     expect(moves.map((m) => [m.kind, m.toLocationKey, m.itemId, m.qty, m.unitCost])).toEqual([
-      ["purchase_in", truckKey, GFCI, 2, 59.355],
-      ["purchase_in", truckKey, AFCI, 1, 51.29],
+      ["purchase_in", truckKey, GFCI, 2, 60.33],
+      ["purchase_in", truckKey, AFCI, 1, 52.13],
     ]);
     const gfci = await prisma.stockLevel.findUniqueOrThrow({ where: { locationKey_itemId: { locationKey: truckKey, itemId: GFCI } } });
-    expect(gfci.avgUnitCost).toBe(59.355);
+    expect(gfci.avgUnitCost).toBe(60.33);
   });
 
   it("a receipt with a total and no line prices leaves both lines at their own book price, unscaled", async () => {
@@ -182,14 +199,17 @@ describe("landing prices come from the receipt, line by line", () => {
     // Both lines matched a receipt line, but neither carries a price, so hitTotal is 0 for
     // each and the book price is used — as is, never scaled to the receipt (Kyle, 2026-09-23).
     expect(d.matchedTotal).toBe(0);
-    // No line on this receipt carries a price, so nothing can be called tax.
-    expect(d.taxTotal).toBe(0);
+    // A book cost is a pre-tax price too (Kyle, 2026-09-23) — it gets taxed at the rate
+    // regardless of what this (unreadable, for pricing purposes) receipt did or didn't charge.
+    // WIRE: 100 × 0.72 = 72 direct + 9.75% (7.02) = 79.02 / 100. GFCI: 2 × 21.32 = 42.64 + 4.16 = 46.80 / 2.
+    expect(d.taxTotal).toBe(11.18);
     expect(d.lines.every((l: { costSource: string; matchedReceiptLine: unknown }) => l.costSource === "book" && l.matchedReceiptLine !== null)).toBe(true);
-    expect(d.lines[0].unitCostDefault).toBe(0.72);
-    expect(d.lines[1].unitCostDefault).toBe(21.32);
-    // 100 × 0.72 + 2 × 21.32 = 114.64 — not the $120 receipt, and that is not a defect: the
-    // receipt is proof, not a total the lines must add up to.
-    expect(d.linesTotal).toBe(114.64);
+    // Was [0.72, 21.32] before tax applied to book costs too (2026-09-23).
+    expect(d.lines[0].unitCostDefault).toBe(0.7902);
+    expect(d.lines[1].unitCostDefault).toBe(23.4);
+    // 100 × 0.7902 + 2 × 23.4 = 125.82 — not the $120 receipt, and that is not a defect: the
+    // receipt is proof, not a total the lines must add up to. (Was 114.64 pre-tax.)
+    expect(d.linesTotal).toBe(125.82);
     expect(d.balanced).toBe(false);
   });
 
@@ -202,47 +222,53 @@ describe("landing prices come from the receipt, line by line", () => {
         { name: "Staples, box", qty: 1, unit: "box", unitCost: 6.5 },
       ],
     });
-    // 159.50 swiped; the photo printed 2 × 25 (GFCI) + 3 (Gatorade, NOT on the PO) = 53, so 106.50 is tax.
+    // 159.50 swiped; the photo printed 2 × 25 (GFCI) + 3 (Gatorade, NOT on the PO) = 53. Under
+    // the gap model this whole $106.50 leftover would have been called "tax" and dumped onto
+    // whichever line(s) matched — now it is simply unread, and each line taxes only its own cost.
     const receipt = await receiptWith(159.5, [
       { name: "20A GFCI breaker", qty: 2, unit: "ea", unitCost: 25 },
       { name: "Gatorade 32oz", qty: 1, unit: "ea", unitCost: 3 },
     ]);
     await attach(po.id, receipt.id);
     let d = await defaultsOf(po.id);
-    // GFCI matched its own receipt line ($50) and is the ONLY matched line, so it takes ALL
-    // of the tax: (50 + 106.50) / 2 = 78.25. WIRE and Staples have no receipt line of their
-    // own, so they land at the book price and the typed cost, exactly as they read — never
-    // scaled by the receipt (Kyle, 2026-09-23).
+    // GFCI: 50 direct + 9.75% (4.88) = 54.88 / 2 = 27.44 — its OWN cost, not the whole $106.50
+    // leftover (that was the bug this plan removes). WIRE and Staples have no receipt line of
+    // their own, so they land at the book price and the typed cost — each ALSO taxed at 9.75%,
+    // since a book/typed cost is a pre-tax price too (Kyle, 2026-09-23).
     expect(d.lines.map((l: { unitCostDefault: number; costSource: string }) => [l.unitCostDefault, l.costSource])).toEqual([
-      [78.25, "receipt-line"],
-      [0.72, "book"],
-      [6.5, "po-line"],
+      [27.44, "receipt-line"],
+      [0.7902, "book"],
+      [7.13, "po-line"],
     ]);
     expect(d.matchedTotal).toBe(50);
-    // $53 of the $159.50 is priced on the photo; the rest is unread, not tax.
-    expect(d.taxTotal).toBe(106.5);
-    expect(d.lines.map((l: { taxShare: number }) => l.taxShare)).toEqual([106.5, 0, 0]);
-    // 78.25×2 + 0.72×100 + 6.50×1 = 235.00 — nowhere near the $159.50 receipt, and that is
+    // Σ of each line's own tax: 4.88 (GFCI) + 7.02 (WIRE) + 0.63 (Staples).
+    expect(d.taxTotal).toBe(12.53);
+    expect(d.lines.map((l: { taxShare: number }) => l.taxShare)).toEqual([4.88, 7.02, 0.63]);
+    // 27.44×2 + 0.7902×100 + 7.13×1 = 141.03 — nowhere near the $159.50 receipt, and that is
     // not a defect: a receipt legitimately carries items never on this P.O.
-    expect(d.linesTotal).toBe(235);
+    expect(d.linesTotal).toBe(141.03);
     expect(d.balanced).toBe(false);
     expect(d.receiptLines[0].unmatched).toHaveLength(1);
     expect(d.receiptLines[0].unmatched[0]).toMatchObject({ name: "Gatorade 32oz", qty: 1, unitCost: 3, matchedLineId: null });
 
     // "not on this PO — add as a line?" → the office add-line route; it then matches and
-    // prices from its OWN receipt line, and re-splits the tax across both matched lines now.
+    // prices from its OWN receipt line, at its OWN 9.75% — no re-splitting anything.
     const add = await request(app).post(`/purchase-orders/${po.id}/lines`).send({ name: "Gatorade 32oz", qty: 1, unit: "ea", unitCost: 3, reason: "added from the receipt at landing" });
     expect(add.status).toBe(201);
     d = await defaultsOf(po.id);
     expect(d.lines).toHaveLength(4);
-    // matchedTotal is now 53 (50 + 3); GFCI's tax share drops to 106.5×50/53, Gatorade takes 106.5×3/53.
-    expect(d.lines[3]).toMatchObject({ name: "Gatorade 32oz", unitCostDefault: 9.03, costSource: "receipt-line" });
+    // Gatorade: 3 direct + 9.75% (0.29) = 3.29.
+    expect(d.lines[3]).toMatchObject({ name: "Gatorade 32oz", unitCostDefault: 3.29, costSource: "receipt-line" });
     expect(d.receiptLines[0].unmatched).toEqual([]);
-    expect(d.lines[0]).toMatchObject({ unitCostDefault: 75.235, costSource: "receipt-line" });
-    // WIRE and Staples are untouched by the Gatorade match — they never shared in the tax.
-    expect(d.lines[1]).toMatchObject({ unitCostDefault: 0.72, costSource: "book" });
-    expect(d.lines[2]).toMatchObject({ unitCostDefault: 6.5, costSource: "po-line" });
-    expect(d.linesTotal).toBe(238);
+    // THE POINT OF THE WHOLE CHANGE (Kyle, 2026-09-23): GFCI's cost is IDENTICAL to what it was
+    // before Gatorade ever matched anything — 27.44, not re-split. Under the old gap model this
+    // would have moved (was 78.25 → 75.235) because a newly-matched line changed everyone else's
+    // share of the leftover. Now one line's cost never depends on any other line being read.
+    expect(d.lines[0]).toMatchObject({ unitCostDefault: 27.44, costSource: "receipt-line" });
+    // WIRE and Staples are equally untouched by the Gatorade match.
+    expect(d.lines[1]).toMatchObject({ unitCostDefault: 0.7902, costSource: "book" });
+    expect(d.lines[2]).toMatchObject({ unitCostDefault: 7.13, costSource: "po-line" });
+    expect(d.linesTotal).toBe(144.32);
   });
 
   it("no receipt at all → the typed cost, else the book, else none; bad receipt JSON is a note, not a crash", async () => {
@@ -251,22 +277,27 @@ describe("landing prices come from the receipt, line by line", () => {
       lines: [{ itemId: GFCI, name: "20A GFCI breaker", qty: 1, unit: "ea" }, { name: "Wire nuts", qty: 1, unit: "box", unitCost: 4 }, { name: "Mystery", qty: 1 }],
     });
     let d = await defaultsOf(po.id);
-    expect(d.lines.map((l: { unitCostDefault: number; costSource: string }) => [l.unitCostDefault, l.costSource])).toEqual([[21.32, "book"], [4, "po-line"], [0, "none"]]);
+    // A book or typed cost is taxed at the rate too, even with no receipt at all attached yet —
+    // it is still a pre-tax price (Kyle, 2026-09-23). GFCI: 21.32 + 9.75% (2.08) = 23.40.
+    // Wire nuts: 4 + 9.75% (0.39) = 4.39. (Was [21.32, 4, 0] before this change.)
+    expect(d.lines.map((l: { unitCostDefault: number; costSource: string }) => [l.unitCostDefault, l.costSource])).toEqual([[23.4, "book"], [4.39, "po-line"], [0, "none"]]);
     const bad = await prisma.receipt.create({ data: { id: newId(), category: "materials", vendor: VENDOR, amount: 30, status: "confirmed", source: "manual", lineItems: "{not json" } });
     await attach(po.id, bad.id);
     d = await defaultsOf(po.id);
     expect(d.receiptLines[0].parseError).toMatch(/not valid JSON/);
     expect(d.receiptLines[0].lines).toEqual([]);
-    // Kyle, 2026-09-23: an unreadable receipt fabricates NOTHING. With no parsed lines there
-    // is nothing to match and nothing to call tax, so every line stays exactly where it was —
-    // book, typed, or none — untouched by the $30 the receipt carries.
-    expect(d.taxTotal).toBe(0);
+    // Kyle, 2026-09-23: an unreadable receipt fabricates NOTHING. With no parsed lines there is
+    // nothing to match and no receipt-line cost to price from, so every line stays EXACTLY where
+    // it was before this bad receipt was ever attached — untouched by the $30 it carries. Their
+    // tax (2.08 + 0.39 = 2.47) comes from the rate on their own book/typed cost, not from this
+    // receipt at all — the guard that can waive tax only touches a line priced FROM a receipt.
+    expect(d.taxTotal).toBe(2.47);
     expect(d.lines.map((l: { unitCostDefault: number; costSource: string }) => [l.unitCostDefault, l.costSource])).toEqual([
-      [21.32, "book"],
-      [4, "po-line"],
+      [23.4, "book"],
+      [4.39, "po-line"],
       [0, "none"],
     ]);
-    expect(d.linesTotal).toBe(25.32);
+    expect(d.linesTotal).toBe(27.79);
     expect(d.balanced).toBe(false);
   });
 
@@ -310,13 +341,15 @@ describe("each line prices at its own receipt line, never a share of the receipt
     expect(d.lines[0].matchedReceiptLines.map((rl: { name: string }) => rl.name)).toEqual(["DOWNROD", '48" MATTE BLACK EXTENSION DOWNROD']);
     expect(d.lines[0].costSource).toBe("receipt-line");
     expect(d.lines[0].weight).toBe(134.98);
-    // The fan's receipt line matched by name but carried no price, so it contributes nothing
-    // to the tax base and has no typed cost or book price of its own — "none" (Kyle,
-    // 2026-09-23: never an even split; a human has to type this one).
+    // The fan's receipt line matched by name but carried no price, so it has no receipt cost,
+    // no typed cost, and no book price of its own — "none" (Kyle, 2026-09-23: never an even
+    // split; a human has to type this one). Tax on nothing is nothing — it gets no share.
     expect(d.lines[1].costSource).toBe("none");
     expect(d.lines[1].unitCostDefault).toBe(0);
-    // The Down Rod line is the ONLY line with a receipt line of its own, so it takes ALL
-    // $13.16 of the tax — none of it lands on the fan.
+    // Down Rod's own 9.75% on its $134.98 direct cost is $13.16 — this real receipt's actual
+    // tax rate (13.16 / 134.98 ≈ 9.75%) happens to land on the same number the old gap model
+    // produced here, which is exactly why this fixture is a good one: the rate model gets it
+    // right for the reason that matters (each line's own cost), not by accident of the total.
     expect(d.taxTotal).toBe(13.16);
     expect(d.lines.map((l: { taxShare: number }) => l.taxShare)).toEqual([13.16, 0]);
     expect(d.lines.map((l: { unitCostDefault: number }) => l.unitCostDefault)).toEqual([148.14, 0]);
@@ -367,7 +400,7 @@ describe("each line prices at its own receipt line, never a share of the receipt
     expect(mv.unitCost).toBe(6);
   });
 
-  it("a PO with no lines offers the receipt's own, and once added the landing equals the receipt", async () => {
+  it("a PO with no lines offers the receipt's own, and once added each prices at its own cost plus 9.75%", async () => {
     const po = await createPurchaseOrder({ supplier: "Lowes", openedBy: "owner", actor: "test", truckId, lines: [] });
     const receipt = await receiptWith(46.8, [
       { name: "Wire connectors", qty: 1, unit: "box", unitCost: 12 },
@@ -389,9 +422,14 @@ describe("each line prices at its own receipt line, never a share of the receipt
     }
     d = await defaultsOf(po.id);
     expect(d.suggestedLines).toEqual([]);
-    expect(d.lines.map((l: { unitCostDefault: number }) => l.unitCostDefault)).toEqual([13.37, 8.3575]);
-    expect(d.linesTotal).toBe(46.8);
-    expect(d.balanced).toBe(true);
+    // Wire connectors: 12 + 9.75% (1.17) = 13.17. Old work box: 30 (4 × 7.5) + 9.75% (2.93) =
+    // 32.93 / 4 = 8.2325. (Was [13.37, 8.3575] — the $4.80 gap between this exactly-balanced
+    // receipt and its parsed lines, split proportionally — before this change.)
+    expect(d.lines.map((l: { unitCostDefault: number }) => l.unitCostDefault)).toEqual([13.17, 8.2325]);
+    // 13.17 + 4 × 8.2325 = 46.10 — the 9.75% rate does not exactly match this receipt's own
+    // effective tax (4.80 / 42 ≈ 11.4%), and nothing requires it to. (Was 46.80.)
+    expect(d.linesTotal).toBe(46.1);
+    expect(d.balanced).toBe(false);
     const land = await request(app).post(`/purchase-orders/${po.id}/land`).send({
       lines: d.lines.map((l: { lineId: string; qtyLandedDefault: number; unitCostDefault: number }) => ({ lineId: l.lineId, qtyLanded: l.qtyLandedDefault, unitCost: l.unitCostDefault })),
     });
@@ -465,8 +503,12 @@ describe("each line prices at its own receipt line, never a share of the receipt
     const d = await defaultsOf(po.id);
     expect(d.receiptTotal).toBe(24.99);
     expect(d.hasReceiptPhoto).toBe(true);
-    expect(d.lines[0].unitCostDefault).toBe(24.99);
-    expect(d.balanced).toBe(true);
+    // 22.50 direct + 9.75% (2.19) = 24.69 — this receipt's own effective tax (2.49 / 22.50 ≈
+    // 11.1%) isn't exactly 9.75%, and nothing requires it to be (Kyle, 2026-09-23: "Computed
+    // tax will not always equal the receipt's printed tax, and nothing needs it to."). Was
+    // 24.99 (forced to equal the receipt) before this change.
+    expect(d.lines[0].unitCostDefault).toBe(24.69);
+    expect(d.balanced).toBe(false);
     vision.result = null;
   });
 
@@ -535,5 +577,123 @@ describe("each line prices at its own receipt line, never a share of the receipt
     // receivedAt falls back to the upload time (Prisma's default now()), not the rejected date.
     expect(receipt.receivedAt.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
     vision.result = null;
+  });
+});
+
+/**
+ * Plan 2026-09-23-tax-from-the-rate.md: tax comes from CompanySetting.purchasing.salesTaxRate
+ * applied to each line's OWN direct cost, never from `receiptTotal − parsedTotal` spread across
+ * matched lines. This describe block is the new plan's own proof, separate from the tests above
+ * (which cover the 2026-09-23-morning direct-cost fix and were updated in place for the new tax
+ * numbers where they overlap).
+ */
+describe("tax comes from the rate, not the receipt's leftover (2026-09-23)", () => {
+  afterEach(async () => {
+    // Never leave a non-default rate behind for a later test file's landing assertions.
+    await prisma.companySetting.deleteMany({ where: { key: "purchasing" } });
+  });
+
+  it("a multi-line receipt prices every line at its own printed cost plus 9.75%, to the cent — the receipt total is never read", async () => {
+    const po = await createPurchaseOrder({
+      supplier: "Home Depot", openedBy: "owner", actor: "test", truckId,
+      lines: [{ name: "Item A", qty: 1, unit: "ea" }, { name: "Item B", qty: 1, unit: "ea" }, { name: "Item C", qty: 1, unit: "ea" }],
+    });
+    // The receipt total (999.99) is deliberately nonsense and unrelated to the parsed lines —
+    // proof that no line's cost is derived from it (Kyle, 2026-09-23).
+    const receipt = await receiptWith(999.99, [
+      { name: "Item A", qty: 1, unit: "ea", unitCost: 10 },
+      { name: "Item B", qty: 1, unit: "ea", unitCost: 25.4 },
+      { name: "Item C", qty: 1, unit: "ea", unitCost: 7.33 },
+    ]);
+    await attach(po.id, receipt.id);
+    const d = await defaultsOf(po.id);
+    expect(d.receiptTotal).toBe(999.99);
+    // Each line's own printed cost × 1.0975, to the cent — no reference to the $999.99 total:
+    // 10 → 10.98, 25.40 → 27.88, 7.33 → 8.04.
+    expect(d.lines.map((l: { unitCostDefault: number; costSource: string }) => [l.unitCostDefault, l.costSource])).toEqual([
+      [10.98, "receipt-line"],
+      [27.88, "receipt-line"],
+      [8.04, "receipt-line"],
+    ]);
+    expect(d.lines.map((l: { taxShare: number }) => l.taxShare)).toEqual([0.98, 2.48, 0.71]);
+    expect(d.linesTotal).toBe(46.9);
+    // Nowhere near the $999.99 receipt, and that is fine — the total is context only.
+    expect(d.balanced).toBe(false);
+  });
+
+  it("a line that fails to parse changes only that line — the others land at EXACTLY what they would have if it had parsed", async () => {
+    const poAllParsed = await createPurchaseOrder({
+      supplier: "Home Depot", openedBy: "owner", actor: "test", truckId,
+      lines: [{ name: "Widget X", qty: 1, unit: "ea" }, { name: "Widget Y", qty: 1, unit: "ea" }, { name: "Widget Z", qty: 1, unit: "ea" }],
+    });
+    const receiptAllParsed = await receiptWith(50, [
+      { name: "Widget X", qty: 1, unit: "ea", unitCost: 15 },
+      { name: "Widget Y", qty: 1, unit: "ea", unitCost: 22.5 },
+      { name: "Widget Z", qty: 1, unit: "ea", unitCost: 8 },
+    ]);
+    await attach(poAllParsed.id, receiptAllParsed.id);
+    const allParsed = await defaultsOf(poAllParsed.id);
+
+    // Same PO shape, same receipt total, but Widget Z's line item is missing its "name" —
+    // exactly what a photo-reader miss looks like: parseReceiptLines drops any item with none.
+    const poOneMissed = await createPurchaseOrder({
+      supplier: "Home Depot", openedBy: "owner", actor: "test", truckId,
+      lines: [{ name: "Widget X", qty: 1, unit: "ea" }, { name: "Widget Y", qty: 1, unit: "ea" }, { name: "Widget Z", qty: 1, unit: "ea" }],
+    });
+    const receiptOneMissed = await receiptWith(50, [
+      { name: "Widget X", qty: 1, unit: "ea", unitCost: 15 },
+      { name: "Widget Y", qty: 1, unit: "ea", unitCost: 22.5 },
+      { qty: 1, unit: "ea", unitCost: 8 }, // no "name" — parseReceiptLines drops this one entirely
+    ]);
+    await attach(poOneMissed.id, receiptOneMissed.id);
+    const oneMissed = await defaultsOf(poOneMissed.id);
+
+    // THE POINT OF THE WHOLE CHANGE: Widget X and Y cost exactly the same whether or not Z ever
+    // parsed. Under the old (this-morning's) gap model this would NOT hold — the gap, and every
+    // matched line's share of it, shifts the moment the set of matched lines changes.
+    expect(oneMissed.lines[0].unitCostDefault).toBe(allParsed.lines[0].unitCostDefault);
+    expect(oneMissed.lines[1].unitCostDefault).toBe(allParsed.lines[1].unitCostDefault);
+    expect(allParsed.lines[0].unitCostDefault).toBe(16.46); // 15 + 9.75% (1.46)
+    expect(allParsed.lines[1].unitCostDefault).toBe(24.69); // 22.50 + 9.75% (2.19)
+
+    // Z priced normally when its line parsed…
+    expect(allParsed.lines[2].costSource).toBe("receipt-line");
+    expect(allParsed.lines[2].unitCostDefault).toBe(8.78); // 8 + 9.75% (0.78)
+    // …and is left for a human, cost 0, when it didn't — never guessed, never fabricated from
+    // what the other two lines or the receipt total suggest.
+    expect(oneMissed.lines[2].costSource).toBe("none");
+    expect(oneMissed.lines[2].unitCostDefault).toBe(0);
+  });
+
+  it("changing CompanySetting.purchasing changes the very next landing's tax; a missing or garbled row falls back to 9.75%, never 0", async () => {
+    const po = await createPurchaseOrder({
+      supplier: "Home Depot", openedBy: "owner", actor: "test", truckId,
+      lines: [{ name: "Item Q", qty: 1, unit: "ea" }],
+    });
+    const receipt = await receiptWith(105, [{ name: "Item Q", qty: 1, unit: "ea", unitCost: 100 }]);
+    await attach(po.id, receipt.id);
+
+    // No purchasing row at all yet → the 9.75% default, never 0.
+    const beforeAnySetting = await defaultsOf(po.id);
+    expect(beforeAnySetting.lines[0].taxShare).toBe(9.75);
+    expect(beforeAnySetting.lines[0].unitCostDefault).toBe(109.75);
+
+    await prisma.companySetting.upsert({
+      where: { key: "purchasing" },
+      update: { valueJson: JSON.stringify({ salesTaxRate: 0.05 }) },
+      create: { key: "purchasing", valueJson: JSON.stringify({ salesTaxRate: 0.05 }) },
+    });
+    const atFivePercent = await defaultsOf(po.id);
+    expect(atFivePercent.lines[0].taxShare).toBe(5);
+    expect(atFivePercent.lines[0].unitCostDefault).toBe(105);
+
+    // A percent-shaped value stored where a fraction belongs (9.75 instead of 0.0975) is caught
+    // and falls back to the default rather than multiplying every cost by ten (Kyle, 2026-09-23:
+    // "Store the DECIMAL FRACTION 0.0975, not 9.75 — a rate stored as 9.75 multiplies every cost
+    // by ten"; and "never fall back to 0, which silently under-costs everything").
+    await prisma.companySetting.update({ where: { key: "purchasing" }, data: { valueJson: JSON.stringify({ salesTaxRate: 9.75 }) } });
+    const withBadRow = await defaultsOf(po.id);
+    expect(withBadRow.lines[0].taxShare).toBe(9.75);
+    expect(withBadRow.lines[0].unitCostDefault).toBe(109.75);
   });
 });
