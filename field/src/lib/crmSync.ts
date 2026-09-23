@@ -996,9 +996,10 @@ export async function moveToolFromField(toolId: string, toLocationKey: string, r
   return crmRequest(`/tools/${toolId}/move`, { method: 'POST', body: JSON.stringify({ toLocationKey, reason: reason ?? null }) })
 }
 
-// Kyle, 2026-09-11: the receipt total is the truth; its line prices are only the weights that
-// split it, and the tax rides in the unit costs. The source says which weight decided the line.
-export type FieldLandingCostSource = 'receipt-line' | 'po-line' | 'book' | 'even' | 'none'
+// Kyle, 2026-09-23: landing is inventory, not money. A line's cost comes from its OWN matched
+// receipt line (plus its own tax share), else the typed cost, else the book price, else it is
+// unpriced. Never a share of the receipt total, never an even split.
+export type FieldLandingCostSource = 'receipt-line' | 'po-line' | 'book' | 'none'
 
 export interface FieldLandingReceiptLine {
   receiptId: string
@@ -1051,6 +1052,7 @@ export interface FieldLanding {
   matchedTotal: number
   taxTotal: number
   linesTotal: number
+  /** Display only (Kyle, 2026-09-23) — a receipt legitimately carries items never on this P.O., so this is often false and never gates landing. */
   balanced: boolean
   suggestedLines: FieldLandingSuggestedLine[]
   receiptCount: number
@@ -1074,10 +1076,8 @@ export async function fetchLandingDefaults(poId: string): Promise<FieldLanding> 
 export async function landPurchaseOrderFromField(
   poId: string,
   lines: { lineId: string; qtyLanded: number; unitCost: number }[],
-  // Kyle, 2026-09-11: out of balance with the receipt lands only with a one-line reason.
-  override?: { reason: string } | null,
 ): Promise<{ id: string; number: string; status: string; landedAt: string; destination: string }> {
-  return crmRequest(`/purchase-orders/${poId}/land`, { method: 'POST', body: JSON.stringify({ lines, ...(override ? { override } : {}) }) })
+  return crmRequest(`/purchase-orders/${poId}/land`, { method: 'POST', body: JSON.stringify({ lines }) })
 }
 
 /** Landing and tool moves are online-only and never queued — refuse up front when the phone knows it has no signal. */

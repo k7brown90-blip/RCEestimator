@@ -1267,9 +1267,10 @@ export type InventoryOverview = {
   unlandedPos: UnlandedPo[];
 };
 
-// Kyle, 2026-09-11: the receipt total is the truth; the receipt's line prices are only the weights
-// that split it. The source rides beside the number and says which weight decided the line.
-export type LandingCostSource = "receipt-line" | "po-line" | "book" | "even" | "none";
+// Kyle, 2026-09-23: landing is inventory, not money. A line's cost comes from its OWN
+// matched receipt line (plus its own tax share), else the typed cost, else the book price,
+// else it is unpriced. Never a share of the receipt total, never an even split.
+export type LandingCostSource = "receipt-line" | "po-line" | "book" | "none";
 
 export type LandingReceiptLine = {
   receiptId: string;
@@ -1328,6 +1329,7 @@ export type LandingDefaults = {
   parsedTotal: number;
   taxTotal: number;
   linesTotal: number;
+  /** Display only (Kyle, 2026-09-23) — a receipt legitimately carries items never on this P.O., so this is often false and never gates landing. */
   balanced: boolean;
   suggestedLines: LandingSuggestedLine[];
   receiptCount: number;

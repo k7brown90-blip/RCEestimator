@@ -453,15 +453,26 @@ export function landingBlocker(po: Pick<PurchaseOrder, "status" | "number" | "la
 }
 
 /**
- * Where a landing line's WEIGHT came from — shown beside the editable field.
+ * Where a landing line's COST came from — shown beside the editable field.
  *
- * Kyle, 2026-09-11: "The receipt total is the truth. It matches the card swipe
- * to the cent. The photo's line prices are only WEIGHTS." So the label says
- * what decided the split, not where the dollars came from — the dollars always
- * come from the receipt. "none" is the one exception: a PO with no receipt at
- * all still falls back to the typed cost, then the book, then nothing.
+ * Kyle, 2026-09-23 (correcting the 2026-09-11 design): "Stripe is the source of
+ * truth… The receipt is just proof of purchase… The receipt being read and
+ * reported is not about money tracking. It is about building the price book."
+ * Landing is inventory, not money — it is never refused for failing to match a
+ * receipt total, and never fabricates a cost by spreading one. Each line's cost
+ * is its own, plainly:
+ *   - "receipt-line": its own matched receipt line's total ÷ qty, plus its own
+ *     share of the receipt's tax (apportioned only across lines that matched).
+ *   - "po-line": no matching receipt line, so the cost typed on the PO — as is.
+ *   - "book": no receipt line and no typed cost, so the book's purchase price
+ *     — as is.
+ *   - "none": none of the above. Cost is 0 and a human has to type one before
+ *     this line prices anything real.
+ * Never an even split, never a share of someone else's line, never scaled to
+ * force the lines to add up to a receipt that may legitimately carry items
+ * this PO never bought.
  */
-export type LandingCostSource = "receipt-line" | "po-line" | "book" | "even" | "none";
+export type LandingCostSource = "receipt-line" | "po-line" | "book" | "none";
 
 /** One parsed line of an attached receipt, as the landing panel shows it. */
 export interface LandingReceiptLine {
@@ -497,10 +508,10 @@ export interface LandingLineDefault {
   qtyLandedDefault: number;
   unitCostDefault: number;
   costSource: LandingCostSource;
-  /** Kyle, 2026-09-11: the weight this line took of the receipt total, and a phrase for the label. */
+  /** Display only, 2026-09-23: what this line's own cost is based on (its receipt line's total, the typed cost, or the book price) and a phrase for the label. Never used to scale or split anything. */
   weight: number;
   weightBasis: string;
-  /** This line's share of the receipt total past its parsed lines — the sales tax, spread. */
+  /** This line's own share of the receipt's tax, apportioned only across lines that matched a receipt line — never a line with no receipt line of its own. */
   taxShare: number;
   bookPurchasePrice: number | null;
   /** The receipt line that priced (or at least named) this PO line. */
@@ -591,23 +602,32 @@ function looseScore(receiptName: string, poText: string): number {
 /**
  * The defaults the landing panel shows, all editable.
  *
- * Kyle, 2026-09-11 (the seven picks): "Pricing is not matching up on these
- * P.O.'s." PO-2026-0003 landed two lines at $6.58 each because nothing matched
- * and only the $13.16 of SALES TAX was left to prorate; PO-2026-0004 landed at
- * $0.00 because the photo reader misread prices that summed ABOVE the receipt.
- * The ruling: "The receipt total is the truth. It matches the card swipe to
- * the cent. The photo's line prices are only WEIGHTS." And: "Sales tax is
- * spread across the lines, so a landed unit cost is what was actually paid,
- * tax included."
+ * Kyle, 2026-09-23 (correcting the 2026-09-11 design): "Stripe is the source
+ * of truth, when a PO is created and a purchase made stripe already reports it
+ * back… The receipt is just proof of purchase that ensures every PO has
+ * documentation. There might be other charges on there of misc items that do
+ * not get consumed on the job. So perfectly balancing the receipt to the job
+ * purchase is always going to fail… The receipt being read and reported is
+ * not about money tracking. It is about building the price book."
  *
- * So: match receipt lines to PO lines (explicit itemId, else the loosened
- * stockSeed matcher against the PO line's name AND its book description), many
- * receipt lines allowed under one PO line, each receipt line claimed once.
- * Then a weight per line — (a) its matched receipt lines' extended prices,
- * (b) the typed unitCost × qty, (c) qty × book purchase price, (d) qty — and
- * unitCostDefault = receiptTotal × weight / Σweights ÷ qty, with the last
- * landing line absorbing the rounding so Σ equals the receipt to the cent.
- * With no receipt at all the old fallback stands: typed, then book, then 0.
+ * Landing is INVENTORY, not money: what arrived, and what each item cost.
+ * Match receipt lines to PO lines exactly as before (explicit itemId, else the
+ * loosened stockSeed matcher against the PO line's name AND its book
+ * description), many receipt lines allowed under one PO line, each receipt
+ * line claimed once. Then, per PO line, in order:
+ *   1. Matched to its own receipt line(s) with a price → that line's own total
+ *      ÷ qty, plus its own proportional share of the receipt's tax (tax is
+ *      apportioned only across lines that matched, in proportion to each
+ *      one's own matched subtotal — never spread onto a line with no receipt
+ *      line of its own).
+ *   2. No receipt line (or a matched line with no price) → the typed P.O.
+ *      unitCost, exactly as typed.
+ *   3. No typed cost → the book's purchase price, exactly as it reads.
+ *   4. None of the above → cost 0, source "none": a human has to type one.
+ * Never a share of the receipt total, never an even split, never scaled to
+ * force Σ(landed lines) to equal the receipt — a receipt legitimately carries
+ * items never on this P.O. and never consumed on the job, so that will never
+ * balance and is no longer asked to.
  */
 export async function landingDefaults(id: string) {
   // The landing needs every receipt (lines, amounts); the list shape wants only the ones with a file — so LANDING's receipts win here.
@@ -656,63 +676,53 @@ export async function landingDefaults(id: string) {
   }
   for (const r of receipts) r.unmatched = r.lines.filter((rl) => !rl.matchedLineId);
 
-  // (2) The weights. The receipt total is the money; these only decide the split.
+  // (2) Each line's OWN cost — never a share of anyone else's.
   const parsedTotal = r2(receiptLines.reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
+  // Σ of every matched receipt line's own total — the base the tax is apportioned over (rung 1 lines only).
   const matchedTotal = r2([...matched.values()].flat().reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
-  // What the receipt carries past its printed lines: sales tax. Spread, never left over.
-  // Tax is the gap between what the photo's lines add up to and what the receipt
-  // charged. With no parsed lines there is nothing to compare, so the whole
-  // receipt is not "tax" — it is simply unread (Kyle, 2026-09-11: PO-2026-0012,
-  // a SiteOne receipt with no photo, was reporting $381.90 of tax).
+  // What the receipt carries past its printed lines: sales tax. Apportioned only across
+  // lines that matched a priced receipt line — a line with no receipt line of its own
+  // never receives a share (Kyle, 2026-09-23: the receipt is not money's job).
+  // With no parsed lines there is nothing to compare, so the whole receipt is not "tax"
+  // — it is simply unread (Kyle, 2026-09-11: PO-2026-0012, a SiteOne receipt with no
+  // photo, was reporting $381.90 of tax).
   const taxTotal = receiptTotal > 0 && parsedTotal > 0 ? Math.max(0, r2(receiptTotal - parsedTotal)) : 0;
   const qtyOf = (l: (typeof po.lines)[number]) => {
     const q = l.qtyLanded ?? l.qty;
     return Number.isFinite(q) && q > 0 ? q : 0;
   };
-  const weights = po.lines.map((l, i): { weight: number; source: LandingCostSource; basis: string } => {
-    const qty = qtyOf(l);
-    if (qty <= 0) return { weight: 0, source: "even", basis: "nothing landing on this line" };
-    const hits = matched.get(i) ?? [];
-    const hitTotal = r2(hits.reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
-    if (hitTotal > 0) return { weight: hitTotal, source: "receipt-line", basis: hits.length > 1 ? `${hits.length} receipt lines` : "its receipt line" };
-    if (l.unitCost != null && l.unitCost > 0) return { weight: r2(l.unitCost * qty), source: "po-line", basis: "the cost typed on the PO" };
-    const price = bookPrice(l.itemId);
-    if (price != null && price > 0) return { weight: r2(price * qty), source: "book", basis: "the book's purchase price" };
-    return { weight: qty, source: "even", basis: "an even split" };
-  });
-  const weightSum = r4(weights.reduce((s, w) => s + w.weight, 0));
-  const spread = receiptTotal > 0 && weightSum > 0;
-  // The last line with something landing absorbs the rounding, so Σ equals the receipt to the cent.
-  const absorber = spread ? po.lines.map((_, i) => i).filter((i) => weights[i].weight > 0).pop() ?? -1 : -1;
 
-  let allocated = 0;
-  let taxAllocated = 0;
   const lines: LandingLineDefault[] = po.lines.map((l, i) => {
     const price = bookPrice(l.itemId);
     const hits = matched.get(i) ?? [];
     const hit = hits[0] ?? null;
-    const w = weights[i];
     const qty = qtyOf(l);
+    const hitTotal = r2(hits.reduce((s, rl) => s + (rl.lineTotal ?? 0), 0));
     let unitCostDefault = 0;
-    let costSource: LandingCostSource = w.source;
+    let costSource: LandingCostSource;
+    let weight = 0;
+    let weightBasis: string;
     let taxShare = 0;
-    if (spread) {
-      const share = i === absorber ? r2(receiptTotal - allocated) : w.weight > 0 ? r2((receiptTotal * w.weight) / weightSum) : 0;
-      unitCostDefault = qty > 0 ? r6(share / qty) : 0;
-      allocated = r2(allocated + r2(unitCostDefault * qty));
-      if (taxTotal > 0) {
-        taxShare = i === absorber ? r2(taxTotal - taxAllocated) : w.weight > 0 ? r2((taxTotal * w.weight) / weightSum) : 0;
-        taxAllocated = r2(taxAllocated + taxShare);
-      }
+    if (hitTotal > 0) {
+      costSource = "receipt-line";
+      weight = hitTotal;
+      weightBasis = hits.length > 1 ? `${hits.length} receipt lines` : "its receipt line";
+      if (taxTotal > 0 && matchedTotal > 0) taxShare = r2((taxTotal * hitTotal) / matchedTotal);
+      unitCostDefault = qty > 0 ? r6((hitTotal + taxShare) / qty) : 0;
     } else if (l.unitCost != null) {
       unitCostDefault = r4(l.unitCost);
       costSource = "po-line";
+      weight = r2(l.unitCost * qty);
+      weightBasis = "the cost typed on the PO";
     } else if (price != null) {
       unitCostDefault = r4(price);
       costSource = "book";
+      weight = r2(price * qty);
+      weightBasis = "the book's purchase price";
     } else {
       unitCostDefault = 0;
       costSource = "none";
+      weightBasis = "no receipt line and no typed cost — type one";
     }
     return {
       lineId: l.id,
@@ -723,8 +733,8 @@ export async function landingDefaults(id: string) {
       qtyLandedDefault: l.qtyLanded ?? l.qty,
       unitCostDefault,
       costSource,
-      weight: w.weight,
-      weightBasis: w.basis,
+      weight,
+      weightBasis,
       taxShare,
       bookPurchasePrice: price,
       matchedReceiptLine: hit ? { receiptId: hit.receiptId, name: hit.name, qty: hit.qty, unit: hit.unit, unitCost: hit.unitCost } : null,
@@ -733,7 +743,8 @@ export async function landingDefaults(id: string) {
   });
 
   const linesTotal = r2(lines.reduce((s, l) => s + l.qtyLandedDefault * l.unitCostDefault, 0));
-  // Kyle, 2026-09-11: "Land is held when the landing total does not equal the receipt total."
+  // Display only (Kyle, 2026-09-23) — a receipt legitimately carries items never on this
+  // P.O., so this will often read false. It gates nothing; landPurchaseOrder never checks it.
   const balanced = receiptTotal <= 0 || Math.abs(linesTotal - receiptTotal) <= 0.01;
 
   // A PO with no lines has nothing to land (PO-0009, PO-0012) — offer the receipt's own lines.
@@ -774,11 +785,6 @@ export interface LandingLineInput {
   lineId: string;
   qtyLanded: number;
   unitCost: number;
-}
-
-/** Kyle, 2026-09-11: landing out of balance takes a one-line reason, kept on the event and every movement. */
-export interface LandingOverride {
-  reason: string;
 }
 
 /**
@@ -824,10 +830,12 @@ async function jobChargedOnLanding(tx: Tx, poJobId: string): Promise<{ jobId: st
  * closes (through verified, one "status" event, reason "landed"), landedAt is
  * stamped, and a "landed" event holds the lines. Landing twice → 409.
  *
- * Kyle, 2026-09-11: "Land is held when the landing total does not equal the
- * receipt total (tolerance $0.01), with a 'Land anyway' override that REQUIRES
- * a one-line reason." A PO with no receipt attached has nothing to balance
- * against, so the check only runs once a receipt is on it.
+ * Kyle, 2026-09-23 (correcting the 2026-09-11 design): landing is never
+ * refused for failing to match a receipt's total. "The receipt is just proof
+ * of purchase… There might be other charges on there of misc items that do
+ * not get consumed on the job. So perfectly balancing the receipt to the job
+ * purchase is always going to fail." A landing is judged on its own
+ * quantities and costs, not on adding up to someone else's number.
  *
  * Kyle, 2026-09-15: "All items on a P.O. should land automatically on the job
  * it was bought for. Left over material gets counted to the truck or warehouse
@@ -858,7 +866,6 @@ export async function landPurchaseOrder(
   lines: LandingLineInput[],
   actor: string,
   reason?: string | null,
-  opts?: { override?: LandingOverride | null },
 ) {
   const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: LANDING_INCLUDE });
   if (!po) throw new InventoryError("Purchase order not found", 404);
@@ -874,17 +881,11 @@ export async function landPurchaseOrder(
     if (!Number.isFinite(input.unitCost) || input.unitCost < 0) throw new InventoryError("unitCost must be zero or more", 400);
   }
 
-  // The receipt is the truth (Kyle, 2026-09-11) — the lines have to add up to it.
+  // Display/audit only (Kyle, 2026-09-23): the receipt no longer gates landing — it
+  // legitimately carries items never on this P.O. and never consumed on the job.
   const receiptTotal = r2(po.receipts.reduce((s, r) => s + (r.amount ?? 0), 0));
   const landedTotal = r2(lines.reduce((s, l) => s + l.qtyLanded * l.unitCost, 0));
-  const override = opts?.override?.reason?.trim() || null;
-  if (receiptTotal > 0 && Math.abs(landedTotal - receiptTotal) > 0.01 && !override) {
-    throw new InventoryError(
-      `${po.number} lands at $${landedTotal.toFixed(2)} but its receipt${po.receipts.length === 1 ? "" : "s"} total $${receiptTotal.toFixed(2)} — the receipt is the truth. Fix the lines, or land anyway with a reason.`,
-      409,
-    );
-  }
-  const landReason = [reason?.trim() || null, override ? `Landed anyway: ${override}` : null].filter(Boolean).join(" · ") || null;
+  const landReason = reason?.trim() || null;
 
   return prisma.$transaction(async (tx) => {
     await assertLocation(tx, destination);
@@ -978,7 +979,6 @@ export async function landPurchaseOrder(
         reason: landReason,
         after: JSON.stringify({
           destination, purpose, lines: landed, receiptTotal, landedTotal,
-          ...(override ? { override } : {}),
           // The trail of the automatic charge: which job, whether it hopped from
           // a quote visit and through which estimate. Each line above carries its
           // consumeMovementId and chargedUnitCost.
@@ -986,7 +986,7 @@ export async function landPurchaseOrder(
         }),
       },
     });
-    return { purchaseOrder: updated, destination, lines: landed, receiptTotal, landedTotal, override, chargedJob };
+    return { purchaseOrder: updated, destination, lines: landed, receiptTotal, landedTotal, chargedJob };
   });
 }
 

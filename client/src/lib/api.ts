@@ -1353,7 +1353,7 @@ export const api = {
     }
     return (await response.json()) as { id: string; amount: number; vendor: string | null; parsed: boolean; lineCount: number; note: string | null };
   },
-  landPurchaseOrder: (poId: string, input: { lines: { lineId: string; qtyLanded: number; unitCost: number }[]; reason?: string | null; override?: { reason: string } }) =>
+  landPurchaseOrder: (poId: string, input: { lines: { lineId: string; qtyLanded: number; unitCost: number }[]; reason?: string | null }) =>
     request<{ id: string; number: string; status: string; landedAt: string; destination: string }>(`/purchase-orders/${poId}/land`, { method: "POST", body: JSON.stringify(input) }),
   tools: (locationKey?: string) => request<ToolView[]>(`/tools${locationKey ? `?locationKey=${encodeURIComponent(locationKey)}` : ""}`),
   tool: (id: string) => request<ToolDetail>(`/tools/${id}`),

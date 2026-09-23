@@ -143,10 +143,12 @@ inventoryRouter.post("/purchase-orders/:id/land", asyncHandler(async (req, res) 
   const body = z.object({
     lines: z.array(z.object({ lineId: z.string().trim().min(1), qtyLanded: z.number().nonnegative(), unitCost: z.number().nonnegative() })),
     reason: optionalText(300),
-    // Kyle, 2026-09-11: "Land anyway" takes a one-line reason, kept on the event and every movement.
-    override: z.object({ reason: reasonSchema }).optional(),
+    // Kyle, 2026-09-23: landing no longer gates on the receipt total, so an
+    // "override" reason has nothing left to override — accepted and ignored so an
+    // older client that still sends one does not 400.
+    override: z.object({ reason: z.string() }).optional(),
   }).parse(req.body);
-  const result = await landPurchaseOrder(readParam(req, "id"), body.lines, "owner", body.reason ?? null, { override: body.override ?? null });
+  const result = await landPurchaseOrder(readParam(req, "id"), body.lines, "owner", body.reason ?? null);
   res.json({ id: result.purchaseOrder.id, number: result.purchaseOrder.number, status: result.purchaseOrder.status, landedAt: result.purchaseOrder.landedAt, destination: result.destination, lines: result.lines, chargedJob: result.chargedJob });
 }));
 

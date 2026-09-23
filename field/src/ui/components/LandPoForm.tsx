@@ -6,12 +6,15 @@
  * expected), unit cost (default from the office) — all editable. Landing
  * closes the PO.
  *
- * Kyle, 2026-09-11: "The receipt total is the truth. It matches the card swipe
- * to the cent" — the receipt's line prices only weight the split, and the sales
- * tax rides in the unit costs. The balance line says where the landing stands;
- * Land is held until the lines equal the receipt, and landing anyway takes a
- * one-line reason. The receipt photo uploads from right here, and a PO with no
- * lines can take the receipt's own in one tap.
+ * SUPERSEDED 2026-09-23 (Kyle correcting the 2026-09-11 design): "Stripe is
+ * the source of truth… The receipt is just proof of purchase… Perfectly
+ * balancing the receipt to the job purchase is always going to fail." Landing
+ * is inventory, not money — it is never held for failing to match the
+ * receipt's total, so there is no more "Land anyway". The receipt total still
+ * shows as context. An UNPRICED line (source "none") is styled to be
+ * unmissable — a human types the cost before that line means anything. The
+ * receipt photo uploads from right here, and a PO with no lines can take the
+ * receipt's own in one tap.
  *
  * Online only, and NOT queued: the ledger is the office's and a landing that
  * replayed later could double-count. The failure text says so.
@@ -24,10 +27,11 @@ const SOURCE_LABEL: Record<FieldLanding['lines'][number]['costSource'], string> 
   'receipt-line': 'from receipt line',
   'po-line': 'typed on PO',
   book: 'book price',
-  even: 'even split',
-  none: 'no default',
+  none: 'no cost — type one',
 }
-const GUESS_SOURCES = new Set<FieldLanding['lines'][number]['costSource']>(['book', 'even', 'none'])
+const GUESS_SOURCES = new Set<FieldLanding['lines'][number]['costSource']>(['book', 'none'])
+/** Kyle, 2026-09-23: an unpriced line has to be unmissable — a human types the cost or it poisons the item's moving average. */
+const UNPRICED_SOURCES = new Set<FieldLanding['lines'][number]['costSource']>(['none'])
 
 type Row = { lineId: string; qty: string; cost: string }
 
@@ -36,7 +40,6 @@ export function LandPoForm({ poId, onLanded }: { poId: string; onLanded: (result
   const [rows, setRows] = useState<Row[]>([])
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [overrideReason, setOverrideReason] = useState('')
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   const [reloadKey, setReloadKey] = useState(0)
@@ -112,7 +115,7 @@ export function LandPoForm({ poId, onLanded }: { poId: string; onLanded: (result
 
   const valid = rows.length > 0 && rows.every((r) => Number.isFinite(Number(r.qty)) && Number(r.qty) >= 0 && Number.isFinite(Number(r.cost)) && Number(r.cost) >= 0)
   const total = rows.reduce((s, r) => s + (Number(r.qty) || 0) * (Number(r.cost) || 0), 0)
-  // The receipt is the truth — Land is held until the lines add up to it (Kyle, 2026-09-11).
+  // Display only (Kyle, 2026-09-23) — a receipt legitimately carries items never on this PO, so this often reads false and never gates landing.
   const inBalance = !data || data.receiptTotal <= 0 || Math.abs(total - data.receiptTotal) <= 0.01
 
   const land = async () => {
@@ -123,7 +126,6 @@ export function LandPoForm({ poId, onLanded }: { poId: string; onLanded: (result
       const result = await landPurchaseOrderFromField(
         poId,
         rows.map((r) => ({ lineId: r.lineId, qtyLanded: Number(r.qty), unitCost: Number(r.cost) })),
-        inBalance || !overrideReason.trim() ? null : { reason: overrideReason.trim() },
       )
       onLanded(result)
     } catch (err) {
@@ -177,8 +179,9 @@ export function LandPoForm({ poId, onLanded }: { poId: string; onLanded: (result
       {data.lines.map((l, i) => {
         const row = rows[i]
         if (!row) return null
+        const unpriced = UNPRICED_SOURCES.has(l.costSource) && Number(row.cost) === 0
         return (
-          <div key={l.lineId} className="space-y-1">
+          <div key={l.lineId} className={`space-y-1 ${unpriced ? 'rounded border border-red-600 bg-red-950/40 p-2' : ''}`}>
             <p className="text-xs text-slate-200">{l.name} <span className="text-slate-500">· expected {l.qtyExpected} {l.unit ?? ''}</span></p>
             <div className="flex gap-2">
               <label className="flex-1 text-[10px] text-slate-500">
@@ -191,12 +194,12 @@ export function LandPoForm({ poId, onLanded }: { poId: string; onLanded: (result
                 />
               </label>
               <label className="flex-1 text-[10px] text-slate-500">
-                unit cost · <span className={GUESS_SOURCES.has(l.costSource) ? 'text-amber-300' : ''}>{SOURCE_LABEL[l.costSource]}</span>
+                unit cost · <span className={unpriced ? 'font-semibold text-red-300' : GUESS_SOURCES.has(l.costSource) ? 'text-amber-300' : ''}>{SOURCE_LABEL[l.costSource]}</span>
                 {/* Kyle, 2026-09-11: the tax rides in the price, so the line says so. */}
                 {l.taxShare > 0 ? ` · incl. tax $${l.taxShare.toFixed(2)}` : ''}
                 {l.costSource !== 'receipt-line' && l.matchedReceiptLine ? ' · receipt line has no price' : ''}
                 <input
-                  className="mt-0.5 w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white"
+                  className={`mt-0.5 w-full rounded border p-2 text-sm text-white ${unpriced ? 'border-red-500 bg-slate-900' : 'border-slate-600 bg-slate-900'}`}
                   inputMode="decimal"
                   value={row.cost}
                   onChange={(e) => setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, cost: e.target.value } : r)))}
@@ -234,29 +237,22 @@ export function LandPoForm({ poId, onLanded }: { poId: string; onLanded: (result
           )}
         </div>
       )}
-      {/* Kyle, 2026-09-11: the balance is the headline — green when the lines equal the receipt, red when they do not. */}
+      {/* Kyle, 2026-09-23: the receipt total is context, not a gate — a receipt legitimately
+          carries items never on this PO, so this will often read off and that is fine. */}
       <div className="space-y-1">
-        <p className={`text-xs tabular-nums ${data.receiptTotal <= 0 ? 'text-slate-400' : inBalance ? 'text-emerald-300' : 'text-red-300'}`}>
+        <p className={`text-xs tabular-nums ${data.receiptTotal <= 0 ? 'text-slate-400' : inBalance ? 'text-emerald-300' : 'text-slate-400'}`}>
           Landing total ${total.toFixed(2)}
           {data.receiptTotal > 0 ? ` of receipt $${data.receiptTotal.toFixed(2)}` : ' · no receipt to check against'}
           {data.receiptTotal > 0 && !inBalance ? ` · off by $${Math.abs(total - data.receiptTotal).toFixed(2)}` : ''}
         </p>
-        {!inBalance && (
-          <input
-            className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white"
-            placeholder="Why land out of balance? (required)"
-            value={overrideReason}
-            onChange={(e) => setOverrideReason(e.target.value)}
-          />
-        )}
         <div className="flex items-center justify-end">
           <button
             type="button"
-            disabled={busy || !valid || Boolean(data.blocker) || (!inBalance && !overrideReason.trim())}
+            disabled={busy || !valid || Boolean(data.blocker)}
             onClick={() => void land()}
             className="rounded-lg bg-emerald-800 px-4 py-2 text-xs font-medium text-white disabled:opacity-40"
           >
-            {busy ? 'Landing…' : inBalance ? 'Land' : 'Land anyway'}
+            {busy ? 'Landing…' : 'Land'}
           </button>
         </div>
       </div>

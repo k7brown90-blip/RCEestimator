@@ -7,14 +7,16 @@
  * (default from /purchase-orders/:id/landing). Landing closes the PO. Shared
  * by the Inventory page and the Purchases card.
  *
- * Kyle, 2026-09-11 (the seven picks): "The receipt total is the truth. It
- * matches the card swipe to the cent" — the photo's line prices are only the
- * weights that split it, and the sales tax rides in the unit costs rather than
- * being left over. So the panel shows the balance ("Landing total $X of receipt
- * $Y"), holds Land until the two agree, and takes a one-line reason for "Land
- * anyway". A PO with no receipt gets the upload right here ("This is where we
- * need a way to attach a photo of the receipt if one is missing"); a PO with no
- * lines gets the receipt's own lines in one click.
+ * SUPERSEDED 2026-09-23 (Kyle correcting the 2026-09-11 design): "Stripe is
+ * the source of truth… The receipt is just proof of purchase… Perfectly
+ * balancing the receipt to the job purchase is always going to fail." Landing
+ * is inventory, not money — it is never held for failing to match the
+ * receipt's total, and there is no "Land anyway" override anymore because
+ * there is nothing left to override. The receipt total still shows as
+ * context. What matters now is an UNPRICED line (source "none") — a human has
+ * to type a cost before that line means anything, and the row is styled to
+ * make that unmissable. A PO with no receipt gets the upload right here; a PO
+ * with no lines gets the receipt's own lines in one click.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -27,10 +29,11 @@ const COST_SOURCE_LABEL: Record<LandingDefaults["lines"][number]["costSource"], 
   "receipt-line": "from receipt line",
   "po-line": "typed on PO",
   book: "book price",
-  even: "even split",
-  none: "no default",
+  none: "no cost — type one",
 };
-const GUESS_SOURCES = new Set<LandingDefaults["lines"][number]["costSource"]>(["book", "even", "none"]);
+const GUESS_SOURCES = new Set<LandingDefaults["lines"][number]["costSource"]>(["book", "none"]);
+/** Kyle, 2026-09-23: an unpriced line has to be unmissable — a human types the cost or it poisons the item's moving average. */
+const UNPRICED_SOURCES = new Set<LandingDefaults["lines"][number]["costSource"]>(["none"]);
 
 type Row = { lineId: string; qty: string; cost: string };
 
@@ -82,8 +85,6 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [overriding, setOverriding] = useState(false);
-  const [overrideReason, setOverrideReason] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     // A refetch (after adding a line from the receipt) keeps what Kyle already typed on the lines he had.
@@ -129,7 +130,6 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
     mutationFn: () => api.landPurchaseOrder(poId, {
       lines: rows.map((r) => ({ lineId: r.lineId, qtyLanded: Number(r.qty), unitCost: Number(r.cost) })),
       reason: reason.trim() || null,
-      ...(overriding && overrideReason.trim() ? { override: { reason: overrideReason.trim() } } : {}),
     }),
     onSuccess: () => {
       setError(null);
@@ -148,9 +148,8 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
   const total = rows.reduce((s, r) => s + (Number(r.qty) || 0) * (Number(r.cost) || 0), 0);
   const isTool = data.purchaseOrder.purpose === "tool";
   const landed = Boolean(data.purchaseOrder.landedAt);
-  // The receipt is the truth — Land is held until the lines add up to it (Kyle, 2026-09-11).
+  // Display only (Kyle, 2026-09-23) — a receipt legitimately carries items never on this P.O., so this often reads false and never gates landing.
   const inBalance = data.receiptTotal <= 0 || Math.abs(total - data.receiptTotal) <= 0.01;
-  const overrideReady = overriding && overrideReason.trim().length > 0;
 
   return (
     <div className="space-y-2 text-xs">
@@ -202,18 +201,24 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
           {data.lines.map((l, i) => {
             const row = rows[i];
             if (!row) return null;
+            const unpriced = UNPRICED_SOURCES.has(l.costSource) && Number(row.cost) === 0;
             return (
-              <tr key={l.lineId} className="border-t border-rce-border/60">
+              <tr key={l.lineId} className={`border-t border-rce-border/60 ${unpriced ? "bg-red-50" : ""}`}>
                 <td className="py-0.5 pr-2">{l.name}{l.itemId ? <span className="text-rce-muted"> · {l.itemId}</span> : null}</td>
                 <td className="py-0.5 pr-2 text-right tabular-nums">{l.qtyExpected} {l.unit ?? ""}</td>
                 <td className="py-0.5 pr-2">
                   <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" value={row.qty} onChange={(e) => setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, qty: e.target.value } : r)))} />
                 </td>
                 <td className="py-0.5 pr-2">
-                  <input className="field w-24 px-1 py-0.5 text-xs" inputMode="decimal" value={row.cost} onChange={(e) => setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, cost: e.target.value } : r)))} />
+                  <input
+                    className={`field w-24 px-1 py-0.5 text-xs ${unpriced ? "border-red-500" : ""}`}
+                    inputMode="decimal"
+                    value={row.cost}
+                    onChange={(e) => setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, cost: e.target.value } : r)))}
+                  />
                   <span
-                    className={`ml-1 text-[10px] ${GUESS_SOURCES.has(l.costSource) ? "text-amber-800" : "text-rce-muted"}`}
-                    title={l.matchedReceiptLines.length > 0 ? `receipt: ${l.matchedReceiptLines.map((rl) => `${rl.name} × ${rl.qty}`).join(", ")} · weighted by ${l.weightBasis}` : `weighted by ${l.weightBasis}`}
+                    className={`ml-1 text-[10px] ${unpriced ? "font-semibold text-red-700" : GUESS_SOURCES.has(l.costSource) ? "text-amber-800" : "text-rce-muted"}`}
+                    title={l.matchedReceiptLines.length > 0 ? `receipt: ${l.matchedReceiptLines.map((rl) => `${rl.name} × ${rl.qty}`).join(", ")} · ${l.weightBasis}` : l.weightBasis}
                   >
                     {COST_SOURCE_LABEL[l.costSource]}
                     {/* Kyle, 2026-09-11: the tax rides in the price, so the line says so. */}
@@ -259,31 +264,23 @@ export function LandingPanel({ poId, onLanded }: { poId: string; onLanded?: () =
           )}
         </div>
       )}
-      {/* Kyle, 2026-09-11: the balance is the headline — green when the lines equal the receipt, red when they do not. */}
+      {/* Kyle, 2026-09-23: the receipt total is context, not a gate — a receipt legitimately
+          carries items never on this P.O., so this will often read off and that is fine. */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className={`tabular-nums font-medium ${data.receiptTotal <= 0 ? "text-rce-muted" : inBalance ? "text-emerald-700" : "text-red-600"}`}>
+        <span className={`tabular-nums font-medium ${data.receiptTotal <= 0 ? "text-rce-muted" : inBalance ? "text-emerald-700" : "text-rce-muted"}`}>
           Landing total {money(total)}
           {data.receiptTotal > 0 ? ` of receipt ${money(data.receiptTotal)}` : " · no receipt to check against"}
           {data.receiptTotal > 0 && !inBalance ? ` · off by ${money(Math.abs(total - data.receiptTotal))}` : ""}
         </span>
         <span className="inline-flex flex-wrap items-center gap-1">
           <input className="field w-48 max-w-full px-1 py-0.5 text-xs" placeholder="Note (optional)" value={reason} onChange={(e) => setReason(e.target.value)} />
-          {!inBalance && !overriding && (
-            <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => setOverriding(true)}>Land anyway</button>
-          )}
-          {!inBalance && overriding && (
-            <>
-              <input className="field w-52 max-w-full px-1 py-0.5 text-xs" placeholder="Why land out of balance? (required)" value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} />
-              <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => { setOverriding(false); setOverrideReason(""); }}>cancel</button>
-            </>
-          )}
           <button
             type="button"
             className="btn btn-primary px-2 py-0.5 text-xs"
-            disabled={!valid || Boolean(data.blocker) || land.isPending || (!inBalance && !overrideReady)}
+            disabled={!valid || Boolean(data.blocker) || land.isPending}
             onClick={() => land.mutate()}
           >
-            {land.isPending ? "Landing…" : inBalance ? "Land" : "Land anyway"}
+            {land.isPending ? "Landing…" : "Land"}
           </button>
         </span>
       </div>
