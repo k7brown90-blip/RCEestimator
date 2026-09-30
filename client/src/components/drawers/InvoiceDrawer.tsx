@@ -19,8 +19,10 @@ import { DeliveryChip } from "../DeliveryChip";
 import { Drawer } from "../Drawer";
 import { PaymentPanel } from "../PaymentPanel";
 import { PhotoAttachPicker } from "../PhotoGalleryPanel";
+import { RaiseChangeOrderButton } from "../RaiseChangeOrderButton";
 import { SendToPicker } from "../SendToPicker";
 import { OpenDrawerButton } from "./OpenDrawerButton";
+import { acceptanceWording } from "../../../../shared/acceptance";
 
 export function InvoiceDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const queryClient = useQueryClient();
@@ -49,7 +51,7 @@ export function InvoiceDrawer({ id, onClose }: { id: string; onClose: () => void
   const [photoIds, setPhotoIds] = useState<string[]>([]);
   const send = useMutation({
     mutationFn: () => api.sendInvoice(id, { toOverride, photoIds: photoIds.length > 0 ? photoIds : undefined }),
-    onSuccess: (r) => { setError2(null); setNotice(`Invoice emailed to ${r.to}.`); onChange(); },
+    onSuccess: (r) => { setError2(null); setNotice(`Signed copy emailed to ${r.to}.`); onChange(); },
     onError: (err) => { setNotice(null); setError2((err as Error).message); },
   });
 
@@ -77,8 +79,10 @@ export function InvoiceDrawer({ id, onClose }: { id: string; onClose: () => void
           <p className="text-xs text-rce-muted">
             {inv.customerPhone ?? "no phone on file"} · {inv.customerEmail ?? "no email on file"}
             <br />
-            signed {new Date(inv.signedAt).toLocaleDateString()}
-            {inv.signedChannel === "in_person" ? " in person" : inv.signedChannel === "email" ? " from the emailed link" : ""}
+            {/* "signed … in person" / "accepted … by phone, recorded by the office" — shared/acceptance.ts;
+                an office acceptance (2026-09-24) never reads as a bare "signed". */}
+            {acceptanceWording(inv.signedChannel, inv.acceptedVia).verb} {new Date(inv.signedAt).toLocaleDateString()}
+            {acceptanceWording(inv.signedChannel, inv.acceptedVia).how ? ` ${acceptanceWording(inv.signedChannel, inv.acceptedVia).how}` : ""}
             {inv.sentTo ? ` · sent to ${inv.sentTo}` : " · not emailed"}
             {inv.job ? ` · job ${inv.job.status.replaceAll("_", " ")}` : " · job not created yet"}
             {inv.remindersSent > 0 && ` · reminded ${inv.remindersSent}x${inv.lastReminderAt ? ` (last ${new Date(inv.lastReminderAt).toLocaleDateString()})` : ""}`}
@@ -102,13 +106,32 @@ export function InvoiceDrawer({ id, onClose }: { id: string; onClose: () => void
             <button type="button" className="btn btn-secondary text-sm" onClick={() => void openProtectedPdf(`/issued-estimates/${id}/pdf?audience=company`)}>
               Our copy (PDF)
             </button>
+            {/*
+              The job grew (2026-09-29). The invoice is one of the three places a person stands
+              when a tech rings to say there is more work — it lands on THIS invoice, one balance
+              and one payment (services/invoiceGroup.ts). `inv` comes from GET /invoices, which
+              lists live signed roots only, so the target is always signed and never void.
+            */}
+            <RaiseChangeOrderButton
+              target={{ estimateId: inv.id, status: "signed", signed: true }}
+            />
             {inv.paymentStatus !== "paid" && (
               <button type="button" className="btn btn-secondary text-sm" disabled={remind.isPending} onClick={() => remind.mutate()}>
                 {remind.isPending ? "Sending…" : "Send reminder"}
               </button>
             )}
+            {/*
+              TWO SENDS, TWO NAMES (Kyle, 2026-09-29). Both buttons on this drawer email the
+              customer about this invoice and they are NOT the same thing:
+                · "Email invoice {number} — $X due" on the payment panel above sends the whole
+                  invoice: every document, one total, the balance, one pay link. That is the one
+                  Kyle wanted after the Hoover job.
+                · this one attaches the SIGNED COPY — the frozen PDF of this document, with job
+                  photos if any are ticked. It is the receipt for a signature, not the bill.
+              Both read "Email invoice" before this, which is how the wrong one got pressed.
+            */}
             <button type="button" className="btn btn-secondary text-sm" onClick={() => setShowSend((s) => !s)}>
-              {showSend ? "Hide email" : "Email invoice…"}
+              {showSend ? "Hide email" : "Email the signed copy…"}
             </button>
           </div>
 
@@ -117,7 +140,7 @@ export function InvoiceDrawer({ id, onClose }: { id: string; onClose: () => void
               <SendToPicker accountId={inv.customer.id} primaryEmail={inv.customerEmail} onChange={setToOverride} />
               <PhotoAttachPicker propertyId={inv.propertyId} selected={photoIds} onChange={setPhotoIds} />
               <button type="button" className="btn btn-primary text-sm" disabled={send.isPending} onClick={() => send.mutate()}>
-                {send.isPending ? "Sending…" : `Email invoice${photoIds.length ? ` with ${photoIds.length} photo${photoIds.length === 1 ? "" : "s"}` : ""}`}
+                {send.isPending ? "Sending…" : `Email the signed copy${photoIds.length ? ` with ${photoIds.length} photo${photoIds.length === 1 ? "" : "s"}` : ""}`}
               </button>
               {!inv.customerEmail && <p className="text-xs text-rce-soft">No email on this invoice — pick a contact or type one above.</p>}
             </div>

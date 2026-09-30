@@ -77,6 +77,9 @@ import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
 import { groupSignedRows, INVOICE_DOC_SELECT, isLiveSigned, LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER, rollupInvoice, rootFirst, signedRootForJob, type InvoiceDocRow } from "./services/invoiceGroup";
 import { LOSABLE_STATUSES, LOST_REASONS as SHARED_LOST_REASONS } from "../shared/estimateStatus";
+import { ACCEPTED_VIA } from "../shared/acceptance";
+import { acceptEstimateFromOffice, undoOfficeAcceptance } from "./services/officeAcceptance";
+import { holdOrSendDepositRequest } from "./services/sameDayJob";
 import { reopenedStatusOf } from "./services/estimateExpiry";
 import {
   OFF_CARD_METHODS, PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, RECEIPT_HAS_FILE, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
@@ -3128,6 +3131,9 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
       sentAt: r.sentAt,
       signedAt: r.signedAt,
       signedChannel: r.signedChannel,
+      // How the customer told the office, when signedChannel is "office" (2026-09-24) — the row
+      // reads "accepted by phone, recorded by the office", never a bare "signed".
+      acceptedVia: r.acceptedVia,
       // Lost (2026-09-20): when and why the customer said no — the Estimates page's Lost card.
       lostAt: r.lostAt,
       lostReason: r.lostReason,
@@ -3586,6 +3592,95 @@ app.post("/issued-estimates/:id/reopen", asyncHandler(async (req, res) => {
   res.json({ reopened: true, status });
 }));
 
+/*
+  ── CUSTOMER ACCEPTED, RECORDED BY THE OFFICE (Kyle, 2026-09-24) ──────────────────────────────
+
+  "The customer accepted button would be good on the estimate drawer, no need to do sign in
+   person on the CRM because that is being developed for an admin/dispatcher (someone who stays
+   in the office). The field app is for the techs on site."
+
+  The office learns things second-hand — a phone call, an email reply, a text — and records them.
+  This is the exit from Sent/Viewed that means YES without a signature. It is NOT a signature and
+  never reads as one: services/officeAcceptance.ts writes status "signed" (the allow-list every
+  money surface reads) with signedChannel "office", acceptedVia, and NO signature image.
+
+  Kyle's ruling on expiry, same date: "an expired quote needs to have a new estimate. However, we
+  can reissue an expired estimate for them to sign. This ensures that if any pricing has changed
+  the new estimate will reflect that." So a past-validity row is refused with the Copy-to-new
+  sentence; Copy to new (POST /price-book/drafts/:id/duplicate, above) already reprices.
+
+  AFTER the acceptance, the same follow-through both signature doors do — or the sale sits in
+  Sold with no job, the exact disconnect this plan opened with:
+    - the job (createJobFromSignedEstimate; idempotent; a change order with "add to current job"
+      joins its parent's job);
+    - the invoice email — the customer accepted by phone and has no written copy; this is it,
+      with the pay link (sendInvoiceEmail refuses cleanly without an address);
+    - the deposit request, through holdOrSendDepositRequest so the same-day-job hold (Kyle,
+      2026-09-21) still applies — the customer is not on site to scan a QR, so the in-person
+      door's ten-minute courtesy wait does not apply; this is how they learn the deposit gate.
+  NOT fired: notifyOwnerSigned — its email says "signed", and the office just recorded this
+  itself; the SystemEvent and the estimate's event trail are the internal record. And no
+  "signed_estimate" Document rows are filed: the PDF (View / Customer copy) prints the acceptance
+  line and is reachable from the drawer, and a filed document labelled "signed" would be the
+  bare-"signed" lie this whole unit exists to prevent.
+*/
+app.post("/issued-estimates/:id/accept", asyncHandler(async (req, res) => {
+  const body = z.object({
+    acceptedVia: z.enum(ACCEPTED_VIA),
+    acceptedBy: z.string().trim().min(1).max(200),
+    note: z.string().trim().max(2000).nullable().optional(),
+    selectedOptions: z.array(z.string().trim().max(4)).max(3).nullable().optional(),
+  }).parse(req.body ?? {});
+
+  const result = await acceptEstimateFromOffice(prisma, readParam(req, "id"), {
+    acceptedVia: body.acceptedVia,
+    acceptedBy: body.acceptedBy,
+    note: body.note ?? null,
+    selectedOptions: Array.isArray(body.selectedOptions) ? body.selectedOptions.map(String) : null,
+    actor: "human:crm-session",
+  });
+  if (!result.ok) {
+    res.status(result.status).json({ accepted: false, error: result.reason });
+    return;
+  }
+
+  // The job, right here, so the drawer's "Job" door works the moment the acceptance is recorded.
+  // Never able to fail the acceptance: it is durably recorded by this point.
+  let jobVisitId: string | null = null;
+  let jobJoined = false;
+  try {
+    const job = await createJobFromSignedEstimate(prisma, result.estimateId, { actor: "system:office-accept" });
+    if (job.ok) { jobVisitId = job.visitId; jobJoined = Boolean(job.joined); }
+    else console.error("[IssuedEstimate] job creation after office acceptance refused:", job.reason);
+  } catch (err) {
+    console.error("[IssuedEstimate] job creation after office acceptance failed:", err);
+  }
+
+  sendInvoiceEmail(prisma, result.estimateId, { sentBy: "system:auto-on-accept" })
+    .then((r) => { if (!r.ok) console.error("[IssuedEstimate] auto invoice email after office acceptance refused:", r.reason); })
+    .catch((err) => console.error("[IssuedEstimate] auto invoice email after office acceptance failed:", err));
+
+  holdOrSendDepositRequest(prisma, result.estimateId, publicBaseUrl())
+    .catch((err) => console.error("[IssuedEstimate] deposit request after office acceptance failed:", err));
+
+  res.json({ accepted: true, estimateId: result.estimateId, jobVisitId, jobJoined });
+}));
+
+/*
+  The way back out (Kyle's standing rule: nothing is made that cannot be adjusted). Only an
+  OFFICE acceptance can be undone — a customer's signature is voided with a reason, never erased
+  — and only while nothing has moved: a payment, a signed change order, a taken-over invoice, a
+  scheduled job or a purchase order each refuse and name Void as the door.
+*/
+app.post("/issued-estimates/:id/unaccept", asyncHandler(async (req, res) => {
+  const result = await undoOfficeAcceptance(prisma, readParam(req, "id"), { actor: "human:crm-session" });
+  if (!result.ok) {
+    res.status(result.status).json({ unaccepted: false, error: result.reason });
+    return;
+  }
+  res.json({ unaccepted: true, status: result.status, jobAction: result.jobAction });
+}));
+
 app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
   const body = z.object({ waiveTrip: z.boolean().optional() }).parse(req.body ?? {});
   const result = await reviseEstimate(prisma, String(req.params.id), {
@@ -3697,6 +3792,31 @@ app.post("/issued-estimates/:id/change-order", asyncHandler(async (req, res) => 
     });
     return;
   }
+  /*
+    A VOID OR LOST INVOICE TAKES NO NEW WORK (2026-09-29).
+
+    `signedAt` survives a void — the signature happened, and the audit trail keeps it — so the
+    signed-only guard above let a change order be raised against an invoice that is off the
+    books. Its money would roll into a root that `loadInvoiceGroup` deliberately refuses to
+    group (services/invoiceGroup.ts: a void parent means the change order "stands alone as its
+    own invoice, honestly"), so the work would be agreed against nothing.
+
+    Added when this action moved onto the job, estimate and invoice drawers, which is the first
+    time a surface showing a VOID record could reach it. The client greys the button with this
+    same reason; this is the server saying no regardless of which surface asked.
+  */
+  if (est.status === "void" || est.voidedAt) {
+    res.status(409).json({
+      error: "That invoice is void — a voided record takes no new work. Issue a new estimate instead.",
+    });
+    return;
+  }
+  if (est.status === "lost") {
+    res.status(409).json({
+      error: "That estimate is marked lost — reopen it before raising a change order against it.",
+    });
+    return;
+  }
 
   // Always the ROOT invoice (2026-09-20): a change order raised against a change order joins
   // the same invoice as its parent, so the money group stays one level deep.
@@ -3756,6 +3876,9 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       signedAt: est.signedAt,
       signedByName: est.signerName,
       signatureImage: est.signatureImage,
+      // An office acceptance (2026-09-24) prints the acceptance line where the drawn mark would go.
+      signedChannel: est.signedChannel,
+      acceptedVia: est.acceptedVia,
       createdAt: est.createdAt,
       invoice: invoiceAppendix,
       // The named options, so the PDF prints "Option B — Exterior pathway lights" rather than a
@@ -3888,7 +4011,8 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
 const ACCOUNT_ESTIMATE_INCLUDE = {
   serviceProperty: { select: { id: true, name: true, addressLine1: true, city: true } },
   supersededBy: { select: { id: true, revision: true } },
-  options: { select: { option: true, subtotal: true } },
+  // `label` (2026-09-24): the drawer's "Customer accepted" form names the options the office picks among.
+  options: { select: { option: true, label: true, subtotal: true } },
 } satisfies Prisma.IssuedEstimateInclude;
 
 type AccountEstimateRow = Prisma.IssuedEstimateGetPayload<{ include: typeof ACCOUNT_ESTIMATE_INCLUDE }>;
@@ -4914,10 +5038,20 @@ app.post("/visits/:id/complete-consultation", asyncHandler(async (req, res) => {
     return;
   }
   const now = new Date();
-  const updated = await prisma.visit.update({
-    where: { id },
-    data: { completedAt: now, nextStep: "archived", nextStepAt: now },
-  });
+  const [updated] = await prisma.$transaction([
+    prisma.visit.update({
+      where: { id },
+      data: { completedAt: now, nextStep: "archived", nextStepAt: now },
+    }),
+    // Closing the consultation from the CRM must clear the tech's phone too —
+    // no technicianId filter here (the office has no technician in scope),
+    // so this clears every assignment on the visit (Kyle, 2026-09-24: two
+    // Eric Ward cards were stuck on the field app after this door was used).
+    prisma.visitAssignment.updateMany({
+      where: { visitId: id, status: { not: "completed" } },
+      data: { status: "completed", completedAt: now },
+    }),
+  ]);
   res.json({ completed: true, completedAt: updated.completedAt });
 }));
 
@@ -5606,6 +5740,9 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
         ?? [est.serviceProperty.addressLine1, est.serviceProperty.city].filter(Boolean).join(", "),
       signedAt: est.signedAt,
       signedChannel: est.signedChannel,
+      // "office" acceptances (2026-09-24) say how the customer told us, so the invoice drawer
+      // reads "accepted by phone, recorded by the office" and never a bare "signed".
+      acceptedVia: est.acceptedVia,
       sentAt: est.sentAt,
       sentTo: est.sentTo,
       // Bounce flag (Kyle, 2026-09-09) — the invoice email came back. Additive.
@@ -6967,7 +7104,20 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       issuedEstimateId: { not: null },
       propertyId: { in: account.properties.map((p) => p.id) },
     },
-    include: { issuedEstimate: { select: { number: true, customerEmail: true } } },
+    include: {
+      issuedEstimate: {
+        select: {
+          number: true,
+          customerEmail: true,
+          // Which invoice this document belongs to (2026-09-29). A change order is filed
+          // exactly like a root — two copies, same "Invoice NNNN" label — so before this the
+          // account page showed a change order as a second invoice, with its own "Email
+          // invoice" button and the SAME group totals behind it. Reads as double billing.
+          changeOrderForId: true,
+          changeOrderFor: { select: { number: true } },
+        },
+      },
+    },
     orderBy: { createdAt: "desc" },
     take: 100,
   });
@@ -7054,6 +7204,10 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       type: d.type,
       audience: d.type.endsWith("_company") ? "company" : "customer",
       estimateNumber: d.issuedEstimate?.number ?? null,
+      // A change order, and the invoice it joined (2026-09-29). Both null on an ordinary
+      // estimate. The row labels itself from these so it never calls a change order an invoice.
+      isChangeOrder: Boolean(d.issuedEstimate?.changeOrderForId),
+      invoiceNumber: d.issuedEstimate?.changeOrderFor?.number ?? null,
       // The invoice send targets the ESTIMATE, not the document row — the document is one of two
       // renderings of it. Exposed so the account page can offer the send without a second lookup.
       estimateId: d.issuedEstimateId,

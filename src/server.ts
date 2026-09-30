@@ -205,14 +205,23 @@ async function startServer(): Promise<void> {
         select: { id: true, scheduledStart: true, scheduledEnd: true },
       });
       for (const v of stale) {
-        await prisma.visit.update({
-          where: { id: v.id },
-          data: {
-            completedAt: v.scheduledEnd ?? v.scheduledStart ?? new Date(),
-            nextStep: "archived",
-            nextStepAt: new Date(),
-          },
-        });
+        const completedAt = v.scheduledEnd ?? v.scheduledStart ?? new Date();
+        await prisma.$transaction([
+          prisma.visit.update({
+            where: { id: v.id },
+            data: {
+              completedAt,
+              nextStep: "archived",
+              nextStepAt: new Date(),
+            },
+          }),
+          // Same as the manual complete-consultation door: clear the tech's
+          // phone too, or the auto-archived visit stays stuck on the field app.
+          prisma.visitAssignment.updateMany({
+            where: { visitId: v.id, status: { not: "completed" } },
+            data: { status: "completed", completedAt },
+          }),
+        ]);
       }
       if (stale.length > 0) {
         logSystemEvent("info", "jobs", `Auto-archived ${stale.length} stale estimate visit(s) (scheduled 7+ days ago, never completed)`, {

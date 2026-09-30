@@ -53,4 +53,14 @@ describe("InvoiceDrawer", () => {
 
     expect(await screen.findByText(/No live invoice has this id/)).toBeInTheDocument();
   });
+
+  it("reads an office acceptance (2026-09-24) as 'accepted … by text, recorded by the office', never 'signed'", async () => {
+    vi.spyOn(api, "invoices").mockResolvedValue([{ ...inv, signedChannel: "office", acceptedVia: "text" }]);
+    vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(null);
+
+    renderWithProviders(<DrawerHost />, { route: "/financials?invoice=est-1" });
+
+    expect(await screen.findByText(/accepted 9\/12\/2026 by text, recorded by the office/)).toBeInTheDocument();
+    expect(screen.queryByText(/signed 9\/12\/2026/)).not.toBeInTheDocument();
+  });
 });

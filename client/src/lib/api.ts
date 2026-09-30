@@ -1851,6 +1851,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify({}),
     }),
+  /**
+   * "Customer accepted" (Kyle, 2026-09-24) — the office records an acceptance it was told about
+   * by phone / email / text / in writing / in person. Lands on status "signed" with NO signature
+   * image and signedChannel "office"; the job, the invoice email and the deposit request follow
+   * as they do after a signature. `selectedOptions` absent = the whole estimate.
+   */
+  acceptEstimate: (
+    estimateId: string,
+    input: { acceptedVia: string; acceptedBy: string; note?: string | null; selectedOptions?: string[] | null },
+  ) =>
+    request<{ accepted: true; estimateId: string; jobVisitId: string | null; jobJoined: boolean }>(`/issued-estimates/${estimateId}/accept`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  /** Undo an office-recorded acceptance while nothing has moved; refused once money, a change order or a scheduled job exists. */
+  unacceptEstimate: (estimateId: string) =>
+    request<{ unaccepted: true; status: "sent" | "viewed" | "expired"; jobAction: "none" | "cancelled_unscheduled" }>(`/issued-estimates/${estimateId}/unaccept`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
 
   estimateChain: () => request<{ estimates: PbChainRow[] }>("/issued-estimates/chain"),
 

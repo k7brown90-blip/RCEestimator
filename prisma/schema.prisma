@@ -3046,7 +3046,20 @@ model IssuedEstimate {
   // Null on estimates issued before P028. Everything else about a signature — the lock, the
   // audit line, the status, the owner notification — is identical between the two channels;
   // this column records only which door it came through.
+  //
+  // THIRD VALUE, "office" (2026-09-24, Kyle: "The customer accepted button would be good on the
+  // estimate drawer"): the OFFICE recorded an acceptance it was told about — by phone, email,
+  // text, in writing or in person — and NO signature was taken (`signatureImage` stays null).
+  // Still status "signed", because every money and reporting filter is an allow-list on that
+  // string; the channel is what keeps it visibly a different record from a customer's signature
+  // (CLAUDE.md, two apps, two people, two places). Every surface reads shared/acceptance.ts so
+  // it prints "accepted by phone, recorded by the office", never a bare "signed".
   signedChannel   String?
+  // When signedChannel is "office": how the customer told us — shared/acceptance.ts ACCEPTED_VIA
+  // (phone | email | text | writing | in_person) — and the office's internal note. Both null on
+  // a real signature and cleared by /unaccept.
+  acceptedVia     String?
+  acceptedNote    String?
   voidedAt        DateTime?
   voidReason      String?
   // Lost (Kyle, 2026-09-20: "when we give an estimate but they either hire someone else or end up

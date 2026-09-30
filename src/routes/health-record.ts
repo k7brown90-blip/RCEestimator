@@ -95,7 +95,12 @@ healthRecordTechRouter.get("/assignments", asyncHandler(async (req: TechRequest,
     where: {
       technicianId: req.technician!.id,
       status: { in: ["assigned", "in_progress"] },
-      visit: { status: { notIn: ["cancelled", "completed"] } },
+      // A closed consultation leaves visit.status = "estimate" on purpose
+      // (Kyle: consultations are archived, not "completed jobs"), so
+      // completedAt is the only signal that the visit is actually done and
+      // should drop off the tech's list (2026-09-24: two Eric Ward cards
+      // stayed stuck on the field app because this filter never checked it).
+      visit: { status: { notIn: ["cancelled", "completed"] }, completedAt: null },
     },
     include: {
       visit: {
@@ -1313,6 +1318,18 @@ healthRecordTechRouter.get("/visits/:visitId/payment-info", asyncHandler(async (
     data: summary
       ? {
         number: summary.number,
+        /*
+          WHAT THE INVOICE IS MADE OF (2026-09-29). The tech is standing next to the customer
+          when they ask "what am I paying for?" — and the answer on a job with a diagnostic plus
+          its resolutions change order is two documents, not one. The summary already knows;
+          this route was dropping it on the floor. Additive, so an older PWA build ignores it.
+        */
+        documents: summary.documents.map((d) => ({
+          number: d.number,
+          title: d.title,
+          kind: d.kind,
+          billedTotal: d.billedTotal,
+        })),
         billedTotal: summary.billedTotal,
         depositDue: summary.depositDue,
         depositPaid: summary.depositPaid,
@@ -1398,6 +1415,12 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
   // The signature landed and the technician has not yet chosen Complete work now / Schedule for
   // later (2026-09-21): the screen offers exactly those two, and nothing else closes the visit.
   const choicePending = est ? await fieldChoicePending(prisma, est) : false;
+  // The tokenized customer page, so the field app can reopen "review & sign" after the tech
+  // navigates away from the just-issued panel (2026-09-24, "the field app cannot get back to the
+  // signing page"). Built with the SAME helper the issue route uses (estimateLink,
+  // issuedEstimateSend.ts) — never hand-assembled here, and the raw `token` itself never leaves
+  // this object (PUNCHLIST B5, same rule GET /issued-estimates/:id follows at app.ts ~3182).
+  const { estimateLink } = est ? await import("../services/issuedEstimateSend") : { estimateLink: null };
   res.json({
     success: true,
     data: {
@@ -1421,6 +1444,7 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
           title: est.title,
           scopeText: est.scopeText,
           signedAt: est.signedAt?.toISOString() ?? null,
+          customerUrl: estimateLink!(est.token),
           lines: linesOf(est),
           // Signed change orders that joined this invoice (2026-09-20) — added scope, same job.
           changeOrders: changeOrders.map((co) => ({

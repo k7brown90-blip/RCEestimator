@@ -79,11 +79,13 @@ vi.mock("googleapis", () => {
 
 import { app } from "../src/app";
 import { createPurchaseOrder, defaultTruckId } from "../src/services/purchaseOrders";
+import { estimateLink } from "../src/services/issuedEstimateSend";
 
 const newId = () => crypto.randomUUID().replaceAll("-", "");
 const VENDOR = "FCT-test Home Depot";
 
 let customerId: string;
+let propertyId: string;
 let jobId: string;
 let technicianId: string;
 let techToken: string;
@@ -96,6 +98,7 @@ beforeAll(async () => {
   const property = await prisma.property.create({
     data: { customerId, name: "FCT House", addressLine1: "9 Contract Ln", city: "Smyrna", state: "TN", postalCode: "37167" },
   });
+  propertyId = property.id;
   const visit = await prisma.visit.create({
     data: { customerId, propertyId: property.id, mode: "service_diagnostic", purpose: "Contract test job", jobType: "Service", status: "in_progress", visitDate: new Date() },
   });
@@ -358,5 +361,44 @@ describe("DiagnosticReportView — POST /health-record/diagnostic-reports", () =
 
     await prisma.diagnosticOutlet.deleteMany({ where: { reportId } });
     await prisma.diagnosticReport.delete({ where: { id: reportId } });
+  });
+});
+
+describe("JobBrief.estimate.customerUrl — GET /health-record/visits/:visitId/job-brief", () => {
+  /**
+   * 2026-09-24 "closing out an estimate" Unit 2: the field app can take a signature for about
+   * thirty seconds after Issue, then loses the door back to the signing page for good. This pins
+   * the payload the fix reads: `customerUrl` must be the SAME link the issue route already hands
+   * this technician (crmSync.ts:1719, health-record.ts issue route) — built with `estimateLink`
+   * (src/services/issuedEstimateSend.ts), never hand-assembled a second way — and the raw `token`
+   * itself must never appear on the wire (PUNCHLIST B5, the same rule GET /issued-estimates/:id
+   * follows).
+   */
+  it("carries customerUrl built by estimateLink(token), and never the raw token", async () => {
+    const draft = await prisma.priceBookDraftEstimate.create({ data: { title: "fct job-brief draft", supplierId: "FCT-SUP" } });
+    const token = `fct-brief-token-${newId()}`;
+    const est = await prisma.issuedEstimate.create({
+      data: {
+        number: "0000-FCT-BRIEF", token, status: "signed", draftId: draft.id,
+        customerId, serviceAddressId: propertyId, jobVisitId: jobId,
+        customerName: "Field Contract Customer", serviceAddress: "9 Contract Ln, Smyrna",
+        title: "FCT brief estimate", workSubtotal: 500, total: 500, selectedOptions: ["A"],
+        signedAt: new Date(), signedChannel: "email",
+      },
+    });
+
+    try {
+      const res = await request(app)
+        .get(`/health-record/visits/${jobId}/job-brief`)
+        .set("Authorization", `Bearer ${techToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.estimate.number).toBe(est.number);
+      expect(res.body.data.estimate.customerUrl).toBe(estimateLink(token));
+      expect(res.body.data.estimate.token).toBeUndefined();
+    } finally {
+      await prisma.issuedEstimate.delete({ where: { id: est.id } });
+      await prisma.priceBookDraftEstimate.delete({ where: { id: draft.id } });
+    }
   });
 });

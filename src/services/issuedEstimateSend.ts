@@ -39,6 +39,7 @@ import { getCompanyProfile } from "./companyProfile";
 import { billedTotalOf, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf } from "./stripePayments";
 import { invoiceDocumentRows } from "./paymentReceipts";
 import { warrantyEmailLine } from "./warrantyNotice";
+import { isOfficeAcceptance } from "../../shared/acceptance";
 // Kyle, 2026-09-09 ("My emails are not getting to the clients"): a send that lands at a
 // DIFFERENT address than the one that bounced clears the estimate's bounce flag.
 import { clearBounceIfDifferentAddress } from "./bounceWatcher";
@@ -190,6 +191,9 @@ export async function sendInvoiceEmail(
       signedAt: est.signedAt,
       signedByName: est.signerName,
       signatureImage: est.signatureImage,
+      // An office acceptance (2026-09-24) prints the acceptance line where the mark would go.
+      signedChannel: est.signedChannel,
+      acceptedVia: est.acceptedVia,
       createdAt: est.createdAt,
       invoice: invoiceAppendix,
       options: est.options,
@@ -255,12 +259,22 @@ export async function sendInvoiceEmail(
   const bodyHtml = `
     <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
     <p style="font-size:15px;">Thank you for approving <strong>${escapeHtml(est.title)}</strong>.
-    Your signed ${isChangeOrder ? "change order" : "invoice"} is attached.</p>
+    Your ${isOfficeAcceptance(est.signedChannel) ? "" : "signed "}${isChangeOrder ? "change order" : "invoice"} is attached.</p>
     ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
     ${warrantyLine}
-    <p style="font-size:15px;">${isChangeOrder ? `Change order <strong>${escapeHtml(est.number)}</strong> &middot; ${coverage ? "your share" : "amount"} <strong>$${billed.toFixed(2)}</strong> &middot; added to invoice <strong>${escapeHtml(summary.number)}</strong>` : `Invoice <strong>${escapeHtml(est.number)}</strong>${
-      est.revision > 1 ? ` (revision ${est.revision})` : ""
-    } &middot; ${coverage ? "Your total" : "Total"} <strong>${`$${(invoiceAppendix ? summary.billedTotal : billed).toFixed(2)}`}</strong>`}</p>
+    <p style="font-size:15px;">${isChangeOrder
+      /*
+        THE HEADLINE FIGURE IS THE INVOICE'S, NOT THE DOCUMENT'S (2026-09-29). This used to lead
+        with the change order's own amount, so the first number the customer read was the smaller
+        one and the invoice total sat below it in the table. Now the invoice and its total lead,
+        and what this change order added is stated after — which is the shape of the sentence Kyle
+        wanted: the diagnostics amount plus the fix, as one figure.
+      */
+      ? `Invoice <strong>${escapeHtml(summary.number)}</strong> &middot; ${coverage ? "your total" : "updated total"} <strong>$${summary.billedTotal.toFixed(2)}</strong>` +
+        `<br><span style="font-size:14px;color:#666;">This adds change order <strong>${escapeHtml(est.number)}</strong> (${coverage ? "your share" : ""} $${billed.toFixed(2)}) to that invoice — it is not a separate bill.</span>`
+      : `Invoice <strong>${escapeHtml(est.number)}</strong>${
+          est.revision > 1 ? ` (revision ${est.revision})` : ""
+        } &middot; ${coverage ? "Your total" : "Total"} <strong>${`$${(invoiceAppendix ? summary.billedTotal : billed).toFixed(2)}`}</strong>`}</p>
     ${rolledUp}
     ${payUrl ? `
     <p style="margin:24px 0;">
@@ -278,17 +292,55 @@ export async function sendInvoiceEmail(
     ? await photoAttachments(prisma, opts.photoIds, est.serviceAddressId)
     : { attachments: [], refused: [] };
 
+  /*
+    ── THE ENVELOPE NAMES THE INVOICE, NOT THE DOCUMENT (Kyle, 2026-09-29) ─────────────────────
+
+    Kyle, after the Hoover job: "The invoices for Tony Hoover that were sent yesterday did not add
+    into a single invoice to be sent with the total diagnostics amount plus resolutions (fix)."
+
+    The MONEY had already added up — 2026-1093 (a diagnostic) and 2026-1097 (its resolutions
+    change order) were one invoice group, one balance, one pay link, and the body and the PDF
+    appendix below both printed the combined total. What did not add up was the ENVELOPE. Every
+    signature door fires this email on the document just signed, and the subject, the headline and
+    the attachment filename all carried THAT document's number. So two signatures on one job
+    produced "Your invoice — 2026-1093" and "Your invoice — 2026-1097", and the customer (and
+    Kyle, reading his sent folder) saw two invoices.
+
+    Now:
+      · the SUBJECT names the invoice — `summary.number`, the ROOT's. On an ordinary single
+        document invoice that is `est.number` and nothing changes; on a change order it is the
+        invoice the change order joined. Two emails on one job now read as ONE invoice, twice.
+      · the HEADLINE says which of the two it is: a first bill or an updated one.
+      · the ATTACHMENT is named for what it actually IS. A change order's PDF is the frozen
+        change-order document, so calling it `invoice-2026-1097.pdf` was the same lie in a
+        filename. It is `change-order-2026-1097.pdf`; the invoice it belongs to is in the subject
+        and printed inside the PDF as "Invoice 2026-1093 — what it now includes".
+
+    `estimateNumber` below is UNCHANGED and deliberately still this document's: it is the
+    delivery-row attribution (Kyle, 2026-09-09) and the row must show the state of THIS email.
+    Pointing it at the root would merge two sends into one row and lose a bounce.
+
+    NOT CHANGED HERE: that a signature fires this email at all. Two signed documents still send
+    two signed copies, which is correct — each is the customer's receipt for a signature. Whether
+    a change order should auto-send is Kyle's open question, recorded in
+    .claude/plans/2026-09-29-estimate-invoice-findability-audit.md.
+  */
+  const invoiceNumber = summary.number;
   const sent = await sendBrandedEmail({
     to,
-    subject: `Your invoice from Red Cedar Electric — ${est.number}`,
-    headline: "Your invoice",
+    subject: `Your invoice from Red Cedar Electric — ${invoiceNumber}`,
+    headline: isChangeOrder || invoiceAppendix ? "Your updated invoice" : "Your invoice",
     bodyHtml,
     // Delivery-row attribution (Kyle, 2026-09-09) — the invoice row shows THIS email's state.
     kind: "invoice",
     estimateNumber: est.number,
     issuedEstimateId: est.id,
     attachments: [
-      { filename: `invoice-${est.number}.pdf`, content: pdf, contentType: "application/pdf" },
+      {
+        filename: `${isChangeOrder ? "change-order" : "invoice"}-${est.number}.pdf`,
+        content: pdf,
+        contentType: "application/pdf",
+      },
       ...photos.attachments,
     ],
   });

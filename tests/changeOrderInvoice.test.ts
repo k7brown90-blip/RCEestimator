@@ -65,6 +65,7 @@ import { graduateDraft } from "../src/services/issuedEstimateService";
 import { chargeableAmount, paymentSummary } from "../src/services/stripePayments";
 import { loadInvoiceGroup, signedRootForJob } from "../src/services/invoiceGroup";
 import { sweepInvoiceReminders } from "../src/services/invoiceReminders";
+import { sendInvoiceEmail } from "../src/services/issuedEstimateSend";
 import { TEST_SIGNATURE } from "./helpers/signature";
 import { deleteAtomics, ensurePriceBookGates, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
 
@@ -339,6 +340,56 @@ describe("the change order joins the invoice", () => {
     expect(voidRoot.status).toBe(200);
     expect(voidRoot.body.jobAction).toBe("cancelled_unscheduled");
   });
+
+  /*
+    A VOID OR LOST INVOICE TAKES NO NEW WORK (2026-09-29).
+
+    `signedAt` survives a void — the signature happened and the audit trail keeps it — so the
+    route's signed-only guard let a change order be raised against an invoice that is off the
+    books. Its money would roll into a root `loadInvoiceGroup` deliberately refuses to group
+    (a void parent makes the change order "stand alone as its own invoice, honestly"), so the
+    work would be agreed against nothing.
+
+    Found when "Raise a change order" moved onto the job, estimate and invoice drawers — the
+    first time a surface showing a VOID record could reach this route. Runs after the void test
+    above, so `parent` is genuinely void rather than a fixture pretending to be.
+  */
+  it("refuses a change order against a VOID invoice, naming the door", async () => {
+    const parentNow = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: parent.id } });
+    expect(parentNow.signedAt).not.toBeNull();   // the signature survives the void
+    expect(parentNow.voidedAt).not.toBeNull();
+
+    const refused = await request(app).post(`/issued-estimates/${parent.id}/change-order`).send({});
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/void/i);
+    expect(refused.body.error).toMatch(/new estimate/i);
+    expect(refused.body.draftId).toBeUndefined();
+  });
+
+  it("refuses a change order against an UNSIGNED estimate — nothing has been agreed to change", async () => {
+    const d = await quotableDraft("unsigned porch light");
+    const unsigned = await issue(d.id);
+    expect(unsigned.signedAt).toBeNull();
+
+    const refused = await request(app).post(`/issued-estimates/${unsigned.id}/change-order`).send({});
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/has not been signed/i);
+  });
+
+  it("refuses a change order against a LOST estimate — reopen it first", async () => {
+    const d = await quotableDraft("lost attic fan");
+    const quote = await issue(d.id);
+    // Lost starts from sent/viewed, so the quote has to have gone out first.
+    await prisma.issuedEstimate.update({ where: { id: quote.id }, data: { status: "sent", sentAt: new Date() } });
+    const lost = await request(app).post(`/issued-estimates/${quote.id}/lost`).send({ reason: "price" });
+    expect(lost.status).toBe(200);
+
+    const refused = await request(app).post(`/issued-estimates/${quote.id}/change-order`).send({});
+    expect(refused.status).toBe(409);
+    // An unsigned lost quote is refused for the signature first — either refusal is correct, and
+    // both name a door. What must never happen is a 201.
+    expect(refused.body.draftId).toBeUndefined();
+  });
 });
 
 describe("the deposit is optional, with a manual override", () => {
@@ -408,5 +459,102 @@ describe("the deposit is optional, with a manual override", () => {
     const s = (await paymentSummary(prisma, co.id, ORIGIN))!;
     expect(s.estimateId).toBe(parent.id);
     expect(s.documents).toHaveLength(2);
+  });
+});
+
+/*
+  ── THE ENVELOPE NAMES THE INVOICE (Kyle, 2026-09-29) ──────────────────────────────────────────
+
+  Kyle, the morning after the Hoover job: "The invoices for Tony Hoover that were sent yesterday
+  did not add into a single invoice to be sent with the total diagnostics amount plus resolutions
+  (fix) that was done."
+
+  The money had already rolled up — the tests above pin that. What had not was the ENVELOPE: every
+  signature door fires the invoice email on the document just signed, and its subject, headline and
+  attachment filename all carried THAT document's number. Two signatures on one job read as two
+  invoices (2026-1093 and 2026-1097 in production, 2026-09-28).
+
+  These pin the envelope. Nothing here changes WHEN the email is sent — only what it calls itself.
+*/
+describe("the invoice email names the invoice, not the document", () => {
+  /** The sendBrandedEmail call for a given estimate id, of kind "invoice". */
+  function invoiceEmailFor(estimateId: string) {
+    const call = emailMock.sendBrandedEmail.mock.calls
+      .map((c) => c[0] as {
+        kind?: string; subject: string; headline: string; bodyHtml: string; estimateNumber?: string;
+        issuedEstimateId?: string; attachments?: { filename: string }[];
+      })
+      .filter((a) => a.kind === "invoice" && a.issuedEstimateId === estimateId)
+      .pop();
+    if (!call) throw new Error(`no invoice email was sent for ${estimateId}`);
+    return call;
+  }
+
+  it("an ordinary invoice still names itself, and attaches invoice-NNNN.pdf", async () => {
+    const d = await quotableDraft("envelope, plain invoice");
+    let est = await issue(d.id);
+    est = await signInPerson(est.id);
+    /*
+      Driven DIRECTLY rather than through the sign route: that route fires this email
+      fire-and-forget (a signature must never fail because an email did), so asserting on it
+      after a route call is a race. This is the unit that builds the envelope.
+    */
+    emailMock.sendBrandedEmail.mockClear();
+    expect((await sendInvoiceEmail(prisma, est.id, { sentBy: "test" })).ok).toBe(true);
+
+    const mail = invoiceEmailFor(est.id);
+    expect(mail.subject).toBe(`Your invoice from Red Cedar Electric — ${est.number}`);
+    expect(mail.headline).toBe("Your invoice");
+    expect(mail.attachments?.[0]?.filename).toBe(`invoice-${est.number}.pdf`);
+  });
+
+  it("a change order's email is titled with the ROOT invoice and leads with the COMBINED total", async () => {
+    const d = await quotableDraft("envelope, diagnostic");
+    let parent = await issue(d.id);
+    parent = await signInPerson(parent.id);
+    const co = await raiseChangeOrder(parent.id, 2);
+    await signInPerson(co.id);
+    emailMock.sendBrandedEmail.mockClear();
+    expect((await sendInvoiceEmail(prisma, co.id, { sentBy: "test" })).ok).toBe(true);
+
+    const summary = (await paymentSummary(prisma, parent.id, ORIGIN))!;
+    expect(summary.documents).toHaveLength(2);
+    expect(summary.billedTotal).toBeGreaterThan(0);
+
+    const mail = invoiceEmailFor(co.id);
+
+    // THE SUBJECT IS THE INVOICE'S. This is the line Kyle read in his sent folder.
+    expect(mail.subject).toBe(`Your invoice from Red Cedar Electric — ${parent.number}`);
+    expect(mail.subject).not.toContain(co.number);
+    // It says it is an update, not a second invoice.
+    expect(mail.headline).toBe("Your updated invoice");
+
+    // The first figure in the body is the WHOLE invoice's total, and the change order is
+    // explicitly not a separate bill.
+    expect(mail.bodyHtml).toContain(`Invoice <strong>${parent.number}</strong>`);
+    expect(mail.bodyHtml).toContain(`$${summary.billedTotal.toFixed(2)}`);
+    expect(mail.bodyHtml).toContain("it is not a separate bill");
+    expect(mail.bodyHtml).toContain(`change order <strong>${co.number}</strong>`);
+
+    // The attachment is named for what it IS — the frozen change-order document.
+    expect(mail.attachments?.[0]?.filename).toBe(`change-order-${co.number}.pdf`);
+
+    // The delivery row stays per-document, so a bounce on THIS email is still attributable.
+    expect(mail.estimateNumber).toBe(co.number);
+  });
+
+  it("the rolled-up appendix lists both documents under the one total", async () => {
+    const d = await quotableDraft("envelope, appendix");
+    let parent = await issue(d.id);
+    parent = await signInPerson(parent.id);
+    const co = await raiseChangeOrder(parent.id, 1);
+    await signInPerson(co.id);
+    emailMock.sendBrandedEmail.mockClear();
+    expect((await sendInvoiceEmail(prisma, co.id, { sentBy: "test" })).ok).toBe(true);
+
+    const mail = invoiceEmailFor(co.id);
+    expect(mail.bodyHtml).toContain(`Invoice ${parent.number}`);
+    expect(mail.bodyHtml).toContain(`Change order ${co.number}`);
+    expect(mail.bodyHtml).toContain("Invoice total");
   });
 });

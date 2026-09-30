@@ -33,6 +33,7 @@ import PDFDocument from "pdfkit";
 import type { PriceBookOption } from "@prisma/client";
 import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 import { signatureBuffer } from "./signatureImage";
+import { acceptedViaPhrase, isOfficeAcceptance } from "../../shared/acceptance";
 import { discountFor, discountLabel, programmeFor } from "./discounts";
 import type { WarrantyClaim } from "./stripePayments";
 import { warrantyCompanyLine, warrantyNoticeText, warrantyRowLabel } from "./warrantyNotice";
@@ -64,6 +65,15 @@ export interface PdfEstimate {
   signedByName: string | null;
   /** The drawn mark, as a validated PNG data URL. Null for estimates signed before 2026-08-20. */
   signatureImage?: string | null;
+  /**
+   * "in_person" | "email" | "office" (2026-09-24). An OFFICE acceptance has no drawn mark by
+   * design — the office recorded what the customer told it — so the document prints the
+   * acceptance line where the signature would go, never blank space, and never the word
+   * "signed" (shared/acceptance.ts).
+   */
+  signedChannel?: string | null;
+  /** How the customer told the office, when signedChannel is "office". */
+  acceptedVia?: string | null;
   createdAt: Date;
   lines: PdfLine[];
   /**
@@ -545,7 +555,30 @@ export async function renderEstimatePdf(
   }
 
   // ── Signature ──
-  if (estimate.signedAt) {
+  if (estimate.signedAt && isOfficeAcceptance(estimate.signedChannel)) {
+    /*
+      THE OFFICE'S RECORD, NOT A SIGNATURE (2026-09-24). Kyle: "The customer accepted button would
+      be good on the estimate drawer." There is no drawn mark and there must never be one made up
+      here (CLAUDE.md: never fabricate the field artifact from the office desk). What the document
+      carries instead is who accepted, how they told us, who recorded it and when — so a reader
+      can never mistake this page for a signed contract.
+    */
+    doc.moveDown(1);
+    doc.fontSize(10).fillColor("#0a5c2e")
+      .text(
+        `Accepted ${acceptedViaPhrase(estimate.acceptedVia)} by ${estimate.signedByName ?? "the customer"} ` +
+        `on ${estimate.signedAt.toLocaleString("en-US", { timeZone: "America/Chicago", timeZoneName: "short" })}.`,
+      )
+      .fillColor("#000");
+    doc.moveDown(0.3);
+    doc.fontSize(8.5).fillColor("#333")
+      .text(
+        "Recorded by the Red Cedar Electric office from the customer's acceptance. No signature was " +
+        "collected — this is the office's record of acceptance, not an electronic signature.",
+        { width: 500 },
+      )
+      .fillColor("#000");
+  } else if (estimate.signedAt) {
     doc.moveDown(1);
     doc.fontSize(10).fillColor("#0a5c2e")
       .text(`Accepted by ${estimate.signedByName ?? "the customer"} on ${estimate.signedAt.toLocaleString("en-US", { timeZone: "America/Chicago", timeZoneName: "short" })}`)

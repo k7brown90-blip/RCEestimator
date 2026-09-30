@@ -33,6 +33,7 @@ import { useDrawerParams } from "../lib/drawers";
 import type { PbChainRow } from "../lib/types";
 import { money } from "../lib/utils";
 import { isPastValidity } from "../../../shared/estimateExpiry";
+import { acceptanceWording } from "../../../shared/acceptance";
 
 /** Rows shown per card before "Show more" — the page never grows on its own. */
 const PAGE_SIZE = 8;
@@ -312,8 +313,9 @@ function EstimateRow({ row, label, tone }: Classified) {
           <div className="text-xs text-rce-muted">
             {row.number}
             {row.revision > 1 ? ` rev ${row.revision}` : ""}
-            {row.signedChannel === "in_person" ? " · signed in person" : ""}
-            {row.signedChannel === "email" ? " · signed from the emailed link" : ""}
+            {/* "signed in person" / "signed from the emailed link" / "accepted by phone, recorded
+                by the office" — shared/acceptance.ts. An office acceptance never reads "signed". */}
+            {row.signedChannel ? ` · ${acceptanceWording(row.signedChannel, row.acceptedVia).verb} ${acceptanceWording(row.signedChannel, row.acceptedVia).how}` : ""}
           </div>
           {/* Kyle, 2026-09-09: a bounced estimate must not read like a delivered one — and a
               delivered one should say so. The chip is Resend's delivery report for the last email. */}

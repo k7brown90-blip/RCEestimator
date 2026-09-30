@@ -535,6 +535,12 @@ export interface JobBrief {
     scopeText: string | null
     /** When the customer signed; null on an unsigned root. Optional for an older server. */
     signedAt?: string | null
+    /**
+     * The tokenized customer page — same link `issueQuote` already returns, so the tech can
+     * reopen "review & sign" after navigating away from the just-issued panel (2026-09-24).
+     * Optional: an older server leaves it out and the reopen link just does not render.
+     */
+    customerUrl?: string
     lines: { description: string; quantity: number; option: string }[]
     /**
      * Signed change orders that joined this invoice (2026-09-20) — added scope on the SAME job.
@@ -1479,6 +1485,11 @@ export async function propertyForAssignment(
 
 export interface VisitPaymentInfo {
   number: string
+  /**
+   * The documents this ONE invoice is made of — the root, then its signed change orders
+   * (2026-09-29). Optional so an older server build (or a cached response) still parses.
+   */
+  documents?: { number: string; title: string; kind: 'invoice' | 'change_order'; billedTotal: number }[]
   billedTotal: number
   depositDue: number
   depositPaid: number

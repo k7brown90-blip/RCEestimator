@@ -1512,12 +1512,32 @@ function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][nu
     <div className="rounded-lg border border-rce-border/70 p-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
+          {/*
+            A CHANGE ORDER IS NOT A SECOND INVOICE (2026-09-29).
+
+            Signing files two copies of every document, root or change order, so a job with a
+            diagnostic and a resolutions change order shows FOUR rows here — and before this all
+            of them read "Invoice NNNN". Two customer copies, two "Email invoice" buttons, and
+            the same group totals behind each, because paymentSummary resolves to the root. Kyle
+            read that as having sent two invoices (the Hoover job, 2026-09-28).
+
+            Now the row says which it is and which invoice it belongs to.
+          */}
           <p className="font-medium">
-            {d.estimateNumber ? `Invoice ${d.estimateNumber}` : "Invoice"}{" "}
+            {d.estimateNumber
+              ? `${d.isChangeOrder ? "Change order" : "Invoice"} ${d.estimateNumber}`
+              : d.isChangeOrder ? "Change order" : "Invoice"}{" "}
             <span className="text-xs font-normal text-rce-soft">
               {d.audience === "company" ? "· our copy" : "· customer copy"}
             </span>
           </p>
+          {d.isChangeOrder && (
+            <p className="text-xs text-amber-800">
+              {d.invoiceNumber
+                ? `Part of invoice ${d.invoiceNumber} — the total, the balance and the pay link are that invoice's.`
+                : "A change order — its money belongs to the invoice it joined."}
+            </p>
+          )}
           <p className="text-xs text-rce-soft">
             {d.signedByName ? `Signed by ${d.signedByName}` : "Signed"}
             {d.signedAt ? ` · ${new Date(d.signedAt).toLocaleDateString()}` : ""}
@@ -1542,7 +1562,14 @@ function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][nu
               disabled={send.isPending}
               className="btn btn-primary flex-1 text-sm disabled:opacity-60"
             >
-              {send.isPending ? "Sending…" : "Email invoice"}
+              {/*
+                Says what it sends (2026-09-29): the SIGNED COPY of this row's document, not the
+                whole invoice. The whole invoice goes out from "Email invoice NNNN — $X due" on
+                the payment panel ("Take payment…" below). The same two words as the invoice
+                drawer's button, because it is the same send — two names for one action is how
+                the wrong one got pressed after the Hoover job.
+              */}
+              {send.isPending ? "Sending…" : d.isChangeOrder ? "Email the signed change order" : "Email the signed copy"}
             </button>
           </>
         )}

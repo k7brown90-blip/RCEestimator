@@ -435,6 +435,34 @@ export function JobSiteScreen({
           <h2 className="text-sm font-semibold text-slate-200">
             Estimate {brief?.estimate?.number} issued — not signed yet
           </h2>
+          {/*
+            The door back to signing (2026-09-24): issuing shows this same link and share button
+            for about thirty seconds (QuoteScreen.tsx), then "Back to the job" loses it for good.
+            The ordinary case — customer says yes a few minutes later, while the tech is still on
+            site — had no way back to the signing page. Identical to the QuoteScreen panel.
+          */}
+          {brief?.estimate?.customerUrl && (
+            <a
+              href={brief.estimate.customerUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="block w-full rounded-lg bg-sky-600 p-3 text-center text-sm font-medium text-white"
+            >
+              Open the customer&apos;s estimate to review &amp; sign
+            </a>
+          )}
+          {brief?.estimate?.customerUrl && typeof navigator.share === 'function' && (
+            <button
+              type="button"
+              className="w-full rounded-lg border border-slate-600 p-3 text-sm text-slate-200"
+              onClick={() => {
+                const url = brief.estimate!.customerUrl!
+                void navigator.share({ title: `Estimate ${brief.estimate!.number} — Red Cedar Electric`, url }).catch(() => {})
+              }}
+            >
+              Share the link to their phone
+            </button>
+          )}
           <button
             type="button"
             disabled

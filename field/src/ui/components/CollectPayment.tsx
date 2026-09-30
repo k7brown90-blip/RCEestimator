@@ -27,7 +27,7 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
     setError(null)
     try {
       const r = await emailPaymentRequest(visitId, kind)
-      setEmailState(`✓ ${kind === 'deposit' ? 'Deposit request' : 'Final bill'} emailed to ${r.to} — $${r.amount.toFixed(2)} due`)
+      setEmailState(`✓ ${kind === 'deposit' ? 'Deposit request' : 'Invoice'} emailed to ${r.to} — $${r.amount.toFixed(2)} due`)
     } catch (err) {
       setEmailState('idle')
       setError(err instanceof Error ? err.message : String(err))
@@ -88,6 +88,27 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
             Invoice {info.number} · total ${info.billedTotal.toFixed(2)}
             {info.totalPaid > 0 && ` · paid $${info.totalPaid.toFixed(2)}`}
           </p>
+          {/*
+            WHAT THEY ARE PAYING FOR (2026-09-29). On a job with a diagnostic plus its resolutions
+            change order this is ONE invoice made of two documents, and the tech is the person the
+            customer asks. The server has always had this list; the screen showed only the total,
+            so the tech had nothing to point at.
+          */}
+          {(info.documents?.length ?? 0) > 1 && (
+            <ul className="space-y-0.5 rounded-lg bg-slate-900/60 p-2 text-[11px] text-slate-400">
+              {info.documents!.map((d) => (
+                <li key={d.number} className="flex justify-between gap-2">
+                  <span>
+                    {d.kind === 'change_order' ? 'Change order' : 'Invoice'} {d.number} — {d.title}
+                  </span>
+                  <span className="tabular-nums">${d.billedTotal.toFixed(2)}</span>
+                </li>
+              ))}
+              <li className="border-t border-slate-700 pt-0.5 font-medium text-slate-300">
+                One invoice, one payment.
+              </li>
+            </ul>
+          )}
           {info.paidInFull ? (
             <p className="rounded bg-emerald-900/60 p-2 text-sm font-medium text-emerald-200">
               ✓ Paid in full — nothing to collect.
@@ -136,9 +157,13 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
                 onClick={() => void sendBill(info.depositSatisfied ? 'balance' : 'deposit')}
                 className="w-full rounded-lg border border-emerald-700 bg-emerald-950/40 p-2 text-xs font-medium text-emerald-200 disabled:opacity-50"
               >
+                {/* One vocabulary across both apps (2026-09-29) — the CRM's button says
+                    "Email invoice NNNN — $X due" for this same send. */}
                 {emailState === 'sending'
                   ? 'Sending…'
-                  : `📧 Email the ${info.depositSatisfied ? 'final bill' : 'deposit request'} instead`}
+                  : info.depositSatisfied
+                    ? `📧 Email invoice ${info.number} instead — $${info.balance.toFixed(2)} due`
+                    : '📧 Email the deposit request instead'}
               </button>
               {emailState !== 'idle' && emailState !== 'sending' && (
                 <p className="rounded bg-emerald-900/50 p-2 text-xs text-emerald-200">{emailState}</p>

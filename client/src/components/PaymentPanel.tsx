@@ -6,10 +6,18 @@
  * put card data in scope of this app. And it never means opening the
  * customer's payment portal in the admin's browser either (Kyle, 2026-09-01:
  * "it should email the final bill not try and log in as the customer") — the
- * buttons EMAIL the deposit request / final bill with the pay link; the QR
+ * buttons EMAIL the deposit request / the invoice with the pay link; the QR
  * stays for the customer's own phone across the counter. Cash and checks get
  * recorded here too, and a recorded deposit opens the scheduling gate the
  * same as a card one.
+ *
+ * ── THIS PANEL HOLDS THE ONLY WHOLE-INVOICE SEND (renamed 2026-09-29) ────────────────────────
+ * "Email invoice NNNN — $X due" sends every document on the invoice, one total, paid-to-date,
+ * the balance and one pay link (sendBalanceRequestEmail, which resolves to the root). It was
+ * called "Email final bill" — a stage of a job, not the thing it sends — so when Kyle went
+ * looking for a combined invoice after the Hoover job he pressed "Email invoice…" on the invoice
+ * drawer instead and got one frozen document. That button is now "Email the signed copy…".
+ * If a third send is ever added here, name it after what arrives in the customer's inbox.
  */
 
 import { useState } from "react";
@@ -48,7 +56,13 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         : api.emailBalanceRequest(info!.estimateId),
     onSuccess: (r, kind) => {
       setError(null);
-      setNotice(`${kind === "deposit" ? "Deposit request" : "Final bill"} emailed to ${r.to} — $${r.amount.toFixed(2)} due.`);
+      // Reads back the words on the button (2026-09-29), so the confirmation names the same
+      // thing the operator clicked rather than an older internal name for it.
+      setNotice(
+        kind === "deposit"
+          ? `Deposit request emailed to ${r.to} — $${r.amount.toFixed(2)} due.`
+          : `Invoice ${info!.number} emailed to ${r.to}${info!.documents.length > 1 ? ` — all ${info!.documents.length} documents, ` : " — "}$${r.amount.toFixed(2)} due.`,
+      );
     },
     onError: (err) => { setNotice(null); setError((err as Error).message); },
   });
@@ -108,7 +122,10 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
       {/* One invoice, one payment (Kyle, 2026-09-20): what the total is made of when signed
           change orders have joined it. Each document stays its own frozen record. */}
       {info.documents.length > 1 && (
+        /* Named as ONE invoice (2026-09-29): the heading is what stops the list below reading as
+           a list of separate bills, which is exactly how Kyle read the Hoover job's two emails. */
         <ul className="mt-2 space-y-0.5 text-xs text-rce-muted">
+          <li className="pb-0.5 font-medium text-rce-soft">Invoice {info.number} is made up of:</li>
           {info.documents.map((d) => (
             <li key={d.id} className="flex justify-between gap-2">
               <span>{d.kind === "change_order" ? "Change order" : "Invoice"} {d.number} — {d.title}</span>
@@ -184,12 +201,23 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         )}
         {info.stripeConfigured && !info.paidInFull && (
           <>
+            {/*
+              SAY THAT THIS IS THE INVOICE (Kyle, 2026-09-29).
+
+              This is the ONE control that emails the whole invoice — every document on it, one
+              total, paid-to-date, the balance and one pay link (sendBalanceRequestEmail, which
+              resolves to the root). It was called "Email final bill", which named a STAGE of a
+              job rather than the thing it sends. So when Kyle went looking for a combined
+              invoice after the Hoover job he found "Email invoice…" instead — the per-document
+              signed copy — and got one document. The button now names the invoice and says what
+              is due on it.
+            */}
             <button
               className="btn btn-primary text-sm"
               disabled={emailRequest.isPending}
               onClick={() => emailRequest.mutate("balance")}
             >
-              Email final bill — {money(info.balance)}
+              Email invoice {info.number} — {money(info.balance)} due
             </button>
             <button className="btn btn-secondary text-sm" onClick={() => setShowQr(showQr === "balance" ? null : "balance")}>
               {showQr === "balance" ? "Hide QR" : "Balance QR (in person)"}

@@ -3,10 +3,18 @@
  * `JobScheduler` (schedule / reschedule / cancel), `PaymentPanel` (deposit, balance, record a
  * payment, the warranty split), `JobCloseoutPanel` (P.O.s, receipts, materials, mark complete)
  * — plus the visit's own details, editable, and its way out (delete, while nothing is signed).
+ * Since 2026-09-29 it also raises a CHANGE ORDER against the job's invoice: this is the screen
+ * the office is on when a technician rings to say the job grew.
  *
  * What stays on the full page and is linked to from the header: photos, the health record,
  * the finding ledger, the job clock, and "Quote this work" (the builder). Those are the
  * screen's own workshop, not the record's actions.
+ *
+ * Kyle's ruling, 2026-09-29 ("the operations are different as they do not have actions that
+ * directly involve clients ... an admin can complete these tasks on their assigned page") is why
+ * that split is the RIGHT one rather than unfinished work: the job clock, materials used and the
+ * finding ledger are company-internal operations and belong on the page. What moves here is what
+ * reaches the customer — the money, the invoice, and agreeing new work.
  */
 
 import { useState } from "react";
@@ -21,6 +29,7 @@ import { JobCloseoutPanel } from "../JobCloseoutPanel";
 import { JobScheduler } from "../JobScheduler";
 import { OpenDrawerButton } from "./OpenDrawerButton";
 import { PaymentPanel } from "../PaymentPanel";
+import { RaiseChangeOrderButton } from "../RaiseChangeOrderButton";
 import { SendEmailPanel } from "../SendEmailPanel";
 import { StatusBadge } from "../StatusBadge";
 
@@ -176,6 +185,26 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
           />
           {/* Renders itself only when a signed estimate exists (reactive flow, Kyle 2026-08-25). */}
           <PaymentPanel jobId={visitId} />
+
+          {/*
+            THE JOB GREW (2026-09-29).
+
+            This is the screen Kyle is on when a technician rings to say there is more work than
+            the quote covered, and until now it had no way to record that — the only CRM button
+            lived in the estimate builder's Review tab, reachable only with the original draft's
+            URL. `paymentInfo.estimateId` is the ROOT invoice (signedRootForJob returns live
+            signed rows only), so the new work joins this job's existing invoice: one balance,
+            one payment. Greyed with the reason when the job has nothing signed on it yet.
+          */}
+          <div className="flex flex-wrap items-center gap-2">
+            <RaiseChangeOrderButton
+              target={{
+                estimateId: paymentInfo?.estimateId ?? null,
+                status: paymentInfo ? "signed" : null,
+                signed: Boolean(paymentInfo),
+              }}
+            />
+          </div>
           {/* Close-out is JOB furniture — it appears once the visit is contracted work (Kyle, 2026-08-25). */}
           {CLOSEOUT_STATUSES.includes(status) && <JobCloseoutPanel visitId={visitId} status={status} />}
 

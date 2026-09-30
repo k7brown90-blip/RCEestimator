@@ -8,6 +8,8 @@ import { downscale } from "../lib/images";
 import { PhotoAttachPicker } from "../components/PhotoGalleryPanel";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { WarrantyCoveragePanel } from "../components/WarrantyCoveragePanel";
+import { RaiseChangeOrderButton } from "../components/RaiseChangeOrderButton";
+import { acceptanceWording, isOfficeAcceptance } from "../../../shared/acceptance";
 import type {
   PbAtomic,
   PbComputed,
@@ -1988,9 +1990,35 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
         </p>
       )}
 
-      {!est && accountId && serviceAddressId && (
-        <>
-          <div className="mt-2 flex flex-wrap items-center gap-1">
+      {/*
+        ── THE DISCOUNT STAYS EDITABLE AFTER THE ESTIMATE IS ISSUED (Kyle, 2026-09-29) ───────────
+
+        Kyle, from the debug console on /estimate-intake, standing on a draft that had already
+        issued 2026-1098: "There is no place to adjust the discount. The discount needs to be
+        editable as well."
+
+        He was right, and it was this line: the whole discount block sat inside
+        `{!est && ...}` — the "not issued yet" branch — so the moment an estimate came off the
+        draft the controls VANISHED. Every other edit in this builder stays available and the
+        amber banner at the top of the Review tab (the one he was reading) tells him they reach
+        the estimate when he presses "Save changes to the estimate". The discount was the one
+        thing that did not follow its own instructions, which also broke the standing rule that
+        nothing the app creates may be un-editable.
+
+        Nothing on the server needed changing: `graduateDraft` reads `draft.discountType` /
+        `draft.discountPercent` on EVERY graduation (issuedEstimateService.ts:441), and
+        `reviseEstimate` graduates the same draft — so a discount changed here rides into the
+        revision exactly like a changed line or option name. `PUT /price-book/drafts/:id/discount`
+        never had an issued-estimate guard either. It was only ever hidden.
+
+        Signed is the one case that needs saying out loud: the AMOUNT is frozen onto the signed
+        row as `discountJson` at signature, so changing it here moves nothing until a new revision
+        is saved — and that revision needs signing again. Same rule, same wording, as
+        WarrantyCoveragePanel's signed branch.
+      */}
+      {accountId && serviceAddressId && (
+        <div className="mt-2">
+          <div className="flex flex-wrap items-center gap-1">
             <span className="mr-1 text-xs text-rce-soft">Discount</span>
             {([["military", "Military 5%"], ["senior", "Senior 5%"]] as const).map(([val, label]) => (
               <button
@@ -2062,6 +2090,21 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
               <span className="text-xs text-red-700">{(setDiscount.error as Error)?.message ?? "Could not set the discount."}</span>
             )}
           </div>
+          {/* Where the change has to go to count. The banner at the top of the Review tab says
+              this for the draft as a whole; said again here because the discount is money and
+              Kyle went looking for it specifically. */}
+          {est && (
+            <p className={`mt-1 text-xs ${est.signedAt ? "text-amber-800" : "text-rce-muted"}`}>
+              {est.signedAt
+                ? `Estimate ${est.number} is signed, so its discount is frozen at the figure the customer agreed to. Changing it here takes effect only when you press "Save changes to the estimate" below — that makes a new revision the customer has to sign again.`
+                : `Changed here on the draft. Press "Save changes to the estimate" below to put it on ${est.number}.`}
+            </p>
+          )}
+        </div>
+      )}
+
+      {!est && accountId && serviceAddressId && (
+        <>
           {/* The waive-trip checkbox is GONE (Kyle, 2026-08-22): "this is not doing anything
               there is no trip charge that is even applied. we can get rid of it." He is right:
               production Rate Config carries jobFixedCost = 0, so the checkbox waived a charge
@@ -2177,8 +2220,11 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
           {est.signedAt ? (
             <>
               <p className="rounded bg-emerald-50 p-2 text-xs text-emerald-900">
-                <strong>Signed by {est.signerName}</strong> on {new Date(est.signedAt).toLocaleString()}
-                {est.signedChannel === "in_person" ? " — signed in person" : est.signedChannel === "email" ? " — signed from the emailed link" : ""}.
+                {/* An office acceptance (2026-09-24) reads "Accepted by … by phone, recorded by the
+                    office", never "Signed" — shared/acceptance.ts is the one vocabulary. */}
+                <strong>{isOfficeAcceptance(est.signedChannel) ? "Accepted" : "Signed"} by {est.signerName}</strong> on {new Date(est.signedAt).toLocaleString()}
+                {acceptanceWording(est.signedChannel, est.acceptedVia).how ? ` — ${acceptanceWording(est.signedChannel, est.acceptedVia).verb} ${acceptanceWording(est.signedChannel, est.acceptedVia).how}` : ""}
+                {isOfficeAcceptance(est.signedChannel) ? " (no signature on file)" : ""}.
                 This estimate is locked; "Save changes to the estimate" creates a new revision and replaces the customer's link.
               </p>
               <button
@@ -2188,18 +2234,23 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
               >
                 {createJob.isPending ? "Creating job…" : "Create job & schedule"}
               </button>
-                <button
-                  className="btn btn-secondary w-full"
-                  onClick={() => {
-                    void api.pbChangeOrder(detail.estimate.id).then((r) => {
-                      // Straight into the empty change-order draft. Negative counts are accepted
-                      // there and nowhere else.
-                      window.location.href = `/estimate-intake?draft=${r.draftId}`;
-                    });
+              {/*
+                D3 (2026-09-29): this was a bare `void api.pbChangeOrder(...).then()` — no catch,
+                no pending state, no error surface. A refusal from the server did nothing at all
+                and looked identical to a dead button. It is now the SHARED control, the same one
+                the job, estimate and invoice drawers carry, so a change to the action lands on
+                every surface at once instead of on whichever copy someone remembered.
+              */}
+              <div className="flex flex-wrap items-center gap-2">
+                <RaiseChangeOrderButton
+                  target={{
+                    estimateId: detail.estimate.id,
+                    status: est.status,
+                    signed: Boolean(est.signedAt),
                   }}
-                >
-                  Raise a change order
-                </button>
+                  className="btn btn-secondary w-full"
+                />
+              </div>
               <p className="text-xs text-rce-muted">
                 Makes the job at this account and address, then opens it so you can schedule it.
               </p>

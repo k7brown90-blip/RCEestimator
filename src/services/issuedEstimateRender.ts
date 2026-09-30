@@ -37,6 +37,7 @@ import { discountFor, discountLabel, programmeFor } from "./discounts";
 import { CONSENT_TEXT } from "./issuedEstimateService";
 import { parseWarrantyJson } from "./stripePayments";
 import { warrantyNoticeText, warrantyRowLabel } from "./warrantyNotice";
+import { acceptedViaPhrase, isOfficeAcceptance } from "../../shared/acceptance";
 
 const TZ = "America/Chicago";
 const BUSINESS_EMAIL = "service@redcedarelectricllc.com";
@@ -587,17 +588,22 @@ export function renderEstimatePage(
          move forward — we can reopen it for you.</p>
        </div>`;
 
+  // An OFFICE acceptance (2026-09-24) has no drawn mark by design: the office recorded what the
+  // customer told it. The page says so in those words — never "signed", never a blank where a
+  // signature would be (shared/acceptance.ts; CLAUDE.md, two apps, two people, two places).
+  const office = isOfficeAcceptance(est.signedChannel);
+
   const signBlock = inPerson && !est.signedAt
     ? ""
     : est.signedAt
     ? `<div class="signed">
-         <h2 style="margin-top:0;">Accepted &amp; signed</h2>
-         <p style="font-size:15px;margin:0;">Signed by <strong>${escapeHtml(est.signerName ?? "")}</strong>
-         on ${longDate(est.signedAt)}.</p>
+         <h2 style="margin-top:0;">${office ? "Accepted" : "Accepted &amp; signed"}</h2>
+         <p style="font-size:15px;margin:0;">${office ? `Accepted ${escapeHtml(acceptedViaPhrase(est.acceptedVia))} by` : "Signed by"} <strong>${escapeHtml(est.signerName ?? "")}</strong>
+         on ${longDate(est.signedAt)}${office ? ", as recorded by our office. No signature was collected" : ""}.</p>
          ${
            // The mark itself. Rendered from the stored data URL, which was validated as a PNG
            // before it was ever written — see services/signatureImage.ts.
-           est.signatureImage
+           est.signatureImage && !office
              ? `<img src="${escapeHtml(est.signatureImage)}" alt="Signature"
                      style="display:block;margin:10px 0 0;max-width:280px;height:auto;border-bottom:1px solid #999;padding-bottom:4px;">`
              : ""

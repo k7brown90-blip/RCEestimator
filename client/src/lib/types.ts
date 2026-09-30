@@ -1,4 +1,5 @@
 import { LOST_REASONS, type IssuedEstimateStatus } from "../../../shared/estimateStatus";
+import type { AcceptedVia, SignedChannel } from "../../../shared/acceptance";
 import { LEAD_PLATFORMS, type LeadPlatform } from "../../../shared/leadPlatform";
 
 export type { IssuedEstimateStatus };
@@ -1482,7 +1483,10 @@ export type InvoiceSummary = {
   job: { id: string; jobType: string | null; purpose: string | null; status: string; scheduledStart: string | null } | null;
   serviceAddress: string;
   signedAt: string;
-  signedChannel: "in_person" | "email" | null;
+  /** "office" (2026-09-24) is an acceptance the office recorded, not a signature — see shared/acceptance.ts. */
+  signedChannel: SignedChannel | null;
+  /** How the customer told the office, when signedChannel is "office". */
+  acceptedVia?: AcceptedVia | null;
   sentAt: string | null;
   sentTo: string | null;
   billedTotal: number;
@@ -1592,6 +1596,10 @@ export type AccountSummary = {
     type: string;
     audience: "customer" | "company";
     estimateNumber: string | null;
+    /** This document is a signed CHANGE ORDER, not an invoice of its own (2026-09-29). */
+    isChangeOrder: boolean;
+    /** The invoice a change order joined — its root's number. Null on an ordinary estimate. */
+    invoiceNumber: string | null;
     /** The estimate this renders. Emailing an invoice targets it, not this row. */
     estimateId: string | null;
     customerEmail: string | null;
@@ -2011,8 +2019,23 @@ export interface PbIssuedEstimate {
   firstViewedAt: string | null;
   signedAt: string | null;
   signerName: string | null;
-  /** "in_person" (P028) or "email" (P027); null on estimates issued before P028. */
-  signedChannel?: "in_person" | "email" | null;
+  /**
+   * "in_person" (P028), "email" (P027) or "office" (2026-09-24: the office recorded an acceptance
+   * it was told about — no signature image; `acceptedVia` says how). Null before P028.
+   */
+  signedChannel?: SignedChannel | null;
+  /** How the customer told the office (phone / email / text / writing / in_person); null unless signedChannel is "office". */
+  acceptedVia?: AcceptedVia | null;
+  /** The office's internal note on the acceptance; never customer-facing. */
+  acceptedNote?: string | null;
+  /** Days the quote stays open from `createdAt` — shared/estimateExpiry.ts is the arithmetic. */
+  validDays?: number;
+  /** The named options frozen at issue; the office picks among them when recording an acceptance. */
+  options?: { option: string; label?: string | null; subtotal: number }[];
+  /** One-or-the-other options (Kyle, 2026-08-25): an acceptance names exactly one. */
+  exclusiveOptions?: boolean;
+  /** What was bought, once signed/accepted. */
+  selectedOptions?: string[];
   /** Lost (Kyle, 2026-09-20): the customer's decision, reason from LEAD_LOST_REASONS. All null unless status is "lost". */
   lostAt?: string | null;
   lostReason?: string | null;
@@ -2140,7 +2163,9 @@ export interface PbChainRow {
   createdAt: string;
   sentAt: string | null;
   signedAt: string | null;
-  signedChannel: "in_person" | "email" | null;
+  signedChannel: SignedChannel | null;
+  /** How the customer told the office, when signedChannel is "office" (2026-09-24). */
+  acceptedVia?: AcceptedVia | null;
   /** Lost (2026-09-20) — the Lost card reads these. */
   lostAt?: string | null;
   lostReason?: string | null;
