@@ -2310,15 +2310,27 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                     Attach Generator Sizing data sheet
                   </label>
                 </div>
-                {/* Photo gallery (2026-08-28): assessment/job photos can ride
-                    the estimate email — ticked here, per send, never assumed. */}
-                {serviceAddressId && (
-                  <PhotoAttachPicker
-                    propertyId={serviceAddressId}
-                    selected={sendPhotoIds}
-                    onChange={setSendPhotoIds}
-                  />
-                )}
+                {/*
+                  Photo gallery (2026-08-28): assessment/job photos can ride the estimate email —
+                  ticked here, per send, never assumed.
+
+                  THE ADDRESS COMES FROM THE ESTIMATE, NOT THE URL (Kyle, 2026-10-01: "I want to
+                  be able to attach photos to the email now… I need to be able to attach photos to
+                  the email when sending an estimate too").
+
+                  This was gated on `serviceAddressId`, the `?address=` URL PARAMETER — while the
+                  rest of this panel is not. So reaching the builder by any route that does not
+                  carry `&address=` left the two report checkboxes and the Email button on screen
+                  with the photo picker silently missing, which is exactly what Kyle was looking
+                  at when he filed this. An ISSUED estimate always carries its own
+                  `serviceAddressId` (it is required on the row), so read it from the document
+                  rather than from how the operator happened to navigate here.
+                */}
+                <PhotoAttachPicker
+                  propertyId={est.serviceAddressId}
+                  selected={sendPhotoIds}
+                  onChange={setSendPhotoIds}
+                />
                 <button
                   className="btn btn-secondary mt-2 w-full"
                   disabled={send.isPending}

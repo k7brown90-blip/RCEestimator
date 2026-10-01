@@ -69,6 +69,7 @@ const overview: CrmOverview = {
       open: 1,
       unsent: 1,
       voided: 1,
+      withdrawn: 0,
       rate: 63,
       lostReasons: { price: 2 },
     },

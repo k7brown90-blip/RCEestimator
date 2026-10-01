@@ -420,6 +420,9 @@ export async function sendEstimateEmail(
   // truth — a quote out with the customer is not a lost one — and so a resend cannot quietly
   // put a lost estimate back on the Sent card with its lost record still attached.
   if (est.status === "lost") return { ok: false, reason: "This estimate is marked lost. Reopen it first, then send it again." };
+  // Archived (2026-10-01) is put away, not sent: unarchiving is one click on the drawer and says
+  // on the trail that a person chose to keep this one in play.
+  if (est.archivedAt) return { ok: false, reason: "This estimate is archived. Unarchive it first, then send it again." };
   if (est.signedAt) return { ok: false, reason: "This estimate is already signed." };
 
   const to = (opts.toOverride ?? est.customerEmail ?? "").trim();

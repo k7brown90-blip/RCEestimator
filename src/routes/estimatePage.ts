@@ -37,6 +37,7 @@ import { renderEstimatePage, renderUnavailable } from "../services/issuedEstimat
 import { notifyOwnerSigned, publicBaseUrl } from "../services/issuedEstimateSend";
 import { paymentSummary } from "../services/stripePayments";
 import { createJobFromSignedEstimate } from "../services/accountSpine";
+import { archiveCompetingEstimates } from "../services/estimateArchive";
 
 export const estimatePageRouter = express.Router();
 
@@ -154,6 +155,14 @@ estimatePageRouter.post(
         if (!job.ok) console.error("[EstimatePage] job creation after email sign refused:", job.reason);
       })
       .catch((err) => console.error("[EstimatePage] job creation after email sign failed:", err));
+    /*
+      THE OPTIONS NOT CHOSEN ARE PUT AWAY (Kyle, 2026-10-01: "once a job is sold the other ones
+      that are not chosen should be archived"). The other presented, unsigned estimates at this
+      address are archived — services/estimateArchive.ts owns the rule and its exclusions. All
+      three signature doors do this or none do. Never able to fail the signature: the service
+      catches everything and reports its own failure.
+    */
+    await archiveCompetingEstimates(prisma, result.estimateId, "system:email-sign");
     /*
       NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." · "No
       auto send across the board."

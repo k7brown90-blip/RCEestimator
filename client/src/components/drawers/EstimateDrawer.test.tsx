@@ -210,6 +210,55 @@ describe("EstimateDrawer", () => {
     expect(screen.queryByRole("button", { name: "Undo acceptance" })).not.toBeInTheDocument();
   });
 
+  // Archive (Kyle, 2026-10-01: "once a job is sold the other ones that are not chosen should be
+  // archived"). The third exit for an unsigned quote beside Mark lost and Delete — and reversible.
+  it("offers Archive… beside Mark lost on a sent estimate, and sends the reason", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({ estimate: estimate({ status: "viewed", firstViewedAt: "2026-09-11T12:00:00.000Z" }) });
+    vi.spyOn(api, "accountContacts").mockResolvedValue([]);
+    const archive = vi.spyOn(api, "archiveEstimate").mockResolvedValue({ archived: true, archivedAt: "2026-10-01T12:00:00.000Z", reason: "went with 2026-1101 instead" });
+
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Archive…" }));
+    expect(screen.getByRole("button", { name: "Mark lost…" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^Why/), { target: { value: "went with 2026-1101 instead" } });
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+    await waitFor(() => expect(archive).toHaveBeenCalledWith("est-1", { reason: "went with 2026-1101 instead" }));
+    expect(await screen.findByText(/^Archived — filed behind the Sent card/)).toBeInTheDocument();
+    // Not lost, not void: neither of those was touched.
+    expect(screen.queryByRole("button", { name: "Void" })).not.toBeInTheDocument();
+  });
+
+  it("shows an archived estimate as archived with its reason, offers Unarchive, and withholds Resend and Mark lost until then", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({
+      estimate: estimate({ status: "viewed", firstViewedAt: "2026-09-11T12:00:00.000Z", archivedAt: "2026-10-01T12:00:00.000Z", archivedReason: "another estimate was signed at this address (2026-1101)" }),
+    });
+    vi.spyOn(api, "accountContacts").mockResolvedValue([]);
+    const unarchive = vi.spyOn(api, "unarchiveEstimate").mockResolvedValue({ unarchived: true, status: "viewed" });
+
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+
+    expect(await screen.findByText(/Archived 10\/1\/2026 — another estimate was signed at this address \(2026-1101\)\. Still viewed, not lost and not void\./)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resend…" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /mark lost/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Archive…" })).not.toBeInTheDocument();
+    // Still unsigned, so Delete and Customer accepted stay; an acceptance un-archives on its own.
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Customer accepted…" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Unarchive" }));
+    await waitFor(() => expect(unarchive).toHaveBeenCalledWith("est-1"));
+    expect(await screen.findByText("Unarchived — back on the viewed list.")).toBeInTheDocument();
+  });
+
+  it("never offers Archive on a signed estimate — Void is that door", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({
+      estimate: estimate({ status: "signed", signedAt: "2026-09-12T12:00:00.000Z", signerName: "Jane", signedChannel: "email", jobVisitId: "visit-1" }),
+    });
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+    expect(await screen.findByRole("button", { name: "Void" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /archive/i })).not.toBeInTheDocument();
+  });
+
   it("deletes an unsigned estimate after a confirm and closes", async () => {
     vi.spyOn(api, "estimateRecord").mockResolvedValue({ estimate: estimate({}) });
     vi.spyOn(api, "accountContacts").mockResolvedValue([]);

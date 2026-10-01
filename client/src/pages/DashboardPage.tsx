@@ -278,7 +278,7 @@ export function DashboardPage() {
               numerator={phases.winRate.contracted}
               denominator={phases.winRate.issued}
               measure="Signed quotes out of quotes put in front of a customer. One estimate number counts once, at its latest revision."
-              note={`${phases.winRate.open} still out • ${phases.winRate.lost} lost • ${phases.winRate.unsent} never sent and ${phases.winRate.voided} void, both outside the rate.`}
+              note={`${phases.winRate.open} still out • ${phases.winRate.lost} lost • ${phases.winRate.unsent} never sent, ${phases.winRate.voided} void and ${phases.winRate.withdrawn ?? 0} archived (options not taken), all outside the rate.`}
               tone="headline"
             />
             <PhaseCard

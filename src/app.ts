@@ -79,6 +79,7 @@ import { groupSignedRows, INVOICE_DOC_SELECT, isLiveSigned, LIVE_SIGNED, LIVE_SI
 import { LOSABLE_STATUSES, LOST_REASONS as SHARED_LOST_REASONS } from "../shared/estimateStatus";
 import { ACCEPTED_VIA } from "../shared/acceptance";
 import { acceptEstimateFromOffice, undoOfficeAcceptance } from "./services/officeAcceptance";
+import { archiveCompetingEstimates, archiveEstimateByHand, unarchiveEstimate } from "./services/estimateArchive";
 import { reopenedStatusOf } from "./services/estimateExpiry";
 import {
   OFF_CARD_METHODS, PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, RECEIPT_HAS_FILE, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
@@ -3137,6 +3138,10 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
       lostAt: r.lostAt,
       lostReason: r.lostReason,
       lostNotes: r.lostNotes,
+      // Archived (2026-10-01): put away because another estimate at the address was signed, or
+      // by hand. Not a status — the page files it behind the Sent card's toggle with the reason.
+      archivedAt: r.archivedAt,
+      archivedReason: r.archivedReason,
       // Kyle, 2026-09-07 (Estimates sectioned into Sent / Viewed / Sold): the page derives
       // "expired" from sentAt + validDays, so the window rides along. Additive — nothing
       // that read this payload before is changed.
@@ -3656,6 +3661,11 @@ app.post("/issued-estimates/:id/accept", asyncHandler(async (req, res) => {
     console.error("[IssuedEstimate] job creation after office acceptance failed:", err);
   }
 
+  // The options not chosen are put away (Kyle, 2026-10-01) — the other presented, unsigned
+  // estimates at this address. services/estimateArchive.ts owns the rule; every signature door
+  // runs it; it can never fail the acceptance. The drawer's follow-up names what was archived.
+  const { archived } = await archiveCompetingEstimates(prisma, result.estimateId, "system:office-accept");
+
   /*
     NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." · "No
     auto send across the board."
@@ -3674,7 +3684,7 @@ app.post("/issued-estimates/:id/accept", asyncHandler(async (req, res) => {
     deleted (Kyle, 2026-08-11: "sequencing, not deletion").
   */
 
-  res.json({ accepted: true, estimateId: result.estimateId, jobVisitId, jobJoined });
+  res.json({ accepted: true, estimateId: result.estimateId, jobVisitId, jobJoined, archived });
 }));
 
 /*
@@ -3690,6 +3700,39 @@ app.post("/issued-estimates/:id/unaccept", asyncHandler(async (req, res) => {
     return;
   }
   res.json({ unaccepted: true, status: result.status, jobAction: result.jobAction });
+}));
+
+/*
+  ── ARCHIVED, BY HAND (Kyle, 2026-10-01) ─────────────────────────────────────────────────────
+
+  "once a job is sold the other ones that are not chosen should be archived. ... The first one
+   totaling over $14,000 is now irrelevent and can be archived."
+
+  The automatic version runs at every signature door (services/estimateArchive.ts). This is the
+  same thing from the estimate drawer, for the rows a signature did not catch — Arlene's
+  2026-1096, signed-around before this existed, is the live case. NOT a status: the row keeps its
+  status and only gains archivedAt + archivedReason, so no money or reporting allow-list changes
+  its reading. Refuses a signed row (Void is that door), a void or lost row (each already has its
+  exit), and a superseded revision (archive the latest). Unarchive below is the way back, and an
+  unarchive by hand also tells the automatic pass to leave that row alone from then on.
+*/
+app.post("/issued-estimates/:id/archive", asyncHandler(async (req, res) => {
+  const body = z.object({ reason: z.string().trim().max(500).nullable().optional() }).parse(req.body ?? {});
+  const result = await archiveEstimateByHand(prisma, readParam(req, "id"), { reason: body.reason ?? null, actor: "human:crm-session" });
+  if (!result.ok) {
+    res.status(result.status).json({ archived: false, error: result.reason });
+    return;
+  }
+  res.json({ archived: true, archivedAt: result.archivedAt, reason: result.reason });
+}));
+
+app.post("/issued-estimates/:id/unarchive", asyncHandler(async (req, res) => {
+  const result = await unarchiveEstimate(prisma, readParam(req, "id"), { actor: "human:crm-session" });
+  if (!result.ok) {
+    res.status(result.status).json({ unarchived: false, error: result.reason });
+    return;
+  }
+  res.json({ unarchived: true, status: result.status });
 }));
 
 app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
@@ -3978,6 +4021,11 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
     console.error("[IssuedEstimate] job creation after in-person sign failed:", err);
   }
 
+  // The options not chosen are put away (Kyle, 2026-10-01) — the other presented, unsigned
+  // estimates at this address. services/estimateArchive.ts owns the rule; every signature door
+  // runs it; it can never fail the signature. Returned so the signed screen can say what moved.
+  const { archived } = await archiveCompetingEstimates(prisma, result.estimateId, "system:sign-in-person");
+
   /*
     NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." · "No
     auto send across the board."
@@ -3996,7 +4044,7 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
     landed and a send is waiting.
   */
 
-  res.json({ signed: true, estimateId: result.estimateId, jobVisitId, jobJoined });
+  res.json({ signed: true, estimateId: result.estimateId, jobVisitId, jobJoined, archived });
 }));
 
 // ─── THE ACCOUNT SPINE (P029) ────────────────────────────────────────────────
@@ -5891,6 +5939,114 @@ app.delete("/accounts/:id/contacts/:contactId", asyncHandler(async (req, res) =>
   await prisma.customerContact.deleteMany({
     where: { id: readParam(req, "contactId"), customerId: readParam(req, "id") },
   });
+  res.status(204).end();
+}));
+
+// ─── ACCOUNT CONVERSATION NOTES (Kyle, 2026-10-01) ───────────────────────────
+//
+// "I have no place to record notes from the customer conversation that can be accessed by admin
+// and other personnel." Ruled: "Notes should be account based for an admin that is answering calls
+// and dispatching. Any info gathered during a conversation should be able to be documented and
+// shared with others per account."
+//
+// So: a running log on the ACCOUNT (CustomerNote), one row per conversation, newest first, read
+// by the account page and the job drawer alike. `Visit.notes` — one box about one job — is a
+// different record and is not touched here.
+//
+// WHO TOOK THE CALL IS TYPED. There is no per-user identity behind the PIN gate (every actor
+// string in this file is "human:crm-session"), so the server cannot know and will not guess:
+// `takenBy` is required in the body, exactly like `reviewedBy` on the contractor review.
+//
+// EDITED SHOWS AS EDITED. Create pins `createdAt` and `updatedAt` to the same instant, so
+// `updatedAt > createdAt` is true only after a real PATCH — the client renders that as "edited".
+// Left to Prisma's two separate clock reads, a fresh note can differ by a millisecond and read
+// as edited (tests/accountNotes.test.ts pins the equality).
+//
+// Behind pinAuthMiddleware like every other account read. Note bodies are customer-entered
+// information about a person: never written to SystemEvent, never on a public route.
+
+const CUSTOMER_NOTE_INCLUDE = {
+  visit: {
+    select: {
+      id: true, jobType: true, purpose: true, visitDate: true,
+      property: { select: { addressLine1: true } },
+    },
+  },
+} as const;
+
+app.get("/accounts/:id/notes", asyncHandler(async (req, res) => {
+  const notes = await prisma.customerNote.findMany({
+    where: { customerId: readParam(req, "id") },
+    orderBy: { createdAt: "desc" },
+    include: CUSTOMER_NOTE_INCLUDE,
+  });
+  res.json(notes);
+}));
+
+app.post("/accounts/:id/notes", asyncHandler(async (req, res) => {
+  const customerId = readParam(req, "id");
+  const body = z.object({
+    body: z.string().trim().min(1, "Write down what was said.").max(10_000),
+    takenBy: z.string().trim().min(1, "Say who took the call.").max(100),
+    visitId: z.string().trim().min(1).nullable().optional(),
+  }).parse(req.body);
+
+  const customer = await prisma.customer.findUnique({ where: { id: customerId }, select: { id: true } });
+  if (!customer) { res.status(404).json({ error: "Account not found" }); return; }
+
+  // The tag must point at one of THIS account's jobs — a note can never be filed against one
+  // customer while naming another customer's job.
+  if (body.visitId) {
+    const visit = await prisma.visit.findUnique({ where: { id: body.visitId }, select: { customerId: true } });
+    if (!visit || visit.customerId !== customerId) {
+      res.status(400).json({ error: "That job is not on this account." });
+      return;
+    }
+  }
+
+  const now = new Date();
+  const note = await prisma.customerNote.create({
+    data: {
+      customerId,
+      visitId: body.visitId ?? null,
+      body: body.body,
+      takenBy: body.takenBy,
+      createdAt: now,
+      updatedAt: now,
+    },
+    include: CUSTOMER_NOTE_INCLUDE,
+  });
+  res.status(201).json(note);
+}));
+
+app.patch("/accounts/:id/notes/:noteId", asyncHandler(async (req, res) => {
+  const customerId = readParam(req, "id");
+  const noteId = readParam(req, "noteId");
+  const body = z.object({
+    body: z.string().trim().min(1, "Write down what was said.").max(10_000).optional(),
+    takenBy: z.string().trim().min(1, "Say who took the call.").max(100).optional(),
+  }).parse(req.body);
+  if (body.body === undefined && body.takenBy === undefined) {
+    res.status(400).json({ error: "Nothing to change." });
+    return;
+  }
+
+  // Scoped to the account in the URL, so a note id from another account is a 404, not an edit.
+  const updated = await prisma.customerNote.updateMany({
+    where: { id: noteId, customerId },
+    data: { ...body, updatedAt: new Date() },
+  });
+  if (updated.count === 0) { res.status(404).json({ error: "Note not found" }); return; }
+
+  const note = await prisma.customerNote.findUnique({ where: { id: noteId }, include: CUSTOMER_NOTE_INCLUDE });
+  res.json(note);
+}));
+
+app.delete("/accounts/:id/notes/:noteId", asyncHandler(async (req, res) => {
+  const deleted = await prisma.customerNote.deleteMany({
+    where: { id: readParam(req, "noteId"), customerId: readParam(req, "id") },
+  });
+  if (deleted.count === 0) { res.status(404).json({ error: "Note not found" }); return; }
   res.status(204).end();
 }));
 

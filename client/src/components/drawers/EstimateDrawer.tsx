@@ -1,8 +1,9 @@
 /**
  * The estimate drawer (2026-09-20). The account page's estimate row, with its actions, wherever
  * the estimate is clicked: View (the company PDF), Edit (a DRAFT, in the builder), Copy to new,
- * Delete (unsigned), Void (signed), Resend (sent, unsigned), and — once signed — the door to its
- * invoice and its job.
+ * Delete (unsigned), Void (signed), Resend (sent, unsigned), Mark lost / Reopen, Archive /
+ * Unarchive (2026-10-01 — the options not chosen when another estimate was signed), and — once
+ * signed — the door to its invoice and its job.
  *
  * ── WHAT THIS DRAWER DOES NOT DO, ON PURPOSE (drawers plan, trap 6) ─────────────────────────
  * No Issue and no Revise. Issuing a draft that already has a live estimate silently becomes a
@@ -119,6 +120,24 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
     onError: (err) => setFollowUp((err as Error).message),
   });
 
+  // Archive (Kyle, 2026-10-01: "once a job is sold the other ones that are not chosen should be
+  // archived"). Not lost — the customer did not say no — and not void — nothing was signed. The
+  // row keeps its status and is filed behind the Sent card's toggle with the reason. A signature
+  // at the same address does this on its own; this is the hand version for the rows it missed.
+  // Unarchive is the way back (standing rule: nothing is one-way).
+  const [archiving, setArchiving] = useState(false);
+  const [archiveReason, setArchiveReason] = useState("");
+  const archive = useMutation({
+    mutationFn: () => api.archiveEstimate(id, { reason: archiveReason.trim() || null }),
+    onSuccess: () => { refresh(); setArchiving(false); setArchiveReason(""); setFollowUp("Archived — filed behind the Sent card's \"Show drafts / expired / void / archived\" toggle. Unarchive brings it back."); },
+    onError: (err) => setFollowUp((err as Error).message),
+  });
+  const unarchive = useMutation({
+    mutationFn: () => api.unarchiveEstimate(id),
+    onSuccess: (r) => { refresh(); setFollowUp(`Unarchived — back on the ${r.status} list.`); },
+    onError: (err) => setFollowUp((err as Error).message),
+  });
+
   // Customer accepted (Kyle, 2026-09-24: "The customer accepted button would be good on the
   // estimate drawer"). The OFFICE records an acceptance it was told about — by phone, email,
   // text, in writing, or in person — and it is never a signature (CLAUDE.md, two apps, two
@@ -150,10 +169,15 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
     onSuccess: (r) => {
       refresh();
       setAccepting(false);
+      // The options not chosen were put away (2026-10-01) — say which, right here, so a genuine
+      // second job at the same address is unarchived now rather than found later.
+      const archivedNote = r.archived && r.archived.length > 0
+        ? ` ${r.archived.length === 1 ? "1 other estimate" : `${r.archived.length} other estimates`} at this address archived: ${r.archived.map((a) => `${a.number} (${money(a.total)})`).join(", ")} — open it to unarchive if it is a separate job.`
+        : "";
       setFollowUp(
-        r.jobJoined ? "Accepted — added to the current job."
+        (r.jobJoined ? "Accepted — added to the current job."
           : r.jobVisitId ? "Accepted — job created. Open Job to schedule it."
-          : "Accepted. No job was created — use Create job on the estimate.",
+          : "Accepted. No job was created — use Create job on the estimate.") + archivedNote,
       );
     },
     onError: (err) => setFollowUp((err as Error).message),
@@ -178,6 +202,10 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
 
   const unfinished = e?.status === "draft";
   const lost = e?.status === "lost";
+  // Archived (2026-10-01) is orthogonal to status: the row is still sent / viewed / expired, just
+  // put away. Nothing is resent or marked lost on it until it is unarchived; Delete, Copy to new
+  // and Customer accepted stay (an acceptance takes it back out of the archive on its own).
+  const archived = Boolean(e?.archivedAt);
   // Live = not void and not lost: nothing is sent, changed or invoiced on either until reopened.
   const live = e ? e.status !== "void" && !lost : false;
 
@@ -258,6 +286,11 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                     Lost{e.lostAt ? ` ${new Date(e.lostAt).toLocaleDateString()}` : ""}{e.lostReason ? ` — ${e.lostReason}` : ""}{e.lostNotes ? `: "${e.lostNotes}"` : ""}
                   </p>
                 )}
+                {archived && e.archivedAt && (
+                  <p className="font-semibold text-zinc-700">
+                    Archived {new Date(e.archivedAt).toLocaleDateString()}{e.archivedReason ? ` — ${e.archivedReason}` : ""}. Still {e.status}, not lost and not void. Unarchive to resend it or mark it lost.
+                  </p>
+                )}
                 {/* Kyle, 2026-08-22: "Is there any way to know if our emails have been read?" */}
                 {e.sentAt && !e.signedAt && (
                   e.firstViewedAt ? (
@@ -321,7 +354,7 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                 target={{ estimateId: e.id, status: e.status, signed: Boolean(e.signedAt) }}
               />
             )}
-            {e.sentAt && !e.signedAt && live && (
+            {e.sentAt && !e.signedAt && live && !archived && (
               <button type="button" className="btn btn-secondary text-sm" onClick={() => setResending((s) => !s)}>
                 {resending ? "Hide resend" : "Resend…"}
               </button>
@@ -336,9 +369,25 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                 Delete
               </button>
             )}
-            {!e.signedAt && live && LOSABLE.has(e.status) && !e.supersededBy && (
+            {!e.signedAt && live && LOSABLE.has(e.status) && !e.supersededBy && !archived && (
               <button type="button" className="btn btn-danger text-sm" onClick={() => setLosing((s) => !s)}>
                 {losing ? "Cancel mark lost" : "Mark lost…"}
+              </button>
+            )}
+            {/*
+              Archive (2026-10-01): the third exit for an unsigned quote beside Mark lost and
+              Delete — the customer bought something ELSE, so it is neither lost nor dead. Any
+              unsigned, live, latest revision can be put away by hand, drafts included (Delete is
+              permanent; this is not). Unarchive is the way back, shown in its place.
+            */}
+            {!e.signedAt && live && !e.supersededBy && !archived && (
+              <button type="button" className="btn btn-secondary text-sm" onClick={() => setArchiving((s) => !s)}>
+                {archiving ? "Cancel archive" : "Archive…"}
+              </button>
+            )}
+            {archived && (
+              <button type="button" className="btn btn-secondary text-sm" disabled={unarchive.isPending} onClick={() => unarchive.mutate()}>
+                {unarchive.isPending ? "Unarchiving…" : "Unarchive"}
               </button>
             )}
             {canAccept && (
@@ -406,6 +455,27 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
               <div className="flex justify-end gap-2">
                 <button type="button" className="btn btn-secondary text-xs" onClick={() => setLosing(false)}>Cancel</button>
                 <button type="submit" className="btn btn-primary text-xs" disabled={markLost.isPending || !lostReason}>{markLost.isPending ? "Saving…" : "Save as lost"}</button>
+              </div>
+            </form>
+          )}
+
+          {archiving && (
+            <form
+              className="space-y-2 rounded-lg border border-rce-border p-3"
+              onSubmit={(event) => { event.preventDefault(); archive.mutate(); }}
+            >
+              <p className="text-xs text-rce-muted">
+                Put this estimate away without deciding it — for the set of options the customer did not take when they went
+                with another estimate. Not lost (they bought), not void (nothing was signed). It keeps its status, drops off the
+                Sent card, and comes back with Unarchive.
+              </p>
+              <label className="block text-xs font-medium">
+                Why <span className="text-rce-soft">(optional, internal only)</span>
+                <input className="field mt-1" value={archiveReason} onChange={(ev) => setArchiveReason(ev.target.value)} maxLength={500} placeholder="e.g. went with 2026-1101 instead" />
+              </label>
+              <div className="flex justify-end gap-2">
+                <button type="button" className="btn btn-secondary text-xs" onClick={() => setArchiving(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary text-xs" disabled={archive.isPending}>{archive.isPending ? "Archiving…" : "Archive"}</button>
               </div>
             </form>
           )}

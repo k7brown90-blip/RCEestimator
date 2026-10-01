@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type { PhotoTag, VisitPhotoMeta } from "../lib/api";
 import { downscale } from "../lib/images";
 import { PhotoLightbox } from "./PhotoLightbox";
+import type { AccountJob } from "../lib/types";
 
 /**
  * The job photo gallery (Kyle, 2026-08-28) — replaced the legacy
@@ -30,6 +31,18 @@ const TAGS: Array<{ value: PhotoTag; label: string }> = [
 
 const tagLabel = (tag: PhotoTag | null) =>
   TAGS.find((t) => t.value === tag)?.label ?? "Untagged";
+
+/**
+ * The one definition of "fetch this property's photos" (tests/queryKeyCollisions.test.ts: a query
+ * key names an ENDPOINT, and every caller of that endpoint shares this, rather than each writing
+ * its own `{ queryKey, queryFn }` literal — four independent copies is how two of them drift and
+ * the test (correctly) can no longer tell "same endpoint, different spelling" from "different
+ * shape". Used by the visit gallery, the read-only history panel, the account-wide gallery
+ * (useQueries, one per property), and the send-flow picker.
+ */
+function propertyPhotosQuery(propertyId: string) {
+  return { queryKey: ["property-photos", propertyId] as const, queryFn: () => api.propertyPhotos(propertyId) };
+}
 
 /** Authed thumbnail with object-URL lifecycle handled. */
 export function AuthedPhoto(props: { path: string; alt: string; className?: string; onClick?: () => void }) {
@@ -137,8 +150,7 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
     queryFn: () => api.visitPhotos(props.visitId),
   });
   const { data: history } = useQuery({
-    queryKey: ["property-photos", props.propertyId],
-    queryFn: () => api.propertyPhotos(props.propertyId),
+    ...propertyPhotosQuery(props.propertyId),
     enabled: showHistory,
   });
 
@@ -333,8 +345,7 @@ export function PropertyPhotoSection(props: { propertyId: string; propertyLabel:
   // Zoomable viewer (Kyle, 2026-08-31) — nameplates are unreadable at thumbnail size.
   const [lightbox, setLightbox] = useState<{ path: string; alt: string; caption?: string | null } | null>(null);
   const { data: photos } = useQuery({
-    queryKey: ["property-photos", props.propertyId],
-    queryFn: () => api.propertyPhotos(props.propertyId),
+    ...propertyPhotosQuery(props.propertyId),
     enabled: open,
   });
   const jobPhotos = photos?.jobPhotos ?? [];
@@ -427,6 +438,193 @@ export function PropertyPhotoSection(props: { propertyId: string; propertyLabel:
 }
 
 /**
+ * ONE photo gallery for the whole account (Kyle, 2026-10-01: "I should be able
+ * to upload photos on this screen here" / "the attached photos should prompt a
+ * job selection but can all be viewed from a single place. I dont want to
+ * click through different jobs to find a photo I am looking for.")
+ *
+ * Replaces the old read-only, per-property accordion on the account page.
+ * Upload reuses the exact same endpoint the visit gallery uses
+ * (`POST /health-record-admin/visits/:visitId/photos`) — a photo still belongs
+ * to a visit, so uploading here asks which job it's for, same as the visit
+ * gallery's "+ Add photos" just without first navigating to that visit.
+ *
+ * Assembled client-side: `api.propertyPhotos` is per-PROPERTY (there is no
+ * per-account endpoint), so this fires one query per property the account has
+ * — same `["property-photos", propertyId]` key and shape the visit gallery and
+ * the send-flow picker already use, so uploads here invalidate everywhere else
+ * automatically, and no new endpoint is needed.
+ */
+export function AccountPhotoGallery(props: {
+  properties: Array<{ id: string; name: string; addressLine1: string; city: string }>;
+  jobs: AccountJob[];
+}) {
+  const queryClient = useQueryClient();
+  const [uploadVisitId, setUploadVisitId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [lightbox, setLightbox] = useState<{ path: string; alt: string; caption?: string | null } | null>(null);
+
+  const propertyQueries = useQueries({
+    queries: props.properties.map((property) => propertyPhotosQuery(property.id)),
+  });
+
+  const propertyLabel = (propertyId: string) => {
+    const p = props.properties.find((candidate) => candidate.id === propertyId);
+    return p ? `${p.name} — ${p.addressLine1}, ${p.city}` : "Address removed";
+  };
+
+  type CombinedPhoto = {
+    key: string;
+    path: string;
+    alt: string;
+    date: string;
+    label: string;
+    caption?: string | null;
+  };
+
+  const combined: CombinedPhoto[] = [];
+  props.properties.forEach((property, i) => {
+    const data = propertyQueries[i]?.data;
+    if (!data) return;
+    for (const p of data.jobPhotos) {
+      combined.push({
+        key: `job-${p.id}`,
+        path: `/health-record-admin/visit-photos/${p.id}`,
+        alt: p.caption ?? "job photo",
+        date: p.visitDate,
+        label: `${p.jobType || p.purpose || "Job"} — ${propertyLabel(property.id)} · ${tagLabel(p.tag)}`,
+        caption: p.caption,
+      });
+    }
+    for (const p of data.assessmentPhotos) {
+      combined.push({
+        key: `assessment-${p.id}`,
+        path: `/health-record-admin/inspection-photos/${p.id}`,
+        alt: "assessment photo",
+        date: p.inspectionDate,
+        label: `Health Record assessment — ${propertyLabel(property.id)}`,
+      });
+    }
+  });
+  combined.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  // Newest first — the job someone just finished is the one they're most likely attaching
+  // photos for.
+  const sortedJobs = [...props.jobs].sort(
+    (a, b) => new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime(),
+  );
+  const jobLabel = (job: AccountJob) =>
+    `${job.jobType || job.purpose || "Job"} — ${job.propertyLabel} (${new Date(job.visitDate).toLocaleDateString()})`;
+
+  const onlyJob = sortedJobs.length === 1 ? sortedJobs[0] : null;
+  const effectiveVisitId = onlyJob ? onlyJob.visitId : uploadVisitId;
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    if (files.length === 0 || !effectiveVisitId) return;
+    setBusy(true);
+    setErr("");
+    try {
+      for (const file of files) {
+        const dataUrl = await downscale(file);
+        await api.uploadVisitPhoto(effectiveVisitId, { dataUrl, tag: null });
+      }
+      const job = sortedJobs.find((j) => j.visitId === effectiveVisitId);
+      if (job) void queryClient.invalidateQueries({ queryKey: ["property-photos", job.propertyId] });
+    } catch (ex) {
+      setErr((ex as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card mt-5 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">Photos</h2>
+          <p className="text-sm text-rce-muted">
+            Every photo on record across this account's jobs and addresses, newest first.
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex items-center gap-2">
+            {sortedJobs.length > 1 && (
+              <select
+                className="field text-xs"
+                aria-label="Which job are these photos for?"
+                value={uploadVisitId}
+                onChange={(e) => setUploadVisitId(e.target.value)}
+              >
+                <option value="">Which job are these photos for?</option>
+                {sortedJobs.map((job) => (
+                  <option key={job.visitId} value={job.visitId}>{jobLabel(job)}</option>
+                ))}
+              </select>
+            )}
+            <label
+              className={`btn btn-primary text-sm ${
+                sortedJobs.length === 0 || (sortedJobs.length > 1 && !uploadVisitId) || busy
+                  ? "cursor-not-allowed opacity-50"
+                  : "cursor-pointer"
+              }`}
+            >
+              {busy ? "Uploading…" : "+ Add photos"}
+              <input
+                type="file" accept="image/*" capture="environment" multiple hidden
+                onChange={(e) => void onPick(e)}
+                disabled={sortedJobs.length === 0 || (sortedJobs.length > 1 && !uploadVisitId) || busy}
+              />
+            </label>
+          </div>
+          {sortedJobs.length === 0 && (
+            <p className="text-xs text-rce-soft">
+              No jobs on this account yet — create a job before adding photos.
+            </p>
+          )}
+          {onlyJob && (
+            <p className="text-xs text-rce-soft">Adding to: {jobLabel(onlyJob)}</p>
+          )}
+        </div>
+      </div>
+      {err && <p className="mt-2 text-xs text-rce-danger">{err}</p>}
+
+      {combined.length === 0 ? (
+        <p className="mt-4 text-sm text-rce-soft">No photos on this account yet.</p>
+      ) : (
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {combined.map((photo) => (
+            <figure key={photo.key} className="overflow-hidden rounded-xl border border-rce-border bg-white shadow-sm">
+              <AuthedPhoto
+                path={photo.path}
+                alt={photo.alt}
+                className="h-32 w-full cursor-zoom-in object-cover"
+                onClick={() => setLightbox({ path: photo.path, alt: photo.alt, caption: photo.caption })}
+              />
+              <figcaption className="space-y-0.5 p-2 text-[11px] text-rce-soft">
+                <div>{new Date(photo.date).toLocaleDateString()}</div>
+                <div className="truncate" title={photo.label}>{photo.label}</div>
+                {photo.caption && <div className="truncate text-rce-muted" title={photo.caption}>{photo.caption}</div>}
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
+      {lightbox && (
+        <PhotoLightbox
+          path={lightbox.path}
+          alt={lightbox.alt}
+          caption={lightbox.caption}
+          onClose={() => setLightbox(null)}
+        />
+      )}
+    </section>
+  );
+}
+
+/**
  * Compact photo picker for the estimate/invoice send flows — tick the photos
  * to ride the email. Lists every job photo at the address so before/after from
  * the right visit is always reachable, capped at 10 per send (server cap).
@@ -436,10 +634,7 @@ export function PhotoAttachPicker(props: {
   selected: string[];
   onChange: (ids: string[]) => void;
 }) {
-  const { data: history } = useQuery({
-    queryKey: ["property-photos", props.propertyId],
-    queryFn: () => api.propertyPhotos(props.propertyId),
-  });
+  const { data: history } = useQuery(propertyPhotosQuery(props.propertyId));
   const photos = history?.jobPhotos ?? [];
   if (photos.length === 0) return null;
   const toggle = (id: string) => {

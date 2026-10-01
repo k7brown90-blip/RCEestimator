@@ -85,6 +85,55 @@ async function expectDiscountControls() {
   expect(screen.getByLabelText("Custom discount percentage")).toBeInTheDocument();
 }
 
+/*
+  THE PHOTO PICKER DOES NOT DEPEND ON HOW YOU GOT HERE (Kyle, 2026-10-01).
+
+  "I want to be able to attach photos to the email now." — filed from the estimate builder's
+  "Or email it instead" block, which showed the two report checkboxes and the Email button but no
+  photo picker. Cause: the picker was gated on the `?address=` URL PARAMETER while the rest of the
+  panel was not, so any route into the builder without it dropped the control silently. An issued
+  estimate carries its own `serviceAddressId`, so that is what it reads now.
+
+  The route WITHOUT `&address=` is the regression test — it is the one that used to fail.
+*/
+describe("PriceBookIntakePage — photos can ride the estimate email", () => {
+  const ROUTE_NO_ADDRESS = "/estimate-intake?draft=draft-1&tab=review";
+
+  /**
+   * `PhotoAttachPicker` returns null when the property has no photos, so the fixture must carry
+   * one — mocking an empty list proves nothing about whether the picker was reachable.
+   * It asks for the photos of whatever `propertyId` it is handed, which is the whole point here:
+   * the assertion is that it was handed the ESTIMATE's address rather than the URL's.
+   */
+  function mockPhotosFor(propertyId: string) {
+    return vi.spyOn(api, "propertyPhotos").mockImplementation(async (id) =>
+      (id === propertyId
+        ? { jobPhotos: [{ id: "photo-1", visitDate: "2026-09-20T12:00:00.000Z", caption: "Panel before" }] }
+        : { jobPhotos: [] }) as never,
+    );
+  }
+
+  it("offers the photo picker even when the URL carries no address", async () => {
+    mockPage(issued());
+    const photos = mockPhotosFor("prop-1");
+
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE_NO_ADDRESS });
+
+    // It asked for the ESTIMATE's address, not the URL's (which has none), and drew the picker.
+    await waitFor(() => expect(photos).toHaveBeenCalledWith("prop-1"));
+    expect(await screen.findByText(/Attach job photos/)).toBeInTheDocument();
+  });
+
+  it("still offers it on the ordinary route that does carry the address", async () => {
+    mockPage(issued());
+    mockPhotosFor("prop-1");
+
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+
+    expect(await screen.findByText(/Attach job photos/)).toBeInTheDocument();
+  });
+});
+
 describe("PriceBookIntakePage — the discount is always adjustable", () => {
   it("offers the discount before anything has been issued", async () => {
     mockPage(null);

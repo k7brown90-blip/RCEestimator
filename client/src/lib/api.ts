@@ -138,6 +138,30 @@ export interface CustomerContact {
   createdAt: string;
 }
 
+/**
+ * One conversation with the customer, on the ACCOUNT (Kyle, 2026-10-01). `takenBy` is typed by
+ * whoever took the call — there is no per-user identity behind the PIN, so the server never
+ * invents one. `visit` is the job the note was tagged to, if any; null once that job is deleted
+ * (the note itself survives on the account). `updatedAt > createdAt` means it was edited — the
+ * server pins both to one instant at create, so the comparison is exact.
+ */
+export interface CustomerNote {
+  id: string;
+  customerId: string;
+  visitId: string | null;
+  body: string;
+  takenBy: string;
+  createdAt: string;
+  updatedAt: string;
+  visit: {
+    id: string;
+    jobType: string | null;
+    purpose: string | null;
+    visitDate: string;
+    property: { addressLine1: string } | null;
+  } | null;
+}
+
 export interface PurchaseOrderRow {
   id: string;
   /** PO-YYYY-NNNN (Kyle, 2026-09-09). */
@@ -1085,6 +1109,15 @@ export const api = {
     request<CustomerContact>(`/accounts/${accountId}/contacts`, { method: "POST", body: JSON.stringify(input) }),
   deleteAccountContact: (accountId: string, contactId: string) =>
     request<void>(`/accounts/${accountId}/contacts/${contactId}`, { method: "DELETE" }),
+  // ─── Account conversation notes (2026-10-01) — newest first ─────────────────
+  accountNotes: (accountId: string) =>
+    request<CustomerNote[]>(`/accounts/${accountId}/notes`),
+  addAccountNote: (accountId: string, input: { body: string; takenBy: string; visitId?: string | null }) =>
+    request<CustomerNote>(`/accounts/${accountId}/notes`, { method: "POST", body: JSON.stringify(input) }),
+  updateAccountNote: (accountId: string, noteId: string, input: { body?: string; takenBy?: string }) =>
+    request<CustomerNote>(`/accounts/${accountId}/notes/${noteId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteAccountNote: (accountId: string, noteId: string) =>
+    request<void>(`/accounts/${accountId}/notes/${noteId}`, { method: "DELETE" }),
 
   // ─── Job lifecycle (2026-08-25) ────────────────────────────────────────────
   completeJob: (jobId: string) =>
@@ -1869,6 +1902,22 @@ export const api = {
       body: JSON.stringify({}),
     }),
   /**
+   * Archive an unsigned estimate by hand (Kyle, 2026-10-01: "the other ones that are not chosen
+   * should be archived"). Not lost (the customer did not say no), not void (nothing was signed):
+   * the row keeps its status and is filed behind the Sent card's toggle with the reason.
+   */
+  archiveEstimate: (estimateId: string, input: { reason?: string | null }) =>
+    request<{ archived: true; archivedAt: string; reason: string | null }>(`/issued-estimates/${estimateId}/archive`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  /** The way back: clears the archive; the row returns to the card its status puts it in. */
+  unarchiveEstimate: (estimateId: string) =>
+    request<{ unarchived: true; status: string }>(`/issued-estimates/${estimateId}/unarchive`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  /**
    * "Customer accepted" (Kyle, 2026-09-24) — the office records an acceptance it was told about
    * by phone / email / text / in writing / in person. Lands on status "signed" with NO signature
    * image and signedChannel "office"; the job, the invoice email and the deposit request follow
@@ -1878,7 +1927,11 @@ export const api = {
     estimateId: string,
     input: { acceptedVia: string; acceptedBy: string; note?: string | null; selectedOptions?: string[] | null },
   ) =>
-    request<{ accepted: true; estimateId: string; jobVisitId: string | null; jobJoined: boolean }>(`/issued-estimates/${estimateId}/accept`, {
+    request<{
+      accepted: true; estimateId: string; jobVisitId: string | null; jobJoined: boolean;
+      /** The other presented, unsigned estimates at this address that the acceptance archived (2026-10-01). */
+      archived?: { id: string; number: string; revision: number; total: number; status: string }[];
+    }>(`/issued-estimates/${estimateId}/accept`, {
       method: "POST",
       body: JSON.stringify(input),
     }),

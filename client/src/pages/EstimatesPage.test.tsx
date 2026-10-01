@@ -7,7 +7,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { EstimatesPage } from "./EstimatesPage";
 import { api } from "../lib/api";
@@ -75,7 +75,34 @@ describe("EstimatesPage", () => {
     expect(screen.getByRole("heading", { name: "Sent (1)" })).toBeInTheDocument();
     expect(screen.getByText("lost — price")).toBeInTheDocument();
     expect(screen.queryByText("void")).not.toBeInTheDocument();
-    expect(screen.getByText(/Show drafts \/ expired \/ void \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Show drafts \/ expired \/ void \/ archived \(1\)/)).toBeInTheDocument();
+  });
+
+  // Archive (Kyle, 2026-10-01: "once a job is sold the other ones that are not chosen should be
+  // archived"). Filed like superseded — behind the Sent card's toggle, labelled with the reason —
+  // never deleted, and never in the Sent count or the attention strip.
+  it("files an archived estimate behind the Sent card's toggle with its reason, off the Sent count (2026-10-01)", async () => {
+    vi.spyOn(api, "estimateChain").mockResolvedValue({
+      estimates: [
+        row({ id: "e-sold", number: "2026-1101", status: "signed", signedAt: "2026-09-30T19:58:00.000Z", job: { id: "job-1", status: "contracted", scheduledStart: null } }),
+        // Arlene's first $14k options — still status "viewed", archived when 2026-1101 was signed.
+        row({
+          id: "e-archived", number: "2026-1096", status: "viewed", total: 14004, createdAt: "2026-09-28T16:30:00.000Z", sentAt: "2026-09-28T16:30:00.000Z",
+          archivedAt: "2026-09-30T19:58:00.000Z", archivedReason: "another estimate was signed at this address (2026-1101)",
+        }),
+      ],
+    });
+
+    renderWithProviders(<EstimatesPage />);
+
+    expect(await screen.findByRole("heading", { name: "Sold (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sent (0)" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Viewed (0)" })).toBeInTheDocument();
+    expect(screen.queryByText(/another estimate was signed/)).not.toBeInTheDocument();
+    const toggle = screen.getByLabelText(/Show drafts \/ expired \/ void \/ archived \(1\)/);
+    fireEvent.click(toggle);
+    expect(screen.getByText("archived — another estimate was signed at this address (2026-1101)")).toBeInTheDocument();
+    expect(screen.getByText("2026-1096")).toBeInTheDocument();
   });
 
   it("opens with its own attention strip: bounced first, then quotes stale for 7+ days (2026-09-20)", async () => {
@@ -171,7 +198,7 @@ describe("EstimatesPage", () => {
 
     // Expired leaves the Sent count and sits behind the hidden toggle instead.
     expect(await screen.findByRole("heading", { name: "Sent (1)" })).toBeInTheDocument();
-    expect(screen.getByText(/Show drafts \/ expired \/ void \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Show drafts \/ expired \/ void \/ archived \(1\)/)).toBeInTheDocument();
     expect(screen.getByText("Live Sent")).toBeInTheDocument();
   });
 });

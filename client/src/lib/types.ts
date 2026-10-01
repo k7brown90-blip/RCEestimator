@@ -1712,6 +1712,8 @@ export type CrmFunnelReport = {
     unsent: number;
     /** Dead documents — outside the rate. */
     voided: number;
+    /** Archived (2026-10-01): the options not taken when another estimate at the address was signed — outside the rate, neither won nor lost. */
+    withdrawn: number;
     rate: number | null;
     /** Why a QUOTE was lost. Same vocabulary as the lead reasons, a separate population. */
     lostReasons: Record<string, number>;
@@ -2040,6 +2042,12 @@ export interface PbIssuedEstimate {
   lostAt?: string | null;
   lostReason?: string | null;
   lostNotes?: string | null;
+  /**
+   * Archived (Kyle, 2026-10-01): put away because another estimate at the address was signed, or
+   * by hand. NOT a status — the row keeps its status; always unsigned. Unarchive is the way back.
+   */
+  archivedAt?: string | null;
+  archivedReason?: string | null;
   supersededBy?: { id: string; revision: number } | null;
   lines?: PbIssuedLine[];
   events?: PbIssuedEvent[];
@@ -2176,6 +2184,9 @@ export interface PbChainRow {
   lostAt?: string | null;
   lostReason?: string | null;
   lostNotes?: string | null;
+  /** Archived (2026-10-01) — filed behind the Sent card's toggle with the reason. Not a status. */
+  archivedAt?: string | null;
+  archivedReason?: string | null;
   /** Days the quote stays open after sending (Kyle, 2026-09-07 — "expired" is derived from this). */
   validDays?: number;
   account: { id: string; name: string; isTestAccount: boolean };

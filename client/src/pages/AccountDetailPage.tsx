@@ -3,11 +3,12 @@ import type { FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { InspectionResultChip } from "../components/InspectionResultChip";
+import { ConversationNotes } from "../components/ConversationNotes";
 import { FindingLedger } from "../components/FindingLedger";
 import { SendEmailPanel } from "../components/SendEmailPanel";
 import { SendToPicker } from "../components/SendToPicker";
 import { PaymentPanel } from "../components/PaymentPanel";
-import { PhotoAttachPicker, PropertyPhotoSection } from "../components/PhotoGalleryPanel";
+import { AccountPhotoGallery, PhotoAttachPicker } from "../components/PhotoGalleryPanel";
 import { GeneratorDesigner } from "../components/GeneratorDesigner";
 import { LoadCalcEditor } from "../components/LoadCalcEditor";
 import { PageHeader } from "../components/PageHeader";
@@ -405,6 +406,13 @@ export function AccountDetailPage() {
         )}
       </div>
 
+      {/* ── Conversation notes (Kyle, 2026-10-01) ─────────────────────────
+          The HOME of the account's call log: what the customer said, who took it, when.
+          Right under the contact card because that is where the person answering the phone is
+          looking. The same component sits in the job drawer, tagged to the job; this is the
+          whole list. */}
+      <ConversationNotes accountId={account.id} surface="account" />
+
       {/* ── Addresses ───────────────────────────────────────────────────── */}
       <section className="card mb-5 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -552,26 +560,17 @@ export function AccountDetailPage() {
 
       <HealthInspectionHistory accountId={account.id} customerEmail={account.email} />
 
-      {/* ── Photos, per address (Kyle, 2026-08-29: "I don't see where to find
-          the photos, I need to be able to access them"). Read-only here —
-          upload and tagging live on the visit's gallery. ── */}
+      {/* ── Photos — one gallery for the whole account (Kyle, 2026-10-01: "I
+          should be able to upload photos on this screen here" / "the attached
+          photos should prompt a job selection but can all be viewed from a
+          single place. I dont want to click through different jobs to find a
+          photo I am looking for."). Upload asks which job; the per-job
+          gallery on the visit page is unaffected. ── */}
       {properties.length > 0 && (
-        <section className="card mt-5 p-4">
-          <h2 className="text-lg font-semibold">Photos</h2>
-          <p className="mb-3 text-xs text-rce-muted">
-            Every photo on record at each address — job photos across visits and Health Record
-            assessment shots. Add photos from the visit page's gallery.
-          </p>
-          <div className="space-y-2">
-            {properties.map((property) => (
-              <PropertyPhotoSection
-                key={property.id}
-                propertyId={property.id}
-                propertyLabel={`${property.name} — ${property.addressLine1}, ${property.city}`}
-              />
-            ))}
-          </div>
-        </section>
+        <AccountPhotoGallery
+          properties={properties.map((p) => ({ id: p.id, name: p.name, addressLine1: p.addressLine1, city: p.city }))}
+          jobs={jobs}
+        />
       )}
     </div>
   );
@@ -835,6 +834,12 @@ function AccountEstimates({
                     {e.serviceAddress ?? "address missing"}
                   </p>
                   <p className="text-xs uppercase tracking-wide text-rce-muted">{e.status}</p>
+                {/* Archived (Kyle, 2026-10-01): put away, with the reason, wherever the row is shown. */}
+                {e.archivedAt && (
+                  <p className="text-xs font-semibold text-rce-soft">
+                    Archived {new Date(e.archivedAt).toLocaleDateString()}{e.archivedReason ? ` — ${e.archivedReason}` : ""}
+                  </p>
+                )}
                 {/* Kyle, 2026-09-09: "My emails are not getting to the clients" — when Gmail
                     reported this estimate's email undeliverable, say so here, with the reason. */}
                 {(e.lastBounceAt || e.lastDelivery) && (

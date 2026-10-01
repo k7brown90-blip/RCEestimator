@@ -4,24 +4,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
-import { api, type VisitMode } from "../lib/api";
+import { api } from "../lib/api";
 import { money, parseJsonArray, shortDate } from "../lib/utils";
-
-const MODES: Array<{ value: VisitMode; label: string }> = [
-  { value: "service_diagnostic", label: "Service / Diagnostic" },
-  { value: "remodel", label: "Remodel / Addition" },
-  { value: "new_construction", label: "New Construction" },
-  { value: "maintenance", label: "Maintenance" },
-];
 
 export function PropertyDetailPage() {
   const { propertyId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: property, isLoading } = useQuery({ queryKey: ["property", propertyId], queryFn: () => api.property(propertyId), enabled: Boolean(propertyId) });
-
-  const [mode, setMode] = useState<VisitMode>("service_diagnostic");
-  const [purpose, setPurpose] = useState("");
 
   const deficiencyList = useMemo(() => parseJsonArray(property?.systemSnapshot?.deficienciesJson), [property?.systemSnapshot?.deficienciesJson]);
   const [serviceSummary, setServiceSummary] = useState(property?.systemSnapshot?.serviceSummary ?? "");
@@ -43,14 +33,6 @@ export function PropertyDetailPage() {
     property?.systemSnapshot?.wiringMethodSummary,
     property?.systemSnapshot?.deficienciesJson,
   ]);
-
-  const startVisit = useMutation({
-    mutationFn: api.createVisit,
-    onSuccess: (visit) => {
-      queryClient.invalidateQueries({ queryKey: ["property", propertyId] });
-      navigate(`/visits/${visit.id}`);
-    },
-  });
 
   const updateSnapshot = useMutation({
     mutationFn: (input: { serviceSummary?: string; panelSummary?: string; groundingSummary?: string; wiringMethodSummary?: string; deficiencies?: string[] }) =>
@@ -86,12 +68,6 @@ export function PropertyDetailPage() {
   }
 
   const hasVisits = (property?.visits?.length ?? 0) > 0;
-
-  function submitVisit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!property) return;
-    startVisit.mutate({ propertyId: property.id, customerId: property.customerId, mode, purpose });
-  }
 
   function submitSnapshot(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -162,33 +138,18 @@ export function PropertyDetailPage() {
         </form>
       )}
 
-      <section className="card mb-5 p-4">
-        <h2 className="mb-3 text-lg font-semibold">Start New Visit</h2>
-        <form className="grid gap-3 md:grid-cols-3" onSubmit={submitVisit}>
-          <label className="text-sm font-medium">
-            Mode
-            <select className="field mt-1" value={mode} onChange={(event) => setMode(event.target.value as VisitMode)}>
-              {MODES.map((item) => (
-                <option key={item.value} value={item.value}>{item.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm font-medium md:col-span-2">
-            Purpose
-            <input className="field mt-1" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="Customer stated reason" />
-          </label>
-          <div className="md:col-span-3">
-            <button className="btn btn-primary" type="submit" disabled={startVisit.isPending}>+ Start New Visit</button>
-          </div>
-        </form>
-      </section>
-
       {/* ── Estimate entry points (Kyle, 2026-08-19) ────────────────────────────────────────
           "Between the Start New Visit Card and System Snapshot I want to have the 'Create New
           Estimate', 'Previous Estimates' and 'Sold Work' buttons to select from."
 
           All three carry the account AND the address, so an estimate started here is already on
-          the spine P029 built rather than asking again for something this page already knows. */}
+          the spine P029 built rather than asking again for something this page already knows.
+
+          The "Start New Visit" card referenced above was removed 2026-10-01 (Kyle: "This is
+          repetitive and should be removed there is already a place to start a new visit.") —
+          it duplicated AccountDetailPage's StartWorkCard "Open a visit" / "Book consultation"
+          buttons, which call the same api.createVisit and land on the same /visits/:id
+          workspace, where mode and purpose remain editable. */}
       <section className="card mb-5 p-4">
         <h2 className="mb-3 text-lg font-semibold">Estimates for this address</h2>
         <div className="flex flex-col gap-2 sm:flex-row">

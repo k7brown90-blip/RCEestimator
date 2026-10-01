@@ -57,7 +57,7 @@ type Bucket = "sent" | "viewed" | "sold" | "lost" | "hidden" | "gone";
 
 /**
  * The funnel position this row has reached, in Kyle's own sequence, and which card it lands in.
- * `hidden` rows (drafts, expired, void, superseded) sit behind the Sent card's toggle. `lost`
+ * `hidden` rows (drafts, expired, void, superseded, archived) sit behind the Sent card's toggle. `lost`
  * (Kyle, 2026-09-20) is its own VISIBLE card, not hidden: these are the quotes the customer
  * turned down — the other half of the win rate — and until they had a home the Sent card was
  * silently accumulating dead quotes.
@@ -65,6 +65,11 @@ type Bucket = "sent" | "viewed" | "sold" | "lost" | "hidden" | "gone";
 function classify(row: PbChainRow, now: number): { bucket: Bucket; label: string; tone: string } {
   const quiet = "bg-rce-border/50 text-rce-soft";
   if (row.supersededBy) return { bucket: "hidden", label: "superseded", tone: quiet };
+  // Archived (Kyle, 2026-10-01: "once a job is sold the other ones that are not chosen should be
+  // archived"). Filed like superseded — behind the toggle, never deleted — and the label says why.
+  // Checked before status: an archived row keeps its status (sent / viewed / expired), and the
+  // Sent card is exactly where it must stop appearing.
+  if (row.archivedAt) return { bucket: "hidden", label: row.archivedReason ? `archived — ${row.archivedReason}` : "archived", tone: quiet };
   if (row.status === "void") return { bucket: "hidden", label: "void", tone: quiet };
   if (row.status === "lost") return { bucket: "lost", label: row.lostReason ? `lost — ${row.lostReason}` : "lost", tone: "bg-zinc-200 text-zinc-700" };
   if (row.signedAt) {
@@ -206,7 +211,7 @@ function SectionCard({
   subtitle: string;
   rows: Classified[];
   emptyText: string;
-  /** Drafts, expired, void, superseded — only the Sent card carries these. */
+  /** Drafts, expired, void, superseded, archived — only the Sent card carries these. */
   hiddenRows?: Classified[];
 }) {
   const [search, setSearch] = useState("");
@@ -247,7 +252,7 @@ function SectionCard({
               checked={showHidden}
               onChange={(e) => { setShowHidden(e.target.checked); setLimit(PAGE_SIZE); }}
             />
-            Show drafts / expired / void ({hiddenRows.length})
+            Show drafts / expired / void / archived ({hiddenRows.length})
           </label>
         )}
       </div>

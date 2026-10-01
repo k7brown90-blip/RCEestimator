@@ -213,6 +213,9 @@ export async function acceptEstimateFromOffice(
         acceptedVia: input.acceptedVia,
         acceptedNote: note,
         status: "signed",
+        // Same as applySignature: a signed row is never an archived row (services/estimateArchive.ts).
+        archivedAt: null,
+        archivedReason: null,
       },
     });
     if (result.count === 0) return { written: false as const, adopted: null };

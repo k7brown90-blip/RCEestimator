@@ -49,6 +49,8 @@ model Customer {
   /// because a campaign send targets an EmailListMember, not a Customer directly.
   emailDeliveries   EmailDelivery[]
   emailBounces      EmailBounce[]
+  /// The running log of what this customer said on the phone (Kyle, 2026-10-01) — see CustomerNote.
+  conversationNotes CustomerNote[]
 
   @@index([phone])
   // ── GLOBAL SEARCH (2026-09-20, drawers plan Phase 5) ──
@@ -79,6 +81,46 @@ model CustomerContact {
 
   @@index([customerId])
   @@index([phone])
+}
+
+// ── ACCOUNT CONVERSATION NOTES (Kyle, 2026-10-01) ──
+// "Notes should be account based for an admin that is answering calls and dispatching. Any info
+// gathered during a conversation should be able to be documented and shared with others per
+// account." One row per conversation, on the ACCOUNT, newest first — a running log several
+// people add to. This is NOT `Visit.notes`: that is one overwritable box about one job, with no
+// author and no time, and it stays what it is.
+//
+// `takenBy` is TYPED by the person recording the call, and that is deliberate. There is no
+// per-user identity in this app (one shared PIN; every actor string in app.ts is the literal
+// "human:crm-session"), so the server cannot know who took the call, and inventing an author
+// would be the fabrication this codebase refuses everywhere else. Same house pattern as
+// HealthInspection.reviewedBy. When real logins exist, `takenBy` becomes the default, not the
+// only source.
+//
+// `visitId` is OPTIONAL and SetNull: a note taken while looking at a job says which job, without
+// ceasing to be an account note — so deleting the job keeps the note on the account and only
+// drops the tag. The account owns the log, so deleting the account takes its notes with it
+// (Cascade, like CustomerContact).
+//
+// EDITED, NEVER SILENTLY REWRITTEN (standing rule: everything is editable and deletable, but a
+// log whose entries can be quietly changed is worth less than one that cannot). The create path
+// writes `createdAt` and `updatedAt` from the SAME instant, so `updatedAt > createdAt` is TRUE
+// only after a real edit, and the UI renders that as "edited". Without pinning both at create,
+// Prisma fills them from two separate clock reads and a fresh note can read as edited by a
+// millisecond — the trap this comment exists to name.
+model CustomerNote {
+  id         String   @id @default(cuid())
+  customerId String
+  visitId    String?
+  body       String
+  takenBy    String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  visit      Visit?   @relation(fields: [visitId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@index([visitId])
 }
 
 model Property {
@@ -381,6 +423,9 @@ model Visit {
   commissions            Commission[]
   emailBounces           EmailBounce[]
   emailDeliveries        EmailDelivery[]
+  /// Account conversation notes TAGGED to this job (2026-10-01). The note belongs to the
+  /// customer; this link is SetNull, so deleting the job keeps the note on the account.
+  conversationNotes      CustomerNote[]
 
   @@index([customerId, visitDate])
   @@index([status, scheduledStart])
@@ -3068,6 +3113,22 @@ model IssuedEstimate {
   lostAt          DateTime?
   lostReason      String?
   lostNotes       String?
+  // ARCHIVED — put away, not decided (Kyle, 2026-10-01: "once a job is sold the other ones that are
+  // not chosen should be archived. ... The first one totaling over $14,000 is now irrelevent and
+  // can be archived."). Arlene Williamson signed 2026-1101 for $4004.01; 2026-1096 ($14k, the first
+  // set of options at the same address) was neither lost (she bought) nor void (never signed) nor
+  // superseded (a separate estimate, not a revision) — nothing hid it from the Sent card.
+  //
+  // DELIBERATELY NOT A STATUS VALUE. `status` is the allow-list every money and reporting surface
+  // reads ("SIGNED IS AN ALLOW-LIST EVERYWHERE", constants.md); archiving is orthogonal to it and
+  // the row keeps whatever status it had. An archived row is always UNSIGNED — the signature and
+  // the office-acceptance write both clear these two columns in the same update — so it never has
+  // an invoice, a payment or a job to hide. Set automatically when another estimate at the same
+  // address is signed (services/estimateArchive.ts) or by hand from the estimate drawer; cleared
+  // by Unarchive (standing rule: nothing the app makes is one-way). The funnel reports an archived
+  // document as WITHDRAWN, outside the win rate like void — neither won nor lost.
+  archivedAt      DateTime?
+  archivedReason  String?
 
   lines  IssuedEstimateLine[]
   events IssuedEstimateEvent[]

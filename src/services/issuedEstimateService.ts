@@ -901,6 +901,11 @@ async function applySignature(
         consentText: CONSENT_TEXT,
         signedChannel: channel,
         status: "signed",
+        // A signed row is never an archived row (services/estimateArchive.ts): archiving does
+        // not block the customer's link, so a signature on a put-away estimate takes it back out
+        // in the same write — "archived ⇒ unsigned" is what keeps archiving off every money surface.
+        archivedAt: null,
+        archivedReason: null,
       },
     });
     if (result.count === 0) return { signed: false as const, adopted: null };

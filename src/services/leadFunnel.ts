@@ -90,6 +90,8 @@ export interface FunnelReport {
     /** Outside the rate: issued but never presented (draft) and dead documents (void). */
     unsent: number;
     voided: number;
+    /** Outside the rate (2026-10-01): archived — the options not taken when another estimate at the address was signed. Neither won nor lost. */
+    withdrawn: number;
     rate: number | null;
     /** Why a quote was lost. "unrecorded" = lost with no reason typed. */
     lostReasons: Record<string, number>;
@@ -121,6 +123,8 @@ type LeadRow = {
 type EstimateRow = {
   id: string; number: string; revision: number; status: string; lostReason: string | null; createdAt: Date;
   leadId: string | null; visitId: string | null; jobVisitId: string | null; customerId: string;
+  /** Archived (2026-10-01): put away, not decided — reported as WITHDRAWN, outside the rate. */
+  archivedAt: Date | null;
 };
 
 /** One quote = one number, judged at its latest revision, dated from its first. */
@@ -230,7 +234,7 @@ export async function getFunnelReport(prisma: PrismaClient, range: FunnelRange):
   const customerIds = [...new Set(leads.map((l) => l.customerId).filter((c): c is string => Boolean(c)))];
   const ESTIMATE_SELECT = {
     id: true, number: true, revision: true, status: true, lostReason: true, createdAt: true,
-    leadId: true, visitId: true, jobVisitId: true, customerId: true,
+    leadId: true, visitId: true, jobVisitId: true, customerId: true, archivedAt: true,
   } as const;
   const candidateRows: EstimateRow[] = leads.length === 0 ? [] : await prisma.issuedEstimate.findMany({
     where: {
@@ -288,9 +292,20 @@ export async function getFunnelReport(prisma: PrismaClient, range: FunnelRange):
   });
   const allDocs = groupByNumber(allRows);
   const docs = allDocs.filter((d) => d.firstIssuedAt >= range.start && d.firstIssuedAt <= range.end);
-  let contracted = 0, quoteLost = 0, quoteOpen = 0, unsent = 0, voided = 0;
+  let contracted = 0, quoteLost = 0, quoteOpen = 0, unsent = 0, voided = 0, withdrawn = 0;
   const quoteLostReasons: Record<string, number> = {};
   for (const d of docs) {
+    /*
+      WITHDRAWN (2026-10-01): an ARCHIVED document — the set of options the customer did not take
+      when they signed a different estimate at the same address, or one Kyle put away by hand. It
+      is neither won nor lost: the customer did not say no to Red Cedar, they bought something
+      else from Red Cedar. Counted outside the rate, like void, so an address quoted two ways and
+      sold once reads 1 of 1 rather than 1 of 2 — and so it does not sit in "still out" forever.
+      An archived row is never signed (the signature clears the archive), so this never hides a
+      contracted document. Status is checked AFTER: an archived row keeps its status, and status
+      is not what this bucket is about.
+    */
+    if (d.latest.archivedAt) { withdrawn += 1; continue; }
     switch (d.latest.status) {
       case "signed": contracted += 1; break;
       case "lost": quoteLost += 1; tally(quoteLostReasons, d.latest.lostReason ?? "unrecorded"); break;
@@ -367,6 +382,7 @@ export async function getFunnelReport(prisma: PrismaClient, range: FunnelRange):
       open: quoteOpen,
       unsent,
       voided,
+      withdrawn,
       rate: pct(contracted, issued),
       lostReasons: quoteLostReasons,
     },
