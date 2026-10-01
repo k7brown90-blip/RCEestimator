@@ -79,7 +79,6 @@ import { groupSignedRows, INVOICE_DOC_SELECT, isLiveSigned, LIVE_SIGNED, LIVE_SI
 import { LOSABLE_STATUSES, LOST_REASONS as SHARED_LOST_REASONS } from "../shared/estimateStatus";
 import { ACCEPTED_VIA } from "../shared/acceptance";
 import { acceptEstimateFromOffice, undoOfficeAcceptance } from "./services/officeAcceptance";
-import { holdOrSendDepositRequest } from "./services/sameDayJob";
 import { reopenedStatusOf } from "./services/estimateExpiry";
 import {
   OFF_CARD_METHODS, PO_LIST_INCLUDE, PO_PURPOSES, PO_STATUSES, RECEIPT_HAS_FILE, addPurchaseOrderLine, attachReceiptToPurchaseOrder, createPurchaseOrder,
@@ -3609,20 +3608,21 @@ app.post("/issued-estimates/:id/reopen", asyncHandler(async (req, res) => {
   the new estimate will reflect that." So a past-validity row is refused with the Copy-to-new
   sentence; Copy to new (POST /price-book/drafts/:id/duplicate, above) already reprices.
 
-  AFTER the acceptance, the same follow-through both signature doors do — or the sale sits in
-  Sold with no job, the exact disconnect this plan opened with:
+  AFTER the acceptance, the one thing every signature door still does — or the sale sits in Sold
+  with no job, the exact disconnect this plan opened with:
     - the job (createJobFromSignedEstimate; idempotent; a change order with "add to current job"
-      joins its parent's job);
-    - the invoice email — the customer accepted by phone and has no written copy; this is it,
-      with the pay link (sendInvoiceEmail refuses cleanly without an address);
-    - the deposit request, through holdOrSendDepositRequest so the same-day-job hold (Kyle,
-      2026-09-21) still applies — the customer is not on site to scan a QR, so the in-person
-      door's ten-minute courtesy wait does not apply; this is how they learn the deposit gate.
-  NOT fired: notifyOwnerSigned — its email says "signed", and the office just recorded this
-  itself; the SystemEvent and the estimate's event trail are the internal record. And no
-  "signed_estimate" Document rows are filed: the PDF (View / Customer copy) prints the acceptance
-  line and is reachable from the drawer, and a filed document labelled "signed" would be the
-  bare-"signed" lie this whole unit exists to prevent.
+      joins its parent's job).
+  NO AUTO-SEND (Kyle, 2026-10-01: "I do not want auto send, manual review and send" — "No auto
+  send across the board"): this route used to also fire the invoice email (sendInvoiceEmail) and,
+  through holdOrSendDepositRequest, the deposit-request email. Both are gone — the customer
+  accepted by phone and has no written copy until Kyle presses "Email the signed copy…" on the
+  invoice drawer, and learns of the deposit gate only when Kyle presses "Email deposit request" on
+  the payment panel. See the comment at the removal site below for the detail.
+  NOT fired, same as before this change: notifyOwnerSigned — its email says "signed", and the
+  office just recorded this itself; the SystemEvent and the estimate's event trail are the
+  internal record. And no "signed_estimate" Document rows are filed: the PDF (View / Customer
+  copy) prints the acceptance line and is reachable from the drawer, and a filed document labelled
+  "signed" would be the bare-"signed" lie this whole unit exists to prevent.
 */
 app.post("/issued-estimates/:id/accept", asyncHandler(async (req, res) => {
   const body = z.object({
@@ -3656,12 +3656,23 @@ app.post("/issued-estimates/:id/accept", asyncHandler(async (req, res) => {
     console.error("[IssuedEstimate] job creation after office acceptance failed:", err);
   }
 
-  sendInvoiceEmail(prisma, result.estimateId, { sentBy: "system:auto-on-accept" })
-    .then((r) => { if (!r.ok) console.error("[IssuedEstimate] auto invoice email after office acceptance refused:", r.reason); })
-    .catch((err) => console.error("[IssuedEstimate] auto invoice email after office acceptance failed:", err));
+  /*
+    NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." · "No
+    auto send across the board."
 
-  holdOrSendDepositRequest(prisma, result.estimateId, publicBaseUrl())
-    .catch((err) => console.error("[IssuedEstimate] deposit request after office acceptance failed:", err));
+    This used to fire the invoice email (sendInvoiceEmail, sentBy "system:auto-on-accept") and,
+    through holdOrSendDepositRequest, the deposit-request email the moment the office recorded the
+    acceptance. Both are gone. The customer gets the invoice when Kyle presses "Email the signed
+    copy…" on the invoice drawer, and the deposit ask when he presses "Email deposit request" on
+    the payment panel (POST /issued-estimates/:id/email-deposit-request). Neither notifyOwnerSigned
+    nor a SystemEvent fires here either, same as before this change — see the comment above this
+    route: the office just recorded this itself, so there is nothing for Kyle to be told that he
+    does not already know.
+
+    holdOrSendDepositRequest (services/sameDayJob.ts) is UNCHANGED and left in place — it has no
+    remaining caller as of this change; see the comment there for why it is kept rather than
+    deleted (Kyle, 2026-08-11: "sequencing, not deletion").
+  */
 
   res.json({ accepted: true, estimateId: result.estimateId, jobVisitId, jobJoined });
 }));
@@ -3967,32 +3978,23 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
     console.error("[IssuedEstimate] job creation after in-person sign failed:", err);
   }
 
-  // The customer's signed copy (Kyle, 2026-09-05: "The emails are not going
-  // out after the customer signs and pays the deposit on site") — the signed
-  // invoice, PDF attached, pay link included, the moment they sign. Existed
-  // only behind the manual button before; both sign doors now fire it.
-  // Fire-and-forget: their signature already stands, and a missing email
-  // address refuses cleanly and is logged.
-  sendInvoiceEmail(prisma, result.estimateId, { sentBy: "system:auto-on-sign" })
-    .then((r) => { if (!r.ok) console.error("[IssuedEstimate] auto invoice email refused:", r.reason); })
-    .catch((err) => console.error("[IssuedEstimate] auto invoice email failed:", err));
+  /*
+    NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." · "No
+    auto send across the board."
 
-  // The deposit request in writing (Kyle, 2026-08-25). In person the deposit
-  // is usually collected on the spot by QR, so this waits ten minutes and
-  // sends only if it still isn't in — the customer who says "I'll pay
-  // tonight" leaves with the link, the one who scanned the QR is never
-  // nagged. (A server restart in the window drops the courtesy email; the
-  // signed page itself still carries the same pay button.)
-  {
-    const estimateIdForDeposit = result.estimateId;
-    setTimeout(() => {
-      void (async () => {
-        const { sendDepositRequestEmail } = await import("./services/paymentReceipts");
-        const { publicBaseUrl } = await import("./services/issuedEstimateSend");
-        await sendDepositRequestEmail(prisma, estimateIdForDeposit, publicBaseUrl());
-      })().catch((err) => console.error("[IssuedEstimate] deposit request email failed:", err));
-    }, 10 * 60_000);
-  }
+    This door used to fire the invoice email (sendInvoiceEmail, sentBy "system:auto-on-sign") the
+    moment the signature landed, and a ten-minute delayed deposit-request email
+    (sendDepositRequestEmail) if the QR payment hadn't landed by then. Both are gone. The customer
+    gets the invoice when Kyle presses "Email the signed copy…" on the invoice drawer, and the
+    deposit ask when he presses "Email deposit request" on the payment panel
+    (POST /issued-estimates/:id/email-deposit-request) — both now easy to find (2026-09-29, Unit
+    2). The signed page itself still carries the pay button, so a customer who scans the QR is
+    unaffected either way.
+
+    notifyOwnerSigned (above) is what makes a manual send possible rather than forgotten — with
+    nothing going to the customer automatically, it is the only thing that tells Kyle a signature
+    landed and a send is waiting.
+  */
 
   res.json({ signed: true, estimateId: result.estimateId, jobVisitId, jobJoined });
 }));
@@ -4545,6 +4547,36 @@ app.post("/issued-estimates/:id/email-balance-request", asyncHandler(async (req,
   const { sendBalanceRequestEmail } = await import("./services/paymentReceipts");
   const { publicBaseUrl } = await import("./services/issuedEstimateSend");
   const result = await sendBalanceRequestEmail(prisma, String(req.params.id), publicBaseUrl());
+  if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
+  res.json(result);
+}));
+
+/**
+ * The Synchrony financing link, on its own (Kyle, 2026-10-01: "I also need to have the
+ * financing link available to email on its own ... These links should be available along side
+ * the invoice email button"). Keyed to the issued estimate, same shape as the deposit/balance
+ * sends right above it on PaymentPanel. See services/financingEmail.ts for the no-credit-terms
+ * rule and why this is not behind the automation gate.
+ */
+app.post("/issued-estimates/:id/email-financing", asyncHandler(async (req, res) => {
+  const { sendFinancingEmail } = await import("./services/financingEmail");
+  const result = await sendFinancingEmail(prisma, String(req.params.id));
+  if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
+  res.json(result);
+}));
+
+/**
+ * The Google review ask, on its own, pressed by a human (Kyle, 2026-10-01: "a google review
+ * request to email on its own" / "These should be a manual send both from the field app and
+ * from the CRM"). Kyle switched AUTOMATED_CUSTOMER_SENDS_REVIEW_REQUESTS off the same day — see
+ * services/reviewRequest.ts's header for the full ruling — so until this route existed, no
+ * review request could reach a customer at all. `jobId` here is a Visit.id, the same convention
+ * as `/jobs/:jobId/complete` just below: the review ask is keyed by the completed VISIT, exactly
+ * as the automatic path already is, not by an estimate.
+ */
+app.post("/jobs/:jobId/email-review-request", asyncHandler(async (req, res) => {
+  const { sendReviewRequestEmail } = await import("./services/reviewRequest");
+  const result = await sendReviewRequestEmail(prisma, String(req.params.jobId), { manual: true });
   if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
   res.json(result);
 }));

@@ -22,10 +22,12 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import QRCode from "qrcode";
 import { api } from "../lib/api";
 import { money } from "../lib/utils";
 import type { PaymentInfo } from "../lib/api";
 import { WarrantyClaimTracker } from "./WarrantyCoveragePanel";
+import { GOOGLE_REVIEW_URL } from "../../../shared/reviewRequestUrl";
 
 export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId?: string }) {
   const queryClient = useQueryClient();
@@ -36,6 +38,12 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
     refetchInterval: 15_000, // a webhook can land any second while the customer pays
   });
   const [showQr, setShowQr] = useState<"deposit" | "balance" | null>(null);
+  // The review QR (Kyle, 2026-10-01) — generated client-side from GOOGLE_REVIEW_URL, never
+  // stored or fetched from a route; see shared/reviewRequestUrl.ts for why. Separate from
+  // `showQr`/`qrSrc` above because those read a server-rendered SVG off a token-scoped pay URL;
+  // this one is a data: URI this component draws itself, so it needs its own toggle and cache.
+  const [showReviewQr, setShowReviewQr] = useState(false);
+  const [reviewQrSrc, setReviewQrSrc] = useState<string | null>(null);
   const [recording, setRecording] = useState<"deposit" | "final" | null>(null);
   const [amount, setAmount] = useState("");
   // Methods the system can't detect (Kyle, 2026-08-25): cash, check, Zelle — or other.
@@ -66,6 +74,69 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
     },
     onError: (err) => { setNotice(null); setError((err as Error).message); },
   });
+
+  /*
+   * FINANCING AND THE REVIEW ASK, STANDALONE (Kyle, 2026-10-01: "I also need to have the
+   * financing link available to email on its own along with a google review request to email on
+   * its own" / "These links should be available along side the invoice email button" / "These
+   * should be a manual send both from the field app and from the CRM").
+   *
+   * Each reads its own "last sent" off GET /email-deliveries (api.emailDeliveries, already used
+   * by SendEmailPanel) filtered to the kind the server stamps it with (financingEmail.ts /
+   * reviewRequest.ts) — a security review on 2026-10-01 found financing had NO repeat guard at
+   * all (every press re-emails), and Kyle has already been hit by duplicate customer emails
+   * twice in a fortnight (two invoice emails on the Hoover job 2026-09-28, two deposit requests
+   * on Arlene's 2026-09-30). The fix is UI, deliberately, not a server-side block — financing is
+   * resent on request legitimately — so the button must SHOW when it last went and relabel to
+   * "send again" once it has, the same remedy field/QuoteScreen.tsx shipped yesterday.
+   */
+  const financingDeliveries = useQuery({
+    queryKey: ["email-deliveries", "estimate", info?.estimateId, "financing"],
+    queryFn: () => api.emailDeliveries({ estimateId: info!.estimateId, limit: 10 }),
+    enabled: Boolean(info?.estimateId),
+  });
+  const lastFinancing = financingDeliveries.data?.find((d) => d.kind === "financing") ?? null;
+
+  const financingSend = useMutation({
+    mutationFn: () => api.emailFinancing(info!.estimateId),
+    onSuccess: (r) => {
+      setError(null);
+      setNotice(`Financing link emailed to ${r.to}.`);
+      void queryClient.invalidateQueries({ queryKey: ["email-deliveries", "estimate", info!.estimateId, "financing"] });
+    },
+    onError: (err) => { setNotice(null); setError((err as Error).message); },
+  });
+
+  // Keyed by the JOB (a Visit.id), not the estimate — the review route needs one, and this
+  // panel is sometimes opened from an estimate alone (InvoiceDrawer, AccountDetailPage,
+  // SigningModePage) with no jobId at all. Greyed with the reason when that happens, never
+  // hidden (CLAUDE.md click-through rule 5).
+  const reviewDeliveries = useQuery({
+    queryKey: ["email-deliveries", "job", jobId, "review_request"],
+    queryFn: () => api.emailDeliveries({ visitId: jobId, limit: 10 }),
+    enabled: Boolean(jobId),
+  });
+  const lastReview = reviewDeliveries.data?.find((d) => d.kind === "review_request") ?? null;
+
+  const reviewSend = useMutation({
+    mutationFn: () => api.emailReviewRequest(jobId!),
+    onSuccess: (r) => {
+      setError(null);
+      setNotice(`Review request emailed to ${r.to}.`);
+      void queryClient.invalidateQueries({ queryKey: ["email-deliveries", "job", jobId, "review_request"] });
+    },
+    // The server's refusal (job not completed, already asked on this job, this customer asked
+    // within 90 days, no email on file) is readable text — surfaced as-is, never swallowed.
+    onError: (err) => { setNotice(null); setError((err as Error).message); },
+  });
+
+  const toggleReviewQr = () => {
+    if (showReviewQr) { setShowReviewQr(false); return; }
+    setShowReviewQr(true);
+    if (!reviewQrSrc) {
+      void QRCode.toDataURL(GOOGLE_REVIEW_URL, { margin: 1, width: 240 }).then(setReviewQrSrc);
+    }
+  };
 
   // The deposit is optional (Kyle, 2026-09-20): the manual override lives where the money is shown.
   const setDeposit = useMutation({
@@ -224,6 +295,56 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
             </button>
           </>
         )}
+        {/*
+          FINANCING, ON ITS OWN — alongside the invoice send, per Kyle's own words (see the
+          header comment above). Relabels to "send again" once it has gone (never resets on a
+          refetch — `lastFinancing` keeps reading true after this component remounts) so a
+          second press reads as a decision, not a stale default.
+        */}
+        <button
+          type="button"
+          className="btn btn-secondary text-sm"
+          disabled={financingSend.isPending}
+          title="Emails the Synchrony financing link and an invitation to apply — no rates, terms or approval odds stated"
+          onClick={() => financingSend.mutate()}
+        >
+          {financingSend.isPending
+            ? "Sending…"
+            // Relabels off EITHER signal: `lastFinancing` (a delivery already on file when the
+            // panel opened) or `financingSend.isSuccess` (a send made just now, in this
+            // session, before the invalidated query has had a chance to round-trip and
+            // refetch) — so the relabel is never a beat behind the send that triggered it.
+            : (lastFinancing || financingSend.isSuccess)
+              ? "Send the financing link again"
+              : "Email the financing link"}
+        </button>
+        {/*
+          THE REVIEW ASK, ON ITS OWN — bypasses the automation gate because a human pressed it
+          (Kyle switched AUTOMATED_CUSTOMER_SENDS_REVIEW_REQUESTS off 2026-10-01; until this
+          button existed, no review request could reach a customer at all). Keyed by the JOB, so
+          it's greyed with the reason — not hidden — when this panel only has an estimateId
+          (InvoiceDrawer, AccountDetailPage, SigningModePage all open PaymentPanel that way).
+        */}
+        <button
+          type="button"
+          className="btn btn-secondary text-sm"
+          disabled={!jobId || reviewSend.isPending}
+          title={
+            !jobId
+              ? "This needs an open JOB, not just an estimate — send the review request from the job's own screen."
+              : "Emails the Google review ask — refused unless the job is completed, this job hasn't already asked, and this customer hasn't been asked in the last 90 days"
+          }
+          onClick={() => reviewSend.mutate()}
+        >
+          {reviewSend.isPending
+            ? "Sending…"
+            : (lastReview || reviewSend.isSuccess)
+              ? "Send the review request again"
+              : "Email a review request"}
+        </button>
+        <button type="button" className="btn btn-secondary text-sm" onClick={toggleReviewQr}>
+          {showReviewQr ? "Hide QR" : "Review QR (in person)"}
+        </button>
         {!info.paidInFull && (
           <>
             {info.depositRequired && depositRemaining > 0 && (
@@ -249,6 +370,35 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
           <img src={qrSrc} alt="Scan to pay" className="h-56 w-56" />
           <p className="mt-1 text-center text-xs text-rce-muted">
             Customer scans with their phone camera — opens the secure payment page.
+          </p>
+        </div>
+      )}
+
+      {/*
+        LAST SENT (security review, 2026-10-01): financing had no repeat guard at all — every
+        press re-emailed the customer — so showing when it last went is the whole remedy for
+        that finding, same pattern as SendAssessmentReport's "Last sent to…" line.
+      */}
+      {lastFinancing && (
+        <p className="mt-2 text-xs text-rce-muted">
+          Financing last emailed to {lastFinancing.to} on {new Date(lastFinancing.createdAt).toLocaleDateString()}.
+        </p>
+      )}
+      {lastReview && (
+        <p className="mt-1 text-xs text-rce-muted">
+          Review request last emailed to {lastReview.to} on {new Date(lastReview.createdAt).toLocaleDateString()}.
+        </p>
+      )}
+
+      {showReviewQr && (
+        <div className="mt-3 inline-block rounded-lg border border-rce-border bg-white p-3">
+          {reviewQrSrc ? (
+            <img src={reviewQrSrc} alt="Scan to leave a Google review" className="h-56 w-56" />
+          ) : (
+            <p className="flex h-56 w-56 items-center justify-center text-xs text-rce-muted">Generating…</p>
+          )}
+          <p className="mt-1 text-center text-xs text-rce-muted">
+            Customer scans with their phone camera — opens the Google review page directly.
           </p>
         </div>
       )}

@@ -80,6 +80,14 @@ export function CalendarPage() {
     queryFn: () => api.calendarSchedule(rangeStart, rangeEnd),
   });
   const scheduleParamRetried = useRef(false);
+  // State, not a ref, on purpose: when the retry's refetch returns a month IDENTICAL to the one
+  // cached (the job really is not in it), react-query's structural sharing keeps the same
+  // `schedule` reference and the effect below would never run again — which is how the old
+  // "else consume" branch was unreachable in exactly that case (found 2026-10-01, by test).
+  const [scheduleRetrySettled, setScheduleRetrySettled] = useState(false);
+  const scheduleParamLookedUp = useRef(false);
+  // Why an arriving `?schedule=` opened nothing — said on screen, never swallowed.
+  const [scheduleMiss, setScheduleMiss] = useState<string | null>(null);
 
   const { data: availability } = useQuery<AvailabilityResponse>({
     queryKey: ["schedule", "availability"],
@@ -110,11 +118,46 @@ export function CalendarPage() {
       // (Kyle, 2026-09-03, Cecilia Pesavento). Refetch once and keep the param;
       // the effect re-runs on fresh data and opens the picker.
       scheduleParamRetried.current = true;
-      void refetchSchedule();
+      void refetchSchedule().finally(() => setScheduleRetrySettled(true));
+    } else if (!scheduleRetrySettled) {
+      // The retry is still in flight; its settling re-runs this effect.
+    } else if (!scheduleParamLookedUp.current) {
+      // ONE SCHEDULER (2026-10-01, plan item E3). The job drawer, the visit workspace and the
+      // lead drawer no longer carry their own picker — "Reschedule or cancel on the Calendar"
+      // lands here with `?schedule=`. A job booked in ANOTHER month is not in this month's
+      // `appointments`, so without this the door opened onto nothing. Look the visit up once
+      // and move the grid to its month; the effect re-runs when that month loads and finds it.
+      // A visit with no date that the rail does not list (cancelled, in progress, closed) is
+      // said so on screen rather than silently consumed.
+      scheduleParamLookedUp.current = true;
+      void api.visit(scheduleId)
+        .then((visit) => {
+          const key = visit.scheduledStart ? dayKeyCT(visit.scheduledStart) : null;
+          const targetYear = key ? Number(key.slice(0, 4)) : null;
+          const targetMonth = key ? Number(key.slice(5, 7)) : null;
+          // Jump only to a DIFFERENT month: if it is booked in the month already on screen and
+          // the server still did not list it (a cancelled job keeps its date), moving nowhere
+          // would re-run nothing — so that case falls through to the notice below.
+          if (key && visit.status !== "cancelled" && (targetYear !== year || targetMonth !== month)) {
+            setYear(targetYear as number);
+            setMonth(targetMonth as number);
+            setSelectedDate(null);
+            setPickedDate(null);
+            return;
+          }
+          const who = visit.customer?.name ?? "That job";
+          const status = String(visit.status ?? "").replaceAll("_", " ");
+          setScheduleMiss(`${who} is not waiting to be scheduled — its status is "${status}"${visit.completedAt ? " and it is closed" : ""}, so there is nothing to book here.`);
+          consumeScheduleParam();
+        })
+        .catch(() => {
+          setScheduleMiss("That job could not be found, so there is nothing to schedule here.");
+          consumeScheduleParam();
+        });
     } else {
       consumeScheduleParam();
     }
-  }, [searchParams, schedule, setSearchParams, refetchSchedule]);
+  }, [searchParams, schedule, setSearchParams, refetchSchedule, scheduleRetrySettled, year, month]);
 
   /** Start scheduling `job` against the page's own grid. */
   function startScheduling(job: CalendarAppointment | UnscheduledJob) {
@@ -203,7 +246,20 @@ export function CalendarPage() {
 
       {rescheduling && (
         <p data-scheduling-hint className="rounded-md border border-rce-accent bg-rce-accentBg/40 p-3 text-sm">
-          <strong>Scheduling {rescheduling.customerName}</strong> — tap a start date on the calendar; the details are below the grid.
+          {"scheduledStart" in rescheduling && rescheduling.scheduledStart ? (
+            <><strong>Rescheduling {rescheduling.customerName}</strong> — tap a new start date on the calendar; the reason, the technician and Cancel Job are below the grid.</>
+          ) : (
+            <><strong>Scheduling {rescheduling.customerName}</strong> — tap a start date on the calendar; the details are below the grid.</>
+          )}
+        </p>
+      )}
+
+      {scheduleMiss && !rescheduling && (
+        <p data-schedule-miss className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          {scheduleMiss}
+          <button className="btn btn-secondary ml-2 px-2 py-0.5 text-xs min-h-0" onClick={() => setScheduleMiss(null)}>
+            Dismiss
+          </button>
         </p>
       )}
 

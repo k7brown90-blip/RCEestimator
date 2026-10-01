@@ -1,14 +1,19 @@
 /**
  * The job drawer (2026-09-20): the working job furniture from the visit workspace —
- * `JobScheduler` (schedule / reschedule / cancel), `PaymentPanel` (deposit, balance, record a
- * payment, the warranty split), `JobCloseoutPanel` (P.O.s, receipts, materials, mark complete)
- * — plus the visit's own details, editable, and its way out (delete, while nothing is signed).
+ * `ScheduleOnCalendar` (what is booked, and the door to the Calendar to schedule / reschedule /
+ * cancel it — the picker itself lives ONLY on the Calendar page since 2026-10-01, plan item E3),
+ * `PaymentPanel` (deposit, balance, record a payment, the warranty split), `JobCloseoutPanel`
+ * (P.O.s, receipts, materials, mark complete) — plus the visit's own details, editable, and its
+ * way out (delete, while nothing is signed).
  * Since 2026-09-29 it also raises a CHANGE ORDER against the job's invoice: this is the screen
  * the office is on when a technician rings to say the job grew.
  *
- * What stays on the full page and is linked to from the header: photos, the health record,
- * the finding ledger, the job clock, and "Quote this work" (the builder). Those are the
- * screen's own workshop, not the record's actions.
+ * What stays on the WORKSPACE (/visits/:id, linked from the header): photos, the finding ledger,
+ * the job clock, materials used, the contractor review of an assessment, the load-calc editor, the
+ * generator designer, and "Quote this work" (the builder). Those are company-internal operations,
+ * not things that reach the customer. The one part of the health record that IS client-facing —
+ * emailing the homeowner their assessment — is here, as `SendAssessmentReport`; a send it has to
+ * refuse links back to the workspace for the review rather than duplicating it.
  *
  * Kyle's ruling, 2026-09-29 ("the operations are different as they do not have actions that
  * directly involve clients ... an admin can complete these tasks on their assigned page") is why
@@ -26,10 +31,11 @@ import { useVisit } from "../../lib/recordQueries";
 import { shortDate } from "../../lib/utils";
 import { Drawer } from "../Drawer";
 import { JobCloseoutPanel } from "../JobCloseoutPanel";
-import { JobScheduler } from "../JobScheduler";
 import { OpenDrawerButton } from "./OpenDrawerButton";
 import { PaymentPanel } from "../PaymentPanel";
 import { RaiseChangeOrderButton } from "../RaiseChangeOrderButton";
+import { ScheduleOnCalendar } from "../ScheduleOnCalendar";
+import { SendAssessmentReport } from "../SendAssessmentReport";
 import { SendEmailPanel } from "../SendEmailPanel";
 import { StatusBadge } from "../StatusBadge";
 
@@ -101,8 +107,16 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
       headerActions={
         <>
           {estimate?.status ? <StatusBadge status={estimate.status} /> : null}
-          <Link to={`/visits/${visitId}`} className="btn btn-secondary px-2 py-1 text-xs min-h-0" title="Photos, health record, findings, the job clock, and the quote builder">
-            Full page →
+          {/*
+            "Workspace", not "Full page" (2026-09-29). Kyle's ruling: "the operations are different
+            as they do not have actions that directly involve clients ... an admin can complete
+            these tasks on their assigned page." So /visits/:id is not a fuller version of this
+            drawer that the drawer is a cut-down copy of — it is the INTERNAL side of the job, and
+            this drawer is the customer-facing side. "Full page" said the drawer was the lesser
+            surface, which is the inversion the ruling corrects.
+          */}
+          <Link to={`/visits/${visitId}`} className="btn btn-secondary px-2 py-1 text-xs min-h-0" title="The internal side of this job: photos, health record, findings, the job clock, materials used and the quote builder">
+            Workspace →
           </Link>
         </>
       }
@@ -122,6 +136,24 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
             )}
             {paymentInfo?.estimateId && (
               <OpenDrawerButton kind="estimate" id={paymentInfo.estimateId} onOpen={drawers.open} label="Estimate" />
+            )}
+            {/*
+              THE JOB NAMES ITS INVOICE, AND OPENS IT (2026-09-29, findability audit B5).
+
+              The job drawer carried the MONEY (the payment panel below) but no invoice IDENTITY
+              and no door to the invoice record — so from the screen Kyle is on when a tech calls,
+              there was no route to the PDFs, the reminder, the signed copy or the delivery state.
+              `paymentInfo.estimateId` is the ROOT (signedRootForJob), which is exactly the id the
+              invoice drawer lists, so this door never lands on the change-order dead end that
+              EstimateDrawer's did before today.
+            */}
+            {paymentInfo?.estimateId && (
+              <OpenDrawerButton
+                kind="invoice"
+                id={paymentInfo.estimateId}
+                onOpen={drawers.open}
+                label={`Invoice ${paymentInfo.number}`}
+              />
             )}
             {!hasAcceptedEstimate && !editing && (
               <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={startEdit}>Edit details</button>
@@ -174,14 +206,21 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
 
           <SendEmailPanel target="job" id={visitId} primaryEmail={visit.customer?.email ?? null} accountIdForContacts={visit.customerId} />
 
-          <JobScheduler
-            jobId={visitId}
+          {/*
+            ONE SCHEDULER (2026-10-01, plan item E3). This drawer used to host its own
+            `JobScheduler` in idle mode — a "Book Estimate Visit" button that opened a second
+            month grid inside the drawer — while the Calendar opened straight into its picker.
+            Kyle: "the date picker would only come up in one scheduling page and not the other."
+            Now the drawer shows what is booked and ONE door to the Calendar with this job selected.
+          */}
+          <ScheduleOnCalendar
+            visitId={visitId}
             status={status}
             scheduledStart={visit.scheduledStart}
             scheduledEnd={visit.scheduledEnd}
             durationDays={visit.estimatedDurationDays}
             completedAt={visit.completedAt}
-            onScheduled={refreshVisit}
+            onChanged={refreshVisit}
           />
           {/* Renders itself only when a signed estimate exists (reactive flow, Kyle 2026-08-25). */}
           <PaymentPanel jobId={visitId} />
@@ -205,6 +244,16 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
               }}
             />
           </div>
+
+          {/*
+            The customer's copy of their assessment (2026-09-29). Client-facing, so it belongs on
+            the record under Kyle's ruling — the only button for it was three levels down
+            /visits/:id, inside HealthRecordPanel, inside an inspection row you had to expand.
+            Renders itself away when the job has no assessment. The REVIEW and the report
+            generation stay on the workspace: those are internal work, and a refused send here
+            links to them rather than duplicating them.
+          */}
+          <SendAssessmentReport visitId={visitId} />
           {/* Close-out is JOB furniture — it appears once the visit is contracted work (Kyle, 2026-08-25). */}
           {CLOSEOUT_STATUSES.includes(status) && <JobCloseoutPanel visitId={visitId} status={status} />}
 

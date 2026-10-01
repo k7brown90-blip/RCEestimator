@@ -1,9 +1,16 @@
 /**
  * The lead drawer (2026-09-20). Everything a lead card on the Leads page can do — Mark
- * Contacted, Schedule (converting first when it must), Convert only (with the duplicate-account
- * question), Mark Lost with a reason, the email campaign, Delete — plus the edit form in place
- * (Kyle: "the drawer allows edits throughout as the user finds and corrects or updates any
- * information"), and its job's drawer once it has one.
+ * Contacted, Book on the Calendar (converting first when it must, then landing on the Calendar
+ * with the new visit selected), Convert only (with the duplicate-account question), Mark Lost
+ * with a reason, the email campaign, Delete — plus the edit form in place (Kyle: "the drawer
+ * allows edits throughout as the user finds and corrects or updates any information"), and its
+ * job's drawer once it has one.
+ *
+ * ONE SCHEDULER (2026-10-01, plan item E3). Until today this drawer opened its own `JobScheduler`
+ * inline, drawing a second month grid against `/crm/schedule/month` — a picker that showed a dot
+ * for "busy" and nothing about who or what, while the Calendar page shows the whole month. Kyle:
+ * "It all needs consolidated into a single scheduling system in one place." Booking a lead is
+ * the same `/calendar?schedule=<visitId>` door "Book consultation" on the account page uses.
  *
  * `smsConsent` is shown as three words and never as a control (PUNCHLIST E1): `null` is "never
  * asked", the state the A2P registration attests to, and only `true` opens the SMS gate.
@@ -11,16 +18,16 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useDrawerParams } from "../../lib/drawers";
 import { ADDRESS_QUERY_KEYS } from "../../lib/queryKeys";
 import { useLead } from "../../lib/recordQueries";
-import { LEAD_LOST_REASONS, type CustomerMatch, type JobStatus, type Lead, type LeadLinkedVisit } from "../../lib/types";
+import { scheduleDoorLabel, scheduleDoorPath } from "../../lib/scheduleDoor";
+import { LEAD_LOST_REASONS, type CustomerMatch, type Lead } from "../../lib/types";
 import { shortDate } from "../../lib/utils";
 import { platformLabel } from "../../../../shared/leadPlatform";
 import { Drawer } from "../Drawer";
-import { JobScheduler } from "../JobScheduler";
 import { LeadDuplicatePicker, type ConvertInput } from "../LeadDuplicatePicker";
 import { LeadForm } from "../LeadForm";
 import { SendEmailPanel } from "../SendEmailPanel";
@@ -52,6 +59,7 @@ function consentLabel(value: boolean | null | undefined): string {
 export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const queryClient = useQueryClient();
   const drawers = useDrawerParams();
+  const navigate = useNavigate();
   const { data: lead, isLoading, error } = useLead(id);
 
   const invalidate = () => {
@@ -64,8 +72,6 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
   const [editing, setEditing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<CustomerMatch[] | null>(null);
-  /** A visit to schedule right here, after a convert (or a lead that already has one). */
-  const [scheduling, setScheduling] = useState<LeadLinkedVisit | null>(null);
   const [losing, setLosing] = useState(false);
   const [lostReason, setLostReason] = useState("");
   const [lostNotes, setLostNotes] = useState("");
@@ -92,15 +98,10 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
       setDuplicate(null);
       setNotice(null);
       if (result.visit && convertIntent === "schedule") {
-        setScheduling({
-          id: result.visit.id,
-          status: (result.visit.status as JobStatus | null) ?? "estimate",
-          scheduledStart: null,
-          scheduledEnd: null,
-          estimatedDurationDays: result.visit.estimatedDurationDays ?? null,
-          jobType: result.visit.jobType ?? null,
-          purpose: result.visit.purpose ?? null,
-        });
+        // Straight to the Calendar with the new visit selected — the same landing "Book
+        // consultation" uses. Leaving /leads drops `?lead=`, which closes this drawer; the
+        // Calendar's own hint names the customer so the operator knows where they landed.
+        navigate(scheduleDoorPath(result.visit.id));
       } else if (result.visit) {
         setNotice("Converted — account, address and job created.");
       }
@@ -139,8 +140,8 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
 
   const startSchedule = () => {
     if (!lead) return;
-    if (lead.linkedVisit) { setScheduling(lead.linkedVisit); return; }
-    if (window.confirm(`Booking an appointment for ${lead.name} will first convert this lead into an account, property, and job. Continue?`)) {
+    if (lead.linkedVisit) { navigate(scheduleDoorPath(lead.linkedVisit.id)); return; }
+    if (window.confirm(`Booking an appointment for ${lead.name} will first convert this lead into an account, property, and job, then open the Calendar to pick the date. Continue?`)) {
       setConvertIntent("schedule");
       convert.mutate(undefined);
     }
@@ -210,8 +211,14 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
             )}
             {visit && <OpenDrawerButton kind="job" id={visit.id} onOpen={drawers.open} label="Go to Job" className="btn btn-secondary text-xs" />}
             {!closed && (
-              <button type="button" className="btn btn-primary text-xs" disabled={convert.isPending} onClick={startSchedule}>
-                {visit?.scheduledStart ? "Reschedule" : "Schedule"}
+              <button
+                type="button"
+                className="btn btn-primary text-xs"
+                disabled={convert.isPending}
+                onClick={startSchedule}
+                title="Dates are picked on the Calendar page — this lands there with the visit already selected"
+              >
+                {convert.isPending ? "Converting…" : scheduleDoorLabel(visit?.status ?? "estimate", visit?.scheduledStart)}
               </button>
             )}
             {!closed && !visit && lead.status !== "converted" && (
@@ -277,22 +284,7 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
             </form>
           )}
 
-          {scheduling && (
-            <div className="rounded-lg border border-rce-border p-3">
-              <JobScheduler
-                autoOpen
-                jobId={scheduling.id}
-                status={scheduling.status}
-                scheduledStart={scheduling.scheduledStart}
-                scheduledEnd={scheduling.scheduledEnd}
-                durationDays={scheduling.estimatedDurationDays}
-                onScheduled={() => { setScheduling(null); invalidate(); }}
-              />
-              <button type="button" className="btn btn-secondary mt-2 px-2 py-0.5 text-xs min-h-0" onClick={() => setScheduling(null)}>Close scheduler</button>
-            </div>
-          )}
-
-          {notice && <p className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-900">{notice}</p>}
+          {notice &&<p className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-900">{notice}</p>}
 
           {lead.email && (
             <SendEmailPanel target="lead" id={id} primaryEmail={lead.email} accountIdForContacts={lead.customerId ?? undefined} />

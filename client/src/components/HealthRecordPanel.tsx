@@ -68,15 +68,21 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
     },
   });
 
-  // Email the report to the customer (2026-08-24). The server refuses an
-  // unreviewed critical report and logs every send as a delivery.
-  const [emailResult, setEmailResult] = useState<string | null>(null);
-  const emailMutation = useMutation({
-    mutationFn: (input: { id: string; includeGenerator: boolean }) =>
-      api.emailHealthReport(input.id, undefined, input.includeGenerator),
-    onSuccess: (r) => setEmailResult(`Sent to ${r.sentTo}.`),
-    onError: (err) => setEmailResult((err as Error).message),
-  });
+  /*
+    THE SEND MOVED TO THE JOB DRAWER (Kyle, 2026-09-29/30).
+
+    Emailing the homeowner their assessment is client-facing, and under Kyle's ruling that belongs
+    on the record, not on this page: "the operations are different as they do not have actions that
+    directly involve clients ... an admin can complete these tasks on their assigned page." What
+    this panel keeps is the internal work — the contractor review, the load calc, the generator
+    designer and report generation.
+
+    It lives in `components/SendAssessmentReport.tsx`, rendered by `JobDrawer`, and is a strict
+    superset of the button that used to be here: same refusal on an unreviewed critical finding,
+    same generator-sizing behaviour, plus the last-sent line and a link back here for the review.
+    Kyle asked for this copy to go once the drawer had it — two buttons for one send is the smell
+    that sent him to the wrong "Email invoice" earlier in the same week.
+  */
 
   const criticalOf = (json: string): string[] => {
     try {
@@ -261,23 +267,14 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                           onClose={() => setDesignerInspectionId(null)}
                         />
                       )}
-                      <button
-                        type="button"
-                        className="btn btn-primary ml-2 mt-2 text-xs"
-                        disabled={
-                          emailMutation.isPending ||
-                          (criticals.length > 0 && !inspectionDetail.contractorReviewed)
-                        }
-                        title={
-                          criticals.length > 0 && !inspectionDetail.contractorReviewed
-                            ? "Critical finding — contractor review required before this can be emailed"
-                            : undefined
-                        }
-                        onClick={() => emailMutation.mutate({ id: inspection.id, includeGenerator: Boolean(inspection.hasLoadCalc) })}
-                      >
-                        {emailMutation.isPending ? "Sending…" : `Email report to customer${inspection.hasLoadCalc ? " + generator sizing" : ""}`}
-                      </button>
-                      {emailResult && <p className="mt-1 text-xs">{emailResult}</p>}
+                      {/* Says where the send went (2026-09-30). A removed button with no
+                          forwarding address reads as a deleted feature, and the operator goes
+                          looking for it — the same failure the click-through rule exists to stop. */}
+                      <p className="ml-2 mt-2 text-xs text-rce-soft">
+                        {criticals.length > 0 && !inspectionDetail.contractorReviewed
+                          ? "Review this record above before it can be emailed — then send it from the job's drawer (Jobs → the job → Open)."
+                          : "Email this report to the customer from the job's drawer: Jobs → the job → Open."}
+                      </p>
                     </div>
                   )}
                 </li>

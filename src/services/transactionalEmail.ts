@@ -36,7 +36,12 @@ import { logSystemEvent } from "./systemEvents";
 
 export type EmailKind =
   | "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt"
-  | "health_record" | "document" | "campaign" | "communication" | "other";
+  | "health_record" | "document" | "campaign" | "communication"
+  // Added 2026-10-01 for the standalone financing invitation and Google review ask
+  // (plan 2026-10-01-manual-sends-archiving-and-one-calendar.md, item B) — giving each its
+  // own kind, rather than filing both as "other", is what lets a later "last sent" read
+  // (EmailDelivery filtered by issuedEstimateId/visitId + kind) tell them apart.
+  | "financing" | "review_request" | "other";
 
 export type EmailProvider = "resend" | "gmail";
 

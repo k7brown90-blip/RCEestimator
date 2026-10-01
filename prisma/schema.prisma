@@ -3465,7 +3465,7 @@ model EmailBounce {
   action            String?
   remoteMta         String?
   originalSubject   String?
-  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | communication | other
+  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | communication | financing | review_request | other
   kind              String
   estimateNumber    String?
   issuedEstimateId  String?
@@ -3511,7 +3511,7 @@ model EmailDelivery {
   providerMessageId String?         @unique
   to                String
   subject           String
-  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | communication | other
+  /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | communication | financing | review_request | other
   kind              String
   estimateNumber    String?
   issuedEstimateId  String?

@@ -16,10 +16,25 @@
  *
  * So `sendEstimateEmail` is deliberately NOT a member of the `CustomerSendWorkflow` union and
  * `AUTOMATED_CUSTOMER_SENDS` is neither read nor written by this file. The gate stays exactly as
- * P013/P017 left it. What replaces the gate as the safety property is the CALLER: this function
- * has exactly one, a PIN-authenticated route handler. Nothing scheduled, retried or webhook-driven
- * may call it, and the negative test in `tests/issuedEstimate.test.ts` pins that the unauthenticated
- * caller gets a 401 rather than a sent email.
+ * P013/P017 left it. What replaces the gate as the safety property is the CALLER, and the property
+ * is this: **every caller is an authenticated route handler acting on a human's tap. Nothing
+ * scheduled, retried or webhook-driven may call it.**
+ *
+ * There are TWO callers as of 2026-10-01, and the count matters enough to keep accurate here —
+ * a security review (2026-10-01) caught this comment still claiming "exactly one", which is the
+ * kind of invariant drift that lets a third, automated caller look permissible later:
+ *   1. `POST /issued-estimates/:id/send` (src/app.ts) — the operator's Send button, behind the
+ *      PIN gate, after a confirm.
+ *   2. `POST /health-record/issued-estimates/:id/email` (src/routes/health-record.ts) — the
+ *      technician's "Email the estimate to the customer" on the field app's post-issue screen,
+ *      behind the technician bearer-token gate and refused 403 unless that visit is assigned to
+ *      them. Added when Kyle ruled out share-via-text (no SMS at Red Cedar).
+ * Both are human-initiated. `tests/issuedEstimate.test.ts` pins that an unauthenticated caller of
+ * (1) gets a 401 rather than a sent email; `tests/fieldEstimateEmail.test.ts` pins the 403 on (2).
+ *
+ * ADDING A THIRD CALLER IS A SECURITY DECISION, not a wiring task: if it is not a human pressing a
+ * button behind an auth gate, it belongs in `CustomerSendWorkflow` behind the automation gate
+ * instead, and this comment has to be updated to say so.
  *
  * Every send is recorded on the row (sentAt / sentBy / sentTo), appended to the estimate's event
  * log, and written to SystemEvent — so a send is as visible after the fact as a suppressed one.

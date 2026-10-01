@@ -28,18 +28,25 @@
  *                        clock's pause (timeTracking.pauseJob), which only closes a time session
  *                        and leaves the job exactly where it was.
  *
- * THE NOTIFICATION GUARANTEE. The field signs through the customer's public page, whose sign
- * door fires the deposit-request email ("one step to get you scheduled") the instant the
- * signature lands — before the tech has chosen anything. So `holdOrSendDepositRequest` is what
- * the public door calls instead: when the estimate's origin visit is a LIVE technician
- * consultation (status estimate, not closed, a tech assigned, and underway — scheduled for now
- * or earlier, or never scheduled at all, as a field-created service call is), the email is HELD
- * and an `deposit_request_held` event is written on the estimate. Complete work now cancels the
- * hold (nothing is ever sent); Schedule for later releases it (the ordinary email goes out then,
- * still subject to its own "deposit required and unpaid" checks). Any other signature — from
- * home, on a closed consultation, on a visit with no technician — sends immediately, exactly as
- * before. The hold is a persisted event, not a timer: a server restart cannot lose it, and Kyle
- * can see it on the estimate's timeline.
+ * THE NOTIFICATION GUARANTEE, AS IT WAS BUILT (2026-09-21). The field signs through the
+ * customer's public page, whose sign door fired the deposit-request email ("one step to get you
+ * scheduled") the instant the signature landed — before the tech had chosen anything. So
+ * `holdOrSendDepositRequest` was what the public door called instead: when the estimate's origin
+ * visit was a LIVE technician consultation (status estimate, not closed, a tech assigned, and
+ * underway — scheduled for now or earlier, or never scheduled at all, as a field-created service
+ * call is), the email was HELD and a `deposit_request_held` event written on the estimate.
+ * Complete work now cancelled the hold (nothing was ever sent); Schedule for later released it
+ * (the ordinary email went out then, still subject to its own "deposit required and unpaid"
+ * checks). Any other signature — from home, on a closed consultation, on a visit with no
+ * technician — sent immediately.
+ *
+ * NO AUTO-SEND (Kyle, 2026-10-01: "I do not want auto send, manual review and send" — "No auto
+ * send across the board") SUPERSEDES ALL OF THAT. Every signature door now sends the customer
+ * nothing automatically — not a same-day job's deposit request, not any other one's either — so
+ * `holdOrSendDepositRequest` has no remaining caller (see its own comment) and the release branch
+ * in `scheduleForLater` below only closes out a hold event, never sends. The code is kept rather
+ * than deleted ("sequencing, not deletion", Kyle 2026-08-11) in case a future build reintroduces
+ * an automatic send that needs the same guard.
  *
  * Nothing here sends the customer anything. Kyle's internal notification is fire-and-forget.
  */
@@ -100,6 +107,20 @@ export async function fieldChoicePending(
  * The public sign door's deposit step. Sends the ordinary deposit-request email unless a
  * technician's choice is pending, in which case the request is HELD (event on the estimate) and
  * nothing goes to the customer. Returns what happened so the caller can say so to Kyle.
+ *
+ * HAS NO REMAINING CALLER as of 2026-10-01 (Kyle: "I do not want auto send, manual review and
+ * send." — "No auto send across the board"). Both doors that called this — the public sign route
+ * (routes/estimatePage.ts) and the office-acceptance route (app.ts) — now send the customer
+ * nothing at all; the deposit ask goes out only when Kyle presses "Email deposit request" on the
+ * payment panel. The behaviour this function protected (same-day jobs send the customer nothing,
+ * Kyle 2026-09-21) is now unconditional — EVERY signature sends nothing automatically, not just a
+ * same-day one — so there is nothing left for it to hold against.
+ *
+ * LEFT IN PLACE, not deleted — the precedent is Kyle's 2026-08-11 ruling (services/
+ * automationGate.ts): "sequencing, not deletion." If a future build reintroduces any automatic
+ * customer send on signature, this is the gate that must sit in front of it again. Whether to
+ * remove this function, EVENT_DEPOSIT_HELD and the release step in scheduleForLater below is
+ * flagged for the architect, not decided here.
  */
 export async function holdOrSendDepositRequest(
   prisma: PrismaClient,
@@ -337,15 +358,16 @@ export interface ScheduleForLaterResult {
   ok: true;
   /** The contracted job waiting for the office to schedule. */
   jobVisitId: string;
-  /** The held deposit request was released to the ordinary email path. */
+  /** A previously-held deposit request's hold was cleared. No auto-send (2026-10-01) — this no
+   *  longer means an email went out; it means the hold event was closed. */
   depositRequestReleased: boolean;
 }
 
 /**
  * The job goes back to the admin side. Books nothing. Closes the consultation the way the
- * office's complete-consultation door does (completedAt + archived, status untouched), releases
- * a held deposit request, and tells Kyle there is a job to schedule — not the old "quote
- * follow-up" wording, which described an unsigned estimate.
+ * office's complete-consultation door does (completedAt + archived, status untouched), clears any
+ * held deposit request without sending it (2026-10-01 — no auto-send), and tells Kyle there is a
+ * job to schedule — not the old "quote follow-up" wording, which described an unsigned estimate.
  */
 export async function scheduleForLater(
   prisma: PrismaClient,
@@ -384,6 +406,18 @@ export async function scheduleForLater(
     });
   });
 
+  /*
+    NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." · "No auto
+    send across the board."
+
+    This used to send the deposit-request email itself the moment a held request was released —
+    still an automatic send, just a delayed one, so it goes too. holdOrSendDepositRequest has no
+    remaining caller as of this change (see the comment there), so nothing SHOULD ever reach this
+    branch for a newly signed estimate — but a HELD event written before this deploy could still
+    be sitting open, and this keeps closing it out cleanly rather than leaving it stuck. The
+    customer now hears about the deposit only when Kyle presses "Email deposit request" on the
+    payment panel; depositLine (below) tells him in the same notification that it is still due.
+  */
   let depositRequestReleased = false;
   if (await openHold(prisma, root.id)) {
     await prisma.issuedEstimateEvent.create({
@@ -391,13 +425,10 @@ export async function scheduleForLater(
         estimateId: root.id,
         type: EVENT_DEPOSIT_RELEASED,
         actor: input.actor,
-        detail: "Held deposit request released — sent now if a deposit is required and still unpaid.",
+        detail: "Held deposit request released — no auto-send; email it from the payment panel when ready.",
       },
     });
     depositRequestReleased = true;
-    const { sendDepositRequestEmail } = await import("./paymentReceipts");
-    await sendDepositRequestEmail(prisma, root.id, input.payBaseUrl).catch((err) =>
-      console.error("[sameDayJob] released deposit request failed:", err));
   }
 
   const { paymentSummary } = await import("./stripePayments");

@@ -1412,6 +1412,23 @@ export const api = {
     request<{ ok: true; to: string; amount: number }>(`/issued-estimates/${estimateId}/email-balance-request`, { method: "POST" }),
   estimatePaymentInfo: (estimateId: string) =>
     request<PaymentInfo | null>(`/issued-estimates/${estimateId}/payment-info`),
+  /**
+   * The Synchrony financing link, on its own (Kyle, 2026-10-01: "I also need to have the
+   * financing link available to email on its own ... These links should be available along
+   * side the invoice email button"). No credit terms in the copy — see
+   * services/financingEmail.ts for why that's load-bearing, not a style choice.
+   */
+  emailFinancing: (estimateId: string) =>
+    request<{ ok: true; to: string }>(`/issued-estimates/${estimateId}/email-financing`, { method: "POST" }),
+  /**
+   * The Google review ask, on its own, pressed by a human (Kyle, 2026-10-01). `jobId` is a
+   * Visit.id, same convention as `/jobs/:jobId/complete` — bypasses the automation gate the
+   * way a manual press always does (see services/reviewRequest.ts); every other guard (job
+   * completed, no duplicate ask, no repeat ask on this customer within 90 days, email on file)
+   * still applies and comes back as a readable 400 `{ error }`.
+   */
+  emailReviewRequest: (jobId: string) =>
+    request<{ ok: true; to: string }>(`/jobs/${jobId}/email-review-request`, { method: "POST" }),
 
   // ─── Financials (2026-08-25) ───────────────────────────────────────────────
   financialsSummary: (year: number) => request<FinancialsSummary>(`/financials/summary?year=${year}`),

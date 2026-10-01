@@ -200,7 +200,19 @@ describe("the happy path — trap 1: status 'signed', no signature image", () =>
     expect(events[0].actor).toBe("human:crm-session");
   });
 
-  it("a VIEWED estimate can be accepted; the invoice email goes out and says nothing about a signature", async () => {
+  /*
+    NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." · "No auto
+    send across the board."
+
+    This used to assert the OPPOSITE: that accepting by phone fired the invoice email itself
+    (sentBy "system:auto-on-accept"), on the theory that a phone acceptance leaves the customer
+    with no written copy otherwise. Kyle's ruling closes that gap differently — Kyle now presses
+    "Email the signed copy…" on the invoice drawer himself. Inverted rather than deleted: this is
+    the regression protection for the ruling, on the one door this file covers. The other two
+    doors are pinned in tests/changeOrderInvoice.test.ts
+    ("no auto-send on any signature door (Kyle, 2026-10-01)").
+  */
+  it("a VIEWED estimate can be accepted; NOTHING is emailed to the customer — Kyle sends the invoice himself", async () => {
     emailMock.sendBrandedEmail.mockClear();
     const est = await issue("viewed-yes");
     await put(est.id, "viewed");
@@ -209,17 +221,10 @@ describe("the happy path — trap 1: status 'signed', no signature image", () =>
     expect(r.status).toBe("signed");
     expect(r.acceptedVia).toBe("text");
     expect(r.acceptedNote).toBeNull();
-    // The invoice email is fire-and-forget after the response; give it a moment.
-    const deadline = Date.now() + 5000;
-    let invoice: { kind?: string; html?: string; bodyHtml?: string } | undefined;
-    while (Date.now() < deadline && !invoice) {
-      invoice = emailMock.sendBrandedEmail.mock.calls.map((c) => c[0] as { kind?: string }).find((c) => c.kind === "invoice");
-      if (!invoice) await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(invoice, "the invoice email was sent").toBeTruthy();
-    const body = JSON.stringify(invoice);
-    expect(body).toContain("Your invoice is attached");
-    expect(body).not.toContain("Your signed invoice");
+    // Nothing here is fire-and-forget anymore, but give any lingering async path a beat anyway so
+    // a reintroduced auto-send would show up before this asserts its absence.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(emailMock.sendBrandedEmail).not.toHaveBeenCalled();
   });
 
   it("a second acceptance, and the in-person signature door, are both refused once accepted (sign-once)", async () => {

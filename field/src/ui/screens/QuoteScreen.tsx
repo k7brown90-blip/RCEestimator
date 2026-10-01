@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   addQuoteLine,
   editQuoteLine,
+  emailEstimateToCustomer,
   fetchPropertyFindings,
   fetchQuote,
   issueQuote,
@@ -116,8 +117,12 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
   const [busy, setBusy] = useState(false)
   const [search, setSearch] = useState('')
   const [results, setResults] = useState<QuoteCatalogRow[] | null>(null)
-  const [issued, setIssued] = useState<{ number: string; customerUrl: string; unpriced: string[] } | null>(null)
+  const [issued, setIssued] = useState<{ estimateId: string; number: string; customerUrl: string; unpriced: string[] } | null>(null)
   const [issueReasons, setIssueReasons] = useState<string[]>([])
+  // The email-the-estimate button below (2026-10-01, replaces "share via text").
+  const [emailSending, setEmailSending] = useState(false)
+  const [emailSentTo, setEmailSentTo] = useState<string | null>(null)
+  const [emailError, setEmailError] = useState<string | null>(null)
   // The EXISTING optional deposit checkbox, at the tech's discretion (Kyle, 2026-09-21). null =
   // the service's default (on for an estimate, off for a change order) until the tech touches it.
   const [depositRequired, setDepositRequired] = useState<boolean | null>(null)
@@ -203,14 +208,54 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
         >
           Open the customer&apos;s estimate to review &amp; sign
         </a>
-        {typeof navigator.share === 'function' && (
-          <button
-            type="button"
-            className="w-full rounded-lg border border-slate-600 p-3 text-sm text-slate-200"
-            onClick={() => void navigator.share({ title: `Estimate ${issued.number} — Red Cedar Electric`, url: issued.customerUrl }).catch(() => {})}
-          >
-            Share the link to their phone
-          </button>
+        {/*
+          2026-10-01 — Kyle: "On the field app the text option for signiture needs chaged to
+          email since we do not have text yet." This used to be `navigator.share(...)`, labelled
+          "Share the link to their phone" — the OS share sheet, which on a phone in practice means
+          texting the link. Red Cedar has no SMS (Kyle, 2026-08-16: "There will be NO automated
+          texting ONLY emails ... My personal number is what I will use to text clients"), so
+          there was nothing to share TO. The button now emails the estimate instead, through the
+          same send the CRM uses (`sendEstimateEmail`, via the field's own tech-scoped route) — do
+          NOT restore navigator.share here; it was removed on purpose, not lost. Choice 1 above
+          (hand the phone over) still covers a customer standing right here; this covers the one
+          who isn't.
+        */}
+        {/*
+          A SECOND SEND IS A DECISION, NOT A DOUBLE-TAP (security review, 2026-10-01).
+
+          This was `disabled={emailSending}` only, so the moment a send succeeded the button went
+          live again wearing the same label — one more tap and the customer gets a second copy.
+          Kyle has been bitten by duplicate sends twice in a fortnight: two invoice emails on the
+          Hoover job (2026-09-28) and two deposit requests on Arlene's (2026-09-30). Once it has
+          gone, the button says so and asks for a deliberate re-send instead.
+        */}
+        <button
+          type="button"
+          disabled={emailSending}
+          onClick={() => {
+            setEmailSending(true); setEmailError(null); setEmailSentTo(null)
+            emailEstimateToCustomer(issued.estimateId)
+              .then((r) => setEmailSentTo(r.to))
+              .catch((err) => setEmailError(err instanceof Error ? err.message : String(err)))
+              .finally(() => setEmailSending(false))
+          }}
+          className="w-full rounded-lg border border-slate-600 p-3 text-sm text-slate-200 disabled:opacity-40"
+        >
+          {emailSending
+            ? 'Emailing the estimate…'
+            : emailSentTo
+              ? '📧 Send it again'
+              : '📧 Email the estimate to the customer'}
+        </button>
+        {emailSentTo && (
+          <p className="rounded bg-emerald-950/50 p-2 text-xs text-emerald-200">
+            It&apos;s gone to {emailSentTo} — tell the customer to check their inbox.
+          </p>
+        )}
+        {emailError && (
+          <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">
+            {emailError} Use the link above instead — hand them your phone.
+          </p>
         )}
         <button type="button" onClick={onBack} className="w-full rounded-lg border border-slate-700 p-3 text-sm text-slate-300">
           Back to the job

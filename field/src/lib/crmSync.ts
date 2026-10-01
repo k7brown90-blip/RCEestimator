@@ -1484,6 +1484,11 @@ export async function propertyForAssignment(
 // ─── Payment collection (2026-08-25) ─────────────────────────────────────────
 
 export interface VisitPaymentInfo {
+  /**
+   * The ROOT issued estimate this job's money hangs off (2026-10-01). Optional so an older
+   * server build still parses; the financing send is keyed by it.
+   */
+  estimateId?: string
   number: string
   /**
    * The documents this ONE invoice is made of — the root, then its signed change orders
@@ -1546,6 +1551,49 @@ export async function emailPaymentRequest(
     method: 'POST',
     body: JSON.stringify({ kind }),
   })
+}
+
+/**
+ * Email the issued estimate to the customer (2026-10-01) — replaces the old "share the link"
+ * button, which was the OS share sheet and on a phone that means texting it. Red Cedar has no SMS
+ * (Kyle, 2026-08-16: "There will be NO automated texting ONLY emails"), so the field now sends the
+ * estimate the same way it already sends the assessment and diagnostic reports: the server resolves
+ * the customer's address and composes the email (`sendEstimateEmail`, the same function the CRM's
+ * send button calls) — nothing here carries the estimate's signing token.
+ */
+export async function emailEstimateToCustomer(estimateId: string): Promise<{ to: string }> {
+  return crmRequest(`/issued-estimates/${estimateId}/email`, { method: 'POST', body: '{}' })
+}
+
+/**
+ * The Synchrony financing link, on its own, from the driveway (Kyle, 2026-10-01: "I also need
+ * to have the financing link available to email on its own ... These should be a manual send
+ * both from the field app and from the CRM"). Same no-credit-terms rule as the CRM's send — see
+ * services/financingEmail.ts — this is a link and an invitation to apply, nothing about rates
+ * or terms.
+ *
+ * NOTE for whoever wires a call site: this needs the ISSUED ESTIMATE id, which
+ * `fetchJobBrief`/`fetchVisitPaymentInfo` below do not currently return (only `number`,
+ * `title`, etc. — never `id`). The one place in this file that has a fresh estimate id is
+ * `issueQuote`'s return value, right after the tech issues a quote. Wiring this into
+ * `CollectPayment` (a later visit, after navigating away) needs that id added to the
+ * job-brief or payment-info response first — a one-line additive server change this dispatch
+ * was not scoped to make. Flagged in the build report rather than guessed around.
+ */
+export async function emailFinancing(estimateId: string): Promise<{ to: string }> {
+  return crmRequest(`/issued-estimates/${estimateId}/email-financing`, { method: 'POST', body: '{}' })
+}
+
+/**
+ * The Google review ask, on its own, pressed by the technician (Kyle, 2026-10-01: "a google
+ * review request to email on its own" / "manual send both from the field app and from the
+ * CRM"). Bypasses the automation gate the same way a manual press always does — see
+ * services/reviewRequest.ts — but every other guard (job completed, no duplicate ask on this
+ * job, no repeat ask on this customer within 90 days, email on file) still applies and comes
+ * back as a readable refusal.
+ */
+export async function emailReviewRequest(visitId: string): Promise<{ to: string }> {
+  return crmRequest(`/visits/${visitId}/email-review-request`, { method: 'POST', body: '{}' })
 }
 
 // ─── My accounts (Kyle, 2026-09-01: "The tech needs to assess accounts that

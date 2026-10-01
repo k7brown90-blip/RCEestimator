@@ -929,6 +929,39 @@ healthRecordTechRouter.post("/visits/:visitId/email-payment-request", asyncHandl
   res.json({ success: true, data: { ok: true, to: est.customerEmail, amount: Math.round((summary.depositDue - summary.depositPaid) * 100) / 100 } });
 }));
 
+/**
+ * POST /health-record/visits/:visitId/email-review-request — the Google review ask, on its own,
+ * pressed by the technician (Kyle, 2026-10-01: "a google review request to email on its own" /
+ * "manual send both from the field app and from the CRM"). Same assignment gate as
+ * /visits/:visitId/email-payment-request directly above — fail-closed: no assignment row means
+ * 403, whether the visit exists or not.
+ *
+ * Bypasses the automation gate exactly like the CRM's sibling route
+ * (`POST /jobs/:jobId/email-review-request`, app.ts) — a human pressed it, same precedent as
+ * `/issued-estimates/:id/payment-reminder`. Every OTHER correctness check inside
+ * sendReviewRequestEmail (job must be completed, no duplicate ask on this job, no repeat ask on
+ * this customer within 90 days, customer must have an email on file) still applies unchanged —
+ * see services/reviewRequest.ts's header for the full guard order.
+ */
+healthRecordTechRouter.post("/visits/:visitId/email-review-request", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const assigned = await prisma.visitAssignment.findFirst({
+    where: { visitId, technicianId: req.technician!.id },
+    select: { id: true },
+  });
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const { sendReviewRequestEmail } = await import("../services/reviewRequest");
+  const result = await sendReviewRequestEmail(prisma, visitId, { manual: true });
+  if (!result.ok) {
+    res.status(409).json({ success: false, error: { code: "not_sent", message: result.reason } });
+    return;
+  }
+  res.json({ success: true, data: { to: result.to } });
+}));
+
 
 // ─── QUOTE IN THE FIELD (Kyle, 2026-09-01, ratified Option A) ────────────────
 //
@@ -1178,6 +1211,100 @@ healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: T
   });
 }));
 
+/**
+ * POST /health-record/issued-estimates/:id/email — email the just-issued estimate to the
+ * customer, from the driveway.
+ *
+ * WHY THIS EXISTS (2026-10-01): Kyle — "On the field app the text option for signiture needs
+ * chaged to email since we do not have text yet." The third choice on the post-issue screen used
+ * to be `navigator.share(...)`, labelled "Share the link to their phone" — on a phone, the OS
+ * share sheet's realistic use is texting the link. Red Cedar has no SMS capability: Kyle's
+ * 2026-08-16 ruling is *"There will be NO automated texting ONLY emails ... My personal number is
+ * what I will use to text clients,"* and `automationGate.ts` silences outbound Twilio for every
+ * automated send class. So "share via text" is replaced with an email, the same way the field
+ * already hands the customer the assessment report and the diagnostic report, and the way the CRM
+ * itself sends this very estimate (`POST /issued-estimates/:id/send`). If a future reader is
+ * tempted to bring the share button back thinking it was lost by accident: it wasn't — there was
+ * never a text channel behind it, and "Open the customer's estimate to review & sign" (handing the
+ * phone over) still covers the customer standing right there.
+ *
+ * ONE SEND, ONE PLACE IT IS COMPOSED: delegates to `sendEstimateEmail`, the SAME function the CRM
+ * route calls. No second email body, no second template.
+ *
+ * Guard: the technician must be assigned to the visit this estimate came from — checked against
+ * BOTH `visitId` (set when the draft is issued from a visit, which is every field quote) and
+ * `jobVisitId` (set once the estimate becomes a job's root), the same OR shape
+ * `/visits/:visitId/email-payment-request` above uses. A technician must not be able to email an
+ * estimate on a job that is not theirs.
+ *
+ * The field posts only the estimate's id. The server resolves the customer's address and sends —
+ * `sendEstimateEmail` returns `{ ok, to }`, never the token, and nothing here puts it on the wire
+ * (PUNCHLIST B4; see tests/fieldContract.test.ts for the pinned contract on the issue response).
+ */
+healthRecordTechRouter.post("/issued-estimates/:id/email", asyncHandler(async (req: TechRequest, res) => {
+  const estimateId = readParam(req, "id");
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { id: true, visitId: true, jobVisitId: true },
+  });
+  if (!est) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Estimate not found" } });
+    return;
+  }
+  const visitIds = [est.visitId, est.jobVisitId].filter((id): id is string => Boolean(id));
+  const assigned = visitIds.length > 0 && Boolean(await prisma.visitAssignment.findFirst({
+    where: { visitId: { in: visitIds }, technicianId: req.technician!.id },
+    select: { id: true },
+  }));
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This estimate is not on one of your visits" } });
+    return;
+  }
+  const { sendEstimateEmail } = await import("../services/issuedEstimateSend");
+  const result = await sendEstimateEmail(prisma, est.id, { sentBy: `tech:${req.technician!.id}` });
+  if (!result.ok) {
+    res.status(409).json({ success: false, error: { code: "not_sent", message: result.reason } });
+    return;
+  }
+  res.json({ success: true, data: { to: result.to } });
+}));
+
+/**
+ * POST /health-record/issued-estimates/:id/email-financing — the Synchrony financing link, on
+ * its own, from the driveway (Kyle, 2026-10-01: "a manual send both from the field app and from
+ * the CRM"). Same guard as /email directly above: an allow-list of the estimate's non-null visit
+ * ids, 403 unless the technician is assigned to one of them, fail-closed when the estimate
+ * carries neither `visitId` nor `jobVisitId`. See services/financingEmail.ts for the
+ * no-credit-terms rule — this is a link and an invitation to apply, nothing about rates or terms.
+ */
+healthRecordTechRouter.post("/issued-estimates/:id/email-financing", asyncHandler(async (req: TechRequest, res) => {
+  const estimateId = readParam(req, "id");
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { id: true, visitId: true, jobVisitId: true },
+  });
+  if (!est) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Estimate not found" } });
+    return;
+  }
+  const visitIds = [est.visitId, est.jobVisitId].filter((id): id is string => Boolean(id));
+  const assigned = visitIds.length > 0 && Boolean(await prisma.visitAssignment.findFirst({
+    where: { visitId: { in: visitIds }, technicianId: req.technician!.id },
+    select: { id: true },
+  }));
+  if (!assigned) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This estimate is not on one of your visits" } });
+    return;
+  }
+  const { sendFinancingEmail } = await import("../services/financingEmail");
+  const result = await sendFinancingEmail(prisma, est.id);
+  if (!result.ok) {
+    res.status(409).json({ success: false, error: { code: "not_sent", message: result.reason } });
+    return;
+  }
+  res.json({ success: true, data: { to: result.to } });
+}));
+
 
 // ─── SELF-SERVE VISITS FROM THE FIELD (Kyle, 2026-09-01, phase 5) ────────────
 //
@@ -1317,6 +1444,14 @@ healthRecordTechRouter.get("/visits/:visitId/payment-info", asyncHandler(async (
     success: true,
     data: summary
       ? {
+        /*
+          THE ESTIMATE'S ID (2026-10-01). The route already resolved `est` via signedRootForJob
+          to build this summary and was dropping the id on the floor — which left the field app's
+          "Email the financing link" button permanently disabled, because that send is keyed by
+          the estimate. A capability that exists only in the server is not shipped (CLAUDE.md,
+          build it as if you had to click it). Additive, so an older PWA build ignores it.
+        */
+        estimateId: est.id,
         number: summary.number,
         /*
           WHAT THE INVOICE IS MADE OF (2026-09-29). The tech is standing next to the customer

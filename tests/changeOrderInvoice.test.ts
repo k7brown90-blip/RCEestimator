@@ -405,9 +405,11 @@ describe("the deposit is optional, with a manual override", () => {
     expect(s.depositDue).toBe(0);
     expect(s.depositSatisfied).toBe(true);
     expect(s.paidInFull).toBe(false);
-    // The deposit request is never sent — the sign door's invoice email may be, the deposit email may not.
-    const kinds = emailMock.sendBrandedEmail.mock.calls.map((c) => c[0].kind as string);
-    expect(kinds).not.toContain("deposit");
+    // NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." Signing
+    // in person used to fire the invoice email itself; now it fires nothing. The deposit ask was
+    // already never sent here (depositRequired: false) — this now proves the stronger claim the
+    // ruling makes: NO customer email of any kind goes out on this signature, invoice included.
+    expect(emailMock.sendBrandedEmail).not.toHaveBeenCalled();
     const ask = await request(app).post(`/issued-estimates/${est.id}/email-deposit-request`);
     expect(ask.status).toBe(400);
     expect(ask.body.error).toMatch(/no deposit is required/i);
@@ -459,6 +461,52 @@ describe("the deposit is optional, with a manual override", () => {
     const s = (await paymentSummary(prisma, co.id, ORIGIN))!;
     expect(s.estimateId).toBe(parent.id);
     expect(s.documents).toHaveLength(2);
+  });
+});
+
+/*
+  ── NO AUTO-SEND. MANUAL REVIEW, THEN SEND. (Kyle, 2026-10-01) ────────────────────────────────
+
+  "I do not want auto send, manual review and send." · "No auto send across the board."
+
+  Every signature door used to fire the invoice email itself (sentBy "system:auto-on-sign" /
+  "system:auto-on-accept"), and two of them also fired the deposit-request email (directly, or
+  through sameDayJob.holdOrSendDepositRequest). All of that is gone. The customer now hears
+  nothing until Kyle presses "Email the signed copy…" on the invoice drawer or "Email deposit
+  request" on the payment panel — notifyOwnerSigned is what tells him a send is waiting.
+
+  This proves the two doors this file can reach directly. The third door — the office recording an
+  acceptance it was told about by phone — is pinned in tests/officeAcceptance.test.ts.
+*/
+describe("no auto-send on any signature door (Kyle, 2026-10-01)", () => {
+  it("the customer signing from the EMAILED LINK sends nothing — not the invoice, not the deposit ask", async () => {
+    const d = await quotableDraft("no auto-send, emailed link", 1);
+    const est = await issue(d.id); // depositRequired defaults true, so a deposit email would have had every reason to fire
+    emailMock.sendBrandedEmail.mockClear();
+
+    const res = await request(app)
+      .post(`/e/${est.token}/sign`)
+      .send({ signerName: "No AutoSend Emailed", signatureImage: TEST_SIGNATURE });
+    expect(res.status).toBe(200);
+
+    // The job creation and (formerly) the deposit/invoice steps are fire-and-forget; give the
+    // event loop a beat so a lingering auto-send would have shown up before we assert its absence.
+    await new Promise((r) => setTimeout(r, 200));
+    const signed = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: est.id } });
+    expect(signed.signedAt).not.toBeNull(); // the signature itself still lands
+    expect(emailMock.sendBrandedEmail).not.toHaveBeenCalled();
+  });
+
+  it("the IN-PERSON door sends nothing even when a deposit is required (the invoice email used to fire regardless)", async () => {
+    const d = await quotableDraft("no auto-send, in person", 1);
+    const est = await issue(d.id);
+    expect(est.depositRequired).toBe(true);
+    emailMock.sendBrandedEmail.mockClear();
+
+    const signed = await signInPerson(est.id);
+    expect(signed.signedAt).not.toBeNull();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(emailMock.sendBrandedEmail).not.toHaveBeenCalled();
   });
 });
 

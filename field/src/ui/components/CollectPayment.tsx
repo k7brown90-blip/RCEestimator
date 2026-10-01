@@ -10,7 +10,9 @@
  */
 
 import { useEffect, useState } from 'react'
-import { emailPaymentRequest, fetchVisitPaymentInfo, type VisitPaymentInfo } from '../../lib/crmSync'
+import QRCode from 'qrcode'
+import { emailFinancing, emailPaymentRequest, emailReviewRequest, fetchVisitPaymentInfo, type VisitPaymentInfo } from '../../lib/crmSync'
+import { GOOGLE_REVIEW_URL } from '../../../../shared/reviewRequestUrl'
 
 export function CollectPayment({ visitId, startOpen = false }: { visitId: string; startOpen?: boolean }) {
   const [open, setOpen] = useState(startOpen)
@@ -21,6 +23,18 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
   // Bill in writing (Kyle, 2026-09-01): the customer who isn't standing there
   // gets the deposit request / final bill by email instead of a QR.
   const [emailState, setEmailState] = useState<'idle' | 'sending' | string>('idle')
+  // The review ask, on its own (Kyle, 2026-10-01). `reviewSentTo` relabels the button to a
+  // deliberate re-send the same way QuoteScreen's estimate-email button already does — see
+  // its 2026-10-01 comment for why a second press must be a decision, not a stale default.
+  const [reviewState, setReviewState] = useState<'idle' | 'sending' | string>('idle')
+  const [reviewSentTo, setReviewSentTo] = useState<string | null>(null)
+  const [showReviewQr, setShowReviewQr] = useState(false)
+  const [reviewQrSrc, setReviewQrSrc] = useState<string | null>(null)
+  // Financing, on its own (Kyle, 2026-10-01). Its own error slot rather than the shared one:
+  // this send sits beside the review ask, and a failure here must not read as that one failing.
+  const [financingState, setFinancingState] = useState<'idle' | 'sending'>('idle')
+  const [financingSentTo, setFinancingSentTo] = useState<string | null>(null)
+  const [financingError, setFinancingError] = useState<string | null>(null)
 
   const sendBill = async (kind: 'deposit' | 'balance') => {
     setEmailState('sending')
@@ -31,6 +45,45 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
     } catch (err) {
       setEmailState('idle')
       setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const sendFinancing = async () => {
+    const estimateId = info !== 'none' && info ? info.estimateId : undefined
+    if (!estimateId) return
+    setFinancingState('sending')
+    setFinancingError(null)
+    try {
+      const r = await emailFinancing(estimateId)
+      setFinancingSentTo(r.to)
+    } catch (err) {
+      // The server's refusal — no customer email, estimate gone — is readable text; surfaced as-is.
+      setFinancingError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setFinancingState('idle')
+    }
+  }
+
+  const sendReview = async () => {
+    setReviewState('sending')
+    setError(null)
+    try {
+      const r = await emailReviewRequest(visitId)
+      setReviewSentTo(r.to)
+      setReviewState('idle')
+    } catch (err) {
+      setReviewState('idle')
+      // The server's refusal — job not completed, already asked on this job, this customer
+      // asked within 90 days, no email on file — is readable text; surfaced as-is.
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const toggleReviewQr = () => {
+    if (showReviewQr) { setShowReviewQr(false); return }
+    setShowReviewQr(true)
+    if (!reviewQrSrc) {
+      void QRCode.toDataURL(GOOGLE_REVIEW_URL, { margin: 1, width: 220 }).then(setReviewQrSrc)
     }
   }
 
@@ -109,6 +162,81 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
               </li>
             </ul>
           )}
+          {/*
+            FINANCING AND THE REVIEW ASK, STANDALONE (Kyle, 2026-10-01: "I also need to have the
+            financing link available to email on its own along with a google review request to
+            email on its own" / "These should be a manual send both from the field app and from
+            the CRM"). Shown regardless of paid-in-full, same as the CRM's PaymentPanel.
+          */}
+          {/*
+            LIVE as of 2026-10-01. This shipped disabled for a day because the visit's payment
+            info did not carry the estimate id this send is keyed by — the route had it and was
+            dropping it. The id is in the payload now, so the button works. It stays GREYED WITH
+            THE REASON (never hidden) on the older-build case where the id is absent, per
+            CLAUDE.md click-through rule 5.
+          */}
+          <button
+            type="button"
+            disabled={!info.estimateId || financingState === 'sending'}
+            title={info.estimateId
+              ? undefined
+              : "This visit's payment info is from an older app version and doesn't carry the estimate id this send needs. Send financing from the CRM."}
+            onClick={() => void sendFinancing()}
+            className="w-full rounded-lg border border-slate-600 p-2 text-xs text-slate-200 disabled:opacity-40"
+          >
+            {financingState === 'sending'
+              ? 'Sending…'
+              : financingSentTo
+                ? '📧 Send the financing link again'
+                : '📧 Email the financing link'}
+          </button>
+          {financingSentTo && (
+            <p className="rounded bg-emerald-900/50 p-2 text-xs text-emerald-200">
+              Financing link emailed to {financingSentTo}.
+            </p>
+          )}
+          {financingError && (
+            <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{financingError}</p>
+          )}
+          <button
+            type="button"
+            disabled={reviewState === 'sending'}
+            onClick={() => void sendReview()}
+            className="w-full rounded-lg border border-emerald-700 bg-emerald-950/40 p-2 text-xs font-medium text-emerald-200 disabled:opacity-50"
+          >
+            {reviewState === 'sending'
+              ? 'Sending…'
+              : reviewSentTo
+                ? '📧 Send it again'
+                : '📧 Email a review request'}
+          </button>
+          {reviewSentTo && (
+            <p className="rounded bg-emerald-900/50 p-2 text-xs text-emerald-200">
+              Review request emailed to {reviewSentTo}.
+            </p>
+          )}
+          {/*
+            THE REVIEW QR — ask in person (Kyle, 2026-10-01). Generated client-side from
+            GOOGLE_REVIEW_URL with the same `qrcode` package the CRM uses — never a server route;
+            see shared/reviewRequestUrl.ts for why this one must stay client-drawn.
+          */}
+          <button
+            type="button"
+            onClick={toggleReviewQr}
+            className="w-full rounded-lg border border-slate-600 p-2 text-xs text-slate-200"
+          >
+            {showReviewQr ? 'Hide review QR' : 'Review QR (in person)'}
+          </button>
+          {showReviewQr && (
+            <div className="rounded-lg bg-white p-2 text-center">
+              {reviewQrSrc ? (
+                <img src={reviewQrSrc} alt="Scan to leave a Google review" className="mx-auto h-44 w-44" />
+              ) : (
+                <p className="flex h-44 w-44 items-center justify-center text-xs text-slate-500">Generating…</p>
+              )}
+            </div>
+          )}
+
           {info.paidInFull ? (
             <p className="rounded bg-emerald-900/60 p-2 text-sm font-medium text-emerald-200">
               ✓ Paid in full — nothing to collect.

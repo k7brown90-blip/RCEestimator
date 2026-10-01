@@ -2104,7 +2104,13 @@ export type EmailBouncePollResult =
 
 export type EmailKind =
   | "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt"
-  | "health_record" | "document" | "campaign" | "communication" | "other";
+  | "health_record" | "document" | "campaign" | "communication"
+  // Added 2026-10-01 (plan 2026-10-01-manual-sends-archiving-and-one-calendar.md, item B) —
+  // matches src/services/transactionalEmail.ts's EmailKind. The standalone financing
+  // invitation and Google review ask each need their own kind so PaymentPanel's "last sent"
+  // read (GET /email-deliveries filtered by estimateId/visitId) can tell them apart from
+  // every other email on the same record.
+  | "financing" | "review_request" | "other";
 
 export type EmailDeliveryStatus = "sent" | "delivered" | "delayed" | "bounced" | "complained" | "failed";
 

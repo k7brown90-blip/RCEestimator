@@ -34,9 +34,8 @@ import {
   signEstimate,
 } from "../services/issuedEstimateService";
 import { renderEstimatePage, renderUnavailable } from "../services/issuedEstimateRender";
-import { notifyOwnerSigned, publicBaseUrl, sendInvoiceEmail } from "../services/issuedEstimateSend";
+import { notifyOwnerSigned, publicBaseUrl } from "../services/issuedEstimateSend";
 import { paymentSummary } from "../services/stripePayments";
-import { holdOrSendDepositRequest } from "../services/sameDayJob";
 import { createJobFromSignedEstimate } from "../services/accountSpine";
 
 export const estimatePageRouter = express.Router();
@@ -156,38 +155,28 @@ estimatePageRouter.post(
       })
       .catch((err) => console.error("[EstimatePage] job creation after email sign failed:", err));
     /*
-      The deposit request (Kyle, 2026-08-25): a customer signing from home has
-      no other way to hear the deposit gate exists. HELD, not sent, when a
-      technician's consultation on this estimate is still open (Kyle,
-      2026-09-21: "No notifications should be sent on the same day jobs") — the
-      field signs through this very page, so the tech's Complete work now /
-      Schedule for later choice comes AFTER this point. services/sameDayJob.ts
-      owns the rule; the hold is an event on the estimate, released or
-      cancelled by the tech's choice. Kyle's own notification (internal, must
-      never be able to fail the signature) says which happened.
+      NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." · "No
+      auto send across the board."
+
+      This door used to fire the invoice email (sendInvoiceEmail, sentBy "system:auto-on-sign")
+      and, through holdOrSendDepositRequest, the deposit-request email the instant the signature
+      landed — both fire-and-forget, both now gone. The customer gets the invoice when Kyle
+      presses "Email the signed copy…" on the invoice drawer, and the deposit ask when he presses
+      "Email deposit request" on the payment panel (POST /issued-estimates/:id/email-deposit-
+      request, below) — both now easy to find (2026-09-29, Unit 2).
+
+      notifyOwnerSigned is what makes a manual send possible rather than forgotten: with nothing
+      going to the customer automatically, this is the ONLY thing that tells Kyle a signature
+      landed and a send is waiting. It must never be able to fail the signature, which already
+      stands by this point.
+
+      holdOrSendDepositRequest (services/sameDayJob.ts) is UNCHANGED and left in place — it has no
+      remaining caller as of this change; see the comment there for why it is kept rather than
+      deleted (Kyle, 2026-08-11: "sequencing, not deletion").
     */
-    holdOrSendDepositRequest(prisma, result.estimateId, publicBaseUrl())
-      .catch((err): "sent" | "held" | "failed" => {
-        console.error("[EstimatePage] deposit request step failed:", err);
-        return "failed";
-      })
-      .then((outcome) =>
-        notifyOwnerSigned(prisma, result.estimateId, {
-          note: outcome === "held"
-            ? "Deposit request HELD — the technician's consultation is still open. Complete work now sends the customer nothing; Schedule for later sends the deposit request then."
-            : null,
-        }),
-      )
-      .catch((err) => console.error("[EstimatePage] owner notification failed:", err));
-    // The customer's signed copy (Kyle, 2026-09-05: "The emails are not going
-    // out after the customer signs and pays the deposit on site") — the signed
-    // invoice, PDF attached, pay link included, the moment they sign. Existed
-    // only behind the manual button before; both sign doors now fire it.
-    // Fire-and-forget: their signature already stands, and a missing email
-    // address refuses cleanly and is logged.
-    sendInvoiceEmail(prisma, result.estimateId, { sentBy: "system:auto-on-sign" })
-      .then((r) => { if (!r.ok) console.error("[EstimatePage] auto invoice email refused:", r.reason); })
-      .catch((err) => console.error("[EstimatePage] auto invoice email failed:", err));
+    notifyOwnerSigned(prisma, result.estimateId).catch((err) =>
+      console.error("[EstimatePage] owner notification failed:", err)
+    );
 
     const signed = await getEstimateByToken(prisma, token);
     if (!signed.ok) {

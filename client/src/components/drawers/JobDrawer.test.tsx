@@ -21,6 +21,11 @@ function LocationProbe() {
   return <p data-testid="location">{search}</p>;
 }
 
+function PathProbe() {
+  const { pathname, search } = useLocation();
+  return <p data-testid="path">{pathname}{search}</p>;
+}
+
 function visit(status: string): Visit {
   return {
     id: "visit-1", propertyId: "prop-1", customerId: "cust-1", mode: "service_diagnostic", status, jobType: "Panel upgrade",
@@ -51,14 +56,66 @@ describe("JobDrawer", () => {
     renderWithProviders(<><DrawerHost /><LocationProbe /></>, { route: "/jobs?job=visit-1" });
 
     expect(await screen.findByRole("dialog", { name: "12 Main St" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Full page/ })).toHaveAttribute("href", "/visits/visit-1");
-    // JobScheduler's idle state offers to book; close-out is job furniture and is absent here.
-    expect(await screen.findByRole("button", { name: "Book Estimate Visit" })).toBeInTheDocument();
+    // "Workspace", not "Full page" (2026-09-29): under Kyle's ruling /visits/:id is the INTERNAL
+    // side of the job, not a fuller version of this drawer. The old label said the drawer was the
+    // lesser surface, which is the inversion the ruling corrects.
+    expect(screen.getByRole("link", { name: /Workspace/ })).toHaveAttribute("href", "/visits/visit-1");
+    // No signed invoice on a consultation-stage visit, so no invoice door.
+    expect(screen.queryByRole("button", { name: /^Invoice / })).not.toBeInTheDocument();
+    // ONE SCHEDULER (2026-10-01, plan item E3): the drawer no longer opens its own picker. It
+    // shows the booking state and ONE door to the Calendar with this job already selected.
+    const door = await screen.findByRole("link", { name: "Book on the Calendar" });
+    expect(door).toHaveAttribute("href", "/calendar?schedule=visit-1");
+    expect(screen.getByText("Not booked yet.")).toBeInTheDocument();
+    // The inline scheduler is gone: no "Book Estimate Visit" button, no second month grid.
+    expect(screen.queryByRole("button", { name: "Book Estimate Visit" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Su")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Pick a start date/)).not.toBeInTheDocument();
+    // Close-out is job furniture and is absent here.
     expect(screen.queryByText("Job close-out")).not.toBeInTheDocument();
     // An unsigned visit keeps its way out.
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
     // The record carries its own actions (2026-09-20 communications build).
     expect(screen.getByRole("button", { name: "Send email" })).toBeInTheDocument();
+  });
+
+  /*
+    ONE SCHEDULER (2026-10-01, plan item E3). Kyle: "the date picker would only come up in one
+    scheduling page and not the other." This drawer was one of the pages where it did not — it
+    rendered `JobScheduler` idle, a button that opened a second month grid inside the drawer.
+    Now a booked job shows its date and ONE door; clicking it leaves for the Calendar with
+    `?schedule=<visitId>`, which CalendarPage consumes by opening the reschedule picker.
+  */
+  it("a scheduled job shows its date and 'Reschedule or cancel on the Calendar', which lands on /calendar?schedule=<id>", async () => {
+    vi.spyOn(api, "visit").mockResolvedValue({
+      ...visit("scheduled"),
+      scheduledStart: "2026-10-15T13:00:00.000Z",
+      scheduledEnd: "2026-10-15T21:00:00.000Z",
+      estimatedDurationDays: 1,
+    });
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(null);
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
+    vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([]);
+    vi.spyOn(api, "receiptsNeedingPo").mockResolvedValue([]);
+    vi.spyOn(api, "landingDefaults").mockRejectedValue(new Error("not in this test"));
+
+    renderWithProviders(<><DrawerHost /><PathProbe /></>, { route: "/jobs?job=visit-1" });
+
+    const dialog = await screen.findByRole("dialog", { name: "12 Main St" });
+    expect(within(dialog).getByText("Scheduled")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Thursday, October 15, 2026/)).toBeInTheDocument();
+    // No picker in the drawer, in either mode.
+    expect(within(dialog).queryByRole("button", { name: /^reschedule$/i })).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Su")).not.toBeInTheDocument();
+
+    const door = within(dialog).getByRole("link", { name: "Reschedule or cancel on the Calendar" });
+    expect(door).toHaveAttribute("href", "/calendar?schedule=visit-1");
+    fireEvent.click(door);
+
+    expect(screen.getByTestId("path")).toHaveTextContent("/calendar?schedule=visit-1");
+    // Leaving /jobs dropped `?job=`, so the drawer closed behind the navigation.
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
   it("sends a follow-up email about the job, tagged to the visit", async () => {
@@ -137,5 +194,42 @@ describe("JobDrawer", () => {
     await waitFor(() => expect(api.estimateRecord).toHaveBeenCalledWith("est-1"));
     expect(screen.getByTestId("location")).toHaveTextContent("?job=visit-1&estimate=est-1");
     expect(await screen.findByRole("dialog", { name: "Panel upgrade" })).toBeInTheDocument();
+  });
+
+  /*
+    THE JOB NAMES ITS INVOICE AND OPENS IT (2026-09-29, findability audit B5).
+
+    The job drawer carried the money but no invoice IDENTITY and no door to the invoice record —
+    so from the screen the office is on when a technician rings, there was no route to the PDFs,
+    the reminder, the signed copy or the delivery state. `paymentInfo.estimateId` is the ROOT, so
+    this door cannot land on the change-order dead end EstimateDrawer's did before today.
+  */
+  it("names the job's invoice and opens its drawer", async () => {
+    vi.spyOn(api, "visit").mockResolvedValue(visit("contracted"));
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paymentInfo);
+    vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(null);
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
+    vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([]);
+    vi.spyOn(api, "receiptsNeedingPo").mockResolvedValue([]);
+    vi.spyOn(api, "landingDefaults").mockRejectedValue(new Error("not in this test"));
+    vi.spyOn(api, "invoices").mockResolvedValue([{
+      remindersSent: 0, lastReminderAt: null, id: "est-1", number: "EST-2026-0001", revision: 1,
+      title: "Panel upgrade", customer: { id: "cust-1", name: "Jane Homeowner" },
+      customerPhone: null, customerEmail: "jane@example.com", propertyId: "prop-1",
+      job: { id: "visit-1", jobType: "Panel upgrade", purpose: null, status: "contracted", scheduledStart: null },
+      serviceAddress: "12 Main St, Smyrna", signedAt: "2026-09-12T12:00:00.000Z", signedChannel: "email",
+      sentAt: "2026-09-12T12:00:00.000Z", sentTo: "jane@example.com", billedTotal: 4200, depositDue: 0,
+      totalPaid: 0, discountTotal: 0, collected: 0, balance: 4200, lastPaidAt: null, paymentStatus: "unpaid",
+    } as never]);
+
+    renderWithProviders(<><DrawerHost /><LocationProbe /></>, { route: "/jobs?job=visit-1" });
+
+    // Named after the invoice, so the operator knows which one before clicking.
+    const invoiceDoor = await screen.findByRole("button", { name: "Invoice EST-2026-0001" });
+    fireEvent.click(invoiceDoor);
+
+    expect(screen.getByTestId("location")).toHaveTextContent("?job=visit-1&invoice=est-1");
+    expect(await screen.findByRole("dialog", { name: "Invoice EST-2026-0001" })).toBeInTheDocument();
   });
 });

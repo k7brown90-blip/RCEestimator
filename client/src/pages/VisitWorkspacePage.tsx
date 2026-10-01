@@ -5,7 +5,8 @@ import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
 import { money, shortDate } from "../lib/utils";
-import { JobScheduler } from "../components/JobScheduler";
+import { useDrawerParams } from "../lib/drawers";
+import { ScheduleOnCalendar } from "../components/ScheduleOnCalendar";
 import { HealthRecordPanel } from "../components/HealthRecordPanel";
 import { JobCloseoutPanel } from "../components/JobCloseoutPanel";
 import { MaterialsUsedPanel } from "../components/MaterialsUsedPanel";
@@ -13,6 +14,7 @@ import { JobTimePanel } from "../components/JobTimePanel";
 import { PaymentPanel } from "../components/PaymentPanel";
 import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
 import { PhotoGalleryPanel } from "../components/PhotoGalleryPanel";
+import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 
 /**
  * The visit workspace, after the 2026-08-28 cleanout.
@@ -26,9 +28,9 @@ import { PhotoGalleryPanel } from "../components/PhotoGalleryPanel";
  * retired estimate system; every estimate Kyle actually writes is a price-book
  * one, and the price book has its own send-and-sign flow (P027/P028).
  *
- * What remains is the working job furniture (scheduler, payment, close-out,
- * health record, finding ledger), the "Quote this work" door into the price
- * book, and the photo gallery that replaced the tabs. A visit that still
+ * What remains is the working job furniture (the booked date with its door to the
+ * Calendar, payment, close-out, health record, finding ledger), the "Quote this
+ * work" door into the price book, and the photo gallery that replaced the tabs. A visit that still
  * carries a legacy estimate shows a read-only record card — the data stays;
  * only the dead controls went.
  */
@@ -36,6 +38,9 @@ export function VisitWorkspacePage() {
   const { visitId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  // Called unconditionally with the rest of the top-level hooks (tests/hooksOrder.test.ts
+  // forbids a conditional hook) so the "Job drawer" button below can open `?job=<visitId>`.
+  const drawers = useDrawerParams();
   const [editingVisit, setEditingVisit] = useState(false);
   const [visitEditForm, setVisitEditForm] = useState({ mode: "", purpose: "", jobType: "", notes: "" });
 
@@ -105,6 +110,23 @@ export function VisitWorkspacePage() {
         actions={
           <div className="flex items-center gap-2">
             {status ? <StatusBadge status={status} /> : null}
+            {/*
+              The way back (2026-10-01, plan item D). Kyle's 2026-09-29 ruling moved everything
+              that reaches the customer — payment, the invoice, raising a change order, emailing
+              the assessment report — off this page and into the job drawer; JobDrawer.tsx:116
+              already links OUT to this workspace ("Workspace →"). Before this button there was
+              no way back: an operator on the internal workspace had to leave, find the job in a
+              list, and reopen the drawer just to take a payment or send an invoice. This is NOT
+              redundant with "Workspace →" — they are opposite directions of the same split.
+            */}
+            <OpenDrawerButton
+              kind="job"
+              id={visitId}
+              onOpen={drawers.open}
+              label="Job drawer →"
+              className="btn btn-secondary px-3 py-1.5 text-xs"
+              title="Payment, invoice, change orders and sending the assessment report — the customer-facing side of this job"
+            />
             {!hasAcceptedEstimate && (
               <>
                 <button type="button" className="rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100" onClick={startEditVisit}>Edit</button>
@@ -149,14 +171,21 @@ export function VisitWorkspacePage() {
       )}
 
       <section className="space-y-5 pb-10">
-        <JobScheduler
-          jobId={visitId}
+        {/*
+          ONE SCHEDULER (2026-10-01, plan item E3). This page rendered a SECOND `JobScheduler` for
+          the same visit — the duplicate Kyle pointed at from /visits/:id: "There are two points to
+          schedule and this one links to the wrong scheduling mechanism." Under his 2026-09-29
+          ruling this page is the internal workspace, and booking the customer is client-facing
+          work; the date is picked on the Calendar, and this card is the door there.
+        */}
+        <ScheduleOnCalendar
+          visitId={visitId}
           status={visit.status ?? "estimate"}
           scheduledStart={visit.scheduledStart}
           scheduledEnd={visit.scheduledEnd}
           durationDays={visit.estimatedDurationDays}
           completedAt={visit.completedAt}
-          onScheduled={refreshVisit}
+          onChanged={refreshVisit}
         />
         {/* Money renders itself only when a signed estimate exists — the
             panel returns null otherwise, so an unquoted visit shows nothing

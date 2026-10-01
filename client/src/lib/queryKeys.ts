@@ -1,11 +1,25 @@
 /**
  * Query keys that several pages have to invalidate together.
  *
- * Defined once for the same reason `SCHEDULE_QUERY_KEYS` exists in
- * `components/JobScheduler.tsx`: an address touched on one page is read on three
- * others, and a list that quietly misses one of them is invisible until someone
- * wonders why a property they just added isn't in a dropdown.
+ * Defined once: an address touched on one page is read on three others, and a
+ * list that quietly misses one of them is invisible until someone wonders why a
+ * property they just added isn't in a dropdown.
  */
+
+/**
+ * Everything a booking touches. Kept in one place so no call site forgets one.
+ *
+ * Lived in `components/JobScheduler.tsx` until 2026-10-01 (plan item E3), when
+ * `ScheduleOnCalendar` — the door the job drawer, the visit workspace and the lead
+ * drawer now show instead of their own scheduler — needed the same list for
+ * "Mark consultation complete". One list, two readers.
+ *
+ * PUNCHLIST C13: this carried `["account"]` but the account page's own read is
+ * cached under `["account-summary"]` (AccountDetailPage.tsx) — scheduling from a
+ * drawer left that page showing the stale date until an unrelated refetch.
+ * `["account"]` is kept too since some callers may still read under it.
+ */
+export const SCHEDULE_QUERY_KEYS = [["jobs"], ["visit"], ["leads"], ["calendar"], ["account"], ["account-summary"]];
 
 /**
  * Everything that reads an account or one of its addresses.

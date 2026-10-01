@@ -1,6 +1,17 @@
+/**
+ * ONE HOME (2026-10-01, plan item E3). This component is hosted by `pages/CalendarPage.tsx`
+ * and nowhere else. It used to render on four surfaces — the Calendar, the job drawer, the
+ * visit workspace and the lead drawer — two of them opening straight into the picker and two
+ * showing a button first, which is what Kyle hit: "the date picker would only come up in one
+ * scheduling page and not the other. It all needs consolidated into a single scheduling system
+ * in one place." The other three now show `ScheduleOnCalendar`, a door to
+ * `/calendar?schedule=<visitId>`. `components/JobScheduler.oneHome.test.ts` fails if a second
+ * host imports this file.
+ */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { SCHEDULE_QUERY_KEYS } from "../lib/queryKeys";
 import type { MonthSchedule, ScheduleJobResult, TechDayAvailability } from "../lib/types";
 
 interface Props {
@@ -14,7 +25,7 @@ interface Props {
   /** Carries the booking result on a fresh schedule (so the caller can say whether the
       customer's confirmation went out); undefined on reschedule/cancel. */
   onScheduled?: (result?: ScheduleJobResult) => void;
-  /** Open straight into the date picker — used when launched from Leads or Calendar. */
+  /** Open straight into the date picker — the Calendar page always does. */
   autoOpen?: boolean;
   /**
    * ONE MONTH GRID (tab separation, 2026-09-20 — PUNCHLIST C9). On the Calendar page the
@@ -35,16 +46,6 @@ interface Props {
    */
   onClose?: () => void;
 }
-
-/**
- * Everything a booking touches. Kept in one place so no call site forgets one.
- *
- * PUNCHLIST C13: this carried `["account"]` but the account page's own read is cached under
- * `["account-summary"]` (AccountDetailPage.tsx) — scheduling from a drawer left that page
- * showing the stale date until an unrelated refetch. `["account"]` is kept too since some
- * callers may still read under it.
- */
-const SCHEDULE_QUERY_KEYS = [["jobs"], ["visit"], ["leads"], ["calendar"], ["account"], ["account-summary"]];
 
 // Fixed 2-hour estimate blocks — same set Savannah's check_availability offers
 // so a slot picked in the CRM matches a slot picked over the phone. Kyle wants

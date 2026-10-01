@@ -11,8 +11,19 @@
  *   6. The field deposit checkbox reaches `depositRequired`.
  *
  * The field signs through the customer's PUBLIC page (POST /e/:token/sign), exactly as the phone
- * does, so the deposit-request hold is exercised on the real door. Customer emails are counted,
- * never sent (sendBrandedEmail mocked); the calendar is mocked and its deletes recorded.
+ * does. Customer emails are counted, never sent (sendBrandedEmail mocked); the calendar is mocked
+ * and its deletes recorded.
+ *
+ * NO AUTO-SEND (Kyle, 2026-10-01: "I do not want auto send, manual review and send" — "No auto
+ * send across the board") SUPERSEDES part of the ORIGINAL design this file pinned. Check 2 used to
+ * be proved by a HOLD-then-RELEASE mechanism (sameDayJob.holdOrSendDepositRequest): the public
+ * sign door fired the deposit-request email immediately unless a technician's consultation was
+ * open, in which case it held the email and released it (sending it) when the tech chose Schedule
+ * for later. That mechanism is now unreachable from this door — the sign route calls
+ * notifyOwnerSigned and nothing else — so check 2 ("sends the customer nothing") is proved more
+ * simply: no signature on this door ever sends an email, same-day job or not. The hold/release
+ * machinery is left in place (not deleted) per the comment at holdOrSendDepositRequest; the tests
+ * below assert it is never exercised rather than asserting it still fires.
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -126,12 +137,9 @@ async function signOnPublicPage(estimateId: string) {
   const res = await request(app).post(`/e/${est.token}/sign`).type("form").send(signedBy("Field Customer"));
   expect(res.status).toBe(200);
   await waitFor(async () => Boolean((await prisma.issuedEstimate.findUnique({ where: { id: estimateId } }))?.jobVisitId), "job creation after sign");
-  // Every signature in this file either holds the request (an event) or sends it (a counted email).
-  await waitFor(async () => {
-    const held = await prisma.issuedEstimateEvent.count({ where: { estimateId, type: EVENT_DEPOSIT_HELD } });
-    return held > 0 || depositEmailsFor(estimateId) > 0;
-  }, "deposit step after sign");
-  // The owner notification runs after the deposit step; give it a tick so nothing lands mid-assertion.
+  // NO AUTO-SEND (Kyle, 2026-10-01): this door used to either hold the deposit request (an event)
+  // or send it (a counted email) — there is nothing left to wait for; notifyOwnerSigned is the
+  // only async step left, and the sleep below gives it a tick so nothing lands mid-assertion.
   await new Promise((r) => setTimeout(r, 100));
   return prisma.issuedEstimate.findUniqueOrThrow({ where: { id: estimateId } });
 }
@@ -220,7 +228,7 @@ describe("Complete work now — one Visit, no customer message, closes as a job"
     expect(on.depositRequired).toBe(true);
   });
 
-  it("the public-page signature mints the job but HOLDS the deposit request while the tech's consultation is open (check 2)", async () => {
+  it("the public-page signature mints the job and sends the customer NOTHING — no hold needed, nothing ever fires (check 2, 2026-10-01)", async () => {
     // Time and a P.O. already on the consultation before the customer signs — the day's work.
     await clock(consult.id, 60);
     await poWithFee(consult.id, 40);
@@ -228,9 +236,13 @@ describe("Complete work now — one Visit, no customer message, closes as a job"
     expect(est.jobVisitId).toBeTruthy();
     expect(est.jobVisitId).not.toBe(consult.id);
     mintedJobId = est.jobVisitId!;
+    // NO AUTO-SEND (Kyle, 2026-10-01): this door no longer calls holdOrSendDepositRequest at all,
+    // so no EVENT_DEPOSIT_HELD is ever written — the old mechanism that made a same-day job send
+    // nothing is superseded by a rule that makes EVERY signature send nothing.
     const held = await prisma.issuedEstimateEvent.count({ where: { estimateId: est.id, type: EVENT_DEPOSIT_HELD } });
-    expect(held).toBe(1);
+    expect(held).toBe(0);
     expect(depositEmailsFor(est.id)).toBe(0);
+    expect(emailMock.sendBrandedEmail.mock.calls.some((c) => c[0]?.issuedEstimateId === est.id)).toBe(false);
     const brief = await auth(request(app).get(`/health-record/visits/${consult.id}/job-brief`));
     expect(brief.body.data.choicePending).toBe(true);
     expect(brief.body.data.estimate.signedAt).toBeTruthy();
@@ -256,7 +268,9 @@ describe("Complete work now — one Visit, no customer message, closes as a job"
     expect(await prisma.visitAssignment.count({ where: { visitId: consult.id, technicianId } })).toBe(1);
     const types = (await prisma.issuedEstimateEvent.findMany({ where: { estimateId: est.id }, select: { type: true } })).map((e) => e.type);
     expect(types).toContain(EVENT_SAME_DAY_JOB);
-    expect(types).toContain(EVENT_DEPOSIT_CANCELLED);
+    // NO AUTO-SEND (Kyle, 2026-10-01): no EVENT_DEPOSIT_HELD was ever written (check 2, above), so
+    // completeWorkNow has no open hold to cancel — EVENT_DEPOSIT_CANCELLED is never written either.
+    expect(types).not.toContain(EVENT_DEPOSIT_CANCELLED);
 
     // A second tap is idempotent.
     const again = await auth(request(app).post(`/health-record/visits/${consult.id}/complete-work-now`)).send({});
@@ -328,7 +342,15 @@ describe("Schedule for later — the job goes to the office; the field cannot bo
   let est: Awaited<ReturnType<typeof issueFromField>>;
   let jobId: string;
 
-  it("the held deposit request is released when the tech chooses Schedule for later; the consultation closes properly", async () => {
+  /*
+    NO AUTO-SEND (Kyle, 2026-10-01): this used to prove the deposit request was HELD at signature
+    and RELEASED (sent) when the tech chose Schedule for later. Both halves of that mechanism are
+    gone from this door: no hold is ever written (check 2, above), and even if one existed, the
+    release branch in scheduleForLater no longer sends — it only closes the hold out. So this now
+    proves the stronger claim: the customer hears nothing at signature AND nothing at Schedule for
+    later. The deposit goes out only when Kyle presses "Email deposit request" on the payment panel.
+  */
+  it("Schedule for later sends the customer nothing — no hold, no release-triggered send", async () => {
     consult = await consultation("service upgrade");
     est = await issueFromField(consult.id, {});
     expect(est.depositRequired).toBe(true);
@@ -340,7 +362,8 @@ describe("Schedule for later — the job goes to the office; the field cannot bo
 
     const res = await auth(request(app).post(`/health-record/visits/${consult.id}/schedule-for-later`)).send({});
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ jobVisitId: jobId, depositRequestReleased: true });
+    // depositRequestReleased is false: there was no hold to release (none is ever created anymore).
+    expect(res.body.data).toEqual({ jobVisitId: jobId, depositRequestReleased: false });
 
     const c = await prisma.visit.findUniqueOrThrow({ where: { id: consult.id } });
     expect(c.status).toBe("estimate");
@@ -351,11 +374,11 @@ describe("Schedule for later — the job goes to the office; the field cannot bo
     expect(job.status).toBe("contracted");
     expect(job.scheduledStart).toBeNull();
     expect(job.googleEventId).toBeNull();
-    // The deposit request went out exactly once — now, not at the signature.
-    expect(depositEmailsFor(est.id)).toBe(1);
+    // No deposit email ever — not at signature, not at Schedule for later.
+    expect(depositEmailsFor(est.id)).toBe(0);
     const types = (await prisma.issuedEstimateEvent.findMany({ where: { estimateId: est.id }, orderBy: { at: "asc" }, select: { type: true } })).map((e) => e.type);
-    expect(types).toContain(EVENT_DEPOSIT_RELEASED);
-    expect(types.indexOf(EVENT_DEPOSIT_HELD)).toBeLessThan(types.indexOf(EVENT_DEPOSIT_RELEASED));
+    expect(types).not.toContain(EVENT_DEPOSIT_HELD);
+    expect(types).not.toContain(EVENT_DEPOSIT_RELEASED);
   });
 
   it("the field's own booking route is gone", async () => {
@@ -469,7 +492,7 @@ describe("Schedule for later — the job goes to the office; the field cannot bo
     expect(calendarMock.deleted).not.toContain("evt_pause_past");
   });
 
-  it("closing a consultation with a signed, undecided estimate IS Schedule for later", async () => {
+  it("closing a consultation with a signed, undecided estimate IS Schedule for later — and still sends nothing", async () => {
     const c = await consultation("closed without choosing");
     let e = await issueFromField(c.id, { depositRequired: true });
     e = await signOnPublicPage(e.id);
@@ -477,13 +500,24 @@ describe("Schedule for later — the job goes to the office; the field cannot bo
     const res = await auth(request(app).post(`/health-record/visits/${c.id}/complete`)).send({});
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ completed: true, scheduledForLater: true, jobVisitId: e.jobVisitId });
-    expect(depositEmailsFor(e.id)).toBe(1);
+    // NO AUTO-SEND (Kyle, 2026-10-01): this used to assert the deposit email went out exactly once,
+    // here, as the delayed half of the hold/release mechanism. It no longer does — the "Email
+    // deposit request" button on the payment panel is the only door for it now.
+    expect(depositEmailsFor(e.id)).toBe(0);
     expect((await prisma.visit.findUniqueOrThrow({ where: { id: e.jobVisitId! } })).status).toBe("contracted");
   });
 });
 
-describe("the ordinary signature is unchanged", () => {
-  it("a signature with no technician's consultation open sends the deposit request at once", async () => {
+/*
+  NO AUTO-SEND (Kyle, 2026-10-01): this describe block's name and test used to be the control case
+  — the one signature that was NOT held, proving the hold only applied to a live technician
+  consultation. That control is gone along with the mechanism: now EVERY signature on this door
+  sends nothing, whether or not a technician's consultation is open. Kept (inverted, not deleted)
+  because "a signature with no field consultation open" is still a real, distinct case worth
+  pinning — it is the ordinary office-issued, emailed quote, same as any `/e/:token/sign`.
+*/
+describe("the ordinary signature — also no auto-send now", () => {
+  it("a signature with no technician's consultation open sends nothing either", async () => {
     // No technician on this visit: the office built and emailed the quote (the CRM's own issue path).
     const v = await consultation("emailed from the office", { assigned: false, scheduledStart: null });
     const d = await createDraft(prisma, { title: `${MARK} office quote`, supplierId: "HD", visitId: v.id });
@@ -493,6 +527,7 @@ describe("the ordinary signature is unchanged", () => {
     if (!g.ok) throw new Error(g.reasons.join("; "));
     const e = await signOnPublicPage(g.estimateId);
     expect(await prisma.issuedEstimateEvent.count({ where: { estimateId: e.id, type: EVENT_DEPOSIT_HELD } })).toBe(0);
-    expect(depositEmailsFor(e.id)).toBe(1);
+    expect(depositEmailsFor(e.id)).toBe(0);
+    expect(emailMock.sendBrandedEmail.mock.calls.some((c) => c[0]?.issuedEstimateId === e.id)).toBe(false);
   });
 });

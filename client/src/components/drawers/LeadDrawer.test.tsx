@@ -4,15 +4,21 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useLocation } from "react-router-dom";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../../test/renderWithProviders";
 import { DrawerHost } from "./DrawerHost";
 import { api } from "../../lib/api";
-import type { Lead } from "../../lib/types";
+import type { Lead, Visit } from "../../lib/types";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+function PathProbe() {
+  const { pathname, search } = useLocation();
+  return <p data-testid="path">{pathname}{search}</p>;
+}
 
 function lead(overrides: Partial<Lead>): Lead {
   return {
@@ -41,7 +47,7 @@ describe("LeadDrawer", () => {
     expect(dialog.querySelector("[data-sms-consent]")).toHaveAttribute("data-sms-consent", "null");
     expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Mark Contacted" })).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "Schedule" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Book on the Calendar" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Convert only" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Mark Lost" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "+ Email campaign" })).toBeInTheDocument();
@@ -107,6 +113,65 @@ describe("LeadDrawer", () => {
       target: "lead", id: "lead-1", to: "jane@example.com", subject: "Checking in", body: "Just following up on your quote.",
     }));
     expect(await within(dialog).findByText(/unsubscribed from marketing/)).toBeInTheDocument();
+  });
+
+  /*
+    ONE SCHEDULER (2026-10-01, plan item E3). This drawer used to open its own `JobScheduler`
+    inline — a second month grid against a second endpoint — the moment "Schedule" was pressed.
+    Kyle: "It all needs consolidated into a single scheduling system in one place." Booking a
+    lead is now the same door "Book consultation" uses: land on the Calendar with the visit
+    selected. Three cases: a lead that already has a visit, a lead that must convert first, and
+    a lead whose visit is already booked.
+  */
+  it("a converted lead's 'Book on the Calendar' leaves for /calendar?schedule=<visitId> and opens no picker here", async () => {
+    mockCommon(lead({
+      status: "converted", leadStatus: "won", customerId: "cust-1", propertyId: "prop-1",
+      linkedVisit: { id: "visit-9", status: "estimate", scheduledStart: null, scheduledEnd: null, estimatedDurationDays: null, jobType: "Panel upgrade", purpose: null },
+    }));
+
+    renderWithProviders(<><DrawerHost /><PathProbe /></>, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Book on the Calendar" }));
+
+    // No inline scheduler — straight to the Calendar; the drawer closes with the route change.
+    expect(screen.queryByText(/Pick a start date/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Su")).not.toBeInTheDocument();
+    expect(screen.getByTestId("path")).toHaveTextContent("/calendar?schedule=visit-9");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("a new lead converts first, then lands on the Calendar with the new visit selected", async () => {
+    mockCommon(lead({}));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(api, "convertLead").mockResolvedValue({
+      customer: { id: "cust-1", name: "Jane Homeowner" } as never,
+      property: { id: "prop-1" } as never,
+      visit: { id: "visit-new", propertyId: "prop-1", customerId: "cust-1", mode: "service_diagnostic", status: "estimate", visitDate: "2026-10-01T12:00:00.000Z" } as Visit,
+      lead: lead({ status: "converted" }),
+    });
+
+    renderWithProviders(<><DrawerHost /><PathProbe /></>, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Book on the Calendar" }));
+
+    await waitFor(() => expect(api.convertLead).toHaveBeenCalledWith("lead-1", undefined));
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent("/calendar?schedule=visit-new"));
+    expect(screen.queryByText(/Pick a start date/)).not.toBeInTheDocument();
+  });
+
+  it("a lead whose visit is booked offers 'Reschedule or cancel on the Calendar'", async () => {
+    mockCommon(lead({
+      status: "converted", leadStatus: "won", customerId: "cust-1", propertyId: "prop-1",
+      linkedVisit: { id: "visit-9", status: "estimate", scheduledStart: "2026-10-15T13:00:00.000Z", scheduledEnd: "2026-10-15T15:00:00.000Z", estimatedDurationDays: null, jobType: "Panel upgrade", purpose: null },
+    }));
+
+    renderWithProviders(<><DrawerHost /><PathProbe /></>, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reschedule or cancel on the Calendar" }));
+    expect(screen.getByTestId("path")).toHaveTextContent("/calendar?schedule=visit-9");
   });
 
   it("removes a lead from the campaign list from the same badge that added it", async () => {
