@@ -531,7 +531,7 @@ export function AccountDetailPage() {
           </p>
           <div className="space-y-2">
             {summary.documents.map((d) => (
-              <InvoiceRow key={d.id} doc={d} accountId={account.id} />
+              <InvoiceRow key={d.id} doc={d} accountId={account.id} properties={properties} />
             ))}
           </div>
         </section>
@@ -1494,7 +1494,13 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
  * on each would be two buttons doing one thing — and the one that reads "our copy" is the last
  * place to put a control that emails a customer.
  */
-function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][number]; accountId: string }) {
+function InvoiceRow({ doc: d, accountId, properties }: {
+  doc: AccountSummary["documents"][number];
+  accountId: string;
+  /** Every address on the account (2026-10-01, item J) — threaded down so the photo picker
+   * below can attach any photo on the account, not just this document's own property. */
+  properties: AccountSummary["properties"];
+}) {
   const [sent, setSent] = useState<string | null>(null);
   // Which address (Kyle, 2026-08-25) — null lets the server default to primary.
   const [toOverride, setToOverride] = useState<string | null>(null);
@@ -1580,15 +1586,20 @@ function InvoiceRow({ doc: d, accountId }: { doc: AccountSummary["documents"][nu
         )}
       </div>
 
-      {/* Photo gallery (2026-08-28): attach before/after job photos to the
-          invoice email — per send, ticked by the operator, never assumed. */}
-      {canSend && d.propertyId && (
+      {/*
+        Photo gallery (2026-08-28): attach photos to the invoice email — per send, ticked by the
+        operator, never assumed. Gated on the ACCOUNT having an address at all (2026-10-01, item
+        J), not on this document's own `propertyId` — the picker now reaches every property on
+        the account plus this estimate's draft photos, not just the one this document was filed
+        at.
+      */}
+      {canSend && properties.length > 0 && (
         <div className="mt-2">
           <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setShowPhotos((s) => !s)}>
-            {showPhotos ? "Hide photos" : `Attach job photos…${photoIds.length ? ` (${photoIds.length})` : ""}`}
+            {showPhotos ? "Hide photos" : `Attach photos…${photoIds.length ? ` (${photoIds.length})` : ""}`}
           </button>
           {showPhotos && (
-            <PhotoAttachPicker propertyId={d.propertyId} selected={photoIds} onChange={setPhotoIds} />
+            <PhotoAttachPicker properties={properties} draftId={d.draftId} selected={photoIds} onChange={setPhotoIds} />
           )}
         </div>
       )}

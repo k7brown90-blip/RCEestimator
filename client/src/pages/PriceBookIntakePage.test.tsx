@@ -57,7 +57,14 @@ function issued(overrides: Partial<PbIssuedEstimate> = {}): PbIssuedEstimate {
 }
 
 /** Every query the page fires. `issuedEstimate: null` = nothing has been issued from the draft. */
-function mockPage(issuedEstimate: PbIssuedEstimate | null) {
+function mockPage(
+  issuedEstimate: PbIssuedEstimate | null,
+  // Every address on the account (2026-10-01, item J) — rides `pbIssuedDetail` now, and the
+  // photo picker below needs at least one to have anything to ask `propertyPhotos` about.
+  accountProperties: Array<{ id: string; name: string; addressLine1: string; city: string }> = [
+    { id: "prop-1", name: "Tony Hoover House", addressLine1: "1 Main St", city: "Smyrna" },
+  ],
+) {
   vi.spyOn(api, "pbDrafts").mockResolvedValue({ drafts: [DRAFT] });
   vi.spyOn(api, "pbSections").mockResolvedValue({ sections: [] });
   vi.spyOn(api, "pbReview").mockResolvedValue(REVIEW);
@@ -72,7 +79,7 @@ function mockPage(issuedEstimate: PbIssuedEstimate | null) {
   vi.spyOn(api, "pbPhotos").mockResolvedValue({ photos: [] });
   vi.spyOn(api, "pbIssuedList").mockResolvedValue({ estimates: issuedEstimate ? [issuedEstimate] : [] });
   vi.spyOn(api, "pbIssuedDetail").mockResolvedValue(
-    issuedEstimate ? { estimate: issuedEstimate, customerLink: "https://example.test/e/tok" } : (null as never),
+    issuedEstimate ? { estimate: issuedEstimate, customerLink: "https://example.test/e/tok", accountProperties } : (null as never),
   );
 }
 
@@ -100,10 +107,11 @@ describe("PriceBookIntakePage — photos can ride the estimate email", () => {
   const ROUTE_NO_ADDRESS = "/estimate-intake?draft=draft-1&tab=review";
 
   /**
-   * `PhotoAttachPicker` returns null when the property has no photos, so the fixture must carry
-   * one — mocking an empty list proves nothing about whether the picker was reachable.
-   * It asks for the photos of whatever `propertyId` it is handed, which is the whole point here:
-   * the assertion is that it was handed the ESTIMATE's address rather than the URL's.
+   * `PhotoAttachPicker` shows an explanatory empty-state message when the account has no photos
+   * at all, so the fixture must carry one — mocking an empty list proves nothing about whether
+   * the picker was reachable. It asks for the photos of every property `mockPage` put on the
+   * account, which is the whole point here: the assertion is that `prop-1` came from the
+   * ESTIMATE's account (via `pbIssuedDetail`'s `accountProperties`), not from the URL.
    */
   function mockPhotosFor(propertyId: string) {
     return vi.spyOn(api, "propertyPhotos").mockImplementation(async (id) =>
@@ -119,9 +127,10 @@ describe("PriceBookIntakePage — photos can ride the estimate email", () => {
 
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE_NO_ADDRESS });
 
-    // It asked for the ESTIMATE's address, not the URL's (which has none), and drew the picker.
+    // It asked for the ESTIMATE's account's address, not the URL's (which has none), and drew
+    // the picker.
     await waitFor(() => expect(photos).toHaveBeenCalledWith("prop-1"));
-    expect(await screen.findByText(/Attach job photos/)).toBeInTheDocument();
+    expect(await screen.findByText(/Attach photos/)).toBeInTheDocument();
   });
 
   it("still offers it on the ordinary route that does carry the address", async () => {
@@ -130,7 +139,40 @@ describe("PriceBookIntakePage — photos can ride the estimate email", () => {
 
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
 
-    expect(await screen.findByText(/Attach job photos/)).toBeInTheDocument();
+    expect(await screen.findByText(/Attach photos/)).toBeInTheDocument();
+  });
+
+  /*
+    ANY PHOTO ON THE ACCOUNT, PLUS THE DRAFT'S (Kyle, 2026-10-01, item J): "Having the photos
+    linked to the job is necessary but that should not eleminate them from being selected…
+    sending the photos as evidence is our standard." The picker must reach a SECOND property on
+    the same account (not just the estimate's own `serviceAddressId`) and this estimate's
+    `DraftPhoto`s — each option labelled with which property/job or that it's a draft photo, and
+    when, so two similar photos can be told apart.
+  */
+  it("offers photos from a second property on the account and this estimate's draft photos, each labelled", async () => {
+    mockPage(issued(), [
+      { id: "prop-1", name: "Tony Hoover House", addressLine1: "1 Main St", city: "Smyrna" },
+      { id: "prop-2", name: "Rental", addressLine1: "2 Second St", city: "Smyrna" },
+    ]);
+    vi.spyOn(api, "propertyPhotos").mockImplementation(async (id) =>
+      (id === "prop-1"
+        ? { jobPhotos: [{ id: "photo-1", visitDate: "2026-09-20T12:00:00.000Z", caption: "Panel before", jobType: "Panel upgrade" }] }
+        : { jobPhotos: [{ id: "photo-2", visitDate: "2026-09-18T12:00:00.000Z", caption: null, jobType: "Rewire" }] }) as never,
+    );
+    vi.spyOn(api, "pbPhotos").mockResolvedValue({
+      photos: [{ id: "draft-photo-1", mime: "image/png", size: 10, note: "Breaker panel", createdAt: "2026-09-25T10:00:00.000Z" }],
+    });
+
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+
+    await screen.findByText(/Attach photos/);
+    // The second property's photo is offered, labelled with that property — not just prop-1's.
+    // Both property queries and the draft-photo query resolve asynchronously, so these wait
+    // rather than asserting on whatever happened to be rendered first.
+    expect(await screen.findByTitle(/Rental/)).toBeInTheDocument();
+    // The draft photo is offered too, labelled as added while building the estimate.
+    expect(await screen.findByTitle(/Added while building this estimate/)).toBeInTheDocument();
   });
 });
 

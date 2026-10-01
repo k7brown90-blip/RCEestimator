@@ -138,7 +138,14 @@ export function InvoiceDrawer({ id, onClose }: { id: string; onClose: () => void
           {showSend && (
             <div className="space-y-2 rounded-lg border border-rce-border p-3">
               <SendToPicker accountId={inv.customer.id} primaryEmail={inv.customerEmail} onChange={setToOverride} />
-              <PhotoAttachPicker propertyId={inv.propertyId} selected={photoIds} onChange={setPhotoIds} />
+              {/*
+                ANY PHOTO ON THE ACCOUNT, PLUS THE DRAFT'S (Kyle, 2026-10-01). Was scoped to
+                `inv.propertyId` alone — an account with two addresses could not send a photo
+                from the other one, and `DraftPhoto`s (added while BUILDING the estimate) were
+                unreachable from any send. `accountProperties` and `draftId` ride on the
+                `GET /invoices` row itself now (item J).
+              */}
+              <PhotoAttachPicker properties={inv.accountProperties} draftId={inv.draftId} selected={photoIds} onChange={setPhotoIds} />
               <button type="button" className="btn btn-primary text-sm" disabled={send.isPending} onClick={() => send.mutate()}>
                 {send.isPending ? "Sending…" : `Email the signed copy${photoIds.length ? ` with ${photoIds.length} photo${photoIds.length === 1 ? "" : "s"}` : ""}`}
               </button>

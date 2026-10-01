@@ -1789,7 +1789,13 @@ export const api = {
     ),
 
   pbIssuedDetail: (id: string) =>
-    request<{ estimate: PbIssuedEstimate; customerLink: string }>(`/issued-estimates/${id}`),
+    request<{
+      estimate: PbIssuedEstimate;
+      customerLink: string;
+      /** Every address on the account (2026-10-01, item J) — the photo picker attaches any
+       * photo on the account, not just this estimate's own serviceAddressId. */
+      accountProperties: Array<{ id: string; name: string; addressLine1: string; city: string }>;
+    }>(`/issued-estimates/${id}`),
 
   /** OPERATOR ACTION ONLY. Behind the PIN session and a confirm; never called automatically. */
   pbIssuedSend: (id: string, input: { to?: string | null; message?: string | null; photoIds?: string[]; attachHealthReport?: boolean; attachGeneratorReport?: boolean }) =>

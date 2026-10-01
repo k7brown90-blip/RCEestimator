@@ -293,6 +293,7 @@ describe("EstimateDrawer", () => {
     // "may be voided or superseded" dead end.
     vi.spyOn(api, "invoices").mockResolvedValue([{
       remindersSent: 0, lastReminderAt: null, id: "root-1", number: "2026-1093", revision: 1,
+      draftId: "draft-1", accountProperties: [{ id: "prop-1", name: "Tony Hoover House", addressLine1: "12 Main St", city: "Smyrna" }],
       title: "Kitchen circuit diagnostic", customer: { id: "acct-1", name: "Tony Hoover" },
       customerPhone: null, customerEmail: "tony@example.com", propertyId: "prop-1",
       job: { id: "visit-1", jobType: "Diagnostic", purpose: null, status: "in_progress", scheduledStart: null },

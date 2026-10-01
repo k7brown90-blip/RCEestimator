@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
 import { downscale } from "../lib/images";
-import { PhotoAttachPicker } from "../components/PhotoGalleryPanel";
+import { PhotoAttachPicker, draftPhotosQuery } from "../components/PhotoGalleryPanel";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { WarrantyCoveragePanel } from "../components/WarrantyCoveragePanel";
 import { RaiseChangeOrderButton } from "../components/RaiseChangeOrderButton";
@@ -1962,6 +1962,9 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   });
 
   const est = detail?.estimate;
+  // Every address on the account (2026-10-01, item J) — the photo picker below attaches any
+  // photo on the account, not just this estimate's own serviceAddressId.
+  const accountProperties = detail?.accountProperties ?? [];
 
   // The terms after issue (2026-09-20) — editable from where the document is shown.
   const setTerms = useMutation({
@@ -2314,20 +2317,20 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                   Photo gallery (2026-08-28): assessment/job photos can ride the estimate email —
                   ticked here, per send, never assumed.
 
-                  THE ADDRESS COMES FROM THE ESTIMATE, NOT THE URL (Kyle, 2026-10-01: "I want to
-                  be able to attach photos to the email now… I need to be able to attach photos to
-                  the email when sending an estimate too").
-
-                  This was gated on `serviceAddressId`, the `?address=` URL PARAMETER — while the
-                  rest of this panel is not. So reaching the builder by any route that does not
-                  carry `&address=` left the two report checkboxes and the Email button on screen
-                  with the photo picker silently missing, which is exactly what Kyle was looking
-                  at when he filed this. An ISSUED estimate always carries its own
-                  `serviceAddressId` (it is required on the row), so read it from the document
-                  rather than from how the operator happened to navigate here.
+                  ANY PHOTO ON THE ACCOUNT, PLUS THE DRAFT'S (Kyle, 2026-10-01: "Having the
+                  photos linked to the job is necessary but that should not eleminate them from
+                  being selected… sending the photos as evidence is our standard"). This used to
+                  be gated on `serviceAddressId` alone (the `?address=` URL PARAMETER, while the
+                  rest of this panel is not) and only reached `VisitPhoto`s at that one address —
+                  an account with two properties could not send a photo from the other, and
+                  photos added while BUILDING the estimate (`DraftPhoto`) could not ride the email
+                  at all. `accountProperties` (every address on this estimate's account) and
+                  `est.draftId` (the draft this was issued from) both come from the issued
+                  estimate's own detail response, not from how the operator navigated here.
                 */}
                 <PhotoAttachPicker
-                  propertyId={est.serviceAddressId}
+                  properties={accountProperties}
+                  draftId={est.draftId}
                   selected={sendPhotoIds}
                   onChange={setSendPhotoIds}
                 />
@@ -2427,10 +2430,7 @@ function PhotoAttach(props: { draftId: string }) {
   // Zoomable viewer (Kyle, 2026-08-31) — nameplates are unreadable at thumbnail size.
   const [lightboxId, setLightboxId] = useState<string | null>(null);
 
-  const { data } = useQuery({
-    queryKey: ["pb-photos", props.draftId],
-    queryFn: () => api.pbPhotos(props.draftId),
-  });
+  const { data } = useQuery(draftPhotosQuery(props.draftId));
   const photos = data?.photos ?? [];
   const photoIds = photos.map((p) => p.id).join(",");
 

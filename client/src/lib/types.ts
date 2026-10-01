@@ -1472,6 +1472,12 @@ export type InvoiceSummary = {
   id: string;
   number: string;
   revision: number;
+  /** The draft this invoice's estimate was issued from (2026-10-01, item J) — the photo picker
+   * reads its DraftPhoto rows, the ones added while BUILDING the estimate. */
+  draftId: string;
+  /** Every address on the account (item J) — the photo picker attaches any photo on the
+   * account, not just this invoice's own `propertyId`. */
+  accountProperties: Array<{ id: string; name: string; addressLine1: string; city: string }>;
   title: string;
   customer: { id: string; name: string };
   // Kyle, 2026-09-07 (invoices merged into Financials): contact info for the expanded
@@ -1602,6 +1608,9 @@ export type AccountSummary = {
     invoiceNumber: string | null;
     /** The estimate this renders. Emailing an invoice targets it, not this row. */
     estimateId: string | null;
+    /** The draft behind that estimate (2026-10-01, item J) — null on the handful of rows
+     * issued before drafts carried provenance. The photo picker reads its DraftPhoto rows. */
+    draftId: string | null;
     customerEmail: string | null;
     signedByName: string | null;
     signedAt: string | null;

@@ -3172,6 +3172,9 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
       supersedes: { select: { id: true, number: true, revision: true } },
       // The invoice a change order joins (2026-09-20) — its number, for the panel.
       changeOrderFor: { select: { id: true, number: true } },
+      // Every address on the account (2026-10-01, item J) — the photo picker attaches any
+      // photo on the account, not just this estimate's own serviceAddressId.
+      account: { select: { properties: { select: { id: true, name: true, addressLine1: true, city: true } } } },
     },
   });
   if (!est) {
@@ -3182,16 +3185,25 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
   // will see. The raw `token` itself never leaves the server (PUNCHLIST B5): it is the
   // customer's unrevokable read-and-sign capability, and customerLink is the only thing built
   // from it that a caller needs.
-  const { changeOrderFor, token, ...row } = est;
-  res.json({ estimate: { ...row, changeOrderForNumber: changeOrderFor?.number ?? null }, customerLink: estimateLink(token) });
+  const { changeOrderFor, token, account, ...row } = est;
+  res.json({
+    estimate: { ...row, changeOrderForNumber: changeOrderFor?.number ?? null },
+    customerLink: estimateLink(token),
+    accountProperties: account.properties,
+  });
 }));
 
 app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
   const body = z.object({
     to: z.string().trim().email().nullable().optional(),
     message: z.string().trim().max(2000).nullable().optional(),
-    // Photo gallery (2026-08-28): job photos chosen to ride the email. The
-    // service refuses any photo not taken at this estimate's address.
+    // Photos chosen to ride the email (2026-08-28; widened 2026-10-01). The service refuses any
+    // photo that is not THIS CUSTOMER'S: a job photo whose visit belongs to the estimate's
+    // customer (any property on the account), or a photo on this estimate's own draft. Kyle,
+    // 2026-10-01: "Having the photos linked to the job is necessary but that should not eleminate
+    // them from being selected … sending the photos as evidence is our standard." The scoping
+    // lives in ONE place, `photoAttachments` in services/issuedEstimateSend.ts — a security
+    // review passed it on 2026-10-01 and `tests/anyPhotoOnAccountEmail.test.ts` pins the refusal.
     photoIds: z.array(z.string().min(1)).max(10).optional(),
     // Support documentation (2026-08-29), rendered fresh at send time.
     attachHealthReport: z.boolean().optional(),
@@ -5709,7 +5721,15 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     where: { ...LIVE_SIGNED, changeOrderForId: null, ...EXCLUDE_TEST_ACCOUNT },
     include: {
       options: true,
-      account: { select: { id: true, name: true, phone: true, email: true } },
+      // `properties` (2026-10-01, item J): every address on the ACCOUNT, not just this
+      // invoice's own serviceProperty — the photo picker attaches ANY photo on the account,
+      // so it needs the full property list to fetch each one's gallery.
+      account: {
+        select: {
+          id: true, name: true, phone: true, email: true,
+          properties: { select: { id: true, name: true, addressLine1: true, city: true } },
+        },
+      },
       serviceProperty: { select: { id: true, addressLine1: true, city: true } },
     },
     orderBy: { signedAt: "desc" },
@@ -5798,6 +5818,12 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       id: est.id,
       number: est.number,
       revision: est.revision,
+      // The draft this invoice's estimate was issued from (2026-10-01, item J) — the photo
+      // picker reads its DraftPhoto rows, the ones added while BUILDING the estimate.
+      draftId: est.draftId,
+      // Every address on the account (item J) — the photo picker attaches any photo on the
+      // account, not just this invoice's own serviceProperty.
+      accountProperties: est.account.properties,
       remindersSent: est.paymentRemindersSent,
       lastReminderAt: est.lastPaymentReminderAt,
       title: est.title,
@@ -7303,6 +7329,9 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
           // invoice" button and the SAME group totals behind it. Reads as double billing.
           changeOrderForId: true,
           changeOrderFor: { select: { number: true } },
+          // The draft this estimate was issued from (2026-10-01, item J) — the photo picker
+          // reads its DraftPhoto rows alongside the account's VisitPhoto gallery.
+          draftId: true,
         },
       },
     },
@@ -7399,6 +7428,9 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       // The invoice send targets the ESTIMATE, not the document row — the document is one of two
       // renderings of it. Exposed so the account page can offer the send without a second lookup.
       estimateId: d.issuedEstimateId,
+      // The draft behind that estimate (item J) — null only for the handful of rows issued
+      // before drafts carried provenance; the photo picker just has no DraftPhoto source then.
+      draftId: d.issuedEstimate?.draftId ?? null,
       customerEmail: d.issuedEstimate?.customerEmail ?? null,
       signedByName: d.signedByName,
       signedAt: d.signedAt,

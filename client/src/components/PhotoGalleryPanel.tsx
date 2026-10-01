@@ -44,6 +44,20 @@ function propertyPhotosQuery(propertyId: string) {
   return { queryKey: ["property-photos", propertyId] as const, queryFn: () => api.propertyPhotos(propertyId) };
 }
 
+/**
+ * The one definition of "fetch this draft's walkthrough photos" (same
+ * tests/queryKeyCollisions.test.ts rule as `propertyPhotosQuery` above). Used by the
+ * draft-builder's own `PhotoAttach` panel (PriceBookIntakePage.tsx) and, since 2026-10-01
+ * (item J), by `PhotoAttachPicker` below — the send-flow picker reads the SAME draft photos
+ * the builder shows, so a photo added while pricing the job can ride the estimate email too.
+ * Exported because PriceBookIntakePage.tsx is a different file; a second inline copy of this
+ * literal there would read as a different query to the collision test even though it hits the
+ * same endpoint.
+ */
+export function draftPhotosQuery(draftId: string) {
+  return { queryKey: ["pb-photos", draftId] as const, queryFn: () => api.pbPhotos(draftId) };
+}
+
 /** Authed thumbnail with object-URL lifecycle handled. */
 export function AuthedPhoto(props: { path: string; alt: string; className?: string; onClick?: () => void }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -625,18 +639,96 @@ export function AccountPhotoGallery(props: {
 }
 
 /**
- * Compact photo picker for the estimate/invoice send flows — tick the photos
- * to ride the email. Lists every job photo at the address so before/after from
- * the right visit is always reachable, capped at 10 per send (server cap).
+ * Compact photo picker for the estimate/invoice send flows — tick the photos to ride the email.
+ *
+ * ── ANY PHOTO ON THE ACCOUNT (Kyle, 2026-10-01) ────────────────────────────────────────────────
+ *
+ * "What use is having photos uploaded that cannot be attached? … Having the photos linked to the
+ * job is necessary but that should not eleminate them from being selected because building an
+ * estimate will often come from what is found on the job and sending the photos as evidence is
+ * our standard."
+ *
+ * Before this the picker offered one property's `VisitPhoto`s and nothing else — an account with
+ * two addresses could not send a photo from the other one, and photos added while BUILDING the
+ * estimate (`DraftPhoto`, a separate table) could not be emailed at all. Now it offers every
+ * `VisitPhoto` across every property on the ACCOUNT (one query per property, reusing
+ * `propertyPhotosQuery` exactly as `AccountPhotoGallery` does — no third photo query) plus the
+ * `DraftPhoto`s of the estimate actually being sent, when `draftId` is passed.
+ *
+ * THE SERVER ENFORCES OWNERSHIP, NOT THIS LIST. `issuedEstimateSend.ts`'s `photoAttachments`
+ * re-checks every ticked id against the estimate's `customerId` / `draftId` before it ever reads
+ * bytes — this component choosing what to ASK FOR is not the security boundary.
  */
 export function PhotoAttachPicker(props: {
-  propertyId: string;
+  properties: Array<{ id: string; name: string; addressLine1: string; city: string }>;
+  /** The draft the estimate being sent was issued from. Null/omitted = no draft photos offered
+   * (there is nothing to be a draft of on some older or company-only sends). */
+  draftId?: string | null;
   selected: string[];
   onChange: (ids: string[]) => void;
 }) {
-  const { data: history } = useQuery(propertyPhotosQuery(props.propertyId));
-  const photos = history?.jobPhotos ?? [];
-  if (photos.length === 0) return null;
+  const propertyQueries = useQueries({
+    queries: props.properties.map((property) => propertyPhotosQuery(property.id)),
+  });
+  const { data: draftPhotos } = useQuery({
+    ...draftPhotosQuery(props.draftId ?? ""),
+    enabled: Boolean(props.draftId),
+  });
+
+  const propertyLabel = (propertyId: string) => {
+    const p = props.properties.find((candidate) => candidate.id === propertyId);
+    return p ? `${p.name} — ${p.addressLine1}, ${p.city}` : "Address removed";
+  };
+
+  type PickerPhoto = { id: string; path: string; alt: string; date: string; title: string };
+  const combined: PickerPhoto[] = [];
+  props.properties.forEach((property, i) => {
+    const data = propertyQueries[i]?.data;
+    if (!data) return;
+    for (const p of data.jobPhotos) {
+      combined.push({
+        id: p.id,
+        path: `/health-record-admin/visit-photos/${p.id}`,
+        alt: p.caption ?? "job photo",
+        date: p.visitDate,
+        title: `${new Date(p.visitDate).toLocaleDateString()} · ${p.jobType || p.purpose || "Job"} — ${propertyLabel(property.id)}${p.caption ? ` — ${p.caption}` : ""}`,
+      });
+    }
+  });
+  for (const p of draftPhotos?.photos ?? []) {
+    combined.push({
+      id: p.id,
+      path: `/draft-photos/${p.id}`,
+      alt: p.note ?? "estimate draft photo",
+      date: p.createdAt,
+      title: `${new Date(p.createdAt).toLocaleDateString()} · Added while building this estimate${p.note ? ` — ${p.note}` : ""}`,
+    });
+  }
+  combined.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  /*
+    IT SAYS WHY IT IS EMPTY (Kyle, 2026-10-01: "I am ready to send this estimate but want to
+    include all the job photos … still do not see a way to attach the photos. Are the photos
+    being auto attached?").
+
+    This used to `return null` on an empty list, so a send screen with no job photos at the
+    address showed NOTHING between the report checkboxes and the Email button — identical to the
+    control being broken or missing. Kyle could not tell "there is nothing to attach" from "the
+    attach control is gone", and reasonably wondered whether photos were going out silently.
+    Nothing is ever attached without being ticked here.
+
+    Now that the picker reaches every property on the account plus this estimate's draft photos,
+    "empty" genuinely means there is nothing on the account yet — not "wrong address".
+  */
+  if (combined.length === 0) {
+    return (
+      <p className="mt-2 text-xs text-rce-soft">
+        No photos on this account yet, so there is nothing to attach. Photos taken on any job at
+        any address on this account, and photos added while building this estimate, will appear
+        here. Nothing is attached unless you tick it.
+      </p>
+    );
+  }
   const toggle = (id: string) => {
     if (props.selected.includes(id)) props.onChange(props.selected.filter((x) => x !== id));
     else if (props.selected.length < 10) props.onChange([...props.selected, id]);
@@ -644,10 +736,10 @@ export function PhotoAttachPicker(props: {
   return (
     <div className="mt-2">
       <p className="mb-1 text-xs text-rce-soft">
-        Attach job photos ({props.selected.length ? `${props.selected.length} selected` : "optional"}, max 10):
+        Attach photos ({props.selected.length ? `${props.selected.length} selected` : "optional"}, max 10):
       </p>
       <div className="grid max-h-40 grid-cols-4 gap-1.5 overflow-y-auto sm:grid-cols-6">
-        {photos.map((p) => (
+        {combined.map((p) => (
           <button
             key={p.id}
             type="button"
@@ -655,13 +747,9 @@ export function PhotoAttachPicker(props: {
               props.selected.includes(p.id) ? "border-rce-accent" : "border-transparent"
             }`}
             onClick={() => toggle(p.id)}
-            title={`${new Date(p.visitDate).toLocaleDateString()}${p.caption ? ` — ${p.caption}` : ""}`}
+            title={p.title}
           >
-            <AuthedPhoto
-              path={`/health-record-admin/visit-photos/${p.id}`}
-              alt={p.caption ?? "job photo"}
-              className="h-16 w-full object-cover"
-            />
+            <AuthedPhoto path={p.path} alt={p.alt} className="h-16 w-full object-cover" />
             {props.selected.includes(p.id) && (
               <span className="absolute right-0.5 top-0.5 rounded bg-rce-accent px-1 text-[10px] font-bold text-rce-text">✓</span>
             )}

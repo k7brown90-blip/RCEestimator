@@ -16,6 +16,7 @@ afterEach(() => {
 
 const inv: InvoiceSummary = {
   remindersSent: 1, lastReminderAt: "2026-09-15T12:00:00.000Z", id: "est-1", number: "EST-2026-0001", revision: 1, title: "Panel upgrade",
+  draftId: "draft-1", accountProperties: [{ id: "prop-1", name: "Jane Homeowner House", addressLine1: "12 Main St", city: "Smyrna" }],
   customer: { id: "acct-1", name: "Jane Homeowner" }, customerPhone: "615-555-0101", customerEmail: "jane@example.com", propertyId: "prop-1",
   job: { id: "visit-1", jobType: "Panel upgrade", purpose: null, status: "scheduled", scheduledStart: "2026-09-22T13:00:00.000Z" },
   serviceAddress: "12 Main St, Smyrna", signedAt: "2026-09-12T12:00:00.000Z", signedChannel: "email", sentAt: "2026-09-12T12:00:00.000Z",

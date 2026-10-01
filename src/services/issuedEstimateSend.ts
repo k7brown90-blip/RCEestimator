@@ -63,29 +63,67 @@ import sharp from "sharp";
 export type SendResult = { ok: true; to: string } | { ok: false; reason: string };
 
 /**
- * Job photos chosen by the operator to ride an estimate or invoice email
- * (photo gallery, Kyle 2026-08-28). Guarded twice:
- *  - a photo only attaches if it was taken at THIS estimate's service address —
- *    a wrong id cannot leak another customer's job onto this email;
- *  - each image is downscaled for email and the count is capped, so a send
- *    can't balloon past what mail providers accept.
+ * Job photos chosen by the operator to ride an estimate or invoice email (photo gallery, Kyle
+ * 2026-08-28; widened to the whole account 2026-10-01, item J).
+ *
+ * ── THE OWNERSHIP RULE: THIS PHOTO BELONGS TO THIS CUSTOMER — enforced HERE, nowhere else ──────
+ *
+ * Kyle, 2026-10-01: "Having the photos linked to the job is necessary but that should not
+ * eleminate them from being selected… sending the photos as evidence is our standard." The job
+ * link is for ORGANISATION, not permission — so this used to require `visit.propertyId ===
+ * serviceAddressId` (one address) and that guard is gone. What replaces it is NOT "no guard" —
+ * it is "this photo belongs to the CUSTOMER this estimate is for", checked against the two stores
+ * a photo can live in:
+ *
+ *   - `VisitPhoto` (taken on a visit) qualifies when its visit's `customerId` matches the
+ *     estimate's `customerId` — ANY property on the account, never cross-account.
+ *   - `DraftPhoto` (added while BUILDING the estimate, a separate table — before this item NO
+ *     send path read it at all) qualifies when its `draftId` is the estimate's OWN `draftId`.
+ *     Not "any draft on this customer": `PriceBookDraftEstimate.customerId` is nullable (drafts
+ *     are priced speculatively, context-free, by design — see its schema comment), so a draft
+ *     tied to this exact estimate can have a null `customerId`. Matching on `customerId` would
+ *     silently refuse a legitimate send for that whole class of estimates. Matching on the exact
+ *     `draftId` is strictly tighter AND avoids that gap: `IssuedEstimate.draftId` is a required,
+ *     `onDelete: Restrict` foreign key, so "this is the draft THIS customer's estimate was issued
+ *     from" is already a proven fact before this function is ever called.
+ *
+ * A wrong id — someone else's visit photo, someone else's draft photo, a stale id for a photo
+ * that moved accounts — cannot leak across the boundary either way: it is simply refused, same as
+ * an id that was never real. `MAX_EMAIL_PHOTOS` and the downscale-or-refuse-on-corruption
+ * behaviour are unchanged from the single-address version.
  */
 const MAX_EMAIL_PHOTOS = 10;
 
-async function photoAttachments(
+// Exported so tests/anyPhotoOnAccountEmail.test.ts can pin the ownership guard directly —
+// this is the security boundary the 2026-10-01 review runs against, so it is tested as a
+// unit, not only indirectly through whichever send happens to call it.
+export async function photoAttachments(
   prisma: PrismaClient,
   photoIds: string[],
-  serviceAddressId: string,
+  owner: { customerId: string; draftId: string },
 ): Promise<{ attachments: Array<{ filename: string; content: Buffer; contentType: string }>; refused: string[] }> {
   const ids = [...new Set(photoIds)].slice(0, MAX_EMAIL_PHOTOS);
-  const photos = await prisma.visitPhoto.findMany({
-    where: { id: { in: ids }, visit: { propertyId: serviceAddressId } },
-    select: { id: true, data: true, caption: true },
-  });
-  const found = new Set(photos.map((p) => p.id));
+
+  const [visitPhotos, draftPhotos] = await Promise.all([
+    prisma.visitPhoto.findMany({
+      where: { id: { in: ids }, visit: { customerId: owner.customerId } },
+      select: { id: true, data: true, caption: true },
+    }),
+    prisma.draftPhoto.findMany({
+      where: { id: { in: ids }, draftId: owner.draftId },
+      select: { id: true, bytes: true, note: true },
+    }),
+  ]);
+
+  const found = new Set([...visitPhotos.map((p) => p.id), ...draftPhotos.map((p) => p.id)]);
   const refused = ids.filter((id) => !found.has(id));
+
   const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = [];
-  for (const [i, photo] of photos.entries()) {
+  let n = 0;
+  // Visit photos (data: Bytes) and draft photos (bytes: Bytes) are different columns on
+  // different models — each store downscales from its own, never guessing a shared shape.
+  for (const photo of visitPhotos) {
+    n++;
     try {
       const content = await sharp(Buffer.from(photo.data))
         .rotate()
@@ -94,12 +132,31 @@ async function photoAttachments(
         .toBuffer();
       const label = (photo.caption ?? "").trim().replace(/[^a-z0-9 _-]/gi, "").slice(0, 40);
       attachments.push({
-        filename: `photo-${i + 1}${label ? `-${label.replace(/\s+/g, "-")}` : ""}.jpg`,
+        filename: `photo-${n}${label ? `-${label.replace(/\s+/g, "-")}` : ""}.jpg`,
         content,
         contentType: "image/jpeg",
       });
     } catch {
       refused.push(photo.id); // a corrupt image must not sink the send
+    }
+  }
+  for (const photo of draftPhotos) {
+    n++;
+    try {
+      const content = await sharp(Buffer.from(photo.bytes))
+        .rotate()
+        .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      // Same naming as a visit photo's caption — a draft photo's `note` is its equivalent.
+      const label = (photo.note ?? "").trim().replace(/[^a-z0-9 _-]/gi, "").slice(0, 40);
+      attachments.push({
+        filename: `photo-${n}${label ? `-${label.replace(/\s+/g, "-")}` : ""}.jpg`,
+        content,
+        contentType: "image/jpeg",
+      });
+    } catch {
+      refused.push(photo.id);
     }
   }
   return { attachments, refused };
@@ -302,9 +359,10 @@ export async function sendInvoiceEmail(
     <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
 
   // Job photos the operator chose to include — before/after shots belong on
-  // the invoice for completed work (photo gallery, Kyle 2026-08-28).
+  // the invoice for completed work (photo gallery, Kyle 2026-08-28; any photo
+  // on the account plus this estimate's draft photos, 2026-10-01 item J).
   const photos = opts.photoIds && opts.photoIds.length > 0
-    ? await photoAttachments(prisma, opts.photoIds, est.serviceAddressId)
+    ? await photoAttachments(prisma, opts.photoIds, { customerId: est.customerId, draftId: est.draftId })
     : { attachments: [], refused: [] };
 
   /*
@@ -463,8 +521,9 @@ export async function sendEstimateEmail(
 
   // Job photos the operator chose to include (photo gallery, Kyle 2026-08-28) —
   // assessment shots that show the customer what the estimate is talking about.
+  // Any photo on the account plus this estimate's draft photos (2026-10-01, item J).
   const photos = opts.photoIds && opts.photoIds.length > 0
-    ? await photoAttachments(prisma, opts.photoIds, est.serviceAddressId)
+    ? await photoAttachments(prisma, opts.photoIds, { customerId: est.customerId, draftId: est.draftId })
     : { attachments: [], refused: [] };
 
   // Support documentation, rendered fresh at send time (2026-08-29). Refuses
