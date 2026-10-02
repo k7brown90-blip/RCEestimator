@@ -318,7 +318,24 @@ describe("AccountDetailPage — Start work removed, additional contacts in the c
     const del = vi.spyOn(api, "deleteAccountContact").mockImplementation(async (_accountId, contactId) => {
       contacts = contacts.filter((c) => c.id !== contactId);
     });
-    return { add, del };
+    // Edits IN PLACE — same id, same position in the list. The old add-then-delete could do
+    // neither, which is the whole point of the route this replaces.
+    const patch = vi.spyOn(api, "patchAccountContact").mockImplementation(async (_accountId, contactId, input) => {
+      let updated: CustomerContact | undefined;
+      contacts = contacts.map((c) => {
+        if (c.id !== contactId) return c;
+        updated = {
+          ...c,
+          label: input.label ?? c.label,
+          email: input.email === undefined ? c.email : input.email,
+          phone: input.phone === undefined ? c.phone : input.phone,
+        };
+        return updated;
+      });
+      if (!updated) throw new Error("Contact not found on this account.");
+      return updated;
+    });
+    return { add, del, patch };
   }
 
   function renderPage() {
@@ -361,7 +378,7 @@ describe("AccountDetailPage — Start work removed, additional contacts in the c
   });
 
   it("adds, edits and removes an additional contact from the contact card", async () => {
-    const { add, del } = mockAccountReadsWithContacts([]);
+    const { add, del, patch } = mockAccountReadsWithContacts([]);
 
     renderPage();
 
@@ -387,15 +404,25 @@ describe("AccountDetailPage — Start work removed, additional contacts in the c
     fireEvent.click(within(card).getByRole("button", { name: "Save changes" }));
 
     await waitFor(() =>
-      expect(add).toHaveBeenCalledWith("cust-1", { label: "Spouse — cell", email: null, phone: "615-555-0222" }),
+      expect(patch).toHaveBeenCalledWith("cust-1", "contact-1", {
+        label: "Spouse — cell",
+        email: null,
+        phone: "615-555-0222",
+      }),
     );
-    await waitFor(() => expect(del).toHaveBeenCalledWith("cust-1", "contact-1"));
     await within(card).findByText("615-555-0222");
     expect(within(card).queryByText("615-555-0199")).not.toBeInTheDocument();
 
-    // Remove.
+    // THE REGRESSION THIS REPLACES (2026-10-01): saving an edit used to POST a new contact and
+    // then DELETE the old one, so a failure between the two left a DUPLICATE on this card. One
+    // call now — `add` stays at the single call from the Add step above, and nothing was deleted.
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(del).not.toHaveBeenCalled();
+
+    // Remove. The id is still contact-1, not contact-2 — the edit kept the row rather than
+    // recreating it, which is also what keeps it in place in a list ordered by createdAt.
     fireEvent.click(within(card).getByRole("button", { name: "Remove" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith("cust-1", "contact-2"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("cust-1", "contact-1"));
     await within(card).findByText("No additional contacts yet.");
   });
 });

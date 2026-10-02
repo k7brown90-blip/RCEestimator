@@ -990,7 +990,6 @@ describe("photos and the discount, end to end", () => {
     await request(app).get(`/price-book/drafts/${d.id}/photos`).expect(404);
     await request(app).get(`/draft-photos/anything`).expect(404);
     await request(app).delete(`/draft-photos/anything`).expect(404);
-    expect(await prisma.draftPhoto.count({ where: { draftId: d.id } })).toBe(0);
 
     // The one upload path that remains: the job's own gallery endpoint.
     const visit = await prisma.visit.create({

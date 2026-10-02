@@ -835,17 +835,17 @@ function AdditionalContacts({ accountId }: { accountId: string }) {
     onError: (err) => setError((err as Error).message),
   });
 
-  // Add the corrected row first, then remove the original — if the delete fails the customer's
-  // contact still exists (duplicated, not lost) rather than the reverse.
+  // One call, one row (2026-10-01). This used to add the corrected contact and then delete the
+  // original, so a failure between the two left a DUPLICATE on the account page, and every
+  // successful edit sent the contact to the bottom of a list ordered by createdAt. The server
+  // refuses an edit that would leave the contact with neither an email nor a phone.
   const saveEdit = useMutation({
-    mutationFn: async (id: string) => {
-      await api.addAccountContact(accountId, {
+    mutationFn: (id: string) =>
+      api.patchAccountContact(accountId, id, {
         label: label.trim(),
         email: email.trim() || null,
         phone: phone.trim() || null,
-      });
-      await api.deleteAccountContact(accountId, id);
-    },
+      }),
     onSuccess: () => { resetForm(); refresh(); },
     onError: (err) => setError((err as Error).message),
   });

@@ -78,16 +78,17 @@ export type SendResult = { ok: true; to: string } | { ok: false; reason: string 
  *     `customerId` — ANY property on the account, never cross-account.
  *
  * ONE STORE, since plan A (Kyle, 2026-10-02: "Draft photos don't make sense to me"). The second
- * branch that read `DraftPhoto` by the estimate's own `draftId` is gone with the store: a photo
+ * branch that read `DraftPhoto` by the estimate's own `draftId` is gone with the store (the
+ * `DraftPhoto` table itself is DROPPED as of migration 20261002130000_drop_draft_photos): a photo
  * added while BUILDING an estimate is now a `VisitPhoto` on the consultation job it came from, so
  * it is covered by the one rule above and outlives the estimate. The scoping of the surviving
  * branch is EXACTLY as it was — security-reviewed 2026-10-01 — and
- * tests/anyPhotoOnAccountEmail.test.ts pins both that it attaches across properties on the
- * account and that it refuses another customer's photo and any id from the retired draft store.
+ * tests/anyPhotoOnAccountEmail.test.ts pins that it attaches across properties on the account and
+ * that it refuses another customer's photo.
  *
- * A wrong id — someone else's visit photo, a stale id for a photo that moved accounts, an id
- * from the retired draft table — cannot leak across the boundary: it is simply refused, same as
- * an id that was never real. Never an unscoped `findMany({ where: { id: { in: ids } } })`.
+ * A wrong id — someone else's visit photo, a stale id for a photo that moved accounts — cannot
+ * leak across the boundary: it is simply refused, same as an id that was never real. Never an
+ * unscoped `findMany({ where: { id: { in: ids } } })`.
  * `MAX_EMAIL_PHOTOS` and the downscale-or-refuse-on-corruption behaviour are unchanged from the
  * single-address version.
  */

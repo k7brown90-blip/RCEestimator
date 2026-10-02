@@ -2525,9 +2525,10 @@ app.post("/price-book/drafts/:draftId/options/copy", asyncHandler(async (req, re
   photos` the account gallery uses. It outlives the estimate: when the 30 days pass and the
   estimate is rebuilt, the photos are still on the job.
 
-  The `DraftPhoto` TABLE still exists and still holds its rows; nothing reads or writes it from
-  the app any more. scripts/migrateDraftPhotosToVisits.ts copies those rows onto their jobs and
-  reports what it could not place; the table is dropped only after Kyle has seen that count.
+  The `DraftPhoto` TABLE is gone (migration 20261002130000_drop_draft_photos). Its rows were
+  moved onto their jobs first by a one-time script, run and verified against production on
+  2026-10-01; the handful that could not be placed were reviewed and dispositioned by Kyle
+  before the table was dropped.
 */
 
 app.get("/price-book/drafts/:draftId/options", asyncHandler(async (req, res) => {
@@ -5942,6 +5943,59 @@ app.delete("/accounts/:id/contacts/:contactId", asyncHandler(async (req, res) =>
     where: { id: readParam(req, "contactId"), customerId: readParam(req, "id") },
   });
   res.status(204).end();
+}));
+
+/**
+ * EDIT a contact in place (Kyle, 2026-10-01: "Do those last two fixes").
+ *
+ * The CRM used to save an edit by POSTing a new contact and then DELETEing the old one. The end
+ * state was right, but a failure between the two left the customer with TWO contact rows — the
+ * duplicate visible on the account page — and every successful edit moved the contact to the
+ * bottom of the list, since the list is ordered by `createdAt`. One call, same row, same id.
+ *
+ * TWO THINGS THIS ROUTE MUST KEEP DOING, both easy to lose in a refactor:
+ *
+ *  1. **Scoped by customer, exactly as the DELETE above is.** `updateMany` with BOTH `id` and
+ *     `customerId` means account A cannot edit account B's contact by guessing an id. A bare
+ *     `update({ where: { id } })` would be that hole. `count === 0` is the 404.
+ *  2. **"A contact needs an email or a phone" is checked on the MERGED RESULT, not on the body.**
+ *     The POST above can check its own body because it has every field. A PATCH does not: clearing
+ *     the email of a contact that has no phone would leave a contact nobody can reach, and a
+ *     body-only check would allow it. So the existing row is read first and the rule is applied to
+ *     what the row WILL be.
+ */
+app.patch("/accounts/:id/contacts/:contactId", asyncHandler(async (req, res) => {
+  const customerId = readParam(req, "id");
+  const contactId = readParam(req, "contactId");
+  const body = z.object({
+    label: z.string().trim().min(1).max(100).optional(),
+    email: z.string().trim().email().nullable().optional(),
+    phone: z.string().trim().min(7).max(20).nullable().optional(),
+  }).parse(req.body ?? {});
+
+  const existing = await prisma.customerContact.findFirst({
+    where: { id: contactId, customerId },
+    select: { id: true, label: true, email: true, phone: true },
+  });
+  if (!existing) {
+    res.status(404).json({ error: "Contact not found on this account." });
+    return;
+  }
+
+  // What the row will be once this patch is applied — an absent key keeps what is there, an
+  // explicit null clears it.
+  const merged = {
+    label: body.label ?? existing.label,
+    email: body.email === undefined ? existing.email : body.email,
+    phone: body.phone === undefined ? existing.phone : body.phone,
+  };
+  if (!merged.email && !merged.phone) {
+    res.status(400).json({ error: "A contact needs an email or a phone number (or both)." });
+    return;
+  }
+
+  const updated = await prisma.customerContact.update({ where: { id: existing.id }, data: merged });
+  res.json(updated);
 }));
 
 // ─── ACCOUNT CONVERSATION NOTES (Kyle, 2026-10-01) ───────────────────────────

@@ -1117,6 +1117,10 @@ export const api = {
     request<CustomerContact>(`/accounts/${accountId}/contacts`, { method: "POST", body: JSON.stringify(input) }),
   deleteAccountContact: (accountId: string, contactId: string) =>
     request<void>(`/accounts/${accountId}/contacts/${contactId}`, { method: "DELETE" }),
+  // Edit in place (2026-10-01). Replaces an add-then-delete that left a duplicate behind when
+  // the delete half failed. An omitted field keeps its value; an explicit null clears it.
+  patchAccountContact: (accountId: string, contactId: string, input: { label?: string; email?: string | null; phone?: string | null }) =>
+    request<CustomerContact>(`/accounts/${accountId}/contacts/${contactId}`, { method: "PATCH", body: JSON.stringify(input) }),
   // ─── Account conversation notes (2026-10-01) — newest first ─────────────────
   accountNotes: (accountId: string) =>
     request<CustomerNote[]>(`/accounts/${accountId}/notes`),

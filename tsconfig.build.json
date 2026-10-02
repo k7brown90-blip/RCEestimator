@@ -44,8 +44,6 @@
     "scripts/inspectSchedule.ts",
     // Job-photo listing/base64 export for Kyle's machine (Kyle, 2026-09-03).
     "scripts/exportVisitPhotos.ts",
-    // Retired estimate-draft photos -> VisitPhoto on their job, dry-run default, --apply, never deletes (plan A4, 2026-10-02).
-    "scripts/migrateDraftPhotosToVisits.ts",
     // Read-only audit: the rung each job's material comes from, PO receipts still counted, never-landed consumes (Kyle, 2026-09-03 / 2026-09-09).
     "scripts/auditMaterialCosts.ts",
     // Build 4 backfill: drop receipts on a PO from the receipt rung, dry-run default, --apply (Kyle, 2026-09-09).

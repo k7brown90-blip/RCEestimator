@@ -26,15 +26,13 @@ function arg(name: string): string | undefined {
 async function main(): Promise<void> {
   const photoId = arg("photo");
   if (photoId) {
-    // Photos live in three stores: the visit gallery, the assessment
-    // (InspectionPhoto), and the estimate-draft gallery (DraftPhoto). One id,
-    // three lookups.
+    // Photos live in two stores: the visit gallery and the assessment
+    // (InspectionPhoto). One id, two lookups.
     const vp = await prisma.visitPhoto.findUnique({ where: { id: photoId } });
     const ip = vp ? null : await prisma.inspectionPhoto.findUnique({ where: { id: photoId } });
-    const dp = vp || ip ? null : await prisma.draftPhoto.findUnique({ where: { id: photoId } });
-    const bytes = vp?.data ?? ip?.data ?? dp?.bytes;
+    const bytes = vp?.data ?? ip?.data;
     if (!bytes) {
-      console.error(`Photo ${photoId} not found in visit, inspection, or draft stores.`);
+      console.error(`Photo ${photoId} not found in visit or inspection stores.`);
       process.exitCode = 1;
       return;
     }
@@ -84,17 +82,6 @@ async function main(): Promise<void> {
     console.log(`Inspection ${ins.id} — ${ins.inspectionDate.toISOString().slice(0, 10)} · ${ins.photos.length} assessment photo(s)`);
     for (const p of ins.photos) {
       console.log(`  ${p.id}  ${p.mimeType.padEnd(11)} ${(p.sizeBytes / 1024).toFixed(0).padStart(5)} KB`);
-    }
-  }
-
-  const drafts = await prisma.priceBookDraftEstimate.findMany({
-    where: { visitId: { in: visitIds } },
-    select: { id: true, title: true, photos: { select: { id: true, mime: true, size: true, note: true } } },
-  });
-  for (const d of drafts) {
-    console.log(`Draft ${d.id} — "${d.title}" · ${d.photos.length} draft photo(s)`);
-    for (const p of d.photos) {
-      console.log(`  ${p.id}  ${p.mime.padEnd(11)} ${(p.size / 1024).toFixed(0).padStart(5)} KB  "${p.note ?? ""}"`);
     }
   }
 }
