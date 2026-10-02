@@ -755,6 +755,51 @@ describe("the financing link in the estimate email", () => {
       await prisma.companySetting.deleteMany({ where: { key: "companyProfile" } });
     }
   });
+
+  /*
+    Kyle, 2026-10-02: "attach relavent attachements (generator sizing, health report, photos,
+    financing link, and custom message) all checked or unchecked to designate what gets sent."
+
+    The pairing with the first test in this block is the whole property: that one calls
+    `sendEstimateEmail` with NO financing option and asserts the link IS there, which pins the
+    opt-OUT default — the field app's send (routes/health-record.ts) passes no flag and must keep
+    carrying the line. This one pins that the CRM's unticked box actually removes it.
+  */
+  it("leaves the financing line out when the send says so, and sends everything else", async () => {
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const { sendEstimateEmail } = await import("../src/services/issuedEstimateSend");
+      const d = await quotableDraft("lender-line-off");
+      const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
+      expect(g.ok).toBe(true);
+      if (!g.ok) return;
+
+      const result = await sendEstimateEmail(prisma, g.estimateId, {
+        sentBy: "human:test",
+        includeFinancingLink: false,
+      });
+      expect(result.ok).toBe(true);
+
+      const html = String(spy.mock.calls[0][0].bodyHtml);
+      expect(html).not.toContain("mysynchrony.com");
+      // The draft above is deliberately NOT named "financing-*": the email renders `est.title`,
+      // so a fixture with that word in its name puts it in the body and fails this line on its
+      // own. The first run of this test did exactly that.
+      expect(html).not.toMatch(/financing/i);
+      expect(html).not.toMatch(/pay over time/i);
+
+      // Dropping one paragraph must not drop the email: the link the customer signs through, the
+      // estimate number and the total are all still there. Without this, making the whole body
+      // empty would pass the assertions above.
+      const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
+      expect(html).toContain(est!.token);
+      expect(html).toContain(est!.number);
+      expect(html).toContain(est!.total.toFixed(2));
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 // ─── The customer sees scope and ONE price (P031, 2026-08-18) ──────────────────
@@ -931,34 +976,38 @@ describe("photos and the discount, end to end", () => {
   const PNG_1PX =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-  it("stores, lists, serves and deletes a walkthrough photo", async () => {
+  /*
+    THE DRAFT PHOTO STORE IS RETIRED (plan A, Kyle 2026-10-02: "Draft photos don't make sense to
+    me … we would obviously want the photos added to the estimates that are from an applied job,
+    consultation, or diagnostics."). A photo added while building an estimate is a VisitPhoto on
+    the job the estimate came from, written through the same route the account gallery uses. The
+    four draft-photo routes are gone — a client that still posts to them must get a 404, not a
+    silently accepted upload into a table nothing reads.
+  */
+  it("the retired draft-photo routes are gone, and the builder's upload lands on the job", async () => {
     const d = await quotableDraft("photos");
-    const up = await request(app)
-      .post(`/price-book/drafts/${d.id}/photos`)
-      .send({ dataUrl: PNG_1PX })
-      .expect(201);
-    expect(up.body.mime).toBe("image/png");
+    await request(app).post(`/price-book/drafts/${d.id}/photos`).send({ dataUrl: PNG_1PX }).expect(404);
+    await request(app).get(`/price-book/drafts/${d.id}/photos`).expect(404);
+    await request(app).get(`/draft-photos/anything`).expect(404);
+    await request(app).delete(`/draft-photos/anything`).expect(404);
+    expect(await prisma.draftPhoto.count({ where: { draftId: d.id } })).toBe(0);
 
-    const list = await request(app).get(`/price-book/drafts/${d.id}/photos`).expect(200);
-    expect(list.body.photos).toHaveLength(1);
-    // Metadata only — the bytes must not ride the list.
-    expect(JSON.stringify(list.body)).not.toContain("iVBOR");
-
-    const img = await request(app).get(`/draft-photos/${up.body.id}`).expect(200);
-    expect(img.headers["content-type"]).toBe("image/png");
-    expect(img.body.length).toBeGreaterThan(20);
-
-    await request(app).delete(`/draft-photos/${up.body.id}`).expect(200);
-    const after = await request(app).get(`/price-book/drafts/${d.id}/photos`).expect(200);
-    expect(after.body.photos).toHaveLength(0);
-  });
-
-  it("refuses bytes that are not an image", async () => {
-    const d = await quotableDraft("photos-bad");
-    await request(app)
-      .post(`/price-book/drafts/${d.id}/photos`)
-      .send({ dataUrl: "data:application/pdf;base64,JVBERi0=" })
-      .expect(400);
+    // The one upload path that remains: the job's own gallery endpoint.
+    const visit = await prisma.visit.create({
+      data: { customerId, propertyId, mode: "onsite", purpose: "Consultation — estimate visit", status: "scheduled" },
+    });
+    try {
+      const up = await request(app)
+        .post(`/health-record-admin/visits/${visit.id}/photos`)
+        .send({ dataUrl: PNG_1PX, caption: "Walkthrough" })
+        .expect(201);
+      const photo = await prisma.visitPhoto.findUnique({ where: { id: up.body.id } });
+      expect(photo?.visitId).toBe(visit.id);
+      expect(photo?.caption).toBe("Walkthrough");
+    } finally {
+      await prisma.visitPhoto.deleteMany({ where: { visitId: visit.id } });
+      await prisma.visit.delete({ where: { id: visit.id } });
+    }
   });
 
   it("freezes the programme discount at signature, from the frozen figures", async () => {

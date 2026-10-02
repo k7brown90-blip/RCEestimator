@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { InspectionResultChip } from "../components/InspectionResultChip";
 import { ConversationNotes } from "../components/ConversationNotes";
+import { ReviewRequestPanel } from "../components/ReviewRequestPanel";
 import { FindingLedger } from "../components/FindingLedger";
 import { SendEmailPanel } from "../components/SendEmailPanel";
 import { SendToPicker } from "../components/SendToPicker";
@@ -18,6 +19,7 @@ import { DeliveryChip } from "../components/DeliveryChip";
 import { api, openProtectedPdf } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
 import type { AccountJob, AccountSummary } from "../lib/types";
+import type { CustomerContact } from "../lib/api";
 import { PendingReceiptFields, ReceiptReviewList } from "../components/ReceiptReviewList";
 import { PO_PURPOSE_LABEL, PoStatusPill, ReceiptPoPicker } from "../components/PurchaseOrders";
 import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
@@ -399,6 +401,11 @@ export function AccountDetailPage() {
         {deleteAccount.error && (
           <p className="mt-2 text-sm text-red-600">{(deleteAccount.error as Error).message}</p>
         )}
+        {/* ── Additional contacts, ALONGSIDE the main contact (Kyle, 2026-10-02) ───────────────
+            "When an additional contact is added it should be shown along side the main contact in
+            the contact card." Used to be its own section below Addresses — whoever answers the
+            phone now sees every way to reach this customer in one look, not two. */}
+        {!editing && <AdditionalContacts accountId={account.id} />}
         {!editing && (
           <div className="mt-3 border-t border-rce-border/70 pt-3">
             <SendEmailPanel target="account" id={accountId} primaryEmail={account.email ?? null} accountIdForContacts={accountId} />
@@ -412,6 +419,17 @@ export function AccountDetailPage() {
           looking. The same component sits in the job drawer, tagged to the job; this is the
           whole list. */}
       <ConversationNotes accountId={account.id} surface="account" />
+
+      {/* ── Google review — send and confirm (Kyle, 2026-10-02, item E / ruling E2) ──────────
+          "Under the conversation notes on the main account" — literally right under it. Its own
+          component, not folded into ConversationNotes: see ReviewRequestPanel.tsx's header for
+          why. */}
+      <ReviewRequestPanel
+        accountId={account.id}
+        jobs={jobs}
+        reviewConfirmedAt={account.reviewConfirmedAt}
+        reviewConfirmedBy={account.reviewConfirmedBy}
+      />
 
       {/* ── Addresses ───────────────────────────────────────────────────── */}
       <section className="card mb-5 p-4">
@@ -511,8 +529,6 @@ export function AccountDetailPage() {
         </div>
       </section>
 
-      <ContactsCard accountId={account.id} />
-      <StartWorkCard accountId={account.id} properties={properties} />
       <AccountEstimates accountId={account.id} properties={properties} />
 
       {/* ── Jobs ────────────────────────────────────────────────────────── */}
@@ -573,158 +589,6 @@ export function AccountDetailPage() {
         />
       )}
     </div>
-  );
-}
-
-/**
- * Where work starts. (P029)
- *
- * Kyle, 2026-08-18: *"Now we have an account established and if they call back we go to their
- * account and schedule an appointment -> estimate -> signed quote -> job -> payment."*
- *
- * Before this the account page showed properties, jobs, findings and inspections — and had no way
- * to begin any of it. The estimate flow lived on its own page with no connection to the customer,
- * which is the thing Kyle filed three times.
- *
- * THE ADDRESS IS PICKED, NEVER ASSUMED. When the account has one property it is preselected
- * because there is nothing to choose; with several, the operator chooses and the buttons stay
- * disabled until they have. Silently defaulting to the first address is how the wrong street ends
- * up on a signed document.
- */
-function StartWorkCard({
-  accountId,
-  properties,
-}: {
-  accountId: string;
-  properties: AccountSummary["properties"];
-}) {
-  const navigate = useNavigate();
-  const [addressId, setAddressId] = useState(properties.length === 1 ? properties[0].id : "");
-  const [error, setError] = useState<string | null>(null);
-
-  const scheduleVisit = useMutation({
-    mutationFn: () =>
-      api.createVisit({
-        customerId: accountId,
-        propertyId: addressId,
-        // "onsite" is not a mode the server has ever accepted, so this button returned
-        // 400 "Validation failed" every time it was pressed. The mode can be changed on
-        // the visit itself; this is the sensible default for a call-out.
-        mode: "service_diagnostic",
-        purpose: "Appointment",
-      }),
-    onSuccess: (visit) => navigate(`/visits/${visit.id}`),
-    onError: (err) => setError((err as Error).message),
-  });
-
-  // Consultation: an estimate-request call-in. Same Visit machinery, no price
-  // book — straight to the calendar with the scheduler open for it.
-  const bookConsultation = useMutation({
-    mutationFn: () =>
-      api.createVisit({
-        customerId: accountId,
-        propertyId: addressId,
-        mode: "service_diagnostic",
-        purpose: "Consultation — estimate visit",
-      }),
-    onSuccess: (visit) => navigate(`/calendar?schedule=${visit.id}`),
-    onError: (err) => setError((err as Error).message),
-  });
-
-  const need = () => {
-    if (!addressId) {
-      setError("Pick the address you are working at first.");
-      return false;
-    }
-    setError(null);
-    return true;
-  };
-
-  if (properties.length === 0) {
-    return (
-      <section className="card mb-5 p-4">
-        <h2 className="text-lg font-semibold">Start work</h2>
-        <p className="mt-2 text-sm text-rce-muted">
-          Add an address to this account first — every appointment, estimate and job links to the
-          address it happens at.
-        </p>
-      </section>
-    );
-  }
-
-  return (
-    <section className="card mb-5 p-4">
-      <h2 className="text-lg font-semibold">Start work</h2>
-      <p className="mt-1 text-xs text-rce-soft">
-        Appointment &rarr; estimate &rarr; signed quote &rarr; job. All of it links to this account,
-        at the address you pick.
-      </p>
-
-      {properties.length > 1 ? (
-        <label className="mt-3 block text-sm font-medium">
-          Address being worked
-          <select
-            className="field mt-1 w-full"
-            value={addressId}
-            onChange={(e) => {
-              setAddressId(e.target.value);
-              setError(null);
-            }}
-          >
-            <option value="">Pick an address…</option>
-            {properties.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} — {p.addressLine1}, {p.city}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : (
-        <p className="mt-3 text-sm text-rce-text">
-          {properties[0].name} — {properties[0].addressLine1}, {properties[0].city}
-        </p>
-      )}
-
-      {error && <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{error}</p>}
-
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-        {/* Consultation (Kyle, 2026-08-25): "a 'consultation' that is scheduled
-            that is not part of the price book but only used to schedule those
-            who call in and request a visit to do an estimate." Creates the
-            visit and lands straight on the calendar with the picker open —
-            the price book is never involved. */}
-        <button
-          className="btn btn-primary flex-1"
-          disabled={bookConsultation.isPending}
-          onClick={() => {
-            if (!need()) return;
-            bookConsultation.mutate();
-          }}
-        >
-          {bookConsultation.isPending ? "Creating…" : "Book consultation"}
-        </button>
-        <button
-          className="btn btn-secondary flex-1"
-          disabled={scheduleVisit.isPending}
-          onClick={() => {
-            if (!need()) return;
-            scheduleVisit.mutate();
-          }}
-        >
-          {scheduleVisit.isPending ? "Creating…" : "Open a visit"}
-        </button>
-        <button
-          className="btn btn-primary flex-1"
-          onClick={() => {
-            if (!need()) return;
-            // The intake screen opens already bound to this account and address.
-            navigate(`/estimate-intake?account=${accountId}&address=${addressId}`);
-          }}
-        >
-          Start an estimate
-        </button>
-      </div>
-    </section>
   );
 }
 
@@ -930,22 +794,36 @@ function AccountEstimates({
 }
 
 /**
- * The account's contact book (Kyle, 2026-08-25): labeled additional emails and
- * phone numbers. Primary stays on the account itself; these feed every send
- * picker, and a text from any stored number matches this account.
+ * The account's contact book (Kyle, 2026-08-25): labeled additional emails and phone numbers.
+ * Primary stays on the account itself; these feed every send picker, and a text from any stored
+ * number matches this account.
+ *
+ * Kyle, 2026-10-02: "When an additional contact is added it should be shown along side the main
+ * contact in the contact card" — moved out of its own section (it used to sit below Addresses)
+ * into the Contact card itself, so whoever answers the phone sees every way to reach this
+ * customer in one look.
+ *
+ * EDIT, not just add/remove (standing rule — nothing the app creates may be un-editable): there is
+ * no PATCH /accounts/:id/contacts/:contactId route, only POST (add) and DELETE (remove), and nothing
+ * else references a contact's id (CustomerContact has no incoming foreign key, checked against
+ * prisma/schema.prisma), so "edit" is implemented client-side as add-the-correction-then-remove-
+ * the-original against the two routes that already exist — no server change.
  */
-function ContactsCard({ accountId }: { accountId: string }) {
+function AdditionalContacts({ accountId }: { accountId: string }) {
   const queryClient = useQueryClient();
   const { data: contacts } = useQuery({
     queryKey: ["accountContacts", accountId],
     queryFn: () => api.accountContacts(accountId),
   });
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () => void queryClient.invalidateQueries({ queryKey: ["accountContacts", accountId] });
+  const resetForm = () => { setEditingId(null); setLabel(""); setEmail(""); setPhone(""); setError(null); };
+
   const add = useMutation({
     mutationFn: () =>
       api.addAccountContact(accountId, {
@@ -953,13 +831,44 @@ function ContactsCard({ accountId }: { accountId: string }) {
         email: email.trim() || null,
         phone: phone.trim() || null,
       }),
-    onSuccess: () => { setLabel(""); setEmail(""); setPhone(""); setError(null); refresh(); },
+    onSuccess: () => { resetForm(); refresh(); },
     onError: (err) => setError((err as Error).message),
   });
 
+  // Add the corrected row first, then remove the original — if the delete fails the customer's
+  // contact still exists (duplicated, not lost) rather than the reverse.
+  const saveEdit = useMutation({
+    mutationFn: async (id: string) => {
+      await api.addAccountContact(accountId, {
+        label: label.trim(),
+        email: email.trim() || null,
+        phone: phone.trim() || null,
+      });
+      await api.deleteAccountContact(accountId, id);
+    },
+    onSuccess: () => { resetForm(); refresh(); },
+    onError: (err) => setError((err as Error).message),
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deleteAccountContact(accountId, id),
+    onSuccess: refresh,
+    onError: (err) => setError((err as Error).message),
+  });
+
+  function startEdit(c: CustomerContact) {
+    setEditingId(c.id);
+    setLabel(c.label);
+    setEmail(c.email ?? "");
+    setPhone(c.phone ?? "");
+    setError(null);
+  }
+
+  const busy = add.isPending || saveEdit.isPending;
+
   return (
-    <section className="card mb-5 p-4">
-      <h2 className="text-lg font-semibold">Additional contacts</h2>
+    <div className="mt-4 border-t border-rce-border/70 pt-3">
+      <h3 className="text-sm font-semibold">Additional contacts</h3>
       <p className="text-xs text-rce-muted">
         Spouse's cell, work email, property manager — they appear in every "send to" picker, and a
         text from any number here matches this account.
@@ -973,32 +882,46 @@ function ContactsCard({ accountId }: { accountId: string }) {
                 {[c.email, c.phone].filter(Boolean).join(" · ")}
               </span>
             </span>
-            <button
-              className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
-              onClick={() => void api.deleteAccountContact(accountId, c.id).then(refresh)}
-            >
-              remove
-            </button>
+            <span className="flex shrink-0 gap-1">
+              <button className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => startEdit(c)}>
+                Edit
+              </button>
+              <button
+                className="btn btn-danger px-2 py-0.5 text-xs min-h-0"
+                disabled={remove.isPending}
+                onClick={() => {
+                  if (editingId === c.id) resetForm();
+                  remove.mutate(c.id);
+                }}
+              >
+                Remove
+              </button>
+            </span>
           </li>
         ))}
         {(contacts ?? []).length === 0 && (
           <li className="text-sm text-rce-muted">No additional contacts yet.</li>
         )}
       </ul>
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <input className="field w-40" placeholder="Label (Spouse — cell)" value={label} onChange={(e) => setLabel(e.target.value)} />
         <input className="field w-52 max-w-full" type="email" placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
         <input className="field w-36" placeholder="Phone (optional)" value={phone} onChange={(e) => setPhone(e.target.value)} />
         <button
           className="btn btn-primary text-sm"
-          disabled={!label.trim() || (!email.trim() && !phone.trim()) || add.isPending}
-          onClick={() => add.mutate()}
+          disabled={!label.trim() || (!email.trim() && !phone.trim()) || busy}
+          onClick={() => (editingId ? saveEdit.mutate(editingId) : add.mutate())}
         >
-          Add contact
+          {editingId ? (busy ? "Saving…" : "Save changes") : "Add contact"}
         </button>
+        {editingId && (
+          <button className="btn btn-secondary text-sm" type="button" onClick={resetForm}>
+            Cancel
+          </button>
+        )}
       </div>
       {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
-    </section>
+    </div>
   );
 }
 
@@ -1590,8 +1513,8 @@ function InvoiceRow({ doc: d, accountId, properties }: {
         Photo gallery (2026-08-28): attach photos to the invoice email — per send, ticked by the
         operator, never assumed. Gated on the ACCOUNT having an address at all (2026-10-01, item
         J), not on this document's own `propertyId` — the picker now reaches every property on
-        the account plus this estimate's draft photos, not just the one this document was filed
-        at.
+        the account, not just the one this document was filed at. Photos added while building
+        the estimate are job photos too (plan A, 2026-10-02), so that one source covers them.
       */}
       {canSend && properties.length > 0 && (
         <div className="mt-2">
@@ -1599,7 +1522,7 @@ function InvoiceRow({ doc: d, accountId, properties }: {
             {showPhotos ? "Hide photos" : `Attach photos…${photoIds.length ? ` (${photoIds.length})` : ""}`}
           </button>
           {showPhotos && (
-            <PhotoAttachPicker properties={properties} draftId={d.draftId} selected={photoIds} onChange={setPhotoIds} />
+            <PhotoAttachPicker properties={properties} selected={photoIds} onChange={setPhotoIds} />
           )}
         </div>
       )}

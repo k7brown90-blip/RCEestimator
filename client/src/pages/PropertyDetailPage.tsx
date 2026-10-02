@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
-import type { FormEvent } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
+import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
+import { InspectionResultChip } from "../components/InspectionResultChip";
+import { PropertyPhotoSection } from "../components/PhotoGalleryPanel";
 import { api } from "../lib/api";
-import { money, parseJsonArray, shortDate } from "../lib/utils";
+import { money, shortDate } from "../lib/utils";
 
 export function PropertyDetailPage() {
   const { propertyId = "" } = useParams();
@@ -13,33 +15,42 @@ export function PropertyDetailPage() {
   const queryClient = useQueryClient();
   const { data: property, isLoading } = useQuery({ queryKey: ["property", propertyId], queryFn: () => api.property(propertyId), enabled: Boolean(propertyId) });
 
-  const deficiencyList = useMemo(() => parseJsonArray(property?.systemSnapshot?.deficienciesJson), [property?.systemSnapshot?.deficienciesJson]);
-  const [serviceSummary, setServiceSummary] = useState(property?.systemSnapshot?.serviceSummary ?? "");
-  const [panelSummary, setPanelSummary] = useState(property?.systemSnapshot?.panelSummary ?? "");
-  const [groundingSummary, setGroundingSummary] = useState(property?.systemSnapshot?.groundingSummary ?? "");
-  const [wiringMethodSummary, setWiringMethodSummary] = useState(property?.systemSnapshot?.wiringMethodSummary ?? "");
-  const [deficienciesText, setDeficienciesText] = useState(deficiencyList.join("\n"));
+  // The property's health record (Kyle, 2026-10-02, plan item C): every electrical assessment and
+  // circuit diagnostic ever run at THIS address, across every visit — read-only here. Editing a
+  // load calc, running the generator designer, marking a contractor review, and emailing a report
+  // all stay where they already live (the visit workspace's HealthRecordPanel, and the account
+  // page's HealthInspectionHistory) so this page is not a second editor for either.
+  const { data: inspections } = useQuery({
+    queryKey: ["propertyInspections", propertyId],
+    queryFn: () => api.propertyInspections(propertyId),
+    enabled: Boolean(propertyId),
+  });
+  const { data: diagnosticReportsData } = useQuery({
+    queryKey: ["propertyDiagnosticReports", propertyId],
+    queryFn: () => api.propertyDiagnosticReports(propertyId),
+    enabled: Boolean(propertyId),
+  });
 
-  useEffect(() => {
-    setServiceSummary(property?.systemSnapshot?.serviceSummary ?? "");
-    setPanelSummary(property?.systemSnapshot?.panelSummary ?? "");
-    setGroundingSummary(property?.systemSnapshot?.groundingSummary ?? "");
-    setWiringMethodSummary(property?.systemSnapshot?.wiringMethodSummary ?? "");
-    setDeficienciesText(parseJsonArray(property?.systemSnapshot?.deficienciesJson).join("\n"));
-  }, [
-    property?.systemSnapshot?.serviceSummary,
-    property?.systemSnapshot?.panelSummary,
-    property?.systemSnapshot?.groundingSummary,
-    property?.systemSnapshot?.wiringMethodSummary,
-    property?.systemSnapshot?.deficienciesJson,
-  ]);
-
-  const updateSnapshot = useMutation({
-    mutationFn: (input: { serviceSummary?: string; panelSummary?: string; groundingSummary?: string; wiringMethodSummary?: string; deficiencies?: string[] }) =>
-      api.updateSnapshot(propertyId, input),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["property", propertyId] });
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  // Schedule Consultation (Kyle, 2026-10-02): creates the consultation visit for this customer at
+  // this property, then lands on the Calendar with it selected — the ONE scheduler
+  // (`/calendar?schedule=<visitId>`, constants.md "ONE SCHEDULER, AND IT LIVES ON THE CALENDAR").
+  // This button is also the fold-in point for "Open a visit" (D2, 2026-10-02): the Calendar's four
+  // preset blocks plus its free time input already cover an ordinary daytime consultation or an
+  // after-hours/emergency call, so nothing extra is built here — only the wording avoids implying
+  // business hours.
+  const scheduleConsultation = useMutation({
+    mutationFn: () => {
+      if (!property) return Promise.reject(new Error("Property not loaded yet"));
+      return api.createVisit({
+        customerId: property.customerId,
+        propertyId: property.id,
+        mode: "service_diagnostic",
+        purpose: "Consultation — estimate visit",
+      });
     },
+    onSuccess: (visit) => navigate(`/calendar?schedule=${visit.id}`),
+    onError: (err) => setScheduleError((err as Error).message),
   });
 
   const [editingProperty, setEditingProperty] = useState(false);
@@ -68,17 +79,6 @@ export function PropertyDetailPage() {
   }
 
   const hasVisits = (property?.visits?.length ?? 0) > 0;
-
-  function submitSnapshot(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    updateSnapshot.mutate({
-      serviceSummary,
-      panelSummary,
-      groundingSummary,
-      wiringMethodSummary,
-      deficiencies: deficienciesText.split("\n").map((entry) => entry.trim()).filter(Boolean),
-    });
-  }
 
   if (isLoading || !property) {
     return <p className="text-sm text-rce-muted">Loading property...</p>;
@@ -138,69 +138,144 @@ export function PropertyDetailPage() {
         </form>
       )}
 
-      {/* ── Estimate entry points (Kyle, 2026-08-19) ────────────────────────────────────────
-          "Between the Start New Visit Card and System Snapshot I want to have the 'Create New
-          Estimate', 'Previous Estimates' and 'Sold Work' buttons to select from."
-
-          All three carry the account AND the address, so an estimate started here is already on
-          the spine P029 built rather than asking again for something this page already knows.
-
-          The "Start New Visit" card referenced above was removed 2026-10-01 (Kyle: "This is
-          repetitive and should be removed there is already a place to start a new visit.") —
-          it duplicated AccountDetailPage's StartWorkCard "Open a visit" / "Book consultation"
-          buttons, which call the same api.createVisit and land on the same /visits/:id
-          workspace, where mode and purpose remain editable. */}
+      {/* ── The two doors into work at this address (Kyle, 2026-10-02, plan item C) ──────────
+          "The top card will have the 'estimates for this address' will be removed. The top card
+          will have no title. The buttons in this card will be Schedule Consultation ... and
+          Create New Estimate." No <h2> here on purpose — this card is intentionally untitled. */}
       <section className="card mb-5 p-4">
-        <h2 className="mb-3 text-lg font-semibold">Estimates for this address</h2>
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Link
+          <button
+            type="button"
             className="btn btn-primary flex-1"
+            disabled={scheduleConsultation.isPending}
+            onClick={() => { setScheduleError(null); scheduleConsultation.mutate(); }}
+          >
+            {scheduleConsultation.isPending ? "Scheduling…" : "Schedule Consultation"}
+          </button>
+          <Link
+            className="btn btn-secondary flex-1"
             to={`/estimate-intake?account=${property.customerId}&address=${property.id}`}
           >
             Create New Estimate
           </Link>
-          <Link
-            className="btn btn-secondary flex-1"
-            to={`/accounts/${property.customerId}?address=${property.id}`}
-          >
-            Previous Estimates
-          </Link>
-          <Link
-            className="btn btn-secondary flex-1"
-            to={`/jobs?address=${property.id}&open=1`}
-          >
-            Sold Work
-          </Link>
         </div>
+        <p className="mt-2 text-xs text-rce-soft">
+          Schedule Consultation covers any visit to this address — an ordinary consultation or an
+          after-hours/emergency call — and lands on the Calendar to pick the time.
+        </p>
+        {scheduleError && <p className="mt-2 text-xs text-red-600">{scheduleError}</p>}
       </section>
 
-      <section className="card mb-5 p-4">
-        <h2 className="mb-3 text-lg font-semibold">System Snapshot</h2>
-        <form className="grid gap-3 md:grid-cols-2" onSubmit={submitSnapshot}>
-          <label className="text-sm font-medium">
-            Service
-            <textarea className="field mt-1 min-h-24" value={serviceSummary} onChange={(event) => setServiceSummary(event.target.value)} />
-          </label>
-          <label className="text-sm font-medium">
-            Main Panel
-            <textarea className="field mt-1 min-h-24" value={panelSummary} onChange={(event) => setPanelSummary(event.target.value)} />
-          </label>
-          <label className="text-sm font-medium">
-            Grounding
-            <textarea className="field mt-1 min-h-24" value={groundingSummary} onChange={(event) => setGroundingSummary(event.target.value)} />
-          </label>
-          <label className="text-sm font-medium">
-            Wiring Method
-            <textarea className="field mt-1 min-h-24" value={wiringMethodSummary} onChange={(event) => setWiringMethodSummary(event.target.value)} />
-          </label>
-          <label className="text-sm font-medium md:col-span-2">
-            Deficiencies (one per line)
-            <textarea className="field mt-1 min-h-28" value={deficienciesText} onChange={(event) => setDeficienciesText(event.target.value)} />
-          </label>
-          <div className="md:col-span-2">
-            <button className="btn btn-primary" type="submit" disabled={updateSnapshot.isPending}>Save Snapshot</button>
-          </div>
-        </form>
+      {/* "Previous Estimates" and "Sold Work" (Kyle, 2026-08-19) moved out of the now-untitled
+          top card (plan item C) but kept — each is the sole route from this page to its filtered
+          view (the account's estimates filtered to this address, and the Jobs page's open work
+          orders filtered to this address). */}
+      <div className="mb-5 flex flex-col gap-2 sm:flex-row">
+        <Link className="btn btn-secondary flex-1" to={`/accounts/${property.customerId}?address=${property.id}`}>
+          Previous Estimates
+        </Link>
+        <Link className="btn btn-secondary flex-1" to={`/jobs?address=${property.id}&open=1`}>
+          Sold Work
+        </Link>
+      </div>
+
+      {/* ── This property's HEALTH RECORD (Kyle, 2026-10-02, plan item C) ─────────────────────
+          "The system snapshot on this page is not being utilized and should be where this
+          particular properties health record lives (findings ledger, load calc, generator sizing
+          tool, and electrical assessment results) ... we can also add in diagnostics reports
+          here ... Property photos will also show up here."
+
+          Read-only aggregation across every visit at this address. Editing a load calc, running
+          the generator designer, marking a contractor review, and emailing a report to the
+          customer all stay on the visit workspace (HealthRecordPanel) and the account page
+          (HealthInspectionHistory) — duplicating those controls here would be a second editor for
+          a record that already has one. This page only lists and links out.
+
+          NOTE for the architect: the old "System Snapshot" form (service/panel/grounding/wiring
+          summaries + deficiencies) is removed per Kyle's own instruction above, but it was the
+          ONLY CRM read/write surface for that data — SystemSnapshot is still written by the
+          Savannah phone-intake agent (src/routes/agent.ts, agent-jerry.ts). Flagging since nothing
+          in the CRM can view or edit it after this change; no other screen showed it before. */}
+      <section className="card mb-5 space-y-5 p-4">
+        <h2 className="text-lg font-semibold">Health Record</h2>
+
+        <FindingLedgerPanel propertyId={property.id} />
+
+        <div>
+          <h3 className="mb-2 text-sm font-semibold">Electrical assessments</h3>
+          {(inspections?.length ?? 0) === 0 && (
+            <p className="text-sm text-rce-soft">No electrical assessment on file for this address yet.</p>
+          )}
+          {(inspections?.length ?? 0) > 0 && (
+            <ul className="space-y-2">
+              {inspections!.map((inspection) => {
+                let criticals: string[] = [];
+                try { criticals = JSON.parse(inspection.criticalFindingsJson) as string[]; } catch { /* malformed, treat as none */ }
+                return (
+                  <li key={inspection.id} className="rounded-lg border border-rce-border p-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        <span className="mr-2">
+                          <InspectionResultChip
+                            criticalCount={criticals.length}
+                            failCount={inspection.failCount}
+                            monitorCount={inspection.monitorCount}
+                            schemaVersion={inspection.schemaVersion}
+                            score={inspection.score}
+                          />
+                        </span>
+                        {shortDate(inspection.inspectionDate)} · {inspection.itemsAssessed} items
+                        {inspection.scope === "phase1" && " (Phase 1)"}
+                        {inspection.technician && ` · ${inspection.technician.name}`}
+                        {inspection.hasLoadCalc && " · load calc + generator sizing on file"}
+                        {criticals.length > 0 && (
+                          <span className="ml-2 font-semibold text-red-600">⚠ {criticals.join(", ")}</span>
+                        )}
+                      </span>
+                      <Link to={`/visits/${inspection.visitId}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
+                        open visit →
+                      </Link>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <h3 className="mb-2 text-sm font-semibold">Diagnostic reports</h3>
+          {(diagnosticReportsData?.reports.length ?? 0) === 0 && (
+            <p className="text-sm text-rce-soft">No circuit diagnostic on file for this address yet.</p>
+          )}
+          {(diagnosticReportsData?.reports.length ?? 0) > 0 && (
+            <ul className="space-y-2">
+              {diagnosticReportsData!.reports.map((report) => (
+                <li key={report.id} className="rounded-lg border border-rce-border p-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      {shortDate(report.reportDate)} · {report.complaint} · circuit {report.circuitLabel}
+                      {report.status === "void" && <span className="ml-2 text-xs font-semibold text-red-600">VOIDED</span>}
+                      {report.status === "in_progress" && <span className="ml-2 text-xs text-amber-700">in progress</span>}
+                      {report.defectCount > 0 && (
+                        <span className="ml-2 text-xs text-amber-700">{report.defectCount} defective</span>
+                      )}
+                    </span>
+                    <Link to={`/visits/${report.visitId}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
+                      open visit →
+                    </Link>
+                  </div>
+                  <p className="mt-1 text-xs text-rce-soft">{report.coverageStatement}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <h3 className="mb-2 text-sm font-semibold">Photos</h3>
+          <PropertyPhotoSection propertyId={property.id} propertyLabel={property.addressLine1} defaultOpen />
+        </div>
       </section>
 
       <section className="space-y-3">

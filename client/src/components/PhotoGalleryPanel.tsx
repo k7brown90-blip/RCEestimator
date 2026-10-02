@@ -38,24 +38,11 @@ const tagLabel = (tag: PhotoTag | null) =>
  * its own `{ queryKey, queryFn }` literal — four independent copies is how two of them drift and
  * the test (correctly) can no longer tell "same endpoint, different spelling" from "different
  * shape". Used by the visit gallery, the read-only history panel, the account-wide gallery
- * (useQueries, one per property), and the send-flow picker.
+ * (useQueries, one per property — on the account page AND inside the estimate builder since
+ * plan A, 2026-10-02), and the send-flow picker.
  */
 function propertyPhotosQuery(propertyId: string) {
   return { queryKey: ["property-photos", propertyId] as const, queryFn: () => api.propertyPhotos(propertyId) };
-}
-
-/**
- * The one definition of "fetch this draft's walkthrough photos" (same
- * tests/queryKeyCollisions.test.ts rule as `propertyPhotosQuery` above). Used by the
- * draft-builder's own `PhotoAttach` panel (PriceBookIntakePage.tsx) and, since 2026-10-01
- * (item J), by `PhotoAttachPicker` below — the send-flow picker reads the SAME draft photos
- * the builder shows, so a photo added while pricing the job can ride the estimate email too.
- * Exported because PriceBookIntakePage.tsx is a different file; a second inline copy of this
- * literal there would read as a different query to the collision test even though it hits the
- * same endpoint.
- */
-export function draftPhotosQuery(draftId: string) {
-  return { queryKey: ["pb-photos", draftId] as const, queryFn: () => api.pbPhotos(draftId) };
 }
 
 /** Authed thumbnail with object-URL lifecycle handled. */
@@ -348,14 +335,21 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
 }
 
 /**
- * Read-only photo browser for the ACCOUNT page (Kyle, 2026-08-29: "I don't see
- * where to find the photos, I need to be able to access them") — every photo
- * at an address: job photos across visits plus Health Record assessment shots.
- * Uploading and tagging stay on the visit page's gallery, where the job
- * context lives; each photo links back through its visit.
+ * Read-only photo browser for an address: job photos across visits plus Health
+ * Record assessment shots. Uploading and tagging stay on the visit page's
+ * gallery, where the job context lives; each photo links back through its
+ * visit.
+ *
+ * Originally built for the ACCOUNT page (Kyle, 2026-08-29: "I don't see where
+ * to find the photos, I need to be able to access them"), superseded there by
+ * `AccountPhotoGallery` (2026-10-01, which also uploads). Reused as-is on the
+ * PROPERTY page's health record (plan item C, 2026-10-02: "Property photos
+ * will also show up here as each photo will be assigned to a particular
+ * property and consultation/diagnostics") — this page is read-only, so the
+ * upload-capable version would be the wrong fit here.
  */
-export function PropertyPhotoSection(props: { propertyId: string; propertyLabel: string }) {
-  const [open, setOpen] = useState(false);
+export function PropertyPhotoSection(props: { propertyId: string; propertyLabel: string; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(props.defaultOpen ?? false);
   // Zoomable viewer (Kyle, 2026-08-31) — nameplates are unreadable at thumbnail size.
   const [lightbox, setLightbox] = useState<{ path: string; alt: string; caption?: string | null } | null>(null);
   const { data: photos } = useQuery({
@@ -402,7 +396,11 @@ export function PropertyPhotoSection(props: { propertyId: string; propertyLabel:
                       }
                     />
                     <figcaption className="mt-0.5 text-[10px] text-rce-soft">
-                      {new Date(p.visitDate).toLocaleDateString()} · {tagLabel(p.tag)}
+                      {/* Which job the photo came from (Kyle, 2026-10-02: "each photo must show
+                          which consultation or diagnostic it came from") — purpose is the visit's
+                          reason (e.g. "Consultation — estimate visit"); jobType, when set, is more
+                          specific and wins. */}
+                      {p.jobType || p.purpose || "Job"} · {new Date(p.visitDate).toLocaleDateString()} · {tagLabel(p.tag)}
                       {p.caption ? ` · ${p.caption}` : ""}
                     </figcaption>
                   </figure>
@@ -468,16 +466,38 @@ export function PropertyPhotoSection(props: { propertyId: string; propertyLabel:
  * — same `["property-photos", propertyId]` key and shape the visit gallery and
  * the send-flow picker already use, so uploads here invalidate everywhere else
  * automatically, and no new endpoint is needed.
+ *
+ * ALSO THE ESTIMATE BUILDER'S PHOTO PANEL (plan A, Kyle 2026-10-02: "Draft
+ * photos don't make sense to me … we would obviously want the photos added to
+ * the estimates that are from an applied job, consultation, or diagnostics").
+ * The builder used to park its photos in a `DraftPhoto` table nothing else
+ * could reach; now it renders THIS component for the estimate's account, so a
+ * photo added while pricing is a job photo like any other, and it outlives the
+ * estimate — when the 30 days pass and the estimate is rebuilt, the photos are
+ * still on the consultation. `defaultVisitId` preselects the job the draft was
+ * created from, when it has one. One upload path, not two.
+ *
+ * Every photo added here can be removed here (standing rule, Kyle 2026-09-18:
+ * "nothing should be added that cannot be adjusted, edited, deleted"). The ×
+ * on a job photo is the same `deleteVisitPhoto` the visit gallery uses, behind
+ * the same confirm. Assessment photos belong to the Health Record and are not
+ * created here, so they carry no ×.
  */
 export function AccountPhotoGallery(props: {
   properties: Array<{ id: string; name: string; addressLine1: string; city: string }>;
   jobs: AccountJob[];
+  /** The job to preselect for uploads — the consultation an estimate draft came from. */
+  defaultVisitId?: string | null;
 }) {
   const queryClient = useQueryClient();
-  const [uploadVisitId, setUploadVisitId] = useState("");
+  const [uploadVisitId, setUploadVisitId] = useState(props.defaultVisitId ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [lightbox, setLightbox] = useState<{ path: string; alt: string; caption?: string | null } | null>(null);
+  const remove = useMutation({
+    mutationFn: (input: { photoId: string; propertyId: string }) => api.deleteVisitPhoto(input.photoId),
+    onSuccess: (_r, input) => void queryClient.invalidateQueries({ queryKey: ["property-photos", input.propertyId] }),
+  });
 
   const propertyQueries = useQueries({
     queries: props.properties.map((property) => propertyPhotosQuery(property.id)),
@@ -495,6 +515,8 @@ export function AccountPhotoGallery(props: {
     date: string;
     label: string;
     caption?: string | null;
+    /** Set on job photos only — the id and property needed to delete it from here. */
+    deletable?: { photoId: string; propertyId: string };
   };
 
   const combined: CombinedPhoto[] = [];
@@ -509,6 +531,7 @@ export function AccountPhotoGallery(props: {
         date: p.visitDate,
         label: `${p.jobType || p.purpose || "Job"} — ${propertyLabel(property.id)} · ${tagLabel(p.tag)}`,
         caption: p.caption,
+        deletable: { photoId: p.id, propertyId: property.id },
       });
     }
     for (const p of data.assessmentPhotos) {
@@ -532,7 +555,10 @@ export function AccountPhotoGallery(props: {
     `${job.jobType || job.purpose || "Job"} — ${job.propertyLabel} (${new Date(job.visitDate).toLocaleDateString()})`;
 
   const onlyJob = sortedJobs.length === 1 ? sortedJobs[0] : null;
-  const effectiveVisitId = onlyJob ? onlyJob.visitId : uploadVisitId;
+  // A preselected job that is not on this account (or was removed) counts as no choice — the
+  // select must never claim a job that is not in its own list.
+  const chosenVisitId = sortedJobs.some((j) => j.visitId === uploadVisitId) ? uploadVisitId : "";
+  const effectiveVisitId = onlyJob ? onlyJob.visitId : chosenVisitId;
 
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
@@ -569,7 +595,7 @@ export function AccountPhotoGallery(props: {
               <select
                 className="field text-xs"
                 aria-label="Which job are these photos for?"
-                value={uploadVisitId}
+                value={chosenVisitId}
                 onChange={(e) => setUploadVisitId(e.target.value)}
               >
                 <option value="">Which job are these photos for?</option>
@@ -580,7 +606,7 @@ export function AccountPhotoGallery(props: {
             )}
             <label
               className={`btn btn-primary text-sm ${
-                sortedJobs.length === 0 || (sortedJobs.length > 1 && !uploadVisitId) || busy
+                sortedJobs.length === 0 || (sortedJobs.length > 1 && !chosenVisitId) || busy
                   ? "cursor-not-allowed opacity-50"
                   : "cursor-pointer"
               }`}
@@ -589,7 +615,7 @@ export function AccountPhotoGallery(props: {
               <input
                 type="file" accept="image/*" capture="environment" multiple hidden
                 onChange={(e) => void onPick(e)}
-                disabled={sortedJobs.length === 0 || (sortedJobs.length > 1 && !uploadVisitId) || busy}
+                disabled={sortedJobs.length === 0 || (sortedJobs.length > 1 && !chosenVisitId) || busy}
               />
             </label>
           </div>
@@ -610,13 +636,27 @@ export function AccountPhotoGallery(props: {
       ) : (
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           {combined.map((photo) => (
-            <figure key={photo.key} className="overflow-hidden rounded-xl border border-rce-border bg-white shadow-sm">
+            <figure key={photo.key} className="relative overflow-hidden rounded-xl border border-rce-border bg-white shadow-sm">
               <AuthedPhoto
                 path={photo.path}
                 alt={photo.alt}
                 className="h-32 w-full cursor-zoom-in object-cover"
                 onClick={() => setLightbox({ path: photo.path, alt: photo.alt, caption: photo.caption })}
               />
+              {photo.deletable && (
+                <button
+                  type="button"
+                  aria-label="Delete photo"
+                  title="Delete this photo"
+                  className="absolute right-1 top-1 rounded bg-black/60 px-1.5 text-xs text-white"
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    if (window.confirm("Delete this photo? This cannot be undone.")) remove.mutate(photo.deletable!);
+                  }}
+                >
+                  ×
+                </button>
+              )}
               <figcaption className="space-y-0.5 p-2 text-[11px] text-rce-soft">
                 <div>{new Date(photo.date).toLocaleDateString()}</div>
                 <div className="truncate" title={photo.label}>{photo.label}</div>
@@ -652,27 +692,21 @@ export function AccountPhotoGallery(props: {
  * two addresses could not send a photo from the other one, and photos added while BUILDING the
  * estimate (`DraftPhoto`, a separate table) could not be emailed at all. Now it offers every
  * `VisitPhoto` across every property on the ACCOUNT (one query per property, reusing
- * `propertyPhotosQuery` exactly as `AccountPhotoGallery` does — no third photo query) plus the
- * `DraftPhoto`s of the estimate actually being sent, when `draftId` is passed.
+ * `propertyPhotosQuery` exactly as `AccountPhotoGallery` does — no second photo query). That is
+ * the only source: since plan A (2026-10-02) a photo added while building the estimate IS a
+ * `VisitPhoto` on the consultation job, so the `DraftPhoto` branch this once had is gone.
  *
  * THE SERVER ENFORCES OWNERSHIP, NOT THIS LIST. `issuedEstimateSend.ts`'s `photoAttachments`
- * re-checks every ticked id against the estimate's `customerId` / `draftId` before it ever reads
- * bytes — this component choosing what to ASK FOR is not the security boundary.
+ * re-checks every ticked id against the estimate's `customerId` before it ever reads bytes —
+ * this component choosing what to ASK FOR is not the security boundary.
  */
 export function PhotoAttachPicker(props: {
   properties: Array<{ id: string; name: string; addressLine1: string; city: string }>;
-  /** The draft the estimate being sent was issued from. Null/omitted = no draft photos offered
-   * (there is nothing to be a draft of on some older or company-only sends). */
-  draftId?: string | null;
   selected: string[];
   onChange: (ids: string[]) => void;
 }) {
   const propertyQueries = useQueries({
     queries: props.properties.map((property) => propertyPhotosQuery(property.id)),
-  });
-  const { data: draftPhotos } = useQuery({
-    ...draftPhotosQuery(props.draftId ?? ""),
-    enabled: Boolean(props.draftId),
   });
 
   const propertyLabel = (propertyId: string) => {
@@ -695,15 +729,6 @@ export function PhotoAttachPicker(props: {
       });
     }
   });
-  for (const p of draftPhotos?.photos ?? []) {
-    combined.push({
-      id: p.id,
-      path: `/draft-photos/${p.id}`,
-      alt: p.note ?? "estimate draft photo",
-      date: p.createdAt,
-      title: `${new Date(p.createdAt).toLocaleDateString()} · Added while building this estimate${p.note ? ` — ${p.note}` : ""}`,
-    });
-  }
   combined.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   /*
@@ -717,14 +742,14 @@ export function PhotoAttachPicker(props: {
     attach control is gone", and reasonably wondered whether photos were going out silently.
     Nothing is ever attached without being ticked here.
 
-    Now that the picker reaches every property on the account plus this estimate's draft photos,
-    "empty" genuinely means there is nothing on the account yet — not "wrong address".
+    Now that the picker reaches every property on the account, "empty" genuinely means there is
+    nothing on the account yet — not "wrong address".
   */
   if (combined.length === 0) {
     return (
       <p className="mt-2 text-xs text-rce-soft">
-        No photos on this account yet, so there is nothing to attach. Photos taken on any job at
-        any address on this account, and photos added while building this estimate, will appear
+        No photos on this account yet, so there is nothing to attach. Photos on any job at any
+        address on this account — including ones added while building an estimate — will appear
         here. Nothing is attached unless you tick it.
       </p>
     );

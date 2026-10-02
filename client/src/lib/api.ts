@@ -995,8 +995,16 @@ export const api = {
     request<PropertyPhotos>(`/health-record-admin/properties/${propertyId}/photos`),
   customerInspections: (customerId: string) =>
     request<HealthInspectionSummary[]>(`/health-record-admin/customers/${customerId}/inspections`),
+  /** Every electrical assessment at this address, across every visit — the property health record. */
+  propertyInspections: (propertyId: string) =>
+    request<HealthInspectionSummary[]>(`/health-record-admin/properties/${propertyId}/inspections`),
   visitInspections: (visitId: string) =>
     request<HealthInspectionSummary[]>(`/health-record-admin/visits/${visitId}/inspections`),
+  /** Every circuit diagnostic run at this address, across every visit — the property health record. */
+  propertyDiagnosticReports: (propertyId: string) =>
+    request<{ reports: import("../../../shared/diagnostics").DiagnosticReportView[] }>(
+      `/health-record-admin/properties/${propertyId}/diagnostic-reports`,
+    ),
   healthInspection: (inspectionId: string) =>
     request<HealthInspectionDetail>(`/health-record-admin/inspections/${inspectionId}`),
   reviewInspection: (inspectionId: string, input: { reviewedBy: string }) =>
@@ -1462,6 +1470,30 @@ export const api = {
    */
   emailReviewRequest: (jobId: string) =>
     request<{ ok: true; to: string }>(`/jobs/${jobId}/email-review-request`, { method: "POST" }),
+  /**
+   * The SAME ask, resolved by ACCOUNT (item E / ruling E2, 2026-10-02) — for the "send while on
+   * the phone with them" button on the account page, which has no job id in hand. The server
+   * resolves this account's own most recently completed job; every guard from the job-keyed
+   * door above still applies and comes back the same way, as a readable 400 `{ error }`.
+   */
+  emailAccountReviewRequest: (accountId: string) =>
+    request<{ ok: true; to: string; visitId: string }>(`/accounts/${accountId}/email-review-request`, { method: "POST" }),
+  /**
+   * The manual "review confirmed" mark (item E / ruling E2) — a recorded fact, not a toggle
+   * the system derives: Google never tells us a review landed. `confirmedBy` is required, same
+   * house pattern as `addAccountNote`'s `takenBy` — no per-user identity to default it to.
+   * Reversible: `clearReviewConfirmed` undoes it.
+   */
+  setReviewConfirmed: (accountId: string, input: { confirmedBy: string }) =>
+    request<{ reviewConfirmedAt: string; reviewConfirmedBy: string }>(
+      `/accounts/${accountId}/review-confirmed`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  clearReviewConfirmed: (accountId: string) =>
+    request<{ reviewConfirmedAt: null; reviewConfirmedBy: null }>(
+      `/accounts/${accountId}/review-confirmed`,
+      { method: "DELETE" },
+    ),
 
   // ─── Financials (2026-08-25) ───────────────────────────────────────────────
   financialsSummary: (year: number) => request<FinancialsSummary>(`/financials/summary?year=${year}`),
@@ -1567,18 +1599,9 @@ export const api = {
       body: JSON.stringify({ type, percent: percent ?? null }),
     }),
 
-  /** Walkthrough photos (2026-08-22). Bytes live in the DB; nothing goes to any AI. */
-  pbUploadPhoto: (draftId: string, dataUrl: string, note?: string | null) =>
-    request<{ id: string; mime: string; size: number }>(`/price-book/drafts/${draftId}/photos`, {
-      method: "POST",
-      body: JSON.stringify({ dataUrl, note: note ?? null }),
-    }),
-  pbPhotos: (draftId: string) =>
-    request<{ photos: Array<{ id: string; mime: string; size: number; note: string | null; createdAt: string }> }>(
-      `/price-book/drafts/${draftId}/photos`,
-    ),
-  pbDeletePhoto: (photoId: string) =>
-    request<{ deleted: true }>(`/draft-photos/${photoId}`, { method: "DELETE" }),
+  // The draft-photo calls (pbUploadPhoto / pbPhotos / pbDeletePhoto) are retired (plan A, Kyle
+  // 2026-10-02: "Draft photos don't make sense to me"). A photo added while building an estimate
+  // is a job photo — `uploadVisitPhoto` above, against the job the estimate is for.
 
   pbDraftOptions: (draftId: string) =>
     request<Array<{ option: PbOption; label: string | null; note: string | null }>>(
@@ -1798,7 +1821,7 @@ export const api = {
     }>(`/issued-estimates/${id}`),
 
   /** OPERATOR ACTION ONLY. Behind the PIN session and a confirm; never called automatically. */
-  pbIssuedSend: (id: string, input: { to?: string | null; message?: string | null; photoIds?: string[]; attachHealthReport?: boolean; attachGeneratorReport?: boolean }) =>
+  pbIssuedSend: (id: string, input: { to?: string | null; message?: string | null; photoIds?: string[]; attachHealthReport?: boolean; attachGeneratorReport?: boolean; includeFinancingLink?: boolean }) =>
     request<{ sent: true; to: string }>(`/issued-estimates/${id}/send`, {
       method: "POST",
       body: JSON.stringify(input),

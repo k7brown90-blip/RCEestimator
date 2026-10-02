@@ -211,6 +211,93 @@ describe("POST /jobs/:jobId/email-review-request (CRM)", () => {
   });
 });
 
+/**
+ * POST /accounts/:accountId/email-review-request — the ACCOUNT-keyed door (item E / ruling E2,
+ * 2026-10-02): a phone call is with a customer, not a Visit.id, so this resolves the account's
+ * own most recently completed job and hands it to the exact same service as the job-keyed door
+ * above. Every guard proven above still applies; these tests prove the RESOLUTION step and that
+ * it reads as a sentence when there is nothing to resolve.
+ */
+describe("POST /accounts/:accountId/email-review-request (CRM, account-keyed)", () => {
+  it("404s an account that does not exist", async () => {
+    const res = await request(app).post("/accounts/does-not-exist/email-review-request").send({});
+    expect(res.status).toBe(404);
+  });
+
+  it("400s, readably, when the account has no completed job at all", async () => {
+    const customer = await prisma.customer.create({ data: { name: `${MARK} Acct No Job`, phone: "615-555-0103", email: "rvw-acct-nojob@example.com" } });
+    customerIdsBySuffix["acct-no-job"] = customer.id;
+    const res = await request(app).post(`/accounts/${customer.id}/email-review-request`).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/no completed job/i);
+  });
+
+  it("400s, readably, when the account's only jobs are not completed yet", async () => {
+    const customer = await prisma.customer.create({ data: { name: `${MARK} Acct Open`, phone: "615-555-0104", email: "rvw-acct-open@example.com" } });
+    const property = await prisma.property.create({ data: { customerId: customer.id, name: `${MARK} Acct Open House`, addressLine1: "3 Review Way", city: "La Vergne", state: "TN", postalCode: "37086" } });
+    const visit = await prisma.visit.create({ data: { customerId: customer.id, propertyId: property.id, mode: "onsite", purpose: `${MARK} acct open`, status: "scheduled" } });
+    visitIds.push(visit.id);
+    customerIdsBySuffix["acct-open"] = customer.id;
+    propertyIdsBySuffix["acct-open"] = property.id;
+
+    const res = await request(app).post(`/accounts/${customer.id}/email-review-request`).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/no completed job/i);
+  });
+
+  it("resolves the MOST RECENTLY completed job when there are several, and sends with the gate off", async () => {
+    delete process.env.AUTOMATED_CUSTOMER_SENDS_REVIEW_REQUESTS;
+    delete process.env.AUTOMATED_CUSTOMER_SENDS;
+
+    const customer = await prisma.customer.create({ data: { name: `${MARK} Acct Multi`, phone: "615-555-0105", email: "rvw-acct-multi@example.com" } });
+    const property = await prisma.property.create({ data: { customerId: customer.id, name: `${MARK} Acct Multi House`, addressLine1: "4 Review Way", city: "La Vergne", state: "TN", postalCode: "37086" } });
+    const older = await prisma.visit.create({
+      data: { customerId: customer.id, propertyId: property.id, mode: "onsite", purpose: `${MARK} older job`, status: "completed", completedAt: new Date("2026-08-01T12:00:00.000Z") },
+    });
+    const newer = await prisma.visit.create({
+      data: { customerId: customer.id, propertyId: property.id, mode: "onsite", purpose: `${MARK} newer job`, status: "completed", completedAt: new Date("2026-09-20T12:00:00.000Z") },
+    });
+    visitIds.push(older.id, newer.id);
+    customerIdsBySuffix["acct-multi"] = customer.id;
+    propertyIdsBySuffix["acct-multi"] = property.id;
+
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const res = await request(app).post(`/accounts/${customer.id}/email-review-request`).send({});
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.to).toBe("rvw-acct-multi@example.com");
+      // The NEWER job got the ask, not the older one.
+      expect(res.body.visitId).toBe(newer.id);
+
+      const olderAfter = await prisma.visit.findUniqueOrThrow({ where: { id: older.id } });
+      const newerAfter = await prisma.visit.findUniqueOrThrow({ where: { id: newer.id } });
+      expect(olderAfter.reviewRequestedAt).toBeNull();
+      expect(newerAfter.reviewRequestedAt).not.toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("the account's OTHER guards still apply — a second press on the same resolved job is a dedupe refusal", async () => {
+    const { visitId: _unused, customerEmail } = await makeCompletedVisit("acct-dedupe");
+    const customerId = customerIdsBySuffix["acct-dedupe"];
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const first = await request(app).post(`/accounts/${customerId}/email-review-request`).send({});
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
+      expect(first.body.to).toBe(customerEmail);
+
+      const second = await request(app).post(`/accounts/${customerId}/email-review-request`).send({});
+      expect(second.status).toBe(400);
+      expect(second.body.error).toMatch(/already been sent/i);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe("POST /health-record/visits/:visitId/email-review-request (field)", () => {
   it("403s a technician who is not assigned to this visit", async () => {
     const { visitId } = await makeCompletedVisit("field-not-yours");

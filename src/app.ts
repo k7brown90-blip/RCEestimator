@@ -2385,7 +2385,9 @@ app.post("/price-book/drafts/:draftId/duplicate", asyncHandler(async (req, res) 
   const sourceId = String(req.params.draftId);
   const source = await prisma.priceBookDraftEstimate.findUnique({
     where: { id: sourceId },
-    include: { lines: true, questions: true, optionMeta: true, photos: true },
+    // No `photos`: a draft's photos live on its JOB as VisitPhotos (plan A, 2026-10-02), so a
+    // copy of the draft already shares them — there is nothing to duplicate.
+    include: { lines: true, questions: true, optionMeta: true },
   });
   if (!source) {
     res.status(404).json({ error: `Draft ${sourceId} not found.` });
@@ -2460,17 +2462,6 @@ app.post("/price-book/drafts/:draftId/duplicate", asyncHandler(async (req, res) 
       })),
     });
   }
-  if (source.photos.length > 0) {
-    await prisma.draftPhoto.createMany({
-      data: source.photos.map((p) => ({
-        draftId: copy.id,
-        mime: p.mime,
-        bytes: p.bytes,
-        size: p.size,
-        note: p.note,
-      })),
-    });
-  }
   res.status(201).json({ id: copy.id, title: copy.title });
 }));
 
@@ -2524,74 +2515,20 @@ app.post("/price-book/drafts/:draftId/options/copy", asyncHandler(async (req, re
 }));
 
 /*
-  ── WALKTHROUGH PHOTOS (Kyle, 2026-08-22) ──────────────────────────────────────────────────────
+  ── WALKTHROUGH PHOTOS: RETIRED (plan A, Kyle 2026-10-02) ──────────────────────────────────────
 
-  "there is no capability to take photos right now."
+  The four `DraftPhoto` routes that lived here (POST/GET /price-book/drafts/:draftId/photos,
+  GET/DELETE /draft-photos/:id) are gone. Kyle: "Draft photos don't make sense to me … we would
+  obviously want the photos added to the estimates that are from an applied job, consultation, or
+  diagnostics." A photo added while building an estimate is a `VisitPhoto` on the job it came
+  from — the consultation IS a job — through the same `POST /health-record-admin/visits/:visitId/
+  photos` the account gallery uses. It outlives the estimate: when the 30 days pass and the
+  estimate is rebuilt, the photos are still on the job.
 
-  Bytes live in Postgres because Railway wipes the filesystem on deploy — a photo in generated/
-  survives until the next release and no longer. The client downscales before upload; the 4MB cap
-  here is the backstop, not the plan. JPEG/PNG/WebP only: a photo endpoint that accepts any bytes
-  is a file host.
-
-  NO AI EGRESS. Attach-only, per the P012 seam — sending customer photos to a model is a separate
-  decision Kyle has not made, and no code path here reaches one.
+  The `DraftPhoto` TABLE still exists and still holds its rows; nothing reads or writes it from
+  the app any more. scripts/migrateDraftPhotosToVisits.ts copies those rows onto their jobs and
+  reports what it could not place; the table is dropped only after Kyle has seen that count.
 */
-const PHOTO_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
-const PHOTO_MAX_BYTES = 4 * 1024 * 1024;
-
-app.post("/price-book/drafts/:draftId/photos", asyncHandler(async (req, res) => {
-  const body = z.object({
-    dataUrl: z.string().max(8 * 1024 * 1024),
-    note: z.string().trim().max(300).nullable().optional(),
-  }).parse(req.body ?? {});
-  const draftId = String(req.params.draftId);
-  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { id: true } });
-  if (!draft) {
-    res.status(404).json({ error: `Draft ${draftId} not found.` });
-    return;
-  }
-  const m = /^data:([a-z0-9/+.-]+);base64,(.+)$/i.exec(body.dataUrl);
-  if (!m || !PHOTO_MIMES.has(m[1].toLowerCase())) {
-    res.status(400).json({ error: "Photos must be JPEG, PNG or WebP." });
-    return;
-  }
-  const bytes = Buffer.from(m[2], "base64");
-  if (bytes.length === 0 || bytes.length > PHOTO_MAX_BYTES) {
-    res.status(400).json({ error: `Photo must be under ${PHOTO_MAX_BYTES / 1024 / 1024}MB.` });
-    return;
-  }
-  const photo = await prisma.draftPhoto.create({
-    data: { draftId, mime: m[1].toLowerCase(), bytes, size: bytes.length, note: body.note ?? null },
-    select: { id: true, mime: true, size: true, note: true, createdAt: true },
-  });
-  res.status(201).json(photo);
-}));
-
-app.get("/price-book/drafts/:draftId/photos", asyncHandler(async (req, res) => {
-  // Metadata only — a list endpoint that returns megabytes of bytea is a self-inflicted outage.
-  const photos = await prisma.draftPhoto.findMany({
-    where: { draftId: String(req.params.draftId) },
-    orderBy: { createdAt: "asc" },
-    select: { id: true, mime: true, size: true, note: true, createdAt: true },
-  });
-  res.json({ photos });
-}));
-
-app.get("/draft-photos/:id", asyncHandler(async (req, res) => {
-  const photo = await prisma.draftPhoto.findUnique({ where: { id: String(req.params.id) } });
-  if (!photo) {
-    res.status(404).json({ error: "Photo not found." });
-    return;
-  }
-  res.setHeader("Content-Type", photo.mime);
-  res.setHeader("Cache-Control", "private, max-age=3600");
-  res.send(Buffer.from(photo.bytes));
-}));
-
-app.delete("/draft-photos/:id", asyncHandler(async (req, res) => {
-  await prisma.draftPhoto.delete({ where: { id: String(req.params.id) } }).catch(() => null);
-  res.json({ deleted: true });
-}));
 
 app.get("/price-book/drafts/:draftId/options", asyncHandler(async (req, res) => {
   const meta = await prisma.priceBookDraftOption.findMany({
@@ -3208,6 +3145,11 @@ app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
     // Support documentation (2026-08-29), rendered fresh at send time.
     attachHealthReport: z.boolean().optional(),
     attachGeneratorReport: z.boolean().optional(),
+    // The financing line in the email body (Kyle, 2026-10-02: "financing link ... checked or
+    // unchecked to designate what gets sent"). Absent means SENT: it is an opt-out, so neither
+    // the field app nor any older caller silently loses a line Kyle has wanted on every estimate
+    // since 2026-09-16. See sendEstimateEmail's `includeFinancingLink` for the full reasoning.
+    includeFinancingLink: z.boolean().optional(),
   }).parse(req.body ?? {});
 
   const result = await sendEstimateEmail(prisma, String(req.params.id), {
@@ -3217,6 +3159,7 @@ app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
     photoIds: body.photoIds,
     attachHealthReport: body.attachHealthReport,
     attachGeneratorReport: body.attachGeneratorReport,
+    includeFinancingLink: body.includeFinancingLink,
   });
 
   if (!result.ok) {
@@ -4641,6 +4584,39 @@ app.post("/jobs/:jobId/email-review-request", asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+/**
+ * The SAME ask, resolved by ACCOUNT rather than by job (plan 2026-10-02-account-property-and-
+ * the-estimate-that-knows-the-job.md, item E / ruling E2). Kyle: "I would like... a button that
+ * sends them a review request... while we are on the phone with them." A phone call is with a
+ * CUSTOMER, not a specific Visit.id — the button above needs one, so this door resolves this
+ * account's own most recently completed job (by `completedAt`) and hands it to the exact same
+ * service. Every guard still applies exactly as it does on the job-keyed door above: the job
+ * must be completed (true by construction of the query below), no duplicate ask on that job, no
+ * repeat ask on this customer within 90 days, email on file. With no completed job at all, this
+ * reads as a sentence, not a 404 — the CRM greys the button on the same signal, but a refusal
+ * here must still be readable on its own.
+ */
+app.post("/accounts/:accountId/email-review-request", asyncHandler(async (req, res) => {
+  const accountId = readParam(req, "accountId");
+  const account = await prisma.customer.findUnique({ where: { id: accountId }, select: { id: true } });
+  if (!account) { res.status(404).json({ error: "Account not found" }); return; }
+
+  const job = await prisma.visit.findFirst({
+    where: { customerId: accountId, status: "completed" },
+    orderBy: { completedAt: "desc" },
+    select: { id: true },
+  });
+  if (!job) {
+    res.status(400).json({ error: "This account has no completed job yet — a review request needs one to send." });
+    return;
+  }
+
+  const { sendReviewRequestEmail } = await import("./services/reviewRequest");
+  const result = await sendReviewRequestEmail(prisma, job.id, { manual: true });
+  if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
+  res.json({ ...result, visitId: job.id });
+}));
+
 /** Same summary, addressed by the JOB — what the visit workspace shows. The ROOT invoice (2026-09-20). */
 app.get("/jobs/:jobId/payment-info", asyncHandler(async (req, res) => {
   const jobId = readParam(req, "jobId");
@@ -5818,8 +5794,8 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       id: est.id,
       number: est.number,
       revision: est.revision,
-      // The draft this invoice's estimate was issued from (2026-10-01, item J) — the photo
-      // picker reads its DraftPhoto rows, the ones added while BUILDING the estimate.
+      // The draft this invoice's estimate was issued from. Provenance only since plan A
+      // (2026-10-02): photos live on the job, so no picker reads anything by draft any more.
       draftId: est.draftId,
       // Every address on the account (item J) — the photo picker attaches any photo on the
       // account, not just this invoice's own serviceProperty.
@@ -6074,6 +6050,47 @@ app.delete("/accounts/:id/notes/:noteId", asyncHandler(async (req, res) => {
   });
   if (deleted.count === 0) { res.status(404).json({ error: "Note not found" }); return; }
   res.status(204).end();
+}));
+
+// ─── GOOGLE REVIEW CONFIRMED — manual mark (Kyle, 2026-10-02, item E / ruling E2) ────────────
+//
+// "I would like the google review to be a manual only marked ... Once once is done we can mark
+// that and that button changes to review confirmed." Google gives this app no way to detect a
+// review landing, so this is a recorded fact a human enters after checking Google themselves —
+// not a toggle the system derives from anything. `confirmedBy` is required and typed, same house
+// pattern as CustomerNote.takenBy and HealthInspection.reviewedBy: no per-user identity behind
+// the shared PIN, so the server will not invent an author.
+//
+// REVERSIBLE (standing rule): the DELETE clears both columns back to null — this is never a
+// one-way switch.
+app.post("/accounts/:id/review-confirmed", asyncHandler(async (req, res) => {
+  const customerId = readParam(req, "id");
+  const body = z.object({
+    confirmedBy: z.string().trim().min(1, "Say who confirmed it.").max(100),
+  }).parse(req.body);
+
+  const existing = await prisma.customer.findUnique({ where: { id: customerId }, select: { id: true } });
+  if (!existing) { res.status(404).json({ error: "Account not found" }); return; }
+
+  const updated = await prisma.customer.update({
+    where: { id: customerId },
+    data: { reviewConfirmedAt: new Date(), reviewConfirmedBy: body.confirmedBy },
+    select: { reviewConfirmedAt: true, reviewConfirmedBy: true },
+  });
+  res.json(updated);
+}));
+
+app.delete("/accounts/:id/review-confirmed", asyncHandler(async (req, res) => {
+  const customerId = readParam(req, "id");
+  const existing = await prisma.customer.findUnique({ where: { id: customerId }, select: { id: true } });
+  if (!existing) { res.status(404).json({ error: "Account not found" }); return; }
+
+  const updated = await prisma.customer.update({
+    where: { id: customerId },
+    data: { reviewConfirmedAt: null, reviewConfirmedBy: null },
+    select: { reviewConfirmedAt: true, reviewConfirmedBy: true },
+  });
+  res.json(updated);
 }));
 
 // ─── JOB COMPLETION (Kyle, 2026-08-25) ───────────────────────────────────────
@@ -7269,6 +7286,10 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       visitDate: visit.visitDate,
       scheduledStart: visit.scheduledStart,
       scheduledEnd: visit.scheduledEnd,
+      // When this job finished (item E / ruling E2) — the account-level review-request control
+      // resolves "the account's most recently completed job" off this, the same way the server's
+      // own `/accounts/:accountId/email-review-request` route does (`orderBy: completedAt desc`).
+      completedAt: visit.completedAt,
       /** The visit whose card carries this one's costs, when part of a chain. */
       costsRolledUpTo: childToJob.get(visit.id) ?? null,
       costs: childToJob.has(visit.id)
@@ -7329,8 +7350,8 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
           // invoice" button and the SAME group totals behind it. Reads as double billing.
           changeOrderForId: true,
           changeOrderFor: { select: { number: true } },
-          // The draft this estimate was issued from (2026-10-01, item J) — the photo picker
-          // reads its DraftPhoto rows alongside the account's VisitPhoto gallery.
+          // The draft this estimate was issued from — provenance for the account page's
+          // "open in builder" link. Photos no longer hang off a draft (plan A, 2026-10-02).
           draftId: true,
         },
       },
@@ -7360,6 +7381,9 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       phone: account.phone,
       createdAt: account.createdAt,
       isTestAccount: account.isTestAccount,
+      // The manual "review confirmed" mark (item E / ruling E2) — who and when, reversible.
+      reviewConfirmedAt: account.reviewConfirmedAt,
+      reviewConfirmedBy: account.reviewConfirmedBy,
     },
     properties: account.properties.map((property) => {
       const propertyJobs = jobsByProperty.get(property.id) ?? [];
@@ -7428,8 +7452,8 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
       // The invoice send targets the ESTIMATE, not the document row — the document is one of two
       // renderings of it. Exposed so the account page can offer the send without a second lookup.
       estimateId: d.issuedEstimateId,
-      // The draft behind that estimate (item J) — null only for the handful of rows issued
-      // before drafts carried provenance; the photo picker just has no DraftPhoto source then.
+      // The draft behind that estimate — null only for the handful of rows issued before drafts
+      // carried provenance. Provenance only: photos live on the job (plan A, 2026-10-02).
       draftId: d.issuedEstimate?.draftId ?? null,
       customerEmail: d.issuedEstimate?.customerEmail ?? null,
       signedByName: d.signedByName,

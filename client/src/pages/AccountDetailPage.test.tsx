@@ -17,7 +17,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { AccountDetailPage } from "./AccountDetailPage";
 import { api } from "../lib/api";
-import type { CustomerNote, PropertyPhotos } from "../lib/api";
+import type { CustomerContact, CustomerNote, PropertyPhotos } from "../lib/api";
 import type { AccountSummary } from "../lib/types";
 
 // The gallery's "+ Add photos" downscales the file in-browser before upload (lib/images.ts,
@@ -263,5 +263,139 @@ describe("AccountDetailPage — account-wide photo gallery", () => {
     await waitFor(() =>
       expect(upload).toHaveBeenCalledWith("visit-2", { dataUrl: "data:image/jpeg;base64,ZmFrZQ==", tag: null }),
     );
+  });
+});
+
+/**
+ * Plan item B, 2026-10-02 — "The account page is about the CUSTOMER."
+ *
+ * The "Start work" card (Book consultation / Open a visit / Start an estimate) is removed from
+ * this page: those doors moved to the property page (Schedule Consultation / Create New Estimate
+ * on PropertyDetailPage.tsx, plan item C). This file only proves the card and its three buttons
+ * are gone from the ACCOUNT page — PropertyDetailPage has its own test file for the replacements.
+ *
+ * Additional contacts move INTO the contact card (Kyle, 2026-10-02): "When an additional contact
+ * is added it should be shown along side the main contact in the contact card." They used to sit
+ * in their own "Additional contacts" section below Addresses.
+ */
+describe("AccountDetailPage — Start work removed, additional contacts in the contact card", () => {
+  const prop1 = { id: "prop-1", name: "Main House", addressLine1: "123 Main St", addressLine2: null, city: "Murfreesboro", state: "TN", postalCode: "37130", occupancyType: "residential", jurisdictionId: "murfreesboro", notes: null, activeJobCount: 0, completedJobCount: 0, lastInspectionDate: null, openFindingCount: 0, openDefectCount: 0 };
+
+  function accountSummaryWithOneProperty(): AccountSummary {
+    return {
+      account: { id: "cust-1", name: "Jane Homeowner", email: "jane@example.com", phone: "615-555-0100", createdAt: "2026-09-01T12:00:00.000Z", isTestAccount: false },
+      properties: [prop1],
+      jobs: [],
+      totals: {
+        lifetimeRevenue: 0, lifetimeCost: 0, lifetimeProfit: 0, lifetimeMargin: null, activeJobCount: 0, completedJobCount: 0,
+        propertyCount: 1, lifetimeCollected: 0, lifetimeCustomerPaid: 0, lifetimeWarrantyPaid: 0, lifetimePaymentCount: 0, lastPaidAt: null,
+      },
+      documents: [],
+    } as unknown as AccountSummary;
+  }
+
+  /** `api.accountContacts` backed by a mutable array, so add/edit/remove visibly round-trip. */
+  function mockAccountReadsWithContacts(initialContacts: CustomerContact[]) {
+    let contacts = [...initialContacts];
+    vi.spyOn(api, "accountSummary").mockResolvedValue(accountSummaryWithOneProperty());
+    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "accountContacts").mockImplementation(async () => contacts);
+    vi.spyOn(api, "accountEstimates").mockResolvedValue({ estimates: [] } as never);
+    vi.spyOn(api, "customerInspections").mockResolvedValue([]);
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    const add = vi.spyOn(api, "addAccountContact").mockImplementation(async (_accountId, input) => {
+      const created: CustomerContact = {
+        id: `contact-${contacts.length + 1}`,
+        customerId: "cust-1",
+        label: input.label,
+        email: input.email ?? null,
+        phone: input.phone ?? null,
+        createdAt: "2026-10-02T00:00:00.000Z",
+      };
+      contacts = [...contacts, created];
+      return created;
+    });
+    const del = vi.spyOn(api, "deleteAccountContact").mockImplementation(async (_accountId, contactId) => {
+      contacts = contacts.filter((c) => c.id !== contactId);
+    });
+    return { add, del };
+  }
+
+  function renderPage() {
+    return renderWithProviders(
+      <Routes>
+        <Route path="/accounts/:accountId" element={<AccountDetailPage />} />
+      </Routes>,
+      { route: "/accounts/cust-1" },
+    );
+  }
+
+  it("has no 'Start work' card and none of its three buttons", async () => {
+    mockAccountReadsWithContacts([]);
+
+    renderPage();
+
+    // Wait for the page to finish loading before asserting absence.
+    await screen.findByText("Jane Homeowner");
+    expect(screen.queryByRole("heading", { name: "Start work" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Book consultation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open a visit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start an estimate" })).not.toBeInTheDocument();
+  });
+
+  it("shows an additional contact beside the main contact, in the same contact card", async () => {
+    mockAccountReadsWithContacts([
+      { id: "contact-1", customerId: "cust-1", label: "Spouse — cell", email: null, phone: "615-555-0199", createdAt: "2026-09-01T00:00:00.000Z" },
+    ]);
+
+    renderPage();
+
+    const heading = await screen.findByRole("heading", { name: "Additional contacts" });
+    const card = heading.closest(".card") as HTMLElement;
+    // The main contact's email/phone and the additional contact's row are in the SAME card.
+    // The additional-contacts list loads via its own query, after the heading — wait for its row.
+    await within(card).findByText("Spouse — cell");
+    expect(within(card).getByText("jane@example.com")).toBeInTheDocument();
+    expect(within(card).getByText("615-555-0100")).toBeInTheDocument();
+    expect(within(card).getByText("615-555-0199")).toBeInTheDocument();
+  });
+
+  it("adds, edits and removes an additional contact from the contact card", async () => {
+    const { add, del } = mockAccountReadsWithContacts([]);
+
+    renderPage();
+
+    const heading = await screen.findByRole("heading", { name: "Additional contacts" });
+    const card = heading.closest(".card") as HTMLElement;
+
+    expect(within(card).getByText("No additional contacts yet.")).toBeInTheDocument();
+
+    // Add.
+    fireEvent.change(within(card).getByPlaceholderText("Label (Spouse — cell)"), { target: { value: "Spouse — cell" } });
+    fireEvent.change(within(card).getByPlaceholderText("Phone (optional)"), { target: { value: "615-555-0199" } });
+    fireEvent.click(within(card).getByRole("button", { name: "Add contact" }));
+
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith("cust-1", { label: "Spouse — cell", email: null, phone: "615-555-0199" }),
+    );
+    await within(card).findByText("615-555-0199");
+
+    // Edit — populate from the row, change the phone, save.
+    fireEvent.click(within(card).getByRole("button", { name: "Edit" }));
+    const phoneField = within(card).getByDisplayValue("615-555-0199");
+    fireEvent.change(phoneField, { target: { value: "615-555-0222" } });
+    fireEvent.click(within(card).getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith("cust-1", { label: "Spouse — cell", email: null, phone: "615-555-0222" }),
+    );
+    await waitFor(() => expect(del).toHaveBeenCalledWith("cust-1", "contact-1"));
+    await within(card).findByText("615-555-0222");
+    expect(within(card).queryByText("615-555-0199")).not.toBeInTheDocument();
+
+    // Remove.
+    fireEvent.click(within(card).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("cust-1", "contact-2"));
+    await within(card).findByText("No additional contacts yet.");
   });
 });

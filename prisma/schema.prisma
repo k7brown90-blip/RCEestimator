@@ -40,6 +40,19 @@ model Customer {
   // Rows under a test account are excluded from funnel counts and the Estimates chain view,
   // and the whole account deletes in one action — on Kyle's word, never on a schedule.
   isTestAccount     Boolean                  @default(false)
+  // ── GOOGLE REVIEW CONFIRMED (Kyle, 2026-10-02, plan item E / ruling E2) ──
+  // "I would like the google review to be a manual only marked ... when we follow up with them we
+  // can send it while we are on the phone with them." Google gives this app no signal that a
+  // review actually landed, so this is a recorded BUSINESS FACT a human enters after checking
+  // Google themselves — not a flag the system derives. Same house pattern as
+  // HealthInspection.reviewedAt/reviewedBy: who and when, on the row the fact is about, no
+  // per-user identity to default `reviewConfirmedBy` to (one shared PIN; see CustomerNote.takenBy
+  // for the same reasoning). A column, not its own table or a log of events: this is a single
+  // CURRENT fact ("has this customer left us a review"), not a history several people add to.
+  // REVERSIBLE, like everything this app creates — clearing both fields is the way out, and the
+  // CRM's control does exactly that; it is never a one-way switch.
+  reviewConfirmedAt DateTime?
+  reviewConfirmedBy String?
   healthInspections HealthInspection[]
   diagnosticReports DiagnosticReport[]
   contacts          CustomerContact[]

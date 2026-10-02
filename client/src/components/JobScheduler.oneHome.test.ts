@@ -63,9 +63,9 @@ describe("scheduling has one home", () => {
     // The four redirects that predate this change and the new door must all agree on the param,
     // or the Calendar's effect (CalendarPage.tsx `searchParams.get("schedule")`) misses one.
     const doors = [
-      "pages/AccountDetailPage.tsx",
       "pages/JobsPage.tsx",
       "pages/PriceBookIntakePage.tsx",
+      "pages/PropertyDetailPage.tsx",
       "pages/SigningModePage.tsx",
     ];
     for (const rel of doors) {

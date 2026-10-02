@@ -3,10 +3,8 @@ import { useStickyFooterSpace } from "../lib/useStickyFooterSpace";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
-import { api, fetchProtectedObjectUrl } from "../lib/api";
-import { downscale } from "../lib/images";
-import { PhotoAttachPicker, draftPhotosQuery } from "../components/PhotoGalleryPanel";
-import { PhotoLightbox } from "../components/PhotoLightbox";
+import { api } from "../lib/api";
+import { AccountPhotoGallery, PhotoAttachPicker } from "../components/PhotoGalleryPanel";
 import { WarrantyCoveragePanel } from "../components/WarrantyCoveragePanel";
 import { RaiseChangeOrderButton } from "../components/RaiseChangeOrderButton";
 import { acceptanceWording, isOfficeAcceptance } from "../../../shared/acceptance";
@@ -314,6 +312,8 @@ export function PriceBookIntakePage() {
               onChanged={invalidate}
               accountId={accountId}
               serviceAddressId={serviceAddressId}
+              draftVisitId={review?.draft.visitId ?? null}
+              draftCustomerId={review?.draft.customerId ?? null}
               onAttached={(acc, addr) => {
                 const next = new URLSearchParams(params);
                 next.set("account", acc);
@@ -1003,6 +1003,10 @@ function ReviewTab(props: {
   onChanged: () => void;
   /** A change-order draft (2026-09-20): the deposit defaults off and "add to current job" is offered. */
   isChangeOrder?: boolean;
+  /** The consultation this draft was created from, when it has one — the job its photos default to. */
+  draftVisitId: string | null;
+  /** The draft's own account, for the photo panel when the URL carries no `?account=`. */
+  draftCustomerId: string | null;
 }) {
   const { draftId, review, computed, options, optionMeta, onChanged, accountId, serviceAddressId, onAttached } = props;
   // finalizeMsg went with the Check / Finalize buttons — nothing sets it now, and a
@@ -1185,7 +1189,7 @@ function ReviewTab(props: {
 
       <IssueAndSendPanel draftId={draftId} accountId={accountId} serviceAddressId={serviceAddressId} isChangeOrder={Boolean(props.isChangeOrder)} />
 
-      <PhotoAttach draftId={draftId} />
+      <EstimatePhotos accountId={accountId ?? props.draftCustomerId} defaultVisitId={props.draftVisitId} />
     </div>
   );
 }
@@ -1778,6 +1782,10 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   // generator sizing sheet, rendered fresh at send time.
   const [attachHealthReport, setAttachHealthReport] = useState(false);
   const [attachGeneratorReport, setAttachGeneratorReport] = useState(false);
+  // Ticked by default, unlike the two above (Kyle, 2026-10-02). The financing line has gone out
+  // on every estimate email since 2026-09-16 on his word; a box that started empty would have
+  // quietly stopped it. What he gains here is the ability to leave it OFF on one estimate.
+  const [includeFinancingLink, setIncludeFinancingLink] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -1908,6 +1916,9 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
         photoIds: sendPhotoIds.length > 0 ? sendPhotoIds : undefined,
         attachHealthReport: attachHealthReport || undefined,
         attachGeneratorReport: attachGeneratorReport || undefined,
+        // Only sent when switched OFF. The server treats absent as "send it", so the default
+        // path stays byte-identical to what estimates have always carried.
+        includeFinancingLink: includeFinancingLink ? undefined : false,
       }),
     onSuccess: (r) => {
       setNotice(`Sent to ${r.to}.`);
@@ -2312,25 +2323,32 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                     />
                     Attach Generator Sizing data sheet
                   </label>
+                  <label className="flex items-center gap-2 text-xs text-rce-soft">
+                    <input
+                      type="checkbox"
+                      checked={includeFinancingLink}
+                      onChange={(e) => setIncludeFinancingLink(e.target.checked)}
+                    />
+                    Include the Synchrony financing link
+                  </label>
                 </div>
                 {/*
                   Photo gallery (2026-08-28): assessment/job photos can ride the estimate email —
                   ticked here, per send, never assumed.
 
-                  ANY PHOTO ON THE ACCOUNT, PLUS THE DRAFT'S (Kyle, 2026-10-01: "Having the
-                  photos linked to the job is necessary but that should not eleminate them from
-                  being selected… sending the photos as evidence is our standard"). This used to
-                  be gated on `serviceAddressId` alone (the `?address=` URL PARAMETER, while the
-                  rest of this panel is not) and only reached `VisitPhoto`s at that one address —
-                  an account with two properties could not send a photo from the other, and
-                  photos added while BUILDING the estimate (`DraftPhoto`) could not ride the email
-                  at all. `accountProperties` (every address on this estimate's account) and
-                  `est.draftId` (the draft this was issued from) both come from the issued
-                  estimate's own detail response, not from how the operator navigated here.
+                  ANY PHOTO ON THE ACCOUNT (Kyle, 2026-10-01: "Having the photos linked to the
+                  job is necessary but that should not eleminate them from being selected… sending
+                  the photos as evidence is our standard"). This used to be gated on
+                  `serviceAddressId` alone (the `?address=` URL PARAMETER, while the rest of this
+                  panel is not) and only reached `VisitPhoto`s at that one address — an account
+                  with two properties could not send a photo from the other. `accountProperties`
+                  (every address on this estimate's account) comes from the issued estimate's own
+                  detail response, not from how the operator navigated here. Photos added while
+                  BUILDING the estimate are job photos too since plan A (2026-10-02), so this one
+                  source reaches them.
                 */}
                 <PhotoAttachPicker
                   properties={accountProperties}
-                  draftId={est.draftId}
                   selected={sendPhotoIds}
                   onChange={setSendPhotoIds}
                 />
@@ -2348,7 +2366,11 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                       attachGeneratorReport ? "the Generator Sizing sheet" : null,
                       sendPhotoIds.length ? `${sendPhotoIds.length} photo(s)` : null,
                     ].filter(Boolean).join(", ");
-                    if (window.confirm(`Email estimate ${est.number} to ${to}${extras ? ` with ${extras}` : ""}?`)) send.mutate();
+                    // The financing link is normally ON, so the confirm calls out its ABSENCE —
+                    // listing it every time would be noise, but dropping it silently would mean
+                    // Kyle only finds out by reading the sent email.
+                    const without = includeFinancingLink ? "" : " (no financing link)";
+                    if (window.confirm(`Email estimate ${est.number} to ${to}${extras ? ` with ${extras}` : ""}${without}?`)) send.mutate();
                   }}
                 >
                   {send.isPending ? "Sending…" : est.sentAt ? "Email again" : "Email estimate"}
@@ -2409,116 +2431,80 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
  * not receive the bytes unless he separately says so.
  */
 /**
- * Walkthrough photos — real now (Kyle, 2026-08-22: "there is no capability to take photos
- * right now").
+ * Photos while building the estimate — filed on the JOB, not on the draft (plan A, Kyle
+ * 2026-10-02).
  *
- * The <input capture="environment"> opens the phone's rear camera directly; the gallery still
- * works through the same control. Every image is DOWNSCALED ON THE PHONE (max 1600px, JPEG .82)
- * before upload — a 12MP photo is ~6MB of bytes the database does not need for "which breaker
- * fed the disposal", and the server's 4MB cap is the backstop, not the plan.
+ *   "Draft photos don't make sense to me. Using basic logic here we would obviously want the
+ *    photos added to the estimates that are from an applied job, consultation, or diagnostics.
+ *    This is why they are labeled with what job they came from or assigned to a job once
+ *    uploaded."
  *
- * Thumbnails fetch through the authed blob path — a bare <img src> carries no Authorization
- * header, the same lesson the PDF buttons paid for.
+ * This used to be `PhotoAttach`, which wrote a `DraftPhoto` row nothing else could reach — the
+ * exact dead end of 2026-10-01, when the photos justifying a quote were the only ones that could
+ * not be emailed with it. A consultation IS a job, created when it is scheduled, so there is
+ * always a job to put the photo on; and because the photo lives on the job it OUTLIVES the
+ * estimate — when the 30 days pass and the estimate is rebuilt, the photos are still there to
+ * attach to the new one.
  *
- * STILL NO AI EGRESS. Photos attach to the draft and go nowhere else (P012 seam).
+ * So this renders the account's own gallery, the one on the account page: every photo on the
+ * account newest first (Kyle: "When building an estimate we want to access all photos"), upload
+ * asks WHICH JOB (no question when there is exactly one, greyed with the reason when there is
+ * none), and the job the draft was created from is preselected. Same `api.uploadVisitPhoto`,
+ * same `["property-photos", …]` cache — one upload path, not two. Every photo added here has
+ * its × here.
+ *
+ * The account comes from the URL (`?account=`) or, failing that, the draft's own `customerId`.
+ * With neither there is no job to file a photo on, and the panel says so rather than hiding.
+ *
+ * STILL NO AI EGRESS. Photos go to the job and nowhere else (P012 seam).
  */
-function PhotoAttach(props: { draftId: string }) {
-  const queryClient = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  // Zoomable viewer (Kyle, 2026-08-31) — nameplates are unreadable at thumbnail size.
-  const [lightboxId, setLightboxId] = useState<string | null>(null);
-
-  const { data } = useQuery(draftPhotosQuery(props.draftId));
-  const photos = data?.photos ?? [];
-  const photoIds = photos.map((p) => p.id).join(",");
-
-  useEffect(() => {
-    let dead = false;
-    for (const ph of photos) {
-      if (thumbs[ph.id]) continue;
-      void fetchProtectedObjectUrl(`/draft-photos/${ph.id}`)
-        .then((url) => { if (!dead) setThumbs((t) => ({ ...t, [ph.id]: url })); })
-        .catch(() => {});
-    }
-    return () => { dead = true; };
-    // Keyed on the id list: re-running on `thumbs` itself would loop forever.
-  }, [photoIds]);
-
-  const remove = useMutation({
-    mutationFn: (id: string) => api.pbDeletePhoto(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["pb-photos", props.draftId] }),
+function EstimatePhotos(props: { accountId: string | null; defaultVisitId: string | null }) {
+  const accountId = props.accountId ?? "";
+  // Same key, same call and same shape as AccountDetailPage's read (tests/queryKeyCollisions).
+  const { data: summary, isError } = useQuery({
+    queryKey: ["account-summary", accountId],
+    queryFn: () => api.accountSummary(accountId),
+    enabled: Boolean(accountId),
   });
 
-  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
-    if (files.length === 0) return;
-    setBusy(true); setErr("");
-    try {
-      for (const file of files) {
-        const dataUrl = await downscale(file);
-        await api.pbUploadPhoto(props.draftId, dataUrl);
-      }
-      await queryClient.invalidateQueries({ queryKey: ["pb-photos", props.draftId] });
-    } catch (ex) {
-      setErr((ex as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="card p-3">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">Photos {photos.length > 0 ? `(${photos.length})` : ""}</h3>
-        <label className="btn btn-secondary cursor-pointer text-sm">
-          {busy ? "Uploading…" : "+ Add photo"}
-          <input
-            type="file" accept="image/*" capture="environment" multiple hidden
-            onChange={(e) => void onPick(e)} disabled={busy}
-          />
-        </label>
-      </div>
-      {err && <p className="mt-1 text-xs text-red-600">{err}</p>}
-      {photos.length === 0 && !busy && (
-        <p className="mt-1 text-xs text-rce-muted">
-          Walkthrough photos attach to this draft. They are never sent to the AI.
-        </p>
-      )}
-      {photos.length > 0 && (
-        <div className="mt-2 grid grid-cols-3 gap-2">
-          {photos.map((ph) => (
-            <div key={ph.id} className="relative">
-              {thumbs[ph.id]
-                ? <img
-                    src={thumbs[ph.id]}
-                    alt="walkthrough"
-                    className="h-24 w-full cursor-zoom-in rounded object-cover"
-                    onClick={() => setLightboxId(ph.id)}
-                  />
-                : <div className="h-24 w-full animate-pulse rounded bg-rce-border/40" />}
-              <button
-                type="button"
-                onClick={() => remove.mutate(ph.id)}
-                className="absolute right-1 top-1 rounded bg-black/60 px-1.5 text-xs text-white"
-                aria-label="Delete photo"
-              >
-                ×
-              </button>
-            </div>
-          ))}
+  if (!accountId) {
+    return (
+      <section className="card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold">Photos</h2>
+          <label className="btn btn-primary cursor-not-allowed text-sm opacity-50">
+            + Add photos
+            <input type="file" accept="image/*" multiple hidden disabled />
+          </label>
         </div>
-      )}
-      {lightboxId && thumbs[lightboxId] && (
-        <PhotoLightbox
-          src={thumbs[lightboxId]}
-          alt="walkthrough photo"
-          onClose={() => setLightboxId(null)}
-        />
-      )}
-    </div>
+        <p className="mt-2 text-sm text-rce-soft">
+          Attach this estimate to an account first — photos are filed on a job, and the jobs live on the account.
+        </p>
+      </section>
+    );
+  }
+  if (isError) {
+    return (
+      <section className="card p-4">
+        <h2 className="text-lg font-semibold">Photos</h2>
+        <p className="mt-2 text-sm text-rce-danger">Could not load this account's jobs and photos. Reload to try again.</p>
+      </section>
+    );
+  }
+  if (!summary) {
+    return (
+      <section className="card p-4">
+        <h2 className="text-lg font-semibold">Photos</h2>
+        <p className="mt-2 text-sm text-rce-soft">Loading this account's photos…</p>
+      </section>
+    );
+  }
+  return (
+    <AccountPhotoGallery
+      properties={summary.properties.map((p) => ({ id: p.id, name: p.name, addressLine1: p.addressLine1, city: p.city }))}
+      jobs={summary.jobs}
+      defaultVisitId={props.defaultVisitId}
+    />
   );
 }
 

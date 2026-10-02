@@ -1446,6 +1446,9 @@ export type AccountJob = {
   visitDate: string;
   scheduledStart: string | null;
   scheduledEnd: string | null;
+  /** When this job finished — null until it is. Used to resolve "the account's most recently
+   * completed job" for the account-level review-request control (item E / ruling E2). */
+  completedAt: string | null;
   costs: JobCosts;
   purchaseOrders: AccountPurchaseOrder[];
   receipts: AccountReceipt[];
@@ -1472,8 +1475,8 @@ export type InvoiceSummary = {
   id: string;
   number: string;
   revision: number;
-  /** The draft this invoice's estimate was issued from (2026-10-01, item J) — the photo picker
-   * reads its DraftPhoto rows, the ones added while BUILDING the estimate. */
+  /** The draft this invoice's estimate was issued from. Provenance only since plan A
+   * (2026-10-02): photos live on the job, so nothing reads anything by draft any more. */
   draftId: string;
   /** Every address on the account (item J) — the photo picker attaches any photo on the
    * account, not just this invoice's own `propertyId`. */
@@ -1573,6 +1576,10 @@ export type AccountSummary = {
     createdAt: string;
     /** Practice work — kept out of every company financial total. */
     isTestAccount: boolean;
+    /** The manual "review confirmed" mark (item E / ruling E2, 2026-10-02) — who and when,
+     * null until a human checks Google and marks it; reversible (DELETE clears both). */
+    reviewConfirmedAt: string | null;
+    reviewConfirmedBy: string | null;
   };
   properties: AccountProperty[];
   jobs: AccountJob[];
@@ -1608,8 +1615,8 @@ export type AccountSummary = {
     invoiceNumber: string | null;
     /** The estimate this renders. Emailing an invoice targets it, not this row. */
     estimateId: string | null;
-    /** The draft behind that estimate (2026-10-01, item J) — null on the handful of rows
-     * issued before drafts carried provenance. The photo picker reads its DraftPhoto rows. */
+    /** The draft behind that estimate — null on the handful of rows issued before drafts
+     * carried provenance. Provenance only: photos live on the job (plan A, 2026-10-02). */
     draftId: string | null;
     customerEmail: string | null;
     signedByName: string | null;

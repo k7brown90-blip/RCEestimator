@@ -3350,6 +3350,22 @@ healthRecordAdminRouter.get("/visits/:visitId/diagnostic-reports", asyncHandler(
   res.json({ reports: rows.map(serializeDiagnosticReport) });
 }));
 
+/**
+ * Every diagnostic report ever run at an address, across every visit — the
+ * property page's health record (plan item C, 2026-10-02) aggregates this the
+ * same way it already aggregates inspections and findings per-property rather
+ * than per-visit, so a 30-day-old estimate rebuilt from a new consultation
+ * still shows the diagnostic history that justified it.
+ */
+healthRecordAdminRouter.get("/properties/:propertyId/diagnostic-reports", asyncHandler(async (req, res) => {
+  const rows = await prisma.diagnosticReport.findMany({
+    where: { propertyId: readParam(req, "propertyId") },
+    orderBy: { reportDate: "desc" },
+    include: REPORT_INCLUDE,
+  });
+  res.json({ reports: rows.map(serializeDiagnosticReport) });
+}));
+
 healthRecordAdminRouter.get("/diagnostic-reports/:id", asyncHandler(async (req, res) => {
   const report = await loadDiagnosticReport(prisma, readParam(req, "id"));
   if (!report) {

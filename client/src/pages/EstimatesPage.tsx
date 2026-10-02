@@ -163,9 +163,13 @@ export function EstimatesPage() {
       />
 
       <div className="card p-3 text-xs text-rce-muted">
-        Estimates are started from an account — open the account, pick the address you are working
-        at, and tap <strong>Start an estimate</strong>. This page is the record of what has been
-        quoted, not where quoting begins. Once a sold job is on the schedule it moves to the Jobs tab.
+        {/* Kyle's model, 2026-10-02: "Account -> Property -> Create Estimate." The old wording
+            named a "Start an estimate" button on the ACCOUNT page, which no longer exists — the
+            account is about the customer, and an estimate belongs to an address. A user-facing
+            instruction that names a button nobody can find is worse than none. */}
+        Estimates are started from a property — open the account, open the property, and tap{" "}
+        <strong>Create New Estimate</strong>. This page is the record of what has been quoted, not
+        where quoting begins. Once a sold job is on the schedule it moves to the Jobs tab.
       </div>
 
       {isLoading && <p className="text-sm text-rce-muted">Loading…</p>}

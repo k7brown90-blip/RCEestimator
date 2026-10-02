@@ -72,25 +72,24 @@ export type SendResult = { ok: true; to: string } | { ok: false; reason: string 
  * eleminate them from being selected… sending the photos as evidence is our standard." The job
  * link is for ORGANISATION, not permission — so this used to require `visit.propertyId ===
  * serviceAddressId` (one address) and that guard is gone. What replaces it is NOT "no guard" —
- * it is "this photo belongs to the CUSTOMER this estimate is for", checked against the two stores
- * a photo can live in:
+ * it is "this photo belongs to the CUSTOMER this estimate is for":
  *
- *   - `VisitPhoto` (taken on a visit) qualifies when its visit's `customerId` matches the
- *     estimate's `customerId` — ANY property on the account, never cross-account.
- *   - `DraftPhoto` (added while BUILDING the estimate, a separate table — before this item NO
- *     send path read it at all) qualifies when its `draftId` is the estimate's OWN `draftId`.
- *     Not "any draft on this customer": `PriceBookDraftEstimate.customerId` is nullable (drafts
- *     are priced speculatively, context-free, by design — see its schema comment), so a draft
- *     tied to this exact estimate can have a null `customerId`. Matching on `customerId` would
- *     silently refuse a legitimate send for that whole class of estimates. Matching on the exact
- *     `draftId` is strictly tighter AND avoids that gap: `IssuedEstimate.draftId` is a required,
- *     `onDelete: Restrict` foreign key, so "this is the draft THIS customer's estimate was issued
- *     from" is already a proven fact before this function is ever called.
+ *   - a `VisitPhoto` qualifies when its visit's `customerId` matches the estimate's
+ *     `customerId` — ANY property on the account, never cross-account.
  *
- * A wrong id — someone else's visit photo, someone else's draft photo, a stale id for a photo
- * that moved accounts — cannot leak across the boundary either way: it is simply refused, same as
- * an id that was never real. `MAX_EMAIL_PHOTOS` and the downscale-or-refuse-on-corruption
- * behaviour are unchanged from the single-address version.
+ * ONE STORE, since plan A (Kyle, 2026-10-02: "Draft photos don't make sense to me"). The second
+ * branch that read `DraftPhoto` by the estimate's own `draftId` is gone with the store: a photo
+ * added while BUILDING an estimate is now a `VisitPhoto` on the consultation job it came from, so
+ * it is covered by the one rule above and outlives the estimate. The scoping of the surviving
+ * branch is EXACTLY as it was — security-reviewed 2026-10-01 — and
+ * tests/anyPhotoOnAccountEmail.test.ts pins both that it attaches across properties on the
+ * account and that it refuses another customer's photo and any id from the retired draft store.
+ *
+ * A wrong id — someone else's visit photo, a stale id for a photo that moved accounts, an id
+ * from the retired draft table — cannot leak across the boundary: it is simply refused, same as
+ * an id that was never real. Never an unscoped `findMany({ where: { id: { in: ids } } })`.
+ * `MAX_EMAIL_PHOTOS` and the downscale-or-refuse-on-corruption behaviour are unchanged from the
+ * single-address version.
  */
 const MAX_EMAIL_PHOTOS = 10;
 
@@ -100,28 +99,20 @@ const MAX_EMAIL_PHOTOS = 10;
 export async function photoAttachments(
   prisma: PrismaClient,
   photoIds: string[],
-  owner: { customerId: string; draftId: string },
+  owner: { customerId: string },
 ): Promise<{ attachments: Array<{ filename: string; content: Buffer; contentType: string }>; refused: string[] }> {
   const ids = [...new Set(photoIds)].slice(0, MAX_EMAIL_PHOTOS);
 
-  const [visitPhotos, draftPhotos] = await Promise.all([
-    prisma.visitPhoto.findMany({
-      where: { id: { in: ids }, visit: { customerId: owner.customerId } },
-      select: { id: true, data: true, caption: true },
-    }),
-    prisma.draftPhoto.findMany({
-      where: { id: { in: ids }, draftId: owner.draftId },
-      select: { id: true, bytes: true, note: true },
-    }),
-  ]);
+  const visitPhotos = await prisma.visitPhoto.findMany({
+    where: { id: { in: ids }, visit: { customerId: owner.customerId } },
+    select: { id: true, data: true, caption: true },
+  });
 
-  const found = new Set([...visitPhotos.map((p) => p.id), ...draftPhotos.map((p) => p.id)]);
+  const found = new Set(visitPhotos.map((p) => p.id));
   const refused = ids.filter((id) => !found.has(id));
 
   const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = [];
   let n = 0;
-  // Visit photos (data: Bytes) and draft photos (bytes: Bytes) are different columns on
-  // different models — each store downscales from its own, never guessing a shared shape.
   for (const photo of visitPhotos) {
     n++;
     try {
@@ -138,25 +129,6 @@ export async function photoAttachments(
       });
     } catch {
       refused.push(photo.id); // a corrupt image must not sink the send
-    }
-  }
-  for (const photo of draftPhotos) {
-    n++;
-    try {
-      const content = await sharp(Buffer.from(photo.bytes))
-        .rotate()
-        .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
-        .jpeg({ quality: 80 })
-        .toBuffer();
-      // Same naming as a visit photo's caption — a draft photo's `note` is its equivalent.
-      const label = (photo.note ?? "").trim().replace(/[^a-z0-9 _-]/gi, "").slice(0, 40);
-      attachments.push({
-        filename: `photo-${n}${label ? `-${label.replace(/\s+/g, "-")}` : ""}.jpg`,
-        content,
-        contentType: "image/jpeg",
-      });
-    } catch {
-      refused.push(photo.id);
     }
   }
   return { attachments, refused };
@@ -362,7 +334,7 @@ export async function sendInvoiceEmail(
   // the invoice for completed work (photo gallery, Kyle 2026-08-28; any photo
   // on the account plus this estimate's draft photos, 2026-10-01 item J).
   const photos = opts.photoIds && opts.photoIds.length > 0
-    ? await photoAttachments(prisma, opts.photoIds, { customerId: est.customerId, draftId: est.draftId })
+    ? await photoAttachments(prisma, opts.photoIds, { customerId: est.customerId })
     : { attachments: [], refused: [] };
 
   /*
@@ -463,6 +435,24 @@ export async function sendEstimateEmail(
      * address, so the attachment is never a stale file. */
     attachHealthReport?: boolean;
     attachGeneratorReport?: boolean;
+    /**
+     * The Synchrony financing line in the email body (Kyle, 2026-10-02: "attach relavent
+     * attachements (generator sizing, health report, photos, financing link, and custom message)
+     * all checked or unchecked to designate what gets sent").
+     *
+     * DEFAULTS TO TRUE when the caller says nothing, and that default is the point. This line has
+     * ridden every estimate email since the financing URL was added, on Kyle's 2026-09-16 word
+     * that he wants it sent with estimates; turning it into an opt-IN tick-box would have quietly
+     * stopped it going out on every send that predates the box — including the field app's, which
+     * does not pass this flag at all. So the CRM's box starts ticked and this is an opt-OUT: the
+     * choice Kyle gained is the ability to LEAVE IT OFF on a particular estimate (a warranty job,
+     * a landlord, a quote he does not want to read as a finance pitch), not a new thing to
+     * remember on every send.
+     *
+     * Unlike the two above this is not an attachment — nothing is rendered and nothing is
+     * fetched. It is one paragraph of the body, which is why it cannot fail the send.
+     */
+    includeFinancingLink?: boolean;
   }
 ): Promise<SendResult> {
   const est = await prisma.issuedEstimate.findUnique({
@@ -496,6 +486,9 @@ export async function sendEstimateEmail(
   const link = estimateLink(est.token);
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
   const note = (opts.message ?? "").trim();
+  // Opt-OUT, not opt-in: a caller that says nothing still gets the financing line, because the
+  // field app is such a caller and this line has been on every estimate email since 2026-09-16.
+  const includeFinancing = opts.includeFinancingLink !== false;
   const profile = await getCompanyProfile();
 
   // Flat total only. The email carries no line detail and — like the page — no hours.
@@ -511,8 +504,8 @@ export async function sendEstimateEmail(
         View &amp; accept your estimate
       </a>
     </p>
-    <p style="font-size:15px;">Prefer to pay over time? Financing is available through Synchrony —
-    <a href="${escapeHtml(profile.financingUrl)}">apply here</a>.</p>
+    ${includeFinancing ? `<p style="font-size:15px;">Prefer to pay over time? Financing is available through Synchrony —
+    <a href="${escapeHtml(profile.financingUrl)}">apply here</a>.</p>` : ""}
     <p style="font-size:13px;color:#666;">Estimate ${escapeHtml(est.number)}${est.revision > 1 ? ` (revision ${est.revision})` : ""}
     &middot; Total ${`$${est.total.toFixed(2)}`} &middot; Valid ${est.validDays} days.</p>
     <p style="font-size:13px;color:#666;">If the button does not work, copy this link into your browser:<br>
@@ -523,7 +516,7 @@ export async function sendEstimateEmail(
   // assessment shots that show the customer what the estimate is talking about.
   // Any photo on the account plus this estimate's draft photos (2026-10-01, item J).
   const photos = opts.photoIds && opts.photoIds.length > 0
-    ? await photoAttachments(prisma, opts.photoIds, { customerId: est.customerId, draftId: est.draftId })
+    ? await photoAttachments(prisma, opts.photoIds, { customerId: est.customerId })
     : { attachments: [], refused: [] };
 
   // Support documentation, rendered fresh at send time (2026-08-29). Refuses
