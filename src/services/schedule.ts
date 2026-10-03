@@ -4,7 +4,7 @@
  */
 
 import { google } from "googleapis";
-import { companyCalendarIds } from "./techCalendars";
+import { activeTechCalendars, companyCalendarIds } from "./techCalendars";
 
 const TZ = "America/Chicago";
 
@@ -335,9 +335,22 @@ function mapEvent(e: any): CalendarEvent {
 
 // ─── AVAILABILITY CHECKING (used by scheduling endpoints) ───────────────────────
 
+export interface AvailabilityConflict {
+  date: string;
+  /** Legacy wording ("Busy: 2:00 PM–5:00 PM") — what the voice agents already read. Unchanged. */
+  reason: string;
+  /**
+   * The office-readable sentence naming WHOSE calendar is busy and when, e.g.
+   * "Michael Schramm's calendar is busy all day Wednesday, October 7". An all-day
+   * block says "all day", never "12:00 AM–12:00 AM". Present ONLY when the caller
+   * passed `nameOwners` (the CRM scheduler) — absent for every agent path.
+   */
+  message?: string;
+}
+
 export interface AvailabilityCheckResult {
   available: boolean;
-  conflicts: Array<{ date: string; reason: string }>;
+  conflicts: AvailabilityConflict[];
 }
 
 function getCTParts(d: Date) {
@@ -370,14 +383,21 @@ function getCTParts(d: Date) {
   };
 }
 
-/** Convert Central Time components → UTC Date */
-function ctToUtc(year: number, month: number, day: number, hour: number, minute = 0): Date {
+/**
+ * Convert Central Time components → UTC Date.
+ *
+ * The first guess assumes CST (UTC-6). While Central is on daylight time the
+ * guess for a late hour (23:xx) rolls past midnight into the NEXT Central day,
+ * so the correction has to compare the whole wall-clock reading — date and time
+ * — not just minutes-of-day. Comparing only minutes-of-day corrected the clock
+ * but left the date a day late (2026-10-06 23:59 came out as Oct 7 11:59 PM CT).
+ */
+export function ctToUtc(year: number, month: number, day: number, hour: number, minute = 0): Date {
   const guess = new Date(Date.UTC(year, month - 1, day, hour + 6, minute));
   const actual = getCTParts(guess);
-  const wantMin = hour * 60 + minute;
-  const gotMin = actual.hour * 60 + actual.minute;
-  const delta = gotMin - wantMin;
-  return new Date(guess.getTime() - delta * 60_000);
+  const wanted = Date.UTC(year, month - 1, day, hour, minute);
+  const got = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute);
+  return new Date(guess.getTime() - (got - wanted));
 }
 
 /**
@@ -400,6 +420,23 @@ export async function checkAvailabilityBlock(
    * agents and open-day finder want.
    */
   window?: { start: Date; end: Date },
+  /**
+   * Which calendar(s) to read (Kyle, 2026-10-02: "I am not scheduling Michael I
+   * am scheduling myself and his schedule is blocking me"). The CRM scheduler
+   * passes the ASSIGNED technician's calendar email — a job lands on that tech's
+   * own calendar (they are an attendee on the event), so their calendar alone
+   * sees their other booked jobs, and another tech's "ON CALL" block is not a
+   * conflict. Omitted = the whole company set, exactly as before; the voice
+   * agents and the open-day finder never pass it.
+   */
+  calendarIdsToCheck?: string[],
+  /**
+   * Fill in each conflict's `message` — the sentence that names WHOSE calendar is busy.
+   * Only the CRM scheduler asks for it. It is off by default because the voice agents
+   * return `conflicts` to the caller wholesale (agent-shared.ts), and a technician's name
+   * must not reach them.
+   */
+  nameOwners?: boolean,
 ): Promise<AvailabilityCheckResult> {
   const calendar = getCalendarClient();
 
@@ -410,17 +447,20 @@ export async function checkAvailabilityBlock(
     cursor = new Date(cursor.getTime() + 86_400_000);
   }
 
-  // Query freebusy for the full range — across the WHOLE company calendar set
-  // (primary + env extras + every active tech), so a day one tech has claimed
-  // is a conflict for company-wide block booking. This previously read only
-  // the primary calendar, which is how double-booking against a tech's own
-  // calendar was possible.
+  // Query freebusy for the full range. With no calendar named, that is the WHOLE
+  // company calendar set (primary + env extras + every active tech), so a day one
+  // tech has claimed is a conflict for company-wide block booking — this
+  // previously read only the primary calendar, which is how double-booking
+  // against a tech's own calendar was possible. A caller that names the assigned
+  // tech's calendar reads only that one (see calendarIdsToCheck above).
   const firstParts = getCTParts(workDays[0]);
   const rangeStart = ctToUtc(firstParts.year, firstParts.month, firstParts.day, 0);
   const lastParts = getCTParts(workDays[workDays.length - 1]);
   const rangeEnd = ctToUtc(lastParts.year, lastParts.month, lastParts.day, 23, 59);
 
-  const calendarIds = await companyCalendarIds();
+  const calendarIds = calendarIdsToCheck && calendarIdsToCheck.length > 0
+    ? calendarIdsToCheck
+    : await companyCalendarIds();
   const response = await calendar.freebusy.query({
     requestBody: {
       timeMin: rangeStart.toISOString(),
@@ -430,30 +470,22 @@ export async function checkAvailabilityBlock(
     },
   });
 
-  let busyPeriods = Object.values(response.data.calendars ?? {})
-    .flatMap((cal) => ((cal as { busy?: Array<{ start?: string | null; end?: string | null }> }).busy ?? []))
-    .map((b) => ({
-      start: new Date(b.start!),
-      end: new Date(b.end!),
-    }));
-
-  // The same appointment lives on several company calendars (primary + the
-  // assigned tech), so the raw freebusy union repeats it — "Busy: 2:00 PM-5:00
-  // PM, 2:00 PM-5:00 PM" (Kyle's screenshot). Merge overlapping/duplicate
-  // periods into single spans before any reporting.
-  busyPeriods.sort((a, b) => a.start.getTime() - b.start.getTime());
-  const merged: typeof busyPeriods = [];
-  for (const b of busyPeriods) {
-    const last = merged[merged.length - 1];
-    if (last && b.start.getTime() <= last.end.getTime()) {
-      if (b.end.getTime() > last.end.getTime()) last.end = b.end;
-    } else {
-      merged.push({ start: new Date(b.start), end: new Date(b.end) });
-    }
+  // Keep the calendar each busy period came from — the office needs to be told
+  // WHOSE calendar is blocking, and a flattened union loses that.
+  type BusyPeriod = { start: Date; end: Date };
+  const busyByCalendar = new Map<string, BusyPeriod[]>();
+  for (const [calendarId, cal] of Object.entries(response.data.calendars ?? {})) {
+    const busy = (cal as { busy?: Array<{ start?: string | null; end?: string | null }> }).busy ?? [];
+    busyByCalendar.set(
+      calendarId,
+      busy.map((b) => ({ start: new Date(b.start!), end: new Date(b.end!) })),
+    );
   }
-  busyPeriods = merged;
 
-  // If excluding a specific event (reschedule), filter its busy block
+  // If excluding a specific event (reschedule), drop its busy block. Done on the
+  // raw per-calendar periods, before any merge, so the job's own event is excluded
+  // from every calendar it sits on (primary + the assigned tech) and can never be
+  // swallowed into a larger merged span that no longer matches its start/end.
   if (excludeEventId) {
     try {
       const event = await calendar.events.get({ calendarId: "primary", eventId: excludeEventId });
@@ -462,16 +494,46 @@ export async function checkAvailabilityBlock(
       if (es && ee) {
         const exStart = new Date(es).getTime();
         const exEnd = new Date(ee).getTime();
-        busyPeriods = busyPeriods.filter(
-          (b) => !(b.start.getTime() === exStart && b.end.getTime() === exEnd),
-        );
+        for (const [calendarId, periods] of busyByCalendar) {
+          busyByCalendar.set(
+            calendarId,
+            periods.filter((b) => !(b.start.getTime() === exStart && b.end.getTime() === exEnd)),
+          );
+        }
       }
     } catch {
       // Event may have been deleted — proceed without exclusion
     }
   }
 
-  const conflicts: Array<{ date: string; reason: string }> = [];
+  // The same appointment lives on several company calendars (primary + the
+  // assigned tech), so the raw freebusy union repeats it — "Busy: 2:00 PM-5:00
+  // PM, 2:00 PM-5:00 PM" (Kyle's screenshot). Merge overlapping/duplicate
+  // periods into single spans before any reporting — across all calendars for
+  // the legacy `reason`, and within each calendar for the named message.
+  const mergePeriods = (periods: BusyPeriod[]): BusyPeriod[] => {
+    const sorted = [...periods].sort((a, b) => a.start.getTime() - b.start.getTime());
+    const out: BusyPeriod[] = [];
+    for (const b of sorted) {
+      const last = out[out.length - 1];
+      if (last && b.start.getTime() <= last.end.getTime()) {
+        if (b.end.getTime() > last.end.getTime()) last.end = b.end;
+      } else {
+        out.push({ start: new Date(b.start), end: new Date(b.end) });
+      }
+    }
+    return out;
+  };
+  const busyPeriods = mergePeriods([...busyByCalendar.values()].flat());
+  const mergedByCalendar = new Map<string, BusyPeriod[]>(
+    [...busyByCalendar].map(([calendarId, periods]) => [calendarId, mergePeriods(periods)]),
+  );
+
+  const conflicts: AvailabilityConflict[] = [];
+  // Per conflicting day, who is busy and when — turned into sentences below once
+  // (and only if) there is something to name.
+  type DayOwner = { calendarId: string; allDay: boolean; spans: string[] };
+  const owedNames: Array<{ index: number; dateLabel: string; owners: DayOwner[] }> = [];
 
   // The clock span each work day defends: the booked block's own hours when a
   // window is given, business hours otherwise. A multi-day job applies the same
@@ -488,9 +550,9 @@ export async function checkAvailabilityBlock(
       ? ctToUtc(dp.year, dp.month, dp.day, winEnd.hour, winEnd.minute)
       : ctToUtc(dp.year, dp.month, dp.day, 17);
 
-    const dayBusy = busyPeriods.filter(
-      (b) => b.start.getTime() < dayEnd.getTime() && b.end.getTime() > dayStart.getTime(),
-    );
+    const overlapsWindow = (b: BusyPeriod) =>
+      b.start.getTime() < dayEnd.getTime() && b.end.getTime() > dayStart.getTime();
+    const dayBusy = busyPeriods.filter(overlapsWindow);
 
     if (dayBusy.length > 0) {
       const summaries = dayBusy.map((b) =>
@@ -500,6 +562,51 @@ export async function checkAvailabilityBlock(
         date: formatDateCT(day),
         reason: `Busy: ${summaries}`,
       });
+
+      // Who is busy that day. A span that covers the whole Central day (an
+      // all-day event comes back from freebusy as midnight to midnight) is "all
+      // day" — never "12:00 AM–12:00 AM".
+      const calStart = ctToUtc(dp.year, dp.month, dp.day, 0).getTime();
+      const calEnd = ctToUtc(dp.year, dp.month, dp.day, 23, 59).getTime();
+      const owners: DayOwner[] = [];
+      for (const [calendarId, periods] of mergedByCalendar) {
+        const hits = periods.filter(overlapsWindow);
+        if (hits.length === 0) continue;
+        const allDay = hits.some((b) => b.start.getTime() <= calStart && b.end.getTime() >= calEnd);
+        owners.push({
+          calendarId,
+          allDay,
+          spans: allDay
+            ? []
+            : hits.map((b) => {
+                const s = Math.max(b.start.getTime(), calStart);
+                const e = Math.min(b.end.getTime(), calEnd);
+                return `${formatTimeCT(new Date(s))}–${formatTimeCT(new Date(e))}`;
+              }),
+        });
+      }
+      owedNames.push({ index: conflicts.length - 1, dateLabel: formatDateCT(day), owners });
+    }
+  }
+
+  if (nameOwners && owedNames.length > 0) {
+    // Names are looked up only when there is a conflict to name.
+    const nameByEmail = new Map<string, string>();
+    try {
+      for (const t of await activeTechCalendars()) nameByEmail.set(t.email.toLowerCase(), t.name);
+    } catch {
+      // A failed lookup must not turn a conflict into an error — fall back to the calendar id.
+    }
+    const ownerLabel = (calendarId: string) => {
+      if (calendarId === "primary") return "The company calendar";
+      const name = nameByEmail.get(calendarId.toLowerCase());
+      return name ? `${name}'s calendar` : `${calendarId}'s calendar`;
+    };
+    for (const entry of owedNames) {
+      if (entry.owners.length === 0) continue;
+      conflicts[entry.index].message = entry.owners
+        .map((o) => `${ownerLabel(o.calendarId)} is busy ${o.allDay ? "all day" : o.spans.join(", ")} ${entry.dateLabel}`)
+        .join("; ");
     }
   }
 

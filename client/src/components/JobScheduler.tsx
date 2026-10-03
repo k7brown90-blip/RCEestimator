@@ -10,7 +10,7 @@
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { SCHEDULE_QUERY_KEYS } from "../lib/queryKeys";
 import type { MonthSchedule, ScheduleJobResult, TechDayAvailability } from "../lib/types";
 
@@ -149,10 +149,34 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   });
   const techs = techQuery.data?.techs ?? [];
 
+  // "Schedule anyway" (Kyle, 2026-10-02: "I want what I manually schedule in this system to
+  // take priority"). When the server refuses a booking over a Google Calendar block it says so
+  // with `canOverride` and names whose calendar is busy; we hold that sentence together with
+  // the exact request it answered. The override button shows only while the screen still
+  // describes THAT request — change the date, either time, the end date or the technician and
+  // the conflict no longer applies, so it goes (the next Schedule click asks the server afresh).
+  // Other 409s (someone else booking that date, an end before the start) are never overridable
+  // and fall through to the ordinary red error line.
+  const requestKey = [mode, selectedDate, startTime, endDate ?? selectedDate, endTime, technicianId ?? ""].join("|");
+  const [calendarConflict, setCalendarConflict] = useState<{ message: string; key: string } | null>(null);
+  const activeConflict = calendarConflict && calendarConflict.key === requestKey ? calendarConflict : null;
+
+  /** Route a failed booking: an overridable calendar conflict is offered back; anything else is an error line. */
+  const onBookingError = (err: Error, key: string) => {
+    if (err instanceof ApiError && err.status === 409 && err.body?.canOverride === true) {
+      setCalendarConflict({ message: err.message, key });
+      setError(null);
+      return;
+    }
+    setCalendarConflict(null);
+    setError(err.message);
+  };
+
   const scheduleMutation = useMutation({
-    mutationFn: () => api.scheduleJob(jobId, {
+    mutationFn: ({ override }: { override: boolean; key: string }) => api.scheduleJob(jobId, {
       startDate: selectedDate!, startTime, technicianId: technicianId ?? undefined,
       ...(isEstimateVisit ? {} : { endDate: endDate ?? selectedDate!, endTime }),
+      ...(override ? { overrideCalendarConflict: true } : {}),
     }),
     onSuccess: (result) => {
       invalidateAll();
@@ -160,19 +184,21 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
       setSelectedDate(null);
       setTechnicianId(null);
       setError(null);
+      setCalendarConflict(null);
       onScheduled?.(result);
     },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error, { key }) => onBookingError(err, key),
   });
 
   const rescheduleMutation = useMutation({
-    mutationFn: () => api.rescheduleJob(jobId, {
+    mutationFn: ({ override }: { override: boolean; key: string }) => api.rescheduleJob(jobId, {
       newStartDate: selectedDate!, newStartTime: startTime, reason,
       // PUNCHLIST C8: rescheduling can change who does the work, not just when — the picker
       // below now renders in this mode too. Omitted (not sent as null) when nothing was
       // picked, which the service reads as "leave the current assignment alone".
       technicianId: technicianId ?? undefined,
       ...(isEstimateVisit ? {} : { endDate: endDate ?? selectedDate!, endTime }),
+      ...(override ? { overrideCalendarConflict: true } : {}),
     }),
     onSuccess: () => {
       invalidateAll();
@@ -181,10 +207,21 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
       setTechnicianId(null);
       setReason("");
       setError(null);
+      setCalendarConflict(null);
       onScheduled?.();
     },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error, { key }) => onBookingError(err, key),
   });
+
+  const bookingPending = scheduleMutation.isPending || rescheduleMutation.isPending;
+  const submitBooking = (override: boolean) => {
+    // A fresh attempt starts clean; a failure puts back whichever message applies.
+    setError(null);
+    setCalendarConflict(null);
+    const vars = { override, key: requestKey };
+    if (mode === "schedule") scheduleMutation.mutate(vars);
+    else rescheduleMutation.mutate(vars);
+  };
 
   const cancelMutation = useMutation({
     mutationFn: () => api.cancelJob(jobId, { reason }),
@@ -555,24 +592,39 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
             </div>
           )}
 
+          {/* A Google Calendar block: say WHOSE calendar and when, in red, right above the
+              buttons that can book over it. */}
+          {activeConflict && (
+            <p role="alert" className="text-sm text-red-600">{activeConflict.message}</p>
+          )}
+
           {/* Confirm */}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => mode === "schedule" ? scheduleMutation.mutate() : rescheduleMutation.mutate()}
+              onClick={() => submitBooking(false)}
               disabled={
                 !selectedDate ||
                 (mode === "reschedule" && !reason.trim()) ||
-                scheduleMutation.isPending ||
-                rescheduleMutation.isPending
+                bookingPending
               }
               className="btn btn-primary text-sm disabled:opacity-40"
             >
-              {(scheduleMutation.isPending || rescheduleMutation.isPending)
+              {bookingPending
                 ? "Saving..."
                 : mode === "schedule"
                 ? "Schedule"
                 : "Reschedule"}
             </button>
+            {activeConflict && (
+              <button
+                type="button"
+                onClick={() => submitBooking(true)}
+                disabled={bookingPending}
+                className="rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-40"
+              >
+                {mode === "schedule" ? "Schedule anyway" : "Reschedule anyway"}
+              </button>
+            )}
             <button
               onClick={() => {
                 if (onClose) onClose();

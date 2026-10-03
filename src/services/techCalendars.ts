@@ -89,10 +89,17 @@ function formatTimeCT(d: Date): string {
 export function ctToUtc(dateStr: string, hour: number, minute = 0): Date {
   const [year, month, day] = dateStr.split("-").map(Number);
   const guess = new Date(Date.UTC(year, month - 1, day, hour + 6, minute));
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(guess);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(guess);
   const get = (t: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === t)!.value);
-  const gotMin = (get("hour") === 24 ? 0 : get("hour")) * 60 + get("minute");
-  return new Date(guess.getTime() - (gotMin - (hour * 60 + minute)) * 60_000);
+  // Compare the whole wall-clock reading, date included. The guess (hour + 6 UTC)
+  // is right on standard time; on daylight time a late hour (23:xx) lands in the
+  // NEXT Central day, and comparing minutes-of-day alone fixed the clock but left
+  // the date a day late (2026-10-06 23:59 came out as Oct 7 11:59 PM CT).
+  const got = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour") === 24 ? 0 : get("hour"), get("minute"));
+  const wanted = Date.UTC(year, month - 1, day, hour, minute);
+  return new Date(guess.getTime() - (got - wanted));
 }
 
 /**

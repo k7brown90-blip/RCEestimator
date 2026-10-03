@@ -54,6 +54,48 @@ async function notifyAssignedTechs(visitId: string, event: "assigned" | "changed
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────────
 
+/** Options only the CRM scheduler sets — no agent route ever passes these. */
+export interface ScheduleOptions {
+  /**
+   * "Schedule anyway" (Kyle, 2026-10-02: "I want what I manually schedule in this
+   * system to take priority"). The Google Calendar availability check does not block
+   * the booking. Slot-hold contention, the deposit gate and the end-before-start
+   * check all still apply.
+   */
+  overrideCalendarConflict?: boolean;
+  /**
+   * Reschedule only: when no technician is picked, check the calendar of whoever the
+   * job is CURRENTLY assigned to instead of the whole company set. The CRM routes set
+   * it. The voice agents reschedule without naming a tech and must keep the
+   * company-wide hard block, so this is off unless a CRM route asks.
+   */
+  scopeToCurrentTech?: boolean;
+  /**
+   * Name whose calendar is busy in the conflict ("Michael Schramm's calendar is busy all
+   * day …"). The CRM routes set it; it is carried on `ConflictError.officeMessage` only.
+   * The voice agents never set it, so a technician's name never reaches them — neither in
+   * `ConflictError.message` (which stays the old `Calendar conflict: …` string) nor in the
+   * per-conflict `message` of `conflicts`.
+   */
+  nameCalendarOwners?: boolean;
+}
+
+/**
+ * The calendar-conflict refusal. `message` is the exact string the agent routes have always
+ * passed on; the named office sentence(s), when the CRM asked for them, ride separately on
+ * `officeMessage`.
+ */
+function calendarConflictError(
+  conflicts: Array<{ date: string; reason: string; message?: string }>,
+  spokenFallback?: string,
+): ConflictError {
+  const legacy = `Calendar conflict: ${conflicts.map((c) => `${c.date}: ${c.reason}`).join("; ")}`;
+  const named = conflicts.length > 0 && conflicts.every((c) => c.message)
+    ? conflicts.map((c) => c.message).join("; ")
+    : undefined;
+  return new ConflictError(legacy, conflicts, spokenFallback, { canOverride: true, officeMessage: named });
+}
+
 export interface ScheduleJobResult {
   jobId: string;
   scheduledStart: Date;
@@ -250,6 +292,7 @@ export async function scheduleJob(
   startTime?: string | null,
   technicianId?: string | null,
   end?: ScheduleEnd | null,
+  options?: ScheduleOptions,
 ): Promise<ScheduleJobResult> {
   // Load the job
   const job = await prisma.visit.findUnique({
@@ -343,15 +386,25 @@ export async function scheduleJob(
       // The check defends the block Kyle actually set - not the whole business
       // day - and never counts this job's own existing calendar event against
       // itself (a prior booking of the same job is not a conflict).
-      const availability = await checkAvailabilityBlock(
-        scheduledStart,
-        durationDays,
-        job.googleEventId ?? undefined,
-        { start: scheduledStart, end: scheduledEnd },
-      );
-      if (!availability.available) {
-        const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
-        throw new ConflictError(`Calendar conflict: ${conflictSummary}`, availability.conflicts);
+      //
+      // Only the ASSIGNED tech's calendar is read (Kyle, 2026-10-02: "I am not
+      // scheduling Michael I am scheduling myself and his schedule is blocking
+      // me"). No tech picked, or one with no calendar email, checks the whole
+      // company set as before. A CRM "Schedule anyway" skips the check entirely:
+      // what Kyle schedules by hand takes priority over a Google Calendar block.
+      // The agent paths never set the flag.
+      if (!options?.overrideCalendarConflict) {
+        const availability = await checkAvailabilityBlock(
+          scheduledStart,
+          durationDays,
+          job.googleEventId ?? undefined,
+          { start: scheduledStart, end: scheduledEnd },
+          technician?.email ? [technician.email] : undefined,
+          options?.nameCalendarOwners === true,
+        );
+        if (!availability.available) {
+          throw calendarConflictError(availability.conflicts);
+        }
       }
     }
 
@@ -512,6 +565,7 @@ export async function rescheduleJob(
   // PUNCHLIST C8: undefined/null means "leave the assignment alone" — the deposit gate and
   // every customer-facing notification below are unchanged by this; only VisitAssignment moves.
   technicianId?: string | null,
+  options?: ScheduleOptions,
 ): Promise<ScheduleJobResult> {
   const job = await prisma.visit.findUnique({
     where: { id: jobId },
@@ -579,20 +633,38 @@ export async function rescheduleJob(
 
   try {
     if (!isEstimate) {
-      // Check availability (exclude current event)
-      const availability = await checkAvailabilityBlock(newStart, durationDays, job.googleEventId, {
-        start: newStart,
-        end: newEnd,
-      });
-      if (!availability.available) {
-        const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
-        // Notify Kyle about the blocked reschedule
-        await notify.sendKyleSms(notify.kyleRescheduleConflict(jobData, newStart, conflictSummary));
-        throw new ConflictError(
-          `Calendar conflict: ${conflictSummary}`,
-          availability.conflicts,
-          "I wasn't able to reschedule — there's a conflict on that date. I've notified Kyle, and he'll call you back to find another date.",
+      // Check availability (exclude current event). From the CRM, only the
+      // assigned tech's calendar is read — the newly picked tech, else whoever the
+      // job is currently assigned to; with neither (or no calendar email), the
+      // whole company set as before. A CRM "Reschedule anyway" skips the check, and
+      // then there is no conflict to report, so Kyle is not texted about one.
+      if (!options?.overrideCalendarConflict) {
+        let checkEmail: string | null = technician?.email ?? null;
+        if (!technician && options?.scopeToCurrentTech) {
+          const current = await prisma.visitAssignment.findFirst({
+            where: { visitId: jobId, role: "primary", status: { in: ["assigned", "in_progress"] } },
+            orderBy: { assignedAt: "desc" },
+            select: { technician: { select: { email: true } } },
+          });
+          checkEmail = current?.technician?.email ?? null;
+        }
+        const availability = await checkAvailabilityBlock(
+          newStart,
+          durationDays,
+          job.googleEventId,
+          { start: newStart, end: newEnd },
+          checkEmail ? [checkEmail] : undefined,
+          options?.nameCalendarOwners === true,
         );
+        if (!availability.available) {
+          const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
+          // Notify Kyle about the blocked reschedule
+          await notify.sendKyleSms(notify.kyleRescheduleConflict(jobData, newStart, conflictSummary));
+          throw calendarConflictError(
+            availability.conflicts,
+            "I wasn't able to reschedule — there's a conflict on that date. I've notified Kyle, and he'll call you back to find another date.",
+          );
+        }
       }
     }
 
@@ -810,17 +882,32 @@ export async function cancelJob(
 // ─── ERROR TYPES ────────────────────────────────────────────────────────────────
 
 export class ConflictError extends Error {
-  conflicts: Array<{ date: string; reason: string }>;
+  conflicts: Array<{ date: string; reason: string; message?: string }>;
   spokenFallback: string;
+  /**
+   * True ONLY for a Google Calendar conflict on a booking the CRM scheduler made —
+   * the one refusal the office may knowingly book over ("Schedule anyway"). Slot-hold
+   * contention and a backwards end time are never overridable.
+   */
+  canOverride: boolean;
+  /**
+   * The readable sentence(s) naming whose calendar is busy — set only when the CRM asked
+   * for names. `message` stays the legacy string the voice-agent routes pass through; the
+   * two CRM routes answer with `officeMessage ?? message`.
+   */
+  officeMessage?: string;
 
   constructor(
     message: string,
-    conflicts: Array<{ date: string; reason: string }>,
+    conflicts: Array<{ date: string; reason: string; message?: string }>,
     spokenFallback?: string,
+    opts?: { canOverride?: boolean; officeMessage?: string },
   ) {
     super(message);
     this.name = "ConflictError";
     this.conflicts = conflicts;
+    this.canOverride = opts?.canOverride ?? false;
+    this.officeMessage = opts?.officeMessage;
     this.spokenFallback = spokenFallback ?? "That date has a scheduling conflict. Want to try a different date?";
   }
 }

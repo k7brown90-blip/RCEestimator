@@ -4949,17 +4949,23 @@ app.post("/crm/jobs/:jobId/schedule", asyncHandler(async (req, res) => {
     endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     endTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     technicianId: z.string().optional(),
+    // "Schedule anyway" (Kyle, 2026-10-02) — book over a Google Calendar block.
+    overrideCalendarConflict: z.boolean().optional(),
   }).parse(req.body);
 
   try {
     const result = await scheduleJob(
       jobId, body.startDate, body.startTime, body.technicianId,
       body.endDate ? { date: body.endDate, time: body.endTime ?? null } : null,
+      { overrideCalendarConflict: body.overrideCalendarConflict === true, nameCalendarOwners: true },
     );
     res.json(result);
   } catch (err) {
     if (err instanceof ConflictError) {
-      res.status(409).json({ error: err.message, conflicts: err.conflicts });
+      // canOverride is true only for a Google Calendar conflict — the client keys its
+      // "Schedule anyway" button on it. Hold contention and a bad end time never offer it.
+      // officeMessage names whose calendar is busy; only the CRM ever sees it.
+      res.status(409).json({ error: err.officeMessage ?? err.message, conflicts: err.conflicts, canOverride: err.canOverride });
       return;
     }
     throw err;
@@ -5035,6 +5041,8 @@ app.post("/crm/jobs/:jobId/reschedule", asyncHandler(async (req, res) => {
     // change the date but never who was assigned. Optional and undefined means "leave the
     // assignment alone", the same convention scheduleJob's technicianId already uses.
     technicianId: z.string().min(1).optional(),
+    // "Reschedule anyway" (Kyle, 2026-10-02) — move over a Google Calendar block.
+    overrideCalendarConflict: z.boolean().optional(),
   }).parse(req.body);
 
   try {
@@ -5042,11 +5050,13 @@ app.post("/crm/jobs/:jobId/reschedule", asyncHandler(async (req, res) => {
       jobId, body.newStartDate, body.newStartTime ?? null, body.reason,
       body.endDate ? { date: body.endDate, time: body.endTime ?? null } : null,
       body.technicianId ?? null,
+      // scopeToCurrentTech: with no new tech picked, only the job's current tech's calendar is read.
+      { overrideCalendarConflict: body.overrideCalendarConflict === true, scopeToCurrentTech: true, nameCalendarOwners: true },
     );
     res.json(result);
   } catch (err) {
     if (err instanceof ConflictError) {
-      res.status(409).json({ error: err.message, conflicts: err.conflicts });
+      res.status(409).json({ error: err.officeMessage ?? err.message, conflicts: err.conflicts, canOverride: err.canOverride });
       return;
     }
     throw err;

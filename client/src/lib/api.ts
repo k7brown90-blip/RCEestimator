@@ -938,7 +938,7 @@ export const api = {
   crmPhases: (range?: { startDate?: string; endDate?: string }) =>
     request<CrmFunnelReport>(withDateRange("/crm/analytics/win-loss", range)),
   // ─── Job Scheduling ──────────────────────────────────────────────────────
-  scheduleJob: (jobId: string, input: { startDate: string; startTime?: string; endDate?: string; endTime?: string; technicianId?: string }) =>
+  scheduleJob: (jobId: string, input: { startDate: string; startTime?: string; endDate?: string; endTime?: string; technicianId?: string; overrideCalendarConflict?: boolean }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/schedule`, { method: "POST", body: JSON.stringify(input) }),
   // Per-tech busy blocks for one day — drives the scheduler's tech picker.
   // calendarAccessible=false means Google can't read that tech's calendar
@@ -949,7 +949,7 @@ export const api = {
     if (opts?.durationMinutes) query.set("durationMinutes", String(opts.durationMinutes));
     return request<{ date: string; techs: TechDayAvailability[] }>(`/crm/schedule/tech-availability?${query.toString()}`);
   },
-  rescheduleJob: (jobId: string, input: { newStartDate: string; newStartTime?: string; endDate?: string; endTime?: string; reason: string; technicianId?: string }) =>
+  rescheduleJob: (jobId: string, input: { newStartDate: string; newStartTime?: string; endDate?: string; endTime?: string; reason: string; technicianId?: string; overrideCalendarConflict?: boolean }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/reschedule`, { method: "POST", body: JSON.stringify(input) }),
   /** Ride along on an already-scheduled visit at the same account (Kyle, 2026-09-06). */
   coScheduleJob: (jobId: string, withJobId: string) =>
