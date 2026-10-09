@@ -39,6 +39,7 @@ import { Drawer } from "../Drawer";
 import { SendToPicker } from "../SendToPicker";
 import { RaiseChangeOrderButton } from "../RaiseChangeOrderButton";
 import { OpenDrawerButton } from "./OpenDrawerButton";
+import { COPY_REFUSED_CHANGE_ORDER } from "../../../../shared/draftLifecycle";
 
 const STATUS_TONE: Record<string, string> = {
   draft: "bg-amber-100 text-amber-900",
@@ -200,6 +201,15 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
     onError: (err) => setFollowUp((err as Error).message),
   });
 
+  // The financing link on its own, sendable BEFORE signing (Kyle, 2026-10-08). The same server
+  // function as the builder's "Email the financing link", the payment panel's and the phone's.
+  const [financingSentTo, setFinancingSentTo] = useState<string | null>(null);
+  const sendFinancing = useMutation({
+    mutationFn: () => api.emailFinancing(id),
+    onSuccess: (r) => { setFinancingSentTo(r.to); setFollowUp(`Financing link emailed to ${r.to}.`); refresh(); },
+    onError: (err) => setFollowUp((err as Error).message),
+  });
+
   const unfinished = e?.status === "draft";
   const lost = e?.status === "lost";
   // Archived (2026-10-01) is orthogonal to status: the row is still sent / viewed / expired, just
@@ -222,6 +232,12 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
     : unfinished ? "Never sent to the customer — send it first."
     : e.status === "expired" || pastValidity
       ? `This quote expired on ${(expiresOn ?? new Date(e.createdAt)).toLocaleDateString()}. Use Copy to new to reissue at today's pricing.`
+    : null;
+  const financingBlock: string | null = !e ? null
+    : e.status === "void" ? "This estimate is void."
+    : lost ? "Marked lost - reopen it first, then send the financing link."
+    : e.supersededBy ? `Replaced by rev ${e.supersededBy.revision} - send the financing link from that one.`
+    : !e.customerEmail ? "No customer email on file - add one to the account first."
     : null;
   const canAccept = e ? !e.signedAt && e.status !== "void" : false;
   const acceptSubmitReady = Boolean(acceptedVia) && acceptedBy.trim().length > 0
@@ -341,9 +357,18 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                 Edit in builder
               </button>
             )}
-            <button type="button" className="btn btn-secondary text-sm" disabled={duplicateDraft.isPending} onClick={() => duplicateDraft.mutate()}>
+            {/* Greyed WITH the reason on a change order (the copy would take over as the job's quote) -
+                the server refuses it too (duplicateDraft), so a diagnostic's draft answers with the same words after the press. */}
+            <button
+              type="button"
+              className="btn btn-secondary text-sm"
+              disabled={duplicateDraft.isPending || Boolean(e.changeOrderForId)}
+              title={e.changeOrderForId ? COPY_REFUSED_CHANGE_ORDER : undefined}
+              onClick={() => duplicateDraft.mutate()}
+            >
               {duplicateDraft.isPending ? "Copying…" : "Copy to new"}
             </button>
+            {e.changeOrderForId && <p className="w-full text-[11px] text-rce-soft">{COPY_REFUSED_CHANGE_ORDER}</p>}
             {/*
               The job grew (2026-09-29). Shown on every SIGNED estimate, greyed with the reason
               when the record cannot take one — before this the only button in the CRM was inside
@@ -359,6 +384,22 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                 {resending ? "Hide resend" : "Resend…"}
               </button>
             )}
+            {/*
+              The financing link, on its own, BEFORE signing (Kyle, 2026-10-08: "the financing link
+              should be able to be sent before signing"). On every estimate, greyed WITH the
+              reason when the server would refuse (void, lost, replaced, no email) - never hidden.
+              No credit terms in the email: a link and an invitation to apply.
+            */}
+            <button
+              type="button"
+              className="btn btn-secondary text-sm"
+              disabled={sendFinancing.isPending || financingBlock !== null}
+              title={financingBlock ?? "Emails the Synchrony financing link and an invitation to apply - no rates, terms or approval odds stated"}
+              onClick={() => sendFinancing.mutate()}
+            >
+              {sendFinancing.isPending ? "Sending…" : financingSentTo ? "Send the financing link again" : "Email the financing link"}
+            </button>
+            {financingBlock && <p className="w-full text-[11px] text-rce-soft">{financingBlock}</p>}
             {!e.signedAt && (
               <button
                 type="button"

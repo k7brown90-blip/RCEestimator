@@ -28,18 +28,20 @@
 
 import { useMemo, useState } from "react";
 import { useStickyFooterSpace } from "../lib/useStickyFooterSpace";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import {
   buildOptions,
-  combinedTotal,
   companySummary,
   materialList,
   type Audience,
 } from "../lib/presentation";
+import { emailReason, presentDecision, presentFooter, signNowReason } from "../lib/presentIssue";
 import type { PbOption } from "../lib/types";
+import { defaultSelection, picksOne, selectionPrice, toggleSelection } from "../../../shared/quoteMoney";
+import { FinancingLine } from "../components/FinancingSheet";
 
 function money(v: number | null | undefined): string {
   if (v === null || v === undefined) return "—";
@@ -51,7 +53,9 @@ export function PresentationPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [audience, setAudience] = useState<Audience>("customer");
-  const [selected, setSelected] = useState<PbOption[]>([]);
+  // null = Kyle has not touched a tick yet (the shared default applies); an empty array is a real
+  // choice - everything unticked - exactly as on the phone's Show the customer screen.
+  const [selected, setSelected] = useState<PbOption[] | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["pb-compute", draftId],
@@ -64,48 +68,43 @@ export function PresentationPage() {
     [data, audience],
   );
 
+  /*
+    ── THE PRICE OF WHAT IS TICKED COMES FROM THE SERVER (Phase 3 unit A, 2026-10-08) ─────────────
+    "One estimating system": this screen used to add the ticked options, the trip, the combined-
+    options saving and the programme discount in the browser, beside a second copy in Estimate
+    Intake and a third on the customer's page. There is one pricer now (shared/quoteMoney.ts, run
+    by the server); the compute payload carries its finished table as `money.selections` and this
+    screen LOOKS THE TICK UP. It adds nothing. The customer's page and the field's "Show the
+    customer" screen read the same table, so the three cannot disagree.
+  */
+  const figures = data?.money ?? null;
+
   // One-or-the-other mode (Kyle, 2026-08-25): options are alternatives, not
   // add-ons — ticking one unticks the rest, and exactly one goes to signature.
-  const { data: optionsMode } = useQuery({
-    queryKey: ["pbOptionsMode", draftId],
-    queryFn: () => api.pbOptionsMode(draftId),
-    enabled: Boolean(draftId),
-  });
-  const exclusive = Boolean(optionsMode?.exclusiveOptions) && options.length > 1;
+  const exclusive = figures ? picksOne(figures) : false;
 
   // Everything with work in it starts ticked. Kyle presents the whole thing and un-ticks what the
   // customer declines, rather than building the sale up from nothing. In exclusive mode the
   // default is the FIRST option — presenting three alternatives as all-selected would be a lie.
-  const effectiveSelected = exclusive
-    ? (selected.length > 0 ? selected.slice(0, 1) : options.slice(0, 1).map((o) => o.option))
-    : selected.length > 0 ? selected : options.map((o) => o.option);
+  // (`defaultSelection` is the shared rule; the field's screen starts the same way.)
+  const effectiveSelected: PbOption[] = !figures
+    ? []
+    : selected === null
+      ? defaultSelection(figures)
+      : (figures.pickable.filter((o) => selected.includes(o)) as PbOption[]);
 
   /*
     The third gate, live while Kyle sells (2026-08-22): "the savings add up and help push the sale
     of more work simply by lowing the cost of material." The engine priced every combination
-    server-side; this looks the current selection up and shows the saving beside the total, so
-    "take both and the material gets cheaper" is a number on screen, not a promise.
+    server-side; the saving for the current tick is in the same table row as the total, shown
+    beside it, so "take both and the material gets cheaper" is a number on screen, not a promise.
+    The programme discount (Kyle, 2026-08-22: 5% of what this selection pays, capped at $250) is in
+    that row too, with the programme's own words in `money.discount.label`.
   */
-  const comboSel = [...effectiveSelected].sort().join("+");
-  const combo = data?.computed.combinationDiscounts?.[comboSel];
-  const comboSaving = combo?.applied ? combo.reduction : 0;
-  const preDiscount = data ? combinedTotal(options, effectiveSelected, data.computed.jobFixedCost) : null;
-  const afterCombo = preDiscount === null ? null : Math.round((preDiscount - comboSaving) * 100) / 100;
-  /*
-    The programme discount (Kyle, 2026-08-22): 5% of what this selection pays, capped at $250.
-    Terms come from the server with the compute — the rate is not hardcoded here, so a change to
-    the programme changes this screen without a second edit.
-  */
-  const prog = data?.discount ?? null;
-  const progAmount =
-    prog && afterCombo !== null && afterCombo > 0
-      ? (() => {
-          const raw = Math.round(afterCombo * prog.rate * 100) / 100;
-          // cap null = the custom percentage, uncapped (2026-09-01).
-          return prog.cap === null ? raw : Math.min(raw, prog.cap);
-        })()
-      : 0;
-  const total = afterCombo === null ? null : Math.round((afterCombo - progAmount) * 100) / 100;
+  const priced = figures ? selectionPrice(figures, effectiveSelected) : null;
+  const comboSaving = priced?.comboSaving ?? 0;
+  const progAmount = priced?.discount ?? 0;
+  const total = priced?.total ?? null;
   const materials = data ? materialList(data.computed, effectiveSelected) : [];
   const summary = data ? companySummary(data.computed, effectiveSelected) : null;
 
@@ -123,23 +122,52 @@ export function PresentationPage() {
     the send then fails — an expired Gmail token, a bad address — the frozen record exists and can
     be re-sent, which is recoverable. Sending first and freezing second would mean a customer
     holding a quote that was never recorded, which is not.
+
+    ISSUED ONCE, NOT ON EVERY PRESS (2026-10-08 audit §5). This used to call pbIssue on each press,
+    and on a draft already issued and untouched since, every press made a NEW revision of an
+    unchanged document and killed the customer's link. The server's `lifecycle` (shared/
+    draftLifecycle.ts, the same lookup the issue door itself runs) now decides, in lib/presentIssue:
+    nothing issued or the draft changed since → issue (a first estimate, or a revision carrying the
+    edits); issued and unchanged → use the estimate that exists; lost → blocked, reopen it first.
   */
   const account = params.get("account");
   const address = params.get("address");
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string[]>([]);
+  const queryClient = useQueryClient();
+  const decision = presentDecision(data?.lifecycle);
+  // Nothing ticked is nothing to sign (the server refuses an explicit empty choice) - grey the
+  // button WITH that reason before the press instead of issuing and then failing.
+  const signBlocked =
+    signNowReason(decision) ??
+    (effectiveSelected.length === 0 && decision.kind !== "blocked" ? "Tick at least one option - there is nothing to sign yet." : null);
+  const emailBlocked = emailReason(decision);
 
   const issueThen = useMutation({
     mutationFn: async (next: "send" | "sign") => {
-      if (!account || !address) {
-        throw new Error("This estimate is not attached to an account and address yet.");
+      if (decision.kind === "blocked") throw new Error(decision.reason);
+      let estimateId: string;
+      let number: string;
+      let unpriced: string[] | undefined;
+      if (decision.kind === "reuse") {
+        estimateId = decision.estimateId;
+        number = decision.number;
+      } else {
+        if (!account || !address) {
+          throw new Error("This estimate is not attached to an account and address yet.");
+        }
+        const issued = await api.pbIssue(draftId, { accountId: account, serviceAddressId: address });
+        estimateId = issued.estimateId;
+        number = issued.number;
+        unpriced = issued.unpriced;
+        // The lifecycle on this screen is now stale — the next press must see the estimate exists.
+        void queryClient.invalidateQueries({ queryKey: ["pb-compute", draftId] });
       }
-      const issued = await api.pbIssue(draftId, { accountId: account, serviceAddressId: address });
       if (next === "send") {
-        const sent = await api.pbIssuedSend(issued.estimateId, {});
-        return { next, estimateId: issued.estimateId, number: issued.number, to: sent.to, unpriced: issued.unpriced };
+        const sent = await api.pbIssuedSend(estimateId, {});
+        return { next, estimateId, number, to: sent.to, unpriced };
       }
-      return { next, estimateId: issued.estimateId, number: issued.number, to: null, unpriced: issued.unpriced };
+      return { next, estimateId, number, to: null, unpriced };
     },
     onMutate: (next) => {
       setBusy(next);
@@ -169,17 +197,14 @@ export function PresentationPage() {
     },
   });
 
+  // The tap rule is the SHARED one (shared/quoteMoney.ts toggleSelection), the same function the
+  // phone's Show the customer screen uses, so the same tap does the same thing in both apps
+  // (review finding, 2026-10-08): one-or-the-other - picking one IS the act and a tap on the chosen
+  // one does nothing (unticking it would present a $0 sale); otherwise a tap flips the option, and
+  // unticking everything shows "Nothing selected" with no total, never a silent re-tick of all.
   const toggle = (option: PbOption) => {
-    if (exclusive) {
-      // Radio behavior: picking one IS the act; unticking the only choice would
-      // present a $0 sale, so a tap on the selected option is a no-op.
-      setSelected([option]);
-      return;
-    }
-    const current = effectiveSelected;
-    setSelected(
-      current.includes(option) ? current.filter((o) => o !== option) : [...current, option],
-    );
+    if (!figures) return;
+    setSelected(toggleSelection(figures, effectiveSelected, option));
   };
 
   /*
@@ -263,7 +288,11 @@ export function PresentationPage() {
                   )}
                 </span>
               </label>
-              <div className="text-right text-lg font-semibold">{money(o.total)}</div>
+              {/* The option's price is the SERVER's figure (the same table as the total below), so a
+                  frozen estimate shows the frozen price here too, not a live recompute. */}
+              <div className="text-right text-lg font-semibold">
+                {money(figures ? selectionPrice(figures, [o.option])?.subtotal ?? null : o.total)}
+              </div>
             </header>
 
             {/*
@@ -376,9 +405,7 @@ export function PresentationPage() {
             {effectiveSelected.length === 0
               ? "Nothing selected"
               : `Option${effectiveSelected.length > 1 ? "s" : ""} ${effectiveSelected.join(" + ")}`}
-            {(data.computed.jobFixedCost ?? 0) > 0
-              ? ` · includes ${money(data.computed.jobFixedCost)} fixed`
-              : ""}
+            {(priced?.trip ?? 0) > 0 ? ` · includes ${money(priced?.trip)} fixed` : ""}
           </div>
           <div className="text-right">
             {comboSaving > 0 && (
@@ -388,11 +415,24 @@ export function PresentationPage() {
             )}
             {progAmount > 0 && (
               <div className="text-xs font-semibold text-green-700">
-                {prog!.type === "military" ? "military" : prog!.type === "senior" ? "senior" : `${prog!.percent}%`} discount −{money(progAmount)}
+                {figures?.discount?.label ?? "Discount"} −{money(progAmount)}
               </div>
             )}
             <div className="text-xs text-rce-soft">Total</div>
             <div className="text-2xl font-semibold">{money(total)}</div>
+            {/*
+              ── "or from $X/mo with financing" (Phase 5 unit B, 2026-10-08) ─────────────────────
+              Under the total of what is ticked. The figures are the SERVER's (money.financing, the
+              one shared calculator); pressing the line opens the four Synchrony plan cards, each
+              with its own disclosure. Absent when no plan is on offer or nothing is ticked.
+              Nothing here records a choice - the plan is picked when the balance is paid.
+            */}
+            <FinancingLine
+              financing={figures?.financing}
+              selected={effectiveSelected}
+              label={`Option${effectiveSelected.length > 1 ? "s" : ""} ${effectiveSelected.join(" + ")}`}
+              total={total}
+            />
           </div>
         </div>
         {problem.length > 0 && (
@@ -403,24 +443,28 @@ export function PresentationPage() {
           </div>
         )}
 
+        {/* Greyed WITH the reason, never hidden (standing rule): the tooltip and the line below say why. */}
         <div className="mx-auto mt-2 flex max-w-3xl gap-2">
           <button
             className="btn btn-secondary flex-1"
-            disabled={busy !== null || options.length === 0}
+            disabled={busy !== null || options.length === 0 || emailBlocked !== null}
+            title={emailBlocked ?? undefined}
             onClick={() => issueThen.mutate("send")}
           >
             {busy === "send" ? "Sending…" : "Email to customer"}
           </button>
           <button
             className="btn btn-primary flex-1"
-            disabled={busy !== null || options.length === 0}
+            disabled={busy !== null || options.length === 0 || signBlocked !== null}
+            title={signBlocked ?? undefined}
             onClick={() => issueThen.mutate("sign")}
           >
             {busy === "sign" ? "Preparing…" : "Sign now"}
           </button>
         </div>
         <p className="mx-auto mt-1 max-w-3xl text-[11px] text-rce-soft">
-          Either action records the estimate and freezes its prices. Nothing is frozen before then.
+          {presentFooter(decision)}
+          {signBlocked && decision.kind !== "blocked" ? ` ${signBlocked}` : ""}
         </p>
       </div>
     </div>

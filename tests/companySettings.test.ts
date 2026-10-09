@@ -104,4 +104,37 @@ describe("Company settings store", () => {
     const rows = await prisma.companySetting.findMany({ where: { key: "operatingHours" } });
     expect(rows).toHaveLength(1);
   });
+
+  /**
+   * Payroll (Kyle, 2026-10-08, decision 10): "Employer cost on top of wages (%)" is a PERCENT —
+   * 9.5 means 9.5%. A fraction (0.095) would burden labor by a tenth of a percent and overstate
+   * every job's profit, so it is refused; so is anything over 50 (a typo). Null clears it.
+   */
+  it("payroll: employer cost on top of wages is a percent between 0 and 50; fractions are refused; null clears", async () => {
+    const saved = await request(app).put("/crm/settings/payroll").send({ employerCostPercent: 9.5 });
+    expect(saved.status).toBe(200);
+    expect(saved.body.value).toEqual({ employerCostPercent: 9.5 });
+    expect((await request(app).get("/crm/settings")).body.payroll).toEqual({ employerCostPercent: 9.5 });
+
+    const fraction = await request(app).put("/crm/settings/payroll").send({ employerCostPercent: 0.095 });
+    expect(fraction.status).toBe(400);
+    expect(fraction.body.error).toMatch(/PERCENT.*not a fraction/);
+
+    const typo = await request(app).put("/crm/settings/payroll").send({ employerCostPercent: 95 });
+    expect(typo.status).toBe(400);
+    expect(typo.body.error).toMatch(/more than 50%/);
+
+    expect((await request(app).put("/crm/settings/payroll").send({ employerCostPercent: -1 })).status).toBe(400);
+    expect((await request(app).put("/crm/settings/payroll").send({ employerCostPercent: "nine" })).status).toBe(400);
+    expect((await request(app).put("/crm/settings/payroll").send([9.5])).status).toBe(400);
+
+    // Zero is a real answer (set, and 0%), unlike "not set".
+    expect((await request(app).put("/crm/settings/payroll").send({ employerCostPercent: 0 })).body.value).toEqual({ employerCostPercent: 0 });
+
+    const cleared = await request(app).put("/crm/settings/payroll").send({ employerCostPercent: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.value).toEqual({ employerCostPercent: null });
+    // A refused value never replaced the stored one.
+    expect((await request(app).get("/crm/settings")).body.payroll).toEqual({ employerCostPercent: null });
+  });
 });

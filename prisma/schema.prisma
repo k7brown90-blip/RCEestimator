@@ -533,6 +533,12 @@ model Commission {
   reason           String?
   earnedAt         DateTime   @default(now())
   paidAt           DateTime?
+  // VOID, never delete (CLAUDE.md money-history rule; Phase 6 CARRY, 2026-10-09). A voided commission
+  // is not money: every reader (payroll ledger, Team week, P&L payroll, the duplicate check) filters
+  // voidedAt: null. The row stays, with who voided it and why. services/commissionVoid.ts.
+  voidedAt         DateTime?
+  voidedBy         String?
+  voidReason       String?
   createdAt        DateTime   @default(now())
   technician       Technician @relation(fields: [technicianId], references: [id], onDelete: Restrict)
   visit            Visit?     @relation(fields: [visitId], references: [id], onDelete: SetNull)
@@ -1718,7 +1724,12 @@ model Payment {
   estimateId      String? // IssuedEstimate id — plain column, provenance
   visitId         String?
   amount          Float
-  method          String // stripe | cash | check | other
+  // What actually gets written (audited 2026-10-09): stripe (webhook) | cash | check | zelle |
+  // ach | other (hand-recorded, routes/financials.ts) | discount (LEGACY — the retired 3%
+  // non-card programme, 2026-08-25 -> 08-30; no writer today, rows kept so those invoices
+  // still close to zero) | synchrony (the financed balance, Phase 6 Unit 6A 2026-10-09 — see the
+  // financing* columns below).
+  method          String
   // What the money was FOR (Kyle, 2026-08-25: "a 1/3 deposit on every job.
   // Deposit required before it can be scheduled"). deposit | final | other.
   // The scheduling gate reads paid deposit rows; the final pay link charges
@@ -1737,9 +1748,129 @@ model Payment {
   checkNumber     String?
   paidAt          DateTime?
   createdAt       DateTime  @default(now())
+  // VOID, NEVER DELETE (Kyle, 2026-10-08, decision 11 of the one-estimating-system plan: "only
+  // the administrator can void a recorded payment ... reason required; row kept, marked void,
+  // audit trail"). A voided row stays listed where it was recorded, struck through, and counts
+  // in NO money figure — every reader filters `voidedAt: null` (services/paymentVoid.ts says
+  // which). Only the CRM session can set these; there is no technician route, by design. A
+  // Stripe-recorded row is never voided here — a card payment is refunded in Stripe.
+  voidedAt        DateTime?
+  voidedBy        String? // "human:crm-session" — the only actor that may void
+  voidReason      String?
+  // A SYNCHRONY payment (Kyle, 2026-10-08, decisions 7, 8 and 12 of the one-estimating-system
+  // plan; Phase 6 Unit 6A). method "synchrony": `amount` is the GROSS the customer authorized
+  // Synchrony to release (the balance plus the financing fee — what the invoice is owed, so the
+  // invoice closes). Synchrony pays Red Cedar NET of its discount rate, and there is no API to
+  // read that from, so the cut is captured at recording from the fee record's rate snapshot:
+  // financingCut = gross x rate, financingNet = gross - cut. The cut is the P&L expense
+  // (routes/financials.ts, like Stripe fees); the NET is what the bank statement shows, so
+  // bank matching (services/bankStatements.ts) matches a Synchrony row on financingNet.
+  // financingFeeId names the FinancingFee the customer authorized; while this row is live
+  // (not voided) that fee is LOCKED — the only exit is voiding this row (services/paymentVoid.ts).
+  financingFeeId     String?
+  financingPlanNumber String?
+  // Synchrony's authorization / reference number for the transaction, typed by the office.
+  financingAuthNumber String?
+  financingNet       Float?
+  financingCut       Float?
+  // A CARD REFUND IS RECORDED FROM STRIPE, NEVER TYPED HERE (Kyle, 2026-10-09, ruling 7 of the
+  // one-estimating-system plan: "the app listens for Stripe's refund events (charge.refunded) and
+  // records the refund itself, so a refunded card payment stops counting as collected"). The refund
+  // is MADE in the Stripe Dashboard; the webhook (services/paymentRefunds.ts) writes one
+  // PaymentRefund row per Stripe refund id and keeps these two columns in step with them:
+  // refundedAmount = Σ succeeded refunds (dollars), refundedAt = the latest. COLLECTED = amount −
+  // refundedAmount — every money reader subtracts it (services/paymentRefunds.ts collectedOf). A
+  // FULLY refunded row is also marked status "refunded", so a reader that filters status "paid"
+  // drops it outright; a PARTIAL refund keeps status "paid" with refundedAmount > 0. Never deleted,
+  // never voided (void still refuses a Stripe row): the row and its refunds are the history.
+  refundedAmount     Float     @default(0)
+  refundedAt         DateTime?
+  // The PaymentIntent behind the Checkout Session, captured when the payment is recorded (the
+  // webhook's session object names it) — the key a charge.refunded / refund.* event is matched on.
+  // Null on rows recorded before 2026-10-09; those are matched by asking Stripe which Checkout
+  // Session the refunded PaymentIntent belongs to, then backfilled here.
+  stripePaymentIntentId String?
+  stripeChargeId        String?
+  refunds         PaymentRefund[]
   customer        Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
   @@index([paidAt])
+  @@index([estimateId])
+  @@index([stripePaymentIntentId])
+}
+
+/// One Stripe refund against one card Payment (Kyle, 2026-10-09, ruling 7). Written ONLY by the
+/// Stripe webhook (services/paymentRefunds.ts) from charge.refunded / refund.* events, idempotent on
+/// stripeRefundId: the same event twice writes nothing twice. `status` is Stripe's (pending |
+/// succeeded | failed | canceled) — only a succeeded refund counts against the payment.
+model PaymentRefund {
+  id             String   @id @default(cuid())
+  paymentId      String
+  /// Stripe's refund id (re_…). The idempotency key. One row per charge may instead be the
+  /// UNLISTED stand-in, "<ch_…>:unlisted" (services/paymentRefunds.ts): the part of the charge's
+  /// amount_refunded that Stripe did not name (no refund list on the event, no Refunds read
+  /// scope on the key). It shrinks as named rows arrive and is removed once every dollar is
+  /// named — a placeholder for ids, not money history; the Payment's event log is that.
+  stripeRefundId String   @unique
+  stripeChargeId String?
+  amount         Float
+  status         String
+  /// Stripe's reason when one was given: duplicate | fraudulent | requested_by_customer.
+  reason         String?
+  /// When Stripe made the refund (the refund object's own `created`).
+  refundedAt     DateTime
+  recordedAt     DateTime @default(now())
+  payment        Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+}
+
+/// THE FINANCING FEE — its own root-level record (Kyle, 2026-10-08, one-estimating-system plan,
+/// decisions 7, 8 and 12; Detail B build audit item I; Phase 6 Unit 6A).
+///
+/// "Fee = 50% of plan rate x balance after 1/3 deposit; financed = balance + fee." The fee is the
+/// ONE deliberate exception to "one price, every method" (constants.md), and it exists only on
+/// the Synchrony path: a customer who pays by card, bank, cash, check or Zelle never has one.
+///
+/// WHY NOT ON THE SIGNED DOCUMENT: signed money is frozen (issuedEstimateService.ts applySignature)
+/// and the consent text covers "the price on this estimate" — the fee is not part of what was
+/// signed, so it cannot be written into any IssuedEstimate money column. It lives here, keyed to
+/// the ROOT invoice, OUTSIDE documentOf / billedTotalOf / depositBase (services/invoiceGroup.ts):
+/// the deposit is a third of the documents, never of the fee. Every balance reader adds the live
+/// fee through services/financingFee.ts and shows it as its own line.
+///
+/// LIFECYCLE: applied when the office presses "Pay balance with Synchrony" and picks the plan
+/// (the plan is chosen when the balance is paid through Synchrony, not at signing - decision 12);
+/// removable with a reason until the Synchrony payment is recorded; after that the exit is
+/// voiding the payment (decision 11), which unlocks the fee again. REMOVED, NEVER DELETED
+/// (standing rule): removedAt / removedBy / removeReason keep the history; readers look at the
+/// row with removedAt null. Moves with the invoice when a signed revision takes over
+/// (issuedEstimateService.ts adoptSupersededInvoice), exactly as the payments do.
+///
+/// `discountRatePct` is the plan's Synchrony rate at the moment the fee was applied - RED CEDAR'S
+/// COST, server-side only, never selected into a customer, field or CRM payload. It is what the
+/// Synchrony payment's cut is computed from, so a later Settings edit never changes a fee or a
+/// cut already on the books. Money is INTEGER CENTS here (feeBaseCents, feeCents) because the fee
+/// is computed by shared/financing.ts in cents and must be stored exactly as computed; readers
+/// convert to dollars once.
+model FinancingFee {
+  id              String    @id @default(cuid())
+  /// The ROOT invoice (IssuedEstimate id) the fee is owed on. Plain column, like Payment.estimateId.
+  estimateId      String
+  planNumber      String
+  planDescription String
+  /// Synchrony's discount rate for the plan, as a PERCENT (6.1 = 6.1%), frozen when applied. Server-side only.
+  discountRatePct Float
+  /// The homeowner balance the fee was worked on, in cents - what remained after the deposit.
+  feeBaseCents    Int
+  /// 50% of the rate x feeBaseCents, to the cent - shared/financing.ts financingFeeCents.
+  feeCents        Int
+  appliedAt       DateTime  @default(now())
+  appliedBy       String
+  removedAt       DateTime?
+  removedBy       String?
+  removeReason    String?
+
   @@index([estimateId])
 }
 
@@ -2928,10 +3059,21 @@ model PriceBookDraftQuestion {
 /// A and B that the tech finds necessary to offer. Each option gives its total separately."
 ///
 /// The labels stay literally "Option A/B/C" on the customer's page — his ruling, 2026-08-19.
+///
+/// Kyle, 2026-10-08: "I want to be able to add more than 3 options for projects that are more
+/// expansive ... continue the options past 'C'." and "Capping it at eight is good." So the
+/// letters continue past C up to H (eight in all). A, B and C keep the meanings above; D through
+/// H have no fixed meaning — the user names them (PriceBookDraftOption.label). The list lives in
+/// shared/estimateOptions.ts; keep the two in step.
 enum PriceBookOption {
   A
   B
   C
+  D
+  E
+  F
+  G
+  H
 }
 
 model PriceBookDraftLine {
@@ -3263,6 +3405,16 @@ model IssuedEstimate {
   /// already quoted, on a page a customer may be looking at. Null on estimates issued before the
   /// schedule was configurable; the code's own default stands for those.
   jobBandsJson String?
+
+  /// The Synchrony financing plans in force when this was issued, as JSON (2026-10-08, one
+  /// estimating system, Phase 5): { version, takenAt, plans: [...] } - the ACTIVE plans with
+  /// everything the server needs to recompute the monthly figures, INCLUDING Synchrony’s discount
+  /// rate (Red Cedar’s cost). Frozen for the same reason jobBandsJson is: Kyle edits the plan
+  /// list in Settings as Synchrony changes rates, and a Settings edit must never change a quote
+  /// already sent. SERVER-SIDE ONLY: never selected into a customer, field or CRM-customer payload
+  /// (the rate must not leave the server). Null on estimates issued before this existed, or when no
+  /// plan was active at issue - such an estimate offers no financing figures.
+  financingPlansJson String?
 
   /// WHICH OPTIONS THE CUSTOMER ACTUALLY BOUGHT.
   ///

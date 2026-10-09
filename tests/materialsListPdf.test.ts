@@ -184,7 +184,11 @@ const PROFILE: CompanyProfile = {
 
 /** Same hex-run decoder as tests/issuedEstimatePdf.test.ts — pdfkit draws text as hex strings. */
 function extractText(buf: Buffer): string {
-  const raw = buf.toString("latin1");
+  // The trailer's /ID [<hex> <hex>] is 32 random bytes pdfkit writes in the same <hex> form as the
+  // text, and about one run in eight it decodes to include a "$" (0x24), which made the
+  // "no dollar sign" assertion below fail at random (found 2026-10-08). It is not page text, so
+  // it is cut before decoding; the assertion keeps its meaning (no amounts on the materials list).
+  const raw = buf.toString("latin1").replace(/\/ID\s*\[[^\]]*\]/g, "");
   const parts: string[] = [];
   for (const m of raw.matchAll(/<([0-9A-Fa-f]+)>/g)) {
     if (m[1].length % 2 !== 0) continue;
@@ -192,6 +196,18 @@ function extractText(buf: Buffer): string {
   }
   return parts.join("");
 }
+
+describe("extractText", () => {
+  it("does not read the trailer's random /ID as page text (the cause of the ~1-in-8 '$' failure)", () => {
+    // 0x24 is "$". A fixed buffer, so the case that used to fail one run in eight fails every time
+    // if the decoder regresses.
+    const withDollarInId = Buffer.from(
+      "<48656c6c6f> Tj\ntrailer\n<< /ID [<24242424242424242424242424242424> <24242424242424242424242424242424>] >>\n",
+      "latin1",
+    );
+    expect(extractText(withDollarInId)).toBe("Hello");
+  });
+});
 
 describe("renderMaterialsListPdf", () => {
   it("prints item, description, quantity, and unit — and no cost figures", async () => {

@@ -3,6 +3,12 @@ import type { CrmAssignment, Inspection, ItemResult, Property } from '../domain/
 import { inspectionSchema, propertySchema } from '../domain/schemas'
 import { mergeLegacyGroundingItems, normalizeResultState } from '../domain/compat'
 import type { DiagnosticCoverage, DiagnosticOutletPayload } from '../../../shared/diagnostics'
+import type { FieldCatalogRow } from '../../../shared/quoteCatalog'
+import type { EstimateOptionLetter } from '../../../shared/estimateOptions'
+// Type-only (erased at build): the mirror holds the quote payload exactly as crmSync types it.
+// crmSync imports this module for `db`; a runtime import the other way would be a cycle, a type
+// import is not.
+import type { QuoteState } from '../lib/crmSync'
 
 export interface PhotoRecord {
   id: string
@@ -217,6 +223,160 @@ export interface DiagnosticPhotoRecord {
   queuedAt: string
 }
 
+/*
+  ── ESTIMATING WITH NO SIGNAL (Phase 7, one-estimating-system plan, 2026-10-09) ──────────────────
+
+  Kyle, 2026-09-22: "They would have to be able to do estimates and even the diagnostics,
+  electrical assessment, without service." Four stores, Dexie v10, pure addition. The phone keeps
+  a record of what the tech DID; the server sets every firm price and records every signature.
+
+  NEVER ON THIS PHONE (pinned by key-set tests on the server routes that feed these stores, and by
+  the source guard in tests/financingEstimator.test.ts, which is why none of the column names is
+  spelled out here): labour hours or dollars, a labour unit basis, the billed labour rate, any
+  company cost or cost basis, the per-unit sell price, supplier prices, markup tiers, Synchrony's
+  discount rate or any other Synchrony rate. A phone is handed to the customer. What lands here is
+  words, yes/no badges, the server's own customer figures, and the tech's edits.
+*/
+
+/**
+ * One row of the price book as the picker sees it with no signal: the SAME `FieldCatalogRow` the
+ * online picker is handed (shared/quoteCatalog.ts), plus its place in the server's order so the
+ * offline list reads in the order the online one does (the server orders by itemId in the
+ * database's collation; a JavaScript sort can differ for mixed-case codes — U2 finding).
+ * The snapshot's version, time and section cards live in `meta` under QUOTE_CATALOG_META_KEY.
+ */
+export interface QuoteCatalogRecord extends FieldCatalogRow {
+  position: number
+}
+
+/**
+ * The last server answer to GET /quotes/:draftId for one quote — the exact payload the online
+ * screen renders, saved so the screen can render it with no signal and overlay the tech's waiting
+ * edits on it (lib/quoteSync.ts overlayQuote).
+ *
+ * `origin` 'phone' means the office has never received this quote (it was started with no
+ * signal); 'server' means the payload came from the office. `visitId` is null when the save came
+ * from a plain fetchQuote (the payload does not carry it); the flush and the assignment-sync cache
+ * pass always know it and set it.
+ */
+export interface QuoteMirrorRecord {
+  draftId: string
+  visitId: string | null
+  payload: QuoteState
+  snapshotAt: string
+  origin: 'phone' | 'server'
+  /** Set when queued edits landed and the office's prices have not been looked at since (U6's "Check the prices" gate). */
+  pricesNeedReview: boolean
+  /** The office's draft for this visit when start-quote was refused 409 — the U6 "Add my lines to it" prompt. Null otherwise. */
+  pendingRebase: string | null
+}
+
+export type QuoteOpKind =
+  | 'start_quote'
+  | 'add_line'
+  | 'edit_line'
+  | 'remove_line'
+  | 'add_option'
+  | 'remove_option'
+  | 'set_option_meta'
+  | 'set_discount'
+  | 'set_mode'
+  | 'set_details'
+  | 'line_order'
+
+export type QuoteOpDifficulty = 'NORMAL' | 'DIFFICULT' | 'VERY_DIFFICULT'
+
+/** What a line edit may change, and `expected`: the same fields as the phone's screen last showed them. */
+export interface QuoteLinePatch {
+  quantity?: number
+  difficulty?: QuoteOpDifficulty
+  option?: EstimateOptionLetter
+  note?: string | null
+  location?: string | null
+}
+
+/**
+ * One queued edit's body — item ids, quantities, letters, names, the discount programme, and
+ * `expected` (what the tech saw, for the server's replay rule). Never money: a queued edit is
+ * what the tech asked for, and the server prices it when it lands.
+ */
+export type QuoteOpBody =
+  | { kind: 'start_quote'; title?: string }
+  | { kind: 'add_line'; lineId: string; itemId: string; quantity: number; difficulty?: QuoteOpDifficulty; option?: EstimateOptionLetter; note?: string | null; location?: string | null }
+  | { kind: 'edit_line'; lineId: string; patch: QuoteLinePatch; expected?: QuoteLinePatch }
+  | { kind: 'remove_line'; lineId: string }
+  | { kind: 'add_option'; option: EstimateOptionLetter }
+  | { kind: 'remove_option'; option: EstimateOptionLetter; expectedLines?: number }
+  | { kind: 'set_option_meta'; option: EstimateOptionLetter; label: string; note: string; expected?: { label?: string | null; note?: string | null } }
+  | { kind: 'set_discount'; type: 'military' | 'senior' | 'custom' | null; percent: number | null; expected?: { type?: 'military' | 'senior' | 'custom' | null; percent?: number | null } }
+  | { kind: 'set_mode'; exclusive: boolean; expected?: { exclusive?: boolean } }
+  | { kind: 'set_details'; title?: string; jobDescription?: string | null; expected?: { title?: string | null; jobDescription?: string | null } }
+  | { kind: 'line_order'; order: Array<{ lineId: string; option: EstimateOptionLetter; was?: EstimateOptionLetter }> }
+
+/**
+ * A quote edit waiting to reach the office. An edit is NEVER changed after it is queued: a replay
+ * sends exactly what the tech asked for, under the id the phone minted, so a lost answer lands on
+ * the same row (constants.md idempotency convention).
+ *
+ * `seq` orders the edits within ONE draft — they replay strictly in that order, because a later
+ * edit may depend on an earlier one (edit a line that was added with no signal). Drafts are
+ * independent of each other.
+ *
+ * `status`: 'queued' waits for signal; 'refused' means the server said no with words (`refusal`)
+ * and that draft's later edits wait for the tech to Discard it — a refusal is never retried on
+ * its own; 'delivered' means the server took it (2xx) and the row only waits for the saved copy
+ * to be refreshed from the office, after which it is deleted. A row is deleted ONLY after a 2xx,
+ * a 404 on a remove (already gone = done), or an explicit Discard.
+ */
+export interface QuoteOpRecord {
+  /** Client-minted UUID — the idempotency key for the replay. */
+  opId: string
+  draftId: string
+  visitId: string
+  seq: number
+  kind: QuoteOpKind
+  body: QuoteOpBody
+  status: 'queued' | 'refused' | 'delivered'
+  attempts: number
+  lastError?: string
+  /** The server's own words when it refused this edit. */
+  refusal?: string
+  /** The server's error code on a refusal ('conflict', 'line_gone', ...). */
+  refusalCode?: string
+  /** On a refused start-quote: the office's draft for this visit (409 `existingDraftId`). */
+  existingDraftId?: string
+  queuedAt: string
+}
+
+/**
+ * A signature captured on this phone with no signal, waiting to become a record (Phase 7.2, U8).
+ * SCHEMA ONLY in U4 — nothing writes it until U8. The drawn image rides in the SAME row as the
+ * signer's name and what they signed, so the image can never come apart from its record.
+ * `capturedAt` is the phone's clock; the server keeps its own receipt time beside it.
+ */
+export interface SignatureQueueRecord {
+  signatureId: string
+  estimateId: string
+  visitId: string | null
+  signerName: string
+  /** Data URL, 400,000 characters at most. */
+  signatureImage: string
+  selectedOptions: string[]
+  revision: number
+  figuresKey: string
+  /** The consent sentence the customer was shown, verbatim — the server refuses a mismatch. */
+  consentText: string
+  capturedAt: string
+  state: 'queued' | 'recorded' | 'refused' | 'cancelled'
+  reason?: string
+  attempts: number
+  lastError?: string
+  queuedAt: string
+}
+
+/** `meta` key under which the saved price book's version, time and section cards live. */
+export const QUOTE_CATALOG_META_KEY = 'quoteCatalog'
+
 export class HealthRecordDatabase extends Dexie {
   properties!: Table<Property, string>
   inspections!: Table<Inspection, string>
@@ -233,6 +393,10 @@ export class HealthRecordDatabase extends Dexie {
   diagnostics!: Table<DiagnosticRecord, string>
   diagnosticSyncQueue!: Table<DiagnosticSyncRecord, string>
   diagnosticPhotoQueue!: Table<DiagnosticPhotoRecord, string>
+  quoteCatalog!: Table<QuoteCatalogRecord, string>
+  quoteMirrors!: Table<QuoteMirrorRecord, string>
+  quoteOpQueue!: Table<QuoteOpRecord, string>
+  signatureQueue!: Table<SignatureQueueRecord, string>
 
   constructor() {
     super('red-cedar-health-record')
@@ -408,6 +572,33 @@ export class HealthRecordDatabase extends Dexie {
       diagnostics: 'reportId, visitId, status, updatedAt',
       diagnosticSyncQueue: 'reportId, queuedAt',
       diagnosticPhotoQueue: 'photoId, reportId, queuedAt',
+    })
+
+    // v10: estimating with no signal (Phase 7, 2026-10-09). Four store additions — the saved price
+    // book, the saved copy of each quote, the queue of quote edits, and the queue of signatures
+    // taken with no signal (schema only until U8). Pure addition, same shape as v6-v9, so there is
+    // no .upgrade() and nothing existing to break: a phone that never builds a quote offline
+    // behaves exactly as it did.
+    this.version(10).stores({
+      properties: 'id, address, jurisdictionId, createdAt, crm.visitId, legacy',
+      inspections: 'id, propertyId, jurisdictionId, date, technician, status, scope, [propertyId+date]',
+      photos: 'id, mimeType',
+      syncQueue: 'inspectionId, queuedAt',
+      photoSyncQueue: 'photoId, inspectionId, queuedAt',
+      assignments: 'visitId, assignmentId, scheduledStart, cachedAt',
+      meta: 'key',
+      corrupt: 'id, table, quarantinedAt',
+      findings: 'id, propertyId, itemId, status, track, [propertyId+status]',
+      findingActionQueue: 'actionId, findingId, kind, queuedAt',
+      receiptSyncQueue: 'receiptId, queuedAt',
+      materials: 'id, upc, sku, itemId',
+      diagnostics: 'reportId, visitId, status, updatedAt',
+      diagnosticSyncQueue: 'reportId, queuedAt',
+      diagnosticPhotoQueue: 'photoId, reportId, queuedAt',
+      quoteCatalog: 'itemId, category, position',
+      quoteMirrors: 'draftId, visitId',
+      quoteOpQueue: 'opId, draftId, seq, status, [draftId+seq]',
+      signatureQueue: 'signatureId, estimateId, state',
     })
   }
 }

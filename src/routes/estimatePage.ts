@@ -92,8 +92,14 @@ async function depositState(estimate: { id: string; signedAt: Date | null; token
     satisfied: summary.depositSatisfied,
     paidInFull: summary.paidInFull,
     payUrl: summary.depositPayUrl,
-    invoice: summary.documents.length > 1
-      ? { number: summary.number, documents: summary.documents, billedTotal: summary.billedTotal, totalPaid: summary.totalPaid, balance: summary.balance }
+    // The block renders for a multi-document invoice, or whenever a financing fee is on it
+    // (2026-10-09): the fee is its own line and the balance carries it, so the page must say so.
+    invoice: summary.documents.length > 1 || summary.financingFee
+      ? {
+        number: summary.number, documents: summary.documents, billedTotal: summary.billedTotal, totalPaid: summary.totalPaid, balance: summary.balance,
+        // `locked` (2026-10-09): once the Synchrony payment is recorded the fee is paid and the pay links reopen for anything still owed.
+        financingFee: summary.financingFee ? { planNumber: summary.financingFee.planNumber, fee: summary.financingFee.fee, locked: summary.financingFee.locked } : null,
+      }
       : null,
   };
 }

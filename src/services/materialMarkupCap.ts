@@ -235,8 +235,9 @@ export function comboKey(options: Iterable<string>): string {
 /**
  * Every non-empty combination of the offered options, each priced as a single job.
  *
- * At most three options exist, so at most seven combinations — cheap to enumerate, and shipping
- * the finished totals is what lets the customer's page update as they tick WITHOUT ever being
+ * At most eight options exist (Kyle, 2026-10-08: "Capping it at eight is good."), so at most 255
+ * combinations — cheap to enumerate, and only the options actually offered are counted, so an
+ * A/B/C estimate still yields its seven. Shipping the finished totals is what lets the customer's page update as they tick WITHOUT ever being
  * handed a cost figure. The page sees only what each combination would come to.
  */
 export function allSelectionCaps(

@@ -5,6 +5,10 @@
  * available along side the invoice email button." … "These should be a manual
  * send both from the field app and from the CRM."
  *
+ * SENDABLE BEFORE SIGNING (Kyle, 2026-10-08, one-estimating-system plan Phase 4): the buttons are
+ * on the field Quote screen's issued panel, Estimate Intake's after-issue panel and the Estimate
+ * drawer as well as the payment panel. Refused for a void, lost or superseded estimate.
+ *
  * KEYED TO AN ISSUED ESTIMATE, not a visit — matching the plan's own reasoning
  * (2026-10-01-manual-sends-archiving-and-one-calendar.md, item B): the CRM
  * button lives beside the invoice/deposit/balance sends on PaymentPanel, which
@@ -45,9 +49,25 @@ export async function sendFinancingEmail(
 ): Promise<{ ok: true; to: string } | { ok: false; reason: string }> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
-    select: { number: true, title: true, customerName: true, customerEmail: true },
+    select: {
+      number: true, title: true, customerName: true, customerEmail: true, status: true,
+      supersededBy: { select: { id: true } },
+    },
   });
   if (!est) return { ok: false, reason: "Estimate not found." };
+  // BEFORE SIGNING IS ALLOWED (Kyle, 2026-10-08: "the financing link should be able to be sent
+  // before signing"), and so is after - a signed estimate's payment panel sends it too. What is
+  // refused is an estimate that is not a live offer, with the reason the screen shows. Same
+  // wording as the estimate email's own refusals (issuedEstimateSend.ts); they are decided HERE,
+  // in the service, so the CRM button, the drawer and the phone cannot disagree. Not refused:
+  // archived (put away, still the customer's offer) and expired (the link only invites them to apply).
+  if (est.supersededBy) {
+    return { ok: false, reason: "This estimate has been superseded by a newer revision. Send that one instead." };
+  }
+  if (est.status === "void") return { ok: false, reason: "This estimate is void." };
+  if (est.status === "lost") {
+    return { ok: false, reason: "This estimate is marked lost. Reopen it first, then send the financing link." };
+  }
   if (!est.customerEmail) {
     return { ok: false, reason: "No customer email on file — add one to the account first." };
   }

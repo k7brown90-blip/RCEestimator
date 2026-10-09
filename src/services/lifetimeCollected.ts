@@ -14,7 +14,12 @@
  *     never revenue — the same carve-out routes/financials.ts and /invoices already make);
  *   - EITHER payer: the homeowner's money and the warranty company's money are both money
  *     collected on this account's work (Kyle, 2026-09-10: "money is money");
- *   - the test account never counts.
+ *   - the test account never counts;
+ *   - voidedAt null (2026-10-09, services/paymentVoid.ts): a voided row was recorded and taken
+ *     back — it is not money;
+ *   - amount − refundedAmount (2026-10-09, ruling 7, services/paymentRefunds.ts): a card refund
+ *     made in Stripe and recorded by the webhook comes off; a row refunded in full is status
+ *     "refunded" and is not "paid" at all.
  *
  * `collectedByCustomer` attributes a payment to an account by its own `customerId`, else through
  * the invoice it paid (`estimateId` -> IssuedEstimate.customerId) — Stripe webhooks and hand-typed
@@ -22,9 +27,10 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
+import { collectedOf } from "./paymentRefunds";
 
 /** The Prisma `where` fragment every "collected" query starts from. Add a date window or a scope; never loosen this. */
-export const COLLECTED_PAYMENT_WHERE = { status: "paid", method: { not: "discount" } } as const;
+export const COLLECTED_PAYMENT_WHERE = { status: "paid", method: { not: "discount" }, voidedAt: null } as const;
 
 export interface LifetimeCollected {
   /** Every dollar collected on this account's work, either payer. */
@@ -66,7 +72,7 @@ export async function collectedByCustomer(
         ? { OR: [{ customerId: { in: customerIds } }, { estimateId: { in: [...ownerOfEstimate.keys()] } }] }
         : {}),
     },
-    select: { customerId: true, estimateId: true, amount: true, payer: true, paidAt: true, createdAt: true },
+    select: { customerId: true, estimateId: true, amount: true, payer: true, paidAt: true, createdAt: true, refundedAmount: true },
   });
 
   const testIds = new Set(
@@ -79,9 +85,13 @@ export async function collectedByCustomer(
     if (!owner || testIds.has(owner)) continue;
     if (customerIds && !customerIds.includes(owner)) continue;
     const row = out.get(owner) ?? emptyLifetime();
-    row.collected = round2(row.collected + p.amount);
-    if (p.payer === "warranty") row.warrantyPaid = round2(row.warrantyPaid + p.amount);
-    else row.customerPaid = round2(row.customerPaid + p.amount);
+    // What the row is still worth: a card refund recorded from Stripe comes off (2026-10-09,
+    // ruling 7; services/paymentRefunds.ts). A row refunded in full is status "refunded" and
+    // never reaches here.
+    const worth = collectedOf(p);
+    row.collected = round2(row.collected + worth);
+    if (p.payer === "warranty") row.warrantyPaid = round2(row.warrantyPaid + worth);
+    else row.customerPaid = round2(row.customerPaid + worth);
     row.paymentCount += 1;
     const at = p.paidAt ?? p.createdAt;
     if (!row.firstPaidAt || at < row.firstPaidAt) row.firstPaidAt = at;

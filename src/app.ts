@@ -32,9 +32,8 @@ import { LEAD_PLATFORMS, normalizeLeadPlatform } from "../shared/leadPlatform";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
 import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
 import { accessLogMiddleware } from "./middleware/accessLog";
-import { singularize } from "./services/singularize";
-import { nameTokens, rankWithDiagnostics, stripQuantity } from "./services/walkthroughMatch";
-import { proposeFromWalkthrough, ProposerUnavailable } from "./services/aiProposer";
+import { resolveWalkthroughRows, walkthroughRowsBodySchema } from "./services/walkthroughMatch";
+import { proposeWalkthroughForDraft, walkthroughTextBodySchema } from "./services/aiProposer";
 import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
 import { summarizeOptions } from "./services/atomicEstimateEngine";
 import { renderEstimatePdf } from "./services/issuedEstimatePdf";
@@ -42,10 +41,13 @@ import {
   addLine,
   editLine,
   browseAtomics,
+  browseSections,
   createDraft,
   removeLine,
   computeDraft,
+  confirmLineBodySchema,
   confirmProposedLine,
+  resolveQuestionBodySchema,
   finalizeDraft,
   findAtomicByCode,
   getDraftReview,
@@ -53,6 +55,30 @@ import {
   looksLikeLegacyCode,
   rejectProposedLine,
   resolveQuestion,
+  // Draft-level rules, one set for both doors (2026-10-08).
+  addOption,
+  attachDraftToAccount,
+  copyOptionBodySchema,
+  copyOptionLines,
+  deleteDraft,
+  draftDetailsBodySchema,
+  draftDiscountBodySchema,
+  DraftError,
+  duplicateDraft,
+  setDraftDetails,
+  getOptionsMode,
+  lineOrderBodySchema,
+  lineQuantitySchema,
+  listOptionMeta,
+  optionMetaBodySchema,
+  optionsModeBodySchema,
+  raiseQuestion,
+  removeOption,
+  expectedLinesSchema,
+  saveLineOrder,
+  setDraftDiscount,
+  setOptionMeta,
+  setOptionsMode,
 } from "./services/atomicEstimateService";
 import {
   createAtomic,
@@ -75,9 +101,11 @@ import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
+import { activeFinancingFeesByRoot, feeDollarsOf, FINANCING_IN_PROGRESS, financingInProgress } from "./services/financingFee";
 import { groupSignedRows, INVOICE_DOC_SELECT, isLiveSigned, LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER, rollupInvoice, rootFirst, signedRootForJob, type InvoiceDocRow } from "./services/invoiceGroup";
 import { LOSABLE_STATUSES, LOST_REASONS as SHARED_LOST_REASONS } from "../shared/estimateStatus";
 import { ACCEPTED_VIA } from "../shared/acceptance";
+import { ALL_OPTIONS, MAX_OPTIONS, isEstimateOption } from "../shared/estimateOptions";
 import { acceptEstimateFromOffice, undoOfficeAcceptance } from "./services/officeAcceptance";
 import { archiveCompetingEstimates, archiveEstimateByHand, unarchiveEstimate } from "./services/estimateArchive";
 import { reopenedStatusOf } from "./services/estimateExpiry";
@@ -103,6 +131,8 @@ import { parseReceiptImage } from "./services/receiptVision";
 import { capacityCheckTechRouter, capacityCheckAdminRouter } from "./routes/capacityCheck";
 import { scheduleJob, rescheduleJob, cancelJob, ConflictError, appointmentKindFor, ESTIMATE_TRAVEL_BUFFER_MINUTES, coScheduleJob } from "./services/scheduling";
 import { rollupJobCosts, getLaborRate, sumJobCosts, estimateOptionTotal, mergeCostableChain, ROLLED_UP_COSTS, materialCostForJobs, MATERIAL_SPEND_KINDS, costChainByJob, chainChildrenByJob } from "./services/jobCosting";
+import { processingCostsForJobs } from "./services/jobProcessingCosts";
+import { collectedOf } from "./services/paymentRefunds";
 import { closeOutMaterialWarning, consumeForJob, jobMaterials, materialNeedListForJob, returnForJob } from "./services/jobMaterials";
 import { renderMaterialsListPdf } from "./services/materialsListPdf";
 import { parseJsonStringArray } from "./lib/json";
@@ -115,7 +145,8 @@ import { sharedAgentRouter } from "./routes/agent-shared";
 import { inboundSmsRouter } from "./routes/inboundSms";
 import { confirmPageRouter } from "./routes/confirmPage";
 import { estimatePageRouter } from "./routes/estimatePage";
-import { graduateDraft, reviseEstimate, signEstimateInPerson } from "./services/issuedEstimateService";
+import { createChangeOrderDraft, getDraftLifecycle, issueDraft, issueExtrasBodySchema, reviseEstimate } from "./services/issuedEstimateService";
+import { inPersonSignBodySchema, signInPerson, signerContextOf } from "./services/inPersonSigning";
 import { renderEstimatePage, renderUnavailable } from "./services/issuedEstimateRender";
 import {
   createJobFromSignedEstimate,
@@ -125,11 +156,14 @@ import {
   EXCLUDE_TEST_ACCOUNT,
   EXCLUDE_TEST_JOB,
 } from "./services/accountSpine";
-import { sendEstimateEmail, sendInvoiceEmail, estimateLink, notifyOwnerSigned, publicBaseUrl } from "./services/issuedEstimateSend";
+import { sendEstimateEmailFromBody, sendInvoiceEmail, estimateLink, publicBaseUrl } from "./services/issuedEstimateSend";
 // Transactional email delivery tracking (Kyle, 2026-09-09: "very few are actually getting through").
 import { lastDeliveriesForEstimates } from "./services/transactionalEmail";
 import { handleResendWebhook } from "./services/resendWebhook";
-import { asCustomPercent, programmeFor } from "./services/discounts";
+import { programmeFor } from "./services/discounts";
+import { getQuoteMoney } from "./services/quoteMoney";
+import { FINANCING_PLANS_KEY, getFinancingPlans, validateFinancingPlans } from "./services/financingSettings";
+import { PAYROLL_SETTINGS_KEY, validatePayrollSettings } from "./services/payrollSettings";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
 import { sendWebLeadAutoReply } from "./services/visitConfirmations";
 import {
@@ -1993,16 +2027,9 @@ app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(re
  * card that leads nowhere.
  */
 app.get("/price-book/sections", asyncHandler(async (_req, res) => {
-  const grouped = await prisma.priceBookAtomic.groupBy({
-    by: ["category"],
-    where: { retiredAt: null },
-    _count: { _all: true },
-  });
-  const sections = grouped
-    .filter((g) => g.category)
-    .map((g) => ({ section: g.category as string, itemCount: g._count._all }))
-    .sort((a, b) => a.section.localeCompare(b.section));
-  res.json({ sections });
+  // The query lives in browseSections() (atomicEstimateService.ts) — the field app's section
+  // cards call the SAME function (2026-10-08, one estimating system).
+  res.json({ sections: await browseSections(prisma) });
 }));
 
 app.get("/price-book/nec-categories", asyncHandler(async (_req, res) => {
@@ -2294,224 +2321,81 @@ app.post("/price-book/drafts", asyncHandler(async (req, res) => {
 }));
 
 /*
-  ── NAMING THE OPTIONS (Kyle, 2026-08-20) ──────────────────────────────────────────────────────
+  ── DRAFT-LEVEL RULES LIVE IN THE SERVICE (Kyle, 2026-10-08, "one estimating system") ─────────
 
-  "It would be nice to be able to rename the options at the review screen in order to specify the
-   scope of work to the job being quoted. This is the perfect spot to make the title of each option
-   reflect the itemized list that it represents. A Short description to add text in would be nice
-   too."
+  The discount programme (2026-08-22), option mode (2026-08-25), copying an option (2026-08-25),
+  naming the options (2026-08-20), duplicating a draft (2026-08-31), raising a question and
+  attaching a draft each used to be implemented right here, in the route. The rule and Kyle's
+  reasoning for each now sit on the function in services/atomicEstimateService.ts; every route
+  below is a thin wrapper that parses the body, calls it, and maps its refusal to the same status
+  code it always answered with. Phase 2 adds tech routes in routes/health-record.ts that wrap
+  these same functions (the line routes already do), so a rule cannot exist on one door and not
+  the other.
 
-  The review screen is where he is standing when he knows what each option turned out to be, so it
-  is where the naming belongs. These names are frozen onto the issued estimate at graduation and
-  are what the customer reads on the tick boxes — "Exterior pathway lights" rather than "Option B".
-
-  Upsert rather than create: there is exactly one name per option per draft, and renaming is the
-  normal case rather than the exception.
+  Only a DraftError — a rule refusing — is answered here. Anything else (a database failure, a
+  Prisma race) is re-thrown into asyncHandler so the global handler answers 500 and writes the
+  SystemEvent row, exactly as these routes behaved before the rules moved.
 */
-/*
-  ── THE DISCOUNT PROGRAMME ON A DRAFT (Kyle, 2026-08-22) ───────────────────────────────────────
+const draftRuleError = (res: express.Response, err: unknown): void => {
+  if (!(err instanceof DraftError)) throw err;
+  res.status(err.status).json({ error: err.message });
+};
 
-  "military discount at 5%, senior citizen discount at 5%" — "Off of the whole job but gets
-  capped at $250." One programme per estimate; setting a new one replaces the old, null clears.
-  The AMOUNT is never stored on the draft — it is 5% of what the customer eventually selects, so
-  it does not exist yet. Surfaces compute it live; the signature freezes it.
-
-  Custom percentage (Kyle, 2026-09-01): "I want a simple enter a percentage and apply button next
-  to the other discounts" — for price matching. Type "custom" carries its percent (0 < p ≤ 50,
-  uncapped); the percent is stored only with that type so a stale figure cannot ride along under
-  a programme.
-*/
 app.put("/price-book/drafts/:draftId/discount", asyncHandler(async (req, res) => {
-  const body = z.object({
-    type: z.enum(["military", "senior", "custom"]).nullable(),
-    percent: z.number().optional().nullable(),
-  }).parse(req.body ?? {});
-  const draftId = String(req.params.draftId);
-  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { id: true } });
-  if (!draft) {
-    res.status(404).json({ error: `Draft ${draftId} not found.` });
-    return;
+  // The body schema is the service's — the tech's PUT /quotes/:draftId/discount reads the same one.
+  const body = draftDiscountBodySchema.parse(req.body ?? {});
+  try {
+    res.json(await setDraftDiscount(prisma, String(req.params.draftId), body));
+  } catch (err) {
+    draftRuleError(res, err);
   }
-  const percent = body.type === "custom" ? asCustomPercent(body.percent) : null;
-  if (body.type === "custom" && percent === null) {
-    res.status(400).json({ error: "A custom discount needs a percentage above 0 and at most 50." });
-    return;
-  }
-  const saved = await prisma.priceBookDraftEstimate.update({
-    where: { id: draftId },
-    data: { discountType: body.type, discountPercent: percent },
-    select: { discountType: true, discountPercent: true },
-  });
-  res.json(saved);
 }));
 
-/*
-  ── OPTION MODE (Kyle, 2026-08-25) ─────────────────────────────────────────────────────────────
-
-  "A single EV Charger estimate, give 3 options on length from panel… Since these are to help
-   decide the location and not 3 different EV Chargers they cannot be additive. A check box would
-   be nice… I want to be able to choose either or options or the all that apply options."
-
-  Per draft, frozen onto the issued estimate at graduation. Exclusive = the customer's page shows
-  radio buttons and the signature refuses anything but exactly one option.
-*/
 app.put("/price-book/drafts/:draftId/options-mode", asyncHandler(async (req, res) => {
-  const body = z.object({ exclusive: z.boolean() }).parse(req.body ?? {});
-  const draftId = String(req.params.draftId);
-  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { id: true } });
-  if (!draft) { res.status(404).json({ error: `Draft ${draftId} not found.` }); return; }
-  const saved = await prisma.priceBookDraftEstimate.update({
-    where: { id: draftId },
-    data: { exclusiveOptions: body.exclusive },
-    select: { exclusiveOptions: true },
-  });
-  res.json(saved);
+  const body = optionsModeBodySchema.parse(req.body ?? {});
+  try {
+    res.json(await setOptionsMode(prisma, String(req.params.draftId), body.exclusive));
+  } catch (err) {
+    draftRuleError(res, err);
+  }
 }));
 
-/*
-  ── DUPLICATE A DRAFT (Kyle, 2026-08-31) ───────────────────────────────────────────────────────
-
-  "I also need a way to create a new version from already sent estimates. I want to be able to
-   take one, have it copied exactly the way it is into the estimate builder, and begin editing it
-   to send it as a new estimate."
-
-  Copies the draft behind an estimate — lines with their confirm state, option names, discount,
-  photos, resolved questions, the rate snapshot — into a brand-new EDITABLE draft (status
-  "draft", never finalized). The sent estimate and its own draft are untouched; issuing the copy
-  produces a NEW estimate number, not a revision. changeOrderForId is deliberately not copied —
-  a fresh estimate is not a change order on the old one.
-*/
 app.post("/price-book/drafts/:draftId/duplicate", asyncHandler(async (req, res) => {
-  const sourceId = String(req.params.draftId);
-  const source = await prisma.priceBookDraftEstimate.findUnique({
-    where: { id: sourceId },
-    // No `photos`: a draft's photos live on its JOB as VisitPhotos (plan A, 2026-10-02), so a
-    // copy of the draft already shares them — there is nothing to duplicate.
-    include: { lines: true, questions: true, optionMeta: true },
-  });
-  if (!source) {
-    res.status(404).json({ error: `Draft ${sourceId} not found.` });
-    return;
+  try {
+    res.status(201).json(await duplicateDraft(prisma, String(req.params.draftId)));
+  } catch (err) {
+    draftRuleError(res, err);
   }
-  const rate = await loadRateContext(prisma);
-  const copy = await prisma.priceBookDraftEstimate.create({
-    data: {
-      title: source.title,
-      leadId: source.leadId,
-      customerId: source.customerId,
-      visitId: source.visitId,
-      supplierId: source.supplierId,
-      jobDescription: source.jobDescription,
-      scenarioRef: source.scenarioRef,
-      exclusiveOptions: source.exclusiveOptions,
-      // Editable from the first click — the whole point of the copy.
-      status: "draft",
-      // A fresh rate snapshot, not the source's: the copy prices live at today's Rate Config
-      // and book, so its record must say today's rate (Kyle, 2026-09-01 — a copy of a $150
-      // estimate is a $100 estimate now).
-      billedLaborRate: rate.rc.billedLaborRate,
-      rateProvisional: rate.provisional,
-      provisionalReason: rate.provisionalReason,
-      notes: source.notes,
-      discountType: source.discountType,
-      discountPercent: source.discountPercent,
-    },
-  });
-  if (source.lines.length > 0) {
-    await prisma.priceBookDraftLine.createMany({
-      data: source.lines.map((l) => ({
-        draftId: copy.id,
-        itemId: l.itemId,
-        quantity: l.quantity,
-        quantitySource: l.quantitySource,
-        difficulty: l.difficulty,
-        location: l.location,
-        note: l.note,
-        sortOrder: l.sortOrder,
-        option: l.option,
-        state: l.state,
-        proposedBy: l.proposedBy,
-        proposalReasoning: l.proposalReasoning,
-        proposedAt: l.proposedAt,
-        confirmedBy: l.confirmedBy,
-        confirmedAt: l.confirmedAt,
-        editedBeforeConfirm: l.editedBeforeConfirm,
-      })),
-    });
-  }
-  if (source.questions.length > 0) {
-    await prisma.priceBookDraftQuestion.createMany({
-      data: source.questions.map((q) => ({
-        draftId: copy.id,
-        question: q.question,
-        rawText: q.rawText,
-        raisedBy: q.raisedBy,
-        resolvedAt: q.resolvedAt,
-        resolvedBy: q.resolvedBy,
-        resolutionNote: q.resolutionNote,
-      })),
-    });
-  }
-  if (source.optionMeta.length > 0) {
-    await prisma.priceBookDraftOption.createMany({
-      data: source.optionMeta.map((o) => ({
-        draftId: copy.id,
-        option: o.option,
-        label: o.label,
-        note: o.note,
-      })),
-    });
-  }
-  res.status(201).json({ id: copy.id, title: copy.title });
 }));
 
-/*
-  ── COPY AN OPTION'S LINES (Kyle, 2026-08-25) ──────────────────────────────────────────────────
+// The estimate's title and scope of work, edited on the draft after creation (2026-10-08, Phase 2
+// unit B — no route could before; the field's PUT /quotes/:draftId/details wraps the same function).
+app.put("/price-book/drafts/:draftId/details", asyncHandler(async (req, res) => {
+  const body = draftDetailsBodySchema.parse(req.body ?? {});
+  try {
+    res.json(await setDraftDetails(prisma, String(req.params.draftId), body));
+  } catch (err) {
+    draftRuleError(res, err);
+  }
+}));
 
-  "It would be nice to be able to copy an option to another so I could build on it" — build the
-  10-foot run once in A, copy to B and C, change one length each. Lines are duplicated with their
-  quantity, difficulty, location, note and confirm state intact; APPENDS to the target, never
-  replaces what's already there.
-*/
+// Delete a draft nothing has been issued from (standing rule: nothing the app creates is
+// permanent). Refused with the reason once anything was issued — the exit is then on the estimate.
+app.delete("/price-book/drafts/:draftId", asyncHandler(async (req, res) => {
+  try {
+    res.json(await deleteDraft(prisma, String(req.params.draftId)));
+  } catch (err) {
+    draftRuleError(res, err);
+  }
+}));
+
 app.post("/price-book/drafts/:draftId/options/copy", asyncHandler(async (req, res) => {
-  const body = z.object({
-    from: z.enum(["A", "B", "C"]),
-    to: z.enum(["A", "B", "C"]),
-  }).parse(req.body ?? {});
-  if (body.from === body.to) {
-    res.status(400).json({ error: "Source and target options are the same." });
-    return;
+  const body = copyOptionBodySchema.parse(req.body ?? {});
+  try {
+    res.status(201).json(await copyOptionLines(prisma, String(req.params.draftId), body.from, body.to));
+  } catch (err) {
+    draftRuleError(res, err);
   }
-  const draftId = String(req.params.draftId);
-  const lines = await prisma.priceBookDraftLine.findMany({
-    where: { draftId, option: body.from },
-    orderBy: { sortOrder: "asc" },
-  });
-  if (lines.length === 0) {
-    res.status(400).json({ error: `Option ${body.from} has no lines to copy.` });
-    return;
-  }
-  await prisma.priceBookDraftLine.createMany({
-    data: lines.map((l) => ({
-      draftId,
-      itemId: l.itemId,
-      quantity: l.quantity,
-      quantitySource: l.quantitySource,
-      difficulty: l.difficulty,
-      location: l.location,
-      note: l.note,
-      sortOrder: l.sortOrder,
-      option: body.to,
-      state: l.state,
-      proposedBy: l.proposedBy,
-      proposalReasoning: l.proposalReasoning,
-      proposedAt: l.proposedAt,
-      confirmedBy: l.confirmedBy,
-      confirmedAt: l.confirmedAt,
-      editedBeforeConfirm: l.editedBeforeConfirm,
-    })),
-  });
-  res.status(201).json({ copied: lines.length, from: body.from, to: body.to });
 }));
 
 /*
@@ -2532,68 +2416,82 @@ app.post("/price-book/drafts/:draftId/options/copy", asyncHandler(async (req, re
 */
 
 app.get("/price-book/drafts/:draftId/options", asyncHandler(async (req, res) => {
-  const meta = await prisma.priceBookDraftOption.findMany({
-    where: { draftId: String(req.params.draftId) },
-    orderBy: { option: "asc" },
-    select: { option: true, label: true, note: true },
-  });
-  res.json(meta);
+  res.json(await listOptionMeta(prisma, String(req.params.draftId)));
 }));
 
 /** The draft's option mode — additive (default) or one-or-the-other. */
 app.get("/price-book/drafts/:draftId/options-mode", asyncHandler(async (req, res) => {
-  const draft = await prisma.priceBookDraftEstimate.findUnique({
-    where: { id: String(req.params.draftId) },
-    select: { exclusiveOptions: true },
-  });
-  if (!draft) { res.status(404).json({ error: "Draft not found." }); return; }
-  res.json(draft);
+  try {
+    res.json(await getOptionsMode(prisma, String(req.params.draftId)));
+  } catch (err) {
+    draftRuleError(res, err);
+  }
+}));
+
+// "+ Add Option D" — the next option after the ones the draft has (Kyle, 2026-10-08). Which letter,
+// the cap of eight and the signed-draft refusal are addOption in the service; the tech's
+// POST /quotes/:draftId/options calls the same function.
+app.post("/price-book/drafts/:draftId/options", asyncHandler(async (req, res) => {
+  try {
+    res.status(201).json(await addOption(prisma, String(req.params.draftId)));
+  } catch (err) {
+    draftRuleError(res, err);
+  }
+}));
+
+// "Remove Option D" — an ADDED option (D-H) and its lines, in one transaction. A/B/C are refused
+// in the service. The answer says how many lines went. `?expectedLines=N` is the count the
+// confirm showed: if the other app has put lines in the option since, nothing is deleted (409).
+app.delete("/price-book/drafts/:draftId/options/:option", asyncHandler(async (req, res) => {
+  const expectedLines = expectedLinesSchema.parse(req.query.expectedLines);
+  try {
+    res.json(await removeOption(prisma, String(req.params.draftId), String(req.params.option).toUpperCase(), expectedLines));
+  } catch (err) {
+    draftRuleError(res, err);
+  }
+}));
+
+// Save the order of the lines and which option each is in — the Review screen's drag-and-drop
+// (Kyle, 2026-10-08). The FULL list or nothing; every check is saveLineOrder in the service.
+app.put("/price-book/drafts/:draftId/line-order", asyncHandler(async (req, res) => {
+  // The body schema is the service's (lineOrderBodySchema) — the tech's route reads the same one.
+  const body = lineOrderBodySchema.parse(req.body ?? {});
+  try {
+    res.json({ ok: true, ...(await saveLineOrder(prisma, String(req.params.draftId), body.order)) });
+  } catch (err) {
+    draftRuleError(res, err);
+  }
 }));
 
 app.put("/price-book/drafts/:draftId/options/:option", asyncHandler(async (req, res) => {
   const option = String(req.params.option).toUpperCase();
-  if (!["A", "B", "C"].includes(option)) {
+  if (!isEstimateOption(option)) {
     res.status(400).json({ error: `Unknown option "${option}".` });
     return;
   }
-  const body = z.object({
-    // Empty string clears the name rather than storing "", so the document falls back to the bare
-    // letter instead of rendering a nameless heading.
-    label: z.string().trim().max(120).nullable().optional(),
-    note: z.string().trim().max(400).nullable().optional(),
-  }).parse(req.body ?? {});
-
-  const draftId = String(req.params.draftId);
-  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { id: true } });
-  if (!draft) {
-    res.status(404).json({ error: `Draft ${draftId} not found.` });
-    return;
+  const body = optionMetaBodySchema.parse(req.body ?? {});
+  try {
+    res.json(await setOptionMeta(prisma, String(req.params.draftId), option, body));
+  } catch (err) {
+    draftRuleError(res, err);
   }
-
-  const label = body.label?.trim() ? body.label.trim() : null;
-  const note = body.note?.trim() ? body.note.trim() : null;
-
-  const saved = await prisma.priceBookDraftOption.upsert({
-    where: { draftId_option: { draftId, option: option as "A" | "B" | "C" } },
-    create: { draftId, option: option as "A" | "B" | "C", label, note },
-    update: { label, note },
-    select: { option: true, label: true, note: true },
-  });
-  res.json(saved);
 }));
 
 // Add a line the HUMAN chose — lands CONFIRMED, unlike an AI proposal.
 app.post("/price-book/drafts/:draftId/lines", asyncHandler(async (req, res) => {
   const body = z.object({
     itemId: z.string().trim().min(1),
-    quantity: z.number().positive(),
-    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]),
+    // Non-zero, either sign — whether a negative is legal is the service's call
+    // (assertQuantityAllowed: change orders only), the same call the field's route leaves to it.
+    // There is no quantitySource here on purpose: the service derives it from the item (Kyle,
+    // 2026-10-08: "We just need a number not type"). A client that still sends one is ignored.
+    quantity: lineQuantitySchema,
     difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
     location: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
-    // Which of the three options this line belongs to. Absent means A — what every line was
-    // before there was anywhere else to put one.
-    option: z.enum(["A", "B", "C"]).optional(),
+    // Which option this line belongs to (A-H, shared/estimateOptions.ts). Absent means A — what
+    // every line was before there was anywhere else to put one.
+    option: z.enum(ALL_OPTIONS).optional(),
   }).parse(req.body ?? {});
   try {
     const line = await addLine(prisma, String(req.params.draftId), {
@@ -2614,14 +2512,13 @@ app.post("/price-book/drafts/:draftId/lines", asyncHandler(async (req, res) => {
 // refusal — a line on an issued estimate is not edited in place.
 app.patch("/price-book/lines/:lineId", asyncHandler(async (req, res) => {
   const body = z.object({
-    quantity: z.number().positive().optional(),
-    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).optional(),
+    quantity: lineQuantitySchema.optional(),
     difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
     location: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
     // Moving a line to another option. Without this a line put in the wrong one could only be
     // fixed by deleting and re-adding it.
-    option: z.enum(["A", "B", "C"]).optional(),
+    option: z.enum(ALL_OPTIONS).optional(),
   }).parse(req.body ?? {});
   try {
     const line = await editLine(prisma, String(req.params.lineId), body);
@@ -2641,29 +2538,27 @@ app.delete("/price-book/lines/:lineId", asyncHandler(async (req, res) => {
 }));
 
 // Raise a question by hand — where an unresolved walkthrough row lands. A line the system
-// cannot match must become a visible question, never dropped text.
+// cannot match must become a visible question, never dropped text. The rule (and the
+// signed-draft guard) is raiseQuestion in the service.
 app.post("/price-book/drafts/:draftId/questions", asyncHandler(async (req, res) => {
   const body = z.object({
     question: z.string().trim().min(1),
     rawText: z.string().nullable().optional(),
   }).parse(req.body ?? {});
-  const q = await prisma.priceBookDraftQuestion.create({
-    data: {
-      draftId: String(req.params.draftId),
-      question: body.question,
-      rawText: body.rawText ?? null,
-      raisedBy: "human:walkthrough-entry",
-    },
-  });
-  res.status(201).json(q);
+  try {
+    const q = await raiseQuestion(prisma, String(req.params.draftId), { ...body, raisedBy: "human:walkthrough-entry" });
+    res.status(201).json(q);
+  } catch (err) {
+    draftRuleError(res, err);
+  }
 }));
 
 // ─── WALKTHROUGH MATERIAL LIST — resolve typed rows against the catalog ──────
 //
-// The tech types the list they built on the walkthrough. Resolution happens here, not in the
-// browser, so the matching rule lives in one place. NOTHING is auto-added: this returns
-// candidates and the tech commits them. An ambiguous row comes back ambiguous — silently
-// picking the top hit is the assumption the atomic-first ruling exists to remove.
+// The tech types the list they built on the walkthrough. Resolution happens on the server, not
+// in the browser, so the matching rule lives in one place: resolveWalkthroughRows in
+// services/walkthroughMatch.ts, which the field's tech route (POST /health-record/quote-catalog/
+// resolve-walkthrough) shares. "Build the draft (AI)" is proposeWalkthroughForDraft, shared the same way.
 /**
  * THE PRIMARY INTAKE PATH (P023 / F10).
  *
@@ -2683,107 +2578,19 @@ app.post("/price-book/drafts/:draftId/questions", asyncHandler(async (req, res) 
  */
 app.post("/price-book/drafts/:draftId/propose", asyncHandler(async (req, res) => {
   const draftId = readParam(req, "draftId");
-  const body = z.object({ text: z.string().trim().min(1).max(8000) }).parse(req.body ?? {});
-
+  // The body schema, the model call, the degrade-to-basic answer and the signed-draft refusal are
+  // proposeWalkthroughForDraft's — the technician's route calls the same function (Phase 2 unit D).
+  const body = walkthroughTextBodySchema.parse(req.body ?? {});
   try {
-    const outcome = await proposeFromWalkthrough(prisma, draftId, body.text);
-    res.json({
-      path: outcome.path,
-      proposed: outcome.result.proposed,
-      questions: outcome.result.questions,
-      rejected: outcome.result.rejected,
-      usage: outcome.usage,
-    });
-    return;
+    res.json(await proposeWalkthroughForDraft(prisma, draftId, body.text));
   } catch (err) {
-    if (!(err instanceof ProposerUnavailable)) throw err;
-    // eslint-disable-next-line no-console
-    console.warn(`[aiProposer] degraded to the token matcher: ${err.message}`);
-    res.status(200).json({
-      path: "basic" as const,
-      degradedReason: err.message,
-      proposed: [],
-      questions: [],
-      rejected: [],
-      usage: null,
-    });
+    draftRuleError(res, err);
   }
 }));
 
 app.post("/price-book/resolve-walkthrough", asyncHandler(async (req, res) => {
-  const body = z.object({
-    rows: z.array(z.object({
-      raw: z.string().trim().min(1),
-      quantity: z.number().positive().optional(),
-    })).max(100),
-  }).parse(req.body ?? {});
-
-  const SELECT = { itemId: true, description: true, unit: true, laborUnitBasis: true, costBasisUsed: true };
-
-  const out = [];
-  for (const row of body.rows) {
-    /*
-      NAME ONLY, NO QUANTITY MATCHING (P031). Kyle, 2026-08-18:
-
-        "I want it to match on the name only. No quantity matching at all. The quantity will be
-         handled during the review step."
-
-      He typed "NM-B 12/3 cable 100 feet" — an item plainly in his book — and got UNMATCHED,
-      because `100` and `feet` were matched as if they named the product. The quantity is now
-      stripped before matching and never consulted again; it is returned for display only.
-    */
-    const { term, quantity } = stripQuantity(row.raw);
-    const tokens = nameTokens(term);
-
-    /*
-      FETCH WIDE, RANK NARROW.
-
-      The old query AND-ed every token in SQL, so one word the catalog does not use — "romex",
-      where Kyle's book says "NM-B" — returned nothing at all. Now any token may bring a row in,
-      and `rankCandidates` orders by how many of the tech's words actually hit. One unfamiliar
-      word can no longer erase a good match.
-
-      Still candidates, never a selection: the tech taps the row they meant.
-    */
-    const pool = tokens.length === 0 ? [] : await prisma.priceBookAtomic.findMany({
-      where: {
-        retiredAt: null,
-        OR: tokens.flatMap((tk) => {
-          const forms = [...new Set([tk, singularize(tk)])];
-          return forms.flatMap((f) => [
-            { itemId: { contains: f, mode: "insensitive" as const } },
-            { description: { contains: f, mode: "insensitive" as const } },
-          ]);
-        }),
-      },
-      take: 200,
-      select: SELECT,
-    });
-
-    const ranked = rankWithDiagnostics(pool, tokens);
-    const matches = ranked.candidates.slice(0, 8);
-
-    out.push({
-      raw: row.raw,
-      // Display only. Kyle sets the real quantity in Review.
-      parsedQuantity: row.quantity ?? quantity,
-      searchTerm: term,
-      status: matches.length === 0 ? "UNMATCHED" : matches.length === 1 ? "MATCHED" : "AMBIGUOUS",
-      matchedOn: "name",
-      // The tech's words that appear nowhere in the catalog. Reported so an UNMATCHED row can say
-      // WHICH word it did not know — "canless is not in your price book" beats silence.
-      unknownWords: ranked.unknownWords,
-      candidates: matches.map((m) => ({
-        itemId: m.itemId,
-        description: m.description,
-        unit: m.unit,
-        isContinuousLength: (m.unit ?? "").toLowerCase() === "ft",
-        hasLabourUnitBasis: m.laborUnitBasis !== null,
-        hasPriceAtActiveSupplier: m.costBasisUsed !== null,
-      })),
-    });
-  }
-  res.json({ rows: out });
+  const body = walkthroughRowsBodySchema.parse(req.body ?? {});
+  res.json({ rows: await resolveWalkthroughRows(prisma, body.rows) });
 }));
 
 app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
@@ -2799,7 +2606,16 @@ app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
       // A change-order draft (2026-09-20): the issue panel defaults its deposit off and offers
       // "add to current job" only when this is set.
       changeOrderForId: review.draft.changeOrderForId,
+      // The scope of work the customer reads under the title — editable here now (PUT .../details).
+      jobDescription: review.draft.jobDescription,
     },
+    // Issued or not, changed since, deletable or not — ONE server answer for every screen
+    // (shared/draftLifecycle.ts); the field's quote payload carries the same object.
+    lifecycle: await getDraftLifecycle(prisma, review.draft.id),
+    // The options this draft has — A, B, C plus any added — and the letter "Add option" would
+    // create next (null at the cap). The same object the field's quote payload carries; the screen
+    // never works out which options exist by itself.
+    optionSet: review.optionSet,
     proposedLines: review.proposedLines.map((l) => ({
       id: l.id, itemId: l.itemId, description: l.atomic?.description ?? null,
       quantity: l.quantity, quantitySource: l.quantitySource, difficulty: l.difficulty,
@@ -2812,6 +2628,10 @@ app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
     // about is a data-loss bug wearing a UI (Kyle, 2026-08-17).
     confirmedLines: review.confirmedLines.map((l) => ({
       id: l.id, itemId: l.itemId, description: l.atomic?.description ?? null,
+      // The option each line is in, FROM THE DRAFT — the drag board groups by this and sends it back
+      // as `was`. It used to read it from the compute result, so a drag made before that arrived
+      // filed every line under Option A (2026-10-08 review).
+      option: l.option,
       quantity: l.quantity, quantitySource: l.quantitySource, difficulty: l.difficulty,
       location: l.location, note: l.note, unit: l.atomic?.unit ?? null,
       confirmedBy: l.confirmedBy, confirmedAt: l.confirmedAt,
@@ -2831,19 +2651,15 @@ app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
 // Confirm one proposed line — edit-then-confirm supported. This is the act that makes a
 // model suggestion real.
 app.post("/price-book/lines/:lineId/confirm", asyncHandler(async (req, res) => {
-  const body = z.object({
-    quantity: z.number().positive().optional(),
-    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).optional(),
-    difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
-    location: z.string().nullable().optional(),
-    note: z.string().nullable().optional(),
-  }).parse(req.body ?? {});
+  // The body schema and every refusal are the service's — the technician's route reads the same
+  // schema and answers a DraftError with the same status (Phase 2 unit D).
+  const body = confirmLineBodySchema.parse(req.body ?? {});
 
   try {
     const line = await confirmProposedLine(prisma, String(req.params.lineId), "human:crm-session", body);
     res.json({ ok: true, line });
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    draftRuleError(res, err);
   }
 }));
 
@@ -2852,17 +2668,17 @@ app.post("/price-book/lines/:lineId/reject", asyncHandler(async (req, res) => {
     await rejectProposedLine(prisma, String(req.params.lineId));
     res.status(204).send();
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    draftRuleError(res, err);
   }
 }));
 
 app.post("/price-book/questions/:questionId/resolve", asyncHandler(async (req, res) => {
-  const body = z.object({ resolutionNote: z.string().trim().min(1) }).parse(req.body ?? {});
+  const body = resolveQuestionBodySchema.parse(req.body ?? {});
   try {
     const q = await resolveQuestion(prisma, String(req.params.questionId), "human:crm-session", body.resolutionNote);
     res.json({ ok: true, question: q });
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    draftRuleError(res, err);
   }
 }));
 
@@ -2871,8 +2687,9 @@ app.get("/price-book/drafts/:draftId/compute", asyncHandler(async (req, res) => 
   const { computed, rate } = await computeDraft(prisma, String(req.params.draftId));
   const draftRow = await prisma.priceBookDraftEstimate.findUnique({
     where: { id: String(req.params.draftId) },
-    select: { discountType: true, discountPercent: true },
+    select: { discountType: true, discountPercent: true, exclusiveOptions: true },
   });
+  const lifecycle = await getDraftLifecycle(prisma, String(req.params.draftId));
   res.json({
     computed,
     // The discount programme + its terms, so the presentation screen can show the amount for the
@@ -2883,8 +2700,20 @@ app.get("/price-book/drafts/:draftId/compute", asyncHandler(async (req, res) => 
     // re-priced. The trip charge is deliberately absent from these — it is charged once for the
     // job, not once per option; see summarizeOptions.
     options: summarizeOptions(computed),
+    // The customer's price for every combination the customer could tick, the discount's finished
+    // dollars and the one-or-the-other range — ONE pricer (shared/quoteMoney.ts, built by
+    // services/quoteMoney.ts), the SAME object the field's quote payload carries. The Presentation
+    // page and Estimate Intake's discount block render this; neither adds anything up itself
+    // (2026-10-08, one-estimating-system plan, Phase 3 unit A).
+    // When the draft is issued and unchanged since, the Present screen USES that estimate as it
+    // stands, so the money is priced from its frozen figures (getQuoteMoney) - the number on the
+    // screen is the number the signature records (review finding, 2026-10-08).
+    money: await getQuoteMoney(prisma, String(req.params.draftId), computed, lifecycle),
     rateProvisional: rate.provisional,
     provisionalReason: rate.provisionalReason,
+    // The presentation screen reads this to use the estimate that already exists when nothing has
+    // changed, instead of issuing a fresh revision on every press (2026-10-08 audit §5).
+    lifecycle,
   });
 }));
 
@@ -2917,56 +2746,30 @@ app.post("/price-book/drafts/:draftId/issue", asyncHandler(async (req, res) => {
     scopeText: z.string().trim().nullable().optional(),
     includedText: z.string().trim().nullable().optional(),
     waiveTrip: z.boolean().optional(),
-    // P031: operator's explicit choice to attach the generator one-pager.
-    includeGenerator: z.boolean().optional(),
-    // The deposit checkbox (Kyle, 2026-09-20) — absent means the default: on for an estimate,
-    // off for a change order. And "add to current job", change orders only.
-    depositRequired: z.boolean().optional(),
-    addToCurrentJob: z.boolean().optional(),
-  }).parse(req.body ?? {});
+  })
+    // The three issue checkboxes - generator one-pager (P031), the deposit (Kyle, 2026-09-20) and
+    // "add to current job" (change orders only) - are ONE definition shared with the tech's issue
+    // route (issueExtrasBodySchema, services/issuedEstimateService.ts), so the two doors keep the
+    // same defaults and refusals.
+    .merge(issueExtrasBodySchema)
+    .parse(req.body ?? {});
 
-  const draftId = String(req.params.draftId);
-
-  /*
-    ── ISSUING A DRAFT THAT IS ALREADY ISSUED IS A REVISION, NOT A SECOND ESTIMATE ───────────────
-
-    Kyle, 2026-08-20: the estimator "is filled with redundancies and duplicate paths", and he
-    asked for an Edit button that reopens an unfinished estimate in the builder.
-
-    Those two things collide here. Without this branch, editing a draft and pressing Issue again
-    minted a BRAND NEW estimate number for the same job — so the account grew a second row, the
-    first one stayed live with its own working customer link, and nothing recorded that they were
-    the same quote. The Edit button would have put that one tap away.
-
-    A draft has one live estimate at a time. Re-issuing it supersedes what was there: same house
-    number, revision up, the old link dead so a customer cannot sign a version Kyle has replaced.
-
-    The guard lives HERE and not in graduateDraft because reviseEstimate calls graduateDraft — a
-    check inside it would recurse forever.
-  */
-  const live = await prisma.issuedEstimate.findFirst({
-    where: { draftId, supersededBy: null, status: { not: "void" } },
-    orderBy: { revision: "desc" },
-    select: { id: true, number: true, revision: true },
+  // Issue-or-revise is ONE decision for both doors — issueDraft (services/issuedEstimateService.ts)
+  // carries the 2026-08-20 "a re-issue is a revision, not a second estimate" rule and the
+  // 2026-10-08 signed/lost refusals; the tech's POST /quotes/:draftId/issue calls the same function.
+  const result = await issueDraft(prisma, {
+    draftId: String(req.params.draftId),
+    accountId: body.accountId,
+    serviceAddressId: body.serviceAddressId,
+    title: body.title,
+    scopeText: body.scopeText,
+    includedText: body.includedText,
+    waiveTrip: body.waiveTrip,
+    includeGenerator: body.includeGenerator,
+    depositRequired: body.depositRequired,
+    addToCurrentJob: body.addToCurrentJob,
+    actor: "human:crm-session",
   });
-
-  const result = live
-    ? await reviseEstimate(prisma, live.id, { actor: "human:crm-session", waiveTrip: body.waiveTrip })
-    : await graduateDraft(prisma, {
-        draftId,
-        accountId: body.accountId,
-        serviceAddressId: body.serviceAddressId,
-        title: body.title ?? null,
-        scopeText: body.scopeText ?? null,
-        includedText: body.includedText ?? null,
-        waiveTrip: body.waiveTrip ?? false,
-        // P031: operator chose to attach the generator one-pager (the human
-        // approval; the field tech's include flag proposed it).
-        includeGenerator: body.includeGenerator ?? false,
-        depositRequired: body.depositRequired,
-        addToCurrentJob: body.addToCurrentJob,
-        createdBy: "human:crm-session",
-      });
 
   // 409 with the engine's verbatim reasons, exactly like finalize — the wording is what tells
   // the operator what to fix, and this screen never re-words a refusal.
@@ -3123,7 +2926,11 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
   // will see. The raw `token` itself never leaves the server (PUNCHLIST B5): it is the
   // customer's unrevokable read-and-sign capability, and customerLink is the only thing built
   // from it that a caller needs.
-  const { changeOrderFor, token, account, ...row } = est;
+  // `financingPlansJson` (2026-10-08, Phase 5) holds Synchrony's discount rates - Red Cedar's cost.
+  // The office screen that presents this estimate to a customer fetches this row, so the column is
+  // dropped here: a rate must not be one dev-tools tab away from the homeowner.
+  const { changeOrderFor, token, account, financingPlansJson, ...row } = est;
+  void financingPlansJson;
   res.json({
     estimate: { ...row, changeOrderForNumber: changeOrderFor?.number ?? null },
     customerLink: estimateLink(token),
@@ -3132,36 +2939,16 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
 }));
 
 app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
-  const body = z.object({
-    to: z.string().trim().email().nullable().optional(),
-    message: z.string().trim().max(2000).nullable().optional(),
-    // Photos chosen to ride the email (2026-08-28; widened 2026-10-01). The service refuses any
-    // photo that is not THIS CUSTOMER'S: a job photo whose visit belongs to the estimate's
-    // customer (any property on the account), or a photo on this estimate's own draft. Kyle,
-    // 2026-10-01: "Having the photos linked to the job is necessary but that should not eleminate
-    // them from being selected … sending the photos as evidence is our standard." The scoping
-    // lives in ONE place, `photoAttachments` in services/issuedEstimateSend.ts — a security
-    // review passed it on 2026-10-01 and `tests/anyPhotoOnAccountEmail.test.ts` pins the refusal.
-    photoIds: z.array(z.string().min(1)).max(10).optional(),
-    // Support documentation (2026-08-29), rendered fresh at send time.
-    attachHealthReport: z.boolean().optional(),
-    attachGeneratorReport: z.boolean().optional(),
-    // The financing line in the email body (Kyle, 2026-10-02: "financing link ... checked or
-    // unchecked to designate what gets sent"). Absent means SENT: it is an opt-out, so neither
-    // the field app nor any older caller silently loses a line Kyle has wanted on every estimate
-    // since 2026-09-16. See sendEstimateEmail's `includeFinancingLink` for the full reasoning.
-    includeFinancingLink: z.boolean().optional(),
-  }).parse(req.body ?? {});
-
-  const result = await sendEstimateEmail(prisma, String(req.params.id), {
-    sentBy: "human:crm-session",
-    toOverride: body.to ?? null,
-    message: body.message ?? null,
-    photoIds: body.photoIds,
-    attachHealthReport: body.attachHealthReport,
-    attachGeneratorReport: body.attachGeneratorReport,
-    includeFinancingLink: body.includeFinancingLink,
-  });
+  // The body, its defaults and every refusal live in ONE place - estimateEmailBodySchema and
+  // sendEstimateEmailFromBody in services/issuedEstimateSend.ts - which the technician's
+  // POST /health-record/issued-estimates/:id/email calls too (Phase 4, 2026-10-08, one estimating
+  // system). The fields it takes, with their reasons, are documented there:
+  //   - photoIds: Kyle, 2026-10-01: "Having the photos linked to the job is necessary but that
+  //     should not eleminate them from being selected ... sending the photos as evidence is our
+  //     standard." The scoping is `photoAttachments`; `tests/anyPhotoOnAccountEmail.test.ts`.
+  //   - attachHealthReport / attachGeneratorReport: support documentation (2026-08-29).
+  //   - includeFinancingLink: Kyle, 2026-10-02, an opt-out - absent means SENT.
+  const result = await sendEstimateEmailFromBody(prisma, String(req.params.id), req.body, "human:crm-session");
 
   if (!result.ok) {
     res.status(400).json({ sent: false, error: result.reason });
@@ -3429,10 +3216,13 @@ app.post("/issued-estimates/:id/void", asyncHandler(async (req, res) => {
   const round2 = (n: number) => Math.round(n * 100) / 100;
   const [payments, openPurchaseOrders] = await Promise.all([
     prisma.payment.findMany({
-      where: { estimateId: est.id, status: "paid" },
-      select: { id: true, amount: true, method: true, kind: true, paidAt: true },
+      // A voided payment (2026-10-09) was never money — nothing to refund by hand. A card
+      // payment already refunded in Stripe (status "refunded", ruling 7) is not listed either;
+      // a partly refunded one lists what is still held.
+      where: { estimateId: est.id, status: "paid", voidedAt: null },
+      select: { id: true, amount: true, method: true, kind: true, paidAt: true, refundedAmount: true },
       orderBy: { paidAt: "asc" },
-    }),
+    }).then((rows) => rows.map((p) => ({ id: p.id, amount: collectedOf(p), method: p.method, kind: p.kind, paidAt: p.paidAt })).filter((p) => p.amount > 0.009)),
     jobId
       ? prisma.purchaseOrder.findMany({
           where: { jobId, status: { in: ["open", "purchased", "verified"] } },
@@ -3590,7 +3380,9 @@ app.post("/issued-estimates/:id/accept", asyncHandler(async (req, res) => {
     acceptedVia: z.enum(ACCEPTED_VIA),
     acceptedBy: z.string().trim().min(1).max(200),
     note: z.string().trim().max(2000).nullable().optional(),
-    selectedOptions: z.array(z.string().trim().max(4)).max(3).nullable().optional(),
+    // Capped at the option limit (8), not three: a customer who takes four options is a normal
+    // acceptance, not a refusal (2026-10-08 audit; shared/estimateOptions.ts).
+    selectedOptions: z.array(z.string().trim().max(4)).max(MAX_OPTIONS).nullable().optional(),
   }).parse(req.body ?? {});
 
   const result = await acceptEstimateFromOffice(prisma, readParam(req, "id"), {
@@ -3765,13 +3557,18 @@ app.get("/issued-estimates/:id/customer-view", asyncHandler(async (req, res) => 
  */
 async function invoiceAppendixFor(estimateId: string) {
   const summary = await paymentSummary(prisma, estimateId, publicBaseUrl());
-  if (!summary || summary.documents.length < 2) return null;
+  // Widened for a financing fee (plan Detail B item J; review finding, 2026-10-09): the balance
+  // carries the fee, so the PDF must print the fee as its own line even on a one-document invoice,
+  // or "Invoice total − Paid to date" would not equal "Balance due". Same rule as
+  // issuedEstimateSend.ts and routes/estimatePage.ts.
+  if (!summary || (summary.documents.length < 2 && !summary.financingFee)) return null;
   return {
     number: summary.number,
     documents: summary.documents.map((d) => ({ number: d.number, title: d.title, kind: d.kind, billedTotal: d.billedTotal, signedAt: d.signedAt })),
     billedTotal: summary.billedTotal,
     totalPaid: summary.totalPaid,
     balance: summary.balance,
+    financingFee: summary.financingFee ? { planNumber: summary.financingFee.planNumber, fee: summary.financingFee.fee } : null,
   };
 }
 
@@ -3791,69 +3588,16 @@ async function invoiceAppendixFor(estimateId: string) {
  * thing to do with an unsigned estimate is edit it.
  */
 app.post("/issued-estimates/:id/change-order", asyncHandler(async (req, res) => {
-  const est = await prisma.issuedEstimate.findUnique({ where: { id: readParam(req, "id") } });
-  if (!est) {
-    res.status(404).json({ error: "Estimate not found" });
+  // The rules (signed only; never void or lost; always the ROOT invoice) are createChangeOrderDraft
+  // in services/issuedEstimateService.ts — the field's "Raise a change order" (Phase 2) calls it too.
+  const result = await createChangeOrderDraft(prisma, readParam(req, "id"));
+  if (!result.ok) {
+    res.status(result.status).json({ error: result.error });
     return;
   }
-  if (!est.signedAt) {
-    res.status(409).json({
-      error: "That estimate has not been signed. Change orders are for work already agreed — edit the estimate instead.",
-    });
-    return;
-  }
-  /*
-    A VOID OR LOST INVOICE TAKES NO NEW WORK (2026-09-29).
-
-    `signedAt` survives a void — the signature happened, and the audit trail keeps it — so the
-    signed-only guard above let a change order be raised against an invoice that is off the
-    books. Its money would roll into a root that `loadInvoiceGroup` deliberately refuses to
-    group (services/invoiceGroup.ts: a void parent means the change order "stands alone as its
-    own invoice, honestly"), so the work would be agreed against nothing.
-
-    Added when this action moved onto the job, estimate and invoice drawers, which is the first
-    time a surface showing a VOID record could reach it. The client greys the button with this
-    same reason; this is the server saying no regardless of which surface asked.
-  */
-  if (est.status === "void" || est.voidedAt) {
-    res.status(409).json({
-      error: "That invoice is void — a voided record takes no new work. Issue a new estimate instead.",
-    });
-    return;
-  }
-  if (est.status === "lost") {
-    res.status(409).json({
-      error: "That estimate is marked lost — reopen it before raising a change order against it.",
-    });
-    return;
-  }
-
-  // Always the ROOT invoice (2026-09-20): a change order raised against a change order joins
-  // the same invoice as its parent, so the money group stays one level deep.
-  const rootId = est.changeOrderForId ?? est.id;
-  const root = rootId === est.id ? est : (await prisma.issuedEstimate.findUnique({ where: { id: rootId } })) ?? est;
-  const draft = await prisma.priceBookDraftEstimate.create({
-    data: {
-      title: `Change order — ${root.number}`,
-      changeOrderForId: root.id,
-      // The draft's spine mirrors the estimate's: same account, same job. The address lives on
-      // the issued estimate rather than the draft, and graduation re-derives it there.
-      customerId: root.customerId,
-      visitId: root.jobVisitId ?? root.visitId ?? est.jobVisitId ?? est.visitId,
-      // Same default the ordinary create-draft route uses: the configured active supplier,
-      // falling back to HD. A change order prices against today's supplier, not the one that was
-      // active when the original was signed — the material is bought now.
-      supplierId:
-        (await prisma.priceBookRateConfig.findUnique({ where: { key: "activeSupplier" } }))?.textValue ?? "HD",
-    },
-  });
-
-  logSystemEvent("info", "issued-estimate", `Change order raised against ${est.number}`, {
-    estimateId: est.id,
-    draftId: draft.id,
-  });
-
-  res.status(201).json({ draftId: draft.id, changeOrderFor: root.number });
+  // ONE RULE, both doors (Phase 3 unit C, 2026-10-08): an open change order for the invoice is
+  // REOPENED (200, resumed: true) rather than a second one started (201) - the field always did.
+  res.status(result.resumed ? 200 : 201).json({ draftId: result.draftId, changeOrderFor: result.changeOrderFor, resumed: result.resumed });
 }));
 
 app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
@@ -3925,26 +3669,14 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
 }));
 
 app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) => {
-  const body = z.object({
-    signerName: z.string().trim().min(1).max(200),
-    // The drawn mark. Validated in applySignature, which is the single write path for both doors.
-    signatureImage: z.string().max(400_000).optional(),
-    // Which options the customer took. Optional, and the service tells absent from empty: absent
-    // means the client never offered a choice, empty means everything was declined and is refused.
-    selectedOptions: z.array(z.string().trim().max(4)).max(3).optional(),
-  }).parse(req.body ?? {});
-
-  const fwd = req.headers["x-forwarded-for"];
-  const ip = (Array.isArray(fwd) ? fwd[0] : fwd?.split(",")[0]) ?? req.socket.remoteAddress ?? "unknown";
-
-  const result = await signEstimateInPerson(prisma, String(req.params.id), {
-    signerName: body.signerName,
-    signatureImage: body.signatureImage ?? null,
-    // The customer ticks the options on Kyle's device in front of him, so this door carries the
-    // same choice the emailed link does. Null when the client did not send one — see SignInput.
-    selectedOptions: Array.isArray(body.selectedOptions) ? body.selectedOptions.map(String) : null,
-    ip: ip.trim(),
-    userAgent: String(req.headers["user-agent"] ?? "").slice(0, 500),
+  // ONE function for both devices that go in a customer's hand (Phase 3 unit C, 2026-10-08): the
+  // signature, then Kyle's notification, the job, and putting away the options not chosen. The
+  // technician's phone calls the same `signInPerson` from POST /health-record/issued-estimates/:id/
+  // sign-in-person, with the same body schema. The reasoning for each step lives in the service.
+  const body = inPersonSignBodySchema.parse(req.body ?? {});
+  const result = await signInPerson(prisma, String(req.params.id), body, {
+    ...signerContextOf(req),
+    actor: "system:sign-in-person",
   });
 
   if (!result.ok) {
@@ -3952,55 +3684,13 @@ app.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req, res) =
     return;
   }
 
-  // Internal, and it must never be able to fail the customer's signature — which is already
-  // durably recorded by this point.
-  notifyOwnerSigned(prisma, result.estimateId).catch((err) =>
-    console.error("[IssuedEstimate] owner notification failed:", err)
-  );
-
-  // The signed quote becomes a job right here (Kyle, 2026-08-24: "It gets signed and there is
-  // no scheduling proceedings. It should immediately go to the calendar view to schedule.").
-  // In-person door ONLY — an emailed signature lands while Kyle is elsewhere, and he kept that
-  // door manual (his ruling, same date). Idempotent, and never able to fail the signature:
-  // if job creation breaks, the client just falls back to the old Done button.
-  let jobVisitId: string | null = null;
-  // A change order that joined the CURRENT job (Kyle, 2026-09-20) — the signed screen then has
-  // nothing new to schedule and says so instead of offering the calendar.
-  let jobJoined = false;
-  try {
-    const job = await createJobFromSignedEstimate(prisma, result.estimateId, {
-      actor: "system:sign-in-person",
-    });
-    if (job.ok) { jobVisitId = job.visitId; jobJoined = Boolean(job.joined); }
-    else console.error("[IssuedEstimate] job creation after in-person sign refused:", job.reason);
-  } catch (err) {
-    console.error("[IssuedEstimate] job creation after in-person sign failed:", err);
-  }
-
-  // The options not chosen are put away (Kyle, 2026-10-01) — the other presented, unsigned
-  // estimates at this address. services/estimateArchive.ts owns the rule; every signature door
-  // runs it; it can never fail the signature. Returned so the signed screen can say what moved.
-  const { archived } = await archiveCompetingEstimates(prisma, result.estimateId, "system:sign-in-person");
-
-  /*
-    NO AUTO-SEND (Kyle, 2026-10-01): "I do not want auto send, manual review and send." · "No
-    auto send across the board."
-
-    This door used to fire the invoice email (sendInvoiceEmail, sentBy "system:auto-on-sign") the
-    moment the signature landed, and a ten-minute delayed deposit-request email
-    (sendDepositRequestEmail) if the QR payment hadn't landed by then. Both are gone. The customer
-    gets the invoice when Kyle presses "Email the signed copy…" on the invoice drawer, and the
-    deposit ask when he presses "Email deposit request" on the payment panel
-    (POST /issued-estimates/:id/email-deposit-request) — both now easy to find (2026-09-29, Unit
-    2). The signed page itself still carries the pay button, so a customer who scans the QR is
-    unaffected either way.
-
-    notifyOwnerSigned (above) is what makes a manual send possible rather than forgotten — with
-    nothing going to the customer automatically, it is the only thing that tells Kyle a signature
-    landed and a send is waiting.
-  */
-
-  res.json({ signed: true, estimateId: result.estimateId, jobVisitId, jobJoined, archived });
+  res.json({
+    signed: true,
+    estimateId: result.estimateId,
+    jobVisitId: result.jobVisitId,
+    jobJoined: result.jobJoined,
+    archived: result.archived,
+  });
 }));
 
 // ─── THE ACCOUNT SPINE (P029) ────────────────────────────────────────────────
@@ -4053,11 +3743,11 @@ async function serializeAccountEstimateRows(estimates: AccountEstimateRow[]) {
   const warrantyPaidById = new Map<string, number>();
   if (coveredIds.length > 0) {
     const rows = await prisma.payment.findMany({
-      where: { estimateId: { in: coveredIds }, status: "paid", payer: "warranty" },
-      select: { estimateId: true, amount: true },
+      where: { estimateId: { in: coveredIds }, status: "paid", payer: "warranty", voidedAt: null },
+      select: { estimateId: true, amount: true, refundedAmount: true },
     });
     for (const r of rows) {
-      if (r.estimateId) warrantyPaidById.set(r.estimateId, Math.round(((warrantyPaidById.get(r.estimateId) ?? 0) + r.amount) * 100) / 100);
+      if (r.estimateId) warrantyPaidById.set(r.estimateId, Math.round(((warrantyPaidById.get(r.estimateId) ?? 0) + collectedOf(r)) * 100) / 100);
     }
   }
   // A change order names the invoice it joins (2026-09-20). Usually on the same account list;
@@ -4084,8 +3774,11 @@ async function serializeAccountEstimateRows(estimates: AccountEstimateRow[]) {
     };
     const coverage = warrantyCoverageOf(money);
     // The capability link stays on the server (see the function comment).
-    const { token, ...safe } = e;
+    // Neither the capability link nor the frozen Synchrony plans (their discount rates are Red
+    // Cedar's cost - Phase 5, 2026-10-08) belong in a payload the office may show a customer.
+    const { token, financingPlansJson, ...safe } = e;
     void token;
+    void financingPlansJson;
     return {
       ...safe,
       billedTotal: billedTotalOf(money),
@@ -4425,14 +4118,14 @@ app.get("/warranty-receivables", asyncHandler(async (_req, res) => {
     orderBy: { signedAt: "desc" },
   });
   const paid = estimates.length === 0 ? [] : await prisma.payment.findMany({
-    where: { estimateId: { in: estimates.map((e) => e.id) }, status: "paid", payer: "warranty" },
-    select: { estimateId: true, amount: true, paidAt: true },
+    where: { estimateId: { in: estimates.map((e) => e.id) }, status: "paid", payer: "warranty", voidedAt: null },
+    select: { estimateId: true, amount: true, paidAt: true, refundedAmount: true },
   });
   const paidById = new Map<string, { amount: number; lastAt: Date | null }>();
   for (const p of paid) {
     if (!p.estimateId) continue;
     const cur = paidById.get(p.estimateId) ?? { amount: 0, lastAt: null };
-    cur.amount = Math.round((cur.amount + p.amount) * 100) / 100;
+    cur.amount = Math.round((cur.amount + collectedOf(p)) * 100) / 100;
     if (p.paidAt && (!cur.lastAt || p.paidAt > cur.lastAt)) cur.lastAt = p.paidAt;
     paidById.set(p.estimateId, cur);
   }
@@ -4533,6 +4226,14 @@ app.post("/issued-estimates/:id/email-deposit-request", asyncHandler(async (req,
   }
   if (!summary || summary.depositSatisfied || summary.paidInFull) {
     res.status(400).json({ error: "The deposit on this job is already in." });
+    return;
+  }
+  // FINANCING IN PROGRESS (review finding, 2026-10-09): a fee is on and the deposit is not in
+  // (voided after the fee went on). The deposit pay link is closed — chargeableAmount refuses —
+  // so the email would send the customer to a dead end. The panel greys the button with this
+  // reason; this is the server's half, so a stale bundle cannot send it either.
+  if (financingInProgress(summary)) {
+    res.status(409).json({ error: `${FINANCING_IN_PROGRESS} — the deposit pay link is closed. Remove the financing fee (with a reason) to collect the deposit again, then add the fee back.` });
     return;
   }
   await sendDepositRequestEmail(prisma, estimateId, publicBaseUrl());
@@ -4652,28 +4353,11 @@ app.post("/price-book/drafts/:draftId/attach", asyncHandler(async (req, res) => 
     accountId: z.string().trim().min(1),
     serviceAddressId: z.string().trim().min(1),
   }).parse(req.body ?? {});
-
-  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: String(req.params.draftId) } });
-  if (!draft) {
-    res.status(404).json({ error: "Draft not found." });
-    return;
+  try {
+    res.json(await attachDraftToAccount(prisma, String(req.params.draftId), body));
+  } catch (err) {
+    draftRuleError(res, err);
   }
-  if (draft.status !== "draft") {
-    res.status(409).json({ error: `This draft is ${draft.status} and is no longer editable.` });
-    return;
-  }
-
-  const property = await prisma.property.findUnique({ where: { id: body.serviceAddressId } });
-  if (!property || property.customerId !== body.accountId) {
-    res.status(400).json({ error: "That address does not belong to that account." });
-    return;
-  }
-
-  const updated = await prisma.priceBookDraftEstimate.update({
-    where: { id: draft.id },
-    data: { customerId: body.accountId },
-  });
-  res.json({ ok: true, draft: updated, serviceAddressId: body.serviceAddressId });
 }));
 
 // ─── The test account: a marked instrument with a delete button (P029) ────────
@@ -4716,7 +4400,7 @@ app.use("/health-record-admin", healthRecordAdminRouter);
 app.use("/health-record-admin/capacity-checks", capacityCheckAdminRouter);
 
 // ─── COMPANY SETTINGS (key-value config store — PIN/JWT protected) ────────────
-const SETTING_KEYS = ["companyProfile", "operatingHours", "territories", "legal", "purchasing"] as const;
+const SETTING_KEYS = ["companyProfile", "operatingHours", "territories", "legal", "purchasing", FINANCING_PLANS_KEY, PAYROLL_SETTINGS_KEY] as const;
 
 app.get("/crm/settings", asyncHandler(async (_req, res) => {
   const rows = await prisma.companySetting.findMany();
@@ -4731,13 +4415,45 @@ app.get("/crm/settings", asyncHandler(async (_req, res) => {
   res.json(settings);
 }));
 
+// The Synchrony plan list for the Settings card (2026-10-08, Phase 5). SEEDED, not written, until
+// Kyle saves it: an absent row reads as his four plans, so the card has something to edit on first
+// open. Always the VALIDATED list (the stored plans, or the defaults when the row is garbled). This
+// is the office's Settings screen - the one place Synchrony's discount rates are shown (labelled
+// "never shown to customers"); no customer or field payload is built from this route.
+app.get("/crm/financing-plans", asyncHandler(async (_req, res) => {
+  res.json({ plans: await getFinancingPlans() });
+}));
+
 app.put("/crm/settings/:key", asyncHandler(async (req, res) => {
   const key = readParam(req, "key");
   if (!SETTING_KEYS.includes(key as (typeof SETTING_KEYS)[number])) {
     res.status(400).json({ error: `Unknown settings key. Valid keys: ${SETTING_KEYS.join(", ")}` });
     return;
   }
-  const valueJson = JSON.stringify(req.body ?? {});
+  // The Synchrony plan list is the one key with server-side validation (2026-10-08, Phase 5): a
+  // rate typed as a fraction (0.061) or a plan turned on with no Synchrony disclosure text would put
+  // a wrong number or an unexplained credit term in front of a customer. Stored normalised, in order.
+  let toStore: unknown = req.body ?? {};
+  if (key === FINANCING_PLANS_KEY) {
+    const checked = validateFinancingPlans(req.body);
+    if (!checked.ok) {
+      res.status(400).json({ error: checked.errors.join(" ") });
+      return;
+    }
+    toStore = checked.plans;
+  }
+  // The employer cost on top of wages (Kyle, 2026-10-08, decision 10; Phase 6 Unit 6D) is a PERCENT
+  // (9.5 = 9.5%). A fraction (0.095) would burden labor by a tenth of a percent and overstate every
+  // job's profit the commission is paid on, so it is refused here; null clears it to "not set".
+  if (key === PAYROLL_SETTINGS_KEY) {
+    const checked = validatePayrollSettings(req.body);
+    if (!checked.ok) {
+      res.status(400).json({ error: checked.errors.join(" ") });
+      return;
+    }
+    toStore = checked.value;
+  }
+  const valueJson = JSON.stringify(toStore);
   const row = await prisma.companySetting.upsert({
     where: { key },
     update: { valueJson },
@@ -5231,16 +4947,21 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     const g = groupOf(e);
     return [g.root.id, ...g.changeOrders.map((c) => c.id)];
   }))];
+  // The live financing fee per root invoice (services/financingFee.ts) — revenue on the job card
+  // below, never part of the deposit gate (a third of the documents, never of the fee).
+  const jobFeesByRoot = await activeFinancingFeesByRoot(prisma, [...signedQualifies.values()].map((e) => groupOf(e).root.id));
   const paidRows = signedEstIds.length === 0 ? [] : await prisma.payment.findMany({
     // The homeowner's money only (Kyle, 2026-09-10): a warranty company's check
     // is against the covered amount and never opens the homeowner's deposit gate.
-    where: { estimateId: { in: signedEstIds }, status: "paid", payer: { not: "warranty" } },
-    select: { estimateId: true, amount: true },
+    // A voided row (2026-10-09, services/paymentVoid.ts) opens nothing either.
+    where: { estimateId: { in: signedEstIds }, status: "paid", payer: { not: "warranty" }, voidedAt: null },
+    select: { estimateId: true, amount: true, refundedAmount: true },
   });
   const paidByEstimate = new Map<string, number>();
   for (const row of paidRows) {
     if (!row.estimateId) continue; // nullable in the schema; the `in` filter already excludes null
-    paidByEstimate.set(row.estimateId, (paidByEstimate.get(row.estimateId) ?? 0) + row.amount);
+    // amount − refunded (2026-10-09, ruling 7): a deposit refunded in Stripe closes the gate again.
+    paidByEstimate.set(row.estimateId, (paidByEstimate.get(row.estimateId) ?? 0) + collectedOf(row));
   }
   const depositSatisfiedFor = (est: typeof issued[number]): boolean => {
     // The whole invoice (2026-09-20): ⅓ of the shares that require a deposit — zero when none
@@ -5318,6 +5039,18 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     jobVisits
       .filter((v) => !jobsChildToJob.has(v.id))
       .map((v) => ({ visitId: v.id, chainVisitIds: jobsChain.get(v.id) ?? [] })),
+  );
+  /*
+    SYNCHRONY'S CUT AND CARD PROCESSING FEES (Kyle, 2026-10-09, ruling 6) — one grouped query
+    through services/jobProcessingCosts.ts, the same helper the account summary, job
+    profitability and the commission basis call, attributed through the job's signed root
+    invoice (its change orders included) or its visit. Inside totalCost below; each its own
+    field on the card. A fee Stripe cannot give yet rides along as pending with the reason.
+  */
+  const processingByJob = await processingCostsForJobs(
+    jobVisits
+      .filter((v) => !jobsChildToJob.has(v.id))
+      .map((v) => ({ visitId: v.id, rootEstimateId: signedQualifies.has(v.id) ? groupOf(signedQualifies.get(v.id)!).root.id : null })),
   );
 
   const jobs = jobVisits.map((visit: typeof visits[number]) => {
@@ -5414,14 +5147,18 @@ app.get("/jobs", asyncHandler(async (req, res) => {
               costs against null revenue and the account read negative
               lifetime profit.
             */
-            // The whole invoice (2026-09-20): the root's full bill plus its signed change orders'.
+            // The whole invoice (2026-09-20): the root's full bill plus its signed change orders'
+            // — plus the financing fee when one is applied (Kyle, 2026-10-08, decision 10: the fee
+            // is revenue), the same way the account summary and job profitability add it.
             acceptedTotal ??
               (signedQualifies.has(visit.id)
-                ? (() => { const g = groupOf(signedQualifies.get(visit.id)!); return rollupInvoice(g.root, g.changeOrders).fullBill; })()
+                ? (() => { const g = groupOf(signedQualifies.get(visit.id)!); return Math.round((rollupInvoice(g.root, g.changeOrders).fullBill + feeDollarsOf(jobFeesByRoot, g.root.id)) * 100) / 100; })()
                 : null),
             laborRate,
             // THE MONEY (Kyle, 2026-09-19): the P.O.s tagged to this job.
             materialByJob.get(visit.id)?.poMaterial ?? null,
+            // Synchrony's cut + card processing fees (Kyle, 2026-10-09, ruling 6).
+            processingByJob.get(visit.id) ?? null,
           ),
     };
   });
@@ -5744,8 +5481,12 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
   const invoiceJobById = new Map(invoiceJobs.map((j) => [j.id, j]));
 
   const paidRows = estimates.length === 0 ? [] : await prisma.payment.findMany({
-    where: { estimateId: { in: [...estimates.map((e) => e.id), ...changeOrderRows.map((c) => c.id)] }, status: "paid" },
-    select: { estimateId: true, amount: true, method: true, paidAt: true, payer: true },
+    // Voided rows (2026-10-09, services/paymentVoid.ts) are listed on the invoice's own panel
+    // but are not money: they count in no total, balance or status here.
+    where: { estimateId: { in: [...estimates.map((e) => e.id), ...changeOrderRows.map((c) => c.id)] }, status: "paid", voidedAt: null },
+    // refundedAmount: a card refund recorded from Stripe (2026-10-09, ruling 7) comes off inside
+    // splitPaidByPayer; a row refunded in full is status "refunded" and is not fetched at all.
+    select: { estimateId: true, amount: true, method: true, paidAt: true, payer: true, refundedAmount: true },
   });
   // Keyed by the ROOT: money that history left on a change order's own row counts on its invoice.
   const rootOfId = new Map<string, string>(changeOrderRows.map((c) => [c.id, c.changeOrderForId!]));
@@ -5759,6 +5500,9 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
   }
   // The newest customer email about each invoice and what became of it (Kyle, 2026-09-09).
   const lastDeliveryById = await lastDeliveriesForEstimates(prisma, estimates.map((e) => e.id));
+  // The live financing fee per invoice (Kyle, 2026-10-08; services/financingFee.ts) — one query.
+  // It is owed on top of the documents and is NOT in billedTotal or depositDue.
+  const feesByRoot = await activeFinancingFeesByRoot(prisma, estimates.map((e) => e.id));
 
   const round2 = (n: number) => Math.round(n * 100) / 100;
   res.json(estimates.map((est) => {
@@ -5789,7 +5533,11 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       (latest, r) => (r.paidAt && (!latest || r.paidAt > latest) ? r.paidAt : latest), null,
     );
     const depositDue = group.depositDue;
-    const paidInFull = totalPaid >= billedTotal - 0.01;
+    // What is OWED is the documents plus the financing fee when one is applied (Kyle, 2026-10-08)
+    // — the same arithmetic paymentSummary runs, so this row and the payment panel agree.
+    const financingFee = feesByRoot.get(est.id) ?? null;
+    const owed = round2(billedTotal + (financingFee?.fee ?? 0));
+    const paidInFull = totalPaid >= owed - 0.01;
     const warrantyPaid = coverage ? split.warrantyPaid : 0;
     const warrantyBalance = coverage ? round2(coverage.applied - warrantyPaid) : 0;
     // "deposit_paid" only means something when a deposit is required (2026-09-20).
@@ -5859,7 +5607,12 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
       // invoice rather than per account: `totalPaid` above is a SETTLEMENT figure and keeps the
       // legacy 3% "discount" rows in, because those rows are what closed those invoices.
       collected: round2(totalPaid - discountTotal + warrantyPaid),
-      balance: round2(billedTotal - totalPaid),
+      balance: round2(owed - totalPaid),
+      // The financing fee on this invoice (services/financingFee.ts) — its own line beside the
+      // balance, which already includes it. Null when the balance is not going through Synchrony.
+      financingFee: financingFee
+        ? { id: financingFee.id, planNumber: financingFee.planNumber, planDescription: financingFee.planDescription, fee: financingFee.fee, locked: financingFee.locked }
+        : null,
       lastPaidAt,
       paymentStatus,
       // No payToken: the raw estimate token is the customer's unrevokable sign/pay link and no screen
@@ -7285,9 +7038,17 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
   // 2026-09-10) — the revenue rung that backfills estimate-sold jobs (Kyle,
   // 2026-09-06), kept in lockstep with GET /jobs by the money-invariant test.
   const estRevenueByJob = new Map<string, number>();
-  for (const g of groupSignedRows(signedForCosts).values()) {
+  // The job's signed ROOT invoice — what its payments' processing costs are attributed through.
+  const rootByJob = new Map<string, string>();
+  const accountGroups = groupSignedRows(signedForCosts);
+  // Plus the financing fee when one is applied (Kyle, 2026-10-08, decision 10) — in lockstep with GET /jobs.
+  const accountFeesByRoot = await activeFinancingFeesByRoot(prisma, [...accountGroups.values()].map((g) => g.root.id));
+  for (const g of accountGroups.values()) {
     const key = g.root.jobVisitId ?? g.root.visitId;
-    if (key && !estRevenueByJob.has(key)) estRevenueByJob.set(key, rollupInvoice(g.root, g.changeOrders).fullBill);
+    if (key && !estRevenueByJob.has(key)) {
+      estRevenueByJob.set(key, Math.round((rollupInvoice(g.root, g.changeOrders).fullBill + feeDollarsOf(accountFeesByRoot, g.root.id)) * 100) / 100);
+      rootByJob.set(key, g.root.id);
+    }
   }
   const visitById = new Map(account.visits.map((v) => [v.id, v]));
   // THE MONEY (Kyle, 2026-09-19), one grouped query — the same helper GET /jobs
@@ -7296,6 +7057,13 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
     account.visits
       .filter((v) => !childToJob.has(v.id))
       .map((v) => ({ visitId: v.id, chainVisitIds: childrenOfJob.get(v.id) ?? [] })),
+  );
+  // Synchrony's cut + card processing fees (Kyle, 2026-10-09, ruling 6) — the same helper GET /jobs,
+  // job profitability and the commission basis call. Kept in lockstep by the invariant test.
+  const processingByJob = await processingCostsForJobs(
+    account.visits
+      .filter((v) => !childToJob.has(v.id))
+      .map((v) => ({ visitId: v.id, rootEstimateId: rootByJob.get(v.id) ?? null })),
   );
   const [receipts, laborRate, findings] = await Promise.all([
     visitIds.length
@@ -7366,6 +7134,7 @@ app.get("/accounts/:customerId/summary", asyncHandler(async (req, res) => {
             acceptedTotal ?? estRevenueByJob.get(visit.id) ?? null,
             laborRate,
             materialByJob.get(visit.id)?.poMaterial ?? null,
+            processingByJob.get(visit.id) ?? null,
           ),
       purchaseOrders: visit.purchaseOrders.map((order) => ({
         id: order.id,

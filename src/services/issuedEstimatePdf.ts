@@ -34,6 +34,7 @@ import type { PriceBookOption } from "@prisma/client";
 import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 import { signatureBuffer } from "./signatureImage";
 import { acceptedViaPhrase, isOfficeAcceptance } from "../../shared/acceptance";
+import { ALL_OPTIONS } from "../../shared/estimateOptions";
 import { discountFor, discountLabel, programmeFor } from "./discounts";
 import type { WarrantyClaim } from "./stripePayments";
 import { warrantyCompanyLine, warrantyNoticeText, warrantyRowLabel } from "./warrantyNotice";
@@ -131,11 +132,21 @@ export interface PdfEstimate {
     documents: Array<{ number: string; title: string; kind: "invoice" | "change_order"; billedTotal: number; signedAt: Date | null }>;
     billedTotal: number;
     totalPaid: number;
+    /** What is owed — includes the financing fee below when one is applied (2026-10-09). */
     balance: number;
+    /**
+     * The financing fee on the invoice (Kyle, 2026-10-08, decision 7: "shown as its own line,
+     * never folded in") — the plan number and the fee in dollars only, never a rate. When set the
+     * appendix prints even for a one-document invoice (plan Detail B item J).
+     */
+    financingFee?: { planNumber: string; fee: number } | null;
   } | null;
 }
 
-const OPTIONS: PriceBookOption[] = ["A", "B", "C"];
+// Every letter an estimate could carry (A-H, shared/estimateOptions.ts). The loop below skips an
+// option with no lines, so an A/B/C estimate prints exactly as before and nobody gets eight
+// headings (2026-10-08).
+const OPTIONS: PriceBookOption[] = [...ALL_OPTIONS];
 
 /** Money arithmetic to the cent — the billed total is re-summed from the options taken. */
 function round2(n: number): number {
@@ -613,8 +624,10 @@ export async function renderEstimatePdf(
     what is paid and still due — the same figures the pay page and the bill email carry.
   */
   if (estimate.invoice && estimate.signedAt) {
+    const fee = estimate.invoice.financingFee ?? null;
     doc.moveDown(1.2);
-    doc.fontSize(11).text(`Invoice ${estimate.invoice.number} — what it now includes`);
+    // One document with a fee on it is not "what it now includes" — it is what is owed on it.
+    doc.fontSize(11).text(`Invoice ${estimate.invoice.number} — ${estimate.invoice.documents.length > 1 ? "what it now includes" : "what is owed"}`);
     doc.moveDown(0.3);
     doc.fontSize(9);
     for (const d of estimate.invoice.documents) {
@@ -627,10 +640,21 @@ export async function renderEstimatePdf(
     doc.font("Helvetica-Bold").text("Invoice total", 50, yTotal, { width: 380 });
     doc.text(money(estimate.invoice.billedTotal), 430, yTotal, { width: 120, align: "right" });
     doc.font("Helvetica");
-    if (estimate.invoice.totalPaid > 0) {
-      const yPaid = doc.y;
-      doc.text("Paid to date", 50, yPaid, { width: 380 });
-      doc.text(money(estimate.invoice.totalPaid), 430, yPaid, { width: 120, align: "right" });
+    // THE FINANCING FEE AS ITS OWN LINE (Kyle, 2026-10-08, decision 7; review finding 2026-10-09):
+    // the balance below carries it, so without this row "total − paid" would not equal "balance".
+    if (fee) {
+      const yFee = doc.y;
+      doc.text(`Financing fee — Plan ${fee.planNumber}`, 50, yFee, { width: 380 });
+      doc.text(money(fee.fee), 430, yFee, { width: 120, align: "right" });
+    }
+    // The balance prints whenever there is a payment OR a fee — with a fee on and nothing paid,
+    // the figure owed is still not the invoice total, and the document must say what it is.
+    if (estimate.invoice.totalPaid > 0 || fee) {
+      if (estimate.invoice.totalPaid > 0) {
+        const yPaid = doc.y;
+        doc.text("Paid to date", 50, yPaid, { width: 380 });
+        doc.text(money(estimate.invoice.totalPaid), 430, yPaid, { width: 120, align: "right" });
+      }
       const yBal = doc.y;
       doc.text("Balance due", 50, yBal, { width: 380 });
       doc.text(money(estimate.invoice.balance), 430, yBal, { width: 120, align: "right" });

@@ -39,7 +39,7 @@ import { PageHeader } from "../components/PageHeader";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type { CompanyBillRow, JobProfitRow, JobReceiptRow, PaymentRow, WarrantyReceivableRow } from "../lib/api";
-import { MATERIAL_SOURCE_LABEL, type InvoiceSummary, type MaterialsByMonth } from "../lib/types";
+import { MATERIAL_SOURCE_LABEL, cardFeesPendingNote, type InvoiceSummary, type MaterialsByMonth } from "../lib/types";
 import { money } from "../lib/utils";
 import { AttentionStrip } from "../components/AttentionStrip";
 import { BounceBadge } from "../components/BounceBadge";
@@ -50,11 +50,14 @@ import { BalancesStrip, TrucksCard } from "../components/TrucksCards";
 import { MonthEndSweepCard } from "../components/MonthEndSweepCard";
 import { CollapsibleCard } from "../components/CollapsibleCard";
 import { BankQueueCard, BankStatementsCard, BillConfirmationNote } from "../components/BankCards";
+import { RefundedPaymentNote, VoidPaymentButton, VoidedPaymentNote } from "../components/VoidPaymentButton";
 import type { BankConfirmations } from "../lib/types";
 
 /** Expenses-by-category row labels: bill:x -> "bills — x", payroll:x -> "payroll — x", bank:x -> "bank — x", stripe_fees -> "Stripe fees". */
 function categoryLabel(category: string): string {
   if (category === "stripe_fees") return "Stripe fees";
+  // Synchrony's cut on financed balances (Kyle, 2026-10-08) — an expense like Stripe's fees.
+  if (category === "synchrony_cuts") return "Synchrony's cut (financing)";
   if (category.startsWith("bill:")) return category.replace("bill:", "bills — ");
   if (category.startsWith("payroll:")) return category.replace("payroll:", "payroll — ");
   if (category.startsWith("bank:")) return category.replace("bank:", "bank — ").replace("_", " ");
@@ -769,8 +772,14 @@ function JobProfitabilityCard({ year, rows }: { year: number; rows: JobProfitRow
         <ul className="mt-2 space-y-1">
           {jobsAtAddress.map((j) => (
             <PickRow key={j.visitId} onClick={() => setVisitId(j.visitId)} right={
-              <span className={`font-semibold tabular-nums ${j.margin !== null && j.margin < 0 ? "text-red-600" : ""}`}>
-                {j.margin !== null ? money(j.margin) : "—"}
+              // The pick list's figure is the job's profit; while a card fee is still pending with
+              // Stripe it is "before pending card fees" HERE too, not only one click deeper
+              // (ruling 6; review finding, 2026-10-09).
+              <span className="text-right">
+                <span className={`font-semibold tabular-nums ${j.margin !== null && j.margin < 0 ? "text-red-600" : ""}`}>
+                  {j.margin !== null ? money(j.margin) : "—"}
+                </span>
+                {cardFeesPendingNote(j) && <span className="block text-[10px] font-normal text-amber-800">profit before pending card fees</span>}
               </span>
             }>
               <span className="font-medium">{j.jobType ?? "job"}</span>
@@ -819,7 +828,7 @@ function JobDetail({ job }: { job: JobProfitRow }) {
             {job.address} · {job.completedAt ? `closed ${new Date(job.completedAt).toLocaleDateString()}` : `sold — ${job.status.replaceAll("_", " ")}`}
           </span>
         </div>
-        <div className="mt-2 grid gap-2 text-sm md:grid-cols-4">
+        <div className="mt-2 grid gap-2 text-sm md:grid-cols-3 lg:grid-cols-6">
           <div><span className="text-xs text-rce-soft">Quoted</span><p className="font-semibold tabular-nums">{job.quoted !== null ? money(job.quoted) : "—"}</p></div>
           <div>
             <span className="text-xs text-rce-soft">Materials</span>
@@ -833,8 +842,20 @@ function JobDetail({ job }: { job: JobProfitRow }) {
               {job.laborHours > 0 ? `${job.laborHours}h · ${money(job.laborCost)}` : "not clocked"}
             </p>
           </div>
+          {/* Processing costs (Kyle, 2026-10-09, ruling 6): each its own field, inside both margins —
+              the same figures the job card, the commission card and the P&L charge. */}
           <div>
-            <span className="text-xs text-rce-soft">Profit</span>
+            <span className="text-xs text-rce-soft">Synchrony's cut</span>
+            <p className="font-semibold tabular-nums">{money(job.synchronyCut ?? 0)}</p>
+          </div>
+          <div>
+            <span className="text-xs text-rce-soft">Card processing fees</span>
+            {/* A fee Stripe cannot give yet is PENDING with the reason — never printed as $0. */}
+            <p className="font-semibold tabular-nums">{cardFeesPendingNote(job) && !(job.cardFees ?? 0) ? "pending" : money(job.cardFees ?? 0)}</p>
+            {cardFeesPendingNote(job) && <p className="text-[10px] text-amber-800">{cardFeesPendingNote(job)}</p>}
+          </div>
+          <div>
+            <span className="text-xs text-rce-soft">Profit{cardFeesPendingNote(job) ? " (before pending card fees)" : ""}</span>
             <p className={`font-semibold tabular-nums ${job.margin !== null && job.margin < 0 ? "text-red-600" : ""}`}>
               {job.margin !== null ? money(job.margin) : "—"}
               {marginPct !== null && <span className="ml-1 text-xs font-normal text-rce-muted">({marginPct}%)</span>}
@@ -1253,7 +1274,7 @@ function PaymentsCard({
           <ul className="space-y-1">
             {payments.slice(0, ledgerLimit).map((p) => (
               <li key={p.id} className="flex items-start justify-between gap-2 rounded-lg border border-rce-border px-3 py-2 text-sm">
-                <span className="min-w-0">
+                <span className={`min-w-0${p.voidedAt ? " line-through" : ""}`}>
                   <span className="font-medium capitalize">{p.method}</span>
                   {/* Whose money (Kyle, 2026-09-10): a warranty company's check is labelled as such. */}
                   {p.payer === "warranty" && (
@@ -1263,11 +1284,23 @@ function PaymentsCard({
                     {p.paidAt ? new Date(p.paidAt).toLocaleDateString() : ""}
                     {p.customer ? ` · ${p.customer.name}` : ""}
                     {p.checkNumber ? ` · check #${p.checkNumber}` : ""}
+                    {/* A Synchrony row (2026-10-09): gross financed is the amount; the bank sees the net. */}
+                    {p.method === "synchrony" && p.financingPlanNumber ? ` · Plan ${p.financingPlanNumber}` : ""}
+                    {p.method === "synchrony" && p.financingAuthNumber ? ` · auth #${p.financingAuthNumber}` : ""}
+                    {p.method === "synchrony" && p.financingNet != null ? ` · net funded ${money(p.financingNet)} (Synchrony's cut ${money(p.financingCut ?? 0)})` : ""}
                     {p.note ? ` · ${p.note}` : ""}
                     {p.status !== "paid" ? ` · ${p.status}` : ""}
                   </span>
                 </span>
-                <span className="shrink-0 font-medium tabular-nums">{money(p.amount)}</span>
+                {/* The row's exit (Kyle, 2026-10-08, decision 11): void with a reason, administrator
+                    only. A voided row stays in the ledger, struck through, and counts nowhere. */}
+                <span className="flex shrink-0 flex-col items-end gap-1">
+                  <span className={`font-medium tabular-nums${p.voidedAt ? " line-through" : ""}`}>{money(p.amount)}</span>
+                  <VoidedPaymentNote voidedAt={p.voidedAt} voidReason={p.voidReason} />
+                  {/* A card refund made in Stripe, recorded by the webhook (2026-10-09, ruling 7) — no button: the refund is made in Stripe. */}
+                  <RefundedPaymentNote payment={p} />
+                  <VoidPaymentButton payment={p} onVoided={onChange} />
+                </span>
               </li>
             ))}
             {payments.length === 0 && <li className="text-sm text-rce-muted">No payments recorded this year.</li>}

@@ -38,6 +38,8 @@ import {
 // The second, job-level check on material markup — see that file for why it exists.
 import { allSelectionCaps, bandsFrom, capMaterial, type MaterialCapResult } from "./materialMarkupCap";
 import { RULED_BILLED_RATE } from "./laborRate";
+// ONE option list for server, CRM and field (2026-10-08) — shared/estimateOptions.ts.
+import { ALL_OPTIONS, BASE_OPTIONS, type EstimateOptionLetter } from "../../shared/estimateOptions";
 
 // ─── Inputs ─────────────────────────────────────────────────────────────────────
 
@@ -96,9 +98,12 @@ export function isFlatPriced(atomic: EngineAtomic): boolean {
 }
 
 /** One tech input. */
-/** Which of Kyle's three options a line sits in. Defaults to A when a caller does not say. */
-export type EstimateOption = "A" | "B" | "C";
-export const ESTIMATE_OPTIONS: EstimateOption[] = ["A", "B", "C"];
+/**
+ * Which of Kyle's options a line sits in. Defaults to A when a caller does not say. A, B and C
+ * are the three every estimate has; Kyle, 2026-10-08, added D through H ("continue the options
+ * past 'C'", capped at eight). The list is shared/estimateOptions.ts.
+ */
+export type EstimateOption = EstimateOptionLetter;
 
 export interface DraftLineInput {
   id?: string;
@@ -329,7 +334,7 @@ export function rowTypeSells(rowType: string | null | undefined): {
  * (unit = ft) atomics"). Reusing that test rather than inventing a keyword list keeps the app
  * and the book agreeing on what counts as cable.
  */
-export function isContinuousLength(atomic: EngineAtomic): boolean {
+export function isContinuousLength(atomic: Pick<EngineAtomic, "unit">): boolean {
   const u = (atomic.unit ?? "").trim().toLowerCase();
   return u === "ft" || u === "lf";
 }
@@ -699,7 +704,7 @@ export function computeEstimate(
     whatever else is on the job, and contribute nothing to the band.
   */
   const materialCaps: Record<string, MaterialCapResult> = {};
-  for (const option of ESTIMATE_OPTIONS) {
+  for (const option of ALL_OPTIONS) {
     const inOption = computed.filter((l) => l.option === option && l.inMaterialCap);
     if (inOption.length === 0) continue;
 
@@ -1088,7 +1093,14 @@ export interface OptionSummary {
  * implementation of the money maths to drift from the first.
  */
 export function summarizeOptions(computed: ComputedEstimate): OptionSummary[] {
-  return ESTIMATE_OPTIONS.map((option) => {
+  // A, B and C always get a summary (an empty one still reads "no lines" on the screens that
+  // show it); D through H appear only once a line is in them, so an A/B/C estimate summarises
+  // exactly as it always did and nobody is handed five empty options (2026-10-08).
+  const present = new Set<string>(computed.lines.map((l) => l.option));
+  const options = ALL_OPTIONS.filter(
+    (o) => (BASE_OPTIONS as readonly string[]).includes(o) || present.has(o),
+  );
+  return options.map((option) => {
     const lines = computed.lines.filter((l) => l.option === option);
     const laborHours = lines.reduce((n, l) => n + (l.laborHours ?? 0), 0);
     const laborDollars = lines.reduce((n, l) => n + (l.laborDollars ?? 0), 0);

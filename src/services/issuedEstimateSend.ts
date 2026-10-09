@@ -29,7 +29,10 @@
  *      technician's "Email the estimate to the customer" on the field app's post-issue screen,
  *      behind the technician bearer-token gate and refused 403 unless that visit is assigned to
  *      them. Added when Kyle ruled out share-via-text (no SMS at Red Cedar).
- * Both are human-initiated. `tests/issuedEstimate.test.ts` pins that an unauthenticated caller of
+ * Both are human-initiated, and (Phase 4, 2026-10-08) both reach this function through the ONE
+ * request-shaped entry `sendEstimateEmailFromBody` below - the same body schema, the same
+ * defaults, the same refusals - so neither door can offer an option the other lacks.
+ * `tests/issuedEstimate.test.ts` pins that an unauthenticated caller of
  * (1) gets a 401 rather than a sent email; `tests/fieldEstimateEmail.test.ts` pins the 403 on (2).
  *
  * ADDING A THIRD CALLER IS A SECURITY DECISION, not a wiring task: if it is not a human pressing a
@@ -52,13 +55,17 @@ import { logSystemEvent } from "./systemEvents";
 import { renderEstimatePdf } from "./issuedEstimatePdf";
 import { getCompanyProfile } from "./companyProfile";
 import { billedTotalOf, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf } from "./stripePayments";
-import { invoiceDocumentRows } from "./paymentReceipts";
+import { financingFeeRow, invoiceDocumentRows } from "./paymentReceipts";
+import { financingInProgress } from "./financingFee";
 import { warrantyEmailLine } from "./warrantyNotice";
 import { isOfficeAcceptance } from "../../shared/acceptance";
 // Kyle, 2026-09-09 ("My emails are not getting to the clients"): a send that lands at a
 // DIFFERENT address than the one that bounced clears the estimate's bounce flag.
 import { clearBounceIfDifferentAddress } from "./bounceWatcher";
 import sharp from "sharp";
+import { z } from "zod";
+import { MAX_ESTIMATE_PHOTOS } from "../../shared/estimatePhotos";
+import { PHOTO_OUTSIDE_JOB_REFUSAL, photoIdsOutsideJob } from "./estimatePhotos";
 
 export type SendResult = { ok: true; to: string } | { ok: false; reason: string };
 
@@ -89,6 +96,11 @@ export type SendResult = { ok: true; to: string } | { ok: false; reason: string 
  * A wrong id — someone else's visit photo, a stale id for a photo that moved accounts — cannot
  * leak across the boundary: it is simply refused, same as an id that was never real. Never an
  * unscoped `findMany({ where: { id: { in: ids } } })`.
+
+ * THE TRUCK IS NARROWER THAN THE OFFICE (Kyle, 2026-10-09, ruling 2): `owner.visitIds`, when a caller
+ * passes it, additionally limits the photos to those visits. The field's estimate email passes the
+ * estimate's job chain (estimatePhotos.ts, jobCosting.jobChainOfVisits); the CRM passes none and keeps
+ * the account-wide rule above.
  * `MAX_EMAIL_PHOTOS` and the downscale-or-refuse-on-corruption behaviour are unchanged from the
  * single-address version.
  */
@@ -100,12 +112,12 @@ const MAX_EMAIL_PHOTOS = 10;
 export async function photoAttachments(
   prisma: PrismaClient,
   photoIds: string[],
-  owner: { customerId: string },
+  owner: { customerId: string; visitIds?: string[] },
 ): Promise<{ attachments: Array<{ filename: string; content: Buffer; contentType: string }>; refused: string[] }> {
   const ids = [...new Set(photoIds)].slice(0, MAX_EMAIL_PHOTOS);
 
   const visitPhotos = await prisma.visitPhoto.findMany({
-    where: { id: { in: ids }, visit: { customerId: owner.customerId } },
+    where: { id: { in: ids }, visit: { customerId: owner.customerId }, ...(owner.visitIds ? { visitId: { in: owner.visitIds } } : {}) },
     select: { id: true, data: true, caption: true },
   });
 
@@ -214,13 +226,18 @@ export async function sendInvoiceEmail(
     (the ROOT's, so a change order's copy pays the same invoice).
   */
   const summary = (await paymentSummary(prisma, est.id, publicBaseUrl()))!;
-  const invoiceAppendix = summary.documents.length > 1
+  // The appendix prints for a multi-document invoice, or whenever a financing fee is on it
+  // (plan Detail B item J: the single-document gate "must widen for a fee line to show"): the
+  // balance carries the fee, and the PDF must name it as its own line or its figures do not add
+  // up (review finding, 2026-10-09). The same rule as app.ts invoiceAppendixFor and estimatePage.ts.
+  const invoiceAppendix = summary.documents.length > 1 || summary.financingFee
     ? {
       number: summary.number,
       documents: summary.documents.map((d) => ({ number: d.number, title: d.title, kind: d.kind, billedTotal: d.billedTotal, signedAt: d.signedAt })),
       billedTotal: summary.billedTotal,
       totalPaid: summary.totalPaid,
       balance: summary.balance,
+      financingFee: summary.financingFee ? { planNumber: summary.financingFee.planNumber, fee: summary.financingFee.fee } : null,
     }
     : null;
   const pdf = await renderEstimatePdf(
@@ -289,6 +306,7 @@ export async function sendInvoiceEmail(
         ${invoiceDocumentRows(summary)}
         <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td>
           <td style="text-align:right;font-weight:700;">$${summary.billedTotal.toFixed(2)}</td></tr>
+        ${financingFeeRow(summary)}
         ${summary.totalPaid > 0 ? `<tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>
         <tr><td style="padding:4px 0;font-weight:600;">Balance</td><td style="text-align:right;font-weight:600;">$${summary.balance.toFixed(2)}</td></tr>` : ""}
       </table>`
@@ -299,8 +317,15 @@ export async function sendInvoiceEmail(
   // Pay online (Stripe, 2026-08-25): the link is OUR durable /pay route, which
   // mints a fresh Checkout session per click — a raw session URL would expire
   // in a day. Only rendered while Stripe is configured on the service. The
-  // ROOT invoice's link (2026-09-20) — one pay link for the whole job.
-  const payUrl = stripeConfigured() ? summary.payUrl : null;
+  // ROOT invoice's link (2026-09-20) — one pay link for the whole job. Not while
+  // a financing fee is applied and not yet paid (2026-10-09, services/financingFee.ts
+  // financingInProgress): the card path is closed then, and the fee is shown as its own line
+  // instead. A locked (paid) fee leaves the link open for whatever is still owed.
+  const payUrl = stripeConfigured() && !financingInProgress(summary) ? summary.payUrl : null;
+  const financingNote = financingInProgress(summary)
+    ? `${invoiceAppendix ? "" : `<table style="width:100%;font-size:14px;border-collapse:collapse;margin:8px 0;">${financingFeeRow(summary)}</table>`}
+    <p style="font-size:14px;color:#555;">This balance is being paid through your Synchrony financing — $${summary.balance.toFixed(2)} including the financing fee.</p>`
+    : "";
   const bodyHtml = `
     <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
     <p style="font-size:15px;">Thank you for approving <strong>${escapeHtml(est.title)}</strong>.
@@ -321,6 +346,7 @@ export async function sendInvoiceEmail(
           est.revision > 1 ? ` (revision ${est.revision})` : ""
         } &middot; ${coverage ? "Your total" : "Total"} <strong>${`$${(invoiceAppendix ? summary.billedTotal : billed).toFixed(2)}`}</strong>`}</p>
     ${rolledUp}
+    ${financingNote}
     ${payUrl ? `
     <p style="margin:24px 0;">
       <a href="${escapeHtml(payUrl)}"
@@ -430,6 +456,11 @@ export async function sendEstimateEmail(
     toOverride?: string | null;
     message?: string | null;
     photoIds?: string[];
+    /**
+     * Limit the photos to these visits (the field door passes the job chain - Kyle, 2026-10-09,
+     * ruling 2). Absent = the account-wide office rule, unchanged.
+     */
+    photoVisitIds?: string[];
     /** Support documentation (Kyle, 2026-08-29: "I should be able to add the
      * reports here for the electrical assessment, generator report, and any
      * photos") — rendered fresh from the newest assessment at the estimate's
@@ -517,7 +548,7 @@ export async function sendEstimateEmail(
   // assessment shots that show the customer what the estimate is talking about.
   // Any photo on the account plus this estimate's draft photos (2026-10-01, item J).
   const photos = opts.photoIds && opts.photoIds.length > 0
-    ? await photoAttachments(prisma, opts.photoIds, { customerId: est.customerId })
+    ? await photoAttachments(prisma, opts.photoIds, { customerId: est.customerId, visitIds: opts.photoVisitIds })
     : { attachments: [], refused: [] };
 
   // Support documentation, rendered fresh at send time (2026-08-29). Refuses
@@ -609,6 +640,62 @@ export async function sendEstimateEmail(
   });
 
   return { ok: true, to };
+}
+
+/**
+ * The request body both doors send for "Email the estimate" - ONE schema (Phase 4, one estimating
+ * system, 2026-10-08). The CRM's POST /issued-estimates/:id/send and the field's
+ * POST /health-record/issued-estimates/:id/email used to parse their own bodies: the CRM took an
+ * address, a note, the two reports and the financing line, the phone took photo ids only. Kyle:
+ * "the office and the truck are ONE estimating system".
+ *
+ * Absent `includeFinancingLink` means SENT (an opt-out; see sendEstimateEmail). `to` is the
+ * address override: the account's address is used when it is blank or absent. The names match
+ * shared/estimateEmail.ts, which builds this body for both apps.
+ */
+export const estimateEmailBodySchema = z.object({
+  to: z.string().trim().email().nullable().optional(),
+  message: z.string().trim().max(2000).nullable().optional(),
+  // The photo rule lives in photoAttachments (security-reviewed 2026-10-01): an id that is not on
+  // THIS customer's account is refused there, whichever door sent it. The field door adds the
+  // job-chain wall on top (sendEstimateEmailFromBody's `scope`).
+  photoIds: z.array(z.string().min(1)).max(MAX_ESTIMATE_PHOTOS).optional(),
+  attachHealthReport: z.boolean().optional(),
+  attachGeneratorReport: z.boolean().optional(),
+  includeFinancingLink: z.boolean().optional(),
+});
+export type EstimateEmailBody = z.infer<typeof estimateEmailBodySchema>;
+
+/**
+ * Validate a request body and send. The ONLY thing either route does besides its own auth: parse
+ * with `estimateEmailBodySchema` (a ZodError is thrown for the route's error handler, exactly as
+ * before) and call `sendEstimateEmail` with `sentBy` naming who pressed the button.
+ */
+export async function sendEstimateEmailFromBody(
+  prisma: PrismaClient,
+  estimateId: string,
+  rawBody: unknown,
+  sentBy: string,
+  /** The field door's extra wall: only photos on these visits (this job's chain). Absent for the CRM. */
+  scope: { photoVisitIds?: string[] } = {},
+): Promise<SendResult> {
+  const body = estimateEmailBodySchema.parse(rawBody ?? {});
+  // A tick from another job is REFUSED, not silently dropped: the email must not arrive thinner
+  // than the technician ticked (ruling 2, Kyle 2026-10-09).
+  if (scope.photoVisitIds && body.photoIds && body.photoIds.length > 0) {
+    const outside = await photoIdsOutsideJob(prisma, body.photoIds, scope.photoVisitIds);
+    if (outside.length > 0) return { ok: false, reason: PHOTO_OUTSIDE_JOB_REFUSAL };
+  }
+  return sendEstimateEmail(prisma, estimateId, {
+    sentBy,
+    toOverride: body.to ?? null,
+    message: body.message ?? null,
+    photoIds: body.photoIds,
+    photoVisitIds: scope.photoVisitIds,
+    attachHealthReport: body.attachHealthReport,
+    attachGeneratorReport: body.attachGeneratorReport,
+    includeFinancingLink: body.includeFinancingLink,
+  });
 }
 
 /**

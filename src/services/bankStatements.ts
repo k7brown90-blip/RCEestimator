@@ -449,10 +449,11 @@ export async function loadClassifyContext(db: PrismaClient | Prisma.TransactionC
     }),
     db.payment.findMany({
       where: {
-        status: "paid", method: { notIn: ["stripe", "discount"] }, paidAt: { gte: new Date(from.getTime() - pad), lt: new Date(to.getTime() + pad) },
+        // A voided payment (2026-10-09, services/paymentVoid.ts) never matches a bank deposit.
+        status: "paid", voidedAt: null, method: { notIn: ["stripe", "discount"] }, paidAt: { gte: new Date(from.getTime() - pad), lt: new Date(to.getTime() + pad) },
         ...EXCLUDE_TEST_PAYER,
       },
-      select: { id: true, amount: true, paidAt: true, method: true, customer: { select: { name: true } } },
+      select: { id: true, amount: true, paidAt: true, method: true, financingNet: true, customer: { select: { name: true } } },
     }),
     db.bankLine.findMany({
       where: { classification: "already_counted", matchedKind: { in: ["company_bill", "po_off_card", "payment"] } },
@@ -482,7 +483,13 @@ export async function loadClassifyContext(db: PrismaClient | Prisma.TransactionC
       months: yrs.flatMap((y) => billMonthsInYear(b, y).map((m) => monthKeyOf(y, m.month))),
     })),
     purchaseOrders: pos.map((p) => ({ id: p.id, number: p.number, supplier: p.supplier, offCardAmount: p.offCardAmount!, offCardAt: p.offCardAt!, offCardMethod: p.offCardMethod })),
-    payments: payments.map((p) => ({ id: p.id, amount: p.amount, paidAt: p.paidAt!, method: p.method, customerName: p.customer?.name ?? null })),
+    // A SYNCHRONY payment (2026-10-09, services/financingFee.ts) lands in the bank NET of
+    // Synchrony's cut, so the candidate amount is `financingNet` — a gross match would never fire.
+    payments: payments.map((p) => ({
+      id: p.id,
+      amount: p.method === "synchrony" && p.financingNet != null ? p.financingNet : p.amount,
+      paidAt: p.paidAt!, method: p.method, customerName: p.customer?.name ?? null,
+    })),
     confirmedBillMonths: new Set(confirmations.filter((c) => c.matchedKind === "company_bill" && c.matchedId && c.matchedMonth).map((c) => `${c.matchedId}:${c.matchedMonth}`)),
     confirmedPoIds: new Set(confirmations.filter((c) => c.matchedKind === "po_off_card" && c.matchedId).map((c) => c.matchedId!)),
     confirmedPaymentIds: new Set(confirmations.filter((c) => c.matchedKind === "payment" && c.matchedId).map((c) => c.matchedId!)),
@@ -648,7 +655,9 @@ export function classifyLine(line: LineForRules, ctx: ClassifyContext): Decision
     const p = candidates.payments[0];
     return {
       classification: "already_counted", matchedKind: "payment", matchedId: p.id,
-      reason: `Matches the $${p.amount.toFixed(2)} ${p.method} payment${p.customerName ? ` from ${p.customerName}` : ""} recorded ${p.date.slice(0, 10)} — already counted as collected.`,
+      reason: p.method === "synchrony"
+        ? `Matches the $${p.amount.toFixed(2)} Synchrony funding (net of Synchrony's cut)${p.customerName ? ` for ${p.customerName}` : ""} recorded ${p.date.slice(0, 10)} — already counted as collected at the gross financed amount.`
+        : `Matches the $${p.amount.toFixed(2)} ${p.method} payment${p.customerName ? ` from ${p.customerName}` : ""} recorded ${p.date.slice(0, 10)} — already counted as collected.`,
     };
   }
   if (candidates.payments.length > 1) {
@@ -863,8 +872,9 @@ export async function classifyBankLine(lineId: string, input: ClassifyInput): Pr
       if (other) throw new BankError(`${po.number} is already confirmed by the ${other.postedAt.toISOString().slice(0, 10)} line.`, 409);
       d.matchedId = po.id;
     } else if (input.matchedKind === "payment") {
-      const p = input.matchedId ? await prisma.payment.findUnique({ where: { id: input.matchedId }, select: { id: true } }) : null;
+      const p = input.matchedId ? await prisma.payment.findUnique({ where: { id: input.matchedId }, select: { id: true, voidedAt: true } }) : null;
       if (!p) throw new BankError("Pick the recorded payment this deposit is.", 400);
+      if (p.voidedAt) throw new BankError("That payment was voided — it is not money this deposit can be.", 409);
       const other = await prisma.bankLine.findFirst({ where: { id: { not: line.id }, matchedKind: "payment", matchedId: p.id }, select: { postedAt: true } });
       if (other) throw new BankError(`That payment is already confirmed by the ${other.postedAt.toISOString().slice(0, 10)} line.`, 409);
       d.matchedId = p.id;

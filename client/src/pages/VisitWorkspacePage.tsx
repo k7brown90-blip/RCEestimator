@@ -11,6 +11,7 @@ import { HealthRecordPanel } from "../components/HealthRecordPanel";
 import { JobCloseoutPanel } from "../components/JobCloseoutPanel";
 import { MaterialsUsedPanel } from "../components/MaterialsUsedPanel";
 import { JobTimePanel } from "../components/JobTimePanel";
+import { CommissionPanel } from "../components/CommissionPanel";
 import { PaymentPanel } from "../components/PaymentPanel";
 import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
 import { PhotoGalleryPanel } from "../components/PhotoGalleryPanel";
@@ -205,6 +206,10 @@ export function VisitWorkspacePage() {
                 arrive-to-leave session with its frozen rate, editable with a
                 reason. Unbilled shift time is overhead and lives on the Team tab. */}
             <JobTimePanel visitId={visitId} />
+            {/* Commission on this job (Kyle, 2026-10-08, decision 10): the profit math, every
+                term its own row, per technician who worked it — and the button that records
+                the commission from it. Lives beside the hours it is computed from. */}
+            <CommissionPanel visitId={visitId} />
           </>
         )}
 

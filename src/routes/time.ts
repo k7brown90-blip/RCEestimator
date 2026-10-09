@@ -29,6 +29,7 @@ import {
   jobTime,
   payrollForWeek,
 } from "../services/timeTracking";
+import { CommissionVoidError, NOT_VOID_COMMISSION, voidCommission } from "../services/commissionVoid";
 
 export const timeRouter = express.Router();
 
@@ -42,7 +43,7 @@ const toDate = (raw: string): Date => {
 
 /** Service refusals carry their own status; everything else is a 500 upstream. */
 function send(res: express.Response, err: unknown): boolean {
-  if (err instanceof TimeError) {
+  if (err instanceof TimeError || err instanceof CommissionVoidError) {
     res.status(err.statusCode).json({ error: err.message });
     return true;
   }
@@ -221,13 +222,19 @@ timeRouter.get("/time/commissions", guard(async (req, res) => {
     reason: c.reason,
     earnedAt: c.earnedAt.toISOString(),
     paidAt: c.paidAt?.toISOString() ?? null,
+    // Voided rows are listed ON PURPOSE (the job card shows them struck through); no total is
+    // ever taken off this list — the money readers filter voidedAt: null themselves.
+    voidedAt: c.voidedAt?.toISOString() ?? null,
+    voidedBy: c.voidedBy,
+    voidReason: c.voidReason,
   })));
 }));
 
 /**
  * Record a commission. basis "job_profit" computes it from revenue − material −
- * fees at the given (or the technician's) percentage; "manual" takes the amount
- * Kyle types. An override on a job needs a reason — rule 7.
+ * fees − labor at total cost, floored at $0 (decision 10, Kyle 2026-10-08), at
+ * the given (or the technician's) percentage; "manual" takes the amount Kyle
+ * types. An override on a job needs a reason — rule 7.
  */
 timeRouter.post("/time/commissions", guard(async (req, res) => {
   const body = z.object({
@@ -245,11 +252,28 @@ timeRouter.post("/time/commissions", guard(async (req, res) => {
   let percent = body.percent ?? null;
   if (body.basis === "job_profit") {
     if (!body.visitId) throw new TimeError("A job-profit commission needs the job it came from.", 400);
+    // ONE JOB-PROFIT COMMISSION PER TECH PER JOB (review finding, 2026-10-09): the quote never
+    // subtracts what was already recorded, so a second press would book the full share again and
+    // double the payout. The CRM panel greys the button with the same words; this is the server's
+    // half. The exit is the row's own "Void…" (reason required), then record again — a voided one does not block.
+    const already = await prisma.commission.findFirst({
+      where: { technicianId: body.technicianId, visitId: body.visitId, basis: "job_profit", ...NOT_VOID_COMMISSION },
+      select: { id: true, amount: true, earnedAt: true },
+    });
+    if (already) {
+      throw new TimeError(
+        `A job-profit commission of $${already.amount.toFixed(2)} is already recorded for this technician on this job (${already.earnedAt.toLocaleDateString("en-US")}) — void it first (with a reason) to re-record.`,
+        409,
+      );
+    }
     const quote = await commissionForJob(body.visitId, body.technicianId, percent);
     if (quote.amount == null) {
+      // Decision 10 (2026-10-08): profit is null whenever anything the math needs is MISSING — no
+      // revenue, a tech's hourly rate, the employer cost %, or a card fee Stripe could not give —
+      // and the refusal names it, the same words the job page shows.
       throw new TimeError(
         quote.percentSet
-          ? "That job has no revenue recorded yet, so there is no profit to take a percentage of."
+          ? `The job's profit cannot be worked out yet: ${quote.missing.join("; ")}.`
           : "No commission percent is set for this technician — type one on their Team page first.",
         400,
       );
@@ -281,16 +305,20 @@ timeRouter.post("/time/commissions", guard(async (req, res) => {
   res.status(201).json(row);
 }));
 
-timeRouter.delete("/time/commissions/:id", guard(async (req, res) => {
-  const body = z.object({ reason: reasonSchema }).parse(req.body ?? {});
-  const id = readParam(req, "id");
-  const existing = await prisma.commission.findUnique({ where: { id } });
-  if (!existing) { res.status(404).json({ error: "Commission not found" }); return; }
-  // TimeEdit is the trail for HOURS (kind shift|job); a removed commission is
-  // money, so its reason is filed where every other money correction is read.
-  logSystemEvent("info", "time", `Commission of $${existing.amount.toFixed(2)} removed — ${body.reason}`, {
-    commissionId: id, technicianId: existing.technicianId, visitId: existing.visitId, amount: existing.amount,
-  });
-  await prisma.commission.delete({ where: { id } });
-  res.status(204).end();
+/**
+ * Void a recorded commission (2026-10-09, Phase 6 CARRY): reason required, row kept and marked,
+ * SystemEvent, atomic against a double submit, refused once paid out. CRM session only — this
+ * router sits behind the operator session and the technician router has no route to it.
+ */
+timeRouter.post("/time/commissions/:id/void", guard(async (req, res) => {
+  const body = z.object({ reason: z.string().max(300).optional() }).parse(req.body ?? {});
+  const voided = await voidCommission(prisma, readParam(req, "id"), body.reason ?? "");
+  res.json({ ok: true, ...voided });
 }));
+
+/** The old hard delete is gone: a commission is money, so the exit is a void with a reason. */
+timeRouter.delete("/time/commissions/:id", (_req, res) => {
+  res.status(410).json({
+    error: "Commissions are no longer deleted — void the commission instead (the Void… button on the job's \"Commission on this job\" card). The row stays, marked void, with your reason.",
+  });
+});

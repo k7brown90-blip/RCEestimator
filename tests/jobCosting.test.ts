@@ -128,6 +128,35 @@ describe("rollupJobCosts", () => {
     expect(costs.grossProfit).toBe(-100);
     expect(costs.margin).toBeNull();
   });
+
+  // Kyle, 2026-10-09, ruling 6: "Job card, account summary and job profitability subtract
+  // Synchrony's cut AND card processing fees, so job profit agrees with the P&L and the
+  // commission card." The fifth argument; each its own field, inside totalCost.
+  it("subtracts Synchrony's cut and the card processing fees as costs of the job, each its own field", () => {
+    const costs = rollupJobCosts(
+      { ...noCosts, laborHours: 8, overheadAllocation: 100, revenue: 2000 },
+      null, 75, 400,
+      { synchronyCut: 30.5, cardFees: 29.3, cardFeesPending: [] },
+    );
+    expect(costs.synchronyCut).toBe(30.5);
+    expect(costs.cardFees).toBe(29.3);
+    expect(costs.cardFeesPending).toEqual([]);
+    expect(costs.totalCost).toBe(1159.8); // 400 + 600 + 100 + 30.5 + 29.3
+    expect(costs.grossProfit).toBe(840.2);
+    // No processing costs given (a rolled-up child, a unit test): zeros, never undefined.
+    const none = rollupJobCosts(noCosts, null);
+    expect(none).toMatchObject({ synchronyCut: 0, cardFees: 0, cardFeesPending: [] });
+  });
+
+  it("a card fee Stripe cannot give yet is carried as PENDING with its reason — never counted as $0 silently", () => {
+    const pending = [{ paymentId: "pay_1", amount: 500, reason: "Stripe has not settled this payment yet — its processing fee is not known." }];
+    const costs = rollupJobCosts({ ...noCosts, revenue: 1000 }, null, 75, 0, { synchronyCut: 0, cardFees: 9.97, cardFeesPending: pending });
+    expect(costs.cardFees).toBe(9.97);
+    expect(costs.cardFeesPending).toEqual(pending);
+    // Profit is computed from what IS known and the surface labels it "before pending card fees".
+    expect(costs.totalCost).toBe(9.97);
+    expect(costs.grossProfit).toBe(990.03);
+  });
 });
 
 describe("estimateOptionTotal", () => {
@@ -170,6 +199,19 @@ describe("sumJobCosts", () => {
 
   it("returns a null margin for an account that has never billed", () => {
     expect(sumJobCosts([]).lifetimeMargin).toBeNull();
+    expect(sumJobCosts([]).cardFeesPendingCount).toBe(0);
+  });
+
+  it("carries the jobs' pending card fees up, so the account summary can say 'before pending card fees' (review finding, 2026-10-09)", () => {
+    const pending = (n: number) => Array.from({ length: n }, (_, i) => ({ paymentId: `pay_${i}`, amount: 100, reason: "Stripe has not settled this payment yet — its processing fee is not known." }));
+    const totals = sumJobCosts([
+      rollupJobCosts({ ...noCosts, revenue: 1000 }, null, DEFAULT_LABOR_RATE, 400, { synchronyCut: 0, cardFees: 0, cardFeesPending: pending(2) }),
+      rollupJobCosts({ ...noCosts, revenue: 500 }, null, DEFAULT_LABOR_RATE, 100, { synchronyCut: 0, cardFees: 10, cardFeesPending: [] }),
+      rollupJobCosts(noCosts, null, DEFAULT_LABOR_RATE, 0, { synchronyCut: 0, cardFees: 0, cardFeesPending: pending(1) }),
+    ]);
+    // The totals count only the fees Stripe could give — and say how many are still out.
+    expect(totals.lifetimeCost).toBe(510);
+    expect(totals.cardFeesPendingCount).toBe(3);
   });
 });
 
@@ -250,6 +292,10 @@ describe("GET /jobs and GET /accounts/:id/summary agree about money", () => {
     // The P.O.'s charge + typed amount, and nothing else.
     expect(fromJobs.materialCost).toBe(612.5);
     expect(fromJobs.materialSource).toBe("po");
+    // Processing costs (ruling 6) are fields on BOTH, zero on a job with no payments — and inside
+    // totalCost, so the two endpoints cannot disagree about them either.
+    expect(fromJobs).toMatchObject({ synchronyCut: 0, cardFees: 0, cardFeesPending: [] });
+    expect(fromJobs.totalCost).toBe(612.5 + 6.5 * DEFAULT_LABOR_RATE + 90);
   });
 
   it("both endpoints pick up a labor rate change from company settings", async () => {

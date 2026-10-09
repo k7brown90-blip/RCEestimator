@@ -18,6 +18,13 @@ import { summarizeFindings } from '../domain/findings'
 import { jurisdictions } from '../data/jurisdictions'
 import { buildLedgerFindings } from '../domain/ledgerFindings'
 import { buildReport } from '../domain/report'
+import type { DraftOptionSet, EstimateOptionLetter } from '../../../shared/estimateOptions'
+import type { QuoteMoney } from '../../../shared/quoteMoney'
+import type { DraftLifecycle } from '../../../shared/draftLifecycle'
+import type { CatalogSection, FieldCatalogPage, FieldCatalogRow, FieldCatalogSnapshotResponse } from '../../../shared/quoteCatalog'
+import type { EstimatePhoto } from '../../../shared/estimatePhotos'
+import { estimateEmailRequest, type EstimateEmailChoices } from '../../../shared/estimateEmail'
+import type { FieldOpenQuestion, QuoteSuggestedLine, FieldWalkthroughRow, WalkthroughProposal } from '../../../shared/suggestedLines'
 import { toPushV2 } from '../domain/v2Types'
 
 const BASE_URL_KEY = 'rce_crm_base_url'
@@ -94,11 +101,29 @@ export function consumeEnrollmentToken(): boolean {
  */
 export class CrmRequestError extends Error {
   readonly body: unknown
-  constructor(message: string, body: unknown) {
+  /**
+   * The HTTP status the server answered with (Phase 7, 2026-10-09). The quote queue sorts its
+   * answers by it — 401 "sign in again", 4xx a refusal that stops the draft's chain, 5xx "try
+   * again later" — so it rides here. Undefined only when a 200 carried `success: false`.
+   */
+  readonly status: number | undefined
+  constructor(message: string, body: unknown, status?: number) {
     super(message)
     this.name = 'CrmRequestError'
     this.body = body
+    this.status = status
   }
+}
+
+/**
+ * "No signal" for the quote queue means the request never got an answer — fetch threw (the
+ * browser's TypeError), not the server saying no. An HTTP refusal is NEVER offline (Phase 7 trap:
+ * treating a 409 as "no signal" would queue a refused edit forever).
+ */
+export function isNetworkFailure(error: unknown): boolean {
+  if (error instanceof CrmRequestError) return false
+  if (error instanceof Error && error.message === 'CRM not configured') return false
+  return true
 }
 
 async function crmRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -116,7 +141,11 @@ async function crmRequest<T>(path: string, init?: RequestInit): Promise<T> {
     | { success?: boolean; data?: T; error?: { message?: string } }
     | null
   if (!response.ok || body?.success === false) {
-    throw new CrmRequestError(body?.error?.message ?? `CRM request failed (${response.status})`, body)
+    throw new CrmRequestError(
+      body?.error?.message ?? `CRM request failed (${response.status})`,
+      body,
+      response.ok ? undefined : response.status,
+    )
   }
   return body?.data as T
 }
@@ -530,6 +559,8 @@ export interface JobBrief {
   customerPhone: string | null
   address: string
   estimate: {
+    /** The issued estimate's id - the Job site screen's "Email the estimate" needs it. Optional for an older server. */
+    id?: string
     number: string
     title: string
     scopeText: string | null
@@ -1506,6 +1537,19 @@ export interface VisitPaymentInfo {
   depositPayUrl: string
   qrUrl: string
   depositQrUrl: string
+  /**
+   * FINANCING IN PROGRESS (Kyle, 2026-10-08; Phase 6 Unit 6A). The balance — fee included — is
+   * being paid through Synchrony: the fee is shown as its own line, read-only, and the QR / pay
+   * link are closed on the server while this is set. Dollars only, never a rate. The field never
+   * records a Synchrony payment; that is the office's. Optional so an older server build parses.
+   */
+  financing?: { planNumber: string; planDescription: string; fee: number; reason: string } | null
+  /**
+   * Why the balance cannot be financed yet (Kyle, 2026-10-08, decision 8; Phase 6 Unit 6C) — the
+   * 1/3 deposit has not been collected. The server's own sentence, the same one the CRM's greyed
+   * "Pay balance with Synchrony" shows. Null/absent = nothing to say. Optional for older servers.
+   */
+  financingBlocked?: string | null
 }
 
 /**
@@ -1561,8 +1605,22 @@ export async function emailPaymentRequest(
  * the customer's address and composes the email (`sendEstimateEmail`, the same function the CRM's
  * send button calls) — nothing here carries the estimate's signing token.
  */
-export async function emailEstimateToCustomer(estimateId: string): Promise<{ to: string }> {
-  return crmRequest(`/issued-estimates/${estimateId}/email`, { method: 'POST', body: '{}' })
+export async function emailEstimateToCustomer(
+  estimateId: string,
+  opts: Partial<EstimateEmailChoices> = {},
+): Promise<{ to: string }> {
+  // The same choices the office's Email estimate panel offers (Phase 4, 2026-10-08, one estimating
+  // system): an address, a note, the Health Record report, the Generator Sizing sheet, the
+  // Synchrony financing line (on unless switched off) and photos. The body is built by the SAME
+  // function the CRM uses (shared/estimateEmail.ts), so a default cannot differ between the apps,
+  // and the server parses it with the same schema (estimateEmailBodySchema). Photos keep the office
+  // picker's rule narrowed to THIS JOB (Kyle, 2026-10-09, ruling 2): at most ten, only what was ticked;
+  // the server re-checks every id against the job chain and refuses one from another job. Nothing
+  // chosen sends `{}`.
+  return crmRequest(`/issued-estimates/${estimateId}/email`, {
+    method: 'POST',
+    body: JSON.stringify(estimateEmailRequest(opts)),
+  })
 }
 
 /**
@@ -1572,13 +1630,10 @@ export async function emailEstimateToCustomer(estimateId: string): Promise<{ to:
  * services/financingEmail.ts — this is a link and an invitation to apply, nothing about rates
  * or terms.
  *
- * NOTE for whoever wires a call site: this needs the ISSUED ESTIMATE id, which
- * `fetchJobBrief`/`fetchVisitPaymentInfo` below do not currently return (only `number`,
- * `title`, etc. — never `id`). The one place in this file that has a fresh estimate id is
- * `issueQuote`'s return value, right after the tech issues a quote. Wiring this into
- * `CollectPayment` (a later visit, after navigating away) needs that id added to the
- * job-brief or payment-info response first — a one-line additive server change this dispatch
- * was not scoped to make. Flagged in the build report rather than guessed around.
+ * Call sites (2026-10-08, Phase 4): "Email the financing link" on the Quote screen's issued panel
+ * and the Job site's awaiting-signature panel - BEFORE the customer signs (Kyle: "the financing
+ * link should be able to be sent before signing") - and CollectPayment's button after. Refused by
+ * the server, in its words, for a void, lost or superseded estimate (services/financingEmail.ts).
  */
 export async function emailFinancing(estimateId: string): Promise<{ to: string }> {
   return crmRequest(`/issued-estimates/${estimateId}/email-financing`, { method: 'POST', body: '{}' })
@@ -1699,18 +1754,10 @@ export async function pauseJobForLater(visitId: string, reason?: string | null):
 //    Same price book, same engine, same gates as the CRM — these call the
 //    tech-authenticated wrappers, never a second pricing path.
 
-export interface QuoteCatalogRow {
-  itemId: string
-  description: string | null
-  category: string | null
-  unit: string | null
-  isFlatPriced: boolean
-  isContinuousLength: boolean
-  isHourlyProduct: boolean
-  hasPublishedLabour: boolean
-  hasPriceAtActiveSupplier: boolean
-  sellsMaterial: boolean
-}
+// One catalog item as the phone sees it — words and yes/no gap badges, NO hours and NO costs. The
+// shape is shared (shared/quoteCatalog.ts) so the server's projection and this type cannot drift.
+export type QuoteCatalogRow = FieldCatalogRow
+export type QuoteSection = CatalogSection
 
 export interface QuoteLine {
   id: string
@@ -1719,52 +1766,261 @@ export interface QuoteLine {
   quantity: number
   quantitySource: 'COUNT' | 'MEASURED_LENGTH' | 'TERMINATION_COUNT' | 'MANUAL'
   difficulty: 'NORMAL' | 'DIFFICULT' | 'VERY_DIFFICULT'
-  option: 'A' | 'B' | 'C'
+  // A-H (shared/estimateOptions.ts) — one list for server, CRM and field.
+  option: EstimateOptionLetter
+  // An AI-suggested line waits for the office to confirm it: it is not priced and the board does
+  // not let it be dragged (the CRM keeps proposed lines in their own list too). Absent = confirmed.
+  state?: 'PROPOSED' | 'CONFIRMED'
   note: string | null
   location: string | null
   // No laborHours here (2026-09-21): hours never leave the office, same
   // standing rule as the job-brief's scope-only lines.
   lineTotal: number | null
   gaps: string[]
+  // True when the item has since been retired from the price book ("no longer offered"); the
+  // server still prices it (Phase 7 U1, 2026-10-09). Optional so an older server still renders.
+  retired?: boolean
 }
 
 export interface QuoteState {
   draftId: string
+  // The supplier the draft prices at (Phase 7 U1, 2026-10-09). Optional so an older server still renders.
+  supplierId?: string
+  // The title and the scope of work the customer reads — editable on the Quote screen (Phase 2,
+  // 2026-10-08); the draft's values ARE the estimate's, on a first issue and on every revision.
+  title: string
+  jobDescription: string | null
+  // Issued or not, changed since, deletable — decided by ONE server function for both apps
+  // (shared/draftLifecycle.ts). The screen shows the issued estimate from this, offers "Edit the
+  // estimate", and relabels Issue as "Save changes to the estimate".
+  lifecycle: DraftLifecycle
+  // The AI-suggested lines ("AI proposals") and open questions waiting on the tech — the same two
+  // lists the office's Estimate Intake shows, from the same server function. Not priced; the draft
+  // cannot be issued while either has anything in it (shared/suggestedLines.ts).
+  suggestedLines: QuoteSuggestedLine[]
+  openQuestions: FieldOpenQuestion[]
   // A change order is the one draft where a negative quantity is legal
   // (assertQuantityAllowed, server-side) — the quantity input reads this to
   // decide whether to let a negative value through.
   isChangeOrder: boolean
+  // The invoice number a change order is against ("Change order to 2026-1012"); null for an ordinary quote.
+  changeOrderFor: string | null
   lines: QuoteLine[]
-  options: Array<{ option: 'A' | 'B' | 'C'; lineCount: number; materialSell: number; subtotal: number | null; complete: boolean }>
+  // The options this draft has (A, B, C plus any added) and the letter "Add option" creates next
+  // — the same object the CRM's review payload carries, built by the same server function.
+  optionSet: DraftOptionSet
+  options: Array<{ option: EstimateOptionLetter; lineCount: number; subtotal: number | null; complete: boolean }>
+  // The discount programme with its computed DOLLARS, and the one-or-the-other mode with the range
+  // it shows — worked out by the server (services/quoteMoney.ts), so this phone does no money
+  // arithmetic (2026-09-24 Unit A trap 2). Customer prices only.
+  money: QuoteMoney
   total: number | null
   rateProvisional: boolean
 }
 
-export async function openQuoteForVisit(visitId: string): Promise<{ draftId: string; resumed: boolean }> {
+/**
+ * Find-or-create the visit's quote. With `draftId` — an id this phone minted with no signal — it
+ * is the replay-safe PUT (Phase 7, 2026-10-09): the same id again answers 200 with the same draft,
+ * and a visit whose quote the office started meanwhile answers 409 carrying `existingDraftId`
+ * (read it off the thrown CrmRequestError's body). Without one, the POST exactly as before.
+ */
+export async function openQuoteForVisit(visitId: string, draftId?: string): Promise<{ draftId: string; resumed: boolean }> {
+  if (draftId) return crmRequest(`/visits/${visitId}/quote/${draftId}`, { method: 'PUT', body: '{}' })
   return crmRequest(`/visits/${visitId}/quote`, { method: 'POST', body: '{}' })
 }
 
-export async function searchQuoteCatalog(search: string): Promise<{ atomics: QuoteCatalogRow[]; truncated: boolean }> {
+/**
+ * READ-ONLY: the visit's quote if it has one, null when it has none (404). Never starts one — the
+ * assignment-sync cache pass (quoteSync.cacheVisitQuotes) calls this for every assigned visit and
+ * must not leave a quote on a visit nobody has quoted (Phase 7, 2026-10-09).
+ */
+export async function fetchVisitQuote(visitId: string): Promise<{ draftId: string } | null> {
+  try {
+    return await crmRequest(`/visits/${visitId}/quote`, { method: 'GET' })
+  } catch (error) {
+    if (error instanceof CrmRequestError && error.status === 404) return null
+    throw error
+  }
+}
+
+// The picker: type to search, or tap a section card to browse it (assemblies are in both). The same
+// browse the office's Estimate Intake runs, minus the labour columns (Phase 2 unit C, 2026-10-08).
+export async function searchQuoteCatalog(search: string): Promise<FieldCatalogPage> {
   return crmRequest(`/quote-catalog?search=${encodeURIComponent(search)}`, { method: 'GET' })
 }
 
-export async function fetchQuote(draftId: string): Promise<QuoteState> {
-  return crmRequest(`/quotes/${draftId}`, { method: 'GET' })
+export async function browseQuoteSection(section: string): Promise<FieldCatalogPage> {
+  return crmRequest(`/quote-catalog?category=${encodeURIComponent(section)}`, { method: 'GET' })
 }
 
+export async function fetchQuoteSections(): Promise<{ sections: QuoteSection[] }> {
+  return crmRequest('/quote-catalog/sections', { method: 'GET' })
+}
+
+/**
+ * The whole price book in words, for the phone to keep (Phase 7 U2/U4, 2026-10-09). With the
+ * version of the copy already saved, the server answers `{ unchanged: true }` and sends no rows.
+ */
+export async function fetchQuoteCatalogSnapshot(version?: string | null): Promise<FieldCatalogSnapshotResponse> {
+  const q = version ? `?version=${encodeURIComponent(version)}` : ''
+  return crmRequest(`/quote-catalog/snapshot${q}`, { method: 'GET' })
+}
+
+/**
+ * Keep the server's answer for one quote on this phone (Phase 7, 2026-10-09) — the SAME payload
+ * the online screen renders, so with no signal the screen renders this and overlays the tech's
+ * waiting edits on it (quoteSync.overlayQuote). The payload does not carry the visit, so a save
+ * from a plain fetchQuote keeps whatever visit the row already had; the flush and the cache pass
+ * always pass it. `pendingRebase` is never touched here — only the queue sets and clears it.
+ */
+export async function saveQuoteMirror(
+  payload: QuoteState,
+  opts: { visitId?: string | null; origin?: 'phone' | 'server'; pricesNeedReview?: boolean } = {},
+): Promise<void> {
+  await db.transaction('rw', db.quoteMirrors, async () => {
+    const existing = await db.quoteMirrors.get(payload.draftId)
+    await db.quoteMirrors.put({
+      draftId: payload.draftId,
+      visitId: opts.visitId ?? existing?.visitId ?? null,
+      payload,
+      snapshotAt: new Date().toISOString(),
+      origin: opts.origin ?? existing?.origin ?? 'server',
+      pricesNeedReview: opts.pricesNeedReview ?? existing?.pricesNeedReview ?? false,
+      pendingRebase: existing?.pendingRebase ?? null,
+    })
+  })
+}
+
+/**
+ * The quote as the office has it. Every successful read is saved to the phone (saveQuoteMirror)
+ * so the screen can open it with no signal; a failed save never fails the read — the online
+ * screen is rendering from the payload in hand either way.
+ */
+export async function fetchQuote(draftId: string, opts: { visitId?: string | null } = {}): Promise<QuoteState> {
+  const quote = await crmRequest<QuoteState>(`/quotes/${draftId}`, { method: 'GET' })
+  try {
+    await saveQuoteMirror(quote, { visitId: opts.visitId, origin: 'server' })
+  } catch {
+    /* the phone's copy is a convenience; the office's answer is already in hand */
+  }
+  return quote
+}
+
+// Quantity is just a number: the server decides how it was counted (Kyle, 2026-10-08).
+// `lineId` (Phase 7, 2026-10-09): the id this phone minted for a line added with no signal —
+// the replay-safe PUT, where the same id on this quote again answers 200 and writes nothing.
+// Without one, the POST exactly as before, the database picking the id.
 export async function addQuoteLine(draftId: string, line: {
-  itemId: string; quantity: number; quantitySource: QuoteLine['quantitySource'];
-  difficulty?: QuoteLine['difficulty']; option?: QuoteLine['option']; note?: string | null;
-}): Promise<{ lineId: string }> {
+  itemId: string; quantity: number;
+  difficulty?: QuoteLine['difficulty']; option?: QuoteLine['option']; note?: string | null; location?: string | null;
+}, lineId?: string): Promise<{ lineId: string }> {
+  if (lineId) return crmRequest(`/quotes/${draftId}/lines/${lineId}`, { method: 'PUT', body: JSON.stringify(line) })
   return crmRequest(`/quotes/${draftId}/lines`, { method: 'POST', body: JSON.stringify(line) })
 }
 
-export async function editQuoteLine(lineId: string, patch: Partial<Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'quantitySource'>>): Promise<void> {
-  await crmRequest(`/quote-lines/${lineId}`, { method: 'PATCH', body: JSON.stringify(patch) })
+/**
+ * `expected` (Phase 7, 2026-10-09): each changed field as this phone's screen last showed it. The
+ * server accepts the edit when the field now equals that, or already equals the new value, and
+ * otherwise refuses 409 "Changed at the office since you last saw it: quantity was 3, now 5".
+ * Omitted = last write wins, exactly as before.
+ */
+export async function editQuoteLine(
+  lineId: string,
+  patch: Partial<Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'location'>>,
+  expected?: Partial<Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'location'>>,
+): Promise<void> {
+  const body = expected ? { ...patch, expected } : patch
+  await crmRequest(`/quote-lines/${lineId}`, { method: 'PATCH', body: JSON.stringify(body) })
 }
 
 export async function removeQuoteLine(lineId: string): Promise<void> {
   await crmRequest(`/quote-lines/${lineId}`, { method: 'DELETE' })
+}
+
+// Options past C and line order — the same service functions as the CRM (Kyle, 2026-10-08).
+// `option` (Phase 7, 2026-10-09): the letter the screen showed it was adding, so a replay cannot add
+// a second one — already present answers 200 (`created: false`) with nothing written. Without one,
+// the empty body as before and the server picks the letter.
+export async function addQuoteOption(
+  draftId: string,
+  option?: EstimateOptionLetter,
+): Promise<{ option: EstimateOptionLetter; optionSet: DraftOptionSet; created?: boolean }> {
+  return crmRequest(`/quotes/${draftId}/options`, { method: 'POST', body: option ? JSON.stringify({ option }) : '{}' })
+}
+
+// `expectedLines` is the count the confirm showed; the server deletes nothing (409) if the option
+// holds a different number now (the office may have added lines since this screen loaded).
+export async function removeQuoteOption(
+  draftId: string,
+  option: EstimateOptionLetter,
+  expectedLines?: number,
+): Promise<{ option: EstimateOptionLetter; linesRemoved: number; optionSet: DraftOptionSet }> {
+  const q = expectedLines === undefined ? '' : `?expectedLines=${expectedLines}`
+  return crmRequest(`/quotes/${draftId}/options/${option}${q}`, { method: 'DELETE' })
+}
+
+// Discount, option names, one-or-the-other mode and copy-an-option — the same service functions as
+// the CRM's routes (Kyle, 2026-10-08). Plain online calls like the ones above (offline is Phase 7).
+// A refusal (a signed quote, a bad percentage) throws a CrmRequestError carrying the server's words.
+
+// Each settings writer below takes an optional `expected` (Phase 7, 2026-10-09): the value this
+// phone's screen last showed, so a replay after a lost answer is accepted and an edit the office
+// overtook is refused 409 with both values (the server's assertExpected rule). Sent only when given.
+
+/**
+ * Military / Senior / a custom percentage; `type: null` clears the discount. The server bounds the percent.
+ * `expected.percent` is compared with the STORED percent, which the server keeps only for a custom
+ * programme — so it is the custom figure or null, never the 5% a military/senior row displays.
+ */
+export async function setQuoteDiscount(
+  draftId: string,
+  next: { type: 'military' | 'senior' | 'custom' | null; percent?: number | null },
+  expected?: { type?: 'military' | 'senior' | 'custom' | null; percent?: number | null },
+): Promise<{ discountType: string | null; discountPercent: number | null }> {
+  const body: Record<string, unknown> = { type: next.type, percent: next.percent ?? null }
+  if (expected) body.expected = expected
+  return crmRequest(`/quotes/${draftId}/discount`, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+/** "One-or-the-other options": the customer picks exactly ONE option instead of the options adding up. */
+export async function setQuoteOptionsMode(
+  draftId: string,
+  exclusive: boolean,
+  expected?: { exclusive?: boolean },
+): Promise<{ exclusiveOptions: boolean }> {
+  const body = expected ? { exclusive, expected } : { exclusive }
+  return crmRequest(`/quotes/${draftId}/options-mode`, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+/** Name an option and give it a short description. An empty string clears it (the server's rule). */
+export async function saveQuoteOptionMeta(
+  draftId: string,
+  option: EstimateOptionLetter,
+  meta: { label: string; note: string },
+  expected?: { label?: string | null; note?: string | null },
+): Promise<{ option: EstimateOptionLetter; label: string | null; note: string | null }> {
+  const body = expected ? { ...meta, expected } : meta
+  return crmRequest(`/quotes/${draftId}/options/${option}`, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+/** "Copy lines": append every line of one option to another (never replaces what is there). */
+export async function copyQuoteOption(
+  draftId: string,
+  from: EstimateOptionLetter,
+  to: EstimateOptionLetter,
+): Promise<{ copied: number; from: EstimateOptionLetter; to: EstimateOptionLetter }> {
+  return crmRequest(`/quotes/${draftId}/options/copy`, { method: 'POST', body: JSON.stringify({ from, to }) })
+}
+
+/**
+ * The FULL ordered list of the quote's lines, each with the option it now sits in and (`was`) the
+ * option this screen last saw it in — a save from a screen the office has overtaken is refused (409).
+ */
+export async function saveQuoteLineOrder(
+  draftId: string,
+  order: Array<{ lineId: string; option: EstimateOptionLetter; was?: EstimateOptionLetter }>,
+): Promise<{ saved: number; changed: number }> {
+  return crmRequest(`/quotes/${draftId}/line-order`, { method: 'PUT', body: JSON.stringify({ order }) })
 }
 
 /**
@@ -1774,11 +2030,156 @@ export async function removeQuoteLine(lineId: string): Promise<void> {
  */
 export async function issueQuote(
   draftId: string,
-  opts: { depositRequired?: boolean } = {},
+  opts: { depositRequired?: boolean; includeGenerator?: boolean; addToCurrentJob?: boolean } = {},
 ): Promise<{ estimateId: string; number: string; unpriced: string[]; customerUrl: string }> {
-  return crmRequest(`/quotes/${draftId}/issue`, {
+  // Only what the tech actually chose goes on the wire: an absent key is the service's default
+  // (deposit on for an estimate / off for a change order; no generator sheet; add-to-current-job on
+  // when the job is live). includeGenerator and addToCurrentJob take effect on the FIRST issue only.
+  const body: Record<string, boolean> = {}
+  if (opts.depositRequired !== undefined) body.depositRequired = opts.depositRequired
+  if (opts.includeGenerator !== undefined) body.includeGenerator = opts.includeGenerator
+  if (opts.addToCurrentJob !== undefined) body.addToCurrentJob = opts.addToCurrentJob
+  return crmRequest(`/quotes/${draftId}/issue`, { method: 'POST', body: JSON.stringify(body) })
+}
+
+// ─── Photos on the estimate, and raising a change order (Phase 2 unit E, 2026-10-08) ──────────
+//    Plain online fetches like the rest of the quote calls - no offline queue (that is Phase 7).
+//    A photo added from the Quote screen goes up through uploadJobPhoto above: the SAME job-photo
+//    path the Job site screen uses. These calls only list, preview and take back.
+
+/** The job photos that can ride this quote's estimate email: this job only (the quote's visit and its job chain). */
+export async function fetchQuotePhotos(draftId: string): Promise<{ photos: EstimatePhoto[]; total: number; max: number; visitId: string }> {
+  return crmRequest(`/quotes/${draftId}/photos`, { method: 'GET' })
+}
+
+/** A small preview. The token needs a header, which an <img> tag cannot send - so this is a fetch. */
+export async function fetchQuotePhotoPreview(draftId: string, photoId: string): Promise<Blob> {
+  const settings = getCrmSettings()
+  if (!settings) throw new Error('CRM not configured')
+  const response = await fetch(`${settings.baseUrl}/api/health-record/quotes/${draftId}/photos/${photoId}/preview`, {
+    headers: { Authorization: `Bearer ${settings.token}` },
+  })
+  if (!response.ok) throw new Error(`Photo preview failed (${response.status})`)
+  return response.blob()
+}
+
+/** Take back a photo this technician added to this job. The server refuses anyone else's, with why. */
+export async function deleteQuotePhoto(draftId: string, photoId: string): Promise<{ deleted: true }> {
+  return crmRequest(`/quotes/${draftId}/photos/${photoId}`, { method: 'DELETE' })
+}
+
+/**
+ * "Raise a change order" from the job. The server finds the job's signed estimate from the visit
+ * (this phone never holds an estimate id) and runs the same rules as the office's button; an open
+ * change order on the same invoice is reopened instead of starting a second (resumed = true).
+ */
+export async function raiseChangeOrder(
+  visitId: string,
+): Promise<{ draftId: string; changeOrderFor: string; resumed: boolean }> {
+  return crmRequest(`/visits/${visitId}/change-order`, { method: 'POST', body: '{}' })
+}
+
+// ─── Sign in person, on this phone (Phase 3 unit C, 2026-10-08) ──────────────
+//    The customer is standing next to the tech, so the signature is a FIELD action (Kyle,
+//    2026-09-24). The same server function the office's signing screen calls (signInPerson),
+//    behind visit assignment. Needs signal, deliberately: a signature is a legal record and the
+//    server must accept it before the screen says "Signed" - there is no queued, pretend-signed state.
+
+export interface InPersonSignResult {
+  signed: true
+  estimateId: string
+  number: string
+  /** The options the server recorded as taken. */
+  selectedOptions: string[]
+  /** What the signed document bills - the server's figure, frozen at signing. Never added up on the phone. */
+  total: number
+  jobVisitId: string | null
+  /** A change order that joined the current job: nothing new to schedule. */
+  jobJoined: boolean
+  /** Numbers of the other estimates at this address that were put away. */
+  archivedNumbers: string[]
+}
+
+/**
+ * Record the customer's signature, drawn on this phone. The server answers 400 with a readable
+ * reason (already signed, expired, closed, pick an option, ...), which reaches the screen verbatim
+ * as the thrown error's message.
+ */
+export async function signEstimateInPerson(
+  estimateId: string,
+  input: { signerName: string; signatureImage: string; selectedOptions: string[] },
+): Promise<InPersonSignResult> {
+  return crmRequest(`/issued-estimates/${estimateId}/sign-in-person`, {
     method: 'POST',
-    body: JSON.stringify(opts.depositRequired === undefined ? {} : { depositRequired: opts.depositRequired }),
+    body: JSON.stringify(input),
+  })
+}
+
+// ─── Title & scope, delete, copy to a new quote (Phase 2 unit B, 2026-10-08) ──
+//    The same three service functions Estimate Intake calls (setDraftDetails, deleteDraft,
+//    duplicateDraft), through tech-scoped wrappers. Plain online fetches like the rest of the
+//    quote calls — no offline queue (that is Phase 7).
+
+/**
+ * The estimate's title and scope of work. Either field alone is a valid edit; an empty scope clears it.
+ * `expected` (Phase 7): the title / scope this screen last showed — the server's replay rule, as above.
+ */
+export async function setQuoteDetails(
+  draftId: string,
+  patch: { title?: string; jobDescription?: string | null },
+  expected?: { title?: string | null; jobDescription?: string | null },
+): Promise<{ id: string; title: string; jobDescription: string | null }> {
+  const body = expected ? { ...patch, expected } : patch
+  return crmRequest(`/quotes/${draftId}/details`, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+/** Delete a quote nothing has been issued from. The server refuses (409, with why) once anything was issued. */
+export async function deleteQuote(draftId: string): Promise<{ deleted: true; title: string }> {
+  return crmRequest(`/quotes/${draftId}`, { method: 'DELETE' })
+}
+
+/** "Copy to a new quote": a fresh draft on the same visit with this quote's lines, names and discount, priced at today's book. */
+export async function copyQuoteToNew(draftId: string): Promise<{ draftId: string; title: string }> {
+  return crmRequest(`/quotes/${draftId}/duplicate`, { method: 'POST', body: '{}' })
+}
+
+// ─── AI proposals, open questions and the walkthrough list (Phase 2 unit D, 2026-10-08) ──
+//    The same service functions Estimate Intake calls (confirmProposedLine, rejectProposedLine,
+//    resolveQuestion, proposeWalkthroughForDraft, resolveWalkthroughRows) through tech-scoped
+//    wrappers. Plain online fetches like the rest of the quote calls — no offline queue (Phase 7).
+
+/** "Confirm" / "Edit & confirm": the suggestion becomes a real, priced line. Edits are optional. */
+export async function confirmSuggestedLine(
+  lineId: string,
+  edits: { quantity?: number; difficulty?: QuoteLine['difficulty'] } = {},
+): Promise<{ lineId: string }> {
+  return crmRequest(`/quote-lines/${lineId}/confirm`, { method: 'POST', body: JSON.stringify(edits) })
+}
+
+/** "Reject": the suggestion is dropped (an unconfirmed suggestion is not a record). */
+export async function rejectSuggestedLine(lineId: string): Promise<void> {
+  await crmRequest(`/quote-lines/${lineId}/reject`, { method: 'POST', body: '{}' })
+}
+
+/** "Resolve" on an open question, with the answer / what was done. */
+export async function resolveQuoteQuestion(questionId: string, resolutionNote: string): Promise<void> {
+  await crmRequest(`/quote-questions/${questionId}/resolve`, { method: 'POST', body: JSON.stringify({ resolutionNote }) })
+}
+
+/**
+ * "Build the draft (AI)". `path` says which brain answered: 'ai' wrote suggestions onto the quote
+ * (they show under "AI proposals"); 'basic' means the model was unavailable, nothing was written,
+ * and `degradedReason` says why — the screen then runs the basic match.
+ */
+export async function proposeFromWalkthroughList(draftId: string, text: string): Promise<WalkthroughProposal> {
+  return crmRequest(`/quotes/${draftId}/walkthrough/propose`, { method: 'POST', body: JSON.stringify({ text }) })
+}
+
+/** "Basic match only": candidates for each typed line. Nothing is added until the tech taps one. */
+export async function matchWalkthroughList(lines: string[]): Promise<{ rows: FieldWalkthroughRow[] }> {
+  return crmRequest('/quote-catalog/resolve-walkthrough', {
+    method: 'POST',
+    body: JSON.stringify({ rows: lines.map((raw) => ({ raw })) }),
   })
 }
 

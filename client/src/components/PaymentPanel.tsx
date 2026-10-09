@@ -27,6 +27,8 @@ import { api } from "../lib/api";
 import { money } from "../lib/utils";
 import type { PaymentInfo } from "../lib/api";
 import { WarrantyClaimTracker } from "./WarrantyCoveragePanel";
+import { RefundedPaymentNote, VoidPaymentButton, VoidedPaymentNote } from "./VoidPaymentButton";
+import { FINANCING_IN_PROGRESS, financingInProgress, SynchronyFinancing } from "./SynchronyFinancing";
 import { GOOGLE_REVIEW_URL } from "../../../shared/reviewRequestUrl";
 
 export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId?: string }) {
@@ -170,6 +172,19 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
   if (!info) return null;
 
   const depositRemaining = Math.max(0, info.depositDue - info.depositPaid);
+  /*
+    FINANCING IN PROGRESS (Kyle, 2026-10-08; SynchronyFinancing.tsx). While a financing fee is on
+    the invoice AND NOT YET PAID the balance carries it and ONLY the Synchrony payment may close
+    it: every card, QR, deposit-request and record-cash/check control below is greyed WITH this
+    reason (never hidden — CLAUDE.md click-through rule 5). The server refuses the same things:
+    chargeableAmount (card, QR, pay page), POST /financials/payments (cash/check/Zelle) and the
+    deposit-request route. Once the Synchrony payment is recorded the fee is LOCKED and paid —
+    anything still owed after that (a deposit check that bounced and was voided) is plain invoice
+    money, and every control reopens for it (review finding, 2026-10-09: the lock used to close
+    every rail, and the only way to collect that money was to void real Synchrony money).
+  */
+  const financing = financingInProgress(info);
+  const closed = financing ? { disabled: true, title: FINANCING_IN_PROGRESS } : {};
   const qrSrc =
     showQr === "deposit" ? `${info.payUrl}/qr.svg?type=deposit`
     : showQr === "balance" ? `${info.payUrl}/qr.svg`
@@ -230,6 +245,12 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
           {" · "}Balance <b>{money(info.balance)}</b>
         </p>
       )}
+      {/* The financing fee as its own line (Kyle, 2026-10-08: "never folded in") — the balance above already includes it. */}
+      {info.financingFee && (
+        <p className="mt-1 text-sm text-rce-muted">
+          Financing fee — Plan {info.financingFee.planNumber}: <b>{money(info.financingFee.fee)}</b> (included in the balance)
+        </p>
+      )}
       {info.depositRequired && !info.depositSatisfied && (
         <p className="mt-1 text-xs text-amber-800">
           This job can't be scheduled until the deposit is in — charge it below or record the cash/check.
@@ -260,12 +281,13 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
           <>
             <button
               className="btn btn-primary text-sm"
-              disabled={emailRequest.isPending}
+              disabled={emailRequest.isPending || financing}
+              {...closed}
               onClick={() => emailRequest.mutate("deposit")}
             >
               Email deposit request — {money(depositRemaining)}
             </button>
-            <button className="btn btn-secondary text-sm" onClick={() => setShowQr(showQr === "deposit" ? null : "deposit")}>
+            <button className="btn btn-secondary text-sm" {...closed} onClick={() => setShowQr(showQr === "deposit" ? null : "deposit")}>
               {showQr === "deposit" ? "Hide QR" : "Deposit QR (in person)"}
             </button>
           </>
@@ -283,6 +305,14 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
               signed copy — and got one document. The button now names the invoice and says what
               is due on it.
             */}
+            {/*
+              THE FINAL INVOICE STAYS SENDABLE WHILE FINANCING (Kyle, 2026-10-08, Phase 6 Unit 6C): "I can
+              send the final invoice out and then it is due" — a financed customer is owed the same
+              document, due upon receipt, as everyone else. The email carries the fee as its own line
+              and NO pay link (paymentReceipts.sendBalanceRequestEmail), so the card path still never
+              sees the fee-inclusive balance. Only the deposit request, the QR and the card/record
+              buttons are closed.
+            */}
             <button
               className="btn btn-primary text-sm"
               disabled={emailRequest.isPending}
@@ -290,7 +320,8 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
             >
               Email invoice {info.number} — {money(info.balance)} due
             </button>
-            <button className="btn btn-secondary text-sm" onClick={() => setShowQr(showQr === "balance" ? null : "balance")}>
+            {/* The QR / pay page NEVER shows a fee-inclusive balance: closed while financing (the server refuses too). */}
+            <button className="btn btn-secondary text-sm" {...closed} onClick={() => setShowQr(showQr === "balance" ? null : "balance")}>
               {showQr === "balance" ? "Hide QR" : "Balance QR (in person)"}
             </button>
           </>
@@ -350,14 +381,17 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
             {info.depositRequired && depositRemaining > 0 && (
               <button
                 className="btn btn-secondary text-sm"
+                {...closed}
                 onClick={() => { setRecording("deposit"); setKind("deposit"); setAmount(depositRemaining.toFixed(2)); }}
               >
                 Record deposit (cash/check/Zelle)
               </button>
             )}
+            {/* The prefill is the plain balance — never a fee-inclusive one; closed outright while financing. */}
             <button
               className="btn btn-secondary text-sm"
-              onClick={() => { setRecording("final"); setKind("final"); setAmount(info.balance.toFixed(2)); }}
+              {...closed}
+              onClick={() => { setRecording("final"); setKind("final"); setAmount((info.balanceBeforeFee ?? info.balance).toFixed(2)); }}
             >
               Record payment (cash/check/Zelle)
             </button>
@@ -365,7 +399,14 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         )}
       </div>
 
-      {qrSrc && (
+      {/*
+        PAY BALANCE WITH SYNCHRONY (Kyle, 2026-10-08, decisions 7, 8, 12): pick the plan, add the
+        financing fee, later record the Synchrony payment; remove the fee with a reason until then.
+        Only on a signed invoice with a balance — the component greys itself with the reason.
+      */}
+      {(!info.paidInFull || info.financingFee) && <SynchronyFinancing info={info} queryKey={queryKey} />}
+
+      {qrSrc && !financing && (
         <div className="mt-3 inline-block rounded-lg border border-rce-border bg-white p-3">
           <img src={qrSrc} alt="Scan to pay" className="h-56 w-56" />
           <p className="mt-1 text-center text-xs text-rce-muted">
@@ -441,13 +482,27 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         />
       )}
 
+      {/* Every payment on the invoice, with its exit (Kyle, 2026-10-08, decision 11): "Void…" per
+          row, reason required, administrator only — the CRM session. A voided row stays here,
+          struck through, so the ledger shows it was recorded and taken back. */}
       {info.payments.length > 0 && (
         <ul className="mt-3 space-y-1 text-xs text-rce-muted">
           {info.payments.map((p) => (
-            <li key={p.id}>
-              {money(p.amount)} · {p.method} · {p.payer === "warranty" ? `${info.warranty?.claim.company ?? "warranty company"}` : p.kind}
-              {p.checkNumber ? ` · check #${p.checkNumber}` : ""}
-              {p.paidAt ? ` · ${new Date(p.paidAt).toLocaleDateString()}` : ""} · {p.status}
+            <li key={p.id} className="flex flex-wrap items-center gap-2">
+              <span className={p.voidedAt ? "line-through" : undefined}>
+                {money(p.amount)} · {p.method} · {p.payer === "warranty" ? `${info.warranty?.claim.company ?? "warranty company"}` : p.kind}
+                {p.checkNumber ? ` · check #${p.checkNumber}` : ""}
+                {/* A Synchrony row (2026-10-09): the plan, the authorization number, and what landed after Synchrony's cut. */}
+                {p.method === "synchrony" && p.financingPlanNumber ? ` · Plan ${p.financingPlanNumber}` : ""}
+                {p.method === "synchrony" && p.financingAuthNumber ? ` · auth #${p.financingAuthNumber}` : ""}
+                {p.method === "synchrony" && p.financingNet != null ? ` · net funded ${money(p.financingNet)} (Synchrony's cut ${money(p.financingCut ?? 0)})` : ""}
+                {p.paidAt ? ` · ${new Date(p.paidAt).toLocaleDateString()}` : ""} · {p.status}
+              </span>
+              <VoidedPaymentNote voidedAt={p.voidedAt} voidReason={p.voidReason} />
+              {/* A card refund made in Stripe, recorded by the webhook (Kyle, 2026-10-09, ruling 7):
+                  "Refunded $X on <date>" on the row. No button — the refund is MADE in Stripe. */}
+              <RefundedPaymentNote payment={p} />
+              <VoidPaymentButton payment={p} onVoided={() => { void queryClient.invalidateQueries({ queryKey }); }} />
             </li>
           ))}
         </ul>

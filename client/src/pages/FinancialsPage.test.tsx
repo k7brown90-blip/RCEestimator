@@ -15,7 +15,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { FinancialsPage } from "./FinancialsPage";
 import { api } from "../lib/api";
@@ -262,5 +262,42 @@ describe("FinancialsPage", () => {
     expect(within(strip).getByText(/Bob Bounce — owes \$900\.00, invoice email bounced/)).toBeInTheDocument();
     expect(within(strip).getByText(/RELY owes \$370\.00 on Patricia Warranty/)).toBeInTheDocument();
     expect(within(strip).queryByText(/Jane Homeowner/)).not.toBeInTheDocument();
+  });
+});
+
+describe("FinancialsPage — job profitability pick list (ruling 6; review finding, 2026-10-09)", () => {
+  it("a job whose card fee is still pending with Stripe says 'profit before pending card fees' in the pick list, not only one click deeper", async () => {
+    mockEverything();
+    vi.spyOn(api, "accounts").mockResolvedValue([
+      { id: "cust-9", name: "Pat Pending", email: "pat@example.com", phone: "615-555-0199", isTestAccount: false, properties: [{ id: "prop-9", addressLine1: "9 Pending Pl", city: "Smyrna", state: "TN" }] },
+    ] as never);
+    vi.spyOn(api, "jobProfitability").mockResolvedValue([
+      {
+        visitId: "visit-9", customer: "Pat Pending", customerId: "cust-9", propertyId: "prop-9", address: "9 Pending Pl, Smyrna", jobType: "Panel upgrade",
+        status: "completed", completedAt: "2026-09-20T12:00:00.000Z", quoted: 3000, materialSpend: 400, materialSource: "po", laborHours: 4, laborCost: 300,
+        synchronyCut: 0, cardFees: 0, cardFeesPending: [{ paymentId: "pay-9", amount: 1000, reason: "Stripe has not settled this payment yet — its processing fee is not known." }],
+        marginBeforeLabor: 2600, margin: 2300,
+      },
+      {
+        visitId: "visit-8", customer: "Pat Pending", customerId: "cust-9", propertyId: "prop-9", address: "9 Pending Pl, Smyrna", jobType: "Outlet add",
+        status: "completed", completedAt: "2026-08-20T12:00:00.000Z", quoted: 500, materialSpend: 50, materialSource: "po", laborHours: 1, laborCost: 75,
+        synchronyCut: 0, cardFees: 14.8, cardFeesPending: [], marginBeforeLabor: 435.2, margin: 360.2,
+      },
+    ] as never);
+
+    renderWithProviders(<FinancialsPage />);
+
+    // The payments card carries the same account search — scope to this card.
+    const card = within((await screen.findByText("Job profitability")).closest("section")!);
+    fireEvent.change(card.getByPlaceholderText(/Search account by name/), { target: { value: "Pat" } });
+    fireEvent.click(await card.findByRole("button", { name: /Pat Pending/ }));
+    fireEvent.click(await card.findByRole("button", { name: /9 Pending Pl/ }));
+
+    const pendingRow = await card.findByRole("button", { name: /Panel upgrade/ });
+    expect(within(pendingRow).getByText("$2,300.00")).toBeInTheDocument();
+    expect(within(pendingRow).getByText("profit before pending card fees")).toBeInTheDocument();
+    const settledRow = card.getByRole("button", { name: /Outlet add/ });
+    expect(within(settledRow).getByText("$360.20")).toBeInTheDocument();
+    expect(within(settledRow).queryByText(/pending/)).not.toBeInTheDocument();
   });
 });

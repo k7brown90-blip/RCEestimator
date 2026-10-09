@@ -110,9 +110,20 @@ describe("item 2 — no labor hours or labor dollars reach the field quote", () 
     const l = quote.body.data.lines[0];
     expect(l).not.toHaveProperty("laborHours");
     expect(l.lineTotal).toBeGreaterThan(0);
+    // NAMED FIELDS ONLY. `retired` (a yes/no) and the draft's `supplierId` (an id, no prices)
+    // were added deliberately on 2026-10-09 (Phase 7, offline estimating); anything else new
+    // here must be added to this list on purpose, never by spreading a row.
+    expect(Object.keys(l).sort()).toEqual([
+      "description", "difficulty", "gaps", "id", "itemId", "lineTotal", "location", "note", "option", "quantity", "quantitySource", "retired", "state",
+    ]);
+    expect(quote.body.data.supplierId).toBe("HD");
     const optA = quote.body.data.options.find((o: { option: string }) => o.option === "A");
     expect(optA).not.toHaveProperty("laborHours");
     expect(optA).not.toHaveProperty("laborDollars");
+    // subtotal = labour dollars + materialSell, so sending both would give the labour back to the
+    // cent (2026-10-08 review). The option summary is subtotal alone.
+    expect(optA).not.toHaveProperty("materialSell");
+    expect(Object.keys(optA).sort()).toEqual(["complete", "lineCount", "option", "subtotal"]);
     expect(optA).toHaveProperty("subtotal");
   });
 });

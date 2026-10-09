@@ -39,6 +39,11 @@ import { renderEstimatePage } from "../src/services/issuedEstimateRender";
 
 const MARK = "P027";
 
+// Kyle, 2026-10-09 (ruling 4): the ONE consent sentence, character for character. Spelled out here on
+// purpose - if this drifts from shared/consentText.ts the test says so instead of following it.
+const EXACT_CONSENT =
+  "By typing my full name and tapping Accept & Sign, I agree to the scope and the price on this estimate, and I authorize Red Cedar Electric LLC to perform the work described. I understand this is an electronic signature with the same effect as a written one.";
+
 /** Fully quotable in the seeded catalog: labour value, a unit basis, and a price at HD. */
 const GOOD_A = "BF001";
 const GOOD_B = "A008";
@@ -401,6 +406,9 @@ describe("the token reaches exactly one estimate and nothing else", () => {
     const res = await request(app).get(`/e/${est!.token}`);
     expect(res.status).toBe(200);
     expect(res.text).toContain("ESTIMATE TOTAL");
+    // Ruling 4: the emailed page shows the shared sentence verbatim, and its button is exactly "Accept & Sign".
+    expect(res.text).toContain(EXACT_CONSENT.replace("&", "&amp;"));
+    expect(res.text).toContain('<button type="submit">Accept &amp; Sign</button>');
 
     const after = await prisma.issuedEstimate.findUnique({ where: { id: est!.id } });
     expect(after!.firstViewedAt).not.toBeNull();
@@ -439,8 +447,15 @@ describe("signing", () => {
     expect(after!.status).toBe("signed");
     expect(after!.signerName).toBe("Test Signature");
     expect(after!.signedAt).not.toBeNull();
-    expect(after!.consentText).toContain("electronic signature");
+    // Recorded VERBATIM (ruling 4): what the customer read is what the row keeps.
+    expect(after!.consentText).toBe(EXACT_CONSENT);
     expect(after!.signerIp).toBeTruthy();
+
+    // A row signed under an older sentence keeps what it recorded: viewing the page never rewrites it.
+    const OLD = "By typing my full name below and tapping Accept, I agree (recorded before 2026-10-09).";
+    await prisma.issuedEstimate.update({ where: { id: est!.id }, data: { consentText: OLD } });
+    await request(app).get(`/e/${est!.token}`);
+    expect((await prisma.issuedEstimate.findUnique({ where: { id: est!.id } }))!.consentText).toBe(OLD);
     expect(after!.events.map((e) => e.type)).toContain("signed");
   });
 
@@ -540,6 +555,55 @@ describe("revisions", () => {
     expect(first.ok).toBe(true);
     const second = await reviseEstimate(prisma, g.estimateId);
     expect(second.ok).toBe(false);
+  });
+
+  /**
+   * Review finding, 2026-10-09: issueDraft's signed refusal was a check-then-act. The Issue doors
+   * now hand reviseEstimate the refusal (`refuseSignedWith`), and it is checked up front AND under
+   * a row lock at the supersede, so a signature landing while the revision is being built wins.
+   */
+  it("refuseSignedWith: a signed estimate is refused up front — nothing built, nothing linked", async () => {
+    const d = await quotableDraft("refuse-signed");
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
+    expect(g.ok).toBe(true);
+    if (!g.ok) return;
+    const issued = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: g.estimateId } });
+    await signEstimate(prisma, issued.token, { signerName: "Signed First", signatureImage: TEST_SIGNATURE });
+
+    const refused = await reviseEstimate(prisma, g.estimateId, { actor: "tech:test", refuseSignedWith: "Signed — the office changes a signed estimate" });
+    expect(refused).toEqual({ ok: false, reasons: ["Signed — the office changes a signed estimate"] });
+    expect(await prisma.issuedEstimate.count({ where: { draftId: d.id } })).toBe(1);
+    // Without the flag (the office's own Revise button) the signed estimate still revises.
+    const office = await reviseEstimate(prisma, g.estimateId, { actor: "human:test" });
+    expect(office.ok).toBe(true);
+  });
+
+  it("refuseSignedWith: a signature that lands WHILE the revision is being built wins — the supersede is refused under the row lock and the half-built revision is rolled back", async () => {
+    const d = await quotableDraft("race-signed");
+    const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
+    expect(g.ok).toBe(true);
+    if (!g.ok) return;
+
+    // The customer's signature, holding the previous row's lock until the revision's new row
+    // exists (graduateDraft has run, the supersede has not): exactly the gap the finding named.
+    const signature = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "IssuedEstimate" WHERE "id" = ${g.estimateId} FOR UPDATE`;
+      for (let i = 0; i < 400; i++) {
+        if (await prisma.issuedEstimate.count({ where: { draftId: d.id, id: { not: g.estimateId } } })) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      await tx.issuedEstimate.update({ where: { id: g.estimateId }, data: { signedAt: new Date(), signerName: "Signed Meanwhile", signedChannel: "field" } });
+    }, { timeout: 30_000 });
+    const revise = reviseEstimate(prisma, g.estimateId, { actor: "tech:test", refuseSignedWith: "Signed — the office changes a signed estimate" });
+    await signature;
+    const result = await revise;
+
+    expect(result).toEqual({ ok: false, reasons: ["Signed — the office changes a signed estimate"] });
+    const after = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: g.estimateId }, include: { supersededBy: true } });
+    expect(after.signerName).toBe("Signed Meanwhile");
+    expect(after.supersededBy).toBeNull();
+    // The half-built revision is gone — not left as a live, unlinked estimate on the draft.
+    expect(await prisma.issuedEstimate.count({ where: { draftId: d.id } })).toBe(1);
   });
 });
 

@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
-import type { CompanyProfile, LegalInfo, OperatingHours, PurchasingSettings, Territory } from "../lib/api";
+import type { CompanyProfile, LegalInfo, OperatingHours, PayrollSettings, PurchasingSettings, Territory } from "../lib/api";
 import type { TreasurySettings } from "../lib/types";
+import { FinancingPlansSection } from "./FinancingPlansSection";
 
 const EMPTY_PROFILE: CompanyProfile = {
   companyName: "Red Cedar Electric LLC",
@@ -201,6 +202,10 @@ export function SettingsPage() {
   // only on save (Kyle, 2026-09-23: "Store the DECIMAL FRACTION, display a percent.").
   const [taxRatePercent, setTaxRatePercent] = useState<string>(String(DEFAULT_SALES_TAX_RATE * 100));
   const [purchasingError, setPurchasingError] = useState<string | null>(null);
+  // Employer cost on top of wages (Kyle, 2026-10-08, decision 10): a PERCENT string while typing
+  // ("9.5"), saved as the number 9.5 — never a fraction. Empty clears it to "not set".
+  const [employerCostPercent, setEmployerCostPercent] = useState<string>("");
+  const [payrollError, setPayrollError] = useState<string | null>(null);
   const [savedKey, setSavedKey] = useState<string | null>(null);
 
   useEffect(() => {
@@ -213,6 +218,7 @@ export function SettingsPage() {
       setPurchasing({ ...EMPTY_PURCHASING, ...settings.purchasing });
       setTaxRatePercent(String((settings.purchasing.salesTaxRate ?? DEFAULT_SALES_TAX_RATE) * 100));
     }
+    setEmployerCostPercent(settings.payroll?.employerCostPercent != null ? String(settings.payroll.employerCostPercent) : "");
   }, [settings]);
 
   const saveMutation = useMutation({
@@ -238,6 +244,24 @@ export function SettingsPage() {
     const salesTaxRate = percent / 100;
     setPurchasing({ ...purchasing, salesTaxRate });
     saveMutation.mutate({ key: "purchasing", value: { ...purchasing, salesTaxRate } });
+  };
+
+  const saveEmployerCost = () => {
+    const raw = employerCostPercent.trim();
+    const value: PayrollSettings = { employerCostPercent: raw === "" ? null : Number(raw) };
+    if (value.employerCostPercent != null) {
+      const n = value.employerCostPercent;
+      if (!Number.isFinite(n) || n < 0 || n > 50) {
+        setPayrollError("Enter a percent between 0 and 50 (e.g. 9.5).");
+        return;
+      }
+      if (n > 0 && n < 1) {
+        setPayrollError(`This is a percent — type 9.5 for 9.5%, not a fraction like ${n}.`);
+        return;
+      }
+    }
+    setPayrollError(null);
+    saveMutation.mutate({ key: "payroll", value });
   };
 
   const updateTerritory = (index: number, patch: Partial<Territory>) =>
@@ -433,6 +457,41 @@ export function SettingsPage() {
           {savedKey === "purchasing" ? "Saved ✓" : "Save purchasing"}
         </button>
       </SectionCard>
+
+      {/* ── Payroll (Kyle, 2026-10-08, decision 10): labor on a job is the TOTAL cost Red Cedar pays ── */}
+      <SectionCard
+        title="Payroll"
+        subtitle="Labor on a job counts at its total cost in the commission basis (Kyle, 2026-10-08: 'It should be the total cost that we pay because that all comes out of the field work.'). Hours × the technician's hourly rate × (1 + this percent). Until it is set, every commission basis says 'employer cost % not set' — never 0%."
+      >
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field
+            label="Employer cost on top of wages (%)"
+            value={employerCostPercent}
+            type="number"
+            placeholder="not set"
+            onChange={(v) => setEmployerCostPercent(v)}
+          />
+        </div>
+        <p className="mt-2 text-xs text-rce-muted">
+          Everything Red Cedar pays on top of wages — employer Social Security 6.2%, Medicare 1.45%, federal and Tennessee unemployment, workers' comp.
+          A percent, e.g. 9.5 means 9.5%. Leave it empty to clear it.
+        </p>
+        {payrollError && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{payrollError}</p>}
+        {saveMutation.error && saveMutation.variables?.key === "payroll" && (
+          <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{(saveMutation.error as Error).message}</p>
+        )}
+        <button
+          className="btn btn-primary mt-4"
+          type="button"
+          disabled={saveMutation.isPending}
+          onClick={saveEmployerCost}
+        >
+          {savedKey === "payroll" ? "Saved ✓" : "Save payroll"}
+        </button>
+      </SectionCard>
+
+      {/* ── Financing plans (Kyle, 2026-10-08): the Synchrony plan list, rates and disclosure text ── */}
+      <FinancingPlansSection />
 
       {/* ── Treasury (Kyle, 2026-09-09): floats + the Chase destination for the month-end sweep ── */}
       <TreasurySection />

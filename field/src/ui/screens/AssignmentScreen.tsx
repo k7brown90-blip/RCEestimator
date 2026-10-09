@@ -16,6 +16,7 @@ import {
   type CrmTechnician,
   type ShiftStatus,
 } from '../../lib/crmSync'
+import { forgetOfficeCopies } from '../../lib/quoteSync'
 import type { CrmAssignment } from '../../domain/types'
 
 /** Production job or estimate visit — the card dresses as what it is (Phase 2). */
@@ -472,6 +473,9 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
                 type="button"
                 onClick={() => {
                   clearCrmSettings()
+                  // The office's saved quote copies go with the token (they carry the customer's
+                  // estimate-page link); a draft with edits still waiting keeps its copy.
+                  void forgetOfficeCopies()
                   setConfigured(false)
                   setAssignments([])
                   setTechnician(null)

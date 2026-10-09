@@ -46,6 +46,21 @@ describe("InvoiceDrawer", () => {
     expect(await screen.findByText(/Reminder emailed to jane@example.com/)).toBeInTheDocument();
   });
 
+  it("'Send reminder' is greyed WITH the reason while the balance is being paid through Synchrony (Phase 6 Unit 6C)", async () => {
+    const financing = { id: "fee-1", planNumber: "965", planDescription: "11.99% APR until paid in full", fee: 200, locked: false };
+    vi.spyOn(api, "invoices").mockResolvedValue([{ ...inv, financingFee: financing, balance: 3000 }]);
+    vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(null);
+    const send = vi.spyOn(api, "sendPaymentReminder").mockResolvedValue({ ok: true, to: "jane@example.com", amount: 3000 });
+
+    renderWithProviders(<DrawerHost />, { route: "/financials?invoice=est-1" });
+
+    const button = await screen.findByRole("button", { name: "Send reminder" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", expect.stringContaining("Financing in progress — balance is being paid through Synchrony"));
+    fireEvent.click(button);
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("says so when the id is not a live invoice", async () => {
     vi.spyOn(api, "invoices").mockResolvedValue([]);
     vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(null);

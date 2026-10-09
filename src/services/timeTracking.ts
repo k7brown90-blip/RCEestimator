@@ -24,8 +24,16 @@
  *  6. Rates are typed by Kyle, never defaulted. No rate = hours but NO cost, and
  *     every surface says "rate not set" rather than inventing a number.
  *  7. Commission: a hand-entered PERCENTAGE per technician on JOB PROFIT =
- *     revenue − material cost − fees (permits, inspections). Labor is NOT
- *     subtracted. Overridable per job with a reason.
+ *     revenue (the job's ladder plus any financing fee) − material − fees
+ *     (permits, inspections, Synchrony's cut, Stripe's processing fee on each
+ *     card payment) − LABOR AT TOTAL COST (every tech's hours × the rate frozen
+ *     on the session × (1 + employer cost % from Settings)). Floored at $0: an
+ *     underbid job pays no commission and the tech never owes money back.
+ *     Overridable per job with a reason. (Kyle, 2026-10-08, decision 10 of the
+ *     one-estimating-system plan — SUPERSEDES the 2026-09-11 "Labor is NOT
+ *     subtracted" ruling: "If a tech bids a job and it is a wash then the
+ *     company could end up paying a profit out of its capital." Labor is "the
+ *     total cost that we pay because that all comes out of the field work.")
  *  8. Overtime is automatic under Tennessee rules, which means federal FLSA:
  *     over 40 hours in a fixed 7-day workweek at 1.5×. The premium (the extra
  *     0.5×) rides the hours that crossed 40, in the order worked, so the long
@@ -38,6 +46,10 @@ import { logSystemEvent } from "./systemEvents";
 import { costChainVisitIds, estimateOptionTotal, materialCostForJobs, type MaterialSource } from "./jobCosting";
 import { fullBillOf } from "./stripePayments";
 import { EXCLUDE_TEST_CUSTOMER_VIA_VISIT, EXCLUDE_TEST_VISIT } from "./accountSpine";
+import { NOT_VOID_COMMISSION } from "./commissionVoid";
+import { activeFinancingFeeFor } from "./financingFee";
+import { getEmployerCostPercent } from "./payrollSettings";
+import { processingCostsForJobs } from "./jobProcessingCosts";
 
 /** Rule 5: a clock still running after this many hours is flagged and stops accruing. */
 export const RUNAWAY_HOURS = 12;
@@ -857,7 +869,7 @@ export async function payrollForWeek(technicianId: string, weekStart: Date): Pro
       },
     }),
     prisma.commission.findMany({
-      where: { technicianId, earnedAt: { gte: start, lte: end }, ...EXCLUDE_TEST_VISIT },
+      where: { technicianId, earnedAt: { gte: start, lte: end }, ...NOT_VOID_COMMISSION, ...EXCLUDE_TEST_VISIT },
       orderBy: { earnedAt: "asc" },
       include: {
         visit: { select: { id: true, customer: { select: { name: true } }, property: { select: { addressLine1: true } } } },
@@ -990,6 +1002,8 @@ export interface JobTimeView {
     rate: number | null;
     rateSet: boolean;
     cost: number | null;
+    /** True when a counted session of theirs closed with no rate — `cost` is then partial or null. */
+    rateMissing: boolean;
     assigned: boolean;
   }>;
   sessions: PayrollEntryView[];
@@ -1058,6 +1072,7 @@ export async function jobTime(visitId: string): Promise<JobTimeView> {
         rate: t?.hourlyRate ?? null,
         rateSet: t?.hourlyRate != null,
         cost: b.missing && b.cost === 0 ? null : round2(b.cost),
+        rateMissing: b.missing,
         assigned: assignedIds.has(technicianId),
       };
     }),
@@ -1091,24 +1106,74 @@ export async function jobTime(visitId: string): Promise<JobTimeView> {
 /** Receipt categories and card-spend kinds that ARE job fees (Kyle, 2026-09-11). */
 export const FEE_CATEGORIES = ["permit", "inspection"] as const;
 
+/** One technician's labor on the job, at total cost — its own visible row (decision 10). */
+export interface CommissionLaborRow {
+  technicianId: string;
+  name: string;
+  hours: number;
+  /** Hours × the rate frozen on each session (jobTime's costing); null when a counted session has no rate. */
+  wage: number | null;
+  rateMissing: boolean;
+  /** wage × (1 + employer cost % / 100); null when the wage or the percent is missing. */
+  total: number | null;
+}
+
 export interface CommissionBasis {
   visitId: string;
   revenue: number | null;
   materialCost: number;
   materialSource: MaterialSource;
   fees: number;
-  feeRows: Array<{ kind: "card"; id: string; label: string; category: string; amount: number }>;
-  /** revenue − material − fees. Labor is NOT subtracted (Kyle's ruling). */
+  /**
+   * "card": a permit / inspection card charge on the job's P.O.s. "synchrony" (2026-10-09, decision
+   * 10): Synchrony's cut on a financed balance the job collected. "stripe" (Unit 6D, decision 10):
+   * Stripe's processing fee on one card payment of the job's invoice, read off the payment's own
+   * balance transaction (treasury.stripeFeeForSession). Each a fee of the job, shown as its own row
+   * so the basis stays "shown rather than asserted".
+   */
+  feeRows: Array<{ kind: "card" | "synchrony" | "stripe"; id: string; label: string; category: string; amount: number }>;
+  /**
+   * Card payments whose Stripe fee could NOT be read (not settled yet, key scope, Stripe down) —
+   * each with the reason. While any exist `profit` is null: a fee that cannot be read is MISSING,
+   * never $0 (rule 6).
+   */
+  feeProblems: Array<{ paymentId: string; amount: number; reason: string }>;
+  /** The financing fee counted into `revenue` (decision 10: "Financing fee counts as revenue"); 0 when none. */
+  financingFee: number;
+  /** LABOR AT TOTAL COST (Kyle, 2026-10-08) — one row per technician who worked the job's cost chain. */
+  laborRows: CommissionLaborRow[];
+  /** Sum of the rows' wages; null when any worked row has no rate. */
+  laborWage: number | null;
+  /** Settings → Payroll "Employer cost on top of wages (%)"; null until Kyle sets it. */
+  employerCostPercent: number | null;
+  employerCostSet: boolean;
+  /** Sum of the rows' totals; 0 with no hours; null when a rate or the employer cost % is missing. */
+  laborCost: number | null;
+  /** Why `profit` is null, in words for the screen; empty when it computes. */
+  missing: string[];
+  /**
+   * revenue − material − fees − labor at total cost (Kyle, 2026-10-08, decision 10; supersedes the
+   * "Labor is NOT subtracted" ruling). May be NEGATIVE — shown as such; the commission is taken on
+   * `commissionableProfit`. Null while anything the math needs is missing.
+   */
   profit: number | null;
+  /** max(0, profit): an underbid job pays no commission and the tech never owes money back. */
+  commissionableProfit: number | null;
 }
 
 /**
- * The math behind a commission, shown rather than asserted.
+ * The math behind a commission, shown rather than asserted — every term its own
+ * row (decision 10, Kyle 2026-10-08):
+ *
+ *   revenue (+ financing fee) − material − fees (permit/inspection card charges,
+ *   Synchrony's cut, Stripe's processing fee per card payment) − labor at total
+ *   cost (every tech's hours × frozen rate × (1 + employer cost %)) = profit,
+ *   floored at $0 for the commission.
  *
  * Revenue rides the SAME ladder the Jobs tab uses (typed Visit.revenue, else the
  * legacy accepted option, else the signed issued estimate's full bill through
- * fullBillOf) and material rides materialCostForJobs — imported, not re-derived,
- * so this can never disagree with the job card.
+ * fullBillOf), material rides materialCostForJobs and labor rides jobTime —
+ * imported, not re-derived, so this can never disagree with the job card.
  */
 export async function commissionBasisForJob(visitId: string): Promise<CommissionBasis> {
   const visit = await prisma.visit.findUnique({
@@ -1138,7 +1203,13 @@ export async function commissionBasisForJob(visitId: string): Promise<Commission
       optionsSubtotals: issued.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
     })
     : null;
-  const revenue = visit.revenue ?? acceptedTotal ?? signedRevenue ?? null;
+  // THE FINANCING FEE IS REVENUE (Kyle, 2026-10-08, decision 10; services/financingFee.ts): the
+  // live fee on the signed invoice rides on top of whichever rung answered, the same way GET /jobs,
+  // the account summary and job profitability add it.
+  const fee = issued ? await activeFinancingFeeFor(prisma, [issued.changeOrderForId ?? issued.id]) : null;
+  const financingFee = fee?.fee ?? 0;
+  const base = visit.revenue ?? acceptedTotal ?? signedRevenue ?? null;
+  const revenue = base == null ? null : round2(base + financingFee);
 
   const materials = await materialCostForJobs([{ visitId }]);
   const material = materials.get(visitId)!;
@@ -1156,7 +1227,74 @@ export async function commissionBasisForJob(visitId: string): Promise<Commission
     select: { id: true, merchantName: true, amount: true, kind: true },
   });
   const feeRows: CommissionBasis["feeRows"] = spends.map((s) => ({ kind: "card" as const, id: s.id, label: s.merchantName, category: s.kind, amount: s.amount }));
+  // SYNCHRONY'S CUT is a fee of the job (decision 10: "Deducted: ... Synchrony's cut") — one row
+  // per live Synchrony payment on the signed invoice, from the figure captured at recording.
+  // STRIPE'S PROCESSING FEE on each card payment of the job's invoice is a fee of the job (decision
+  // 10: "card processing fees on the job's payments"), read off that payment's own balance
+  // transaction — the same figure the P&L's Stripe-fees line reads. A fee that cannot be read is a
+  // PROBLEM the basis shows and refuses to compute around — never $0.
+  // BOTH come from services/jobProcessingCosts.ts (Kyle, 2026-10-09, ruling 6): the ONE attribution
+  // of a payment's processing cost to a job, shared with GET /jobs, the account summary and job
+  // profitability, so the commission card and the job card can never disagree about them.
+  const processing = (await processingCostsForJobs([{ visitId, rootEstimateId: issued ? issued.changeOrderForId ?? issued.id : null }])).get(visitId)!;
+  for (const s of processing.synchronyRows) {
+    feeRows.push({ kind: "synchrony" as const, id: s.paymentId, label: `Synchrony's cut${s.planNumber ? ` — Plan ${s.planNumber}` : ""}`, category: "financing", amount: s.amount });
+  }
+  for (const c of processing.cardFeeRows) {
+    const paidOn = c.paidAt ? c.paidAt.toLocaleDateString("en-US") : "";
+    feeRows.push({
+      kind: "stripe" as const, id: c.paymentId, category: "card_processing", amount: c.fee,
+      label: `Card processing fee — $${c.paymentAmount.toFixed(2)} ${c.kind} paid by card${paidOn ? ` ${paidOn}` : ""}${c.refunded ? " (later refunded — Stripe keeps its fee)" : ""}`,
+    });
+  }
+  const feeProblems: CommissionBasis["feeProblems"] = processing.cardFeesPending.map((p) => ({ paymentId: p.paymentId, amount: p.amount, reason: p.reason }));
   const fees = round2(feeRows.reduce((sum, f) => sum + f.amount, 0));
+
+  // LABOR AT TOTAL COST (Kyle, 2026-10-08, decision 10). Hours and wages are jobTime's own costing —
+  // every session on the cost chain at the rate frozen when it closed (rule 3: that IS what the
+  // hours cost) — never re-derived here. On top of the wage rides the employer cost % from Settings
+  // (payrollSettings.ts). A missing rate or a missing percent is MISSING, never $0 (rule 6); with
+  // no hours on the job there is nothing to burden and labor is $0 whatever the percent.
+  const [time, employerCostPercent] = await Promise.all([jobTime(visitId), getEmployerCostPercent()]);
+  const employerCostSet = employerCostPercent != null;
+  const missing: string[] = [];
+  const laborRows: CommissionLaborRow[] = time.technicians
+    .filter((t) => t.minutes > 0)
+    .map((t) => {
+      const wage = t.rateMissing ? null : round2(t.cost ?? 0);
+      if (t.rateMissing) missing.push(`${t.name} has hours on this job with no hourly rate set`);
+      const total = wage == null || !employerCostSet ? null : round2(wage * (1 + employerCostPercent / 100));
+      return { technicianId: t.technicianId, name: t.name, hours: t.hours, wage, rateMissing: t.rateMissing, total };
+    });
+  const anyWageMissing = laborRows.some((r) => r.wage == null);
+  const laborWage = anyWageMissing ? null : round2(laborRows.reduce((s, r) => s + (r.wage ?? 0), 0));
+  if (laborWage != null && laborWage > 0 && !employerCostSet) {
+    missing.push("employer cost % not set — Settings → Payroll → \"Employer cost on top of wages (%)\"");
+  }
+  const laborCost = laborWage == null
+    ? null
+    : laborWage === 0
+      ? 0
+      : employerCostSet ? round2(laborRows.reduce((s, r) => s + (r.total ?? 0), 0)) : null;
+
+  for (const fp of feeProblems) missing.push(`the card processing fee on the $${fp.amount.toFixed(2)} card payment could not be read: ${fp.reason}`);
+  // HOURS STILL PENDING ARE MISSING, NEVER $0 (review finding, 2026-10-09). jobTime's counts() keeps
+  // a session still running (no end) and a runaway-flagged session nobody has confirmed OUT of the
+  // labor rows — right for the hours ledger, but silent here: the profit would read too high and
+  // "Record commission" would be live while a tech is still clocked in. Each one is named, so the
+  // profit stays null until the hours settle (rule 6: anything missing is said in words).
+  const pendingSessions: string[] = [];
+  for (const s of time.sessions) {
+    const who = s.visitLabel ?? "A technician";
+    if (s.open) pendingSessions.push(`${who} is still clocked in on this job — the hours are not final`);
+    else if (s.flagged && !s.confirmed) pendingSessions.push(`${who} has a flagged session on this job awaiting confirmation`);
+  }
+  for (const p of new Set(pendingSessions)) missing.push(p);
+  if (revenue == null) missing.unshift("no revenue is recorded on this job yet");
+
+  const profit = revenue == null || laborCost == null || feeProblems.length > 0 || pendingSessions.length > 0
+    ? null
+    : round2(revenue - material.materialCost - fees - laborCost);
 
   return {
     visitId,
@@ -1165,7 +1303,16 @@ export async function commissionBasisForJob(visitId: string): Promise<Commission
     materialSource: material.materialSource,
     fees,
     feeRows,
-    profit: revenue == null ? null : round2(revenue - material.materialCost - fees),
+    feeProblems,
+    financingFee,
+    laborRows,
+    laborWage,
+    employerCostPercent,
+    employerCostSet,
+    laborCost,
+    missing,
+    profit,
+    commissionableProfit: profit == null ? null : Math.max(0, profit),
   };
 }
 
@@ -1195,7 +1342,7 @@ export async function commissionForJob(visitId: string, technicianId: string, pe
     technicianId,
     percent,
     percentSet: percent != null,
-    // A job that lost money pays no commission; it never claws one back.
-    amount: percent == null || basis.profit == null ? null : round2(Math.max(0, basis.profit * (percent / 100))),
+    // A job that lost money pays no commission; it never claws one back (decision 10: floored at $0).
+    amount: percent == null || basis.commissionableProfit == null ? null : round2(basis.commissionableProfit * (percent / 100)),
   };
 }

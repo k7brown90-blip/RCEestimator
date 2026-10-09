@@ -98,3 +98,44 @@ describe('emailEstimateToCustomer', () => {
     await expect(crmSync.emailEstimateToCustomer('est-4')).rejects.toThrow('This estimate is not on one of your visits')
   })
 })
+
+describe('emailEstimateToCustomer - the office\'s send options (Phase 4, 2026-10-08)', () => {
+  it('sends the body shared/estimateEmail.ts builds - the one the CRM sends - to the same server function', async () => {
+    const f = mockFetchOk({ to: 'other@example.com' })
+    await crmSync.emailEstimateToCustomer('est-1', {
+      to: ' other@example.com ',
+      message: 'Call me',
+      photoIds: ['p1'],
+      attachHealthReport: true,
+      attachGeneratorReport: true,
+      includeFinancingLink: false,
+    })
+    expect(lastCall(f)).toEqual({
+      url: 'https://rce.example.com/api/health-record/issued-estimates/est-1/email',
+      method: 'POST',
+      body: { to: 'other@example.com', message: 'Call me', photoIds: ['p1'], attachHealthReport: true, attachGeneratorReport: true, includeFinancingLink: false },
+    })
+  })
+
+  it('the financing line is ON by default: a ticked box sends nothing about it', async () => {
+    const f = mockFetchOk({ to: 'a@b.c' })
+    await crmSync.emailEstimateToCustomer('est-1', { includeFinancingLink: true, attachHealthReport: false, to: '', message: '  ' })
+    expect(lastCall(f).body).toEqual({})
+  })
+
+  it('"Email the financing link" posts to the tech-scoped email-financing route with no body to carry a token', async () => {
+    const f = mockFetchOk({ to: 'a@b.c' })
+    const r = await crmSync.emailFinancing('est-9')
+    expect(lastCall(f)).toEqual({
+      url: 'https://rce.example.com/api/health-record/issued-estimates/est-9/email-financing',
+      method: 'POST',
+      body: {},
+    })
+    expect(r.to).toBe('a@b.c')
+  })
+
+  it('a refusal (void, lost, superseded) comes through in the server\'s words', async () => {
+    mockFetchRefusal({ success: false, error: { code: 'not_sent', message: 'This estimate is void.' } })
+    await expect(crmSync.emailFinancing('est-10')).rejects.toThrow('This estimate is void.')
+  })
+})

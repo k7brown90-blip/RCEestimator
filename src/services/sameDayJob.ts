@@ -84,9 +84,19 @@ const money = (n: number) => `$${n.toFixed(2)}`;
  */
 export async function fieldChoicePending(
   prisma: PrismaClient,
-  est: { visitId: string | null; jobVisitId: string | null },
+  est: { visitId: string | null; jobVisitId: string | null; signedAt: Date | null },
   now: Date = new Date(),
 ): Promise<boolean> {
+  /*
+    NO SIGNATURE, NO CHOICE (2026-10-08). The job brief now carries an issued-but-UNSIGNED estimate
+    too (so the field's "issued — not signed yet" panel and its signing link render; before this
+    the brief only ever held a signed root, so this was never asked about an unsigned row). The
+    choice — Complete work now / Schedule for later — is what happens AFTER the customer signs;
+    answering true here for unsigned money would light those buttons on work nobody agreed to
+    (2026-09-24 closing-out plan, Unit 2 outcome: "a worse defect than the one being fixed").
+    `consultationWithSignedRoot` still refuses the routes themselves without a signed root.
+  */
+  if (!est.signedAt) return false;
   if (!est.visitId) return false;
   // Already decided: the consultation IS the job (Complete work now happened).
   if (est.jobVisitId && est.jobVisitId === est.visitId) return false;
@@ -129,7 +139,7 @@ export async function holdOrSendDepositRequest(
 ): Promise<"sent" | "held"> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
-    select: { id: true, number: true, visitId: true, jobVisitId: true },
+    select: { id: true, number: true, visitId: true, jobVisitId: true, signedAt: true },
   });
   if (est && (await fieldChoicePending(prisma, est))) {
     await prisma.issuedEstimateEvent.create({

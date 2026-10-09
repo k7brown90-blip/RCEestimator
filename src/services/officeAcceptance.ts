@@ -42,7 +42,7 @@ import { reopenedStatusOf } from "./estimateExpiry";
 import { adoptSupersededInvoice, type AdoptedInvoice } from "./issuedEstimateService";
 import { LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER } from "./invoiceGroup";
 import { selectionCap, type MarkupBand } from "./materialMarkupCap";
-import { discountFor, programmeFor } from "./discounts";
+import { frozenSelectionDiscount } from "./discounts";
 import { logSystemEvent } from "./systemEvents";
 
 export { ACCEPTED_VIA };
@@ -177,12 +177,12 @@ export async function acceptEstimateFromOffice(
   }));
   const frozenBands = est.jobBandsJson ? (JSON.parse(est.jobBandsJson) as MarkupBand[]) : undefined;
   const comboCap = selectionCap(frozenLines, new Set(bought), frozenBands);
-  const boughtSubtotals = est.options
-    .filter((o) => bought.includes(o.option))
-    .reduce((n, o) => n + o.subtotal, 0);
-  const discount = discountFor(
-    programmeFor(est.discountType, est.discountPercent),
-    boughtSubtotals + (est.tripCharge ?? 0) - (comboCap.applied ? comboCap.reduction : 0),
+  // The same pure pricer applySignature uses (frozenSelectionDiscount -> shared priceSelection),
+  // so the accepted discount is the cent the customer was shown, not a second calculation.
+  const discount = frozenSelectionDiscount(
+    { discountType: est.discountType, discountPercent: est.discountPercent, tripCharge: est.tripCharge, options: est.options },
+    bought,
+    comboCap.applied ? comboCap.reduction : 0,
   );
 
   const note = input.note?.trim() || null;
@@ -197,7 +197,10 @@ export async function acceptEstimateFromOffice(
   */
   const written = await prisma.$transaction(async (tx) => {
     const result = await tx.issuedEstimate.updateMany({
-      where: { id: estimateId, signedAt: null },
+      // Void, lost and replaced are guarded IN the write, not only in the reads above: the same
+      // rule as applySignature's WHERE (review finding, 2026-10-08) - a void or revision made in
+      // the gap between the read and this write must not let the acceptance land.
+      where: { id: estimateId, signedAt: null, status: { notIn: ["void", "lost"] }, supersededBy: { is: null } },
       data: {
         selectedOptions: bought as never,
         comboCapJson: JSON.stringify(comboCap),
@@ -232,7 +235,20 @@ export async function acceptEstimateFromOffice(
     });
     return { written: true as const, adopted };
   });
-  if (!written.written) return { ok: false, status: 409, reason: "Already accepted / signed." };
+  if (!written.written) {
+    const now = await prisma.issuedEstimate.findUnique({
+      where: { id: estimateId },
+      select: { signedAt: true, status: true, supersededBy: { select: { revision: true } } },
+    });
+    if (now && !now.signedAt) {
+      if (now.supersededBy) {
+        return { ok: false, status: 409, reason: `Replaced by rev ${now.supersededBy.revision} — accept that one.` };
+      }
+      if (now.status === "void") return { ok: false, status: 409, reason: "This estimate is void." };
+      if (now.status === "lost") return { ok: false, status: 409, reason: "Marked lost — reopen it first." };
+    }
+    return { ok: false, status: 409, reason: "Already accepted / signed." };
+  }
 
   if (written.adopted) {
     const a = written.adopted;
@@ -301,8 +317,9 @@ export async function undoOfficeAcceptance(
     };
   }
 
-  const [payments, changeOrders, takeover, job, purchaseOrders] = await Promise.all([
-    prisma.payment.count({ where: { estimateId: est.id, status: { not: "failed" } } }),
+  const [payments, changeOrders, takeover, job, purchaseOrders, financingFees] = await Promise.all([
+    // A voided payment (2026-10-09) is not money on the invoice — it does not block the undo.
+    prisma.payment.count({ where: { estimateId: est.id, status: { not: "failed" }, voidedAt: null } }),
     prisma.issuedEstimate.findMany({
       where: { changeOrderForId: est.id, ...LIVE_SIGNED_CHANGE_ORDER },
       select: { number: true },
@@ -317,7 +334,15 @@ export async function undoOfficeAcceptance(
     est.jobVisitId
       ? prisma.purchaseOrder.count({ where: { jobId: est.jobVisitId, status: { not: "cancelled" } } })
       : Promise.resolve(0),
+    // A LIVE financing fee (services/financingFee.ts; review finding 2026-10-09): the fee was put
+    // on after the deposit, and the deposit was then voided — so no payment blocks the undo, but
+    // the fee would be left live on an unsigned estimate and come back, with its stale base, the
+    // next time it is accepted. Refused with the exit: remove the fee (with a reason) first.
+    prisma.financingFee.count({ where: { estimateId: est.id, removedAt: null } }),
   ]);
+  if (financingFees > 0) {
+    return { ok: false, status: 409, reason: "A financing fee is on this invoice — remove it (with a reason) under \"Pay balance with Synchrony\" on the payment panel first, then undo the acceptance." };
+  }
   if (payments > 0) {
     return { ok: false, status: 409, reason: `${payments} payment${payments > 1 ? "s have" : " has"} been recorded on this invoice — the acceptance cannot be undone. Void the estimate instead (refunds stay manual).` };
   }

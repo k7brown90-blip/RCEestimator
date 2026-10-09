@@ -128,6 +128,10 @@ describe("the in-person signature", () => {
     expect(est!.signerName).toBe("Test Signature");
     expect(est!.signerIp).toBe("10.0.0.9");
     expect(est!.consentText).toContain("electronic signature");
+    // Ruling 4 (Kyle, 2026-10-09): the CRM's in-person screen records the same sentence as the emailed page and the phone.
+    expect(est!.consentText).toBe(
+      "By typing my full name and tapping Accept & Sign, I agree to the scope and the price on this estimate, and I authorize Red Cedar Electric LLC to perform the work described. I understand this is an electronic signature with the same effect as a written one.",
+    );
 
     const signed = est!.events.find((e) => e.type === "signed");
     expect(signed!.actor).toBe("customer:in-person");

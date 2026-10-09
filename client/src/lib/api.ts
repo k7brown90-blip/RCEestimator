@@ -39,7 +39,6 @@ import type {
   WarrantyClaimRef,
   PbNecCategory,
   PbOption,
-  PbQuantitySource,
   PbQuestion,
   PbReview,
   PbWalkthroughRow,
@@ -83,6 +82,7 @@ import type {
   ConsumeLineInput,
   JobMaterialsView,
   MaterialSource,
+  CardFeePending,
   MaterialsByMonth,
   MaterialRow,
   MaterialWithCompletion,
@@ -92,6 +92,9 @@ import type {
   Visit,
   WeekSchedule,
 } from "./types";
+import type { DraftOptionSet } from "../../../shared/estimateOptions";
+import type { EstimateEmailRequest } from "../../../shared/estimateEmail";
+import type { FinancingPlan } from "../../../shared/financing";
 
 const API_BASE = "/api";
 
@@ -214,8 +217,9 @@ export interface FinancialsSummary {
    * Chase. Its own column AND inside expenses, like stripeFees and payroll. A transfer or an
    * already-counted line is not here.
    */
-  months: { month: number; invoiced: number; collected: number; stripeFees: number; payroll: number; bank: number; expenses: number; net: number }[];
-  totals: { invoiced: number; collected: number; stripeFees: number; payroll: number; bank: number; expenses: number; net: number };
+  /** synchronyCuts (2026-10-09): what Synchrony kept from financed balances — inside expenses, like stripeFees; its own category row. */
+  months: { month: number; invoiced: number; collected: number; stripeFees: number; synchronyCuts?: number; payroll: number; bank: number; expenses: number; net: number }[];
+  totals: { invoiced: number; collected: number; stripeFees: number; synchronyCuts?: number; payroll: number; bank: number; expenses: number; net: number };
   expensesByCategory: { category: string; monthly: number[]; total: number }[];
   /** The bank queue: lines nobody has classified are NOT in Expenses yet, and the P&L says so. */
   bank?: { accounts: number; unclassified: number; unclassifiedOut: number; lastImportAt: string | null };
@@ -238,6 +242,10 @@ export interface JobProfitRow {
   materialSource?: MaterialSource;
   laborHours: number;
   laborCost: number;
+  /** Synchrony's cut and card processing fees (Kyle, 2026-10-09, ruling 6) — inside both margins. Optional so an older server build parses. */
+  synchronyCut?: number;
+  cardFees?: number;
+  cardFeesPending?: CardFeePending[];
   marginBeforeLabor: number | null;
   margin: number | null;
 }
@@ -299,7 +307,16 @@ export interface PaymentInfo {
   documents: { id: string; number: string; revision: number; title: string; kind: "invoice" | "change_order"; signedAt: string | null; billedTotal: number; depositRequired: boolean }[];
   depositPaid: number;
   totalPaid: number;
+  /** What is OWED: billedTotal + the financing fee (when one is applied) − totalPaid. */
   balance: number;
+  /** billedTotal − totalPaid — the figure the financing fee is worked on. Optional so an older server build parses. */
+  balanceBeforeFee?: number;
+  /**
+   * The financing fee applied to this invoice (Kyle, 2026-10-08, decisions 7, 8, 12), or null.
+   * Dollars only — no plan rate ever reaches this app. `locked` = a Synchrony payment is recorded
+   * against it, so it can only come off by voiding that payment.
+   */
+  financingFee?: FinancingFeeView | null;
   depositSatisfied: boolean;
   /** The HOMEOWNER is paid up; the warranty share may still be open (Kyle, 2026-09-10). */
   paidInFull: boolean;
@@ -313,12 +330,47 @@ export interface PaymentInfo {
     /** "customer" | "warranty" (Kyle, 2026-09-10). */
     payer?: string;
     checkNumber?: string | null;
+    /** Voided (Kyle, 2026-10-08): still listed, struck through, counted nowhere. */
+    voidedAt?: string | null;
+    voidReason?: string | null;
+    /** A Synchrony row (2026-10-09): the plan, the authorization number, what landed net and Synchrony's cut. */
+    financingPlanNumber?: string | null;
+    financingAuthNumber?: string | null;
+    financingNet?: number | null;
+    financingCut?: number | null;
+    /** A card refund recorded from Stripe (2026-10-09, ruling 7): how much went back and when. The row stays listed. */
+    refundedAmount?: number;
+    refundedAt?: string | null;
+    refunds?: PaymentRefundRow[];
   }[];
   /** Home-warranty coverage (Kyle, 2026-09-09): already off billedTotal, which is the homeowner share. */
   warrantyCovered?: number;
   warrantyClaim?: WarrantyClaimRef | null;
   /** The warranty company's side of the account (Kyle, 2026-09-10): covered, paid, balance, and the claim with its dates. */
   warranty?: { covered: number; paid: number; balance: number; claim: WarrantyClaim } | null;
+}
+
+/** The financing fee on an invoice, as the payment panel shows it (services/financingFee.ts). Dollars, no rate. */
+export interface FinancingFeeView {
+  id: string;
+  planNumber: string;
+  planDescription: string;
+  fee: number;
+  feeBase: number;
+  appliedAt: string;
+  locked: boolean;
+  lockedByPaymentId: string | null;
+}
+
+/** What "Pay balance with Synchrony" shows: each plan's fee on the balance after the deposit. */
+export interface FinancingOptions {
+  estimateId: string;
+  number: string;
+  balance: number;
+  /** Why no fee can be added right now (deposit not collected, paid in full, fee already on) — null when it can. */
+  blockedReason: string | null;
+  applied: FinancingFeeView | null;
+  options: { planNumber: string; description: string; fee: number; financed: number }[];
 }
 
 export interface PaymentRow {
@@ -333,6 +385,30 @@ export interface PaymentRow {
   /** "customer" | "warranty" (Kyle, 2026-09-10). */
   payer?: string;
   checkNumber?: string | null;
+  /** Voided (Kyle, 2026-10-08, decision 11): the row stays, struck through, and counts nowhere. */
+  voidedAt?: string | null;
+  voidedBy?: string | null;
+  voidReason?: string | null;
+  /** A Synchrony row (2026-10-09): plan, authorization number, net funded and Synchrony's cut. */
+  financingPlanNumber?: string | null;
+  financingAuthNumber?: string | null;
+  financingNet?: number | null;
+  financingCut?: number | null;
+  /** A card refund recorded from Stripe (2026-10-09, ruling 7): how much went back and when. The row stays listed; collected = amount − refundedAmount. */
+  refundedAmount?: number;
+  refundedAt?: string | null;
+  refunds?: PaymentRefundRow[];
+}
+
+/** One Stripe refund against a card payment (2026-10-09, ruling 7) — written only by the Stripe webhook. */
+export interface PaymentRefundRow {
+  id: string;
+  stripeRefundId: string;
+  amount: number;
+  /** Stripe's: pending | succeeded | failed | canceled. Only succeeded counts. */
+  status: string;
+  reason: string | null;
+  refundedAt: string;
 }
 
 /** One row of GET /warranty-receivables (Kyle, 2026-09-10): the warranty company's open money. */
@@ -1510,7 +1586,8 @@ export const api = {
   paymentsList: (year: number) => request<PaymentRow[]>(`/financials/payments?year=${year}`),
   recordPayment: (input: {
     amount: number;
-    method: "cash" | "check" | "zelle" | "ach" | "other";
+    /** "synchrony" (2026-10-09) is the financed balance: needs the fee on the invoice, `planNumber` and `authNumber`. */
+    method: "cash" | "check" | "zelle" | "ach" | "other" | "synchrony";
     kind?: "deposit" | "final" | "other";
     /** "warranty" records the warranty company's check against the claim (Kyle, 2026-09-10); default "customer". */
     payer?: "customer" | "warranty";
@@ -1519,12 +1596,39 @@ export const api = {
     customerId?: string;
     estimateId?: string;
     note?: string;
+    planNumber?: string;
+    authNumber?: string;
   }) =>
     request<PaymentRow>("/financials/payments", { method: "POST", body: JSON.stringify(input) }),
+  // ─── The financing fee (Kyle, 2026-10-08, decisions 7, 8, 12; Phase 6 Unit 6A) ────────────
+  /** "Pay balance with Synchrony": the balance after the deposit and each plan's fee on it. */
+  financingOptions: (estimateId: string) =>
+    request<FinancingOptions>(`/financials/financing-fees/options?estimateId=${encodeURIComponent(estimateId)}`),
+  /** "Add the financing fee" for a plan. Refused with the reason when the 1/3 deposit is not in. */
+  addFinancingFee: (estimateId: string, planNumber: string) =>
+    request<FinancingFeeView>("/financials/financing-fees", { method: "POST", body: JSON.stringify({ estimateId, planNumber }) }),
+  /** "Remove financing fee" — reason required; refused once a Synchrony payment is recorded against it. */
+  removeFinancingFee: (feeId: string, reason: string) =>
+    request<{ ok: true; id: string; removedAt: string; removeReason: string }>(
+      `/financials/financing-fees/${feeId}/remove`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  /**
+   * Void a recorded payment (Kyle, 2026-10-08, decision 11): administrator only — this is the
+   * CRM session's route and there is no field-app equivalent. Reason required; the row is kept
+   * and marked. A Stripe payment is refused (refund it in Stripe).
+   */
+  voidPayment: (paymentId: string, reason: string) =>
+    request<{ ok: true; id: string; voidedAt: string; voidedBy: string; voidReason: string; bankLinesReopened?: number }>(
+      `/financials/payments/${paymentId}/void`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
   /** Every warranty receivable — signed estimates with a claim, with money and status (Kyle, 2026-09-10). */
   warrantyReceivables: () => request<WarrantyReceivables>("/warranty-receivables"),
   // ─── Company settings ───────────────────────────────────────────────────
   companySettings: () => request<CompanySettings>("/crm/settings"),
+  /** The Synchrony plan list for the Settings card (the stored list, or the seeded defaults). Carries Synchrony’s rate to Red Cedar - the Settings card only. */
+  financingPlans: () => request<{ plans: FinancingPlan[] }>("/crm/financing-plans"),
   saveCompanySetting: (key: string, value: unknown) =>
     request<{ key: string; value: unknown; updatedAt: string }>(`/crm/settings/${key}`, {
       method: "PUT",
@@ -1588,6 +1692,21 @@ export const api = {
     }),
 
   /**
+   * The estimate's title and scope of work, edited on the draft (2026-10-08, Phase 2). The draft's
+   * values ARE the estimate's: a first issue reads them, and "Save changes to the estimate" re-reads
+   * them into the revision. Same function behind the field's "Title & scope".
+   */
+  pbSetDraftDetails: (draftId: string, input: { title?: string; jobDescription?: string | null }) =>
+    request<{ id: string; title: string; jobDescription: string | null }>(`/price-book/drafts/${draftId}/details`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+
+  /** Delete a draft nothing has been issued from. 409 with the reason once anything was issued. */
+  pbDeleteDraft: (draftId: string) =>
+    request<{ deleted: true; title: string }>(`/price-book/drafts/${draftId}`, { method: "DELETE" }),
+
+  /**
    * Kyle's names for the three options (2026-08-20).
    *
    * "It would be nice to be able to rename the options at the review screen in order to specify
@@ -1626,12 +1745,12 @@ export const api = {
     request<PbComputeResponse>(`/price-book/drafts/${draftId}/compute`),
 
   // Human-added line. Lands CONFIRMED — this is the path an AI proposal can never take.
+  // Quantity is just a number: the server decides how it was counted (Kyle, 2026-10-08).
   pbAddLine: (
     draftId: string,
     input: {
       itemId: string;
       quantity: number;
-      quantitySource: PbQuantitySource;
       difficulty?: PbDifficulty;
       location?: string | null;
       note?: string | null;
@@ -1644,7 +1763,7 @@ export const api = {
   // draft server-side — a line on an issued estimate is a record, not a working document.
   pbEditLine: (
     lineId: string,
-    patch: { quantity?: number; quantitySource?: PbQuantitySource; difficulty?: PbDifficulty; location?: string | null; note?: string | null; option?: PbOption }
+    patch: { quantity?: number; difficulty?: PbDifficulty; location?: string | null; note?: string | null; option?: PbOption }
   ) => request(`/price-book/lines/${lineId}`, { method: "PATCH", body: JSON.stringify(patch) }),
 
   pbDeleteLine: (lineId: string) =>
@@ -1652,7 +1771,7 @@ export const api = {
 
   pbConfirmLine: (
     lineId: string,
-    edits?: { quantity?: number; quantitySource?: PbQuantitySource; difficulty?: PbDifficulty; location?: string | null; note?: string | null }
+    edits?: { quantity?: number; difficulty?: PbDifficulty; location?: string | null; note?: string | null }
   ) => request(`/price-book/lines/${lineId}/confirm`, { method: "POST", body: JSON.stringify(edits ?? {}) }),
 
   pbRejectLine: (lineId: string) =>
@@ -1825,7 +1944,9 @@ export const api = {
     }>(`/issued-estimates/${id}`),
 
   /** OPERATOR ACTION ONLY. Behind the PIN session and a confirm; never called automatically. */
-  pbIssuedSend: (id: string, input: { to?: string | null; message?: string | null; photoIds?: string[]; attachHealthReport?: boolean; attachGeneratorReport?: boolean; includeFinancingLink?: boolean }) =>
+  // The body is shared/estimateEmail.ts's EstimateEmailRequest - the field app sends the same one
+  // to the same server function (Phase 4, 2026-10-08), built by estimateEmailRequest().
+  pbIssuedSend: (id: string, input: EstimateEmailRequest) =>
     request<{ sent: true; to: string }>(`/issued-estimates/${id}/send`, {
       method: "POST",
       body: JSON.stringify(input),
@@ -1839,9 +1960,12 @@ export const api = {
    *
    * Creates an EMPTY draft pointing at it — a change order describes the CHANGE, so pre-filling
    * it with the original lines would invite signing the whole job twice.
+   *
+   * ONE RULE with the field's button (2026-10-08): when a change order is already open for the
+   * invoice it is REOPENED, not duplicated - `resumed` is true and the draft already has its work.
    */
   pbChangeOrder: (estimateId: string) =>
-    request<{ draftId: string; changeOrderFor: string }>(
+    request<{ draftId: string; changeOrderFor: string; resumed?: boolean }>(
       `/issued-estimates/${estimateId}/change-order`,
       { method: "POST" },
     ),
@@ -1869,7 +1993,31 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ exclusive }),
     }),
-  pbCopyOption: (draftId: string, from: "A" | "B" | "C", to: "A" | "B" | "C") =>
+  // "+ Add Option D" / "Remove Option D" / drag-and-drop save (Kyle, 2026-10-08). The rules —
+  // which letter is next, the cap of eight, the signed-draft refusal, "the order must be
+  // complete" — are in the service; the field's quote routes call the same functions.
+  pbAddOption: (draftId: string) =>
+    request<{ option: PbOption; optionSet: DraftOptionSet }>(`/price-book/drafts/${draftId}/options`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  // `expectedLines` is the count the confirm showed; the server deletes nothing (409) if the option
+  // holds a different number now.
+  pbRemoveOption: (draftId: string, option: PbOption, expectedLines?: number) =>
+    request<{ option: PbOption; linesRemoved: number; optionSet: DraftOptionSet }>(
+      `/price-book/drafts/${draftId}/options/${option}${expectedLines === undefined ? "" : `?expectedLines=${expectedLines}`}`,
+      { method: "DELETE" },
+    ),
+  /**
+   * The FULL ordered list of the draft's confirmed lines, each with the option it now sits in and
+   * (`was`) the option this screen last saw it in.
+   */
+  pbSaveLineOrder: (draftId: string, order: Array<{ lineId: string; option: PbOption; was?: PbOption }>) =>
+    request<{ ok: true; saved: number; changed: number }>(`/price-book/drafts/${draftId}/line-order`, {
+      method: "PUT",
+      body: JSON.stringify({ order }),
+    }),
+  pbCopyOption: (draftId: string, from: PbOption, to: PbOption) =>
     request<{ copied: number; from: string; to: string }>(`/price-book/drafts/${draftId}/options/copy`, {
       method: "POST",
       body: JSON.stringify({ from, to }),
@@ -2082,12 +2230,16 @@ export const api = {
 
   commissionQuote: (visitId: string, technicianId: string) =>
     request<CommissionQuote>(`/time/commissions/quote?visitId=${encodeURIComponent(visitId)}&technicianId=${encodeURIComponent(technicianId)}`),
+  /** The commissions recorded on ONE job (test or not — asking about a job answers about that job). */
+  jobCommissions: (visitId: string) =>
+    request<CommissionRow[]>(`/time/commissions?visitId=${encodeURIComponent(visitId)}`),
   createCommission: (input: {
     technicianId: string; visitId?: string | null; basis: "job_profit" | "manual";
     percent?: number | null; amount?: number | null; note?: string | null; reason?: string | null;
   }) => request<{ id: string }>("/time/commissions", { method: "POST", body: JSON.stringify(input) }),
-  deleteCommission: (id: string, reason: string) =>
-    request<void>(`/time/commissions/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
+  /** Void a recorded commission (reason required; the row stays, marked void). The old hard DELETE answers 410. */
+  voidCommission: (id: string, reason: string) =>
+    request<{ ok: boolean; id: string }>(`/time/commissions/${id}/void`, { method: "POST", body: JSON.stringify({ reason }) }),
 
 };
 
@@ -2144,6 +2296,10 @@ export interface CommissionRow {
   reason: string | null;
   earnedAt: string;
   paidAt: string | null;
+  /** Set when the commission was voided: kept on the list, struck through, never summed. */
+  voidedAt?: string | null;
+  voidedBy?: string | null;
+  voidReason?: string | null;
 }
 
 export interface PayrollWeek {
@@ -2183,6 +2339,8 @@ export interface JobTimeView {
     rate: number | null;
     rateSet: boolean;
     cost: number | null;
+    /** A counted session of theirs closed with no rate (optional so an older server build parses). */
+    rateMissing?: boolean;
     assigned: boolean;
   }>;
   sessions: PayrollEntry[];
@@ -2192,6 +2350,24 @@ export interface JobTimeView {
   anyRateMissing: boolean;
 }
 
+/** One technician's labor on the job at total cost (decision 10, Kyle 2026-10-08) — its own row. */
+export interface CommissionLaborRow {
+  technicianId: string;
+  name: string;
+  hours: number;
+  /** Hours × the rate frozen on each session; null when a session has no rate. */
+  wage: number | null;
+  rateMissing: boolean;
+  /** wage × (1 + employer cost % / 100); null when the wage or the percent is missing. */
+  total: number | null;
+}
+
+/**
+ * The commission math, every term its own row (decision 10, Kyle 2026-10-08): revenue (+ financing
+ * fee) − material − fees (permits/inspections, Synchrony's cut, Stripe's fee per card payment) −
+ * labor at total cost = profit, floored at $0 for the commission. `profit` is null while anything
+ * is MISSING, and `missing` says what in words.
+ */
 export interface CommissionQuote {
   visitId: string;
   technicianId: string;
@@ -2199,8 +2375,21 @@ export interface CommissionQuote {
   materialCost: number;
   materialSource: string;
   fees: number;
-  feeRows: Array<{ kind: "receipt" | "card"; id: string; label: string; category: string; amount: number }>;
+  /** "synchrony" (2026-10-09): Synchrony's cut on a financed balance. "stripe" (Unit 6D): Stripe's processing fee on one card payment. */
+  feeRows: Array<{ kind: "receipt" | "card" | "synchrony" | "stripe"; id: string; label: string; category: string; amount: number }>;
+  /** Card payments whose Stripe fee could not be read, each with the reason — profit is null while any exist. */
+  feeProblems: Array<{ paymentId: string; amount: number; reason: string }>;
+  /** The financing fee counted into revenue (decision 10). */
+  financingFee: number;
+  laborRows: CommissionLaborRow[];
+  laborWage: number | null;
+  employerCostPercent: number | null;
+  employerCostSet: boolean;
+  laborCost: number | null;
+  missing: string[];
+  /** May be negative — shown as such; the commission is taken on commissionableProfit. */
   profit: number | null;
+  commissionableProfit: number | null;
   percent: number | null;
   percentSet: boolean;
   amount: number | null;
@@ -2276,12 +2465,20 @@ export interface PurchasingSettings {
   salesTaxRate: number;
 }
 
+/** Kyle, 2026-10-08 (decision 10): labor on a job is the TOTAL cost Red Cedar pays. The employer cost
+ * on top of wages is a PERCENT (9.5 = 9.5%) — the server refuses a fraction; null until Kyle sets it,
+ * and the commission basis says "employer cost % not set" until then. */
+export interface PayrollSettings {
+  employerCostPercent: number | null;
+}
+
 export interface CompanySettings {
   companyProfile?: CompanyProfile | null;
   operatingHours?: OperatingHours | null;
   territories?: Territory[] | null;
   legal?: LegalInfo | null;
   purchasing?: PurchasingSettings | null;
+  payroll?: PayrollSettings | null;
 }
 
 export interface VisitAssignment {

@@ -31,6 +31,9 @@ import Stripe from "stripe";
 import type { PrismaClient } from "@prisma/client";
 import { logSystemEvent } from "./systemEvents";
 import { sendKyleNotificationEmail } from "./confirmationEmail";
+import { activeFinancingFeeFor, FINANCING_IN_PROGRESS, financingInProgress, type FinancingFeeView } from "./financingFee";
+import { BALANCE_DUE_TERMS } from "./paymentTerms";
+import { collectedOf, recordRefundEvent, recordRefundsFromCharge } from "./paymentRefunds";
 
 export function stripeConfigured(): boolean {
   return Boolean(process.env.STRIPE_SECRET_KEY);
@@ -274,6 +277,13 @@ export const DEPOSIT_NONREFUNDABLE_CAP = 300;
  * the only trace left is that paymentSummary/financials still tolerate the
  * legacy Payment rows it wrote (method "discount") so those invoices keep
  * closing to zero and "collected" stays real money only.
+ *
+ * THE ONE EXCEPTION (Kyle, 2026-10-08, constants.md "Financing fee"): a balance
+ * paid through Synchrony carries a financing fee — 50% of the plan's rate on the
+ * balance after the 1/3 deposit — as its own root-level record
+ * (services/financingFee.ts). Card, bank, cash, check and Zelle still pay
+ * exactly the invoice: while the fee is applied the card paths are CLOSED
+ * (chargeableAmount refuses), so no card is ever charged a fee-inclusive balance.
  */
 
 export function depositDueOf(billedTotal: number): number {
@@ -311,8 +321,21 @@ export interface PaymentSummary {
   depositPaid: number;
   /** Homeowner money only (payer "customer"); a warranty check never lands here. */
   totalPaid: number;
-  /** The homeowner's balance. */
+  /**
+   * The homeowner's balance — WHAT IS OWED: billedTotal + the financing fee (when one is applied)
+   * − totalPaid. The fee is the one exception to "one price, every method" (Kyle, 2026-10-08) and
+   * exists only on the Synchrony path: while it is applied the card paths are closed
+   * (chargeableAmount refuses), so no card can ever be charged this figure. Once the Synchrony
+   * payment (gross = this balance) is recorded, the invoice closes to zero.
+   */
   balance: number;
+  /** The document balance alone — billedTotal − totalPaid — the figure the fee is worked on. Equal to `balance` when no fee is applied. */
+  balanceBeforeFee: number;
+  /**
+   * The financing fee applied to this invoice (services/financingFee.ts), or null. Dollars, no
+   * rate. Shown as its own line everywhere the balance is shown.
+   */
+  financingFee: FinancingFeeView | null;
   depositSatisfied: boolean;
   /** The HOMEOWNER is paid up (balance ≤ $0.01). The warranty share may still be open. */
   paidInFull: boolean;
@@ -325,6 +348,28 @@ export interface PaymentSummary {
     /** "customer" | "warranty" (Kyle, 2026-09-10). */
     payer: string;
     checkNumber: string | null;
+    /**
+     * Voided (Kyle, 2026-10-08, decision 11): the row stays listed, struck through, and counts
+     * in none of the figures above. services/paymentVoid.ts.
+     */
+    voidedAt: Date | null;
+    voidReason: string | null;
+    /**
+     * A Synchrony row (2026-10-09, services/financingFee.ts): the plan, Synchrony's authorization
+     * number, what landed net and what Synchrony kept. All null on every other method.
+     */
+    financingPlanNumber: string | null;
+    financingAuthNumber: string | null;
+    financingNet: number | null;
+    financingCut: number | null;
+    /**
+     * A card refund recorded from Stripe (Kyle, 2026-10-09, ruling 7; services/paymentRefunds.ts):
+     * how much of this row went back, when, and each Stripe refund. The row stays listed; the
+     * figures above count amount − refundedAmount. 0 / null / [] on every unrefunded row.
+     */
+    refundedAmount: number;
+    refundedAt: Date | null;
+    refunds: { id: string; stripeRefundId: string; amount: number; status: string; reason: string | null; refundedAt: Date }[];
   }[];
   /**
    * Home-warranty coverage (Kyle, 2026-09-09). `warrantyCovered` is what the
@@ -347,7 +392,7 @@ export interface PaymentSummary {
  * existed default to "customer"; legacy "discount" rows stay on the homeowner
  * side where they have always closed balances.
  */
-export function splitPaidByPayer<T extends { amount: number; payer?: string | null }>(paid: T[]): {
+export function splitPaidByPayer<T extends { amount: number; payer?: string | null; refundedAmount?: number | null }>(paid: T[]): {
   customer: T[];
   warranty: T[];
   customerPaid: number;
@@ -355,11 +400,14 @@ export function splitPaidByPayer<T extends { amount: number; payer?: string | nu
 } {
   const customer = paid.filter((p) => p.payer !== "warranty");
   const warranty = paid.filter((p) => p.payer === "warranty");
+  // What each row is still worth — a card refund recorded from Stripe comes off (Kyle, 2026-10-09,
+  // ruling 7; services/paymentRefunds.ts collectedOf). Callers that pass rows without the column
+  // (hand-built lists, older selects) read refundedAmount as 0.
   return {
     customer,
     warranty,
-    customerPaid: round2(customer.reduce((s, p) => s + p.amount, 0)),
-    warrantyPaid: round2(warranty.reduce((s, p) => s + p.amount, 0)),
+    customerPaid: round2(customer.reduce((s, p) => s + collectedOf(p), 0)),
+    warrantyPaid: round2(warranty.reduce((s, p) => s + collectedOf(p), 0)),
   };
 }
 
@@ -393,16 +441,27 @@ export async function paymentSummary(
   const payments = await prisma.payment.findMany({
     where: { estimateId: { in: group.ids } },
     orderBy: { createdAt: "desc" },
+    include: { refunds: { orderBy: { refundedAt: "asc" } } },
   });
-  const paid = payments.filter((p) => p.status === "paid");
+  // A voided row (2026-10-09, services/paymentVoid.ts) is listed below so the ledger shows it
+  // was recorded and taken back, but it is not money: nothing here sums it. A row refunded in
+  // full (status "refunded", services/paymentRefunds.ts) is listed and not money either; a
+  // partly refunded row is "paid" and is worth amount − refundedAmount (collectedOf, inside
+  // splitPaidByPayer).
+  const paid = payments.filter((p) => p.status === "paid" && !p.voidedAt);
   // Two payers, two ledgers (Kyle, 2026-09-10): the homeowner's money closes
   // the homeowner share; the warranty company's money closes the covered
   // amount. Neither ever reduces the other's balance.
   const split = splitPaidByPayer(paid);
   const totalPaid = split.customerPaid;
-  const depositPaid = round2(split.customer.filter((p) => p.kind === "deposit").reduce((s, p) => s + p.amount, 0));
+  const depositPaid = round2(split.customer.filter((p) => p.kind === "deposit").reduce((s, p) => s + collectedOf(p), 0));
   const depositDue = group.depositDue;
-  const homeownerBalance = round2(billedTotal - totalPaid);
+  // The financing fee (Kyle, 2026-10-08; services/financingFee.ts): its own record on the root,
+  // never in billedTotal or depositDue — a third of the documents, never of the fee. What is
+  // OWED is the documents plus the fee; the Synchrony payment is recorded gross against it.
+  const financingFee = await activeFinancingFeeFor(prisma, group.ids);
+  const balanceBeforeFee = round2(billedTotal - totalPaid);
+  const homeownerBalance = round2(billedTotal + (financingFee?.fee ?? 0) - totalPaid);
   const warranty = coverage
     ? {
       covered: coverage.applied,
@@ -425,6 +484,8 @@ export async function paymentSummary(
     depositPaid,
     totalPaid,
     balance: homeownerBalance,
+    balanceBeforeFee,
+    financingFee,
     // Any money at or past the deposit satisfies the gate — a customer who paid
     // in full up front did not fail to pay a deposit. No deposit required
     // (depositDue 0) satisfies it outright: nothing gates scheduling.
@@ -435,7 +496,11 @@ export async function paymentSummary(
     depositPayUrl: `${origin}/pay/${est.token}?type=deposit`,
     payments: payments.map((p) => ({
       id: p.id, amount: p.amount, method: p.method, kind: p.kind, status: p.status, paidAt: p.paidAt,
-      payer: p.payer, checkNumber: p.checkNumber,
+      payer: p.payer, checkNumber: p.checkNumber, voidedAt: p.voidedAt, voidReason: p.voidReason,
+      financingPlanNumber: p.financingPlanNumber, financingAuthNumber: p.financingAuthNumber,
+      financingNet: p.financingNet, financingCut: p.financingCut,
+      refundedAmount: p.refundedAmount, refundedAt: p.refundedAt,
+      refunds: p.refunds.map((r) => ({ id: r.id, stripeRefundId: r.stripeRefundId, amount: r.amount, status: r.status, reason: r.reason, refundedAt: r.refundedAt })),
     })),
     warrantyCovered: coverage?.applied ?? 0,
     warrantyClaim: coverage
@@ -477,8 +542,18 @@ export async function chargeableAmount(
   // against (Kyle, 2026-09-20: "allow a single payment once its all finished").
   const summary = (await paymentSummary(prisma, est.id, "https://unused.invalid"))!;
   if (summary.paidInFull) return { ok: false, reason: "This invoice has already been paid — thank you!" };
+  // THE CARD PATH NEVER SEES THE FEE (Kyle, 2026-10-08; services/financingFee.ts). While a
+  // financing fee is applied AND NOT YET PAID the balance carries it, and a card must never be
+  // charged that figure — so the pay page, the checkout and the QR all stop here, with the reason,
+  // until the Synchrony payment is recorded or the fee is removed. Once the Synchrony payment is
+  // recorded (the fee is locked) the fee is inside totalPaid, so `balance` below is plain invoice
+  // money — a deposit check that bounced and was voided — and the card may take it
+  // (review finding, 2026-10-09).
+  if (financingInProgress(summary)) {
+    return { ok: false, reason: `${FINANCING_IN_PROGRESS}. Call Red Cedar Electric if you would like to pay another way.` };
+  }
   if (payType === "deposit" && !summary.depositRequired) {
-    return { ok: false, reason: "No deposit is required on this invoice — the balance is due at completion." };
+    return { ok: false, reason: `No deposit is required on this invoice. ${BALANCE_DUE_TERMS}` };
   }
   if (payType === "deposit" && summary.depositSatisfied) {
     return { ok: false, reason: "The deposit on this job has already been paid — thank you!" };
@@ -610,11 +685,18 @@ export async function dispatchStripeEvent(prisma: PrismaClient, event: Stripe.Ev
       where: { stripeSessionId: session.id },
       select: { id: true, status: true },
     });
-    const firstPaidRecording = !existed || existed.status !== "paid";
+    // A row already REFUNDED (services/paymentRefunds.ts, 2026-10-09) stays refunded: a late
+    // retry of the completed event must not turn the money back on, and must not re-email a
+    // receipt for it.
+    const alreadyRefunded = existed?.status === "refunded";
+    const firstPaidRecording = !existed || (existed.status !== "paid" && !alreadyRefunded);
+    // The PaymentIntent behind the session — the key a charge.refunded event is matched on.
+    const paymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id ?? null;
     await prisma.payment.upsert({
       where: { stripeSessionId: session.id },
       create: {
         stripeSessionId: session.id,
+        stripePaymentIntentId: paymentIntentId,
         estimateId,
         customerId: session.metadata?.customerId || null,
         visitId: session.metadata?.visitId || null,
@@ -624,7 +706,9 @@ export async function dispatchStripeEvent(prisma: PrismaClient, event: Stripe.Ev
         status: "paid",
         paidAt: new Date(),
       },
-      update: { status: "paid", paidAt: new Date(), amount },
+      update: alreadyRefunded
+        ? { stripePaymentIntentId: paymentIntentId ?? undefined }
+        : { status: "paid", paidAt: new Date(), amount, stripePaymentIntentId: paymentIntentId ?? undefined },
     });
     logSystemEvent("info", "stripe", `Payment received — $${amount.toFixed(2)} on invoice ${session.metadata?.estimateNumber ?? "?"}`, {
       sessionId: session.id,
@@ -681,6 +765,23 @@ export async function dispatchStripeEvent(prisma: PrismaClient, event: Stripe.Ev
     // ONE source of card spend — these events are acknowledged (so Stripe
     // stops retrying) and create nothing. One INFO SystemEvent per process,
     // not one per event.
+    // A CARD REFUND MADE IN STRIPE IS RECORDED HERE (Kyle, 2026-10-09, ruling 7 of the
+    // one-estimating-system plan). charge.refunded fires on every refund of a charge, partial or
+    // full, with the cumulative amount; the refund.* events carry one refund's own lifecycle (a
+    // bank refund pends, then succeeds or fails). Both are idempotent on Stripe's refund id
+    // (services/paymentRefunds.ts). The endpoint in the Stripe Dashboard must be subscribed to
+    // these events or they never arrive — see the ruling-7 report.
+    // The event's own time rides along (review finding, 2026-10-09): Stripe retries with the same
+    // body and promises no order, so an older snapshot must never undo a newer one.
+    case "charge.refunded":
+      await recordRefundsFromCharge(prisma, event.data.object as Stripe.Charge, event.type, event.created);
+      break;
+    case "charge.refund.updated":
+    case "refund.created":
+    case "refund.updated":
+    case "refund.failed":
+      await recordRefundEvent(prisma, event.data.object as Stripe.Refund, event.type, event.created);
+      break;
     case "issuing_transaction.created":
     case "issuing_transaction.updated": {
       if (!issuingWebhookNoticeLogged) {

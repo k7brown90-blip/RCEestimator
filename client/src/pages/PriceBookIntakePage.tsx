@@ -1,13 +1,49 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useStickyFooterSpace } from "../lib/useStickyFooterSpace";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
 import { AccountPhotoGallery, PhotoAttachPicker } from "../components/PhotoGalleryPanel";
 import { WarrantyCoveragePanel } from "../components/WarrantyCoveragePanel";
 import { RaiseChangeOrderButton } from "../components/RaiseChangeOrderButton";
+import { FinancingLine } from "../components/FinancingSheet";
+import { cheapestSelection } from "../../../shared/financingDisplay";
+import { picksOne, selectionPrice, type QuoteMoney } from "../../../shared/quoteMoney";
 import { acceptanceWording, isOfficeAcceptance } from "../../../shared/acceptance";
+import { ESTIMATE_EMAIL_DEFAULTS, estimateEmailExtras, estimateEmailRequest } from "../../../shared/estimateEmail";
+import {
+  BASE_OPTIONS,
+  OPTION_HINTS,
+  OPTION_LIMIT_REASON,
+  optionHint,
+  type DraftOptionEntry,
+  type DraftOptionSet,
+} from "../../../shared/estimateOptions";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  closestCorners,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  buildColumns,
+  findColumn,
+  flattenOrder,
+  moveToColumn,
+  reorderWithin,
+  sameColumns,
+  type LineColumns,
+} from "../lib/lineOrder";
 import type {
   PbAtomic,
   PbComputed,
@@ -17,7 +53,7 @@ import type {
   PbDraft,
   PbLine,
   PbOption,
-  PbQuantitySource,
+  PbReview,
   PbWalkthroughRow,
   OnHand,
 } from "../lib/types";
@@ -37,25 +73,36 @@ import type {
  *     arithmetic in this file — not a multiply, not a sum. If a number is on screen, the server
  *     produced it. That is what keeps the screen and the workbook agreeing to the cent.
  *
- *  2. EXACT INPUTS PER ITEM. Quantity, quantity-source and difficulty are required per line and
- *     none of them is silently defaulted into something that looks like data. Continuous-length
- *     product forces MEASURED_LENGTH, because length is a field measurement (Kyle, rule R3).
+ *  2. EXACT INPUTS PER ITEM. Quantity and difficulty are required per line and neither is
+ *     silently defaulted into something that looks like data. Quantity is JUST A NUMBER (Kyle,
+ *     2026-10-08: "We just need a number not type") — how it was counted (a length that was
+ *     measured, an item that was counted) is worked out by the server from the item, so there is
+ *     nothing here to pick and nothing to get wrong.
  */
 
 type Tab = "browse" | "walkthrough" | "review";
-
-const QUANTITY_SOURCES: Array<{ value: PbQuantitySource; label: string; hint: string }> = [
-  { value: "COUNT", label: "Counted", hint: "Discrete items you counted" },
-  { value: "MEASURED_LENGTH", label: "Measured", hint: "Length you measured on site" },
-  { value: "TERMINATION_COUNT", label: "Terminations", hint: "Driven by termination count" },
-  { value: "MANUAL", label: "Manual", hint: "Hand-set — say why in the note" },
-];
 
 const DIFFICULTIES: Array<{ value: PbDifficulty; label: string }> = [
   { value: "NORMAL", label: "Normal" },
   { value: "DIFFICULT", label: "Difficult" },
   { value: "VERY_DIFFICULT", label: "Very difficult" },
 ];
+
+/**
+ * Why a typed quantity cannot be saved, or null when it can.
+ *
+ * Mirrors the server's rule (lineQuantitySchema + assertQuantityAllowed in
+ * atomicEstimateService.ts) and the field's Quote screen, so the desk refuses what the server
+ * would, with the reason on screen: non-zero, and negative ONLY on a change order (a credit for
+ * work removed). The server stays the decision; this just saves a round trip and a mystery.
+ */
+function quantityProblem(raw: string, isChangeOrder: boolean, what = "a quantity"): string | null {
+  const n = raw.trim() === "" ? NaN : Number(raw);
+  if (!Number.isFinite(n)) return `Enter ${what}.`;
+  if (n === 0) return "A quantity of zero changes nothing — enter a number above zero" + (isChangeOrder ? " (or a minus number to take work off)." : ".");
+  if (n < 0 && !isChangeOrder) return "Only a change order can take work off — enter a quantity above zero.";
+  return null;
+}
 
 /** Money display only. Formatting, never arithmetic. */
 function money(v: number | null | undefined): string {
@@ -72,6 +119,10 @@ export function PriceBookIntakePage() {
   // come back to the same estimate, and the office can be sent a link to one job rather than
   // "open the estimate screen and find it".
   const [params, setParams] = useSearchParams();
+  // "Raise a change order" arrives here with state when it REOPENED one already in progress
+  // (RaiseChangeOrderButton) - said on arrival, because the press looks the same either way.
+  const arrival = useLocation().state as { changeOrderResumed?: string } | null;
+  const [resumedNoteDismissed, setResumedNoteDismissed] = useState(false);
   /** Which option new lines land in. Defaults to A — the direct quote for the call-out. */
   const [activeOption, setActiveOption] = useState<PbOption>("A");
   const draftId = params.get("draft");
@@ -132,6 +183,22 @@ export function PriceBookIntakePage() {
     enabled: Boolean(draftId),
   });
 
+  // The draft's OWN options — A, B, C plus any that were added (2026-10-08). Every option list on
+  // this screen reads this, never a fixed three. Until the review arrives the three every draft
+  // has stand in, so the bar draws at once.
+  const optionSet = review?.optionSet;
+  const letters: PbOption[] = optionSet ? optionSet.options.map((o) => o.option) : [...BASE_OPTIONS];
+  // An option that is gone (removed here, or from the field) must not stay selected: new lines
+  // would be filed under a letter the draft no longer has.
+  const activeOpt: PbOption = letters.includes(activeOption) ? activeOption : "A";
+
+  // A signed estimate shuts the draft's lines, options and order, and the server refuses each
+  // (atomicEstimateService: addOption / removeOption / saveLineOrder) — so the buttons grey with the
+  // reason instead of letting the click fail. The reason is the SERVER's (`optionSet.lockedReason`,
+  // the same rule that does the refusing); this screen no longer decides "signed" for itself, which
+  // is how it went wrong after a signed estimate was revised.
+  const lockedReason = optionSet?.lockedReason ?? null;
+
   const { data: computed } = useQuery({
     queryKey: ["pb-compute", draftId],
     queryFn: () => api.pbCompute(draftId as string),
@@ -178,6 +245,18 @@ export function PriceBookIntakePage() {
     <div className="space-y-4">
       <PageHeader title="Estimate intake" subtitle="Browse, search, and confirm — the engine prices" />
 
+      {arrival?.changeOrderResumed && !resumedNoteDismissed && (
+        <div role="status" className="flex items-start justify-between gap-3 rounded-lg bg-rce-accentBg p-3 text-sm text-rce-accentDark">
+          <span>
+            <strong>Opened the change order already in progress</strong> on estimate {arrival.changeOrderResumed}. No
+            second change order was started - its lines are below.
+          </span>
+          <button type="button" className="shrink-0 text-xs underline" onClick={() => setResumedNoteDismissed(true)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* ── Draft selection. Every estimate starts blank (Kyle, 2026-08-12). ── */}
       <div className="card p-4">
         {/* The draft PICKER is gone (Kyle, 2026-08-19): "There should be no select a draft and
@@ -220,6 +299,19 @@ export function PriceBookIntakePage() {
             {attachmentLabel(activeDraft) ?? "Unattached — not linked to a job or lead"}
           </p>
         )}
+        {/* The title and scope the customer reads, and the way OUT of a draft nothing was issued
+            from — in the same card that shows the draft (2026-10-08, Phase 2 unit B). */}
+        {draftId && review && (
+          <DraftDetailsCard
+            draftId={draftId}
+            review={review}
+            onChanged={invalidate}
+            onDeleted={() => {
+              setDraftId(null);
+              void queryClient.invalidateQueries({ queryKey: ["pb-drafts"] });
+            }}
+          />
+        )}
       </div>
 
       {draftId && (
@@ -230,29 +322,15 @@ export function PriceBookIntakePage() {
               and asking on every single line would be a tap per item to answer a question whose
               answer almost never changes between them. Everything added — browse, search, or
               walkthrough — lands in whichever option is selected here. */}
-          <div className="card flex flex-wrap items-center gap-2 p-3">
-            <span className="text-xs font-medium text-rce-soft">Adding into</span>
-            {(["A", "B", "C"] as PbOption[]).map((o) => (
-              <button
-                key={o}
-                onClick={() => setActiveOption(o)}
-                className={
-                  activeOption === o
-                    ? "rounded-full bg-rce-accent px-3 py-1.5 text-sm font-semibold text-rce-text"
-                    : "rounded-full border border-rce-border px-3 py-1.5 text-sm text-rce-soft"
-                }
-              >
-                Option {o}
-              </button>
-            ))}
-            <span className="text-xs text-rce-soft">
-              {activeOption === "A" && "what the client called for"}
-              {activeOption === "B" && "code violations & hazards found"}
-              {activeOption === "C" && "recommended beyond A and B"}
-            </span>
-          </div>
+          <OptionBar
+            draftId={draftId}
+            optionSet={optionSet}
+            active={activeOpt}
+            onSelect={setActiveOption}
+            lockedReason={lockedReason}
+          />
 
-          <OptionModeAndCopy draftId={draftId} />
+          <OptionModeAndCopy draftId={draftId} letters={letters} lockedReason={lockedReason} />
 
           {draftId && (
             <Link
@@ -295,7 +373,7 @@ export function PriceBookIntakePage() {
           {tab === "walkthrough" && (
             <WalkthroughTab
               draftId={draftId}
-              option={activeOption}
+              option={activeOpt}
               onChanged={invalidate}
               onOpenItemsChange={setOpenItems}
             />
@@ -326,6 +404,7 @@ export function PriceBookIntakePage() {
           {/* ── Running totals. Straight from the engine, always visible. ── */}
           <TotalsBar
             computed={computed?.computed}
+            quoteMoney={computed?.money}
             options={computed?.options}
             openQuestions={review?.counts.openQuestions ?? 0}
             openItems={openItems}
@@ -338,7 +417,8 @@ export function PriceBookIntakePage() {
         <AddLineSheet
           atomic={picked}
           draftId={draftId}
-          option={activeOption}
+          option={activeOpt}
+          isChangeOrder={Boolean(review?.draft.changeOrderForId)}
           onClose={() => setPicked(null)}
           onAdded={() => {
             setPicked(null);
@@ -346,6 +426,128 @@ export function PriceBookIntakePage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// ─── Which option is being built: select / add / remove ─────────────────────
+
+/**
+ * The "Adding into" bar — the draft's own options, then "+ Add Option D" (Kyle, 2026-10-08).
+ *
+ * Kyle, debug-console request 2026-10-08 7:55 AM CT: "I want to be able to add more than 3 options
+ * for projects that are more expansive. I want to have a create additional option button here which
+ * will continue the options past 'C'." and "Capping it at eight is good."
+ *
+ *   - The button always NAMES the letter it will create ("+ Add Option D"). Which letter is the
+ *     server's call (the lowest free letter after C, atomicEstimateService.addOption); the screen
+ *     shows `optionSet.nextOption` and never works it out itself.
+ *   - At H it is greyed and the reason is on screen: "Eight options is the limit."
+ *   - Standing rule — nothing created is permanent: while an ADDED option (D to H) is selected,
+ *     "Remove Option D" sits in the same bar. A, B and C are permanent and show no such button.
+ *     If the option has lines, a confirm says how many go with it.
+ *   - D to H have no fixed meaning, so the hint beside the bar says to name it in Review.
+ *   - A signed estimate refuses both (the server's rule), so both grey with the reason shown.
+ */
+function OptionBar(props: {
+  draftId: string;
+  /** Undefined until the review arrives. */
+  optionSet: DraftOptionSet | undefined;
+  active: PbOption;
+  onSelect: (o: PbOption) => void;
+  /** Why options cannot be added or removed right now (a signed estimate), or null. */
+  lockedReason: string | null;
+}) {
+  const { draftId, optionSet, active, onSelect, lockedReason } = props;
+  const queryClient = useQueryClient();
+  const [err, setErr] = useState<string | null>(null);
+
+  const entries: DraftOptionEntry[] =
+    optionSet?.options ??
+    BASE_OPTIONS.map((option) => ({ option, label: null, note: null, lineCount: 0, removable: false }));
+  const activeEntry = entries.find((e) => e.option === active);
+  const next = optionSet?.nextOption ?? null;
+
+  // The response carries the draft's new option list: put it straight into the review cache so the
+  // bar, the Review sections and every select agree at once, then refetch the rest.
+  const adopt = (set: DraftOptionSet) => {
+    queryClient.setQueryData<PbReview>(["pb-review", draftId], (old) => (old ? { ...old, optionSet: set } : old));
+    void queryClient.invalidateQueries({ queryKey: ["pb-review", draftId] });
+    void queryClient.invalidateQueries({ queryKey: ["pb-compute", draftId] });
+    void queryClient.invalidateQueries({ queryKey: ["pb-draft-options", draftId] });
+    void queryClient.invalidateQueries({ queryKey: ["pb-issued", draftId] });
+  };
+
+  const add = useMutation({
+    mutationFn: () => api.pbAddOption(draftId),
+    onSuccess: (r) => {
+      setErr(null);
+      adopt(r.optionSet);
+      onSelect(r.option);
+    },
+    onError: (e) => setErr((e as Error).message),
+  });
+  const remove = useMutation({
+    // The count goes with the press: if the other app has put lines in the option since this screen
+    // loaded, the server deletes nothing and says so (409) instead of removing more than was agreed.
+    mutationFn: (v: { option: PbOption; expectedLines: number }) => api.pbRemoveOption(draftId, v.option, v.expectedLines),
+    onSuccess: (r) => {
+      setErr(null);
+      adopt(r.optionSet);
+      if (active === r.option) onSelect("A");
+    },
+    onError: (e) => {
+      setErr((e as Error).message);
+      // The count on this screen is out of date — refetch so the next press shows the real one.
+      void queryClient.invalidateQueries({ queryKey: ["pb-review", draftId] });
+    },
+  });
+
+  const addReason = !optionSet ? "Loading the estimate…" : lockedReason ?? (next ? null : `${OPTION_LIMIT_REASON}.`);
+  const removeReason = lockedReason;
+
+  return (
+    <div className="card flex flex-wrap items-center gap-2 p-3">
+      <span className="text-xs font-medium text-rce-soft">Adding into</span>
+      {entries.map((e) => (
+        <button
+          key={e.option}
+          onClick={() => onSelect(e.option)}
+          className={
+            active === e.option
+              ? "rounded-full bg-rce-accent px-3 py-1.5 text-sm font-semibold text-rce-text"
+              : "rounded-full border border-rce-border px-3 py-1.5 text-sm text-rce-soft"
+          }
+        >
+          Option {e.option}
+        </button>
+      ))}
+      <button
+        className="rounded-full border border-dashed border-rce-soft px-3 py-1.5 text-sm font-medium text-rce-text disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={Boolean(addReason) || add.isPending}
+        title={addReason ?? `Start Option ${next} — everything you add next lands in it`}
+        onClick={() => add.mutate()}
+      >
+        {add.isPending ? "Adding…" : next ? `+ Add Option ${next}` : "+ Add Option"}
+      </button>
+      {activeEntry?.removable && (
+        <button
+          className="rounded-full border border-rce-border px-3 py-1.5 text-sm text-rce-soft disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={Boolean(removeReason) || remove.isPending}
+          title={removeReason ?? `Take Option ${active} off this estimate`}
+          onClick={() => {
+            const n = activeEntry.lineCount;
+            if (n > 0 && !window.confirm(`Option ${active} has ${n} ${n === 1 ? "line" : "lines"} — remove them too?`)) return;
+            remove.mutate({ option: active, expectedLines: n });
+          }}
+        >
+          {remove.isPending ? "Removing…" : `Remove Option ${active}`}
+        </button>
+      )}
+      <span className="text-xs text-rce-soft">{optionHint(active)}</span>
+      {addReason && optionSet && <p className="w-full text-xs text-amber-800">{addReason}</p>}
+      {!addReason && activeEntry?.removable && removeReason && <p className="w-full text-xs text-amber-800">{removeReason}</p>}
+      {err && <p className="w-full rounded bg-red-50 p-2 text-xs text-red-900">{err}</p>}
     </div>
   );
 }
@@ -365,15 +567,22 @@ export function PriceBookIntakePage() {
  * line from one option into another (appends, never replaces), so the 10-ft
  * run is built once and B/C start as copies to tweak.
  */
-function OptionModeAndCopy({ draftId }: { draftId: string }) {
+function OptionModeAndCopy({ draftId, letters, lockedReason }: { draftId: string; letters: PbOption[]; lockedReason: string | null }) {
   const queryClient = useQueryClient();
   const { data: mode } = useQuery({
     queryKey: ["pbOptionsMode", draftId],
     queryFn: () => api.pbOptionsMode(draftId),
   });
-  const [copyFrom, setCopyFrom] = useState<"A" | "B" | "C">("A");
-  const [copyTo, setCopyTo] = useState<"A" | "B" | "C">("B");
+  const [copyFromPick, setCopyFrom] = useState<PbOption>("A");
+  const [copyToPick, setCopyTo] = useState<PbOption>("B");
+  // A pick that has since been removed falls back to the first/second option the draft has.
+  const copyFrom: PbOption = letters.includes(copyFromPick) ? copyFromPick : letters[0];
+  const copyTo: PbOption = letters.includes(copyToPick) ? copyToPick : (letters[1] ?? letters[0]);
   const [notice, setNotice] = useState<string | null>(null);
+  // A signed estimate shuts the draft's lines, and copying an option adds lines, so the server
+  // refuses it (2026-10-08). Grey the button and say why (the server's own sentence) instead of
+  // letting the click fail. Mode and names stay open on a signed estimate — they take effect
+  // through "Save changes to the estimate" (Kyle, 2026-09-29).
 
   const setMode = useMutation({
     mutationFn: (exclusive: boolean) => api.pbSetOptionsMode(draftId, exclusive),
@@ -407,21 +616,25 @@ function OptionModeAndCopy({ draftId }: { draftId: string }) {
       </label>
       <span className="ml-auto flex items-center gap-1 text-xs text-rce-soft">
         Copy
-        <select className="field text-xs" value={copyFrom} onChange={(e) => setCopyFrom(e.target.value as "A" | "B" | "C")}>
-          {["A", "B", "C"].map((o) => <option key={o} value={o}>{o}</option>)}
+        <select className="field text-xs" aria-label="Copy from option" value={copyFrom} onChange={(e) => setCopyFrom(e.target.value as PbOption)}>
+          {letters.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
         →
-        <select className="field text-xs" value={copyTo} onChange={(e) => setCopyTo(e.target.value as "A" | "B" | "C")}>
-          {["A", "B", "C"].map((o) => <option key={o} value={o}>{o}</option>)}
+        <select className="field text-xs" aria-label="Copy into option" value={copyTo} onChange={(e) => setCopyTo(e.target.value as PbOption)}>
+          {letters.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
         <button
           className="btn btn-secondary text-xs"
-          disabled={copy.isPending || copyFrom === copyTo}
+          disabled={copy.isPending || copyFrom === copyTo || Boolean(lockedReason)}
+          title={lockedReason ?? undefined}
           onClick={() => copy.mutate()}
         >
           {copy.isPending ? "Copying…" : "Copy lines"}
         </button>
       </span>
+      {lockedReason && (
+        <p className="w-full text-xs text-amber-800">Lines can't be copied into this estimate. {lockedReason}</p>
+      )}
       {notice && <p className="w-full text-xs text-rce-muted">{notice}</p>}
     </div>
   );
@@ -518,6 +731,11 @@ function BrowseTab(props: {
                 {a.isHourlyProduct && (
                   <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] text-sky-900">by the hour</span>
                 )}
+                {/* A hand-built product — one line here, the parts kept underneath. The field app's
+                    picker badges it the same way (2026-10-08, one estimating system). */}
+                {a.isAssembly && (
+                  <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] text-sky-900">assembly</span>
+                )}
               </div>
             </button>
           ))}
@@ -533,14 +751,19 @@ function AddLineSheet(props: {
   atomic: PbAtomic;
   draftId: string;
   option: PbOption;
+  /**
+   * A change-order draft may take a NEGATIVE quantity — a credit for work removed. Same rule the
+   * field's Quote screen applies (QuoteScreen `allowNegative`); the server's assertQuantityAllowed
+   * is the actual decision and refuses a negative anywhere else.
+   */
+  isChangeOrder: boolean;
   onClose: () => void;
   onAdded: () => void;
 }) {
-  const { atomic, draftId, option, onClose, onAdded } = props;
-  // Continuous-length product is forced to MEASURED_LENGTH and cannot be changed — Kyle's rule
-  // that length is a field measurement, enforced at the point of entry rather than as a warning
-  // after the fact.
-  const forced = atomic.isContinuousLength;
+  const { atomic, draftId, option, isChangeOrder, onClose, onAdded } = props;
+  // Sold by the foot: the number is a length measured on site (Kyle's rule R3). It is still just
+  // a number here — the server records it as a measured length on its own.
+  const byLength = atomic.isContinuousLength;
   /*
     HOURLY PRODUCT — the third input shape (Kyle, 2026-08-17, verbatim):
 
@@ -548,23 +771,19 @@ function AddLineSheet(props: {
        counted does not apply. We will put diagnostic hours and difficulty only here...
        The location and note is okay to stay here."
 
-    So for a row sold by the hour the quantity field IS hours and the source picker is GONE —
-    not relabelled, not disabled-but-visible. Three of its four options are meaningless against
-    an hour, and offering them is what pushed Kyle onto MANUAL (which then demanded a
-    justification note for the crime of billing one hour). His DG001 line landed
-    `qty 2 MANUAL` on 2026-08-17 for exactly that reason.
+    So for a row sold by the hour the quantity field IS hours. (The source picker that used to
+    sit under it was removed for every item on 2026-10-08 — "We just need a number not type" —
+    after having been hidden for hourly rows since this ruling: offering "Manual" against an
+    hour is what pushed Kyle's DG001 line onto `qty 2 MANUAL` and its justification note.)
 
-    SEAM — what is stored. The line still records `COUNT`, because `PriceBookQuantitySource`
-    has no HOURS member and adding one touches the Prisma enum, four zod schemas, the MCP tool
-    contract and the AI proposer's function schema. Nothing branches on it here: the engine
-    reads quantitySource in exactly two places (the MANUAL-needs-a-note guard and the
-    continuous-length guard) and an hourly line trips neither. The display is unit-aware
-    instead, so no screen shows the word "Counted" against an hour. If the stored record itself
-    ever has to carry the distinction, HOURS as a real enum member is the fuller fix.
+    SEAM — what is stored. The line records `COUNT`, because `PriceBookQuantitySource` has no
+    HOURS member and adding one touches the Prisma enum, the MCP tool contract and the AI
+    proposer's function schema. The display is unit-aware instead, so no screen shows a count
+    against an hour. If the stored record itself ever has to carry the distinction, HOURS as a
+    real enum member is the fuller fix.
   */
   const hourly = atomic.isHourlyProduct;
   const [quantity, setQuantity] = useState("");
-  const [source, setSource] = useState<PbQuantitySource>(forced ? "MEASURED_LENGTH" : "COUNT");
   const [difficulty, setDifficulty] = useState<PbDifficulty>("NORMAL");
   const [location, setLocation] = useState("");
   const [note, setNote] = useState("");
@@ -574,7 +793,6 @@ function AddLineSheet(props: {
       api.pbAddLine(draftId, {
         itemId: atomic.itemId,
         quantity: Number(quantity),
-        quantitySource: source,
         difficulty,
         option,
         location: location.trim() || null,
@@ -583,8 +801,8 @@ function AddLineSheet(props: {
     onSuccess: onAdded,
   });
 
-  const qtyValid = Number(quantity) > 0;
-  const noteRequired = source === "MANUAL" && !note.trim();
+  const qtyProblem = quantityProblem(quantity, isChangeOrder, hourly ? "the hours" : "a quantity");
+  const qtyValid = qtyProblem === null;
 
   return (
     <div className="fixed inset-0 z-40 flex items-end bg-black/40 sm:items-center sm:justify-center" onClick={onClose}>
@@ -601,37 +819,20 @@ function AddLineSheet(props: {
             inputMode="decimal"
             value={quantity}
             onChange={(e) => setQuantity(e.target.value)}
-            placeholder={hourly ? "How many hours" : forced ? "Measured length" : "How many"}
+            placeholder={hourly ? "How many hours" : byLength ? "Measured length" : isChangeOrder ? "How many (minus to remove)" : "How many"}
             autoFocus
           />
         </label>
 
-        {hourly ? (
+        {hourly && (
           <p className="mt-1 text-xs text-rce-muted">
             Sold by the hour — hours and difficulty are the only inputs this needs.
           </p>
-        ) : (
-          <div className="mt-3">
-            <span className="mb-1 block text-xs font-medium text-rce-soft">Quantity source</span>
-            <div className="flex flex-wrap gap-1">
-              {QUANTITY_SOURCES.map((s) => (
-                <button
-                  key={s.value}
-                  disabled={forced && s.value !== "MEASURED_LENGTH"}
-                  className={source === s.value ? "btn btn-primary" : "btn btn-secondary"}
-                  onClick={() => setSource(s.value)}
-                  title={s.hint}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-            {forced && (
-              <p className="mt-1 text-xs text-rce-muted">
-                Sold by the {atomic.unit} — length is a field measurement, so this is locked to Measured.
-              </p>
-            )}
-          </div>
+        )}
+        {isChangeOrder && (
+          <p className="mt-1 text-xs text-rce-muted">
+            This is a change order — type a minus sign (for example -2) to take work off it.
+          </p>
         )}
 
         <div className="mt-3">
@@ -679,7 +880,7 @@ function AddLineSheet(props: {
         </label>
 
         <label className="mt-3 block text-sm font-medium">
-          Note {source === "MANUAL" && <span className="text-rce-muted">— required for a manual quantity</span>}
+          Note (optional)
           <input className="field mt-1 w-full" value={note} onChange={(e) => setNote(e.target.value)} />
         </label>
 
@@ -692,19 +893,15 @@ function AddLineSheet(props: {
             a quantity and added two lines successfully a minute later.
 
             A disabled control has to say what would enable it. */}
-        {(!qtyValid || noteRequired) && (
-          <p className="mt-3 rounded bg-amber-50 p-2 text-xs text-amber-900">
-            {!qtyValid
-              ? `Enter ${hourly ? "the hours" : "a quantity"} above to add this line.`
-              : "A manual quantity needs a note saying why."}
-          </p>
+        {qtyProblem && (
+          <p className="mt-3 rounded bg-amber-50 p-2 text-xs text-amber-900">{qtyProblem} The line cannot be added until then.</p>
         )}
 
         <div className="mt-4 flex gap-2">
           <button className="btn btn-secondary flex-1" onClick={onClose}>Cancel</button>
           <button
             className="btn btn-primary flex-1"
-            disabled={!qtyValid || noteRequired || add.isPending}
+            disabled={!qtyValid || add.isPending}
             onClick={() => add.mutate()}
           >
             {add.isPending ? "Adding…" : "Add line"}
@@ -899,7 +1096,6 @@ function WalkthroughRow(props: {
         itemId: c.itemId,
         // Quantity 1 on purpose — Kyle adjusts it in Review, where he can see the price move.
         quantity: 1,
-        quantitySource: c.isContinuousLength ? "MEASURED_LENGTH" : "COUNT",
         difficulty: "NORMAL",
         option,
         note: `From walkthrough: "${row.raw}"`,
@@ -990,7 +1186,7 @@ function ReviewTab(props: {
   accountId: string | null;
   serviceAddressId: string | null;
   onAttached: (accountId: string, serviceAddressId: string) => void;
-  review: { proposedLines: PbLine[]; confirmedLines: PbLine[]; openQuestions: Array<{ id: string; question: string; raisedBy: string }>; counts: { proposed: number; confirmed: number; openQuestions: number } } | undefined;
+  review: { optionSet: DraftOptionSet; proposedLines: PbLine[]; confirmedLines: PbLine[]; openQuestions: Array<{ id: string; question: string; raisedBy: string }>; counts: { proposed: number; confirmed: number; openQuestions: number } } | undefined;
   computed: PbComputed | undefined;
   options: PbOptionSummary[] | undefined;
   /**
@@ -1025,6 +1221,7 @@ function ReviewTab(props: {
     queryFn: () => api.pbIssuedList(draftId),
   });
   const liveIssued = (issuedList?.estimates ?? []).find((e) => !e.supersededBy);
+  // Whether the draft's lines are shut comes from the server's own rule (optionSet.lockedReason).
   // The default truck's on-hand beside each material line (Kyle, 2026-09-09,
   // Build 4): "on truck: 190 ft" and a shortfall hint. One read for every
   // confirmed line that carries material; read-only, nothing here moves stock.
@@ -1065,7 +1262,7 @@ function ReviewTab(props: {
             AI proposals — {review.counts.proposed} waiting on you
           </h3>
           {review.proposedLines.map((l) => (
-            <ProposedLineRow key={l.id} line={l} onChanged={onChanged} />
+            <ProposedLineRow key={l.id} line={l} isChangeOrder={Boolean(props.isChangeOrder)} onChanged={onChanged} />
           ))}
         </div>
       )}
@@ -1094,51 +1291,18 @@ function ReviewTab(props: {
         <h3 className="text-sm font-semibold">Confirmed lines — {review.counts.confirmed}</h3>
         {review.confirmedLines.length === 0 && <p className="text-sm text-rce-muted">Nothing confirmed yet.</p>}
 
-        {(["A", "B", "C"] as PbOption[]).map((opt) => {
-          // Joined on the LINE id, not the itemId. A draft may legitimately carry the same atomic
-          // twice — Kyle's 2026-08-16 draft has two N001 lines of 100 ft — and an itemId join
-          // rendered the first row's hours and dollars against both of them.
-          const withComputed = review.confirmedLines.map((l) => ({
-            line: l,
-            computed: computed?.lines.find((x) => x.id === l.id),
-          }));
-          const mine = withComputed.filter((x) => (x.computed?.option ?? "A") === opt);
-          const summary = options?.find((o) => o.option === opt);
-          if (mine.length === 0 && review.confirmedLines.length === 0) return null;
-
-          return (
-            <section key={opt} className="rounded-lg border border-rce-border">
-              <header className="flex items-baseline justify-between gap-2 border-b border-rce-border bg-rce-bg px-3 py-2">
-                <OptionNaming
-                  draftId={draftId as string}
-                  option={opt}
-                  meta={optionMeta?.find((m) => m.option === opt) ?? null}
-                />
-                <div className="text-right">
-                  <div className="text-sm font-semibold">{money(summary?.subtotal)}</div>
-                  <div className="text-[11px] text-rce-soft">{mine.length} line(s)</div>
-                </div>
-              </header>
-              <div className="space-y-2 p-2">
-                {mine.length === 0 ? (
-                  <p className="text-xs text-rce-muted">
-                    Nothing in this option yet. Pick "Option {opt}" above to add into it.
-                  </p>
-                ) : (
-                  mine.map((x) => (
-                    <ConfirmedLineRow
-                      key={x.line.id}
-                      line={x.line}
-                      computed={x.computed}
-                      onChanged={onChanged}
-                      onHand={truckOnHand?.[x.line.itemId]}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-          );
-        })}
+        <ConfirmedLinesBoard
+          draftId={draftId}
+          optionSet={review.optionSet}
+          confirmedLines={review.confirmedLines}
+          computed={computed}
+          options={options}
+          optionMeta={optionMeta}
+          isChangeOrder={Boolean(props.isChangeOrder)}
+          onChanged={onChanged}
+          truckOnHand={truckOnHand}
+          lockedReason={review.optionSet.lockedReason ? `Lines can't be moved or reordered. ${review.optionSet.lockedReason}` : null}
+        />
 
         {/* A fixed job cost, when there is one, sits outside every option because it is charged
             once for the visit — so the sections above would not add up to this.
@@ -1195,6 +1359,299 @@ function ReviewTab(props: {
 }
 
 /**
+ * THE CONFIRMED LINES, ONE SECTION PER OPTION — AND THEY DRAG (Kyle, 2026-10-08).
+ *
+ * "I would like to be able to drag and drop line items on the review screen ... If I add all the line
+ *  items and then go to review and see that I made a mistake and added some to option 'B' that were
+ *  supposed to be on option 'C' then I can drag and drop them where they need to be rather than
+ *  delete and rebuild the line items that were incorrect. This will save time and also allow me to
+ *  organize the line items so the presentation can be set up to explain the install start to finish."
+ *
+ * Two jobs with one gesture: move a line to another option, and put the lines of an option in install
+ * order. The order IS what the customer sees — presentation, issued estimate and PDF all read lines by
+ * sortOrder and none re-sorts — so a drop is saved through `PUT /price-book/drafts/:id/line-order`,
+ * which takes the FULL ordered list and replaces the whole order or nothing.
+ *
+ *   - Handle: "⋮⋮" at the left of every CONFIRMED line ("Drag to reorder or move to another option").
+ *     AI-proposed lines are a separate list above and are not draggable — they are confirmed first.
+ *   - Every option section accepts a drop, an EMPTY one included, so a new Option D can be filled by
+ *     dragging. The section lights up while a line is over it, and the line's old place shows as a
+ *     dashed marker where it will land.
+ *   - Mouse, finger (the handle takes the touch, so scrolling the list does not start a drag) and
+ *     keyboard: Tab to a handle, Space to pick the line up, arrows to move it, Space to drop.
+ *   - The screen updates the moment the line is dropped. If the save fails the lines go back where
+ *     they were and the server's reason is shown here — nothing is left looking saved when it is not.
+ *     When it succeeds the review and the computed totals are refetched, so each option's subtotal
+ *     follows the line. The screen does no money arithmetic of its own.
+ *   - A signed estimate shuts its lines (the server refuses). The handles grey and the reason is
+ *     printed above the sections — "raise a change order" — rather than the handles disappearing.
+ *   - The Edit → "Option" buttons on each row stay: they are the one-click way to move a line.
+ */
+function ConfirmedLinesBoard(props: {
+  draftId: string;
+  optionSet: DraftOptionSet;
+  confirmedLines: PbLine[];
+  computed: PbComputed | undefined;
+  options: PbOptionSummary[] | undefined;
+  optionMeta: PbOptionMeta[] | undefined;
+  isChangeOrder: boolean;
+  onChanged: () => void;
+  truckOnHand: Record<string, OnHand> | undefined;
+  /** Why lines cannot be moved right now (a signed estimate), or null when they can. */
+  lockedReason: string | null;
+}) {
+  const { draftId, optionSet, confirmedLines, computed, options, optionMeta, isChangeOrder, onChanged, truckOnHand, lockedReason } = props;
+  const queryClient = useQueryClient();
+  const letters = useMemo(() => optionSet.options.map((o) => o.option), [optionSet]);
+
+  const computedById = useMemo(() => {
+    const m = new Map<string, PbComputedLine>();
+    for (const c of computed?.lines ?? []) if (c.id) m.set(c.id, c);
+    return m;
+  }, [computed]);
+  const lineById = useMemo(() => new Map(confirmedLines.map((l) => [l.id, l])), [confirmedLines]);
+
+  // What the server says: each confirmed line under the option IT IS IN (the review payload's own
+  // `option`, not the compute result's), in saved order. Reading the option from the compute result
+  // meant a drag made before that query arrived, or after it failed, filed every line under
+  // Option A and saved it (2026-10-08 review). The compute result still supplies the PRICES.
+  const serverCols = useMemo(
+    () => buildColumns(letters, confirmedLines, (id) => lineById.get(id)?.option),
+    [letters, confirmedLines, lineById],
+  );
+
+  // The layout while a line is being dragged, and from the drop until the save has come back and
+  // the review has been refetched. Null the rest of the time (the server's layout is shown).
+  const [local, setLocalState] = useState<LineColumns | null>(null);
+  const localRef = useRef<LineColumns | null>(null);
+  const setLocal = (next: LineColumns | null) => {
+    localRef.current = next;
+    setLocalState(next);
+  };
+  const shown = local ?? serverCols;
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const locked = Boolean(lockedReason);
+  const dragDisabled = locked || saving;
+
+  const sensors = useSensors(
+    // A few pixels before a drag starts, so a click on the handle is not a drag.
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const save = async (next: LineColumns) => {
+    setSaving(true);
+    setErr(null);
+    try {
+      // `was`: the option each line had on the layout this drag started from, so a save from a
+      // screen the other app has since overtaken is refused (409) instead of undoing its move.
+      await api.pbSaveLineOrder(draftId, flattenOrder(next, letters, serverCols));
+      // Hold the dropped layout on screen until BOTH refetches are in, so the lines do not flick
+      // back (or into Option A) between the review arriving and the compute arriving.
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ["pb-review", draftId] }),
+        queryClient.refetchQueries({ queryKey: ["pb-compute", draftId] }),
+      ]);
+      setLocal(null);
+    } catch (e) {
+      setLocal(null);
+      setErr((e as Error).message);
+      // A refusal because someone else changed the estimate: show the real layout, not the stale one.
+      void queryClient.invalidateQueries({ queryKey: ["pb-review", draftId] });
+      void queryClient.invalidateQueries({ queryKey: ["pb-compute", draftId] });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onDragStart = (e: DragStartEvent) => {
+    setErr(null);
+    setLocal(localRef.current ?? serverCols);
+    setActiveId(String(e.active.id));
+  };
+
+  const onDragOver = (e: DragOverEvent) => {
+    const { active, over } = e;
+    if (!over) return;
+    const cur = localRef.current ?? serverCols;
+    const translated = active.rect.current.translated;
+    const below = Boolean(translated && translated.top > over.rect.top + over.rect.height / 2);
+    const next = moveToColumn(cur, String(active.id), String(over.id), below);
+    if (next !== cur) setLocal(next);
+  };
+
+  const onDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    setActiveId(null);
+    // Dropped on nothing: put it back.
+    if (!over) {
+      setLocal(null);
+      return;
+    }
+    const next = reorderWithin(localRef.current ?? serverCols, String(active.id), String(over.id));
+    if (sameColumns(next, serverCols, letters)) {
+      setLocal(null); // dropped where it started
+      return;
+    }
+    setLocal(next);
+    void save(next);
+  };
+
+  const onDragCancel = () => {
+    setActiveId(null);
+    setLocal(null);
+  };
+
+  const dragging = activeId ? lineById.get(activeId) : undefined;
+  const overColumn = activeId ? findColumn(shown, activeId) : null;
+
+  return (
+    <div className="space-y-4">
+      {confirmedLines.length > 0 && !locked && (
+        <p className="text-xs text-rce-soft">
+          Drag a line by its <span aria-hidden="true">⋮⋮</span> handle to put it in order, or into another option.
+        </p>
+      )}
+      {lockedReason && confirmedLines.length > 0 && (
+        <p className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">{lockedReason}</p>
+      )}
+      {err && <p className="rounded bg-red-50 p-2 text-xs text-red-900">{err} The lines are back where they were.</p>}
+      {saving && <p className="text-xs text-rce-soft">Saving the new order…</p>}
+
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCorners}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDragEnd={onDragEnd}
+        onDragCancel={onDragCancel}
+      >
+        {optionSet.options.map((entry) => {
+          const opt = entry.option;
+          const ids = (shown[opt] ?? []).filter((id) => lineById.has(id));
+          const summary = options?.find((o) => o.option === opt);
+          // Nothing confirmed anywhere: A, B and C stay out of the way (as they always have). An
+          // ADDED option still shows, so it can be named and dropped into.
+          if (ids.length === 0 && confirmedLines.length === 0 && !entry.removable) return null;
+
+          return (
+            <OptionSection
+              key={opt}
+              option={opt}
+              highlighted={overColumn === opt}
+              header={
+                <>
+                  <OptionNaming
+                    draftId={draftId}
+                    option={opt}
+                    meta={optionMeta?.find((m) => m.option === opt) ?? null}
+                  />
+                  <div className="text-right">
+                    <div className="text-sm font-semibold">{money(summary?.subtotal)}</div>
+                    <div className="text-[11px] text-rce-soft">{ids.length} line(s)</div>
+                  </div>
+                </>
+              }
+            >
+              <SortableContext items={ids} strategy={verticalListSortingStrategy} disabled={dragDisabled}>
+                {ids.length === 0 ? (
+                  <p className="text-xs text-rce-muted">
+                    Nothing in this option yet. Pick "Option {opt}" above to add into it, or drag a line here.
+                  </p>
+                ) : (
+                  ids.map((id) => {
+                    const line = lineById.get(id) as PbLine;
+                    return (
+                      <SortableLine key={id} id={id} locked={dragDisabled} lockedReason={lockedReason ?? "Saving the new order…"}>
+                        <ConfirmedLineRow
+                          isChangeOrder={isChangeOrder}
+                          line={line}
+                          computed={computedById.get(id)}
+                          onChanged={onChanged}
+                          onHand={truckOnHand?.[line.itemId]}
+                          optionLetters={letters}
+                        />
+                      </SortableLine>
+                    );
+                  })
+                )}
+              </SortableContext>
+            </OptionSection>
+          );
+        })}
+        <DragOverlay>
+          {dragging ? (
+            <div className="card flex items-center gap-2 p-3 shadow-lg">
+              <span aria-hidden="true" className="text-rce-soft">⋮⋮</span>
+              <div className="min-w-0">
+                <div className="font-semibold">
+                  {dragging.itemId} <span className="text-rce-soft">× {dragging.quantity}{dragging.unit ? ` ${dragging.unit}` : ""}</span>
+                </div>
+                <div className="text-xs text-rce-muted line-clamp-1">{dragging.description}</div>
+              </div>
+            </div>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
+    </div>
+  );
+}
+
+/** One option's section. The body is a drop target on its own, so an EMPTY option can take a line. */
+function OptionSection(props: { option: PbOption; highlighted: boolean; header: ReactNode; children: ReactNode }) {
+  const { setNodeRef } = useDroppable({ id: props.option });
+  return (
+    <section
+      aria-label={`Option ${props.option} lines`}
+      className={`rounded-lg border ${props.highlighted ? "border-rce-accent ring-2 ring-rce-accent" : "border-rce-border"}`}
+    >
+      <header className="flex items-baseline justify-between gap-2 border-b border-rce-border bg-rce-bg px-3 py-2">
+        {props.header}
+      </header>
+      <div ref={setNodeRef} className="min-h-[3rem] space-y-2 p-2">
+        {props.children}
+      </div>
+    </section>
+  );
+}
+
+/** A confirmed line with its drag handle. The handle greys, with the reason in its tooltip, when dragging is off. */
+function SortableLine(props: { id: string; locked: boolean; lockedReason: string; children: ReactNode }) {
+  const { id, locked, lockedReason, children } = props;
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+    disabled: locked,
+  });
+  const title = locked ? lockedReason : "Drag to reorder or move to another option";
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      // The line's old place stays as a dashed marker while its copy travels with the pointer.
+      className={`flex items-stretch gap-1 rounded-lg ${isDragging ? "opacity-40 outline-2 outline-dashed outline-rce-accent" : ""}`}
+    >
+      <button
+        type="button"
+        ref={setActivatorNodeRef}
+        {...attributes}
+        {...(locked ? {} : listeners)}
+        aria-label={title}
+        title={title}
+        className={`flex w-7 shrink-0 touch-none select-none items-center justify-center rounded text-base leading-none ${
+          locked ? "cursor-not-allowed text-rce-border" : "cursor-grab text-rce-soft hover:bg-rce-bg active:cursor-grabbing"
+        }`}
+      >
+        <span aria-hidden="true">⋮⋮</span>
+      </button>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
+/**
  * A line the tech has committed — now editable and removable (Kyle, 2026-08-17: "I also have no
  * way to edit or delete an entry already submitted").
  *
@@ -1202,8 +1659,8 @@ function ReviewTab(props: {
  * rather than swallowed: a button that silently does nothing is the defect this whole screen has
  * been paying for.
  */
-function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | undefined; onChanged: () => void; onHand?: OnHand }) {
-  const { line: l, computed: c, onChanged, onHand } = props;
+function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | undefined; isChangeOrder: boolean; onChanged: () => void; onHand?: OnHand; optionLetters: PbOption[] }) {
+  const { line: l, computed: c, isChangeOrder, onChanged, onHand, optionLetters } = props;
   // On-hand on the default truck beside a material line (Kyle, 2026-09-09, Build 4).
   // Read-only: "on truck: 190 ft", and "short 60 ft" when the line needs more than
   // the truck holds. Only lines that carry material. Not a PO prompt — Kyle,
@@ -1221,6 +1678,7 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
   const [err, setErr] = useState<string | null>(null);
 
   const hourly = (l.unit ?? "").trim().toLowerCase() === "hr";
+  const qtyProblem = quantityProblem(qty, isChangeOrder, hourly ? "the hours" : "a quantity");
 
   const save = useMutation({
     mutationFn: () =>
@@ -1259,9 +1717,9 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
           </div>
           <div className="text-xs text-rce-muted line-clamp-2">{l.description}</div>
           <div className="text-xs text-rce-soft">
-            {/* An hourly line's quantity source carries no information — the quantity IS hours —
-                so it is not shown rather than displaying "COUNT" against an hour. */}
-            Option {c?.option ?? "A"} · {hourly ? "by the hour" : l.quantitySource} · {l.difficulty}
+            {/* Quantity is just a number (Kyle, 2026-10-08) — how it was counted is no longer shown
+                or asked. An hourly line says so, because its number is hours, not a count. */}
+            Option {c?.option ?? "A"} · {hourly ? "by the hour · " : ""}{l.difficulty}
             {l.proposedBy ? ` · from ${l.proposedBy}` : " · entered by hand"}
             {l.editedBeforeConfirm ? " · edited before confirm" : ""}
           </div>
@@ -1301,11 +1759,12 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
               onChange={(e) => setQty(e.target.value)}
             />
           </label>
+          {qtyProblem && <p className="text-xs text-amber-900">{qtyProblem}</p>}
           {/* Move a line to another option. Without this, putting one in the wrong option
               could only be undone by deleting it and adding it again. */}
           <div className="flex flex-wrap items-center gap-1">
             <span className="mr-1 text-xs text-rce-soft">Option</span>
-            {(["A", "B", "C"] as PbOption[]).map((o) => (
+            {optionLetters.map((o) => (
               <button
                 key={o}
                 className={option === o ? "btn btn-primary" : "btn btn-secondary"}
@@ -1344,7 +1803,7 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
           <>
             <button
               className="btn btn-primary flex-1"
-              disabled={!(Number(qty) > 0) || save.isPending}
+              disabled={qtyProblem !== null || save.isPending}
               onClick={() => save.mutate()}
             >
               {save.isPending ? "Saving…" : "Save"}
@@ -1384,9 +1843,12 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
   );
 }
 
-function ProposedLineRow(props: { line: PbLine; onChanged: () => void }) {
-  const { line, onChanged } = props;
+function ProposedLineRow(props: { line: PbLine; isChangeOrder: boolean; onChanged: () => void }) {
+  const { line, isChangeOrder, onChanged } = props;
   const [qty, setQty] = useState(String(line.quantity));
+  // The model can never PROPOSE a negative, but the person confirming a change order's line may
+  // edit it into a credit — the same rule as every other quantity box on this screen.
+  const qtyProblem = quantityProblem(qty, isChangeOrder);
   const [difficulty, setDifficulty] = useState<PbDifficulty>(line.difficulty);
 
   const confirm = useMutation({
@@ -1415,6 +1877,7 @@ function ProposedLineRow(props: { line: PbLine; onChanged: () => void }) {
           Qty
           <input className="field mt-1 w-20" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} />
         </label>
+        {qtyProblem && <p className="basis-full text-xs text-amber-900">{qtyProblem}</p>}
         <div className="flex gap-1">
           {DIFFICULTIES.map((d) => (
             <button
@@ -1429,7 +1892,7 @@ function ProposedLineRow(props: { line: PbLine; onChanged: () => void }) {
       </div>
 
       <div className="mt-2 flex gap-2">
-        <button className="btn btn-primary flex-1" disabled={!(Number(qty) > 0) || confirm.isPending} onClick={() => confirm.mutate()}>
+        <button className="btn btn-primary flex-1" disabled={qtyProblem !== null || confirm.isPending} onClick={() => confirm.mutate()}>
           {Number(qty) !== line.quantity || difficulty !== line.difficulty ? "Edit & confirm" : "Confirm"}
         </button>
         <button className="btn btn-secondary" disabled={reject.isPending} onClick={() => reject.mutate()}>
@@ -1466,6 +1929,109 @@ function QuestionRow(props: { question: { id: string; question: string; raisedBy
  * One line naming what a draft belongs to, or null when it belongs to nothing.
  * Names, never ids — this is read by a person deciding whether they are in the right draft.
  */
+/**
+ * "Title & scope" and "Delete this draft" — ONE service each, shared with the field Quote screen
+ * (2026-10-08, one-estimating-system plan, Phase 2 unit B).
+ *
+ * TITLE AND SCOPE. The audit found no route could rename a draft or edit its scope of work after
+ * creation, and the issue panel never sent either — so the customer read whatever the draft was
+ * born with ("customer — address" from the field). The draft's values ARE the estimate's: a first
+ * issue reads them, and "Save changes to the estimate" re-reads them into the revision, exactly
+ * like the discount (Kyle, 2026-09-29). That is why the editor stays live after issue, with the
+ * same amber hint the discount block carries.
+ *
+ * DELETE. Standing rule — nothing the app creates is permanent, and the exit lives where the thing
+ * is shown. Greyed WITH the reason once anything has been issued from the draft: the way out is
+ * then on the estimate (Estimates page: delete while unsigned, void, or mark lost).
+ */
+function DraftDetailsCard(props: { draftId: string; review: PbReview; onChanged: () => void; onDeleted: () => void }) {
+  const { draftId, review, onChanged, onDeleted } = props;
+  const savedTitle = review.draft.title;
+  const savedScope = review.draft.jobDescription ?? "";
+  const [title, setTitle] = useState(savedTitle);
+  const [scope, setScope] = useState(savedScope);
+  // A draft switched under the editor (the URL changed) or saved from the other app: show what is saved.
+  useEffect(() => {
+    setTitle(savedTitle);
+    setScope(savedScope);
+  }, [review.draft.id, savedTitle, savedScope]);
+  const dirty = title.trim() !== savedTitle || scope.trim() !== savedScope;
+  const [said, setSaid] = useState<string | null>(null);
+  const issued = review.lifecycle?.issued ?? null;
+  const deleteReason = review.lifecycle?.deleteReason ?? null;
+
+  const save = useMutation({
+    mutationFn: () => api.pbSetDraftDetails(draftId, { title: title.trim(), jobDescription: scope.trim() || null }),
+    onSuccess: () => {
+      setSaid(issued ? `Saved on the draft. Press "Save changes to the estimate" in Review to put it on ${issued.number}.` : "Saved.");
+      onChanged();
+    },
+    onError: (err) => setSaid((err as Error).message),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.pbDeleteDraft(draftId),
+    onSuccess: onDeleted,
+    onError: (err) => setSaid((err as Error).message),
+  });
+
+  return (
+    <div className="mt-3 space-y-2 border-t border-rce-border pt-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+        <label className="flex-1 text-xs text-rce-soft">
+          Estimate title
+          <input
+            className="field mt-1 w-full"
+            value={title}
+            maxLength={200}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="What this estimate is for"
+          />
+        </label>
+        <label className="flex-[2] text-xs text-rce-soft">
+          Scope of work — what the customer reads under the title (optional)
+          <textarea
+            className="field mt-1 w-full"
+            rows={2}
+            value={scope}
+            maxLength={4000}
+            onChange={(e) => setScope(e.target.value)}
+            placeholder="e.g. Replace the 100A panel with a 200A panel and bring the service up to code."
+          />
+        </label>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn btn-secondary text-sm"
+          disabled={!dirty || !title.trim() || save.isPending}
+          title={!title.trim() ? "The estimate needs a title." : !dirty ? "Nothing changed" : undefined}
+          onClick={() => save.mutate()}
+        >
+          {save.isPending ? "Saving…" : "Save title & scope"}
+        </button>
+        <button
+          type="button"
+          className="btn btn-danger text-sm"
+          disabled={deleteReason !== null || remove.isPending}
+          title={deleteReason ?? "Deletes this draft and its lines. Nothing has been issued from it."}
+          onClick={() => {
+            if (window.confirm(`Delete the draft "${savedTitle}" and its ${review.counts.confirmed + review.counts.proposed} line(s)? This cannot be undone.`)) remove.mutate();
+          }}
+        >
+          {remove.isPending ? "Deleting…" : "Delete this draft"}
+        </button>
+        {issued && (
+          <span className="text-[11px] text-amber-800">
+            Issued as {issued.number} — a new title or scope reaches the customer when you press "Save changes to the estimate" in Review.
+          </span>
+        )}
+      </div>
+      {deleteReason && <p className="text-[11px] text-rce-soft">{deleteReason}</p>}
+      {said && <p className="rounded bg-rce-accentBg/40 p-2 text-xs text-rce-text">{said}</p>}
+    </div>
+  );
+}
+
 function attachmentLabel(d: PbDraft | undefined): string | null {
   if (!d) return null;
   const who = d.customer?.name ?? d.lead?.name ?? null;
@@ -1488,6 +2054,8 @@ function attachmentLabel(d: PbDraft | undefined): string | null {
  */
 function TotalsBar(props: {
   computed: PbComputed | undefined;
+  /** The server's finished prices and financing figures (shared/quoteMoney.ts). Optional: older payloads lack it. */
+  quoteMoney?: QuoteMoney;
   options?: PbOptionSummary[];
   openQuestions: number;
   openItems: number;
@@ -1543,6 +2111,36 @@ function TotalsBar(props: {
 
   // Only options that actually carry work. An empty option has no subtotal worth showing.
   const usedOptions = (props.options ?? []).filter((o) => o.lineCount > 0);
+
+  /*
+    "or from $X/mo with financing" under the total (Phase 5 unit B, 2026-10-08) - the OFFICE's view
+    of what the customer will be shown. The figures are the server's (quoteMoney.financing); this
+    only picks WHICH selection to look up. Ordinary mode: everything with work in it. One-or-the-
+    other: the customer picks exactly one, so the honest headline is the cheapest alternative, and
+    the line says so.
+
+    The bar's headline (c.total) is the engine total BEFORE any military / senior / custom programme
+    discount, but the sheet is worked on the total AFTER it (money.selections - what the customer
+    pays; review finding, 2026-10-08). So when a programme discount applies the sheet's label says
+    "after $X discount" instead of letting two different totals sit side by side unexplained.
+  */
+  const qm = props.quoteMoney ?? null;
+  let financingSelected: string[] = [];
+  let financingLabel = "";
+  if (qm) {
+    if (picksOne(qm)) {
+      const best = cheapestSelection(qm.financing, qm.pickable.map((o) => [o]));
+      if (best) {
+        financingSelected = best.key.split("+");
+        financingLabel = `Option ${best.key} (the cheapest of the alternatives)`;
+      }
+    } else {
+      financingSelected = [...qm.pickable];
+      financingLabel = `Option${financingSelected.length > 1 ? "s" : ""} ${financingSelected.join(" + ")}`;
+    }
+    const discounted = selectionPrice(qm, financingSelected)?.discount ?? 0;
+    if (financingLabel && discounted > 0) financingLabel += ` (after $${discounted.toFixed(2)} discount)`;
+  }
 
   return (
     <>
@@ -1647,6 +2245,16 @@ function TotalsBar(props: {
               {expanded ? "▾ less" : "▴ detail"}
             </button>
           </div>
+          {qm && (
+            <div>
+              <FinancingLine
+                financing={qm.financing}
+                selected={financingSelected}
+                label={financingLabel}
+                total={selectionPrice(qm, financingSelected)?.total ?? null}
+              />
+            </div>
+          )}
           {feeOnly && (
             <div className="text-xs text-amber-800">fixed fee only — no lines priced</div>
           )}
@@ -1780,12 +2388,12 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   const [sendPhotoIds, setSendPhotoIds] = useState<string[]>([]);
   // Support documentation (Kyle, 2026-08-29): the assessment report and the
   // generator sizing sheet, rendered fresh at send time.
-  const [attachHealthReport, setAttachHealthReport] = useState(false);
-  const [attachGeneratorReport, setAttachGeneratorReport] = useState(false);
+  const [attachHealthReport, setAttachHealthReport] = useState(ESTIMATE_EMAIL_DEFAULTS.attachHealthReport);
+  const [attachGeneratorReport, setAttachGeneratorReport] = useState(ESTIMATE_EMAIL_DEFAULTS.attachGeneratorReport);
   // Ticked by default, unlike the two above (Kyle, 2026-10-02). The financing line has gone out
   // on every estimate email since 2026-09-16 on his word; a box that started empty would have
   // quietly stopped it. What he gains here is the ability to leave it OFF on one estimate.
-  const [includeFinancingLink, setIncludeFinancingLink] = useState(true);
+  const [includeFinancingLink, setIncludeFinancingLink] = useState(ESTIMATE_EMAIL_DEFAULTS.includeFinancingLink);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -1805,43 +2413,24 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   const activePercent = computeData?.discount?.percent ?? null;
   /*
     SHOW THE MONEY (Kyle, 2026-09-01: "The discounts are not showing up. I can't tell if it is
-    applying them."). The amount is per selection, so this panel prices the discount for the whole
-    job (every option together) and, under exclusive options, for each option on its own -- the
-    same arithmetic the customer's page and the PDF run: options + trip - combination discount,
-    then the percentage, then the programme cap.
+    applying them."). The amount is per selection: the whole job (every option together) and, under
+    exclusive options, each option on its own. The figures are the SERVER's (one-estimating-system
+    plan, Phase 3 unit A, 2026-10-08): `computeData.money.discount.rows` is built by the one pricer
+    (shared/quoteMoney.ts) — options + trip - combination discount, then the percentage, then the
+    programme cap — the same arithmetic the customer's page, the PDF and the field's Quote screen
+    use. This panel used to redo that sum in the browser; it now only words what the server sent.
   */
-  const { data: sendOptionsMode } = useQuery({
-    queryKey: ["pbOptionsMode", draftId],
-    queryFn: () => api.pbOptionsMode(draftId),
-    enabled: Boolean(draftId),
-  });
+  const fmtMoney = (n: number) => "$" + n.toFixed(2);
   const discountPreview = (() => {
-    const prog = computeData?.discount ?? null;
-    const comp = computeData?.computed;
-    if (!prog || !comp) return null;
-    const used = (computeData?.options ?? []).filter((o) => o.lineCount > 0);
-    if (used.length === 0) return { rows: [], incomplete: false };
-    const fmt = (n: number) => "$" + n.toFixed(2);
-    const priceFor = (sel: typeof used) => {
-      if (sel.some((o) => o.subtotal === null)) return null;
-      const key = sel.map((o) => o.option).sort().join("+");
-      const combo = comp.combinationDiscounts?.[key];
-      const base = Math.round((sel.reduce((n, o) => n + (o.subtotal ?? 0), 0) + (comp.jobFixedCost ?? 0) - (combo?.applied ? combo.reduction : 0)) * 100) / 100;
-      if (base <= 0) return { base, amount: 0, capped: false };
-      const raw = Math.round(base * prog.rate * 100) / 100;
-      const amount = prog.cap === null ? raw : Math.min(raw, prog.cap);
-      return { base, amount, capped: prog.cap !== null && raw > prog.cap };
-    };
-    const exclusive = sendOptionsMode?.exclusiveOptions ?? false;
-    const sets = exclusive && used.length > 1 ? used.map((o) => [o]) : [used];
-    const rows = sets.map((sel) => {
-      const priced = priceFor(sel);
-      const label = sel.length === used.length ? (used.length > 1 ? "whole job" : "Option " + sel[0].option) : "Option " + sel[0].option;
-      return priced === null
-        ? { label, text: "prices once every line is confirmed" }
-        : { label, text: "-" + fmt(priced.amount) + (priced.capped ? " (capped)" : "") + " -> " + fmt(Math.round((priced.base - priced.amount) * 100) / 100) };
-    });
-    return { rows, incomplete: rows.some((r) => r.text.startsWith("prices")) };
+    const d = computeData?.money?.discount ?? null;
+    if (!d) return null;
+    const rows = d.rows.map((r) => ({
+      label: r.label,
+      text: "-" + fmtMoney(r.amount) + (r.capped ? " (capped)" : "") + " -> " + fmtMoney(r.after),
+    }));
+    // A selection still holding an unpriced line has no row from the server: say so, never $0.
+    if (d.pricedOnceComplete) rows.push({ label: "unpriced lines", text: "prices once every line is confirmed" });
+    return { rows, incomplete: d.pricedOnceComplete };
   })();
   const setDiscount = useMutation({
     mutationFn: (next: { type: "military" | "senior" | "custom" | null; percent?: number | null }) =>
@@ -1910,16 +2499,16 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
 
   const send = useMutation({
     mutationFn: () =>
-      api.pbIssuedSend(activeId as string, {
-        to: sendTo.trim() || null,
-        message: sendMsg.trim() || null,
-        photoIds: sendPhotoIds.length > 0 ? sendPhotoIds : undefined,
-        attachHealthReport: attachHealthReport || undefined,
-        attachGeneratorReport: attachGeneratorReport || undefined,
-        // Only sent when switched OFF. The server treats absent as "send it", so the default
-        // path stays byte-identical to what estimates have always carried.
-        includeFinancingLink: includeFinancingLink ? undefined : false,
-      }),
+      // The body is built by shared/estimateEmail.ts - the field app's Email button builds the same
+      // one. includeFinancingLink goes only when switched OFF (absent means "send it").
+      api.pbIssuedSend(activeId as string, estimateEmailRequest({
+        to: sendTo,
+        message: sendMsg,
+        photoIds: sendPhotoIds,
+        attachHealthReport,
+        attachGeneratorReport,
+        includeFinancingLink,
+      })),
     onSuccess: (r) => {
       setNotice(`Sent to ${r.to}.`);
       setReasons([]);
@@ -1931,6 +2520,35 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
       setReasons([(err as Error).message]);
     },
   });
+
+  /*
+    The financing link on its own, BEFORE signing (Kyle, 2026-10-08: "the financing link should be
+    able to be sent before signing"). The same server function the field's "Email the financing
+    link" and the payment panel call (services/financingEmail.ts); it refuses a void, lost or
+    superseded estimate and an account with no email, in words shown below. No credit terms in
+    the copy - the email is a link and an invitation to apply.
+  */
+  const [financingSentTo, setFinancingSentTo] = useState<string | null>(null);
+  // The server's refusal (superseded, not found, a send failure) shows UNDER the button that was
+  // pressed, not in the red block at the top of "Send to the customer" - that block is hundreds of
+  // pixels above this button and out of view when it is pressed (review finding, 2026-10-08).
+  const [financingError, setFinancingError] = useState<string | null>(null);
+  const sendFinancing = useMutation({
+    mutationFn: () => api.emailFinancing(activeId as string),
+    onMutate: () => setFinancingError(null),
+    onSuccess: (r) => {
+      setFinancingSentTo(r.to);
+      setNotice(`Financing link emailed to ${r.to}.`);
+      setReasons([]);
+      refresh();
+    },
+    onError: (err) => {
+      setNotice(null);
+      setFinancingError((err as Error).message);
+    },
+  });
+  // A new estimate in the panel (another revision, another draft) has not had its link sent yet.
+  useEffect(() => { setFinancingSentTo(null); setFinancingError(null); }, [activeId]);
 
   /**
    * Hand the device to the customer. No lock, no token swap — Kyle removed that on 2026-08-18.
@@ -2134,7 +2752,8 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
             Attach generator sizing recommendation (from this address's field assessment)
           </label>
           {/* The deposit is optional (Kyle, 2026-09-20). On: the ⅓ is asked and gates the
-              schedule — today's rule. Off: nothing gates it; the balance is due at completion. */}
+              schedule — today's rule. Off: nothing gates it; the balance is due upon receipt of the final invoice
+              (2026-10-08). A financed job needs this ON — the Synchrony fee is refused without it. */}
           <label className="mt-1 flex items-center gap-2 text-xs text-rce-soft">
             <input type="checkbox" checked={depositRequired} onChange={(e) => setDepositRequired(e.target.checked)} />
             Deposit required (⅓ before scheduling){isChangeOrder ? " — off by default for a change order" : ""}
@@ -2361,11 +2980,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                       setReasons(["No customer email address. Type one above, or add it to the account."]);
                       return;
                     }
-                    const extras = [
-                      attachHealthReport ? "the Health Record report" : null,
-                      attachGeneratorReport ? "the Generator Sizing sheet" : null,
-                      sendPhotoIds.length ? `${sendPhotoIds.length} photo(s)` : null,
-                    ].filter(Boolean).join(", ");
+                    const extras = estimateEmailExtras({ photoIds: sendPhotoIds, attachHealthReport, attachGeneratorReport });
                     // The financing link is normally ON, so the confirm calls out its ABSENCE —
                     // listing it every time would be noise, but dropping it silently would mean
                     // Kyle only finds out by reading the sent email.
@@ -2375,6 +2990,37 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                 >
                   {send.isPending ? "Sending…" : est.sentAt ? "Email again" : "Email estimate"}
                 </button>
+                {/*
+                  THE FINANCING LINK, ON ITS OWN, BEFORE SIGNING (Kyle, 2026-10-08). Beside the
+                  estimate email, not behind a signature: a customer weighing the price is the one
+                  who wants to apply. Greyed with the reason (void / lost / no email), never
+                  hidden. Relabels once sent so a second press is a decision, not a double-tap.
+                */}
+                {(() => {
+                  const financingBlock: string | null =
+                    est.status === "void" ? "This estimate is void."
+                    : est.status === "lost" ? "This estimate is marked lost. Reopen it from the Estimates page first, then send the financing link."
+                    : !est.customerEmail ? "No customer email on file - add one to the account first."
+                    : null;
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-secondary mt-2 w-full"
+                        disabled={sendFinancing.isPending || financingBlock !== null}
+                        title={financingBlock ?? "Emails the Synchrony financing link and an invitation to apply - no rates, terms or approval odds stated"}
+                        onClick={() => sendFinancing.mutate()}
+                      >
+                        {sendFinancing.isPending ? "Sending…" : financingSentTo ? "Send the financing link again" : "Email the financing link"}
+                      </button>
+                      {financingBlock && <p className="mt-1 text-xs text-amber-800">{financingBlock}</p>}
+                      {financingError && <p role="alert" className="mt-1 rounded bg-red-50 p-2 text-xs text-red-700">{financingError}</p>}
+                      {financingSentTo && !financingBlock && !financingError && (
+                        <p className="mt-1 text-xs text-rce-muted">Financing link last emailed to {financingSentTo} just now.</p>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </>
           )}
@@ -2386,7 +3032,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
               ("New revision from this draft") never read as saving. */}
           <button
             className="btn btn-primary w-full"
-            disabled={revise.isPending}
+            disabled={revise.isPending || est.status === "lost"}
             onClick={() => {
               if (window.confirm(`Save your draft changes to estimate ${est.number}? The customer's copy is replaced (same estimate number, new revision); their old link stops working.`)) {
                 revise.mutate();
@@ -2398,6 +3044,13 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
           <p className="text-xs text-rce-muted">
             Edits made in this builder don't reach the issued estimate until saved to it.
           </p>
+          {/* 2026-10-08: the server refuses to revise a lost estimate (Reopen is the way back), so
+              the button says why it is greyed instead of failing after the click. */}
+          {est.status === "lost" && (
+            <p className="text-xs text-amber-800">
+              This estimate is marked lost. Open it from the Estimates page and press Reopen, then come back and save changes to it.
+            </p>
+          )}
 
           {(est.events ?? []).length > 0 && (
             <div className="rounded-lg bg-rce-accentBg/30 p-2">
@@ -2567,12 +3220,9 @@ function OptionNaming(props: {
     save.mutate({ label: nextLabel, note: nextNote });
   };
 
-  const hint =
-    props.option === "A"
-      ? "what the client called for"
-      : props.option === "B"
-        ? "code violations & hazards found"
-        : "recommended beyond A and B";
+  // A/B/C keep Kyle's meanings; D and later are named by the user right here, so the empty box
+  // just says so (shared/estimateOptions.ts).
+  const hint = OPTION_HINTS[props.option] ?? "name this option";
 
   return (
     <div className="min-w-0 flex-1">

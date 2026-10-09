@@ -16,6 +16,7 @@ import {
   type CompanyProfile,
 } from "./companyProfile";
 import { findingCitations } from "./findingLedger";
+import { CONTRACT_PAYMENT_TERMS } from "./paymentTerms";
 import { serializeDiagnosticReport } from "./diagnosticReport";
 import {
   DEVICE_LABEL,
@@ -230,7 +231,7 @@ export async function generateContract(input: ContractInput): Promise<{ document
   doc.fillColor(BRAND.cedar).fontSize(12).text("Pricing", { underline: true });
   doc.fillColor(BRAND.text).fontSize(10).text(`Total Price: $${input.totalPrice.toFixed(2)}`);
   if (input.estimatedHours) doc.text(`Estimated Duration: ${input.estimatedHours} hours`);
-  doc.text(`Payment Terms: ${input.paymentTerms ?? "Due upon completion"}`);
+  doc.text(`Payment Terms: ${input.paymentTerms ?? CONTRACT_PAYMENT_TERMS}`);
   doc.moveDown();
 
   doc.fillColor(BRAND.cedar).fontSize(12).text("Terms & Conditions", { underline: true });

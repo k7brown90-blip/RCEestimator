@@ -18,6 +18,7 @@ import { BounceBadge } from "../BounceBadge";
 import { DeliveryChip } from "../DeliveryChip";
 import { Drawer } from "../Drawer";
 import { PaymentPanel } from "../PaymentPanel";
+import { FINANCING_IN_PROGRESS } from "../SynchronyFinancing";
 import { PhotoAttachPicker } from "../PhotoGalleryPanel";
 import { RaiseChangeOrderButton } from "../RaiseChangeOrderButton";
 import { SendToPicker } from "../SendToPicker";
@@ -116,7 +117,15 @@ export function InvoiceDrawer({ id, onClose }: { id: string; onClose: () => void
               target={{ estimateId: inv.id, status: "signed", signed: true }}
             />
             {inv.paymentStatus !== "paid" && (
-              <button type="button" className="btn btn-secondary text-sm" disabled={remind.isPending} onClick={() => remind.mutate()}>
+              <button
+                type="button"
+                className="btn btn-secondary text-sm"
+                disabled={remind.isPending || Boolean(inv.financingFee)}
+                // Greyed WITH the reason (Kyle, 2026-10-08; Phase 6 Unit 6C): a customer whose balance is
+                // being paid through Synchrony is not chased — the server refuses the same send.
+                title={inv.financingFee ? `${FINANCING_IN_PROGRESS} — no reminder is sent. Remove the financing fee (with a reason) if the financing falls through.` : undefined}
+                onClick={() => remind.mutate()}
+              >
                 {remind.isPending ? "Sending…" : "Send reminder"}
               </button>
             )}

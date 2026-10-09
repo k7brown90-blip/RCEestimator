@@ -17,11 +17,13 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { PriceBookIntakePage } from "./PriceBookIntakePage";
 import { api } from "../lib/api";
 import type { AccountSummary, PbDraft, PbIssuedEstimate, PbReview } from "../lib/types";
+import { buildQuoteFinancing, type FinancingPlan } from "../../../shared/financing";
+import { DEFAULT_FINANCING_PLANS } from "../../../src/services/financingPlanDefaults";
 
 // "+ Add photos" downscales in-browser before upload (lib/images.ts, shared with every other
 // photo-upload path). createImageBitmap/canvas don't exist in jsdom — a fixed data URL in, the
@@ -42,6 +44,12 @@ const DRAFT: PbDraft = {
 
 const REVIEW: PbReview = {
   draft: DRAFT,
+  // What the server sends: A, B, C always (none removable), and "Add option" offers D.
+  optionSet: {
+    options: (["A", "B", "C"] as const).map((option) => ({ option, label: null, note: null, lineCount: option === "A" ? 1 : 0, removable: false })),
+    nextOption: "D",
+    lockedReason: null,
+  },
   proposedLines: [],
   // One confirmed line with no material, so the on-hand lookup stays disabled.
   confirmedLines: [{
@@ -80,6 +88,7 @@ function mockPage(
     discount: null,
     computed: { lines: [], laborHours: 0, laborDollars: 0, materialSell: 0, subtotal: 0 } as never,
     options: [],
+    money: { exclusiveOptions: false, range: null, discount: null, discountedTotal: null, discountedRange: null, pickable: [], selections: {} },
   });
   vi.spyOn(api, "pbDraftOptions").mockResolvedValue([]);
   vi.spyOn(api, "pbOptionsMode").mockResolvedValue({ exclusiveOptions: false });
@@ -375,5 +384,198 @@ describe("PriceBookIntakePage — the discount is always adjustable", () => {
       ).toBeInTheDocument(),
     );
     expect(screen.getByText(/the customer has to sign again/)).toBeInTheDocument();
+  });
+});
+
+describe("PriceBookIntakePage — the discount block prints the SERVER's figures (one presentation math)", () => {
+  // 2026-10-08, one-estimating-system plan, Phase 3 unit A. The block used to redo the discount
+  // sum in the browser (discountPreview). It now words `compute.money.discount.rows` — the amounts
+  // below are deliberately not what any browser arithmetic on the page's other numbers would give.
+  const withDiscount = (rows: Array<{ label: string; base: number; comboSaving: number; amount: number; capped: boolean; after: number }>, pricedOnceComplete = false) => {
+    mockPage(null);
+    vi.mocked(api.pbCompute).mockResolvedValue({
+      discount: { type: "military", rate: 0.05, cap: 250, percent: 5 },
+      computed: { lines: [], laborHours: 0, laborDollars: 0, materialSell: 0, subtotal: 0, jobFixedCost: 200, combinationDiscounts: {} } as never,
+      options: [],
+      money: {
+        exclusiveOptions: false, range: null, discountedTotal: null, discountedRange: null, pickable: ["A"], selections: {},
+        discount: { type: "military", percent: 5, label: "Military discount (5%)", terms: "5% off, capped at $250", rows, pricedOnceComplete },
+      },
+    });
+  };
+
+  it("shows the whole-job amount and the after-discount figure the server sent", async () => {
+    withDiscount([{ label: "whole job", base: 4000, comboSaving: 0, amount: 250, capped: true, after: 3750.01 }]);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    await expectDiscountControls();
+    await waitFor(() => expect(screen.getByText(/whole job/)).toBeInTheDocument());
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("-$250.00 (capped) -> $3750.01");
+    expect(text).toContain("5% off, capped at $250");
+  });
+
+  it("a selection the server could not price yet says so instead of showing $0", async () => {
+    withDiscount([], true);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    await expectDiscountControls();
+    await waitFor(() => expect(document.body.textContent).toContain("prices once every line is confirmed"));
+  });
+});
+
+/*
+  Phase 4 (2026-10-08): "Email the financing link" on the after-issue panel, BEFORE signing. Kyle:
+  "the financing link should be able to be sent before signing." Beside "Email estimate", greyed
+  with the reason when the server would refuse - never hidden - and the estimate email's own body
+  is the one shared/estimateEmail.ts builds (the phone sends the same).
+*/
+describe("PriceBookIntakePage — Email the financing link, before signing", () => {
+  it("sits under Email estimate on an issued, unsigned estimate and sends the one financing email", async () => {
+    mockPage(issued());
+    const send = vi.spyOn(api, "emailFinancing").mockResolvedValue({ ok: true, to: "tony@example.com" });
+
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    const button = await screen.findByRole("button", { name: "Email the financing link" });
+    expect(button).toBeEnabled();
+    // No confirm and no signature in the way: nothing about signing gates it.
+    fireEvent.click(button);
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith("est-1"));
+    expect(await screen.findByText("Financing link emailed to tony@example.com.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send the financing link again" })).toBeInTheDocument();
+  });
+
+  it("is available on an estimate that has never been emailed (status draft)", async () => {
+    mockPage(issued({ status: "draft" }));
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeEnabled();
+  });
+
+  it("greys with the reason for a lost or void estimate", async () => {
+    mockPage(issued({ status: "lost" }));
+    const { unmount } = renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeDisabled();
+    expect(screen.getByText(/Reopen it from the Estimates page first, then send the financing link/)).toBeInTheDocument();
+    unmount();
+    vi.restoreAllMocks();
+
+    mockPage(issued({ status: "void" }));
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeDisabled();
+    expect(screen.getByText("This estimate is void.")).toBeInTheDocument();
+  });
+
+  it("greys with the reason when the account has no email", async () => {
+    mockPage(issued({ customerEmail: null }));
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeDisabled();
+    expect(screen.getByText(/No customer email on file/)).toBeInTheDocument();
+  });
+
+  it("shows the server's refusal in the panel", async () => {
+    mockPage(issued());
+    vi.spyOn(api, "emailFinancing").mockRejectedValue(new Error("This estimate is void."));
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    const button = await screen.findByRole("button", { name: "Email the financing link" });
+    fireEvent.click(button);
+    const refusal = await screen.findByText("This estimate is void.");
+    expect(refusal).toBeInTheDocument();
+    // UNDER the button that was pressed (same container), not in the red block at the top of
+    // "Send to the customer" hundreds of pixels away (review finding, 2026-10-08).
+    expect(refusal.parentElement).toBe(button.parentElement);
+    expect(refusal).toHaveAttribute("role", "alert");
+  });
+
+  it("the estimate email body is the shared one: address, note, reports and financing box in the same names", async () => {
+    mockPage(issued());
+    const send = vi.spyOn(api, "pbIssuedSend").mockResolvedValue({ sent: true, to: "x@example.com" } as never);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    fireEvent.change(await screen.findByPlaceholderText("tony@example.com"), { target: { value: "x@example.com" } });
+    fireEvent.change(screen.getByPlaceholderText("Optional note to include in the email"), { target: { value: "Call me" } });
+    fireEvent.click(screen.getByLabelText(/Attach Electrical Health Record report/));
+    fireEvent.click(screen.getByLabelText(/Attach Generator Sizing data sheet/));
+    fireEvent.click(screen.getByRole("button", { name: /Email estimate|Email again/ }));
+
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send.mock.calls[0][1]).toEqual({
+      to: "x@example.com", message: "Call me", photoIds: undefined,
+      attachHealthReport: true, attachGeneratorReport: true, includeFinancingLink: undefined,
+    });
+  });
+});
+
+/*
+  Phase 5 unit B (2026-10-08): the totals bar at the bottom of Estimate Intake is the office's view of
+  what the customer will be shown, so it carries the same "or from $X/mo with financing" line under
+  the total, read from the server's `money.financing` (the plan cards, with the fee, open from it).
+*/
+describe("PriceBookIntakePage - financing under the totals bar", () => {
+  const FIN = buildQuoteFinancing(DEFAULT_FINANCING_PLANS as FinancingPlan[], { A: 900, B: 300, "A+B": 1200 })!;
+  const sel = (key: string, total: number) => ({
+    key, options: key.split("+"), subtotal: total, trip: 0, comboSaving: 0, base: total, discount: 0, discountCapped: false, total,
+  });
+  const withFinancing = (exclusiveOptions: boolean) => {
+    mockPage(null);
+    vi.mocked(api.pbCompute).mockResolvedValue({
+      discount: null,
+      computed: { lines: [], laborHours: 0, laborDollars: 0, materialSell: 0, subtotal: 0, total: 1200, totalLineCount: 2, incompleteLineCount: 0, completenessSummary: "ok", combinationDiscounts: {} } as never,
+      options: [],
+      money: {
+        exclusiveOptions, range: null, discountedTotal: null, discountedRange: null, pickable: ["A", "B"], discount: null,
+        selections: { A: sel("A", 900), B: sel("B", 300), "A+B": sel("A+B", 1200) } as never,
+        financing: FIN,
+      },
+    });
+  };
+
+  it("shows the headline for everything with work in it, and the card sheet opens from it with the fee line", async () => {
+    withFinancing(false);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    const headline = `or from $${FIN.bySelection["A+B"].fromMonthly}/mo with financing`;
+    fireEvent.click(await screen.findByRole("button", { name: headline }));
+    const dialog = await screen.findByRole("dialog", { name: "Financing options" });
+    expect(within(dialog).getByText("Financing fee — Plan 965")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Options A \+ B · total \$1200\.00/)).toBeInTheDocument();
+  });
+
+  it("one-or-the-other: the headline is the cheapest alternative, and says which option", async () => {
+    withFinancing(true);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    const headline = `or from $${FIN.bySelection["B"].fromMonthly}/mo with financing`;
+    fireEvent.click(await screen.findByRole("button", { name: headline }));
+    expect(await screen.findByText(/Option B \(the cheapest of the alternatives\) · total \$300\.00/)).toBeInTheDocument();
+  });
+
+  it("no plan on offer: no line at all", async () => {
+    mockPage(null);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    await screen.findByText(/Estimate intake/);
+    expect(screen.queryByRole("button", { name: /with financing/ })).toBeNull();
+  });
+});
+
+/*
+  Carry item (2026-10-08): "Raise a change order" on an invoice that already has an open change
+  order REOPENS it (the API answers resumed:true). The press looked the same either way, so the
+  arrival now says so.
+*/
+describe("PriceBookIntakePage - arriving on a change order that was already in progress", () => {
+  it("says 'Opened the change order already in progress' when the button reopened one, and Dismiss clears it", async () => {
+    mockPage(null);
+    renderWithProviders(<PriceBookIntakePage />, {
+      route: { pathname: "/estimate-intake", search: "?draft=draft-1&account=acct-1&address=prop-1&tab=review", state: { changeOrderResumed: "2026-1093" } },
+    });
+    expect(await screen.findByText("Opened the change order already in progress")).toBeInTheDocument();
+    expect(screen.getByText(/on estimate 2026-1093/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Opened the change order already in progress")).toBeNull();
+  });
+
+  it("says nothing on an ordinary arrival", async () => {
+    mockPage(null);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    await screen.findByText(/Estimate intake/);
+    expect(screen.queryByText("Opened the change order already in progress")).toBeNull();
   });
 });

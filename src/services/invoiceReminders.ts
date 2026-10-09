@@ -28,6 +28,21 @@ import { logSystemEvent } from "./systemEvents";
 import { EXCLUDE_TEST_ACCOUNT } from "./accountSpine";
 import { publicBaseUrl } from "./issuedEstimateSend";
 import { invoiceRootId } from "./invoiceGroup";
+import { FINANCING_IN_PROGRESS, financingInProgress } from "./financingFee";
+
+/**
+ * FINANCING IN PROGRESS (Kyle, 2026-10-08; Phase 6 Unit 6C, item K). A customer whose balance is
+ * being paid through Synchrony is not chased — not by the daily sweep and not by the manual button.
+ * The money comes when the customer releases it with Synchrony, and the pay link a reminder
+ * carries is closed. The warranty receivable is exempt for the same reason (the homeowner's
+ * balance is the only one reminded). The exemption ends on its own: remove the fee (with a
+ * reason) when the financing falls through and the reminders resume; record the Synchrony
+ * payment and the invoice is paid in full. A LOCKED fee (the Synchrony payment is recorded) is
+ * paid: anything still owed after it is plain invoice money with an open pay link, so it IS
+ * reminded (review finding, 2026-10-09).
+ */
+export const REMINDER_PAUSED_FOR_FINANCING =
+  `${FINANCING_IN_PROGRESS} — no reminder is sent. If the financing falls through, remove the financing fee (with a reason) and reminders resume.`;
 
 const QUIET_DAYS = 7;
 const MAX_REMINDERS = 3;
@@ -38,6 +53,9 @@ export async function sendInvoiceReminder(
 ): Promise<{ ok: true; to: string; amount: number } | { ok: false; reason: string }> {
   // ONE rolled-up balance (2026-09-20): a change order's id chases — and stamps — its root.
   estimateId = await invoiceRootId(prisma, estimateId);
+  // The manual button is covered too: "a human pressed it" lifts the pacing, not the exemption.
+  const before = await paymentSummary(prisma, estimateId, "https://unused.invalid");
+  if (before && financingInProgress(before)) return { ok: false, reason: REMINDER_PAUSED_FOR_FINANCING };
   const result = await sendBalanceRequestEmail(prisma, estimateId, publicBaseUrl(), { reminder: true });
   if (result.ok) {
     await prisma.issuedEstimate.update({
@@ -96,8 +114,14 @@ export async function sweepInvoiceReminders(prisma: PrismaClient): Promise<{ rem
     // this list. Pinned by tests/warrantyPayments.test.ts.
     const summary = await paymentSummary(prisma, est.id, "https://unused.invalid");
     if (!summary || summary.paidInFull || summary.balance <= 0.009) continue;
+    // FINANCING IN PROGRESS (Kyle, 2026-10-08; services/financingFee.ts): the balance is being
+    // paid through Synchrony — the pay link this reminder carries is closed and the money comes
+    // when the customer releases it. Chasing them would be the warranty receivable's mistake over
+    // again. The office removes the fee (with a reason) if the financing falls through, and the
+    // reminders resume on their own.
+    if (financingInProgress(summary)) { skipped += 1; continue; }
     const lastPaid = summary.payments
-      .filter((pmt) => pmt.status === "paid" && pmt.paidAt && pmt.payer !== "warranty")
+      .filter((pmt) => pmt.status === "paid" && !pmt.voidedAt && pmt.paidAt && pmt.payer !== "warranty")
       .reduce<Date | null>((latest, pmt) => (!latest || pmt.paidAt! > latest ? pmt.paidAt! : latest), null);
     const anchor = Math.max(
       est.signedAt?.getTime() ?? 0,

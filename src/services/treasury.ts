@@ -382,3 +382,76 @@ export async function stripeFeeRows(year: number, bounds?: { from: Date; to: Dat
   feeCache.set(year, { at: Date.now(), ttl: FEE_TTL, value });
   return value;
 }
+
+// ─── The processing fee on ONE card payment (the commission basis) ───────────
+
+/**
+ * Stripe's fee on one Checkout payment, dollars, or why it could not be read.
+ * `paidAt` is the balance transaction's own stamp.
+ */
+export type StripeSessionFee =
+  | { ok: true; fee: number; net: number; chargeId: string; paidAt: Date }
+  | { ok: false; reason: string };
+
+/** A fee never changes once the charge settled, so a good read is kept for the day. */
+const SESSION_FEE_TTL = 24 * 60 * 60 * 1000;
+const sessionFeeCache = new Map<string, { at: number; ttl: number; value: StripeSessionFee }>();
+
+/** Test/diagnostic hook: forget the cached per-session fees. */
+export function resetStripeSessionFeeCache(): void {
+  sessionFeeCache.clear();
+}
+
+/**
+ * The processing fee Stripe took on one Checkout Session — for the commission basis (Kyle,
+ * 2026-10-08, decision 10: "card processing fees on the job's payments" come off the profit a
+ * technician is paid on).
+ *
+ * WHY PER SESSION, NOT THROUGH `stripeFeeRows`: a Payment row carries the Checkout Session id
+ * (cs_…) and nothing else; the year's fee rows above are keyed by the charge id (ch_…) the
+ * balance transaction names. There is no join between the two without asking Stripe, so this
+ * asks Stripe once per payment — session → payment_intent → latest_charge → balance_transaction —
+ * and reads `fee` off the SAME balance transaction the P&L's fee rows come from. One source of
+ * truth, attributed to the payment it was taken from by construction. Cached per session.
+ *
+ * A session whose charge has not settled yet (a bank debit still pending), a key without charge
+ * read scope, or any other Stripe error returns `ok: false` with the reason — the basis shows it
+ * and refuses to compute a profit, never treating the fee as $0.
+ */
+export async function stripeFeeForSession(sessionId: string): Promise<StripeSessionFee> {
+  if (!stripeConfigured()) return { ok: false, reason: "STRIPE_SECRET_KEY is not set." };
+  const hit = sessionFeeCache.get(sessionId);
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.value;
+
+  let value: StripeSessionFee;
+  try {
+    const session = await stripe().checkout.sessions.retrieve(sessionId, {
+      expand: ["payment_intent.latest_charge.balance_transaction"],
+    });
+    const intent = session.payment_intent;
+    const charge = intent && typeof intent !== "string" ? intent.latest_charge : null;
+    const tx = charge && typeof charge !== "string" ? charge.balance_transaction : null;
+    if (!tx || typeof tx === "string") {
+      value = { ok: false, reason: "Stripe has not settled this payment yet — its processing fee is not known." };
+    } else {
+      value = {
+        ok: true,
+        fee: round2((tx.fee ?? 0) / 100),
+        net: round2((tx.net ?? 0) / 100),
+        chargeId: typeof charge === "string" ? charge : charge?.id ?? tx.id,
+        paidAt: new Date(tx.created * 1000),
+      };
+    }
+  } catch (err) {
+    const { permission, reason } = describeStripeError(err);
+    const e = err as { message?: string };
+    value = {
+      ok: false,
+      reason: permission
+        ? `The Stripe key cannot read this payment's charge — add Checkout Sessions, PaymentIntents, Charges and Balance transactions read scope to the restricted key in the Stripe Dashboard. (${e?.message ?? reason})`
+        : `Stripe could not be read: ${e?.message ?? reason}`,
+    };
+  }
+  sessionFeeCache.set(sessionId, { at: Date.now(), ttl: value.ok ? SESSION_FEE_TTL : FEE_FAILURE_TTL, value });
+  return value;
+}

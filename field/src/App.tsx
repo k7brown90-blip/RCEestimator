@@ -109,6 +109,11 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
    * "Build the quote".
    */
   const [quoteDraftId, setQuoteDraftId] = useState<string | null>(null)
+  // The Job site's "Show the customer / Sign now": the Quote screen opens straight onto the customer's view.
+  const [quoteStartShowing, setQuoteStartShowing] = useState(false)
+  // Where the Quote screen's back arrow goes: a diagnostic's resolutions draft came from Diagnostics;
+  // a change order raised from the Job site screen goes back to the Job site (Phase 2 unit E).
+  const [quoteBackTo, setQuoteBackTo] = useState<'diagnostics' | 'jobsite'>('jobsite')
 
   // Pull the ledger once when a job starts, so every item card can show what was
   // already documented here without another round trip on a phone.
@@ -179,7 +184,9 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
           setCapacityAssignment(activeAssignment)
           setScreen('capacity')
         }}
-        onBuildQuote={() => { setQuoteDraftId(null); setScreen('quote') }}
+        onBuildQuote={() => { setQuoteDraftId(null); setQuoteStartShowing(false); setQuoteBackTo('jobsite'); setScreen('quote') }}
+        onShowCustomer={() => { setQuoteDraftId(null); setQuoteStartShowing(true); setQuoteBackTo('jobsite'); setScreen('quote') }}
+        onOpenChangeOrder={(draftId) => { setQuoteDraftId(draftId); setQuoteStartShowing(false); setQuoteBackTo('jobsite'); setScreen('quote') }}
         onRunDiagnostics={() => setScreen('diagnostics')}
         onRunAssessment={() => {
           void (async () => {
@@ -209,7 +216,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
         customerName={activeAssignment.customerName}
         jobPurpose={activeAssignment.purpose ?? null}
         onBack={() => setScreen('jobsite')}
-        onOpenDraft={(draftId) => { setQuoteDraftId(draftId); setScreen('quote') }}
+        onOpenDraft={(draftId) => { setQuoteDraftId(draftId); setQuoteStartShowing(false); setQuoteBackTo('diagnostics'); setScreen('quote') }}
       />
     )
   }
@@ -218,11 +225,20 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
   if (screen === 'quote' && activeAssignment) {
     return (
       <QuoteScreen
+        key={`${quoteDraftId ?? 'visit-quote'}${quoteStartShowing ? '-show' : ''}`}
+        startShowing={quoteStartShowing}
         visitId={activeAssignment.visitId}
         propertyId={activeAssignment.propertyId}
         customerName={activeAssignment.customerName}
         draftId={quoteDraftId}
-        onBack={() => setScreen(quoteDraftId ? 'diagnostics' : 'jobsite')}
+        // The back arrow says where it goes (2026-10-08 review): a diagnostic's draft goes back to Diagnostics.
+        backLabel={quoteDraftId && quoteBackTo === 'diagnostics' ? 'Diagnostics' : 'Job site'}
+        // "Raise a change order" on a SIGNED estimate's panel - the same call as the Job site button.
+        onOpenChangeOrder={(draftId) => { setQuoteDraftId(draftId); setQuoteStartShowing(false); setQuoteBackTo('jobsite') }}
+        // After the customer signs on the phone (Phase 3 unit C): straight to the JOB, where "Complete
+        // work now" / "Schedule for later" are - whatever screen the quote was opened from.
+        onBackToJob={() => { setQuoteDraftId(null); setScreen('jobsite') }}
+        onBack={() => setScreen(quoteDraftId ? quoteBackTo : 'jobsite')}
       />
     )
   }
@@ -422,7 +438,10 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
           quote built off what the assessment just found.
         */
         onBackToJob={activeAssignment ? () => setScreen('jobsite') : undefined}
-        onBuildQuote={activeAssignment ? () => setScreen('quote') : undefined}
+        // Clear the diagnostic's draft first (2026-10-08 audit §5): this used to jump straight to
+        // the quote screen, so a leftover resolutions change order from an earlier tap opened as
+        // the quote for the assessment. Same as the job screen's "Build the quote".
+        onBuildQuote={activeAssignment ? () => { setQuoteDraftId(null); setQuoteStartShowing(false); setScreen('quote') } : undefined}
       />
     )
   }

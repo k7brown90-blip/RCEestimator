@@ -37,6 +37,7 @@ import { asyncHandler, readParam } from "./agent-helpers";
 import { fullBillOf, stripeConfigured } from "../services/stripePayments";
 import { groupSignedRows, INVOICE_DOC_SELECT, invoiceRootId, LIVE_SIGNED, rollupInvoice, type InvoiceDocRow } from "../services/invoiceGroup";
 import { chainChildrenByJob, getLaborRate, materialCostForJobs, mergeCostableChain } from "../services/jobCosting";
+import { emptyProcessingCosts, processingCostsForJobs } from "../services/jobProcessingCosts";
 import { payrollForYear, type PayrollYear } from "../services/payrollLedger";
 import { billMonthKey, billMonthsInYear, cardConfirmedBillMonths, monthKeyOf } from "../services/companyBills";
 import { bankExpenseRowsForYear, bankQueueSummary, type BankExpenseRow, type BankQueueSummary } from "../services/bankLedger";
@@ -44,6 +45,12 @@ import { readBalances } from "../services/cardSpend";
 import { TreasuryError, executeSweep, readSweep, stripeFeeRows } from "../services/treasury";
 import type { StripeFeeRow } from "../services/treasury";
 import { createLedgerReplay } from "../services/inventory";
+import { NOT_VOID, PaymentVoidError, VOID_REASON_MAX, voidPayment } from "../services/paymentVoid";
+import { isUnlistedRefundId } from "../services/paymentRefunds";
+import {
+  activeFinancingFeeFor, activeFinancingFeesByRoot, applyFinancingFee, FEE_REMOVE_REASON_MAX, feeDollarsOf, FINANCING_AUTH_MAX, FINANCING_IN_PROGRESS,
+  FinancingFeeError, financingInProgress, financingOptionsFor, recordSynchronyPayment, removeFinancingFee, synchronyCutRows,
+} from "../services/financingFee";
 import { recordObservationsForReceipt, summarizeObservationsByMaterial } from "../services/materialPriceObservations";
 import {
   EXCLUDE_TEST_ACCOUNT,
@@ -128,7 +135,9 @@ financialsRouter.get("/payments", asyncHandler(async (req, res) => {
   const payments = await prisma.payment.findMany({
     where: { createdAt: { gte: new Date(`${year}-01-01`), lt: new Date(`${year + 1}-01-01`) } },
     orderBy: { createdAt: "desc" },
-    include: { customer: { select: { id: true, name: true } } },
+    // Each Stripe refund recorded against the row (2026-10-09, ruling 7) rides along so the
+    // ledger row can say "Refunded $X on <date>".
+    include: { customer: { select: { id: true, name: true } }, refunds: { orderBy: { refundedAt: "asc" } } },
   });
   res.json(payments);
 }));
@@ -150,8 +159,14 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
     // Methods the system can't detect (Kyle, 2026-08-25: "when they write a
     // check or do another form of payment that the system can't detect like
     // cash or zelle"). Stripe rows only ever arrive via the webhook. "ach" is
-    // how a warranty company pays when it does not mail a check.
-    method: z.enum(["cash", "check", "zelle", "ach", "other"]),
+    // how a warranty company pays when it does not mail a check. "synchrony"
+    // (2026-10-09, Phase 6 Unit 6A) is the financed balance — it needs the
+    // financing fee on the invoice and Synchrony's authorization number, and is
+    // written by services/financingFee.ts recordSynchronyPayment, below.
+    method: z.enum(["cash", "check", "zelle", "ach", "other", "synchrony"]),
+    /** Synchrony only: the plan the fee was added for (checked against the fee) and the authorization number. */
+    planNumber: z.string().trim().max(12).optional(),
+    authNumber: z.string().trim().max(FINANCING_AUTH_MAX).optional(),
     // deposit satisfies the scheduling gate (Kyle, 2026-08-25).
     kind: z.enum(["deposit", "final", "other"]).default("other"),
     // Whose money (Kyle, 2026-09-10): the homeowner's, or the warranty company's.
@@ -163,6 +178,38 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
     note: z.string().trim().max(500).optional(),
     paidAt: z.string().optional(),
   }).parse(req.body);
+
+  if (body.method === "synchrony") {
+    if (body.payer === "warranty") {
+      res.status(400).json({ error: "A warranty company does not pay through Synchrony — record its check or ACH instead." });
+      return;
+    }
+    if (!body.estimateId) {
+      res.status(400).json({ error: "A Synchrony payment is recorded against the invoice that was financed." });
+      return;
+    }
+    try {
+      const payment = await recordSynchronyPayment(prisma, {
+        estimateId: body.estimateId,
+        amount: body.amount,
+        planNumber: body.planNumber,
+        authNumber: body.authNumber ?? "",
+        paidAt: body.paidAt ? new Date(body.paidAt) : undefined,
+        note: body.note ?? null,
+        customerId: body.customerId ?? null,
+        visitId: body.visitId ?? null,
+      });
+      // The customer's receipt — the same document every other payment sends (Kyle, 2026-08-25).
+      const { sendPaymentReceiptEmail } = await import("../services/paymentReceipts");
+      sendPaymentReceiptEmail(prisma, payment.id).catch((err) =>
+        console.error("[financials] receipt email failed:", err));
+      res.status(201).json(payment);
+    } catch (err) {
+      if (err instanceof FinancingFeeError) { res.status(err.statusCode).json({ error: err.message }); return; }
+      throw err;
+    }
+    return;
+  }
 
   if (body.payer === "warranty") {
     if (!body.estimateId) {
@@ -261,6 +308,21 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
   // recorded on the ROOT invoice it joined, so a later void of that change order never carries
   // the invoice's money away with it.
   const rootEstimateId = body.estimateId ? await invoiceRootId(prisma, body.estimateId) : null;
+  // THE FEE ONLY EXISTS ON THE SYNCHRONY PATH (Kyle, 2026-10-08; services/financingFee.ts): while
+  // a financing fee is applied AND NOT YET PAID, the balance carries it and no other rail may close
+  // the invoice — a check for the plain balance would leave the fee owing. The panel greys these
+  // with the same reason; this is the server's half of that rule. Remove the fee first, with a
+  // reason. Once the Synchrony payment is recorded the fee is locked and PAID — whatever is still
+  // owed after that (a deposit check that bounced and was voided) is plain invoice money, and this
+  // rail is open for it (review finding, 2026-10-09: the lock used to close every rail too, and the
+  // only way to collect a voided deposit was to void real Synchrony money).
+  if (rootEstimateId) {
+    const fee = await activeFinancingFeeFor(prisma, [rootEstimateId]);
+    if (fee && financingInProgress({ financingFee: fee })) {
+      res.status(409).json({ error: `${FINANCING_IN_PROGRESS} — remove the financing fee first to record a ${body.method} payment.` });
+      return;
+    }
+  }
   const payment = await prisma.payment.create({
     data: {
       amount: body.amount,
@@ -286,6 +348,71 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
   res.status(201).json(payment);
 }));
 
+/**
+ * Void a recorded payment (Kyle, 2026-10-08, decision 11: administrator only, reason required,
+ * row kept and marked, audit trail). THE CRM SESSION IS THE ADMINISTRATOR — this router sits
+ * behind pinAuthMiddleware, and there is deliberately no technician route for it
+ * (services/paymentVoid.ts). A Stripe row is refused: a card payment is refunded in Stripe.
+ */
+financialsRouter.post("/payments/:id/void", asyncHandler(async (req, res) => {
+  const body = z.object({ reason: z.string().max(VOID_REASON_MAX).optional() }).parse(req.body ?? {});
+  try {
+    const voided = await voidPayment(prisma, readParam(req, "id"), body.reason ?? "");
+    res.json({ ok: true, ...voided });
+  } catch (err) {
+    if (err instanceof PaymentVoidError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+}));
+
+// ── The financing fee (Kyle, 2026-10-08, decisions 7, 8, 12; Phase 6 Unit 6A) ────────────────
+//
+// CRM only, behind pinAuthMiddleware like the void route: the office applies the fee when the
+// balance is going through Synchrony, and removes it with a reason until the Synchrony payment is
+// recorded. services/financingFee.ts holds every rule; these are thin.
+
+const sendFeeError = (res: express.Response, err: unknown): boolean => {
+  if (err instanceof FinancingFeeError) { res.status(err.statusCode).json({ error: err.message }); return true; }
+  return false;
+};
+
+/** What "Pay balance with Synchrony" shows: the balance, each plan's fee on it, and why it is blocked if it is. */
+financialsRouter.get("/financing-fees/options", asyncHandler(async (req, res) => {
+  const estimateId = typeof req.query.estimateId === "string" ? req.query.estimateId : "";
+  if (!estimateId) { res.status(400).json({ error: "estimateId is required." }); return; }
+  try {
+    res.json(await financingOptionsFor(prisma, estimateId));
+  } catch (err) {
+    if (sendFeeError(res, err)) return;
+    throw err;
+  }
+}));
+
+/** "Add the financing fee" — Plan NNN on this invoice's balance after the deposit. */
+financialsRouter.post("/financing-fees", asyncHandler(async (req, res) => {
+  const body = z.object({ estimateId: z.string().min(1), planNumber: z.string().trim().min(1).max(12) }).parse(req.body ?? {});
+  try {
+    res.status(201).json(await applyFinancingFee(prisma, body.estimateId, body.planNumber));
+  } catch (err) {
+    if (sendFeeError(res, err)) return;
+    throw err;
+  }
+}));
+
+/** "Remove financing fee" — reason required; refused once a Synchrony payment is recorded against it. */
+financialsRouter.post("/financing-fees/:id/remove", asyncHandler(async (req, res) => {
+  const body = z.object({ reason: z.string().max(FEE_REMOVE_REASON_MAX).optional() }).parse(req.body ?? {});
+  try {
+    res.json({ ok: true, ...(await removeFinancingFee(prisma, readParam(req, "id"), body.reason ?? "")) });
+  } catch (err) {
+    if (sendFeeError(res, err)) return;
+    throw err;
+  }
+}));
+
 // ── Report machinery ─────────────────────────────────────────────────────────
 
 /**
@@ -297,8 +424,12 @@ export { billMonthsInYear };
 interface YearLedger {
   /** Signed invoices: { month, amount, number, customer, estimateId, signedAt } */
   invoiced: { month: number; amount: number; number: string; customer: string; estimateId: string; date: Date }[];
-  /** Every paid row, both payers — money is money (Kyle, 2026-09-10); `payer` says whose. */
-  collected: { month: number; amount: number; method: string; payer: string; date: Date; note: string | null }[];
+  /**
+   * Every paid row, both payers — money is money (Kyle, 2026-09-10); `payer` says whose. Plus
+   * one NEGATIVE row per card refund recorded from Stripe (2026-10-09, ruling 7), `refund: true`,
+   * in the month it was refunded — so collected = paid − refunded.
+   */
+  collected: { month: number; amount: number; method: string; payer: string; date: Date; note: string | null; refund?: true }[];
   /**
    * The scheduled bill-months that are still the money. A bill-month a CARD CHARGE paid is NOT
    * here (Kyle, 2026-09-21, "the actual charge is the source of truth" — PUNCHLIST M6): that
@@ -328,6 +459,14 @@ interface YearLedger {
   /** False (with feesReason) when the key cannot read balance transactions — the column is then honestly empty. */
   feesAvailable: boolean;
   feesReason: string | null;
+  /**
+   * SYNCHRONY'S CUT (Kyle, 2026-10-08; Phase 6 Unit 6A): what Synchrony kept from each financed
+   * balance it funded, one row per live Synchrony payment in the month paid — an expense like
+   * Stripe's fees. Collected stays GROSS (the fee-inclusive balance the customer authorized); the
+   * cut is the company's expense. Captured at recording (services/financingFee.ts) — Synchrony
+   * pays net and has no API to read it from.
+   */
+  synchronyCutRows: { month: number; amount: number; paymentId: string; net: number; date: Date; planNumber: string | null }[];
   /**
    * PAYROLL (Kyle, 2026-09-20): wages and commissions from the hours ledger,
    * in the month worked / earned. Counted here ONCE; job profitability's labour
@@ -361,7 +500,7 @@ async function yearLedger(year: number): Promise<YearLedger> {
   const from = new Date(`${year}-01-01`);
   const to = new Date(`${year + 1}-01-01`);
 
-  const [estimates, payments, bills, spend, typed, fees, payroll, bankRows, bankQueue, paidOnCard] = await Promise.all([
+  const [estimates, payments, bills, spend, typed, fees, payroll, bankRows, bankQueue, paidOnCard, synchronyCuts, financingFees, refunds] = await Promise.all([
     // INVOICED = signed, live. `status: "signed"` is an allow-list (2026-09-21, PUNCHLIST A9): a
     // signed row only ever moves to "void" (every writer of IssuedEstimate.status was audited),
     // and `not: "void"` would let any status nobody has thought of yet count as revenue.
@@ -371,9 +510,12 @@ async function yearLedger(year: number): Promise<YearLedger> {
     }),
     // Collected = MONEY. Legacy "discount" rows (the retired 3% non-card
     // programme, 2026-08-25 → 08-30) close invoices but were never revenue —
-    // they stay out of every collected figure.
+    // they stay out of every collected figure. So does a VOIDED row (2026-10-09).
+    // A REFUNDED row (ruling 7) stays here at its GROSS, in the month paid: the money did land,
+    // and its refund is the negative row below in the month it went back. Dropping it here too
+    // would subtract the same money twice.
     prisma.payment.findMany({
-      where: { status: "paid", method: { not: "discount" }, paidAt: { gte: from, lt: to }, ...EXCLUDE_TEST_PAYER },
+      where: { status: { in: ["paid", "refunded"] }, method: { not: "discount" }, ...NOT_VOID, paidAt: { gte: from, lt: to }, ...EXCLUDE_TEST_PAYER },
     }),
     prisma.companyBill.findMany(),
     // THE CHARGE IS THE MONEY: every live card transaction, once, in its month.
@@ -399,10 +541,47 @@ async function yearLedger(year: number): Promise<YearLedger> {
     bankQueueSummary(),
     // Which bill-months a card charge paid — those leave billRows (the charge is the money).
     cardConfirmedBillMonths(prisma),
+    // Synchrony's cut on every live Synchrony payment of the year — the expense rows. Test-account money stays out.
+    synchronyCutRows(prisma, { from, to }, EXCLUDE_TEST_PAYER),
+    // The live financing fees applied this year (services/financingFee.ts) — revenue in the month applied, below.
+    prisma.financingFee.findMany({
+      where: { removedAt: null, appliedAt: { gte: from, lt: to } },
+      select: { id: true, estimateId: true, planNumber: true, feeCents: true, appliedAt: true },
+      orderBy: { appliedAt: "desc" },
+    }).then((rows) => {
+      // ONE LIVE FEE PER INVOICE — the NEWEST, exactly as activeFinancingFeeFor / activeFinancingFeesByRoot
+      // read it for the balance, /invoices, /jobs and the commission basis. Should a second live row ever
+      // exist on one root, this ledger must not count a fee those readers do not (review finding, 2026-10-09).
+      const seen = new Set<string>();
+      return rows.filter((r) => (seen.has(r.estimateId) ? false : (seen.add(r.estimateId), true)));
+    }),
+    // CARD REFUNDS recorded from Stripe (2026-10-09, ruling 7; services/paymentRefunds.ts): money
+    // that went back, in the month Stripe refunded it — a NEGATIVE collected row below, so the
+    // year's collected is paid − refunded and a refund of last year's payment lands this year.
+    // Only succeeded refunds, on live rows, and never the test account's. A refund Stripe would
+    // not name is the charge's unlisted stand-in row (paymentRefunds.ts) — the same row every
+    // other reader sums, so this ledger cannot miss it (review finding, 2026-10-09).
+    prisma.paymentRefund.findMany({
+      where: {
+        status: "succeeded", refundedAt: { gte: from, lt: to },
+        payment: { ...NOT_VOID, method: { not: "discount" }, ...EXCLUDE_TEST_PAYER },
+      },
+      select: { id: true, amount: true, reason: true, refundedAt: true, stripeRefundId: true, payment: { select: { method: true, payer: true, amount: true, estimateId: true } } },
+    }),
   ]);
 
+  // The fee's invoice: signed and live, not the test account's — the same rows `invoiced` lists.
+  // A fee on an invoice outside the year's signed rows (signed last year, financed this year)
+  // still counts this year: it is revenue in the month it was applied.
+  const feeRootIds = [...new Set(financingFees.map((f) => f.estimateId))];
+  const feeRoots = feeRootIds.length === 0 ? [] : await prisma.issuedEstimate.findMany({
+    where: { id: { in: feeRootIds }, status: "signed", voidedAt: null, ...EXCLUDE_TEST_ACCOUNT },
+    select: { id: true, number: true, account: { select: { name: true } } },
+  });
+  const feeRootById = new Map(feeRoots.map((r) => [r.id, r]));
+
   return {
-    invoiced: estimates.map((est) => ({
+    invoiced: [...estimates.map((est) => ({
       month: est.signedAt!.getMonth(),
       // The FULL bill — homeowner share + warranty share (Kyle, 2026-09-10). Collected
       // below counts both payers' money, so invoiced must too or the P&L would show
@@ -421,9 +600,34 @@ async function yearLedger(year: number): Promise<YearLedger> {
       estimateId: est.id,
       date: est.signedAt!,
     })),
-    collected: payments.map((p) => ({
-      month: p.paidAt!.getMonth(), amount: p.amount, method: p.method, payer: p.payer, date: p.paidAt!, note: p.note,
-    })),
+    // THE FINANCING FEE IS REVENUE, as its own line (Kyle, 2026-10-08, decision 10: "Financing
+    // fee counts as revenue"): in the month it was applied, on the invoice it belongs to.
+    ...financingFees.flatMap((f) => {
+      const root = feeRootById.get(f.estimateId);
+      if (!root) return [];
+      return [{
+        month: f.appliedAt.getMonth(),
+        amount: f.feeCents / 100,
+        number: `${root.number} financing fee (Plan ${f.planNumber})`,
+        customer: root.account.name,
+        estimateId: root.id,
+        date: f.appliedAt,
+      }];
+    })],
+    collected: [
+      // Gross, in the month paid — a partly refunded row stays gross here; its refund is the
+      // negative row below, in the month Stripe made it.
+      ...payments.map((p) => ({
+        month: p.paidAt!.getMonth(), amount: p.amount, method: p.method, payer: p.payer, date: p.paidAt!, note: p.note,
+      })),
+      ...refunds.map((r) => ({
+        month: r.refundedAt.getMonth(), amount: -r.amount, method: `${r.payment.method} refund`, payer: r.payment.payer, date: r.refundedAt,
+        note: isUnlistedRefundId(r.stripeRefundId)
+          ? `Refunded in Stripe (charge ${r.stripeRefundId.split(":")[0]} — Stripe did not name the refund)`
+          : `Refunded in Stripe (${r.stripeRefundId})${r.reason ? ` — ${r.reason.replaceAll("_", " ")}` : ""}`,
+        refund: true as const,
+      })),
+    ],
     billRows: bills.flatMap((bill) =>
       billMonthsInYear(bill, year)
         .filter((hit) => !paidOnCard.has(billMonthKey(bill.id, monthKeyOf(year, hit.month))))
@@ -442,6 +646,7 @@ async function yearLedger(year: number): Promise<YearLedger> {
     feeRows: fees.rows,
     feesAvailable: fees.available,
     feesReason: fees.reason ?? null,
+    synchronyCutRows: synchronyCuts,
     payroll,
     bankRows,
     bankQueue,
@@ -554,18 +759,21 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
     const typedExp = ledger.typedRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     // Stripe processing fees — their own column AND inside Expenses (Kyle, 2026-09-09). Collected above stays gross.
     const stripeFees = ledger.feeRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
+    // Synchrony's cut (2026-10-09) — its own figure AND inside Expenses, exactly like the Stripe fees.
+    const synchronyCuts = ledger.synchronyCutRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     // Payroll — its own column AND inside Expenses, the same way as the fees.
     const wages = ledger.payroll.wageRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     const commissions = ledger.payroll.commissionRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
     const payroll = wages + commissions;
     // Bank expenses — the statements' new money out. Its own column too, so Kyle can see what the import added.
     const bank = ledger.bankRows.filter((r) => r.month === month).reduce((s, r) => s + r.amount, 0);
-    const expenses = spendExp + typedExp + billExp + stripeFees + payroll + bank;
+    const expenses = spendExp + typedExp + billExp + stripeFees + synchronyCuts + payroll + bank;
     return {
       month,
       invoiced: round2(invoiced),
       collected: round2(collected),
       stripeFees: round2(stripeFees),
+      synchronyCuts: round2(synchronyCuts),
       payroll: round2(payroll),
       bank: round2(bank),
       expenses: round2(expenses),
@@ -585,6 +793,8 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
   for (const t of ledger.typedRows) addExpense(t.category, t.month, t.amount);
   for (const b of ledger.billRows) addExpense(`bill:${b.category}`, b.month, b.amount);
   for (const f of ledger.feeRows) addExpense("stripe_fees", f.month, f.amount);
+  // Synchrony's cut on financed balances (Kyle, 2026-10-08) — its own category, like Stripe's fees.
+  for (const c of ledger.synchronyCutRows) addExpense("synchrony_cuts", c.month, c.amount);
   // Payroll, two rows so Kyle can see wages apart from commissions (Kyle, 2026-09-20).
   for (const w of ledger.payroll.wageRows) addExpense("payroll:wages", w.month, w.amount);
   for (const c of ledger.payroll.commissionRows) addExpense("payroll:commissions", c.month, c.amount);
@@ -611,6 +821,7 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
       invoiced: round2(months.reduce((s, m) => s + m.invoiced, 0)),
       collected: round2(months.reduce((s, m) => s + m.collected, 0)),
       stripeFees: round2(months.reduce((s, m) => s + m.stripeFees, 0)),
+      synchronyCuts: round2(months.reduce((s, m) => s + m.synchronyCuts, 0)),
       payroll: round2(months.reduce((s, m) => s + m.payroll, 0)),
       bank: round2(months.reduce((s, m) => s + m.bank, 0)),
       expenses: round2(months.reduce((s, m) => s + m.expenses, 0)),
@@ -675,13 +886,19 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
   }) as InvoiceDocRow[];
 
   const laborRate = await getLaborRate();
+  const groups = groupSignedRows(estimates);
+  // The live financing fee per root (Kyle, 2026-10-08, decision 10: the fee counts as revenue) —
+  // added to the full bill here exactly as GET /jobs and the account summary add it.
+  const feesByRoot = await activeFinancingFeesByRoot(prisma, [...groups.values()].map((g) => g.root.id));
   const estimateByJob = new Map<string, number>();
-  for (const g of groupSignedRows(estimates).values()) {
+  // The job's signed ROOT invoice — what its payments' processing costs are attributed through (ruling 6).
+  const rootByJob = new Map<string, string>();
+  for (const g of groups.values()) {
     // The full bill of the whole INVOICE — the root plus its signed change orders (2026-09-20),
     // both payers (Kyle, 2026-09-10) — the same revenue rung GET /jobs and the account summary use.
-    const amount = rollupInvoice(g.root, g.changeOrders).fullBill;
+    const amount = round2(rollupInvoice(g.root, g.changeOrders).fullBill + feeDollarsOf(feesByRoot, g.root.id));
     for (const key of [g.root.jobVisitId, g.root.visitId]) {
-      if (key && !estimateByJob.has(key)) estimateByJob.set(key, amount);
+      if (key && !estimateByJob.has(key)) { estimateByJob.set(key, amount); rootByJob.set(key, g.root.id); }
     }
   }
   // An open visit earns a row only when a signed estimate backs it - stray
@@ -693,11 +910,14 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
     this report and the job card show one number. The helper follows the
     signed estimate from the sold job back to its quote visit on its own.
   */
-  const [materialByJob, chainChildren] = await Promise.all([
+  const [materialByJob, chainChildren, processingByJob] = await Promise.all([
     materialCostForJobs(rows.map((v) => ({ visitId: v.id }))),
     // The consultation's hours count on the job it won (Kyle, 2026-09-21) — the same chain
     // GET /jobs and the account page merge; until this date the report dropped them.
     chainChildrenByJob(rows.map((v) => v.id)),
+    // Synchrony's cut + card processing fees (Kyle, 2026-10-09, ruling 6) — the same helper GET /jobs,
+    // the account summary and the commission basis call, so the four cannot disagree.
+    processingCostsForJobs(rows.map((v) => ({ visitId: v.id, rootEstimateId: rootByJob.get(v.id) ?? null }))),
   ]);
   res.json(rows.map((visit) => {
     const quoted = estimateByJob.get(visit.id) ?? null;
@@ -708,6 +928,9 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
     // hours plus its consultation's, through the one chain rule.
     const laborHours = mergeCostableChain(visit, chainChildren.get(visit.id) ?? []).laborHours ?? 0;
     const laborCost = round2(laborHours * laborRate);
+    const processing = processingByJob.get(visit.id) ?? emptyProcessingCosts();
+    // Processing costs come off every margin (ruling 6): "before labor" is before LABOR only.
+    const processingCost = round2(processing.synchronyCut + processing.cardFees);
     return {
       visitId: visit.id,
       customer: visit.customer.name,
@@ -722,8 +945,14 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       materialSource: material.materialSource,
       laborHours,
       laborCost,
-      marginBeforeLabor: quoted !== null ? round2(quoted - materialSpend) : null,
-      margin: quoted !== null ? round2(quoted - materialSpend - laborCost) : null,
+      // Synchrony's cut and card processing fees (Kyle, 2026-10-09, ruling 6) — each its own
+      // field, inside both margins. A fee Stripe cannot give yet is listed as pending with the
+      // reason, never counted as $0.
+      synchronyCut: processing.synchronyCut,
+      cardFees: processing.cardFees,
+      cardFeesPending: processing.cardFeesPending,
+      marginBeforeLabor: quoted !== null ? round2(quoted - materialSpend - processingCost) : null,
+      margin: quoted !== null ? round2(quoted - materialSpend - laborCost - processingCost) : null,
     };
   }));
 }));
@@ -906,7 +1135,8 @@ financialsRouter.get("/export", asyncHandler(async (req, res) => {
     rows.push(`${r.date.toISOString().slice(0, 10)},income,invoiced,${esc(`Invoice ${r.number} — ${r.customer}`)},${r.amount.toFixed(2)}`);
   }
   for (const c of ledger.collected) {
-    rows.push(`${c.date.toISOString().slice(0, 10)},income,collected,${esc(`Payment (${c.method}${c.payer === "warranty" ? ", warranty company" : ""})${c.note ? ` — ${c.note}` : ""}`)},${c.amount.toFixed(2)}`);
+    // A card refund recorded from Stripe (2026-10-09, ruling 7) is a negative collected row in the month it was made.
+    rows.push(`${c.date.toISOString().slice(0, 10)},income,collected,${esc(`${c.refund ? "Refund" : "Payment"} (${c.method}${c.payer === "warranty" ? ", warranty company" : ""})${c.note ? ` — ${c.note}` : ""}`)},${c.amount.toFixed(2)}`);
   }
   // THE MONEY (Kyle, 2026-09-19): every card charge once, and every typed not-on-card P.O. amount.
   for (const s of ledger.spendRows) {
@@ -921,6 +1151,10 @@ financialsRouter.get("/export", asyncHandler(async (req, res) => {
   // Stripe processing fees, one per charge (Kyle, 2026-09-09). Collected rows above are gross.
   for (const f of ledger.feeRows) {
     rows.push(`${f.date.toISOString().slice(0, 10)},expense,stripe_fees,${esc(`Stripe fee — ${f.chargeId} (net ${f.net.toFixed(2)})`)},${f.amount.toFixed(2)}`);
+  }
+  // Synchrony's cut on financed balances (Kyle, 2026-10-08), one per Synchrony payment — the export carries what the screen shows.
+  for (const c of ledger.synchronyCutRows) {
+    rows.push(`${c.date.toISOString().slice(0, 10)},expense,synchrony_cuts,${esc(`Synchrony's cut — ${c.planNumber ? `Plan ${c.planNumber}, ` : ""}payment ${c.paymentId} (net ${c.net.toFixed(2)})`)},${c.amount.toFixed(2)}`);
   }
   // PAYROLL (Kyle, 2026-09-20): one wage row per technician per workweek (split
   // at a month boundary), in the month worked; one row per commission, at

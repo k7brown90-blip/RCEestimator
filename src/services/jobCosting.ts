@@ -18,6 +18,25 @@ export interface JobCosts {
   laborRate: number;
   laborCost: number;
   overhead: number;
+  /**
+   * SYNCHRONY'S CUT (Kyle, 2026-10-09, ruling 6): what Synchrony kept from the financed balance
+   * this job collected — captured on the Synchrony payment (services/financingFee.ts), attributed
+   * through services/jobProcessingCosts.ts. Inside totalCost; its own row on every cost surface.
+   */
+  synchronyCut: number;
+  /**
+   * CARD PROCESSING FEES (ruling 6): Stripe's fee on each card payment of the job's invoice, read
+   * off the payment's own balance transaction — the figure the P&L and the commission card read.
+   * Inside totalCost. Only the fees that COULD be read; see cardFeesPending.
+   */
+  cardFees: number;
+  /**
+   * Card payments whose Stripe fee is not known yet (not settled, key without read scope, Stripe
+   * not configured), each with the reason. While any exist cardFees is incomplete and the screen
+   * says "pending — <reason>", never $0 (rule 6). totalCost / grossProfit are computed from what
+   * is known and labelled "before pending card fees".
+   */
+  cardFeesPending: { paymentId: string; amount: number; reason: string }[];
   totalCost: number;
   revenue: number | null;
   grossProfit: number | null;
@@ -31,6 +50,13 @@ export interface JobCosts {
 }
 
 export type MaterialSource = "po" | "none";
+
+/** The processing costs rollupJobCosts reads — the shape services/jobProcessingCosts.ts returns. */
+export interface ProcessingCostsInput {
+  synchronyCut: number;
+  cardFees: number;
+  cardFeesPending: { paymentId: string; amount: number; reason: string }[];
+}
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -276,6 +302,28 @@ export async function costChainVisitIds(jobId: string): Promise<string[]> {
 }
 
 /**
+ * Every visit that is "this job" for a visit the technician is standing on - the visit itself plus
+ * its whole cost chain (Kyle, 2026-10-09, ruling 2: the field Quote screen's photo list is THIS
+ * JOB's photos, not the whole account). If the visit was a consultation that a live signed estimate
+ * turned into a job (`jobVisitId` is another visit), the job is that visit and the chain is read
+ * from it; otherwise the visit is the job. Same link, same helper (`costChainVisitIds`) as hours,
+ * P.O.s and fees - nothing here re-derives the chain.
+ */
+export async function jobChainOfVisits(visitIds: Array<string | null | undefined>): Promise<string[]> {
+  const out = new Set<string>();
+  for (const visitId of new Set(visitIds.filter((v): v is string => Boolean(v)))) {
+    const link = await prisma.issuedEstimate.findFirst({
+      where: { visitId, jobVisitId: { not: null }, ...LIVE_SIGNED_LINK },
+      orderBy: { signedAt: "desc" },
+      select: { jobVisitId: true },
+    });
+    out.add(visitId);
+    for (const id of await costChainVisitIds(link?.jobVisitId ?? visitId)) out.add(id);
+  }
+  return [...out];
+}
+
+/**
  * The chain's CHILD visits per job, as the rows mergeCostableChain reads — for the list surfaces
  * (GET /jobs, the account page) that already hold the job's own row. Fetched, not looked up in
  * the caller's list: a consultation that was closed and archived may not be on the list at all.
@@ -343,13 +391,24 @@ export function rollupJobCosts(
    * P.O. on the job carries money — the card then reads $0, "none".
    */
   poMaterial: number | null = null,
+  /**
+   * Synchrony's cut and the card processing fees on the job's payments (Kyle, 2026-10-09,
+   * ruling 6), from processingCostsForJobs(). Null when the caller has none to give — a child
+   * visit whose costs rolled onto its job, or a unit test — reads as no processing cost.
+   */
+  processing: ProcessingCostsInput | null = null,
 ): JobCosts {
   const revenue = visit.revenue ?? acceptedOptionTotal ?? null;
   const { materialCost, materialSource } = resolveMaterialCost(poMaterial);
   const laborHours = visit.laborHours ?? 0;
   const laborCost = laborHours * laborRate;
   const overhead = visit.overheadAllocation ?? 0;
-  const totalCost = materialCost + laborCost + overhead;
+  const synchronyCut = round2(processing?.synchronyCut ?? 0);
+  const cardFees = round2(processing?.cardFees ?? 0);
+  const cardFeesPending = processing?.cardFeesPending ?? [];
+  // Processing costs come off like any other cost of the job (ruling 6) — the P&L charges them
+  // and the commission deducts them, so the job card must too or the three disagree.
+  const totalCost = round2(materialCost + laborCost + overhead + synchronyCut + cardFees);
 
   return {
     estimatedCost: visit.estimatedCost,
@@ -358,6 +417,9 @@ export function rollupJobCosts(
     laborRate,
     laborCost,
     overhead,
+    synchronyCut,
+    cardFees,
+    cardFeesPending,
     totalCost,
     revenue,
     grossProfit: revenue != null ? revenue - totalCost : null,
@@ -386,12 +448,21 @@ export async function getLaborRate(): Promise<number> {
   }
 }
 
-/** Sum a set of job rollups into account-level lifetime totals. */
+/**
+ * Sum a set of job rollups into account-level lifetime totals.
+ *
+ * `cardFeesPendingCount` carries the jobs' pending card fees up (review finding, 2026-10-09):
+ * lifetimeCost counts only the fees Stripe could give, so while any card payment's fee is still
+ * pending the account's cost reads low and its profit high — the summary must say "before
+ * pending card fees" exactly as the job card and job profitability do (rule 6: pending, never $0).
+ */
 export function sumJobCosts(costs: JobCosts[]): {
   lifetimeRevenue: number;
   lifetimeCost: number;
   lifetimeProfit: number;
   lifetimeMargin: number | null;
+  /** Card payments across these jobs whose Stripe fee is not known yet — 0 when every fee is in. */
+  cardFeesPendingCount: number;
 } {
   const lifetimeRevenue = costs.reduce((sum, c) => sum + (c.revenue ?? 0), 0);
   const lifetimeCost = costs.reduce((sum, c) => sum + c.totalCost, 0);
@@ -402,6 +473,7 @@ export function sumJobCosts(costs: JobCosts[]): {
     lifetimeProfit,
     lifetimeMargin:
       lifetimeRevenue > 0 ? Math.round((lifetimeProfit / lifetimeRevenue) * 100) : null,
+    cardFeesPendingCount: costs.reduce((sum, c) => sum + (c.cardFeesPending?.length ?? 0), 0),
   };
 }
 

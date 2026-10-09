@@ -27,15 +27,19 @@ import {
   pauseJobClock,
   pauseJobForLater,
   completeVisitFromField,
+  emailEstimateToCustomer,
+  emailFinancing,
   fetchJobBrief,
   fetchPurchaseOrders,
   pendingReceiptCount,
+  raiseChangeOrder,
   scheduleForLater,
   uploadJobPhoto,
   type FieldPurchaseOrder,
   type JobBrief,
 } from '../../lib/crmSync'
 import { CollectPayment } from '../components/CollectPayment'
+import { CUSTOMER_PAGE_LABEL, EmailEstimateButton, EmailFinancingButton } from './QuoteLifecycle'
 import { MaterialsUsedStep } from '../components/MaterialsUsedStep'
 import {
   PhotoPicker,
@@ -45,10 +49,39 @@ import {
   type CreatedPo,
 } from '../components/PurchaseOrderPanel'
 import type { CrmAssignment } from '../../domain/types'
+import { changeOrderBlockReason } from '../../../../shared/changeOrderBlock'
 
 const JOB_STATUSES = new Set(['contracted', 'scheduled', 'in_progress', 'completed'])
 /** A job can be PAUSED (sent back to scheduling) from these — work underway or booked. */
 const PAUSABLE_STATUSES = new Set(['in_progress', 'scheduled'])
+
+/**
+ * Whether the "Estimate N issued — not signed yet" panel renders: the brief carries an estimate
+ * that has no signature, the signed-only choice is not pending, and the visit is not done.
+ *
+ * Exported so a test can pin it (2026-10-08). Until the job brief carried an UNSIGNED estimate
+ * (health-record.ts job-brief, same day), `brief.estimate` was either null or signed, so this was
+ * never true and the panel — built twice, 2026-09-23 and 2026-09-24 — had never rendered on a
+ * phone (2026-09-24 closing-out plan, "Unit 2 outcome").
+ */
+export function awaitingSignatureFor(
+  brief: Pick<JobBrief, 'estimate'> | null,
+  choicePending: boolean,
+  alreadyDone: boolean,
+): boolean {
+  return Boolean(brief?.estimate) && !brief?.estimate?.signedAt && !choicePending && !alreadyDone
+}
+
+/**
+ * Why "Raise a change order" is greyed on this job, or null when it can be pressed (Phase 2 unit E,
+ * 2026-10-08). The wording is the office's (shared/changeOrderBlock.ts). The brief's estimate is the
+ * job's live signed root when there is one, else a live unsigned one; "signed" is what unlocks it.
+ * Exported so a test can pin it.
+ */
+export function changeOrderReasonFor(brief: Pick<JobBrief, 'estimate'> | null): string | null {
+  if (!brief) return 'Loading the job...'
+  return changeOrderBlockReason({ hasEstimate: Boolean(brief.estimate), signed: Boolean(brief.estimate?.signedAt) })
+}
 
 export function JobSiteScreen({
   assignment,
@@ -56,6 +89,8 @@ export function JobSiteScreen({
   onRunDiagnostics,
   onCapacityCheck,
   onBuildQuote,
+  onShowCustomer,
+  onOpenChangeOrder,
   onBack,
 }: {
   assignment: CrmAssignment
@@ -69,10 +104,24 @@ export function JobSiteScreen({
   onCapacityCheck?: () => void
   /** Quote in the field (2026-09-01): same book and gates as the office. */
   onBuildQuote?: () => void
+  /**
+   * "Show the customer / Sign now" from the Job site (review finding, 2026-10-08): opens the Quote
+   * screen straight onto the customer's view of the quote this visit already issued, so the customer
+   * who says yes a few minutes later signs IN PERSON on this phone (recorded as in person, with the
+   * technician named), not through the emailed-link page. Omitted where the app cannot open it.
+   */
+  onShowCustomer?: () => void
+  /**
+   * "Raise a change order" (Phase 2 unit E): the server makes - or reopens - the change-order draft
+   * against this job's signed estimate and the Quote screen opens on it.
+   */
+  onOpenChangeOrder?: (draftId: string) => void
   onBack: () => void
 }) {
   const [brief, setBrief] = useState<JobBrief | null>(null)
   const [briefError, setBriefError] = useState<string | null>(null)
+  const [coBusy, setCoBusy] = useState(false)
+  const [coError, setCoError] = useState<string | null>(null)
 
   const reloadBrief = useCallback(async () => {
     try {
@@ -285,7 +334,7 @@ export function JobSiteScreen({
   // Before the signature (2026-09-23): an estimate is issued but the customer has not signed yet
   // (choicePending only ever turns true once signedAt is set), so today NOTHING renders here,
   // which reads as "this cannot be done." Show both choices, disabled, with why.
-  const awaitingSignature = Boolean(brief?.estimate) && !brief?.estimate?.signedAt && !choicePending && !alreadyDone
+  const awaitingSignature = awaitingSignatureFor(brief, choicePending, alreadyDone)
   const canPauseJob = Boolean(brief) && PAUSABLE_STATUSES.has(status) && !alreadyDone
   const waitingOnOffice = isJob && status === 'contracted' && !brief?.scheduledStart
 
@@ -366,8 +415,10 @@ export function JobSiteScreen({
       {/* ── The scope — what was bought, never hours ── */}
       {brief?.estimate && (
         <section className="space-y-1 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+          {/* An issued-but-unsigned estimate rides the brief too now (2026-10-08) — it is quoted
+              work, not agreed work, and the heading says which. */}
           <h2 className="text-sm font-semibold text-white">
-            Scope — {brief.estimate.title} <span className="text-xs font-normal text-slate-400">({brief.estimate.number})</span>
+            {brief.estimate.signedAt ? 'Scope' : 'Quoted — not signed yet'} — {brief.estimate.title} <span className="text-xs font-normal text-slate-400">({brief.estimate.number})</span>
           </h2>
           {brief.estimate.scopeText && <p className="text-xs text-slate-400">{brief.estimate.scopeText}</p>}
           <ul className="space-y-0.5 pt-1 text-sm text-slate-300">
@@ -439,29 +490,56 @@ export function JobSiteScreen({
             The door back to signing (2026-09-24): issuing shows this same link and share button
             for about thirty seconds (QuoteScreen.tsx), then "Back to the job" loses it for good.
             The ordinary case — customer says yes a few minutes later, while the tech is still on
-            site — had no way back to the signing page. Identical to the QuoteScreen panel.
+            site — had no way back to the signing page. Same link and same email button as the
+            QuoteScreen panel (IssuedEstimatePanel).
           */}
+          {/*
+            SIGNING AT THE HOUSE (review finding, 2026-10-08): "Show the customer" then "Sign now"
+            records the signature IN PERSON with the technician named. The page link below is the
+            customer's own-device door - a signature there is recorded as "from the emailed link" -
+            so it is labelled that way and sits second.
+          */}
+          {onShowCustomer && (
+            <button
+              type="button"
+              onClick={onShowCustomer}
+              title="Turn the phone around: the customer sees each option, ticks what they want, then signs on this phone"
+              className="w-full rounded-lg bg-sky-700 p-3 text-sm font-semibold text-white"
+            >
+              Show the customer / Sign now
+            </button>
+          )}
           {brief?.estimate?.customerUrl && (
             <a
               href={brief.estimate.customerUrl}
               target="_blank"
               rel="noreferrer"
-              className="block w-full rounded-lg bg-sky-600 p-3 text-center text-sm font-medium text-white"
+              className="block w-full rounded-lg border border-sky-700 p-3 text-center text-sm font-medium text-sky-200"
             >
-              Open the customer&apos;s estimate to review &amp; sign
+              {CUSTOMER_PAGE_LABEL}
             </a>
           )}
-          {brief?.estimate?.customerUrl && typeof navigator.share === 'function' && (
-            <button
-              type="button"
-              className="w-full rounded-lg border border-slate-600 p-3 text-sm text-slate-200"
-              onClick={() => {
-                const url = brief.estimate!.customerUrl!
-                void navigator.share({ title: `Estimate ${brief.estimate!.number} — Red Cedar Electric`, url }).catch(() => {})
-              }}
-            >
-              Share the link to their phone
-            </button>
+          {/*
+            EMAIL, not the OS share sheet (Kyle, 2026-10-01: "the text option for signiture needs
+            chaged to email since we do not have text yet"; Red Cedar has no SMS). This panel
+            still carried the old navigator.share button from 2026-09-24 and had never rendered on
+            a phone, so nobody noticed; since the job brief began carrying an unsigned live
+            estimate (2026-10-08) it renders, and it must say what the Quote screen's issued panel
+            says. Same server send (sendEstimateEmail), same words. Photos ride from the Quote
+            screen's ticks only - there are none to tick here, so none go.
+          */}
+          {brief?.estimate?.id && (
+            <EmailEstimateButton
+              estimateId={brief.estimate.id}
+              send={emailEstimateToCustomer}
+            />
+          )}
+          {/* And the financing link on its own, before the customer signs (Kyle, 2026-10-08). */}
+          {brief?.estimate?.id && (
+            <EmailFinancingButton
+              estimateId={brief.estimate.id}
+              send={emailFinancing}
+            />
           )}
           <button
             type="button"
@@ -478,7 +556,9 @@ export function JobSiteScreen({
             Schedule for later
           </button>
           <p className="text-[11px] text-slate-400">
-            The customer signs first — then you can do the work now in this block.
+            The customer signs first — then you can do the work now in this block. To change the
+            quote, open <span className="font-semibold text-slate-200">Build the quote</span> below — it
+            reopens this estimate and saves your changes to it.
           </p>
         </section>
       )}
@@ -511,6 +591,40 @@ export function JobSiteScreen({
           🧾 Build the quote
         </button>
       )}
+      {/* The job grew after the customer signed: a change order is its own document against the signed estimate.
+          Greyed WITH the reason while nothing is signed - never hidden (CLAUDE.md click-through rule 5). */}
+      {onOpenChangeOrder && (() => {
+        const block = changeOrderReasonFor(brief)
+        return (
+          <div className="space-y-1">
+            <button
+              type="button"
+              disabled={block !== null || coBusy}
+              title={block ?? 'Adds agreed work to this job — its own document the customer signs; one balance, one payment'}
+              onClick={() => {
+                setCoBusy(true)
+                setCoError(null)
+                raiseChangeOrder(assignment.visitId)
+                  .then((r) => onOpenChangeOrder(r.draftId))
+                  .catch((err) => setCoError(err instanceof Error ? err.message : String(err)))
+                  .finally(() => setCoBusy(false))
+              }}
+              className="w-full rounded-lg border border-sky-800 bg-sky-950/40 p-3 text-sm font-medium text-sky-100 disabled:opacity-40"
+            >
+              {coBusy ? 'Opening the change order…' : 'Raise a change order'}
+            </button>
+            {block ? (
+              <p className="text-[11px] text-slate-400">{block}</p>
+            ) : (
+              <p className="text-[11px] text-slate-400">
+                The job grew after the customer signed? Add the new work (or take work off) as a change order. If one is already open
+                for this job, this reopens it.
+              </p>
+            )}
+            {coError && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{coError}</p>}
+          </div>
+        )
+      })()}
       {onCapacityCheck && (
         <button
           type="button"

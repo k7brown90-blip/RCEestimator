@@ -138,9 +138,11 @@ export function TechnicianPage() {
           </p>
         )}
         <p className="mt-2 text-xs text-rce-muted">
-          Commission is a percentage of JOB PROFIT — revenue minus material minus fees (permits, inspections).
-          Labor is not subtracted. A rate change takes effect going forward: hours already closed keep the rate
-          they were paid at.
+          Commission is a percentage of JOB PROFIT — revenue (plus any financing fee) minus material, minus fees
+          (permits, inspections, Synchrony's cut, card processing fees), minus labor at its total cost (every tech's
+          hours × hourly rate × (1 + employer cost % from Settings → Payroll)). A job that lost money pays $0, never
+          less. The math is shown on each job's page under "Commission on this job". A rate change takes effect going
+          forward: hours already closed keep the rate they were paid at.
         </p>
       </section>
 

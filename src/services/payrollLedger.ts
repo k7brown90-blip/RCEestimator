@@ -69,6 +69,7 @@
 
 import { prisma } from "../lib/prisma";
 import { EXCLUDE_TEST_CUSTOMER_VIA_VISIT, EXCLUDE_TEST_VISIT } from "./accountSpine";
+import { NOT_VOID_COMMISSION } from "./commissionVoid";
 import { attributeWorkweek, payableSegments, weekOf, type PayableEntry } from "./timeTracking";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -141,7 +142,7 @@ export async function payrollForYear(year: number): Promise<PayrollYear> {
       select: entrySelect,
     }),
     prisma.commission.findMany({
-      where: { earnedAt: { gte: yearStart, lt: yearEnd }, ...EXCLUDE_TEST_VISIT },
+      where: { earnedAt: { gte: yearStart, lt: yearEnd }, ...NOT_VOID_COMMISSION, ...EXCLUDE_TEST_VISIT },
       orderBy: { earnedAt: "asc" },
       select: {
         technicianId: true, basis: true, percent: true, amount: true, note: true, earnedAt: true, paidAt: true,

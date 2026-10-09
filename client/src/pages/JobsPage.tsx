@@ -7,7 +7,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api, type VisitMode } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
-import { MATERIAL_SOURCE_LABEL, type JobSummary } from "../lib/types";
+import { MATERIAL_SOURCE_LABEL, cardFeesPendingNote, type JobSummary } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
 const MODES: Array<{ value: VisitMode; label: string }> = [
@@ -377,7 +377,11 @@ function JobCard({
 }) {
   const queryClient = useQueryClient();
   const drawers = useDrawerParams();
-  const hasCostData = job.costs.revenue != null || job.costs.materialCost > 0 || job.costs.laborHours > 0;
+  // Synchrony's cut and card processing fees (Kyle, 2026-10-09, ruling 6) are costs of the job too —
+  // a job that has only collected a card deposit so far already carries a processing cost.
+  const cardFeesNote = cardFeesPendingNote(job.costs);
+  const hasCostData = job.costs.revenue != null || job.costs.materialCost > 0 || job.costs.laborHours > 0
+    || (job.costs.synchronyCut ?? 0) > 0 || (job.costs.cardFees ?? 0) > 0 || cardFeesNote != null;
   // Mark complete (Kyle, 2026-09-17, Unit K): "I would like to be able to mark
   // complete from these cards." Completion is NEVER blocked client-side — the
   // standing rule (constants.md, close-out) is that a skipped leftover count
@@ -446,7 +450,7 @@ function JobCard({
       </div>
 
       {hasCostData ? (
-        <div className="mt-3 grid gap-2 rounded-lg bg-rce-bg p-3 text-xs md:grid-cols-5">
+        <div className="mt-3 grid gap-2 rounded-lg bg-rce-bg p-3 text-xs md:grid-cols-4 lg:grid-cols-7">
           <div>
             <span className="text-rce-soft">Materials</span>
             <p className="font-semibold">{money(job.costs.materialCost)}</p>
@@ -461,12 +465,24 @@ function JobCard({
             <span className="text-rce-soft">Overhead</span>
             <p className="font-semibold">{money(job.costs.overhead)}</p>
           </div>
+          {/* Processing costs (Kyle, 2026-10-09, ruling 6): each its own field, inside the cost and
+              the profit — the same figures the commission card and the P&L charge. */}
+          <div>
+            <span className="text-rce-soft">Synchrony's cut</span>
+            <p className="font-semibold">{money(job.costs.synchronyCut ?? 0)}</p>
+          </div>
+          <div>
+            <span className="text-rce-soft">Card processing fees</span>
+            {/* A fee Stripe cannot give yet is PENDING with the reason — never printed as $0. */}
+            <p className="font-semibold">{cardFeesNote && !(job.costs.cardFees ?? 0) ? "pending" : money(job.costs.cardFees ?? 0)}</p>
+            {cardFeesNote && <p className="text-[10px] text-amber-800">{cardFeesNote}</p>}
+          </div>
           <div>
             <span className="text-rce-soft">Revenue</span>
             <p className="font-semibold">{money(job.costs.revenue)}</p>
           </div>
           <div>
-            <span className="text-rce-soft">Profit</span>
+            <span className="text-rce-soft">Profit{cardFeesNote ? " (before pending card fees)" : ""}</span>
             <p className={`font-semibold ${(job.costs.grossProfit ?? 0) >= 0 ? "text-rce-success" : "text-red-500"}`}>
               {job.costs.grossProfit != null ? `${money(job.costs.grossProfit)} (${job.costs.margin}%)` : "—"}
             </p>

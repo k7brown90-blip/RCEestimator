@@ -32,6 +32,7 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { PaymentPanel } from "../components/PaymentPanel";
 import { SignaturePad } from "../components/SignaturePad";
+import { CONSENT_TEXT } from "../../../shared/consentText";
 
 type Phase = "reviewing" | "signed";
 
@@ -159,11 +160,11 @@ export function SigningModePage() {
               checked={agreed}
               onChange={(e) => setAgreed(e.target.checked)}
             />
-            <span>
-              I agree to the scope and the price on this estimate, and I authorize Red Cedar
-              Electric LLC to perform the work described. I understand this is an electronic
-              signature with the same effect as a written one.
-            </span>
+            {/* The customer must read the SAME sentence the server records beside their name
+                (signatures.consentText = CONSENT_TEXT). This box used to carry a shortened
+                paraphrase, so what was agreed to on screen and what was stored were two
+                different texts (carry item, one-estimating-system plan, 2026-10-08). */}
+            <span data-testid="consent-text">{CONSENT_TEXT}</span>
           </label>
           {signError && (
             <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{signError}</p>

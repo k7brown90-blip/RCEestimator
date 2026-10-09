@@ -15,7 +15,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildOptions,
-  combinedTotal,
   labourHours,
   materialList,
 } from "../client/src/lib/presentation";
@@ -159,23 +158,16 @@ describe("the material list — what actually gets ordered", () => {
   });
 });
 
-describe("combining the options the customer ticked", () => {
-  const options = buildOptions(COMPUTED, SUMMARIES, "customer");
-
-  it("adds the selected options together", () => {
-    expect(combinedTotal(options, ["A"], 0)).toBe(700);
-    expect(combinedTotal(options, ["A", "B"], 0)).toBe(1050);
+describe("what the ticked options come to is NOT computed in the client any more", () => {
+  // 2026-10-08, one-estimating-system plan, Phase 3 unit A: the price of a ticked combination is the
+  // server's one pricer (shared/quoteMoney.ts), delivered as `money.selections` and looked up. Its
+  // arithmetic is pinned in tests/onePresentationMath.test.ts, tick for tick against the customer's page.
+  it("lib/presentation no longer exports a combinedTotal to add the options up", async () => {
+    const mod = await import("../client/src/lib/presentation");
+    expect(mod).not.toHaveProperty("combinedTotal");
   });
 
-  it("adds a fixed job cost once, not once per option", () => {
-    expect(combinedTotal(options, ["A", "B"], 200)).toBe(1250);
-  });
-
-  it("prices an empty selection as nothing, not as zero", () => {
-    expect(combinedTotal(options, [], 0)).toBeNull();
-  });
-
-  it("reports labour hours for scheduling, across the selection", () => {
+  it("reports labour hours for scheduling, across the selection (company view only)", () => {
     expect(labourHours(COMPUTED, ["A"])).toBe(4);
     expect(labourHours(COMPUTED, ["A", "B"])).toBe(6);
   });

@@ -33,23 +33,29 @@
 
 import { randomBytes } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { computeDraft, finalizeDraft } from "./atomicEstimateService";
+import { DraftError, computeDraft, draftCopyReason, draftDeleteReason, finalizeDraft } from "./atomicEstimateService";
 import { rowTypeSells } from "./atomicEstimateEngine";
+import type { DraftLifecycle, DraftLifecycleIssued } from "../../shared/draftLifecycle";
+import { FIELD_SIGNED_REVISE_REASON } from "../../shared/draftLifecycle";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { checkSignatureImage } from "./signatureImage";
 import { logSystemEvent } from "./systemEvents";
 import { bandsFrom, selectionCap, type MarkupBand } from "./materialMarkupCap";
-import { discountFor, programmeFor } from "./discounts";
+import { frozenSelectionDiscount, programmeFor } from "./discounts";
+import { snapshotActiveFinancingPlansJson } from "./financingSettings";
 import { notifyOwnerViewed } from "./issuedEstimateSend";
+import { ALL_OPTIONS, type EstimateOptionLetter } from "../../shared/estimateOptions";
+import { CONSENT_TEXT } from "../../shared/consentText";
+import { signedRootForJob } from "./invoiceGroup";
+import { z } from "zod";
 
 /** House numbering continues the issued PDFs, the last of which was 2026-1010. */
 const NUMBER_FLOOR = 1010;
 const NUMBER_YEAR = "2026";
 
-export const CONSENT_TEXT =
-  "By typing my full name below and tapping Accept, I agree to the scope and the price on this " +
-  "estimate, and I authorize Red Cedar Electric LLC to perform the work described. I understand " +
-  "this is an electronic signature with the same effect as a written one.";
+// The consent sentence lives in shared/ (2026-10-08): the field app's signing screen must show the
+// customer exactly the words recorded here. Re-exported so every `import { CONSENT_TEXT }` still works.
+export { CONSENT_TEXT };
 
 /**
  * A fresh, unguessable customer credential: 32 bytes = 256 bits of entropy, hex-encoded.
@@ -187,7 +193,7 @@ export async function graduateDraft(
     sortOrder: number;
     // Frozen for the COMPANY copy — the material to order and the hours to schedule. Rebuilding
     // these from the draft later would read a document that is allowed to change.
-    option: "A" | "B" | "C";
+    option: EstimateOptionLetter;
     laborHours: number | null;
     materialSell: number | null;
     materialCost: number | null;
@@ -280,7 +286,7 @@ export async function graduateDraft(
     however many options are taken, and dividing it up would make each option look more expensive
     than it is and would double-charge anyone taking two.
   */
-  const optionRows = (["A", "B", "C"] as const)
+  const optionRows = ALL_OPTIONS
     .map((option) => {
       const inOption = lines.filter((l) => l.option === option);
       const meta = draft.optionMeta.find((m) => m.option === option);
@@ -293,7 +299,8 @@ export async function graduateDraft(
       };
     })
     // An option with no work in it is not offered. An empty "Option C" on a customer's screen is
-    // an invitation to ask what is missing from it.
+    // an invitation to ask what is missing from it. (This is also why walking all eight letters
+    // is safe: only the options that actually hold lines become IssuedEstimateOption rows.)
     .filter((o) => o.lineCount > 0);
 
   const workSubtotal = round2(lines.reduce((s, l) => s + l.lineTotal, 0));
@@ -397,6 +404,15 @@ export async function graduateDraft(
   const depositRequired = input.depositRequired ?? !changeOrderForId;
   const addToCurrentJob = changeOrderForId ? (input.addToCurrentJob ?? parentJobLive) : false;
 
+  /*
+    THE FINANCING PLANS, FROZEN WITH THE PRICES (2026-10-08, one estimating system, Phase 5).
+    Kyle edits the Synchrony plan list in Settings as Synchrony changes rates; an estimate already
+    in a customer's hands must keep the plans (and the monthly figures they produce) it was sent
+    with - the same reason the band schedule is frozen below. Read once, before the transaction.
+    Null when no plan is active: the estimate then offers no financing figures.
+  */
+  const financingPlansJson = await snapshotActiveFinancingPlansJson();
+
   const created = await prisma.$transaction(async (tx) => {
     const est = await tx.issuedEstimate.create({
       data: {
@@ -454,6 +470,9 @@ export async function graduateDraft(
         // a retune in Rate Config would restate the combination discounts on an estimate already
         // in a customer's hands.
         jobBandsJson: JSON.stringify(bandsFrom(rate.rc.jobBands)),
+        // The Synchrony plans in force right now (rates included - SERVER-SIDE column, never selected
+        // into a customer or field payload), so a Settings edit never changes a quote already sent.
+        financingPlansJson,
         lines: { create: lines },
         options: { create: optionRows },
       },
@@ -652,6 +671,14 @@ export interface SignInput {
   selectedOptions?: string[] | null;
   ip?: string | null;
   userAgent?: string | null;
+  /**
+   * WHO HELD THE DEVICE (Phase 3 unit C, 2026-10-08). The customer's signature is the customer's;
+   * this is the technician whose phone it was drawn on, so "signed in person" names the person who
+   * was standing there ("tech:<id>"). Recorded in the signed event's detail and the system log only -
+   * the event's actor stays "customer:in-person" (the signature is theirs). Absent on the office
+   * door and the emailed link, whose records read exactly as before.
+   */
+  recordedBy?: string | null;
 }
 
 /**
@@ -870,12 +897,21 @@ async function applySignature(
     paying — bought options + trip − combination discount — capped at $250. Computed here and
     nowhere else at signing time, from the same frozen figures every rendering surface reads.
   */
-  const boughtSubtotals = (issuedWith?.options ?? [])
-    .filter((o) => bought.includes(o.option))
-    .reduce((n, o) => n + o.subtotal, 0);
-  const discount = discountFor(
-    programmeFor(issuedWith?.discountType, issuedWith?.discountPercent),
-    boughtSubtotals + (issuedWith?.tripCharge ?? 0) - (comboCap.applied ? comboCap.reduction : 0),
+  /*
+    Priced by the SAME pure function every screen uses (shared/quoteMoney.ts priceSelection, via
+    frozenSelectionDiscount), which rounds the base to the cent before taking the percentage. The
+    frozen discount therefore cannot differ by a cent from the figure the customer ticked and was
+    shown on the page, the CRM Present screen or the phone (review finding, 2026-10-08).
+  */
+  const discount = frozenSelectionDiscount(
+    {
+      discountType: issuedWith?.discountType,
+      discountPercent: issuedWith?.discountPercent,
+      tripCharge: issuedWith?.tripCharge,
+      options: issuedWith?.options ?? [],
+    },
+    bought,
+    comboCap.applied ? comboCap.reduction : 0,
   );
 
   /*
@@ -888,7 +924,19 @@ async function applySignature(
   */
   const signed = await prisma.$transaction(async (tx) => {
     const result = await tx.issuedEstimate.updateMany({
-      where: { id: estimateId, signedAt: null },
+      /*
+        Every refusal that guards the WRITE lives in this one WHERE (review finding, 2026-10-08):
+        unsigned, not void, not lost and not replaced by a newer revision. The reads above give
+        the customer a friendly reason early, but a read is a snapshot — the office voiding,
+        closing or revising this estimate in the gap between that read and this write must not
+        let the signature land on it. Whichever condition failed is re-read below for the reason.
+      */
+      where: {
+        id: estimateId,
+        signedAt: null,
+        status: { notIn: ["void", "lost"] },
+        supersededBy: { is: null },
+      },
       data: {
         selectedOptions: bought as never,
         comboCapJson: JSON.stringify(comboCap),
@@ -912,7 +960,24 @@ async function applySignature(
     const adopted = await adoptSupersededInvoice(tx, estimateId, channel === "in_person" ? "customer:in-person" : "customer");
     return { signed: true as const, adopted };
   });
-  if (!signed.signed) return { ok: false, reason: "This estimate has already been signed." };
+  if (!signed.signed) {
+    // Which guard stopped the write? Say that, not a blanket "already signed".
+    const now = await prisma.issuedEstimate.findUnique({
+      where: { id: estimateId },
+      select: { signedAt: true, status: true, supersededBy: { select: { id: true } } },
+    });
+    if (now && !now.signedAt) {
+      if (now.supersededBy) return { ok: false, reason: "This estimate has been replaced by a newer revision." };
+      if (now.status === "void") return { ok: false, reason: "This estimate is void." };
+      if (now.status === "lost") {
+        return {
+          ok: false,
+          reason: "This estimate has been closed. Call Red Cedar Electric if you would like to move forward — we will reopen it for you.",
+        };
+      }
+    }
+    return { ok: false, reason: "This estimate has already been signed." };
+  }
   if (signed.adopted) {
     const a = signed.adopted;
     logSystemEvent("info", "issued-estimate", `Estimate ${number} rev ${revision} signed — took over the invoice from rev ${a.replaced.map((r) => r.revision).join(", ")}: ${a.changeOrders} change order(s), ${a.payments} payment(s), ${a.jobVisitId ? "same job" : "no job to inherit"}`, {
@@ -930,7 +995,7 @@ async function applySignature(
       estimateId,
       type: "signed",
       actor: channel === "in_person" ? "customer:in-person" : "customer",
-      detail: `Signed by "${name}" ${where} (rev ${revision}) from ${input.ip ?? "unknown IP"}`,
+      detail: `Signed by "${name}" ${where} (rev ${revision}) from ${input.ip ?? "unknown IP"}${input.recordedBy ? ` - device held by ${input.recordedBy}` : ""}`,
     },
   });
   logSystemEvent("info", "issued-estimate", `Estimate ${number} signed by ${name} (${channel})`, {
@@ -938,6 +1003,7 @@ async function applySignature(
     revision,
     channel,
     ip: input.ip ?? null,
+    recordedBy: input.recordedBy ?? null,
   });
 
   /*
@@ -1071,9 +1137,14 @@ export async function adoptSupersededInvoice(
   if (replaced.length === 0) return null;
   const replacedIds = replaced.map((r) => r.id);
 
-  const [changeOrders, payments] = await Promise.all([
+  const [changeOrders, payments, financingFees] = await Promise.all([
     tx.issuedEstimate.updateMany({ where: { changeOrderForId: { in: replacedIds } }, data: { changeOrderForId: me.id } }),
     tx.payment.updateMany({ where: { estimateId: { in: replacedIds } }, data: { estimateId: me.id } }),
+    // The financing fee (2026-10-09, services/financingFee.ts) is owed on the INVOICE, so it
+    // moves with it the way the payments do — the live one and the removed history alike. Its
+    // base was the OLD revision's balance; if the revision changed the price the office removes
+    // it and adds it again on the new balance (the panel shows the base beside the fee).
+    tx.financingFee.updateMany({ where: { estimateId: { in: replacedIds } }, data: { estimateId: me.id } }),
   ]);
 
   // The job: the nearest replaced revision's, if it is still live.
@@ -1092,7 +1163,7 @@ export async function adoptSupersededInvoice(
   }
 
   const now = new Date();
-  const summary = `${changeOrders.count} change order(s), ${payments.count} payment(s)${jobVisitId ? ", the job" : ""}`;
+  const summary = `${changeOrders.count} change order(s), ${payments.count} payment(s)${financingFees.count > 0 ? `, ${financingFees.count} financing fee record(s)` : ""}${jobVisitId ? ", the job" : ""}`;
   await tx.issuedEstimate.updateMany({
     where: { id: { in: replacedIds } },
     data: { status: "void", voidedAt: now, voidReason: `Replaced by signed revision ${me.revision} — its ${summary} moved there.` },
@@ -1127,7 +1198,19 @@ export async function adoptSupersededInvoice(
 export async function reviseEstimate(
   prisma: PrismaClient,
   estimateId: string,
-  opts: { actor?: string; waiveTrip?: boolean } = {}
+  opts: {
+    actor?: string;
+    waiveTrip?: boolean;
+    /**
+     * Refuse a SIGNED estimate with this sentence — checked here, and again under a row lock at
+     * the moment of the supersede (review finding, 2026-10-09: `issueDraft` read signedAt once,
+     * then this function re-read the row without refusing signed, so a customer signing in the
+     * gap had the just-signed agreement superseded by an unsigned copy — the exact thing ruling 1
+     * exists to prevent). Both Issue doors pass it; the office's own Revise button does not, so a
+     * signed estimate can still be revised from there.
+     */
+    refuseSignedWith?: string;
+  } = {}
 ): Promise<GraduateResult> {
   const prev = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
@@ -1137,6 +1220,20 @@ export async function reviseEstimate(
   if (prev.supersededBy) {
     return { ok: false, reasons: ["That estimate has already been superseded by a newer revision."] };
   }
+  if (opts.refuseSignedWith && prev.signedAt) {
+    return { ok: false, reasons: [opts.refuseSignedWith] };
+  }
+  // LOST (2026-10-08): Kyle's standing rule is that Reopen is the way back. A revision made behind
+  // a lost row would leave the row and its reason standing with a live estimate on top of it that
+  // nobody marked reopened. The refusal lives HERE, not in issueDraft, because both buttons reach
+  // this function — the builder's "Save changes to the estimate" (POST /issued-estimates/:id/revise)
+  // and, through issueDraft, the Issue buttons in both apps — and a rule that only one of them
+  // carried would be the two-decisions problem this move exists to end. A SIGNED estimate is
+  // deliberately NOT refused here: revising it is how the office changes the trip charge,
+  // warranty or discount on a signed estimate (the customer signs the new revision again).
+  if (prev.status === "lost") {
+    return { ok: false, reasons: [lostReopenReason(prev.number)] };
+  }
 
   const graduated = await graduateDraft(prisma, {
     draftId: prev.draftId,
@@ -1144,8 +1241,13 @@ export async function reviseEstimate(
     // revision of this estimate — it is a different estimate for a different job.
     accountId: prev.customerId,
     serviceAddressId: prev.serviceAddressId,
-    title: prev.title,
-    scopeText: prev.scopeText,
+    // The TITLE and the SCOPE come from the DRAFT, as on a first issue (2026-10-08, Phase 2):
+    // both apps can now edit them on the draft (setDraftDetails), and like a changed line or the
+    // discount they reach the customer only through this revision. Until now the previous
+    // document's were copied forward, so a renamed draft never reached anyone. Null here means
+    // graduateDraft reads draft.title / draft.jobDescription.
+    title: null,
+    scopeText: null,
     includedText: prev.includedText,
     // A revision keeps what the previous document carried — including the
     // generator one-pager the customer already saw (P031).
@@ -1160,30 +1262,518 @@ export async function reviseEstimate(
   if (!graduated.ok) return graduated;
 
   // Re-key the new row onto the SAME house number, one revision up, and link the chain.
-  const next = await prisma.$transaction(async (tx) => {
-    const updated = await tx.issuedEstimate.update({
-      where: { id: graduated.estimateId },
-      data: {
-        number: prev.number,
-        revision: prev.revision + 1,
-        supersedesId: prev.id,
-        // The home-warranty claim rides the revision (Kyle, 2026-09-09): same claim number, same
-        // authorization — a revision changes the WORK, not who is paying for it. The credit is
-        // re-capped live against the new figures, and the new revision is unsigned, so Kyle can
-        // change or clear it there (that is what "revise to change coverage after signing" means).
-        warrantyJson: prev.warrantyJson,
-      },
+  /**
+   * THE SUPERSEDE IS CHECKED AGAIN UNDER A ROW LOCK (review finding, 2026-10-09). graduateDraft
+   * above ran outside any transaction, so the previous row may have changed since `prev` was
+   * read: a customer may have SIGNED it (the signature's own write refuses a superseded row, so
+   * whichever of the two commits first wins — this is the losing side's refusal), or another
+   * revise may have superseded it. Either way the row built above must not become its revision:
+   * it is unlinked, unnumbered and seconds old, never sent and never seen — it is rolled back
+   * (deleted, children cascade) and the caller gets the refusal it would have had.
+   */
+  class SupersedeRefused extends Error {
+    constructor(public readonly reason: string) { super(reason); }
+  }
+  let next: { id: string; number: string; revision: number };
+  try {
+    next = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "IssuedEstimate" WHERE "id" = ${prev.id} FOR UPDATE`;
+      const locked = await tx.issuedEstimate.findUniqueOrThrow({
+        where: { id: prev.id },
+        select: { signedAt: true, supersededBy: { select: { id: true } } },
+      });
+      if (locked.supersededBy) throw new SupersedeRefused("That estimate has already been superseded by a newer revision.");
+      if (opts.refuseSignedWith && locked.signedAt) throw new SupersedeRefused(opts.refuseSignedWith);
+      return linkRevision(tx, prev, graduated.estimateId, opts.actor);
     });
-    await tx.issuedEstimateEvent.create({
-      data: {
-        estimateId: prev.id,
-        type: "superseded",
-        actor: opts.actor ?? "human:crm-session",
-        detail: `Superseded by ${prev.number} rev ${prev.revision + 1}. This revision's link no longer opens.`,
-      },
+  } catch (err) {
+    if (!(err instanceof SupersedeRefused)) throw err;
+    await prisma.issuedEstimate.delete({ where: { id: graduated.estimateId } });
+    logSystemEvent("warn", "issued-estimate", `Revision of ${prev.number} refused at the supersede — the estimate changed while the revision was being built; the unlinked revision was rolled back`, {
+      estimateId: prev.id, rolledBackEstimateId: graduated.estimateId, reason: err.reason, actor: opts.actor ?? "human:crm-session",
     });
-    return updated;
-  });
+    return { ok: false, reasons: [err.reason] };
+  }
 
   return { ok: true, estimateId: next.id, number: next.number, revision: next.revision };
 }
+
+/** Re-key the graduated row onto the previous one's house number, one revision up, and link the chain. */
+async function linkRevision(
+  tx: Prisma.TransactionClient,
+  prev: { id: string; number: string; revision: number; warrantyJson: string | null },
+  estimateId: string,
+  actor: string | undefined,
+): Promise<{ id: string; number: string; revision: number }> {
+  const updated = await tx.issuedEstimate.update({
+    where: { id: estimateId },
+    select: { id: true, number: true, revision: true },
+    data: {
+      number: prev.number,
+      revision: prev.revision + 1,
+      supersedesId: prev.id,
+      // The home-warranty claim rides the revision (Kyle, 2026-09-09): same claim number, same
+      // authorization — a revision changes the WORK, not who is paying for it. The credit is
+      // re-capped live against the new figures, and the new revision is unsigned, so Kyle can
+      // change or clear it there (that is what "revise to change coverage after signing" means).
+      warrantyJson: prev.warrantyJson,
+    },
+  });
+  await tx.issuedEstimateEvent.create({
+    data: {
+      estimateId: prev.id,
+      type: "superseded",
+      actor: actor ?? "human:crm-session",
+      detail: `Superseded by ${prev.number} rev ${prev.revision + 1}. This revision's link no longer opens.`,
+    },
+  });
+  return updated;
+}
+
+// ─── ISSUE: ONE DECISION FOR BOTH DOORS (Kyle, 2026-10-08, "one estimating system") ───────────
+
+/**
+ * The refusals the issue door and the revise door share, worded ONCE. `getDraftLifecycle` hands the
+ * same sentence to a screen as `reviseReason`, so it greys its button with the exact words the
+ * server would answer with.
+ *
+ * ── CHANGING A SIGNED ESTIMATE IS OFFICE ONLY (Kyle, 2026-10-09, ruling 1) ───────────────────
+ * "Save changes to the estimate" on a SIGNED estimate is a deliberate CRM-only power, in the same
+ * family as void and mark-lost. The OFFICE revises it (reviseEstimate, POST /issued-estimates/:id/
+ * revise - the customer signs the new revision); the FIELD is refused, in FIELD_SIGNED_REVISE_REASON
+ * (shared/draftLifecycle.ts), and the phone offers "Raise a change order" for new work instead.
+ *
+ * This sentence is the office's ISSUE-route refusal only (POST /price-book/drafts/:id/issue): Issue
+ * would replace the signed agreement with an unsigned copy of itself, so it points at the revise
+ * button that does the job.
+ */
+export function signedReissueReason(est: { number: string; revision: number }): string {
+  return (
+    `Estimate ${est.number} rev ${est.revision} from this draft is SIGNED. Issuing again would replace the signed ` +
+    `agreement with an unsigned copy - press "Save changes to the estimate" on the estimate to revise it ` +
+    `(the customer signs the new revision), or raise a change order for new work.`
+  );
+}
+/** Which app is asking: the office (CRM) or the truck (field). Only the SIGNED-revise rule differs between them. */
+export type EstimateDoor = "crm" | "field";
+/** The SIGNED refusal for a door: the field gets Kyle's exact sentence; the office is not refused on a revise. */
+export function signedReviseReasonFor(door: EstimateDoor): string | null {
+  return door === "field" ? FIELD_SIGNED_REVISE_REASON : null;
+}
+export function lostReopenReason(number: string): string {
+  return `Estimate ${number} is marked lost — reopen it before changing or issuing it again.`;
+}
+
+/**
+ * The three checkboxes the issue step carries, validated ONCE for both doors (2026-10-08, Phase 2
+ * unit E). The CRM's POST /price-book/drafts/:draftId/issue extends this with the account/address
+ * it needs from the operator; the tech's POST /health-record/quotes/:draftId/issue takes it as is
+ * (the account and address come from the visit). Same words, same defaults, same refusals:
+ *   - depositRequired: absent = ON for an estimate, OFF for a change order.
+ *   - includeGenerator (P031): attach the generator sizing one-pager from this address's field
+ *     assessment. Absent = off. Refused with "No generator sizing recommendation is on file ..."
+ *     when the address has none (graduateDraft) - never a silent no-op.
+ *   - addToCurrentJob: change orders only; absent = ON when the parent job is still live. The
+ *     service ignores it on an ordinary estimate.
+ * All three take effect on the FIRST issue only; a revision carries the previous document's values.
+ */
+export const issueExtrasBodySchema = z.object({
+  depositRequired: z.boolean().optional(),
+  includeGenerator: z.boolean().optional(),
+  addToCurrentJob: z.boolean().optional(),
+});
+
+export interface IssueDraftInput {
+  draftId: string;
+  /** The spine (P029) — both required on a FIRST issue; a revision keeps the previous estimate's. */
+  accountId: string;
+  serviceAddressId: string;
+  title?: string | null;
+  scopeText?: string | null;
+  includedText?: string | null;
+  /** Absent on a revision means "what the previous document carried"; on a first issue, false. */
+  waiveTrip?: boolean;
+  includeGenerator?: boolean;
+  depositRequired?: boolean;
+  addToCurrentJob?: boolean;
+  /** "human:crm-session" from the office, "tech:<id>" from the driveway. */
+  actor: string;
+  /**
+   * Which app is asking (default "crm"). Decides only the wording of the SIGNED refusal - the field
+   * gets FIELD_SIGNED_REVISE_REASON (Kyle, 2026-10-09, ruling 1: changing a signed estimate is office
+   * only), the office's Issue route points at "Save changes to the estimate". Both are refused.
+   */
+  door?: EstimateDoor;
+  /**
+   * What a REVISION records as its author, when that differs from `actor`. The field's Issue route
+   * has always written `tech:<name>` on the revision and `tech:<id>` on a first issue; collapsing
+   * the two into one actor on 2026-10-08 silently changed the audit trail of every field
+   * re-issue (review finding), so the route passes both and the stored values stay as they were.
+   */
+  reviseActor?: string;
+}
+
+/**
+ * Issue a draft — as a NEW estimate, or as a REVISION of the one it already has.
+ *
+ * ── ISSUING A DRAFT THAT IS ALREADY ISSUED IS A REVISION, NOT A SECOND ESTIMATE ───────────────
+ *
+ * Kyle, 2026-08-20: the estimator "is filled with redundancies and duplicate paths", and he
+ * asked for an Edit button that reopens an unfinished estimate in the builder.
+ *
+ * Those two things collide here. Without this branch, editing a draft and pressing Issue again
+ * minted a BRAND NEW estimate number for the same job — so the account grew a second row, the
+ * first one stayed live with its own working customer link, and nothing recorded that they were
+ * the same quote. The Edit button would have put that one tap away.
+ *
+ * A draft has one live estimate at a time. Re-issuing it supersedes what was there: same house
+ * number, revision up, the old link dead so a customer cannot sign a version Kyle has replaced.
+ *
+ * The guard lives HERE and not in graduateDraft because reviseEstimate calls graduateDraft — a
+ * check inside it would recurse forever.
+ *
+ * ── ONE DECISION, TWO DOORS (2026-10-08) ─────────────────────────────────────────────────────
+ *
+ * The CRM's POST /price-book/drafts/:draftId/issue and the tech's POST /quotes/:draftId/issue
+ * each carried their own copy of the "live" lookup, and "live" excluded only void — so a SIGNED
+ * or a LOST estimate counted as live and pressing Issue quietly revised it. Two refusals now,
+ * the same from either door:
+ *
+ *   SIGNED — the draft is shut (`reopenForEditIfUnsigned`), so nothing on it can have changed;
+ *   re-issuing could only supersede a signed agreement with an unsigned copy of itself and kill
+ *   the customer's signed link. The office's own Revise button (POST /issued-estimates/:id/revise
+ *   → reviseEstimate) is the deliberate way to change the trip charge or warranty on a signed
+ *   estimate and is NOT this path; Issue is "publish my edits", and there are none.
+ *   (2026-10-08 review: "there are none" is not quite true. The discount, option names, option mode,
+ *   title and scope stay editable on a signed draft - signedStaysEditable, Kyle 2026-09-29 - and
+ *   only the office's Revise button can publish them. So the SAME label, "Save changes to the
+ *   estimate", proceeds in the CRM and is refused here for the truck. That split is deliberate in
+ *   the code and an OPEN RULING for Kyle: allow it on both doors, or refuse it on both. It is not
+ *   decided in this file.)
+ *
+ *   LOST — Kyle's standing rule is that Reopen is the way back. Superseding a lost quote from the
+ *   builder would leave the lost row and its reason behind a revision nobody marked reopened.
+ *   Same door the change-order rule names: reopen it first. The refusal itself is in
+ *   `reviseEstimate`, which this calls — so the builder's "Save changes to the estimate" (which
+ *   calls `reviseEstimate` directly) is refused for the same reason, in the same words.
+ */
+/** The estimate a draft's Issue button would REVISE — the one lookup `issueDraft` and `getDraftLifecycle` share. */
+async function liveEstimateOfDraft(prisma: PrismaClient, draftId: string) {
+  return prisma.issuedEstimate.findFirst({
+    where: { draftId, supersededBy: null, status: { not: "void" } },
+    orderBy: { revision: "desc" },
+    select: { id: true, number: true, revision: true, signedAt: true, status: true, archivedAt: true },
+  });
+}
+
+export async function issueDraft(prisma: PrismaClient, input: IssueDraftInput): Promise<GraduateResult> {
+  const live = await liveEstimateOfDraft(prisma, input.draftId);
+
+  const signedRefusal = (est: { number: string; revision: number }) =>
+    input.door === "field" ? FIELD_SIGNED_REVISE_REASON : signedReissueReason(est);
+  if (live?.signedAt) {
+    // Refused on BOTH doors (Issue would supersede a signed agreement with an unsigned copy). The
+    // office has its own deliberate way in (reviseEstimate); the field has none - ruling 1.
+    return { ok: false, reasons: [signedRefusal(live)] };
+  }
+  if (live) {
+    // The same refusal is checked AGAIN under a row lock at the supersede (reviseEstimate): this
+    // read is a snapshot, and a customer signing between it and the supersede must win.
+    return reviseEstimate(prisma, live.id, { actor: input.reviseActor ?? input.actor, waiveTrip: input.waiveTrip, refuseSignedWith: signedRefusal(live) });
+  }
+  // A title or scope handed to the issue route is written onto the DRAFT first (2026-10-08, Phase
+  // 2): the draft's title and jobDescription are the estimate's — graduateDraft reads them, every
+  // revision re-reads them (reviseEstimate), and both apps edit them there (setDraftDetails). Kept
+  // on the route for the callers that always sent one; it no longer bypasses the record.
+  const title = (input.title ?? "").trim();
+  if (title || input.scopeText !== undefined) {
+    await prisma.priceBookDraftEstimate.update({
+      where: { id: input.draftId },
+      data: {
+        ...(title ? { title } : {}),
+        ...(input.scopeText !== undefined ? { jobDescription: (input.scopeText ?? "").trim() || null } : {}),
+      },
+    });
+  }
+  return graduateDraft(prisma, {
+    draftId: input.draftId,
+    accountId: input.accountId,
+    serviceAddressId: input.serviceAddressId,
+    title: null,
+    scopeText: null,
+    includedText: input.includedText ?? null,
+    waiveTrip: input.waiveTrip ?? false,
+    // P031: the operator chose to attach the generator one-pager (the human approval; the
+    // field tech's include flag proposed it).
+    includeGenerator: input.includeGenerator ?? false,
+    depositRequired: input.depositRequired,
+    addToCurrentJob: input.addToCurrentJob,
+    createdBy: input.actor,
+  });
+}
+
+/**
+ * Where a draft stands — for BOTH apps, from ONE lookup (2026-10-08, Phase 2 unit B;
+ * shared/draftLifecycle.ts has the field-by-field contract).
+ *
+ * `issued` is exactly the estimate `issueDraft` would revise (`liveEstimateOfDraft`), so what a
+ * screen says will happen on the press and what the press does cannot disagree. `reviseReason` is
+ * the sentence the press would be refused with FOR THIS DOOR (signed: field only; lost: both), and
+ * `deleteReason` is the draft-side rule from atomicEstimateService. Carried in the CRM's review and
+ * compute payloads and the field's quote payload; the presentation screen reads it to stop issuing
+ * a fresh revision on every press.
+ */
+export async function getDraftLifecycle(prisma: PrismaClient, draftId: string, door: EstimateDoor = "crm"): Promise<DraftLifecycle> {
+  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { status: true } });
+  if (!draft) throw new DraftError(`Draft ${draftId} not found.`, 404);
+  const live = await liveEstimateOfDraft(prisma, draftId);
+  const issued: DraftLifecycleIssued | null = live
+    ? {
+        estimateId: live.id,
+        number: live.number,
+        revision: live.revision,
+        status: live.status,
+        signedAt: live.signedAt?.toISOString() ?? null,
+        archived: live.archivedAt !== null,
+        customerUrl: null,
+      }
+    : null;
+  return {
+    status: draft.status,
+    issued,
+    hasUnsavedChanges: issued !== null && draft.status === "draft",
+    // SIGNED: office-only power (ruling 1) - null for the CRM (reviseEstimate allows it), Kyle's sentence for the field.
+    reviseReason: !live ? null : live.signedAt ? signedReviseReasonFor(door) : live.status === "lost" ? lostReopenReason(live.number) : null,
+    deleteReason: await draftDeleteReason(prisma, draftId),
+    copyReason: await draftCopyReason(prisma, draftId),
+  };
+}
+
+// ─── CHANGE ORDER — a new draft under a signed estimate, from either door ─────────────────────
+
+export type ChangeOrderDraftResult =
+  | { ok: true; draftId: string; changeOrderFor: string; /** An open change order was reopened; nothing new was made. */ resumed: boolean }
+  | { ok: false; status: 404 | 409; error: string };
+
+/**
+ * Open a change-order draft against a signed estimate - or REOPEN the one already open.
+ *
+ * Kyle, 2026-08-19: "additional sections that add the work or remove the work". A change order is
+ * its own document with its own signature, raised against the estimate the customer signed, so
+ * the extra work is agreed in writing rather than tacked onto the job a second time. It inherits
+ * the account, the address and the job, so the change lands on the work it belongs to.
+ *
+ * The signed estimate is not touched. It is refused outright if it was never signed, because the
+ * thing to do with an unsigned estimate is edit it.
+ *
+ * ONE RULE FOR BOTH DOORS (Phase 3 unit C, 2026-10-08): "Raise a change order" in the office
+ * (POST /issued-estimates/:id/change-order) and in the field (POST /health-record/visits/:visitId/
+ * change-order, through raiseChangeOrderForVisit) both land here, and both REOPEN the change order
+ * that is already open for the invoice instead of starting a second. Before this the field reopened
+ * and the office always created, so pressing the office button twice (or once after the tech had
+ * started one) stacked empty drafts on the same invoice. "Open" is openChangeOrderDraft below.
+ *
+ * WHERE A NEW ONE IS FILED is the one thing the doors still do differently, on purpose: the office
+ * files it on the JOB (the default); the field files it on the visit the technician is standing on
+ * (`opts.visitId`), exactly as a diagnostic's resolutions change order is (diagnosticReport.ts:
+ * `visitId: report.visitId`) - right after a signature the job is a freshly minted visit nobody is
+ * assigned to yet, and the Quote screen answers 403 on a draft whose visit is not the tech's.
+ * When the open change order is on some OTHER visit than the one the technician stands on, the
+ * field door asks the one question the Quote screen itself asks (quoteDraftForTech): is THIS
+ * technician assigned to the visit the draft is filed on? If so it reopens the draft - the phone can
+ * open it, so the refusal would be wrong (a tech who raised it on the estimate visit and now stands
+ * on the job visit is the ordinary case). If not, starting a second would stack two on one invoice
+ * and this phone cannot open the first, so the field door is told so, in words that do not guess who
+ * started it; the office door (no visit named) opens it wherever it is.
+ *
+ * Moved out of the CRM route on 2026-10-08 so the field can raise one from the job with the same
+ * rules (Phase 2 item 12). The wording and status codes of every refusal are preserved verbatim -
+ * the client greys its button with these same reasons.
+ */
+export async function createChangeOrderDraft(
+  prisma: PrismaClient,
+  estimateId: string,
+  /** File a NEW draft on THIS visit instead of the job (the field's door). See above. */
+  opts: { visitId?: string; /** The technician on the phone: may reopen an open draft filed on ANY visit they are assigned to. */ technicianId?: string } = {},
+): Promise<ChangeOrderDraftResult> {
+  const target = await resolveChangeOrderTarget(prisma, estimateId);
+  if (!target.ok) return target;
+  const { est, root } = target;
+
+  const open = await openChangeOrderDraft(prisma, root.id);
+  if (open) {
+    if (opts.visitId && open.visitId !== opts.visitId) {
+      // The field's own access rule, not visit equality: assigned to the visit the draft is filed on
+      // = this phone can open it (quoteDraftForTech), so reopen it rather than refuse.
+      const canOpen =
+        opts.technicianId && open.visitId
+          ? await prisma.visitAssignment.findFirst({
+              where: { visitId: open.visitId, technicianId: opts.technicianId },
+              select: { id: true },
+            })
+          : null;
+      if (!canOpen) {
+        return {
+          ok: false,
+          status: 409,
+          error: `A change order for ${root.number} is already open on a visit you are not assigned to, so this phone cannot open it. Ask the office to finish it or delete it, then raise a new one.`,
+        };
+      }
+    }
+    return { ok: true, draftId: open.id, changeOrderFor: root.number, resumed: true };
+  }
+
+  const draft = await prisma.priceBookDraftEstimate.create({
+    data: {
+      title: `Change order — ${root.number}`,
+      changeOrderForId: root.id,
+      // The draft's spine mirrors the estimate's: same account, same job. The address lives on
+      // the issued estimate rather than the draft, and graduation re-derives it there.
+      customerId: root.customerId,
+      visitId: opts.visitId ?? target.visitId,
+      // Same default the ordinary create-draft route uses: the configured active supplier,
+      // falling back to HD. A change order prices against today's supplier, not the one that was
+      // active when the original was signed — the material is bought now.
+      supplierId:
+        (await prisma.priceBookRateConfig.findUnique({ where: { key: "activeSupplier" } }))?.textValue ?? "HD",
+    },
+  });
+
+  logSystemEvent("info", "issued-estimate", `Change order raised against ${est.number}`, {
+    estimateId: est.id,
+    draftId: draft.id,
+  });
+
+  return { ok: true, draftId: draft.id, changeOrderFor: root.number, resumed: false };
+}
+
+/**
+ * The change-order draft that is still OPEN for an invoice, or null: the newest draft raised
+ * against this root that has not been signed and has not been lost. "Open" means a draft that has
+ * not been issued, or whose live estimate is still waiting on the customer. Not open: one issued
+ * and then voided/superseded away (finished), one signed (done), one the office marked lost
+ * (closed), and a diagnostic's own resolutions change order - that one is reached from its
+ * diagnostic, by id, and arrives pre-seeded with the outlets found beyond the quote.
+ */
+async function openChangeOrderDraft(
+  prisma: PrismaClient,
+  rootId: string,
+): Promise<{ id: string; visitId: string | null } | null> {
+  const drafts = await prisma.priceBookDraftEstimate.findMany({
+    where: { changeOrderForId: rootId },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, visitId: true },
+    take: 10,
+  });
+  for (const d of drafts) {
+    if ((await prisma.diagnosticReport.count({ where: { changeOrderDraftId: d.id } })) > 0) continue;
+    const live = await liveEstimateOfDraft(prisma, d.id);
+    const everIssued = await prisma.issuedEstimate.count({ where: { draftId: d.id } });
+    if (everIssued > 0 && !live) continue; // issued, then voided/superseded away: finished
+    if (live?.signedAt || live?.status === "lost") continue; // done, or the office closed it
+    return d;
+  }
+  return null;
+}
+
+type IssuedEstimateRow = NonNullable<Awaited<ReturnType<PrismaClient["issuedEstimate"]["findUnique"]>>>;
+
+/**
+ * THE RULES for raising a change order against an estimate, and where the new draft will be
+ * filed — one place, so the CRM's button and the field's button cannot disagree about either.
+ * Refuses (404/409) a missing, never-signed, void or lost estimate; resolves to the ROOT invoice;
+ * and names the visit the draft lands on (the root's job, else its visit).
+ */
+async function resolveChangeOrderTarget(
+  prisma: PrismaClient,
+  estimateId: string,
+): Promise<
+  | { ok: true; est: IssuedEstimateRow; root: IssuedEstimateRow; visitId: string | null }
+  | { ok: false; status: 404 | 409; error: string }
+> {
+  const est = await prisma.issuedEstimate.findUnique({ where: { id: estimateId } });
+  if (!est) return { ok: false, status: 404, error: "Estimate not found" };
+  if (!est.signedAt) {
+    return {
+      ok: false,
+      status: 409,
+      error: "That estimate has not been signed. Change orders are for work already agreed — edit the estimate instead.",
+    };
+  }
+  /*
+    A VOID OR LOST INVOICE TAKES NO NEW WORK (2026-09-29).
+
+    `signedAt` survives a void — the signature happened, and the audit trail keeps it — so the
+    signed-only guard above let a change order be raised against an invoice that is off the
+    books. Its money would roll into a root that `loadInvoiceGroup` deliberately refuses to
+    group (services/invoiceGroup.ts: a void parent means the change order "stands alone as its
+    own invoice, honestly"), so the work would be agreed against nothing.
+
+    Added when this action moved onto the job, estimate and invoice drawers, which is the first
+    time a surface showing a VOID record could reach it. The client greys the button with this
+    same reason; this is the server saying no regardless of which surface asked.
+  */
+  if (est.status === "void" || est.voidedAt) {
+    return {
+      ok: false,
+      status: 409,
+      error: "That invoice is void — a voided record takes no new work. Issue a new estimate instead.",
+    };
+  }
+  if (est.status === "lost") {
+    return {
+      ok: false,
+      status: 409,
+      error: "That estimate is marked lost — reopen it before raising a change order against it.",
+    };
+  }
+
+  // Always the ROOT invoice (2026-09-20): a change order raised against a change order joins
+  // the same invoice as its parent, so the money group stays one level deep.
+  const rootId = est.changeOrderForId ?? est.id;
+  const root = rootId === est.id ? est : (await prisma.issuedEstimate.findUnique({ where: { id: rootId } })) ?? est;
+  return { ok: true, est, root, visitId: root.jobVisitId ?? root.visitId ?? est.jobVisitId ?? est.visitId };
+}
+
+export type FieldChangeOrderResult = ChangeOrderDraftResult;
+
+/**
+ * "Raise a change order" from the job in the field (Phase 2 unit E, 2026-10-08).
+ *
+ * The technician is standing on a VISIT, not looking at an estimate id (the job brief never
+ * carries one), so this finds the estimate the way the brief does - the job's live signed ROOT
+ * (signedRootForJob) - and hands it to createChangeOrderDraft, the same function and the same
+ * rules the CRM's button runs, INCLUDING reopening a change order that is already open instead of
+ * starting a second (Phase 3 unit C moved that rule into the shared function). When no live signed
+ * root exists it still names the newest estimate on the visit so the refusal is the real one
+ * (unsigned / void / lost) and not a generic "nothing".
+ *
+ * The only difference from the office's door is where a NEW draft is filed: on THE VISIT THE
+ * TECHNICIAN IS ON, not on the signed job (see createChangeOrderDraft for why).
+ */
+export async function raiseChangeOrderForVisit(
+  prisma: PrismaClient,
+  visitId: string,
+  /** The technician pressing the button - lets an open change order on another of THEIR visits be reopened. */
+  technicianId?: string,
+): Promise<FieldChangeOrderResult> {
+  const signed = await signedRootForJob(prisma, visitId);
+  const against =
+    signed?.id ??
+    (
+      await prisma.issuedEstimate.findFirst({
+        where: { OR: [{ visitId }, { jobVisitId: visitId }], supersededBy: null },
+        orderBy: { createdAt: "desc" },
+        select: { id: true },
+      })
+    )?.id;
+  if (!against) {
+    return {
+      ok: false,
+      status: 409,
+      error: "Nothing has been quoted on this job yet. Change orders are for work already agreed - build the quote first.",
+    };
+  }
+  return createChangeOrderDraft(prisma, against, { visitId, technicianId });
+}
+

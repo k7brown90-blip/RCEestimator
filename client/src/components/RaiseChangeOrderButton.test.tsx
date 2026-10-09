@@ -19,8 +19,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { useLocation } from "react-router-dom";
 import { RaiseChangeOrderButton, changeOrderBlock } from "./RaiseChangeOrderButton";
 import { api } from "../lib/api";
+
+/** Shows where the app navigated to, and with what state - what the arriving screen would read. */
+function Arrival() {
+  const l = useLocation();
+  return <p data-testid="arrival">{l.pathname + l.search + " | " + JSON.stringify(l.state)}</p>;
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -95,5 +102,36 @@ describe("RaiseChangeOrderButton", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Raise a change order" }));
     expect(await screen.findByText(/Issue a new estimate instead/)).toBeInTheDocument();
+  });
+
+  /*
+    Carry item (2026-10-08): the API answers resumed:true when it REOPENED an open change order
+    instead of starting a second. The press looked the same either way; the arrival now carries the
+    fact so Estimate Intake can say "Opened the change order already in progress".
+  */
+  it("passes 'resumed' to the arriving screen when the server reopened a change order", async () => {
+    vi.spyOn(api, "pbChangeOrder").mockResolvedValue({ draftId: "draft-9", changeOrderFor: "2026-1093", resumed: true });
+    renderWithProviders(
+      <>
+        <RaiseChangeOrderButton target={{ estimateId: "est-1", status: "signed", signed: true }} />
+        <Arrival />
+      </>,
+      { route: "/jobs" },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Raise a change order" }));
+    await waitFor(() => expect(screen.getByTestId("arrival").textContent).toBe('/estimate-intake?draft=draft-9&tab=review | {"changeOrderResumed":"2026-1093"}'));
+  });
+
+  it("passes nothing extra when a NEW change order was started", async () => {
+    vi.spyOn(api, "pbChangeOrder").mockResolvedValue({ draftId: "draft-9", changeOrderFor: "2026-1093", resumed: false });
+    renderWithProviders(
+      <>
+        <RaiseChangeOrderButton target={{ estimateId: "est-1", status: "signed", signed: true }} />
+        <Arrival />
+      </>,
+      { route: "/jobs" },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Raise a change order" }));
+    await waitFor(() => expect(screen.getByTestId("arrival").textContent).toBe("/estimate-intake?draft=draft-9&tab=review | null"));
   });
 });

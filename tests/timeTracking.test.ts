@@ -10,7 +10,9 @@
  *      last month.
  *   5. A clock past 12 hours is flagged, STOPS ACCRUING, and is confirmable.
  *   6. No rate set = hours but NO cost, and rateSet says so.
- *   7. Commission = percent × (revenue − material − permit/inspection fees).
+ *   7. Commission = percent × (revenue − material − permit/inspection fees − labor
+ *      at TOTAL cost), floored at $0 (Kyle, 2026-10-08, decision 10 — supersedes
+ *      the 2026-09-11 "labor is NOT subtracted" ruling this file used to pin).
  *   8. A 46-hour week is 40 regular + 6 overtime, with the premium on the LATER
  *      hours, in the order worked.
  *
@@ -424,8 +426,38 @@ async function moneyOnJob(visit: string, input: { typed: number; charges?: Array
   }
 }
 
-describe("rule 7 — commission on job profit", () => {
-  it("is percent × (revenue − material − permit/inspection fees); labor is NOT subtracted", async () => {
+/** Closed job hours on the visit for one technician, at a frozen rate (or none). */
+async function hoursOnJob(technician: string, hours: number, rateApplied: number | null) {
+  const startedAt = new Date(Date.now() - (hours + 1) * HOUR);
+  await prisma.timeEntry.create({
+    data: {
+      visitId, technicianId: technician, startedAt,
+      endedAt: new Date(startedAt.getTime() + hours * HOUR), minutes: hours * 60, endedReason: "completed", rateApplied,
+    },
+  });
+}
+
+/** Settings → Payroll → "Employer cost on top of wages (%)" — through the PUT, so the validation runs. */
+async function employerCost(percent: number | null) {
+  const res = await request(app).put("/crm/settings/payroll").send({ employerCostPercent: percent });
+  expect(res.status).toBe(200);
+}
+
+/**
+ * DECISION 10 (Kyle, 2026-10-08) — commission on TRUE profit. The test that used to live here
+ * pinned "labor is NOT subtracted" (revenue 5000 − 1200 − 250 = 3550, "labor's $600 is
+ * deliberately absent"). It was changed on purpose, not worked around: labor at TOTAL cost is now
+ * the fourth term, every tech's hours × the rate frozen on the session × (1 + employer cost %).
+ */
+describe("rule 7 — commission on job profit (decision 10: labor at total cost is subtracted)", () => {
+  beforeEach(async () => {
+    await prisma.companySetting.deleteMany({ where: { key: "payroll" } });
+  });
+  afterAll(async () => {
+    await prisma.companySetting.deleteMany({ where: { key: "payroll" } });
+  });
+
+  it("is percent × (revenue − material − permit/inspection fees − labor at total cost), each its own row", async () => {
     await prisma.technician.update({ where: { id: technicianId }, data: { commissionPercent: 10, hourlyRate: 30 } });
     await prisma.visit.update({ where: { id: visitId }, data: { revenue: 5000, laborHours: 20 } });
     await moneyOnJob(visitId, {
@@ -435,6 +467,8 @@ describe("rule 7 — commission on job profit", () => {
         { kind: "inspection", amount: 100, merchant: "State Inspector" },
       ],
     });
+    await hoursOnJob(technicianId, 20, 30); // $600 of wages
+    await employerCost(10);                 // $660 at total cost
 
     const quote = await commissionForJob(visitId, technicianId);
     expect(quote.revenue).toBe(5000);
@@ -443,9 +477,104 @@ describe("rule 7 — commission on job profit", () => {
     expect(quote.materialSource).toBe("po");
     expect(quote.fees).toBe(250);
     expect(quote.feeRows.map((f) => [f.kind, f.category, f.amount])).toEqual([["card", "permit", 150], ["card", "inspection", 100]]);
-    expect(quote.profit).toBe(3550);       // labor's $600 is deliberately absent
+    expect(quote.feeProblems).toEqual([]);
+    // Labor, shown: who, hours, wages, and the total with the employer cost on top.
+    expect(quote.laborRows).toEqual([
+      { technicianId, name: "Time Test Tech", hours: 20, wage: 600, rateMissing: false, total: 660 },
+    ]);
+    expect(quote.laborWage).toBe(600);
+    expect(quote.employerCostPercent).toBe(10);
+    expect(quote.employerCostSet).toBe(true);
+    expect(quote.laborCost).toBe(660);
+    expect(quote.missing).toEqual([]);
+    expect(quote.profit).toBe(2890);       // 5000 − 1200 − 250 − 660
+    expect(quote.commissionableProfit).toBe(2890);
     expect(quote.percent).toBe(10);
-    expect(quote.amount).toBe(355);
+    expect(quote.amount).toBe(289);
+  });
+
+  /**
+   * KYLE'S WORKED EXAMPLE (2026-10-08): a $500 job; materials $150 + a $65 GFCI breaker; permit $50
+   * + a $50 reinspection; labor $100 + $100 — profit −$15, so the commission is $0: "the tech never
+   * owes money back". Two technicians at $20/hr × 4h = $80 of wages each, 25% employer cost on top
+   * = $100 each — every tech who worked it counts.
+   */
+  it("Kyle's example: $500 job, $215 material, $100 fees, $200 labor → profit −$15 → commission $0", async () => {
+    const second = await prisma.technician.create({ data: { name: "Time Test Helper", accessToken: `tt-helper-${Date.now()}`, hourlyRate: 20 } });
+    try {
+      await prisma.technician.update({ where: { id: technicianId }, data: { commissionPercent: 10, hourlyRate: 20 } });
+      await prisma.visit.update({ where: { id: visitId }, data: { revenue: 500 } });
+      await moneyOnJob(visitId, {
+        typed: 215, // $150 of materials + the $65 GFCI breaker
+        charges: [
+          { kind: "permit", amount: 50, merchant: "Rutherford County" },
+          { kind: "inspection", amount: 50, merchant: "State Inspector — reinspection" },
+        ],
+      });
+      await hoursOnJob(technicianId, 4, 20);
+      await hoursOnJob(second.id, 4, 20);
+      await employerCost(25);
+
+      const quote = await commissionForJob(visitId, technicianId);
+      expect(quote.revenue).toBe(500);
+      expect(quote.materialCost).toBe(215);
+      expect(quote.fees).toBe(100);
+      expect(quote.laborRows.map((r) => [r.name, r.hours, r.wage, r.total])).toEqual(expect.arrayContaining([
+        ["Time Test Tech", 4, 80, 100],
+        ["Time Test Helper", 4, 80, 100],
+      ]));
+      expect(quote.laborCost).toBe(200);
+      expect(quote.profit).toBe(-15);              // shown as the loss it is
+      expect(quote.commissionableProfit).toBe(0);  // floored — never negative
+      expect(quote.amount).toBe(0);                // $0, the tech never owes money back
+
+      // Recording it through the route books $0, not a refusal — the job was worked.
+      const posted = await request(app).post("/time/commissions").send({ technicianId, visitId, basis: "job_profit" });
+      expect(posted.status).toBe(201);
+      expect(posted.body.amount).toBe(0);
+    } finally {
+      await prisma.timeEntry.deleteMany({ where: { technicianId: second.id } });
+      await prisma.technician.delete({ where: { id: second.id } });
+    }
+  });
+
+  it("a missing hourly rate or employer cost % is MISSING, never $0 labor — and the route says which", async () => {
+    await prisma.technician.update({ where: { id: technicianId }, data: { commissionPercent: 10, hourlyRate: null } });
+    await prisma.visit.update({ where: { id: visitId }, data: { revenue: 5000 } });
+    await moneyOnJob(visitId, { typed: 1200 });
+
+    // Hours closed with no rate on file.
+    await hoursOnJob(technicianId, 8, null);
+    await employerCost(10);
+    let quote = await commissionForJob(visitId, technicianId);
+    expect(quote.laborRows[0]).toMatchObject({ rateMissing: true, wage: null, total: null });
+    expect(quote.laborCost).toBeNull();
+    expect(quote.profit).toBeNull();
+    expect(quote.amount).toBeNull();
+    expect(quote.missing).toEqual(["Time Test Tech has hours on this job with no hourly rate set"]);
+    const refused = await request(app).post("/time/commissions").send({ technicianId, visitId, basis: "job_profit" });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toMatch(/no hourly rate set/);
+
+    // Rated hours, but the employer cost % was never set.
+    await prisma.timeEntry.deleteMany({ where: { visitId } });
+    await hoursOnJob(technicianId, 8, 30);
+    await employerCost(null);
+    quote = await commissionForJob(visitId, technicianId);
+    expect(quote.laborWage).toBe(240);
+    expect(quote.employerCostSet).toBe(false);
+    expect(quote.laborCost).toBeNull();
+    expect(quote.profit).toBeNull();
+    expect(quote.missing).toEqual(['employer cost % not set — Settings → Payroll → "Employer cost on top of wages (%)"']);
+
+    // No hours at all: nothing to burden, labor is $0 and the profit computes even with no percent set.
+    await prisma.timeEntry.deleteMany({ where: { visitId } });
+    quote = await commissionForJob(visitId, technicianId);
+    expect(quote.laborRows).toEqual([]);
+    expect(quote.laborCost).toBe(0);
+    expect(quote.employerCostSet).toBe(false);
+    expect(quote.profit).toBe(3800);
+    expect(quote.amount).toBe(380);
   });
 
   it("invents no percentage when none was typed", async () => {
@@ -577,6 +706,10 @@ describe("the office routes", () => {
     expect(list.body).toHaveLength(1);
     expect(list.body[0].percent).toBe(5);
 
-    await request(app).delete(`/time/commissions/${created.body.id}`).send({ reason: "Entered twice" }).expect(204);
+    await request(app).post(`/time/commissions/${created.body.id}/void`).send({ reason: "Entered twice" }).expect(200);
+    // Voided, not deleted: the row is still listed, marked, and no longer counted.
+    const after = await request(app).get(`/time/commissions?technicianId=${technicianId}`).expect(200);
+    expect(after.body).toHaveLength(1);
+    expect(after.body[0].voidReason).toBe("Entered twice");
   });
 });

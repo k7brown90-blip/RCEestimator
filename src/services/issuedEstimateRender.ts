@@ -32,10 +32,25 @@
  */
 
 import type { IssuedEstimateWithLines } from "./issuedEstimateService";
-import { allSelectionCaps, comboKey } from "./materialMarkupCap";
-import { discountFor, discountLabel, programmeFor } from "./discounts";
+import { comboKey } from "./materialMarkupCap";
+import { discountLabel, programmeFor } from "./discounts";
+import { priceSelection } from "../../shared/quoteMoney";
+import { pricingFiguresFromIssued } from "./issuedPricingFigures";
+import { buildQuoteFinancing, type QuoteFinancing } from "../../shared/financing";
+import {
+  FINANCING_SHEET_NOTE,
+  breakdownRows,
+  financingOffersFor,
+  fromLine,
+  monthlyLabel,
+  planTitle,
+  termLine,
+  wholeDollars,
+} from "../../shared/financingDisplay";
+import { plansFromSnapshot } from "./financingSettings";
 import { CONSENT_TEXT } from "./issuedEstimateService";
 import { parseWarrantyJson } from "./stripePayments";
+import { BALANCE_DUE_TERMS } from "./paymentTerms";
 import { warrantyNoticeText, warrantyRowLabel } from "./warrantyNotice";
 import { acceptedViaPhrase, isOfficeAcceptance } from "../../shared/acceptance";
 
@@ -119,6 +134,18 @@ function shell(title: string, inner: string): string {
   .consent{font-size:12px;color:#555;margin:12px 0 0;}
   .signed{background:#eaf5ec;border:2px solid #1a5c2e;border-radius:8px;padding:18px 16px;
           margin-top:24px;text-align:center;}
+  /* Financing plan cards (2026-10-08). */
+  .fin{margin:12px 4px 0;border:1px solid #d9d9d9;border-radius:6px;background:#f7f9f7;}
+  .fin summary{cursor:pointer;padding:12px 14px;font-weight:700;font-size:15px;color:#1a5c2e;}
+  .finnote{font-size:12px;color:#555;margin:0 14px 10px;}
+  .fincard{border-top:1px solid #e0e6e0;padding:12px 14px;}
+  .fincard h3{margin:0;font-size:15px;}
+  .finterm{margin:2px 0 6px;font-size:13px;color:#555;}
+  .finmonthly{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;color:#555;}
+  .finmonthly strong{font-size:22px;color:#222;}
+  .finrow{display:flex;justify-content:space-between;gap:10px;font-size:14px;padding:2px 0;}
+  .fin .findisc summary{padding:8px 0;font-size:13px;font-weight:600;}
+  .findisc p{font-size:12px;color:#444;margin:6px 0;}
   .foot{font-size:12px;color:#777;padding:18px 24px;border-top:1px solid #eee;}
   .err{background:#fdecea;border:1px solid #f5c6c2;color:#8c1d18;border-radius:6px;
        padding:12px 14px;margin-bottom:14px;font-size:14px;}
@@ -132,7 +159,7 @@ function shell(title: string, inner: string): string {
   @media print {
     body{background:#fff;}
     .wrap{max-width:none;}
-    .printbar,.sign{display:none !important;}
+    .printbar,.sign,.fin{display:none !important;}
     .head{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
   }
 </style></head>
@@ -239,9 +266,22 @@ export interface RenderOpts {
       documents: { number: string; title: string; kind: "invoice" | "change_order"; billedTotal: number }[];
       billedTotal: number;
       totalPaid: number;
+      /** What is owed — includes the financing fee below when one is applied (2026-10-09). */
       balance: number;
+      /**
+       * The financing fee on the invoice, its own line (Kyle, 2026-10-08) — dollars and the plan
+       * number only. `locked` = the Synchrony payment is recorded (the fee is paid); until then the
+       * financing is IN PROGRESS and every card path on this page is closed (2026-10-09).
+       */
+      financingFee?: { planNumber: string; fee: number; locked?: boolean } | null;
     } | null;
   } | null;
+}
+
+/** A fee is on the invoice and NOT yet paid through Synchrony — the pay links are closed (services/financingFee.ts financingInProgress). */
+function financingInProgressOn(deposit: RenderOpts["deposit"]): boolean {
+  const fee = deposit?.invoice?.financingFee;
+  return Boolean(fee && !fee.locked);
 }
 
 /**
@@ -253,12 +293,13 @@ function invoiceSummaryBlock(deposit: RenderOpts["deposit"]): string {
   const inv = deposit?.invoice;
   if (!inv) return "";
   return `<div style="margin-top:14px;padding:12px 14px;border:1px solid #cfd8cf;border-radius:8px;background:#fafcfa;">
-    <p style="font-size:14px;margin:0 0 6px;"><strong>Invoice ${escapeHtml(inv.number)} now includes</strong></p>
+    <p style="font-size:14px;margin:0 0 6px;"><strong>Invoice ${escapeHtml(inv.number)}${inv.documents.length > 1 ? " now includes" : ""}</strong></p>
     <table style="width:100%;font-size:14px;border-collapse:collapse;">
       ${inv.documents.map((d) =>
         `<tr><td style="padding:3px 0;color:#444;">${d.kind === "change_order" ? "Change order" : "Invoice"} ${escapeHtml(d.number)} — ${escapeHtml(d.title)}</td>
          <td style="text-align:right;padding:3px 0;">$${d.billedTotal.toFixed(2)}</td></tr>`).join("")}
       <tr style="border-top:1px solid #1a5c2e;"><td style="padding:4px 0;font-weight:600;">Invoice total</td><td style="text-align:right;padding:4px 0;font-weight:600;">$${inv.billedTotal.toFixed(2)}</td></tr>
+      ${inv.financingFee ? `<tr><td style="padding:3px 0;color:#444;">Financing fee — Plan ${escapeHtml(inv.financingFee.planNumber)}</td><td style="text-align:right;padding:3px 0;">$${inv.financingFee.fee.toFixed(2)}</td></tr>` : ""}
       ${inv.totalPaid > 0 ? `<tr><td style="padding:3px 0;color:#444;">Paid to date</td><td style="text-align:right;padding:3px 0;">$${inv.totalPaid.toFixed(2)}</td></tr>
       <tr><td style="padding:3px 0;font-weight:600;">Balance</td><td style="text-align:right;padding:3px 0;font-weight:600;">$${inv.balance.toFixed(2)}</td></tr>` : ""}
     </table>
@@ -340,32 +381,25 @@ export function renderEstimatePage(
     /*
       Priced with the schedule frozen at issue (jobBandsJson), not whatever Rate Config holds now.
       Kyle tunes these bands in his workbook; without this, retuning them would change the combo
-      prices on a page a customer may already have open, after he had quoted them.
+      prices on a page a customer may already have open, after he had quoted them. The figures are
+      built by pricingFiguresFromIssued - the SAME function the quote payloads use when the phone
+      or the Present screen is showing this estimate as it stands.
     */
-    const frozenBands = est.jobBandsJson
-      ? (JSON.parse(est.jobBandsJson) as Parameters<typeof allSelectionCaps>[1])
-      : undefined;
-    const caps = allSelectionCaps(
-      // Continuous-length material only (Kyle, 2026-08-31, "split the difference") — unit items
-      // keep their book price; the frozen flag keeps this page on the issue's population.
-      est.lines.map((l) => ({
-        option: l.option,
-        materialCost: l.inMaterialCap ? l.materialCost : null,
-        materialSell: l.inMaterialCap ? l.materialSell : null,
-      })),
-      frozenBands,
-    );
+    const { figures, caps } = pricingFiguresFromIssued(est);
+    /*
+      ONE PRESENTATION MATH (2026-10-08, Phase 3 unit A). The arithmetic for "what does this tick
+      come to" is the shared pure pricer (shared/quoteMoney.ts) — the SAME function that builds the
+      CRM presentation's and the field screen's `money.selections` — run here over the frozen lines.
+      The programme discount rides every combination: its percentage of what THIS selection pays,
+      then the cap. The table keeps the engine's own key set (`caps`), so the page offers exactly
+      the combinations it always has.
+    */
     for (const [key, cap] of Object.entries(caps)) {
-      const subtotals = estOptions
-        .filter((o) => key.split("+").includes(o.option))
-        .reduce((n, o) => n + o.subtotal, 0);
-      // The programme discount rides every combination: 5% of what THIS selection pays, capped.
-      const base = subtotals + est.tripCharge - cap.reduction;
-      const disc = discountFor(programme, base);
+      const price = priceSelection(figures, key.split("+"));
       comboTable[key] = {
-        total: round2(base - (disc?.amount ?? 0)),
+        total: price?.total ?? 0,
         saving: cap.reduction,
-        discount: disc?.amount ?? 0,
+        discount: price?.discount ?? 0,
       };
     }
   }
@@ -421,6 +455,112 @@ export function renderEstimatePage(
     ? round2(Math.max(0, Math.min(warranty.coveredAmount, preCoverageTotal)))
     : 0;
   const grandTotal = round2(Math.max(0, preCoverageTotal - warrantyApplied));
+
+  /*
+    ── SYNCHRONY FINANCING FIGURES (2026-10-08, one estimating system, Phase 5) ───────────────
+    For every combination the customer could tick: the deposit, the financing fee, the amount
+    financed and the monthly payment of each plan, worked out HERE by the one shared calculator
+    (shared/financing.ts) from the plans FROZEN onto this estimate at issue - never from today's
+    Settings, so a rate change cannot restate a quote already sent. The page is handed FINISHED
+    dollar figures and each plan's own Synchrony disclosure text; Synchrony's discount rate (Red
+    Cedar's cost) is not in this module's output and so cannot be in the page source. The monthly
+    figure is on what the customer would actually finance: the ticked combination after trip,
+    combination saving and programme discount, less any home-warranty coverage. An estimate with no
+    frozen plans (issued before they existed, or none on offer) shows no financing.
+  */
+  const financing: QuoteFinancing | null = (() => {
+    const plans = plansFromSnapshot(est.financingPlansJson);
+    if (!plans || Object.keys(comboTable).length === 0) return null;
+    const totals: Record<string, number> = {};
+    for (const [key, row] of Object.entries(comboTable)) totals[key] = row.total;
+    return buildQuoteFinancing(plans, totals, warranty ? warranty.coveredAmount : 0);
+  })();
+  // Embedded in a <script>: a "<" in Settings-typed disclosure text must never close the tag.
+  const financingJson = JSON.stringify(financing).replace(/</g, "\\u003c");
+
+  /*
+    ── "or from $X/mo with financing" AND THE PLAN CARDS (Phase 5 unit B, 2026-10-08) ────────────
+    Shown on an estimate the customer can still act on: not signed, not closed (lost). The card
+    shells - plan title, term, the labelled rows and the plan's Synchrony disclosure, VERBATIM and
+    in full - are written here once, in Settings' order; the NUMBERS in them are filled from the
+    precomputed per-selection figures above, here for the first look (so a page with scripts off
+    still shows them) and by the script below as boxes are ticked. The script only swaps text: no
+    browser arithmetic, and no rate - the figures it is handed have none. The whole block is a
+    <details>, so it opens without any script at all. Nothing here records a plan choice (the plan
+    is picked when the balance is paid), and it does not print: the printed page is the estimate,
+    and credit terms live only on screens (constants.md, "Credit terms in customer copy").
+    Explanations stay in TypeScript, not in HTML comments - a comment ships to the customer.
+  */
+  // NOT on the in-person page (review finding, 2026-10-08): the CRM signing screen loads this render
+  // in a sandboxed iframe where the script cannot run, so the block would be painted once for EVERY
+  // option together and never follow the ticks - a customer signing for Option A alone would see
+  // monthly figures worked on A+B+C beside the signature pad. The office showed the right plan
+  // cards on "Present to the customer" (which follows the ticks) a click earlier.
+  const financingShown =
+    !signedOff && est.status !== "lost" && estOptions.length > 0 && financing !== null && opts.channel !== "in_person";
+  const financingFirst = financingShown ? financingOffersFor(financing, liveAllKey.split("+")) : null;
+  const financingBlock = financingShown && financing
+    ? `<details class="fin" id="finBlock"${financingFirst ? "" : ' style="display:none;"'}>
+         <summary id="finFrom">${financingFirst ? escapeHtml(fromLine(financingFirst.from)) : ""}</summary>
+         <p class="finnote">${escapeHtml(FINANCING_SHEET_NOTE)}</p>
+         ${financing.plans
+           .map((p) => {
+             const fig = financingFirst?.offers.find((o) => o.planNumber === p.planNumber);
+             const rows = breakdownRows(fig ?? { planNumber: p.planNumber, deposit: 0, fee: 0, financed: 0 });
+             return `<div class="fincard" data-plan="${escapeHtml(p.planNumber)}">
+           <h3>${escapeHtml(planTitle(p))}</h3>
+           <p class="finterm">${escapeHtml(termLine(p))}</p>
+           <div class="finmonthly"><span>${escapeHtml(monthlyLabel(p.type))}</span><strong data-fin="monthly">${fig ? escapeHtml(wholeDollars(fig.monthly)) + "/mo" : ""}</strong></div>
+           ${rows
+             .map((r) => `<div class="finrow"><span>${escapeHtml(r.label)}</span><span data-fin="${r.key}">${fig ? escapeHtml(r.value) : ""}</span></div>`)
+             .join("")}
+           <details class="findisc">
+             <summary>Synchrony&#39;s terms for Plan ${escapeHtml(p.planNumber)}</summary>
+             <p>${escapeHtml(p.disclosure.explanation)}</p>
+             <p><strong>${escapeHtml(p.disclosure.important)}</strong></p>
+             <p>${escapeHtml(p.disclosure.terms)}</p>
+           </details>
+         </div>`;
+           })
+           .join("")}
+       </details>`
+    : "";
+  // The headline's wording lives in shared/financingDisplay.ts fromLine; the script splits it around
+  // the figure so the page and the other screens can never word it differently.
+  const [fromPre, fromPost] = fromLine({ fromMonthly: 0 }).split("$0");
+  const financingScript = financingShown && selectable
+    ? `<script>
+         (function () {
+           var financing = ${financingJson};
+           var block = document.getElementById("finBlock");
+           var from = document.getElementById("finFrom");
+           if (!financing || !block || !from) return;
+           var boxes = [].slice.call(document.querySelectorAll(".optpick"));
+           function put(card, key, text) {
+             var el = card.querySelector('[data-fin="' + key + '"]');
+             if (el) el.textContent = text;
+           }
+           function paint() {
+             var picked = boxes.filter(function (b) { return b.checked; })
+               .map(function (b) { return b.dataset.option; }).sort().join("+");
+             var sel = picked ? financing.bySelection[picked] : null;
+             if (!sel) { block.style.display = "none"; return; }
+             block.style.display = "";
+             from.textContent = ${JSON.stringify(fromPre)} + "$" + sel.fromMonthly + ${JSON.stringify(fromPost)};
+             sel.offers.forEach(function (o) {
+               var card = block.querySelector('[data-plan="' + o.planNumber + '"]');
+               if (!card) return;
+               put(card, "monthly", "$" + o.monthly + "/mo");
+               put(card, "deposit", "$" + o.deposit.toFixed(2));
+               put(card, "fee", "$" + o.fee.toFixed(2));
+               put(card, "financed", "$" + o.financed.toFixed(2));
+             });
+           }
+           boxes.forEach(function (b) { b.addEventListener("change", paint); });
+           paint();
+         })();
+       </script>`
+    : "";
 
   const optionName = (o: { option: string; label: string | null }) =>
     o.label ? `${escapeHtml(o.label)}` : `Option ${escapeHtml(o.option)}`;
@@ -610,7 +750,19 @@ export function renderEstimatePage(
          }
          ${invoiceSummaryBlock(opts.deposit)}
          ${
-           opts.deposit && opts.deposit.required !== false && !opts.deposit.satisfied
+           opts.deposit && opts.deposit.required !== false && !opts.deposit.satisfied && financingInProgressOn(opts.deposit)
+             // FINANCING IN PROGRESS with the deposit not in (it was voided after the fee went on —
+             // review finding, 2026-10-09): the deposit pay link is CLOSED (chargeableAmount refuses
+             // with FINANCING_IN_PROGRESS), so the page must not show a working-looking "Pay your
+             // deposit" button. Closed WITH the reason, never a dead end.
+             ? `<div style="margin-top:16px;padding:14px;border:2px solid #b7791f;border-radius:8px;background:#fdf8ee;">
+                  <p style="font-size:15px;margin:0 0 8px;"><strong>Your deposit:</strong>
+                  $${opts.deposit.due.toFixed(2)} (one third of the total) is still due.</p>
+                  <p style="font-size:14px;margin:0;">Your balance is being arranged through Synchrony financing, so online payment of the
+                  deposit is paused for the moment. Please call ${BUSINESS_PHONE} and we will arrange it with you.</p>
+                  <p style="font-size:13px;color:#555;margin:8px 0 0;">${BALANCE_DUE_TERMS}</p>
+                </div>`
+             : opts.deposit && opts.deposit.required !== false && !opts.deposit.satisfied
              ? `<div style="margin-top:16px;padding:14px;border:2px solid #1a5c2e;border-radius:8px;background:#f4f8f4;">
                   <p style="font-size:15px;margin:0 0 8px;"><strong>Next step — your deposit:</strong>
                   $${opts.deposit.due.toFixed(2)} (one third of the total) reserves your spot on the
@@ -628,11 +780,17 @@ export function renderEstimatePage(
                 <p style="font-size:13px;color:#555;margin:6px 0 0;">Questions? Call ${BUSINESS_PHONE}.</p>`
              : opts.deposit && opts.deposit.required === false
              ? `<p style="font-size:14px;color:#1a5c2e;font-weight:600;margin:10px 0 0;">✓ Thank you — no deposit is needed. We'll be in touch to schedule the work.</p>
-                <p style="font-size:13px;color:#555;margin:6px 0 0;">The balance is due at completion.
+                <p style="font-size:13px;color:#555;margin:6px 0 0;">${BALANCE_DUE_TERMS}
                 Questions? Call ${BUSINESS_PHONE}.</p>`
              : opts.deposit
              ? `<p style="font-size:14px;color:#1a5c2e;font-weight:600;margin:10px 0 0;">✓ Deposit received — we'll be in touch to schedule the work.</p>
-                <p style="font-size:13px;color:#555;margin:6px 0 0;">The balance is due at completion.
+                <p style="font-size:13px;color:#555;margin:6px 0 0;">${financingInProgressOn(opts.deposit)
+                  // Financing in progress (2026-10-09): the balance, fee included, is what the customer
+                  // releases through Synchrony. The terms STILL print — "due upon receipt applies to
+                  // everyone" (Kyle, 2026-10-08; plan Structure item 4), financed or not. The Synchrony
+                  // sentence sits beside them, never in their place (review finding, 2026-10-09).
+                  ? `The balance is being paid through your Synchrony financing. ${BALANCE_DUE_TERMS}`
+                  : BALANCE_DUE_TERMS}
                 Questions? Call ${BUSINESS_PHONE}.</p>`
              : `<p style="font-size:13px;color:#555;margin:10px 0 0;">Thank you. We will be in touch to
                 schedule the work. Questions? Call ${BUSINESS_PHONE}.</p>`
@@ -850,6 +1008,8 @@ export function renderEstimatePage(
          Furnished and installed, flat rate. The scope above is what the price covers.
        </p>
 
+       ${financingBlock}
+
        ${included}
 
        ${generatorSection}
@@ -862,6 +1022,7 @@ export function renderEstimatePage(
 
        ${signBlock}
        ${pickerScript}
+       ${financingScript}
      </div>
      <div class="foot">
        This estimate is valid for ${est.validDays} days. Work performed to the 2017 National

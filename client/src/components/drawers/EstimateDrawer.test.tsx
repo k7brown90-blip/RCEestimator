@@ -330,3 +330,52 @@ describe("EstimateDrawer", () => {
     expect(screen.queryByRole("button", { name: "Raise a change order" })).not.toBeInTheDocument();
   });
 });
+
+// ─── Phase 4 (2026-10-08): the financing link before signing ─────────────────────────────────────
+
+describe("EstimateDrawer — Email the financing link, before signing", () => {
+  it("is on an unsigned estimate and calls the one financing send", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({ estimate: estimate({}) });
+    vi.spyOn(api, "accountContacts").mockResolvedValue([]);
+    const send = vi.spyOn(api, "emailFinancing").mockResolvedValue({ ok: true, to: "jane@example.com" });
+
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+
+    const button = await screen.findByRole("button", { name: "Email the financing link" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() => expect(send).toHaveBeenCalledWith("est-1"));
+    expect(await screen.findByText("Financing link emailed to jane@example.com.")).toBeInTheDocument();
+    // A second press reads as a decision, not a double-tap.
+    expect(screen.getByRole("button", { name: "Send the financing link again" })).toBeInTheDocument();
+  });
+
+  it("is also on a never-sent draft estimate (nothing needs to be sent first)", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({ estimate: estimate({ status: "draft", sentAt: null, sentTo: null }) });
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeEnabled();
+  });
+
+  it("greys with the reason when the estimate is lost - never hidden", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({ estimate: estimate({ status: "lost" }) });
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+    const button = await screen.findByRole("button", { name: "Email the financing link" });
+    expect(button).toBeDisabled();
+    expect(screen.getByText(/Marked lost - reopen it first/)).toBeInTheDocument();
+  });
+
+  it("greys with the reason when there is no customer email on file", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({ estimate: estimate({ customerEmail: null }) });
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeDisabled();
+    expect(screen.getByText(/No customer email on file/)).toBeInTheDocument();
+  });
+
+  it("shows the server's refusal on the drawer when the send is refused", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({ estimate: estimate({}) });
+    vi.spyOn(api, "emailFinancing").mockRejectedValue(new Error("This estimate has been superseded by a newer revision. Send that one instead."));
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+    fireEvent.click(await screen.findByRole("button", { name: "Email the financing link" }));
+    expect(await screen.findByText(/superseded by a newer revision/)).toBeInTheDocument();
+  });
+});

@@ -106,6 +106,25 @@ const STORES_V8 = {
   materials: 'id, upc, sku, itemId',
 }
 
+// v9 adds the circuit diagnostic's three stores (2026-09-20), mirroring src/db/database.ts.
+// Pure store addition — no data migration.
+const STORES_V9 = {
+  ...STORES_V8,
+  diagnostics: 'reportId, visitId, status, updatedAt',
+  diagnosticSyncQueue: 'reportId, queuedAt',
+  diagnosticPhotoQueue: 'photoId, reportId, queuedAt',
+}
+
+// v10 adds the four offline-estimating stores (Phase 7, 2026-10-09), mirroring
+// src/db/database.ts. Pure store addition — no data migration.
+const STORES_V10 = {
+  ...STORES_V9,
+  quoteCatalog: 'itemId, category, position',
+  quoteMirrors: 'draftId, visitId',
+  quoteOpQueue: 'opId, draftId, seq, status, [draftId+seq]',
+  signatureQueue: 'signatureId, estimateId, state',
+}
+
 afterEach(async () => {
   await Dexie.delete(DB_NAME)
 })
@@ -367,6 +386,99 @@ describe('v3 → v4 property migration', () => {
     expect((await v8.table('materials').where('upc').equals('078477123456').first()).id).toBe('m1')
     expect((await v8.table('materials').where('sku').equals('5320-W').first()).id).toBe('m1')
     v8.close()
+  })
+
+  it('carries a v9 database up to v10 without losing anything in any store', async () => {
+    // v10 adds only the four offline-estimating stores (Phase 7, 2026-10-09) — no data
+    // migration, same risk in kind as v6→v7→v8→v9: a version chain that fails to open takes
+    // every queued store down with it, mid-job, on a technician's phone. Every pre-existing
+    // store is seeded here, the v9 diagnostic ones included, so a lost row anywhere shows.
+    await seedV3([crmProperty])
+    const v9 = openV4()
+    v9.version(5).stores(STORES_V5)
+    v9.version(6).stores(STORES_V6)
+    v9.version(7).stores(STORES_V7)
+    v9.version(8).stores(STORES_V8)
+    v9.version(9).stores(STORES_V9)
+    await v9.open()
+    await v9.table('syncQueue').put({
+      inspectionId: 'insp-queued', visitId: 'v1', payload: '{}', attempts: 0, queuedAt: 'now',
+    })
+    await v9.table('photoSyncQueue').put({
+      photoId: 'photo-1', inspectionId: 'insp-queued', attempts: 0, queuedAt: 'now',
+    })
+    await v9.table('findings').put({
+      id: 'f1', propertyId: 'prop1', itemId: 'C4', locationKey: '_default', cycle: 1,
+      track: 'defect', title: 'MBJ', section: null, citations: [], citationsAvailable: false,
+      severity: 'FAIL', critical: true, findingText: 'x', resolutionNote: null,
+      expectedEolYear: null, status: 'open', openedAt: 'now', observedCount: 1,
+      declinedByName: null, declinedByRelation: null, declinedVerbatim: null, cachedAt: 'now',
+    })
+    await v9.table('findingActionQueue').put({
+      actionId: 'a1', findingId: 'f1', kind: 'cure_claim', payload: '{}', attempts: 0, queuedAt: 'now',
+    })
+    await v9.table('receiptSyncQueue').put({
+      receiptId: 'r1', photoId: 'photo-r1', originalPhotoId: 'photo-r1-orig',
+      purchaseOrderId: 'po1', category: 'materials', attempts: 0, queuedAt: 'now',
+    })
+    await v9.table('materials').put({
+      id: 'm1', upc: '078477123456', sku: '5320-W', supplier: null, description: null,
+      packQty: null, packUnit: null, lastCost: null, itemId: null, cachedAt: 'now',
+    })
+    await v9.table('diagnostics').put({
+      reportId: 'rep-1', visitId: 'v1', reportDate: 'now', complaint: 'dead kitchen', circuitLabel: 'K',
+      status: 'in_progress', outlets: [], syncedAt: null, updatedAt: 'now',
+    })
+    await v9.table('diagnosticSyncQueue').put({ reportId: 'rep-1', visitId: 'v1', payload: '{}', attempts: 0, queuedAt: 'now' })
+    await v9.table('diagnosticPhotoQueue').put({ photoId: 'dp-1', reportId: 'rep-1', attempts: 0, queuedAt: 'now' })
+    await v9.table('assignments').put({ visitId: 'v1', assignmentId: 'a1', cachedAt: 'now' })
+    await v9.table('meta').put({ key: 'me', value: { name: 'Michael' }, updatedAt: 'now' })
+    v9.close()
+
+    const v10 = openV4()
+    v10.version(5).stores(STORES_V5)
+    v10.version(6).stores(STORES_V6)
+    v10.version(7).stores(STORES_V7)
+    v10.version(8).stores(STORES_V8)
+    v10.version(9).stores(STORES_V9)
+    v10.version(10).stores(STORES_V10)
+    await v10.open()
+
+    // Nothing in any pre-existing store is lost by the upgrade.
+    expect(await v10.table('syncQueue').count()).toBe(1)
+    expect(await v10.table('photoSyncQueue').count()).toBe(1)
+    expect(await v10.table('findings').count()).toBe(1)
+    expect(await v10.table('findingActionQueue').count()).toBe(1)
+    expect(await v10.table('receiptSyncQueue').count()).toBe(1)
+    expect(await v10.table('materials').count()).toBe(1)
+    expect(await v10.table('diagnostics').count()).toBe(1)
+    expect(await v10.table('diagnosticSyncQueue').count()).toBe(1)
+    expect(await v10.table('diagnosticPhotoQueue').count()).toBe(1)
+    expect(await v10.table('assignments').count()).toBe(1)
+    expect((await v10.table('meta').get('me')).value.name).toBe('Michael')
+    expect((await v10.table('diagnostics').get('rep-1')).complaint).toBe('dead kitchen')
+    expect((await v10.table('properties').get('p-crm')).crm.visitId).toBe('v1')
+
+    // And the four new stores are usable and indexed the way the sync engine reads them: the
+    // catalog by section and position, the mirrors by visit, the queue by draft in seq order.
+    await v10.table('quoteCatalog').bulkPut([
+      { itemId: 'B002', category: 'Devices', position: 1, description: 'Duplex receptacle' },
+      { itemId: 'A016', category: 'Devices', position: 0, description: 'Single-pole switch' },
+    ])
+    expect((await v10.table('quoteCatalog').where('category').equals('Devices').sortBy('position')).map((r) => r.itemId)).toEqual(['A016', 'B002'])
+    await v10.table('quoteMirrors').put({ draftId: 'd1', visitId: 'v1', payload: { draftId: 'd1' }, snapshotAt: 'now', origin: 'server', pricesNeedReview: false, pendingRebase: null })
+    expect((await v10.table('quoteMirrors').where('visitId').equals('v1').first()).draftId).toBe('d1')
+    await v10.table('quoteOpQueue').bulkPut([
+      { opId: 'op-2', draftId: 'd1', visitId: 'v1', seq: 2, kind: 'edit_line', body: {}, status: 'queued', attempts: 0, queuedAt: 'now' },
+      { opId: 'op-1', draftId: 'd1', visitId: 'v1', seq: 1, kind: 'add_line', body: {}, status: 'queued', attempts: 0, queuedAt: 'now' },
+    ])
+    expect((await v10.table('quoteOpQueue').where('[draftId+seq]').between(['d1', Dexie.minKey], ['d1', Dexie.maxKey]).toArray()).map((o) => o.opId)).toEqual(['op-1', 'op-2'])
+    await v10.table('signatureQueue').put({
+      signatureId: 's1', estimateId: 'e1', visitId: 'v1', signerName: 'Hollis', signatureImage: 'data:,', selectedOptions: ['A'],
+      revision: 1, figuresKey: 'k', consentText: 'c', capturedAt: 'now', state: 'queued', attempts: 0, queuedAt: 'now',
+    })
+    expect(await v10.table('signatureQueue').where('state').equals('queued').count()).toBe(1)
+    v10.close()
   })
 
   it('preserves an inspection draft across the upgrade', async () => {

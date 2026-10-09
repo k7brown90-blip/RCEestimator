@@ -5,6 +5,7 @@ import App from './App.tsx'
 import { registerSW } from 'virtual:pwa-register'
 import { consumeEnrollmentToken, flushReceiptQueue, flushSyncQueue, registerSyncListener } from './lib/crmSync'
 import { flushDiagnosticQueue, registerDiagnosticSyncListener } from './lib/diagnosticSync'
+import { flushQuoteQueue, registerQuoteSyncListener } from './lib/quoteSync'
 
 // Before createRoot — PropertyScreen reads the saved token in a useState
 // initializer, so enrolling any later wouldn't take effect until a reload.
@@ -21,6 +22,13 @@ void flushReceiptQueue()
 // not import diagnosticSync, which imports crmSync for the session settings.
 registerDiagnosticSyncListener()
 void flushDiagnosticQueue()
+// And quote edits made with no signal (Phase 7, 2026-10-09) — the same arrangement: quoteSync
+// imports crmSync, so it registers its own listener here rather than from inside crmSync.
+registerQuoteSyncListener()
+void flushQuoteQueue()
+// navigator.storage.persist() — the ask not to evict IndexedDB — is NOT made here. Firefox puts a
+// permission prompt on it, and at launch that prompt has no context; quoteSync asks the first time
+// something is queued that exists nowhere else (requestPersistentStorage, Phase 7 review 2026-10-09).
 
 // A new service worker taking control means a newer bundle exists than the one
 // running. Announce it instead of running stale silently (Kyle's Caysens walk,

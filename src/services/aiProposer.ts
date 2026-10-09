@@ -40,7 +40,9 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
-import { proposeLines, type ProposeResult } from "./atomicEstimateService";
+import { z } from "zod";
+import { DraftError, draftLockedReason, proposeLines, type ProposeResult } from "./atomicEstimateService";
+import type { WalkthroughProposal } from "../../shared/suggestedLines";
 
 /** Which brain produced a result. The UI shows this — a tech should never wonder. */
 export type ProposalPath = "ai" | "basic";
@@ -256,4 +258,63 @@ export async function proposeFromWalkthrough(
   );
 
   return { path: "ai", result, usage };
+}
+
+// ─── ONE ENTRY POINT FOR BOTH DOORS (2026-10-08, one-estimating-system plan, Phase 2 unit D) ──────
+//
+// "Build the draft (AI)" lived inside the CRM's route, degrade-to-basic and all. The field Quote
+// screen now has the same button, so the rule moved here: the CRM's POST
+// /price-book/drafts/:draftId/propose and the technician's POST /health-record/quotes/:draftId/
+// walkthrough/propose are both thin wrappers over `proposeWalkthroughForDraft`.
+
+/** The body of "Build the draft (AI)" — the same for both doors. */
+export const walkthroughTextBodySchema = z.object({ text: z.string().trim().min(1).max(8000) });
+
+/**
+ * Run the walkthrough through the model and land the results as PROPOSED lines — or say, plainly,
+ * that the model was unavailable and nothing was written.
+ *
+ * DEGRADED PATH (P023). If the model cannot run for any reason — no key, an API error, unparseable
+ * output — this answers `path: "basic"` with the reason and writes NOTHING. P019 found Kyle had been
+ * using the token matcher believing it was the intelligent one; a silent fallback would recreate
+ * that. The caller then runs the basic match (resolveWalkthroughRows) so the tech still gets
+ * candidates, and the screen names which brain answered.
+ *
+ * A SIGNED draft is refused BEFORE the model is called: proposeLines would refuse the write anyway,
+ * but only after the call had been paid for, and the basic path writes nothing so it would never
+ * refuse at all. The refusal is the signed sentence (draftLockedReason), the one every draft edit
+ * gives. An unsigned finalized draft is reopened by proposeLines, as for any edit.
+ */
+export async function proposeWalkthroughForDraft(
+  prisma: PrismaClient,
+  draftId: string,
+  text: string,
+): Promise<WalkthroughProposal & { usage: ProposerUsage | null }> {
+  const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId }, select: { status: true } });
+  if (!draft) throw new DraftError(`Draft ${draftId} not found.`, 404);
+  const locked = await draftLockedReason(prisma, draftId, draft.status);
+  if (locked) throw new DraftError(locked, 400);
+
+  try {
+    const outcome = await proposeFromWalkthrough(prisma, draftId, text);
+    return {
+      path: outcome.path,
+      proposed: outcome.result.proposed,
+      questions: outcome.result.questions,
+      rejected: outcome.result.rejected,
+      usage: outcome.usage,
+    };
+  } catch (err) {
+    if (!(err instanceof ProposerUnavailable)) throw err;
+    // eslint-disable-next-line no-console
+    console.warn(`[aiProposer] degraded to the token matcher: ${err.message}`);
+    return {
+      path: "basic",
+      degradedReason: err.message,
+      proposed: [],
+      questions: [],
+      rejected: [],
+      usage: null,
+    };
+  }
 }

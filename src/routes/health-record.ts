@@ -11,9 +11,17 @@
 
 import express from "express";
 import { summarizeOptions } from "../services/atomicEstimateEngine";
+import { ALL_OPTIONS, isEstimateOption } from "../../shared/estimateOptions";
 import { SameDayError, completeWorkNow, fieldChoicePending, pauseJobForLater, scheduleForLater } from "../services/sameDayJob";
-import { graduateDraft, reviseEstimate } from "../services/issuedEstimateService";
-import { addLine, browseAtomics, computeDraft, createDraft, editLine, loadRateContext, removeLine } from "../services/atomicEstimateService";
+import { getDraftLifecycle, issueDraft, issueExtrasBodySchema, raiseChangeOrderForVisit } from "../services/issuedEstimateService";
+import { inPersonSignBodySchema, signInPerson, signerContextOf } from "../services/inPersonSigning";
+import { PhotoError, jobPhotoPreview, listJobPhotos, removeOwnVisitPhoto } from "../services/estimatePhotos";
+import { jobChainOfVisits } from "../services/jobCosting";
+import { MAX_ESTIMATE_PHOTOS } from "../../shared/estimatePhotos";
+import { DraftError, addLine, addOption, browseFieldCatalog, browseSections, computeDraft, confirmLineBodySchema, confirmProposedLine, copyOptionBodySchema, copyOptionLines, deleteDraft, draftDetailsBodySchema, draftDiscountBodySchema, duplicateDraft, editLine, editLineExpectedSchema, expectedLinesSchema, fieldCatalogSnapshot, getDraftOptionSet, getDraftSuggestions, lineOrderBodySchema, lineQuantitySchema, openOrCreateWorkingDraft, optionMetaBodySchema, optionsModeBodySchema, rejectProposedLine, removeLine, removeOption, resolveQuestion, resolveQuestionBodySchema, saveLineOrder, setDraftDetails, setDraftDiscount, setOptionMeta, setOptionsMode, workingDraftForVisit } from "../services/atomicEstimateService";
+import { proposeWalkthroughForDraft, walkthroughTextBodySchema } from "../services/aiProposer";
+import { resolveWalkthroughRows, walkthroughRowsBodySchema } from "../services/walkthroughMatch";
+import { frozenStyleSubtotal, getQuoteMoney } from "../services/quoteMoney";
 import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -52,6 +60,7 @@ import {
 } from "../services/diagnosticReport";
 import { sendDiagnosticReportEmail } from "../services/diagnosticReportEmail";
 import { paymentSummary } from "../services/stripePayments";
+import { FINANCING_IN_PROGRESS, financingBlockedReason, financingInProgress } from "../services/financingFee";
 import { LIVE_SIGNED_CHANGE_ORDER, signedRootForJob } from "../services/invoiceGroup";
 import { logSystemEvent } from "../services/systemEvents";
 import { sendKyleNotificationEmail } from "../services/confirmationEmail";
@@ -924,6 +933,13 @@ healthRecordTechRouter.post("/visits/:visitId/email-payment-request", asyncHandl
     res.status(400).json({ success: false, error: { code: "not_sent", message: "The deposit on this job is already in." } });
     return;
   }
+  // FINANCING IN PROGRESS (review finding, 2026-10-09): a fee is on and the deposit is not in
+  // (voided after the fee went on). The deposit pay link is closed, so the email would send the
+  // customer to a dead end — refused here in the server's words, not only greyed on the screen.
+  if (financingInProgress(summary)) {
+    res.status(409).json({ success: false, error: { code: "financing_in_progress", message: `${FINANCING_IN_PROGRESS} — the deposit pay link is closed. The office removes the financing fee (with a reason) to collect the deposit again.` } });
+    return;
+  }
   const { sendDepositRequestEmail } = await import("../services/paymentReceipts");
   await sendDepositRequestEmail(prisma, est.id, publicBaseUrl());
   res.json({ success: true, data: { ok: true, to: est.customerEmail, amount: Math.round((summary.depositDue - summary.depositPaid) * 100) / 100 } });
@@ -986,60 +1002,135 @@ async function quoteDraftForTech(draftId: string, technicianId: string) {
   return assigned ? draft : null;
 }
 
-/** Find-or-create the working draft for a visit — one quote per visit, resumable. */
-healthRecordTechRouter.post("/visits/:visitId/quote", asyncHandler(async (req: TechRequest, res) => {
-  const visitId = readParam(req, "visitId");
+/*
+  A DraftError (a rule refusing) is answered with the status the CRM answers the same refusal with;
+  anything else — a database failure — is re-thrown into asyncHandler for the global handler, so
+  the phone is never told an outage is a bad request (Phase 7, 2026-10-09: an offline queue treats
+  a 4xx as a refusal and stops replaying, a 5xx as "try again later"). `details` — `existingDraftId`
+  on "the office already started a quote for this visit" — ride beside the code and message.
+*/
+const quoteRuleError = (res: express.Response, err: unknown): void => {
+  if (!(err instanceof DraftError)) throw err;
+  const code = err.status === 404 ? "not_found" : err.status === 409 ? "conflict" : "bad_request";
+  res.status(err.status).json({ success: false, error: { code, message: err.message, ...(err.details ?? {}) } });
+};
+
+/** This visit must be assigned to the technician asking. */
+async function visitAssignedTo(visitId: string, technicianId: string): Promise<boolean> {
   const assigned = await prisma.visitAssignment.findFirst({
-    where: { visitId, technicianId: req.technician!.id },
+    where: { visitId, technicianId },
     select: { id: true },
   });
-  if (!assigned) {
+  return Boolean(assigned);
+}
+
+/** The ids a phone mints with no signal (constants.md idempotency convention) must be UUIDs. */
+const clientIdSchema = z.string().uuid();
+
+/**
+ * Find-or-create the working draft for a visit — one quote per visit, resumable.
+ *
+ * WHICH DRAFT IS THE VISIT'S QUOTE is the service's rule — `workingDraftForVisit`
+ * (atomicEstimateService.ts), 2026-10-08. It keeps the 2026-09-21 filter that
+ * is load-bearing, not tidiness: a change order raised on this job is ALSO a
+ * draft on this visit, and resuming it would put new-work lines on a document
+ * that only describes the change (never widen that back). It also skips a
+ * diagnostic's resolutions draft, and — the fix the audit asked for (§1.3) — it
+ * RESUMES AN ISSUED DRAFT: this used to match `status: "draft"` only, and
+ * issuing marks the draft finalized, so a tech's edit after issue started a
+ * NEW draft and a NEW estimate number. The phone now gets the issued draft
+ * back (the quote payload's `lifecycle` says so) and "Save changes to the
+ * estimate" revises it, exactly as the office does.
+ *
+ * The title and supplier of a new draft are `openOrCreateWorkingDraft`'s (Phase 7, 2026-10-09),
+ * shared with the replay-safe PUT below; with no client id its behaviour is this route's as it was.
+ */
+healthRecordTechRouter.post("/visits/:visitId/quote", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await visitAssignedTo(visitId, req.technician!.id))) {
     res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
     return;
   }
-  const visit = await prisma.visit.findUnique({
-    where: { id: visitId },
-    select: { id: true, customerId: true, propertyId: true, customer: { select: { name: true } }, property: { select: { addressLine1: true } } },
-  });
-  if (!visit) {
-    res.status(404).json({ success: false, error: { code: "not_found", message: "Visit not found" } });
-    return;
+  try {
+    const opened = await openOrCreateWorkingDraft(prisma, visitId);
+    res.status(opened.resumed ? 200 : 201).json({ success: true, data: opened });
+  } catch (err) {
+    quoteRuleError(res, err);
   }
-  /*
-    `changeOrderForId: null` is load-bearing, not tidiness (found 2026-09-21
-    building the diagnostics report). A change order raised on this job — from
-    the CRM, or by this build's resolutions button — is ALSO a draft on this
-    visit with status "draft", so without this filter "Build the quote" would
-    silently resume the change order and the tech would add new-work lines to a
-    document that only describes the change. Never widen this back.
-  */
-  const existing = await prisma.priceBookDraftEstimate.findFirst({
-    where: { visitId, status: "draft", changeOrderForId: null },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
-  });
-  if (existing) {
-    res.json({ success: true, data: { draftId: existing.id, resumed: true } });
-    return;
-  }
-  const { rc } = await loadRateContext(prisma);
-  const draft = await createDraft(prisma, {
-    title: `${visit.customer.name} — ${visit.property.addressLine1}`,
-    supplierId: rc.activeSupplier ?? "HD",
-    visitId,
-    jobDescription: null,
-  });
-  res.status(201).json({ success: true, data: { draftId: draft.id, resumed: false } });
 }));
 
-/** Catalog search for the picker — same browse the CRM uses, capped for a phone. */
+/*
+  ── A QUOTE STARTED WITH NO SIGNAL (Phase 7, offline estimating, 2026-10-09) ──────────────────────
+
+  The phone mints the draft's id at capture time and PUTs it when signal returns; a replay after a
+  lost answer lands on the same row (200, resumed), and a visit whose quote the office started
+  meanwhile answers 409 with `existingDraftId` so the phone can offer to add its lines to that one.
+  The rule is `openOrCreateWorkingDraft`; this is the same assignment check as the POST above.
+
+  GET /visits/:visitId/quote is READ-ONLY — the phone caches every assigned visit's quote at
+  assignment sync, and a cache pass must never start a quote on a visit nobody has quoted.
+*/
+healthRecordTechRouter.put("/visits/:visitId/quote/:draftId", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  const draftId = clientIdSchema.parse(readParam(req, "draftId"));
+  if (!(await visitAssignedTo(visitId, req.technician!.id))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  try {
+    const opened = await openOrCreateWorkingDraft(prisma, visitId, draftId);
+    res.status(opened.resumed ? 200 : 201).json({ success: true, data: opened });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+healthRecordTechRouter.get("/visits/:visitId/quote", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await visitAssignedTo(visitId, req.technician!.id))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This visit is not assigned to you" } });
+    return;
+  }
+  const existing = await workingDraftForVisit(prisma, visitId);
+  if (!existing) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "This visit has no quote yet" } });
+    return;
+  }
+  res.json({ success: true, data: { draftId: existing.id } });
+}));
+
+/*
+  The picker's catalog (2026-10-08, one estimating system): search AND browse by section, assemblies
+  included — the SAME services the CRM's Estimate Intake uses (browseAtomics behind
+  browseFieldCatalog; browseSections). The one difference is on purpose: browseFieldCatalog takes the
+  workbook's labour hours, the labour unit basis and Red Cedar's supplier cost OFF every row, leaving
+  words and yes/no gap badges. This route used to hand the phone the CRM's rows whole, hours and cost
+  included, to a screen the technician then hands to the customer (constants.md "Field app").
+*/
 healthRecordTechRouter.get("/quote-catalog", asyncHandler(async (req: TechRequest, res) => {
-  const result = await browseAtomics(prisma, {
+  const result = await browseFieldCatalog(prisma, {
     search: typeof req.query.search === "string" ? req.query.search : null,
     category: typeof req.query.category === "string" ? req.query.category : null,
-    limit: 30,
   });
   res.json({ success: true, data: result });
+}));
+
+/** The section cards the picker browses by — the CRM's own `GET /price-book/sections`. */
+healthRecordTechRouter.get("/quote-catalog/sections", asyncHandler(async (_req: TechRequest, res) => {
+  res.json({ success: true, data: { sections: await browseSections(prisma) } });
+}));
+
+/*
+  The whole live price book, for the phone to keep (2026-10-09, one estimating system, Phase 7 unit
+  U2). With no signal the picker searches and browses this saved copy instead of calling the two
+  routes above. Same rows as the picker — fieldCatalogSnapshot runs them through toFieldCatalogRow,
+  so words and yes/no badges only, no labour hours, unit basis, cost or price — but every live item,
+  not a 60-row page. `?version=` is the stamp the phone already holds; when it still matches, the
+  answer is `{ unchanged: true }` and no rows are sent.
+*/
+healthRecordTechRouter.get("/quote-catalog/snapshot", asyncHandler(async (req: TechRequest, res) => {
+  const have = typeof req.query.version === "string" && req.query.version.length <= 100 ? req.query.version : null;
+  res.json({ success: true, data: await fieldCatalogSnapshot(prisma, have) });
 }));
 
 /** The working quote: lines with live prices, per-option totals, gaps. */
@@ -1053,101 +1144,596 @@ healthRecordTechRouter.get("/quotes/:draftId", asyncHandler(async (req: TechRequ
   const rows = await prisma.priceBookDraftLine.findMany({
     where: { draftId: draft.id },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-    select: { id: true, itemId: true, quantity: true, quantitySource: true, difficulty: true, option: true, note: true, location: true },
+    // `state` rides along so the phone can tell an AI-proposed line (not yet confirmed, not
+    // priced, not draggable) from a confirmed one — the CRM keeps them in separate lists too.
+    // `atomic.retiredAt` becomes the line's `retired` flag below and is never sent itself.
+    select: { id: true, itemId: true, quantity: true, quantitySource: true, difficulty: true, option: true, note: true, location: true, state: true, atomic: { select: { retiredAt: true } } },
   });
   const priced = new Map(computed.lines.map((l) => [l.id, l]));
+  const details = await prisma.priceBookDraftEstimate.findUniqueOrThrow({
+    where: { id: draft.id },
+    select: { title: true, jobDescription: true, supplierId: true },
+  });
+  // Issued or not, changed since, deletable — the SAME object the CRM's review payload carries
+  // (getDraftLifecycle). The customer page link for the issued estimate is added HERE, built with
+  // estimateLink and never the raw token (PUNCHLIST B5; the issue route and job-brief do the same).
+  // door "field": a SIGNED estimate's reviseReason is Kyle's sentence (changing it is office only).
+  const lifecycle = await getDraftLifecycle(prisma, draft.id, "field");
+  // The AI-suggested lines and open questions waiting on the tech — the same two lists the CRM's
+  // review payload carries, shaped for the phone (getDraftSuggestions). No hours, no cost, no usage.
+  const suggestions = await getDraftSuggestions(prisma, draft.id);
+  if (lifecycle.issued) {
+    const { estimateLink } = await import("../services/issuedEstimateSend");
+    const row = await prisma.issuedEstimate.findUnique({ where: { id: lifecycle.issued.estimateId }, select: { token: true } });
+    lifecycle.issued.customerUrl = row ? estimateLink(row.token) : null;
+  }
   res.json({
     success: true,
     data: {
       draftId: draft.id,
+      // The title and the scope of work the customer reads — editable on this screen now (Phase 2).
+      title: details.title,
+      jobDescription: details.jobDescription,
+      // The supplier the draft prices against (Phase 7, 2026-10-09): the phone's cached price book
+      // is built at ONE supplier, and a quote at another cannot be previewed from it. The id only —
+      // no supplier prices, no markup.
+      supplierId: details.supplierId,
+      lifecycle,
+      // "AI proposals" and "Open questions": each is confirmed / rejected / resolved on this screen
+      // (POST /quote-lines/:id/confirm|reject, POST /quote-questions/:id/resolve), and the draft
+      // cannot be issued while either list has anything in it.
+      suggestedLines: suggestions.suggestedLines,
+      openQuestions: suggestions.openQuestions,
       // Change orders are the one place a negative quantity is legal
       // (assertQuantityAllowed, atomicEstimateService.ts) — the phone needs
       // to know which draft this is before it decides whether to let a
       // negative quantity through the UI.
       isChangeOrder: Boolean(draft.changeOrderForId),
-      lines: rows.map((l) => {
+      // The invoice number a change order is against ("Change order to 2026-1012"), so the screen can
+      // say which document this is. A number only; null for an ordinary quote.
+      changeOrderFor: draft.changeOrderForId
+        ? (await prisma.issuedEstimate.findUnique({ where: { id: draft.changeOrderForId }, select: { number: true } }))?.number ?? null
+        : null,
+      // The options this draft has (A, B, C plus any added) and the letter "Add option" would
+      // create next — the SAME function that builds the CRM review payload's optionSet. Names and
+      // line counts only: no hours, no rates.
+      optionSet: await getDraftOptionSet(prisma, draft.id),
+      // The discount programme AND its computed dollars, and the one-or-the-other mode with the
+      // range it shows — worked out HERE (services/quoteMoney.ts, from discounts.ts), so the phone
+      // renders finished figures and does no money arithmetic of its own (2026-09-24 Unit A trap 2).
+      // Customer prices only: no hours, no labour dollars, no rates.
+      money: await getQuoteMoney(prisma, draft.id, computed, lifecycle),
+      lines: rows.map(({ atomic, ...l }) => {
         const c = priced.get(l.id);
         return {
           ...l,
           description: c?.description ?? l.itemId,
           lineTotal: c ? Math.round(((c.laborDollars ?? 0) + (c.materialSell ?? 0)) * 100) / 100 : null,
           gaps: c?.gaps.map((g) => g.message) ?? [],
+          // "No longer offered in the price book" (Phase 7, 2026-10-09). Retire means "do not
+          // offer", not "do not price" (loadCatalogAtSupplier), so the line still prices above;
+          // the phone says so after a sync rather than refusing the add.
+          retired: atomic.retiredAt !== null,
         };
       }),
       // Hours (and the labor dollars they price out to) never leave the office — the same
-      // standing rule the job-brief route already applies (~1280). materialSell/subtotal are
-      // the price the customer sees, not the labor cost of getting there.
-      options: summarizeOptions(computed).map(({ laborHours: _laborHours, laborDollars: _laborDollars, ...rest }) => rest),
+      // standing rule the job-brief route already applies (~1280). BUILT FROM NAMED FIELDS, not by
+      // stripping two (2026-10-08 review): summarizeOptions defines subtotal = laborDollars +
+      // materialSell, so sending subtotal AND materialSell lets anyone subtract one from the other
+      // and get the labour dollars to the cent. The customer's page never splits labour from
+      // material (issuedEstimateRender), so neither does this payload: the subtotal alone.
+      options: summarizeOptions(computed).map((o) => ({
+        option: o.option,
+        lineCount: o.lineCount,
+        // Per-line-rounded, like the frozen estimate and `money` (frozenStyleSubtotal), so the phone's
+        // option totals add up to its own line totals and to the figure the customer signs.
+        subtotal: frozenStyleSubtotal(computed, o),
+        complete: o.complete,
+      })),
       total: computed.total,
       rateProvisional: rate.provisional,
     },
   });
 }));
 
-/**
- * A quantity is non-zero here, full stop — positive OR negative reaches the
- * service. `assertQuantityAllowed` (atomicEstimateService.ts) is the actual
- * rule (negative only on a change order); the route only stops blocking a
- * change order's credit line, it does not re-decide the rule. Zero stays
- * invalid everywhere.
- */
-const nonZeroQuantity = z.number().refine((n) => n !== 0, { message: "Quantity cannot be zero." });
+// The quantity schema is `lineQuantitySchema` (atomicEstimateService.ts) — the SAME one the CRM's
+// line routes use (2026-10-08). Non-zero, either sign reaches the service, and
+// `assertQuantityAllowed` there is the only place that decides a negative is legal (change
+// orders only). This file used to define its own copy while the CRM said `.positive()`.
 
+// The body of an added line — the POST (the phone online, id picked by the database) and the PUT
+// (the phone replaying an add it made with no signal, id minted on the phone) read the same one.
+const addLineBodySchema = z.object({
+  itemId: z.string().min(1),
+  quantity: lineQuantitySchema,
+  // No quantitySource: the service derives it from the item (Kyle, 2026-10-08).
+  difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).default("NORMAL"),
+  option: z.enum(ALL_OPTIONS).default("A"),
+  note: z.string().nullable().optional(),
+  location: z.string().nullable().optional(),
+});
+
+// A refusal (quantity, item not in the catalog, signed quote) is a DraftError answered with its
+// status; a database failure goes to the global handler as a 5xx (quoteRuleError). This route used
+// to answer EVERY error 400, so an outage mid-replay would have read as a refusal (Phase 7, 2026-10-09).
 healthRecordTechRouter.post("/quotes/:draftId/lines", asyncHandler(async (req: TechRequest, res) => {
   const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
   if (!draft) {
     res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
     return;
   }
-  const body = z.object({
-    itemId: z.string().min(1),
-    quantity: nonZeroQuantity,
-    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).default("COUNT"),
-    difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).default("NORMAL"),
-    option: z.enum(["A", "B", "C"]).default("A"),
-    note: z.string().nullable().optional(),
-    location: z.string().nullable().optional(),
-  }).parse(req.body ?? {});
+  const body = addLineBodySchema.parse(req.body ?? {});
   try {
     const line = await addLine(prisma, draft.id, { ...body, confirmedBy: `tech:${req.technician!.id}` });
     res.status(201).json({ success: true, data: { lineId: line.id } });
   } catch (err) {
-    res.status(400).json({ success: false, error: { code: "bad_request", message: err instanceof Error ? err.message : String(err) } });
+    quoteRuleError(res, err);
+  }
+}));
+
+// A line added with no signal, replayed: the same add under the id the phone minted. The same id
+// on this quote already → 200 and nothing written; on another quote → 409 (addLine's rule).
+healthRecordTechRouter.put("/quotes/:draftId/lines/:lineId", asyncHandler(async (req: TechRequest, res) => {
+  const lineId = clientIdSchema.parse(readParam(req, "lineId"));
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = addLineBodySchema.parse(req.body ?? {});
+  try {
+    const line = await addLine(prisma, draft.id, { ...body, id: lineId, confirmedBy: `tech:${req.technician!.id}` });
+    res.json({ success: true, data: { lineId: line.id } });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+/*
+  ── OPTIONS D-H AND LINE ORDER FROM THE FIELD (Kyle, 2026-10-08, "one estimating system") ────────
+
+  Each route is a wrapper over the SAME service function the CRM's route calls (addOption,
+  removeOption, saveLineOrder in atomicEstimateService.ts): which letter is next, the cap of eight,
+  the signed-draft refusal and every check on a saved order live there, not here. A rule that
+  existed in only one of the two route files would be the bug. Behind quoteDraftForTech, so a
+  technician reaches only a quote on a visit assigned to them.
+
+  A DraftError (a rule refusing) is answered with the status the CRM answers the same refusal with
+  (quoteRuleError, above); anything else — a database failure — is re-thrown for the global handler.
+*/
+
+// `{ option }` (optional, Phase 7): the letter the phone showed it was adding, so a replay cannot
+// add a second one — already present answers 200 with nothing written; only `nextOption` is created.
+healthRecordTechRouter.post("/quotes/:draftId/options", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = z.object({ option: z.string().trim().toUpperCase().max(4).optional() }).parse(req.body ?? {});
+  try {
+    const added = await addOption(prisma, draft.id, body.option);
+    res.status(added.created ? 201 : 200).json({ success: true, data: added });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+healthRecordTechRouter.delete("/quotes/:draftId/options/:option", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  // `?expectedLines=N`: the count the confirm showed; if the office has put lines in the option
+  // since, nothing is deleted (409) — same as the CRM's route.
+  const expectedLines = expectedLinesSchema.parse(req.query.expectedLines);
+  try {
+    res.json({ success: true, data: await removeOption(prisma, draft.id, readParam(req, "option").toUpperCase(), expectedLines) });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+healthRecordTechRouter.put("/quotes/:draftId/line-order", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  // The body schema is the service's (lineOrderBodySchema) — the CRM's route reads the same one.
+  const body = lineOrderBodySchema.parse(req.body ?? {});
+  try {
+    res.json({ success: true, data: await saveLineOrder(prisma, draft.id, body.order) });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+/*
+  ── DISCOUNT, OPTION NAMES, ONE-OR-THE-OTHER MODE AND COPY-AN-OPTION FROM THE FIELD ──────────────
+  (Kyle, 2026-10-08, "one estimating system"; the discount is the gap he named on 2026-09-24.)
+
+  Thin wrappers over the SAME service functions the CRM's routes call (setDraftDiscount,
+  setOptionMeta, setOptionsMode, copyOptionLines) and the SAME body schemas — what each accepts,
+  the signed-draft rule, the 0 < percent <= 50 bound and the wording of every refusal live there,
+  not here. Behind quoteDraftForTech, so a technician reaches only a quote on a visit assigned to
+  them. A DraftError is answered with the status the CRM answers it with (quoteRuleError).
+
+  Void and mark-lost stay CRM-only (Kyle, 2026-09-22, Q8); nothing here touches them.
+*/
+healthRecordTechRouter.put("/quotes/:draftId/discount", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = draftDiscountBodySchema.parse(req.body ?? {});
+  try {
+    res.json({ success: true, data: await setDraftDiscount(prisma, draft.id, body) });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+healthRecordTechRouter.put("/quotes/:draftId/options-mode", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = optionsModeBodySchema.parse(req.body ?? {});
+  try {
+    res.json({ success: true, data: await setOptionsMode(prisma, draft.id, body.exclusive, { expected: body.expected }) });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+// "Copy lines": declared before the :option route below only for reading order — a POST and a PUT
+// never collide in Express. Appends to the target, never replaces (copyOptionLines).
+healthRecordTechRouter.post("/quotes/:draftId/options/copy", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = copyOptionBodySchema.parse(req.body ?? {});
+  try {
+    res.status(201).json({ success: true, data: await copyOptionLines(prisma, draft.id, body.from, body.to) });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+/*
+  ── TITLE & SCOPE, DELETE, COPY TO A NEW QUOTE (2026-10-08, Phase 2 unit B) ───────────────────────
+
+  Same shape as the routes above: each wraps the ONE service function the CRM's route calls
+  (setDraftDetails, deleteDraft, duplicateDraft) behind quoteDraftForTech; a DraftError answers with
+  the CRM's status and words (quoteRuleError). The copy stays on the same visit, so it is the tech's
+  quote too, and — being the newest draft on the visit — it is what "Build the quote" resumes next.
+*/
+healthRecordTechRouter.put("/quotes/:draftId/details", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = draftDetailsBodySchema.parse(req.body ?? {});
+  try {
+    res.json({ success: true, data: await setDraftDetails(prisma, draft.id, body) });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+healthRecordTechRouter.delete("/quotes/:draftId", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  try {
+    res.json({ success: true, data: await deleteDraft(prisma, draft.id) });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+healthRecordTechRouter.post("/quotes/:draftId/duplicate", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  try {
+    const copy = await duplicateDraft(prisma, draft.id);
+    res.status(201).json({ success: true, data: { draftId: copy.id, title: copy.title } });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+// Name an option and give it a short description — what the customer reads on the tick boxes.
+healthRecordTechRouter.put("/quotes/:draftId/options/:option", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const option = readParam(req, "option").toUpperCase();
+  if (!isEstimateOption(option)) {
+    res.status(400).json({ success: false, error: { code: "bad_request", message: `Unknown option "${option}".` } });
+    return;
+  }
+  const body = optionMetaBodySchema.parse(req.body ?? {});
+  try {
+    res.json({ success: true, data: await setOptionMeta(prisma, draft.id, option, body) });
+  } catch (err) {
+    quoteRuleError(res, err);
   }
 }));
 
 healthRecordTechRouter.patch("/quote-lines/:lineId", asyncHandler(async (req: TechRequest, res) => {
   const row = await prisma.priceBookDraftLine.findUnique({ where: { id: readParam(req, "lineId") }, select: { draftId: true } });
-  const draft = row ? await quoteDraftForTech(row.draftId, req.technician!.id) : null;
+  // "The office removed this line": a row that does not exist is `line_gone` (404), the same answer
+  // the remove below gives, so a phone replaying an edit can say why it was refused (Phase 7,
+  // 2026-10-09). A line that exists on somebody else's quote stays 403.
+  if (!row) {
+    res.status(404).json({ success: false, error: { code: "line_gone", message: "That line is no longer on any quote — the office may have removed it." } });
+    return;
+  }
+  const draft = await quoteDraftForTech(row.draftId, req.technician!.id);
   if (!draft) {
     res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
     return;
   }
-  const body = z.object({
-    quantity: nonZeroQuantity.optional(),
-    quantitySource: z.enum(["COUNT", "MEASURED_LENGTH", "TERMINATION_COUNT", "MANUAL"]).optional(),
+  // `expected` (optional, Phase 7): what the phone's screen showed for each field it changes —
+  // the replay rule is editLine's (assertExpected), refused 409 naming the field and both values.
+  const { expected, ...body } = z.object({
+    quantity: lineQuantitySchema.optional(),
     difficulty: z.enum(["NORMAL", "DIFFICULT", "VERY_DIFFICULT"]).optional(),
-    option: z.enum(["A", "B", "C"]).optional(),
+    option: z.enum(ALL_OPTIONS).optional(),
     note: z.string().nullable().optional(),
     location: z.string().nullable().optional(),
+    expected: editLineExpectedSchema,
   }).parse(req.body ?? {});
+  // A refusal is a DraftError with its status; a database failure is a 5xx (quoteRuleError), no
+  // longer a 400 carrying Prisma's wording (Phase 7, 2026-10-09).
   try {
-    await editLine(prisma, readParam(req, "lineId"), body);
+    await editLine(prisma, readParam(req, "lineId"), body, expected);
     res.json({ success: true });
   } catch (err) {
-    res.status(400).json({ success: false, error: { code: "bad_request", message: err instanceof Error ? err.message : String(err) } });
+    quoteRuleError(res, err);
   }
 }));
 
 healthRecordTechRouter.delete("/quote-lines/:lineId", asyncHandler(async (req: TechRequest, res) => {
   const row = await prisma.priceBookDraftLine.findUnique({ where: { id: readParam(req, "lineId") }, select: { draftId: true } });
+  // A line that does not exist is `line_gone` (404), and ONLY then (Phase 7, 2026-10-09): a phone
+  // replaying a remove it made with no signal treats that as done, so it must never be told 404 for
+  // a line that is still there on somebody else's quote — that stays 403, exactly as before.
+  if (!row) {
+    res.status(404).json({ success: false, error: { code: "line_gone", message: "That line is no longer on any quote." } });
+    return;
+  }
+  const draft = await quoteDraftForTech(row.draftId, req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  // A signed quote's refusal ("raise a change order") is a DraftError: a 400 with the reason, not
+  // a 500 that hides it. Anything else — a database failure — goes to the global handler to be
+  // logged rather than being told to the phone as a bad request with Prisma's wording
+  // (2026-10-08 review; the add and edit routes moved onto the same handler on 2026-10-09).
+  try {
+    await removeLine(prisma, readParam(req, "lineId"));
+    res.json({ success: true });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+/*
+  ── AI-SUGGESTED LINES, OPEN QUESTIONS AND THE WALKTHROUGH LIST FROM THE FIELD ─────────────────────
+  (Kyle, 2026-10-08, "one estimating system" — Phase 2 unit D. NOT Savannah: these are the
+  Walkthrough tab's "Build the draft (AI)" and basic match.)
+
+  Each route wraps the SAME service function the CRM's route calls — confirmProposedLine,
+  rejectProposedLine, resolveQuestion, proposeWalkthroughForDraft, resolveWalkthroughRows — and
+  reads the SAME body schema. The signed-draft refusal, the change-order quantity rule and the
+  degrade-to-basic answer live there, not here. A suggestion or a question is reached only through
+  its draft, and the draft only through quoteDraftForTech, so a technician touches nothing on a
+  visit that is not assigned to them. A DraftError is answered with the status the CRM answers it
+  with (quoteRuleError).
+
+  A line the tech confirms is entered by a human, so it is confirmed by tech:<id> — the same actor
+  addLine records for a line the tech types.
+*/
+async function quoteDraftForLine(lineId: string, technicianId: string) {
+  const row = await prisma.priceBookDraftLine.findUnique({ where: { id: lineId }, select: { draftId: true } });
+  return row ? quoteDraftForTech(row.draftId, technicianId) : null;
+}
+
+healthRecordTechRouter.post("/quote-lines/:lineId/confirm", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForLine(readParam(req, "lineId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = confirmLineBodySchema.parse(req.body ?? {});
+  try {
+    const line = await confirmProposedLine(prisma, readParam(req, "lineId"), `tech:${req.technician!.id}`, body);
+    res.json({ success: true, data: { lineId: line.id } });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+healthRecordTechRouter.post("/quote-lines/:lineId/reject", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForLine(readParam(req, "lineId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  try {
+    await rejectProposedLine(prisma, readParam(req, "lineId"));
+    res.json({ success: true });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+healthRecordTechRouter.post("/quote-questions/:questionId/resolve", asyncHandler(async (req: TechRequest, res) => {
+  const row = await prisma.priceBookDraftQuestion.findUnique({ where: { id: readParam(req, "questionId") }, select: { draftId: true } });
   const draft = row ? await quoteDraftForTech(row.draftId, req.technician!.id) : null;
   if (!draft) {
     res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
     return;
   }
-  await removeLine(prisma, readParam(req, "lineId"));
-  res.json({ success: true });
+  const body = resolveQuestionBodySchema.parse(req.body ?? {});
+  try {
+    await resolveQuestion(prisma, readParam(req, "questionId"), `tech:${req.technician!.id}`, body.resolutionNote);
+    res.json({ success: true });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+// "Build the draft (AI)". The answer carries which brain ran ("ai" wrote suggestions onto the
+// draft; "basic" means the model was unavailable and nothing was written) and, for "basic", why.
+// `usage` (the model name and token counts the CRM's route also returns) is left OFF: it is Red
+// Cedar's cost, and this screen is handed to the customer.
+//
+// `degradedReason` is REPLACED with a fixed sentence (2026-10-08 review): the CRM's reason is the
+// upstream error text (ProposerUnavailable wraps the OpenAI SDK message, which can carry a masked
+// key and quota/organisation detail), and the badge it ends up in is shown on the phone the tech
+// hands to the customer. The raw text stays in the server log (aiProposer.ts console.warn) and in
+// the office's answer; the truck gets only "unavailable right now".
+const TECH_AI_UNAVAILABLE = "The AI helper is unavailable right now.";
+healthRecordTechRouter.post("/quotes/:draftId/walkthrough/propose", asyncHandler(async (req: TechRequest, res) => {
+  const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
+  if (!draft) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const body = walkthroughTextBodySchema.parse(req.body ?? {});
+  try {
+    const { usage: _usage, ...answer } = await proposeWalkthroughForDraft(prisma, draft.id, body.text);
+    res.json({
+      success: true,
+      data: answer.degradedReason === undefined ? answer : { ...answer, degradedReason: TECH_AI_UNAVAILABLE },
+    });
+  } catch (err) {
+    quoteRuleError(res, err);
+  }
+}));
+
+// "Basic match only" — the CRM's POST /price-book/resolve-walkthrough. Candidates only: nothing is
+// added until the tech taps "+ Add to quote" (an ordinary add-line). The catalog is not a draft's,
+// so there is no draft to check; the technician's token is.
+healthRecordTechRouter.post("/quote-catalog/resolve-walkthrough", asyncHandler(async (req: TechRequest, res) => {
+  const body = walkthroughRowsBodySchema.parse(req.body ?? {});
+  res.json({ success: true, data: { rows: await resolveWalkthroughRows(prisma, body.rows) } });
+}));
+
+/*
+  ── PHOTOS ON THE ESTIMATE (Phase 2 unit E, 2026-10-08) ─────────────────────────────────────────
+  A photo taken while building a quote is a job photo - a VisitPhoto on the visit - uploaded by the
+  field's existing PUT /visits/:visitId/photos/:photoId (the Job site screen's "Job photos" path);
+  there is no second upload path. These three routes let the Quote screen LIST the photos that can
+  ride the estimate email, show a small preview of each, and take back one this technician added.
+  All behind quoteDraftForTech. The email itself is POST /issued-estimates/:id/email below, which
+  takes the ticked ids.
+
+  SCOPE (Kyle, 2026-10-09, ruling 2): THIS JOB's photos - the quote's visit and its job chain
+  (estimatePhotos.ts / jobCosting.jobChainOfVisits) - not the whole customer account. The list, the
+  preview (403 outside the job) and the email below enforce the same chain. The CRM's email picker
+  keeps the account-wide scope (Kyle, 2026-10-01); that is the office, choosing second-hand.
+*/
+async function photoContextFor(draftId: string, technicianId: string) {
+  const draft = await quoteDraftForTech(draftId, technicianId);
+  if (!draft) return null;
+  const visit = await prisma.visit.findUnique({ where: { id: draft.visitId! }, select: { id: true, customerId: true } });
+  return visit ? { draft, visitId: visit.id, customerId: visit.customerId, technicianId } : null;
+}
+
+function sendPhotoError(res: express.Response, err: unknown): boolean {
+  if (err instanceof PhotoError) {
+    res.status(err.statusCode).json({ success: false, error: { code: err.statusCode === 404 ? "not_found" : "forbidden", message: err.message } });
+    return true;
+  }
+  return false;
+}
+
+healthRecordTechRouter.get("/quotes/:draftId/photos", asyncHandler(async (req: TechRequest, res) => {
+  const ctx = await photoContextFor(readParam(req, "draftId"), req.technician!.id);
+  if (!ctx) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  const { photos, total } = await listJobPhotos(prisma, ctx);
+  res.json({
+    success: true,
+    // visitId: the job a photo added from this screen is filed on - the quote's own visit. total:
+    // how many photos this JOB has, so the screen can say when it shows only the newest.
+    data: { photos, total, max: MAX_ESTIMATE_PHOTOS, visitId: ctx.visitId },
+  });
+}));
+
+/** A small JPEG preview (the Bearer token rides a fetch; an <img> tag cannot send it). Job-scoped: 403 outside this job. */
+healthRecordTechRouter.get("/quotes/:draftId/photos/:photoId/preview", asyncHandler(async (req: TechRequest, res) => {
+  const ctx = await photoContextFor(readParam(req, "draftId"), req.technician!.id);
+  if (!ctx) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  try {
+    const { mimeType, bytes } = await jobPhotoPreview(prisma, readParam(req, "photoId"), ctx);
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    res.send(bytes);
+  } catch (err) {
+    if (!sendPhotoError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.delete("/quotes/:draftId/photos/:photoId", asyncHandler(async (req: TechRequest, res) => {
+  const ctx = await photoContextFor(readParam(req, "draftId"), req.technician!.id);
+  if (!ctx) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "Not your quote" } });
+    return;
+  }
+  try {
+    await removeOwnVisitPhoto(prisma, readParam(req, "photoId"), ctx);
+    res.json({ success: true, data: { deleted: true } });
+  } catch (err) {
+    if (!sendPhotoError(res, err)) throw err;
+  }
+}));
+
+/**
+ * "Raise a change order" from the job in the field (Phase 2 unit E, 2026-10-08; the office's twin
+ * is POST /issued-estimates/:id/change-order). Both call the same rules - createChangeOrderDraft
+ * (signed only; never void or lost; resolves to the ROOT invoice) - through raiseChangeOrderForVisit,
+ * which finds the job's signed estimate from the VISIT (the phone is never handed an estimate id)
+ * and files the draft on the visit the technician is on. An open change order for the same invoice
+ * is resumed, not duplicated (see the service).
+ * Void and mark-lost stay the office's (Kyle Q8); this route cannot do either.
+ */
+healthRecordTechRouter.post("/visits/:visitId/change-order", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  const result = await raiseChangeOrderForVisit(prisma, visitId, req.technician!.id);
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: { code: result.status === 404 ? "not_found" : "conflict", message: result.error } });
+    return;
+  }
+  res.status(result.resumed ? 200 : 201).json({
+    success: true,
+    data: { draftId: result.draftId, changeOrderFor: result.changeOrderFor, resumed: result.resumed },
+  });
 }));
 
 /**
@@ -1157,13 +1743,13 @@ healthRecordTechRouter.delete("/quote-lines/:lineId", asyncHandler(async (req: T
  * address that we are working at". Returns the customer-page link so the
  * customer signs on their own phone or the tech's, and payment follows.
  *
- * RE-ISSUE IS A REVISION, NOT A SECOND ESTIMATE — same rule as the CRM's
- * POST /price-book/drafts/:draftId/issue (app.ts). Editing a quote in the
+ * RE-ISSUE IS A REVISION, NOT A SECOND ESTIMATE — the SAME function as the
+ * CRM's POST /price-book/drafts/:draftId/issue: issueDraft in
+ * services/issuedEstimateService.ts (2026-10-08). Editing a quote in the
  * driveway reopens the draft (reopenForEditIfUnsigned); pressing Issue again
- * without this branch would mint a brand-new estimate number for the same
- * job. The guard lives HERE, not inside graduateDraft, because reviseEstimate
- * calls graduateDraft — a check inside it would recurse forever. The refusal
- * for a signed live row is already enforced inside reviseEstimate/graduateDraft.
+ * revises the live estimate rather than minting a second number, and a SIGNED
+ * or LOST live estimate is refused with the same reason the office sees. This
+ * route used to carry its own copy of that decision; it must not grow one back.
  */
 healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: TechRequest, res) => {
   const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
@@ -1175,25 +1761,31 @@ healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: T
   // same `depositRequired` the CRM's issue route passes; absent = the service's default (ON for
   // an estimate, OFF for a change order). First issue only, like the CRM: a re-issue revises and
   // carries the previous document's flag; the office's PATCH /terms is the override after that.
-  const body = z.object({ depositRequired: z.boolean().optional() }).parse(req.body ?? {});
+  // The same three checkboxes the CRM's issue step carries (Phase 2 unit E): `issueExtrasBodySchema`
+  // is the one definition - deposit, "attach the generator sizing recommendation" (refused with
+  // "No generator sizing recommendation is on file ..." by graduateDraft when the address has none)
+  // and, on a change order, "add to the current job".
+  const body = issueExtrasBodySchema.parse(req.body ?? {});
   const visit = await prisma.visit.findUnique({
     where: { id: draft.visitId! },
     select: { customerId: true, propertyId: true },
   });
-  const live = await prisma.issuedEstimate.findFirst({
-    where: { draftId: draft.id, supersededBy: null, status: { not: "void" } },
-    orderBy: { revision: "desc" },
-    select: { id: true, number: true, revision: true },
+  // ONE decision, both doors (2026-10-08): issueDraft holds the graduate-vs-revise rule and
+  // refuses a signed or lost live estimate with the same reason the CRM's issue route gives.
+  const result = await issueDraft(prisma, {
+    draftId: draft.id,
+    accountId: visit!.customerId,
+    serviceAddressId: visit!.propertyId,
+    depositRequired: body.depositRequired,
+    includeGenerator: body.includeGenerator,
+    addToCurrentJob: body.addToCurrentJob,
+    actor: `tech:${req.technician!.id}`,
+    // Unchanged from before the move: a field revision has always recorded the tech's name.
+    reviseActor: `tech:${req.technician!.name}`,
+    // Ruling 1 (Kyle, 2026-10-09): changing a SIGNED estimate is office only - the truck is refused
+    // with FIELD_SIGNED_REVISE_REASON. There is deliberately NO field route to reviseEstimate.
+    door: "field",
   });
-  const result = live
-    ? await reviseEstimate(prisma, live.id, { actor: `tech:${req.technician!.name}` })
-    : await graduateDraft(prisma, {
-        draftId: draft.id,
-        accountId: visit!.customerId,
-        serviceAddressId: visit!.propertyId,
-        depositRequired: body.depositRequired,
-        createdBy: `tech:${req.technician!.id}`,
-      });
   if (!result.ok) {
     res.status(409).json({ success: false, error: { code: "not_ready", message: result.reasons.join(" ") }, reasons: result.reasons });
     return;
@@ -1210,6 +1802,26 @@ healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: T
     },
   });
 }));
+
+/**
+ * Is this technician assigned to a visit this estimate belongs to? Checked against BOTH `visitId`
+ * (set when the draft is issued from a visit, which is every field quote) and `jobVisitId` (set once
+ * the estimate becomes a job's root) - an allow-list of the estimate's non-null visit ids, fail-closed
+ * when it carries neither. ONE definition for every tech route that takes an issued-estimate id
+ * (email, email-financing, sign-in-person): a technician must not reach an estimate on a job that is
+ * not theirs, and a copy of this that drifts is a hole.
+ */
+async function techAssignedToEstimate(
+  technicianId: string,
+  est: { visitId: string | null; jobVisitId: string | null },
+): Promise<boolean> {
+  const visitIds = [est.visitId, est.jobVisitId].filter((id): id is string => Boolean(id));
+  if (visitIds.length === 0) return false;
+  return Boolean(await prisma.visitAssignment.findFirst({
+    where: { visitId: { in: visitIds }, technicianId },
+    select: { id: true },
+  }));
+}
 
 /**
  * POST /health-record/issued-estimates/:id/email — email the just-issued estimate to the
@@ -1237,7 +1849,9 @@ healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: T
  * `/visits/:visitId/email-payment-request` above uses. A technician must not be able to email an
  * estimate on a job that is not theirs.
  *
- * The field posts only the estimate's id. The server resolves the customer's address and sends —
+ * The field posts the estimate's id in the path and the send choices in the body (shared/
+ * estimateEmail.ts: address override, note, reports, financing line, photos). The server resolves
+ * the customer's address when none is given and sends —
  * `sendEstimateEmail` returns `{ ok, to }`, never the token, and nothing here puts it on the wire
  * (PUNCHLIST B4; see tests/fieldContract.test.ts for the pinned contract on the issue response).
  */
@@ -1251,17 +1865,20 @@ healthRecordTechRouter.post("/issued-estimates/:id/email", asyncHandler(async (r
     res.status(404).json({ success: false, error: { code: "not_found", message: "Estimate not found" } });
     return;
   }
-  const visitIds = [est.visitId, est.jobVisitId].filter((id): id is string => Boolean(id));
-  const assigned = visitIds.length > 0 && Boolean(await prisma.visitAssignment.findFirst({
-    where: { visitId: { in: visitIds }, technicianId: req.technician!.id },
-    select: { id: true },
-  }));
-  if (!assigned) {
+  if (!(await techAssignedToEstimate(req.technician!.id, est))) {
     res.status(403).json({ success: false, error: { code: "forbidden", message: "This estimate is not on one of your visits" } });
     return;
   }
-  const { sendEstimateEmail } = await import("../services/issuedEstimateSend");
-  const result = await sendEstimateEmail(prisma, est.id, { sentBy: `tech:${req.technician!.id}` });
+  // The body - photos, the address override, the note, the two reports, the financing line - is
+  // parsed and sent by the SAME function the CRM's POST /issued-estimates/:id/send calls (Phase 4,
+  // 2026-10-08: the phone used to take photo ids only). Photos keep the office picker's semantics:
+  // ids of photos, at most ten, nothing attached unless ticked. THE TRUCK'S SCOPE IS THIS JOB (Kyle,
+  // 2026-10-09, ruling 2): the estimate's visit(s) and their job chain, passed as photoVisitIds so
+  // an id from another job - or another customer - is refused in the service, not trusted here. The
+  // CRM's door passes no scope and keeps the account-wide picker (Kyle, 2026-10-01).
+  const { sendEstimateEmailFromBody } = await import("../services/issuedEstimateSend");
+  const photoVisitIds = await jobChainOfVisits([est.visitId, est.jobVisitId]);
+  const result = await sendEstimateEmailFromBody(prisma, est.id, req.body, `tech:${req.technician!.id}`, { photoVisitIds });
   if (!result.ok) {
     res.status(409).json({ success: false, error: { code: "not_sent", message: result.reason } });
     return;
@@ -1287,12 +1904,7 @@ healthRecordTechRouter.post("/issued-estimates/:id/email-financing", asyncHandle
     res.status(404).json({ success: false, error: { code: "not_found", message: "Estimate not found" } });
     return;
   }
-  const visitIds = [est.visitId, est.jobVisitId].filter((id): id is string => Boolean(id));
-  const assigned = visitIds.length > 0 && Boolean(await prisma.visitAssignment.findFirst({
-    where: { visitId: { in: visitIds }, technicianId: req.technician!.id },
-    select: { id: true },
-  }));
-  if (!assigned) {
+  if (!(await techAssignedToEstimate(req.technician!.id, est))) {
     res.status(403).json({ success: false, error: { code: "forbidden", message: "This estimate is not on one of your visits" } });
     return;
   }
@@ -1303,6 +1915,73 @@ healthRecordTechRouter.post("/issued-estimates/:id/email-financing", asyncHandle
     return;
   }
   res.json({ success: true, data: { to: result.to } });
+}));
+
+/**
+ * POST /health-record/issued-estimates/:id/sign-in-person - the customer signs on the TECHNICIAN'S
+ * PHONE (Phase 3 unit C, 2026-10-08).
+ *
+ * Kyle, 2026-09-24: "The field app is for the techs on site." A signature taken with the customer
+ * standing there is a field action; the office's version is "Record acceptance" and stays a
+ * different record. The worked example in CLAUDE.md is exactly this gap: the CRM carried a full
+ * in-person signing screen and the field's quote flow stopped at issue.
+ *
+ * A THIN WRAPPER around `signInPerson` (services/inPersonSigning.ts) - the SAME function the
+ * office's POST /issued-estimates/:id/sign-in-person calls, with the SAME body schema
+ * (`inPersonSignBodySchema`: signerName 1-200, signatureImage <= 400000, selectedOptions <= 8).
+ * Every rule - sign-once, void, lost, expired, superseded, the options chosen, one-or-the-other, the
+ * drawn mark - is in applySignature, so none is restated here. After the signature the same three
+ * side effects run once (notify Kyle, make the job, put away the options not chosen).
+ *
+ * The signature is recorded as channel "in_person" (never "email"); the technician whose phone it
+ * was drawn on is recorded as the actor on the job and archive events and in the signed event's
+ * detail. IP and user agent are captured the way the office's route captures them.
+ *
+ * Guard: the technician must be assigned to a visit this estimate belongs to (techAssignedToEstimate,
+ * the same guard as the estimate email above). A stranger tech gets 403 and nothing is signed.
+ * A refused signature answers 400 like the office route (`reason` is readable, customer-safe text).
+ *
+ * The response carries the figures the signed screen shows - the number, the options taken and the
+ * total the signed document bills - so the phone adds nothing up. It never carries the token, hours,
+ * costs or margins.
+ */
+healthRecordTechRouter.post("/issued-estimates/:id/sign-in-person", asyncHandler(async (req: TechRequest, res) => {
+  const estimateId = readParam(req, "id");
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { id: true, visitId: true, jobVisitId: true },
+  });
+  if (!est) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Estimate not found" } });
+    return;
+  }
+  if (!(await techAssignedToEstimate(req.technician!.id, est))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This estimate is not on one of your visits" } });
+    return;
+  }
+  const body = inPersonSignBodySchema.parse(req.body ?? {});
+  const result = await signInPerson(prisma, est.id, body, {
+    ...signerContextOf(req),
+    actor: `tech:${req.technician!.id}`,
+    recordedBy: `tech:${req.technician!.id}`,
+  });
+  if (!result.ok) {
+    res.status(400).json({ success: false, error: { code: "not_signed", message: result.reason } });
+    return;
+  }
+  res.status(201).json({
+    success: true,
+    data: {
+      signed: true,
+      estimateId: result.estimateId,
+      number: result.number,
+      selectedOptions: result.selectedOptions,
+      total: result.signedTotal,
+      jobVisitId: result.jobVisitId,
+      jobJoined: result.jobJoined,
+      archivedNumbers: result.archived.map((a) => a.number),
+    },
+  });
 }));
 
 
@@ -1476,6 +2155,29 @@ healthRecordTechRouter.get("/visits/:visitId/payment-info", asyncHandler(async (
         depositPayUrl: summary.depositPayUrl,
         qrUrl: `${summary.payUrl}/qr.svg`,
         depositQrUrl: `${summary.payUrl}/qr.svg?type=deposit`,
+        /*
+          FINANCING IN PROGRESS (Kyle, 2026-10-08; Phase 6 Unit 6A, services/financingFee.ts).
+          Read-only for the tech: the fee as its own line and the fact that the balance (fee
+          included) is being paid through Synchrony. The QR / pay link above are CLOSED server-side
+          while this is set (chargeableAmount refuses), and the screen hides them with the reason.
+          No plan rate, no fee base — dollars only. The field never records a Synchrony payment:
+          that is the office's, on the CRM payment panel. Additive, so an older PWA build ignores it.
+          Only while the fee is NOT YET PAID (financingInProgress): once the Synchrony payment is
+          recorded, anything still owed is plain invoice money and the QR reopens for it
+          (review finding, 2026-10-09).
+        */
+        financing: financingInProgress(summary)
+          ? { planNumber: summary.financingFee!.planNumber, planDescription: summary.financingFee!.planDescription, fee: summary.financingFee!.fee, reason: FINANCING_IN_PROGRESS }
+          : null,
+        /*
+          WHY FINANCING CANNOT START YET (Kyle, 2026-10-08, decision 8; Phase 6 Unit 6C). The 1/3
+          deposit is required on a financed job and must be in first — the CRM panel's greyed
+          "Pay balance with Synchrony" says it, and the tech standing next to a customer who asks
+          "can I finance this?" reads the SAME sentence here (financingBlockedReason is the one
+          source). Null when financing is open, when a fee is already on (the `financing` block
+          above takes over) and when the invoice is paid. Additive, so an older PWA build ignores it.
+        */
+        financingBlocked: summary.financingFee || summary.paidInFull ? null : financingBlockedReason(summary),
       }
       : null,
   });
@@ -1514,9 +2216,35 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
     working from the root alone works from a stale brief.
   */
   const root = await signedRootForJob(prisma, visitId);
-  const est = root
+  /*
+    ISSUED, NOT SIGNED YET (2026-10-08; 2026-09-24 closing-out plan, Unit 4). The brief used to be
+    filled from the signed root ONLY, so `estimate` was either null or signed — and the field's
+    "Estimate N issued — not signed yet" panel (JobSiteScreen.tsx), with its "Open the customer's
+    estimate to review & sign" link and the two greyed choices, could never render: two builds put
+    work into a block nobody could reach. With no signed root, the newest LIVE unsigned root on the
+    visit stands in: not void, not lost, not expired, not archived, not superseded, never a change
+    order. `fieldChoicePending` refuses an unsigned estimate, so `choicePending` stays false and
+    "Complete work now" stays signature-gated (the routes refuse too: consultationWithSignedRoot).
+  */
+  const pending = root
+    ? null
+    : await prisma.issuedEstimate.findFirst({
+      where: {
+        OR: [{ visitId }, { jobVisitId: visitId }],
+        signedAt: null,
+        voidedAt: null,
+        supersededBy: null,
+        archivedAt: null,
+        changeOrderForId: null,
+        status: { notIn: ["void", "lost", "expired"] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+  const estId = root?.id ?? pending?.id ?? null;
+  const est = estId
     ? await prisma.issuedEstimate.findUnique({
-      where: { id: root.id },
+      where: { id: estId },
       include: { lines: { orderBy: { sortOrder: "asc" } } },
     })
     : null;
@@ -1575,6 +2303,10 @@ healthRecordTechRouter.get("/visits/:visitId/job-brief", asyncHandler(async (req
       address: `${visit.property.addressLine1}, ${visit.property.city}, ${visit.property.state}`,
       estimate: est
         ? {
+          // The estimate's id, so the Job site screen's "awaiting signature" panel can email it
+          // (POST /issued-estimates/:id/email) the way the Quote screen's issued panel does. The id is
+          // not a secret (the quote payload's lifecycle already carries it); the token never is sent.
+          id: est.id,
           number: est.number,
           title: est.title,
           scopeText: est.scopeText,
@@ -2468,6 +3200,22 @@ healthRecordTechRouter.put(
     const visit = await prisma.visit.findUnique({ where: { id: visitId }, select: { id: true } });
     if (!visit) {
       res.status(404).json({ success: false, error: { code: "not_found", message: `Visit ${visitId} not found` } });
+      return;
+    }
+    // Only a technician on this visit may file a photo on it, and a client-chosen photo id may never
+    // reach an existing photo that is not this technician's on this visit (2026-10-08 security
+    // review). Before this the route checked only that the visit existed and upserted by the id the
+    // phone sent — and the Quote screen's photo list (GET /quotes/:draftId/photos) now hands out
+    // the ids of every photo on the customer's account, so a tech could PUT over another tech's
+    // photo, take ownership of it (the upsert rewrites visitId and technicianId), and then pass the
+    // "your own photo, from the job it was filed on" check to delete it.
+    if (!(await requireAssigned(req, res, visitId))) return;
+    const existingPhoto = await prisma.visitPhoto.findUnique({
+      where: { id: photoId },
+      select: { visitId: true, technicianId: true },
+    });
+    if (existingPhoto && (existingPhoto.visitId !== visitId || existingPhoto.technicianId !== req.technician!.id)) {
+      res.status(403).json({ success: false, error: { code: "forbidden", message: "That photo belongs to another job or technician" } });
       return;
     }
 

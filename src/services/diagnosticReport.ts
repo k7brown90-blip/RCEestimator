@@ -559,6 +559,15 @@ export async function buildResolutionsChangeOrder(
     scopeLines.push("No damaged or defective equipment was recorded on this diagnostic.");
   }
 
+  /*
+    NO SIGNED ROOT = AN ORDINARY DRAFT ON THE VISIT, AND THE PHONE MUST NOT MISTAKE IT FOR THE
+    VISIT'S QUOTE (2026-10-08 audit §5). With nothing signed this draft has no changeOrderForId,
+    so it looked exactly like the working quote "Build the quote" resumes, and could silently
+    become it. It is identified by the DiagnosticReport that owns it (`changeOrderDraftId`, written
+    below): `workingDraftForVisit` (atomicEstimateService.ts) skips any draft a report points at,
+    so this one is reached only from the diagnostic's own "Build the resolutions change order"
+    (by id) — exactly like a real change order. Deleting the draft unlinks the report again.
+  */
   const draft = await prisma.priceBookDraftEstimate.create({
     data: {
       title: root ? `Resolutions — ${report.circuitLabel} (change order on ${root.number})` : `Resolutions — ${report.circuitLabel}`,
@@ -582,7 +591,6 @@ export async function buildResolutionsChangeOrder(
         await addLine(prisma, draft.id, {
           itemId: report.diagnosticItemId,
           quantity: qty,
-          quantitySource: "COUNT",
           difficulty: tier,
           option: "A",
           note: "Outlets found beyond the quoted count — the circuit decides the count, not the quote (RCE standard).",

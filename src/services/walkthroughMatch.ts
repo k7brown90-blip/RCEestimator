@@ -25,7 +25,10 @@
  * "longest token" retry started offering load centers for a wall sconce.
  */
 
+import type { PrismaClient } from "@prisma/client";
+import { z } from "zod";
 import { singularize } from "./singularize";
+import { isContinuousLength } from "./atomicEstimateEngine";
 
 /**
  * Units that can follow a NUMBER, used only to decide whether that number is a quantity.
@@ -190,3 +193,119 @@ export function rankWithDiagnostics<T extends Scorable>(rows: T[], tokens: strin
     unknownWords,
   };
 }
+
+// ─── THE RESOLVER — the walkthrough list against the catalog, in one place ──────────────────
+//
+// Moved out of the CRM route (app.ts POST /price-book/resolve-walkthrough) on 2026-10-08 so the
+// field app's Quote screen can call the SAME matching (Phase 2, "one estimating system"). The
+// route is a thin wrapper now; the field's tech route will be another. NOTHING is auto-added:
+// this returns candidates and the tech commits them. An ambiguous row comes back ambiguous —
+// silently picking the top hit is the assumption the atomic-first ruling exists to remove.
+
+export interface WalkthroughRowInput {
+  raw: string;
+  /** A quantity the caller already parsed; display only, like the one stripped from `raw`. */
+  quantity?: number;
+}
+
+export interface ResolvedWalkthroughRow {
+  raw: string;
+  /** Display only. Kyle sets the real quantity in Review. */
+  parsedQuantity: number | null;
+  searchTerm: string;
+  status: "MATCHED" | "AMBIGUOUS" | "UNMATCHED";
+  matchedOn: "name";
+  /**
+   * The tech's words that appear nowhere in the catalog. Reported so an UNMATCHED row can say
+   * WHICH word it did not know — "canless is not in your price book" beats silence.
+   */
+  unknownWords: string[];
+  candidates: Array<{
+    itemId: string;
+    description: string | null;
+    unit: string | null;
+    isContinuousLength: boolean;
+    hasLabourUnitBasis: boolean;
+    hasPriceAtActiveSupplier: boolean;
+  }>;
+}
+
+/** At most this many candidates per row — a phone screen's worth, and more is a list nobody reads. */
+export const WALKTHROUGH_CANDIDATES = 8;
+
+export async function resolveWalkthroughRows(
+  prisma: PrismaClient,
+  rows: WalkthroughRowInput[],
+): Promise<ResolvedWalkthroughRow[]> {
+  const SELECT = { itemId: true, description: true, unit: true, laborUnitBasis: true, costBasisUsed: true } as const;
+
+  const out: ResolvedWalkthroughRow[] = [];
+  for (const row of rows) {
+    /*
+      NAME ONLY, NO QUANTITY MATCHING (P031). Kyle, 2026-08-18:
+
+        "I want it to match on the name only. No quantity matching at all. The quantity will be
+         handled during the review step."
+
+      He typed "NM-B 12/3 cable 100 feet" — an item plainly in his book — and got UNMATCHED,
+      because `100` and `feet` were matched as if they named the product. The quantity is now
+      stripped before matching and never consulted again; it is returned for display only.
+    */
+    const { term, quantity } = stripQuantity(row.raw);
+    const tokens = nameTokens(term);
+
+    /*
+      FETCH WIDE, RANK NARROW.
+
+      The old query AND-ed every token in SQL, so one word the catalog does not use — "romex",
+      where Kyle's book says "NM-B" — returned nothing at all. Now any token may bring a row in,
+      and `rankCandidates` orders by how many of the tech's words actually hit. One unfamiliar
+      word can no longer erase a good match.
+
+      Still candidates, never a selection: the tech taps the row they meant.
+    */
+    const pool = tokens.length === 0 ? [] : await prisma.priceBookAtomic.findMany({
+      where: {
+        retiredAt: null,
+        OR: tokens.flatMap((tk) => {
+          const forms = [...new Set([tk, singularize(tk)])];
+          return forms.flatMap((f) => [
+            { itemId: { contains: f, mode: "insensitive" as const } },
+            { description: { contains: f, mode: "insensitive" as const } },
+          ]);
+        }),
+      },
+      take: 200,
+      select: SELECT,
+    });
+
+    const ranked = rankWithDiagnostics(pool, tokens);
+    const matches = ranked.candidates.slice(0, WALKTHROUGH_CANDIDATES);
+
+    out.push({
+      raw: row.raw,
+      parsedQuantity: row.quantity ?? quantity,
+      searchTerm: term,
+      status: matches.length === 0 ? "UNMATCHED" : matches.length === 1 ? "MATCHED" : "AMBIGUOUS",
+      matchedOn: "name",
+      unknownWords: ranked.unknownWords,
+      candidates: matches.map((m) => ({
+        itemId: m.itemId,
+        description: m.description,
+        unit: m.unit,
+        isContinuousLength: isContinuousLength({ unit: m.unit }),
+        hasLabourUnitBasis: m.laborUnitBasis !== null,
+        hasPriceAtActiveSupplier: m.costBasisUsed !== null,
+      })),
+    });
+  }
+  return out;
+}
+
+/** The body of "Basic match only" — the same for the CRM's route and the technician's. Up to 100 typed lines. */
+export const walkthroughRowsBodySchema = z.object({
+  rows: z.array(z.object({
+    raw: z.string().trim().min(1),
+    quantity: z.number().positive().optional(),
+  })).max(100),
+});

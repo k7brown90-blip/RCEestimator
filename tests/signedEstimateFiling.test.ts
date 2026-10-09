@@ -132,7 +132,16 @@ describe("the notification, which already existed", () => {
     // The public door passes a third argument since 2026-09-21 (the held-deposit note for Kyle);
     // the pin is the CALL at each door, not its arity.
     const calledAtDoor = /notifyOwnerSigned\(prisma, result\.estimateId[,)]/;
-    expect(app).toMatch(calledAtDoor);
+    // The in-person doors (the office's device AND the technician's phone, Phase 3 unit C 2026-10-08)
+    // share ONE function, services/inPersonSigning.ts `signInPerson`, which makes the call; each
+    // route goes through it and must not grow a second copy of the sequence.
+    const inPerson = fs.readFileSync(path.join(APP, "src/services/inPersonSigning.ts"), "utf8");
+    expect(inPerson).toMatch(calledAtDoor);
+    expect(app).toMatch(/signInPerson\(prisma, String\(req\.params\.id\)/);
+    const tech = fs.readFileSync(path.join(APP, "src/routes/health-record.ts"), "utf8");
+    expect(tech).toMatch(/signInPerson\(prisma, est\.id/);
+    expect(app).not.toMatch(calledAtDoor);
+    expect(tech).not.toMatch(calledAtDoor);
     const page = fs.readFileSync(path.join(APP, "src/routes/estimatePage.ts"), "utf8");
     expect(page).toMatch(calledAtDoor);
   });

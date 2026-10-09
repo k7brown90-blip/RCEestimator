@@ -1,6 +1,9 @@
 import { LOST_REASONS, type IssuedEstimateStatus } from "../../../shared/estimateStatus";
 import type { AcceptedVia, SignedChannel } from "../../../shared/acceptance";
 import { LEAD_PLATFORMS, type LeadPlatform } from "../../../shared/leadPlatform";
+import type { DraftOptionSet, EstimateOptionLetter } from "../../../shared/estimateOptions";
+import type { DraftLifecycle } from "../../../shared/draftLifecycle";
+import type { QuoteMoney } from "../../../shared/quoteMoney";
 
 export type { IssuedEstimateStatus };
 export type EstimateStatus = "draft" | "review" | "sent" | "accepted" | "declined" | "expired" | "revised";
@@ -47,7 +50,28 @@ export type JobCosts = {
    * not-on-card amounts — or nothing.
    */
   materialSource?: MaterialSource;
+  /**
+   * Synchrony's cut and card processing fees (Kyle, 2026-10-09, ruling 6) — inside totalCost,
+   * each its own row. `cardFeesPending` lists card payments whose Stripe fee is not known yet,
+   * with why: shown as "pending — <reason>", never $0. Optional so an older server build parses.
+   */
+  synchronyCut?: number;
+  cardFees?: number;
+  cardFeesPending?: CardFeePending[];
 };
+
+export type CardFeePending = { paymentId: string; amount: number; reason: string };
+
+/**
+ * "Card processing fees" as every cost surface prints it: the fees that could be read, and a
+ * pending note when any card payment's fee is not known yet (ruling 6 — pending, never $0).
+ */
+export function cardFeesPendingNote(costs: { cardFees?: number; cardFeesPending?: CardFeePending[] }): string | null {
+  const pending = costs.cardFeesPending ?? [];
+  if (pending.length === 0) return null;
+  const n = pending.length;
+  return `${n} card payment${n === 1 ? "" : "s"} pending — ${pending[0].reason}`;
+}
 
 export type MaterialSource = "po" | "none";
 
@@ -1507,7 +1531,10 @@ export type InvoiceSummary = {
   totalPaid: number;
   discountTotal: number;
   collected: number;
+  /** What is owed — the documents plus the financing fee when one is applied (2026-10-09). */
   balance: number;
+  /** The financing fee on this invoice (Kyle, 2026-10-08), its own line beside the balance; null when none. */
+  financingFee?: { id: string; planNumber: string; planDescription: string; fee: number; locked: boolean } | null;
   lastPaidAt: string | null;
   paymentStatus: "unpaid" | "partial" | "deposit_paid" | "paid";
   /** Home-warranty coverage (Kyle, 2026-09-09) — already off billedTotal; shown beside it. */
@@ -1593,6 +1620,12 @@ export type AccountSummary = {
     lifetimeCost: number;
     lifetimeProfit: number;
     lifetimeMargin: number | null;
+    /**
+     * Card payments on this account whose Stripe fee is not known yet (ruling 6). While above
+     * zero, lifetimeCost / lifetimeProfit are "before pending card fees" and the tiles say so.
+     * Optional so an older server build parses.
+     */
+    cardFeesPendingCount?: number;
     activeJobCount: number;
     completedJobCount: number;
     propertyCount: number;
@@ -1786,6 +1819,8 @@ export interface PbAtomic {
   /** Priced from Kyle's own sell columns — no supplier price needed (2026-08-22). */
   isFlatPriced?: boolean;
   isContinuousLength: boolean;
+  /** A hand-built product (rowType ASSEMBLY): one line, the parts kept underneath. */
+  isAssembly?: boolean;
   /** False when all three published labour columns are blank — no hour at any difficulty. */
   hasPublishedLabour: boolean;
   /** False for a LABOR PRODUCT — "no price at supplier" is not a gap on one. */
@@ -1799,6 +1834,8 @@ export interface PbDraft {
   title: string;
   supplierId: string;
   status: string;
+  /** The scope of work the customer reads under the title (review payload only; editable on the draft, 2026-10-08). */
+  jobDescription?: string | null;
   /** Set when this draft is a change order on a signed estimate (Kyle, 2026-08-19). */
   changeOrderForId?: string | null;
   /** Context (P024, Option A). All nullable — an unattached draft is the working default. */
@@ -1819,6 +1856,8 @@ export interface PbLine {
   id: string;
   itemId: string;
   description: string | null;
+  /** The option the line is in, from the draft itself (confirmed lines; the Review board groups by it). */
+  option?: PbOption;
   quantity: number;
   quantitySource: PbQuantitySource;
   difficulty: PbDifficulty;
@@ -1844,6 +1883,14 @@ export interface PbQuestion {
 
 export interface PbReview {
   draft: PbDraft;
+  /**
+   * Issued or not, changed since, deletable — ONE server answer for every screen
+   * (shared/draftLifecycle.ts; the field's quote payload carries the same object). Optional only so
+   * fixtures from before 2026-10-08 still type; the server always sends it.
+   */
+  lifecycle?: DraftLifecycle;
+  /** The options this draft has (A, B, C plus any added) and the letter "Add option" creates next. */
+  optionSet: DraftOptionSet;
   proposedLines: PbLine[];
   confirmedLines: PbLine[];
   openQuestions: PbQuestion[];
@@ -1929,12 +1976,24 @@ export interface PbComputeResponse {
   discount?: { type: "military" | "senior" | "custom"; rate: number; cap: number | null; percent: number } | null;
   computed: PbComputed;
   options: PbOptionSummary[];
+  /**
+   * The customer's price for every combination that could be ticked, the discount's finished
+   * dollars and the one-or-the-other range — worked out by the server's ONE pricer
+   * (shared/quoteMoney.ts), the same object the field's quote payload carries. The Presentation
+   * page and Estimate Intake's discount block render it; neither adds anything up (2026-10-08).
+   */
+  money: QuoteMoney;
   rateProvisional?: boolean;
   provisionalReason?: string | null;
+  /** Where the draft stands (shared/draftLifecycle.ts) — the presentation screen reads it to reuse an estimate that already exists. */
+  lifecycle?: DraftLifecycle;
 }
 
-/** Which of the three options a line belongs to (Kyle, 2026-08-19). */
-export type PbOption = "A" | "B" | "C";
+/**
+ * Which option a line belongs to (Kyle, 2026-08-19: A, B, C; 2026-10-08: continues to H, eight in
+ * all). One list for server, CRM and field: shared/estimateOptions.ts.
+ */
+export type PbOption = EstimateOptionLetter;
 
 export interface PbOptionSummary {
   option: PbOption;

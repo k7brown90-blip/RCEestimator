@@ -44,6 +44,9 @@
  * cannot restate a document in a customer's hands.
  */
 
+import { discountOnBase } from "../../shared/discountMath";
+import { priceSelection, selectionKey } from "../../shared/quoteMoney";
+
 export type DiscountType = "military" | "senior" | "custom";
 
 export const DISCOUNT_RATE = 0.05;
@@ -111,6 +114,15 @@ export function discountLabel(p: DiscountProgramme | DiscountType): string {
 }
 
 /**
+ * The terms in the words the office's discount block prints beside the buttons — "5% off, capped
+ * at $250" / "7.5% off, no cap" (PriceBookIntakePage). Built here so the phone is SENT the sentence
+ * and never works out a cap or a rate for itself (2026-10-08, one estimating system).
+ */
+export function discountTerms(p: DiscountProgramme): string {
+  return p.cap === null ? `${fmtPercent(p.percent)}% off, no cap` : `${fmtPercent(p.percent)}% off, capped at $${p.cap}`;
+}
+
+/**
  * The discount for a billed base. Null when no programme applies or the base is not positive —
  * a discount on a zero job is a negative invoice, which is not a thing this system produces.
  * Accepts a programme type ("military"/"senior") for the fixed programmes, or the full terms.
@@ -121,16 +133,68 @@ export function discountFor(
 ): DiscountResult | null {
   const prog = typeof programme === "string" ? programmeFor(programme) : programme ?? null;
   if (!prog) return null;
-  if (!Number.isFinite(base) || base <= 0) return null;
-  const raw = Math.round(base * prog.rate * 100) / 100;
-  const amount = prog.cap === null ? raw : Math.min(raw, prog.cap);
+  // The arithmetic itself is shared/discountMath.ts — the one copy the pure selection pricer
+  // (shared/quoteMoney.ts, the CRM presentation and the field screen) also uses (2026-10-08).
+  const d = discountOnBase(prog, base);
+  if (!d) return null;
   return {
     type: prog.type,
     rate: prog.rate,
     cap: prog.cap,
     percent: prog.percent,
     base: Math.round(base * 100) / 100,
-    amount,
-    capped: prog.cap !== null && raw > prog.cap,
+    amount: d.amount,
+    capped: d.capped,
+  };
+}
+
+/**
+ * The discount FROZEN at signing or office acceptance, worked out by the shared pure pricer
+ * (shared/quoteMoney.ts `priceSelection`) over the estimate's frozen figures (2026-10-08, Kyle's
+ * "one estimating system", review finding on Phase 3 unit A).
+ *
+ * The customer page, the CRM Present screen, Estimate Intake and the field Show / Sign screens all
+ * price "what did they tick" through `priceSelection`, which rounds the base to the cent BEFORE it
+ * takes the percentage. Signing used to add the floats itself and hand the unrounded sum to
+ * `discountFor`, so a base like 1235.8999999999999 froze $61.79 where the screen had shown $61.80
+ * — a signed total a cent off the one the customer ticked. Both write paths (applySignature and
+ * recordOfficeAcceptance) call THIS function now, so the frozen discount cannot come from a
+ * different calculation than the figure on screen.
+ *
+ * `comboReduction` is the combined-options saving that APPLIED for exactly `bought` (0 when none).
+ */
+export function frozenSelectionDiscount(
+  est: {
+    discountType: string | null | undefined;
+    discountPercent: number | null | undefined;
+    tripCharge: number | null | undefined;
+    options: ReadonlyArray<{ option: string; subtotal: number }>;
+  },
+  bought: readonly string[],
+  comboReduction: number,
+): DiscountResult | null {
+  const programme = programmeFor(est.discountType, est.discountPercent);
+  if (!programme) return null;
+  const trip = est.tripCharge ?? 0;
+  const price = priceSelection(
+    {
+      options: est.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+      tripCharge: trip,
+      comboSavings: { [selectionKey(bought)]: comboReduction },
+      programme: { rate: programme.rate, cap: programme.cap },
+    },
+    bought,
+  );
+  // An estimate with no options at all (nothing to tick) is priced on its trip alone, as before.
+  if (!price) return discountFor(programme, Math.round((trip - comboReduction) * 100) / 100);
+  if (!(price.base > 0)) return null;
+  return {
+    type: programme.type,
+    rate: programme.rate,
+    cap: programme.cap,
+    percent: programme.percent,
+    base: price.base,
+    amount: price.discount,
+    capped: price.discountCapped,
   };
 }

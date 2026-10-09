@@ -17,6 +17,8 @@ import { logSystemEvent } from "./systemEvents";
 import { paymentSummary, type PaymentSummary } from "./stripePayments";
 import { warrantyEmailLine } from "./warrantyNotice";
 import { invoiceRootId } from "./invoiceGroup";
+import { BALANCE_DUE_TERMS, FINAL_BILL_TERMS } from "./paymentTerms";
+import { financingInProgress } from "./financingFee";
 
 /**
  * What the invoice is made of (Kyle, 2026-09-20): the root estimate and every signed change
@@ -56,16 +58,31 @@ const METHOD_LABEL: Record<string, string> = {
   cash: "paid in cash",
   check: "paid by check",
   zelle: "paid via Zelle",
+  ach: "paid by bank transfer",
+  // The financed balance (2026-10-09, services/financingFee.ts) — the gross the customer authorized.
+  synchrony: "financed through Synchrony",
   other: "paid",
 };
+
+/**
+ * The financing fee as its own line (Kyle, 2026-10-08: "Shown as its own line, never folded in"),
+ * above the balance, whenever one is applied on the invoice. Empty otherwise — an invoice paid any
+ * other way reads exactly as it did.
+ */
+export function financingFeeRow(summary: Pick<PaymentSummary, "financingFee">): string {
+  const fee = summary.financingFee;
+  if (!fee) return "";
+  return `<tr><td style="padding:4px 0;color:#666;">Financing fee — Plan ${escapeHtml(fee.planNumber)}</td>
+    <td style="text-align:right;">$${fee.fee.toFixed(2)}</td></tr>`;
+}
 
 /**
  * Legacy discount credits (the retired 3% non-card programme, 2026-08-25 →
  * 08-30) — only ever non-empty on invoices that were paid while it ran, and
  * shown so the receipt's arithmetic still adds up on those.
  */
-function discountRows(summary: { payments: { method: string; kind: string; amount: number }[] }): string {
-  const discounts = summary.payments.filter((p) => p.method === "discount");
+function discountRows(summary: { payments: { method: string; kind: string; amount: number; voidedAt?: Date | null }[] }): string {
+  const discounts = summary.payments.filter((p) => p.method === "discount" && !p.voidedAt);
   if (discounts.length === 0) return "";
   const total = discounts.reduce((s, d) => s + d.amount, 0);
   return `<tr><td style="padding:4px 0;color:#1a5c2e;">Discount credit</td>
@@ -97,6 +114,10 @@ export async function sendDepositRequestEmail(
   const summary = await paymentSummary(prisma, estimateId, payBaseUrl);
   // No deposit required (Kyle, 2026-09-20) means no deposit email — not a $0.00 ask.
   if (!summary || !summary.depositRequired || summary.depositSatisfied || summary.paidInFull) return;
+  // FINANCING IN PROGRESS (review finding, 2026-10-09): a fee is on and not yet paid, so the
+  // deposit pay link this email carries is closed (chargeableAmount refuses). Never send a
+  // customer to a dead end — the CRM and field routes refuse with the reason; this is the last line.
+  if (financingInProgress(summary)) return;
 
   const due = Math.round((summary.depositDue - summary.depositPaid) * 100) / 100;
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
@@ -123,7 +144,7 @@ export async function sendDepositRequestEmail(
         </a>
       </p>
       <p style="font-size:13px;color:#666;">Pay by card or bank transfer online, or by cash, check, or Zelle — same amount either way.
-      Deposits are non-refundable up to $300 if the job is cancelled. The balance is due at completion.</p>
+      Deposits are non-refundable up to $300 if the job is cancelled. ${BALANCE_DUE_TERMS}</p>
       <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
   });
   if (sent) {
@@ -185,19 +206,29 @@ export async function sendBalanceRequestEmail(
         ${invoiceDocumentRows(summary)}
         ${warrantyRow(summary)}
         <tr><td style="padding:4px 0;color:#666;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
+        ${financingFeeRow(summary)}
         ${discountRows(summary)}
         ${summary.totalPaid > 0 ? `<tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>` : ""}
         <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">Balance due</td>
           <td style="text-align:right;font-weight:700;">$${due.toFixed(2)}</td></tr>
       </table>
-      <p style="margin:24px 0;">
+      <p style="font-size:14px;font-weight:600;color:#1a5c2e;">${FINAL_BILL_TERMS}</p>
+      ${financingInProgress(summary)
+        // Financing in progress (Kyle, 2026-10-08): the balance, fee included, is what the customer
+        // authorizes Synchrony to release — no pay link, because the card path never charges it.
+        // The sentence says HOW to pay what is due (release the funds), never "nothing to pay":
+        // this document is what makes the balance due (review finding, 2026-10-09). Once the
+        // Synchrony payment is recorded (fee locked), anything still owed is plain invoice money
+        // and the pay link below is the right path for it.
+        ? `<p style="font-size:14px;">This balance is being paid through your Synchrony financing: to pay it, release the funds with Synchrony now. As soon as Synchrony confirms the release, we will send your paid-in-full receipt.</p>`
+        : `<p style="margin:24px 0;">
         <a href="${escapeHtml(payUrl)}"
            style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
                   border-radius:6px;font-size:16px;font-weight:600;display:inline-block;">
           Pay your balance — $${due.toFixed(2)}
         </a>
       </p>
-      <p style="font-size:13px;color:#666;">Pay by card or bank transfer online, or by cash, check, or Zelle — same amount either way.</p>
+      <p style="font-size:13px;color:#666;">Pay by card or bank transfer online, or by cash, check, or Zelle — same amount either way.</p>`}
       <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
   });
   if (!sent) return { ok: false, reason: "The email could not be sent — check the email connection." };
@@ -212,7 +243,8 @@ export async function sendPaymentReceiptEmail(
   paymentId: string,
 ): Promise<void> {
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
-  if (!payment || payment.status !== "paid" || !payment.estimateId) return;
+  // No receipt for a voided row (2026-10-09, services/paymentVoid.ts) — it is not money received.
+  if (!payment || payment.status !== "paid" || payment.voidedAt || !payment.estimateId) return;
 
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: payment.estimateId },
@@ -256,6 +288,7 @@ export async function sendPaymentReceiptEmail(
       ${invoiceDocumentRows(summary)}
       ${warrantyRow(summary)}
       <tr><td style="padding:4px 0;color:#666;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
+      ${financingFeeRow(summary)}
       ${discountRows(summary)}
       <tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>
       <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">${paidInFull ? "Balance" : "Remaining balance"}</td>
@@ -263,7 +296,7 @@ export async function sendPaymentReceiptEmail(
     </table>
     ${paidInFull
       ? `<p style="font-size:14px;">Your invoice is paid in full. It has been a pleasure — keep this receipt with your records.</p>`
-      : `<p style="font-size:14px;color:#555;">The remaining balance is due at completion of the work.</p>`}
+      : `<p style="font-size:14px;color:#555;">${BALANCE_DUE_TERMS}</p>`}
     <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
 
   const sent = await sendBrandedEmail({

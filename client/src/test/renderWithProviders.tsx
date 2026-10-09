@@ -17,7 +17,11 @@ import { render } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
-export function renderWithProviders(ui: ReactElement, { route = "/" }: { route?: string } = {}) {
+/** `route` is a URL, or a history entry with navigation `state` (a screen that reads what it was navigated with). */
+export function renderWithProviders(
+  ui: ReactElement,
+  { route = "/" }: { route?: string | { pathname: string; search?: string; state?: unknown } } = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0, staleTime: 0 },

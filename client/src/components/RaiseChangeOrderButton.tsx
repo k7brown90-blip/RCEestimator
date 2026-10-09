@@ -34,6 +34,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import { changeOrderBlockReason } from "../../../shared/changeOrderBlock";
 
 export type ChangeOrderTarget = {
   /** The signed estimate (or change order) to raise against. Null = nothing signed here. */
@@ -54,11 +55,8 @@ export type ChangeOrderTarget = {
  * Mirrors the server's refusals in app.ts POST /issued-estimates/:id/change-order.
  */
 export function changeOrderBlock(t: ChangeOrderTarget): string | null {
-  if (!t.estimateId) return "No signed estimate on this record yet.";
-  if (t.status === "void") return "This invoice is void — a voided record takes no new work.";
-  if (t.status === "lost") return "This estimate is marked lost — reopen it first.";
-  if (!t.signed) return "Nothing is signed yet. Change orders are for work already agreed — edit the estimate instead.";
-  return null;
+  // The wording is shared with the field app's button (shared/changeOrderBlock.ts).
+  return changeOrderBlockReason({ hasEstimate: Boolean(t.estimateId), status: t.status, signed: t.signed });
 }
 
 export function RaiseChangeOrderButton({
@@ -85,7 +83,15 @@ export function RaiseChangeOrderButton({
       setError(null);
       // Straight into the empty change-order draft, on the Review tab where the lines are
       // added and the document is issued. Negative counts are accepted there and nowhere else.
-      navigate(`/estimate-intake?draft=${encodeURIComponent(r.draftId)}&tab=review`);
+      //
+      // RESUMED (carry item, one-estimating-system plan, 2026-10-08): when this invoice already has
+      // an open change order the server REOPENS it (200, resumed:true) instead of starting a second.
+      // The press looked identical either way, so the arrival says which it was - Estimate Intake
+      // shows "Opened the change order already in progress" from this navigation state.
+      navigate(
+        `/estimate-intake?draft=${encodeURIComponent(r.draftId)}&tab=review`,
+        r.resumed ? { state: { changeOrderResumed: r.changeOrderFor } } : undefined,
+      );
     },
     onError: (err) => setError((err as Error).message),
   });

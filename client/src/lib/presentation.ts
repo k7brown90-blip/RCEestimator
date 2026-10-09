@@ -110,24 +110,14 @@ function presentLine(line: PbComputedLine, audience: Audience): PresentationLine
   };
 }
 
-/**
- * What the selected options come to.
- *
- * The fixed job cost is added ONCE, after the selection is known — the visit happens once, and any
- * combination signed together is a single job (Kyle, R4). Selecting nothing returns null rather
- * than zero: an empty selection has no price, and a $0 total invites signing it.
- */
-export function combinedTotal(
-  options: PresentationOption[],
-  selected: PbOption[],
-  jobFixedCost: number | null,
-): number | null {
-  const chosen = options.filter((o) => selected.includes(o.option));
-  if (chosen.length === 0) return null;
-  if (chosen.some((o) => o.total === null)) return null;
-  const subtotal = chosen.reduce((n, o) => n + (o.total ?? 0), 0);
-  return subtotal + (jobFixedCost ?? 0);
-}
+/*
+  What the selected options COME TO is not computed here any more (2026-10-08, one-estimating-system
+  plan, Phase 3 unit A). The price of a ticked combination — options + trip − the combined-options
+  saving − the programme discount — is the server's ONE pricer (shared/quoteMoney.ts), delivered as
+  `money.selections` on the compute payload and looked up by `selectionPrice`. This file builds the
+  two audiences' LINES and the company-only ordering list; it does no money arithmetic for the
+  customer's total.
+*/
 
 /**
  * The material list for what has been selected — the company's ordering sheet.

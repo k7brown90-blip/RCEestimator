@@ -426,3 +426,52 @@ describe("AccountDetailPage — Start work removed, additional contacts in the c
     await within(card).findByText("No additional contacts yet.");
   });
 });
+
+describe("AccountDetailPage — pending card fees are said on the first figures shown (ruling 6; review finding, 2026-10-09)", () => {
+  const prop = { id: "prop-1", name: "Main House", addressLine1: "123 Main St", addressLine2: null, city: "Murfreesboro", state: "TN", postalCode: "37130", occupancyType: "residential", jurisdictionId: "murfreesboro", notes: null, activeJobCount: 1, completedJobCount: 0, lastInspectionDate: null, openFindingCount: 0, openDefectCount: 0 };
+  const pendingReason = "Stripe has not settled this payment yet — its processing fee is not known.";
+  // A card-paid job with NO P.O., receipt or document: it has no "Cost detail" toggle at all, so
+  // the card's own headline is the only place the pending state can be seen.
+  const cardPaidJob = {
+    visitId: "visit-1", propertyId: "prop-1", propertyLabel: "Main House — 123 Main St", status: "contracted", archived: false,
+    jobType: "Panel upgrade", purpose: null, mode: "remodel", visitDate: "2026-09-01T12:00:00.000Z",
+    scheduledStart: null, scheduledEnd: null,
+    costs: { ...zeroCosts(), revenue: 3000, totalCost: 400, grossProfit: 2600, margin: 87, synchronyCut: 0, cardFees: 0, cardFeesPending: [{ paymentId: "pay-1", amount: 1000, reason: pendingReason }] },
+    purchaseOrders: [], receipts: [], documents: [], latestEstimate: null,
+  };
+
+  it("the job card's Cost and Profit are labelled 'before pending card fees' with the reason on the card, and the lifetime tiles say the same", async () => {
+    const base = accountSummaryWithJobs({ properties: [prop], jobs: [cardPaidJob] });
+    mockAccountReadsFor(
+      { ...base, totals: { ...base.totals, lifetimeRevenue: 3000, lifetimeCost: 400, lifetimeProfit: 2600, lifetimeMargin: 87, cardFeesPendingCount: 1 } },
+      { "prop-1": { jobPhotos: [], assessmentPhotos: [] } },
+    );
+
+    renderAccountPage();
+
+    // The lifetime tiles — the first figures on the page.
+    expect(await screen.findByText("Lifetime cost (before pending card fees)")).toBeInTheDocument();
+    expect(screen.getByText("Lifetime profit (before pending card fees)")).toBeInTheDocument();
+    expect(screen.getAllByText("1 card payment pending with Stripe — see the job's cost detail").length).toBeGreaterThan(0);
+
+    // The job card's headline, with no toggle to open.
+    expect(screen.getByText("Cost (before pending card fees)")).toBeInTheDocument();
+    expect(screen.getByText("Profit (before pending card fees)")).toBeInTheDocument();
+    expect(screen.getByText(`Card processing fees: 1 card payment pending — ${pendingReason}. Cost and profit above are before those fees.`)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Cost detail/ })).not.toBeInTheDocument();
+  });
+
+  it("with every fee in, the plain labels stand", async () => {
+    const settled = { ...cardPaidJob, costs: { ...cardPaidJob.costs, cardFees: 29.3, cardFeesPending: [] } };
+    const base = accountSummaryWithJobs({ properties: [prop], jobs: [settled] });
+    mockAccountReadsFor({ ...base, totals: { ...base.totals, cardFeesPendingCount: 0 } }, { "prop-1": { jobPhotos: [], assessmentPhotos: [] } });
+
+    renderAccountPage();
+
+    expect(await screen.findByText("Lifetime cost")).toBeInTheDocument();
+    expect(screen.getByText("Lifetime profit")).toBeInTheDocument();
+    expect(screen.getByText("Cost")).toBeInTheDocument();
+    expect(screen.getByText("Profit")).toBeInTheDocument();
+    expect(screen.queryByText(/before pending card fees/)).not.toBeInTheDocument();
+  });
+});

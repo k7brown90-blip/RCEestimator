@@ -18,7 +18,7 @@ import { BounceBadge } from "../components/BounceBadge";
 import { DeliveryChip } from "../components/DeliveryChip";
 import { api, openProtectedPdf } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
-import type { AccountJob, AccountSummary } from "../lib/types";
+import { cardFeesPendingNote, type AccountJob, type AccountSummary } from "../lib/types";
 import type { CustomerContact } from "../lib/api";
 import { PendingReceiptFields, ReceiptReviewList } from "../components/ReceiptReviewList";
 import { PO_PURPOSE_LABEL, PoStatusPill, ReceiptPoPicker } from "../components/PurchaseOrders";
@@ -326,11 +326,21 @@ export function AccountDetailPage() {
             : "Nothing collected yet"}
         />
         <Stat label="Contracted revenue" value={money(totals.lifetimeRevenue)} />
-        <Stat label="Lifetime cost" value={money(totals.lifetimeCost)} />
+        {/* Cost and profit are "before pending card fees" while any card payment's Stripe fee is
+            not in yet (ruling 6: pending, never $0) — said HERE, on the first figures the page
+            shows, not only inside a job's cost detail (review finding, 2026-10-09). */}
         <Stat
-          label="Lifetime profit"
+          label={`Lifetime cost${(totals.cardFeesPendingCount ?? 0) > 0 ? " (before pending card fees)" : ""}`}
+          value={money(totals.lifetimeCost)}
+          hint={(totals.cardFeesPendingCount ?? 0) > 0 ? pendingCardFeesHint(totals.cardFeesPendingCount!) : undefined}
+        />
+        <Stat
+          label={`Lifetime profit${(totals.cardFeesPendingCount ?? 0) > 0 ? " (before pending card fees)" : ""}`}
           value={money(totals.lifetimeProfit)}
-          hint={totals.lifetimeMargin != null ? `${totals.lifetimeMargin}% margin` : undefined}
+          hint={[
+            totals.lifetimeMargin != null ? `${totals.lifetimeMargin}% margin` : null,
+            (totals.cardFeesPendingCount ?? 0) > 0 ? pendingCardFeesHint(totals.cardFeesPendingCount!) : null,
+          ].filter(Boolean).join(" · ") || undefined}
           tone={totals.lifetimeProfit < 0 ? "bad" : "good"}
         />
         <Stat label="Active jobs" value={String(totals.activeJobCount)} />
@@ -925,6 +935,11 @@ function AdditionalContacts({ accountId }: { accountId: string }) {
   );
 }
 
+/** The lifetime tiles' pending-fee hint (ruling 6): how many card payments Stripe has not given a fee for yet. */
+function pendingCardFeesHint(count: number): string {
+  return `${count} card payment${count === 1 ? "" : "s"} pending with Stripe — see the job's cost detail`;
+}
+
 function Stat({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: "good" | "bad" }) {
   return (
     <div>
@@ -1043,16 +1058,27 @@ function JobCard({ job, scheduleTargets = [] }: { job: AccountJob; scheduleTarge
           {" "}— nothing is double-counted.
         </p>
       ) : (
+      <>
+      {/* The headline Cost / Profit say "before pending card fees" the moment a card payment's
+          Stripe fee is not in yet (ruling 6) — on the card itself, not only inside the "Cost
+          detail" toggle, which a job with no P.O. or receipt does not even have (review finding,
+          2026-10-09). The same label the Jobs tab and job profitability print. */}
       <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <Metric label="Revenue" value={money(costs.revenue)} />
-        <Metric label="Cost" value={money(costs.totalCost)} />
+        <Metric label={`Cost${cardFeesPendingNote(costs) ? " (before pending card fees)" : ""}`} value={money(costs.totalCost)} />
         <Metric
-          label="Profit"
+          label={`Profit${cardFeesPendingNote(costs) ? " (before pending card fees)" : ""}`}
           value={money(costs.grossProfit)}
           tone={costs.grossProfit != null && costs.grossProfit < 0 ? "bad" : undefined}
         />
         <Metric label="Margin" value={costs.margin != null ? `${costs.margin}%` : "-"} />
       </div>
+      {cardFeesPendingNote(costs) && (
+        <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
+          Card processing fees: {cardFeesPendingNote(costs)}. Cost and profit above are before those fees.
+        </p>
+      )}
+      </>
       )}
 
       {pendingReceipts > 0 && !showCosts && (
@@ -1205,8 +1231,20 @@ function CostBreakdown({ job }: { job: AccountJob }) {
           <span>{money(costs.laborCost)}</span>
         </li>
         <li className="flex justify-between gap-2"><span>Overhead</span><span>{money(costs.overhead)}</span></li>
+        {/* Processing costs (Kyle, 2026-10-09, ruling 6): Synchrony's cut on a financed balance and
+            Stripe's fee on each card payment — each its own row, inside the total, the same figures
+            the commission card and the P&L charge. A fee Stripe cannot give yet is pending with the
+            reason, never $0. */}
+        <li className="flex justify-between gap-2"><span>Synchrony's cut</span><span>{money(costs.synchronyCut ?? 0)}</span></li>
+        <li className="flex justify-between gap-2">
+          <span>
+            Card processing fees
+            {cardFeesPendingNote(costs) && <span className="ml-1 text-amber-800">· {cardFeesPendingNote(costs)}</span>}
+          </span>
+          <span>{cardFeesPendingNote(costs) && !(costs.cardFees ?? 0) ? "pending" : money(costs.cardFees ?? 0)}</span>
+        </li>
         <li className="flex justify-between gap-2 border-t border-rce-border pt-1 font-medium">
-          <span>Total cost</span><span>{money(costs.totalCost)}</span>
+          <span>Total cost{cardFeesPendingNote(costs) ? " (before pending card fees)" : ""}</span><span>{money(costs.totalCost)}</span>
         </li>
       </ul>
     </div>

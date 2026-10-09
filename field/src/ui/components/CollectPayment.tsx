@@ -14,6 +14,59 @@ import QRCode from 'qrcode'
 import { emailFinancing, emailPaymentRequest, emailReviewRequest, fetchVisitPaymentInfo, type VisitPaymentInfo } from '../../lib/crmSync'
 import { GOOGLE_REVIEW_URL } from '../../../../shared/reviewRequestUrl'
 
+/**
+ * Which of the three collection states the screen is in (Phase 6 Unit 6A, 2026-10-09). Pure, so
+ * the field suite (static markup, no DOM) can pin it: paid → nothing to collect; financing → the
+ * read-only fee block below; collect → the QR / pay link / email-the-invoice flow as before.
+ */
+export function collectionModeFor(info: Pick<VisitPaymentInfo, 'paidInFull' | 'financing'>): 'paid' | 'financing' | 'collect' {
+  if (info.paidInFull) return 'paid'
+  if (info.financing) return 'financing'
+  return 'collect'
+}
+
+/**
+ * FINANCING IN PROGRESS (Kyle, 2026-10-08; Phase 6 Unit 6A). Read-only on site: the fee as its
+ * own line and the balance it is inside, and the fact that it is being paid through Synchrony.
+ * The QR, the pay link and "email the invoice" are NOT offered — the server has closed them
+ * (chargeableAmount refuses; the pay page would only say so), and a QR that leads to a refusal
+ * is worse than none. The office records the Synchrony payment on the CRM; the tech never
+ * records one. The reason is the server's own sentence.
+ */
+export function FinancingInProgress({ info }: { info: Pick<VisitPaymentInfo, 'balance' | 'financing'> }) {
+  if (!info.financing) return null
+  return (
+    <div className="space-y-1 rounded-lg bg-slate-900/60 p-2 text-xs text-slate-300">
+      <p>
+        Financing fee — Plan {info.financing.planNumber}: <b>${info.financing.fee.toFixed(2)}</b>
+      </p>
+      <p>
+        Balance (fee included): <b>${info.balance.toFixed(2)}</b>
+      </p>
+      <p className="text-amber-200">{info.financing.reason}.</p>
+      <p className="text-[10px] text-slate-500">
+        No QR or pay link while the balance is financed — the office records the Synchrony payment.
+      </p>
+    </div>
+  )
+}
+
+/**
+ * WHY FINANCING CANNOT START YET (Kyle, 2026-10-08, decision 8; Phase 6 Unit 6C). A customer asks
+ * "can I finance this?" while the 1/3 deposit is still owing: the tech reads the server's reason
+ * right here instead of promising something the office will have to refuse. Read-only, no button —
+ * the office adds the fee and records the Synchrony payment on the CRM. Nothing when there is no
+ * reason (financing is open, already on, or the invoice is paid).
+ */
+export function FinancingBlockedNote({ info }: { info: Pick<VisitPaymentInfo, 'financingBlocked'> }) {
+  if (!info.financingBlocked) return null
+  return (
+    <p className="rounded-lg bg-slate-900/60 p-2 text-[11px] text-amber-200">
+      Financing: {info.financingBlocked}
+    </p>
+  )
+}
+
 export function CollectPayment({ visitId, startOpen = false }: { visitId: string; startOpen?: boolean }) {
   const [open, setOpen] = useState(startOpen)
   const [info, setInfo] = useState<VisitPaymentInfo | null | 'none'>(null)
@@ -237,10 +290,12 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
             </div>
           )}
 
-          {info.paidInFull ? (
+          {collectionModeFor(info) === 'paid' ? (
             <p className="rounded bg-emerald-900/60 p-2 text-sm font-medium text-emerald-200">
               ✓ Paid in full — nothing to collect.
             </p>
+          ) : collectionModeFor(info) === 'financing' ? (
+            <FinancingInProgress info={info} />
           ) : (
             <>
               <div className="rounded-lg bg-white p-2 text-center">
@@ -296,6 +351,7 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
               {emailState !== 'idle' && emailState !== 'sending' && (
                 <p className="rounded bg-emerald-900/50 p-2 text-xs text-emerald-200">{emailState}</p>
               )}
+              <FinancingBlockedNote info={info} />
               <p className="text-[10px] text-slate-500">
                 Tap refresh after they pay — the paid mark comes from the office record, live.
               </p>
