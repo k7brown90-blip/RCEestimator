@@ -53,7 +53,10 @@ import { logSystemEvent } from "./systemEvents";
 // The invoice send renders the customer's PDF itself rather than reading a stored file — same
 // reason the filed copies are rendered on demand: nothing to drift, nothing lost to a deploy.
 import { renderEstimatePdf } from "./issuedEstimatePdf";
+import { loadPdfFinancing } from "./issuedEstimatePdfFinancing";
 import { getCompanyProfile } from "./companyProfile";
+import { buildQuoteFinancing } from "../../shared/financing";
+import { getActiveFinancingPlans, plansFromSnapshot } from "./financingSettings";
 import { billedTotalOf, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf } from "./stripePayments";
 import { financingFeeRow, invoiceDocumentRows } from "./paymentReceipts";
 import { financingInProgress } from "./financingFee";
@@ -268,6 +271,9 @@ export async function sendInvoiceEmail(
       discount: est.discountJson ? JSON.parse(est.discountJson) : null,
       // Home-warranty coverage (Kyle, 2026-09-09) — the credit row and the claim notice.
       warranty: parseWarrantyJson(est.warrantyJson),
+      // The Synchrony overview + terms page on the emailed invoice (Kyle, 2026-10-09). The email BODY
+      // still states no credit terms; they appear only here, beside the plans' own disclosure.
+      financing: await loadPdfFinancing(prisma, est.id),
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,
@@ -448,6 +454,53 @@ export async function sendInvoiceEmail(
   return { ok: true, to };
 }
 
+/**
+ * The "Finance this project" block of the estimate email (Kyle, 2026-10-10: "The estimate email is
+ * sent just as it is now. At the bottom it shows the monthly payments if they choose each plan
+ * after the deposit is paid and the fee applied. A 'finance this project' button is obviously
+ * located in between the total cost and the financing monthly payments sections that sends them to
+ * synchrony page. No terms need to be displayed on the email as when they go to synchrony it
+ * already gives them the financing information to meet the law.").
+ *
+ * The figures are the email's own total through the ONE shared calculator (shared/financing.ts
+ * buildQuoteFinancing: 1/3 deposit off, the plan's fee on the balance, whole-dollar monthly) - no
+ * second formula. Plans: the snapshot frozen on the estimate at issue, else today's active
+ * Settings plans - the same rule the customer PDF uses (issuedEstimatePdfFinancing.ts). Only the
+ * customer-safe view and figures are read, so no Synchrony rate can reach the email, and no
+ * disclosure text is printed. Each plan line is exactly "Plan <planNumber> · $X/mo" (Kyle,
+ * 2026-10-10, "With plan id"): no description, no APR, no months - those appear only on the PDF. No plan offering a payment (or nothing owed) = the button alone.
+ */
+async function financingBlockHtml(
+  est: { total: number; financingPlansJson: string | null; warrantyJson: string | null },
+  financingUrl: string,
+): Promise<string> {
+  const plans = est.financingPlansJson
+    ? (plansFromSnapshot(est.financingPlansJson) ?? [])
+    : await getActiveFinancingPlans();
+  // A home-warranty claim's share is not the homeowner's to finance: pass the covered amount exactly
+  // as the customer PDF and the customer page do, so the email's figures match the PDF beside it.
+  const covered = parseWarrantyJson(est.warrantyJson)?.coveredAmount ?? 0;
+  const built = buildQuoteFinancing(plans, { email: est.total }, covered);
+  const offers = built?.bySelection.email?.offers ?? [];
+  const lines = built
+    ? built.plans
+        .map((p) => {
+          const o = offers.find((x) => x.planNumber === p.planNumber);
+          return o ? `<p style="font-size:14px;margin:4px 0;">Plan ${escapeHtml(p.planNumber)} &middot; <strong>$${o.monthly.toLocaleString("en-US")}/mo</strong></p>` : "";
+        })
+        .join("")
+    : "";
+  return `
+    <p style="margin:24px 0;">
+      <a href="${escapeHtml(financingUrl)}"
+         style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
+                border-radius:6px;font-size:16px;font-weight:600;display:inline-block;">
+        Finance this project
+      </a>
+    </p>
+    ${lines ? `<p style="font-size:15px;font-weight:600;margin:16px 0 4px;">Monthly payments with financing</p>${lines}` : ""}`;
+}
+
 export async function sendEstimateEmail(
   prisma: PrismaClient,
   estimateId: string,
@@ -481,8 +534,9 @@ export async function sendEstimateEmail(
      * a landlord, a quote he does not want to read as a finance pitch), not a new thing to
      * remember on every send.
      *
-     * Unlike the two above this is not an attachment — nothing is rendered and nothing is
-     * fetched. It is one paragraph of the body, which is why it cannot fail the send.
+     * Unlike the two above this is not an attachment — nothing is rendered. It is the "Finance this
+     * project" button and the monthly-payments lines in the body; the lines read the Settings plans,
+     * and getFinancingPlans catches its own errors, so this still cannot fail the send.
      */
     includeFinancingLink?: boolean;
   }
@@ -536,11 +590,10 @@ export async function sendEstimateEmail(
         View &amp; accept your estimate
       </a>
     </p>
-    ${includeFinancing ? `<p style="font-size:15px;">Prefer to pay over time? Financing is available through Synchrony —
-    <a href="${escapeHtml(profile.financingUrl)}">apply here</a>.</p>` : ""}
     <p style="font-size:13px;color:#666;">Estimate ${escapeHtml(est.number)}${est.revision > 1 ? ` (revision ${est.revision})` : ""}
     &middot; Total ${`$${est.total.toFixed(2)}`} &middot; Valid ${est.validDays} days.</p>
-    <p style="font-size:13px;color:#666;">If the button does not work, copy this link into your browser:<br>
+    ${includeFinancing ? await financingBlockHtml(est, profile.financingUrl) : ""}
+    <p style="font-size:13px;color:#666;">If the "View &amp; accept your estimate" button does not work, copy this link into your browser:<br>
     <span style="word-break:break-all;">${escapeHtml(link)}</span></p>
     <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
 

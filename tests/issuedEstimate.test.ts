@@ -36,6 +36,8 @@ import {
   newToken,
 } from "../src/services/issuedEstimateService";
 import { renderEstimatePage } from "../src/services/issuedEstimateRender";
+import { buildQuoteFinancing } from "../shared/financing";
+import { getActiveFinancingPlans, plansFromSnapshot } from "../src/services/financingSettings";
 
 const MARK = "P027";
 
@@ -763,7 +765,16 @@ describe("a successful send stamps the record", () => {
 // ─── The financing link (Kyle, 2026-09-16) ──────────────────────────────────────
 
 describe("the financing link in the estimate email", () => {
-  it("carries the default Synchrony link and states no credit terms", async () => {
+  /*
+    Kyle, 2026-10-10 (supersedes the old "states no credit terms" pin, which forbade /month/, "mo" and
+    APR in this email): "The estimate email is sent just as it is now. At the bottom it shows the
+    monthly payments if they choose each plan after the deposit is paid and the fee applied. A
+    'finance this project' button is obviously located in between the total cost and the financing
+    monthly payments sections that sends them to synchrony page. No terms need to be displayed on the
+    email as when they go to synchrony it already gives them the financing information to meet the
+    law."
+  */
+  it("puts a Finance this project button under the total, then each plan's monthly payment, and no terms", async () => {
     const mod = await import("../src/services/confirmationEmail");
     const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
     try {
@@ -777,14 +788,122 @@ describe("the financing link in the estimate email", () => {
       expect(result.ok).toBe(true);
 
       const html = String(spy.mock.calls[0][0].bodyHtml);
-      expect(html).toContain("https://www.mysynchrony.com/mmc/S6246031300");
-      // Reg Z: stating a credit term (not just linking to Synchrony's own page,
-      // which carries its own terms and disclosures) would trigger required
-      // disclosures in the email itself.
-      expect(html).not.toMatch(/0%/);
-      expect(html).not.toMatch(/\binterest\b/i);
+      const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
+
+      // The button: its text, linking to the Settings URL (the default profile's here), and placed
+      // after the total and before the monthly section.
+      const url = "https://www.mysynchrony.com/mmc/S6246031300";
+      expect(html).toContain(`href="${url}"`);
+      const totalAt = html.indexOf(`Total $${est!.total.toFixed(2)}`);
+      const buttonAt = html.indexOf("Finance this project");
+      const monthlyAt = html.indexOf("Monthly payments with financing");
+      expect(totalAt).toBeGreaterThan(-1);
+      expect(buttonAt).toBeGreaterThan(totalAt);
+      expect(monthlyAt).toBeGreaterThan(buttonAt);
+      // The link the button carries sits in the button's own anchor.
+      expect(html.slice(html.lastIndexOf("<a ", buttonAt), buttonAt)).toContain(url);
+      // The old one-line pitch is replaced, not kept beside the new block.
+      expect(html).not.toMatch(/pay over time/i);
+
+      // One line per active plan, Settings order, each with the shared calculator's whole-dollar
+      // figure for THIS email's total - recomputed here from the same module, never a second formula.
+      const plans = est!.financingPlansJson ? plansFromSnapshot(est!.financingPlansJson)! : await getActiveFinancingPlans();
+      expect(plans.length).toBeGreaterThan(0);
+      const built = buildQuoteFinancing(plans, { email: est!.total })!;
+      const monthlySection = html.slice(monthlyAt);
+      let last = -1;
+      for (const p of built.plans) {
+        const offer = built.bySelection.email.offers.find((o) => o.planNumber === p.planNumber)!;
+        // Kyle, 2026-10-10 ("With plan id"): exactly "Plan <planNumber> · $X/mo" - no description, APR or months.
+        const line = `Plan ${p.planNumber} &middot; <strong>$${offer.monthly.toLocaleString("en-US")}/mo</strong>`;
+        const at = monthlySection.indexOf(line);
+        expect(at, line).toBeGreaterThan(last);
+        last = at;
+        // The plan's description is not printed: the id and the payment are the whole line.
+        expect(html).not.toContain(p.description);
+      }
+      // The plan lines carry the plan id and the payment only; APR and months live on the PDF.
       expect(html).not.toMatch(/\bAPR\b/i);
-      expect(html).not.toMatch(/\bmonth\b/i);
+      expect(html).not.toMatch(/\bmonths\b/i);
+
+      // No terms and no cost-to-Red-Cedar: no Synchrony rate, no disclosure text, no deposit/fee table.
+      for (const p of plans) {
+        expect(html).not.toContain(`${p.discountRatePct}%`);
+        expect(html).not.toContain(p.disclosure.explanation);
+        expect(html).not.toContain(p.disclosure.important);
+        expect(html).not.toContain(p.disclosure.terms);
+      }
+      expect(html).not.toMatch(/discount rate/i);
+      expect(html).not.toMatch(/IMPORTANT:/);
+      expect(html).not.toMatch(/\bdeposit\b/i);
+      expect(html).not.toMatch(/financing fee/i);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("figures the monthly payments from the snapshot frozen at issue, not from today's Settings", async () => {
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const { sendEstimateEmail } = await import("../src/services/issuedEstimateSend");
+      const d = await quotableDraft("financing-snapshot");
+      const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
+      expect(g.ok).toBe(true);
+      if (!g.ok) return;
+
+      const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
+      const frozen = est!.financingPlansJson ? plansFromSnapshot(est!.financingPlansJson)! : await getActiveFinancingPlans();
+      // Freeze ONE plan under a distinctive description; Settings still holds the full default list.
+      const one = { ...frozen[0], description: "Frozen snapshot plan" };
+      await prisma.issuedEstimate.update({
+        where: { id: g.estimateId },
+        data: { financingPlansJson: JSON.stringify({ version: 1, takenAt: new Date().toISOString(), plans: [one] }) },
+      });
+
+      expect((await sendEstimateEmail(prisma, g.estimateId, { sentBy: "human:test" })).ok).toBe(true);
+      const html = String(spy.mock.calls[0][0].bodyHtml);
+      const offer = buildQuoteFinancing([one], { email: est!.total })!.bySelection.email.offers[0];
+      expect(html).toContain(`Plan ${one.planNumber} &middot; <strong>$${offer.monthly.toLocaleString("en-US")}/mo</strong>`);
+      expect(html).not.toContain("Frozen snapshot plan");
+      expect(html.split("/mo</strong>").length - 1).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("figures the monthly payments on the homeowner's share when a home-warranty claim covers part", async () => {
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const { sendEstimateEmail } = await import("../src/services/issuedEstimateSend");
+      const d = await quotableDraft("warranty-share");
+      const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
+      expect(g.ok).toBe(true);
+      if (!g.ok) return;
+
+      const est0 = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
+      const covered = Math.floor(est0!.total / 2);
+      expect(covered).toBeGreaterThan(0);
+      await prisma.issuedEstimate.update({
+        where: { id: g.estimateId },
+        data: { warrantyJson: JSON.stringify({ company: "RELY Home", claimNumber: "C-1", coveredAmount: covered, setAt: new Date().toISOString() }) },
+      });
+
+      expect((await sendEstimateEmail(prisma, g.estimateId, { sentBy: "human:test" })).ok).toBe(true);
+      const html = String(spy.mock.calls[0][0].bodyHtml);
+      const est = await prisma.issuedEstimate.findUnique({ where: { id: g.estimateId } });
+      const plans = est!.financingPlansJson ? plansFromSnapshot(est!.financingPlansJson)! : await getActiveFinancingPlans();
+      // Same call the customer PDF makes: the warranty company's share is not financed.
+      const built = buildQuoteFinancing(plans, { email: est!.total }, covered)!;
+      const full = buildQuoteFinancing(plans, { email: est!.total })!;
+      let differs = false;
+      for (const p of built.plans) {
+        const offer = built.bySelection.email.offers.find((o) => o.planNumber === p.planNumber)!;
+        expect(html).toContain(`Plan ${p.planNumber} &middot; <strong>$${offer.monthly.toLocaleString("en-US")}/mo</strong>`);
+        if (offer.monthly !== full.bySelection.email.offers.find((o) => o.planNumber === p.planNumber)!.monthly) differs = true;
+      }
+      expect(differs).toBe(true);
     } finally {
       spy.mockRestore();
     }
@@ -852,6 +971,10 @@ describe("the financing link in the estimate email", () => {
       // own. The first run of this test did exactly that.
       expect(html).not.toMatch(/financing/i);
       expect(html).not.toMatch(/pay over time/i);
+      // Unticked: no button and no monthly section either (Kyle, 2026-10-10).
+      expect(html).not.toContain("Finance this project");
+      expect(html).not.toContain("Monthly payments with financing");
+      expect(html).not.toContain("/mo");
 
       // Dropping one paragraph must not drop the email: the link the customer signs through, the
       // estimate number and the total are all still there. Without this, making the whole body

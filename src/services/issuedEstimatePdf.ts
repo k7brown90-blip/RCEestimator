@@ -38,6 +38,11 @@ import { ALL_OPTIONS } from "../../shared/estimateOptions";
 import { discountFor, discountLabel, programmeFor } from "./discounts";
 import type { WarrantyClaim } from "./stripePayments";
 import { warrantyCompanyLine, warrantyNoticeText, warrantyRowLabel } from "./warrantyNotice";
+import {
+  drawFinancingOptions,
+  financingLinesFor,
+  type PdfFinancing,
+} from "./issuedEstimatePdfFinancing";
 
 export type PdfAudience = "customer" | "company";
 
@@ -121,6 +126,13 @@ export interface PdfEstimate {
    * the header. Null when no claim is on the estimate.
    */
   warranty?: WarrantyClaim | null;
+  /**
+   * The Synchrony financing inputs for the CUSTOMER copy (Kyle, 2026-10-09: "They should at very
+   * least get an overview of what the 4 plans monthly cost would be while looking at the pdf they
+   * sign."). Load with `loadPdfFinancing`. Optional and ignored by the company copy; absent or
+   * null prints no financing section. The figures are worked by the shared calculator, never here.
+   */
+  financing?: PdfFinancing | null;
   /**
    * The INVOICE this signed document is part of (Kyle, 2026-09-20): the root estimate plus the
    * signed change orders that joined it. Printed as an appendix beneath the signature — the
@@ -423,6 +435,30 @@ export async function renderEstimatePdf(
       : isInvoice ? "INVOICE TOTAL" : "ESTIMATE TOTAL",
     { continued: true },
   ).text(money(billed), { align: "right" });
+
+  /*
+    ── FINANCING OPTIONS (Kyle, 2026-10-09) — CUSTOMER COPY ONLY ───────────────────────────────
+    "They should at very least get an overview of what the 4 plans monthly cost would be while
+    looking at the pdf they sign." Figures come straight from the shared calculator, worked on
+    the total printed just above. Final layout
+    (Kyle, 2026-10-10): a heading, one "Plan N · APR · months · $X/mo" line per plan, and the
+    Synchrony link - Synchrony's own page carries the legal terms, so there is no table, no
+    deposit/fee note and no terms page here.
+  */
+  const financingLines =
+    audience === "customer" && estimate.financing
+      ? financingLinesFor({
+          financing: estimate.financing,
+          billedBeforeCoverage: jobBilled,
+          coveredAmount: estimate.warranty ? estimate.warranty.coveredAmount : 0,
+          // Change orders joined to this invoice: financing is worked on the whole invoice.
+          wholeInvoiceTotal:
+            estimate.signedAt && estimate.invoice && estimate.invoice.documents.length > 1
+              ? estimate.invoice.billedTotal
+              : null,
+        })
+      : null;
+  if (financingLines) drawFinancingOptions(doc, financingLines, profile.financingUrl);
 
   // ── The company's working sheet ──
   if (audience === "company") {

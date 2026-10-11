@@ -37,6 +37,7 @@ import { proposeWalkthroughForDraft, walkthroughTextBodySchema } from "./service
 import { twilioInboundClosureMiddleware } from "./middleware/twilioInboundClosed";
 import { summarizeOptions } from "./services/atomicEstimateEngine";
 import { renderEstimatePdf } from "./services/issuedEstimatePdf";
+import { loadPdfFinancing } from "./services/issuedEstimatePdfFinancing";
 import {
   addLine,
   editLine,
@@ -1751,6 +1752,8 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
       discountPercent: est.discountPercent,
       discount: est.discountJson ? JSON.parse(est.discountJson) : null,
       warranty: parseWarrantyJson(est.warrantyJson),
+      // The Synchrony overview + terms page: the customer's copy only (Kyle, 2026-10-09).
+      financing: signedAudience === "customer" ? await loadPdfFinancing(prisma, est.id) : null,
       signatureImage: est.signatureImage,
         createdAt: est.createdAt,
         lines: est.lines.map((l) => ({
@@ -3647,6 +3650,8 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       discount: est.discountJson ? JSON.parse(est.discountJson) : null,
       // Home-warranty coverage (Kyle, 2026-09-09) — the credit row and the claim notice.
       warranty: parseWarrantyJson(est.warrantyJson),
+      // The Synchrony overview + terms page: the customer's copy only (Kyle, 2026-10-09).
+      financing: audience === "customer" ? await loadPdfFinancing(prisma, est.id) : null,
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,

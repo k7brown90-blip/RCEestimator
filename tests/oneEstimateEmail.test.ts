@@ -257,7 +257,8 @@ describe("the estimate email's options reach the service identically from both d
       expect(a.bodyHtml).toBe(b.bodyHtml);
       expect(a.attachments).toBeUndefined();
       expect(b.attachments).toBeUndefined();
-      expect(String(a.bodyHtml)).toContain("Prefer to pay over time");
+      // Kyle, 2026-10-10: the one-line pitch became a "Finance this project" button + monthly payments.
+      expect(String(a.bodyHtml)).toContain("Finance this project");
     });
   });
 
@@ -275,7 +276,7 @@ describe("the estimate email's options reach the service identically from both d
       expect(b.to).toBe("spouse@example.com");
       expect(a.bodyHtml).toBe(b.bodyHtml);
       expect(String(b.bodyHtml)).toContain("Call me with questions");
-      expect(String(b.bodyHtml)).not.toContain("Prefer to pay over time");
+      expect(String(b.bodyHtml)).not.toContain("Finance this project");
 
       // Who pressed it is the one difference, and it is recorded.
       const est = await prisma.issuedEstimate.findUnique({ where: { id } });

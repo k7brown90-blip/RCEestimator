@@ -130,6 +130,8 @@ describe("EstimateDrawer", () => {
     vi.spyOn(api, "estimateRecord").mockResolvedValue({
       estimate: estimate({
         status: "viewed", firstViewedAt: "2026-09-11T12:00:00.000Z", validDays: 30,
+        // Created now: a fixed 2026-09-10 + 30 valid days lapsed on 2026-10-10 and the estimate read as expired.
+        createdAt: new Date().toISOString(),
         options: [{ option: "A", label: "Panel only", subtotal: 3000 }, { option: "B", label: "Panel + EV outlet", subtotal: 1200 }],
       }),
     });

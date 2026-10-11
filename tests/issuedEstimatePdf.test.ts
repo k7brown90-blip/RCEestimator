@@ -12,9 +12,47 @@
  * would pass on a blank page.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import request from "supertest";
+import { prisma } from "../src/lib/prisma";
 import { renderEstimatePdf, type PdfEstimate } from "../src/services/issuedEstimatePdf";
+import type { PdfFinancing } from "../src/services/issuedEstimatePdfFinancing";
 import type { CompanyProfile } from "../src/services/companyProfile";
+import { buildQuoteFinancing, type FinancingPlan } from "../shared/financing";
+import { DEFAULT_FINANCING_PLANS } from "../src/services/financingPlanDefaults";
+import { getActiveFinancingPlans } from "../src/services/financingSettings";
+import { getCompanyProfile } from "../src/services/companyProfile";
+
+// The route / filed-copy / invoice-email tests at the bottom load the real app. Customer email is
+// captured, never sent; nothing reaches Twilio or Google.
+vi.mock("../src/services/twilio", () => ({
+  sendSms: vi.fn().mockResolvedValue({ sid: "SM_mock" }),
+  KYLE_PHONE: "+19706661626",
+  isFromKyle: vi.fn().mockReturnValue(false),
+  fetchTwilioMedia: vi.fn().mockResolvedValue(null),
+}));
+vi.mock("googleapis", () => {
+  class MockOAuth2 {
+    setCredentials() {}
+  }
+  return {
+    google: {
+      auth: { OAuth2: MockOAuth2 },
+      calendar: () => ({
+        freebusy: { query: vi.fn().mockResolvedValue({ data: { calendars: { primary: { busy: [] } } } }) },
+        events: { list: vi.fn().mockResolvedValue({ data: { items: [] } }) },
+      }),
+    },
+  };
+});
+const emailMock = vi.hoisted(() => ({ sendBrandedEmail: vi.fn().mockResolvedValue(true) }));
+vi.mock("../src/services/confirmationEmail", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/services/confirmationEmail")>();
+  return { ...mod, sendBrandedEmail: emailMock.sendBrandedEmail, sendKyleNotificationEmail: vi.fn().mockResolvedValue(undefined) };
+});
+
+import { app } from "../src/app";
+import { sendInvoiceEmail } from "../src/services/issuedEstimateSend";
 
 const PROFILE: CompanyProfile = {
   legalName: "Red Cedar Electric LLC",
@@ -22,7 +60,9 @@ const PROFILE: CompanyProfile = {
   email: "service@redcedarelectricllc.com",
   tagline: "Licensed & Insured",
   licenseNumber: null,
+  mailingAddress: "La Vergne, TN",
   licenseState: "TN",
+  financingUrl: "https://www.mysynchrony.com/mmc/S6246031300",
 };
 
 /*
@@ -553,5 +593,443 @@ describe("the programme discount, on the document", () => {
     const text = extractText(await renderEstimatePdf({ ...ESTIMATE, options: OPTIONS }, "customer", PROFILE));
     expect(text).not.toMatch(/Military discount|Senior discount/);
     expect(text).toContain("$1350.00");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// Financing options (Synchrony) on the CUSTOMER copy - Kyle, 2026-10-09, final layout 2026-10-10
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+/*
+  Kyle, 2026-10-09: *"I don't see the financing plan on the client pdf that they get emailed. They
+  should at very least get an overview of what the 4 plans monthly cost would be while looking at
+  the pdf they sign."*
+  Kyle, 2026-10-10: *"synchrony provides all the legal details we just need them to know what the
+  APR is, the total months, and the monthly payment amount and the link."* ... *"With plan id."* ...
+  *"do not forget the apr %."*
+
+  The final layout: a heading, one line per active plan in Settings order, and the Synchrony link.
+  No per-option table, no deposit/fee note, no "Financing terms" page. The figures are the shared
+  calculator's (shared/financing.ts) - these tests compare the PDF to `buildQuoteFinancing`, and pin
+  one $1,350 total by hand so a bug shared by both would still show. Synchrony's discount rates
+  (Red Cedar's cost) never appear.
+
+  Presence is paired with every absence below: text that can't be read would pass any "not".
+*/
+
+/** Flatten extracted text: win-ansi dash/apostrophe back to Unicode, and ALL whitespace gone (PDF line wraps drop spaces). */
+const flat = (s: string) => s.replace(/\x97/g, "—").replace(/\x92/g, "’").replace(/\s+/g, "");
+const pdfFlat = (buf: Buffer) => flat(extractText(buf));
+
+const PLANS: FinancingPlan[] = DEFAULT_FINANCING_PLANS.map((p) => ({ ...p, disclosure: { ...p.disclosure } }));
+const perMonth = (n: number) => `$${n.toLocaleString("en-US")}/mo`;
+const HEADING = "Financing options (Synchrony)";
+const SYNCHRONY_URL = "https://www.mysynchrony.com/mmc/S6246031300";
+
+/**
+ * The lines the PDF must print for `total`: the shared calculator's whole-dollar monthly figure per
+ * plan, in Settings order, in Kyle's exact format.
+ */
+function expectedLines(plans: FinancingPlan[], total: number, covered = 0): string[] {
+  const fin = buildQuoteFinancing(plans, { row: total }, covered)!;
+  return fin.plans.map((p) => {
+    const offer = fin.bySelection.row.offers.find((o) => o.planNumber === p.planNumber)!;
+    const terms = p.type === "reduced_apr" ? `${p.apr}% APR` : "No interest if paid in full";
+    return `Plan ${p.planNumber} · ${terms} · ${p.months} months · ${perMonth(offer.monthly)}`;
+  });
+}
+
+/** The section exactly as drawn: heading, then each line, with nothing between them. */
+const sectionFlat = (lines: string[]) => flat(HEADING) + lines.map(flat).join("");
+
+/** supertest: collect the response body as a Buffer. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const binary = (r: any, cb: (err: Error | null, body: Buffer) => void) => {
+  const chunks: Buffer[] = [];
+  r.on("data", (c: Buffer) => chunks.push(c));
+  r.on("end", () => cb(null, Buffer.concat(chunks)));
+};
+
+describe("the customer's PDF carries the Synchrony financing options", () => {
+  const OPTIONS = [
+    { option: "A" as const, label: "Fans", note: null, subtotal: 850 },
+    { option: "B" as const, label: "Bonding", note: null, subtotal: 350 },
+  ];
+  const FIN: PdfFinancing = { plans: PLANS };
+  const withFin = (over: Partial<PdfEstimate> = {}): PdfEstimate => ({ ...ESTIMATE, options: OPTIONS, financing: FIN, ...over });
+
+  it("prints the heading, one exact line per plan in Settings order, then the link - on the printed total", async () => {
+    const text = pdfFlat(await renderEstimatePdf(withFin(), "customer", PROFILE));
+    expect(text).toContain("ESTIMATETOTAL"); // rendered
+    expect(text).toContain("$1350.00");
+    // $1,350 worked by hand: deposit 450, balance 900, + half of each plan's cost -> financed;
+    // 965 -> 17, 964 -> 17, 920 -> 156, 924 -> 53. APR for reduced-APR plans, Synchrony's wording for deferred.
+    const pinned = [
+      "Plan 965 · 11.99% APR · 86 months · $17/mo",
+      "Plan 964 · 10.99% APR · 82 months · $17/mo",
+      "Plan 920 · No interest if paid in full · 6 months · $156/mo",
+      "Plan 924 · No interest if paid in full · 18 months · $53/mo",
+    ];
+    expect(text).toContain(sectionFlat(pinned));
+    // ... and those are what the shared calculator says (no second formula in the PDF).
+    expect(expectedLines(PLANS, 1350)).toEqual(pinned);
+    // The link follows the last plan line.
+    expect(text).toContain(sectionFlat(pinned) + flat(`Finance this project: ${SYNCHRONY_URL}`));
+    // The section sits under the printed total.
+    expect(text.indexOf(flat(HEADING))).toBeGreaterThan(text.indexOf("ESTIMATETOTAL"));
+  });
+
+  it("an estimate with no option rows gets the same lines on the document's own total", async () => {
+    const text = pdfFlat(await renderEstimatePdf({ ...ESTIMATE, financing: FIN }, "customer", PROFILE));
+    expect(text).toContain(sectionFlat(expectedLines(PLANS, 1350)));
+  });
+
+  it("figures come from the shared calculator on a bigger total, thousands comma included", async () => {
+    const text = pdfFlat(await renderEstimatePdf(withFin({ total: 9000 }), "customer", PROFILE));
+    expect(text).toContain("$9000.00");
+    const lines = expectedLines(PLANS, 9000);
+    expect(lines.some((l) => /\$\d,\d{3}\/mo$/.test(l))).toBe(true); // the fixture exercises a comma
+    expect(text).toContain(sectionFlat(lines));
+  });
+
+  it("the link is the Settings financing URL, printed in full and clickable", async () => {
+    const url = "https://financing.example.test/apply?ref=rce&plan=1";
+    const buf = await renderEstimatePdf(withFin(), "customer", { ...PROFILE, financingUrl: url });
+    const text = pdfFlat(buf);
+    expect(text).toContain(flat(`Finance this project: ${url}`)); // legible on paper
+    expect(text).not.toContain(SYNCHRONY_URL); // it is the Settings value, not a literal
+    // Clickable: a link annotation pointing at the same URL.
+    expect(buf.toString("latin1")).toContain(`/URI (${url})`);
+  });
+
+  it("is lines and a link only: no table, no deposit/fee note, no Financing terms page, no plan descriptions", async () => {
+    const buf = await renderEstimatePdf(withFin(), "customer", PROFILE);
+    const text = pdfFlat(buf);
+    expect(text).toContain(flat(HEADING)); // paired presence
+    expect(text).not.toContain(flat("Financing terms"));
+    expect(text).not.toContain(flat("Selection")); // the old table's header
+    expect(text).not.toContain(flat("All options")); // the old table's row
+    expect(text).not.toContain(flat("1/3 deposit"));
+    expect(text).not.toContain(flat("financing fee"));
+    expect(text).not.toContain(flat("Estimated monthly payments"));
+    expect(text).not.toContain(flat("until paid in full")); // the stored plan description
+    for (const p of PLANS) {
+      expect(p.disclosure.explanation.length).toBeGreaterThan(100); // the fixture is the real text, not a stub
+      expect(text).not.toContain(flat(p.disclosure.explanation.slice(0, 80)));
+      expect(text).not.toContain(flat(p.disclosure.important));
+      expect(text).not.toContain(flat(p.disclosure.terms.slice(0, 60)));
+    }
+    // No terms page: the financing adds no page of its own (the same estimate prints as many pages without it).
+    const pages = (b: Buffer) => (b.toString("latin1").match(/\/Type \/Page\b(?!s)/g) ?? []).length;
+    const plain = await renderEstimatePdf({ ...ESTIMATE, options: OPTIONS }, "customer", PROFILE);
+    expect(pages(buf)).toBe(pages(plain));
+  });
+
+  it("never prints Synchrony's discount rates (Red Cedar's cost)", async () => {
+    const text = pdfFlat(await renderEstimatePdf(withFin(), "customer", PROFILE));
+    // Paired presence: the customer's own APR IS there, so this is not a blank document.
+    expect(text).toContain("10.99%APR");
+    for (const rate of ["6.1%", "7.25%", "7.1%", "10.6%", "7.25", "discountRate", "discountRatePct"]) {
+      expect(text.toLowerCase()).not.toContain(rate.toLowerCase());
+    }
+    expect(text).not.toMatch(/discount\s*rate/i);
+  });
+
+  it("leaves the company copy without any financing section", async () => {
+    const text = pdfFlat(await renderEstimatePdf(withFin(), "company", PROFILE));
+    expect(text).toContain("COMPANYCOPY"); // it rendered, and it is the company copy
+    expect(text).not.toContain(flat(HEADING));
+    expect(text).not.toContain(flat("Financing options"));
+    expect(text).not.toContain(flat("Finance this project"));
+    expect(text).not.toContain(SYNCHRONY_URL);
+    expect(text).not.toContain("/mo");
+  });
+
+  it("prints nothing when no financing is passed", async () => {
+    const text = pdfFlat(await renderEstimatePdf({ ...ESTIMATE, options: OPTIONS }, "customer", PROFILE));
+    expect(text).toContain("ESTIMATETOTAL");
+    expect(text).not.toContain(flat("Financing options"));
+    expect(text).not.toContain(flat("Finance this project"));
+    expect(text).not.toContain("/mo");
+  });
+
+  it("a signed invoice is worked on what they bought, the INVOICE TOTAL printed above", async () => {
+    const signed = withFin({
+      signedAt: new Date("2026-10-09T10:00:00Z"), signedByName: "A Customer",
+      selectedOptions: ["A" as const],
+    });
+    const text = pdfFlat(await renderEstimatePdf(signed, "customer", PROFILE));
+    expect(text).toContain("INVOICETOTAL");
+    expect(text).toContain("$1000.00");
+    expect(text).toContain(flat("Accepted by A Customer"));
+    expect(text).toContain(sectionFlat(expectedLines(PLANS, 1000)));
+    expect(text).not.toContain(flat("Financing terms"));
+  });
+
+  it("a signed invoice with change orders joined is worked on the whole invoice's total", async () => {
+    const signed = withFin({
+      signedAt: new Date("2026-10-09T10:00:00Z"), signedByName: "A Customer",
+      selectedOptions: ["A" as const, "B" as const],
+      invoice: {
+        number: "2026-1099",
+        documents: [
+          { number: "2026-1099", title: "Fans and bonding", kind: "invoice", billedTotal: 1350, signedAt: new Date("2026-10-09T10:00:00Z") },
+          { number: "2026-1099-CO1", title: "Extra outlet", kind: "change_order", billedTotal: 650, signedAt: new Date("2026-10-10T10:00:00Z") },
+        ],
+        billedTotal: 2000,
+        totalPaid: 0,
+        balance: 2000,
+        financingFee: null,
+      },
+    });
+    const text = pdfFlat(await renderEstimatePdf(signed, "customer", PROFILE));
+    expect(text).toContain("INVOICETOTAL");
+    expect(text).toContain(sectionFlat(expectedLines(PLANS, 2000)));
+    expect(text).not.toContain(sectionFlat(expectedLines(PLANS, 1350)));
+  });
+
+  it("a home-warranty claim: the lines are worked on the homeowner's share, as the YOUR TOTAL beside them", async () => {
+    const warranty = { company: "RELY Home", claimNumber: "C-1", authNumber: null, coveredAmount: 500, note: null, setAt: "2026-10-01T00:00:00.000Z" } as unknown as PdfEstimate["warranty"];
+    const text = pdfFlat(await renderEstimatePdf(withFin({ warranty }), "customer", PROFILE));
+    expect(text).toContain("YOURTOTAL");
+    expect(text).toContain(sectionFlat(expectedLines(PLANS, 1350, 500)));
+    expect(text).not.toContain(sectionFlat(expectedLines(PLANS, 1350)));
+  });
+
+  it("only the plans passed are printed (a two-plan snapshot)", async () => {
+    const two = PLANS.filter((p) => p.planNumber === "965" || p.planNumber === "920");
+    const text = pdfFlat(await renderEstimatePdf(withFin({ financing: { plans: two } }), "customer", PROFILE));
+    expect(text).toContain(sectionFlat(expectedLines(two, 1350)));
+    expect(text).not.toContain("Plan964");
+    expect(text).not.toContain("Plan924");
+  });
+
+  it("an inactive plan is not printed, and a list with nothing active prints no section", async () => {
+    const off = PLANS.map((p) => (p.planNumber === "964" ? { ...p, active: false } : p));
+    const text = pdfFlat(await renderEstimatePdf(withFin({ financing: { plans: off } }), "customer", PROFILE));
+    expect(text).toContain(flat(HEADING));
+    expect(text).not.toContain("Plan964");
+    const none = pdfFlat(await renderEstimatePdf(withFin({ financing: { plans: PLANS.map((p) => ({ ...p, active: false })) } }), "customer", PROFILE));
+    expect(none).toContain("ESTIMATETOTAL");
+    expect(none).not.toContain(flat(HEADING));
+    expect(none).not.toContain(flat("Finance this project"));
+  });
+});
+
+// ─── The real doors: the route, the filed copy, and the emailed invoice ────────────────────────
+
+describe("financing reaches the PDF through the route, the filed copy and the invoice email", () => {
+  const MARK = "PDFFIN";
+  const SUP = "PDFFIN-SUP";
+  let customerId: string;
+  let propertyId: string;
+  let draftId: string;
+
+  const cleanup = async () => {
+    const ests = await prisma.issuedEstimate.findMany({ where: { number: { startsWith: `0000-${MARK}` } }, select: { id: true } });
+    const ids = ests.map((e) => e.id);
+    await prisma.document.deleteMany({ where: { issuedEstimateId: { in: ids } } });
+    await prisma.issuedEstimateEvent.deleteMany({ where: { estimateId: { in: ids } } });
+    await prisma.payment.deleteMany({ where: { estimateId: { in: ids } } });
+    await prisma.financingFee.deleteMany({ where: { estimateId: { in: ids } } });
+    await prisma.issuedEstimate.updateMany({ where: { id: { in: ids } }, data: { changeOrderForId: null } });
+    await prisma.issuedEstimate.deleteMany({ where: { id: { in: ids } } });
+    await prisma.priceBookDraftEstimate.deleteMany({ where: { title: `${MARK} draft` } });
+    await prisma.priceBookSupplier.deleteMany({ where: { id: SUP } });
+    await prisma.property.deleteMany({ where: { name: `${MARK} property` } });
+    await prisma.customer.deleteMany({ where: { name: { startsWith: MARK } } });
+  };
+
+  beforeAll(async () => {
+    await cleanup();
+    const customer = await prisma.customer.create({ data: { name: `${MARK} Customer`, email: "pdffin@example.com" } });
+    customerId = customer.id;
+    const property = await prisma.property.create({
+      data: { customerId, name: `${MARK} property`, addressLine1: "1 Financing Way", city: "La Vergne", state: "TN", postalCode: "37086" },
+    });
+    propertyId = property.id;
+    await prisma.priceBookSupplier.create({ data: { id: SUP, name: `${MARK} Supply`, quotable: "YES" } });
+    const draft = await prisma.priceBookDraftEstimate.create({ data: { title: `${MARK} draft`, supplierId: SUP } });
+    draftId = draft.id;
+  });
+
+  afterAll(cleanup);
+
+  /** Option A 350 + trip 75 = 425; Option B 200 + trip 75 = 275; both 625. */
+  async function issue(suffix: string, opts: { signed?: boolean; snapshotPlans?: FinancingPlan[]; rawSnapshot?: string; changeOrderForId?: string } = {}) {
+    return prisma.issuedEstimate.create({
+      data: {
+        number: `0000-${MARK}${suffix}`,
+        token: `${"f".repeat(40)}${suffix.padStart(24, "0")}`.slice(0, 64),
+        status: opts.signed ? "signed" : "sent",
+        draftId,
+        customerId,
+        serviceAddressId: propertyId,
+        customerName: `${MARK} Customer`,
+        customerEmail: "pdffin@example.com",
+        serviceAddress: "1 Financing Way, La Vergne, TN",
+        title: "Fans and bonding",
+        workSubtotal: 550,
+        tripCharge: 75,
+        total: 625,
+        sentAt: new Date(),
+        sentTo: "pdffin@example.com",
+        financingPlansJson: opts.rawSnapshot
+          ?? (opts.snapshotPlans
+            ? JSON.stringify({ version: 1, takenAt: new Date().toISOString(), plans: opts.snapshotPlans })
+            : null),
+        changeOrderForId: opts.changeOrderForId ?? null,
+        ...(opts.signed
+          ? {
+              signedAt: new Date(),
+              signerName: "Pdf Customer",
+              signedChannel: "email",
+              selectedOptions: ["A", "B"],
+              comboCapJson: JSON.stringify({ applied: false, reduction: 0, ceiling: 0, bandLabel: "n/a" }),
+            }
+          : {}),
+        options: {
+          create: [
+            { option: "A", label: "Fans", subtotal: 350, lineCount: 1 },
+            { option: "B", label: "Bonding", subtotal: 200, lineCount: 1 },
+          ],
+        },
+      },
+    });
+  }
+
+  const TOTALS = { A: 425, B: 275, "A+B": 625 };
+
+  it("GET /issued-estimates/:id/pdf: the customer copy has the plan lines from Settings' plans (no snapshot), the company copy none", async () => {
+    const est = await issue("1");
+    const active = await getActiveFinancingPlans();
+    const { financingUrl } = await getCompanyProfile();
+
+    const res = await request(app).get(`/issued-estimates/${est.id}/pdf`).buffer(true).parse(binary);
+    expect(res.status).toBe(200);
+    const text = pdfFlat(res.body as Buffer);
+    // The estimate's own printed total (625), a line per plan, then the Settings link.
+    expect(text).toContain(sectionFlat(expectedLines(active, TOTALS["A+B"])));
+    expect(text).toContain(flat(`Finance this project: ${financingUrl}`));
+    expect(text).not.toContain(flat("Financing terms"));
+    expect(text).not.toContain(flat(active[0].disclosure.terms.slice(0, 60)));
+
+    const co = await request(app).get(`/issued-estimates/${est.id}/pdf?audience=company`).buffer(true).parse(binary);
+    expect(co.status).toBe(200);
+    const coText = pdfFlat(co.body as Buffer);
+    expect(coText).toContain("COMPANYCOPY");
+    expect(coText).not.toContain(flat("Financing options"));
+    expect(coText).not.toContain("/mo");
+  });
+
+  it("uses the plans FROZEN on the estimate, not today's Settings", async () => {
+    const two = PLANS.filter((p) => p.planNumber === "964" || p.planNumber === "924");
+    const est = await issue("2", { snapshotPlans: two });
+    const res = await request(app).get(`/issued-estimates/${est.id}/pdf`).buffer(true).parse(binary);
+    const text = pdfFlat(res.body as Buffer);
+    expect(text).toContain(sectionFlat(expectedLines(two, TOTALS["A+B"])));
+    expect(text).toContain("Plan964");
+    expect(text).not.toContain("Plan965");
+    expect(text).not.toContain("Plan920");
+  });
+
+  it("a change order gets no financing overview (financing is worked on the whole invoice)", async () => {
+    const root = await issue("3", { signed: true });
+    const co = await issue("4", { signed: true, changeOrderForId: root.id });
+    const res = await request(app).get(`/issued-estimates/${co.id}/pdf`).buffer(true).parse(binary);
+    expect(res.status).toBe(200);
+    const text = pdfFlat(res.body as Buffer);
+    expect(text).toContain("INVOICETOTAL"); // rendered
+    expect(text).not.toContain(flat("Financing options"));
+    expect(text).not.toContain(flat("Financing terms"));
+  });
+
+  it("the filed customer copy (/documents/:id/pdf) carries it; the filed company copy does not", async () => {
+    const est = await issue("5", { signed: true });
+    const customerDoc = await prisma.document.create({
+      data: { type: "signed_estimate", pdfUrl: "x", issuedEstimateId: est.id, propertyId },
+    });
+    const companyDoc = await prisma.document.create({
+      data: { type: "signed_estimate_company", pdfUrl: "x", issuedEstimateId: est.id, propertyId },
+    });
+    const active = await getActiveFinancingPlans();
+    const get = (id: string) => request(app).get(`/documents/${id}/pdf`).buffer(true).parse(binary);
+    const cust = await get(customerDoc.id);
+    expect(cust.status).toBe(200);
+    const custText = pdfFlat(cust.body as Buffer);
+    expect(custText).toContain("INVOICETOTAL");
+    expect(custText).toContain(sectionFlat(expectedLines(active, 625)));
+    const comp = await get(companyDoc.id);
+    expect(comp.status).toBe(200);
+    const compText = pdfFlat(comp.body as Buffer);
+    expect(compText).toContain("COMPANYCOPY");
+    expect(compText).not.toContain(flat("Financing options"));
+  });
+
+  it("a frozen snapshot that is garbled offers no financing - it does not quietly fall back to today's Settings", async () => {
+    const est = await issue("7", { rawSnapshot: "{not json" });
+    const res = await request(app).get(`/issued-estimates/${est.id}/pdf`).buffer(true).parse(binary);
+    expect(res.status).toBe(200);
+    const text = pdfFlat(res.body as Buffer);
+    expect(text).toContain("ESTIMATETOTAL"); // rendered
+    expect(text).not.toContain(flat("Financing options"));
+    expect(text).not.toContain(flat("Financing terms"));
+    expect(text).not.toContain("/mo");
+  });
+
+  it("a signed invoice with a financing fee already applied does not offer the four plans again", async () => {
+    const est = await issue("8", { signed: true });
+    await prisma.financingFee.create({
+      data: {
+        estimateId: est.id, planNumber: "964", planDescription: "10.99% APR until paid in full",
+        discountRatePct: 7.25, feeBaseCents: 41667, feeCents: 1510, appliedBy: "test",
+      },
+    });
+    const res = await request(app).get(`/issued-estimates/${est.id}/pdf`).buffer(true).parse(binary);
+    expect(res.status).toBe(200);
+    const text = pdfFlat(res.body as Buffer);
+    expect(text).toContain("INVOICETOTAL");
+    expect(text).toContain(flat("Financing fee")); // the appendix names the plan chosen
+    expect(text).not.toContain(flat("Financing options"));
+    expect(text).not.toContain(flat("Financing terms"));
+    // The emailed invoice is the same document.
+    emailMock.sendBrandedEmail.mockClear();
+    expect((await sendInvoiceEmail(prisma, est.id, { sentBy: "test" })).ok).toBe(true);
+    const args = emailMock.sendBrandedEmail.mock.calls[0][0] as { attachments: Array<{ filename: string; content: Buffer }> };
+    const emailed = pdfFlat(args.attachments.find((a) => a.filename.endsWith(".pdf"))!.content);
+    expect(emailed).toContain(flat("Financing fee"));
+    expect(emailed).not.toContain(flat("Financing options"));
+  });
+
+  it("a signed invoice paid in full does not offer financing for money no longer owed", async () => {
+    const est = await issue("9", { signed: true });
+    await prisma.payment.create({
+      data: { estimateId: est.id, customerId, amount: 625, method: "cash", kind: "final", status: "paid", paidAt: new Date() },
+    });
+    const res = await request(app).get(`/issued-estimates/${est.id}/pdf`).buffer(true).parse(binary);
+    expect(res.status).toBe(200);
+    const text = pdfFlat(res.body as Buffer);
+    expect(text).toContain("INVOICETOTAL");
+    expect(text).not.toContain(flat("Financing options"));
+    expect(text).not.toContain("/mo");
+  });
+
+  it("the invoice email attaches the PDF with the plan lines, and the email BODY still states no credit terms", async () => {
+    const est = await issue("6", { signed: true });
+    emailMock.sendBrandedEmail.mockClear();
+    const sent = await sendInvoiceEmail(prisma, est.id, { sentBy: "test" });
+    expect(sent.ok).toBe(true);
+    expect(emailMock.sendBrandedEmail).toHaveBeenCalledTimes(1);
+    const args = emailMock.sendBrandedEmail.mock.calls[0][0] as {
+      bodyHtml: string;
+      attachments: Array<{ filename: string; content: Buffer }>;
+    };
+    const pdf = args.attachments.find((a) => a.filename.endsWith(".pdf"))!;
+    const text = pdfFlat(pdf.content);
+    const active = await getActiveFinancingPlans();
+    expect(text).toContain(sectionFlat(expectedLines(active, 625)));
+    expect(text).not.toContain(flat("Financing terms"));
+    // The body: no payment, APR or promo language (tests/issuedEstimate.test.ts and
+    // tests/financingEmail.test.ts pin the estimate and financing emails the same way).
+    expect(args.bodyHtml).not.toMatch(/\/mo\b|APR|no interest|0%|promo|monthly payment/i);
   });
 });
