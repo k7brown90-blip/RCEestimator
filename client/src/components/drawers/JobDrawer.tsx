@@ -230,6 +230,7 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
             scheduledEnd={visit.scheduledEnd}
             durationDays={visit.estimatedDurationDays}
             completedAt={visit.completedAt}
+            isTestAccount={visit.customer?.isTestAccount ?? false}
             onChanged={refreshVisit}
           />
           {/* Renders itself only when a signed estimate exists (reactive flow, Kyle 2026-08-25). */}

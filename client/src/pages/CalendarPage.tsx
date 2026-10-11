@@ -87,7 +87,9 @@ export function CalendarPage() {
   const [scheduleRetrySettled, setScheduleRetrySettled] = useState(false);
   const scheduleParamLookedUp = useRef(false);
   // Why an arriving `?schedule=` opened nothing — said on screen, never swallowed.
-  const [scheduleMiss, setScheduleMiss] = useState<string | null>(null);
+  // `visitId` is set only for a Test Account visit (2026-10-11): the notice links to the visit,
+  // where "Put on the field app" lives.
+  const [scheduleMiss, setScheduleMiss] = useState<{ text: string; visitId?: string } | null>(null);
 
   const { data: availability } = useQuery<AvailabilityResponse>({
     queryKey: ["schedule", "availability"],
@@ -132,6 +134,16 @@ export function CalendarPage() {
       scheduleParamLookedUp.current = true;
       void api.visit(scheduleId)
         .then((visit) => {
+          if (visit.customer?.isTestAccount) {
+            // The Calendar never takes the Test Account (2026-09-02); its visits go to the field
+            // app from the visit page (2026-10-11).
+            setScheduleMiss({
+              text: "Test Account visits don't go on the Calendar — open the visit and use \"Put on the field app\".",
+              visitId: visit.id,
+            });
+            consumeScheduleParam();
+            return;
+          }
           const key = visit.scheduledStart ? dayKeyCT(visit.scheduledStart) : null;
           const targetYear = key ? Number(key.slice(0, 4)) : null;
           const targetMonth = key ? Number(key.slice(5, 7)) : null;
@@ -147,11 +159,11 @@ export function CalendarPage() {
           }
           const who = visit.customer?.name ?? "That job";
           const status = String(visit.status ?? "").replaceAll("_", " ");
-          setScheduleMiss(`${who} is not waiting to be scheduled — its status is "${status}"${visit.completedAt ? " and it is closed" : ""}, so there is nothing to book here.`);
+          setScheduleMiss({ text: `${who} is not waiting to be scheduled — its status is "${status}"${visit.completedAt ? " and it is closed" : ""}, so there is nothing to book here.` });
           consumeScheduleParam();
         })
         .catch(() => {
-          setScheduleMiss("That job could not be found, so there is nothing to schedule here.");
+          setScheduleMiss({ text: "That job could not be found, so there is nothing to schedule here." });
           consumeScheduleParam();
         });
     } else {
@@ -256,7 +268,12 @@ export function CalendarPage() {
 
       {scheduleMiss && !rescheduling && (
         <p data-schedule-miss className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-          {scheduleMiss}
+          {scheduleMiss.text}
+          {scheduleMiss.visitId && (
+            <Link to={`/visits/${scheduleMiss.visitId}`} className="btn btn-primary ml-2 px-2 py-0.5 text-xs min-h-0">
+              Open the visit
+            </Link>
+          )}
           <button className="btn btn-secondary ml-2 px-2 py-0.5 text-xs min-h-0" onClick={() => setScheduleMiss(null)}>
             Dismiss
           </button>

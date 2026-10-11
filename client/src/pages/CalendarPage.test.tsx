@@ -287,4 +287,27 @@ describe("?schedule= for a job the month on screen does not hold", () => {
     // Still this month — nothing to jump to.
     expect(screen.getByText(`${MONTH_NAMES[thisMonth - 1]} ${thisYear}`)).toBeInTheDocument();
   });
+
+  it("for a Test Account visit, says it never goes on the Calendar and links to the visit", async () => {
+    mockMonths();
+    vi.spyOn(api, "visit").mockResolvedValue({
+      id: "visit-test", propertyId: "prop-t", customerId: "acct-t", mode: "service_diagnostic", status: "estimate",
+      visitDate: "2026-09-10T12:00:00.000Z", scheduledStart: null,
+      customer: { id: "acct-t", name: "Test Account", isTestAccount: true } as Visit["customer"],
+    } as Visit);
+
+    const { container } = renderWithProviders(<><CalendarPage /><SearchProbe /></>, { route: "/calendar?schedule=visit-test" });
+
+    const miss = await waitFor(() => {
+      const el = container.querySelector("[data-schedule-miss]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(miss).toHaveTextContent("Test Account visits don't go on the Calendar");
+    expect(miss).toHaveTextContent("Put on the field app");
+    expect(miss).not.toHaveTextContent(/is not waiting to be scheduled/);
+    expect(within(miss).getByRole("link", { name: "Open the visit" })).toHaveAttribute("href", "/visits/visit-test");
+    expect(container.querySelector("[data-scheduling-panel]")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("search")).toHaveTextContent(""));
+  });
 });
