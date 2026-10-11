@@ -1081,6 +1081,9 @@ export const api = {
     request<{ reports: import("../../../shared/diagnostics").DiagnosticReportView[] }>(
       `/health-record-admin/properties/${propertyId}/diagnostic-reports`,
     ),
+  /** Render a circuit diagnostic's PDF fresh (sends nothing); open it with `/documents/<id>/pdf`. */
+  diagnosticReportPdf: (reportId: string) =>
+    request<{ documentId: string }>(`/health-record-admin/diagnostic-reports/${reportId}/report`, { method: "POST", body: JSON.stringify({}) }),
   healthInspection: (inspectionId: string) =>
     request<HealthInspectionDetail>(`/health-record-admin/inspections/${inspectionId}`),
   reviewInspection: (inspectionId: string, input: { reviewedBy: string }) =>

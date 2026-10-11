@@ -54,6 +54,13 @@ vi.mock("googleapis", () => {
   };
 });
 
+// Customer emails are counted, never sent — "View report" must not send one.
+const emailMock = vi.hoisted(() => ({ sendBrandedEmail: vi.fn().mockResolvedValue(true) }));
+vi.mock("../src/services/confirmationEmail", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/services/confirmationEmail")>();
+  return { ...mod, sendBrandedEmail: emailMock.sendBrandedEmail };
+});
+
 import { app } from "../src/app";
 
 const SUP = "DIAGTEST-SUP";
@@ -71,6 +78,7 @@ let signedEstimateId: string;
 let signedNumber: string;
 
 async function cleanup() {
+  await prisma.document.deleteMany({ where: { type: "diagnostic_report", jobId: { in: (await prisma.visit.findMany({ where: { customer: { name: "Diagnostic Test Co" } }, select: { id: true } })).map((v) => v.id) } } });
   const reports = await prisma.diagnosticReport.findMany({ where: { customer: { name: "Diagnostic Test Co" } }, select: { id: true } });
   const ids = reports.map((r) => r.id);
   if (ids.length > 0) {
@@ -512,5 +520,61 @@ describe("nothing the app creates is permanent (Kyle's standing rule)", () => {
     expect(res.status).toBe(200);
     expect(await prisma.diagnosticPhoto.count({ where: { reportId } })).toBe(0);
     expect(await prisma.diagnosticReport.count({ where: { id: reportId } })).toBe(1);
+  });
+});
+
+describe("View report from the CRM — renders the PDF fresh and sends nothing (Kyle, 2026-10-11)", () => {
+  const viewReport = (id: string) => request(app).post(`/health-record-admin/diagnostic-reports/${id}/report`).send({});
+
+  it("a complete diagnostic renders: 201, a documentId, a diagnostic_report Document, no delivery row, no email", async () => {
+    const reportId = newId();
+    await push(pushBody({ reportId, status: "complete" }));
+    emailMock.sendBrandedEmail.mockClear();
+
+    const res = await viewReport(reportId);
+    expect(res.status).toBe(201);
+    expect(typeof res.body.documentId).toBe("string");
+
+    const doc = await prisma.document.findUnique({ where: { id: res.body.documentId } });
+    expect(doc?.type).toBe("diagnostic_report");
+    expect(doc?.jobId).toBe(visitId);
+    expect(await prisma.diagnosticReportDelivery.count({ where: { reportId } })).toBe(0);
+    expect(emailMock.sendBrandedEmail).not.toHaveBeenCalled();
+  });
+
+  it("an in-progress diagnostic is refused with 409 and writes no Document", async () => {
+    const reportId = newId();
+    await push(pushBody({ reportId, status: "in_progress" }));
+    const before = await prisma.document.count({ where: { type: "diagnostic_report", jobId: visitId } });
+
+    const res = await viewReport(reportId);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/still in progress/i);
+    expect(await prisma.document.count({ where: { type: "diagnostic_report", jobId: visitId } })).toBe(before);
+  });
+
+  it("a voided diagnostic is refused with 409", async () => {
+    const reportId = newId();
+    await push(pushBody({ reportId, status: "complete" }));
+    await auth(request(app).post(`/health-record/diagnostic-reports/${reportId}/void`)).send({ reason: "Wrong circuit — started over" });
+
+    const res = await viewReport(reportId);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/void/i);
+  });
+
+  it("a complete diagnostic with no outlets is refused with 409", async () => {
+    const reportId = newId();
+    await push(pushBody({ reportId, status: "complete" }));
+    await prisma.diagnosticOutlet.deleteMany({ where: { reportId } });
+
+    const res = await viewReport(reportId);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/No outlets/i);
+  });
+
+  it("an unknown id is a 404", async () => {
+    const res = await viewReport(newId());
+    expect(res.status).toBe(404);
   });
 });

@@ -6,7 +6,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
 import { InspectionResultChip } from "../components/InspectionResultChip";
 import { PropertyPhotoSection } from "../components/PhotoGalleryPanel";
-import { api } from "../lib/api";
+import { api, openProtectedPdf } from "../lib/api";
 import { money, shortDate } from "../lib/utils";
 
 export function PropertyDetailPage() {
@@ -29,6 +29,16 @@ export function PropertyDetailPage() {
     queryKey: ["propertyDiagnosticReports", propertyId],
     queryFn: () => api.propertyDiagnosticReports(propertyId),
     enabled: Boolean(propertyId),
+  });
+
+  // "View report" on a diagnostic row (Kyle, 2026-10-11: "I don't see anywhere to view the
+  // diagnostic report pdf that is generated and emailed"): renders the PDF fresh and opens it —
+  // sends nothing. Same shape as the account page's Health Record "View report".
+  const [reportError, setReportError] = useState<{ reportId: string; message: string } | null>(null);
+  const viewDiagnosticReport = useMutation({
+    mutationFn: (reportId: string) => api.diagnosticReportPdf(reportId),
+    onSuccess: (r) => void openProtectedPdf(`/documents/${r.documentId}/pdf`),
+    onError: (err, reportId) => setReportError({ reportId, message: (err as Error).message }),
   });
 
   const [scheduleError, setScheduleError] = useState<string | null>(null);
@@ -261,10 +271,29 @@ export function PropertyDetailPage() {
                         <span className="ml-2 text-xs text-amber-700">{report.defectCount} defective</span>
                       )}
                     </span>
-                    <Link to={`/visits/${report.visitId}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
-                      open visit →
-                    </Link>
+                    <span className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
+                        disabled={report.status !== "complete" || (viewDiagnosticReport.isPending && viewDiagnosticReport.variables === report.id)}
+                        onClick={() => { setReportError(null); viewDiagnosticReport.mutate(report.id); }}
+                      >
+                        {viewDiagnosticReport.isPending && viewDiagnosticReport.variables === report.id ? "Opening…" : "View report"}
+                      </button>
+                      <Link to={`/visits/${report.visitId}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
+                        open visit →
+                      </Link>
+                    </span>
                   </div>
+                  {report.status === "in_progress" && (
+                    <p className="mt-1 text-xs text-amber-700">Not finished yet — the report exists once the tech completes it.</p>
+                  )}
+                  {report.status === "void" && (
+                    <p className="mt-1 text-xs text-red-600">Voided — never sent to a customer.</p>
+                  )}
+                  {reportError?.reportId === report.id && (
+                    <p className="mt-1 text-xs text-red-600">{reportError.message}</p>
+                  )}
                   <p className="mt-1 text-xs text-rce-soft">{report.coverageStatement}</p>
                 </li>
               ))}

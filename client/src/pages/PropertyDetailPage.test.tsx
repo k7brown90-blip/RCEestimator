@@ -31,11 +31,18 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Route, Routes, useLocation } from "react-router-dom";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { PropertyDetailPage } from "./PropertyDetailPage";
-import { api } from "../lib/api";
+import { api, openProtectedPdf } from "../lib/api";
 import type { Property, Visit } from "../lib/types";
+
+// "View report" hands the rendered document to openProtectedPdf (a real window.open + fetch) —
+// stubbed here so the test can see WHAT it was asked to open.
+vi.mock("../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/api")>()),
+  openProtectedPdf: vi.fn().mockResolvedValue(undefined),
+}));
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -304,6 +311,105 @@ describe("PropertyDetailPage", () => {
       await waitFor(() => {
         expect(screen.getByText(/Consultation — estimate visit/)).toBeInTheDocument();
       });
+    });
+  });
+
+  describe("View report on a diagnostic row (Kyle, 2026-10-11)", () => {
+    const baseReport = {
+      visitId: "visit-8",
+      propertyId: "prop-1",
+      customerId: "cust-1",
+      technicianName: "Jamie",
+      reportDate: "2026-09-15T00:00:00.000Z",
+      complaint: "Kitchen outlets dead",
+      circuitNumber: "12",
+      panelLocation: "Garage",
+      breakerRating: "20A",
+      breakerInspected: true,
+      coverage: "whole_circuit" as const,
+      coverageNote: null,
+      coverageStatement: "The whole circuit was opened and tested.",
+      summary: null,
+      diagnosticItemId: null,
+      completedAt: null,
+      voidedAt: null,
+      voidReason: null,
+      changeOrderDraftId: null,
+      money: {
+        quoted: { NORMAL: 0, DIFFICULT: 0, VERY_DIFFICULT: 0 },
+        examined: { NORMAL: 0, DIFFICULT: 0, VERY_DIFFICULT: 0 },
+        overage: { NORMAL: 0, DIFFICULT: 0, VERY_DIFFICULT: 0 },
+        quotedTotal: 0,
+        examinedTotal: 0,
+        overageTotal: 0,
+      },
+      defectCount: 0,
+      fixedCount: 0,
+      deliveryCount: 0,
+      outlets: [],
+      updatedAt: "2026-09-15T01:00:00.000Z",
+    };
+
+    function mockThreeReports() {
+      vi.spyOn(api, "ledgerFindings").mockResolvedValue([]);
+      vi.spyOn(api, "propertyInspections").mockResolvedValue([]);
+      vi.spyOn(api, "propertyPhotos").mockResolvedValue({ jobPhotos: [], assessmentPhotos: [] });
+      vi.spyOn(api, "propertyDiagnosticReports").mockResolvedValue({
+        reports: [
+          { ...baseReport, id: "diag-done", circuitLabel: "Done circuit", status: "complete" },
+          { ...baseReport, id: "diag-open", circuitLabel: "Open circuit", status: "in_progress" },
+          { ...baseReport, id: "diag-void", circuitLabel: "Void circuit", status: "void" },
+        ],
+      });
+    }
+
+    function rowFor(label: string) {
+      return screen.getByText(new RegExp(`circuit ${label}`)).closest("li") as HTMLElement;
+    }
+
+    it("is enabled on a complete report and generates then opens that report's PDF", async () => {
+      mockThreeReports();
+      const pdf = vi.spyOn(api, "diagnosticReportPdf").mockResolvedValue({ documentId: "doc-9" });
+      renderPage();
+
+      await screen.findByText(/Done circuit/);
+      const button = within(rowFor("Done circuit")).getByRole("button", { name: "View report" });
+      expect(button).toBeEnabled();
+      fireEvent.click(button);
+
+      await waitFor(() => expect(pdf).toHaveBeenCalledWith("diag-done"));
+      await waitFor(() => expect(openProtectedPdf).toHaveBeenCalledWith("/documents/doc-9/pdf"));
+    });
+
+    it("is disabled on an in-progress report, with the reason on screen", async () => {
+      mockThreeReports();
+      renderPage();
+
+      await screen.findByText(/Open circuit/);
+      const row = rowFor("Open circuit");
+      expect(within(row).getByRole("button", { name: "View report" })).toBeDisabled();
+      expect(within(row).getByText("Not finished yet — the report exists once the tech completes it.")).toBeInTheDocument();
+    });
+
+    it("is disabled on a voided report, with the reason on screen", async () => {
+      mockThreeReports();
+      renderPage();
+
+      await screen.findByText(/Void circuit/);
+      const row = rowFor("Void circuit");
+      expect(within(row).getByRole("button", { name: "View report" })).toBeDisabled();
+      expect(within(row).getByText("Voided — never sent to a customer.")).toBeInTheDocument();
+    });
+
+    it("shows the server's reason on the row when the report cannot be rendered", async () => {
+      mockThreeReports();
+      vi.spyOn(api, "diagnosticReportPdf").mockRejectedValue(new Error("No outlets were recorded, so there is no diagnostic report to show."));
+      renderPage();
+
+      await screen.findByText(/Done circuit/);
+      fireEvent.click(within(rowFor("Done circuit")).getByRole("button", { name: "View report" }));
+
+      expect(await screen.findByText("No outlets were recorded, so there is no diagnostic report to show.")).toBeInTheDocument();
     });
   });
 
