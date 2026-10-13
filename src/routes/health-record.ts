@@ -4123,6 +4123,40 @@ healthRecordAdminRouter.get("/diagnostic-reports/:id", asyncHandler(async (req, 
   res.json(serializeDiagnosticReport(report));
 }));
 
+/**
+ * POST /health-record-admin/diagnostic-reports/:id/report — render the diagnostic
+ * PDF fresh so the office can LOOK at it (Kyle, 2026-10-11: "I don't see anywhere to
+ * view the diagnostic report pdf that is generated and emailed"). Same gate as the
+ * email (src/services/diagnosticReportEmail.ts) — a voided or unfinished diagnostic
+ * has no report to show — but it sends nothing and writes no delivery row. generated/
+ * is wiped on every deploy, so there is no stored copy to open; it is rendered on
+ * request, like the Health Record's "View report".
+ */
+healthRecordAdminRouter.post("/diagnostic-reports/:id/report", asyncHandler(async (req, res) => {
+  const report = await loadDiagnosticReport(prisma, readParam(req, "id"));
+  if (!report) {
+    res.status(404).json({ error: "Diagnostic report not found" });
+    return;
+  }
+  if (report.status === "void") {
+    res.status(409).json({ error: "That diagnostic is void. A voided report is never sent to a customer." });
+    return;
+  }
+  if (report.status !== "complete") {
+    res.status(409).json({
+      error: "This diagnostic is still in progress. The report exists once the tech finishes the circuit — breaker to last outlet — and marks it complete.",
+    });
+    return;
+  }
+  if (report.outlets.length === 0) {
+    res.status(409).json({ error: "No outlets were recorded, so there is no diagnostic report to show." });
+    return;
+  }
+  const { generateDiagnosticReport } = await import("../services/pdfGenerator");
+  const { documentId } = await generateDiagnosticReport(report.id);
+  res.status(201).json({ documentId });
+}));
+
 healthRecordAdminRouter.get("/diagnostic-photos/:photoId", asyncHandler(async (req, res) => {
   const photo = await prisma.diagnosticPhoto.findUnique({ where: { id: readParam(req, "photoId") } });
   if (!photo) {
@@ -4175,40 +4209,6 @@ healthRecordAdminRouter.delete("/diagnostic-reports/:id", asyncHandler(async (re
  * POST /health-record-admin/inspections/:id/review — the contractor's
  * acknowledgment of a report (required before a critical-finding report is
  * customer-facing). Records who reviewed and when.
-/**
- * POST /health-record-admin/diagnostic-reports/:id/report — render the diagnostic
- * PDF fresh so the office can LOOK at it (Kyle, 2026-10-11: "I don't see anywhere to
- * view the diagnostic report pdf that is generated and emailed"). Same gate as the
- * email (src/services/diagnosticReportEmail.ts) — a voided or unfinished diagnostic
- * has no report to show — but it sends nothing and writes no delivery row. generated/
- * is wiped on every deploy, so there is no stored copy to open; it is rendered on
- * request, like the Health Record's "View report".
- */
-healthRecordAdminRouter.post("/diagnostic-reports/:id/report", asyncHandler(async (req, res) => {
-  const report = await loadDiagnosticReport(prisma, readParam(req, "id"));
-  if (!report) {
-    res.status(404).json({ error: "Diagnostic report not found" });
-    return;
-  }
-  if (report.status === "void") {
-    res.status(409).json({ error: "That diagnostic is void. A voided report is never sent to a customer." });
-    return;
-  }
-  if (report.status !== "complete") {
-    res.status(409).json({
-      error: "This diagnostic is still in progress. The report exists once the tech finishes the circuit — breaker to last outlet — and marks it complete.",
-    });
-    return;
-  }
-  if (report.outlets.length === 0) {
-    res.status(409).json({ error: "No outlets were recorded, so there is no diagnostic report to show." });
-    return;
-  }
-  const { generateDiagnosticReport } = await import("../services/pdfGenerator");
-  const { documentId } = await generateDiagnosticReport(report.id);
-  res.status(201).json({ documentId });
-}));
-
  */
 healthRecordAdminRouter.post("/inspections/:id/review", asyncHandler(async (req, res) => {
   const body = z.object({ reviewedBy: z.string().min(1) }).parse(req.body);
