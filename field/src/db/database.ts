@@ -8,7 +8,7 @@ import type { EstimateOptionLetter } from '../../../shared/estimateOptions'
 // Type-only (erased at build): the mirror holds the quote payload exactly as crmSync types it.
 // crmSync imports this module for `db`; a runtime import the other way would be a cycle, a type
 // import is not.
-import type { QuoteState } from '../lib/crmSync'
+import type { InPersonSignResult, QuoteState } from '../lib/crmSync'
 
 export interface PhotoRecord {
   id: string
@@ -269,6 +269,26 @@ export interface QuoteMirrorRecord {
   pricesNeedReview: boolean
   /** The office's draft for this visit when start-quote was refused 409 — the U6 "Add my lines to it" prompt. Null otherwise. */
   pendingRebase: string | null
+  /**
+   * What this phone SHOWED for the quote right before the office's answer to its queued edits
+   * replaced it (Phase 7 U6, 2026-10-10): the "Check the prices" panel compares the office's
+   * figures with these FOR EQUALITY ONLY and prints both — no difference is ever worked out.
+   * Written by the flush with the first refresh after a delivery and kept across later passes
+   * (the note is what the tech built against); cleared by "I've checked the prices". Absent on
+   * rows written before U6 and on a copy nothing has been sent for. Not indexed: no Dexie bump.
+   */
+  shownBeforeSync?: ShownFigures | null
+}
+
+/** The figures as the screen showed them — named fields, customer figures only, never a cost or an hour. */
+export interface ShownFigures {
+  /** The phone's clock when the note was taken. */
+  at: string
+  /** Where the figures came from as shown: the office's own, the labelled Preview, or no figure at all. */
+  source: 'server' | 'none' | 'preview'
+  lines: Array<{ id: string; description: string; total: number | null }>
+  options: Array<{ option: string; subtotal: number | null }>
+  total: number | null
 }
 
 export type QuoteOpKind =
@@ -339,6 +359,13 @@ export interface QuoteOpRecord {
   status: 'queued' | 'refused' | 'delivered'
   attempts: number
   lastError?: string
+  /**
+   * What kind of failure `lastError` was (D7, 2026-10-13): 'network' — no answer at all (no
+   * signal); 'office' — the office answered but could not take it yet (5xx, 408, 429, sign in);
+   * 'phone' — this phone's own code failed before or after the request (a bug), which is NOT
+   * "waiting for signal" and is said so on the change.
+   */
+  lastErrorKind?: 'network' | 'office' | 'phone'
   /** The server's own words when it refused this edit. */
   refusal?: string
   /** The server's error code on a refusal ('conflict', 'line_gone', ...). */
@@ -349,10 +376,25 @@ export interface QuoteOpRecord {
 }
 
 /**
- * A signature captured on this phone with no signal, waiting to become a record (Phase 7.2, U8).
- * SCHEMA ONLY in U4 — nothing writes it until U8. The drawn image rides in the SAME row as the
- * signer's name and what they signed, so the image can never come apart from its record.
- * `capturedAt` is the phone's clock; the server keeps its own receipt time beside it.
+ * A signature captured on this phone, waiting to become a record (Phase 7.2, U8, 2026-10-10;
+ * schema since U4). EVERY "Accept & Sign" on the phone writes one of these BEFORE anything is
+ * tried over the wire, online or not (lib/signatureQueue.ts captureSignature) — a signature is a
+ * legal record, and the phone never shows "Signed" until the office has answered 2xx. The drawn
+ * image rides in the SAME row as the signer's name and what they signed, so the image can never
+ * come apart from its record. `capturedAt` is the phone's clock; the server keeps its own receipt
+ * time beside it (Kyle, 2026-10-09, ruling 10: a signature inside the 30 days by the phone's
+ * clock is honoured even when it reaches the office later).
+ *
+ * `state`: 'queued' waits for the office; 'recorded' means the office answered 2xx (`result` is
+ * its answer, kept so the card can say Signed after the app was killed and reopened; pruned at the
+ * next Today-screen sync); 'refused' means the office said no with words (`reason`) and the red
+ * card waits for the technician; 'cancelled' means the technician cancelled it before it was
+ * recorded or dismissed a refused one (`cancelKind`, `reason`), and the row waits only to be FILED
+ * as an event at the office, after which it is deleted — never silently (standing rule);
+ * 'unfiled' (D4, 2026-10-13) means the office REFUSED to file that cancellation (`fileRefusal`, its
+ * words — the estimate is gone, or no longer this technician's), so the row stays on the card with
+ * those words until the technician takes the one exit, "Remove from this phone".
+ * The fields after `queuedAt` are optional and not indexed: no Dexie bump.
  */
 export interface SignatureQueueRecord {
   signatureId: string
@@ -367,15 +409,44 @@ export interface SignatureQueueRecord {
   /** The consent sentence the customer was shown, verbatim — the server refuses a mismatch. */
   consentText: string
   capturedAt: string
-  state: 'queued' | 'recorded' | 'refused' | 'cancelled'
+  state: 'queued' | 'recorded' | 'refused' | 'cancelled' | 'unfiled'
   reason?: string
   attempts: number
   lastError?: string
+  /** As on QuoteOpRecord (D7): 'network' — no answer; 'office' — could not take it yet; 'phone' — this phone's own code failed. */
+  lastErrorKind?: 'network' | 'office' | 'phone'
   queuedAt: string
+  /** True when the phone KNEW it had no signal at capture (D1): the first send is already a resend of something held. */
+  capturedOffline?: boolean
+  /** On an 'unfiled' row: the office's words for why it would not file the cancellation (D4). */
+  fileRefusal?: string
+  /** The quote the estimate was issued from, so the saved copy can be refreshed once it is signed. */
+  draftId?: string | null
+  /** The estimate's house number ("2026-1098"), for the cards. */
+  number?: string
+  /** The office's 2xx answer, once recorded (the figures the signed view shows — never added up here). */
+  result?: InPersonSignResult
+  recordedAt?: string
+  refusedAt?: string
+  /** On a 'cancelled' row: cancelled before it was recorded, or a refused one dismissed after the customer was called. */
+  cancelKind?: 'cancelled' | 'dismissed'
+  /** The technician's reason for the cancel or the dismissal (`reason` keeps the office's refusal words). */
+  cancelReason?: string
+  cancelledAt?: string
 }
 
 /** `meta` key under which the saved price book's version, time and section cards live. */
 export const QUOTE_CATALOG_META_KEY = 'quoteCatalog'
+
+/**
+ * `meta` key under which the customer-price sheet for a Preview with no signal lives, whole
+ * (shared/fieldPriceSheet.ts `PhonePriceSheet` plus `cachedAt`), Phase 7 unit U3 (2026-10-09).
+ * ONE row rather than a price column on each `quoteCatalog` row, which the design sketched:
+ * the two come from two routes with two versions, and the catalog refresh clears and rewrites its
+ * store — a price column there would vanish on every catalog change until the sheet was fetched
+ * again. One row is replaced in one put, so a reader never sees half a sheet. No Dexie bump.
+ */
+export const QUOTE_PRICE_SHEET_META_KEY = 'quotePriceSheet'
 
 export class HealthRecordDatabase extends Dexie {
   properties!: Table<Property, string>
@@ -576,7 +647,7 @@ export class HealthRecordDatabase extends Dexie {
 
     // v10: estimating with no signal (Phase 7, 2026-10-09). Four store additions — the saved price
     // book, the saved copy of each quote, the queue of quote edits, and the queue of signatures
-    // taken with no signal (schema only until U8). Pure addition, same shape as v6-v9, so there is
+    // taken on the phone (written from U8 on). Pure addition, same shape as v6-v9, so there is
     // no .upgrade() and nothing existing to break: a phone that never builds a quote offline
     // behaves exactly as it did.
     this.version(10).stores({

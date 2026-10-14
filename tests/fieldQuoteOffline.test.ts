@@ -495,6 +495,14 @@ describe("the settings writers with `expected` — discount, option mode, option
     const conflict = await send({ exclusive: false, expected: { exclusive: false } });
     expect(conflict.status).toBe(409);
     expect(conflict.body.error.message).toBe("Changed at the office since you last saw it: exclusive was false, now true");
+
+    // The CRM's door checks `expected` too (Phase 7 U5, 2026-10-10 — it used to drop it), and still writes without it.
+    const crmConflict = await request(app).put(`/price-book/drafts/${d.draftId}/options-mode`).send({ exclusive: false, expected: { exclusive: false } });
+    expect(crmConflict.status).toBe(409);
+    expect(crmConflict.body.error).toBe("Changed at the office since you last saw it: exclusive was false, now true");
+    const crmPlain = await request(app).put(`/price-book/drafts/${d.draftId}/options-mode`).send({ exclusive: false });
+    expect(crmPlain.status, JSON.stringify(crmPlain.body)).toBe(200);
+    expect(crmPlain.body).toEqual({ exclusiveOptions: false });
   });
 
   it("option names: a name that does not exist yet reads as blank; a renamed option refuses with both names", async () => {

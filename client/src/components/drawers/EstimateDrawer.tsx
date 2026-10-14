@@ -287,6 +287,16 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                   // phone, recorded by the office" — one vocabulary, shared/acceptance.ts. An
                   // office acceptance never reads as a bare "signed".
                   const w = acceptanceWording(e.signedChannel, e.acceptedVia);
+                  // Signed on the technician's phone, possibly with no signal (Phase 7 unit U7,
+                  // 2026-10-10; Kyle's ruling 10): the record keeps BOTH times, so the line says when
+                  // the customer signed by the phone's clock and when the office recorded it.
+                  if (e.signedChannel === "in_person" && e.signatureCapturedAt) {
+                    return (
+                      <p>
+                        signed in person on the phone at {new Date(e.signatureCapturedAt).toLocaleString()}{e.signerName ? ` by ${e.signerName}` : ""} · recorded {new Date(e.signedAt).toLocaleString()}
+                      </p>
+                    );
+                  }
                   return (
                     <p className={isOfficeAcceptance(e.signedChannel) ? "font-semibold text-emerald-800" : undefined}>
                       {w.verb} {new Date(e.signedAt).toLocaleDateString()}{e.signerName ? ` by ${e.signerName}` : ""}{w.how ? ` ${w.how}` : ""}

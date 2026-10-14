@@ -35,6 +35,29 @@
  *
  * Nothing here is editable except the ticks. Prices, lines and discount are changed on the Quote
  * screen, behind "Back to the quote".
+ *
+ * PREVIEW MODE (Phase 7 unit U6, 2026-10-10; Kyle, 2026-10-13: prices at every difficulty on the
+ * phone). A quote changed on this phone with no signal has no office figure for its lines as they
+ * now stand; what the Quote screen shows is the labelled Preview from the price sheet saved on the
+ * phone (lib/quoteSync.ts overlayQuote, shared/quotePreview.ts). Handed to the customer, the SAME
+ * screen renders with `preview` set: the watermark "Preview — the final price is set when the
+ * estimate is issued" across the top of their part, each option's preview figure (an option holding
+ * wire or conduit says it may come down once issued; an option the sheet cannot price shows "—"),
+ * NO financing line (the Synchrony figures need a rate that never reaches the phone), and "Sign
+ * now" greyed with its reason in the technician's strip — nobody signs a preview (design §3). The
+ * figures are still looked up in the finished table (`quote.money.selections`), which in preview
+ * mode is the shared builder's table over the sheet: this file adds nothing in either mode.
+ *
+ * SIGNING WITH NO SIGNAL (Phase 7 unit U8, 2026-10-10; Kyle's rulings 9 and 10). With no signal
+ * the screen renders this phone's SAVED copy of an estimate the office issued — the frozen table
+ * the office holds, labelled in the technician's strip "This phone's copy, saved 2:14 PM" — and
+ * "Sign now" is live when ONE rule says so (lib/signatureGate.ts `signGate`, the same rule the Job
+ * site and the capture itself apply): issued, unchanged, nothing waiting on this phone, inside its
+ * 30 days by this phone's clock, no signature already held. Otherwise the strip carries the reason
+ * ("You changed this estimate on the phone — Discard my changes to sign the issued version", with
+ * the Discard button right there; "expired on …"; "a signature … is already saved on this phone")
+ * and, at two days or less, the validity warning. Nothing here records a signature: the capture is
+ * the signing screen's, saved on the phone first and recorded by the office.
  */
 
 import { useState } from 'react'
@@ -42,9 +65,23 @@ import type { QuoteState } from '../../lib/crmSync'
 import type { EstimateOptionLetter } from '../../../../shared/estimateOptions'
 import { defaultSelection, picksOne, selectionPrice, toggleSelection } from '../../../../shared/quoteMoney'
 import { presentDecision, signNowReason, type PresentDecision } from '../../../../shared/presentIssue'
+import { PRICED_WHEN_SIGNAL_RETURNS, type PreviewOption } from '../../../../shared/quotePreview'
 import { FinancingLine } from '../components/FinancingSheet'
+import { PREVIEW_SIGN_REASON, PREVIEW_WATERMARK, previewNothingToShowReason, savedAtWords } from './QuoteOffline'
+import { DISCARD_MY_CHANGES_LABEL, type SignGate } from '../../lib/signatureGate'
+import { savedCopyWords } from './SignatureCards'
 
 const money = (n: number | null | undefined) => (n === null || n === undefined ? '—' : `$${n.toFixed(2)}`)
+
+/** What "Show the customer" hands over when the figures are a preview (U6): where they came from and each option's flags. */
+export interface CustomerPreview {
+  /** When this phone saved the sheet the figures come from. */
+  sheetAt: string | null
+  /** Each option holding lines, with its "may come down" / unpriced flags (QuoteView.previewOptions). */
+  options: readonly PreviewOption[] | null
+  /** Why the WHOLE quote shows no figure (the office's rate is provisional, a supplier mismatch), or null. */
+  reason: string | null
+}
 
 // ─── What the customer is shown (named fields only) ──────────────────────────
 
@@ -97,6 +134,19 @@ export function showCustomerReason(quote: QuoteState | null): string | null {
   if (quote.lines.length === 0) return 'Add some work to the quote first — there is nothing to show the customer yet.'
   if (quote.money.pickable.length === 0) return 'The work is still waiting on you (AI proposals or open questions) — confirm it, then it can be shown.'
   if (Object.keys(quote.money.selections).length === 0) return 'Nothing is priced yet — every option has a line with no price, so there is no number to show.'
+  return null
+}
+
+/**
+ * The same gate for a PREVIEW (U6): nothing to show means no option holds work, or none of them
+ * has a preview figure — the sheet could not price the whole quote (`reason`), or every option has
+ * a line priced when signal returns. A screen with no number on it is not handed to a homeowner.
+ */
+export function previewShowReason(quote: QuoteState | null, preview: Pick<CustomerPreview, 'reason'>): string | null {
+  if (!quote) return 'The quote is still loading.'
+  if (quote.lines.length === 0) return 'Add some work to the quote first — there is nothing to show the customer yet.'
+  if (quote.money.pickable.length === 0) return 'The work is still waiting on you (AI proposals or open questions) — confirm it, then it can be shown.'
+  if (Object.keys(quote.money.selections).length === 0) return previewNothingToShowReason(preview.reason)
   return null
 }
 
@@ -180,11 +230,27 @@ export function ShowCustomerScreen(props: {
   onBack: () => void
   /** What starts ticked, for a render that is not the first look (tests). Defaults to the shared rule. */
   initialSelection?: readonly string[]
+  /**
+   * Set when the quote's figures are the labelled Preview from the sheet saved on this phone (U6):
+   * the watermark, no financing, "Sign now" greyed with its reason. Null/omitted = the office's own figures.
+   */
+  preview?: CustomerPreview | null
+  /** Set when the estimate on screen is this phone's saved copy of the one the office issued (no signal): the strip says so (U8). */
+  savedCopy?: { savedAt: string } | null
+  /**
+   * The one signing rule (lib/signatureGate.ts), worked out by the Quote screen from the quote as
+   * shown, the queue and the signature this phone holds (U8). Its reason greys "Sign now" ahead of
+   * the issue-or-reuse decision; its warning is printed in the strip. Null/omitted = no extra rule.
+   */
+  signGate?: SignGate | null
+  /** "Discard my changes" beside the gate's "You changed this estimate on the phone" (U8): drops every waiting edit on the quote. */
+  onDiscardChanges?: () => Promise<void>
 }) {
-  const { quote, issue, onSignInPerson, issueBlockedReason, onBack, initialSelection } = props
+  const { quote, issue, onSignInPerson, issueBlockedReason, onBack, initialSelection, preview = null, savedCopy = null, signGate = null, onDiscardChanges } = props
   const m = quote.money
   const options = customerOptions(quote)
   const exclusive = picksOne(m)
+  const previewFlags = (option: string) => preview?.options?.find((o) => o.option === option) ?? null
   // null = the customer has not touched a tick: the shared default (everything, or the first option
   // in one-or-the-other mode). An empty array is a real choice — nothing ticked.
   const [picked, setPicked] = useState<readonly string[] | null>(initialSelection ?? null)
@@ -198,10 +264,13 @@ export function ShowCustomerScreen(props: {
 
   const price = selectionPrice(m, ticked)
   const decision = presentDecision(quote.lifecycle)
-  const greyed = signNowGreyedReason({ decision, ticked, issueBlockedReason, canSign: Boolean(onSignInPerson) })
+  // The signing gate's reason first (a signature already held, edits waiting, past the 30 days —
+  // U8); then a preview is never signed (design §3); then the issue-or-reuse rule as before.
+  const greyed = signGate?.reason ?? (preview ? PREVIEW_SIGN_REASON : signNowGreyedReason({ decision, ticked, issueBlockedReason, canSign: Boolean(onSignInPerson) }))
+  const [discarding, setDiscarding] = useState(false)
 
   const sign = () => {
-    if (!onSignInPerson) return
+    if (!onSignInPerson || preview) return
     setBusy(true)
     setProblems([])
     runSignNow({ decision, selectedOptions: ticked, issue })
@@ -237,8 +306,43 @@ export function ShowCustomerScreen(props: {
         <p className="mt-1 text-xs text-slate-300" data-testid="tech-note">
           {greyed ?? signFooter(decision)}
         </p>
+        {/* "You changed this estimate on the phone — [Discard my changes] to sign the issued version" (design §2, U8). */}
+        {signGate?.kind === 'changes' && onDiscardChanges && (
+          <button
+            type="button"
+            disabled={busy || discarding}
+            onClick={() => {
+              if (!window.confirm('Discard every change waiting on this phone for this quote? None of them reached the office, so they are simply gone, and the estimate is as the office issued it.')) return
+              setDiscarding(true)
+              setProblems([])
+              onDiscardChanges()
+                .catch((err) => setProblems([err instanceof Error ? err.message : String(err)]))
+                .finally(() => setDiscarding(false))
+            }}
+            className="mt-2 min-h-[2.5rem] rounded-lg border border-amber-400 px-4 text-sm font-semibold text-amber-100 disabled:opacity-40"
+          >
+            {discarding ? 'Discarding…' : DISCARD_MY_CHANGES_LABEL}
+          </button>
+        )}
+        {savedCopy && (
+          <p className="mt-1 text-xs text-sky-300" data-testid="saved-copy">
+            {savedCopyWords(savedCopy.savedAt)} — the estimate exactly as the office issued it. A signature taken now is saved on this phone first and recorded when signal returns.
+          </p>
+        )}
+        {signGate?.warning && (
+          <p className="mt-1 text-xs text-amber-300" data-testid="validity-warning">{signGate.warning}</p>
+        )}
+        {preview && (
+          <p className="mt-1 text-xs text-sky-300">
+            Preview — prices saved on this phone{preview.sheetAt ? ` at ${savedAtWords(preview.sheetAt)}` : ''}. Nothing here is frozen; issue the estimate with signal for the final price.
+          </p>
+        )}
         {ticked.length > 0 && price === null && (
-          <p className="mt-1 text-xs text-amber-300">Part of this is not priced yet — go back to the quote and price it.</p>
+          <p className="mt-1 text-xs text-amber-300">
+            {preview
+              ? `Part of this is ${PRICED_WHEN_SIGNAL_RETURNS.toLowerCase()}${preview.reason ? ` — ${preview.reason}` : ' (a Difficult line, or an item not in the saved prices)'}.`
+              : 'Part of this is not priced yet — go back to the quote and price it.'}
+          </p>
         )}
         {problems.length > 0 && (
           <ul className="mt-1 space-y-1">
@@ -260,6 +364,12 @@ export function ShowCustomerScreen(props: {
       </div>
 
       <div className="mx-auto max-w-xl space-y-4 p-4 pb-6">
+        {/* The watermark (design §1): every figure below it is a preview, and the customer reads that first. */}
+        {preview && (
+          <p role="note" data-testid="preview-watermark" className="rounded-lg border-2 border-dashed border-amber-500 bg-amber-50 p-3 text-center text-lg font-semibold uppercase tracking-wide text-amber-800">
+            {PREVIEW_WATERMARK}
+          </p>
+        )}
         <header>
           <h1 className="text-3xl font-bold leading-tight">{quote.title}</h1>
           {quote.jobDescription && <p className="mt-2 text-lg text-slate-700">{quote.jobDescription}</p>}
@@ -296,7 +406,13 @@ export function ShowCustomerScreen(props: {
                   {o.description && <span className="mt-1 block text-lg text-slate-700">{o.description}</span>}
                 </span>
                 <span className="shrink-0 text-right text-2xl font-bold">
-                  {o.price === null ? <span className="text-base font-medium text-amber-700">not priced yet</span> : money(o.price)}
+                  {/* A preview: an unpriced option is "—" (U6), and wire or conduit says it may come down once issued. */}
+                  {o.price === null
+                    ? (preview ? '—' : <span className="text-base font-medium text-amber-700">not priced yet</span>)
+                    : money(o.price)}
+                  {preview && o.price !== null && previewFlags(o.option)?.mayComeDown && (
+                    <span className="block text-xs font-medium text-slate-600">may come down once issued</span>
+                  )}
                 </span>
               </label>
               <ul className="divide-y divide-slate-200 border-t border-slate-200">
@@ -329,21 +445,24 @@ export function ShowCustomerScreen(props: {
                   {m.discount?.label ?? 'Discount'} −{money(price?.discount)}
                 </div>
               )}
-              <div className="text-sm text-slate-600">Total</div>
+              <div className="text-sm text-slate-600">{preview ? 'Preview total' : 'Total'}</div>
               <div className="text-4xl font-bold" aria-label="Total">{money(price?.total ?? null)}</div>
               {/* "or from $X/mo with financing" (Phase 5 unit B, 2026-10-08): the SERVER's figures for
                   what is ticked (money.financing); pressing it opens the four Synchrony plan cards,
-                  each with its disclosure. Nothing here records a choice. */}
-              <FinancingLine
-                financing={m.financing}
-                selected={ticked}
-                label={`Option${ticked.length > 1 ? 's' : ''} ${ticked.join(' + ')}`}
-                total={price?.total ?? null}
-              />
+                  each with its disclosure. Nothing here records a choice. Never on a preview (U6):
+                  the Synchrony figures are the office's, shown once the estimate is issued. */}
+              {!preview && (
+                <FinancingLine
+                  financing={m.financing}
+                  selected={ticked}
+                  label={`Option${ticked.length > 1 ? 's' : ''} ${ticked.join(' + ')}`}
+                  total={price?.total ?? null}
+                />
+              )}
             </div>
           </div>
           {ticked.length > 0 && price === null && (
-            <p className="text-sm text-slate-600">There is no total to show for this yet.</p>
+            <p className="text-sm text-slate-600">{preview ? 'Part of this is priced when the estimate is issued.' : 'There is no total to show for this yet.'}</p>
           )}
 
           {/* Greyed WITH the reason - the reason is in the technician's strip at the top of this

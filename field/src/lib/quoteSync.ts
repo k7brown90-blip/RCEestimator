@@ -22,11 +22,14 @@
  *  5. A refusal (4xx with words) stops THAT draft's chain and is never retried on its own — a
  *     later edit may depend on it. The tech sees the server's words and chooses Discard.
  *  6. With no signal the screen renders the saved copy of the office's payload (quoteMirrors)
- *     with the waiting edits laid over it (overlayQuote). The overlay NEVER adds, subtracts or
- *     multiplies a money figure: a touched line reads "priced when signal returns" and every
- *     aggregate is blank until the office prices it. A price the office sent is shown; a price
- *     the office did not send is not. (With Kyle's ruling 8 a customer-price sheet can later feed
- *     a labelled Preview here — U3, not built in this unit.)
+ *     with the waiting edits laid over it (overlayQuote). The overlay itself NEVER adds, subtracts
+ *     or multiplies a money figure. Without a price sheet, a touched line reads "priced when
+ *     signal returns" and every aggregate is blank until the office prices it. WITH the saved
+ *     price sheet (U3; Kyle, 2026-10-13: every line at its own difficulty), every figure on a
+ *     touched quote — untouched lines included — comes from shared/quotePreview over that sheet,
+ *     labelled Preview, and the office's figures are not mixed in (one price source at a time).
+ *     A price the office sent is shown as the office's; a preview is shown as a preview; nothing
+ *     else is shown. Nobody signs a preview.
  *
  * NEVER ON THIS PHONE: labour hours or dollars, a labour unit basis, the billed labour rate, any
  * company cost or cost basis, the per-unit sell price, supplier prices, markup tiers, Synchrony's
@@ -41,21 +44,25 @@
 import {
   db,
   QUOTE_CATALOG_META_KEY,
+  QUOTE_PRICE_SHEET_META_KEY,
   type QuoteCatalogRecord,
   type QuoteLinePatch,
   type QuoteMirrorRecord,
   type QuoteOpBody,
   type QuoteOpRecord,
+  type ShownFigures,
 } from '../db/database'
 import {
   CrmRequestError,
   addQuoteLine,
   addQuoteOption,
   editQuoteLine,
+  fetchPriceSheet,
   fetchQuote,
   fetchQuoteCatalogSnapshot,
   fetchVisitQuote,
   getCrmSettings,
+  isNetworkFailure,
   openQuoteForVisit,
   removeQuoteLine,
   removeQuoteOption,
@@ -76,8 +83,19 @@ import {
   type FieldCatalogPage,
   type FieldCatalogRow,
 } from '../../../shared/quoteCatalog'
+import { isCurrentSheetRow, type PhonePriceSheet } from '../../../shared/fieldPriceSheet'
+import { programmeFor } from '../../../shared/discountProgramme'
+import {
+  PRICED_WHEN_SIGNAL_RETURNS,
+  previewFigures,
+  previewMoney,
+  previewTotal,
+  type PreviewLineStatus,
+  type PreviewOption,
+} from '../../../shared/quotePreview'
 
-export type { QuoteMirrorRecord, QuoteOpBody, QuoteOpRecord } from '../db/database'
+export type { QuoteMirrorRecord, QuoteOpBody, QuoteOpRecord, ShownFigures } from '../db/database'
+export type { PhonePriceSheet } from '../../../shared/fieldPriceSheet'
 
 // ─── Queueing ────────────────────────────────────────────────────────────────────────────────
 
@@ -132,6 +150,118 @@ export async function enqueueQuoteOp(input: EnqueueQuoteOpInput): Promise<QuoteO
   void requestPersistentStorage()
   void flushQuoteQueue({ again: true })
   return record
+}
+
+// ─── The Quote screen's one write path (U5, 2026-10-10) ─────────────────────────────────────
+
+export interface QuoteWriteInput {
+  draftId: string
+  visitId: string
+  body: QuoteOpBody
+}
+
+export type QuoteWriteOutcome =
+  /** The office took it in this call; the saved copy is already the office's fresh answer. */
+  | { state: 'delivered'; opId: string }
+  /** Still on this phone. `offline` when the phone knows it has no signal or the try never got an answer; else "sending". */
+  | { state: 'queued'; opId: string; offline: boolean; reason?: string }
+
+/**
+ * Every Quote-screen write, online and offline alike (design §5, "one request shape, two ways to
+ * send it"). The edit is written to IndexedDB FIRST and sent at once through the same flush the
+ * queue uses, so it carries the id this phone minted and `expected` either way, and a write whose
+ * answer is lost replays safely. Three outcomes, as the screen needs them:
+ *
+ *   - delivered: the office took it NOW. The flush already refreshed the saved copy from the office,
+ *     so the screen reads the office's figures off the phone without a second fetch. When nothing
+ *     else was waiting on the draft, the tech is looking at those figures as they land, so the
+ *     saved copy is not flagged for the "Check the prices" review (U6); with earlier edits queued
+ *     ahead of it, it is. A review already OWED (an earlier sync the tech has not checked) is never
+ *     cleared by a new edit — otherwise any quantity change would walk round the gate (U6).
+ *   - refused: the office said no NOW (4xx with words). The edit is taken OUT of the queue and the
+ *     office's own error is thrown, so the refusal prints beside the control exactly as it always
+ *     did — it never sits in the queue blocking the draft's later edits, because the tech saw the
+ *     words and will try again or not. (A refusal the office gives LATER, to an edit queued with no
+ *     signal, stays listed under "Changes waiting" with its words and a Discard — that is the queue's
+ *     rule, §5.)
+ *   - queued: no answer came (no signal, a timeout, a 5xx, a 401) or an earlier edit on the draft is
+ *     still waiting or was refused. The screen renders the overlay and the header says why.
+ *
+ * Why not call crmSync directly while online and only queue on failure, as the design sketched: a
+ * write that LANDED, followed by a refresh that fails because signal dropped in between, would
+ * leave the screen showing the old value with nothing waiting — the office has the edit and the
+ * phone has no record of it. Through the queue the delivered row stays laid over the saved copy
+ * until the office's copy is refreshed, so the screen shows what the tech did (Phase 7 U5 review,
+ * 2026-10-10).
+ */
+export async function writeQuote(input: QuoteWriteInput): Promise<QuoteWriteOutcome> {
+  const [pendingBefore, mirrorBefore] = await Promise.all([pendingQuoteOpCount(input.draftId), db.quoteMirrors.get(input.draftId)])
+  const reviewOwedBefore = mirrorBefore?.pricesNeedReview ?? false
+  const since = Date.now()
+  const op = await enqueueQuoteOp(input)
+  const outcome = await awaitOp(op.opId)
+  if (outcome.state === 'delivered') {
+    if (pendingBefore === 0 && !reviewOwedBefore) await markPricesReviewed(input.draftId).catch(() => undefined)
+    return { state: 'delivered', opId: op.opId }
+  }
+  if (outcome.state === 'refused') {
+    const original = liveRefusals.get(op.opId)
+    liveRefusals.delete(op.opId)
+    await db.quoteOpQueue.delete(op.opId)
+    throw original ?? new Error(outcome.reason ?? 'The office refused this change.')
+  }
+  return {
+    state: 'queued',
+    opId: op.opId,
+    offline: phoneKnowsItIsOffline() || lastNetworkFailureAt >= since,
+    reason: outcome.reason,
+  }
+}
+
+/** The office's own error for an edit refused during the flush — handed back by writeQuote, as the control prints it. */
+const liveRefusals = new Map<string, unknown>()
+
+/** When a send last failed to get any answer (fetch threw); 0 when never. The screen reads "no signal" off it. */
+let lastNetworkFailureAt = 0
+
+export function isPhoneOffline(): boolean {
+  return phoneKnowsItIsOffline()
+}
+
+/**
+ * True after a pass in which the office answered 401 (or the phone holds no session): the queue
+ * waits for the tech to sign in again — "Sign in again — N changes waiting" (design §5, U6).
+ * Set only by a pass that actually tried the office; a pass skipped for no signal leaves it as it
+ * was. Cleared by the next pass the office answers without a 401.
+ */
+export function quoteSyncNeedsSignIn(): boolean {
+  return signInNeeded
+}
+
+let signInNeeded = false
+
+/**
+ * Listeners told when a flush pass has settled — after an edit was delivered and the saved copy
+ * refreshed, or after a try that got no answer. The Quote screen and the Job site re-read the phone
+ * on it (loadQuoteView / the waiting count); nothing here fetches on their behalf.
+ */
+const settledListeners = new Set<() => void>()
+
+export function onQuoteSyncSettled(listener: () => void): () => void {
+  settledListeners.add(listener)
+  return () => {
+    settledListeners.delete(listener)
+  }
+}
+
+function notifySettled(): void {
+  for (const listener of settledListeners) {
+    try {
+      listener()
+    } catch {
+      /* a screen's listener must never break the queue */
+    }
+  }
 }
 
 let persistenceAsked = false
@@ -199,6 +329,12 @@ export async function pendingQuoteOpCount(draftId?: string): Promise<number> {
   return rows.filter((o) => o.status !== 'delivered').length
 }
 
+/** The Job site's "N quote changes waiting" badge: every draft on this visit. */
+export async function pendingQuoteOpCountForVisit(visitId: string): Promise<number> {
+  const rows = await db.quoteOpQueue.toArray()
+  return rows.filter((o) => o.visitId === visitId && o.status !== 'delivered').length
+}
+
 // ─── Flushing ────────────────────────────────────────────────────────────────────────────────
 
 export interface QuoteFlushResult {
@@ -228,6 +364,7 @@ export function flushQuoteQueue(opts: { again?: boolean } = {}): Promise<QuoteFl
   }
   const pass = (): Promise<QuoteFlushResult> =>
     runQuoteFlush().then((result) => {
+      notifySettled()
       if (!quoteFlushRerun) return result
       quoteFlushRerun = false
       return pass()
@@ -316,14 +453,16 @@ async function drainQuoteQueue(): Promise<QuoteFlushResult> {
             existingDraftId: answer.existingDraftId,
             lastError: answer.message,
           })
+          liveRefusals.set(op.opId, answer.error)
           if (op.kind === 'start_quote' && answer.existingDraftId) {
             await recordPendingRebase(op, answer.existingDraftId)
           }
           break
         }
         // transient or auth: keep it, count the attempt, and stop this draft's chain to keep the order.
-        await db.quoteOpQueue.update(op.opId, { attempts: op.attempts + 1, lastError: answer.message })
+        await db.quoteOpQueue.update(op.opId, { attempts: op.attempts + 1, lastError: answer.message, lastErrorKind: answer.errorKind })
         if (answer.kind === 'auth') authNeeded = true
+        if (answer.network) lastNetworkFailureAt = Date.now()
         break
       }
     }
@@ -332,6 +471,7 @@ async function drainQuoteQueue(): Promise<QuoteFlushResult> {
     if (delivered) await refreshMirrorAfterDelivery(draftId, visitId)
   }
 
+  signInNeeded = authNeeded
   return { pushed, authNeeded, ...(await queueSummary()) }
 }
 
@@ -373,8 +513,14 @@ async function recordPendingRebase(op: QuoteOpRecord, existingDraftId: string): 
 
 type SendAnswer =
   | { kind: 'ok' }
-  | { kind: 'transient' | 'auth'; message: string }
-  | { kind: 'refused'; message: string; code?: string; existingDraftId?: string }
+  /**
+   * `network`: fetch threw — no answer at all (no signal), as opposed to a 5xx the office did send.
+   * `errorKind` (D7): what the change's row says — 'network' waits for signal, 'office' waits for
+   * the office, 'phone' is this phone's own code failing, said as such, never "waiting for signal".
+   */
+  | { kind: 'transient' | 'auth'; message: string; network?: boolean; errorKind: 'network' | 'office' | 'phone' }
+  /** `error`: the office's own thrown error, for writeQuote to hand the control that pressed. */
+  | { kind: 'refused'; message: string; code?: string; existingDraftId?: string; error: unknown }
 
 async function sendOp(op: QuoteOpRecord): Promise<SendAnswer> {
   try {
@@ -432,7 +578,9 @@ async function deliver(op: QuoteOpRecord): Promise<void> {
 /**
  * The answer table (design §5):
  *   2xx                      done
- *   network error, 5xx       keep, attempts+1 ("Waiting for signal")
+ *   network error            keep, attempts+1 ("Waiting for signal")
+ *   5xx                      keep, attempts+1 ("The office could not take it yet")
+ *   this phone's code threw  keep, attempts+1, said as THIS phone's failure (D7) — not "waiting for signal"
  *   401 / no session         keep ("Sign in again")
  *   408 / 429                keep, attempts+1 — the office's rate limiter (600/min on the API) or
  *                            a request timeout is "not now", not "no"; a refusal here would stop
@@ -447,28 +595,55 @@ function classifyAnswer(error: unknown, op: QuoteOpRecord): SendAnswer {
   if (error instanceof CrmRequestError) {
     const status = error.status
     const errorBody = (error.body as { error?: { code?: string; existingDraftId?: string } } | null)?.error
-    if (status === 401) return { kind: 'auth', message }
-    if (status === 408 || status === 429) return { kind: 'transient', message }
+    if (status === 401) return { kind: 'auth', message, errorKind: 'office' }
+    if (status === 408 || status === 429) return { kind: 'transient', message, errorKind: 'office' }
     if (status === 404 && (op.kind === 'remove_line' || op.kind === 'remove_option')) return { kind: 'ok' }
     // A 200 carrying `success: false` is the server saying no with words, not an outage.
     if (status === undefined || (status >= 400 && status < 500)) {
-      return { kind: 'refused', message, code: errorBody?.code, existingDraftId: errorBody?.existingDraftId }
+      return { kind: 'refused', message, code: errorBody?.code, existingDraftId: errorBody?.existingDraftId, error }
     }
-    return { kind: 'transient', message }
+    return { kind: 'transient', message, errorKind: 'office' }
   }
-  if (message === 'CRM not configured') return { kind: 'auth', message }
-  return { kind: 'transient', message }
+  if (message === 'CRM not configured') return { kind: 'auth', message, errorKind: 'office' }
+  // Not an HTTP answer. Only what `fetch` itself threw is "no signal" (crmSync.CrmNetworkError, D7);
+  // anything else is this phone's own code failing, kept with its message and said as such.
+  const network = isNetworkFailure(error)
+  return { kind: 'transient', message, network, errorKind: network ? 'network' : 'phone' }
 }
 
 async function refreshMirrorAfterDelivery(draftId: string, visitId: string): Promise<void> {
   try {
+    // What this phone SHOWED for these lines (the saved copy with the queue laid over — the
+    // delivered rows are still in it at this point), noted BEFORE the office's answer replaces it,
+    // so "Check the prices" (U6) can put the two side by side. A note already owed stands: a sync
+    // that lands in several passes compares with what the tech built against, not with the
+    // half-way copy of an earlier pass.
+    const existing = await db.quoteMirrors.get(draftId)
+    const shown = existing?.pricesNeedReview && existing.shownBeforeSync ? undefined : shownFigures(await loadQuoteView(draftId))
     const quote = await fetchQuote(draftId, { visitId })
     // The office priced what landed and the tech has not looked yet (U6's "Check the prices").
-    await saveQuoteMirror(quote, { visitId, origin: 'server', pricesNeedReview: true })
+    await saveQuoteMirror(quote, { visitId, origin: 'server', pricesNeedReview: true, shownBeforeSync: shown })
     await db.quoteOpQueue.where('draftId').equals(draftId).filter((o) => o.status === 'delivered').delete()
   } catch {
     // The saved copy stays as it was and the delivered rows stay overlaid on it; the next flush
     // tries the refresh again. Nothing is re-sent — the rows are marked delivered.
+  }
+}
+
+/**
+ * The figures AS THE SCREEN SHOWED THEM — named fields only (a line's id, words and figure; an
+ * option's letter and subtotal; the headline), never a cost, an hour or the queue. This is the
+ * phone's half of "Check the prices": the office's answer is later laid beside it for equality.
+ */
+export function shownFigures(view: QuoteView): ShownFigures {
+  return {
+    at: new Date().toISOString(),
+    source: view.priceSource,
+    lines: view.lines
+      .filter((l) => l.state !== 'PROPOSED')
+      .map((l) => ({ id: l.id, description: l.description, total: l.lineTotal })),
+    options: view.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
+    total: view.total,
   }
 }
 
@@ -516,6 +691,7 @@ export async function discardQuoteOp(opId: string): Promise<{ discarded: QuoteOp
     }
     refuseIfInFlight(victims.map((v) => v.opId))
     await db.quoteOpQueue.bulkDelete(victims.map((v) => v.opId))
+    for (const v of victims) liveRefusals.delete(v.opId)
     if (op.kind === 'start_quote' && op.existingDraftId) {
       await db.quoteMirrors.update(op.draftId, { pendingRebase: null })
     }
@@ -529,6 +705,7 @@ export async function discardAllQuoteOps(draftId: string): Promise<{ discarded: 
     const victims = (await quoteOpsForDraft(draftId)).filter((o) => o.status !== 'delivered')
     refuseIfInFlight(victims.map((v) => v.opId))
     await db.quoteOpQueue.bulkDelete(victims.map((v) => v.opId))
+    for (const v of victims) liveRefusals.delete(v.opId)
     await db.quoteMirrors.update(draftId, { pendingRebase: null })
     return { discarded: victims }
   })
@@ -655,8 +832,47 @@ export async function rebaseQuoteOps(
   })
 }
 
-function isSettingsOp(op: QuoteOpRecord): boolean {
+/** Title/scope, discount, mode and option names: the edits a rebase asks "Apply mine too?" about. */
+export function isSettingsOp(op: Pick<QuoteOpRecord, 'kind'>): boolean {
   return op.kind === 'set_details' || op.kind === 'set_discount' || op.kind === 'set_mode' || op.kind === 'set_option_meta'
+}
+
+/** "Add my N lines to it" with no signal: greyed WITH this reason (the office's quote is read first). */
+export const REBASE_NEEDS_SIGNAL = "Needs signal — the office's quote is read first, so nothing of theirs is overwritten"
+
+/**
+ * The "Add my N lines to it" button (U6, design §5): read the office's draft as it stands NOW —
+ * fetchQuote, which also saves it on this phone so the screen can open it — then re-point the
+ * tech's queued edits at it (rebaseQuoteOps), each chosen setting carrying the office's current
+ * value as `expected`, and kick a flush so they replay. With no answer from the office nothing is
+ * moved: a rebase against a stale copy would send `expected` values the office never held and
+ * stop the chain with a refusal for a change the office never made.
+ */
+export async function applyRebase(
+  from: string,
+  to: string,
+  visitId: string,
+  opts: { applySettings?: readonly string[] } = {},
+): Promise<{ moved: QuoteOpRecord[]; dropped: QuoteOpRecord[] }> {
+  let office: QuoteState
+  try {
+    office = await fetchQuote(to, { visitId })
+  } catch (error) {
+    if (isNetworkFailure(error)) throw new Error(REBASE_NEEDS_SIGNAL)
+    throw error
+  }
+  const result = await rebaseQuoteOps(from, to, { applySettings: opts.applySettings, office })
+  void flushQuoteQueue({ again: true })
+  return result
+}
+
+/**
+ * The "[Discard them]" button on the same prompt: the quote this phone started, and every edit on
+ * it, go — the office's quote for the visit is the quote now. The same exit as "Delete this quote"
+ * on a phone-only quote (deleteLocalOnlyQuote), under the prompt's own words.
+ */
+export function discardRebase(from: string): Promise<{ deleted: true; changes: number }> {
+  return deleteLocalOnlyQuote(from)
 }
 
 /**
@@ -737,13 +953,40 @@ export function quoteMirror(draftId: string): Promise<QuoteMirrorRecord | undefi
   return db.quoteMirrors.get(draftId)
 }
 
+/**
+ * The office deleted the quote (the online "Delete this quote"): its saved copy goes too, so that
+ * with no signal "Build the quote" cannot open a quote that no longer exists and queue edits the
+ * office would only refuse. Refused while anything still waits on it — those edits are the tech's.
+ */
+export async function forgetQuoteMirror(draftId: string): Promise<void> {
+  await db.transaction('rw', db.quoteMirrors, db.quoteOpQueue, async () => {
+    const waiting = (await quoteOpsForDraft(draftId)).some((o) => o.status !== 'delivered')
+    if (waiting) throw new Error('Changes are still waiting on this quote — discard them first.')
+    await db.quoteOpQueue.where('draftId').equals(draftId).delete()
+    await db.quoteMirrors.delete(draftId)
+  })
+}
+
 export function quoteMirrorForVisit(visitId: string): Promise<QuoteMirrorRecord | undefined> {
   return db.quoteMirrors.where('visitId').equals(visitId).first()
 }
 
-/** "I've checked the prices" (U6): the office's figures for what this phone sent have been looked at. */
+/**
+ * The copy "Build the quote" opens with no signal: the visit's WORKING quote — never a change
+ * order (the server's workingDraftForVisit will not return one either; a change order is opened
+ * by id or not at all) — and the newest saved when the visit has more than one (a "Copy to a new
+ * quote" leaves the older draft's copy behind until the pass that prunes it).
+ */
+export async function workingQuoteMirrorForVisit(visitId: string): Promise<QuoteMirrorRecord | undefined> {
+  const mirrors = await db.quoteMirrors.where('visitId').equals(visitId).toArray()
+  return mirrors
+    .filter((m) => !m.payload.isChangeOrder)
+    .sort((a, b) => b.snapshotAt.localeCompare(a.snapshotAt))[0]
+}
+
+/** "I've checked the prices" (U6): the office's figures for what this phone sent have been looked at; the note of what the phone showed goes with the gate. */
 export async function markPricesReviewed(draftId: string): Promise<void> {
-  await db.quoteMirrors.update(draftId, { pricesNeedReview: false })
+  await db.quoteMirrors.update(draftId, { pricesNeedReview: false, shownBeforeSync: null })
 }
 
 /**
@@ -879,23 +1122,105 @@ export async function cachedCatalogRows(itemIds: Iterable<string>): Promise<Map<
   return map
 }
 
+// ─── The price sheet on the phone (U3, Kyle's ruling 8) ─────────────────────────────────────
+
+/** The sheet as saved: the server's sheet plus when this phone saved it ("Prices saved on this phone at 7:02 AM"). */
+export interface CachedPriceSheet extends PhonePriceSheet {
+  cachedAt: string
+}
+
+export interface PriceSheetSyncResult {
+  /** True when nothing could be fetched and the saved sheet (if any) stands. */
+  stale: boolean
+  /** True when the server said the saved sheet is already current. */
+  unchanged: boolean
+  sheet: CachedPriceSheet | null
+  error?: string
+}
+
+/**
+ * The sheet saved on this phone, or null. A sheet saved by an earlier build (Normal only,
+ * 2026-10-09 — one price per row, one gap sentence) is NOT handed back: Kyle, 2026-10-13, every
+ * line previews at its own difficulty, and a row that does not carry the three cannot do that.
+ * Such a sheet reads as "none saved" (every touched line "priced when signal returns" — never a
+ * figure at the wrong difficulty, never a crash) until the next sync replaces it, which sends no
+ * version so the office sends the whole current sheet.
+ */
+export async function cachedPriceSheet(): Promise<CachedPriceSheet | null> {
+  const row = await db.meta.get(QUOTE_PRICE_SHEET_META_KEY)
+  const sheet = (row?.value as CachedPriceSheet | undefined) ?? null
+  if (!sheet || !Array.isArray(sheet.rows) || !sheet.rows.every(isCurrentSheetRow)) return null
+  return sheet
+}
+
+/**
+ * Refresh the saved price sheet (one customer price per live item at EACH difficulty, built by
+ * the office's engine — crmSync.fetchPriceSheet). Sends the saved version so an unchanged sheet
+ * costs one small answer; otherwise the whole sheet is replaced in ONE put, so a reader never sees
+ * half of it. On failure the saved sheet stands.
+ */
+export async function syncPriceSheet(): Promise<PriceSheetSyncResult> {
+  const have = await cachedPriceSheet()
+  try {
+    const answer = await fetchPriceSheet(have?.version ?? null)
+    if ('unchanged' in answer) return { stale: false, unchanged: true, sheet: have }
+    const now = new Date().toISOString()
+    const sheet: CachedPriceSheet = {
+      version: answer.version,
+      generatedAt: answer.generatedAt,
+      supplierId: answer.supplierId,
+      tripCharge: answer.tripCharge,
+      rateProvisional: answer.rateProvisional,
+      rows: answer.rows,
+      cachedAt: now,
+    }
+    await db.meta.put({ key: QUOTE_PRICE_SHEET_META_KEY, value: sheet, updatedAt: now })
+    return { stale: false, unchanged: false, sheet }
+  } catch (error) {
+    return { stale: true, unchanged: false, sheet: have, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/** Forget the saved sheet (nothing waits on it; the next sync fetches a fresh one). */
+export async function forgetPriceSheet(): Promise<void> {
+  await db.meta.delete(QUOTE_PRICE_SHEET_META_KEY)
+}
+
 // ─── The overlay: the saved copy with the waiting edits laid over it ────────────────────────
 
 export interface QuoteViewLine extends QuoteLine {
-  /** True: "Priced when signal returns" — the office has not priced this line as it now stands. */
+  /** True: "Priced when signal returns" — no figure is shown for this line as it now stands. */
   pendingPrice: boolean
   /** True: added on this phone; the office has never had it. */
   localOnly: boolean
   /** The waiting edits that touch this line. */
   pendingOpIds: string[]
+  /**
+   * Where this line's figure came from. 'office': the office's own `lineTotal` (or its null, for an
+   * AI-proposed line). 'preview' / 'mayComeDown': from the saved price sheet (U3). 'unpriced': no
+   * figure; `priceReason` says why.
+   */
+  priceStatus: 'office' | PreviewLineStatus
+  /** The words under the line when it is not the office's figure: the badge or the reason. */
+  priceReason: string | null
 }
 
 export interface QuoteView extends Omit<QuoteState, 'lines'> {
   lines: QuoteViewLine[]
-  /** True when any waiting edit is laid over the saved copy — every aggregate is then blank. */
+  /** True when any waiting edit is laid over the saved copy. */
   touched: boolean
-  /** 'server': every figure shown is the office's. 'none': no figure is shown that the office did not send as it stands. */
-  priceSource: 'server' | 'none'
+  /**
+   * 'server': every figure shown is the office's. 'none': no figure is shown that the office did
+   * not send as it stands. 'preview': every figure shown comes from the saved price sheet
+   * (shared/quotePreview), labelled Preview — untouched lines included, never mixed with the office's.
+   */
+  priceSource: 'server' | 'none' | 'preview'
+  /** In preview mode: why the WHOLE quote shows no figure (rate provisional, supplier mismatch); else null. */
+  previewReason: string | null
+  /** In preview mode: each option holding lines, with its "may come down" / unpriced flags; else null. */
+  previewOptions: PreviewOption[] | null
+  /** In preview mode: when this phone saved the sheet the figures come from; else null. */
+  priceSheetAt: string | null
   /** A discount change waiting to reach the office — words only; its dollars come from the office. Null when none waits. */
   pendingDiscount: { type: 'military' | 'senior' | 'custom' | null; percent: number | null } | null
   /** The edits laid over the copy, in order. */
@@ -906,6 +1231,8 @@ export interface QuoteView extends Omit<QuoteState, 'lines'> {
   /** When the saved copy was taken from the office; null for a phone-only quote. */
   snapshotAt: string | null
   pricesNeedReview: boolean
+  /** The note of what this phone showed before the office's answer replaced it — "Check the prices" (U6) compares with it; null when none. */
+  shownBeforeSync: ShownFigures | null
   pendingRebase: string | null
 }
 
@@ -922,6 +1249,17 @@ type CatalogLookup = ReadonlyMap<string, FieldCatalogRow> | ((itemId: string) =>
  * — is blank, because the office's aggregates no longer describe these lines and this phone
  * will not make new ones. Server figures and phone figures are never mixed in one total.
  *
+ * WITH A SAVED PRICE SHEET (U3; Kyle, 2026-10-13: every line at its own difficulty): once anything is laid over, EVERY
+ * figure — untouched lines included — comes from shared/quotePreview over the sheet, labelled
+ * Preview (`priceSource: 'preview'`), and none of the office's figures survive into the view. One
+ * price source at a time: the office's figures describe the lines the office had; the preview
+ * describes the lines as they now stand; the two are never added together. This function still
+ * does no arithmetic itself — the multiply and the sums are the shared preview's, the selection
+ * table and the discount rows are the SAME shared builder the office's figures come from. An
+ * AI-proposed line (not confirmed) is not previewed, exactly as the office does not price it.
+ * Financing is never previewed. Nobody signs a preview: the firm number is set when the estimate
+ * is issued with signal.
+ *
  * Refused edits are NOT laid over (the office said no); they are listed in `refused` for the
  * banner. Delivered edits are laid over until the saved copy is refreshed from the office.
  */
@@ -929,6 +1267,7 @@ export function overlayQuote(
   mirror: QuoteMirrorRecord | null | undefined,
   ops: readonly QuoteOpRecord[],
   catalog: CatalogLookup = new Map(),
+  sheet: CachedPriceSheet | PhonePriceSheet | null = null,
 ): QuoteView {
   const lookup = typeof catalog === 'function' ? catalog : (id: string) => catalog.get(id)
   const ordered = [...ops].sort((a, b) => a.seq - b.seq)
@@ -938,7 +1277,9 @@ export function overlayQuote(
     ? structuredClone(mirror.payload)
     : emptyQuoteState(draftId, start?.body.kind === 'start_quote' ? start.body.title : undefined)
 
-  const lines: QuoteViewLine[] = base.lines.map((l) => ({ ...l, pendingPrice: false, localOnly: false, pendingOpIds: [] }))
+  const lines: QuoteViewLine[] = base.lines.map((l) => ({
+    ...l, pendingPrice: false, localOnly: false, pendingOpIds: [], priceStatus: 'office', priceReason: null,
+  }))
   const optionEntries = base.optionSet.options.map((o) => ({ ...o }))
   let pendingDiscount: QuoteView['pendingDiscount'] = null
   let touched = false
@@ -948,6 +1289,8 @@ export function overlayQuote(
   const touchLine = (line: QuoteViewLine, opId: string) => {
     line.lineTotal = null
     line.pendingPrice = true
+    line.priceStatus = 'unpriced'
+    line.priceReason = PRICED_WHEN_SIGNAL_RETURNS
     line.pendingOpIds.push(opId)
   }
 
@@ -978,6 +1321,8 @@ export function overlayQuote(
           pendingPrice: true,
           localOnly: true,
           pendingOpIds: [op.opId],
+          priceStatus: 'unpriced',
+          priceReason: PRICED_WHEN_SIGNAL_RETURNS,
         })
         break
       }
@@ -1064,18 +1409,82 @@ export function overlayQuote(
       optionSet,
       touched: false,
       priceSource: 'server',
+      previewReason: null,
+      previewOptions: null,
+      priceSheetAt: null,
       pendingDiscount: null,
       waiting,
       refused,
       localOnlyQuote: !mirror || mirror.origin === 'phone',
       snapshotAt: mirror?.origin === 'server' ? mirror.snapshotAt : null,
       pricesNeedReview: mirror?.pricesNeedReview ?? false,
+      shownBeforeSync: mirror?.shownBeforeSync ?? null,
       pendingRebase: mirror?.pendingRebase ?? null,
     }
   }
 
-  // Something is laid over: every aggregate is blank. The office's subtotals, selections, discount
-  // dollars, range and financing described different lines; this phone computes no replacement.
+  const tail = {
+    touched: true as const,
+    pendingDiscount,
+    waiting,
+    refused,
+    localOnlyQuote: !mirror || mirror.origin === 'phone',
+    snapshotAt: mirror?.origin === 'server' ? mirror.snapshotAt : null,
+    pricesNeedReview: mirror?.pricesNeedReview ?? false,
+    shownBeforeSync: mirror?.shownBeforeSync ?? null,
+    pendingRebase: mirror?.pendingRebase ?? null,
+  }
+  const lifecycle = base.lifecycle.issued ? { ...base.lifecycle, hasUnsavedChanges: true } : base.lifecycle
+
+  if (sheet) {
+    // Something is laid over and the phone holds a price sheet: every figure is a PREVIEW from it.
+    // The programme is the one waiting to reach the office if there is one, else the office's own
+    // (words only — type and percent; the dollars are the shared builder's over the preview).
+    const programme = pendingDiscount
+      ? programmeFor(pendingDiscount.type, pendingDiscount.percent)
+      : base.money.discount
+        ? programmeFor(base.money.discount.type, base.money.discount.percent)
+        : null
+    const confirmed = lines.filter((l) => l.state !== 'PROPOSED')
+    const preview = previewFigures(
+      confirmed.map((l) => ({ id: l.id, itemId: l.itemId, quantity: l.quantity, difficulty: l.difficulty, option: l.option })),
+      sheet,
+      programme,
+      { draftSupplierId: base.supplierId ?? null },
+    )
+    const previewed = new Map(preview.lines.map((p) => [p.id, p]))
+    for (const line of lines) {
+      const p = previewed.get(line.id)
+      if (!p) continue // an AI proposal: the office did not price it and neither does the preview
+      line.lineTotal = p.total
+      line.pendingPrice = p.total === null
+      line.priceStatus = p.status
+      line.priceReason = p.reason
+    }
+    return {
+      ...base,
+      lines,
+      optionSet,
+      options: preview.options.map((o) => ({
+        option: o.option as EstimateOptionLetter,
+        lineCount: lines.filter((l) => l.option === o.option).length,
+        subtotal: o.subtotal,
+        complete: o.subtotal !== null,
+      })),
+      money: previewMoney(preview, base.money.exclusiveOptions, programme),
+      total: previewTotal(preview),
+      lifecycle,
+      priceSource: 'preview',
+      previewReason: preview.quoteReason,
+      previewOptions: preview.options,
+      priceSheetAt: 'cachedAt' in sheet ? sheet.cachedAt : sheet.generatedAt,
+      ...tail,
+    }
+  }
+
+  // Something is laid over and there is no price sheet: every aggregate is blank. The office's
+  // subtotals, selections, discount dollars, range and financing described different lines; this
+  // phone computes no replacement.
   const withLines = optionEntries.filter((o) => o.lineCount > 0).map((o) => o.option)
   const money: QuoteState['money'] = {
     exclusiveOptions: base.money.exclusiveOptions,
@@ -1101,16 +1510,12 @@ export function overlayQuote(
     })),
     money,
     total: null,
-    lifecycle: base.lifecycle.issued ? { ...base.lifecycle, hasUnsavedChanges: true } : base.lifecycle,
-    touched: true,
+    lifecycle,
     priceSource: 'none',
-    pendingDiscount,
-    waiting,
-    refused,
-    localOnlyQuote: !mirror || mirror.origin === 'phone',
-    snapshotAt: mirror?.origin === 'server' ? mirror.snapshotAt : null,
-    pricesNeedReview: mirror?.pricesNeedReview ?? false,
-    pendingRebase: mirror?.pendingRebase ?? null,
+    previewReason: null,
+    previewOptions: null,
+    priceSheetAt: null,
+    ...tail,
   }
 }
 
@@ -1147,12 +1552,16 @@ export function emptyQuoteState(draftId: string, title?: string): QuoteState {
   }
 }
 
-/** The view for one draft from what is on the phone: its saved copy, its queue, and the saved price book for any added item. */
+/**
+ * The view for one draft from what is on the phone: its saved copy, its queue, the saved price book
+ * for any added item, and the saved price sheet (U3) — so a touched quote shows a labelled Preview
+ * when the phone holds a sheet and "Priced when signal returns" when it does not.
+ */
 export async function loadQuoteView(draftId: string): Promise<QuoteView> {
-  const [mirror, ops] = await Promise.all([db.quoteMirrors.get(draftId), quoteOpsForDraft(draftId)])
+  const [mirror, ops, sheet] = await Promise.all([db.quoteMirrors.get(draftId), quoteOpsForDraft(draftId), cachedPriceSheet()])
   const itemIds = ops.flatMap((o) => (o.body.kind === 'add_line' ? [o.body.itemId] : []))
   const catalog = await cachedCatalogRows(itemIds)
-  return overlayQuote(mirror, ops, catalog)
+  return overlayQuote(mirror, ops, catalog, sheet)
 }
 
 /** The `expected` for a line edit, read off the line as the screen shows it — the fields the patch changes. */
@@ -1164,4 +1573,29 @@ export function expectedForLine(line: Pick<QuoteLine, 'quantity' | 'difficulty' 
   if (patch.note !== undefined) expected.note = line.note
   if (patch.location !== undefined) expected.location = line.location
   return expected
+}
+
+/**
+ * The `expected` for each settings write, read off the quote AS THE SCREEN SHOWS IT (the view:
+ * the office's copy with any waiting edit laid over, so a second change to the same setting names
+ * the first as "what I saw" and replays after it). The discount's `percent` is compared with the
+ * STORED percent, which the office keeps only for a custom programme — never the 5 a military or
+ * senior row displays (withOfficeExpected has the same rule).
+ */
+export function expectedForDiscount(view: Pick<QuoteView, 'money' | 'pendingDiscount'>): NonNullable<Extract<QuoteOpBody, { kind: 'set_discount' }>['expected']> {
+  const shown = view.pendingDiscount ?? (view.money.discount ? { type: view.money.discount.type, percent: view.money.discount.percent } : { type: null, percent: null })
+  return { type: shown.type, percent: shown.type === 'custom' ? shown.percent : null }
+}
+
+export function expectedForMode(view: Pick<QuoteState, 'money'>): { exclusive: boolean } {
+  return { exclusive: view.money.exclusiveOptions }
+}
+
+export function expectedForDetails(view: Pick<QuoteState, 'title' | 'jobDescription'>): { title: string | null; jobDescription: string | null } {
+  return { title: view.title, jobDescription: view.jobDescription }
+}
+
+export function expectedForOptionMeta(view: Pick<QuoteState, 'optionSet'>, option: EstimateOptionLetter): { label: string | null; note: string | null } {
+  const entry = view.optionSet.options.find((o) => o.option === option)
+  return { label: entry?.label ?? null, note: entry?.note ?? null }
 }

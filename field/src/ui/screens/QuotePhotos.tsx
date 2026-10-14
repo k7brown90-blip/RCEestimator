@@ -77,8 +77,14 @@ export function QuotePhotos(props: {
    * even fetched.
    */
   collapsible?: boolean
+  /**
+   * No signal (Phase 7 U5): the upload is a live fetch and the list comes from the office, so taking,
+   * removing and listing are greyed WITH this reason (design §2, "Needs signal — photos for the
+   * estimate upload live"), never hidden. Null with signal.
+   */
+  offlineReason?: string | null
 }) {
-  const { photos, total, max, selected, tickLockedReason, busy, loadPreview, onToggle, onAdd, onRemove, collapsible = false } = props
+  const { photos, total, max, selected, tickLockedReason, busy, loadPreview, onToggle, onAdd, onRemove, collapsible = false, offlineReason = null } = props
   const [open, setOpen] = useState(!collapsible)
   const [caption, setCaption] = useState('')
   const [working, setWorking] = useState(false)
@@ -143,20 +149,23 @@ export function QuotePhotos(props: {
         <h2 className="text-sm font-semibold text-white">Photos for the estimate</h2>
       )}
       <p className="text-[11px] text-slate-400">{photosHint(max)}</p>
+      {offlineReason && <p className="text-[11px] text-amber-200">{offlineReason}</p>}
       <input
-        className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white"
+        className="w-full rounded border border-slate-600 bg-slate-900 p-2 text-xs text-white disabled:opacity-50"
         placeholder="Caption for the next photo (optional)"
         value={caption}
-        disabled={working || busy}
+        disabled={working || busy || Boolean(offlineReason)}
+        title={offlineReason ?? undefined}
         onChange={(e) => setCaption(e.target.value)}
       />
-      <PhotoPicker onPick={(f) => void add(f)} disabled={working || busy} />
+      <PhotoPicker onPick={(f) => void add(f)} disabled={working || busy || Boolean(offlineReason)} />
       {working && <p className="text-xs text-slate-400">Working...</p>}
       {said && <p className="text-xs text-emerald-300">{said}</p>}
       {error && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{error}</p>}
 
-      {photos === null && <p className="text-xs text-slate-500">Loading photos...</p>}
-      {photos !== null && photos.length === 0 && <p className="text-xs text-slate-400">{PHOTOS_EMPTY}</p>}
+      {photos === null && !offlineReason && <p className="text-xs text-slate-500">Loading photos...</p>}
+      {photos === null && offlineReason && <p className="text-xs text-slate-500">The job&apos;s photos list when you have signal.</p>}
+      {photos !== null && photos.length === 0 && <p className="text-xs text-slate-400">{offlineReason ? 'The job\'s photos list when you have signal.' : PHOTOS_EMPTY}</p>}
       {photos !== null && photos.length > 0 && (
         <>
           <p className="text-xs text-slate-300">
@@ -193,7 +202,8 @@ export function QuotePhotos(props: {
                   {p.canRemove && (
                     <button
                       type="button"
-                      disabled={working || busy}
+                      disabled={working || busy || Boolean(offlineReason)}
+                      title={offlineReason ?? undefined}
                       onClick={() => void remove(p.id)}
                       className="text-[11px] text-red-300 underline disabled:opacity-40"
                     >

@@ -18,6 +18,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import {
   ShowCustomerScreen,
   customerOptions,
+  previewShowReason,
   runSignNow,
   showCustomerReason,
   signFooter,
@@ -64,7 +65,7 @@ const lifecycle = (over: Partial<DraftLifecycle> = {}): DraftLifecycle => ({
 const issuedLifecycle = (over: Partial<DraftLifecycle> = {}, issued: Partial<NonNullable<DraftLifecycle['issued']>> = {}): DraftLifecycle =>
   lifecycle({
     status: 'finalized',
-    issued: { estimateId: 'est-1', number: '2026-1098', revision: 1, status: 'sent', signedAt: null, archived: false, customerUrl: null, ...issued },
+    issued: { estimateId: 'est-1', number: '2026-1098', revision: 1, status: 'sent', signedAt: null, issuedAt: '2026-10-01T12:00:00.000Z', validDays: 30, figuresKey: 'k', archived: false, customerUrl: null, ...issued },
     ...over,
   })
 
@@ -369,6 +370,48 @@ describe('Sign now — greyed with its reason', () => {
     expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Sign now</)
     expect(html).toContain('records the estimate and freezes its prices')
   })
+
+  // ─── Phase 7 U8 (2026-10-10): the one signing rule, and this phone's saved copy ───
+  it('the gate\'s reason greys Sign now ahead of the issue-or-reuse rule, and its warning is printed in the strip', () => {
+    const q = quote({ lifecycle: issuedLifecycle() })
+    const held = render(q, { signGate: { kind: 'signature', reason: 'A signature for estimate 2026-1098 by Mrs Panel is already saved on this phone (taken Oct 10, 2:14 PM) — waiting to reach the office', warning: null, daysLeft: 20 } })
+    expect(held).toMatch(/<button[^>]*disabled=""[^>]*>Sign now</)
+    expect(held).toContain('already saved on this phone')
+    const warned = render(q, { signGate: { kind: 'ok', reason: null, warning: 'Estimate 2026-1098 is valid until Oct 31, 2026 — 2 days left', daysLeft: 2 } })
+    expect(warned).not.toMatch(/<button[^>]*disabled=""[^>]*>Sign now</)
+    expect(warned).toContain('data-testid="validity-warning"')
+    expect(warned).toContain('2 days left')
+    // An ok gate changes nothing about the ordinary rule.
+    expect(render(quote(), { signGate: { kind: 'ok', reason: null, warning: null, daysLeft: null } })).toContain('records the estimate and freezes its prices')
+  })
+
+  it('"You changed this estimate on the phone" comes with the Discard my changes button in the technician\'s strip, never in the customer\'s part', () => {
+    const html = render(quote({ lifecycle: issuedLifecycle() }), {
+      signGate: { kind: 'changes', reason: 'You changed this estimate on the phone — Discard my changes to sign the issued version', warning: null, daysLeft: 20 },
+      onDiscardChanges: async () => {},
+    })
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Sign now</)
+    expect(html).toContain('You changed this estimate on the phone')
+    expect(html).toContain('>Discard my changes<')
+    // In the strip (before the customer's part begins), not under the homeowner's thumb.
+    expect(html.indexOf('>Discard my changes<')).toBeLessThan(html.indexOf('Panel upgrade and new circuits'))
+    // Without a handler there is no button, only the words.
+    expect(render(quote(), { signGate: { kind: 'changes', reason: 'You changed this estimate on the phone — Discard my changes to sign the issued version', warning: null, daysLeft: null } })).not.toContain('>Discard my changes<')
+  })
+
+  it('with no signal the strip names this phone\'s saved copy; the figures on the page are the office\'s own frozen table, unlabelled for the customer', () => {
+    const html = render(quote({ lifecycle: issuedLifecycle() }), { savedCopy: { savedAt: '2026-10-10T14:14:00.000Z' } })
+    expect(html).toContain('data-testid="saved-copy"')
+    expect(html).toContain('This phone&#x27;s copy, saved')
+    expect(html).toContain('recorded when signal returns')
+    expect(html).toContain('$1000.00')
+    expect(html).not.toContain('preview-watermark')
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Sign now</)
+    // The customer's part says nothing about signal, copies or the office's queue.
+    const customer = html.slice(html.indexOf('Panel upgrade and new circuits'))
+    for (const word of ['signal', 'saved copy', 'This phone', 'queue']) expect(customer, word).not.toContain(word)
+    expect(render(quote())).not.toContain('saved-copy')
+  })
 })
 
 describe('signFooter', () => {
@@ -491,5 +534,106 @@ describe('ShowCustomerScreen — financing under the total', () => {
     const html = render(quote({ money: money({ financing: FIN }) }))
     expect(html).toContain('Sign now')
     expect(html.match(/with financing/g)).toHaveLength(1)
+  })
+})
+
+// ─── preview mode (Phase 7 unit U6, 2026-10-10; Kyle's ruling 8) ─────────────
+
+/*
+  A quote changed on the phone with no signal: the Quote screen's figures are the labelled Preview
+  from the saved price sheet, and "Show the customer" hands the SAME screen over in preview mode.
+  The watermark is the first thing the customer reads; an option the sheet cannot price shows "—";
+  wire says it may come down; there is no financing line even if the payload carries one; and
+  "Sign now" is greyed with its reason in the technician's strip — nobody signs a preview.
+*/
+describe('ShowCustomerScreen — preview mode', () => {
+  const PLANS = DEFAULT_FINANCING_PLANS as FinancingPlan[]
+  const FIN = buildQuoteFinancing(PLANS, { A: 950, B: 475, 'A+B': 1406 })!
+  const preview = (over: Partial<Parameters<typeof ShowCustomerScreen>[0]['preview'] & object> = {}) => ({
+    sheetAt: '2026-10-10T13:02:00.000Z',
+    options: [
+      { option: 'A', subtotal: 1000, mayComeDown: true, unpriced: false },
+      { option: 'B', subtotal: null, mayComeDown: false, unpriced: true },
+    ],
+    reason: null,
+    ...over,
+  })
+  /** Option B has a Difficult line the sheet cannot price: no selection row holds B. */
+  const previewQuote = (over: Record<string, unknown> = {}) =>
+    quote({
+      money: money({ selections: { A: sel('A', { subtotal: 1000, base: 1000, discount: 50, total: 950 }) }, financing: FIN }),
+      options: [
+        { option: 'A', lineCount: 1, subtotal: 1000, complete: true },
+        { option: 'B', lineCount: 1, subtotal: null, complete: false },
+      ],
+      ...over,
+    })
+  const tech = (html: string) => /data-testid="tech-strip">([\s\S]*?)<\/div>/.exec(html)?.[1] ?? ''
+  const customerPart = (html: string) => html.replace(/<div class="sticky top-0[^>]*data-testid="tech-strip">[\s\S]*?<\/div>/, '')
+
+  it('the watermark is on the customer\'s part of the page, the total is a "Preview total", and the strip says where the prices came from', () => {
+    const html = render(previewQuote(), { preview: preview(), initialSelection: ['A'] })
+    expect(customerPart(html)).toContain('Preview — the final price is set when the estimate is issued')
+    expect(html).toContain('data-testid="preview-watermark"')
+    expect(html).toContain('Preview total')
+    expect(totalOf(html)).toBe('$950.00')
+    expect(tech(html)).toContain('Preview — prices saved on this phone at ')
+    // Without preview there is no watermark and the total is just "Total".
+    const plain = render(quote())
+    expect(plain).not.toContain('preview-watermark')
+    expect(plain).not.toContain('Preview total')
+  })
+
+  it('an option the sheet cannot price shows "—", not "not priced yet"; one holding wire says it may come down', () => {
+    const html = render(previewQuote(), { preview: preview() })
+    expect(html).not.toContain('not priced yet')
+    expect(html).toMatch(/aria-label="Option B"[\s\S]*?<span class="shrink-0 text-right text-2xl font-bold">—</)
+    expect(html).toContain('may come down once issued')
+    // The office's own figures: the old words stand.
+    const office = render(previewQuote())
+    expect(office).toContain('not priced yet')
+    expect(office).not.toContain('may come down')
+  })
+
+  it('NO financing line, even when the payload carries the office\'s figures', () => {
+    const html = render(previewQuote(), { preview: preview(), initialSelection: ['A'] })
+    expect(html).not.toContain('with financing')
+    expect(html).not.toMatch(/\/mo/)
+    expect(render(previewQuote(), { initialSelection: ['A'] })).toContain('with financing')
+  })
+
+  it('"Sign now" is greyed with its reason in the technician\'s strip — nobody signs a preview, whatever is ticked', () => {
+    const html = render(previewQuote(), { preview: preview(), initialSelection: ['A'] })
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Sign now</)
+    expect(tech(html)).toContain('Signing needs the issued estimate — issue it when this phone has signal')
+    expect(customerPart(html)).not.toContain('Signing needs the issued estimate')
+    // Even on an issued-and-unchanged quote: the figures on screen are a preview, so the reason stands.
+    const issued = render(previewQuote({ lifecycle: issuedLifecycle() }), { preview: preview(), initialSelection: ['A'] })
+    expect(issued).toMatch(/<button[^>]*disabled=""[^>]*>Sign now</)
+    expect(tech(issued)).toContain('Signing needs the issued estimate')
+  })
+
+  it('a ticked unpriced option: the customer is told neutrally; the technician\'s strip says it is priced when signal returns, with the sheet\'s reason when there is one', () => {
+    const html = render(previewQuote(), { preview: preview(), initialSelection: ['A', 'B'] })
+    expect(totalOf(html)).toBe('—')
+    expect(customerPart(html)).toContain('Part of this is priced when the estimate is issued.')
+    expect(tech(html)).toMatch(/Part of this is priced when signal returns/)
+    const mismatch = render(previewQuote(), { preview: preview({ reason: 'This quote prices at a different supplier than the prices saved on this phone — priced when signal returns' }), initialSelection: ['A', 'B'] })
+    expect(tech(mismatch)).toContain('different supplier')
+    expect(customerPart(mismatch)).not.toContain('supplier')
+  })
+
+  it('nothing of the queue, the office or the signal reaches the customer\'s part of the page', () => {
+    const html = customerPart(render(previewQuote(), { preview: preview() }))
+    for (const word of [/signal/i, /office/i, /queue/i, /discard/i, /waiting/i, /labou?r/i, /\bcost\b/i, /synchrony/i, /\bhours?\b/i]) expect(html).not.toMatch(word)
+  })
+
+  it('previewShowReason: live when some option has a preview figure; says why when none does, naming the sheet\'s reason', () => {
+    expect(previewShowReason(previewQuote(), preview())).toBeNull()
+    expect(previewShowReason(null, preview())).toMatch(/loading/)
+    expect(previewShowReason(previewQuote({ lines: [] }), preview())).toMatch(/Add some work/)
+    expect(previewShowReason(previewQuote({ money: money({ pickable: [] }) }), preview())).toMatch(/waiting on you/)
+    expect(previewShowReason(previewQuote({ money: money({ selections: {} }) }), preview())).toBe('Nothing to show yet — every option has a line that is priced when signal returns')
+    expect(previewShowReason(previewQuote({ money: money({ selections: {} }) }), preview({ reason: "The office's labour rate needs checking — priced when signal returns" }))).toBe("Nothing to show yet — the office's labour rate needs checking — priced when signal returns")
   })
 })

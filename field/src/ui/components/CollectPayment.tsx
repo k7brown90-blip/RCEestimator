@@ -67,7 +67,16 @@ export function FinancingBlockedNote({ info }: { info: Pick<VisitPaymentInfo, 'f
   )
 }
 
-export function CollectPayment({ visitId, startOpen = false }: { visitId: string; startOpen?: boolean }) {
+export function CollectPayment({ visitId, startOpen = false, blockedReason = null }: {
+  visitId: string
+  startOpen?: boolean
+  /**
+   * Greyed WITH this reason, never hidden (Phase 7 U8, 2026-10-10): while a signature taken on this
+   * phone has not reached the office there is no signed estimate to collect against — "Waiting for
+   * the signature to reach the office" (design §2). The caller words it; this only prints it.
+   */
+  blockedReason?: string | null
+}) {
   const [open, setOpen] = useState(startOpen)
   const [info, setInfo] = useState<VisitPaymentInfo | null | 'none'>(null)
   const [error, setError] = useState<string | null>(null)
@@ -158,6 +167,22 @@ export function CollectPayment({ visitId, startOpen = false }: { visitId: string
     if (open && !loaded) void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
+
+  if (blockedReason !== null) {
+    return (
+      <div className="space-y-1">
+        <button
+          type="button"
+          disabled
+          title={blockedReason}
+          className="w-full cursor-not-allowed rounded-lg border border-emerald-800 bg-emerald-950/40 p-2 text-xs text-emerald-200 opacity-50"
+        >
+          💳 Collect payment
+        </button>
+        <p className="text-[11px] text-amber-200">{blockedReason}</p>
+      </div>
+    )
+  }
 
   if (!open) {
     return (

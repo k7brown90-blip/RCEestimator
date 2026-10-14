@@ -13,6 +13,15 @@
  * workbook's hours and Red Cedar's supplier cost off every row it sends this screen, because the
  * technician hands the phone to the customer (constants.md "Field app").
  *
+ * WITH NO SIGNAL (Phase 7 unit U5, 2026-10-10): the same search and the same section cards, over the
+ * price book saved on this phone at the Today screen (lib/quoteSync.ts syncQuoteCatalog). The test is
+ * the shared one the server runs (shared/quoteCatalog.ts matchesCatalogSearch / inSection), the rows
+ * come in the server's order, and the list is cut at the same page size (CACHED_CATALOG_PAGE, the
+ * server's FIELD_CATALOG_LIMIT) — so the two read alike, and "Showing 60 of 140" means the same
+ * thing. The book's age is always on screen while the saved copy is in use: "Price book saved on
+ * this phone at 7:02 AM". A search that loses signal mid-way falls back to the saved copy and tells
+ * the screen (onNetworkFailure); an HTTP refusal is never treated as no signal.
+ *
  * Tapping an item adds it (quantity 1) to the option chosen in "Adding into"; quantity, difficulty,
  * place and note are then set on the line itself, as before.
  */
@@ -21,11 +30,14 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   browseQuoteSection,
   fetchQuoteSections,
+  isNetworkFailure,
   searchQuoteCatalog,
   type QuoteCatalogRow,
   type QuoteSection,
 } from '../../lib/crmSync'
+import { CACHED_CATALOG_PAGE, cachedCatalogMeta, searchCachedCatalog } from '../../lib/quoteSync'
 import type { EstimateOptionLetter } from '../../../../shared/estimateOptions'
+import { PriceBookAge } from './QuoteOffline'
 
 /** The same gap badges the office sees before it adds a line — worded alike, hours never shown. */
 export function CatalogBadges({ row }: { row: QuoteCatalogRow }) {
@@ -120,7 +132,9 @@ export function SectionCards({ sections, disabledReason, onPick }: {
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
-export function QuoteCatalogPicker({ search, onSearch, lockedReason, busy, addInto, onPick, onError, children }: {
+type Page = { rows: QuoteCatalogRow[]; truncated: boolean; total: number }
+
+export function QuoteCatalogPicker({ search, onSearch, lockedReason, busy, addInto, onPick, onError, offline = false, onNetworkFailure, children }: {
   search: string
   onSearch: (v: string) => void
   /** The server's reason this quote is shut (signed), or null. Greys search, browse and every result. */
@@ -130,42 +144,89 @@ export function QuoteCatalogPicker({ search, onSearch, lockedReason, busy, addIn
   /** Adds the item; resolves true when it landed (so the picker can say so). */
   onPick: (row: QuoteCatalogRow) => Promise<boolean>
   onError: (message: string) => void
+  /** The screen knows the phone has no signal: read the saved book, never ask the server. */
+  offline?: boolean
+  /** A live search got no answer (fetch threw): the picker fell back to the saved book and the screen should know. */
+  onNetworkFailure?: () => void
   /** Rendered between the search box and the lists (the assessment findings). */
   children?: ReactNode
 }) {
-  const [searchRows, setSearchRows] = useState<{ rows: QuoteCatalogRow[]; truncated: boolean; total: number } | null>(null)
+  const [searchRows, setSearchRows] = useState<Page | null>(null)
   const [browsing, setBrowsing] = useState(false)
   const [sections, setSections] = useState<QuoteSection[] | null>(null)
   const [section, setSection] = useState<string | null>(null)
-  const [sectionRows, setSectionRows] = useState<{ rows: QuoteCatalogRow[]; truncated: boolean; total: number } | null>(null)
+  const [sectionRows, setSectionRows] = useState<Page | null>(null)
   const [added, setAdded] = useState<string | null>(null)
+  // The last list came from the book saved on this phone (no signal, or signal lost mid-search).
+  const [fromSaved, setFromSaved] = useState(false)
+  // When the saved book was saved — undefined until read; null when nothing is saved.
+  const [savedAt, setSavedAt] = useState<string | null | undefined>(undefined)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searching = search.trim().length >= 2
+
+  const usingSaved = offline || fromSaved
+  useEffect(() => {
+    if (!usingSaved) return
+    cachedCatalogMeta().then((m) => setSavedAt(m?.cachedAt ?? null)).catch(() => setSavedAt(null))
+  }, [usingSaved])
+
+  /**
+   * Live first unless the phone knows it has no signal; on NO ANSWER (fetch threw) the saved book
+   * answers instead and the screen is told. A refusal is reported as before and nothing is substituted.
+   */
+  const liveOrSaved = async <T,>(live: () => Promise<T>, saved: () => Promise<T>): Promise<T> => {
+    if (!offline) {
+      try {
+        const r = await live()
+        setFromSaved(false)
+        return r
+      } catch (err) {
+        if (!isNetworkFailure(err)) throw err
+        onNetworkFailure?.()
+      }
+    }
+    const r = await saved()
+    setFromSaved(true)
+    return r
+  }
+  const page = (r: { atomics: QuoteCatalogRow[]; truncated: boolean; total: number }): Page => ({ rows: r.atomics, truncated: r.truncated, total: r.total })
 
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current)
     if (!searching) { setSearchRows(null); return }
     timer.current = setTimeout(() => {
-      searchQuoteCatalog(search.trim())
-        .then((r) => setSearchRows({ rows: r.atomics, truncated: r.truncated, total: r.total }))
+      const term = search.trim()
+      liveOrSaved(
+        () => searchQuoteCatalog(term),
+        () => searchCachedCatalog({ search: term, limit: CACHED_CATALOG_PAGE }),
+      )
+        .then((r) => setSearchRows(page(r)))
         .catch((err) => onError(errText(err)))
     }, 300)
     return () => { if (timer.current) clearTimeout(timer.current) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search])
+  }, [search, offline])
 
   const openBrowse = () => {
     setBrowsing(true)
     setAdded(null)
     if (sections === null) {
-      fetchQuoteSections().then((r) => setSections(r.sections)).catch((err) => { setBrowsing(false); onError(errText(err)) })
+      liveOrSaved(
+        () => fetchQuoteSections().then((r) => r.sections),
+        () => cachedCatalogMeta().then((m) => m?.sections ?? []),
+      )
+        .then(setSections)
+        .catch((err) => { setBrowsing(false); onError(errText(err)) })
     }
   }
   const openSection = (name: string) => {
     setSection(name)
     setSectionRows(null)
-    browseQuoteSection(name)
-      .then((r) => setSectionRows({ rows: r.atomics, truncated: r.truncated, total: r.total }))
+    liveOrSaved(
+      () => browseQuoteSection(name),
+      () => searchCachedCatalog({ section: name, limit: CACHED_CATALOG_PAGE }),
+    )
+      .then((r) => setSectionRows(page(r)))
       .catch((err) => { setSection(null); onError(errText(err)) })
   }
   const pick = async (row: QuoteCatalogRow) => {
@@ -186,6 +247,8 @@ export function QuoteCatalogPicker({ search, onSearch, lockedReason, busy, addIn
         title={lockedReason ?? undefined}
         onChange={(e) => { setAdded(null); onSearch(e.target.value) }}
       />
+      {/* The age of the saved book, always on screen while it is the one answering (design §3). */}
+      {usingSaved && savedAt !== undefined && <PriceBookAge cachedAt={savedAt} />}
       {children}
 
       {added && <p className="rounded bg-emerald-950/50 p-2 text-xs text-emerald-200">{added}</p>}
@@ -199,7 +262,7 @@ export function QuoteCatalogPicker({ search, onSearch, lockedReason, busy, addIn
           disabledReason={lockedReason}
           busy={busy}
           addInto={addInto}
-          emptyText="Nothing in the book matches. Try the section cards instead."
+          emptyText={usingSaved ? 'Nothing in the book saved on this phone matches. Try the section cards instead.' : 'Nothing in the book matches. Try the section cards instead.'}
           onPick={(r) => void pick(r)}
         />
       )}

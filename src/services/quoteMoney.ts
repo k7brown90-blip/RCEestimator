@@ -22,21 +22,17 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
-import type { EstimateOptionLetter } from "../../shared/estimateOptions";
 import {
-  priceAllSelections,
+  buildMoneyTable,
   type PricingFigures,
-  type QuoteDiscount,
-  type QuoteDiscountRow,
   type QuoteMoney,
-  type QuoteRange,
   type SelectionPrice,
 } from "../../shared/quoteMoney";
 import { summarizeOptions, type ComputedEstimate, type OptionSummary } from "./atomicEstimateEngine";
 import { pricingFiguresFromIssued } from "./issuedPricingFigures";
 import { presentDecision } from "../../shared/presentIssue";
 import type { DraftLifecycle } from "../../shared/draftLifecycle";
-import { discountLabel, discountTerms, programmeFor, type DiscountProgramme } from "./discounts";
+import { programmeFor, type DiscountProgramme } from "./discounts";
 import { buildQuoteFinancing, type FinancingPlan, type QuoteFinancing } from "../../shared/financing";
 import { getActiveFinancingPlans, plansFromSnapshot } from "./financingSettings";
 import { parseWarrantyJson } from "./stripePayments";
@@ -115,70 +111,12 @@ export function buildQuoteMoneyFromFigures(
   programme: DiscountProgramme | null,
   financing?: FinancingInput | null,
 ): QuoteMoney {
-  const used = figures.options;
-  const pickable = used.map((o) => o.option as EstimateOptionLetter);
-  // One-or-the-other only means anything with two or more options to choose between.
-  const exclusive = exclusiveOptions && used.length > 1;
-  // The range reads the SAME subtotals the table does, so the headline range and the
-  // ticked-combination price can never disagree by a cent.
-  const subtotals = used.map((o) => o.subtotal);
-  const everyPriced = subtotals.every((s) => s !== null);
-
-  const range: QuoteRange | null =
-    exclusive && everyPriced
-      ? {
-          min: round2(Math.min(...(subtotals as number[]))),
-          max: round2(Math.max(...(subtotals as number[]))),
-        }
-      : null;
-  // THE one table: every combination the customer could tick, priced by the shared pricer.
-  const selections = priceAllSelections(figures);
-
-  let discount: QuoteDiscount | null = null;
-  let discountedTotal: number | null = null;
-  let discountedRange: QuoteRange | null = null;
-
-  if (programme) {
-    const rowFor = (sel: string[], label: string): QuoteDiscountRow | null => {
-      const price: SelectionPrice | undefined = selections[[...sel].sort().join("+")];
-      if (!price) return null;
-      return {
-        label,
-        base: price.base,
-        comboSaving: price.comboSaving,
-        amount: price.discount,
-        capped: price.discountCapped,
-        after: price.total,
-      };
-    };
-
-    const letters = used.map((o) => o.option);
-    const sets: string[][] = exclusive ? letters.map((o) => [o]) : letters.length > 0 ? [letters] : [];
-    const rows: QuoteDiscountRow[] = [];
-    let pricedOnceComplete = false;
-    for (const sel of sets) {
-      const label = sel.length === letters.length && letters.length > 1 ? "whole job" : `Option ${sel[0]}`;
-      const row = rowFor(sel, label);
-      if (row) rows.push(row);
-      else pricedOnceComplete = true;
-    }
-
-    discount = {
-      type: programme.type,
-      percent: programme.percent,
-      label: discountLabel(programme),
-      terms: discountTerms(programme),
-      rows,
-      pricedOnceComplete,
-    };
-    if (!exclusive) discountedTotal = rows[0]?.after ?? null;
-    else if (rows.length === sets.length && rows.length > 0) {
-      discountedRange = { min: Math.min(...rows.map((r) => r.after)), max: Math.max(...rows.map((r) => r.after)) };
-    }
-  }
-
-  const money: QuoteMoney = { exclusiveOptions, range, discount, discountedTotal, discountedRange, pickable, selections };
-  if (financing) money.financing = financingForSelections(financing, selections);
+  // The table itself (selections, range, discount rows) is the SHARED builder since Phase 7 unit U3
+  // (2026-10-09): the phone's labelled Preview with no signal shapes its figures with the same
+  // function, so the two cannot drift. Only the Synchrony figures are attached here — their
+  // calculator needs the rate, which stays on the server.
+  const money = buildMoneyTable(figures, exclusiveOptions, programme);
+  if (financing) money.financing = financingForSelections(financing, money.selections);
   return money;
 }
 

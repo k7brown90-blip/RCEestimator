@@ -118,3 +118,16 @@ describe('QuoteCatalogPicker, first screen', () => {
     expect(html).toContain('Browse by section')
   })
 })
+
+// ─── Phase 7 U5 (2026-10-10): the picker with no signal reads the book saved on this phone ────────
+
+describe('QuoteCatalogPicker, first screen with no signal', () => {
+  it('is the same search box and "Browse by section" — the saved book answers behind them', () => {
+    const html = renderToStaticMarkup(
+      <QuoteCatalogPicker search="" onSearch={() => {}} lockedReason={null} busy={false} addInto="A" onPick={async () => true} onError={() => {}} offline />,
+    )
+    expect(html).toContain('Search the price book')
+    expect(html).toContain('Browse by section')
+    expect(html).not.toContain('disabled=""')
+  })
+})

@@ -50,7 +50,7 @@ vi.mock("../src/services/confirmationEmail", async (importOriginal) => {
 });
 
 import { app } from "../src/app";
-import { browseSections, createDraft, fieldCatalogSnapshot } from "../src/services/atomicEstimateService";
+import { browseSections, createDraft, fieldCatalogSnapshot, literalContains } from "../src/services/atomicEstimateService";
 import { inSection, matchesCatalogSearch, type FieldCatalogRow, type FieldCatalogSnapshot } from "../shared/quoteCatalog";
 import { deleteAtomics, ensurePriceBookGates, noLabourAtomic, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
 
@@ -149,6 +149,22 @@ describe("GET /health-record/quote-catalog — the CRM's browse, minus the offic
     const rows = res.body.data.atomics as Row[];
     expect(rows.map((r) => r.itemId)).toEqual([ASM]);
     expect(rows[0]!.isAssembly).toBe(true);
+  });
+
+  it("a typed % or _ is the literal character, online and in the phone's saved-copy matcher alike (Phase 7 U5)", async () => {
+    // Prisma's `contains` hands the text to LIKE untouched: before this, "FQC%device" matched
+    // "FQC plain device" online while the phone's substring test did not. Both doors now agree.
+    const online = async (search: string) =>
+      ((await auth(request(app).get("/health-record/quote-catalog").query({ search }))).body.data.atomics as Row[]).map((r) => r.itemId);
+    const snapshot = (await fieldCatalogSnapshot(prisma)) as FieldCatalogSnapshot;
+    const rows = snapshot.rows.filter((r: FieldCatalogRow) => r.itemId.startsWith("FQC-"));
+    const offline = (search: string) => rows.filter((r: FieldCatalogRow) => matchesCatalogSearch(r, search)).map((r: FieldCatalogRow) => r.itemId);
+    for (const search of ["FQC%device", "FQC_plain", "FQC plain", "by the_foot", "100%"]) {
+      expect(await online(search), search).toEqual(offline(search));
+    }
+    expect(await online("FQC%device")).toEqual([]);
+    expect(await online("FQC plain")).toEqual([EA]);
+    expect(literalContains("a\\b%c_d")).toBe("a\\\\b\\%c\\_d");
   });
 
   it("a row carries ONLY words and yes/no badges — no hours, no unit basis, no cost, no figure of any kind", async () => {

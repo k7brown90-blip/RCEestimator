@@ -61,7 +61,10 @@ import { app } from "../src/app";
 import { notifyOwnerSigned } from "../src/services/issuedEstimateSend";
 import { addLine, createDraft, setOptionsMode } from "../src/services/atomicEstimateService";
 import { CONSENT_TEXT } from "../shared/consentText";
-import { CONSENT_TEXT as SERVICE_CONSENT_TEXT } from "../src/services/issuedEstimateService";
+import { CONSENT_TEXT as SERVICE_CONSENT_TEXT, issuedFiguresKey } from "../src/services/issuedEstimateService";
+import { sendBrandedEmail } from "../src/services/confirmationEmail";
+import { inPersonSignBodySchema, oneLine, REFUSAL_EMAILS_PER_TECH_PER_HOUR, signInPerson } from "../src/services/inPersonSigning";
+import { randomUUID } from "node:crypto";
 import { billedTotalOf } from "../src/services/stripePayments";
 import { TEST_SIGNATURE } from "./helpers/signature";
 import { deleteAtomics, ensurePriceBookGates, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
@@ -116,6 +119,8 @@ afterAll(async () => {
   await prisma.priceBookDraftOption.deleteMany({ where: { draftId: { in: draftIds } } });
   await prisma.priceBookDraftEstimate.deleteMany({ where: { id: { in: draftIds } } });
   await prisma.visitAssignment.deleteMany({ where: { visitId: { in: visitIds } } });
+  // The refused-signature events this tech's captures wrote (Phase 7 U7); the write is fire-and-forget.
+  await prisma.systemEvent.deleteMany({ where: { source: "field-signature", detailsJson: { contains: `tech:${technicianId}` } } });
   await prisma.technician.deleteMany({ where: { id: { in: [technicianId, strangerId] } } });
   await prisma.visit.deleteMany({ where: { customerId } });
   await prisma.property.deleteMany({ where: { id: { in: propertyIds } } });
@@ -608,5 +613,382 @@ describe("Raise a change order - both doors reopen the open change order for the
     expect(crm.status).toBe(409);
     expect(field.status).toBe(409);
     expect(field.body.error.message).toBe(crm.body.error);
+  });
+});
+
+// ─── Captured on the phone with no signal (Phase 7 unit U7, 2026-10-10) ───────────────
+
+/*
+  The phone saves the signature first and sends it when it can. The route is the same thin wrapper;
+  what these pin is the DOOR: the body's five capture fields reach applySignature, a resend gets the
+  same 201 and runs no side effect twice, a refusal of a phone capture tells Kyle (email + a
+  "field-signature" SystemEvent), the office's door and a plain phone body do neither, and the quote
+  payload hands the phone the validity window and the figures key it echoes.
+*/
+describe("a signature captured on the phone and delivered later (Phase 7 U7)", () => {
+  const MINUTE = 60_000;
+  async function captureBody(estimateId: string, over: Record<string, unknown> = {}) {
+    const clientSignatureId = randomUUID();
+    const capturedAt = new Date(Date.now() - MINUTE).toISOString();
+    return {
+      ...signBody(),
+      clientSignatureId,
+      capturedAt,
+      sentAt: new Date().toISOString(),
+      revision: 1,
+      figuresKey: await issuedFiguresKey(prisma, estimateId),
+      consentText: CONSENT_TEXT,
+      ...over,
+    };
+  }
+  const refusedEvents = () =>
+    prisma.systemEvent.findMany({ where: { source: "field-signature", detailsJson: { contains: `tech:${technicianId}` } }, orderBy: { createdAt: "desc" } });
+
+  // The refusal email goes where the "it was signed" email goes (SUMMARY_EMAIL, else GMAIL_USER);
+  // neither is set on a test machine, so the sender would skip. sendBrandedEmail itself is mocked.
+  let summaryEmailBefore: string | undefined;
+  beforeAll(() => {
+    summaryEmailBefore = process.env.SUMMARY_EMAIL;
+    process.env.SUMMARY_EMAIL = "owner@example.test";
+  });
+  afterAll(() => {
+    if (summaryEmailBefore === undefined) delete process.env.SUMMARY_EMAIL;
+    else process.env.SUMMARY_EMAIL = summaryEmailBefore;
+  });
+  beforeEach(() => {
+    vi.mocked(sendBrandedEmail).mockClear();
+  });
+
+  it("the quote payload's lifecycle carries issuedAt, validDays and the server's figuresKey — the phone echoes it and signs", async () => {
+    const q = await issuedQuote("payload-key");
+    const payload = await auth(request(app).get(`/health-record/quotes/${q.draftId}`));
+    expect(payload.status, JSON.stringify(payload.body)).toBe(200);
+    const est = await row(q.estimateId);
+    expect(payload.body.data.lifecycle.issued).toMatchObject({
+      estimateId: q.estimateId,
+      revision: 1,
+      issuedAt: est.createdAt.toISOString(),
+      validDays: est.validDays,
+      figuresKey: await issuedFiguresKey(prisma, q.estimateId),
+    });
+    expect(payload.body.data.lifecycle.issued.figuresKey).toMatch(/^[0-9a-f]{64}$/);
+    for (const key of keysOf(payload.body.data.lifecycle)) expect(key, key).not.toMatch(SECRET_KEY);
+
+    const res = await signFromPhone(q.estimateId, await captureBody(q.estimateId, { figuresKey: payload.body.data.lifecycle.issued.figuresKey }));
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+  });
+
+  it("a resend with the same capture id answers the SAME 201, and Kyle, the job and the archive sweep run once", async () => {
+    const propertyId = await newProperty();
+    const rival = await issuedQuote("replay-rival", { propertyId });
+    await prisma.issuedEstimate.update({ where: { id: rival.estimateId }, data: { status: "sent" } });
+    const q = await issuedQuote("replay-winner", { propertyId });
+    const body = await captureBody(q.estimateId);
+
+    const first = await signFromPhone(q.estimateId, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const again = await signFromPhone(q.estimateId, body);
+    expect(again.status, JSON.stringify(again.body)).toBe(201);
+    // The original success: the same number, options and total; the same job.
+    expect(again.body.data).toMatchObject({
+      signed: true,
+      estimateId: q.estimateId,
+      number: first.body.data.number,
+      selectedOptions: first.body.data.selectedOptions,
+      total: first.body.data.total,
+      jobVisitId: first.body.data.jobVisitId,
+    });
+    for (const key of keysOf(again.body.data)) expect(key, key).not.toMatch(SECRET_KEY);
+
+    expect(notifyOwnerSigned).toHaveBeenCalledTimes(1);
+    expect(await prisma.visit.count({ where: { customerId, purpose: `${MARK} replay-winner`, status: "contracted" } })).toBe(1);
+    expect(await prisma.issuedEstimateEvent.count({ where: { estimateId: q.estimateId, type: "signed" } })).toBe(1);
+    expect(await prisma.issuedEstimateEvent.count({ where: { estimateId: rival.estimateId, type: "archived" } })).toBe(1);
+    const est = await row(q.estimateId);
+    expect(est.clientSignatureId).toBe(body.clientSignatureId);
+    expect(est.signatureCapturedAt!.toISOString()).toBe(body.capturedAt);
+    // Nothing was refused, so Kyle got no refusal email.
+    expect(sendBrandedEmail).not.toHaveBeenCalled();
+  });
+
+  it("a refused signature the phone HELD (heldOnPhone) emails Kyle to call the customer and writes a field-signature SystemEvent", async () => {
+    const q = await issuedQuote("refused-void");
+    await prisma.issuedEstimate.update({ where: { id: q.estimateId }, data: { status: "void", voidedAt: new Date(), voidReason: "test" } });
+    const body = await captureBody(q.estimateId, { heldOnPhone: true });
+    const res = await signFromPhone(q.estimateId, body);
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toMatch(/is void/);
+
+    await vi.waitFor(() => expect(sendBrandedEmail).toHaveBeenCalledTimes(1));
+    const mail = vi.mocked(sendBrandedEmail).mock.calls[0][0];
+    expect(mail.subject).toContain(q.number);
+    expect(mail.subject).toContain(`${MARK} Customer`);
+    expect(mail.bodyHtml).toContain("An in-person signature taken offline was refused:");
+    expect(mail.bodyHtml).toContain("This estimate is void.");
+    expect(mail.bodyHtml).toContain(`contact <strong>${MARK} Customer</strong>`);
+    expect(mail.bodyHtml).toContain("615-555-0171");
+    expect(mail.bodyHtml).toContain(NAME);
+
+    await vi.waitFor(async () => {
+      const events = await refusedEvents();
+      expect(events.some((e) => e.message.includes(q.number) && e.message.includes("This estimate is void."))).toBe(true);
+    });
+    const event = (await refusedEvents()).find((e) => e.message.includes(q.number))!;
+    expect(event.level).toBe("warn");
+    expect(event.message).toContain(`contact ${MARK} Customer`);
+    expect(JSON.parse(event.detailsJson!)).toMatchObject({ estimateId: q.estimateId, clientSignatureId: body.clientSignatureId, capturedAt: body.capturedAt });
+    expect(notifyOwnerSigned).not.toHaveBeenCalled();
+  });
+
+  it("a refusal of the capture's own first try (the customer standing there, heldOnPhone absent) sends no email and writes no event (D1)", async () => {
+    const q = await issuedQuote("refused-live");
+    await prisma.issuedEstimate.update({ where: { id: q.estimateId }, data: { status: "void", voidedAt: new Date(), voidReason: "test" } });
+    const before = (await refusedEvents()).length;
+    const live = await signFromPhone(q.estimateId, await captureBody(q.estimateId));
+    expect(live.status).toBe(400);
+    expect(live.body.error.message).toMatch(/is void/);
+    const explicit = await signFromPhone(q.estimateId, await captureBody(q.estimateId, { heldOnPhone: false }));
+    expect(explicit.status).toBe(400);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sendBrandedEmail).not.toHaveBeenCalled();
+    expect((await refusedEvents()).length).toBe(before);
+  });
+
+  it("a refusal WITHOUT a capture id (the office's screen, a plain phone body) sends no email and writes no event", async () => {
+    const q = await issuedQuote("refused-plain");
+    await prisma.issuedEstimate.update({ where: { id: q.estimateId }, data: { status: "void", voidedAt: new Date(), voidReason: "test" } });
+    const before = (await refusedEvents()).length;
+    expect((await signFromPhone(q.estimateId)).status).toBe(400);
+    const office = await request(app).post(`/issued-estimates/${q.estimateId}/sign-in-person`).send(signBody());
+    expect(office.status).toBe(400);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sendBrandedEmail).not.toHaveBeenCalled();
+    expect((await refusedEvents()).length).toBe(before);
+  });
+
+  // Security review M1 (2026-10-13): one tech token must not be able to email Kyle at will.
+  describe("refusal notices are bounded (security review M1)", () => {
+    const refusedFor = (captureId: string) =>
+      prisma.systemEvent.findMany({
+        where: { source: "field-signature", AND: [{ detailsJson: { contains: '"kind":"signature-refused"' } }, { detailsJson: { contains: `"clientSignatureId":"${captureId}"` } }] },
+      });
+    const settle = () => new Promise((r) => setTimeout(r, 300));
+
+    it("the SAME refused capture sent again and again emails Kyle once and writes one event", async () => {
+      const q = await issuedQuote("refused-repeat");
+      await prisma.issuedEstimate.update({ where: { id: q.estimateId }, data: { status: "void", voidedAt: new Date(), voidReason: "test" } });
+      const body = await captureBody(q.estimateId, { heldOnPhone: true });
+      for (let i = 0; i < 3; i++) expect((await signFromPhone(q.estimateId, body)).status).toBe(400);
+      // The same id with a different story (name) is still the same capture.
+      expect((await signFromPhone(q.estimateId, { ...body, signerName: "Someone Else" })).status).toBe(400);
+      await vi.waitFor(() => expect(sendBrandedEmail).toHaveBeenCalledTimes(1));
+      await settle();
+      expect(sendBrandedEmail).toHaveBeenCalledTimes(1);
+      expect((await refusedFor(body.clientSignatureId as string)).length).toBe(1);
+    });
+
+    it("two DIFFERENT held refusals are two notices: two emails, two events", async () => {
+      const q = await issuedQuote("refused-two");
+      await prisma.issuedEstimate.update({ where: { id: q.estimateId }, data: { status: "void", voidedAt: new Date(), voidReason: "test" } });
+      const a = await captureBody(q.estimateId, { heldOnPhone: true });
+      const b = await captureBody(q.estimateId, { heldOnPhone: true });
+      expect((await signFromPhone(q.estimateId, a)).status).toBe(400);
+      expect((await signFromPhone(q.estimateId, b)).status).toBe(400);
+      await vi.waitFor(() => expect(sendBrandedEmail).toHaveBeenCalledTimes(2));
+      await settle();
+      expect(sendBrandedEmail).toHaveBeenCalledTimes(2);
+      expect((await refusedFor(a.clientSignatureId as string)).length).toBe(1);
+      expect((await refusedFor(b.clientSignatureId as string)).length).toBe(1);
+    });
+
+    it(`the hourly cap holds: after ${REFUSAL_EMAILS_PER_TECH_PER_HOUR} notices one technician sends no more email, and ONE warn event says so; another technician is unaffected`, async () => {
+      const q = await issuedQuote("refused-cap");
+      await prisma.issuedEstimate.update({ where: { id: q.estimateId }, data: { status: "void", voidedAt: new Date(), voidReason: "test" } });
+      const noisy = `tech:cap-test-${randomUUID()}`;
+      const quiet = `tech:cap-test-${randomUUID()}`;
+      try {
+        await prisma.systemEvent.createMany({
+          data: Array.from({ length: REFUSAL_EMAILS_PER_TECH_PER_HOUR }, () => ({
+            level: "warn",
+            source: "field-signature",
+            message: "seeded refusal notice",
+            detailsJson: JSON.stringify({ kind: "signature-refused", clientSignatureId: randomUUID(), recordedBy: noisy }),
+          })),
+        });
+        const send = async (actor: string) => {
+          const body = inPersonSignBodySchema.parse(await captureBody(q.estimateId, { heldOnPhone: true }));
+          const r = await signInPerson(prisma, q.estimateId, body, { ip: "203.0.113.7", userAgent: "t", actor });
+          expect(r.ok).toBe(false);
+          return body;
+        };
+        await send(noisy);
+        await send(noisy);
+        await send(noisy);
+        const suppressed = () =>
+          prisma.systemEvent.findMany({ where: { source: "field-signature", AND: [{ detailsJson: { contains: '"kind":"signature-refused-suppressed"' } }, { detailsJson: { contains: noisy } }] } });
+        await vi.waitFor(async () => expect((await suppressed()).length).toBe(1));
+        await settle();
+        expect(sendBrandedEmail).not.toHaveBeenCalled();
+        const events = await suppressed();
+        expect(events.length).toBe(1);
+        expect(events[0].level).toBe("warn");
+        expect(events[0].message).toContain("suppressed");
+        // The suppressed sends wrote no refusal notice of their own.
+        expect(await prisma.systemEvent.count({ where: { source: "field-signature", AND: [{ detailsJson: { contains: '"kind":"signature-refused"' } }, { detailsJson: { contains: noisy } }] } })).toBe(REFUSAL_EMAILS_PER_TECH_PER_HOUR);
+        // A different technician has their own allowance.
+        await send(quiet);
+        await vi.waitFor(() => expect(sendBrandedEmail).toHaveBeenCalledTimes(1));
+      } finally {
+        await prisma.systemEvent.deleteMany({ where: { source: "field-signature", OR: [{ detailsJson: { contains: noisy } }, { detailsJson: { contains: quiet } }] } });
+      }
+    });
+  });
+
+  it("the office's door is unchanged: a plain body signs, and records no capture id or capture time", async () => {
+    const q = await issuedQuote("office-plain");
+    const office = await request(app).post(`/issued-estimates/${q.estimateId}/sign-in-person`).send(signBody());
+    expect(office.status).toBe(200);
+    expect(office.body).toMatchObject({ signed: true, estimateId: q.estimateId });
+    const est = await row(q.estimateId);
+    expect(est.clientSignatureId).toBeNull();
+    expect(est.signatureCapturedAt).toBeNull();
+    expect(est.signedAt).not.toBeNull();
+  });
+
+  it("the capture fields are validated by the shared schema: a bad id or an unreadable time is 422, nothing signed", async () => {
+    const q = await issuedQuote("capture-schema");
+    expect((await signFromPhone(q.estimateId, signBody({ clientSignatureId: "not-a-uuid" }))).status).toBe(422);
+    expect((await signFromPhone(q.estimateId, signBody({ capturedAt: "yesterday" }))).status).toBe(422);
+    expect((await signFromPhone(q.estimateId, signBody({ capturedAt: new Date().toISOString(), sentAt: "just now" }))).status).toBe(422);
+    expect((await signFromPhone(q.estimateId, signBody({ heldOnPhone: "yes" }))).status).toBe(422);
+    expect((await signFromPhone(q.estimateId, signBody({ revision: 0 }))).status).toBe(422);
+    expect((await row(q.estimateId)).signedAt).toBeNull();
+    expect(sendBrandedEmail).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Phase 7 U8 (2026-10-10): a signature the phone held and never delivered ──────────────────
+//
+// "Cancel this signature (not recorded yet)" and "I've called the customer — dismiss" are the
+// phone's exits for a queued and a refused capture. Neither is a signature; each is filed as a
+// "field-signature" SystemEvent on the next sync so nothing the phone held goes silently.
+
+describe("POST /health-record/issued-estimates/:id/signature-events — a cancelled or dismissed phone signature is filed, never a signature", () => {
+  const fieldEvents = (signatureId: string) =>
+    prisma.systemEvent.findMany({ where: { source: "field-signature", detailsJson: { contains: `"signatureId":"${signatureId}"` } } });
+  const file = (estimateId: string, body: Record<string, unknown>, as: (r: request.Test) => request.Test = auth) =>
+    as(request(app).post(`/health-record/issued-estimates/${estimateId}/signature-events`)).set("X-Forwarded-For", "203.0.113.7").send(body);
+  const eventBody = (over: Record<string, unknown> = {}) => ({
+    signatureId: randomUUID(),
+    event: "cancelled",
+    reason: "Customer wants to think it over",
+    signerName: NAME,
+    capturedAt: new Date(Date.now() - 60_000).toISOString(),
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.mocked(sendBrandedEmail).mockClear();
+  });
+
+  afterAll(async () => {
+    await prisma.systemEvent.deleteMany({ where: { source: "field-signature", detailsJson: { contains: `"recordedBy":"tech:${technicianId}"` } } });
+  });
+
+  it("a cancellation is filed with the capture id, the reason, the signer, the tech and the estimate — and the estimate stays unsigned, nothing emailed", async () => {
+    const q = await issuedQuote("event-cancel");
+    const body = eventBody();
+    const res = await file(q.estimateId, body);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toEqual({ filed: true, duplicate: false });
+    await vi.waitFor(async () => expect((await fieldEvents(body.signatureId as string)).length).toBe(1));
+    const [event] = await fieldEvents(body.signatureId as string);
+    expect(event.level).toBe("info");
+    expect(event.message).toContain(`saved on the phone for estimate ${q.number} was cancelled before it was recorded`);
+    expect(event.message).toContain(body.reason);
+    expect(JSON.parse(event.detailsJson!)).toMatchObject({
+      estimateId: q.estimateId, revision: 1, event: "cancelled", reason: body.reason, signerName: NAME,
+      capturedAt: body.capturedAt, signatureId: body.signatureId, recordedBy: `tech:${technicianId}`, ip: "203.0.113.7",
+    });
+    expect((await row(q.estimateId)).signedAt).toBeNull();
+    expect(sendBrandedEmail).not.toHaveBeenCalled();
+    expect(notifyOwnerSigned).not.toHaveBeenCalled();
+  });
+
+  it("a dismissal carries the office's refusal; filing the same (id, event) again is answered as a duplicate and writes nothing", async () => {
+    const q = await issuedQuote("event-dismiss");
+    const body = eventBody({ event: "dismissed", reason: "Called Mrs Panel — she will sign the reissued estimate", refusal: "This estimate is void." });
+    expect((await file(q.estimateId, body)).body.data).toEqual({ filed: true, duplicate: false });
+    await vi.waitFor(async () => expect((await fieldEvents(body.signatureId as string)).length).toBe(1));
+    expect((await file(q.estimateId, body)).body.data).toEqual({ filed: true, duplicate: true });
+    await new Promise((r) => setTimeout(r, 150));
+    const events = await fieldEvents(body.signatureId as string);
+    expect(events.length).toBe(1);
+    expect(events[0].message).toContain("was dismissed after the customer was called");
+    expect(JSON.parse(events[0].detailsJson!)).toMatchObject({ event: "dismissed", refusal: "This estimate is void." });
+    // The other event kind for the same capture is its own record.
+    expect((await file(q.estimateId, { ...body, event: "cancelled" })).body.data).toEqual({ filed: true, duplicate: false });
+  });
+
+  it("a cancellation of a signature the office RECORDED is refused 409 in plain words and files nothing; other captures are untouched (security review L3)", async () => {
+    const q = await issuedQuote("event-recorded");
+    const clientSignatureId = randomUUID();
+    const signed = await signFromPhone(q.estimateId, signBody({
+      clientSignatureId,
+      capturedAt: new Date(Date.now() - 60_000).toISOString(),
+      sentAt: new Date().toISOString(),
+      revision: 1,
+      figuresKey: await issuedFiguresKey(prisma, q.estimateId),
+      consentText: CONSENT_TEXT,
+    }));
+    expect(signed.status, JSON.stringify(signed.body)).toBe(201);
+    const res = await file(q.estimateId, eventBody({ signatureId: clientSignatureId }));
+    expect(res.status).toBe(409);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.message).toBe("That signature was recorded at the office — it can't be cancelled from the phone.");
+    await new Promise((r) => setTimeout(r, 150));
+    expect((await fieldEvents(clientSignatureId)).length).toBe(0);
+    expect((await row(q.estimateId)).signedAt).not.toBeNull();
+    // A different capture's cancellation on the same estimate is still filed.
+    expect((await file(q.estimateId, eventBody())).status).toBe(200);
+  });
+
+  it("a newline or control character in the reason cannot forge a second log line: the message and the console mirror are one line, the stored detail keeps what was sent (security review L4)", async () => {
+    const q = await issuedQuote("event-logforge");
+    const reason = "thinking it over\n[field-signature] FORGED: Kyle approved\r\n\u2028second\u0007bell";
+    const body = eventBody({ reason });
+    const spy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      expect((await file(q.estimateId, body)).status).toBe(200);
+      const mirrored = spy.mock.calls.map((c) => String(c[0])).filter((line) => line.includes("thinking it over"));
+      expect(mirrored.length).toBe(1);
+      expect(mirrored[0]).not.toMatch(/[\u0000-\u001f\u2028\u2029]/);
+    } finally {
+      spy.mockRestore();
+    }
+    await vi.waitFor(async () => expect((await fieldEvents(body.signatureId as string)).length).toBe(1));
+    const [event] = await fieldEvents(body.signatureId as string);
+    expect(event.message).not.toMatch(/[\u0000-\u001f\u2028\u2029]/);
+    expect(event.message).toContain("thinking it over [field-signature] FORGED: Kyle approved second bell");
+    expect(JSON.parse(event.detailsJson!).reason).toBe(reason);
+    expect(oneLine("a\nb\t\tc  d")).toBe("a b c d");
+  });
+
+  it("is assignment-gated like the signature: a stranger tech 403, an unknown estimate 404, no token 401 — and nothing is filed", async () => {
+    const q = await issuedQuote("event-gate");
+    const body = eventBody();
+    expect((await file(q.estimateId, body, asStranger)).status).toBe(403);
+    expect((await file("no-such-estimate", body)).status).toBe(404);
+    expect((await request(app).post(`/health-record/issued-estimates/${q.estimateId}/signature-events`).send(body)).status).toBe(401);
+    await new Promise((r) => setTimeout(r, 150));
+    expect((await fieldEvents(body.signatureId as string)).length).toBe(0);
+  });
+
+  it("the body is validated: a bad id, an unknown event, an empty reason or no signer is 422", async () => {
+    const q = await issuedQuote("event-schema");
+    expect((await file(q.estimateId, eventBody({ signatureId: "not-a-uuid" }))).status).toBe(422);
+    expect((await file(q.estimateId, eventBody({ event: "lost" }))).status).toBe(422);
+    expect((await file(q.estimateId, eventBody({ reason: "   " }))).status).toBe(422);
+    expect((await file(q.estimateId, eventBody({ signerName: "" }))).status).toBe(422);
   });
 });

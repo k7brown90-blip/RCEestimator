@@ -22,6 +22,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import type { DraftLifecycle } from '../../../../shared/draftLifecycle'
 import { SAVE_CHANGES_LABEL, nothingChangedReason } from '../../../../shared/draftLifecycle'
 import { ESTIMATE_EMAIL_DEFAULTS, type EstimateEmailChoices } from '../../../../shared/estimateEmail'
+import { OFFLINE_CHANGE_ORDER_REASON } from './QuoteOffline'
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -453,9 +454,15 @@ export function IssuedEstimatePanel(props: {
    */
   onShowCustomer?: () => void
   showCustomerReason?: string | null
+  /**
+   * No signal (Phase 7 U5): the two emails and "Raise a change order" are live calls to the office,
+   * so each is greyed WITH this reason (design §2: "Needs signal"), never hidden. "Edit the estimate"
+   * stays live — an edit queues on this phone and reopens the draft when it lands.
+   */
+  offlineReason?: string | null
   children?: ReactNode
 }) {
-  const { issued, reviseReason, unpriced, emailEstimate, emailFinancing, photoCount = 0, onEdit, onBack, backLabel = 'Job site', onRaiseChangeOrder, onShowCustomer, showCustomerReason = null, children } = props
+  const { issued, reviseReason, unpriced, emailEstimate, emailFinancing, photoCount = 0, onEdit, onBack, backLabel = 'Job site', onRaiseChangeOrder, onShowCustomer, showCustomerReason = null, offlineReason = null, children } = props
   const [coBusy, setCoBusy] = useState(false)
   const [coError, setCoError] = useState<string | null>(null)
   const lost = issued.status === 'lost'
@@ -540,14 +547,14 @@ export function IssuedEstimatePanel(props: {
       <EmailEstimateButton
         estimateId={issued.estimateId}
         send={emailEstimate}
-        blockedReason={emailBlockedReason(issued)}
+        blockedReason={offlineReason ?? emailBlockedReason(issued)}
         photoCount={photoCount}
       />
       {/* Beside the estimate email, not behind the signature (Kyle, 2026-10-08). */}
       <EmailFinancingButton
         estimateId={issued.estimateId}
         send={emailFinancing}
-        blockedReason={financingBlockedReason(issued)}
+        blockedReason={offlineReason ?? financingBlockedReason(issued)}
       />
       {/* The office's Edit button. Greyed with the server's reason, never hidden. */}
       <button
@@ -565,8 +572,8 @@ export function IssuedEstimatePanel(props: {
         <>
           <button
             type="button"
-            disabled={coBusy}
-            title="Starts a change order against this signed estimate - the new or changed work, signed on its own"
+            disabled={coBusy || offlineReason !== null}
+            title={offlineReason !== null ? OFFLINE_CHANGE_ORDER_REASON : 'Starts a change order against this signed estimate - the new or changed work, signed on its own'}
             onClick={() => {
               setCoBusy(true); setCoError(null)
               onRaiseChangeOrder().catch((err) => { setCoError(errText(err)); setCoBusy(false) })
@@ -575,6 +582,7 @@ export function IssuedEstimatePanel(props: {
           >
             {coBusy ? 'Raising the change order…' : 'Raise a change order'}
           </button>
+          {offlineReason !== null && <p className="text-[11px] text-amber-200">{OFFLINE_CHANGE_ORDER_REASON}</p>}
           {coError && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{coError}</p>}
         </>
       )}

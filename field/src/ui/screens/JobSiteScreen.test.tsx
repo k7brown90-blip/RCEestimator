@@ -79,3 +79,39 @@ describe('the "issued - not signed yet" panel emails the estimate (Kyle, 2026-10
     expect(code.indexOf('<EmailEstimateButton')).toBeLessThan(code.indexOf('<EmailFinancingButton'))
   })
 })
+
+// ─── Phase 7 U8 (2026-10-10): signing with no signal, as the Job site shows it ────────────────
+
+describe('the Job site with a signature taken on this phone (U8)', () => {
+  // The screen is stateful and fetches, so it cannot be rendered statically; this pins the source
+  // against the design's §2/§6 words. The card itself is pinned by SignatureCards.test.tsx.
+  const source = readFileSync(new URL('./JobSiteScreen.tsx', import.meta.url), 'utf8')
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  it('reads the saved copy of the visit\'s quote when the brief cannot load, and labels the panel as this phone\'s copy', () => {
+    expect(code).toContain('workingQuoteMirrorForVisit(assignment.visitId)')
+    expect(code).toContain('savedCopyWords(savedQuote.snapshotAt)')
+    // Only a network failure stands the saved copy in; a refusal keeps the office's words.
+    expect(code).toContain('if (isNetworkFailure(err)) {')
+  })
+
+  it('shows the signature card and greys Complete work now / Schedule for later / Collect payment "Waiting for the signature to reach the office"', () => {
+    expect(code).toContain('<SignaturePendingCard')
+    expect(code).toContain('blockedReason={signatureWaiting ? WAITING_FOR_SIGNATURE : null}')
+    expect(code).toContain('{WAITING_FOR_SIGNATURE}. Both choices open the moment this card says Signed.')
+    expect(code).toContain('title={signatureWaiting ? WAITING_FOR_SIGNATURE : undefined}')
+  })
+
+  it('"Show the customer / Sign now" is greyed WITH the one signing rule\'s reason (a signature held, expired by this clock, edits waiting) — on the page, not only the tooltip', () => {
+    expect(code).toContain('disabled={showSignReason !== null}')
+    expect(code).toContain('{showSignReason && <p className="text-[11px] text-amber-200">{showSignReason}</p>}')
+    expect(code).toContain('heldSignatureReason(panelEstimate.number, heldSignature)')
+    expect(code).toContain('signGate({')
+  })
+
+  it('the two emails are greyed "Needs signal" from the saved copy, and never says Signed before the office has answered', () => {
+    expect(code).toContain('blockedReason={offline ? OFFLINE_EMAIL_REASON : null}')
+    // "Signed —" renders only from the brief's own signed state (choicePending) or the recorded card.
+    expect(code.match(/Signed — \{brief\?\.estimate\?\.number\}/g)?.length).toBe(1)
+  })
+})

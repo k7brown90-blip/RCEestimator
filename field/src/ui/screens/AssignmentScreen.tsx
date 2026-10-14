@@ -16,7 +16,8 @@ import {
   type CrmTechnician,
   type ShiftStatus,
 } from '../../lib/crmSync'
-import { forgetOfficeCopies } from '../../lib/quoteSync'
+import { cacheVisitQuotes, forgetOfficeCopies, onQuoteSyncSettled, pendingQuoteOpCount, syncPriceSheet, syncQuoteCatalog } from '../../lib/quoteSync'
+import { onSignatureSyncSettled, pendingCancellationCount, pendingSignatureCount, pruneRecordedSignatures } from '../../lib/signatureQueue'
 import type { CrmAssignment } from '../../domain/types'
 
 /** Production job or estimate visit — the card dresses as what it is (Phase 2). */
@@ -245,6 +246,12 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(0)
+  // Quote edits made with no signal, across every visit (Phase 7 U5) — beside the record count.
+  const [pendingQuote, setPendingQuote] = useState(0)
+  // Signatures taken on this phone that the office has not answered (Phase 7 U8) — beside the two counts above.
+  const [pendingSignatures, setPendingSignatures] = useState(0)
+  // Cancellations (and dismissals) still to be filed at the office — not signatures, said apart (D5).
+  const [pendingCancellations, setPendingCancellations] = useState(0)
   const [showSettings, setShowSettings] = useState(false)
   const [baseUrl, setBaseUrl] = useState(getCrmSettings()?.baseUrl ?? defaultBaseUrl())
   const [token, setToken] = useState('')
@@ -252,9 +259,18 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
 
   useEffect(() => {
     void pendingSyncCount().then(setPending)
+    void pendingQuoteOpCount().then(setPendingQuote)
+    void pendingSignatureCount().then(setPendingSignatures)
+    void pendingCancellationCount().then(setPendingCancellations)
     if (configured) void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configured])
+  // The counts drop as the quote and signature queues drain in the background.
+  useEffect(() => onQuoteSyncSettled(() => { void pendingQuoteOpCount().then(setPendingQuote) }), [])
+  useEffect(() => onSignatureSyncSettled(() => {
+    void pendingSignatureCount().then(setPendingSignatures)
+    void pendingCancellationCount().then(setPendingCancellations)
+  }), [])
 
   async function load() {
     setLoading(true)
@@ -294,6 +310,15 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
     // just leaves the existing cache in place (syncMaterials degrades to it) and must never
     // hold up the assignment list, which is the thing the tech actually opened this for.
     void syncMaterials()
+    // Estimating with no signal (Phase 7 U5, 2026-10-10): the price book in words, the Normal-
+    // difficulty price sheet for a labelled Preview, and a saved copy of every assigned visit's
+    // quote — all fetched here, at the Today screen, so the phone has them before the truck leaves
+    // the driveway. Each degrades to its saved copy on failure and none holds up the list.
+    void syncQuoteCatalog()
+    void syncPriceSheet()
+    void cacheVisitQuotes()
+    // A signature the office recorded has had its card; the office's copy says signed now (U8).
+    void pruneRecordedSignatures()
   }
 
   // Today first, by clock; everything else after. The tech's question at 7 AM
@@ -334,6 +359,24 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
         <p className="rounded-lg bg-amber-900/50 p-3 text-xs text-amber-200">
           {pending} completed record{pending > 1 ? 's' : ''} queued for sync — will push
           automatically when you're back online.
+        </p>
+      )}
+      {pendingQuote > 0 && (
+        <p className="rounded-lg bg-amber-900/50 p-3 text-xs text-amber-200">
+          {pendingQuote} quote change{pendingQuote > 1 ? 's' : ''} waiting for signal — they go to the office
+          automatically when you&apos;re back online. Open the visit&apos;s quote to see or discard them.
+        </p>
+      )}
+      {pendingSignatures > 0 && (
+        <p className="rounded-lg bg-amber-900/50 p-3 text-xs text-amber-200">
+          {pendingSignatures} signature{pendingSignatures > 1 ? 's' : ''} saved on this phone — NOT recorded yet. {pendingSignatures > 1 ? 'They go' : 'It goes'} to the office
+          automatically when you&apos;re back online; open the visit to see {pendingSignatures > 1 ? 'them' : 'it'} or cancel {pendingSignatures > 1 ? 'them' : 'it'}.
+        </p>
+      )}
+      {pendingCancellations > 0 && (
+        <p className="rounded-lg bg-slate-800/70 p-3 text-xs text-slate-300">
+          {pendingCancellations} cancelled signature{pendingCancellations > 1 ? 's' : ''} still to be filed at the office — {pendingCancellations > 1 ? 'they go' : 'it goes'}
+          automatically when you&apos;re back online. Nothing was recorded for {pendingCancellations > 1 ? 'them' : 'it'}.
         </p>
       )}
 

@@ -14,9 +14,12 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { SignInPersonScreen, SignedView, optionsLabel, signingProblem, submitSignature } from './SignInPersonScreen'
+import { SavedNotRecordedView, SignInPersonScreen, SignedView, optionsLabel, signingProblem, submitSignature } from './SignInPersonScreen'
 import type { InPersonSignResult } from '../../lib/crmSync'
+import type { SignatureOutcome } from '../../lib/signatureQueue'
+import type { SignatureQueueRecord } from '../../db/database'
 import { CONSENT_TEXT } from '../../../../shared/consentText'
+import { CANCEL_SIGNATURE_LABEL, DISMISS_LABEL, DONT_START_WORK, SIGNATURE_REFUSED_BLOCK, SIGNATURE_SAVED_NOT_RECORDED, WAITING_FOR_SIGNATURE } from './SignatureCards'
 
 const result = (over: Partial<InPersonSignResult> = {}): InPersonSignResult => ({
   signed: true,
@@ -32,6 +35,14 @@ const result = (over: Partial<InPersonSignResult> = {}): InPersonSignResult => (
 
 const MARK = 'data:image/png;base64,iVBORw0KGgo='
 
+/** The row the capture writes to this phone (Phase 7 U8) — the test's stand-in for lib/signatureQueue. */
+const row = (over: Partial<SignatureQueueRecord> = {}): SignatureQueueRecord => ({
+  signatureId: 'sig-1', estimateId: 'est-1', visitId: 'visit-1', draftId: 'd1', number: '2026-1098',
+  signerName: 'Mrs Panel', signatureImage: MARK, selectedOptions: ['A', 'B'], revision: 1, figuresKey: 'k',
+  consentText: CONSENT_TEXT, capturedAt: '2026-10-10T14:14:00.000Z', state: 'queued', attempts: 0, queuedAt: '2026-10-10T14:14:00.000Z', ...over,
+})
+const recorded = (): SignatureOutcome => ({ state: 'recorded', row: row({ state: 'recorded', result: result() }), result: result() })
+
 const screen = (over: Partial<Parameters<typeof SignInPersonScreen>[0]> = {}) =>
   renderToStaticMarkup(
     <SignInPersonScreen
@@ -41,7 +52,7 @@ const screen = (over: Partial<Parameters<typeof SignInPersonScreen>[0]> = {}) =>
       selectedOptions={['A', 'B']}
       optionNames={{ A: 'Panel', B: null }}
       total={1406}
-      onSign={async () => result()}
+      onSign={async () => recorded()}
       onBack={() => {}}
       onBackToJob={() => {}}
       {...over}
@@ -81,10 +92,24 @@ describe('SignInPersonScreen - what the customer sees', () => {
     expect(screen({ total: null })).toContain('aria-label="Total">—<')
   })
 
-  it('has the technician-only way out in its own strip, and says it needs signal', () => {
+  it('has the technician-only way out in its own strip, and says the signature is recorded only once the office accepts it — saved on this phone first with no signal (U8)', () => {
     const html = screen()
     expect(html).toContain('Back to the customer&#x27;s quote')
-    expect(html).toContain('Needs signal')
+    expect(html).toContain('recorded only once Red Cedar Electric&#x27;s system has accepted it')
+    expect(html).toContain('saved on this phone')
+    // Before U8 this read "Needs signal"; signing no longer does (Kyle's ruling 9).
+    expect(html).not.toContain('Needs signal')
+  })
+
+  it('with no signal, the strip names this phone\'s saved copy of the issued estimate (U8)', () => {
+    const html = screen({ savedCopy: { savedAt: '2026-10-10T14:14:00.000Z' }, offline: true })
+    expect(html).toContain('data-testid="saved-copy"')
+    expect(html).toContain('This phone&#x27;s copy, saved')
+    expect(html).toContain('exactly as the office issued it')
+    const online = screen()
+    expect(online).not.toContain('saved-copy')
+    // Offline without a saved-copy label (an online-loaded quote that lost signal) still says where the signature goes.
+    expect(screen({ offline: true })).toContain('No signal — the signature is saved on this phone first')
   })
 
   it('carries nothing of Red Cedar\'s: no labour, cost, margin, rate or token words on a page the customer holds', () => {
@@ -119,19 +144,87 @@ describe('submitSignature - one post, after the checks, with the server\'s answe
     expect(onSign).not.toHaveBeenCalled()
   })
 
-  it('posts once with the trimmed name, the drawing and exactly the ticked options', async () => {
-    const onSign = vi.fn().mockResolvedValue(result())
+  it('captures once with the trimmed name, the drawing and exactly the ticked options, and hands back what became of it', async () => {
+    const onSign = vi.fn().mockResolvedValue(recorded())
     const r = await submitSignature({ ...base, onSign })
     expect(onSign).toHaveBeenCalledTimes(1)
     expect(onSign).toHaveBeenCalledWith({ signerName: 'Mrs Panel', signatureImage: MARK, selectedOptions: ['A', 'B'] })
-    expect(r).toEqual({ ok: true, result: result() })
+    expect(r).toEqual({ ok: true, outcome: recorded() })
+    // Saved and not recorded (no signal) is a held outcome too — never an error, never "Signed".
+    const queued: SignatureOutcome = { state: 'queued', row: row(), offline: true }
+    expect(await submitSignature({ ...base, onSign: vi.fn().mockResolvedValue(queued) })).toEqual({ ok: true, outcome: queued })
   })
 
-  it('hands back the server\'s refusal word for word, and stays unsigned', async () => {
+  it('hands back the server\'s refusal word for word, and stays unsigned — whether the capture threw it or answered it', async () => {
     const reason = 'This estimate expired on 9/1/2026 — material prices are no longer guaranteed. Call Red Cedar Electric for a current quote.'
     const onSign = vi.fn().mockRejectedValue(new Error(reason))
     const r = await submitSignature({ ...base, onSign })
     expect(r).toEqual({ ok: false, error: reason })
+    const answered = vi.fn().mockResolvedValue({ state: 'refused', reason: 'This estimate has already been signed.' } satisfies SignatureOutcome)
+    expect(await submitSignature({ ...base, onSign: answered })).toEqual({ ok: false, error: 'This estimate has already been signed.' })
+  })
+})
+
+// ─── saved on this phone, not recorded yet (Phase 7 U8, 2026-10-10) ─────────
+
+describe('SavedNotRecordedView - NOT "Signed": the capture is on this phone until the office answers', () => {
+  const view = (r: SignatureQueueRecord, extra: Partial<Parameters<typeof SavedNotRecordedView>[0]> = {}) =>
+    renderToStaticMarkup(
+      <SavedNotRecordedView
+        row={r}
+        visitId="visit-1"
+        selectedOptions={['A', 'B']}
+        optionNames={{ A: 'Panel', B: null }}
+        total={1406}
+        offline
+        onCancel={async () => {}}
+        onDismiss={async () => {}}
+        onSignAgain={() => {}}
+        onBackToJob={() => {}}
+        {...extra}
+      />,
+    )
+
+  it('reads "Signature saved on this phone — NOT recorded yet", names who signed what, and never says Signed', () => {
+    const html = view(row())
+    expect(html).toContain(SIGNATURE_SAVED_NOT_RECORDED)
+    expect(html).toContain('Thank you, Mrs Panel')
+    expect(html).toContain('2026-1098')
+    expect(html).toContain('Option A')
+    expect(html).toContain('— Panel')
+    expect(html).toContain('aria-label="Total">$1406.00<')
+    expect(html).not.toContain('Signed — thank you')
+    expect(html).not.toContain('is agreed')
+  })
+
+  it('the technician\'s part: don\'t start work, Cancel (not recorded yet), the deposit greyed "Waiting for the signature to reach the office", Back to the job', () => {
+    const html = view(row())
+    expect(html).toContain(DONT_START_WORK.replace(/'/g, '&#x27;'))
+    expect(html).toContain(CANCEL_SIGNATURE_LABEL)
+    expect(html).toContain(WAITING_FOR_SIGNATURE)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>💳 Collect payment</)
+    expect(html).toContain('Back to the job')
+    expect(html).not.toContain('Back to the customer')
+  })
+
+  it('once the office has refused it: the red card with the office\'s words, Sign again and the dismiss; the deposit is greyed "the office refused the signature", not "waiting" (D6)', () => {
+    const html = view(row({ state: 'refused', reason: 'This estimate is void.' }), { offline: false })
+    expect(html).toContain('Not recorded')
+    expect(html).toContain('Not recorded: This estimate is void. The customer believes they signed — call them.')
+    expect(html).toContain('>Sign again<')
+    expect(html).toContain(DISMISS_LABEL.replace(/'/g, '&#x27;'))
+    expect(html).not.toContain(SIGNATURE_SAVED_NOT_RECORDED)
+    expect(html).not.toContain(CANCEL_SIGNATURE_LABEL)
+    expect(html).toContain(SIGNATURE_REFUSED_BLOCK)
+    expect(html).not.toContain(WAITING_FOR_SIGNATURE)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>💳 Collect payment</)
+  })
+
+  it('carries nothing of Red Cedar\'s and never the drawn mark itself', () => {
+    const html = view(row()).toLowerCase()
+    for (const word of ['hours', 'labor', 'labour', 'margin', 'markup', 'synchrony', 'token', 'base64']) {
+      expect(html, word).not.toContain(word)
+    }
   })
 })
 

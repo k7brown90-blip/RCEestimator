@@ -79,4 +79,15 @@ describe('CollectPayment closed', () => {
     expect(html).toContain('Collect payment')
     expect(html.toLowerCase()).not.toContain('synchrony')
   })
+
+  it('greyed WITH the reason, never hidden, while a signature taken on this phone has not reached the office (Phase 7 U8)', () => {
+    const html = renderToStaticMarkup(<CollectPayment visitId="visit-1" blockedReason="Waiting for the signature to reach the office" />)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>💳 Collect payment</)
+    expect(html).toContain('Waiting for the signature to reach the office')
+    // Nothing to tap through to: no QR, no pay link, no email.
+    expect(html).not.toContain('Payment QR')
+    expect(html).not.toContain('Email invoice')
+    // Even when asked to start open: the block wins.
+    expect(renderToStaticMarkup(<CollectPayment visitId="visit-1" startOpen blockedReason="Waiting for the signature to reach the office" />)).not.toContain('refresh')
+  })
 })

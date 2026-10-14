@@ -170,3 +170,42 @@ describe('QuoteOptionBoard', () => {
     expect(TOUCH_HOLD_MS).toBeGreaterThanOrEqual(200)
   })
 })
+
+// ─── Phase 7 U5 (2026-10-10): the heading's figure says where it came from ───────────────────────
+
+describe('QuoteOptionBoard with no signal', () => {
+  const blank = quote({
+    options: [{ option: 'A', lineCount: 1, subtotal: null, complete: false }, { option: 'B', lineCount: 1, subtotal: null, complete: false }],
+  })
+  const previewed = quote({
+    options: [{ option: 'A', lineCount: 1, subtotal: 1200, complete: true }, { option: 'B', lineCount: 1, subtotal: null, complete: false }],
+  })
+  const board = (q: BoardQuote, priceSource: 'server' | 'none' | 'preview', previewOptions: Array<{ option: string; subtotal: number | null; mayComeDown: boolean; unpriced: boolean }> | null = null) =>
+    renderToStaticMarkup(
+      <QuoteOptionBoard quote={q} busy={false} renderLine={(l) => <div>{l.description}</div>} onAddOption={noop} onRemoveOption={noop} onSaveOrder={noop} onSaveMeta={noop} priceSource={priceSource} previewOptions={previewOptions} />,
+    )
+
+  it("'none': no figure at all reads \"Priced when signal returns\", never the office's \"incomplete\"", () => {
+    const html = board(blank, 'none')
+    expect(html).toContain('Priced when signal returns')
+    expect(html).not.toContain('incomplete')
+    expect(html).not.toMatch(/\$\d/)
+  })
+
+  it("'preview': a previewed subtotal is labelled Preview (and \"may come down\" where the sheet says so); an unpriced option says why", () => {
+    const html = board(previewed, 'preview', [
+      { option: 'A', subtotal: 1200, mayComeDown: true, unpriced: false },
+      { option: 'B', subtotal: null, mayComeDown: false, unpriced: true },
+    ])
+    expect(html).toContain('$1200.00')
+    expect(html).toContain('Preview · may come down once issued')
+    expect(html).toContain('Priced when signal returns')
+    expect(html).not.toContain('incomplete')
+  })
+
+  it("the default ('server') is exactly what it was", () => {
+    const html = board(blank, 'server')
+    expect(html).toContain('incomplete')
+    expect(html).not.toContain('Priced when signal returns')
+  })
+})

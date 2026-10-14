@@ -96,7 +96,7 @@ describe('QuotePhotos', () => {
 })
 
 describe('IssuedEstimatePanel - the email button says how many photos ride it', () => {
-  const issued = { estimateId: 'est-1', number: '2026-1098', revision: 1, status: 'sent', signedAt: null, archived: false, customerUrl: 'https://x/e/t' }
+  const issued = { estimateId: 'est-1', number: '2026-1098', revision: 1, status: 'sent', signedAt: null, issuedAt: '2026-10-01T12:00:00.000Z', validDays: 30, figuresKey: 'k', archived: false, customerUrl: 'https://x/e/t' }
   const panel = (photoCount?: number) =>
     renderToStaticMarkup(
       <IssuedEstimatePanel issued={issued} reviseReason={null} unpriced={[]} emailEstimate={async () => ({ to: 'x' })} emailFinancing={async () => ({ to: 'x' })} photoCount={photoCount} onEdit={() => {}} onBack={() => {}} />,

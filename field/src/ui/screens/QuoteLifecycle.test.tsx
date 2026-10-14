@@ -16,7 +16,7 @@ const LOST = 'Estimate 2026-1098 is marked lost — reopen it before changing or
 const DELETE_REASON = 'Estimate 2026-1098 was issued from this quote, so the quote is its record and stays.'
 
 const issued = (over: Partial<NonNullable<DraftLifecycle['issued']>> = {}): NonNullable<DraftLifecycle['issued']> => ({
-  estimateId: 'est-1', number: '2026-1098', revision: 1, status: 'sent', signedAt: null, archived: false,
+  estimateId: 'est-1', number: '2026-1098', revision: 1, status: 'sent', signedAt: null, issuedAt: '2026-10-01T12:00:00.000Z', validDays: 30, figuresKey: 'k', archived: false,
   customerUrl: 'https://rce.example.com/e/tok', ...over,
 })
 const lifecycle = (over: Partial<DraftLifecycle> = {}): DraftLifecycle => ({
@@ -248,6 +248,36 @@ describe('IssuedEstimatePanel — "Show the customer" (Phase 3 unit B)', () => {
   })
   it('a caller with no such screen gets no button', () => {
     expect(panel({ onShow: false })).not.toContain('Show the customer')
+  })
+})
+
+// ─── Phase 7 U5 (2026-10-10): the issued panel with no signal ──────────────────────────────────────
+
+describe('IssuedEstimatePanel with no signal (offlineReason)', () => {
+  const panel = (signedAt: string | null) =>
+    renderToStaticMarkup(
+      <IssuedEstimatePanel
+        issued={issued({ signedAt, status: signedAt ? 'signed' : 'sent' })}
+        reviseReason={null}
+        unpriced={[]}
+        emailEstimate={async () => ({ to: 'x' })} emailFinancing={async () => ({ to: 'x' })}
+        onEdit={() => {}}
+        onBack={() => {}}
+        onRaiseChangeOrder={noop}
+        offlineReason="Needs signal"
+      />,
+    )
+  it('the two emails are greyed "Needs signal" and their options are put away; "Edit the estimate" stays live (an edit queues)', () => {
+    const html = panel(null)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="Needs signal"[^>]*>📧 Email the estimate to the customer</)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="Needs signal"[^>]*>📧 Email the financing link</)
+    expect(html).not.toContain('Email options')
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Edit the estimate</)
+  })
+  it('"Raise a change order" on a signed estimate is greyed WITH its own reason, on the page', () => {
+    const html = panel('2026-10-08T12:00:00.000Z')
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Raise a change order</)
+    expect(html).toContain('Needs signal — a change order is opened against the signed estimate at the office')
   })
 })
 

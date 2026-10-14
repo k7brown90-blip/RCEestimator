@@ -212,6 +212,65 @@ describe('QuoteTotals', () => {
   })
 })
 
+// ─── Phase 7 U5 (2026-10-10): the totals with no signal ──────────────────────────────────────────
+
+describe('QuoteTotals with no signal (priceSource)', () => {
+  const render = (q: Pick<QuoteState, 'total' | 'money'>, extra: Partial<Parameters<typeof QuoteTotals>[0]> = {}) =>
+    renderToStaticMarkup(<QuoteTotals quote={q} busy={false} lockedReason={null} onSetDiscount={noop} {...extra} />)
+
+  it("'none': no figure, \"Priced when signal returns\" in its place, and financing waits for issue", () => {
+    const html = render({ total: null, money: { ...noMoney, discount: { ...military.discount!, rows: [], pricedOnceComplete: true }, discountedTotal: null } }, { priceSource: 'none' })
+    expect(html).toContain('Priced when signal returns')
+    expect(html).toContain('Financing shown once the estimate is issued')
+    expect(html).not.toContain('incomplete')
+    expect(html).not.toContain('or from $')
+    // The discount's dollars are not made up: its row says it is priced when signal returns, not "once every line is confirmed".
+    expect(html).toContain('Military discount (5%): priced when signal returns')
+    expect(html).not.toContain('once every line is confirmed')
+  })
+
+  it("'preview': the headline reads Preview total with when the prices were saved on this phone", () => {
+    const html = render({ total: 270, money: military }, { priceSource: 'preview', priceSheetAt: '2026-10-09T13:02:00.000Z' })
+    expect(html).toContain('Preview total')
+    expect(html).toContain('$270.00')
+    expect(html).toContain('Preview — prices saved on this phone at ')
+    expect(html).toContain('The final price is set when the estimate is issued with signal.')
+    expect(html).toContain('Financing shown once the estimate is issued')
+    expect(html).toContain('−$13.50')
+  })
+
+  it("a discount change waiting on the phone shows as pressed — not the office's old programme — and says it is waiting", () => {
+    const html = render({ total: null, money: { ...military, discountedTotal: null } }, { priceSource: 'none', pendingDiscount: { type: 'senior', percent: null } })
+    expect(html).toMatch(/aria-pressed="true"[^>]*>Senior 5%</)
+    expect(html).toMatch(/aria-pressed="false"[^>]*>Military 5%</)
+    expect(html).toContain('Discount change waiting to reach the office')
+    // A waiting Clear: nothing pressed, and no Clear button to press again.
+    const cleared = render({ total: null, money: { ...military, discountedTotal: null } }, { priceSource: 'none', pendingDiscount: { type: null, percent: null } })
+    expect(cleared).not.toMatch(/aria-pressed="true"/)
+    expect(cleared).not.toContain('>Clear<')
+  })
+
+  it("the default ('server') is exactly what it was", () => {
+    const html = render({ total: 270, money: military })
+    expect(html).toContain('$270.00')
+    expect(html).not.toContain('Preview')
+    expect(html).not.toContain('Priced when signal returns')
+  })
+})
+
+describe('OptionModeAndCopy with no signal', () => {
+  it('"Copy lines" is greyed WITH the reason while the one-or-the-other box stays live (it queues like any edit)', () => {
+    const q = { optionSet: { options: [entry('A', 2), entry('B'), entry('C')], nextOption: 'D' as const, lockedReason: null }, money: noMoney }
+    const html = renderToStaticMarkup(
+      <OptionModeAndCopy quote={q} busy={false} lockedReason={null} onSetMode={noop} onCopy={async () => ({ copied: 0 })} copyBlockedReason="Needs signal — copying lines is decided at the office" />,
+    )
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="Needs signal — copying lines is decided at the office"/)
+    expect(html).toContain('Needs signal — copying lines is decided at the office.')
+    expect(html).toMatch(/<input type="checkbox"[^>]*>/)
+    expect(html).not.toMatch(/<input type="checkbox"[^>]*disabled=""/)
+  })
+})
+
 describe('QuoteTotals - "or from $X/mo with financing" (review finding, 2026-10-08)', () => {
   const render = (q: Pick<QuoteState, 'total' | 'money'>) =>
     renderToStaticMarkup(<QuoteTotals quote={q} busy={false} lockedReason={null} onSetDiscount={noop} />)

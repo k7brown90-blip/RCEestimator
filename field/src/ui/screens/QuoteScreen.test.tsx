@@ -59,3 +59,33 @@ describe('LineRow', () => {
     expect(html).toContain('Location')
   })
 })
+
+// ─── Phase 7 U5 (2026-10-10): where a line's figure came from, said under it ─────────────────────
+
+describe('LineRow with no signal', () => {
+  it("the office's own figure carries no label; a line added on this phone says so", () => {
+    const html = render(null, false, { ...line, priceStatus: 'office', priceReason: null } as QuoteLine)
+    expect(html).toContain('$1200.00')
+    expect(html).not.toContain('Preview')
+    expect(html).not.toContain('on this phone')
+    const local = render(null, false, { ...line, localOnly: true, priceStatus: 'unpriced', priceReason: 'Priced when signal returns' } as QuoteLine)
+    expect(local).toContain('on this phone — not at the office yet')
+  })
+
+  it('a preview figure is labelled Preview; wire says it may come down; an unpriced line prints why, with no figure', () => {
+    const preview = render(null, false, { ...line, lineTotal: 241, priceStatus: 'preview', priceReason: null } as QuoteLine)
+    expect(preview).toContain('$241.00')
+    expect(preview).toContain('>Preview<')
+    const wire = render(null, false, { ...line, lineTotal: 96, priceStatus: 'mayComeDown', priceReason: 'May come down once issued — wire and conduit are priced as a job' } as QuoteLine)
+    expect(wire).toContain('May come down once issued')
+    // A Difficult line previews at its own Difficult price (Kyle, 2026-10-13); only a difficulty the book does not publish is unpriced, with the sheet's words.
+    const difficult = render(null, false, { ...line, difficulty: 'DIFFICULT', lineTotal: 160, priceStatus: 'preview', priceReason: null } as QuoteLine)
+    expect(difficult).toContain('$160.00')
+    expect(difficult).toContain('>Preview<')
+    const unpriced = render(null, false, { ...line, difficulty: 'VERY_DIFFICULT', lineTotal: null, priceStatus: 'unpriced', priceReason: 'No price is published for this item at this difficulty — the office prices it' } as QuoteLine)
+    expect(unpriced).toContain('>—<')
+    expect(unpriced).toContain('No price is published for this item at this difficulty — the office prices it')
+    // The controls stay live: the line can still be changed with no signal (the edit queues).
+    expect(unpriced).not.toContain('disabled=""')
+  })
+})

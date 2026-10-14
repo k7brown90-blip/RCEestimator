@@ -27,6 +27,7 @@ import { useEffect, useState } from 'react'
 import type { QuoteState } from '../../lib/crmSync'
 import { optionHint, type EstimateOptionLetter } from '../../../../shared/estimateOptions'
 import { picksOne as picksExactlyOne, selectionPrice } from '../../../../shared/quoteMoney'
+import { PRICED_WHEN_SIGNAL_RETURNS } from '../../../../shared/quotePreview'
 import { cheapestSelection } from '../../../../shared/financingDisplay'
 import { FinancingLine } from '../components/FinancingSheet'
 import {
@@ -35,6 +36,7 @@ import {
   copyEmptyReason,
   customPercentLooksValid,
 } from '../../lib/quoteOptions'
+import { FINANCING_AFTER_ISSUE, savedAtWords } from './QuoteOffline'
 
 const money = (n: number | null | undefined) => (n === null || n === undefined ? '—' : `$${n.toFixed(2)}`)
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -89,8 +91,14 @@ export function OptionModeAndCopy(props: {
   /** Each of these refreshes the quote and THROWS the server's words on refusal. */
   onSetMode: (exclusive: boolean) => Promise<void>
   onCopy: (from: EstimateOptionLetter, to: EstimateOptionLetter) => Promise<{ copied: number }>
+  /**
+   * Why "Copy lines" alone is greyed (Phase 7 U5): it is decided at the office and goes round the
+   * queue, so with no signal, or while this quote's changes are still on their way, it waits. The
+   * mode checkbox is NOT greyed by this — it queues like any other edit.
+   */
+  copyBlockedReason?: string | null
 }) {
-  const { quote, busy, lockedReason, onSetMode, onCopy } = props
+  const { quote, busy, lockedReason, onSetMode, onCopy, copyBlockedReason = null } = props
   const entries = quote.optionSet.options
   const letters = entries.map((e) => e.option)
   const [fromPick, setFrom] = useState<EstimateOptionLetter>('A')
@@ -103,8 +111,8 @@ export function OptionModeAndCopy(props: {
   const [error, setError] = useState<string | null>(null)
 
   const sourceLines = entries.find((e) => e.option === from)?.lineCount ?? 0
-  // Greyed WITH its reason, in this order: shut, then the two boxes, then nothing to copy.
-  const copyReason = lockedReason ?? (from === to ? COPY_SAME_REASON : sourceLines === 0 ? copyEmptyReason(from) : null)
+  // Greyed WITH its reason, in this order: shut, no signal / changes on their way, the two boxes, nothing to copy.
+  const copyReason = lockedReason ?? copyBlockedReason ?? (from === to ? COPY_SAME_REASON : sourceLines === 0 ? copyEmptyReason(from) : null)
   const disabled = busy || working
 
   const run = async (fn: () => Promise<void>) => {
@@ -188,17 +196,30 @@ export function QuoteTotals(props: {
   lockedReason: string | null
   /** Refreshes the quote and THROWS the server's words on refusal. `type: null` clears. */
   onSetDiscount: (next: { type: 'military' | 'senior' | 'custom' | null; percent?: number | null }) => Promise<void>
+  /**
+   * Where the figures in `quote` come from (Phase 7 U5, lib/quoteSync.ts QuoteView.priceSource):
+   * 'server' (the default) is the office's own; 'preview' is the labelled Preview from the price
+   * sheet saved on this phone at `priceSheetAt`; 'none' means no figure at all — the quote was
+   * changed on this phone and no sheet is saved, so the totals read "priced when signal returns".
+   */
+  priceSource?: 'server' | 'none' | 'preview'
+  priceSheetAt?: string | null
+  /** A discount change waiting to reach the office (words only): the buttons show IT as pressed, not the office's old programme. */
+  pendingDiscount?: { type: 'military' | 'senior' | 'custom' | null; percent: number | null } | null
 }) {
-  const { quote, busy, lockedReason, onSetDiscount } = props
+  const { quote, busy, lockedReason, onSetDiscount, priceSource = 'server', priceSheetAt = null, pendingDiscount = null } = props
   const m = quote.money
   const d = m.discount
+  // What the discount buttons show as pressed: the change waiting on this phone if there is one, else the office's.
+  const shownType = pendingDiscount ? pendingDiscount.type : (d?.type ?? null)
+  const shownPercent = pendingDiscount ? pendingDiscount.percent : (d?.percent ?? null)
   const [customPct, setCustomPct] = useState('')
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // The box shows the applied figure when the quote already carries one (as the office's does).
   useEffect(() => {
-    if (d?.type === 'custom') setCustomPct(String(d.percent))
-  }, [d?.type, d?.percent])
+    if (shownType === 'custom' && shownPercent !== null) setCustomPct(String(shownPercent))
+  }, [shownType, shownPercent])
 
   const off = busy || working || Boolean(lockedReason)
   const apply = async (next: Parameters<typeof onSetDiscount>[0]) => {
@@ -232,25 +253,40 @@ export function QuoteTotals(props: {
   const finPrice = finSelected.length > 0 ? selectionPrice(m, finSelected) : null
   if (finLabel && (finPrice?.discount ?? 0) > 0) finLabel += ` (after ${money(finPrice?.discount)} discount)`
 
+  // No figure to show at all: the quote was changed on this phone with no price sheet saved ('none'),
+  // or a preview that could not price every option. The office's "incomplete" keeps its own word.
+  const noFigure = priceSource === 'none' || (priceSource === 'preview' && (picksOne ? !m.range : quote.total === null))
+
   return (
     <section aria-label="Totals" className="space-y-2 rounded-lg border border-slate-700 bg-slate-800/70 p-3 text-sm">
       {/* The headline. One-or-the-other: a range, because a grand sum of choices is a lie (Kyle, 2026-08-29). */}
       <p className="flex justify-between font-semibold text-white">
-        <span>{picksOne ? 'Total — customer picks one' : 'Total'}</span>
+        <span>{priceSource === 'preview' ? 'Preview total' : 'Total'}{picksOne ? ' — customer picks one' : ''}</span>
         <span>
-          {picksOne
-            ? (m.range ? `${money(m.range.min)}–${money(m.range.max)}` : <span className="text-amber-300">incomplete</span>)
-            : money(quote.total)}
+          {noFigure
+            ? <span className="text-xs font-normal text-amber-300">{PRICED_WHEN_SIGNAL_RETURNS}</span>
+            : picksOne
+              ? (m.range ? `${money(m.range.min)}–${money(m.range.max)}` : <span className="text-amber-300">incomplete</span>)
+              : money(quote.total)}
         </span>
       </p>
+      {priceSource === 'preview' && (
+        <p className="text-[11px] text-sky-300">
+          Preview — prices saved on this phone{priceSheetAt ? ` at ${savedAtWords(priceSheetAt)}` : ''}. The final price is set when the estimate is issued with signal.
+        </p>
+      )}
 
-      <FinancingLine
-        financing={m.financing}
-        selected={finSelected}
-        label={finLabel}
-        total={finPrice?.total ?? null}
-        className="min-h-[2.5rem] text-sm font-semibold text-sky-300 underline"
-      />
+      {priceSource === 'server' ? (
+        <FinancingLine
+          financing={m.financing}
+          selected={finSelected}
+          label={finLabel}
+          total={finPrice?.total ?? null}
+          className="min-h-[2.5rem] text-sm font-semibold text-sky-300 underline"
+        />
+      ) : (
+        <p className="text-[11px] text-slate-400">{FINANCING_AFTER_ISSUE}</p>
+      )}
 
       {d && (
         <div className="space-y-1 border-t border-slate-600 pt-2 text-emerald-300">
@@ -267,7 +303,9 @@ export function QuoteTotals(props: {
             </p>
           ))}
           {d.pricedOnceComplete && (
-            <p className="text-xs text-amber-300">The discount prices once every line is confirmed.</p>
+            <p className="text-xs text-amber-300">
+              {priceSource === 'none' ? `${d.label}: ${PRICED_WHEN_SIGNAL_RETURNS.toLowerCase()}` : 'The discount prices once every line is confirmed.'}
+            </p>
           )}
           {!picksOne && m.discountedTotal !== null && (
             <p className="flex justify-between border-t border-slate-600 pt-1 font-semibold text-white">
@@ -288,18 +326,19 @@ export function QuoteTotals(props: {
 
       {/* The Discount block — same words as the office's (Send to the customer -> Discount). */}
       <div className="space-y-2 border-t border-slate-600 pt-2">
+        {pendingDiscount && <p className="text-[11px] text-amber-200">Discount change waiting to reach the office</p>}
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-slate-300">Discount</span>
           {([['military', 'Military 5%'], ['senior', 'Senior 5%']] as const).map(([val, label]) => (
             <button
               key={val}
               type="button"
-              aria-pressed={d?.type === val}
+              aria-pressed={shownType === val}
               disabled={off}
               title={lockedReason ?? undefined}
-              onClick={() => void apply({ type: d?.type === val ? null : val })}
+              onClick={() => void apply({ type: shownType === val ? null : val })}
               className={
-                d?.type === val
+                shownType === val
                   ? 'min-h-[2.5rem] rounded-lg bg-sky-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50'
                   : 'min-h-[2.5rem] rounded-lg border border-slate-500 px-3 py-2 text-sm text-slate-100 disabled:opacity-50'
               }
@@ -329,14 +368,14 @@ export function QuoteTotals(props: {
             title={lockedReason ?? (customValid ? undefined : 'Type a percentage above 0 and at most 50')}
             onClick={() => void apply({ type: 'custom', percent: Number(customPct) })}
             className={
-              d?.type === 'custom'
+              shownType === 'custom'
                 ? 'min-h-[2.5rem] rounded-lg bg-sky-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50'
                 : 'min-h-[2.5rem] rounded-lg border border-slate-500 px-3 py-2 text-sm text-slate-100 disabled:opacity-50'
             }
           >
-            {d?.type === 'custom' && d.percent === Number(customPct) ? `Custom ${d.percent}%` : 'Apply'}
+            {shownType === 'custom' && shownPercent === Number(customPct) ? `Custom ${shownPercent}%` : 'Apply'}
           </button>
-          {d && (
+          {shownType !== null && (
             <button
               type="button"
               disabled={off}

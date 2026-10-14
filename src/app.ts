@@ -2357,7 +2357,9 @@ app.put("/price-book/drafts/:draftId/discount", asyncHandler(async (req, res) =>
 app.put("/price-book/drafts/:draftId/options-mode", asyncHandler(async (req, res) => {
   const body = optionsModeBodySchema.parse(req.body ?? {});
   try {
-    res.json(await setOptionsMode(prisma, String(req.params.draftId), body.exclusive));
+    // `expected` rides through on this door too (Phase 7 U5, 2026-10-10): the schema already took
+    // it, but the office's route dropped it on the floor, so a sender's "what I saw" was never checked.
+    res.json(await setOptionsMode(prisma, String(req.params.draftId), body.exclusive, { expected: body.expected }));
   } catch (err) {
     draftRuleError(res, err);
   }

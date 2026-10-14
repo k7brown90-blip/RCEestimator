@@ -31,7 +31,7 @@
  * trigger and no retry queue may call this function.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { DraftError, computeDraft, draftCopyReason, draftDeleteReason, finalizeDraft } from "./atomicEstimateService";
 import { rowTypeSells } from "./atomicEstimateEngine";
@@ -44,6 +44,7 @@ import { bandsFrom, selectionCap, type MarkupBand } from "./materialMarkupCap";
 import { frozenSelectionDiscount, programmeFor } from "./discounts";
 import { snapshotActiveFinancingPlansJson } from "./financingSettings";
 import { notifyOwnerViewed } from "./issuedEstimateSend";
+import { getIssuedQuoteMoney } from "./quoteMoney";
 import { ALL_OPTIONS, type EstimateOptionLetter } from "../../shared/estimateOptions";
 import { CONSENT_TEXT } from "../../shared/consentText";
 import { signedRootForJob } from "./invoiceGroup";
@@ -679,7 +680,64 @@ export interface SignInput {
    * door and the emailed link, whose records read exactly as before.
    */
   recordedBy?: string | null;
+  /**
+   * ── CAPTURED ON THE PHONE, POSSIBLY WITH NO SIGNAL (Phase 7 unit U7, 2026-10-10) ──────────────
+   *
+   * The technician's phone writes the signature to its own storage the moment the customer signs
+   * and sends it when it can — seconds later with signal, days later without. These five fields let
+   * the server accept that request exactly once and judge it by when it was CAPTURED, not when it
+   * arrived. All optional: the office's screen and the emailed link send none of them and behave
+   * exactly as before. Each is checked in applySignature, the one write path, never in a route.
+   */
+  /**
+   * The id the phone minted at capture. A request whose answer was lost is sent again with the same
+   * id and gets the ORIGINAL success back (`replayed: true`), not "already signed". The same id on a
+   * different estimate is refused, never adopted.
+   */
+  clientSignatureId?: string | null;
+  /**
+   * The phone's clock at capture. Kyle, 2026-10-09 (ruling 10): a signature captured inside the 30
+   * days is HONOURED even if it reaches the office after day 30. Recorded as `signatureCapturedAt`
+   * beside the server's own `signedAt` — the phone's claim, labelled as such. The 30 days are judged
+   * NOT by this value but by the capture moment placed on the office's clock from `sentAt` (D2).
+   */
+  capturedAt?: Date | string | null;
+  /**
+   * The phone's clock at the moment it SENT this request (D2, 2026-10-13). Required whenever
+   * `capturedAt` is given. The office trusts only the gap `sentAt − capturedAt` (how long the phone
+   * held the signature): the capture moment on the office's clock is `now − gap`, which is what the
+   * 30 days and the before-issue check are judged against. So a phone whose clock sits days slow or
+   * fast is judged exactly as a correct one — without this, a slow clock let an expired estimate be
+   * signed, because the phone's absolute time decided.
+   */
+  sentAt?: Date | string | null;
+  /** The revision the phone held when the customer signed; refused if it is not this row's. */
+  revision?: number | null;
+  /**
+   * The server-made fingerprint of the frozen figures the customer was shown (`issuedFiguresKey`,
+   * carried on the quote payload's lifecycle). Refused if it is not the key of the figures this row
+   * holds now — the customer signed one number, and must not be recorded against another.
+   */
+  figuresKey?: string | null;
+  /** The consent sentence the phone showed; refused unless it is CONSENT_TEXT exactly. */
+  consentText?: string | null;
 }
+
+/**
+ * The tolerance where the phone's clock still has to be taken on its own word: ten minutes.
+ *
+ * Since D2 (2026-10-13) the phone sends BOTH its capture time and its send time, and the capture
+ * moment is placed on the office's clock from the gap between them (`now − (sentAt − capturedAt)`).
+ * The phone's absolute clock therefore never decides the 30 days: a phone days slow or days fast is
+ * judged exactly as a correct one, and a genuine day-30 capture that arrives on day 31 is honoured
+ * (Kyle, 2026-10-09, ruling 10). What this constant still bounds, both immaterial against a 30-day
+ * window:
+ *   1. a send time EARLIER than the capture time by more than this — the clock was changed between
+ *      the two, so the gap means nothing and the capture is refused;
+ *   2. a capture placed before the estimate existed by more than this — request latency is seconds,
+ *      so this can only mean the phone was signing a document it had not yet received.
+ */
+export const SIGNATURE_CLOCK_SKEW_MS = 10 * 60_000;
 
 /**
  * Which door the signature came through.
@@ -692,7 +750,47 @@ export interface SignInput {
  */
 export type SignChannel = "in_person" | "email";
 
-export type SignResult = { ok: true; estimateId: string } | { ok: false; reason: string };
+export type SignResult =
+  | {
+      ok: true;
+      estimateId: string;
+      /**
+       * True when nothing was written because THIS signature (same `clientSignatureId`) had already
+       * landed — the answer to a request the phone sent again after losing the first one. The
+       * callers skip the side effects (Kyle's notification, the job, the archive sweep) on a replay;
+       * they ran when the signature landed.
+       */
+      replayed?: boolean;
+    }
+  | { ok: false; reason: string };
+
+/**
+ * The fingerprint of the frozen figures a customer is shown on an issued estimate: a sha256 over the
+ * frozen `money.selections` table (every ticked combination's finished dollars) and the revision.
+ * Made on the SERVER only and carried on the quote payload's lifecycle; the phone echoes it back
+ * with a signature it captured, and computes nothing. Null when the estimate is gone.
+ */
+export async function issuedFiguresKey(prisma: PrismaClient, estimateId: string): Promise<string | null> {
+  const row = await prisma.issuedEstimate.findUnique({ where: { id: estimateId }, select: { revision: true } });
+  if (!row) return null;
+  const money = await getIssuedQuoteMoney(prisma, estimateId);
+  if (!money) return null;
+  return figuresKeyOf(money.selections, row.revision);
+}
+
+/** Pure: the key for one selections table and one revision. Keys are sorted so object order cannot move the hash. */
+export function figuresKeyOf(selections: Record<string, unknown>, revision: number): string {
+  return createHash("sha256").update(stableJson({ revision, selections })).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const o = value as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableJson(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
 
 /**
  * Record the customer's signature and LOCK the estimate.
@@ -738,6 +836,15 @@ export async function signEstimateInPerson(
     include: { supersededBy: { select: { id: true } } },
   });
   if (!est) return { ok: false, reason: "This estimate is no longer available." };
+  /*
+    THE SAME SIGNATURE, SENT AGAIN (Phase 7 unit U7). The phone lost the answer to a request that
+    had landed, and sends it again with the same id. Checked before every other read: the signature
+    IS recorded — the office may since have revised or voided the estimate, and that changes nothing
+    about the fact the customer signed, so this request still gets the success it earned.
+  */
+  if (input.clientSignatureId && est.signedAt && est.clientSignatureId === input.clientSignatureId) {
+    return { ok: true, estimateId: est.id, replayed: true };
+  }
   if (est.supersededBy) {
     return { ok: false, reason: "This estimate has been replaced by a newer revision." };
   }
@@ -774,16 +881,109 @@ async function applySignature(
   if (!drawn.ok) return { ok: false, reason: drawn.reason };
 
   /*
+    ── CAPTURED ON THE PHONE, JUDGED AT THE WRITE (Phase 7 unit U7, 2026-10-10) ─────────────────
+    The technician's phone saves a signature the moment the customer makes it and sends it when it
+    has signal. Everything the phone claims about that moment is checked HERE, at the one write
+    path, so the office's door and the emailed link (which send none of it) cannot differ from the
+    phone's door by a rule that exists at only one of them. Every refusal here reaches the phone as
+    the red "Not recorded" card and Kyle's email, so each sentence says what to do next.
+  */
+  // Same id, already landed somewhere? On THIS estimate it is the lost-answer replay and the
+  // original success stands; on another it is refused outright and never adopted — one capture is
+  // one signature on one estimate.
+  if (input.clientSignatureId) {
+    const landed = await prisma.issuedEstimate.findUnique({
+      where: { clientSignatureId: input.clientSignatureId },
+      select: { id: true, signedAt: true },
+    });
+    if (landed && landed.id === estimateId && landed.signedAt) return { ok: true, estimateId, replayed: true };
+    if (landed && landed.id !== estimateId) {
+      return { ok: false, reason: "This signature was already recorded on a different estimate. Open the estimate with signal and sign it again." };
+    }
+  }
+  // The revision the phone held is the revision this row is, or the customer signed a document
+  // that is not this one.
+  if (input.revision != null && input.revision !== revision) {
+    return {
+      ok: false,
+      reason: `This signature was taken on revision ${input.revision} of estimate ${number}; this is revision ${revision}. Open the current estimate with signal and sign it again.`,
+    };
+  }
+  // The words the customer agreed to are the words recorded — exactly (ruling 4: one sentence on
+  // every surface). A phone running an older build shows the older sentence; it is not recorded
+  // under the current one.
+  if (input.consentText != null && input.consentText !== CONSENT_TEXT) {
+    return { ok: false, reason: "The agreement wording shown on the phone is not the current wording. Update the app, then have the customer sign again." };
+  }
+  // The figures the customer saw are the figures this row holds now. The key is the server's own
+  // (issuedFiguresKey, carried on the quote payload); the phone only echoes it.
+  if (input.figuresKey != null) {
+    const current = await issuedFiguresKey(prisma, estimateId);
+    if (current !== input.figuresKey) {
+      return { ok: false, reason: `The figures the customer signed are not the figures estimate ${number} shows now. Open it with signal and have the customer sign the current figures.` };
+    }
+  }
+  /*
+    ── THE PHONE'S CLOCK (D2, 2026-10-13) ──────────────────────────────────────────────────────
+    The phone says when it captured (`capturedAt`) and when it sent (`sentAt`), both on ITS clock.
+    Only the gap between them is trusted — how long the phone held the signature — and the capture
+    moment on the OFFICE's clock is `now − gap`. That is what the 30 days and the before-issue check
+    are judged against. Judging by `capturedAt` itself let a phone whose clock sat days slow sign an
+    expired estimate (and a fast one the other way); bounding `capturedAt` against `now` could not
+    catch it, because a slow clock looks like a long-held capture. The raw `capturedAt` is still
+    recorded as the phone's claim (`signatureCapturedAt`); the skew (`now − sentAt`) goes on the
+    signed event. signedAt stays server time.
+  */
+  let capturedAt: Date | null = null; // the phone's claim, recorded as such
+  let capturedAtOffice: Date | null = null; // the same moment on the office's clock
+  let phoneClockSkewMs: number | null = null;
+  if (input.capturedAt != null && input.capturedAt !== "") {
+    capturedAt = input.capturedAt instanceof Date ? input.capturedAt : new Date(input.capturedAt);
+    if (Number.isNaN(capturedAt.getTime())) {
+      return { ok: false, reason: "The time this signature was taken could not be read from the phone. Have the customer sign again with signal." };
+    }
+    const sentAt = input.sentAt == null || input.sentAt === "" ? null : input.sentAt instanceof Date ? input.sentAt : new Date(input.sentAt);
+    if (!sentAt || Number.isNaN(sentAt.getTime())) {
+      return {
+        ok: false,
+        reason: "The phone did not say when it sent this signature, so the time it was taken cannot be checked. Update the app, then have the customer sign again.",
+      };
+    }
+    const gapMs = sentAt.getTime() - capturedAt.getTime();
+    if (gapMs < -SIGNATURE_CLOCK_SKEW_MS) {
+      return {
+        ok: false,
+        reason: `The phone's clock moved between the signature (${chicago(capturedAt)}) and the send (${chicago(sentAt)}). Fix the phone's clock and have the customer sign again.`,
+      };
+    }
+    const now = Date.now();
+    phoneClockSkewMs = now - sentAt.getTime();
+    capturedAtOffice = new Date(now - Math.max(0, gapMs));
+  }
+
+  /*
     ── THE 30 DAYS MEAN IT (Kyle, 2026-09-06) ──────────────────────────────────────────────────
     Every document prints "Valid N days" and until now nothing enforced it — a customer could
     sign a stale price sheet months later. Checked HERE, at the one write path both doors share,
     and by date arithmetic rather than the sweep's label, so a signature at 12:01 AM on day 31
     is refused even if the cron hasn't relabeled the row yet.
+
+    JUDGED AT CAPTURE WHEN THE PHONE SAYS WHEN (Kyle, 2026-10-09, ruling 10): a signature the
+    customer made on day 30 is honoured when it reaches the office on day 31. "Day 30" is the
+    capture moment on the OFFICE's clock (`capturedAtOffice`, from the phone's held-for gap, D2),
+    so the phone's own clock being wrong cannot move it. Without a capture time (the office's door,
+    the emailed link) it is the server's clock at the write, as before.
   */
   const validity = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
     select: { createdAt: true, validDays: true, status: true },
   });
+  if (validity && capturedAtOffice && capturedAtOffice.getTime() < validity.createdAt.getTime() - SIGNATURE_CLOCK_SKEW_MS) {
+    return {
+      ok: false,
+      reason: `This signature was taken at ${chicago(capturedAtOffice)} (by the office's clock), before estimate ${number} was issued (${chicago(validity.createdAt)}). Open the estimate with signal and have the customer sign again.`,
+    };
+  }
   // LOST is checked at the same shared write path, for the same reason as the 30 days (2026-09-20):
   // both doors — the emailed link and the operator's device — must refuse it, and the office
   // reopens it before anyone signs so the record reads "lost, then reopened, then signed".
@@ -795,7 +995,9 @@ async function applySignature(
   }
   if (validity) {
     const expiresAt = new Date(validity.createdAt.getTime() + validity.validDays * 86_400_000);
-    if (Date.now() > expiresAt.getTime()) {
+    // The phone's capture moment on the office's clock when it gave one, the server's clock otherwise.
+    const signedMoment = capturedAtOffice ? capturedAtOffice.getTime() : Date.now();
+    if (signedMoment > expiresAt.getTime()) {
       return {
         ok: false,
         reason: `This estimate expired on ${expiresAt.toLocaleDateString("en-US", { timeZone: "America/Chicago" })} — material prices are no longer guaranteed. Call Red Cedar Electric for a current quote.`,
@@ -949,6 +1151,10 @@ async function applySignature(
         consentText: CONSENT_TEXT,
         signedChannel: channel,
         status: "signed",
+        // The phone's capture: its id (unique — see the P2002 catch below) and its clock. Both null
+        // on the office's door and the emailed link. signedAt above is the server's time, always.
+        clientSignatureId: input.clientSignatureId ?? null,
+        signatureCapturedAt: capturedAt,
         // A signed row is never an archived row (services/estimateArchive.ts): archiving does
         // not block the customer's link, so a signature on a put-away estimate takes it back out
         // in the same write — "archived ⇒ unsigned" is what keeps archiving off every money surface.
@@ -959,13 +1165,26 @@ async function applySignature(
     if (result.count === 0) return { signed: false as const, adopted: null };
     const adopted = await adoptSupersededInvoice(tx, estimateId, channel === "in_person" ? "customer:in-person" : "customer");
     return { signed: true as const, adopted };
+  }).catch((err: unknown) => {
+    // Two estimates, one client id, arriving together: the unique index refuses the second write
+    // after the read above let it through. Refused with words, never adopted, never a 500.
+    if (input.clientSignatureId && isUniqueViolation(err, "clientSignatureId")) return { signed: false as const, adopted: null, idTaken: true as const };
+    throw err;
   });
   if (!signed.signed) {
+    if ("idTaken" in signed && signed.idTaken) {
+      return { ok: false, reason: "This signature was already recorded on a different estimate. Open the estimate with signal and sign it again." };
+    }
     // Which guard stopped the write? Say that, not a blanket "already signed".
     const now = await prisma.issuedEstimate.findUnique({
       where: { id: estimateId },
-      select: { signedAt: true, status: true, supersededBy: { select: { id: true } } },
+      select: { signedAt: true, status: true, clientSignatureId: true, supersededBy: { select: { id: true } } },
     });
+    // The same capture, twice at once (the phone retried before the first answer came back): the
+    // first write won and this is its replay, not a second signer.
+    if (now?.signedAt && input.clientSignatureId && now.clientSignatureId === input.clientSignatureId) {
+      return { ok: true, estimateId, replayed: true };
+    }
     if (now && !now.signedAt) {
       if (now.supersededBy) return { ok: false, reason: "This estimate has been replaced by a newer revision." };
       if (now.status === "void") return { ok: false, reason: "This estimate is void." };
@@ -995,7 +1214,9 @@ async function applySignature(
       estimateId,
       type: "signed",
       actor: channel === "in_person" ? "customer:in-person" : "customer",
-      detail: `Signed by "${name}" ${where} (rev ${revision}) from ${input.ip ?? "unknown IP"}${input.recordedBy ? ` - device held by ${input.recordedBy}` : ""}`,
+      // The capture time is the PHONE's claim and the line says so; the event's own `at` is when it
+      // was recorded. The IP is the network the phone synced over, not where the customer stood.
+      detail: `Signed by "${name}" ${where} (rev ${revision}) from ${input.ip ?? "unknown IP"}${input.recordedBy ? ` - device held by ${input.recordedBy}` : ""}${capturedAt ? ` - captured on the phone at ${chicago(capturedAt)} (the phone's clock${capturedAtOffice ? `; ${chicago(capturedAtOffice)} by the office's` : ""}), recorded now` : ""}`,
     },
   });
   logSystemEvent("info", "issued-estimate", `Estimate ${number} signed by ${name} (${channel})`, {
@@ -1004,6 +1225,11 @@ async function applySignature(
     channel,
     ip: input.ip ?? null,
     recordedBy: input.recordedBy ?? null,
+    clientSignatureId: input.clientSignatureId ?? null,
+    signatureCapturedAt: capturedAt?.toISOString() ?? null,
+    // D2: the same moment on the office's clock, and how far the phone's clock sat from the office's at the send.
+    signatureCapturedAtOffice: capturedAtOffice?.toISOString() ?? null,
+    phoneClockSkewMs,
   });
 
   /*
@@ -1024,6 +1250,19 @@ async function applySignature(
   void fileSignedCopies(prisma, estimateId, number);
 
   return { ok: true, estimateId };
+}
+
+/** A moment as Red Cedar reads it, for the refusal sentences and the audit line. */
+function chicago(d: Date): string {
+  return d.toLocaleString("en-US", { timeZone: "America/Chicago", timeZoneName: "short" });
+}
+
+/** Prisma's unique-constraint failure (P2002) on the named column — the race the read-then-write above cannot close. */
+function isUniqueViolation(err: unknown, column: string): boolean {
+  const e = err as { code?: unknown; meta?: { target?: unknown } } | null;
+  if (!e || e.code !== "P2002") return false;
+  const target = e.meta?.target;
+  return Array.isArray(target) ? target.includes(column) : typeof target === "string" ? target.includes(column) : true;
 }
 
 /**
@@ -1462,7 +1701,7 @@ async function liveEstimateOfDraft(prisma: PrismaClient, draftId: string) {
   return prisma.issuedEstimate.findFirst({
     where: { draftId, supersededBy: null, status: { not: "void" } },
     orderBy: { revision: "desc" },
-    select: { id: true, number: true, revision: true, signedAt: true, status: true, archivedAt: true },
+    select: { id: true, number: true, revision: true, signedAt: true, status: true, archivedAt: true, createdAt: true, validDays: true },
   });
 }
 
@@ -1534,6 +1773,12 @@ export async function getDraftLifecycle(prisma: PrismaClient, draftId: string, d
         revision: live.revision,
         status: live.status,
         signedAt: live.signedAt?.toISOString() ?? null,
+        // The validity window and the figures' fingerprint (Phase 7 unit U7): the phone judges
+        // "still signable with no signal" from the first two by its own clock, and echoes the third
+        // with a signature it captured. The key is made HERE, server only.
+        issuedAt: live.createdAt.toISOString(),
+        validDays: live.validDays,
+        figuresKey: (await issuedFiguresKey(prisma, live.id)) ?? "",
         archived: live.archivedAt !== null,
         customerUrl: null,
       }

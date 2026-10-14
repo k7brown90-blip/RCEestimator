@@ -2105,6 +2105,13 @@ export interface PbIssuedEstimate {
   acceptedVia?: AcceptedVia | null;
   /** The office's internal note on the acceptance; never customer-facing. */
   acceptedNote?: string | null;
+  /**
+   * The PHONE's clock when the customer signed on the technician's phone (Phase 7 unit U7,
+   * 2026-10-10) — set only on an in-person signature the phone captured, possibly with no signal
+   * and delivered later. `signedAt` stays the server's receipt time; the drawer prints both
+   * ("signed in person on the phone at … · recorded …"). Null everywhere else.
+   */
+  signatureCapturedAt?: string | null;
   /** Days the quote stays open from `createdAt` — shared/estimateExpiry.ts is the arithmetic. */
   validDays?: number;
   /** The named options frozen at issue; the office picks among them when recording an acceptance. */

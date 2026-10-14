@@ -6,6 +6,7 @@ import { registerSW } from 'virtual:pwa-register'
 import { consumeEnrollmentToken, flushReceiptQueue, flushSyncQueue, registerSyncListener } from './lib/crmSync'
 import { flushDiagnosticQueue, registerDiagnosticSyncListener } from './lib/diagnosticSync'
 import { flushQuoteQueue, registerQuoteSyncListener } from './lib/quoteSync'
+import { flushSignatureQueue, registerSignatureSyncListener } from './lib/signatureQueue'
 
 // Before createRoot — PropertyScreen reads the saved token in a useState
 // initializer, so enrolling any later wouldn't take effect until a reload.
@@ -26,6 +27,10 @@ void flushDiagnosticQueue()
 // imports crmSync, so it registers its own listener here rather than from inside crmSync.
 registerQuoteSyncListener()
 void flushQuoteQueue()
+// And a signature taken on the phone that the office has not answered yet (Phase 7 U8,
+// 2026-10-10): sent again under the same id, so a phone killed in the driveway records it once.
+registerSignatureSyncListener()
+void flushSignatureQueue()
 // navigator.storage.persist() — the ask not to evict IndexedDB — is NOT made here. Firefox puts a
 // permission prompt on it, and at launch that prompt has no context; quoteSync asks the first time
 // something is queued that exists nowhere else (requestPersistentStorage, Phase 7 review 2026-10-09).

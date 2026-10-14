@@ -14,7 +14,7 @@ import { summarizeOptions } from "../services/atomicEstimateEngine";
 import { ALL_OPTIONS, isEstimateOption } from "../../shared/estimateOptions";
 import { SameDayError, completeWorkNow, fieldChoicePending, pauseJobForLater, scheduleForLater } from "../services/sameDayJob";
 import { getDraftLifecycle, issueDraft, issueExtrasBodySchema, raiseChangeOrderForVisit } from "../services/issuedEstimateService";
-import { inPersonSignBodySchema, signInPerson, signerContextOf } from "../services/inPersonSigning";
+import { fileSignatureEvent, inPersonSignBodySchema, signInPerson, signatureEventBodySchema, signerContextOf } from "../services/inPersonSigning";
 import { PhotoError, jobPhotoPreview, listJobPhotos, removeOwnVisitPhoto } from "../services/estimatePhotos";
 import { jobChainOfVisits } from "../services/jobCosting";
 import { MAX_ESTIMATE_PHOTOS } from "../../shared/estimatePhotos";
@@ -22,6 +22,7 @@ import { DraftError, addLine, addOption, browseFieldCatalog, browseSections, com
 import { proposeWalkthroughForDraft, walkthroughTextBodySchema } from "../services/aiProposer";
 import { resolveWalkthroughRows, walkthroughRowsBodySchema } from "../services/walkthroughMatch";
 import { frozenStyleSubtotal, getQuoteMoney } from "../services/quoteMoney";
+import { buildPhonePriceSheet } from "../services/fieldPriceSheet";
 import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -1133,6 +1134,20 @@ healthRecordTechRouter.get("/quote-catalog/snapshot", asyncHandler(async (req: T
   res.json({ success: true, data: await fieldCatalogSnapshot(prisma, have) });
 }));
 
+/*
+  The customer-price sheet for a labelled Preview with no signal (2026-10-09, one estimating system,
+  Phase 7 unit U3; Kyle's ruling 8: Normal difficulty only). One customer price per live item, built
+  by the SAME engine the office prices through, one item at a time at quantity 1 at the active
+  supplier (services/fieldPriceSheet.ts). No labour hours or dollars, no unit basis, no cost, no
+  per-unit sell figure, no tiers, no bands, no rate rides on a row — pinned by the key-set test in
+  tests/fieldPriceSheet.test.ts. Thin wrapper, like the snapshot above: `?version=` is the stamp the
+  phone holds, and an unchanged sheet answers `{ unchanged: true }`.
+*/
+healthRecordTechRouter.get("/quote-price-sheet", asyncHandler(async (req: TechRequest, res) => {
+  const have = typeof req.query.version === "string" && req.query.version.length <= 100 ? req.query.version : null;
+  res.json({ success: true, data: await buildPhonePriceSheet(prisma, have) });
+}));
+
 /** The working quote: lines with live prices, per-option totals, gaps. */
 healthRecordTechRouter.get("/quotes/:draftId", asyncHandler(async (req: TechRequest, res) => {
   const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);
@@ -1941,6 +1956,15 @@ healthRecordTechRouter.post("/issued-estimates/:id/email-financing", asyncHandle
  * the same guard as the estimate email above). A stranger tech gets 403 and nothing is signed.
  * A refused signature answers 400 like the office route (`reason` is readable, customer-safe text).
  *
+ * SIGNED WITH NO SIGNAL (Phase 7 unit U7, 2026-10-10): the body may also carry the phone's capture
+ * id, its clock, the revision, the figures' fingerprint (lifecycle.issued.figuresKey on GET
+ * /quotes/:draftId), its send-time clock (`sentAt`, D2) and the consent sentence shown - all judged
+ * in applySignature. A resend with the same id after a lost answer gets this same 201 back and runs
+ * no side effect twice; a 400 on a send the phone HELD (`heldOnPhone`: taken with no signal, or sent
+ * again) also emails Kyle and writes a "field-signature" SystemEvent (inPersonSigning.ts, D1). The
+ * phone treats 400 as refused and keeps the row for the technician's red card; a dead network or a
+ * 5xx is "not recorded yet" and is sent again.
+ *
  * The response carries the figures the signed screen shows - the number, the options taken and the
  * total the signed document bills - so the phone adds nothing up. It never carries the token, hours,
  * costs or margins.
@@ -1982,6 +2006,40 @@ healthRecordTechRouter.post("/issued-estimates/:id/sign-in-person", asyncHandler
       archivedNumbers: result.archived.map((a) => a.number),
     },
   });
+}));
+
+/**
+ * POST /health-record/issued-estimates/:id/signature-events - what became of a signature the
+ * phone held and never delivered (Phase 7 unit U8, 2026-10-10): cancelled by the technician before
+ * it was recorded, or a refused one dismissed after the customer was called. A thin wrapper around
+ * `fileSignatureEvent` (services/inPersonSigning.ts): it writes a "field-signature" SystemEvent and
+ * nothing else - no signature, no change to the estimate, no email. Behind the same assignment
+ * guard as the signature itself (techAssignedToEstimate); a stranger tech gets 403 and nothing is
+ * filed. Idempotent on (signatureId, event): the phone sends it on the next sync and may send it
+ * twice after a lost answer.
+ */
+healthRecordTechRouter.post("/issued-estimates/:id/signature-events", asyncHandler(async (req: TechRequest, res) => {
+  const estimateId = readParam(req, "id");
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: { id: true, visitId: true, jobVisitId: true },
+  });
+  if (!est) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Estimate not found" } });
+    return;
+  }
+  if (!(await techAssignedToEstimate(req.technician!.id, est))) {
+    res.status(403).json({ success: false, error: { code: "forbidden", message: "This estimate is not on one of your visits" } });
+    return;
+  }
+  const body = signatureEventBodySchema.parse(req.body ?? {});
+  const result = await fileSignatureEvent(prisma, est.id, body, { actor: `tech:${req.technician!.id}`, ip: signerContextOf(req).ip });
+  if (!result.filed) {
+    // The office has this signature on the estimate: it was recorded, so it cannot be "cancelled".
+    res.status(409).json({ success: false, error: { code: "already_recorded", message: result.reason } });
+    return;
+  }
+  res.json({ success: true, data: result });
 }));
 
 

@@ -390,7 +390,9 @@ describe("POST /health-record/visits/:visitId/quote — workingDraftForVisit", (
     const row = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: issued.estimateId } });
     expect(q.lifecycle).toEqual({
       status: "finalized",
-      issued: { estimateId: issued.estimateId, number: issued.number, revision: 1, status: "draft", signedAt: null, archived: false, customerUrl: estimateLink(row.token) },
+      // issuedAt / validDays / figuresKey (Phase 7 unit U7): the validity window the phone judges by
+      // its own clock, and the server-made fingerprint of the frozen figures it echoes on a signature.
+      issued: { estimateId: issued.estimateId, number: issued.number, revision: 1, status: "draft", signedAt: null, issuedAt: row.createdAt.toISOString(), validDays: row.validDays, figuresKey: expect.stringMatching(/^[0-9a-f]{64}$/), archived: false, customerUrl: estimateLink(row.token) },
       hasUnsavedChanges: false,
       reviseReason: null,
       deleteReason: expect.stringContaining(issued.number),

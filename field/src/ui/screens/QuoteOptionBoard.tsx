@@ -38,8 +38,10 @@
  *     decided under "AI proposals" at the top of the Quote screen (QuoteSuggestions: Confirm / Edit &
  *     confirm / Reject, Phase 2 unit D); here each option only points at them, exactly as the CRM keeps
  *     them out of its drag list.
- *   - Like every quote call this needs signal by design (the screen's own header says so): there is
- *     no offline queue for add / remove / reorder, the same as editQuoteLine / removeQuoteLine.
+ *   - With no signal (Phase 7 U5, 2026-10-10) add / remove / reorder / naming go through the Quote
+ *     screen's queue like every other edit (lib/quoteSync.ts) and replay when signal returns; the
+ *     heading's figure then reads what the view says — the office's subtotal, a labelled Preview
+ *     from the saved price sheet, or "priced when signal returns" — never a number made here.
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -63,6 +65,7 @@ import type { QuoteLine, QuoteState } from '../../lib/crmSync'
 import { EMPTY_OPTION_TEXT, namePlaceholder, removeOptionConfirm, TOUCH_HOLD_MS, TOUCH_HOLD_TOLERANCE_PX } from '../../lib/quoteOptions'
 import { suggestedPointer } from '../../lib/quoteSuggestions'
 import { OPTION_HINTS, OPTION_LIMIT_REASON, optionHint, type EstimateOptionLetter } from '../../../../shared/estimateOptions'
+import { PRICED_WHEN_SIGNAL_RETURNS, type PreviewOption } from '../../../../shared/quotePreview'
 import {
   buildColumns,
   findColumn,
@@ -88,9 +91,16 @@ interface Props {
   onSaveOrder: (order: LineOrderItem[]) => Promise<void>
   /** Name / describe an option. Empty strings clear it. Refreshes the quote and THROWS on refusal. */
   onSaveMeta: (option: EstimateOptionLetter, meta: { label: string; note: string }) => Promise<void>
+  /**
+   * Where the figures come from (Phase 7 U5): 'server' (the default) prints the office's subtotal;
+   * 'preview' prints the view's subtotal labelled Preview (with "may come down" where the saved
+   * sheet says so — `previewOptions`); 'none' prints "priced when signal returns" in its place.
+   */
+  priceSource?: 'server' | 'none' | 'preview'
+  previewOptions?: readonly PreviewOption[] | null
 }
 
-export function QuoteOptionBoard({ quote, busy, renderLine, onAddOption, onRemoveOption, onSaveOrder, onSaveMeta }: Props) {
+export function QuoteOptionBoard({ quote, busy, renderLine, onAddOption, onRemoveOption, onSaveOrder, onSaveMeta, priceSource = 'server', previewOptions = null }: Props) {
   const entries = quote.optionSet.options
   const letters = useMemo(() => entries.map((e) => e.option), [entries])
   const lineById = useMemo(() => new Map(quote.lines.map((l) => [l.id, l])), [quote.lines])
@@ -258,8 +268,17 @@ export function QuoteOptionBoard({ quote, busy, renderLine, onAddOption, onRemov
                   </div>
                   <div className="shrink-0 text-right">
                     <div className="text-sm font-semibold text-emerald-300">
-                      {summary && !summary.complete ? <span className="text-amber-300">incomplete</span> : money(summary?.subtotal)}
+                      {priceSource === 'none' || (priceSource === 'preview' && (!summary || summary.subtotal === null))
+                        ? <span className="text-[11px] font-normal text-amber-300">{PRICED_WHEN_SIGNAL_RETURNS}</span>
+                        : summary && !summary.complete
+                          ? <span className="text-amber-300">incomplete</span>
+                          : money(summary?.subtotal)}
                     </div>
+                    {priceSource === 'preview' && summary && summary.subtotal !== null && (
+                      <div className="text-[11px] text-sky-300">
+                        Preview{previewOptions?.find((o) => o.option === opt)?.mayComeDown ? ' · may come down once issued' : ''}
+                      </div>
+                    )}
                     <div className="text-[11px] text-slate-400">{ids.length} line{ids.length === 1 ? '' : 's'}</div>
                   </div>
                 </>

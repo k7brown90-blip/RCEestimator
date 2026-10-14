@@ -708,7 +708,7 @@ describe('the overlay never shows a number the office did not supply', () => {
   })
 
   it('settings, options, names, removals and order apply as words — a moved line is unpriced, a reordered one keeps its figure', () => {
-    const issued: QuoteState = { ...serverQuote(), lifecycle: { ...serverQuote().lifecycle, issued: { estimateId: 'e1', number: '2026-1098', revision: 1, status: 'sent', signedAt: null, archived: false, customerUrl: null } } }
+    const issued: QuoteState = { ...serverQuote(), lifecycle: { ...serverQuote().lifecycle, issued: { estimateId: 'e1', number: '2026-1098', revision: 1, status: 'sent', signedAt: null, issuedAt: '2026-10-01T12:00:00.000Z', validDays: 30, figuresKey: 'k', archived: false, customerUrl: null } } }
     const view = mod.overlayQuote(mirrorOf(issued), [
       op(1, { kind: 'set_details', title: 'Panel change', jobDescription: null }),
       op(2, { kind: 'set_mode', exclusive: true }),
@@ -854,6 +854,260 @@ describe('the saved price book (quoteCatalog)', () => {
   })
 })
 
+// ─── The price sheet and the labelled Preview (U3; Kyle, 2026-10-13: every difficulty) ───────
+
+/** The sheet's words for a difficulty the book does not publish for the item — a sentence with no number in it. */
+const NO_DIFFICULTY_WORDS = 'No price is published for this item at this difficulty — the office prices it'
+const NO_LABOUR_WORDS = 'No labour figure is published for this item at this difficulty — the office prices it'
+const priced = { NORMAL: null, DIFFICULT: null, VERY_DIFFICULT: null }
+
+/** What the office cuts: ONE customer price per live item at EACH difficulty, or null with words there. Never a labour figure. */
+const SHEET = {
+  version: 's1',
+  generatedAt: '2026-10-09T13:05:00.000Z',
+  supplierId: 'HD',
+  tripCharge: 0,
+  rateProvisional: false,
+  rows: [
+    { itemId: 'A016', price: { NORMAL: 60.25, DIFFICULT: 75, VERY_DIFFICULT: 90 }, gap: priced, exactOffline: true },
+    // Kyle's row with only the Normal column filled: Difficult and Very difficult are null WITH words, never Normal standing in.
+    { itemId: 'B002', price: { NORMAL: 80, DIFFICULT: null, VERY_DIFFICULT: null }, gap: { NORMAL: null, DIFFICULT: NO_DIFFICULTY_WORDS, VERY_DIFFICULT: NO_DIFFICULTY_WORDS }, exactOffline: true },
+    { itemId: 'W142', price: { NORMAL: 2.5, DIFFICULT: 3, VERY_DIFFICULT: 3.5 }, gap: priced, exactOffline: false },
+    { itemId: 'NOHRS', price: { NORMAL: null, DIFFICULT: null, VERY_DIFFICULT: null }, gap: { NORMAL: NO_LABOUR_WORDS, DIFFICULT: NO_LABOUR_WORDS, VERY_DIFFICULT: NO_LABOUR_WORDS }, exactOffline: false },
+  ],
+}
+
+describe('the saved price sheet (meta row)', () => {
+  it('saves the whole sheet in one row with when it was saved, skips an unchanged version, and keeps the saved sheet when the office cannot be reached', async () => {
+    let sheet = SHEET
+    const server = mockServer((c) => {
+      if (c.path.startsWith('/quote-price-sheet')) {
+        const version = new URL(`https://x${c.path}`).searchParams.get('version')
+        return version === sheet.version ? { status: 200, data: { unchanged: true, version } } : { status: 200, data: sheet }
+      }
+      return { status: 500 }
+    })
+    expect(await mod.cachedPriceSheet()).toBeNull()
+    const first = await mod.syncPriceSheet()
+    expect(first).toMatchObject({ stale: false, unchanged: false, sheet: { version: 's1', supplierId: 'HD', tripCharge: 0, rateProvisional: false } })
+    expect(first.sheet!.rows).toEqual(SHEET.rows)
+    expect(first.sheet!.cachedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(server.calls[0].path).toBe('/quote-price-sheet')
+
+    const second = await mod.syncPriceSheet()
+    expect(second).toMatchObject({ stale: false, unchanged: true, sheet: { version: 's1' } })
+    expect(server.calls[1].path).toBe('/quote-price-sheet?version=s1')
+
+    sheet = { ...SHEET, version: 's2', rows: SHEET.rows.filter((r) => r.itemId !== 'W142') }
+    const third = await mod.syncPriceSheet()
+    expect(third.sheet).toMatchObject({ version: 's2' })
+    expect((await mod.cachedPriceSheet())!.rows.map((r) => r.itemId)).toEqual(['A016', 'B002', 'NOHRS'])
+
+    deadNetwork()
+    expect(await mod.syncPriceSheet()).toMatchObject({ stale: true, unchanged: false, sheet: { version: 's2' }, error: 'Failed to fetch' })
+    expect((await mod.cachedPriceSheet())!.version).toBe('s2')
+
+    await mod.forgetPriceSheet()
+    expect(await mod.cachedPriceSheet()).toBeNull()
+  })
+
+  it('a saved sheet never carries a labour figure, a cost, a tier or a rate — three customer prices per row, and a gap is words with no number in them', async () => {
+    mockServer(() => ({ status: 200, data: SHEET }))
+    await mod.syncPriceSheet()
+    const saved = (await mod.cachedPriceSheet())!
+    const text = JSON.stringify(saved)
+    for (const banned of ['laborNormal', 'laborDifficult', 'laborHours', 'laborDollars', 'laborUnitBasis', 'companyCost', 'companyPrice', 'costBasis', 'sellPricePerUnit', 'sellNormal', 'markupTier', 'discountRatePct']) {
+      expect(text, banned).not.toContain(banned)
+    }
+    for (const row of saved.rows) {
+      expect(Object.keys(row).sort()).toEqual(['exactOffline', 'gap', 'itemId', 'price'])
+      expect(Object.keys(row.price)).toEqual(['NORMAL', 'DIFFICULT', 'VERY_DIFFICULT'])
+      expect(Object.keys(row.gap)).toEqual(['NORMAL', 'DIFFICULT', 'VERY_DIFFICULT'])
+      for (const words of Object.values(row.gap)) if (words !== null) expect(words).not.toMatch(/\d/)
+    }
+  })
+
+  it('a Normal-only sheet saved by an earlier build (2026-10-09) is not read: it counts as no sheet, and the next sync fetches the whole current one', async () => {
+    const { QUOTE_PRICE_SHEET_META_KEY } = await import('../db/database')
+    await db.meta.put({
+      key: QUOTE_PRICE_SHEET_META_KEY,
+      value: { ...SHEET, version: 'old-normal-only', rows: [{ itemId: 'A016', price: { NORMAL: 60.25 }, gap: null, exactOffline: true }], cachedAt: '2026-10-09T13:06:00.000Z' },
+      updatedAt: 'then',
+    })
+    expect(await mod.cachedPriceSheet()).toBeNull()
+    // With "no sheet", a touched line is "priced when signal returns" — never a figure read off a shape that lacks its difficulty.
+    const view = mod.overlayQuote(mirrorOf(serverQuote()), [
+      { opId: 'op-1', draftId: D1, visitId: 'v1', seq: 1, kind: 'edit_line', body: { kind: 'edit_line', lineId: 'line-1', patch: { difficulty: 'DIFFICULT' } }, status: 'queued', attempts: 0, queuedAt: 'now' },
+    ], new Map(), await mod.cachedPriceSheet())
+    expect(view).toMatchObject({ priceSource: 'none', total: null })
+    expect(view.lines[0]).toMatchObject({ lineTotal: null, priceReason: 'Priced when signal returns' })
+
+    const { calls } = mockServer(() => ({ status: 200, data: SHEET }))
+    const synced = await mod.syncPriceSheet()
+    expect(calls[0].path).toBe('/quote-price-sheet') // no version sent: the old one is not vouched for
+    expect(synced.sheet?.version).toBe('s1')
+    expect((await mod.cachedPriceSheet())?.rows.map((r) => Object.keys(r.price))).toEqual(SHEET.rows.map(() => ['NORMAL', 'DIFFICULT', 'VERY_DIFFICULT']))
+  })
+})
+
+describe('the overlay with a price sheet: every figure is a labelled Preview from the sheet, never mixed with the office\'s', () => {
+  const catalog = new Map(CATALOG.rows.map((r) => [r.itemId, r]))
+  const op = (seq: number, body: QuoteOpRecord['body'], status: QuoteOpRecord['status'] = 'queued'): QuoteOpRecord => ({
+    opId: `op-${seq}`, draftId: D1, visitId: 'v1', seq, kind: body.kind, body, status, attempts: 0, queuedAt: 'now',
+  })
+  const cached = { ...SHEET, cachedAt: '2026-10-09T13:06:00.000Z' }
+
+  it('with nothing waiting the office\'s figures stand, sheet or no sheet', () => {
+    const view = mod.overlayQuote(mirrorOf(serverQuote()), [], catalog, cached)
+    expect(view.priceSource).toBe('server')
+    expect(view.total).toBe(200.5)
+    expect(view.lines.map((l) => l.lineTotal)).toEqual([120.5, 80])
+    expect(view.money).toEqual(serverQuote().money)
+    expect(view).toMatchObject({ previewReason: null, previewOptions: null, priceSheetAt: null })
+  })
+
+  it('a touched quote is previewed whole: untouched lines too, the office\'s figures gone, the trip and discount from the shared pricer, no financing', () => {
+    const view = mod.overlayQuote(mirrorOf(serverQuote()), [
+      op(1, { kind: 'edit_line', lineId: 'line-1', patch: { quantity: 3 }, expected: { quantity: 2 } }),
+      op(2, { kind: 'add_line', lineId: L1, itemId: 'W142', quantity: 40, option: 'B' }),
+    ], catalog, cached)
+    expect(view).toMatchObject({ touched: true, priceSource: 'preview', previewReason: null, priceSheetAt: '2026-10-09T13:06:00.000Z' })
+    const [l1, l2, added] = view.lines
+    // line-1: 3 × 60.25 — the office's 120.5 (for 2) is gone, not kept, not added to.
+    expect(l1).toMatchObject({ id: 'line-1', quantity: 3, lineTotal: 180.75, pendingPrice: false, priceStatus: 'preview', priceReason: null })
+    // line-2 was NOT touched, and still comes from the sheet (1 × 80), not from the office's payload.
+    expect(l2).toMatchObject({ id: 'line-2', lineTotal: 80, pendingPrice: false, priceStatus: 'preview' })
+    // Wire: 40 × 2.5, badged "may come down".
+    expect(added).toMatchObject({ id: L1, lineTotal: 100, pendingPrice: false, priceStatus: 'mayComeDown' })
+    expect(added.priceReason).toMatch(/may come down once issued/i)
+    expect(view.options).toEqual([
+      { option: 'A', lineCount: 2, subtotal: 260.75, complete: true },
+      { option: 'B', lineCount: 1, subtotal: 100, complete: true },
+    ])
+    expect(view.previewOptions).toEqual([
+      { option: 'A', subtotal: 260.75, mayComeDown: false, unpriced: false },
+      { option: 'B', subtotal: 100, mayComeDown: true, unpriced: false },
+    ])
+    // The whole-job headline, and the selection table from the SAME shared pricer the office uses.
+    expect(view.total).toBe(360.75)
+    expect(Object.keys(view.money.selections).sort()).toEqual(['A', 'A+B', 'B'])
+    expect(view.money.selections['A+B']).toMatchObject({ subtotal: 360.75, trip: 0, comboSaving: 0, base: 360.75, discount: 18.04, discountCapped: false, total: 342.71 })
+    // The office's military programme (words) applied by the shared builder — its rows are preview dollars.
+    expect(view.money.discount).toMatchObject({ type: 'military', percent: 5, label: 'Military discount (5%)', terms: '5% off, capped at $250', pricedOnceComplete: false })
+    expect(view.money.discount!.rows).toEqual([{ label: 'whole job', base: 360.75, comboSaving: 0, amount: 18.04, capped: false, after: 342.71 }])
+    expect(view.money.discountedTotal).toBe(342.71)
+    expect(view.money.financing).toBeNull()
+    expect(view.money.pickable).toEqual(['A', 'B'])
+    // Nothing the office sent for the OLD lines survives: 120.5, 200.5, 190.47 and 10.03 are gone.
+    const shown = numbersIn({ total: view.total, options: view.options, selections: view.money.selections, lines: view.lines.map((l) => l.lineTotal), money: view.money })
+    for (const stale of [120.5, 200.5, 190.47, 10.03]) expect(shown.has(stale), String(stale)).toBe(false)
+  })
+
+  it('a discount waiting to reach the office is the programme the preview applies; a trip on the sheet rides into every selection', () => {
+    const view = mod.overlayQuote(mirrorOf(serverQuote()), [
+      op(1, { kind: 'set_discount', type: 'custom', percent: 10 }),
+    ], catalog, { ...cached, tripCharge: 25 })
+    expect(view.pendingDiscount).toEqual({ type: 'custom', percent: 10 })
+    expect(view.money.discount).toMatchObject({ type: 'custom', percent: 10, label: 'Discount (10%)', terms: '10% off, no cap' })
+    // A: 2 × 60.25 + 1 × 80 = 200.5, plus the sheet's trip 25 = 225.5 base; 10% = 22.55.
+    expect(view.money.selections.A).toMatchObject({ subtotal: 200.5, trip: 25, base: 225.5, discount: 22.55, total: 202.95 })
+    expect(view.total).toBe(225.5)
+
+    const none = mod.overlayQuote(mirrorOf(serverQuote()), [op(1, { kind: 'set_discount', type: null, percent: null })], catalog, cached)
+    expect(none.money.discount).toBeNull()
+    expect(none.money.selections.A).toMatchObject({ discount: 0, total: 200.5 })
+  })
+
+  it('a Difficult and a Very difficult line preview at THEIR OWN price from the sheet (Kyle, 2026-10-13) — never the Normal figure, a ceiling or a discount', () => {
+    const view = mod.overlayQuote(mirrorOf(serverQuote()), [
+      op(1, { kind: 'edit_line', lineId: 'line-1', patch: { difficulty: 'DIFFICULT' } }),
+      op(2, { kind: 'add_line', lineId: L1, itemId: 'A016', quantity: 3, option: 'A', difficulty: 'VERY_DIFFICULT' }),
+      op(3, { kind: 'add_line', lineId: L2, itemId: 'W142', quantity: 40, option: 'B', difficulty: 'VERY_DIFFICULT' }),
+    ], catalog, cached)
+    expect(view.priceSource).toBe('preview')
+    const [l1, l2, vd, wire] = view.lines
+    expect(l1).toMatchObject({ id: 'line-1', difficulty: 'DIFFICULT', lineTotal: 150, pendingPrice: false, priceStatus: 'preview', priceReason: null }) // 2 × 75, not 2 × 60.25
+    expect(l2).toMatchObject({ id: 'line-2', lineTotal: 80, priceStatus: 'preview' })
+    expect(vd).toMatchObject({ id: L1, difficulty: 'VERY_DIFFICULT', lineTotal: 270, priceStatus: 'preview' }) // 3 × 90
+    expect(wire).toMatchObject({ id: L2, lineTotal: 140, priceStatus: 'mayComeDown' }) // 40 × 3.5 at Very difficult
+    expect(view.options).toEqual([
+      { option: 'A', lineCount: 3, subtotal: 500, complete: true },
+      { option: 'B', lineCount: 1, subtotal: 140, complete: true },
+    ])
+    expect(view.total).toBe(640)
+    // Nothing on screen is a Normal figure for those lines.
+    const shown = numbersIn({ lines: view.lines.map((l) => l.lineTotal), options: view.options, total: view.total })
+    for (const normal of [120.5, 180.75, 100]) expect(shown.has(normal), String(normal)).toBe(false)
+  })
+
+  it('a difficulty the sheet has no price for, an item with no price on the sheet and an item not on the sheet read "priced when signal returns" with the sheet\'s own words; their option and every selection holding it show no figure', () => {
+    const view = mod.overlayQuote(mirrorOf(serverQuote()), [
+      op(1, { kind: 'edit_line', lineId: 'line-2', patch: { difficulty: 'DIFFICULT' } }),
+      op(2, { kind: 'add_line', lineId: L1, itemId: 'NOHRS', quantity: 1, option: 'B' }),
+      op(3, { kind: 'add_line', lineId: L2, itemId: 'ZZ99', quantity: 1, option: 'C' }),
+    ], catalog, cached)
+    expect(view.priceSource).toBe('preview')
+    const [l1, l2, nohrs, unknown] = view.lines
+    expect(l1).toMatchObject({ id: 'line-1', lineTotal: 120.5, priceStatus: 'preview' })
+    // B002 at Difficult: the book publishes no Difficult column for it — the sheet's words for THAT difficulty, and no figure.
+    expect(l2).toMatchObject({ id: 'line-2', difficulty: 'DIFFICULT', lineTotal: null, pendingPrice: true, priceStatus: 'unpriced', priceReason: NO_DIFFICULTY_WORDS })
+    expect(nohrs).toMatchObject({ lineTotal: null, priceStatus: 'unpriced', priceReason: NO_LABOUR_WORDS })
+    expect(unknown).toMatchObject({ lineTotal: null, priceStatus: 'unpriced' })
+    expect(unknown.priceReason).toMatch(/Not in the prices saved on this phone/)
+    expect(view.options).toEqual([
+      { option: 'A', lineCount: 2, subtotal: null, complete: false },
+      { option: 'B', lineCount: 1, subtotal: null, complete: false },
+      { option: 'C', lineCount: 1, subtotal: null, complete: false },
+    ])
+    expect(view.previewOptions!.map((o) => [o.option, o.unpriced])).toEqual([['A', true], ['B', true], ['C', true]])
+    expect(view.total).toBeNull()
+    expect(view.money.selections).toEqual({})
+    expect(view.money.discount).toMatchObject({ rows: [], pricedOnceComplete: true })
+    expect(view.money.discountedTotal).toBeNull()
+  })
+
+  it('the whole quote is unpriced when the office\'s rate is provisional or the quote prices at another supplier than the sheet', () => {
+    const edit = [op(1, { kind: 'edit_line', lineId: 'line-1', patch: { quantity: 3 } })]
+    const provisional = mod.overlayQuote(mirrorOf(serverQuote()), edit, catalog, { ...cached, rateProvisional: true })
+    expect(provisional.priceSource).toBe('preview')
+    expect(provisional.previewReason).toMatch(/labour rate needs checking/)
+    expect(provisional.lines.every((l) => l.lineTotal === null && l.priceStatus === 'unpriced' && l.priceReason === provisional.previewReason)).toBe(true)
+    expect(provisional.total).toBeNull()
+
+    const other = mod.overlayQuote(mirrorOf({ ...serverQuote(), supplierId: 'LOWES' }), edit, catalog, cached)
+    expect(other.previewReason).toMatch(/different supplier/)
+    expect(other.lines.every((l) => l.lineTotal === null)).toBe(true)
+
+    // A phone-only quote names no supplier yet, so the sheet's supplier is taken as read.
+    const phoneOnly = mod.overlayQuote(null, [op(1, { kind: 'start_quote', title: 'New' }), op(2, { kind: 'add_line', lineId: L1, itemId: 'B002', quantity: 2 })], catalog, cached)
+    expect(phoneOnly).toMatchObject({ previewReason: null, total: 160 })
+    expect(phoneOnly.lines[0]).toMatchObject({ lineTotal: 160, priceStatus: 'preview' })
+  })
+
+  it('an AI-proposed line is not previewed, as the office does not price it', () => {
+    const withProposal: QuoteState = { ...serverQuote(), lines: [...serverQuote().lines, { id: 'line-3', itemId: 'A016', description: 'Single-pole switch', quantity: 5, quantitySource: 'COUNT', difficulty: 'NORMAL', option: 'A', note: null, location: null, lineTotal: null, gaps: [], state: 'PROPOSED' }] }
+    const view = mod.overlayQuote(mirrorOf(withProposal), [op(1, { kind: 'edit_line', lineId: 'line-2', patch: { quantity: 2 } })], catalog, cached)
+    expect(view.lines[2]).toMatchObject({ id: 'line-3', lineTotal: null, pendingPrice: false, priceStatus: 'office' })
+    // A: 2 × 60.25 + 2 × 80 — the proposal's 5 switches are not in it.
+    expect(view.options).toEqual([{ option: 'A', lineCount: 3, subtotal: 280.5, complete: true }])
+  })
+
+  it('loadQuoteView hands the saved sheet to the overlay; with no sheet saved, a touched line reads "priced when signal returns"', async () => {
+    await db.quoteMirrors.put(mirrorOf(serverQuote()))
+    await offlineWhile(() => mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'edit_line', lineId: 'line-1', patch: { quantity: 3 }, expected: { quantity: 2 } } }))
+    const bare = await mod.loadQuoteView(D1)
+    expect(bare).toMatchObject({ priceSource: 'none', total: null })
+    expect(bare.lines[0]).toMatchObject({ lineTotal: null, priceReason: 'Priced when signal returns' })
+
+    mockServer(() => ({ status: 200, data: SHEET }))
+    await mod.syncPriceSheet()
+    const previewed = await mod.loadQuoteView(D1)
+    expect(previewed).toMatchObject({ priceSource: 'preview', total: 260.75 })
+    expect(previewed.lines[0]).toMatchObject({ lineTotal: 180.75, priceStatus: 'preview' })
+    expect(previewed.priceSheetAt).toBe((await mod.cachedPriceSheet())!.cachedAt)
+  })
+})
+
 describe('wiring', () => {
   it('registerQuoteSyncListener re-flushes on the browser online event', () => {
     mod.registerQuoteSyncListener()
@@ -883,9 +1137,399 @@ describe('wiring', () => {
     await expect((await import('./quoteSync')).requestPersistentStorage()).resolves.toBeUndefined()
   })
 
-  it('isNetworkFailure: a thrown fetch is offline; a server refusal never is', () => {
-    expect(crmSync.isNetworkFailure(new TypeError('Failed to fetch'))).toBe(true)
+  it('isNetworkFailure: only what fetch itself threw is offline (D7); a server refusal, no session, or a bug in this phone\'s code never is', () => {
+    expect(crmSync.isNetworkFailure(new crmSync.CrmNetworkError(new TypeError('Failed to fetch')))).toBe(true)
+    expect(crmSync.isNetworkFailure(new crmSync.CrmNetworkError(new DOMException('The operation was aborted.', 'AbortError')))).toBe(true)
     expect(crmSync.isNetworkFailure(new crmSync.CrmRequestError('no', { success: false }, 409))).toBe(false)
     expect(crmSync.isNetworkFailure(new Error('CRM not configured'))).toBe(false)
+    // A TypeError that did not come out of fetch is a code bug, not a dead network.
+    expect(crmSync.isNetworkFailure(new TypeError("Cannot read properties of undefined (reading 'lines')"))).toBe(false)
+    expect(crmSync.isNetworkFailure(new TypeError('Failed to fetch'))).toBe(false)
+    // The wrapper keeps the browser's own words and the cause.
+    const wrapped = new crmSync.CrmNetworkError(new TypeError('Failed to fetch'))
+    expect(wrapped.message).toBe('Failed to fetch')
+    expect(wrapped.name).toBe('CrmNetworkError')
+    expect(wrapped.cause).toBeInstanceOf(TypeError)
+  })
+
+  it('a dead network on a quote write is classified as no signal through the wrapper (D7): the edit waits "for signal", and a code bug does not', async () => {
+    deadNetwork()
+    const { start } = await offlineWhile(() => queueStartAndLine())
+    await mod.awaitOp(start.opId)
+    expect((await ops(D1))[0]).toMatchObject({ status: 'queued', attempts: 1, lastError: 'Failed to fetch', lastErrorKind: 'network' })
+
+    // The settings read inside the request throws a TypeError that is NOT fetch's: a bug, not a dead network.
+    const store = new Map<string, string>([['rce_crm_base_url', 'https://rce.example.com'], ['rce_crm_tech_token', 'tok']])
+    let reads = 0
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => {
+        reads += 1
+        if (reads > 2) throw new TypeError("Cannot read properties of undefined (reading 'token')")
+        return store.get(k) ?? null
+      },
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    })
+    const fetchSpy = deadNetwork()
+    await mod.flushQuoteQueue()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    const row = (await ops(D1))[0]
+    expect(row).toMatchObject({ status: 'queued', attempts: 2, lastErrorKind: 'phone' })
+    expect(row.lastError).toMatch(/Cannot read properties/)
+  })
+})
+
+// ─── U5 (2026-10-10): the Quote screen's one write path ──────────────────────────────────────
+//
+// Every write the screen makes — online and offline alike — goes through writeQuote: to the phone
+// first, then sent at once through the same id-carrying route with `expected`. What is proved: a
+// live write lands and the screen gets the office's fresh copy with nothing left waiting and nothing
+// flagged for review; a live refusal is thrown to the control in the office's own words and does NOT
+// sit in the queue blocking the draft; no answer means queued (and the screen is told it is offline);
+// an edit behind a refused one waits for the tech, unsent.
+
+describe("writeQuote — the Quote screen's one write path (U5)", () => {
+  const edit = { kind: 'edit_line' as const, lineId: 'line-1', patch: { quantity: 4 }, expected: { quantity: 2 } }
+
+  it('with signal and nothing waiting: sent at once with the id and `expected`, delivered, the saved copy refreshed from the office and NOT flagged for review, nothing left in the queue', async () => {
+    await db.quoteMirrors.put(mirrorOf(serverQuote()))
+    const fresh = serverQuote()
+    fresh.lines[0].quantity = 4
+    fresh.lines[0].lineTotal = 241
+    const server = mockServer((c) => (c.method === 'GET' && c.path === `/quotes/${D1}` ? { status: 200, data: fresh } : { status: 200, data: { lineId: L1 } }))
+
+    expect((await mod.writeQuote({ draftId: D1, visitId: 'v1', body: edit })).state).toBe('delivered')
+    expect(server.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['PATCH /quote-lines/line-1', `GET /quotes/${D1}`])
+    expect(server.calls[0].body).toEqual({ quantity: 4, expected: { quantity: 2 } })
+    expect(await ops(D1)).toEqual([])
+    const mirror = await mod.quoteMirror(D1)
+    expect(mirror).toMatchObject({ origin: 'server', visitId: 'v1', pricesNeedReview: false })
+    expect(mirror!.payload.lines[0].lineTotal).toBe(241)
+    const view = await mod.loadQuoteView(D1)
+    expect(view.priceSource).toBe('server')
+    expect(view.lines[0]).toMatchObject({ quantity: 4, lineTotal: 241 })
+
+    // An add carries the id this phone minted: the replay-safe PUT, never the POST.
+    expect((await mod.writeQuote({ draftId: D1, visitId: 'v1', body: { kind: 'add_line', lineId: L1, itemId: 'B002', quantity: 1, option: 'B' } })).state).toBe('delivered')
+    expect(server.calls[2]).toMatchObject({ method: 'PUT', path: `/quotes/${D1}/lines/${L1}`, body: { itemId: 'B002', quantity: 1, option: 'B' } })
+  })
+
+  it("a live refusal is thrown to the control in the office's own words with its status, and the edit is taken OUT of the queue — the next write is not blocked", async () => {
+    await db.quoteMirrors.put(mirrorOf(serverQuote()))
+    mockServer((c) => (c.method === 'PATCH'
+      ? { status: 409, error: { code: 'conflict', message: 'Changed at the office since you last saw it: quantity was 2, now 5' } }
+      : { status: 200, data: serverQuote() }))
+    let caught: unknown
+    try { await mod.writeQuote({ draftId: D1, visitId: 'v1', body: edit }) } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(crmSync.CrmRequestError)
+    expect((caught as Error).message).toBe('Changed at the office since you last saw it: quantity was 2, now 5')
+    expect((caught as { status?: number }).status).toBe(409)
+    expect(await ops(D1)).toEqual([])
+    expect((await mod.loadQuoteView(D1)).lines[0].quantity).toBe(2)
+
+    expect((await mod.writeQuote({ draftId: D1, visitId: 'v1', body: { kind: 'set_mode', exclusive: true, expected: { exclusive: false } } })).state).toBe('delivered')
+  })
+
+  it('no answer (fetch threw): queued, and the screen is told it is offline; the edit is laid over the saved copy; the next flush with signal delivers it', async () => {
+    await db.quoteMirrors.put(mirrorOf(serverQuote()))
+    deadNetwork()
+    const outcome = await mod.writeQuote({ draftId: D1, visitId: 'v1', body: edit })
+    expect(outcome).toMatchObject({ state: 'queued', offline: true })
+    const view = await mod.loadQuoteView(D1)
+    expect(view.priceSource).toBe('none')
+    expect(view.lines[0]).toMatchObject({ quantity: 4, lineTotal: null, pendingPrice: true })
+    expect(view.waiting).toHaveLength(1)
+
+    const server = mockServer((c) => ({ status: 200, data: c.method === 'GET' ? serverQuote() : {} }))
+    await mod.flushQuoteQueue()
+    expect(server.calls[0]).toMatchObject({ method: 'PATCH', path: '/quote-lines/line-1', body: { quantity: 4, expected: { quantity: 2 } } })
+    expect(await ops(D1)).toEqual([])
+    // Delivered in the background, with the office's prices not yet looked at: flagged for U6's check.
+    expect((await mod.quoteMirror(D1))?.pricesNeedReview).toBe(true)
+  })
+
+  it('behind an earlier edit the office refused, a new write is queued and NOT sent — the tech decides on the refusal first', async () => {
+    await db.quoteMirrors.put(mirrorOf(serverQuote()))
+    const server = mockServer((c) => (c.method === 'PATCH'
+      ? { status: 409, error: { code: 'conflict', message: 'Changed at the office since you last saw it: quantity was 2, now 5' } }
+      : { status: 200, data: serverQuote() }))
+    const first = await offlineWhile(() => mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: edit }))
+    await mod.flushQuoteQueue()
+    expect((await mod.quoteOpOutcome(first.opId)).state).toBe('refused')
+    const sent = server.calls.length
+
+    const outcome = await mod.writeQuote({ draftId: D1, visitId: 'v1', body: { kind: 'set_mode', exclusive: true, expected: { exclusive: false } } })
+    expect(outcome).toMatchObject({ state: 'queued', offline: false })
+    expect(outcome.state === 'queued' ? outcome.reason : '').toMatch(/refused/)
+    expect(server.calls.length).toBe(sent)
+    expect((await ops(D1)).map((o) => o.status)).toEqual(['refused', 'queued'])
+  })
+
+  it('onQuoteSyncSettled fires when a pass settles and stops after unsubscribe; pendingQuoteOpCountForVisit counts every draft on the visit', async () => {
+    const seen: number[] = []
+    const off = mod.onQuoteSyncSettled(() => seen.push(1))
+    await offlineWhile(async () => {
+      await mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'add_line', lineId: L1, itemId: 'B002', quantity: 1 } })
+      await mod.enqueueQuoteOp({ draftId: D2, visitId: 'v1', body: { kind: 'add_line', lineId: L2, itemId: 'B002', quantity: 1 } })
+      await mod.enqueueQuoteOp({ draftId: '33333333-3333-4333-8333-333333333333', visitId: 'v2', body: { kind: 'set_mode', exclusive: true } })
+    })
+    expect(seen.length).toBeGreaterThan(0)
+    expect(await mod.pendingQuoteOpCountForVisit('v1')).toBe(2)
+    expect(await mod.pendingQuoteOpCountForVisit('v2')).toBe(1)
+    expect(await mod.pendingQuoteOpCountForVisit('v3')).toBe(0)
+    const before = seen.length
+    off()
+    deadNetwork()
+    await mod.flushQuoteQueue()
+    expect(seen.length).toBe(before)
+  })
+
+  it('workingQuoteMirrorForVisit: the newest saved copy for the visit that is not a change order — what "Build the quote" opens with no signal', async () => {
+    const changeOrder = serverQuote(D2)
+    changeOrder.isChangeOrder = true
+    await db.quoteMirrors.put(mirrorOf(serverQuote(D1), { snapshotAt: '2026-10-09T10:00:00.000Z' }))
+    await db.quoteMirrors.put(mirrorOf(changeOrder, { snapshotAt: '2026-10-09T12:00:00.000Z' }))
+    await db.quoteMirrors.put(mirrorOf(serverQuote('44444444-4444-4444-8444-444444444444'), { snapshotAt: '2026-10-08T10:00:00.000Z' }))
+    expect((await mod.workingQuoteMirrorForVisit('v1'))?.draftId).toBe(D1)
+    expect(await mod.workingQuoteMirrorForVisit('nope')).toBeUndefined()
+  })
+
+  it("expectedFor*: read off the quote AS SHOWN — a discount change waiting on the phone wins over the office's, and the percent rides only for a custom programme", () => {
+    const view = mod.overlayQuote(mirrorOf(serverQuote()), [])
+    expect(mod.expectedForDiscount(view)).toEqual({ type: 'military', percent: null })
+    expect(mod.expectedForDiscount({ ...view, pendingDiscount: { type: 'custom', percent: 7.5 } })).toEqual({ type: 'custom', percent: 7.5 })
+    expect(mod.expectedForDiscount({ ...view, pendingDiscount: { type: null, percent: null } })).toEqual({ type: null, percent: null })
+    expect(mod.expectedForDiscount({ ...view, money: { ...view.money, discount: null } })).toEqual({ type: null, percent: null })
+    expect(mod.expectedForMode(view)).toEqual({ exclusive: false })
+    expect(mod.expectedForDetails(view)).toEqual({ title: 'Hollis — 605 Green Farm Way', jobDescription: 'Replace the panel.' })
+    expect(mod.expectedForOptionMeta(view, 'B')).toEqual({ label: null, note: null })
+    expect(mod.expectedForOptionMeta(view, 'H')).toEqual({ label: null, note: null })
+  })
+})
+
+describe('forgetQuoteMirror — the office deleted the quote', () => {
+  it('drops the saved copy (and its finished rows) so "Build the quote" cannot open a dead quote with no signal; refused while an edit still waits', async () => {
+    await db.quoteMirrors.put(mirrorOf(serverQuote()))
+    const waiting = await offlineWhile(() => mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'set_mode', exclusive: true } }))
+    await expect(mod.forgetQuoteMirror(D1)).rejects.toThrow('discard them first')
+    expect(await mod.quoteMirror(D1)).toBeDefined()
+    await mod.discardQuoteOp(waiting.opId)
+    await mod.forgetQuoteMirror(D1)
+    expect(await mod.quoteMirror(D1)).toBeUndefined()
+    expect(await mod.workingQuoteMirrorForVisit('v1')).toBeUndefined()
+  })
+})
+
+// ─── Phase 7 U6 (2026-10-10): after the sync ─────────────────────────────────────────────────────
+
+describe('"Check the prices": what the phone showed is noted before the office\'s answer replaces it', () => {
+  /** The price book and the price sheet as the Today screen saves them with signal. */
+  const cacheSheet = async () => {
+    const { QUOTE_PRICE_SHEET_META_KEY } = await import('../db/database')
+    await db.meta.put({ key: QUOTE_PRICE_SHEET_META_KEY, value: { ...SHEET, cachedAt: '2026-10-10T12:00:00.000Z' }, updatedAt: 'now' })
+    await db.quoteCatalog.bulkPut(CATALOG.rows.map((row, position) => ({ ...row, position })))
+  }
+
+  it('the first refresh after a delivery notes the figures AS SHOWN (the preview over the saved sheet); a later pass keeps that note; "I\'ve checked the prices" clears it with the gate', async () => {
+    await cacheSheet()
+    await db.quoteMirrors.put(mirrorOf(serverQuote()))
+    // Two edits queued with no signal: line-1 to quantity 4 (preview 4 × $60.25 = $241.00) and a new line (3 × $80).
+    const { edit, add } = await offlineWhile(async () => ({
+      edit: await mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'edit_line', lineId: 'line-1', patch: { quantity: 4 }, expected: { quantity: 2 } } }),
+      add: await mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'add_line', lineId: L1, itemId: 'B002', quantity: 3, option: 'B' } }),
+    }))
+    const shownOnPhone = await mod.loadQuoteView(D1)
+    expect(shownOnPhone.priceSource).toBe('preview')
+    expect(shownOnPhone.lines.map((l) => l.lineTotal)).toEqual([241, 80, 240])
+    expect(shownOnPhone.total).toBe(561)
+
+    // The office takes the first edit and is down (503) for the second: one pass delivers one edit.
+    let addDown = true
+    const office = serverQuote()
+    office.lines[0].quantity = 4
+    office.lines[0].lineTotal = 250
+    office.options = [{ option: 'A', lineCount: 2, subtotal: 330, complete: true }]
+    office.total = 330
+    mockServer((c) => {
+      if (c.method === 'PUT' && addDown) return { status: 503, error: { message: 'down' } }
+      if (c.method === 'GET') return { status: 200, data: office }
+      return { status: 200, data: {} }
+    })
+    await mod.flushQuoteQueue()
+    expect(await db.quoteOpQueue.get(edit.opId)).toBeUndefined()
+    expect(await db.quoteOpQueue.get(add.opId)).toMatchObject({ status: 'queued', attempts: 1 })
+    const mirror1 = (await mod.quoteMirror(D1))!
+    expect(mirror1.pricesNeedReview).toBe(true)
+    expect(mirror1.shownBeforeSync).toMatchObject({
+      source: 'preview',
+      total: 561,
+      lines: [{ id: 'line-1', description: 'Single-pole switch', total: 241 }, { id: 'line-2', description: 'Duplex receptacle', total: 80 }, { id: L1, description: 'Duplex receptacle', total: 240 }],
+      options: [{ option: 'A', subtotal: 321 }, { option: 'B', subtotal: 240 }],
+    })
+    // Named fields only — never the queue, a cost or an hour.
+    expect(Object.keys(mirror1.shownBeforeSync!).sort()).toEqual(['at', 'lines', 'options', 'source', 'total'])
+    expect(Object.keys(mirror1.shownBeforeSync!.lines[0]).sort()).toEqual(['description', 'id', 'total'])
+
+    // Pass two lands the add. The note stays the FIRST one — what the tech built against — not the half-way copy.
+    addDown = false
+    office.lines.push({ id: L1, itemId: 'B002', description: 'Duplex receptacle', quantity: 3, quantitySource: 'COUNT', difficulty: 'NORMAL', option: 'B', note: null, location: null, lineTotal: 239, gaps: [], retired: false })
+    office.options = [{ option: 'A', lineCount: 2, subtotal: 330, complete: true }, { option: 'B', lineCount: 1, subtotal: 239, complete: true }]
+    office.total = 569
+    await mod.flushQuoteQueue()
+    expect(await ops(D1)).toEqual([])
+    const mirror2 = (await mod.quoteMirror(D1))!
+    expect(mirror2.pricesNeedReview).toBe(true)
+    expect(mirror2.shownBeforeSync).toEqual(mirror1.shownBeforeSync)
+
+    // The view carries the note for the panel; the comparison is lib/priceCheck.ts, equality only, both figures.
+    const view = await mod.loadQuoteView(D1)
+    expect(view.priceSource).toBe('server')
+    expect(view.shownBeforeSync).toEqual(mirror1.shownBeforeSync)
+    const { priceCheck } = await import('./priceCheck')
+    const report = priceCheck(view.shownBeforeSync, view)
+    expect(report.rows.map((r) => r.kind)).toEqual(['changed', 'changed', 'option', 'option', 'total'])
+    expect(report.rows[0].words).toBe('Single-pole switch: this phone showed $241.00, the office says $250.00')
+    expect(report.rows[4].words).toBe('Total: this phone showed $561.00, the office says $569.00')
+    // No arithmetic: none of the differences (9.00, 1.00, 8.00) is anywhere in the report.
+    expect(report.rows.map((r) => r.words).join('\n')).not.toMatch(/\$9\.00|\$1\.00|\$8\.00/)
+
+    // A plain refresh (the screen's own fetch) keeps the gate and the note.
+    await crmSync.fetchQuote(D1, { visitId: 'v1' })
+    expect(await mod.quoteMirror(D1)).toMatchObject({ pricesNeedReview: true, shownBeforeSync: mirror1.shownBeforeSync })
+
+    await mod.markPricesReviewed(D1)
+    expect(await mod.quoteMirror(D1)).toMatchObject({ pricesNeedReview: false, shownBeforeSync: null })
+    expect((await mod.loadQuoteView(D1)).shownBeforeSync).toBeNull()
+  })
+
+  it('with no sheet saved the note says the phone showed no figure for a touched line, and the office\'s figure for it is "priced for the first time"', async () => {
+    await db.quoteMirrors.put(mirrorOf(serverQuote()))
+    await offlineWhile(() => mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'add_line', lineId: L1, itemId: 'B002', quantity: 1, option: 'A' } }))
+    const office = serverQuote()
+    office.lines.push({ id: L1, itemId: 'B002', description: 'Duplex receptacle', quantity: 1, quantitySource: 'COUNT', difficulty: 'NORMAL', option: 'A', note: null, location: null, lineTotal: 80, gaps: [], retired: false })
+    mockServer((c) => ({ status: 200, data: c.method === 'GET' ? office : {} }))
+    await mod.flushQuoteQueue()
+    const mirror = (await mod.quoteMirror(D1))!
+    expect(mirror.shownBeforeSync).toMatchObject({ source: 'none', total: null, lines: [{ id: 'line-1', total: 120.5 }, { id: 'line-2', total: 80 }, { id: L1, total: null }] })
+    const { priceCheck } = await import('./priceCheck')
+    const report = priceCheck(mirror.shownBeforeSync, mirror.payload)
+    expect(report.rows).toEqual([{ kind: 'first', words: 'Duplex receptacle: priced for the first time — $80.00', shown: null, office: 80 }])
+  })
+
+  it('an online edit made while a review is owed does not clear the gate — only "I\'ve checked the prices" does', async () => {
+    const owed = { at: '2026-10-10T12:00:00.000Z', source: 'none' as const, lines: [], options: [], total: null }
+    await db.quoteMirrors.put(mirrorOf(serverQuote(), { pricesNeedReview: true, shownBeforeSync: owed }))
+    mockServer((c) => ({ status: 200, data: c.method === 'GET' ? serverQuote() : {} }))
+    const mode = { kind: 'set_mode' as const, exclusive: true, expected: { exclusive: false } }
+    expect((await mod.writeQuote({ draftId: D1, visitId: 'v1', body: mode })).state).toBe('delivered')
+    expect(await mod.quoteMirror(D1)).toMatchObject({ pricesNeedReview: true, shownBeforeSync: owed })
+
+    await mod.markPricesReviewed(D1)
+    // Nothing waiting and nothing owed: the tech watches the office's answer land, so no gate.
+    expect((await mod.writeQuote({ draftId: D1, visitId: 'v1', body: mode })).state).toBe('delivered')
+    expect(await mod.quoteMirror(D1)).toMatchObject({ pricesNeedReview: false, shownBeforeSync: null })
+  })
+})
+
+describe('"Sign in again — N changes waiting"', () => {
+  it('is set by a pass the office answered 401, left alone by a pass skipped for no signal, and cleared by a pass the office answers', async () => {
+    expect(mod.quoteSyncNeedsSignIn()).toBe(false)
+    mockServer(() => ({ status: 401, error: { code: 'unauthorized', message: 'Token revoked' } }))
+    await offlineWhile(() => queueStartAndLine())
+    expect(mod.quoteSyncNeedsSignIn()).toBe(false) // the no-signal passes tried nothing
+    await mod.flushQuoteQueue()
+    expect(mod.quoteSyncNeedsSignIn()).toBe(true)
+
+    vi.stubGlobal('navigator', { onLine: false })
+    await mod.flushQuoteQueue()
+    expect(mod.quoteSyncNeedsSignIn()).toBe(true)
+    vi.stubGlobal('navigator', { onLine: true })
+
+    mockServer((c) => ({ status: 200, data: c.method === 'GET' ? serverQuote() : {} }))
+    await mod.flushQuoteQueue()
+    expect(mod.quoteSyncNeedsSignIn()).toBe(false)
+    expect(await ops(D1)).toEqual([])
+  })
+})
+
+describe('the office started one first: the three buttons (design §5)', () => {
+  /** The phone's quote: a refused start (409 with the office's draft), a line, and two settings edits. */
+  async function phoneQuoteBehindTheOffice() {
+    await db.quoteMirrors.put(mirrorOf(mod.emptyQuoteState(D1), { origin: 'phone', pendingRebase: D2 }))
+    const { start, add } = await queueStartAndLine()
+    await db.quoteOpQueue.update(start.opId, { status: 'refused', existingDraftId: D2, refusal: 'The office already started a quote for this visit' })
+    const discount = await mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'set_discount', type: 'senior', percent: null, expected: { type: null, percent: null } } })
+    const mode = await mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'set_mode', exclusive: true, expected: { exclusive: false } } })
+    return { start, add, discount, mode }
+  }
+
+  it('"Add my N lines to it" reads the office\'s quote (saving it here), moves the edits onto it — a ticked setting carrying the office\'s CURRENT value as expected, an unticked one dropped — and sends them', async () => {
+    deadNetwork()
+    const { add, discount, mode } = await phoneQuoteBehindTheOffice()
+    const server = mockServer((c) => (c.method === 'GET' ? { status: 200, data: serverQuote(D2) } : { status: 200, data: {} }))
+
+    const { moved, dropped } = await mod.applyRebase(D1, D2, 'v1', { applySettings: [discount.opId] })
+    expect(moved.map((o) => [o.opId, o.draftId, o.status])).toEqual([[add.opId, D2, 'queued'], [discount.opId, D2, 'queued']])
+    expect(dropped.map((o) => o.opId)).toEqual([mode.opId])
+    // The office's draft carries a MILITARY discount: that is what the applied setting expects, never the phone's placeholder.
+    expect(moved[1].body).toMatchObject({ kind: 'set_discount', type: 'senior', expected: { type: 'military', percent: null } })
+    expect(server.calls[0]).toMatchObject({ method: 'GET', path: `/quotes/${D2}` })
+    expect(await mod.quoteMirror(D1)).toBeUndefined()
+    expect(await mod.quoteMirror(D2)).toMatchObject({ origin: 'server', visitId: 'v1', pendingRebase: null })
+
+    // The kicked flush replays them onto the office's draft, in order, under the ids this phone minted.
+    await mod.flushQuoteQueue()
+    expect(server.calls.slice(1).map((c) => `${c.method} ${c.path}`)).toEqual([`PUT /quotes/${D2}/lines/${L1}`, `PUT /quotes/${D2}/discount`, `GET /quotes/${D2}`])
+    expect(await ops(D1)).toEqual([])
+    expect(await ops(D2)).toEqual([])
+    expect((await mod.quoteMirror(D2))!.pricesNeedReview).toBe(true)
+  })
+
+  it('with no answer from the office nothing is moved: "needs signal" — a rebase against a stale copy would send expected values the office never held', async () => {
+    deadNetwork()
+    const { start, add, discount, mode } = await phoneQuoteBehindTheOffice()
+    await expect(mod.applyRebase(D1, D2, 'v1', { applySettings: [discount.opId] })).rejects.toThrow(mod.REBASE_NEEDS_SIGNAL)
+    expect((await ops(D1)).map((o) => o.opId)).toEqual([start.opId, add.opId, discount.opId, mode.opId])
+    expect(await ops(D2)).toEqual([])
+    expect((await mod.quoteMirror(D1))!.pendingRebase).toBe(D2)
+  })
+
+  it('"Discard them" drops the phone\'s quote with every edit on it ("Keep them on this phone for now" is the screen leaving everything exactly as it is)', async () => {
+    deadNetwork()
+    await phoneQuoteBehindTheOffice()
+    expect(await mod.discardRebase(D1)).toEqual({ deleted: true, changes: 4 })
+    expect(await ops(D1)).toEqual([])
+    expect(await mod.quoteMirror(D1)).toBeUndefined()
+  })
+})
+
+describe('"Discard all N waiting changes" after a refusal', () => {
+  it('drops the refused edit and the ones queued behind it; the quote reads as the office has it and the next write goes straight through', async () => {
+    await db.quoteMirrors.put(mirrorOf(serverQuote()))
+    let refuse = true
+    const server = mockServer((c) => (c.method === 'PATCH' && refuse
+      ? { status: 409, error: { code: 'conflict', message: 'Changed at the office since you last saw it: quantity was 2, now 4' } }
+      : { status: 200, data: c.method === 'GET' ? serverQuote() : {} }))
+    const [first, second, third] = await offlineWhile(async () => [
+      await mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'edit_line', lineId: 'line-1', patch: { quantity: 3 }, expected: { quantity: 2 } } }),
+      await mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'add_line', lineId: L1, itemId: 'B002', quantity: 1 } }),
+      await mod.enqueueQuoteOp({ draftId: D1, visitId: 'v1', body: { kind: 'add_line', lineId: L2, itemId: 'A016', quantity: 1 } }),
+    ])
+    await mod.flushQuoteQueue()
+    expect((await ops(D1)).map((o) => o.status)).toEqual(['refused', 'queued', 'queued'])
+    const view = await mod.loadQuoteView(D1)
+    expect(view.refused.map((o) => o.opId)).toEqual([first.opId])
+    expect(view.waiting.map((o) => o.opId)).toEqual([second.opId, third.opId])
+    expect(view.refused[0].refusal).toBe('Changed at the office since you last saw it: quantity was 2, now 4')
+
+    const { discarded } = await mod.discardAllQuoteOps(D1)
+    expect(discarded.map((o) => o.opId)).toEqual([first.opId, second.opId, third.opId])
+    expect(await mod.pendingQuoteOpCount(D1)).toBe(0)
+    expect(await mod.loadQuoteView(D1)).toMatchObject({ touched: false, priceSource: 'server', refused: [], waiting: [] })
+
+    refuse = false
+    const sent = server.calls.length
+    expect((await mod.writeQuote({ draftId: D1, visitId: 'v1', body: { kind: 'edit_line', lineId: 'line-1', patch: { quantity: 4 }, expected: { quantity: 2 } } })).state).toBe('delivered')
+    expect(server.calls[sent]).toMatchObject({ method: 'PATCH', path: '/quote-lines/line-1', body: { quantity: 4, expected: { quantity: 2 } } })
   })
 })

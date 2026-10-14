@@ -17,6 +17,17 @@
  * scheduling is admin-only. "Pause job" sends any job underway back to the
  * office to reschedule, keeping everything on it — a different thing from the
  * job CLOCK's "Pause clock", which only stops a time session.
+ *
+ * WITH NO SIGNAL (Phase 7 unit U8, 2026-10-10; Kyle's rulings 9 and 10). The brief is the
+ * office's and cannot load; the "issued — not signed yet" panel then renders from this phone's
+ * saved copy of the visit's quote (quoteSync.workingQuoteMirrorForVisit, saved at the Today
+ * screen while there was signal), labelled "This phone's copy, saved 2:14 PM", so "Show the
+ * customer / Sign now" still opens. A signature taken on this phone shows as a card here until
+ * the office has answered — "Signature saved on this phone — NOT recorded yet" with "Cancel this
+ * signature (not recorded yet)", or the red "Not recorded: …" card with "Sign again" and "I've
+ * called the customer — dismiss" — and while one waits, Complete work now, Schedule for later and
+ * Collect payment are greyed "Waiting for the signature to reach the office". "Signed" is never
+ * shown before the office's 2xx.
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -31,6 +42,7 @@ import {
   emailFinancing,
   fetchJobBrief,
   fetchPurchaseOrders,
+  isNetworkFailure,
   pendingReceiptCount,
   raiseChangeOrder,
   scheduleForLater,
@@ -38,8 +50,22 @@ import {
   type FieldPurchaseOrder,
   type JobBrief,
 } from '../../lib/crmSync'
+import { onQuoteSyncSettled, pendingQuoteOpCountForVisit, workingQuoteMirrorForVisit } from '../../lib/quoteSync'
+import {
+  cancelSignature,
+  dismissRefusedSignature,
+  onSignatureSyncSettled,
+  removeUnfiledSignature,
+  signatureSyncNeedsSignIn,
+  signaturesForVisit,
+  type SignatureQueueRecord,
+} from '../../lib/signatureQueue'
+import { heldSignatureReason, signGate } from '../../lib/signatureGate'
+import type { QuoteMirrorRecord } from '../../db/database'
 import { CollectPayment } from '../components/CollectPayment'
 import { CUSTOMER_PAGE_LABEL, EmailEstimateButton, EmailFinancingButton } from './QuoteLifecycle'
+import { JOB_BRIEF_OFFLINE, OFFLINE_EMAIL_REASON } from './QuoteOffline'
+import { SignaturePendingCard, WAITING_FOR_SIGNATURE, savedCopyWords } from './SignatureCards'
 import { MaterialsUsedStep } from '../components/MaterialsUsedStep'
 import {
   PhotoPicker,
@@ -123,20 +149,70 @@ export function JobSiteScreen({
   const [coBusy, setCoBusy] = useState(false)
   const [coError, setCoError] = useState<string | null>(null)
 
-  const reloadBrief = useCallback(async () => {
+  // No signal: the brief got no answer (fetch threw), never an HTTP refusal. With it, the saved copy
+  // of the visit's quote stands in for the brief's estimate (U8).
+  const [offline, setOffline] = useState(false)
+  const [savedQuote, setSavedQuote] = useState<QuoteMirrorRecord | null>(null)
+  // The brief is the office's and loads live. With no signal it says so in words (design §2), not
+  // the browser's raw "Failed to fetch" (Phase 7 U5, 2026-10-10); a refusal keeps the office's words.
+  const briefFailure = (err: unknown) => (isNetworkFailure(err) ? JOB_BRIEF_OFFLINE : err instanceof Error ? err.message : String(err))
+  const loadBrief = useCallback(async (): Promise<void> => {
     try {
       setBrief(await fetchJobBrief(assignment.visitId))
       setBriefError(null)
+      setOffline(false)
     } catch (err) {
-      setBriefError(err instanceof Error ? err.message : String(err))
+      setBriefError(briefFailure(err))
+      if (isNetworkFailure(err)) {
+        setOffline(true)
+        setSavedQuote((await workingQuoteMirrorForVisit(assignment.visitId).catch(() => undefined)) ?? null)
+      }
     }
   }, [assignment.visitId])
+  const reloadBrief = loadBrief
   useEffect(() => {
     let cancelled = false
     fetchJobBrief(assignment.visitId)
-      .then((b) => { if (!cancelled) setBrief(b) })
-      .catch((err) => { if (!cancelled) setBriefError(err instanceof Error ? err.message : String(err)) })
+      .then((b) => { if (!cancelled) { setBrief(b); setOffline(false) } })
+      .catch(async (err) => {
+        if (cancelled) return
+        setBriefError(briefFailure(err))
+        if (isNetworkFailure(err)) {
+          setOffline(true)
+          const mirror = await workingQuoteMirrorForVisit(assignment.visitId).catch(() => undefined)
+          if (!cancelled) setSavedQuote(mirror ?? null)
+        }
+      })
     return () => { cancelled = true }
+  }, [assignment.visitId])
+  // The browser's own word on the signal: back → the office's brief; gone → say so at once.
+  useEffect(() => {
+    const up = () => { void loadBrief() }
+    const down = () => setOffline(true)
+    window.addEventListener('online', up)
+    window.addEventListener('offline', down)
+    return () => {
+      window.removeEventListener('online', up)
+      window.removeEventListener('offline', down)
+    }
+  }, [loadBrief])
+
+  // Signatures taken on this phone for this visit (U8): the newest one is the card; a queued one
+  // greys the after-signature choices and the deposit. Re-read as the signature queue settles.
+  const [signatures, setSignatures] = useState<SignatureQueueRecord[]>([])
+  useEffect(() => {
+    const read = () => { void signaturesForVisit(assignment.visitId).then(setSignatures).catch(() => undefined) }
+    read()
+    return onSignatureSyncSettled(read)
+  }, [assignment.visitId])
+
+  // Quote edits made on this phone that have not reached the office yet (Phase 7 U5) — the badge on
+  // "Build the quote". Re-read as the queue drains in the background.
+  const [quoteChangesWaiting, setQuoteChangesWaiting] = useState(0)
+  useEffect(() => {
+    const read = () => { void pendingQuoteOpCountForVisit(assignment.visitId).then(setQuoteChangesWaiting).catch(() => undefined) }
+    read()
+    return onQuoteSyncSettled(read)
   }, [assignment.visitId])
 
   // ── THE JOB CLOCK (Kyle, 2026-09-11): Arrive → Complete, or Pause on a
@@ -334,7 +410,37 @@ export function JobSiteScreen({
   // Before the signature (2026-09-23): an estimate is issued but the customer has not signed yet
   // (choicePending only ever turns true once signedAt is set), so today NOTHING renders here,
   // which reads as "this cannot be done." Show both choices, disabled, with why.
-  const awaitingSignature = awaitingSignatureFor(brief, choicePending, alreadyDone)
+  // With no signal and no brief, the saved copy of the visit's quote says whether an estimate is
+  // out for signing (U8): issued, live, unsigned. Its figures are the frozen table the office holds.
+  const savedIssued = !brief && offline ? (savedQuote?.payload.lifecycle.issued ?? null) : null
+  const savedAwaiting = Boolean(savedIssued && !savedIssued.signedAt && savedIssued.status !== 'lost' && !alreadyDone)
+  const awaitingSignature = awaitingSignatureFor(brief, choicePending, alreadyDone) || savedAwaiting
+  // The estimate the "not signed yet" panel names: the brief's, else the saved copy's.
+  const panelEstimate = brief?.estimate
+    ? { id: brief.estimate.id, number: brief.estimate.number, customerUrl: brief.estimate.customerUrl }
+    : savedIssued
+      ? { id: savedIssued.estimateId, number: savedIssued.number, customerUrl: savedIssued.customerUrl ?? undefined }
+      : null
+  // The signature this phone holds for the visit (U8): the newest is the card; queued or refused
+  // means the customer's screen stays shut and the after-signature choices wait.
+  const cardSignature = signatures[0] ?? null
+  const heldSignature = signatures.find((s) => s.state === 'queued' || s.state === 'refused') ?? null
+  const signatureWaiting = signatures.some((s) => s.state === 'queued')
+  // Why "Show the customer / Sign now" is greyed, or null: a signature already held, or — with no
+  // signal, from the saved copy — the one signing rule (expired by this clock, edits waiting, edited
+  // after issue). With signal the Quote screen applies the rule itself.
+  const showSignReason = heldSignature && panelEstimate
+    ? heldSignatureReason(panelEstimate.number, heldSignature)
+    : savedIssued && savedQuote
+      ? signGate({
+          issued: savedIssued,
+          hasUnsavedChanges: savedQuote.payload.lifecycle.hasUnsavedChanges,
+          waiting: quoteChangesWaiting,
+          localOnlyQuote: savedQuote.origin === 'phone',
+          offline: true,
+          signature: null,
+        }).reason
+      : null
   const canPauseJob = Boolean(brief) && PAUSABLE_STATUSES.has(status) && !alreadyDone
   const waitingOnOffice = isJob && status === 'contracted' && !brief?.scheduledStart
 
@@ -450,6 +556,35 @@ export function JobSiteScreen({
       )}
       {brief?.notes && <p className="rounded-lg bg-slate-800/60 p-3 text-xs text-slate-300">Office notes: {brief.notes}</p>}
 
+      {/* ── A signature taken on this phone, until the office has answered (U8). ── */}
+      {cardSignature && (
+        <SignaturePendingCard
+          row={cardSignature}
+          offline={offline}
+          busy={false}
+          authNeeded={signatureSyncNeedsSignIn()}
+          onCancel={async (id, reason) => {
+            await cancelSignature(id, reason)
+            setSignatures(await signaturesForVisit(assignment.visitId))
+          }}
+          onDismiss={async (id, reason) => {
+            await dismissRefusedSignature(id, reason)
+            setSignatures(await signaturesForVisit(assignment.visitId))
+          }}
+          onRemove={async (id) => {
+            await removeUnfiledSignature(id)
+            setSignatures(await signaturesForVisit(assignment.visitId))
+          }}
+          onSignAgain={onShowCustomer
+            ? async () => {
+                await dismissRefusedSignature(cardSignature.signatureId, 'Signing again on this phone')
+                setSignatures(await signaturesForVisit(assignment.visitId))
+                onShowCustomer()
+              }
+            : undefined}
+        />
+      )}
+
       {/* ── Signed. What happens now? Exactly two choices (Kyle, 2026-09-21). ── */}
       {choicePending && (
         <section className="space-y-2 rounded-xl border border-emerald-700 bg-emerald-950/30 p-4">
@@ -484,8 +619,12 @@ export function JobSiteScreen({
       {awaitingSignature && (
         <section className="space-y-2 rounded-xl border border-slate-600 bg-slate-800/40 p-4">
           <h2 className="text-sm font-semibold text-slate-200">
-            Estimate {brief?.estimate?.number} issued — not signed yet
+            Estimate {panelEstimate?.number} issued — not signed yet
           </h2>
+          {/* With no signal the panel is read from this phone's saved copy of the quote (U8). */}
+          {savedIssued && savedQuote && (
+            <p className="text-[11px] text-sky-300">{savedCopyWords(savedQuote.snapshotAt)} — the estimate exactly as the office issued it.</p>
+          )}
           {/*
             The door back to signing (2026-09-24): issuing shows this same link and share button
             for about thirty seconds (QuoteScreen.tsx), then "Back to the job" loses it for good.
@@ -500,18 +639,23 @@ export function JobSiteScreen({
             so it is labelled that way and sits second.
           */}
           {onShowCustomer && (
-            <button
-              type="button"
-              onClick={onShowCustomer}
-              title="Turn the phone around: the customer sees each option, ticks what they want, then signs on this phone"
-              className="w-full rounded-lg bg-sky-700 p-3 text-sm font-semibold text-white"
-            >
-              Show the customer / Sign now
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={showSignReason !== null}
+                onClick={onShowCustomer}
+                title={showSignReason ?? 'Turn the phone around: the customer sees each option, ticks what they want, then signs on this phone'}
+                className="w-full rounded-lg bg-sky-700 p-3 text-sm font-semibold text-white disabled:opacity-40"
+              >
+                Show the customer / Sign now
+              </button>
+              {/* Greyed WITH the reason, on the page as well as in the tooltip (U8). */}
+              {showSignReason && <p className="text-[11px] text-amber-200">{showSignReason}</p>}
+            </>
           )}
-          {brief?.estimate?.customerUrl && (
+          {panelEstimate?.customerUrl && (
             <a
-              href={brief.estimate.customerUrl}
+              href={panelEstimate.customerUrl}
               target="_blank"
               rel="noreferrer"
               className="block w-full rounded-lg border border-sky-700 p-3 text-center text-sm font-medium text-sky-200"
@@ -528,22 +672,25 @@ export function JobSiteScreen({
             says. Same server send (sendEstimateEmail), same words. Photos ride from the Quote
             screen's ticks only - there are none to tick here, so none go.
           */}
-          {brief?.estimate?.id && (
+          {panelEstimate?.id && (
             <EmailEstimateButton
-              estimateId={brief.estimate.id}
+              estimateId={panelEstimate.id}
               send={emailEstimateToCustomer}
+              blockedReason={offline ? OFFLINE_EMAIL_REASON : null}
             />
           )}
           {/* And the financing link on its own, before the customer signs (Kyle, 2026-10-08). */}
-          {brief?.estimate?.id && (
+          {panelEstimate?.id && (
             <EmailFinancingButton
-              estimateId={brief.estimate.id}
+              estimateId={panelEstimate.id}
               send={emailFinancing}
+              blockedReason={offline ? OFFLINE_EMAIL_REASON : null}
             />
           )}
           <button
             type="button"
             disabled
+            title={signatureWaiting ? WAITING_FOR_SIGNATURE : undefined}
             className="w-full cursor-not-allowed rounded-lg border border-slate-600 bg-slate-800 p-3 text-left text-sm font-semibold text-slate-500 opacity-60"
           >
             Complete work now
@@ -551,15 +698,21 @@ export function JobSiteScreen({
           <button
             type="button"
             disabled
+            title={signatureWaiting ? WAITING_FOR_SIGNATURE : undefined}
             className="w-full cursor-not-allowed rounded-lg border border-slate-600 bg-slate-800 p-3 text-left text-sm font-semibold text-slate-500 opacity-60"
           >
             Schedule for later
           </button>
-          <p className="text-[11px] text-slate-400">
-            The customer signs first — then you can do the work now in this block. To change the
-            quote, open <span className="font-semibold text-slate-200">Build the quote</span> below — it
-            reopens this estimate and saves your changes to it.
-          </p>
+          {signatureWaiting ? (
+            /* A signature is on this phone and not at the office yet (U8): the two choices wait for it, and say so. */
+            <p className="text-[11px] text-amber-200">{WAITING_FOR_SIGNATURE}. Both choices open the moment this card says Signed.</p>
+          ) : (
+            <p className="text-[11px] text-slate-400">
+              The customer signs first — then you can do the work now in this block. To change the
+              quote, open <span className="font-semibold text-slate-200">Build the quote</span> below — it
+              reopens this estimate and saves your changes to it.
+            </p>
+          )}
         </section>
       )}
       {choiceSaid && <p className="rounded bg-emerald-900/50 p-2 text-xs text-emerald-200">{choiceSaid}</p>}
@@ -582,6 +735,7 @@ export function JobSiteScreen({
           🔌 Run diagnostics — one circuit, breaker to last outlet
         </button>
       )}
+      {/* Works with no signal (Phase 7 U5): the quote opens from this phone's saved copy, and edits queue. */}
       {onBuildQuote && (
         <button
           type="button"
@@ -589,6 +743,11 @@ export function JobSiteScreen({
           className="w-full rounded-lg border border-emerald-800 bg-emerald-950/40 p-2 text-xs text-emerald-200"
         >
           🧾 Build the quote
+          {quoteChangesWaiting > 0 && (
+            <span className="ml-2 rounded bg-amber-700 px-2 py-0.5 text-[10px] font-semibold text-amber-50">
+              {quoteChangesWaiting} quote change{quoteChangesWaiting === 1 ? '' : 's'} waiting
+            </span>
+          )}
         </button>
       )}
       {/* The job grew after the customer signed: a change order is its own document against the signed estimate.
@@ -686,8 +845,8 @@ export function JobSiteScreen({
         )}
       </section>
 
-      {/* ── Payment ── */}
-      <CollectPayment visitId={assignment.visitId} />
+      {/* ── Payment — greyed while a signature taken here has not reached the office (U8) ── */}
+      <CollectPayment visitId={assignment.visitId} blockedReason={signatureWaiting ? WAITING_FOR_SIGNATURE : null} />
 
       {/* ── Pause JOB — back to the office to reschedule (Kyle, 2026-09-21).
           The exit for a mistaken Complete work now and for work that will not

@@ -25,6 +25,21 @@ export interface DraftLifecycleIssued {
   /** ISO timestamp of the customer's signature, or null while unsigned. */
   signedAt: string | null;
   /**
+   * ISO timestamp the estimate was issued (IssuedEstimate.createdAt) — the start of its validity
+   * window — and the days it stays open from then (shared/estimateExpiry.ts isPastValidity is the
+   * arithmetic). Phase 7 unit U7 (2026-10-10): the phone judges "still signable with no signal" by
+   * its own clock from these two, and warns at two days or less; the server re-judges at the write.
+   */
+  issuedAt: string;
+  validDays: number;
+  /**
+   * The server's fingerprint of the frozen figures the customer is shown (money.selections plus the
+   * revision), made on the server only. A signature captured on the phone echoes it back, and the
+   * server refuses the signature if the figures it holds differ — the phone computes nothing and
+   * cannot build one itself.
+   */
+  figuresKey: string;
+  /**
    * True when the estimate was put away (archived). The send refuses it ("Unarchive it first"), and
    * "live" for the issue door excludes only void, so an archived estimate still comes back here;
    * the screens grey "Email" with that reason before the press.

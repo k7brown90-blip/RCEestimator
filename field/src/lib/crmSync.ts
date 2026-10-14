@@ -11,6 +11,7 @@ import {
   type MaterialCacheRecord,
   type PhotoSyncRecord,
   type ReceiptSyncRecord,
+  type ShownFigures,
   type SyncQueueRecord,
 } from '../db/database'
 import type { CrmAssignment, Inspection, JurisdictionProfile, Property } from '../domain/types'
@@ -22,6 +23,7 @@ import type { DraftOptionSet, EstimateOptionLetter } from '../../../shared/estim
 import type { QuoteMoney } from '../../../shared/quoteMoney'
 import type { DraftLifecycle } from '../../../shared/draftLifecycle'
 import type { CatalogSection, FieldCatalogPage, FieldCatalogRow, FieldCatalogSnapshotResponse } from '../../../shared/quoteCatalog'
+import type { PhonePriceSheetResponse } from '../../../shared/fieldPriceSheet'
 import type { EstimatePhoto } from '../../../shared/estimatePhotos'
 import { estimateEmailRequest, type EstimateEmailChoices } from '../../../shared/estimateEmail'
 import type { FieldOpenQuestion, QuoteSuggestedLine, FieldWalkthroughRow, WalkthroughProposal } from '../../../shared/suggestedLines'
@@ -116,20 +118,43 @@ export class CrmRequestError extends Error {
 }
 
 /**
- * "No signal" for the quote queue means the request never got an answer — fetch threw (the
- * browser's TypeError), not the server saying no. An HTTP refusal is NEVER offline (Phase 7 trap:
- * treating a 409 as "no signal" would queue a refused edit forever).
+ * The request never got an answer: `fetch` itself threw (the browser's "Failed to fetch"
+ * TypeError, an abort, a timeout) — no signal, a dead server, a blocked connection. Thrown ONLY by
+ * `crmFetch`, at the one place a request goes out, so it is exact: a TypeError thrown by a bug in
+ * the phone's own code is NOT one of these (D7, 2026-10-13 — before, every non-HTTP error read as
+ * "no signal", so a code bug would retry for ever under "Waiting for signal").
+ */
+export class CrmNetworkError extends Error {
+  readonly cause: unknown
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause))
+    this.name = 'CrmNetworkError'
+    this.cause = cause
+  }
+}
+
+/**
+ * "No signal" for every queue means the request never got an answer — fetch threw, not the server
+ * saying no. An HTTP refusal is NEVER offline (Phase 7 trap: treating a 409 as "no signal" would
+ * queue a refused edit forever), and neither is an error thrown by this phone's own code (D7).
  */
 export function isNetworkFailure(error: unknown): boolean {
-  if (error instanceof CrmRequestError) return false
-  if (error instanceof Error && error.message === 'CRM not configured') return false
-  return true
+  return error instanceof CrmNetworkError
+}
+
+/** `fetch`, with whatever it throws wrapped as a CrmNetworkError. Every CRM request goes out through here. */
+async function crmFetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch (error) {
+    throw new CrmNetworkError(error)
+  }
 }
 
 async function crmRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')
-  const response = await fetch(`${settings.baseUrl}/api/health-record${path}`, {
+  const response = await crmFetch(`${settings.baseUrl}/api/health-record${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -310,7 +335,7 @@ async function pushPhoto(record: PhotoSyncRecord): Promise<void> {
     await db.photoSyncQueue.delete(record.photoId)
     return
   }
-  const response = await fetch(
+  const response = await crmFetch(
     `${settings.baseUrl}/api/health-record/inspections/${record.inspectionId}/photos/${record.photoId}`,
     {
       method: 'PUT',
@@ -1204,7 +1229,7 @@ export async function uploadJobPhoto(visitId: string, blob: Blob, caption?: stri
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')
   const photoId = crypto.randomUUID()
-  const response = await fetch(
+  const response = await crmFetch(
     `${settings.baseUrl}/api/health-record/visits/${visitId}/photos/${photoId}`,
     {
       method: 'PUT',
@@ -1250,7 +1275,7 @@ export async function uploadReceiptFromField(input: {
   if (input.amount) query.set('amount', String(input.amount))
   if (input.vendor) query.set('vendor', input.vendor)
   if (input.category) query.set('category', input.category)
-  const response = await fetch(
+  const response = await crmFetch(
     `${settings.baseUrl}/api/health-record/receipts/${input.receiptId}?${query.toString()}`,
     {
       method: 'PUT',
@@ -1867,6 +1892,16 @@ export async function fetchQuoteCatalogSnapshot(version?: string | null): Promis
 }
 
 /**
+ * The customer-price sheet for a labelled Preview with no signal (Phase 7 U3, 2026-10-09; Kyle's
+ * ruling 8: Normal difficulty only). One customer price per live item, built by the office's own
+ * engine — never a labour figure, cost, tier or rate. Same version skip as the catalog snapshot.
+ */
+export async function fetchPriceSheet(version?: string | null): Promise<PhonePriceSheetResponse> {
+  const q = version ? `?version=${encodeURIComponent(version)}` : ''
+  return crmRequest(`/quote-price-sheet${q}`, { method: 'GET' })
+}
+
+/**
  * Keep the server's answer for one quote on this phone (Phase 7, 2026-10-09) — the SAME payload
  * the online screen renders, so with no signal the screen renders this and overlays the tech's
  * waiting edits on it (quoteSync.overlayQuote). The payload does not carry the visit, so a save
@@ -1875,7 +1910,7 @@ export async function fetchQuoteCatalogSnapshot(version?: string | null): Promis
  */
 export async function saveQuoteMirror(
   payload: QuoteState,
-  opts: { visitId?: string | null; origin?: 'phone' | 'server'; pricesNeedReview?: boolean } = {},
+  opts: { visitId?: string | null; origin?: 'phone' | 'server'; pricesNeedReview?: boolean; shownBeforeSync?: ShownFigures | null } = {},
 ): Promise<void> {
   await db.transaction('rw', db.quoteMirrors, async () => {
     const existing = await db.quoteMirrors.get(payload.draftId)
@@ -1887,6 +1922,9 @@ export async function saveQuoteMirror(
       origin: opts.origin ?? existing?.origin ?? 'server',
       pricesNeedReview: opts.pricesNeedReview ?? existing?.pricesNeedReview ?? false,
       pendingRebase: existing?.pendingRebase ?? null,
+      // What the phone showed before a sync (U6 "Check the prices"): only the flush writes it and only
+      // "I've checked the prices" clears it; a plain refresh keeps whatever note is there.
+      shownBeforeSync: opts.shownBeforeSync === undefined ? (existing?.shownBeforeSync ?? null) : opts.shownBeforeSync,
     })
   })
 }
@@ -1960,7 +1998,10 @@ export async function removeQuoteOption(
 }
 
 // Discount, option names, one-or-the-other mode and copy-an-option — the same service functions as
-// the CRM's routes (Kyle, 2026-10-08). Plain online calls like the ones above (offline is Phase 7).
+// the CRM's routes (Kyle, 2026-10-08). Each is ONE request with no queue of its own; the Quote
+// screen reaches them through quoteSync.writeQuote (Phase 7 U5, 2026-10-10), which writes the edit
+// to the phone first and replays it through these when signal returns. Copy-an-option is the one
+// exception: decided at the office, called live, greyed with no signal.
 // A refusal (a signed quote, a bad percentage) throws a CrmRequestError carrying the server's words.
 
 // Each settings writer below takes an optional `expected` (Phase 7, 2026-10-09): the value this
@@ -2043,7 +2084,8 @@ export async function issueQuote(
 }
 
 // ─── Photos on the estimate, and raising a change order (Phase 2 unit E, 2026-10-08) ──────────
-//    Plain online fetches like the rest of the quote calls - no offline queue (that is Phase 7).
+//    Live calls, deliberately — a photo is a file and the list is the office's — so with no signal
+//    the Quote screen greys "Photos for the estimate" with its reason (Phase 7 U5, 2026-10-10).
 //    A photo added from the Quote screen goes up through uploadJobPhoto above: the SAME job-photo
 //    path the Job site screen uses. These calls only list, preview and take back.
 
@@ -2056,7 +2098,7 @@ export async function fetchQuotePhotos(draftId: string): Promise<{ photos: Estim
 export async function fetchQuotePhotoPreview(draftId: string, photoId: string): Promise<Blob> {
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')
-  const response = await fetch(`${settings.baseUrl}/api/health-record/quotes/${draftId}/photos/${photoId}/preview`, {
+  const response = await crmFetch(`${settings.baseUrl}/api/health-record/quotes/${draftId}/photos/${photoId}/preview`, {
     headers: { Authorization: `Bearer ${settings.token}` },
   })
   if (!response.ok) throw new Error(`Photo preview failed (${response.status})`)
@@ -2082,8 +2124,14 @@ export async function raiseChangeOrder(
 // ─── Sign in person, on this phone (Phase 3 unit C, 2026-10-08) ──────────────
 //    The customer is standing next to the tech, so the signature is a FIELD action (Kyle,
 //    2026-09-24). The same server function the office's signing screen calls (signInPerson),
-//    behind visit assignment. Needs signal, deliberately: a signature is a legal record and the
-//    server must accept it before the screen says "Signed" - there is no queued, pretend-signed state.
+//    behind visit assignment. A signature is a legal record and the server must accept it before
+//    the screen says "Signed" - there is no pretend-signed state. SINCE PHASE 7 U8 (2026-10-10)
+//    the screen does not call this directly: every "Accept & Sign" is written to the phone first
+//    (lib/signatureQueue.ts captureSignature, the signatureQueue store) and sent through this call
+//    at once, carrying the capture fields below; with no answer it is "saved on this phone - NOT
+//    recorded yet" and sent again when signal returns, under the same id, so the office records it
+//    once. An issued estimate saved on this phone while it had signal can therefore be signed with
+//    no signal (Kyle, 2026-10-09, rulings 9 and 10).
 
 export interface InPersonSignResult {
   signed: true
@@ -2101,13 +2149,43 @@ export interface InPersonSignResult {
 }
 
 /**
+ * What the phone sends with a signature it captured (Phase 7 U7/U8): the id it minted at capture
+ * (a resend after a lost answer gets the original success, never "already signed"), its clock at
+ * capture, the revision and the server's own figures fingerprint it was showing
+ * (lifecycle.issued.figuresKey - echoed, never computed here), and the consent sentence the
+ * customer read. All judged on the server (applySignature); the office's screen sends none.
+ */
+export interface SignatureCapture {
+  clientSignatureId: string
+  /** ISO 8601, the phone's clock at capture. */
+  capturedAt: string
+  /**
+   * ISO 8601, the phone's clock at THIS send (D2, 2026-10-13). The office trusts only the gap
+   * between the two — how long the phone held the signature — so its own clock being wrong cannot
+   * move the capture across the 30-day line.
+   */
+  sentAt: string
+  /**
+   * True when this send is not the capture's own first try: taken with no signal, or tried before
+   * and got no answer (D1, 2026-10-13). A refusal of such a send means the customer may have left
+   * believing they signed, so the office emails Kyle; a refusal of a first try is on the screen
+   * in front of the customer and nobody is emailed.
+   */
+  heldOnPhone: boolean
+  revision: number
+  figuresKey: string
+  consentText: string
+}
+
+/**
  * Record the customer's signature, drawn on this phone. The server answers 400 with a readable
- * reason (already signed, expired, closed, pick an option, ...), which reaches the screen verbatim
- * as the thrown error's message.
+ * reason (already signed, expired, closed, pick an option, ...), which reaches the caller verbatim
+ * as the thrown error's message. ONE request, no queue of its own: lib/signatureQueue.ts owns the
+ * row on the phone and calls this to send it.
  */
 export async function signEstimateInPerson(
   estimateId: string,
-  input: { signerName: string; signatureImage: string; selectedOptions: string[] },
+  input: { signerName: string; signatureImage: string; selectedOptions: string[] } & Partial<SignatureCapture>,
 ): Promise<InPersonSignResult> {
   return crmRequest(`/issued-estimates/${estimateId}/sign-in-person`, {
     method: 'POST',
@@ -2115,10 +2193,28 @@ export async function signEstimateInPerson(
   })
 }
 
+/**
+ * File what became of a signature this phone held and never delivered (Phase 7 U8): cancelled by
+ * the technician before it was recorded, or a refused one dismissed after the customer was called.
+ * A record at the office (a "field-signature" SystemEvent), not a signature; idempotent on
+ * (signatureId, event). The drawn mark never goes with it.
+ */
+export async function fileSignatureEvent(
+  estimateId: string,
+  input: { signatureId: string; event: 'cancelled' | 'dismissed'; reason: string; signerName: string; capturedAt?: string; refusal?: string },
+): Promise<{ filed: true; duplicate: boolean }> {
+  return crmRequest(`/issued-estimates/${estimateId}/signature-events`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
 // ─── Title & scope, delete, copy to a new quote (Phase 2 unit B, 2026-10-08) ──
 //    The same three service functions Estimate Intake calls (setDraftDetails, deleteDraft,
-//    duplicateDraft), through tech-scoped wrappers. Plain online fetches like the rest of the
-//    quote calls — no offline queue (that is Phase 7).
+//    duplicateDraft), through tech-scoped wrappers. Title & scope reaches here through the Quote
+//    screen's queue (quoteSync.writeQuote, Phase 7 U5); delete and copy-to-new are decided at the
+//    office and called live — greyed with no signal, and "Delete this quote" on a quote the office
+//    has never received is the phone's own deleteLocalOnlyQuote instead.
 
 /**
  * The estimate's title and scope of work. Either field alone is a valid edit; an empty scope clears it.
@@ -2146,7 +2242,8 @@ export async function copyQuoteToNew(draftId: string): Promise<{ draftId: string
 // ─── AI proposals, open questions and the walkthrough list (Phase 2 unit D, 2026-10-08) ──
 //    The same service functions Estimate Intake calls (confirmProposedLine, rejectProposedLine,
 //    resolveQuestion, proposeWalkthroughForDraft, resolveWalkthroughRows) through tech-scoped
-//    wrappers. Plain online fetches like the rest of the quote calls — no offline queue (Phase 7).
+//    wrappers. Live calls: the AI and the office's suggestions are online only (design §2), so with
+//    no signal the Quote screen greys them with that reason (Phase 7 U5, 2026-10-10).
 
 /** "Confirm" / "Edit & confirm": the suggestion becomes a real, priced line. Edits are optional. */
 export async function confirmSuggestedLine(

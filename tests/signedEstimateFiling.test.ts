@@ -45,7 +45,17 @@ describe("the signature is committed before anything else is attempted", () => {
   it("returns success on the line after the filing is fired", () => {
     const signAt = service.indexOf("async function applySignature");
     const body = service.slice(signAt, service.indexOf("\n}", signAt));
-    expect(body.indexOf("fileSignedCopies")).toBeLessThan(body.indexOf("return { ok: true"));
+    // A signature WRITTEN here returns success only after the filing is fired. The `replayed: true`
+    // returns above the write (Phase 7 U7, 2026-10-10: the phone resent a capture whose answer it
+    // lost) write nothing and file nothing — the first delivery already did — so the success that
+    // matters is the plain one after `updateMany`, and nothing may return it between the write and
+    // the filing.
+    const writeAt = body.indexOf("issuedEstimate.updateMany");
+    const fileAt = body.indexOf("fileSignedCopies", writeAt);
+    expect(writeAt).toBeGreaterThan(-1);
+    expect(fileAt).toBeGreaterThan(writeAt);
+    expect(fileAt).toBeLessThan(body.indexOf("return { ok: true, estimateId };", writeAt));
+    expect(body.slice(writeAt, fileAt)).not.toMatch(/return \{ ok: true, estimateId \};/);
   });
 
   it("guards each filing separately", () => {

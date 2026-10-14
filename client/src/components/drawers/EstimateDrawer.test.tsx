@@ -203,6 +203,31 @@ describe("EstimateDrawer", () => {
     expect(await screen.findByText("Acceptance undone — back to viewed. The unscheduled job was cancelled.")).toBeInTheDocument();
   });
 
+  it("a signature captured on the technician's phone shows BOTH times: the phone's capture and the office's record (ruling 10)", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({
+      estimate: estimate({
+        status: "signed", signedAt: "2026-09-12T12:00:00.000Z", signerName: "Jane", signedChannel: "in_person",
+        signatureCapturedAt: "2026-09-11T20:30:00.000Z", jobVisitId: "visit-1",
+      }),
+    });
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+    const line = await screen.findByText(/signed in person on the phone at .+ by Jane · recorded .+/);
+    expect(line.textContent).toContain(new Date("2026-09-11T20:30:00.000Z").toLocaleString());
+    expect(line.textContent).toContain(new Date("2026-09-12T12:00:00.000Z").toLocaleString());
+    // Still a real signature: Void, the invoice door, no Undo acceptance.
+    expect(screen.getByRole("button", { name: "Void" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /undo acceptance/i })).not.toBeInTheDocument();
+  });
+
+  it("a signature taken in person WITHOUT a capture time (the office's own screen) reads as it always did", async () => {
+    vi.spyOn(api, "estimateRecord").mockResolvedValue({
+      estimate: estimate({ status: "signed", signedAt: "2026-09-12T12:00:00.000Z", signerName: "Jane", signedChannel: "in_person", jobVisitId: "visit-1" }),
+    });
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+    expect(await screen.findByText(/signed 9\/12\/2026 by Jane in person/)).toBeInTheDocument();
+    expect(screen.queryByText(/on the phone at/)).not.toBeInTheDocument();
+  });
+
   it("a real signature reads 'signed … from the emailed link' and offers no Undo acceptance", async () => {
     vi.spyOn(api, "estimateRecord").mockResolvedValue({
       estimate: estimate({ status: "signed", signedAt: "2026-09-12T12:00:00.000Z", signerName: "Jane", signedChannel: "email", jobVisitId: "visit-1" }),

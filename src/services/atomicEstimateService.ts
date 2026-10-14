@@ -311,6 +311,19 @@ function decorate(r: {
 }
 
 /**
+ * What a typed search is matched as: the LITERAL text. Prisma 5's `contains` hands the text to
+ * Postgres LIKE untouched, so `%` and `_` typed into the box were wildcards — "14_2" matched
+ * "14/2" and anything else one character apart, and the phone's saved-copy search
+ * (shared/quoteCatalog.ts matchesCatalogSearch) is a plain substring test, so the two doors
+ * answered differently for the same typed text (Phase 7 U5, 2026-10-10, verified against the test
+ * database: `contains: "ZZP%device"` matched "ZZP plain device"; `"ZZP\\%device"` did not).
+ * Backslash is Postgres' default LIKE escape, so each of `\`, `%` and `_` is escaped with one.
+ */
+export function literalContains(text: string): string {
+  return text.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
  * Search/browse the live catalog. Retired rows are excluded — they are kept on disk (move,
  * never delete) but a retired atomic is not proposable, so it is not browsable either.
  */
@@ -320,12 +333,13 @@ export async function browseAtomics(
 ): Promise<{ atomics: BrowsedAtomic[]; count: number; total: number; truncated: boolean }> {
   const limit = Math.min(Math.max(Number(input.limit ?? 50) || 50, 1), 200);
   const where: Record<string, unknown> = { retiredAt: null };
-  if (input.article) where["necArticle"] = { contains: input.article };
-  if (input.category) where["category"] = { contains: input.category, mode: "insensitive" };
+  if (input.article) where["necArticle"] = { contains: literalContains(input.article) };
+  if (input.category) where["category"] = { contains: literalContains(input.category), mode: "insensitive" };
   if (input.search) {
+    const search = literalContains(input.search);
     where["OR"] = [
-      { itemId: { contains: input.search, mode: "insensitive" } },
-      { description: { contains: input.search, mode: "insensitive" } },
+      { itemId: { contains: search, mode: "insensitive" } },
+      { description: { contains: search, mode: "insensitive" } },
     ];
   }
 
@@ -1978,6 +1992,16 @@ export async function workingDraftForVisit(
  * Two phones starting a visit's first quote at the same instant can still make two drafts —
  * find-then-create is not atomic. That race exists today and this does not widen it.
  */
+/**
+ * The supplier a tech-started quote prices at: the workbook's ACTIVE SUPPLIER, "HD" when Rate
+ * Config names none. ONE rule for the quote the phone starts (openOrCreateWorkingDraft) and for the
+ * price sheet the phone keeps for a preview with no signal (fieldPriceSheet.ts, 2026-10-09): a sheet
+ * built at one supplier and a quote started at another could never be previewed from it.
+ */
+export function draftSupplierFor(rc: Pick<RateConfig, "activeSupplier">): string {
+  return rc.activeSupplier ?? "HD";
+}
+
 export async function openOrCreateWorkingDraft(
   prisma: PrismaClient,
   visitId: string,
@@ -2011,7 +2035,7 @@ export async function openOrCreateWorkingDraft(
   const draft = await createDraft(prisma, {
     id: clientDraftId,
     title: `${visit.customer.name} — ${visit.property.addressLine1}`,
-    supplierId: rc.activeSupplier ?? "HD",
+    supplierId: draftSupplierFor(rc),
     visitId,
     jobDescription: null,
   });

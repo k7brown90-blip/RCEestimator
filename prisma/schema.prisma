@@ -3257,6 +3257,23 @@ model IssuedEstimate {
   // a real signature and cleared by /unaccept.
   acceptedVia     String?
   acceptedNote    String?
+  // ── SIGNED ON THE PHONE WITH NO SIGNAL (2026-10-10, one-estimating-system Phase 7, unit U7) ──
+  //
+  // `clientSignatureId` is the id the phone minted the moment the customer signed, BEFORE any
+  // request went out. A request whose answer was lost is sent again with the same id, and the
+  // server answers the ORIGINAL success instead of "already signed" (idempotent, like the quote
+  // edits' client ids). Unique: one capture is one signature on one estimate — the same id arriving
+  // for a different estimate is refused, never adopted. Null on the office's door and the emailed
+  // link, which send none of this, and on every signature taken before this existed.
+  //
+  // `signatureCapturedAt` is the PHONE's clock at the moment of signing, as the phone claims it;
+  // `signedAt` (above) stays the SERVER's receipt time and is never backdated. Kyle, 2026-10-09
+  // (ruling 10): a signature captured inside the 30 days by the phone's clock is HONOURED even if
+  // it reaches the office after day 30, and the record keeps both times — the CRM prints "signed
+  // in person on the phone at <capturedAt> · recorded <signedAt>". The capture time is bounded at
+  // the write (not after issue + skew, not in the future beyond skew; issuedEstimateService).
+  clientSignatureId   String?   @unique
+  signatureCapturedAt DateTime?
   voidedAt        DateTime?
   voidReason      String?
   // Lost (Kyle, 2026-09-20: "when we give an estimate but they either hire someone else or end up

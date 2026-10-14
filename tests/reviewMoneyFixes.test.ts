@@ -135,7 +135,7 @@ describe("getQuoteMoney - an issued, unchanged, unsigned draft shows the FROZEN 
 
   const lifecycle = (over: Partial<DraftLifecycle> = {}, issued: Partial<NonNullable<DraftLifecycle["issued"]>> = {}): DraftLifecycle => ({
     status: "finalized",
-    issued: { estimateId: "est-1", number: "2026-1098", revision: 1, status: "sent", signedAt: null, archived: false, customerUrl: null, ...issued },
+    issued: { estimateId: "est-1", number: "2026-1098", revision: 1, status: "sent", signedAt: null, issuedAt: "2026-10-01T12:00:00.000Z", validDays: 30, figuresKey: "k", archived: false, customerUrl: null, ...issued },
     hasUnsavedChanges: false,
     reviseReason: null,
     deleteReason: null,
