@@ -39,6 +39,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Before the root suite, not after it: tests/hooksOrder.test.ts lives in the root suite but
+      # loads eslint from client/node_modules, so on a fresh runner it failed with
+      # "Cannot find module 'eslint'" until the client was installed (2026-10-24).
+      - name: Install client dependencies
+        run: npm --prefix client ci
+
       - name: Run test suite (pushes schema + seeds via globalSetup)
         run: npm run test
 
@@ -46,9 +52,6 @@ jobs:
       # (Phase A, 2026-09-20 "drawers and tab purpose" plan) — before this the
       # client had zero rendering tests: no jsdom, no testing-library, no test
       # runner at all. It needs no database; API responses are mocked.
-      - name: Install client dependencies
-        run: npm --prefix client ci
-
       - name: Run client render test suite
         run: npm --prefix client run test
 
