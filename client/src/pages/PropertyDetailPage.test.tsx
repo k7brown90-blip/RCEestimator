@@ -27,6 +27,12 @@
  * "System Snapshot" section is replaced by this property's read-only Health Record: the
  * findings ledger, electrical assessments, diagnostic reports, and photos — each labelled
  * with the job it came from.
+ *
+ * Part 3 (added) - Kyle, 2026-10-24: "I would like the invoices, and estimates to be organized on
+ * the property page not on the account page. The finding ledger should be on the property page,
+ * one ledger per property. Photos should be organized per property too." The Estimates, Invoices
+ * and upload-capable Photos sections live here now (the photo upload cases moved here from
+ * AccountDetailPage.test.tsx), and the dead "Previous Estimates" button is gone.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -35,7 +41,14 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { PropertyDetailPage } from "./PropertyDetailPage";
 import { api, openProtectedPdf } from "../lib/api";
-import type { Property, Visit } from "../lib/types";
+import type { AccountSummary, Property, Visit } from "../lib/types";
+import type { PropertyPhotos } from "../lib/api";
+
+// The gallery's "+ Add photos" downscales the file in-browser before upload (lib/images.ts).
+// createImageBitmap/canvas don't exist in jsdom - a fixed data URL in, the real upload call out.
+vi.mock("../lib/images", () => ({
+  downscale: vi.fn(async () => "data:image/jpeg;base64,ZmFrZQ=="),
+}));
 
 // "View report" hands the rendered document to openProtectedPdf (a real window.open + fetch) —
 // stubbed here so the test can see WHAT it was asked to open.
@@ -74,8 +87,47 @@ function mockEmptyHealthRecordReads() {
   vi.spyOn(api, "propertyPhotos").mockResolvedValue({ jobPhotos: [], assessmentPhotos: [] });
 }
 
-function renderPage() {
+function zeroCosts() {
+  return { estimatedCost: null, materialCost: 0, laborHours: 0, laborRate: 0, laborCost: 0, overhead: 0, totalCost: 0, revenue: 0, grossProfit: 0, margin: null };
+}
+
+/** An account summary for cust-1 with whatever jobs/documents a test needs. */
+function summaryWith(overrides: { jobs?: unknown[]; documents?: unknown[] } = {}): AccountSummary {
+  return {
+    account: { id: "cust-1", name: "Jane Homeowner", email: "jane@example.com", phone: null, createdAt: "2026-09-01T12:00:00.000Z", isTestAccount: false },
+    properties: [],
+    jobs: overrides.jobs ?? [],
+    totals: {},
+    documents: overrides.documents ?? [],
+    inspections: [],
+    findings: [],
+  } as unknown as AccountSummary;
+}
+
+function job(overrides: Record<string, unknown>) {
+  return {
+    visitId: "visit-1", propertyId: "prop-1", propertyLabel: "Home — 12 Main St", status: "completed", archived: true,
+    jobType: "Panel upgrade", purpose: null, mode: "remodel", visitDate: "2026-09-01T12:00:00.000Z",
+    scheduledStart: null, scheduledEnd: null, costs: zeroCosts(), purchaseOrders: [], receipts: [], documents: [], latestEstimate: null,
+    ...overrides,
+  };
+}
+
+function signedDoc(overrides: Record<string, unknown>) {
+  return {
+    id: "doc-1", type: "estimate_customer", audience: "customer", estimateNumber: "E-100", isChangeOrder: false, invoiceNumber: null,
+    estimateId: "est-1", draftId: null, customerEmail: "jane@example.com", signedByName: "Jane", signedAt: "2026-09-02T12:00:00.000Z",
+    createdAt: "2026-09-02T12:00:00.000Z", propertyId: "prop-1",
+    ...overrides,
+  };
+}
+
+function renderPage(summary: AccountSummary = summaryWith()) {
   vi.spyOn(api, "property").mockResolvedValue(property);
+  // Beyond the property read: this property's issued estimates, and the account summary the
+  // Invoices list and the photo gallery's jobs are filtered from. Tests that care pass their own.
+  if (!vi.isMockFunction(api.accountEstimates)) vi.spyOn(api, "accountEstimates").mockResolvedValue({ estimates: [] } as never);
+  vi.spyOn(api, "accountSummary").mockResolvedValue(summary);
   return renderWithProviders(
     <>
       <Routes>
@@ -131,14 +183,15 @@ describe("PropertyDetailPage", () => {
       expect(link).toHaveAttribute("href", "/estimate-intake?account=cust-1&address=prop-1");
     });
 
-    it("keeps 'Previous Estimates' and 'Sold Work' as the sole route to their filtered views", async () => {
+    it("keeps 'Sold Work' as the sole route to the open work orders at this address, and has no 'Previous Estimates' button (Kyle, 2026-10-24)", async () => {
       mockEmptyHealthRecordReads();
       renderPage();
 
-      const previous = await screen.findByRole("link", { name: "Previous Estimates" });
-      expect(previous).toHaveAttribute("href", "/accounts/cust-1?address=prop-1");
       const sold = await screen.findByRole("link", { name: "Sold Work" });
       expect(sold).toHaveAttribute("href", "/jobs?address=prop-1&open=1");
+      // The button linked to /accounts/:id?address=, which the account page never read; the
+      // estimates are listed on this page now.
+      expect(screen.queryByRole("link", { name: "Previous Estimates" })).not.toBeInTheDocument();
     });
 
     it("Schedule Consultation creates the consultation visit for this customer/property and lands on /calendar?schedule=<id> — the ONE scheduler", async () => {
@@ -307,10 +360,159 @@ describe("PropertyDetailPage", () => {
       });
       renderPage();
 
-      // PropertyPhotoSection defaults open on this page (defaultOpen) — no click needed.
+      // The gallery labels each photo with the job it came from (purpose, here).
       await waitFor(() => {
         expect(screen.getByText(/Consultation — estimate visit/)).toBeInTheDocument();
       });
+    });
+  });
+
+  describe("Estimates at this address (Kyle, 2026-10-24)", () => {
+    it("lists this property's issued estimates via the property-filtered read, each opening its drawer", async () => {
+      mockEmptyHealthRecordReads();
+      const estimates = vi.spyOn(api, "accountEstimates").mockResolvedValue({
+        estimates: [{
+          id: "est-9", number: "E-209", revision: 1, title: "Panel upgrade", status: "sent", total: 4200, billedTotal: null,
+          customerId: "cust-1", serviceAddressId: "prop-1", serviceAddress: "12 Main St, Smyrna", draftId: "draft-9",
+          sentAt: "2026-10-01T12:00:00.000Z", firstViewedAt: null, signedAt: null,
+        }],
+      } as never);
+      renderPage();
+
+      await screen.findByText("Panel upgrade");
+      expect(estimates).toHaveBeenCalledWith("cust-1", "prop-1");
+      expect(screen.getByRole("heading", { name: /^Estimates/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+      // No address select: the property IS the address.
+      expect(screen.queryByText("All addresses")).not.toBeInTheDocument();
+    });
+
+    it("says so when nothing has been quoted here", async () => {
+      mockEmptyHealthRecordReads();
+      renderPage();
+      expect(await screen.findByText("Nothing quoted at this address yet.")).toBeInTheDocument();
+    });
+  });
+
+  describe("Invoices at this address (Kyle, 2026-10-24)", () => {
+    it("shows only this property's signed documents, each with its send and payment controls", async () => {
+      mockEmptyHealthRecordReads();
+      renderPage(summaryWith({
+        documents: [
+          signedDoc({ id: "doc-here", estimateNumber: "E-100", propertyId: "prop-1" }),
+          signedDoc({ id: "doc-elsewhere", estimateNumber: "E-777", estimateId: "est-7", propertyId: "prop-other" }),
+        ],
+      }));
+
+      expect(await screen.findByText(/Invoice E-100/)).toBeInTheDocument();
+      expect(screen.queryByText(/E-777/)).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: /^Invoices/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Email the signed copy" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Take payment…" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open PDF" })).toBeInTheDocument();
+    });
+
+    it("says so when there are no signed invoices at this address", async () => {
+      mockEmptyHealthRecordReads();
+      renderPage(summaryWith({ documents: [signedDoc({ propertyId: "prop-other" })] }));
+      expect(await screen.findByText("No signed invoices at this address yet.")).toBeInTheDocument();
+    });
+  });
+
+  // Moved from AccountDetailPage.test.tsx (2026-10-24): the gallery is per property now, given only
+  // this address and only this address's jobs. Kyle's 2026-10-01 ruling - upload asks which job,
+  // and every photo added has its way out - survives the move.
+  describe("Photos at this address - upload and remove (Kyle, 2026-10-01 ruling, moved 2026-10-24)", () => {
+    const job1 = job({ visitId: "visit-1", propertyId: "prop-1", jobType: "Panel upgrade", visitDate: "2026-09-01T12:00:00.000Z" });
+    const job2 = job({ visitId: "visit-2", propertyId: "prop-1", jobType: null, purpose: "Consultation", visitDate: "2026-09-25T12:00:00.000Z" });
+    const jobElsewhere = job({ visitId: "visit-x", propertyId: "prop-other", propertyLabel: "Rental — 456 Oak Ave", jobType: "Rewire", visitDate: "2026-09-30T12:00:00.000Z" });
+
+    function photosOf(...photos: Array<Record<string, unknown>>): PropertyPhotos {
+      return { jobPhotos: photos, assessmentPhotos: [] } as unknown as PropertyPhotos;
+    }
+    async function photoCard() {
+      await screen.findByRole("button", { name: "Schedule Consultation" }); // the page itself has loaded
+      // The gallery waits for the account summary (its jobs); skip past the loading placeholder.
+      await waitFor(() => expect(screen.queryByText(/Loading this address.s photos/)).not.toBeInTheDocument());
+      const heading = await screen.findByRole("heading", { name: "Photos" });
+      return heading.closest("section")!;
+    }
+
+    it("with no jobs at this address, the upload control is greyed with the reason on screen, not hidden", async () => {
+      mockEmptyHealthRecordReads();
+      // A job at ANOTHER address must not count as a job here.
+      renderPage(summaryWith({ jobs: [jobElsewhere] }));
+
+      const card = await photoCard();
+      expect(await within(card).findByText(/No jobs at this address yet/)).toBeInTheDocument();
+      expect(within(card).getByLabelText("+ Add photos")).toBeDisabled();
+    });
+
+    it("with exactly one job here, upload doesn't make him choose - it says which job it is", async () => {
+      mockEmptyHealthRecordReads();
+      renderPage(summaryWith({ jobs: [job1, jobElsewhere] }));
+
+      const card = await photoCard();
+      expect(await within(card).findByText(/Adding to: Panel upgrade — Home — 12 Main St/)).toBeInTheDocument();
+      expect(within(card).queryByLabelText("Which job are these photos for?")).not.toBeInTheDocument();
+      expect(within(card).getByLabelText("+ Add photos")).not.toBeDisabled();
+    });
+
+    it("with more than one job here, prompts a job selection listing only THIS property's jobs, newest first", async () => {
+      mockEmptyHealthRecordReads();
+      vi.spyOn(api, "propertyPhotos").mockResolvedValue(photosOf(
+        { id: "photo-1", mimeType: "image/jpeg", sizeBytes: 100, caption: "Old panel", tag: null, uploadedAt: "2026-09-01T12:05:00.000Z", visitId: "visit-1", visitDate: "2026-09-01T12:00:00.000Z", purpose: null, jobType: "Panel upgrade" },
+        { id: "photo-2", mimeType: "image/jpeg", sizeBytes: 100, caption: null, tag: null, uploadedAt: "2026-09-25T09:05:00.000Z", visitId: "visit-2", visitDate: "2026-09-25T09:00:00.000Z", purpose: "Consultation", jobType: null },
+      ));
+      renderPage(summaryWith({ jobs: [job1, job2, jobElsewhere] }));
+
+      const card = await photoCard();
+      const select = (await within(card).findByLabelText("Which job are these photos for?")) as HTMLSelectElement;
+      const optionLabels = Array.from(select.options).map((o) => o.textContent);
+      expect(optionLabels).toHaveLength(3); // the prompt + this property's two jobs, not the other address's
+      expect(optionLabels[0]).toBe("Which job are these photos for?");
+      expect(optionLabels[1]).toMatch(/^Consultation — /); // visit-2 is newer
+      expect(optionLabels[2]).toMatch(/^Panel upgrade — /);
+      expect(within(card).getByLabelText("+ Add photos")).toBeDisabled(); // until a job is chosen
+
+      await waitFor(() => expect(within(card).getByText(/Old panel/)).toBeInTheDocument());
+      const captions = card.querySelectorAll("figcaption");
+      expect(captions.length).toBe(2);
+      expect(captions[0]).toHaveTextContent(/Consultation — /); // newest first
+      expect(captions[1]).toHaveTextContent(/Panel upgrade — /);
+    });
+
+    it("uploads through the existing visit-photo endpoint once a job is chosen", async () => {
+      mockEmptyHealthRecordReads();
+      const upload = vi.spyOn(api, "uploadVisitPhoto").mockResolvedValue({
+        id: "photo-new", mimeType: "image/jpeg", sizeBytes: 100, caption: null, tag: null, uploadedAt: "2026-10-01T00:00:00.000Z",
+      } as never);
+      renderPage(summaryWith({ jobs: [job1, job2] }));
+
+      const card = await photoCard();
+      const select = await within(card).findByLabelText("Which job are these photos for?");
+      fireEvent.change(select, { target: { value: "visit-2" } });
+
+      const fileInput = within(card).getByLabelText("+ Add photos");
+      fireEvent.change(fileInput, { target: { files: [new File(["fake"], "panel.jpg", { type: "image/jpeg" })] } });
+
+      await waitFor(() =>
+        expect(upload).toHaveBeenCalledWith("visit-2", { dataUrl: "data:image/jpeg;base64,ZmFrZQ==", tag: null }),
+      );
+    });
+
+    it("every job photo has a delete control that removes it after a confirm", async () => {
+      mockEmptyHealthRecordReads();
+      vi.spyOn(api, "propertyPhotos").mockResolvedValue(photosOf(
+        { id: "photo-1", mimeType: "image/jpeg", sizeBytes: 100, caption: "Old panel", tag: null, uploadedAt: "2026-09-01T12:05:00.000Z", visitId: "visit-1", visitDate: "2026-09-01T12:00:00.000Z", purpose: null, jobType: "Panel upgrade" },
+      ));
+      const del = vi.spyOn(api, "deleteVisitPhoto").mockResolvedValue(undefined as never);
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      renderPage(summaryWith({ jobs: [job1] }));
+
+      const card = await photoCard();
+      fireEvent.click(await within(card).findByRole("button", { name: "Delete photo" }));
+      await waitFor(() => expect(del).toHaveBeenCalledWith("photo-1"));
     });
   });
 

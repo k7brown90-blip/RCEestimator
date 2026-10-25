@@ -20,14 +20,6 @@ import { api } from "../lib/api";
 import type { CustomerContact, CustomerNote, PropertyPhotos } from "../lib/api";
 import type { AccountSummary } from "../lib/types";
 
-// The gallery's "+ Add photos" downscales the file in-browser before upload (lib/images.ts,
-// shared with every other photo-upload path). createImageBitmap/canvas don't exist in jsdom —
-// mock it the same way the component's own contract is tested elsewhere: a fixed data URL in,
-// the real upload call out.
-vi.mock("../lib/images", () => ({
-  downscale: vi.fn(async () => "data:image/jpeg;base64,ZmFrZQ=="),
-}));
-
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -109,21 +101,12 @@ describe("AccountDetailPage — conversation notes", () => {
 });
 
 /**
- * AccountPhotoGallery — item H, 2026-10-01. Five change requests, all one theme:
- *
- *   "I should be able to upload photos on this screen here." (/accounts/:id)
- *   "This is not allowing me to attach job photos here. ... the attached photos should prompt a
- *   job selection but can all be viewed from a single place. I dont want to click through
- *   different jobs to find a photo I am looking for." (/accounts/:id)
- *
- * The account page used to show photos read-only, one collapsed accordion per property
- * (PropertyPhotoSection). This replaces that with one upload-capable gallery spanning every
- * property/job on the account. Upload reuses `api.uploadVisitPhoto` (the exact same call the
- * visit-page gallery makes) — a photo still belongs to a visit, so the control asks which job.
+ * Fixtures for the account summary with jobs. (The photo-gallery cases that used to live in this
+ * file moved to PropertyDetailPage.test.tsx on 2026-10-24: photos are organized per property.)
  *
  * Jobs in these fixtures are `archived: true` so they land in the collapsed "Past jobs &
- * consultations" section and JobCard never renders — this file is about the photo gallery, not
- * about satisfying JobCard's full cost-breakdown shape.
+ * consultations" section and JobCard never renders — this file is about the account page's own
+ * cards, not about satisfying JobCard's full cost-breakdown shape.
  */
 function zeroCosts() {
   return { estimatedCost: null, materialCost: 0, laborHours: 0, laborRate: 0, laborCost: 0, overhead: 0, totalCost: 0, revenue: 0, grossProfit: 0, margin: null };
@@ -161,108 +144,39 @@ function renderAccountPage() {
   );
 }
 
-describe("AccountDetailPage — account-wide photo gallery", () => {
+describe("AccountDetailPage — estimates, invoices, findings and photos moved to the property (Kyle, 2026-10-24)", () => {
   const prop1 = { id: "prop-1", name: "Main House", addressLine1: "123 Main St", addressLine2: null, city: "Murfreesboro", state: "TN", postalCode: "37130", occupancyType: "residential", jurisdictionId: "murfreesboro", notes: null, activeJobCount: 0, completedJobCount: 1, lastInspectionDate: null, openFindingCount: 0, openDefectCount: 0 };
-  const prop2 = { id: "prop-2", name: "Rental", addressLine1: "456 Oak Ave", addressLine2: null, city: "Smyrna", state: "TN", postalCode: "37167", occupancyType: "residential", jurisdictionId: "rutherford", notes: null, activeJobCount: 0, completedJobCount: 1, lastInspectionDate: null, openFindingCount: 0, openDefectCount: 0 };
-
   const job1 = {
     visitId: "visit-1", propertyId: "prop-1", propertyLabel: "Main House — 123 Main St", status: "completed", archived: true,
     jobType: "Panel upgrade", purpose: null, mode: "remodel", visitDate: "2026-09-01T12:00:00.000Z",
     scheduledStart: null, scheduledEnd: null, costs: zeroCosts(), purchaseOrders: [], receipts: [], documents: [], latestEstimate: null,
   };
-  const job2 = {
-    visitId: "visit-2", propertyId: "prop-2", propertyLabel: "Rental — 456 Oak Ave", status: "completed", archived: true,
-    jobType: null, purpose: "Consultation", mode: "service_diagnostic", visitDate: "2026-09-25T12:00:00.000Z",
-    scheduledStart: null, scheduledEnd: null, costs: zeroCosts(), purchaseOrders: [], receipts: [], documents: [], latestEstimate: null,
-  };
 
-  it("with no jobs on the account, the upload control is greyed with the reason shown on screen, not hidden", async () => {
+  it("carries none of the four sections, and says on the Addresses card where they went", async () => {
+    const base = accountSummaryWithJobs({ properties: [prop1], jobs: [job1] });
     mockAccountReadsFor(
-      accountSummaryWithJobs({ properties: [prop1], jobs: [] }),
+      {
+        ...base,
+        // Signed documents and findings are still in the payload — the page just no longer lists them.
+        documents: [{ id: "doc-1", type: "estimate_customer", audience: "customer", estimateNumber: "E-1", isChangeOrder: false, invoiceNumber: null, estimateId: "est-1", draftId: null, customerEmail: "jane@example.com", signedByName: "Jane", signedAt: "2026-09-02T12:00:00.000Z", createdAt: "2026-09-02T12:00:00.000Z", propertyId: "prop-1" }],
+        findings: [],
+      } as unknown as AccountSummary,
       {},
     );
 
     renderAccountPage();
 
-    const section = await screen.findByRole("heading", { name: "Photos" });
-    const card = section.closest("section")!;
-    expect(within(card).getByText("No jobs on this account yet — create a job before adding photos.")).toBeInTheDocument();
-    // The control is disabled, not removed — a person can see why, right next to it.
-    expect(within(card).getByLabelText("+ Add photos")).toBeDisabled();
-  });
-
-  it("with exactly one job, upload doesn't make him choose — it says which job it is", async () => {
-    mockAccountReadsFor(
-      accountSummaryWithJobs({ properties: [prop1], jobs: [job1] }),
-      { "prop-1": { jobPhotos: [], assessmentPhotos: [] } },
-    );
-
-    renderAccountPage();
-
-    const section = await screen.findByRole("heading", { name: "Photos" });
-    const card = section.closest("section")!;
-    expect(within(card).getByText(/Adding to: Panel upgrade — Main House — 123 Main St/)).toBeInTheDocument();
-    expect(within(card).queryByLabelText("Which job are these photos for?")).not.toBeInTheDocument();
-    expect(within(card).getByLabelText("+ Add photos")).not.toBeDisabled();
-  });
-
-  it("with more than one job, prompts a job selection, and shows one gallery spanning both jobs/properties", async () => {
-    mockAccountReadsFor(
-      accountSummaryWithJobs({ properties: [prop1, prop2], jobs: [job1, job2] }),
-      {
-        "prop-1": { jobPhotos: [{ id: "photo-1", mimeType: "image/jpeg", sizeBytes: 100, caption: "Old panel", tag: null, uploadedAt: "2026-09-01T12:05:00.000Z", visitId: "visit-1", visitDate: "2026-09-01T12:00:00.000Z", purpose: null, jobType: "Panel upgrade" }], assessmentPhotos: [] },
-        "prop-2": { jobPhotos: [{ id: "photo-2", mimeType: "image/jpeg", sizeBytes: 100, caption: null, tag: null, uploadedAt: "2026-09-25T09:05:00.000Z", visitId: "visit-2", visitDate: "2026-09-25T09:00:00.000Z", purpose: "Consultation", jobType: null }], assessmentPhotos: [] },
-      } as unknown as Record<string, PropertyPhotos>,
-    );
-
-    renderAccountPage();
-
-    const section = await screen.findByRole("heading", { name: "Photos" });
-    const card = section.closest("section")!;
-
-    // Prompts a job selection — a select listing both jobs, newest first.
-    const select = within(card).getByLabelText("Which job are these photos for?") as HTMLSelectElement;
-    const optionLabels = Array.from(select.options).map((o) => o.textContent);
-    expect(optionLabels[0]).toBe("Which job are these photos for?");
-    expect(optionLabels[1]).toMatch(/^Consultation — Rental — 456 Oak Ave/); // visit-2 is newer
-    expect(optionLabels[2]).toMatch(/^Panel upgrade — Main House — 123 Main St/);
-
-    // Upload is disabled until a job is chosen.
-    expect(within(card).getByLabelText("+ Add photos")).toBeDisabled();
-
-    // One gallery, both jobs' photos, each labelled with its own job/address — no per-job
-    // accordion to click through. Scoped to the figure captions, not the job-picker <option>s,
-    // which share the same job label text.
-    await waitFor(() => expect(within(card).getByText(/Old panel/)).toBeInTheDocument());
-    const captions = card.querySelectorAll("figcaption");
-    expect(captions.length).toBe(2);
-    expect(captions[0]).toHaveTextContent(/Consultation — Rental — 456 Oak Ave/); // newest first
-    expect(captions[1]).toHaveTextContent(/Panel upgrade — Main House — 123 Main St/);
-  });
-
-  it("uploads through the existing visit-photo endpoint once a job is chosen", async () => {
-    mockAccountReadsFor(
-      accountSummaryWithJobs({ properties: [prop1, prop2], jobs: [job1, job2] }),
-      { "prop-1": { jobPhotos: [], assessmentPhotos: [] }, "prop-2": { jobPhotos: [], assessmentPhotos: [] } },
-    );
-    const upload = vi.spyOn(api, "uploadVisitPhoto").mockResolvedValue({
-      id: "photo-new", mimeType: "image/jpeg", sizeBytes: 100, caption: null, tag: null, uploadedAt: "2026-10-01T00:00:00.000Z",
-    });
-
-    renderAccountPage();
-
-    const section = await screen.findByRole("heading", { name: "Photos" });
-    const card = section.closest("section")!;
-    const select = within(card).getByLabelText("Which job are these photos for?");
-    fireEvent.change(select, { target: { value: "visit-2" } });
-
-    const fileInput = within(card).getByLabelText("+ Add photos");
-    const file = new File(["fake"], "panel.jpg", { type: "image/jpeg" });
-    fireEvent.change(fileInput, { target: { files: [file] } });
-
-    await waitFor(() =>
-      expect(upload).toHaveBeenCalledWith("visit-2", { dataUrl: "data:image/jpeg;base64,ZmFrZQ==", tag: null }),
-    );
+    // Wait for the page (the Addresses card), then assert absence.
+    await screen.findByText("Estimates, invoices, findings and photos are on each property — Open Property");
+    expect(screen.getByRole("link", { name: "Open Property" })).toHaveAttribute("href", "/properties/prop-1");
+    expect(screen.queryByRole("heading", { name: "Photos" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^Estimates/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Invoices" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Finding ledger")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Email the signed copy/ })).not.toBeInTheDocument();
+    // The estimates list is not even fetched here any more.
+    expect(api.accountEstimates).not.toHaveBeenCalled();
+    expect(api.propertyPhotos).not.toHaveBeenCalled();
   });
 });
 

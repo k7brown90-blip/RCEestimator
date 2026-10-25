@@ -2214,6 +2214,8 @@ export type EmailLastDelivery = {
   status: EmailDeliveryStatus;
   statusAt: string | null;
   to: string;
+  /** Extra recipients on the same message (2026-10-24). Absent on rows from before the CC build. */
+  cc?: string[];
   error: string | null;
   createdAt: string;
 };

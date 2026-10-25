@@ -14,7 +14,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { EmailDeliveryRow } from "../lib/types";
-import { SendToPicker } from "./SendToPicker";
+import { CcChips, SendToPicker } from "./SendToPicker";
 
 const STATUS_TONE: Record<string, string> = {
   sent: "text-rce-muted",
@@ -47,6 +47,9 @@ export function SendEmailPanel({
   const [open, setOpen] = useState(false);
   const [to, setTo] = useState<string | null>(null);
   const [customTo, setCustomTo] = useState(primaryEmail ?? "");
+  // CC (Kyle, 2026-10-24: "The email will be the same as doing a CC email.") - on every record.
+  const [cc, setCc] = useState<string[]>([]);
+  const [ccTyped, setCcTyped] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
@@ -57,21 +60,30 @@ export function SendEmailPanel({
     queryFn: () => api.emailDeliveries(threadKey),
   });
 
+  const addTypedCc = () => {
+    const a = ccTyped.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a)) return;
+    if (!cc.some((c) => c.toLowerCase() === a.toLowerCase())) setCc([...cc, a]);
+    setCcTyped("");
+  };
+
   const send = useMutation({
     mutationFn: () => api.sendRecordEmail({
       target,
       id,
       to: accountIdForContacts ? to : (customTo.trim() || null),
+      ...(cc.length > 0 ? { cc } : {}),
       subject: subject.trim(),
       body: body.trim(),
     }),
     onSuccess: (result) => {
       setSubject("");
       setBody("");
+      const everyone = result.cc && result.cc.length > 0 ? `${result.to}, cc ${result.cc.join(", ")}` : result.to;
       setNotice(
         result.suppressed
-          ? `Sent to ${result.to}. Note: this address unsubscribed from marketing email — this was a direct reply, not a campaign send.`
-          : `Sent to ${result.to}.`,
+          ? `Sent to ${everyone}. Note: this address unsubscribed from marketing email — this was a direct reply, not a campaign send.`
+          : `Sent to ${everyone}.`,
       );
       void queryClient.invalidateQueries({ queryKey: ["email-deliveries", target, id] });
     },
@@ -95,16 +107,43 @@ export function SendEmailPanel({
             To
             <div className="mt-1">
               {accountIdForContacts ? (
-                <SendToPicker accountId={accountIdForContacts} primaryEmail={primaryEmail} onChange={setTo} />
+                <SendToPicker accountId={accountIdForContacts} primaryEmail={primaryEmail} onChange={setTo} onCcChange={setCc} />
               ) : (
-                <input
-                  className="field text-xs"
-                  type="email"
-                  placeholder="name@example.com"
-                  value={customTo}
-                  onChange={(e) => setCustomTo(e.target.value)}
-                  required
-                />
+                <>
+                  <input
+                    className="field text-xs"
+                    type="email"
+                    placeholder="name@example.com"
+                    value={customTo}
+                    onChange={(e) => setCustomTo(e.target.value)}
+                    required
+                  />
+                  {/* A lead has no account, so there is no contact list to pick CCs from or save to. */}
+                  <div className="mt-1 flex flex-wrap items-center gap-1">
+                    <input
+                      className="field text-xs"
+                      type="email"
+                      placeholder="CC: name@example.com"
+                      aria-label="CC address"
+                      value={ccTyped}
+                      onChange={(e) => setCcTyped(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTypedCc(); } }}
+                    />
+                    <button type="button" className="btn btn-secondary text-xs" disabled={!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ccTyped.trim())} onClick={addTypedCc}>
+                      Add CC
+                    </button>
+                    <CcChips cc={cc} onRemove={(a) => setCc(cc.filter((c) => c !== a))} />
+                    <button
+                      type="button"
+                      className="text-xs text-rce-muted underline opacity-60"
+                      disabled
+                      title="Leads have no account to save contacts to"
+                    >
+                      Save as contact
+                    </button>
+                    <span className="text-xs text-rce-muted">Leads have no account to save contacts to</span>
+                  </div>
+                </>
               )}
             </div>
           </label>
@@ -138,7 +177,7 @@ export function SendEmailPanel({
                   <span className={STATUS_TONE[d.status] ?? "text-rce-muted"}>{d.status}</span>
                 </div>
                 <div className="text-rce-muted">
-                  to {d.to} · {new Date(d.createdAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                  to {d.to}{d.cc && d.cc.length > 0 ? ` · cc ${d.cc.join(", ")}` : ""} · {new Date(d.createdAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
                 </div>
                 {d.error && <div className="text-red-700">{d.error}</div>}
               </li>

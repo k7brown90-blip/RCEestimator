@@ -48,6 +48,7 @@
 import type { PrismaClient } from "@prisma/client";
 import fs from "node:fs";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
+import { ccSchema, cleanCc, withCcText } from "./emailCc";
 import { generateGeneratorReport, generateHealthReport } from "./pdfGenerator";
 import { logSystemEvent } from "./systemEvents";
 // The invoice send renders the customer's PDF itself rather than reading a stored file — same
@@ -70,7 +71,7 @@ import { z } from "zod";
 import { MAX_ESTIMATE_PHOTOS } from "../../shared/estimatePhotos";
 import { PHOTO_OUTSIDE_JOB_REFUSAL, photoIdsOutsideJob } from "./estimatePhotos";
 
-export type SendResult = { ok: true; to: string } | { ok: false; reason: string };
+export type SendResult = { ok: true; to: string; cc: string[] } | { ok: false; reason: string };
 
 /**
  * Job photos chosen by the operator to ride an estimate or invoice email (photo gallery, Kyle
@@ -197,7 +198,7 @@ export function estimateLink(token: string): string {
 export async function sendInvoiceEmail(
   prisma: PrismaClient,
   estimateId: string,
-  opts: { sentBy: string; toOverride?: string | null; message?: string | null; photoIds?: string[] }
+  opts: { sentBy: string; toOverride?: string | null; cc?: string[]; message?: string | null; photoIds?: string[] }
 ): Promise<SendResult> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
@@ -220,6 +221,10 @@ export async function sendInvoiceEmail(
         "supply an address when sending.",
     };
   }
+
+  const ccChecked = cleanCc(opts.cc, to);
+  if (!ccChecked.ok) return { ok: false, reason: ccChecked.reason };
+  const cc = ccChecked.cc;
 
   const profile = await getCompanyProfile();
   /*
@@ -406,6 +411,7 @@ export async function sendInvoiceEmail(
   const invoiceNumber = summary.number;
   const sent = await sendBrandedEmail({
     to,
+    ...(cc.length > 0 ? { cc } : {}),
     subject: `Your invoice from Red Cedar Electric — ${invoiceNumber}`,
     headline: isChangeOrder || invoiceAppendix ? "Your updated invoice" : "Your invoice",
     bodyHtml,
@@ -438,11 +444,11 @@ export async function sendInvoiceEmail(
       estimateId: est.id,
       type: "invoice_sent",
       actor: opts.sentBy,
-      detail: `Invoice emailed to ${to} (rev ${est.revision}, ${`$${billed.toFixed(2)}`})`,
+      detail: `Invoice emailed to ${withCcText(to, cc)} (rev ${est.revision}, ${`$${billed.toFixed(2)}`})`,
     },
   });
 
-  logSystemEvent("info", "issued-estimate", `Invoice ${est.number} emailed to ${to}`, {
+  logSystemEvent("info", "issued-estimate", `Invoice ${est.number} emailed to ${withCcText(to, cc)}`, {
     estimateId: est.id,
     sentBy: opts.sentBy,
   });
@@ -451,7 +457,7 @@ export async function sendInvoiceEmail(
   await clearBounceIfDifferentAddress(prisma, est.id, to).catch((err) => {
     console.warn("[IssuedEstimate] bounce flag not cleared:", err);
   });
-  return { ok: true, to };
+  return { ok: true, to, cc };
 }
 
 /**
@@ -507,6 +513,8 @@ export async function sendEstimateEmail(
   opts: {
     sentBy: string;
     toOverride?: string | null;
+    /** Extra visible recipients (2026-10-24). Validated, lower-cased and de-duplicated by cleanCc. */
+    cc?: string[];
     message?: string | null;
     photoIds?: string[];
     /**
@@ -568,6 +576,10 @@ export async function sendEstimateEmail(
         "supply an address when sending.",
     };
   }
+
+  const ccChecked = cleanCc(opts.cc, to);
+  if (!ccChecked.ok) return { ok: false, reason: ccChecked.reason };
+  const cc = ccChecked.cc;
 
   const link = estimateLink(est.token);
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
@@ -641,6 +653,7 @@ export async function sendEstimateEmail(
   const allAttachments = [...docAttachments, ...photos.attachments];
   const sent = await sendBrandedEmail({
     to,
+    ...(cc.length > 0 ? { cc } : {}),
     subject: `Your estimate from Red Cedar Electric — ${est.number}`,
     headline: "Your estimate is ready",
     bodyHtml,
@@ -675,12 +688,12 @@ export async function sendEstimateEmail(
         estimateId: est.id,
         type: "sent",
         actor: opts.sentBy,
-        detail: `Emailed to ${to} (rev ${est.revision})`,
+        detail: `Emailed to ${withCcText(to, cc)} (rev ${est.revision})`,
       },
     });
   });
 
-  logSystemEvent("info", "issued-estimate", `Estimate ${est.number} emailed to ${to}`, {
+  logSystemEvent("info", "issued-estimate", `Estimate ${est.number} emailed to ${withCcText(to, cc)}`, {
     estimateId: est.id,
     revision: est.revision,
     sentBy: opts.sentBy,
@@ -692,7 +705,7 @@ export async function sendEstimateEmail(
     console.warn("[IssuedEstimate] bounce flag not cleared:", err);
   });
 
-  return { ok: true, to };
+  return { ok: true, to, cc };
 }
 
 /**
@@ -708,6 +721,9 @@ export async function sendEstimateEmail(
  */
 export const estimateEmailBodySchema = z.object({
   to: z.string().trim().email().nullable().optional(),
+  // CC (Kyle, 2026-10-24: "The email will be the same as doing a CC email."). Optional; the field
+  // app does not send it. cleanCc re-checks each address, lower-cases, de-dupes and drops the To.
+  cc: ccSchema,
   message: z.string().trim().max(2000).nullable().optional(),
   // The photo rule lives in photoAttachments (security-reviewed 2026-10-01): an id that is not on
   // THIS customer's account is refused there, whichever door sent it. The field door adds the
@@ -742,6 +758,7 @@ export async function sendEstimateEmailFromBody(
   return sendEstimateEmail(prisma, estimateId, {
     sentBy,
     toOverride: body.to ?? null,
+    cc: body.cc,
     message: body.message ?? null,
     photoIds: body.photoIds,
     photoVisitIds: scope.photoVisitIds,

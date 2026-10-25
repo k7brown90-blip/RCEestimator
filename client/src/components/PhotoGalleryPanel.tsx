@@ -335,121 +335,6 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
 }
 
 /**
- * Read-only photo browser for an address: job photos across visits plus Health
- * Record assessment shots. Uploading and tagging stay on the visit page's
- * gallery, where the job context lives; each photo links back through its
- * visit.
- *
- * Originally built for the ACCOUNT page (Kyle, 2026-08-29: "I don't see where
- * to find the photos, I need to be able to access them"), superseded there by
- * `AccountPhotoGallery` (2026-10-01, which also uploads). Reused as-is on the
- * PROPERTY page's health record (plan item C, 2026-10-02: "Property photos
- * will also show up here as each photo will be assigned to a particular
- * property and consultation/diagnostics") — this page is read-only, so the
- * upload-capable version would be the wrong fit here.
- */
-export function PropertyPhotoSection(props: { propertyId: string; propertyLabel: string; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(props.defaultOpen ?? false);
-  // Zoomable viewer (Kyle, 2026-08-31) — nameplates are unreadable at thumbnail size.
-  const [lightbox, setLightbox] = useState<{ path: string; alt: string; caption?: string | null } | null>(null);
-  const { data: photos } = useQuery({
-    ...propertyPhotosQuery(props.propertyId),
-    enabled: open,
-  });
-  const jobPhotos = photos?.jobPhotos ?? [];
-  const assessmentPhotos = photos?.assessmentPhotos ?? [];
-  const total = jobPhotos.length + assessmentPhotos.length;
-
-  return (
-    <div className="rounded-lg border border-rce-border/70 p-3">
-      <button
-        type="button"
-        className="flex w-full items-center justify-between text-left"
-        onClick={() => setOpen((s) => !s)}
-      >
-        <span className="text-sm font-medium">{props.propertyLabel}</span>
-        <span className="text-xs text-rce-accent">
-          {open ? "Hide photos" : `View photos${total > 0 ? ` (${total})` : ""}`}
-        </span>
-      </button>
-      {open && (
-        <div className="mt-3 space-y-4">
-          {jobPhotos.length === 0 && assessmentPhotos.length === 0 && (
-            <p className="text-sm text-rce-soft">No photos at this address yet.</p>
-          )}
-          {jobPhotos.length > 0 && (
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-rce-soft">Job photos</h4>
-              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-                {jobPhotos.map((p) => (
-                  <figure key={p.id}>
-                    <AuthedPhoto
-                      path={`/health-record-admin/visit-photos/${p.id}`}
-                      alt={p.caption ?? "job photo"}
-                      className="h-24 w-full cursor-zoom-in rounded object-cover"
-                      onClick={() =>
-                        setLightbox({
-                          path: `/health-record-admin/visit-photos/${p.id}`,
-                          alt: p.caption ?? "job photo",
-                          caption: p.caption,
-                        })
-                      }
-                    />
-                    <figcaption className="mt-0.5 text-[10px] text-rce-soft">
-                      {/* Which job the photo came from (Kyle, 2026-10-02: "each photo must show
-                          which consultation or diagnostic it came from") — purpose is the visit's
-                          reason (e.g. "Consultation — estimate visit"); jobType, when set, is more
-                          specific and wins. */}
-                      {p.jobType || p.purpose || "Job"} · {new Date(p.visitDate).toLocaleDateString()} · {tagLabel(p.tag)}
-                      {p.caption ? ` · ${p.caption}` : ""}
-                    </figcaption>
-                  </figure>
-                ))}
-              </div>
-            </div>
-          )}
-          {assessmentPhotos.length > 0 && (
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-rce-soft">
-                Electrical assessment photos
-              </h4>
-              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-                {assessmentPhotos.map((p) => (
-                  <figure key={p.id}>
-                    <AuthedPhoto
-                      path={`/health-record-admin/inspection-photos/${p.id}`}
-                      alt="assessment photo"
-                      className="h-24 w-full cursor-zoom-in rounded object-cover"
-                      onClick={() =>
-                        setLightbox({
-                          path: `/health-record-admin/inspection-photos/${p.id}`,
-                          alt: "assessment photo",
-                        })
-                      }
-                    />
-                    <figcaption className="mt-0.5 text-[10px] text-rce-soft">
-                      {new Date(p.inspectionDate).toLocaleDateString()} · Health Record
-                    </figcaption>
-                  </figure>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-      {lightbox && (
-        <PhotoLightbox
-          path={lightbox.path}
-          alt={lightbox.alt}
-          caption={lightbox.caption}
-          onClose={() => setLightbox(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-/**
  * ONE photo gallery for the whole account (Kyle, 2026-10-01: "I should be able
  * to upload photos on this screen here" / "the attached photos should prompt a
  * job selection but can all be viewed from a single place. I dont want to
@@ -477,6 +362,13 @@ export function PropertyPhotoSection(props: { propertyId: string; propertyLabel:
  * still on the consultation. `defaultVisitId` preselects the job the draft was
  * created from, when it has one. One upload path, not two.
  *
+ * ALSO THE PROPERTY PAGE'S PHOTOS (Kyle, 2026-10-24: "Photos should be organized per property
+ * too."). The Property page renders THIS component given ONE property and only that property's
+ * jobs, with `scope="property"` for the wording — so "+ Add photos" asks which of THIS address's
+ * jobs, and × removes, exactly as the account page did before the photos moved. It replaces the
+ * read-only `PropertyPhotoSection` that page used to carry (that component is gone; the Kyle
+ * 2026-10-01 upload ruling now lives on the property).
+ *
  * Every photo added here can be removed here (standing rule, Kyle 2026-09-18:
  * "nothing should be added that cannot be adjusted, edited, deleted"). The ×
  * on a job photo is the same `deleteVisitPhoto` the visit gallery uses, behind
@@ -488,7 +380,10 @@ export function AccountPhotoGallery(props: {
   jobs: AccountJob[];
   /** The job to preselect for uploads — the consultation an estimate draft came from. */
   defaultVisitId?: string | null;
+  /** "property" words the heading text for the Property page; the default is the account page's. */
+  scope?: "account" | "property";
 }) {
+  const isProperty = props.scope === "property";
   const queryClient = useQueryClient();
   const [uploadVisitId, setUploadVisitId] = useState(props.defaultVisitId ?? "");
   const [busy, setBusy] = useState(false);
@@ -586,7 +481,9 @@ export function AccountPhotoGallery(props: {
         <div>
           <h2 className="text-lg font-semibold">Photos</h2>
           <p className="text-sm text-rce-muted">
-            Every photo on record across this account's jobs and addresses, newest first.
+            {isProperty
+              ? "Every photo on record at this address — job photos and electrical assessment shots — newest first."
+              : "Every photo on record across this account's jobs and addresses, newest first."}
           </p>
         </div>
         <div className="flex flex-col items-end gap-1.5">
@@ -621,7 +518,9 @@ export function AccountPhotoGallery(props: {
           </div>
           {sortedJobs.length === 0 && (
             <p className="text-xs text-rce-soft">
-              No jobs on this account yet — create a job before adding photos.
+              {isProperty
+                ? "No jobs at this address yet — schedule a consultation or open a job here before adding photos."
+                : "No jobs on this account yet — create a job before adding photos."}
             </p>
           )}
           {onlyJob && (
@@ -632,7 +531,7 @@ export function AccountPhotoGallery(props: {
       {err && <p className="mt-2 text-xs text-rce-danger">{err}</p>}
 
       {combined.length === 0 ? (
-        <p className="mt-4 text-sm text-rce-soft">No photos on this account yet.</p>
+        <p className="mt-4 text-sm text-rce-soft">{isProperty ? "No photos at this address yet." : "No photos on this account yet."}</p>
       ) : (
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           {combined.map((photo) => (

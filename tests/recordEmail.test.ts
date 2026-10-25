@@ -99,7 +99,7 @@ describe("POST /communications/email", () => {
       .send({ target: "lead", id: leadId, subject: "Checking in", body: "Just following up." })
       .expect(200);
 
-    expect(res.body).toEqual({ sent: true, to: `lead@${DOMAIN}`, suppressed: false });
+    expect(res.body).toEqual({ sent: true, to: `lead@${DOMAIN}`, cc: [], suppressed: false });
 
     const rows = await prisma.emailDelivery.findMany({ where: { leadId } });
     expect(rows).toHaveLength(1);
@@ -140,7 +140,7 @@ describe("POST /communications/email", () => {
       .send({ target: "lead", id: leadId, to, subject: "Following up", body: "About your estimate." })
       .expect(200);
 
-    expect(res.body).toEqual({ sent: true, to, suppressed: true });
+    expect(res.body).toEqual({ sent: true, to, cc: [], suppressed: true });
     expect(fetchMock).toHaveBeenCalled();
   });
 

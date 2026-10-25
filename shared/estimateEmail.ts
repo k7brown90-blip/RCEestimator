@@ -22,6 +22,8 @@
 export interface EstimateEmailChoices {
   /** Send to this address instead of the one on the account. Blank means the account's address. */
   to: string;
+  /** Extra recipients on the same message (CRM only so far; Kyle, 2026-10-24). Absent = none. */
+  cc?: string[];
   /** A sentence or two added above the link. Blank means none. */
   message: string;
   /** Job photos ticked to ride along (ids). Nothing is attached unless ticked. */
@@ -52,6 +54,8 @@ export const ESTIMATE_EMAIL_DEFAULTS: EstimateEmailChoices = {
 /** The request body for the estimate-email routes (CRM `/issued-estimates/:id/send`, field `/health-record/issued-estimates/:id/email`). */
 export interface EstimateEmailRequest {
   to?: string | null;
+  /** CC addresses on the same message. Omitted when empty; the field app never sends it. */
+  cc?: string[];
   message?: string | null;
   photoIds?: string[];
   attachHealthReport?: boolean;
@@ -69,6 +73,7 @@ export function estimateEmailRequest(choices: Partial<EstimateEmailChoices> = {}
   const c: EstimateEmailChoices = { ...ESTIMATE_EMAIL_DEFAULTS, ...choices };
   return {
     to: c.to.trim() || undefined,
+    cc: c.cc && c.cc.length > 0 ? c.cc : undefined,
     message: c.message.trim() || undefined,
     photoIds: c.photoIds.length > 0 ? c.photoIds : undefined,
     attachHealthReport: c.attachHealthReport || undefined,

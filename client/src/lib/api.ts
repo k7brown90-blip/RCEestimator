@@ -791,8 +791,8 @@ export const api = {
    * The single free-form send (2026-09-20 communications build): "Follow ups can be done by
    * sending an email straight from the CRM." `to: null` uses the record's own primary email.
    */
-  sendRecordEmail: (input: { target: "lead" | "account" | "job"; id: string; to?: string | null; subject: string; body: string }) =>
-    request<{ sent: true; to: string; suppressed: boolean }>("/communications/email", {
+  sendRecordEmail: (input: { target: "lead" | "account" | "job"; id: string; to?: string | null; cc?: string[]; subject: string; body: string }) =>
+    request<{ sent: true; to: string; cc?: string[]; suppressed: boolean }>("/communications/email", {
       method: "POST",
       body: JSON.stringify(input),
     }),
@@ -1950,7 +1950,7 @@ export const api = {
   // The body is shared/estimateEmail.ts's EstimateEmailRequest - the field app sends the same one
   // to the same server function (Phase 4, 2026-10-08), built by estimateEmailRequest().
   pbIssuedSend: (id: string, input: EstimateEmailRequest) =>
-    request<{ sent: true; to: string }>(`/issued-estimates/${id}/send`, {
+    request<{ sent: true; to: string; cc?: string[] }>(`/issued-estimates/${id}/send`, {
       method: "POST",
       body: JSON.stringify(input),
     }),
@@ -2038,8 +2038,8 @@ export const api = {
    * Kyle: "I cannot email the invoice to the client." Distinct from pbSendEstimate — that one
    * refuses a signed estimate, this one refuses an unsigned one.
    */
-  sendInvoice: (estimateId: string, input: { toOverride?: string | null; message?: string | null; photoIds?: string[] } = {}) =>
-    request<{ sent: true; to: string }>(`/issued-estimates/${estimateId}/send-invoice`, {
+  sendInvoice: (estimateId: string, input: { toOverride?: string | null; cc?: string[]; message?: string | null; photoIds?: string[] } = {}) =>
+    request<{ sent: true; to: string; cc?: string[] }>(`/issued-estimates/${estimateId}/send-invoice`, {
       method: "POST",
       body: JSON.stringify(input),
     }),

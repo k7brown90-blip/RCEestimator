@@ -56,6 +56,7 @@ emailDeliveriesRouter.get("/email-deliveries", asyncHandler(async (req, res) => 
     provider: r.provider,
     providerMessageId: r.providerMessageId,
     to: r.to,
+    cc: r.cc,
     subject: r.subject,
     kind: r.kind,
     estimateNumber: r.estimateNumber,

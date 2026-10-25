@@ -158,6 +158,7 @@ import {
   EXCLUDE_TEST_JOB,
 } from "./services/accountSpine";
 import { sendEstimateEmailFromBody, sendInvoiceEmail, estimateLink, publicBaseUrl } from "./services/issuedEstimateSend";
+import { ccSchema } from "./services/emailCc";
 // Transactional email delivery tracking (Kyle, 2026-09-09: "very few are actually getting through").
 import { lastDeliveriesForEstimates } from "./services/transactionalEmail";
 import { handleResendWebhook } from "./services/resendWebhook";
@@ -2959,7 +2960,7 @@ app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
     res.status(400).json({ sent: false, error: result.reason });
     return;
   }
-  res.json({ sent: true, to: result.to });
+  res.json({ sent: true, to: result.to, cc: result.cc });
 }));
 
 /*
@@ -2974,6 +2975,8 @@ app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
 app.post("/issued-estimates/:id/send-invoice", asyncHandler(async (req, res) => {
   const body = z.object({
     toOverride: z.string().trim().email().nullable().optional(),
+    // CC (2026-10-24) - see services/emailCc.ts.
+    cc: ccSchema,
     message: z.string().trim().max(2000).nullable().optional(),
     // Photo gallery (2026-08-28): before/after photos on the completed work.
     photoIds: z.array(z.string().min(1)).max(10).optional(),
@@ -2982,6 +2985,7 @@ app.post("/issued-estimates/:id/send-invoice", asyncHandler(async (req, res) => 
   const result = await sendInvoiceEmail(prisma, String(req.params.id), {
     sentBy: "human:crm-session",
     toOverride: body.toOverride ?? null,
+    cc: body.cc,
     message: body.message ?? null,
     photoIds: body.photoIds,
   });
@@ -2990,7 +2994,7 @@ app.post("/issued-estimates/:id/send-invoice", asyncHandler(async (req, res) => 
     res.status(400).json({ sent: false, error: result.reason });
     return;
   }
-  res.json({ sent: true, to: result.to });
+  res.json({ sent: true, to: result.to, cc: result.cc });
 }));
 
 /*

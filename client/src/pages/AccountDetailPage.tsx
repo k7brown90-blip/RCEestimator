@@ -5,17 +5,11 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { InspectionResultChip } from "../components/InspectionResultChip";
 import { ConversationNotes } from "../components/ConversationNotes";
 import { ReviewRequestPanel } from "../components/ReviewRequestPanel";
-import { FindingLedger } from "../components/FindingLedger";
 import { SendEmailPanel } from "../components/SendEmailPanel";
-import { SendToPicker } from "../components/SendToPicker";
-import { PaymentPanel } from "../components/PaymentPanel";
-import { AccountPhotoGallery, PhotoAttachPicker } from "../components/PhotoGalleryPanel";
 import { GeneratorDesigner } from "../components/GeneratorDesigner";
 import { LoadCalcEditor } from "../components/LoadCalcEditor";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
-import { BounceBadge } from "../components/BounceBadge";
-import { DeliveryChip } from "../components/DeliveryChip";
 import { api, openProtectedPdf } from "../lib/api";
 import { ADDRESS_QUERY_KEYS } from "../lib/queryKeys";
 import { cardFeesPendingNote, type AccountJob, type AccountSummary } from "../lib/types";
@@ -450,6 +444,11 @@ export function AccountDetailPage() {
               One account, any number of properties. Work is always recorded against a
               specific address.
             </p>
+            {/* Kyle, 2026-10-24: estimates, invoices, the finding ledger and photos moved to the
+                Property page — said here so a missing section reads as "moved", not "gone". */}
+            <p className="mt-1 text-xs font-medium text-rce-muted">
+              Estimates, invoices, findings and photos are on each property — Open Property
+            </p>
           </div>
           <button className="btn btn-secondary" onClick={() => setShowAddProperty((open) => !open)}>
             {showAddProperty ? "Cancel" : "+ Add Property"}
@@ -539,30 +538,7 @@ export function AccountDetailPage() {
         </div>
       </section>
 
-      <AccountEstimates accountId={account.id} properties={properties} />
-
       {/* ── Jobs ────────────────────────────────────────────────────────── */}
-      {/* ── Signed agreements (Kyle, 2026-08-20) ──────────────────────────────────────────
-          Both copies of every signed estimate. The customer's is what they agreed to; ours
-          carries the material to order and the hours to schedule against. Neither is a stored
-          file — each renders from the frozen estimate, so they still open after a deploy. */}
-      {summary.documents.length > 0 && (
-        <section className="card mb-5 p-4">
-          {/* Kyle, 2026-08-21: "The signed estimates need to be labeled invoices." Once signed
-              it is no longer an offer — it is what the customer owes, and the document says so
-              too. Same number either way, which is what keeps the chain auditable. */}
-          <h2 className="mb-1 text-lg font-semibold">Invoices</h2>
-          <p className="mb-3 text-xs text-rce-soft">
-            {summary.documents.length} document(s) on file — signed work.
-          </p>
-          <div className="space-y-2">
-            {summary.documents.map((d) => (
-              <InvoiceRow key={d.id} doc={d} accountId={account.id} properties={properties} />
-            ))}
-          </div>
-        </section>
-      )}
-
       <JobSection
         title="Current jobs"
         jobs={activeJobs}
@@ -577,229 +553,8 @@ export function AccountDetailPage() {
       )}
       <JobSection title="Past jobs & consultations" jobs={pastJobs} emptyText="No completed work yet." />
 
-      <FindingLedger
-        findings={summary.findings ?? []}
-        propertyLabels={Object.fromEntries(
-          properties.map((property) => [property.id, `${property.name} — ${property.addressLine1}`]),
-        )}
-      />
-
       <HealthInspectionHistory accountId={account.id} customerEmail={account.email} />
-
-      {/* ── Photos — one gallery for the whole account (Kyle, 2026-10-01: "I
-          should be able to upload photos on this screen here" / "the attached
-          photos should prompt a job selection but can all be viewed from a
-          single place. I dont want to click through different jobs to find a
-          photo I am looking for."). Upload asks which job; the per-job
-          gallery on the visit page is unaffected. ── */}
-      {properties.length > 0 && (
-        <AccountPhotoGallery
-          properties={properties.map((p) => ({ id: p.id, name: p.name, addressLine1: p.addressLine1, city: p.city }))}
-          jobs={jobs}
-        />
-      )}
     </div>
-  );
-}
-
-/**
- * Everything quoted for this account — the estimate half of Kyle's funnel, per address.
- *
- * Filterable by address because an account with three properties has three separate histories,
- * and "what have I quoted at this house" is the question being asked.
- */
-function AccountEstimates({
-  accountId,
-  properties,
-}: {
-  accountId: string;
-  properties: AccountSummary["properties"];
-}) {
-  const navigate = useNavigate();
-  const drawers = useDrawerParams();
-  const [addressId, setAddressId] = useState("");
-  /*
-    THE ROW SHOWS; THE DRAWER ACTS (2026-09-21, drawers plan Phase 6). Delete (unsigned — Kyle,
-    2026-08-22: "I need a way to delete the duplicates"), Void (signed, 2026-09-17 — cancels the
-    job, says what is left to refund and cancel by hand), Copy to new (Kyle, 2026-08-31) and
-    Resend to a chosen address (Kyle, 2026-08-25) all live in the estimate's drawer
-    (`EstimateDrawer`), which Open raises over this page. They used to be buttons on this row
-    too, shipped beside the drawer in build #2; Kyle chose the drawer. What stays on the row is
-    Kyle's 2026-08-20 pair — View (the company PDF) and Edit (a draft, in the builder) — and
-    "Start work" on this page, because quoting begins on the account (Kyle, 2026-08-18).
-  */
-  const { data } = useQuery({
-    queryKey: ["account-estimates", accountId, addressId],
-    queryFn: () => api.accountEstimates(accountId, addressId || undefined),
-  });
-  const rows = data?.estimates ?? [];
-
-  return (
-    <section className="card mb-5 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold">
-          Estimates <span className="text-sm font-normal text-rce-muted">({rows.length})</span>
-        </h2>
-        {properties.length > 1 && (
-          <select
-            className="field text-sm"
-            value={addressId}
-            onChange={(e) => setAddressId(e.target.value)}
-          >
-            <option value="">All addresses</option>
-            {properties.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.addressLine1}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      {rows.length === 0 && (
-        <p className="mt-3 text-sm text-rce-muted">
-          Nothing quoted{addressId ? " at this address" : ""} yet.
-        </p>
-      )}
-
-      {/*
-        ── VIEW AND EDIT, NOT ONE OR THE OTHER (Kyle, 2026-08-20) ────────────────────────────────
-
-        "Now we can add an edit button for estimates that are unfinished. There should be a view
-         button that does exactly what clicking on the estimate does now and an edit button that
-         loads this into the estimate builder to finalize and send to the customer."
-
-        View is the old behaviour, unchanged: the company PDF, because an issued estimate is a
-        record and the place to look at one is the page it prints as.
-
-        Edit reopens the DRAFT this was issued from, in the builder, on the review tab — where he
-        left off.
-
-        ── WHY THE ROW IS NO LONGER ITSELF A BUTTON ──────────────────────────────────────────────
-
-        It was, and a button inside a button is invalid HTML that browsers resolve by dropping one
-        of them. The row is a plain container now and View carries what the row used to do.
-
-        ── AND WHY EDIT ONLY APPEARS ON A DRAFT ──────────────────────────────────────────────────
-
-        Kyle said "unfinished", and draft is the only status that means it: nothing has gone to the
-        customer yet, so reopening the builder changes a document nobody has seen.
-
-        Once it is sent, viewed, or signed, the customer is holding a number. Editing the draft
-        underneath it would silently change what they were quoted, so those need a REVISION or a
-        change order — a different path with its own paper trail, which this button deliberately
-        does not pretend to be.
-      */}
-      <div className="mt-3 space-y-2">
-        {rows.map((e) => {
-          const unfinished = e.status === "draft";
-          return (
-            <div
-              key={e.id}
-              className="rounded-lg border border-rce-border/70 p-3"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="break-words font-medium">{e.title}</p>
-                  <p className="text-xs text-rce-soft">
-                    {e.number}
-                    {e.revision > 1 ? ` rev ${e.revision}` : ""} ·{" "}
-                    {/* The FROZEN text, not a live lookup — this is what the signed document says. */}
-                    {e.serviceAddress ?? "address missing"}
-                  </p>
-                  <p className="text-xs uppercase tracking-wide text-rce-muted">{e.status}</p>
-                {/* Archived (Kyle, 2026-10-01): put away, with the reason, wherever the row is shown. */}
-                {e.archivedAt && (
-                  <p className="text-xs font-semibold text-rce-soft">
-                    Archived {new Date(e.archivedAt).toLocaleDateString()}{e.archivedReason ? ` — ${e.archivedReason}` : ""}
-                  </p>
-                )}
-                {/* Kyle, 2026-09-09: "My emails are not getting to the clients" — when Gmail
-                    reported this estimate's email undeliverable, say so here, with the reason. */}
-                {(e.lastBounceAt || e.lastDelivery) && (
-                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                    {e.lastBounceAt && <BounceBadge at={e.lastBounceAt} reason={e.lastBounceReason} />}
-                    {/* The last email's delivery report (Kyle, 2026-09-09: Resend first, Gmail fallback). */}
-                    <DeliveryChip delivery={e.lastDelivery} />
-                  </div>
-                )}
-                {/*
-                  Kyle, 2026-08-22: "Is there any way to know if our emails have been read?"
-                  For an estimate the honest signal already exists — the customer either opened
-                  the page with the price on it or they did not — and it was recorded without
-                  being shown. Now it is shown. A view within ~2 minutes of the send is flagged:
-                  corporate mail scanners prefetch links, and that "view" is usually a machine.
-                */}
-                {e.sentAt && !e.signedAt && (
-                  e.firstViewedAt ? (
-                    <p className="text-xs font-semibold text-green-700">
-                      Viewed {new Date(e.firstViewedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
-                      {new Date(e.firstViewedAt).getTime() - new Date(e.sentAt).getTime() < 120_000
-                        ? " · seconds after sending — possibly a mail scanner"
-                        : ""}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-amber-800">
-                      Sent {new Date(e.sentAt).toLocaleDateString([], { month: "short", day: "numeric" })} — not opened yet
-                    </p>
-                  )
-                )}
-                </div>
-                {/* The billed figure once signed — the row and the document must agree (2026-08-22).
-                    With a home-warranty claim (2026-09-09) it is the homeowner share, and the
-                    warranty company's credit is shown beside it so the numbers read right. */}
-                <div className="shrink-0 text-right">
-                  <p className="font-semibold">${(e.billedTotal ?? e.total).toFixed(2)}</p>
-                  {/* A change order joins its invoice (Kyle, 2026-09-20) — say which one. */}
-                  {e.changeOrderForId && (
-                    <p className="text-[11px] text-rce-soft">change order{e.changeOrderForNumber ? ` → invoice ${e.changeOrderForNumber}` : ""}</p>
-                  )}
-                  {(e.warrantyCovered ?? 0) > 0 && (
-                    <p className="text-[11px] text-green-700">
-                      warranty ${(e.warrantyCovered ?? 0).toFixed(2)}
-                      {e.warranty ? ` · ${e.warranty.company} claim ${e.warranty.claimNumber}` : ""}
-                      {/* The receivable (Kyle, 2026-09-10): has the warranty company paid its share yet? */}
-                      {e.signedAt && (
-                        (e.warrantyPaid ?? 0) >= (e.warrantyCovered ?? 0) - 0.01
-                          ? <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-800">{e.warranty?.company ?? "warranty"} paid</span>
-                          : <span className="ml-1 rounded bg-amber-100 px-1 text-amber-900">{e.warranty?.company ?? "warranty"} unpaid{(e.warrantyPaid ?? 0) > 0 ? ` (${money(e.warrantyPaid ?? 0)} in)` : ""}</span>
-                      )}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-2 flex flex-wrap gap-2">
-                {/* The estimate's drawer (2026-09-20) — the same actions, over this page. */}
-                <OpenDrawerButton kind="estimate" id={e.id} onOpen={drawers.open} label="Open" className="btn btn-secondary flex-1 text-sm" />
-                <button
-                  type="button"
-                  onClick={() => void openProtectedPdf(`/issued-estimates/${e.id}/pdf?audience=company`)}
-                  className="btn btn-secondary flex-1 text-sm"
-                >
-                  View
-                </button>
-                {unfinished && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      navigate(
-                        `/estimate-intake?account=${encodeURIComponent(e.customerId)}` +
-                          `&address=${encodeURIComponent(e.serviceAddressId)}` +
-                          `&draft=${encodeURIComponent(e.draftId)}&tab=review`,
-                      )
-                    }
-                    className="btn btn-primary flex-1 text-sm"
-                  >
-                    Edit
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
   );
 }
 
@@ -1441,153 +1196,5 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
         })}
       </ul>
     </section>
-  );
-}
-
-
-/**
- * One filed invoice copy — open it, and if it is the customer's, send it.
- *
- * Kyle, 2026-08-21: *"All signed agreements are company copies. No customer copy available and I
- * cannot email the invoice to the client."*
- *
- * The send is offered on the CUSTOMER copy only. Both rows point at the same estimate, so a button
- * on each would be two buttons doing one thing — and the one that reads "our copy" is the last
- * place to put a control that emails a customer.
- */
-function InvoiceRow({ doc: d, accountId, properties }: {
-  doc: AccountSummary["documents"][number];
-  accountId: string;
-  /** Every address on the account (2026-10-01, item J) — threaded down so the photo picker
-   * below can attach any photo on the account, not just this document's own property. */
-  properties: AccountSummary["properties"];
-}) {
-  const [sent, setSent] = useState<string | null>(null);
-  // Which address (Kyle, 2026-08-25) — null lets the server default to primary.
-  const [toOverride, setToOverride] = useState<string | null>(null);
-  const [showPay, setShowPay] = useState(false);
-  // Photo gallery (2026-08-28): before/after photos ticked to ride the invoice.
-  const [photoIds, setPhotoIds] = useState<string[]>([]);
-  const [showPhotos, setShowPhotos] = useState(false);
-
-  const send = useMutation({
-    mutationFn: () => api.sendInvoice(d.estimateId as string, {
-      toOverride,
-      photoIds: photoIds.length > 0 ? photoIds : undefined,
-    }),
-    onSuccess: (r) => setSent(r.to),
-  });
-
-  const canSend = d.audience === "customer" && Boolean(d.estimateId);
-
-  return (
-    <div className="rounded-lg border border-rce-border/70 p-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          {/*
-            A CHANGE ORDER IS NOT A SECOND INVOICE (2026-09-29).
-
-            Signing files two copies of every document, root or change order, so a job with a
-            diagnostic and a resolutions change order shows FOUR rows here — and before this all
-            of them read "Invoice NNNN". Two customer copies, two "Email invoice" buttons, and
-            the same group totals behind each, because paymentSummary resolves to the root. Kyle
-            read that as having sent two invoices (the Hoover job, 2026-09-28).
-
-            Now the row says which it is and which invoice it belongs to.
-          */}
-          <p className="font-medium">
-            {d.estimateNumber
-              ? `${d.isChangeOrder ? "Change order" : "Invoice"} ${d.estimateNumber}`
-              : d.isChangeOrder ? "Change order" : "Invoice"}{" "}
-            <span className="text-xs font-normal text-rce-soft">
-              {d.audience === "company" ? "· our copy" : "· customer copy"}
-            </span>
-          </p>
-          {d.isChangeOrder && (
-            <p className="text-xs text-amber-800">
-              {d.invoiceNumber
-                ? `Part of invoice ${d.invoiceNumber} — the total, the balance and the pay link are that invoice's.`
-                : "A change order — its money belongs to the invoice it joined."}
-            </p>
-          )}
-          <p className="text-xs text-rce-soft">
-            {d.signedByName ? `Signed by ${d.signedByName}` : "Signed"}
-            {d.signedAt ? ` · ${new Date(d.signedAt).toLocaleDateString()}` : ""}
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => void openProtectedPdf(`/documents/${d.id}/pdf`)}
-          className="btn btn-secondary flex-1 text-sm"
-        >
-          Open PDF
-        </button>
-        {canSend && (
-          <>
-            <SendToPicker accountId={accountId} primaryEmail={d.customerEmail} onChange={setToOverride} />
-            <button
-              type="button"
-              onClick={() => send.mutate()}
-              disabled={send.isPending}
-              className="btn btn-primary flex-1 text-sm disabled:opacity-60"
-            >
-              {/*
-                Says what it sends (2026-09-29): the SIGNED COPY of this row's document, not the
-                whole invoice. The whole invoice goes out from "Email invoice NNNN — $X due" on
-                the payment panel ("Take payment…" below). The same two words as the invoice
-                drawer's button, because it is the same send — two names for one action is how
-                the wrong one got pressed after the Hoover job.
-              */}
-              {send.isPending ? "Sending…" : d.isChangeOrder ? "Email the signed change order" : "Email the signed copy"}
-            </button>
-          </>
-        )}
-      </div>
-
-      {/*
-        Photo gallery (2026-08-28): attach photos to the invoice email — per send, ticked by the
-        operator, never assumed. Gated on the ACCOUNT having an address at all (2026-10-01, item
-        J), not on this document's own `propertyId` — the picker now reaches every property on
-        the account, not just the one this document was filed at. Photos added while building
-        the estimate are job photos too (plan A, 2026-10-02), so that one source covers them.
-      */}
-      {canSend && properties.length > 0 && (
-        <div className="mt-2">
-          <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setShowPhotos((s) => !s)}>
-            {showPhotos ? "Hide photos" : `Attach photos…${photoIds.length ? ` (${photoIds.length})` : ""}`}
-          </button>
-          {showPhotos && (
-            <PhotoAttachPicker properties={properties} selected={photoIds} onChange={setPhotoIds} />
-          )}
-        </div>
-      )}
-
-      {sent && <p className="mt-2 text-xs text-green-700">Invoice emailed to {sent}.</p>}
-      {send.isError && (
-        <p className="mt-2 text-xs text-red-600">{(send.error as Error).message}</p>
-      )}
-
-      {/* Charge the card / record the check, right off the invoice (2026-08-25). */}
-      {canSend && (
-        <div className="mt-2">
-          <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={() => setShowPay((s) => !s)}>
-            {showPay ? "Hide payment" : "Take payment…"}
-          </button>
-          {showPay && d.estimateId && (
-            <div className="mt-2">
-              <PaymentPanel estimateId={d.estimateId} />
-            </div>
-          )}
-        </div>
-      )}
-      {canSend && !d.customerEmail && !sent && (
-        <p className="mt-2 text-xs text-rce-soft">
-          No email on this estimate — add one to the customer record first.
-        </p>
-      )}
-    </div>
   );
 }

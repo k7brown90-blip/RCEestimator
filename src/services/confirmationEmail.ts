@@ -283,6 +283,8 @@ export async function sendKyleNotificationEmail(subject: string, body: string): 
 
 export async function sendBrandedEmail(input: {
   to: string;
+  /** Extra visible recipients on the same message (2026-10-24 CC build). Optional; existing callers unchanged. */
+  cc?: string[];
   subject: string;
   headline: string;
   bodyHtml: string;
@@ -331,6 +333,7 @@ export async function sendBrandedEmail(input: {
   // "I connot email it either" — a failure with no reason is a failure you reproduce on a customer).
   const result = await sendCustomerEmail({
     to: input.to,
+    ...(input.cc && input.cc.length > 0 ? { cc: input.cc } : {}),
     subject: input.subject,
     html,
     text: htmlToPlainText(html),

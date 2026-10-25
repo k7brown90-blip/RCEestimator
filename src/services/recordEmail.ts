@@ -59,6 +59,8 @@ export type RecordEmailTarget =
 
 export interface SendRecordEmailInput {
   to: string;
+  /** Already cleaned by cleanCc (routes/communications.ts). */
+  cc?: string[];
   subject: string;
   body: string;
   target: RecordEmailTarget;
@@ -80,6 +82,7 @@ export async function sendRecordEmail(input: SendRecordEmailInput): Promise<Send
 
   const ok = await sendBrandedEmail({
     to,
+    ...(input.cc && input.cc.length > 0 ? { cc: input.cc } : {}),
     subject: input.subject,
     headline: input.subject,
     bodyHtml: bodyHtmlFrom(input.body),

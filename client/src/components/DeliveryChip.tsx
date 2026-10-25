@@ -28,10 +28,11 @@ export function DeliveryChip({ delivery }: { delivery?: EmailLastDelivery | null
   if (!delivery) return null;
   const d = delivery;
   const at = when(d.statusAt);
+  const who = d.cc && d.cc.length > 0 ? `${d.to} · cc ${d.cc.join(", ")}` : d.to;
 
   let label: string;
   let tone: string;
-  let title: string | undefined = `To ${d.to}`;
+  let title: string | undefined = `To ${who}`;
   switch (d.status) {
     case "delivered":
       label = `Delivered${at ? ` ${at}` : ""}`;
@@ -40,29 +41,29 @@ export function DeliveryChip({ delivery }: { delivery?: EmailLastDelivery | null
     case "delayed":
       label = `Delayed${at ? ` ${at}` : ""}`;
       tone = "bg-amber-100 text-amber-800";
-      title = `To ${d.to} — the receiver is deferring it; Resend keeps trying.`;
+      title = `To ${who} — the receiver is deferring it; Resend keeps trying.`;
       break;
     case "bounced":
       label = `Bounced${at ? ` ${at}` : ""}`;
       tone = "bg-red-100 text-red-800";
-      title = `To ${d.to}${d.error ? ` — ${d.error}` : ""}`;
+      title = `To ${who}${d.error ? ` — ${d.error}` : ""}`;
       break;
     case "complained":
       label = `Complained${at ? ` ${at}` : ""}`;
       tone = "bg-red-100 text-red-800";
-      title = `To ${d.to} — the recipient marked it as spam${d.error ? ` — ${d.error}` : ""}`;
+      title = `To ${who} — the recipient marked it as spam${d.error ? ` — ${d.error}` : ""}`;
       break;
     case "failed":
       label = "Not sent";
       tone = "bg-red-100 text-red-800";
-      title = `To ${d.to}${d.error ? ` — ${d.error}` : ""}`;
+      title = `To ${who}${d.error ? ` — ${d.error}` : ""}`;
       break;
     default:
       label = d.provider === "gmail" ? "Sent via Gmail" : "Sent, awaiting delivery report";
       tone = "bg-gray-100 text-gray-700";
       title = d.provider === "gmail"
-        ? `To ${d.to} — Gmail reports nothing back; a bounce would show within ten minutes.`
-        : `To ${d.to} — Resend accepted it; the delivered/bounced report usually lands within a minute.`;
+        ? `To ${who} — Gmail reports nothing back; a bounce would show within ten minutes.`
+        : `To ${who} — Resend accepted it; the delivered/bounced report usually lands within a minute.`;
   }
 
   return (

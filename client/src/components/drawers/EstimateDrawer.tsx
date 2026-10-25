@@ -195,9 +195,14 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
   // Resend to a chosen address (Kyle, 2026-08-25) — the same customer link goes out again.
   const [resending, setResending] = useState(false);
   const [to, setTo] = useState<string | null>(null);
+  // CC (Kyle, 2026-10-24): one email, the To above plus any number of CCs.
+  const [cc, setCc] = useState<string[]>([]);
   const resend = useMutation({
-    mutationFn: () => api.pbIssuedSend(id, { to }),
-    onSuccess: (r) => { setFollowUp(`Re-sent to ${r.to}.`); refresh(); },
+    mutationFn: () => api.pbIssuedSend(id, { to, ...(cc.length > 0 ? { cc } : {}) }),
+    onSuccess: (r) => {
+      setFollowUp(`Re-sent to ${r.to}${r.cc && r.cc.length > 0 ? `, cc ${r.cc.join(", ")}` : ""}.`);
+      refresh();
+    },
     onError: (err) => setFollowUp((err as Error).message),
   });
 
@@ -591,7 +596,7 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
 
           {resending && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-rce-border p-3">
-              <SendToPicker accountId={e.customerId} primaryEmail={e.customerEmail} onChange={setTo} />
+              <SendToPicker accountId={e.customerId} primaryEmail={e.customerEmail} onChange={setTo} onCcChange={setCc} />
               <button type="button" className="btn btn-primary text-xs" disabled={resend.isPending} onClick={() => resend.mutate()}>
                 {resend.isPending ? "Sending…" : "Resend"}
               </button>

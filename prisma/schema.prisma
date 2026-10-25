@@ -3727,6 +3727,10 @@ model EmailDelivery {
   /// The Resend email id; null for Gmail. Unique when present (NULLs are distinct in Postgres).
   providerMessageId String?         @unique
   to                String
+  /// Extra visible recipients on the same message (Kyle, 2026-10-24: "The email will be the same
+  /// as doing a CC email."). Lower-cased, de-duplicated, never contains `to`. Empty for every send
+  /// that predates the CC build and for any send with no CC.
+  cc                String[]        @default([])
   subject           String
   /// estimate | invoice | appointment | deposit | balance | receipt | health_record | document | campaign | communication | financing | review_request | other
   kind              String

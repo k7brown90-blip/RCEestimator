@@ -55,6 +55,10 @@ export interface EmailAttachment {
 
 export interface CustomerEmailInput {
   to: string;
+  /** Extra visible recipients on the same message (Kyle, 2026-10-24: "The email will be the same
+   *  as doing a CC email."). Callers pass them already validated, lower-cased, de-duplicated and
+   *  without the To address. Omitted/empty = no cc on the wire. */
+  cc?: string[];
   subject: string;
   html: string;
   /** The plain-text twin. Built by the caller (htmlToPlainText) so both pipes send the same pair. */
@@ -130,13 +134,17 @@ async function sendViaResend(input: CustomerEmailInput): Promise<string> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) throw new ResendError("RESEND_API_KEY is not set");
 
-  const bcc = bccSelfAddress(input.to);
+  const bccCandidate = bccSelfAddress(input.to);
+  const ccList = input.cc ?? [];
+  // Never bcc someone who is already a visible recipient on the message.
+  const bcc = bccCandidate && !ccList.some((c) => c.toLowerCase() === bccCandidate.toLowerCase()) ? bccCandidate : null;
   const tags = [{ name: "kind", value: tagValue(input.kind) }];
   if (input.estimateNumber) tags.push({ name: "estimate", value: tagValue(input.estimateNumber) });
 
   const body = {
     from: transactionalFrom(),
     to: [input.to],
+    ...(ccList.length > 0 ? { cc: ccList } : {}),
     reply_to: input.replyTo ?? transactionalReplyTo(),
     ...(bcc ? { bcc: [bcc] } : {}),
     subject: input.subject,
@@ -187,6 +195,7 @@ async function sendViaGmail(input: CustomerEmailInput): Promise<void> {
   await mail.transporter.sendMail({
     from: mail.from,
     to: input.to,
+    ...(input.cc && input.cc.length > 0 ? { cc: input.cc } : {}),
     replyTo: input.replyTo,
     subject: input.subject,
     html: input.html,
@@ -209,8 +218,10 @@ export async function sendCustomerEmail(
 ): Promise<SendCustomerEmailResult> {
   const prisma = opts.prisma ?? defaultPrisma;
   const to = input.to.trim();
+  const cc = input.cc ?? [];
   const base = {
     to,
+    cc,
     subject: input.subject,
     kind: input.kind,
     estimateNumber: input.estimateNumber ?? null,
@@ -238,7 +249,7 @@ export async function sendCustomerEmail(
 
   if (provider === "resend") {
     try {
-      const id = await sendViaResend({ ...input, to });
+      const id = await sendViaResend({ ...input, to, cc });
       const deliveryId = await record({ provider: "resend", providerMessageId: id, status: "sent" });
       console.log(`[TransactionalEmail] Resend accepted "${input.subject}" to ${to} (${id})`);
       return { ok: true, provider: "resend", id, deliveryId: deliveryId ?? "" };
@@ -265,7 +276,7 @@ export async function sendCustomerEmail(
 
   // Gmail — the preferred pipe when Resend is off, the fallback when it failed.
   try {
-    await sendViaGmail({ ...input, to });
+    await sendViaGmail({ ...input, to, cc });
     const deliveryId = await record({ provider: "gmail", status: "sent", error: resendError ? `Resend fallback: ${resendError}` : null });
     console.log(`[TransactionalEmail] Gmail sent "${input.subject}" to ${to}${resendError ? " (Resend fallback)" : ""}`);
     return { ok: true, provider: "gmail", id: null, deliveryId: deliveryId ?? "" };
@@ -299,6 +310,8 @@ export interface LastDelivery {
   status: DeliveryStatus;
   statusAt: Date | null;
   to: string;
+  /** Who else was on the message (2026-10-24 CC build). Empty when nobody. */
+  cc: string[];
   error: string | null;
   createdAt: Date;
 }
@@ -314,7 +327,7 @@ export async function lastDeliveriesForEstimates(
     where: { issuedEstimateId: { in: estimateIds } },
     orderBy: { createdAt: "desc" },
     distinct: ["issuedEstimateId"],
-    select: { issuedEstimateId: true, provider: true, status: true, statusAt: true, to: true, error: true, createdAt: true },
+    select: { issuedEstimateId: true, provider: true, status: true, statusAt: true, to: true, cc: true, error: true, createdAt: true },
   });
   for (const r of rows) {
     if (!r.issuedEstimateId) continue;
@@ -323,6 +336,7 @@ export async function lastDeliveriesForEstimates(
       status: r.status as DeliveryStatus,
       statusAt: r.statusAt,
       to: r.to,
+      cc: r.cc,
       error: r.error,
       createdAt: r.createdAt,
     });

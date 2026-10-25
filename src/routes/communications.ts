@@ -16,6 +16,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler } from "./agent-helpers";
 import { sendRecordEmail, type RecordEmailTarget } from "../services/recordEmail";
+import { ccSchema, cleanCc } from "../services/emailCc";
 
 export const communicationsRouter = express.Router();
 
@@ -25,6 +26,8 @@ const sendBody = z.object({
   target: z.enum(TARGETS),
   id: z.string().trim().min(1),
   to: z.string().trim().email().nullable().optional(),
+  // CC (Kyle, 2026-10-24: "The email will be the same as doing a CC email.")
+  cc: ccSchema,
   subject: z.string().trim().min(1).max(200),
   body: z.string().trim().min(1).max(10000),
 });
@@ -60,10 +63,14 @@ communicationsRouter.post("/communications/email", asyncHandler(async (req, res)
     return;
   }
 
-  const result = await sendRecordEmail({ to, subject: parsed.subject, body: parsed.body, target });
+  const ccChecked = cleanCc(parsed.cc, to);
+  if (!ccChecked.ok) { res.status(400).json({ error: ccChecked.reason }); return; }
+  const cc = ccChecked.cc;
+
+  const result = await sendRecordEmail({ to, cc, subject: parsed.subject, body: parsed.body, target });
   if (!result.ok) {
     res.status(502).json({ error: "The email could not be sent — see the delivery log (email-deliveries) for the reason.", suppressed: result.suppressed });
     return;
   }
-  res.json({ sent: true, to, suppressed: result.suppressed });
+  res.json({ sent: true, to, cc, suppressed: result.suppressed });
 }));

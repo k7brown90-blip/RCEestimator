@@ -5,7 +5,9 @@ import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
 import { InspectionResultChip } from "../components/InspectionResultChip";
-import { PropertyPhotoSection } from "../components/PhotoGalleryPanel";
+import { AccountPhotoGallery } from "../components/PhotoGalleryPanel";
+import { PropertyEstimates } from "../components/PropertyEstimates";
+import { InvoiceRow } from "../components/InvoiceRow";
 import { api, openProtectedPdf } from "../lib/api";
 import { money, shortDate } from "../lib/utils";
 
@@ -14,6 +16,20 @@ export function PropertyDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: property, isLoading } = useQuery({ queryKey: ["property", propertyId], queryFn: () => api.property(propertyId), enabled: Boolean(propertyId) });
+
+  // This property's invoices and jobs (Kyle, 2026-10-24: "I would like the invoices, and estimates to
+  // be organized on the property page not on the account page ... Photos should be organized per
+  // property too."). One read, the SAME account-summary query the account page and the estimate
+  // builder use: its `documents` carry a `propertyId` (filtered to this address below) and its
+  // `jobs` carry one too (this address's jobs are what the photo upload asks "which job?" over).
+  // Chosen over a `?propertyId=` filter on the summary because it costs no server change, and the
+  // two lists are both needed. NOT enabled until the property tells us its account.
+  const accountId = property?.customerId ?? "";
+  const { data: summary, isError: summaryError } = useQuery({
+    queryKey: ["account-summary", accountId],
+    queryFn: () => api.accountSummary(accountId),
+    enabled: Boolean(accountId),
+  });
 
   // The property's health record (Kyle, 2026-10-02, plan item C): every electrical assessment and
   // circuit diagnostic ever run at THIS address, across every visit — read-only here. Editing a
@@ -93,6 +109,10 @@ export function PropertyDetailPage() {
   if (isLoading || !property) {
     return <p className="text-sm text-rce-muted">Loading property...</p>;
   }
+
+  const thisProperty = { id: property.id, name: property.name, addressLine1: property.addressLine1, city: property.city };
+  const propertyDocuments = (summary?.documents ?? []).filter((d) => d.propertyId === property.id);
+  const propertyJobs = (summary?.jobs ?? []).filter((j) => j.propertyId === property.id);
 
   return (
     <div>
@@ -176,18 +196,38 @@ export function PropertyDetailPage() {
         {scheduleError && <p className="mt-2 text-xs text-red-600">{scheduleError}</p>}
       </section>
 
-      {/* "Previous Estimates" and "Sold Work" (Kyle, 2026-08-19) moved out of the now-untitled
-          top card (plan item C) but kept — each is the sole route from this page to its filtered
-          view (the account's estimates filtered to this address, and the Jobs page's open work
-          orders filtered to this address). */}
+      {/* "Sold Work" (Kyle, 2026-08-19) kept — the sole route from this page to the Jobs page's open
+          work orders filtered to this address. The old "Previous Estimates" button is gone
+          (Kyle, 2026-10-24): it linked to the account page with `?address=`, which that page never
+          read, and this property's estimates are now listed right below. */}
       <div className="mb-5 flex flex-col gap-2 sm:flex-row">
-        <Link className="btn btn-secondary flex-1" to={`/accounts/${property.customerId}?address=${property.id}`}>
-          Previous Estimates
-        </Link>
         <Link className="btn btn-secondary flex-1" to={`/jobs?address=${property.id}&open=1`}>
           Sold Work
         </Link>
       </div>
+
+      {/* ── Estimates and invoices at THIS address (Kyle, 2026-10-24) ─────────────────────────
+          They used to be on the account page; the account page is now the customer overview. */}
+      <PropertyEstimates accountId={property.customerId} propertyId={property.id} />
+
+      <section className="card mb-5 p-4">
+        <h2 className="mb-1 text-lg font-semibold">
+          Invoices <span className="text-sm font-normal text-rce-muted">({propertyDocuments.length})</span>
+        </h2>
+        <p className="mb-3 text-xs text-rce-soft">
+          Signed work at this address — our copy and the customer's copy of each.
+        </p>
+        {!summary && !summaryError && <p className="text-sm text-rce-muted">Loading invoices…</p>}
+        {summaryError && <p className="text-sm text-red-600">Could not load this address's invoices. Reload to try again.</p>}
+        {summary && propertyDocuments.length === 0 && (
+          <p className="text-sm text-rce-muted">No signed invoices at this address yet.</p>
+        )}
+        <div className="space-y-2">
+          {propertyDocuments.map((d) => (
+            <InvoiceRow key={d.id} doc={d} accountId={property.customerId} properties={[thisProperty]} />
+          ))}
+        </div>
+      </section>
 
       {/* ── This property's HEALTH RECORD (Kyle, 2026-10-02, plan item C) ─────────────────────
           "The system snapshot on this page is not being utilized and should be where this
@@ -301,11 +341,25 @@ export function PropertyDetailPage() {
           )}
         </div>
 
-        <div>
-          <h3 className="mb-2 text-sm font-semibold">Photos</h3>
-          <PropertyPhotoSection propertyId={property.id} propertyLabel={property.addressLine1} defaultOpen />
-        </div>
       </section>
+
+      {/* ── Photos at THIS address, with upload and remove (Kyle, 2026-10-24: "Photos should be
+          organized per property too"; Kyle 2026-10-01 upload ruling carried over from the account
+          page). The same gallery the account page had, given only this property and only this
+          property's jobs — "+ Add photos" asks which of THIS address's jobs. Waits for the jobs so
+          it never claims "no jobs" while they are still loading. */}
+      <div className="mb-5">
+        {summary ? (
+          <AccountPhotoGallery properties={[thisProperty]} jobs={propertyJobs} scope="property" />
+        ) : (
+          <section className="card mt-5 p-4">
+            <h2 className="text-lg font-semibold">Photos</h2>
+            <p className={`mt-2 text-sm ${summaryError ? "text-rce-danger" : "text-rce-soft"}`}>
+              {summaryError ? "Could not load this address's jobs and photos. Reload to try again." : "Loading this address's photos…"}
+            </p>
+          </section>
+        )}
+      </div>
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Visits and Estimates</h2>

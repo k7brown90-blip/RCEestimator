@@ -49,10 +49,16 @@ export function InvoiceDrawer({ id, onClose }: { id: string; onClose: () => void
   // address, with before/after photos ticked per send, never assumed.
   const [showSend, setShowSend] = useState(false);
   const [toOverride, setToOverride] = useState<string | null>(null);
+  // CC (Kyle, 2026-10-24): one email, the To above plus any number of CCs.
+  const [cc, setCc] = useState<string[]>([]);
   const [photoIds, setPhotoIds] = useState<string[]>([]);
   const send = useMutation({
-    mutationFn: () => api.sendInvoice(id, { toOverride, photoIds: photoIds.length > 0 ? photoIds : undefined }),
-    onSuccess: (r) => { setError2(null); setNotice(`Signed copy emailed to ${r.to}.`); onChange(); },
+    mutationFn: () => api.sendInvoice(id, { toOverride, ...(cc.length > 0 ? { cc } : {}), photoIds: photoIds.length > 0 ? photoIds : undefined }),
+    onSuccess: (r) => {
+      setError2(null);
+      setNotice(`Signed copy emailed to ${r.to}${r.cc && r.cc.length > 0 ? `, cc ${r.cc.join(", ")}` : ""}.`);
+      onChange();
+    },
     onError: (err) => { setNotice(null); setError2((err as Error).message); },
   });
 
@@ -146,7 +152,7 @@ export function InvoiceDrawer({ id, onClose }: { id: string; onClose: () => void
 
           {showSend && (
             <div className="space-y-2 rounded-lg border border-rce-border p-3">
-              <SendToPicker accountId={inv.customer.id} primaryEmail={inv.customerEmail} onChange={setToOverride} />
+              <SendToPicker accountId={inv.customer.id} primaryEmail={inv.customerEmail} onChange={setToOverride} onCcChange={setCc} />
               {/*
                 ANY PHOTO ON THE ACCOUNT (Kyle, 2026-10-01). Was scoped to `inv.propertyId`
                 alone — an account with two addresses could not send a photo from the other
