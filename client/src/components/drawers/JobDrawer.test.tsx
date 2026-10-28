@@ -45,6 +45,7 @@ const paymentInfo = {
   estimateId: "est-1", number: "EST-2026-0001", billedTotal: 4200, depositDue: 0, depositRequired: false,
   documents: [], depositPaid: 0, totalPaid: 0, balance: 4200, depositSatisfied: true, paidInFull: false,
   payUrl: "", depositPayUrl: "", stripeConfigured: false, payments: [],
+  email: { customerId: "acct-1", customerEmail: "jane@example.com", jobId: "visit-1", jobStatus: "contracted", reviewRequestedAt: null },
 } as unknown as PaymentInfo;
 
 describe("JobDrawer", () => {
@@ -139,6 +140,32 @@ describe("JobDrawer", () => {
     await waitFor(() => expect(api.sendRecordEmail).toHaveBeenCalledWith({
       target: "job", id: "visit-1", to: null, subject: "Your appointment", body: "See you Tuesday.",
     }));
+  });
+
+  /*
+    ONE EMAIL CONTROL on the job (Kyle, 2026-10-27: "one tool for one task"). A job with a signed
+    invoice carries the "Email the customer" panel in its payment card (Invoice · Financing link ·
+    Review request · Message...) and NO separate "Send email"; a job with no invoice yet has no
+    payment card and keeps the plain "Send email" - never both, never neither.
+  */
+  it("a job WITH an invoice shows exactly one email control, 'Email the customer', and no separate 'Send email'", async () => {
+    vi.spyOn(api, "visit").mockResolvedValue(visit("contracted"));
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paymentInfo);
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "accountContacts").mockResolvedValue([]);
+
+    renderWithProviders(<DrawerHost />, { route: "/jobs?job=visit-1" });
+    const dialog = await screen.findByRole("dialog", { name: "12 Main St" });
+
+    expect(await within(dialog).findAllByRole("button", { name: "Email the customer" })).toHaveLength(1);
+    expect(within(dialog).queryByRole("button", { name: "Send email" })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Email the customer" }));
+    // The kinds that apply to the invoice and the job: Invoice, Financing link, Review request, Message.
+    expect(await within(dialog).findByRole("radio", { name: /^Invoice EST-2026-0001/ })).toBeInTheDocument();
+    expect(within(dialog).getByRole("radio", { name: "Financing link" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("radio", { name: "Review request" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("radio", { name: "Message" })).toBeInTheDocument();
   });
 
   it("shows close-out on contracted work and opens a P.O. drawer from its P.O. row", async () => {

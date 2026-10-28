@@ -748,6 +748,23 @@ describe('the overlay never shows a number the office did not supply', () => {
     expect(mod.expectedForLine(line, { quantity: 3, note: 'x' })).toEqual({ quantity: 1, note: 'left wall' })
     expect(mod.expectedForLine(line, { option: 'B' })).toEqual({ option: 'A' })
   })
+
+  it('a waiting name edit is laid over the line, and its expected is the name as the screen showed it (Kyle, 2026-10-27)', () => {
+    const view = mod.overlayQuote(mirrorOf(serverQuote()), [
+      op(1, { kind: 'edit_line', lineId: 'line-1', patch: { customName: 'Panel - Jones garage' }, expected: { customName: null } }),
+    ], catalog)
+    expect(view.lines[0].customName).toBe('Panel - Jones garage')
+    expect(view.lines[1].customName ?? null).toBeNull()
+    const cleared = mod.overlayQuote(mirrorOf(serverQuote()), [
+      op(1, { kind: 'edit_line', lineId: 'line-1', patch: { customName: 'Panel - Jones garage' } }),
+      op(2, { kind: 'edit_line', lineId: 'line-1', patch: { customName: null }, expected: { customName: 'Panel - Jones garage' } }),
+    ], catalog)
+    expect(cleared.lines[0].customName).toBeNull()
+    // expected: the line as the screen shows it, a missing name reading as null.
+    const line = serverQuote().lines[0]
+    expect(mod.expectedForLine(line, { customName: 'x' })).toEqual({ customName: null })
+    expect(mod.expectedForLine({ ...line, customName: 'Panel - Jones garage' }, { customName: null })).toEqual({ customName: 'Panel - Jones garage' })
+  })
 })
 
 describe('the saved copy (quoteMirrors)', () => {

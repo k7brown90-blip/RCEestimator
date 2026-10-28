@@ -354,7 +354,7 @@ describe("the customer's link on a lost estimate", () => {
     const result = await sendEstimateEmail(prisma, est.id, { sentBy: "test" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/lost.*Reopen/i);
-    const viaRoute = await request(app).post(`/issued-estimates/${est.id}/send`).send({});
+    const viaRoute = await request(app).post("/customer-emails").send({ kind: "estimate", estimateId: est.id });
     expect(viaRoute.status).toBe(400);
     expect((await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: est.id } })).status).toBe("lost");
   });

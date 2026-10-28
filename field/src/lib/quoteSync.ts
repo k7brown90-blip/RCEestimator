@@ -1334,6 +1334,7 @@ export function overlayQuote(
         if (b.patch.option !== undefined) line.option = b.patch.option
         if (b.patch.note !== undefined) line.note = b.patch.note
         if (b.patch.location !== undefined) line.location = b.patch.location
+        if (b.patch.customName !== undefined) line.customName = b.patch.customName
         touchLine(line, op.opId)
         break
       }
@@ -1565,13 +1566,14 @@ export async function loadQuoteView(draftId: string): Promise<QuoteView> {
 }
 
 /** The `expected` for a line edit, read off the line as the screen shows it — the fields the patch changes. */
-export function expectedForLine(line: Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'location'>, patch: QuoteLinePatch): QuoteLinePatch {
+export function expectedForLine(line: Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'location'> & { customName?: string | null }, patch: QuoteLinePatch): QuoteLinePatch {
   const expected: QuoteLinePatch = {}
   if (patch.quantity !== undefined) expected.quantity = line.quantity
   if (patch.difficulty !== undefined) expected.difficulty = line.difficulty
   if (patch.option !== undefined) expected.option = line.option as EstimateOptionLetter
   if (patch.note !== undefined) expected.note = line.note
   if (patch.location !== undefined) expected.location = line.location
+  if (patch.customName !== undefined) expected.customName = line.customName ?? null
   return expected
 }
 

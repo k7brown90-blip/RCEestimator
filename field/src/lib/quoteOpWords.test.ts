@@ -23,6 +23,8 @@ describe('describeQuoteOp', () => {
     expect(describeQuoteOp(op({ kind: 'edit_line', lineId: 'line-1', patch: { quantity: 4, option: 'C', location: 'Garage', note: null } }), lookup))
       .toBe('Single-pole switch: quantity → 4, moved to Option C, location → Garage, note cleared')
     expect(describeQuoteOp(op({ kind: 'edit_line', lineId: 'line-1', patch: { difficulty: 'VERY_DIFFICULT' } }), lookup)).toBe('Single-pole switch: difficulty → Very difficult')
+    expect(describeQuoteOp(op({ kind: 'edit_line', lineId: 'line-1', patch: { customName: 'Hall switch - Smith' } }), lookup)).toBe('Single-pole switch: name on the estimate → Hall switch - Smith')
+    expect(describeQuoteOp(op({ kind: 'edit_line', lineId: 'line-1', patch: { customName: null } }), lookup)).toBe('Single-pole switch: price-book name back')
     expect(describeQuoteOp(op({ kind: 'remove_line', lineId: 'line-2' }), lookup)).toBe('Removed Duplex receptacle')
     expect(describeQuoteOp(op({ kind: 'add_option', option: 'D' }))).toBe('Added Option D')
     expect(describeQuoteOp(op({ kind: 'remove_option', option: 'D', expectedLines: 2 }))).toBe('Removed Option D')

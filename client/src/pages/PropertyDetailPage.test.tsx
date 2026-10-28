@@ -407,7 +407,9 @@ describe("PropertyDetailPage", () => {
       expect(await screen.findByText(/Invoice E-100/)).toBeInTheDocument();
       expect(screen.queryByText(/E-777/)).not.toBeInTheDocument();
       expect(screen.getByRole("heading", { name: /^Invoices/ })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Email the signed copy" })).toBeInTheDocument();
+      // 2026-10-27 (one email tool): the row's picker + "Email the signed copy" are the one "Email the customer" panel.
+      expect(screen.getByRole("button", { name: "Email the customer" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Email the signed copy" })).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Take payment…" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Open PDF" })).toBeInTheDocument();
     });

@@ -42,6 +42,8 @@ import { emailReason, presentDecision, presentFooter, signNowReason } from "../l
 import type { PbOption } from "../lib/types";
 import { defaultSelection, picksOne, selectionPrice, toggleSelection } from "../../../shared/quoteMoney";
 import { FinancingLine } from "../components/FinancingSheet";
+import { Modal } from "../components/Modal";
+import { SendEmailPanel } from "../components/SendEmailPanel";
 
 function money(v: number | null | undefined): string {
   if (v === null || v === undefined) return "—";
@@ -142,9 +144,19 @@ export function PresentationPage() {
     signNowReason(decision) ??
     (effectiveSelected.length === 0 && decision.kind !== "blocked" ? "Tick at least one option - there is nothing to sign yet." : null);
   const emailBlocked = emailReason(decision);
+  // "Email the customer" (Kyle, 2026-10-27, one email tool): the estimate is issued (or reused) first,
+  // then the ONE email panel opens on it - Estimate / Financing link / Message, to a chosen contact +
+  // CC. This is the account the panel reads its contacts and address from.
+  const [emailFor, setEmailFor] = useState<{ estimateId: string; number: string } | null>(null);
+  const accountId = account; // same key and call as Estimate Intake / the email panel: one /accounts/:id cache entry
+  const { data: emailAccount } = useQuery({
+    queryKey: ["account", accountId],
+    queryFn: () => api.account(accountId as string),
+    enabled: Boolean(accountId) && emailFor !== null,
+  });
 
   const issueThen = useMutation({
-    mutationFn: async (next: "send" | "sign") => {
+    mutationFn: async (next: "email" | "sign") => {
       if (decision.kind === "blocked") throw new Error(decision.reason);
       let estimateId: string;
       let number: string;
@@ -163,11 +175,7 @@ export function PresentationPage() {
         // The lifecycle on this screen is now stale — the next press must see the estimate exists.
         void queryClient.invalidateQueries({ queryKey: ["pb-compute", draftId] });
       }
-      if (next === "send") {
-        const sent = await api.pbIssuedSend(estimateId, {});
-        return { next, estimateId, number, to: sent.to, unpriced };
-      }
-      return { next, estimateId, number, to: null, unpriced };
+      return { next, estimateId, number, unpriced };
     },
     onMutate: (next) => {
       setBusy(next);
@@ -186,7 +194,7 @@ export function PresentationPage() {
       // The selection rides to the signing screen — on a one-or-the-other
       // estimate the server refuses anything but exactly one.
       if (r.next === "sign") navigate(`/sign-in-person/${r.estimateId}`, { state: { selectedOptions: effectiveSelected } });
-      else if (!r.unpriced?.length) setProblem([`Estimate ${r.number} sent to ${r.to}.`]);
+      else setEmailFor({ estimateId: r.estimateId, number: r.number });
     },
     onError: (err) => {
       setBusy(null);
@@ -317,11 +325,18 @@ export function PresentationPage() {
                 <li key={`${l.itemId}-${i}`} className="flex items-baseline justify-between gap-3 p-3">
                   <span className="min-w-0">
                     <span className="text-sm">{l.description}</span>
-                    <span className="ml-2 text-xs text-rce-soft">
-                      × {l.quantity}
-                      {/* Unit is company-only — absent from a customer line by construction. */}
-                      {audience === "company" && l.unit ? ` ${l.unit}` : ""}
-                    </span>
+                    {/* NO QUANTITY on the customer's view (Kyle, 2026-10-27: "I also want to get rid
+                        of the quantity showing on the estimates and invoices"). The count and the
+                        unit are company-only - absent from a customer line by construction - and
+                        a renamed line shows its price-book item beside the custom name so the
+                        office can still order the part. */}
+                    {audience === "company" && (
+                      <span className="ml-2 text-xs text-rce-soft">
+                        × {l.quantity}
+                        {l.unit ? ` ${l.unit}` : ""}
+                        {l.catalogName ? ` · price book: ${l.catalogName}` : ""}
+                      </span>
+                    )}
                   </span>
                   {/* Present only in the company view — absent from the customer's data entirely. */}
                   {/* Kyle's breakdown, 2026-08-20: what it COSTS us, what we CHARGE, the
@@ -449,9 +464,9 @@ export function PresentationPage() {
             className="btn btn-secondary flex-1"
             disabled={busy !== null || options.length === 0 || emailBlocked !== null}
             title={emailBlocked ?? undefined}
-            onClick={() => issueThen.mutate("send")}
+            onClick={() => issueThen.mutate("email")}
           >
-            {busy === "send" ? "Sending…" : "Email to customer"}
+            {busy === "email" ? "Preparing…" : "Email the customer"}
           </button>
           <button
             className="btn btn-primary flex-1"
@@ -467,6 +482,33 @@ export function PresentationPage() {
           {signBlocked && decision.kind !== "blocked" ? ` ${signBlocked}` : ""}
         </p>
       </div>
+
+      {/*
+        THE ONE EMAIL CONTROL on this screen (Kyle, 2026-10-27). Click path: "Email the customer"
+        (bottom bar; issues the estimate first if it is not recorded yet) -> Estimate / Financing
+        link / Message -> To and CC -> "Send estimate NNNN to …". Opens already expanded: the person
+        just pressed the button that asks for it.
+      */}
+      {emailFor && (
+        <Modal title={`Email estimate ${emailFor.number}`} subtitle="Choose what to send and who gets it" onClose={() => setEmailFor(null)}>
+          <SendEmailPanel
+            target="account"
+            id={account ?? ""}
+            primaryEmail={emailAccount?.email ?? null}
+            accountIdForContacts={account}
+            startOpen
+            record={{
+              estimateId: emailFor.estimateId,
+              number: emailFor.number,
+              kinds: [
+                { kind: "estimate", label: `Estimate ${emailFor.number}` },
+                { kind: "financing", label: "Financing link" },
+                ...(account ? [{ kind: "message" as const, label: "Message" }] : []),
+              ],
+            }}
+          />
+        </Modal>
+      )}
     </div>
   );
 }

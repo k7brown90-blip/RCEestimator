@@ -111,7 +111,8 @@ async function withMailSpy<T>(fn: (spy: MailSpy) => Promise<T>): Promise<T> {
   }
 }
 
-const crmFinancing = (id: string) => request(app).post(`/issued-estimates/${id}/email-financing`).send({});
+// 2026-10-27 (one email tool): the CRM door is POST /customer-emails { kind } - the old per-button routes are gone.
+const crmFinancing = (id: string) => request(app).post("/customer-emails").send({ kind: "financing", estimateId: id });
 const fieldFinancing = (id: string) => tech(request(app).post(`/health-record/issued-estimates/${id}/email-financing`)).send({});
 
 // ─── 1. Financing link before signing ────────────────────────────────────────
@@ -223,7 +224,7 @@ describe("the financing link before signing", () => {
 
 // ─── 2. The estimate email: one body, one service ────────────────────────────
 
-const crmSend = (id: string, body: Record<string, unknown>) => request(app).post(`/issued-estimates/${id}/send`).send(body);
+const crmSend = (id: string, body: Record<string, unknown>) => request(app).post("/customer-emails").send({ kind: "estimate", estimateId: id, ...body });
 const fieldSend = (id: string, body: Record<string, unknown>) =>
   tech(request(app).post(`/health-record/issued-estimates/${id}/email`)).send(body);
 

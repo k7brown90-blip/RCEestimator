@@ -410,7 +410,7 @@ describe("the deposit is optional, with a manual override", () => {
     // already never sent here (depositRequired: false) — this now proves the stronger claim the
     // ruling makes: NO customer email of any kind goes out on this signature, invoice included.
     expect(emailMock.sendBrandedEmail).not.toHaveBeenCalled();
-    const ask = await request(app).post(`/issued-estimates/${est.id}/email-deposit-request`);
+    const ask = await request(app).post("/customer-emails").send({ kind: "deposit", estimateId: est.id });
     expect(ask.status).toBe(400);
     expect(ask.body.error).toMatch(/no deposit is required/i);
     const dep = await chargeableAmount(prisma, est.token, "deposit");

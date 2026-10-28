@@ -85,9 +85,12 @@ export interface CustomerPreview {
 
 // ─── What the customer is shown (named fields only) ──────────────────────────
 
+// NO QUANTITY here, by construction (Kyle, 2026-10-27: "I also want to get rid of the quantity
+// showing on the estimates and invoices"). A field that is not in the object cannot be printed by a
+// later edit that forgets the rule. The line is its NAME: the custom one the tech or the office
+// worded for the job, else the price-book name.
 export interface CustomerLine {
   description: string
-  quantity: number
 }
 
 export interface CustomerOption {
@@ -120,7 +123,7 @@ export function customerOptions(quote: QuoteState): CustomerOption[] {
         price: selectionPrice(quote.money, [o.option])?.subtotal ?? null,
         lines: quote.lines
           .filter((l) => l.option === o.option && l.state !== 'PROPOSED')
-          .map((l) => ({ description: l.description, quantity: l.quantity })),
+          .map((l) => ({ description: l.customName?.trim() || l.description })),
       }
     })
 }
@@ -419,7 +422,6 @@ export function ShowCustomerScreen(props: {
                 {o.lines.map((l, i) => (
                   <li key={i} className="px-4 py-3 text-lg">
                     {l.description}
-                    {l.quantity !== 1 && <span className="ml-2 text-slate-600">× {l.quantity}</span>}
                   </li>
                 ))}
               </ul>

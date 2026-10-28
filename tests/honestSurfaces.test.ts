@@ -195,7 +195,8 @@ describe("the presentation screen puts the refusal where the tap happened", () =
       "utf8",
     );
     const msgAt = src.indexOf("{problem.length > 0 && (");
-    const buttonsAt = src.indexOf('Email to customer');
+    // 2026-10-27 (one email tool): the bar's "Email to customer" is "Email the customer" now.
+    const buttonsAt = src.indexOf(': "Email the customer"}'); // the button's own label, not a comment that names it
     expect(msgAt, "the refusal block was not found").toBeGreaterThan(0);
     expect(buttonsAt, "the send button was not found").toBeGreaterThan(0);
     expect(msgAt, "the refusal must render ABOVE the buttons").toBeLessThan(buttonsAt);

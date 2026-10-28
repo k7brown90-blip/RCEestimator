@@ -5,6 +5,12 @@
  * Unarchive (2026-10-01 — the options not chosen when another estimate was signed), and — once
  * signed — the door to its invoice and its job.
  *
+ * ONE EMAIL CONTROL (Kyle, 2026-10-27: "one tool for one task"). "Resend…" and "Email the financing
+ * link" are the "Email the customer" panel: Estimate / Financing link / Message, to a chosen
+ * contact + CC, the Health Record report / Generator sheet / financing-line tick-boxes and photos,
+ * one Send button naming both ("Send estimate 2026-1100 to …"). A kind that cannot go is greyed with
+ * its reason in the panel.
+ *
  * ── WHAT THIS DRAWER DOES NOT DO, ON PURPOSE (drawers plan, trap 6) ─────────────────────────
  * No Issue and no Revise. Issuing a draft that already has a live estimate silently becomes a
  * REVISION — same number, revision +1 — and the customer's existing link stops working (app.ts,
@@ -36,7 +42,7 @@ import { isPastValidity } from "../../../../shared/estimateExpiry";
 import { BounceBadge } from "../BounceBadge";
 import { DeliveryChip } from "../DeliveryChip";
 import { Drawer } from "../Drawer";
-import { SendToPicker } from "../SendToPicker";
+import { SendEmailPanel } from "../SendEmailPanel";
 import { RaiseChangeOrderButton } from "../RaiseChangeOrderButton";
 import { OpenDrawerButton } from "./OpenDrawerButton";
 import { COPY_REFUSED_CHANGE_ORDER } from "../../../../shared/draftLifecycle";
@@ -192,29 +198,6 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
     onError: (err) => setFollowUp((err as Error).message),
   });
 
-  // Resend to a chosen address (Kyle, 2026-08-25) — the same customer link goes out again.
-  const [resending, setResending] = useState(false);
-  const [to, setTo] = useState<string | null>(null);
-  // CC (Kyle, 2026-10-24): one email, the To above plus any number of CCs.
-  const [cc, setCc] = useState<string[]>([]);
-  const resend = useMutation({
-    mutationFn: () => api.pbIssuedSend(id, { to, ...(cc.length > 0 ? { cc } : {}) }),
-    onSuccess: (r) => {
-      setFollowUp(`Re-sent to ${r.to}${r.cc && r.cc.length > 0 ? `, cc ${r.cc.join(", ")}` : ""}.`);
-      refresh();
-    },
-    onError: (err) => setFollowUp((err as Error).message),
-  });
-
-  // The financing link on its own, sendable BEFORE signing (Kyle, 2026-10-08). The same server
-  // function as the builder's "Email the financing link", the payment panel's and the phone's.
-  const [financingSentTo, setFinancingSentTo] = useState<string | null>(null);
-  const sendFinancing = useMutation({
-    mutationFn: () => api.emailFinancing(id),
-    onSuccess: (r) => { setFinancingSentTo(r.to); setFollowUp(`Financing link emailed to ${r.to}.`); refresh(); },
-    onError: (err) => setFollowUp((err as Error).message),
-  });
-
   const unfinished = e?.status === "draft";
   const lost = e?.status === "lost";
   // Archived (2026-10-01) is orthogonal to status: the row is still sent / viewed / expired, just
@@ -242,7 +225,14 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
     : e.status === "void" ? "This estimate is void."
     : lost ? "Marked lost - reopen it first, then send the financing link."
     : e.supersededBy ? `Replaced by rev ${e.supersededBy.revision} - send the financing link from that one.`
-    : !e.customerEmail ? "No customer email on file - add one to the account first."
+    : null;
+  // The estimate email's refusals, in words on the screen (the server refuses the same ones).
+  const estimateBlock: string | null = !e ? null
+    : e.signedAt ? "Already signed - the invoice is emailed from Invoice & payment, not as an estimate."
+    : e.status === "void" ? "This estimate is void."
+    : lost ? "Marked lost - reopen it first, then send it again."
+    : e.supersededBy ? `Replaced by rev ${e.supersededBy.revision} - send that one instead.`
+    : archived ? "Archived - unarchive it first, then send it."
     : null;
   const canAccept = e ? !e.signedAt && e.status !== "void" : false;
   const acceptSubmitReady = Boolean(acceptedVia) && acceptedBy.trim().length > 0
@@ -394,27 +384,6 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                 target={{ estimateId: e.id, status: e.status, signed: Boolean(e.signedAt) }}
               />
             )}
-            {e.sentAt && !e.signedAt && live && !archived && (
-              <button type="button" className="btn btn-secondary text-sm" onClick={() => setResending((s) => !s)}>
-                {resending ? "Hide resend" : "Resend…"}
-              </button>
-            )}
-            {/*
-              The financing link, on its own, BEFORE signing (Kyle, 2026-10-08: "the financing link
-              should be able to be sent before signing"). On every estimate, greyed WITH the
-              reason when the server would refuse (void, lost, replaced, no email) - never hidden.
-              No credit terms in the email: a link and an invitation to apply.
-            */}
-            <button
-              type="button"
-              className="btn btn-secondary text-sm"
-              disabled={sendFinancing.isPending || financingBlock !== null}
-              title={financingBlock ?? "Emails the Synchrony financing link and an invitation to apply - no rates, terms or approval odds stated"}
-              onClick={() => sendFinancing.mutate()}
-            >
-              {sendFinancing.isPending ? "Sending…" : financingSentTo ? "Send the financing link again" : "Email the financing link"}
-            </button>
-            {financingBlock && <p className="w-full text-[11px] text-rce-soft">{financingBlock}</p>}
             {!e.signedAt && (
               <button
                 type="button"
@@ -594,14 +563,27 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
             </form>
           )}
 
-          {resending && (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-rce-border p-3">
-              <SendToPicker accountId={e.customerId} primaryEmail={e.customerEmail} onChange={setTo} onCcChange={setCc} />
-              <button type="button" className="btn btn-primary text-xs" disabled={resend.isPending} onClick={() => resend.mutate()}>
-                {resend.isPending ? "Sending…" : "Resend"}
-              </button>
-            </div>
-          )}
+          {/*
+            THE ONE EMAIL CONTROL (Kyle, 2026-10-27). Click path from the Dashboard: Estimates -> the
+            estimate -> "Email the customer" -> Estimate / Financing link / Message -> To and CC ->
+            "Send estimate NNNN to …".
+          */}
+          <SendEmailPanel
+            target="account"
+            id={e.customerId}
+            primaryEmail={e.customerEmail}
+            accountIdForContacts={e.customerId}
+            record={{
+              estimateId: e.id,
+              number: e.number,
+              kinds: [
+                { kind: "estimate", label: `Estimate ${e.number}${e.sentAt ? " (send it again)" : ""}`, blocked: estimateBlock },
+                { kind: "financing", label: "Financing link", blocked: financingBlock },
+                { kind: "message", label: "Message" },
+              ],
+              onSent: refresh,
+            }}
+          />
 
           {followUp && <p className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-900">{followUp}</p>}
 

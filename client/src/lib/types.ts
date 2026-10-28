@@ -1855,7 +1855,13 @@ export interface PbDraft {
 export interface PbLine {
   id: string;
   itemId: string;
+  /** The PRICE-BOOK name (never the custom one - that is `customName`). */
   description: string | null;
+  /**
+   * The name the customer reads for this line when it has been worded for the job (Kyle,
+   * 2026-10-27); null = the price-book name. Set and cleared by PATCH /price-book/lines/:id.
+   */
+  customName?: string | null;
   /** The option the line is in, from the draft itself (confirmed lines; the Review board groups by it). */
   option?: PbOption;
   quantity: number;
@@ -1911,6 +1917,8 @@ export interface PbComputedLine {
   id?: string;
   itemId: string;
   description: string | null;
+  /** The line's own customer-facing name, or null for the price-book `description` (2026-10-27). */
+  customName?: string | null;
   quantity: number;
   quantitySource: PbQuantitySource;
   difficulty: PbDifficulty;

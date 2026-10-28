@@ -4,14 +4,14 @@ import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
-import { AccountPhotoGallery, PhotoAttachPicker } from "../components/PhotoGalleryPanel";
+import { AccountPhotoGallery } from "../components/PhotoGalleryPanel";
+import { SendEmailPanel } from "../components/SendEmailPanel";
 import { WarrantyCoveragePanel } from "../components/WarrantyCoveragePanel";
 import { RaiseChangeOrderButton } from "../components/RaiseChangeOrderButton";
 import { FinancingLine } from "../components/FinancingSheet";
 import { cheapestSelection } from "../../../shared/financingDisplay";
 import { picksOne, selectionPrice, type QuoteMoney } from "../../../shared/quoteMoney";
 import { acceptanceWording, isOfficeAcceptance } from "../../../shared/acceptance";
-import { ESTIMATE_EMAIL_DEFAULTS, estimateEmailExtras, estimateEmailRequest } from "../../../shared/estimateEmail";
 import {
   BASE_OPTIONS,
   OPTION_HINTS,
@@ -1573,6 +1573,7 @@ function ConfirmedLinesBoard(props: {
                           onChanged={onChanged}
                           onHand={truckOnHand?.[line.itemId]}
                           optionLetters={letters}
+                          lockedReason={optionSet.lockedReason ?? null}
                         />
                       </SortableLine>
                     );
@@ -1659,8 +1660,8 @@ function SortableLine(props: { id: string; locked: boolean; lockedReason: string
  * rather than swallowed: a button that silently does nothing is the defect this whole screen has
  * been paying for.
  */
-function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | undefined; isChangeOrder: boolean; onChanged: () => void; onHand?: OnHand; optionLetters: PbOption[] }) {
-  const { line: l, computed: c, isChangeOrder, onChanged, onHand, optionLetters } = props;
+function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | undefined; isChangeOrder: boolean; onChanged: () => void; onHand?: OnHand; optionLetters: PbOption[]; lockedReason?: string | null }) {
+  const { line: l, computed: c, isChangeOrder, onChanged, onHand, optionLetters, lockedReason = null } = props;
   // On-hand on the default truck beside a material line (Kyle, 2026-09-09, Build 4).
   // Read-only: "on truck: 190 ft", and "short 60 ft" when the line needs more than
   // the truck holds. Only lines that carry material. Not a PO prompt — Kyle,
@@ -1675,10 +1676,18 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
   const [option, setOption] = useState<PbOption>(c?.option ?? "A");
   const [location, setLocation] = useState(l.location ?? "");
   const [note, setNote] = useState(l.note ?? "");
+  // The name the customer reads for this line (Kyle, 2026-10-27: "I want to be able to edit the
+  // name of the line item so I can customize the line item name to the specific job."). The box
+  // opens on what the line is called now - the price-book name until it is reworded. Typing the
+  // price-book name back, or emptying the box, is "no custom name": the server stores null.
+  const catalogName = l.description ?? "";
+  const [name, setName] = useState(l.customName ?? catalogName);
   const [err, setErr] = useState<string | null>(null);
 
   const hourly = (l.unit ?? "").trim().toLowerCase() === "hr";
   const qtyProblem = quantityProblem(qty, isChangeOrder, hourly ? "the hours" : "a quantity");
+  const typedName = name.trim();
+  const wantedName = typedName === "" || typedName === catalogName ? null : typedName;
 
   const save = useMutation({
     mutationFn: () =>
@@ -1689,9 +1698,23 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
         option,
         location: location.trim() || null,
         note: note.trim() || null,
+        // Sent only when the name actually changed, so saving a quantity never rewrites the name.
+        ...(wantedName !== (l.customName ?? null) ? { customName: wantedName } : {}),
       }),
     onSuccess: () => {
       setEditing(false);
+      setErr(null);
+      onChanged();
+    },
+    onError: (e) => setErr((e as Error).message),
+  });
+
+  // "Use the price-book name": the exit from a custom name. Acts at once - it is its own save, so
+  // it works whatever else in the form is half-typed - and never touches the other fields.
+  const clearName = useMutation({
+    mutationFn: () => api.pbEditLine(l.id, { customName: null }),
+    onSuccess: () => {
+      setName(catalogName);
       setErr(null);
       onChanged();
     },
@@ -1715,7 +1738,13 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
               {l.unit ? ` ${l.unit}` : ""}
             </span>
           </div>
-          <div className="text-xs text-rce-muted line-clamp-2">{l.description}</div>
+          {/* Where the line shows a name, it shows the custom one when there is one (Kyle,
+              2026-10-27) - with the price-book item beside it so the office still knows what to
+              order. */}
+          <div className="text-xs text-rce-muted line-clamp-2">{l.customName || l.description}</div>
+          {l.customName && l.description && (
+            <div className="text-xs text-rce-soft">price book: {l.description}</div>
+          )}
           <div className="text-xs text-rce-soft">
             {/* Quantity is just a number (Kyle, 2026-10-08) — how it was counted is no longer shown
                 or asked. An hourly line says so, because its number is hours, not a count. */}
@@ -1785,6 +1814,32 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
               </button>
             ))}
           </div>
+          {/* The customer reads this name on the estimate, the invoice and the PDF - without the
+              quantity (Kyle, 2026-10-27). A signed estimate is changed by a change order, so the
+              box is greyed with the server's own reason. */}
+          <label className="block text-xs">
+            Name on the estimate
+            <input
+              className="field mt-1 w-full"
+              value={name}
+              maxLength={200}
+              disabled={Boolean(lockedReason)}
+              title={lockedReason ?? undefined}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={Boolean(lockedReason) || !l.customName || clearName.isPending}
+              title={lockedReason ?? (l.customName ? undefined : "This line already uses the price-book name.")}
+              onClick={() => clearName.mutate()}
+            >
+              {clearName.isPending ? "Putting it back…" : "Use the price-book name"}
+            </button>
+            {lockedReason && <span className="text-xs text-amber-800">{lockedReason}</span>}
+          </div>
           <label className="block text-xs">
             Location
             <input className="field mt-1 w-full" value={location} onChange={(e) => setLocation(e.target.value)} />
@@ -1817,6 +1872,7 @@ function ConfirmedLineRow(props: { line: PbLine; computed: PbComputedLine | unde
                 setDifficulty(l.difficulty);
                 setLocation(l.location ?? "");
                 setNote(l.note ?? "");
+                setName(l.customName ?? catalogName);
               }}
             >
               Cancel
@@ -2382,18 +2438,6 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   // job" for a change order, so signing it does not schedule a second visit.
   const [depositRequired, setDepositRequired] = useState(!isChangeOrder);
   const [addToCurrentJob, setAddToCurrentJob] = useState(true);
-  const [sendTo, setSendTo] = useState("");
-  const [sendMsg, setSendMsg] = useState("");
-  // Photo gallery (2026-08-28): job photos ticked to ride the estimate email.
-  const [sendPhotoIds, setSendPhotoIds] = useState<string[]>([]);
-  // Support documentation (Kyle, 2026-08-29): the assessment report and the
-  // generator sizing sheet, rendered fresh at send time.
-  const [attachHealthReport, setAttachHealthReport] = useState(ESTIMATE_EMAIL_DEFAULTS.attachHealthReport);
-  const [attachGeneratorReport, setAttachGeneratorReport] = useState(ESTIMATE_EMAIL_DEFAULTS.attachGeneratorReport);
-  // Ticked by default, unlike the two above (Kyle, 2026-10-02). The financing line has gone out
-  // on every estimate email since 2026-09-16 on his word; a box that started empty would have
-  // quietly stopped it. What he gains here is the ability to leave it OFF on one estimate.
-  const [includeFinancingLink, setIncludeFinancingLink] = useState(ESTIMATE_EMAIL_DEFAULTS.includeFinancingLink);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -2497,60 +2541,16 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
     },
   });
 
-  const send = useMutation({
-    mutationFn: () =>
-      // The body is built by shared/estimateEmail.ts - the field app's Email button builds the same
-      // one. includeFinancingLink goes only when switched OFF (absent means "send it").
-      api.pbIssuedSend(activeId as string, estimateEmailRequest({
-        to: sendTo,
-        message: sendMsg,
-        photoIds: sendPhotoIds,
-        attachHealthReport,
-        attachGeneratorReport,
-        includeFinancingLink,
-      })),
-    onSuccess: (r) => {
-      setNotice(`Sent to ${r.to}.`);
-      setReasons([]);
-      setSendMsg("");
-      refresh();
-    },
-    onError: (err) => {
-      setNotice(null);
-      setReasons([(err as Error).message]);
-    },
-  });
-
   /*
-    The financing link on its own, BEFORE signing (Kyle, 2026-10-08: "the financing link should be
-    able to be sent before signing"). The same server function the field's "Email the financing
-    link" and the payment panel call (services/financingEmail.ts); it refuses a void, lost or
-    superseded estimate and an account with no email, in words shown below. No credit terms in
-    the copy - the email is a link and an invitation to apply.
+    THE EMAIL IS THE ONE PANEL NOW (Kyle, 2026-10-27: "one tool for one task"). "Email estimate" (a
+    typed address box, a note, the two report tick-boxes, the financing-line tick-box, photos) and
+    "Email the financing link" were two buttons here; both are the "Email the customer" panel in the
+    Send to the customer card below - Estimate / Financing link / Message, to a chosen contact + CC,
+    one Send button that names both. The body it sends is still built by shared/estimateEmail.ts,
+    the same builder the field app uses (Kyle 2026-10-08: one estimating system).
   */
-  const [financingSentTo, setFinancingSentTo] = useState<string | null>(null);
-  // The server's refusal (superseded, not found, a send failure) shows UNDER the button that was
-  // pressed, not in the red block at the top of "Send to the customer" - that block is hundreds of
-  // pixels above this button and out of view when it is pressed (review finding, 2026-10-08).
-  const [financingError, setFinancingError] = useState<string | null>(null);
-  const sendFinancing = useMutation({
-    mutationFn: () => api.emailFinancing(activeId as string),
-    onMutate: () => setFinancingError(null),
-    onSuccess: (r) => {
-      setFinancingSentTo(r.to);
-      setNotice(`Financing link emailed to ${r.to}.`);
-      setReasons([]);
-      refresh();
-    },
-    onError: (err) => {
-      setNotice(null);
-      setFinancingError((err as Error).message);
-    },
-  });
-  // A new estimate in the panel (another revision, another draft) has not had its link sent yet.
-  useEffect(() => { setFinancingSentTo(null); setFinancingError(null); }, [activeId]);
 
-  /**
+    /**
    * Hand the device to the customer. No lock, no token swap — Kyle removed that on 2026-08-18.
    */
   const enterSigning = {
@@ -2591,9 +2591,6 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   });
 
   const est = detail?.estimate;
-  // Every address on the account (2026-10-01, item J) — the photo picker below attaches any
-  // photo on the account, not just this estimate's own serviceAddressId.
-  const accountProperties = detail?.accountProperties ?? [];
 
   // The terms after issue (2026-09-20) — editable from where the document is shown.
   const setTerms = useMutation({
@@ -2910,117 +2907,35 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
 
               <div className="pt-1">
                 <p className="mb-1 text-xs font-medium text-rce-soft">Or email it instead</p>
-                <input
-                  className="field w-full"
-                  placeholder={est.customerEmail ?? "Customer email"}
-                  value={sendTo}
-                  onChange={(e) => setSendTo(e.target.value)}
-                />
-                <input
-                  className="field mt-2 w-full"
-                  placeholder="Optional note to include in the email"
-                  value={sendMsg}
-                  onChange={(e) => setSendMsg(e.target.value)}
-                />
-                {/* Support documentation + photos (Kyle, 2026-08-29: "The
-                    email estimate should prompt and ask to attach any support
-                    documentation or photos"). Reports render fresh at send. */}
-                <div className="mt-2 space-y-1">
-                  <label className="flex items-center gap-2 text-xs text-rce-soft">
-                    <input
-                      type="checkbox"
-                      checked={attachHealthReport}
-                      onChange={(e) => setAttachHealthReport(e.target.checked)}
-                    />
-                    Attach Electrical Health Record report (latest assessment at this address)
-                  </label>
-                  <label className="flex items-center gap-2 text-xs text-rce-soft">
-                    <input
-                      type="checkbox"
-                      checked={attachGeneratorReport}
-                      onChange={(e) => setAttachGeneratorReport(e.target.checked)}
-                    />
-                    Attach Generator Sizing data sheet
-                  </label>
-                  <label className="flex items-center gap-2 text-xs text-rce-soft">
-                    <input
-                      type="checkbox"
-                      checked={includeFinancingLink}
-                      onChange={(e) => setIncludeFinancingLink(e.target.checked)}
-                    />
-                    Include the Synchrony financing link
-                  </label>
-                </div>
-                {/*
-                  Photo gallery (2026-08-28): assessment/job photos can ride the estimate email —
-                  ticked here, per send, never assumed.
-
-                  ANY PHOTO ON THE ACCOUNT (Kyle, 2026-10-01: "Having the photos linked to the
-                  job is necessary but that should not eleminate them from being selected… sending
-                  the photos as evidence is our standard"). This used to be gated on
-                  `serviceAddressId` alone (the `?address=` URL PARAMETER, while the rest of this
-                  panel is not) and only reached `VisitPhoto`s at that one address — an account
-                  with two properties could not send a photo from the other. `accountProperties`
-                  (every address on this estimate's account) comes from the issued estimate's own
-                  detail response, not from how the operator navigated here. Photos added while
-                  BUILDING the estimate are job photos too since plan A (2026-10-02), so this one
-                  source reaches them.
-                */}
-                <PhotoAttachPicker
-                  properties={accountProperties}
-                  selected={sendPhotoIds}
-                  onChange={setSendPhotoIds}
-                />
-                <button
-                  className="btn btn-secondary mt-2 w-full"
-                  disabled={send.isPending}
-                  onClick={() => {
-                    const to = sendTo.trim() || est.customerEmail || "";
-                    if (!to) {
-                      setReasons(["No customer email address. Type one above, or add it to the account."]);
-                      return;
-                    }
-                    const extras = estimateEmailExtras({ photoIds: sendPhotoIds, attachHealthReport, attachGeneratorReport });
-                    // The financing link is normally ON, so the confirm calls out its ABSENCE —
-                    // listing it every time would be noise, but dropping it silently would mean
-                    // Kyle only finds out by reading the sent email.
-                    const without = includeFinancingLink ? "" : " (no financing link)";
-                    if (window.confirm(`Email estimate ${est.number} to ${to}${extras ? ` with ${extras}` : ""}${without}?`)) send.mutate();
+                {/* Click path: this estimate -> "Email the customer" -> Estimate / Financing link / Message -> To and CC -> "Send estimate NNNN to …". */}
+                <SendEmailPanel
+                  target="account"
+                  id={est.customerId}
+                  primaryEmail={est.customerEmail ?? null}
+                  accountIdForContacts={est.customerId}
+                  record={{
+                    estimateId: est.id,
+                    number: est.number,
+                    kinds: [
+                      {
+                        kind: "estimate",
+                        label: `Estimate ${est.number}${est.sentAt ? " (send it again)" : ""}`,
+                        blocked: est.status === "void" ? "This estimate is void."
+                          : est.status === "lost" ? "This estimate is marked lost. Reopen it from the Estimates page first, then send it."
+                          : null,
+                      },
+                      {
+                        kind: "financing",
+                        label: "Financing link",
+                        blocked: est.status === "void" ? "This estimate is void."
+                          : est.status === "lost" ? "This estimate is marked lost. Reopen it from the Estimates page first, then send the financing link."
+                          : null,
+                      },
+                      { kind: "message", label: "Message" },
+                    ],
+                    onSent: refresh,
                   }}
-                >
-                  {send.isPending ? "Sending…" : est.sentAt ? "Email again" : "Email estimate"}
-                </button>
-                {/*
-                  THE FINANCING LINK, ON ITS OWN, BEFORE SIGNING (Kyle, 2026-10-08). Beside the
-                  estimate email, not behind a signature: a customer weighing the price is the one
-                  who wants to apply. Greyed with the reason (void / lost / no email), never
-                  hidden. Relabels once sent so a second press is a decision, not a double-tap.
-                */}
-                {(() => {
-                  const financingBlock: string | null =
-                    est.status === "void" ? "This estimate is void."
-                    : est.status === "lost" ? "This estimate is marked lost. Reopen it from the Estimates page first, then send the financing link."
-                    : !est.customerEmail ? "No customer email on file - add one to the account first."
-                    : null;
-                  return (
-                    <>
-                      <button
-                        type="button"
-                        className="btn btn-secondary mt-2 w-full"
-                        disabled={sendFinancing.isPending || financingBlock !== null}
-                        title={financingBlock ?? "Emails the Synchrony financing link and an invitation to apply - no rates, terms or approval odds stated"}
-                        onClick={() => sendFinancing.mutate()}
-                      >
-                        {sendFinancing.isPending ? "Sending…" : financingSentTo ? "Send the financing link again" : "Email the financing link"}
-                      </button>
-                      {financingBlock && <p className="mt-1 text-xs text-amber-800">{financingBlock}</p>}
-                      {financingError && <p role="alert" className="mt-1 rounded bg-red-50 p-2 text-xs text-red-700">{financingError}</p>}
-                      {financingSentTo && !financingBlock && !financingError && (
-                        <p className="mt-1 text-xs text-rce-muted">Financing link last emailed to {financingSentTo} just now.</p>
-                      )}
-                    </>
-                  );
-                })()}
+                />
               </div>
             </>
           )}

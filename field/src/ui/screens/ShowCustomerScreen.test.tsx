@@ -124,7 +124,9 @@ describe('ShowCustomerScreen — the customer view', () => {
     expect(html).toContain('$500.00')
     expect(html).toContain('Replace main panel')
     expect(html).toContain('Install 20A outlet')
-    expect(html).toContain('× 3') // quantity past 1
+    // NO QUANTITY on what the customer reads (Kyle, 2026-10-27) - the 3 outlets are one line.
+    expect(html).not.toContain('× 3')
+    expect(html).not.toMatch(/×\s*\d/)
     // A line's location is draft-only text: the estimate the customer signs does not print it, so
     // neither does this screen (review finding, 2026-10-08).
     expect(html).not.toContain('Garage')
@@ -206,7 +208,21 @@ describe('ShowCustomerScreen — the customer view', () => {
       }),
     )
     expect(Object.keys(a).sort()).toEqual(['description', 'lines', 'name', 'option', 'price'])
-    expect(Object.keys(a.lines[0]).sort()).toEqual(['description', 'quantity'])
+    expect(Object.keys(a.lines[0]).sort()).toEqual(['description'])
+  })
+
+  it('a line renamed for the job shows its custom name, never the price-book name or a count', () => {
+    const html = render(
+      quote({
+        lines: [
+          { id: 'l1', itemId: 'i1', description: 'Replace main panel', customName: 'Main panel - Jones garage', quantity: 4, option: 'A', location: null, note: null, lineTotal: 1000, gaps: [] },
+        ],
+        options: [{ option: 'A', lineCount: 1, subtotal: 1000, complete: true }],
+      }),
+    )
+    expect(html).toContain('Main panel - Jones garage')
+    expect(html).not.toContain('Replace main panel')
+    expect(html).not.toContain('× 4')
   })
 })
 

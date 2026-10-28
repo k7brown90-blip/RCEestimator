@@ -64,6 +64,8 @@ export interface SendRecordEmailInput {
   subject: string;
   body: string;
   target: RecordEmailTarget;
+  /** The estimate / invoice the message is about, so its drawer's thread shows it (2026-10-27). */
+  issuedEstimateId?: string | null;
 }
 
 export interface SendRecordEmailResult {
@@ -87,6 +89,7 @@ export async function sendRecordEmail(input: SendRecordEmailInput): Promise<Send
     headline: input.subject,
     bodyHtml: bodyHtmlFrom(input.body),
     kind: "communication",
+    issuedEstimateId: input.issuedEstimateId ?? null,
     leadId: input.target.kind === "lead" ? input.target.leadId : null,
     customerId: input.target.kind === "account" ? input.target.customerId : null,
     visitId: input.target.kind === "job" ? input.target.visitId : null,

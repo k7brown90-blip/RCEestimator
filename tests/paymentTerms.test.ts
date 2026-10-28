@@ -56,7 +56,8 @@ vi.mock("../src/services/confirmationEmail", async (importOriginal) => {
 });
 
 import { app } from "../src/app";
-import { sendBalanceRequestEmail, sendDepositRequestEmail, sendPaymentReceiptEmail } from "../src/services/paymentReceipts";
+import { sendDepositRequestEmail, sendPaymentReceiptEmail } from "../src/services/paymentReceipts";
+import { sendInvoiceEmail } from "../src/services/issuedEstimateSend";
 
 const MARK = "PTRM";
 const ORIGIN = "https://unused.invalid";
@@ -203,17 +204,20 @@ describe("payment terms: due upon receipt of the final invoice (decision 9)", ()
       expect(r.bodyHtml).not.toMatch(/at completion/i);
     }
 
-    // The FINAL BILL — "Your final bill" — states it is due upon receipt of THIS invoice.
+    // The FINAL INVOICE - since 2026-10-27 THE invoice email (the separate "Your final bill" is gone) -
+    // states it is due upon receipt of THIS invoice, carries the balance and the pay link.
+    process.env.STRIPE_SECRET_KEY = "sk_test_terms"; // the pay link renders only while Stripe is configured (the SDK itself is mocked)
     emailMock.sendBrandedEmail.mockClear();
-    expect(await sendBalanceRequestEmail(prisma, est.id, ORIGIN)).toMatchObject({ ok: true, amount: 283.33 });
-    expect(lastEmail().headline).toBe("Your final bill");
+    expect(await sendInvoiceEmail(prisma, est.id, { sentBy: "test" })).toMatchObject({ ok: true, amount: 283.33, reminder: false });
+    expect(lastEmail().headline).toBe("Your invoice");
     expect(lastEmail().bodyHtml).toContain(FINAL_BILL_TERMS);
     expect(lastEmail().bodyHtml).toContain("/pay/");
+    expect(lastEmail().bodyHtml).toContain("Balance due");
     expect(lastEmail().bodyHtml).not.toMatch(/inspect|at completion/i);
 
-    // The reminder version is the same document.
+    // The reminder version is the same document, in the reminder voice.
     emailMock.sendBrandedEmail.mockClear();
-    expect(await sendBalanceRequestEmail(prisma, est.id, ORIGIN, { reminder: true })).toMatchObject({ ok: true });
+    expect(await sendInvoiceEmail(prisma, est.id, { sentBy: "test", reminder: true })).toMatchObject({ ok: true, reminder: true });
     expect(lastEmail().headline).toBe("A friendly reminder");
     expect(lastEmail().bodyHtml).toContain(FINAL_BILL_TERMS);
 
@@ -221,10 +225,11 @@ describe("payment terms: due upon receipt of the final invoice (decision 9)", ()
     const plan = await firstPlan();
     expect((await addFee(est.id, plan.planNumber)).status).toBe(201);
     emailMock.sendBrandedEmail.mockClear();
-    expect(await sendBalanceRequestEmail(prisma, est.id, ORIGIN)).toMatchObject({ ok: true });
+    expect(await sendInvoiceEmail(prisma, est.id, { sentBy: "test" })).toMatchObject({ ok: true });
     expect(lastEmail().bodyHtml).toContain(FINAL_BILL_TERMS);
     expect(lastEmail().bodyHtml).toContain("Synchrony");
     expect(lastEmail().bodyHtml).not.toContain("/pay/");
+    delete process.env.STRIPE_SECRET_KEY;
   });
 
   it("the customer's estimate page and the pay page say it too", async () => {
@@ -331,9 +336,8 @@ describe("reminders do not chase a customer whose balance is being paid through 
     // Manual: refused with the reason (and the route says so), nothing is sent or stamped.
     emailMock.sendBrandedEmail.mockClear();
     expect(await sendInvoiceReminder(prisma, est.id)).toEqual({ ok: false, reason: REMINDER_PAUSED_FOR_FINANCING });
-    const route = await request(app).post(`/issued-estimates/${est.id}/payment-reminder`).send({});
-    expect(route.status).toBe(400);
-    expect(route.body.error).toBe(REMINDER_PAUSED_FOR_FINANCING);
+    // (The old "Send reminder" route is gone; the one invoice send never words itself as a reminder to a financed balance.)
+    expect(await sendInvoiceEmail(prisma, est.id, { sentBy: "test", reminder: true })).toMatchObject({ ok: false });
     expect(REMINDER_PAUSED_FOR_FINANCING).toContain("Financing in progress — balance is being paid through Synchrony");
 
     // Sweep: skipped.

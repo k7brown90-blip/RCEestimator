@@ -77,12 +77,32 @@ const SUMMARIES: PbOptionSummary[] = [
 describe("the customer's view", () => {
   const options = buildOptions(COMPUTED, SUMMARIES, "customer");
 
-  it("shows what the work IS and how much of it", () => {
+  it("shows what the work IS - and NOT how much of it (Kyle, 2026-10-27)", () => {
     // The presence half. Without this, every assertion below passes on an empty document.
     expect(options).toHaveLength(2);
     const first = options[0].lines[0];
     expect(first.description).toBe("Ceiling fan install");
-    expect(first.quantity).toBe(2);
+    // "I also want to get rid of the quantity showing on the estimates and invoices." Absent, not
+    // hidden: a count that is not in the object cannot be printed by a later edit that forgets.
+    expect(first).not.toHaveProperty("quantity");
+    expect(first).not.toHaveProperty("catalogName");
+  });
+
+  it("a line renamed for the job carries the custom name and nothing of the price-book's", () => {
+    const named = {
+      ...COMPUTED,
+      lines: COMPUTED.lines.map((l, i) => (i === 0 ? { ...l, customName: "  Kitchen fan - Hoover  " } : l)),
+    } as unknown as PbComputed;
+    const customer = buildOptions(named, SUMMARIES, "customer");
+    expect(customer[0].lines[0].description).toBe("Kitchen fan - Hoover");
+    expect(JSON.stringify(customer)).not.toContain("Ceiling fan install");
+    // The office keeps both names and the count: it orders and schedules from them.
+    const company = buildOptions(named, SUMMARIES, "company");
+    expect(company[0].lines[0].description).toBe("Kitchen fan - Hoover");
+    expect(company[0].lines[0].catalogName).toBe("Ceiling fan install");
+    expect(company[0].lines[0].quantity).toBe(2);
+    // An unrenamed line has no second name to show.
+    expect(company[0].lines[1].catalogName).toBeNull();
   });
 
   it("carries NO money and NO hours on any line — absent, not hidden", () => {
@@ -121,6 +141,8 @@ describe("the company's view", () => {
     expect(first.laborHours).toBe(2);
     expect(first.laborDollars).toBe(300);
     expect(first.materialSell).toBe(50);
+    // The count drives the price and the ordering list, so the company view keeps it.
+    expect(first.quantity).toBe(2);
     // The unit is his — for ordering, for the entry screen, for scheduling.
     expect(first.unit).toBe("each");
   });

@@ -66,7 +66,8 @@ vi.mock("../src/services/confirmationEmail", async (importOriginal) => {
 });
 
 import { app } from "../src/app";
-import { sendBalanceRequestEmail, sendDepositRequestEmail } from "../src/services/paymentReceipts";
+import { sendDepositRequestEmail } from "../src/services/paymentReceipts";
+import { sendInvoiceEmail } from "../src/services/issuedEstimateSend";
 
 const MARK = "P6RF";
 /** A year no other test records money in — the P&L assertion sums the whole year. */
@@ -238,8 +239,10 @@ describe("once the Synchrony payment is recorded, money still owed is plain invo
     expect(field.balance).toBe(141.67);
     // The reminder is not paused either — the pay link it carries is open.
     emailMock.sendBrandedEmail.mockClear();
+    process.env.STRIPE_SECRET_KEY = "sk_test_p6"; // the pay link renders only while Stripe is configured (the SDK is mocked)
     expect(await sendInvoiceReminder(prisma, est.id)).toMatchObject({ ok: true, amount: 141.67 });
     expect(emailMock.sendBrandedEmail.mock.calls[0][0].bodyHtml).toContain("/pay/");
+    delete process.env.STRIPE_SECRET_KEY;
     // The customer's page shows the invoice is open again with the link, not a closed notice.
     const page = await request(app).get(`/e/${est.token}`);
     expect(page.text).not.toContain("paused for the moment");
@@ -250,7 +253,9 @@ describe("once the Synchrony payment is recorded, money still owed is plain invo
     // The Synchrony payment was never touched: its cut is still on the P&L.
     const pl = await request(app).get(`/financials/summary?year=${LEDGER_YEAR}`);
     expect(pl.body.totals.synchronyCuts).toBeGreaterThan(0);
-  });
+    // 30s, not the default 5s (2026-10-27): the reminder above is now the one invoice email, which
+    // renders the itemized PDF it attaches.
+  }, 30_000);
 });
 
 // ─── 2-3. Decision 8 (no partial releases) and decision 7 (the fee's base) at recording ─────
@@ -302,8 +307,9 @@ describe("while financing is in progress and the deposit is not in", () => {
     expect(financingInProgress(state)).toBe(true);
 
     emailMock.sendBrandedEmail.mockClear();
-    const crm = await request(app).post(`/issued-estimates/${est.id}/email-deposit-request`);
-    expect(crm.status).toBe(409);
+    // 2026-10-27: the CRM door is POST /customer-emails { kind: "deposit" } (a plain 400 with the reason now; the tech door keeps its 409).
+    const crm = await request(app).post("/customer-emails").send({ kind: "deposit", estimateId: est.id });
+    expect(crm.status).toBe(400);
     expect(crm.body.error).toContain(FINANCING_IN_PROGRESS);
     const field = await request(app).post(`/health-record/visits/${visit.id}/email-payment-request`).set("Authorization", `Bearer ${techToken}`).send({ kind: "deposit" });
     expect(field.status).toBe(409);
@@ -320,7 +326,7 @@ describe("while financing is in progress and the deposit is not in", () => {
 
     // Remove the fee: the deposit request sends again, with the link.
     await removeFinancingFee(prisma, feeId, "Deposit check bounced — re-collecting first");
-    const again = await request(app).post(`/issued-estimates/${est.id}/email-deposit-request`);
+    const again = await request(app).post("/customer-emails").send({ kind: "deposit", estimateId: est.id });
     expect(again.status).toBe(200);
     expect(emailMock.sendBrandedEmail.mock.calls[0][0].bodyHtml).toContain("?type=deposit");
   });
@@ -333,7 +339,7 @@ describe("while financing is in progress and the deposit is not in", () => {
     expect(page.text).toContain(BALANCE_DUE_TERMS);
 
     emailMock.sendBrandedEmail.mockClear();
-    expect((await sendBalanceRequestEmail(prisma, est.id, ORIGIN)).ok).toBe(true);
+    expect((await sendInvoiceEmail(prisma, est.id, { sentBy: "test" })).ok).toBe(true);
     const html = emailMock.sendBrandedEmail.mock.calls[0][0].bodyHtml as string;
     expect(html).not.toMatch(/nothing to pay/i);
     expect(html).toContain("release the funds with Synchrony");

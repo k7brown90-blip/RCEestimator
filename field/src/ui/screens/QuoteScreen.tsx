@@ -222,6 +222,17 @@ export type ShownLine = QuoteLine & Partial<Pick<QuoteViewLine, 'priceStatus' | 
 /** The words a saved quote the office never received gets when it cannot be opened with no signal. */
 export const NOT_SAVED_ON_PHONE = 'No signal — this quote has not been saved on this phone. Open it once with signal and it is saved for next time.'
 
+/**
+ * What leaving the "Name on the estimate" box saves, or null when nothing changed (Kyle,
+ * 2026-10-27). The price-book name typed back, or an emptied box, is "no custom name" (null) - the
+ * same reading the office's Estimate Intake gives the same box.
+ */
+export function lineNamePatch(typed: string, line: Pick<QuoteLine, 'customName' | 'description'>): { customName: string | null } | null {
+  const t = typed.trim()
+  const wanted = t === '' || t === line.description ? null : t
+  return wanted === (line.customName ?? null) ? null : { customName: wanted }
+}
+
 export function LineRow({ line, busy, lockedReason, letters, allowNegative, onPatch, onRemove }: {
   line: ShownLine
   busy: boolean
@@ -252,6 +263,14 @@ export function LineRow({ line, busy, lockedReason, letters, allowNegative, onPa
   const [note, setNote] = useState(line.note ?? '')
   useEffect(() => setLoc(line.location ?? ''), [line.location, resync])
   useEffect(() => setNote(line.note ?? ''), [line.note, resync])
+  // The name the customer reads for this line (Kyle, 2026-10-27: "I want to be able to edit the
+  // name of the line item so I can customize the line item name to the specific job."). The box
+  // opens on what the line is called now - the price-book name until it is reworded - and the
+  // exit is "Use the price-book name". Typing the price-book name back, or emptying the box, also
+  // means "no custom name" (null), exactly as the office's Estimate Intake treats it.
+  const [name, setName] = useState(line.customName ?? line.description)
+  useEffect(() => setName(line.customName ?? line.description), [line.customName, line.description, resync])
+  const shownName = line.customName?.trim() || line.description
   const off = busy || Boolean(lockedReason)
   const why = lockedReason ?? undefined
   // Under the figure: "Preview", "may come down once issued", or why there is no figure (Phase 7 §3).
@@ -269,7 +288,7 @@ export function LineRow({ line, busy, lockedReason, letters, allowNegative, onPa
     <div className="rounded-lg border border-slate-700 bg-slate-800 p-3">
       <div className="flex items-start justify-between gap-2">
         <span className="text-sm font-medium text-white">
-          {line.description}
+          {shownName}
           {line.localOnly && <span className="ml-2 rounded bg-amber-900/70 px-1.5 py-0.5 text-[10px] font-normal text-amber-100">on this phone — not at the office yet</span>}
         </span>
         <span className="shrink-0 text-right">
@@ -319,6 +338,34 @@ export function LineRow({ line, busy, lockedReason, letters, allowNegative, onPa
         </button>
       </div>
       <div className="mt-2 grid grid-cols-1 gap-2 text-xs">
+        <label className="block text-slate-400">
+          Name on the estimate
+          <input
+            className="mt-1 w-full rounded border border-slate-600 bg-slate-900 p-2 text-white"
+            value={name}
+            maxLength={200}
+            disabled={off}
+            title={why}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => {
+              const patch = lineNamePatch(name, line)
+              if (patch) run(() => onPatch(patch))
+            }}
+          />
+          {line.customName && <span className="mt-1 block text-[11px] text-slate-500">price book: {line.description}</span>}
+        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={off || !line.customName}
+            title={why ?? (line.customName ? undefined : 'This line already uses the price-book name.')}
+            onClick={() => run(() => onPatch({ customName: null }))}
+            className="rounded border border-slate-600 px-2 py-1 text-slate-200 underline disabled:opacity-40"
+          >
+            Use the price-book name
+          </button>
+          {lockedReason && <span className="text-[11px] text-amber-300">{lockedReason}</span>}
+        </div>
         <label className="block text-slate-400">
           Location
           <input

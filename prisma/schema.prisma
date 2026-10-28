@@ -3088,6 +3088,12 @@ model PriceBookDraftLine {
   difficulty     PriceBookDifficulty     @default(NORMAL)
   location       String?
   note           String?
+  // The name the CUSTOMER reads for this line, when the office or the tech has worded it for the
+  // job. Kyle, 2026-10-27: "I want to be able to edit the name of the line item so I can customize
+  // the line item name to the specific job." Null = the price-book name. Set and cleared ONLY by
+  // atomicEstimateService.editLine (both doors); issue freezes `customName ?? price-book name`
+  // into IssuedEstimateLine.description. The line's itemId, quantity and price are unaffected.
+  customName     String?
   sortOrder      Int                     @default(0)
   // Defaults to A so every existing line becomes "what the client called for", which is what
   // they all were before there was anywhere else to put them.
@@ -3524,7 +3530,13 @@ model IssuedEstimateLine {
   id          String @id @default(cuid())
   estimateId  String
   itemId      String
+  // What the customer reads: the line's custom name when it has one (PriceBookDraftLine.customName,
+  // Kyle 2026-10-27), otherwise the price-book name.
   description String
+  // The PRICE-BOOK name of the item, frozen beside the custom one so the company copy can show both
+  // and the materials list stays keyed by the item. Null on estimates issued before 2026-10-27
+  // (their `description` already IS the price-book name).
+  catalogDescription String?
   quantity    Float
   // Flat sell price for ONE unit: the line's labour dollars and material sell, already combined.
   unitPrice   Float

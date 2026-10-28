@@ -16,7 +16,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler } from "./agent-helpers";
 import { sendRecordEmail, type RecordEmailTarget } from "../services/recordEmail";
-import { ccSchema, cleanCc } from "../services/emailCc";
+import { ccSchema, resolveRecipients } from "../services/emailCc";
 
 export const communicationsRouter = express.Router();
 
@@ -30,6 +30,12 @@ const sendBody = z.object({
   cc: ccSchema,
   subject: z.string().trim().min(1).max(200),
   body: z.string().trim().min(1).max(10000),
+  /**
+   * The estimate / invoice this message is about (Kyle, 2026-10-27): the "Email the customer" panel
+   * on an invoice or estimate drawer files its Message kind against the estimate too, so the thread
+   * under the panel shows everything sent from that record - invoice, financing link AND message.
+   */
+  estimateId: z.string().trim().min(1).optional(),
 });
 
 /** POST /communications/email — { target, id, to?, subject, body }. */
@@ -58,16 +64,16 @@ communicationsRouter.post("/communications/email", asyncHandler(async (req, res)
     target = { kind: "job", visitId: visit.id };
   }
 
-  if (!to) {
-    res.status(400).json({ error: "No email address on file for this record — add one, or type an address to send to." });
-    return;
-  }
+  // THE ONE RECIPIENT RULE (emailCc.resolveRecipients) - the same check every customer send passes.
+  const recipients = resolveRecipients(
+    { toOverride: to, cc: parsed.cc },
+    "No email address on file for this record — add one, or type an address to send to.",
+  );
+  if (!recipients.ok) { res.status(400).json({ error: recipients.reason }); return; }
+  to = recipients.to;
+  const cc = recipients.cc;
 
-  const ccChecked = cleanCc(parsed.cc, to);
-  if (!ccChecked.ok) { res.status(400).json({ error: ccChecked.reason }); return; }
-  const cc = ccChecked.cc;
-
-  const result = await sendRecordEmail({ to, cc, subject: parsed.subject, body: parsed.body, target });
+  const result = await sendRecordEmail({ to, cc, subject: parsed.subject, body: parsed.body, target, issuedEstimateId: parsed.estimateId ?? null });
   if (!result.ok) {
     res.status(502).json({ error: "The email could not be sent — see the delivery log (email-deliveries) for the reason.", suppressed: result.suppressed });
     return;

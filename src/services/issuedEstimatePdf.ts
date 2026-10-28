@@ -48,7 +48,16 @@ export type PdfAudience = "customer" | "company";
 
 export interface PdfLine {
   option: PriceBookOption;
+  /** What the customer reads: the line's custom name when it has one, else the price-book name. */
   description: string;
+  /**
+   * The price-book name of the item, frozen at issue (2026-10-27). The COMPANY copy shows it beside
+   * a custom `description` and keys the materials list by it. Null/absent on estimates issued
+   * before 2026-10-27, whose `description` already is the price-book name.
+   */
+  catalogDescription?: string | null;
+  /** The price-book item the line was issued for (the materials list's key). */
+  itemId?: string;
   quantity: number;
   lineTotal: number;
   laborHours: number | null;
@@ -305,11 +314,23 @@ export async function renderEstimatePdf(
     }
 
     for (const line of lines) {
+      /*
+        THE LINE'S NAME, AND WHO SEES THE COUNT (Kyle, 2026-10-27): "I also want to get rid of the
+        quantity showing on the estimates and invoices. Instead I want to be able to edit the name
+        of the line item so I can customize the line item name to the specific job."
+        The customer's line is its name and nothing else. The company copy keeps the count (it
+        orders and schedules from it) and, when the line was renamed for the job, shows the
+        price-book item beside the custom name so the office can still tell what to order.
+      */
+      const companyName =
+        line.catalogDescription && line.catalogDescription !== line.description
+          ? `${line.description}  (price book: ${line.catalogDescription})`
+          : line.description;
       doc.fontSize(10).fillColor("#000")
-        .text(`${line.description}  × ${line.quantity}`, { width: 380, continued: false });
+        .text(audience === "company" ? `${companyName}  × ${line.quantity}` : line.description, { width: 380, continued: false });
 
-      // The whole audience split, in one branch. A customer line stops at description and
-      // quantity — no line price, no hours (Kyle, 2026-08-19).
+      // The whole audience split, in one branch. A customer line stops at its name — no quantity,
+      // no line price, no hours (Kyle, 2026-08-19; quantity 2026-10-27).
       if (audience === "company") {
         /*
           THE BREAKDOWN, IN KYLE'S OWN TERMS (2026-08-20):
@@ -497,15 +518,19 @@ export async function renderEstimatePdf(
       .fillColor("#000");
     doc.moveDown(0.3);
 
+    // Keyed by the ITEM and named by the price book, never by a line's custom name (Kyle,
+    // 2026-10-27): two lines renamed for the job are still the same part to order.
     const materials = new Map<string, { description: string; quantity: number }>();
     for (const line of estimate.lines) {
       // Declined options have nothing to order. Listing them would send Kyle to the supply house
       // for parts the customer did not buy.
       if (declinedAreKnown && !taken.has(line.option)) continue;
       if (!line.materialSell) continue;
-      const row = materials.get(line.description);
+      const name = line.catalogDescription || line.description;
+      const key = line.itemId ?? name;
+      const row = materials.get(key);
       if (row) row.quantity += line.quantity;
-      else materials.set(line.description, { description: line.description, quantity: line.quantity });
+      else materials.set(key, { description: name, quantity: line.quantity });
     }
 
     if (materials.size === 0) {

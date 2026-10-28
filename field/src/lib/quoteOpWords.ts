@@ -48,6 +48,7 @@ export function describeQuoteOp(op: Pick<QuoteOpRecord, 'body'>, lookup: QuoteOp
       if (b.patch.option !== undefined) parts.push(`moved to Option ${b.patch.option}`)
       if (b.patch.location !== undefined) parts.push(b.patch.location ? `location → ${b.patch.location}` : 'location cleared')
       if (b.patch.note !== undefined) parts.push(b.patch.note ? 'note changed' : 'note cleared')
+      if (b.patch.customName !== undefined) parts.push(b.patch.customName ? `name on the estimate → ${b.patch.customName}` : 'price-book name back')
       return `${what}: ${parts.join(', ') || 'no change'}`
     }
     case 'remove_line':

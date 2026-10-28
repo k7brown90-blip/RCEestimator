@@ -708,7 +708,23 @@ export const editLineExpectedSchema = z.object({
   option: z.enum(ALL_OPTIONS).optional(),
   note: z.string().nullable().optional(),
   location: z.string().nullable().optional(),
+  customName: z.string().nullable().optional(),
 }).optional();
+
+/**
+ * The name the customer reads for one line (Kyle, 2026-10-27: "I want to be able to edit the name
+ * of the line item so I can customize the line item name to the specific job."). ONE schema for
+ * both doors' line-edit bodies: trimmed, at most 200 characters; empty or null clears it, which
+ * puts the price-book name back. `editLine` repeats the same rule on whatever reaches it, so a
+ * caller that skips this schema cannot store a blank or an over-long name.
+ */
+export const LINE_CUSTOM_NAME_MAX = 200;
+export const lineCustomNameSchema = z
+  .string()
+  .trim()
+  .max(LINE_CUSTOM_NAME_MAX, `The name on the estimate can be at most ${LINE_CUSTOM_NAME_MAX} characters.`)
+  .nullable()
+  .optional();
 
 /**
  * Why a draft's lines and options are shut, or null when they are open (2026-10-08 review).
@@ -990,7 +1006,7 @@ export function wouldChangeNothing(current: Record<string, unknown>, data: Recor
 export async function editLine(
   prisma: PrismaClient,
   lineId: string,
-  patch: Partial<Omit<AddLineInput, "itemId" | "id">>,
+  patch: Partial<Omit<AddLineInput, "itemId" | "id">> & { customName?: string | null },
   expected?: ExpectedValues,
 ) {
   const existing = await prisma.priceBookDraftLine.findUnique({
@@ -1021,8 +1037,24 @@ export async function editLine(
     const atomic = await prisma.priceBookAtomic.findUnique({ where: { itemId: existing.itemId } });
     if (atomic) quantitySource = quantitySourceFor(atomic) as PriceBookQuantitySource;
   }
+  /*
+    The line's own name (Kyle, 2026-10-27). Trimmed; empty or null CLEARS it (null in the row means
+    "use the price-book name" — the exit the screens' "Use the price-book name" button takes).
+    `undefined` means "not touched". Refused before the reopen guard, like a bad quantity, so a
+    refused press never flips an issued draft back to "draft". A signed draft is shut by the same
+    reopenForEditIfUnsigned as every other line field.
+  */
+  let customName: string | null | undefined;
+  if (patch.customName !== undefined) {
+    const trimmed = (patch.customName ?? "").trim();
+    if (trimmed.length > LINE_CUSTOM_NAME_MAX) {
+      throw new DraftError(`The name on the estimate can be at most ${LINE_CUSTOM_NAME_MAX} characters.`, 400);
+    }
+    customName = trimmed === "" ? null : trimmed;
+  }
   const data = {
     quantity: patch.quantity,
+    customName,
     // Part of the comparison on purpose: re-saving the same number on an old MANUAL row still
     // re-sources it, exactly as before.
     quantitySource,
@@ -1283,6 +1315,8 @@ export async function copyOptionLines(
       difficulty: l.difficulty,
       location: l.location,
       note: l.note,
+      // The job-specific name travels with the line (Kyle, 2026-10-27).
+      customName: l.customName,
       sortOrder: firstSortOrder + i,
       option: to as PriceBookOption,
       state: l.state,
@@ -1737,6 +1771,7 @@ export async function duplicateDraft(prisma: PrismaClient, sourceId: string): Pr
         difficulty: l.difficulty,
         location: l.location,
         note: l.note,
+        customName: l.customName,
         sortOrder: l.sortOrder,
         option: l.option,
         state: l.state,
@@ -2429,6 +2464,9 @@ export async function computeDraft(
     difficulty: l.difficulty as Difficulty,
     location: l.location,
     note: l.note,
+    // Rides through the engine untouched so the review, the issue and the presentation all read
+    // the same name (Kyle, 2026-10-27). It prices nothing.
+    customName: l.customName,
     option: l.option as EstimateOption,
   }));
 

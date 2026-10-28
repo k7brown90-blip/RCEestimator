@@ -160,6 +160,48 @@ describe("PresentationPage — Customer view, the total comes from the server's 
     expect(await screen.findByText(/Material list/)).toBeTruthy();
     expect(document.body.textContent).toMatch(/3\.50 hr/);
   });
+
+  /*
+    Kyle, 2026-10-27: "I also want to get rid of the quantity showing on the estimates and invoices.
+    Instead I want to be able to edit the name of the line item so I can customize the line item
+    name to the specific job." Every line in the fixture is a count of 2.
+  */
+  describe("a line's name, and no quantity on what the customer reads", () => {
+    function showNamed() {
+      const r = response(MONEY);
+      (r.computed.lines[0] as { customName?: string }).customName = "Ceiling fan - Jones kitchen";
+      vi.spyOn(api, "pbCompute").mockResolvedValue(r);
+      vi.spyOn(api, "pbOptionsMode").mockResolvedValue({ exclusiveOptions: false });
+      renderWithProviders(
+        <Routes><Route path="/present/:draftId" element={<PresentationPage />} /></Routes>,
+        { route: "/present/draft-1?account=acct-1&address=addr-1" },
+      );
+    }
+
+    it("the customer view shows the custom name and NO count or unit - the price-book name is not on it either", async () => {
+      showNamed();
+      await screen.findByText("$999.99");
+      expect(screen.getByText("Ceiling fan - Jones kitchen")).toBeTruthy();
+      expect(screen.getByText("Bond the water line")).toBeTruthy();
+      expect(document.body.textContent).not.toMatch(/×\s*2/);
+      expect(document.body.textContent).not.toContain("Ceiling fan install");
+      expect(document.body.textContent).not.toContain("price book:");
+    });
+
+    it("the Company view keeps the count and unit, and shows the price-book item beside the custom name", async () => {
+      showNamed();
+      await screen.findByText("$999.99");
+      fireEvent.click(screen.getByRole("button", { name: "Company view" }));
+      expect(await screen.findByText(/Material list/)).toBeTruthy();
+      expect(screen.getByText("Ceiling fan - Jones kitchen")).toBeTruthy();
+      expect(document.body.textContent).toContain("price book: Ceiling fan install");
+      expect(document.body.textContent).toMatch(/×\s*2 ea/);
+      // The ordering list is keyed by the item and named by the price book, never by the custom name.
+      const list = screen.getByText(/Material list/).closest("section") as HTMLElement;
+      expect(within(list).getByText("Ceiling fan install")).toBeTruthy();
+      expect(within(list).queryByText("Ceiling fan - Jones kitchen")).toBeNull();
+    });
+  });
 });
 
 /*
@@ -217,5 +259,37 @@ describe("PresentationPage - financing under the total", () => {
     await screen.findByRole("dialog");
     expect(issue).not.toHaveBeenCalled();
     expect(mode).not.toHaveBeenCalled();
+  });
+});
+
+/*
+  ONE EMAIL CONTROL on Present to the customer (Kyle, 2026-10-27: "one tool for one task"). The
+  bottom bar's "Email to customer" typed nothing and picked nobody - it issued the estimate and sent
+  it to the address on file. It is "Email the customer" now: it still issues the estimate first when
+  the rule says to (lib/presentIssue), then opens the ONE panel on it - Estimate / Financing link /
+  Message, to a chosen contact + CC - and the panel's Send button names both.
+*/
+describe("PresentationPage - Email the customer opens the one email panel", () => {
+  it("issues the estimate, then offers Estimate / Financing link / Message and sends where the panel says", async () => {
+    show(MONEY);
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    vi.spyOn(api, "accountContacts").mockResolvedValue([]);
+    vi.spyOn(api, "account").mockResolvedValue({ id: "acct-1", name: "Tony Hoover", email: "tony@example.com", properties: [] } as never);
+    const issue = vi.spyOn(api, "pbIssue").mockResolvedValue({ estimateId: "est-9", number: "2026-1200" } as never);
+    const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "estimate", to: "tony@example.com", cc: [] });
+
+    await screen.findByText("$999.99");
+    // The old button and its wording are gone; one email control.
+    expect(screen.queryByRole("button", { name: "Email to customer" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Email the customer" }));
+
+    // Issued FIRST (the freeze is a consequence of sending), then the panel opens on that estimate.
+    await waitFor(() => expect(issue).toHaveBeenCalledTimes(1));
+    const dialog = await screen.findByRole("dialog", { name: "Email estimate 2026-1200" });
+    expect(within(dialog).getByRole("radio", { name: "Estimate 2026-1200" })).toBeChecked();
+    expect(within(dialog).getByRole("radio", { name: "Financing link" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("radio", { name: "Message" })).toBeInTheDocument();
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Send estimate 2026-1200 to tony@example.com" }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "estimate", estimateId: "est-9" })));
   });
 });

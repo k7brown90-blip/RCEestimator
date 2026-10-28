@@ -93,7 +93,6 @@ import type {
   WeekSchedule,
 } from "./types";
 import type { DraftOptionSet } from "../../../shared/estimateOptions";
-import type { EstimateEmailRequest } from "../../../shared/estimateEmail";
 import type { FinancingPlan } from "../../../shared/financing";
 
 const API_BASE = "/api";
@@ -295,6 +294,37 @@ export interface NextStepJob {
   completedAt: string | null;
 }
 
+/**
+ * What the "Email the customer" request carries (POST /customer-emails; server: services/customerEmail.ts).
+ * The estimate-only fields are shared/estimateEmail.ts's - the same body the field app builds.
+ */
+export interface CustomerEmailInput {
+  kind: "invoice" | "deposit" | "financing" | "estimate" | "review";
+  /** invoice / deposit / financing / estimate. */
+  estimateId?: string;
+  /** review: the job's Visit.id. */
+  visitId?: string;
+  to?: string | null;
+  cc?: string[];
+  /** The optional note - the screens call it "Note". */
+  message?: string | null;
+  photoIds?: string[];
+  attachHealthReport?: boolean;
+  attachGeneratorReport?: boolean;
+  includeFinancingLink?: boolean;
+}
+
+export interface CustomerEmailSent {
+  sent: true;
+  kind: CustomerEmailInput["kind"];
+  to: string;
+  cc?: string[];
+  /** invoice / deposit: the dollars that were owed in the email. */
+  amount?: number;
+  /** invoice: it went out in the reminder voice (and stamped the reminder clock). */
+  reminder?: boolean;
+}
+
 export interface PaymentInfo {
   /** The ROOT invoice (2026-09-20) — a change order's money answers about the invoice it joined. */
   estimateId: string;
@@ -325,6 +355,17 @@ export interface PaymentInfo {
   payUrl: string;
   depositPayUrl: string;
   stripeConfigured: boolean;
+  /**
+   * Who the "Email the customer" panel on the payment card writes to (2026-10-27): the account, the
+   * address on file, and the job with its status. Null/absent from an older server build.
+   */
+  email?: {
+    customerId: string;
+    customerEmail: string | null;
+    jobId: string | null;
+    jobStatus: string | null;
+    reviewRequestedAt: string | null;
+  } | null;
   payments: {
     id: string; amount: number; method: string; kind: string; status: string; paidAt: string | null;
     /** "customer" | "warranty" (Kyle, 2026-09-10). */
@@ -791,7 +832,7 @@ export const api = {
    * The single free-form send (2026-09-20 communications build): "Follow ups can be done by
    * sending an email straight from the CRM." `to: null` uses the record's own primary email.
    */
-  sendRecordEmail: (input: { target: "lead" | "account" | "job"; id: string; to?: string | null; cc?: string[]; subject: string; body: string }) =>
+  sendRecordEmail: (input: { target: "lead" | "account" | "job"; id: string; to?: string | null; cc?: string[]; subject: string; body: string; estimateId?: string }) =>
     request<{ sent: true; to: string; cc?: string[]; suppressed: boolean }>("/communications/email", {
       method: "POST",
       body: JSON.stringify(input),
@@ -1526,33 +1567,18 @@ export const api = {
   removeListMember: (listId: string, memberId: string) =>
     request<{ removed: true }>(`/email-lists/${listId}/members/${memberId}`, { method: "DELETE" }),
 
-  /** Bill in writing (Kyle, 2026-09-01): the deposit request / final bill lands in the customer's inbox. */
-  emailDepositRequest: (estimateId: string) =>
-    request<{ ok: true; to: string; amount: number }>(`/issued-estimates/${estimateId}/email-deposit-request`, { method: "POST" }),
-  /** Manual unpaid-invoice nudge (Kyle, 2026-09-02) — reminder-voiced final bill; stamps the pacing clock. */
-  sendPaymentReminder: (estimateId: string) =>
-    request<{ ok: true; to: string; amount: number }>(`/issued-estimates/${estimateId}/payment-reminder`, { method: "POST" }),
-  emailBalanceRequest: (estimateId: string) =>
-    request<{ ok: true; to: string; amount: number }>(`/issued-estimates/${estimateId}/email-balance-request`, { method: "POST" }),
   estimatePaymentInfo: (estimateId: string) =>
     request<PaymentInfo | null>(`/issued-estimates/${estimateId}/payment-info`),
   /**
-   * The Synchrony financing link, on its own (Kyle, 2026-10-01: "I also need to have the
-   * financing link available to email on its own ... These links should be available along
-   * side the invoice email button"). No credit terms in the copy — see
-   * services/financingEmail.ts for why that's load-bearing, not a style choice.
+   * THE ONE CUSTOMER-EMAIL CALL (Kyle, 2026-10-27, "one tool for one task"): everything the "Email the
+   * customer" panel sends except a free-form message (sendRecordEmail). It replaced emailDepositRequest,
+   * emailBalanceRequest, sendPaymentReminder, emailFinancing, emailReviewRequest, sendInvoice and
+   * pbIssuedSend - one call per removed button. `kind` picks the email; `estimateId` (a Visit.id
+   * `visitId` for the review ask) says which record; to / cc / message / photoIds are the same on every
+   * kind, and nothing given = the customer on file. A refusal comes back as a readable 400 { error }.
    */
-  emailFinancing: (estimateId: string) =>
-    request<{ ok: true; to: string }>(`/issued-estimates/${estimateId}/email-financing`, { method: "POST" }),
-  /**
-   * The Google review ask, on its own, pressed by a human (Kyle, 2026-10-01). `jobId` is a
-   * Visit.id, same convention as `/jobs/:jobId/complete` — bypasses the automation gate the
-   * way a manual press always does (see services/reviewRequest.ts); every other guard (job
-   * completed, no duplicate ask, no repeat ask on this customer within 90 days, email on file)
-   * still applies and comes back as a readable 400 `{ error }`.
-   */
-  emailReviewRequest: (jobId: string) =>
-    request<{ ok: true; to: string }>(`/jobs/${jobId}/email-review-request`, { method: "POST" }),
+  sendCustomerEmail: (input: CustomerEmailInput) =>
+    request<CustomerEmailSent>("/customer-emails", { method: "POST", body: JSON.stringify(input) }),
   /**
    * The SAME ask, resolved by ACCOUNT (item E / ruling E2, 2026-10-02) — for the "send while on
    * the phone with them" button on the account page, which has no job id in hand. The server
@@ -1766,7 +1792,9 @@ export const api = {
   // draft server-side — a line on an issued estimate is a record, not a working document.
   pbEditLine: (
     lineId: string,
-    patch: { quantity?: number; difficulty?: PbDifficulty; location?: string | null; note?: string | null; option?: PbOption }
+    // customName: the name the customer reads for this line (Kyle, 2026-10-27); null or "" puts the
+    // price-book name back.
+    patch: { quantity?: number; difficulty?: PbDifficulty; location?: string | null; note?: string | null; option?: PbOption; customName?: string | null }
   ) => request(`/price-book/lines/${lineId}`, { method: "PATCH", body: JSON.stringify(patch) }),
 
   pbDeleteLine: (lineId: string) =>
@@ -1946,15 +1974,6 @@ export const api = {
       accountProperties: Array<{ id: string; name: string; addressLine1: string; city: string }>;
     }>(`/issued-estimates/${id}`),
 
-  /** OPERATOR ACTION ONLY. Behind the PIN session and a confirm; never called automatically. */
-  // The body is shared/estimateEmail.ts's EstimateEmailRequest - the field app sends the same one
-  // to the same server function (Phase 4, 2026-10-08), built by estimateEmailRequest().
-  pbIssuedSend: (id: string, input: EstimateEmailRequest) =>
-    request<{ sent: true; to: string; cc?: string[] }>(`/issued-estimates/${id}/send`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-
   // ── In-person signing (P028; device lock removed 2026-08-18 on Kyle's instruction) ──
   pbCustomerView: (id: string) => requestHtml(`/issued-estimates/${id}/customer-view`),
 
@@ -2031,18 +2050,6 @@ export const api = {
     request<{ estimates: PbIssuedEstimate[] }>(
       `/accounts/${accountId}/estimates${serviceAddressId ? `?serviceAddressId=${encodeURIComponent(serviceAddressId)}` : ""}`
     ),
-
-  /**
-   * Email the SIGNED invoice, PDF attached (2026-08-21).
-   *
-   * Kyle: "I cannot email the invoice to the client." Distinct from pbSendEstimate — that one
-   * refuses a signed estimate, this one refuses an unsigned one.
-   */
-  sendInvoice: (estimateId: string, input: { toOverride?: string | null; cc?: string[]; message?: string | null; photoIds?: string[] } = {}) =>
-    request<{ sent: true; to: string; cc?: string[] }>(`/issued-estimates/${estimateId}/send-invoice`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
 
   /** True delete of an ISSUED estimate, unsigned only — the server refuses a signed one outright
       (2026-08-22). Named apart from `deleteEstimate` above, which belongs to the legacy system. */

@@ -627,8 +627,9 @@ describe("the send path is operator-only", () => {
     expect(g.ok).toBe(true);
     if (!g.ok) return;
 
-    for (const spelling of [`/issued-estimates/${g.estimateId}/send`, `/api/issued-estimates/${g.estimateId}/send`]) {
-      const res = await request(app).post(spelling).send({});
+    // 2026-10-27: the estimate send is POST /customer-emails (the one email route).
+    for (const spelling of ["/customer-emails", "/api/customer-emails"]) {
+      const res = await request(app).post(spelling).send({ kind: "estimate", estimateId: g.estimateId });
       expect(res.status).toBe(401);
     }
 
@@ -1280,6 +1281,9 @@ describe("billing in writing — the final-bill email", () => {
   it("emails the balance with the pay link, and refuses before signature", async () => {
     const mod = await import("../src/services/confirmationEmail");
     const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    // The invoice email's pay link renders only while Stripe is configured on the service (2026-08-25).
+    const priorStripeKey = process.env.STRIPE_SECRET_KEY;
+    process.env.STRIPE_SECRET_KEY = "sk_test_email_bill";
     try {
       const d = await quotableDraft("email-bill");
       const issued = await request(app)
@@ -1288,21 +1292,24 @@ describe("billing in writing — the final-bill email", () => {
         .expect(201);
 
       // Unsigned: nothing is billable yet — refuse, never impersonate a fallback.
-      await request(app).post(`/issued-estimates/${issued.body.estimateId}/email-balance-request`).expect(400);
+      await request(app).post("/customer-emails").send({ kind: "invoice", estimateId: issued.body.estimateId }).expect(400);
 
       await request(app)
         .post(`/issued-estimates/${issued.body.estimateId}/sign-in-person`)
         .send({ signerName: "A Customer", signatureImage: TEST_SIGNATURE, selectedOptions: ["A"] })
         .expect(200);
 
+      // 2026-10-27 (one invoice email): "Email invoice - $X due" is the Invoice kind of POST /customer-emails;
+      // the email is the invoice email (itemized PDF attached), no longer a separate "Your bill".
       const r = await request(app)
-        .post(`/issued-estimates/${issued.body.estimateId}/email-balance-request`)
+        .post("/customer-emails")
+        .send({ kind: "invoice", estimateId: issued.body.estimateId })
         .expect(200);
       expect(r.body.to).toBe("p027-customer@example.com");
       expect(r.body.amount).toBeGreaterThan(0);
 
       const est = await prisma.issuedEstimate.findUnique({ where: { id: issued.body.estimateId } });
-      const call = spy.mock.calls.find((c) => String(c[0].subject).includes("Your bill"));
+      const call = spy.mock.calls.find((c) => String(c[0].subject).includes("Your invoice from Red Cedar Electric"));
       expect(call).toBeTruthy();
       const html = String(call![0].bodyHtml);
       expect(html).toContain(`/pay/${est!.token}`); // the durable pay link, not a session URL
@@ -1310,6 +1317,8 @@ describe("billing in writing — the final-bill email", () => {
       expect(call![0].to).toBe("p027-customer@example.com");
     } finally {
       spy.mockRestore();
+      if (priorStripeKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+      else process.env.STRIPE_SECRET_KEY = priorStripeKey;
     }
   });
 });

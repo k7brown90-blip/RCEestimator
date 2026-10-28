@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { LineRow } from './QuoteScreen'
+import { LineRow, lineNamePatch } from './QuoteScreen'
 import type { QuoteLine } from '../../lib/crmSync'
 
 const SIGNED = 'Estimate 2026-1098 from this draft is SIGNED. A signed agreement is never edited — raise a change order instead.'
@@ -25,15 +25,19 @@ const render = (lockedReason: string | null, busy = false, l: QuoteLine = line) 
 
 describe('LineRow', () => {
   it('an open quote: every control is live', () => {
-    const html = render(null)
+    // A line with a custom name, so "Use the price-book name" has something to clear and is live too.
+    const html = render(null, false, { ...line, customName: 'Garage outlet - Smith' })
     expect(html).not.toContain('disabled=""')
     expect(html).toContain('remove')
   })
 
-  it('a SIGNED quote greys quantity, difficulty, option, location, note and remove, each carrying the reason', () => {
+  it('a SIGNED quote greys the name box and its clear button as well as quantity, difficulty, option, location, note and remove, each carrying the reason', () => {
     const html = render(SIGNED)
-    expect((html.match(/disabled=""/g) ?? []).length).toBe(6)
-    expect((html.match(new RegExp(`title="${SIGNED}"`, 'g')) ?? []).length).toBe(6)
+    // 6 row controls + "Name on the estimate" + "Use the price-book name".
+    expect((html.match(/disabled=""/g) ?? []).length).toBe(8)
+    expect((html.match(new RegExp(`title="${SIGNED}"`, 'g')) ?? []).length).toBe(8)
+    // The reason is also printed beside the name box - a tooltip does not exist on a phone.
+    expect(html).toContain(`>${SIGNED}</span>`)
     // Greyed, not hidden: the controls are still on the page.
     expect(html).toContain('remove')
     expect(html).toContain('Option A')
@@ -41,7 +45,7 @@ describe('LineRow', () => {
 
   it('a call in flight greys the row without claiming the quote is signed', () => {
     const html = render(null, true)
-    expect((html.match(/disabled=""/g) ?? []).length).toBe(6)
+    expect((html.match(/disabled=""/g) ?? []).length).toBe(8)
     expect(html).not.toContain('SIGNED')
   })
 
@@ -57,6 +61,37 @@ describe('LineRow', () => {
     const html = render(null)
     expect(html).toContain('placeholder="kitchen, garage…"')
     expect(html).toContain('Location')
+  })
+})
+
+// ─── Kyle, 2026-10-27: "customize the line item name to the specific job" ─────────────────────
+
+describe('LineRow - Name on the estimate', () => {
+  it('opens on the price-book name, the heading shows it, and there is nothing to clear yet', () => {
+    const html = render(null)
+    expect(html).toContain('Name on the estimate')
+    expect(html).toContain('value="Replace panel"')
+    expect(html).toContain('Use the price-book name')
+    // No custom name: the clear button is greyed and says why; nothing says "price book:".
+    expect(html).toContain('title="This line already uses the price-book name."')
+    expect(html).not.toContain('price book:')
+  })
+
+  it('a custom name is the heading and the box value, with the price-book item beside it and a live clear button', () => {
+    const html = render(null, false, { ...line, customName: 'Main panel - Jones garage' })
+    expect(html).toContain('value="Main panel - Jones garage"')
+    expect(html).toContain('Main panel - Jones garage</span>')
+    expect(html).toContain('price book: Replace panel')
+    expect(html).not.toContain('This line already uses the price-book name.')
+  })
+
+  it('leaving the box saves a custom name, and clears it when the price-book name is typed back or the box is emptied', () => {
+    expect(lineNamePatch('  Main panel - Jones  ', line)).toEqual({ customName: 'Main panel - Jones' })
+    expect(lineNamePatch('Replace panel', line)).toBeNull() // already the price-book name: nothing to save
+    const named = { ...line, customName: 'Main panel - Jones' }
+    expect(lineNamePatch('Replace panel', named)).toEqual({ customName: null })
+    expect(lineNamePatch('   ', named)).toEqual({ customName: null })
+    expect(lineNamePatch('Main panel - Jones ', named)).toBeNull() // unchanged
   })
 })
 
@@ -82,7 +117,8 @@ describe('LineRow with no signal', () => {
     const difficult = render(null, false, { ...line, difficulty: 'DIFFICULT', lineTotal: 160, priceStatus: 'preview', priceReason: null } as QuoteLine)
     expect(difficult).toContain('$160.00')
     expect(difficult).toContain('>Preview<')
-    const unpriced = render(null, false, { ...line, difficulty: 'VERY_DIFFICULT', lineTotal: null, priceStatus: 'unpriced', priceReason: 'No price is published for this item at this difficulty — the office prices it' } as QuoteLine)
+    // (A custom name is set so "Use the price-book name" has something to clear and is live as well.)
+    const unpriced = render(null, false, { ...line, customName: 'Panel - Jones', difficulty: 'VERY_DIFFICULT', lineTotal: null, priceStatus: 'unpriced', priceReason: 'No price is published for this item at this difficulty — the office prices it' } as QuoteLine)
     expect(unpriced).toContain('>—<')
     expect(unpriced).toContain('No price is published for this item at this difficulty — the office prices it')
     // The controls stay live: the line can still be changed with no signal (the edit queues).

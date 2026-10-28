@@ -1798,6 +1798,10 @@ export interface QuoteLine {
   state?: 'PROPOSED' | 'CONFIRMED'
   note: string | null
   location: string | null
+  // The name the customer reads for this line when it has been worded for the job (Kyle,
+  // 2026-10-27); null/absent = the price-book name in `description`. Optional so an older server
+  // still renders.
+  customName?: string | null
   // No laborHours here (2026-09-21): hours never leave the office, same
   // standing rule as the job-brief's scope-only lines.
   lineTotal: number | null
@@ -1964,8 +1968,8 @@ export async function addQuoteLine(draftId: string, line: {
  */
 export async function editQuoteLine(
   lineId: string,
-  patch: Partial<Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'location'>>,
-  expected?: Partial<Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'location'>>,
+  patch: Partial<Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'location' | 'customName'>>,
+  expected?: Partial<Pick<QuoteLine, 'quantity' | 'difficulty' | 'option' | 'note' | 'location' | 'customName'>>,
 ): Promise<void> {
   const body = expected ? { ...patch, expected } : patch
   await crmRequest(`/quote-lines/${lineId}`, { method: 'PATCH', body: JSON.stringify(body) })

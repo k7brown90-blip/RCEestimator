@@ -343,7 +343,7 @@ describe("POST /health-record/issued-estimates/:id/email - the ticked photos rid
 
     // The CRM's picker keeps the account-wide scope (Kyle, 2026-10-01): the rental photo rides, the other customer's does not.
     send.mockClear();
-    const crm = await request(app).post(`/issued-estimates/${issued.estimateId}/send`).send({ photoIds: [here, rental, foreign] });
+    const crm = await request(app).post("/customer-emails").send({ kind: "estimate", estimateId: issued.estimateId, photoIds: [here, rental, foreign] });
     expect(crm.status, JSON.stringify(crm.body)).toBe(200);
     const crmCall = send.mock.calls[0][0] as { attachments?: Array<{ filename: string }> };
     expect(crmCall.attachments).toHaveLength(2);

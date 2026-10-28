@@ -42,6 +42,7 @@ import type { PrismaClient } from "@prisma/client";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { customerSendsEnabled, logCustomerSendSkipped } from "./automationGate";
 import { logSystemEvent } from "./systemEvents";
+import { resolveRecipients } from "./emailCc";
 
 /** Kyle's Google review link, given 2026-09-02. */
 /*
@@ -59,8 +60,13 @@ const REPEAT_ASK_DAYS = 90;
 export async function sendReviewRequestEmail(
   prisma: PrismaClient,
   visitId: string,
-  opts: { manual?: boolean } = {},
-): Promise<{ ok: true; to: string } | { ok: false; reason: string }> {
+  /**
+   * ONE EMAIL TOOL (Kyle, 2026-10-27): the "Email the customer" panel (POST /customer-emails)
+   * passes its To, CC and note - checked by the one recipient rule (emailCc.resolveRecipients).
+   * Nothing given = the customer's email on file, as before; the automatic path passes none.
+   */
+  opts: { manual?: boolean; toOverride?: string | null; cc?: string[]; message?: string | null } = {},
+): Promise<{ ok: true; to: string; cc: string[] } | { ok: false; reason: string }> {
   const visit = await prisma.visit.findUnique({
     where: { id: visitId },
     include: {
@@ -75,7 +81,7 @@ export async function sendReviewRequestEmail(
   if (visit.reviewRequestedAt) {
     return { ok: false, reason: "A review request has already been sent for this job." };
   }
-  if (!visit.customer.email) {
+  if (!visit.customer.email && !opts.toOverride) {
     logSystemEvent("info", "jobs", `Review request skipped — no email on ${visit.customer.name}'s account`, { visitId });
     return { ok: false, reason: `No email on file for ${visit.customer.name} — add one to the account first.` };
   }
@@ -96,10 +102,18 @@ export async function sendReviewRequestEmail(
   }
 
   const firstName = visit.customer.name.trim().split(/\s+/)[0] || visit.customer.name;
+  const recipients = resolveRecipients(
+    { toOverride: opts.toOverride, onFile: visit.customer.email, cc: opts.cc },
+    `No valid email address for ${visit.customer.name} — add one to the account first, or type one when sending.`,
+  );
+  if (!recipients.ok) return { ok: false, reason: recipients.reason };
+  const { to, cc } = recipients;
+
   const sent = await sendBrandedEmail({
     kind: "review_request",
     visitId: visit.id,
-    to: visit.customer.email,
+    to,
+    ...(cc.length > 0 ? { cc } : {}),
     subject: `Thank you from Red Cedar Electric — how did we do?`,
     headline: "Thank you — your job is complete",
     bodyHtml: `
@@ -118,10 +132,11 @@ export async function sendReviewRequestEmail(
       </p>
       <p style="font-size:13px;color:#666;">If anything about the work isn't right, reply to this
       email or call us first — we'll make it right.</p>
+      ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${escapeHtml((opts.message ?? "").trim())}</p>` : ""}
       <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
   });
   if (!sent) return { ok: false, reason: "The email could not be sent — check the email connection." };
   await prisma.visit.update({ where: { id: visitId }, data: { reviewRequestedAt: new Date() } });
-  logSystemEvent("info", "jobs", `Review request emailed to ${visit.customer.email} (${visit.customer.name})`, { visitId });
-  return { ok: true, to: visit.customer.email };
+  logSystemEvent("info", "jobs", `Review request emailed to ${to} (${visit.customer.name})`, { visitId });
+  return { ok: true, to, cc };
 }

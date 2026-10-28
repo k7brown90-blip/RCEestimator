@@ -1030,6 +1030,8 @@ describe("financing reaches the PDF through the route, the filed copy and the in
     expect(text).not.toContain(flat("Financing terms"));
     // The body: no payment, APR or promo language (tests/issuedEstimate.test.ts and
     // tests/financingEmail.test.ts pin the estimate and financing emails the same way).
-    expect(args.bodyHtml).not.toMatch(/\/mo\b|APR|no interest|0%|promo|monthly payment/i);
+    // (\b0% - the rule is about "0% APR" language; since 2026-10-27 the invoice email's statement table
+    // is always there and carries the CSS `width:100%`, which a bare 0% would trip on.)
+    expect(args.bodyHtml).not.toMatch(/\/mo\b|APR|no interest|\b0%|promo|monthly payment/i);
   });
 });

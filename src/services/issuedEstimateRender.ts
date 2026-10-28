@@ -9,7 +9,7 @@
  *
  * FORMAT is the house format, lifted from the issued PDFs (2026-1002 Rev C lineage, most
  * recently 2026-1007): letterhead, estimate number and date, "Prepared for", scope prose, a
- * Description / Qty / Price table, work subtotal described as flat rate, the trip line shown even
+ * Description table (no Qty column since Kyle's 2026-10-27 ruling), work subtotal described as flat rate, the trip line shown even
  * when it is waived at $0.00, the total, then payment terms and the acceptance block.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -69,10 +69,6 @@ export function escapeHtml(s: string): string {
 
 function money(n: number): string {
   return `$${n.toFixed(2)}`;
-}
-
-function qty(n: number): string {
-  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)));
 }
 
 function longDate(d: Date): string {
@@ -569,12 +565,10 @@ export function renderEstimatePage(
     .map((o) => {
       const lines = est.lines
         .filter((l) => l.option === o.option)
-        .map(
-          (l) => `<tr>
-        <td>${escapeHtml(l.description)}</td>
-        <td class="r">${qty(l.quantity)}</td>
-      </tr>`
-        )
+        // NO QUANTITY on what the customer reads (Kyle, 2026-10-27: "I also want to get rid of the
+        // quantity showing on the estimates and invoices"). The line shows its name - the custom
+        // one when the office worded it for the job (issue froze it into `description`).
+        .map((l) => `<tr><td>${escapeHtml(l.description)}</td></tr>`)
         .join("");
       const box = selectable
         ? exclusive
@@ -598,7 +592,7 @@ export function renderEstimatePage(
         </header>
         ${note}
         <table>
-          <thead><tr><th>Description</th><th class="r">Qty</th></tr></thead>
+          <thead><tr><th>Description</th></tr></thead>
           <tbody>${lines}</tbody>
         </table>
       </section>`;
@@ -611,11 +605,9 @@ export function renderEstimatePage(
     estOptions.length > 0
       ? optionCards
       : `<table>
-         <thead><tr><th>Description</th><th class="r">Qty</th></tr></thead>
+         <thead><tr><th>Description</th></tr></thead>
          <tbody>${est.lines
-           .map(
-             (l) => `<tr><td>${escapeHtml(l.description)}</td><td class="r">${qty(l.quantity)}</td></tr>`
-           )
+           .map((l) => `<tr><td>${escapeHtml(l.description)}</td></tr>`)
            .join("")}</tbody>
        </table>`;
 
@@ -957,15 +949,24 @@ export function renderEstimatePage(
        </script>`
     : "";
 
+  // A SIGNED job is an invoice, and the customer's own page must say so (Kyle 2026-10-27: "When
+  // sending an invoice the customer sees 'estimate' instead of invoice"; the same rule the PDF
+  // follows, issuedEstimatePdf.ts `isInvoice = Boolean(signedAt)`, Kyle 2026-08-21 "The signed
+  // estimates need to be labeled invoices"). A third party who pays for the job (a school, a
+  // property manager) can only use a document headed "Invoice". Validity means nothing once
+  // signed, so "Valid N days" becomes "Signed <date>". Unsigned pages are unchanged.
+  const docWord = signedOff ? "Invoice" : "Estimate";
   return shell(
-    `Estimate ${est.number}`,
-    `${letterhead("ESTIMATE")}
+    `${docWord} ${est.number}`,
+    `${letterhead(signedOff ? "INVOICE" : "ESTIMATE")}
      <div class="printbar"><button type="button" data-print>Print / Save as PDF</button></div>
      <div class="pad">
        <div class="meta">
-         <div><strong>Estimate No.</strong>${escapeHtml(est.number)}${est.revision > 1 ? ` rev ${est.revision}` : ""}</div>
+         <div><strong>${docWord} No.</strong>${escapeHtml(est.number)}${est.revision > 1 ? ` rev ${est.revision}` : ""}</div>
          <div><strong>Date</strong>${issued}</div>
-         <div><strong>Valid</strong>${est.validDays} days</div>
+         ${est.signedAt
+           ? `<div><strong>Signed</strong>${longDate(est.signedAt)}</div>`
+           : `<div><strong>Valid</strong>${est.validDays} days</div>`}
        </div>
 
        <h2 style="margin-top:0;">${escapeHtml(est.title)}</h2>
@@ -974,7 +975,7 @@ export function renderEstimatePage(
 
        ${scope}
 
-       <h2>Estimate detail</h2>
+       <h2>${docWord} detail</h2>
        ${selectable
          ? exclusive
            ? `<p class="pickhint"><strong>Choose ONE</strong> of the options below — they are alternatives, not add-ons. The total updates as you choose.</p>`
@@ -1002,7 +1003,7 @@ export function renderEstimatePage(
                 <span id="warrantyAmt">&minus;${money(warrantyApplied)}</span>
               </div>`
            : ""}
-         <div class="grand"><span>${warranty ? "YOUR TOTAL" : "ESTIMATE TOTAL"}</span><span id="grandTotal">${money(grandTotal)}</span></div>
+         <div class="grand"><span>${warranty ? "YOUR TOTAL" : signedOff ? "INVOICE TOTAL" : "ESTIMATE TOTAL"}</span><span id="grandTotal">${money(grandTotal)}</span></div>
        </div>
        <p style="font-size:12px;color:#777;margin:8px 4px 0;">
          Furnished and installed, flat rate. The scope above is what the price covers.
@@ -1025,7 +1026,7 @@ export function renderEstimatePage(
        ${financingScript}
      </div>
      <div class="foot">
-       This estimate is valid for ${est.validDays} days. Work performed to the 2017 National
+       ${signedOff ? "" : `This estimate is valid for ${est.validDays} days. `}Work performed to the 2017 National
        Electrical Code as adopted by the Tennessee State Fire Marshal Office.<br>
        Red Cedar Electric LLC &middot; Licensed &amp; Insured &middot; Serving Middle Tennessee
        &middot; ${BUSINESS_PHONE}

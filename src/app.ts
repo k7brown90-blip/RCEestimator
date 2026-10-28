@@ -41,6 +41,7 @@ import { loadPdfFinancing } from "./services/issuedEstimatePdfFinancing";
 import {
   addLine,
   editLine,
+  lineCustomNameSchema,
   browseAtomics,
   browseSections,
   createDraft,
@@ -102,7 +103,7 @@ import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
-import { activeFinancingFeesByRoot, feeDollarsOf, FINANCING_IN_PROGRESS, financingInProgress } from "./services/financingFee";
+import { activeFinancingFeesByRoot, feeDollarsOf } from "./services/financingFee";
 import { groupSignedRows, INVOICE_DOC_SELECT, isLiveSigned, LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER, rollupInvoice, rootFirst, signedRootForJob, type InvoiceDocRow } from "./services/invoiceGroup";
 import { LOSABLE_STATUSES, LOST_REASONS as SHARED_LOST_REASONS } from "../shared/estimateStatus";
 import { ACCEPTED_VIA } from "../shared/acceptance";
@@ -157,8 +158,8 @@ import {
   EXCLUDE_TEST_ACCOUNT,
   EXCLUDE_TEST_JOB,
 } from "./services/accountSpine";
-import { sendEstimateEmailFromBody, sendInvoiceEmail, estimateLink, publicBaseUrl } from "./services/issuedEstimateSend";
-import { ccSchema } from "./services/emailCc";
+import { estimateLink, publicBaseUrl } from "./services/issuedEstimateSend";
+import { sendCustomerEmailRequest } from "./services/customerEmail";
 // Transactional email delivery tracking (Kyle, 2026-09-09: "very few are actually getting through").
 import { lastDeliveriesForEstimates } from "./services/transactionalEmail";
 import { handleResendWebhook } from "./services/resendWebhook";
@@ -1390,9 +1391,20 @@ app.get("/pay/:token", asyncHandler(async (req, res) => {
           <td style="text-align:right;padding:4px 0;font-weight:600;">$${chargeable.documents.reduce((n, d) => n + d.billedTotal, 0).toFixed(2)}</td></tr>
       </table>`
     : "";
+  // The itemized document (Kyle, 2026-10-27): whoever pays — a school, a property manager, not the
+  // job's customer — may hold only this pay link, and this page shows a number and a title, not the
+  // lines. The link goes to the INVOICE ROOT's customer page (/e/<root token>), which reads
+  // "Invoice" once signed and prints/saves as the itemized invoice. The root is looked up by the id
+  // chargeableAmount already resolved (a change order's pay link pays the root), so the pay token
+  // and the page token can differ and only the root's is ever offered. Nothing else is exposed.
+  const rootDoc = await prisma.issuedEstimate.findUnique({ where: { id: chargeable.estimateId }, select: { token: true } });
+  const invoiceLinkHtml = rootDoc
+    ? `<p style="font-size:14px;margin:6px 0 12px;"><a style="color:#1a5c2e;" href="/e/${encodeURIComponent(rootDoc.token)}">View or print your itemized invoice</a></p>`
+    : "";
   res.send(page(`
     <p style="font-size:15px;">${payType === "deposit" ? "Deposit (1/3)" : "Payment"} on invoice
     <b>${chargeable.number}</b> — ${chargeable.title}</p>
+    ${invoiceLinkHtml}
     ${documentsHtml}
     <p style="font-size:14px;">Amount due: <b>$${chargeable.amount.toFixed(2)}</b></p>
     <a style="${btn}background:#1a5c2e;color:#fff;" href="/pay/${token}/checkout${typeParam}">
@@ -1760,6 +1772,10 @@ app.get("/documents/:id/pdf", asyncHandler(async (req, res) => {
         lines: est.lines.map((l) => ({
           option: l.option,
           description: l.description,
+          // The price-book item and its name, for the company copy's "price book:" note and the
+          // materials list (Kyle, 2026-10-27). The customer copy never prints either.
+          itemId: l.itemId,
+          catalogDescription: l.catalogDescription,
           quantity: l.quantity,
           lineTotal: l.lineTotal,
           laborHours: l.laborHours,
@@ -2525,6 +2541,9 @@ app.patch("/price-book/lines/:lineId", asyncHandler(async (req, res) => {
     // Moving a line to another option. Without this a line put in the wrong one could only be
     // fixed by deleting and re-adding it.
     option: z.enum(ALL_OPTIONS).optional(),
+    // The name the customer reads for this line (Kyle, 2026-10-27) - the same schema, and the same
+    // rule in editLine, as the tech's route. Empty or null puts the price-book name back.
+    customName: lineCustomNameSchema,
   }).parse(req.body ?? {});
   try {
     const line = await editLine(prisma, String(req.params.lineId), body);
@@ -2640,6 +2659,8 @@ app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
       option: l.option,
       quantity: l.quantity, quantitySource: l.quantitySource, difficulty: l.difficulty,
       location: l.location, note: l.note, unit: l.atomic?.unit ?? null,
+      // The job-specific name (Kyle, 2026-10-27); `description` above stays the price-book name.
+      customName: l.customName,
       confirmedBy: l.confirmedBy, confirmedAt: l.confirmedAt,
       editedBeforeConfirm: l.editedBeforeConfirm, proposedBy: l.proposedBy,
     })),
@@ -2944,57 +2965,28 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
   });
 }));
 
-app.post("/issued-estimates/:id/send", asyncHandler(async (req, res) => {
-  // The body, its defaults and every refusal live in ONE place - estimateEmailBodySchema and
-  // sendEstimateEmailFromBody in services/issuedEstimateSend.ts - which the technician's
-  // POST /health-record/issued-estimates/:id/email calls too (Phase 4, 2026-10-08, one estimating
-  // system). The fields it takes, with their reasons, are documented there:
-  //   - photoIds: Kyle, 2026-10-01: "Having the photos linked to the job is necessary but that
-  //     should not eleminate them from being selected ... sending the photos as evidence is our
-  //     standard." The scoping is `photoAttachments`; `tests/anyPhotoOnAccountEmail.test.ts`.
-  //   - attachHealthReport / attachGeneratorReport: support documentation (2026-08-29).
-  //   - includeFinancingLink: Kyle, 2026-10-02, an opt-out - absent means SENT.
-  const result = await sendEstimateEmailFromBody(prisma, String(req.params.id), req.body, "human:crm-session");
-
-  if (!result.ok) {
-    res.status(400).json({ sent: false, error: result.reason });
-    return;
-  }
-  res.json({ sent: true, to: result.to, cc: result.cc });
-}));
-
 /*
-  Email the SIGNED invoice, PDF attached.
+  ── THE ONE CUSTOMER-EMAIL ROUTE (Kyle, 2026-10-27: "A rule of thumb is there is one tool for one task.") ──
 
-  Kyle, 2026-08-21: "I cannot email the invoice to the client."
-
-  Separate from the send route above rather than a flag on it. That one refuses once an estimate
-  is signed — correctly, since it exists to ask for a signature — and this one refuses anything
-  NOT signed. Two documents, two guards, no mode to get wrong.
+  POST /customer-emails { kind: "invoice" | "deposit" | "financing" | "estimate" | "review", estimateId | visitId,
+  to?, cc?, message?, photoIds?, ... } - what the "Email the customer" panel on the invoice, job and
+  estimate drawers, Estimate Intake and Present to the customer presses. It replaces seven routes that
+  each fed one removed button: /issued-estimates/:id/send (Email estimate / Resend), /send-invoice
+  ("Email the signed copy"), /email-balance-request ("Email invoice $X due"), /payment-reminder
+  ("Send reminder"), /email-deposit-request, /email-financing, and /jobs/:jobId/email-review-request.
+  The body, the one recipient rule, the defaults and every refusal live in services/customerEmail.ts;
+  each email's words stay in its own service. The estimate kind parses with the same
+  estimateEmailBodySchema the technician's POST /health-record/issued-estimates/:id/email does
+  (Phase 4, one estimating system) - photoIds, the two reports and the financing line are
+  documented there. A free-form message goes through POST /communications/email.
 */
-app.post("/issued-estimates/:id/send-invoice", asyncHandler(async (req, res) => {
-  const body = z.object({
-    toOverride: z.string().trim().email().nullable().optional(),
-    // CC (2026-10-24) - see services/emailCc.ts.
-    cc: ccSchema,
-    message: z.string().trim().max(2000).nullable().optional(),
-    // Photo gallery (2026-08-28): before/after photos on the completed work.
-    photoIds: z.array(z.string().min(1)).max(10).optional(),
-  }).parse(req.body ?? {});
-
-  const result = await sendInvoiceEmail(prisma, String(req.params.id), {
-    sentBy: "human:crm-session",
-    toOverride: body.toOverride ?? null,
-    cc: body.cc,
-    message: body.message ?? null,
-    photoIds: body.photoIds,
-  });
-
+app.post("/customer-emails", asyncHandler(async (req, res) => {
+  const result = await sendCustomerEmailRequest(prisma, req.body, "human:crm-session");
   if (!result.ok) {
     res.status(400).json({ sent: false, error: result.reason });
     return;
   }
-  res.json({ sent: true, to: result.to, cc: result.cc });
+  res.json({ sent: true, ...result });
 }));
 
 /*
@@ -3661,6 +3653,9 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       lines: est.lines.map((l) => ({
         option: l.option,
         description: l.description,
+        // For the company copy only (Kyle, 2026-10-27) - see the signed-document route above.
+        itemId: l.itemId,
+        catalogDescription: l.catalogDescription,
         quantity: l.quantity,
         lineTotal: l.lineTotal,
         laborHours: l.laborHours,
@@ -3672,9 +3667,12 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
   );
 
   res.setHeader("Content-Type", "application/pdf");
+  // A signed job is an invoice, so the saved file says so (Kyle, 2026-10-27; same rule as the
+  // filed copy above and the PDF's own heading, Kyle 2026-08-21 "The signed estimates need to be
+  // labeled invoices").
   res.setHeader(
     "Content-Disposition",
-    `inline; filename="estimate-${est.number}${audience === "company" ? "-company" : ""}.pdf"`,
+    `inline; filename="${est.signedAt ? "invoice" : "estimate"}-${est.number}${audience === "company" ? "-company" : ""}.pdf"`,
   );
   res.send(pdf);
 }));
@@ -4205,8 +4203,33 @@ app.get("/issued-estimates/:id/payment-info", asyncHandler(async (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   const summary = await paymentSummary(prisma, String(req.params.id), origin);
   if (!summary) { res.status(404).json({ error: "Estimate not found" }); return; }
-  res.json({ ...summary, stripeConfigured: stripeConfigured() });
+  res.json({ ...summary, stripeConfigured: stripeConfigured(), email: await emailContextFor(summary.estimateId) });
 }));
+
+/**
+ * Who the "Email the customer" panel on the payment card writes to (Kyle, 2026-10-27, one email
+ * tool): the account (for the contact picker and the photo list), the address on file, and the job
+ * the invoice belongs to with its status (the review-request kind needs a completed one). Read off
+ * the ROOT invoice, the same row the invoice email is sent from.
+ */
+async function emailContextFor(rootId: string, fallbackJobId?: string) {
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: rootId },
+    select: { customerId: true, customerEmail: true, jobVisitId: true },
+  });
+  if (!est) return null;
+  const jobId = est.jobVisitId ?? fallbackJobId ?? null;
+  const job = jobId
+    ? await prisma.visit.findUnique({ where: { id: jobId }, select: { id: true, status: true, reviewRequestedAt: true } })
+    : null;
+  return {
+    customerId: est.customerId,
+    customerEmail: est.customerEmail,
+    jobId: job?.id ?? null,
+    jobStatus: job?.status ?? null,
+    reviewRequestedAt: job?.reviewRequestedAt ?? null,
+  };
+}
 
 /*
   ── BILL BY EMAIL, NEVER BY IMPERSONATION (Kyle, 2026-09-01) ───────────────────────────────────
@@ -4214,100 +4237,25 @@ app.get("/issued-estimates/:id/payment-info", asyncHandler(async (req, res) => {
   "the charge balance is trying to log me into the customers payment portal. Massive error, it
    should email the final bill not try and lig in as the customer."
 
-  The admin buttons used to be links straight to /pay/:token — Kyle's browser landed on the
-  customer's own checkout. These routes send the request in writing instead: the deposit request
-  (the same email the signing flow sends) and the final bill with the balance and pay link. The
-  QR remains the in-person path; nobody's session ever opens the customer's portal.
+  The admin buttons used to be links straight to /pay/:token - Kyle's browser landed on the
+  customer's own checkout. The deposit request, the invoice (with the balance and pay link), the
+  reminder, the financing link and the review ask are now ALL sent by POST /customer-emails above
+  (2026-10-27, one email tool); the routes that fed the separate buttons (email-deposit-request,
+  email-balance-request, payment-reminder, email-financing, jobs/:jobId/email-review-request) are
+  gone. The QR remains the in-person path; nobody's session ever opens the customer's portal.
+
+  The ACCOUNT-keyed review ask below is the account page's own control (ReviewRequestPanel) and is
+  unchanged.
 */
-app.post("/issued-estimates/:id/email-deposit-request", asyncHandler(async (req, res) => {
-  const { sendDepositRequestEmail } = await import("./services/paymentReceipts");
-  const { publicBaseUrl } = await import("./services/issuedEstimateSend");
-  const estimateId = String(req.params.id);
-  const est = await prisma.issuedEstimate.findUnique({
-    where: { id: estimateId },
-    select: { customerEmail: true, signedAt: true },
-  });
-  if (!est) { res.status(404).json({ error: "Estimate not found" }); return; }
-  if (!est.signedAt) { res.status(400).json({ error: "This estimate has not been signed yet." }); return; }
-  if (!est.customerEmail) { res.status(400).json({ error: "No customer email on file — add one to the account first." }); return; }
-  const summary = await paymentSummary(prisma, estimateId, publicBaseUrl());
-  if (summary && !summary.depositRequired) {
-    res.status(400).json({ error: "No deposit is required on this invoice — turn the deposit on first if you want one." });
-    return;
-  }
-  if (!summary || summary.depositSatisfied || summary.paidInFull) {
-    res.status(400).json({ error: "The deposit on this job is already in." });
-    return;
-  }
-  // FINANCING IN PROGRESS (review finding, 2026-10-09): a fee is on and the deposit is not in
-  // (voided after the fee went on). The deposit pay link is closed — chargeableAmount refuses —
-  // so the email would send the customer to a dead end. The panel greys the button with this
-  // reason; this is the server's half, so a stale bundle cannot send it either.
-  if (financingInProgress(summary)) {
-    res.status(409).json({ error: `${FINANCING_IN_PROGRESS} — the deposit pay link is closed. Remove the financing fee (with a reason) to collect the deposit again, then add the fee back.` });
-    return;
-  }
-  await sendDepositRequestEmail(prisma, estimateId, publicBaseUrl());
-  res.json({ ok: true, to: est.customerEmail, amount: Math.round((summary.depositDue - summary.depositPaid) * 100) / 100 });
-}));
-
-/** Manual nudge from the Invoices page — a human pressed it, so pacing does not apply; the stamp still restarts the sweep's clock. */
-app.post("/issued-estimates/:id/payment-reminder", asyncHandler(async (req, res) => {
-  const { sendInvoiceReminder } = await import("./services/invoiceReminders");
-  const result = await sendInvoiceReminder(prisma, String(req.params.id));
-  if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
-  res.json(result);
-}));
-
-app.post("/issued-estimates/:id/email-balance-request", asyncHandler(async (req, res) => {
-  const { sendBalanceRequestEmail } = await import("./services/paymentReceipts");
-  const { publicBaseUrl } = await import("./services/issuedEstimateSend");
-  const result = await sendBalanceRequestEmail(prisma, String(req.params.id), publicBaseUrl());
-  if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
-  res.json(result);
-}));
-
 /**
- * The Synchrony financing link, on its own (Kyle, 2026-10-01: "I also need to have the
- * financing link available to email on its own ... These links should be available along side
- * the invoice email button"). Keyed to the issued estimate, same shape as the deposit/balance
- * sends right above it on PaymentPanel. See services/financingEmail.ts for the no-credit-terms
- * rule and why this is not behind the automation gate.
- */
-app.post("/issued-estimates/:id/email-financing", asyncHandler(async (req, res) => {
-  const { sendFinancingEmail } = await import("./services/financingEmail");
-  const result = await sendFinancingEmail(prisma, String(req.params.id));
-  if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
-  res.json(result);
-}));
-
-/**
- * The Google review ask, on its own, pressed by a human (Kyle, 2026-10-01: "a google review
- * request to email on its own" / "These should be a manual send both from the field app and
- * from the CRM"). Kyle switched AUTOMATED_CUSTOMER_SENDS_REVIEW_REQUESTS off the same day — see
- * services/reviewRequest.ts's header for the full ruling — so until this route existed, no
- * review request could reach a customer at all. `jobId` here is a Visit.id, the same convention
- * as `/jobs/:jobId/complete` just below: the review ask is keyed by the completed VISIT, exactly
- * as the automatic path already is, not by an estimate.
- */
-app.post("/jobs/:jobId/email-review-request", asyncHandler(async (req, res) => {
-  const { sendReviewRequestEmail } = await import("./services/reviewRequest");
-  const result = await sendReviewRequestEmail(prisma, String(req.params.jobId), { manual: true });
-  if (!result.ok) { res.status(400).json({ error: result.reason }); return; }
-  res.json(result);
-}));
-
-/**
- * The SAME ask, resolved by ACCOUNT rather than by job (plan 2026-10-02-account-property-and-
+ * The Google review ask resolved by ACCOUNT rather than by job (plan 2026-10-02-account-property-and-
  * the-estimate-that-knows-the-job.md, item E / ruling E2). Kyle: "I would like... a button that
  * sends them a review request... while we are on the phone with them." A phone call is with a
- * CUSTOMER, not a specific Visit.id — the button above needs one, so this door resolves this
- * account's own most recently completed job (by `completedAt`) and hands it to the exact same
- * service. Every guard still applies exactly as it does on the job-keyed door above: the job
- * must be completed (true by construction of the query below), no duplicate ask on that job, no
- * repeat ask on this customer within 90 days, email on file. With no completed job at all, this
- * reads as a sentence, not a 404 — the CRM greys the button on the same signal, but a refusal
- * here must still be readable on its own.
+ * CUSTOMER, not a specific Visit.id, so this door resolves this account's own most recently
+ * completed job (by `completedAt`) and hands it to the same service the panel's review kind calls.
+ * Every guard applies exactly as it does there: the job must be completed (true by construction of
+ * the query below), no duplicate ask on that job, no repeat ask on this customer within 90 days,
+ * email on file. With no completed job at all, this reads as a sentence, not a 404.
  */
 app.post("/accounts/:accountId/email-review-request", asyncHandler(async (req, res) => {
   const accountId = readParam(req, "accountId");
@@ -4337,7 +4285,7 @@ app.get("/jobs/:jobId/payment-info", asyncHandler(async (req, res) => {
   if (!est) { res.json(null); return; }
   const origin = `${req.protocol}://${req.get("host")}`;
   const summary = await paymentSummary(prisma, est.id, origin);
-  res.json(summary ? { ...summary, stripeConfigured: stripeConfigured() } : null);
+  res.json(summary ? { ...summary, stripeConfigured: stripeConfigured(), email: await emailContextFor(est.id, jobId) } : null);
 }));
 
 /** Signed quote → job, on the same account and address. One tap, idempotent. */

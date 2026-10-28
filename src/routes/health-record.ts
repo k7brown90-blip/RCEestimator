@@ -18,7 +18,7 @@ import { fileSignatureEvent, inPersonSignBodySchema, signInPerson, signatureEven
 import { PhotoError, jobPhotoPreview, listJobPhotos, removeOwnVisitPhoto } from "../services/estimatePhotos";
 import { jobChainOfVisits } from "../services/jobCosting";
 import { MAX_ESTIMATE_PHOTOS } from "../../shared/estimatePhotos";
-import { DraftError, addLine, addOption, browseFieldCatalog, browseSections, computeDraft, confirmLineBodySchema, confirmProposedLine, copyOptionBodySchema, copyOptionLines, deleteDraft, draftDetailsBodySchema, draftDiscountBodySchema, duplicateDraft, editLine, editLineExpectedSchema, expectedLinesSchema, fieldCatalogSnapshot, getDraftOptionSet, getDraftSuggestions, lineOrderBodySchema, lineQuantitySchema, openOrCreateWorkingDraft, optionMetaBodySchema, optionsModeBodySchema, rejectProposedLine, removeLine, removeOption, resolveQuestion, resolveQuestionBodySchema, saveLineOrder, setDraftDetails, setDraftDiscount, setOptionMeta, setOptionsMode, workingDraftForVisit } from "../services/atomicEstimateService";
+import { DraftError, addLine, addOption, browseFieldCatalog, browseSections, computeDraft, confirmLineBodySchema, confirmProposedLine, copyOptionBodySchema, copyOptionLines, deleteDraft, draftDetailsBodySchema, draftDiscountBodySchema, duplicateDraft, editLine, editLineExpectedSchema, expectedLinesSchema, fieldCatalogSnapshot, getDraftOptionSet, getDraftSuggestions, lineCustomNameSchema, lineOrderBodySchema, lineQuantitySchema, openOrCreateWorkingDraft, optionMetaBodySchema, optionsModeBodySchema, rejectProposedLine, removeLine, removeOption, resolveQuestion, resolveQuestionBodySchema, saveLineOrder, setDraftDetails, setDraftDiscount, setOptionMeta, setOptionsMode, workingDraftForVisit } from "../services/atomicEstimateService";
 import { proposeWalkthroughForDraft, walkthroughTextBodySchema } from "../services/aiProposer";
 import { resolveWalkthroughRows, walkthroughRowsBodySchema } from "../services/walkthroughMatch";
 import { frozenStyleSubtotal, getQuoteMoney } from "../services/quoteMoney";
@@ -915,13 +915,28 @@ healthRecordTechRouter.post("/visits/:visitId/email-payment-request", asyncHandl
   }
   const { publicBaseUrl } = await import("../services/issuedEstimateSend");
   if (body.kind === "balance") {
-    const { sendBalanceRequestEmail } = await import("../services/paymentReceipts");
-    const result = await sendBalanceRequestEmail(prisma, est.id, publicBaseUrl());
+    /*
+      THE ONE INVOICE EMAIL (Kyle, 2026-10-27, "one tool for one task"): the field's "email the bill"
+      sends the same email the CRM's "Email the customer" panel does - sendInvoiceEmail: the itemized
+      invoice PDF, the balance, the pay link, due upon receipt - to the customer on file. It used to
+      call a separate bill (sendBalanceRequestEmail) with no PDF. One balance, one bill: the ROOT
+      invoice, as the old bill resolved it. The door and its { ok, to, amount } answer are unchanged.
+    */
+    const { sendInvoiceEmail } = await import("../services/issuedEstimateSend");
+    const { invoiceRootId } = await import("../services/invoiceGroup");
+    const { paymentSummary } = await import("../services/stripePayments");
+    const rootId = await invoiceRootId(prisma, est.id);
+    const before = await paymentSummary(prisma, rootId, publicBaseUrl());
+    if (before?.paidInFull) {
+      res.status(400).json({ success: false, error: { code: "not_sent", message: "This invoice is already paid in full." } });
+      return;
+    }
+    const result = await sendInvoiceEmail(prisma, rootId, { sentBy: `tech:${req.technician!.id}` });
     if (!result.ok) {
       res.status(400).json({ success: false, error: { code: "not_sent", message: result.reason } });
       return;
     }
-    res.json({ success: true, data: result });
+    res.json({ success: true, data: { ok: true, to: result.to, amount: result.amount } });
     return;
   }
   if (!est.customerEmail) {
@@ -1162,7 +1177,7 @@ healthRecordTechRouter.get("/quotes/:draftId", asyncHandler(async (req: TechRequ
     // `state` rides along so the phone can tell an AI-proposed line (not yet confirmed, not
     // priced, not draggable) from a confirmed one — the CRM keeps them in separate lists too.
     // `atomic.retiredAt` becomes the line's `retired` flag below and is never sent itself.
-    select: { id: true, itemId: true, quantity: true, quantitySource: true, difficulty: true, option: true, note: true, location: true, state: true, atomic: { select: { retiredAt: true } } },
+    select: { id: true, itemId: true, quantity: true, quantitySource: true, difficulty: true, option: true, note: true, location: true, customName: true, state: true, atomic: { select: { retiredAt: true } } },
   });
   const priced = new Map(computed.lines.map((l) => [l.id, l]));
   const details = await prisma.priceBookDraftEstimate.findUniqueOrThrow({
@@ -1512,6 +1527,9 @@ healthRecordTechRouter.patch("/quote-lines/:lineId", asyncHandler(async (req: Te
     option: z.enum(ALL_OPTIONS).optional(),
     note: z.string().nullable().optional(),
     location: z.string().nullable().optional(),
+    // The name the customer reads for this line (Kyle, 2026-10-27) - the CRM's schema, and the same
+    // rule in editLine. Empty or null puts the price-book name back.
+    customName: lineCustomNameSchema,
     expected: editLineExpectedSchema,
   }).parse(req.body ?? {});
   // A refusal is a DraftError with its status; a database failure is a 5xx (quoteRuleError), no

@@ -166,15 +166,34 @@ describe("services/financingEmail — sendFinancingEmail", () => {
   });
 });
 
-describe("POST /issued-estimates/:id/email-financing (CRM)", () => {
-  it("emails the financing link and responds with the minimum shape", async () => {
+describe("POST /customer-emails { kind: financing } (CRM - the one email route, 2026-10-27)", () => {
+  it("emails the financing link to the customer on file and responds with who got it", async () => {
     const mod = await import("../src/services/confirmationEmail");
     const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
     try {
       const estimateId = await issuedEstimateId("crm-ok");
-      const res = await request(app).post(`/issued-estimates/${estimateId}/email-financing`).send({});
+      const res = await request(app).post("/customer-emails").send({ kind: "financing", estimateId });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(res.body.to).toBe(CUSTOMER_EMAIL);
+      expect(res.body).toMatchObject({ sent: true, kind: "financing", to: CUSTOMER_EMAIL, cc: [] });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("goes to the chosen To and CC with the note in the body (the one recipient rule)", async () => {
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const estimateId = await issuedEstimateId("crm-to-cc");
+      const res = await request(app).post("/customer-emails").send({
+        kind: "financing", estimateId, to: "payer@example.com", cc: ["Owner@Example.com", "payer@example.com"], message: "Here is the link we talked about.",
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ to: "payer@example.com", cc: ["owner@example.com"] });
+      const call = spy.mock.calls[0][0];
+      expect(call.to).toBe("payer@example.com");
+      expect(call.cc).toEqual(["owner@example.com"]);
+      expect(String(call.bodyHtml)).toContain("Here is the link we talked about.");
     } finally {
       spy.mockRestore();
     }
@@ -184,9 +203,19 @@ describe("POST /issued-estimates/:id/email-financing (CRM)", () => {
     const estimateId = await issuedEstimateId("crm-no-email");
     await prisma.issuedEstimate.update({ where: { id: estimateId }, data: { customerEmail: null } });
 
-    const res = await request(app).post(`/issued-estimates/${estimateId}/email-financing`).send({});
+    const res = await request(app).post("/customer-emails").send({ kind: "financing", estimateId });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/no customer email/i);
+
+    // ...and typing an address on the panel is the way out (nothing given = the customer on file; something given wins).
+    const spy = vi.spyOn((await import("../src/services/confirmationEmail")), "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const typed = await request(app).post("/customer-emails").send({ kind: "financing", estimateId, to: "typed@example.com" });
+      expect(typed.status, JSON.stringify(typed.body)).toBe(200);
+      expect(typed.body.to).toBe("typed@example.com");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

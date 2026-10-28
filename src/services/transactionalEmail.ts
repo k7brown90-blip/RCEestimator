@@ -14,8 +14,10 @@
  *
  *   1. RESEND FIRST. `from` is service@ on the verified root domain — the customer must see the
  *      address they reply to and that Kyle's Gmail owns. reply_to is service@. Kyle's own mailbox
- *      is bcc'd (TRANSACTIONAL_BCC_SELF, default on) so it keeps a copy the way the Sent folder
- *      used to.
+ *      was bcc'd on every send as a verification copy; Kyle, 2026-10-27: "the email bouncing is
+ *      fixed. I no longer need to receive a copy to the company email. We can stop sending a
+ *      duplicate to me for verification." So the bcc is OFF by default now; setting
+ *      TRANSACTIONAL_BCC_SELF=on turns it back on.
  *   2. GMAIL AS THE AUTOMATIC FALLBACK. Any Resend failure — network, 4xx/5xx, missing key — is
  *      logged as a WARN and the same message (html, text, attachments) goes out through the
  *      existing Gmail transporter. Gmail gives no delivery events; the DSN watcher covers its
@@ -100,10 +102,16 @@ export function transactionalProvider(): EmailProvider {
   return process.env.RESEND_API_KEY ? "resend" : "gmail";
 }
 
-/** Kyle's mailbox keeps a copy of every Resend send unless TRANSACTIONAL_BCC_SELF is off. */
+/**
+ * OFF by default (Kyle, 2026-10-27: "I no longer need to receive a copy to the company email. We
+ * can stop sending a duplicate to me for verification."). The verification copy was only ever
+ * there to prove delivery while customer email was bouncing; that is fixed. TRANSACTIONAL_BCC_SELF
+ * = on / 1 / true / yes brings the copy back. Owner notifications ("VIEWED —", "SIGNED —") are
+ * their own emails to the office, not copies of customer mail, and are unaffected.
+ */
 export function bccSelfEnabled(): boolean {
-  const v = (process.env.TRANSACTIONAL_BCC_SELF ?? "on").trim().toLowerCase();
-  return !(v === "off" || v === "0" || v === "false" || v === "no");
+  const v = (process.env.TRANSACTIONAL_BCC_SELF ?? "off").trim().toLowerCase();
+  return v === "on" || v === "1" || v === "true" || v === "yes";
 }
 
 function bccSelfAddress(to: string): string | null {

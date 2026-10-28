@@ -114,6 +114,11 @@ export interface DraftLineInput {
   location?: string | null;
   note?: string | null;
   /**
+   * The customer-facing name the office or tech worded for this job (Kyle, 2026-10-27). Passed
+   * through to the computed line untouched — it prices nothing and no rule reads it.
+   */
+  customName?: string | null;
+  /**
    * Option A, B or C. Optional so the engine stays usable on bare inputs, as its own tests do —
    * an absent option means A, which is what every line was before options existed.
    */
@@ -160,6 +165,8 @@ export interface ComputedLine {
   unit: string | null;
   location: string | null;
   note: string | null;
+  /** The line's own customer-facing name, or null for the price-book `description` (2026-10-27). */
+  customName?: string | null;
 
   /** The atomic's labour figure for THIS line's difficulty, before the unit divisor. */
   laborUnitValue: number | null;
@@ -465,6 +472,7 @@ export function computeEstimate(
         unit: null,
         location: input.location ?? null,
         note: input.note ?? null,
+        customName: input.customName ?? null,
         laborUnitValue: null,
         laborUnitBasis: null,
         laborUnitDivisor: null,
@@ -548,6 +556,7 @@ export function computeEstimate(
         unit: atomic.unit,
         location: input.location ?? null,
         note: input.note ?? null,
+        customName: input.customName ?? null,
         laborUnitValue: laborValueFor(atomic, input.difficulty),
         laborUnitBasis: atomic.laborUnitBasis,
         laborUnitDivisor: atomic.laborUnitDivisor,
@@ -655,6 +664,7 @@ export function computeEstimate(
       unit: atomic.unit,
       location: input.location ?? null,
       note: input.note ?? null,
+      customName: input.customName ?? null,
       laborUnitValue,
       laborUnitBasis: atomic.laborUnitBasis,
       laborUnitDivisor: atomic.laborUnitDivisor,

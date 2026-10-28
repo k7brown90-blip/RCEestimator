@@ -17,8 +17,9 @@ import { logSystemEvent } from "./systemEvents";
 import { paymentSummary, type PaymentSummary } from "./stripePayments";
 import { warrantyEmailLine } from "./warrantyNotice";
 import { invoiceRootId } from "./invoiceGroup";
-import { BALANCE_DUE_TERMS, FINAL_BILL_TERMS } from "./paymentTerms";
-import { financingInProgress } from "./financingFee";
+import { BALANCE_DUE_TERMS } from "./paymentTerms";
+import { FINANCING_IN_PROGRESS, financingInProgress } from "./financingFee";
+import { resolveRecipients } from "./emailCc";
 
 /**
  * What the invoice is made of (Kyle, 2026-09-20): the root estimate and every signed change
@@ -81,7 +82,7 @@ export function financingFeeRow(summary: Pick<PaymentSummary, "financingFee">): 
  * 08-30) — only ever non-empty on invoices that were paid while it ran, and
  * shown so the receipt's arithmetic still adds up on those.
  */
-function discountRows(summary: { payments: { method: string; kind: string; amount: number; voidedAt?: Date | null }[] }): string {
+export function discountRows(summary: { payments: { method: string; kind: string; amount: number; voidedAt?: Date | null }[] }): string {
   const discounts = summary.payments.filter((p) => p.method === "discount" && !p.voidedAt);
   if (discounts.length === 0) return "";
   const total = discounts.reduce((s, d) => s + d.amount, 0);
@@ -96,12 +97,19 @@ function discountRows(summary: { payments: { method: string; kind: string; amoun
  * customer who signed from their kitchen table has no other way to hear that.
  * Skips itself when the deposit (or everything) is already paid — an
  * in-person customer who tapped the QR before Kyle left doesn't get nagged.
+ *
+ * ONE EMAIL TOOL (Kyle, 2026-10-27): when a person presses it (the "Email the customer" panel,
+ * POST /customer-emails) it takes the panel's To, CC and note through the one recipient rule
+ * (emailCc.resolveRecipients) and answers with WHY it did not send; the automatic call after a
+ * signature passes nothing and ignores the answer, exactly as before. Nothing given = the customer
+ * on file.
  */
 export async function sendDepositRequestEmail(
   prisma: PrismaClient,
   estimateId: string,
   payBaseUrl: string,
-): Promise<void> {
+  opts: { toOverride?: string | null; cc?: string[]; message?: string | null } = {},
+): Promise<{ ok: true; to: string; cc: string[]; amount: number } | { ok: false; reason: string }> {
   // The deposit belongs to the INVOICE (2026-09-20): a change order's id resolves to its root,
   // and the ask, the number and the pay link are the root's.
   estimateId = await invoiceRootId(prisma, estimateId);
@@ -109,15 +117,28 @@ export async function sendDepositRequestEmail(
     where: { id: estimateId },
     select: { number: true, title: true, token: true, customerName: true, customerEmail: true, signedAt: true },
   });
-  if (!est?.customerEmail || !est.signedAt) return;
+  if (!est) return { ok: false, reason: "Estimate not found." };
+  if (!est.signedAt) return { ok: false, reason: "This estimate has not been signed yet." };
+  const recipients = resolveRecipients(
+    { toOverride: opts.toOverride, onFile: est.customerEmail, cc: opts.cc },
+    "No customer email on file — add one to the account first, or type an address when sending.",
+  );
+  if (!recipients.ok) return { ok: false, reason: recipients.reason };
+  const { to, cc } = recipients;
 
   const summary = await paymentSummary(prisma, estimateId, payBaseUrl);
+  if (!summary) return { ok: false, reason: "Estimate not found." };
   // No deposit required (Kyle, 2026-09-20) means no deposit email — not a $0.00 ask.
-  if (!summary || !summary.depositRequired || summary.depositSatisfied || summary.paidInFull) return;
+  if (!summary.depositRequired) {
+    return { ok: false, reason: "No deposit is required on this invoice — turn the deposit on first if you want one." };
+  }
+  if (summary.depositSatisfied || summary.paidInFull) return { ok: false, reason: "The deposit on this job is already in." };
   // FINANCING IN PROGRESS (review finding, 2026-10-09): a fee is on and not yet paid, so the
   // deposit pay link this email carries is closed (chargeableAmount refuses). Never send a
-  // customer to a dead end — the CRM and field routes refuse with the reason; this is the last line.
-  if (financingInProgress(summary)) return;
+  // customer to a dead end - refused here with the reason, which the panel shows.
+  if (financingInProgress(summary)) {
+    return { ok: false, reason: `${FINANCING_IN_PROGRESS} — the deposit pay link is closed. Remove the financing fee (with a reason) to collect the deposit again, then add the fee back.` };
+  }
 
   const due = Math.round((summary.depositDue - summary.depositPaid) * 100) / 100;
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
@@ -127,7 +148,8 @@ export async function sendDepositRequestEmail(
     kind: "deposit",
     estimateNumber: est.number,
     issuedEstimateId: estimateId,
-    to: est.customerEmail,
+    to,
+    ...(cc.length > 0 ? { cc } : {}),
     subject: `Next step — your deposit for ${est.title} ($${due.toFixed(2)})`,
     headline: "Thank you — one step to get you scheduled",
     bodyHtml: `
@@ -136,6 +158,7 @@ export async function sendDepositRequestEmail(
       (invoice ${escapeHtml(est.number)}). To reserve your spot on the schedule, a deposit of
       <strong>$${due.toFixed(2)}</strong> — one third of the total — is due up front. We can't book
       the work until it's in.</p>
+      ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${escapeHtml((opts.message ?? "").trim())}</p>` : ""}
       <p style="margin:24px 0;">
         <a href="${escapeHtml(payUrl)}"
            style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
@@ -147,95 +170,11 @@ export async function sendDepositRequestEmail(
       Deposits are non-refundable up to $300 if the job is cancelled. ${BALANCE_DUE_TERMS}</p>
       <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
   });
-  if (sent) {
-    logSystemEvent("info", "stripe", `Deposit request emailed to ${est.customerEmail} — $${due.toFixed(2)} on ${est.number}`, {
-      estimateId,
-    });
-  }
-}
-
-/**
- * The FINAL BILL (Kyle, 2026-09-01: "it should email the final bill not try
- * and log in as the customer" — the admin "charge balance" button used to open
- * the customer's own payment portal in Kyle's browser). This sends the invoice
- * statement instead: total, credits, paid to date, balance due, and the same
- * durable pay link the invoice email carries. Refuses quietly when there is
- * nothing to bill — unsigned, no email on file, or already paid in full.
- */
-export async function sendBalanceRequestEmail(
-  prisma: PrismaClient,
-  estimateId: string,
-  payBaseUrl: string,
-  opts: { reminder?: boolean } = {},
-): Promise<{ ok: true; to: string; amount: number } | { ok: false; reason: string }> {
-  // One balance, one bill (2026-09-20): a change order's id bills its whole invoice.
-  estimateId = await invoiceRootId(prisma, estimateId);
-  const est = await prisma.issuedEstimate.findUnique({
-    where: { id: estimateId },
-    select: { number: true, title: true, token: true, customerName: true, customerEmail: true, signedAt: true, serviceAddress: true },
-  });
-  if (!est) return { ok: false, reason: "Estimate not found." };
-  if (!est.signedAt) return { ok: false, reason: "This estimate has not been signed yet — there is nothing to bill." };
-  if (!est.customerEmail) return { ok: false, reason: "No customer email on file — add one to the account first." };
-
-  const summary = await paymentSummary(prisma, estimateId, payBaseUrl);
-  if (!summary) return { ok: false, reason: "Estimate not found." };
-  if (summary.paidInFull) return { ok: false, reason: "This invoice is already paid in full." };
-  const due = summary.balance;
-  if (!(due > 0)) return { ok: false, reason: "Nothing is due on this invoice." };
-
-  const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
-  const payUrl = `${payBaseUrl}/pay/${est.token}`;
-
-  const sent = await sendBrandedEmail({
-    kind: "balance",
-    estimateNumber: est.number,
-    issuedEstimateId: estimateId,
-    to: est.customerEmail,
-    subject: opts.reminder
-      ? `Friendly reminder — $${due.toFixed(2)} still open on Invoice ${est.number}`
-      : `Your bill for ${est.title} — $${due.toFixed(2)} due (Invoice ${est.number})`,
-    headline: opts.reminder ? "A friendly reminder" : "Your final bill",
-    bodyHtml: `
-      <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
-      <p style="font-size:15px;">${opts.reminder
-        ? `Just a friendly reminder — the balance below is still open on <strong>${escapeHtml(est.title)}</strong> (invoice ${escapeHtml(est.number)}). If payment is already on its way, thank you — please disregard this.`
-        : `Here is the bill for <strong>${escapeHtml(est.title)}</strong> (invoice ${escapeHtml(est.number)}).`}</p>
-      <table style="width:100%;font-size:15px;border-collapse:collapse;margin:12px 0;">
-        ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
-        ${invoiceDocumentRows(summary)}
-        ${warrantyRow(summary)}
-        <tr><td style="padding:4px 0;color:#666;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
-        ${financingFeeRow(summary)}
-        ${discountRows(summary)}
-        ${summary.totalPaid > 0 ? `<tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>` : ""}
-        <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">Balance due</td>
-          <td style="text-align:right;font-weight:700;">$${due.toFixed(2)}</td></tr>
-      </table>
-      <p style="font-size:14px;font-weight:600;color:#1a5c2e;">${FINAL_BILL_TERMS}</p>
-      ${financingInProgress(summary)
-        // Financing in progress (Kyle, 2026-10-08): the balance, fee included, is what the customer
-        // authorizes Synchrony to release — no pay link, because the card path never charges it.
-        // The sentence says HOW to pay what is due (release the funds), never "nothing to pay":
-        // this document is what makes the balance due (review finding, 2026-10-09). Once the
-        // Synchrony payment is recorded (fee locked), anything still owed is plain invoice money
-        // and the pay link below is the right path for it.
-        ? `<p style="font-size:14px;">This balance is being paid through your Synchrony financing: to pay it, release the funds with Synchrony now. As soon as Synchrony confirms the release, we will send your paid-in-full receipt.</p>`
-        : `<p style="margin:24px 0;">
-        <a href="${escapeHtml(payUrl)}"
-           style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
-                  border-radius:6px;font-size:16px;font-weight:600;display:inline-block;">
-          Pay your balance — $${due.toFixed(2)}
-        </a>
-      </p>
-      <p style="font-size:13px;color:#666;">Pay by card or bank transfer online, or by cash, check, or Zelle — same amount either way.</p>`}
-      <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
-  });
   if (!sent) return { ok: false, reason: "The email could not be sent — check the email connection." };
-  logSystemEvent("info", "stripe", `Final bill emailed to ${est.customerEmail} — $${due.toFixed(2)} due on ${est.number}`, {
+  logSystemEvent("info", "stripe", `Deposit request emailed to ${to} — $${due.toFixed(2)} on ${est.number}`, {
     estimateId,
   });
-  return { ok: true, to: est.customerEmail, amount: due };
+  return { ok: true, to, cc, amount: due };
 }
 
 export async function sendPaymentReceiptEmail(

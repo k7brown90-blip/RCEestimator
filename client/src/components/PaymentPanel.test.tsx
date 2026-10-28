@@ -1,4 +1,10 @@
 /**
+ * UPDATED 2026-10-27 (one email tool): the payment card's email buttons - "Email invoice NNNN - $X
+ * due", "Email deposit request", "Email the financing link", "Email a review request" - are the ONE
+ * "Email the customer" panel (SendEmailPanel), so the cases below that pinned those buttons now pin
+ * the same behaviour through the panel: pick the kind, then the one Send button that names both what
+ * and to whom. Deliberately rewritten, not deleted.
+ *
  * The payment panel holds the ONE control that emails the whole invoice (2026-09-29).
  *
  * Kyle, after the Hoover job: "The invoices for Tony Hoover that were sent yesterday did not add
@@ -43,42 +49,60 @@ function info(overrides: Partial<PaymentInfo> = {}): PaymentInfo {
     payUrl: "https://example.test/pay/tok",
     depositPayUrl: "https://example.test/pay/tok?type=deposit",
     stripeConfigured: true,
+    // Who the "Email the customer" panel writes to (2026-10-27): the account, the address on file, the job.
+    email: { customerId: "acct-1", customerEmail: "tony@example.com", jobId: "visit-1", jobStatus: "completed", reviewRequestedAt: null },
     payments: [],
     ...overrides,
   };
 }
 
+/** Open the one panel and pick a kind by its radio. */
+async function openPanel(kindName?: RegExp | string) {
+  fireEvent.click(await screen.findByRole("button", { name: "Email the customer" }));
+  if (kindName) fireEvent.click(await screen.findByRole("radio", { name: kindName }));
+}
+
 describe("PaymentPanel", () => {
-  it("names the invoice and its balance on the whole-invoice send — never 'final bill'", async () => {
+  it("names the invoice and its balance on the whole-invoice send — never 'final bill', and the old separate email buttons are gone", async () => {
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
 
     renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
-    expect(await screen.findByRole("button", { name: "Email invoice 2026-1093 — $233.24 due" })).toBeInTheDocument();
+    await openPanel();
+    expect(await screen.findByRole("radio", { name: "Invoice 2026-1093 — $233.24 due" })).toBeChecked();
     expect(screen.queryByRole("button", { name: /final bill/i })).not.toBeInTheDocument();
+    // ONE email control: none of the retired buttons, and exactly one Send.
+    for (const gone of [/^Email invoice /, /^Email deposit request/, /^Email the financing link/, /^Send the financing link again/, /^Email a review request/, /^Send reminder/, /^Email the signed copy/]) {
+      expect(screen.queryByRole("button", { name: gone })).not.toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("button", { name: /^Send (invoice|deposit|financing|review|message)/ })).toHaveLength(1);
+    // The in-person ways are not email and stay.
+    expect(screen.getByRole("button", { name: "Balance QR (in person)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review QR (in person)" })).toBeInTheDocument();
   });
 
   /*
    * Item B (2026-10-01 plan, "manual-sends-archiving-and-one-calendar"): the financing link and
-   * the Google review ask, sendable on their own, alongside the invoice send. Mutation-checked:
-   * deleting either button from PaymentPanel.tsx fails the matching "present" test below.
+   * the Google review ask, sendable on their own, alongside the invoice send - now kinds of the one panel.
    */
-  describe("financing — standalone send (Kyle, 2026-10-01)", () => {
-    it("is present beside the invoice send and calls the financing endpoint with the estimate id", async () => {
+  describe("financing - a kind of the one panel (Kyle, 2026-10-01; one tool 2026-10-27)", () => {
+    it("is offered beside the invoice and calls the one email endpoint with the estimate id and the customer on file", async () => {
       vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
       vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-      const send = vi.spyOn(api, "emailFinancing").mockResolvedValue({ ok: true, to: "tony@example.com" });
+      const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "financing", to: "tony@example.com", cc: [] });
 
       renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
-      const button = await screen.findByRole("button", { name: "Email the financing link" });
+      await openPanel("Financing link");
+      const button = await screen.findByRole("button", { name: "Send financing link to tony@example.com" });
       fireEvent.click(button);
-      // The ROOT invoice id — PaymentPanel never has a change order's id to send with.
-      await waitFor(() => expect(send).toHaveBeenCalledWith("root-1"));
+      // The ROOT invoice id - PaymentPanel never has a change order's id to send with; nothing chosen = the customer on file.
+      await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "financing", estimateId: "root-1", to: null })));
+      expect(await screen.findByText("Financing link emailed to tony@example.com.")).toBeInTheDocument();
     });
 
-    it("shows when it was last sent, and relabels to a deliberate re-send once it has gone", async () => {
+    it("shows when it was last sent, from the thread, before any click", async () => {
       vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
       vi.spyOn(api, "emailDeliveries").mockImplementation(async (q) =>
         q?.estimateId === "root-1"
@@ -94,76 +118,94 @@ describe("PaymentPanel", () => {
 
       renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
-      // The last-sent line reads the existing delivery before any click.
-      expect(await screen.findByText(/Financing last emailed to tony@example\.com on/)).toBeInTheDocument();
-      // And the button already reads as a deliberate re-send, not the first-time label.
-      expect(screen.getByRole("button", { name: "Send the financing link again" })).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Email the financing link" })).not.toBeInTheDocument();
-    });
-
-    it("relabels after a successful send so a second press is deliberate", async () => {
-      vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
-      vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-      vi.spyOn(api, "emailFinancing").mockResolvedValue({ ok: true, to: "tony@example.com" });
-
-      renderWithProviders(<PaymentPanel jobId="visit-1" />);
-
-      fireEvent.click(await screen.findByRole("button", { name: "Email the financing link" }));
-      expect(await screen.findByText("Financing link emailed to tony@example.com.")).toBeInTheDocument();
-      expect(await screen.findByRole("button", { name: "Send the financing link again" })).toBeInTheDocument();
+      await openPanel("Financing link");
+      expect(await screen.findByText(/Last sent to tony@example\.com on/)).toBeInTheDocument();
     });
 
     it("surfaces a refusal instead of swallowing it", async () => {
       vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
       vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-      vi.spyOn(api, "emailFinancing").mockRejectedValue(new Error("No customer email on file — add one to the account first."));
+      vi.spyOn(api, "sendCustomerEmail").mockRejectedValue(new Error("No customer email on file — add one to the account first."));
 
       renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
-      fireEvent.click(await screen.findByRole("button", { name: "Email the financing link" }));
+      await openPanel("Financing link");
+      fireEvent.click(await screen.findByRole("button", { name: "Send financing link to tony@example.com" }));
       expect(await screen.findByText("No customer email on file — add one to the account first.")).toBeInTheDocument();
     });
   });
 
-  describe("review request — standalone send, keyed by the job (Kyle, 2026-10-01)", () => {
-    it("is present and calls the review endpoint with the job id, when the panel has one", async () => {
+  describe("review request - a kind of the one panel, keyed by the job (Kyle, 2026-10-01)", () => {
+    it("is offered and calls the one email endpoint with the job id, when the job is complete", async () => {
       vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
       vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-      const send = vi.spyOn(api, "emailReviewRequest").mockResolvedValue({ ok: true, to: "tony@example.com" });
+      const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "review", to: "tony@example.com", cc: [] });
 
       renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
-      const button = await screen.findByRole("button", { name: "Email a review request" });
-      expect(button).not.toBeDisabled();
-      fireEvent.click(button);
-      await waitFor(() => expect(send).toHaveBeenCalledWith("visit-1"));
-      expect(await screen.findByRole("button", { name: "Send the review request again" })).toBeInTheDocument();
+      await openPanel("Review request");
+      fireEvent.click(await screen.findByRole("button", { name: "Send review request to tony@example.com" }));
+      await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "review", visitId: "visit-1" })));
+      expect(await screen.findByText("Review request emailed to tony@example.com.")).toBeInTheDocument();
     });
 
-    it("is greyed with the reason, not hidden, when the panel only has an estimate id", async () => {
-      // InvoiceDrawer / AccountDetailPage / SigningModePage open PaymentPanel this way —
-      // no jobId, because a drawer opened off an invoice doesn't carry one.
-      vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(info());
+    it("is greyed with the reason, not hidden, when the invoice has no job yet", async () => {
+      // InvoiceDrawer / AccountDetailPage / SigningModePage open PaymentPanel by estimate id: the
+      // server tells the panel the job (or that there is none) in `email`.
+      vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(info({ email: { customerId: "acct-1", customerEmail: "tony@example.com", jobId: null, jobStatus: null, reviewRequestedAt: null } }));
       vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-      const send = vi.spyOn(api, "emailReviewRequest");
+      const send = vi.spyOn(api, "sendCustomerEmail");
 
       renderWithProviders(<PaymentPanel estimateId="root-1" />);
 
-      const button = await screen.findByRole("button", { name: "Email a review request" });
-      expect(button).toBeDisabled();
-      expect(button).toHaveAttribute("title", expect.stringContaining("needs an open JOB"));
+      await openPanel();
+      const radio = await screen.findByRole("radio", { name: "Review request" });
+      expect(radio).toBeDisabled();
+      expect(screen.getByText(/needs the job - this invoice has no job yet/)).toBeInTheDocument();
       expect(send).not.toHaveBeenCalled();
+    });
+
+    it("is greyed with the reason until the job is complete", async () => {
+      vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info({ email: { customerId: "acct-1", customerEmail: "tony@example.com", jobId: "visit-1", jobStatus: "scheduled", reviewRequestedAt: null } }));
+      vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+      renderWithProviders(<PaymentPanel jobId="visit-1" />);
+      await openPanel();
+      expect(await screen.findByRole("radio", { name: "Review request" })).toBeDisabled();
+      expect(screen.getByText(/once the job is marked complete/)).toBeInTheDocument();
     });
 
     it("surfaces the server's refusal reason (completed / dedupe / 90-day rule) rather than swallowing it", async () => {
       vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
       vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-      vi.spyOn(api, "emailReviewRequest").mockRejectedValue(new Error("This job is not marked complete yet."));
+      vi.spyOn(api, "sendCustomerEmail").mockRejectedValue(new Error("Tony was already asked for a review within the last 90 days."));
 
       renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
-      fireEvent.click(await screen.findByRole("button", { name: "Email a review request" }));
-      expect(await screen.findByText("This job is not marked complete yet.")).toBeInTheDocument();
+      await openPanel("Review request");
+      fireEvent.click(await screen.findByRole("button", { name: "Send review request to tony@example.com" }));
+      expect(await screen.findByText("Tony was already asked for a review within the last 90 days.")).toBeInTheDocument();
+    });
+  });
+
+  describe("deposit request - a kind of the one panel, only while a deposit is due", () => {
+    it("is not offered once the deposit is in", async () => {
+      vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info()); // depositSatisfied: true
+      vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+      renderWithProviders(<PaymentPanel jobId="visit-1" />);
+      await openPanel();
+      expect(await screen.findByRole("radio", { name: /^Invoice 2026-1093/ })).toBeInTheDocument();
+      expect(screen.queryByRole("radio", { name: /^Deposit request/ })).not.toBeInTheDocument();
+    });
+
+    it("is offered while a deposit is due, and sends the deposit ask", async () => {
+      vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info({ depositPaid: 0, totalPaid: 0, balance: 349.86, depositSatisfied: false }));
+      vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+      const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "deposit", to: "tony@example.com", cc: [], amount: 116.62 });
+      renderWithProviders(<PaymentPanel jobId="visit-1" />);
+      await openPanel(/^Deposit request — \$116\.62/);
+      fireEvent.click(await screen.findByRole("button", { name: "Send deposit request to tony@example.com" }));
+      await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "deposit", estimateId: "root-1" })));
+      expect(await screen.findByText(/Deposit request emailed to tony@example\.com — \$116\.62 deposit requested\./)).toBeInTheDocument();
     });
   });
 
@@ -179,17 +221,18 @@ describe("PaymentPanel", () => {
     expect(screen.getByText("Change order 2026-1097 — Resolutions — kitchen circuit")).toBeInTheDocument();
   });
 
-  it("confirms the send in the same words as the button, naming how many documents went", async () => {
+  it("sends the invoice through the one panel, to the root, and says what went and what was owed", async () => {
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-    const send = vi.spyOn(api, "emailBalanceRequest").mockResolvedValue({ ok: true, to: "tony@example.com", amount: 233.24 });
+    const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "invoice", to: "tony@example.com", cc: [], amount: 233.24, reminder: false });
 
     renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Email invoice 2026-1093 — $233.24 due" }));
-    // The ROOT's id — a change order has no invoice of its own.
-    await waitFor(() => expect(send).toHaveBeenCalledWith("root-1"));
-    expect(await screen.findByText(/Invoice 2026-1093 emailed to tony@example.com — all 2 documents, \$233\.24 due\./)).toBeInTheDocument();
+    await openPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Send invoice 2026-1093 to tony@example.com" }));
+    // The ROOT's id - a change order has no invoice of its own.
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "invoice", estimateId: "root-1", to: null })));
+    expect(await screen.findByText("Invoice 2026-1093 emailed to tony@example.com — $233.24 due.")).toBeInTheDocument();
   });
 
   it("on a single-document invoice, still names the invoice and drops the document list", async () => {
@@ -200,8 +243,17 @@ describe("PaymentPanel", () => {
 
     renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
-    expect(await screen.findByRole("button", { name: "Email invoice 2026-1093 — $233.24 due" })).toBeInTheDocument();
+    await openPanel();
+    expect(await screen.findByRole("radio", { name: "Invoice 2026-1093 — $233.24 due" })).toBeInTheDocument();
     expect(screen.queryByText(/is made up of:/)).not.toBeInTheDocument();
+  });
+
+  it("emailPanel={false} leaves the card with NO email control (a host that carries its own panel)", async () => {
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    renderWithProviders(<PaymentPanel jobId="visit-1" emailPanel={false} />);
+    expect(await screen.findByText(/Take payment — Invoice 2026-1093/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Email the customer" })).not.toBeInTheDocument();
   });
 
   /*
@@ -341,8 +393,10 @@ describe("PaymentPanel", () => {
         expect(b, name).toHaveAttribute("title", expect.stringContaining("Financing in progress"));
       }
       // The FINAL INVOICE stays sendable (Phase 6 Unit 6C): a financed customer is owed the same
-      // "due upon receipt" document; the email carries the fee line and no pay link.
-      expect(screen.getByRole("button", { name: "Email invoice 2026-1093 — $240.35 due" })).toBeEnabled();
+      // "due upon receipt" document; the email carries the fee line and no pay link. It is the Invoice
+      // kind of the one panel (2026-10-27).
+      fireEvent.click(screen.getByRole("button", { name: "Email the customer" }));
+      expect(screen.getByRole("radio", { name: "Invoice 2026-1093 — $240.35 due" })).toBeEnabled();
       fireEvent.click(screen.getByRole("button", { name: "Record Synchrony payment" }));
       const recordButton = screen.getByRole("button", { name: "Record" });
       expect(recordButton).toBeDisabled(); // no authorization number yet
@@ -356,12 +410,33 @@ describe("PaymentPanel", () => {
     it("the final invoice can be emailed while financing — it is the document that is due upon receipt", async () => {
       vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info({ balance: 240.35, balanceBeforeFee: 233.24, financingFee: fee() }));
       vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-      const send = vi.spyOn(api, "emailBalanceRequest").mockResolvedValue({ ok: true, to: "tony@example.com", amount: 240.35 });
+      const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "invoice", to: "tony@example.com", cc: [], amount: 240.35, reminder: false });
 
       renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
-      fireEvent.click(await screen.findByRole("button", { name: "Email invoice 2026-1093 — $240.35 due" }));
-      await waitFor(() => expect(send).toHaveBeenCalledWith("root-1"));
+      await openPanel();
+      fireEvent.click(await screen.findByRole("button", { name: "Send invoice 2026-1093 to tony@example.com" }));
+      await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "invoice", estimateId: "root-1" })));
+    });
+
+    it("while financing the deposit request is greyed WITH the reason, and a second invoice send is not worded as a reminder", async () => {
+      vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info({
+        depositPaid: 0, totalPaid: 0, depositSatisfied: false, balance: 357.0, balanceBeforeFee: 349.86, financingFee: fee(),
+      }));
+      vi.spyOn(api, "emailDeliveries").mockImplementation(async (q) => q?.estimateId === "root-1"
+        ? [{
+            id: "d9", provider: "resend", status: "sent", statusAt: null, to: "tony@example.com", error: null, createdAt: "2026-09-20T12:00:00.000Z",
+            providerMessageId: null, subject: "Your invoice", kind: "invoice", estimateNumber: "2026-1093", issuedEstimateId: "root-1", visitId: null,
+            leadId: null, customerId: null, estimate: null,
+          }]
+        : []);
+      renderWithProviders(<PaymentPanel jobId="visit-1" />);
+      await openPanel();
+      expect(await screen.findByRole("radio", { name: /^Deposit request/ })).toBeDisabled();
+      expect(screen.getAllByText(/Financing in progress/).length).toBeGreaterThan(0);
+      // Last sent shown, but NOT the reminder warning - a balance being paid through Synchrony is never chased.
+      expect(await screen.findByText(/Last sent to tony@example\.com on/)).toBeInTheDocument();
+      expect(screen.queryByText(/worded as a friendly reminder/)).not.toBeInTheDocument();
     });
 
     it("fee on but the deposit no longer in (voided): 'Record Synchrony payment' is greyed with the deposit reason", async () => {

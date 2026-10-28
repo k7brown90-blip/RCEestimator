@@ -188,6 +188,8 @@ export async function graduateDraft(
   const lines: Array<{
     itemId: string;
     description: string;
+    /** The price-book name, frozen beside a custom `description` for the company copy (2026-10-27). */
+    catalogDescription: string;
     quantity: number;
     unitPrice: number;
     lineTotal: number;
@@ -243,7 +245,16 @@ export async function graduateDraft(
     }
     lines.push({
       itemId: l.itemId,
-      description: l.description ?? l.itemId,
+      /*
+        THE NAME THE CUSTOMER READS (Kyle, 2026-10-27): "I want to be able to edit the name of the
+        line item so I can customize the line item name to the specific job." The line's own name
+        when it has one, otherwise the price-book name — frozen here so the estimate, the invoice,
+        the PDF and the customer's page all show the job-specific wording, and a later rename or
+        edit of the draft cannot move a document already sent. The price-book name is frozen
+        beside it for the company copy (the materials list stays keyed by the item).
+      */
+      description: l.customName?.trim() || l.description || l.itemId,
+      catalogDescription: l.description ?? l.itemId,
       quantity: l.quantity,
       // `!== 0`, not `> 0`. A change-order line may carry a NEGATIVE count to remove work, and
       // the old test sent those down the divide-by-nothing branch — storing the whole line total

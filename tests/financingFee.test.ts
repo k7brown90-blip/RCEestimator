@@ -57,7 +57,7 @@ vi.mock("../src/services/confirmationEmail", async (importOriginal) => {
 });
 
 import { app } from "../src/app";
-import { sendBalanceRequestEmail } from "../src/services/paymentReceipts";
+import { sendInvoiceEmail } from "../src/services/issuedEstimateSend";
 
 const MARK = "FFEE";
 /** A year no other test records money in — the P&L assertions sum the whole year. */
@@ -258,7 +258,7 @@ describe("the financing fee, the Synchrony payment, and every reader in between"
 
     // The final bill: the fee as its own line, the fee-inclusive balance, and NO pay link.
     emailMock.sendBrandedEmail.mockClear();
-    const bill = await sendBalanceRequestEmail(prisma, est.id, ORIGIN);
+    const bill = await sendInvoiceEmail(prisma, est.id, { sentBy: "test" });
     expect(bill).toMatchObject({ ok: true, amount: owed });
     const html = emailMock.sendBrandedEmail.mock.calls[0][0].bodyHtml as string;
     expect(html).toContain(`Financing fee — Plan ${plan.planNumber}`);
@@ -389,7 +389,10 @@ describe("the financing fee, the Synchrony payment, and every reader in between"
     // With the fee gone, a check closes the plain balance.
     expect((await record({ amount: 283.33, method: "check", kind: "final", estimateId: est.id, customerId })).status).toBe(201);
     expect((await summaryOf(est.id))!.paidInFull).toBe(true);
-  });
+    // 30s, not the default 5s (2026-10-27): the invoice send in the middle of this walk is now THE
+    // invoice email (it renders the itemized PDF) instead of a PDF-less bill, which is the point of
+    // the change and adds real time to a test that already does a dozen route calls.
+  }, 30_000);
 });
 
 // ─── 2. Decision 8, the other refusals ──────────────────────────────────────────────────────

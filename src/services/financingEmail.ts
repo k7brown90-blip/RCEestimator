@@ -42,11 +42,18 @@ import type { PrismaClient } from "@prisma/client";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { getCompanyProfile } from "./companyProfile";
 import { logSystemEvent } from "./systemEvents";
+import { resolveRecipients } from "./emailCc";
 
+/**
+ * ONE EMAIL TOOL (Kyle, 2026-10-27): the "Email the customer" panel (POST /customer-emails) passes
+ * its To, CC and note, and they go through the one recipient rule (emailCc.resolveRecipients).
+ * Nothing given = the customer on file, exactly as the field's button and the old buttons did.
+ */
 export async function sendFinancingEmail(
   prisma: PrismaClient,
   estimateId: string,
-): Promise<{ ok: true; to: string } | { ok: false; reason: string }> {
+  opts: { toOverride?: string | null; cc?: string[]; message?: string | null } = {},
+): Promise<{ ok: true; to: string; cc: string[] } | { ok: false; reason: string }> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
     select: {
@@ -68,9 +75,12 @@ export async function sendFinancingEmail(
   if (est.status === "lost") {
     return { ok: false, reason: "This estimate is marked lost. Reopen it first, then send the financing link." };
   }
-  if (!est.customerEmail) {
-    return { ok: false, reason: "No customer email on file — add one to the account first." };
-  }
+  const recipients = resolveRecipients(
+    { toOverride: opts.toOverride, onFile: est.customerEmail, cc: opts.cc },
+    "No customer email on file — add one to the account first, or type an address when sending.",
+  );
+  if (!recipients.ok) return { ok: false, reason: recipients.reason };
+  const { to, cc } = recipients;
 
   // financingUrl is Settings-editable and https-only validated at the source
   // (companyProfile.ts:73-76) — read through here, never hardcoded.
@@ -81,7 +91,8 @@ export async function sendFinancingEmail(
     kind: "financing",
     issuedEstimateId: estimateId,
     estimateNumber: est.number,
-    to: est.customerEmail,
+    to,
+    ...(cc.length > 0 ? { cc } : {}),
     subject: `Financing available for ${est.title}`,
     headline: "Flexible financing, if you'd like it",
     bodyHtml: `
@@ -90,6 +101,7 @@ export async function sendFinancingEmail(
       <strong>${escapeHtml(est.title)}</strong>, Red Cedar Electric works with Synchrony.
       You're welcome to apply directly through their secure application — it only
       takes a few minutes, and there's no obligation.</p>
+      ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${escapeHtml((opts.message ?? "").trim())}</p>` : ""}
       <p style="margin:24px 0;">
         <a href="${escapeHtml(financingUrl)}"
            style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
@@ -102,8 +114,8 @@ export async function sendFinancingEmail(
       <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
   });
   if (!sent) return { ok: false, reason: "The email could not be sent — check the email connection." };
-  logSystemEvent("info", "stripe", `Financing link emailed to ${est.customerEmail} on ${est.number}`, {
+  logSystemEvent("info", "stripe", `Financing link emailed to ${to} on ${est.number}`, {
     estimateId,
   });
-  return { ok: true, to: est.customerEmail };
+  return { ok: true, to, cc };
 }

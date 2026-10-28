@@ -180,7 +180,9 @@ describe("services/reviewRequest — manual bypass vs. the automatic gate", () =
   });
 });
 
-describe("POST /jobs/:jobId/email-review-request (CRM)", () => {
+// 2026-10-27 (one email tool): the job-keyed CRM route /jobs/:jobId/email-review-request is gone; the
+// review ask is the Review request kind of POST /customer-emails { kind: "review", visitId }.
+describe("POST /customer-emails { kind: review } (CRM)", () => {
   it("sends with the gate off, since a human pressed it", async () => {
     delete process.env.AUTOMATED_CUSTOMER_SENDS_REVIEW_REQUESTS;
     delete process.env.AUTOMATED_CUSTOMER_SENDS;
@@ -189,9 +191,31 @@ describe("POST /jobs/:jobId/email-review-request (CRM)", () => {
     const mod = await import("../src/services/confirmationEmail");
     const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
     try {
-      const res = await request(app).post(`/jobs/${visitId}/email-review-request`).send({});
+      const res = await request(app).post("/customer-emails").send({ kind: "review", visitId });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(res.body.to).toBe(customerEmail);
+      expect(res.body).toMatchObject({ sent: true, kind: "review", to: customerEmail, cc: [] });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("goes to the chosen To and CC, with the note in the body", async () => {
+    delete process.env.AUTOMATED_CUSTOMER_SENDS_REVIEW_REQUESTS;
+    delete process.env.AUTOMATED_CUSTOMER_SENDS;
+
+    const { visitId } = await makeCompletedVisit("crm-to-cc");
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const res = await request(app).post("/customer-emails").send({
+        kind: "review", visitId, to: "tenant@example.com", cc: ["owner@example.com"], message: "Thanks again.",
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ to: "tenant@example.com", cc: ["owner@example.com"] });
+      const call = spy.mock.calls[0][0];
+      expect(call.to).toBe("tenant@example.com");
+      expect(call.cc).toEqual(["owner@example.com"]);
+      expect(String(call.bodyHtml)).toContain("Thanks again.");
     } finally {
       spy.mockRestore();
     }
@@ -205,7 +229,7 @@ describe("POST /jobs/:jobId/email-review-request (CRM)", () => {
     customerIdsBySuffix["crm-not-done"] = customer.id;
     propertyIdsBySuffix["crm-not-done"] = property.id;
 
-    const res = await request(app).post(`/jobs/${visit.id}/email-review-request`).send({});
+    const res = await request(app).post("/customer-emails").send({ kind: "review", visitId: visit.id });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/not marked complete/i);
   });

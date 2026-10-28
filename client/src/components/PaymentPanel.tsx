@@ -11,13 +11,23 @@
  * recorded here too, and a recorded deposit opens the scheduling gate the
  * same as a card one.
  *
- * ── THIS PANEL HOLDS THE ONLY WHOLE-INVOICE SEND (renamed 2026-09-29) ────────────────────────
- * "Email invoice NNNN — $X due" sends every document on the invoice, one total, paid-to-date,
- * the balance and one pay link (sendBalanceRequestEmail, which resolves to the root). It was
- * called "Email final bill" — a stage of a job, not the thing it sends — so when Kyle went
- * looking for a combined invoice after the Hoover job he pressed "Email invoice…" on the invoice
- * drawer instead and got one frozen document. That button is now "Email the signed copy…".
- * If a third send is ever added here, name it after what arrives in the customer's inbox.
+ * ── THE EMAILS LIVE IN ONE PLACE NOW (Kyle, 2026-10-27) ─────────────────────────────────────────────
+ * "Multiple email buttons are created and in use. This is confusing and difficult and causes user
+ * error. A rule of thumb is there is one tool for one task." This card used to carry five email
+ * buttons - "Email invoice NNNN - $X due", "Email deposit request", "Email the financing link",
+ * "Email a review request" - beside the drawer's "Email the signed copy" and "Send reminder". They
+ * are ONE control: the "Email the customer" panel at the bottom of this card (SendEmailPanel with
+ * a `record` built by invoiceEmailRecord below): pick what you are sending - Invoice, Deposit
+ * request (only while a deposit is due), Financing link, Review request, Message - then who it goes
+ * to (customer on file, a saved contact, a typed address, plus CC), and press the one Send button,
+ * which names both ("Send invoice 2026-1104 to jane@example.com"). The invoice it sends is ONE
+ * email: the itemized PDF, the amount due, the pay link, due upon receipt; sent again to the same
+ * address while still unpaid it is worded as a friendly reminder.
+ * Balance QR and Review QR are not email - they are the in-person ways and stay beside Take payment.
+ *
+ * The one panel is mounted HERE so every surface that shows this card (invoice drawer, job drawer,
+ * visit workspace, signing page) ends with exactly one email control. A host that already carries
+ * the panel for the same record passes `emailPanel={false}` (InvoiceRow does, for its own document).
  */
 
 import { useState } from "react";
@@ -30,8 +40,48 @@ import { WarrantyClaimTracker } from "./WarrantyCoveragePanel";
 import { RefundedPaymentNote, VoidPaymentButton, VoidedPaymentNote } from "./VoidPaymentButton";
 import { FINANCING_IN_PROGRESS, financingInProgress, SynchronyFinancing } from "./SynchronyFinancing";
 import { GOOGLE_REVIEW_URL } from "../../../shared/reviewRequestUrl";
+import { SendEmailPanel } from "./SendEmailPanel";
+import type { EmailRecord } from "./SendEmailPanel";
 
-export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId?: string }) {
+/**
+ * The kinds the one "Email the customer" panel offers for an invoice (Kyle, 2026-10-27). Invoice,
+ * Financing link and Message always; the Deposit request only while a deposit is due (and greyed
+ * with the reason while a financing fee has closed the deposit pay link); the Review request is
+ * greyed with its reason until the job is complete and not yet asked. Pure - the host only mounts it.
+ */
+export function invoiceEmailRecord(info: PaymentInfo): EmailRecord {
+  const e = info.email ?? null;
+  const financing = financingInProgress(info);
+  const depositRemaining = Math.max(0, info.depositDue - info.depositPaid);
+  const depositDue = info.stripeConfigured && info.depositRequired && !info.depositSatisfied && depositRemaining > 0;
+  const reviewBlock = !e?.jobId
+    ? "A review request needs the job - this invoice has no job yet."
+    : e.jobStatus !== "completed"
+      ? "A review request can go once the job is marked complete."
+      : e.reviewRequestedAt
+        ? "A review request has already been sent for this job."
+        : null;
+  return {
+    estimateId: info.estimateId,
+    number: info.number,
+    visitId: e?.jobId ?? null,
+    invoiceOwing: !info.paidInFull && !financing,
+    kinds: [
+      { kind: "invoice", label: info.paidInFull ? `Invoice ${info.number} — paid in full` : `Invoice ${info.number} — ${money(info.balance)} due` },
+      ...(depositDue ? [{ kind: "deposit" as const, label: `Deposit request — ${money(depositRemaining)}`, blocked: financing ? FINANCING_IN_PROGRESS : null }] : []),
+      { kind: "financing", label: "Financing link" },
+      { kind: "review", label: "Review request", blocked: reviewBlock },
+      { kind: "message", label: "Message" },
+    ],
+  };
+}
+
+export function PaymentPanel({ jobId, estimateId, emailPanel = true }: {
+  jobId?: string;
+  estimateId?: string;
+  /** Mount the one "Email the customer" panel inside this card (default). A host that carries it itself passes false. */
+  emailPanel?: boolean;
+}) {
   const queryClient = useQueryClient();
   const queryKey = ["paymentInfo", jobId ?? estimateId];
   const { data: info } = useQuery<PaymentInfo | null>({
@@ -57,80 +107,6 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
   const [kind, setKind] = useState<"deposit" | "final" | "other">("final");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  const emailRequest = useMutation({
-    mutationFn: (kind: "deposit" | "balance") =>
-      kind === "deposit"
-        ? api.emailDepositRequest(info!.estimateId)
-        : api.emailBalanceRequest(info!.estimateId),
-    onSuccess: (r, kind) => {
-      setError(null);
-      // Reads back the words on the button (2026-09-29), so the confirmation names the same
-      // thing the operator clicked rather than an older internal name for it.
-      setNotice(
-        kind === "deposit"
-          ? `Deposit request emailed to ${r.to} — $${r.amount.toFixed(2)} due.`
-          : `Invoice ${info!.number} emailed to ${r.to}${info!.documents.length > 1 ? ` — all ${info!.documents.length} documents, ` : " — "}$${r.amount.toFixed(2)} due.`,
-      );
-    },
-    onError: (err) => { setNotice(null); setError((err as Error).message); },
-  });
-
-  /*
-   * FINANCING AND THE REVIEW ASK, STANDALONE (Kyle, 2026-10-01: "I also need to have the
-   * financing link available to email on its own along with a google review request to email on
-   * its own" / "These links should be available along side the invoice email button" / "These
-   * should be a manual send both from the field app and from the CRM").
-   *
-   * Each reads its own "last sent" off GET /email-deliveries (api.emailDeliveries, already used
-   * by SendEmailPanel) filtered to the kind the server stamps it with (financingEmail.ts /
-   * reviewRequest.ts) — a security review on 2026-10-01 found financing had NO repeat guard at
-   * all (every press re-emails), and Kyle has already been hit by duplicate customer emails
-   * twice in a fortnight (two invoice emails on the Hoover job 2026-09-28, two deposit requests
-   * on Arlene's 2026-09-30). The fix is UI, deliberately, not a server-side block — financing is
-   * resent on request legitimately — so the button must SHOW when it last went and relabel to
-   * "send again" once it has, the same remedy field/QuoteScreen.tsx shipped yesterday.
-   */
-  const financingDeliveries = useQuery({
-    queryKey: ["email-deliveries", "estimate", info?.estimateId, "financing"],
-    queryFn: () => api.emailDeliveries({ estimateId: info!.estimateId, limit: 10 }),
-    enabled: Boolean(info?.estimateId),
-  });
-  const lastFinancing = financingDeliveries.data?.find((d) => d.kind === "financing") ?? null;
-
-  const financingSend = useMutation({
-    mutationFn: () => api.emailFinancing(info!.estimateId),
-    onSuccess: (r) => {
-      setError(null);
-      setNotice(`Financing link emailed to ${r.to}.`);
-      void queryClient.invalidateQueries({ queryKey: ["email-deliveries", "estimate", info!.estimateId, "financing"] });
-    },
-    onError: (err) => { setNotice(null); setError((err as Error).message); },
-  });
-
-  // Keyed by the JOB (a Visit.id), not the estimate — the review route needs one, and this
-  // panel is sometimes opened from an estimate alone (InvoiceDrawer, AccountDetailPage,
-  // SigningModePage) with no jobId at all. Greyed with the reason when that happens, never
-  // hidden (CLAUDE.md click-through rule 5).
-  const reviewDeliveries = useQuery({
-    queryKey: ["email-deliveries", "job", jobId, "review_request"],
-    queryFn: () => api.emailDeliveries({ visitId: jobId, limit: 10 }),
-    enabled: Boolean(jobId),
-  });
-  const lastReview = reviewDeliveries.data?.find((d) => d.kind === "review_request") ?? null;
-
-  const reviewSend = useMutation({
-    mutationFn: () => api.emailReviewRequest(jobId!),
-    onSuccess: (r) => {
-      setError(null);
-      setNotice(`Review request emailed to ${r.to}.`);
-      void queryClient.invalidateQueries({ queryKey: ["email-deliveries", "job", jobId, "review_request"] });
-    },
-    // The server's refusal (job not completed, already asked on this job, this customer asked
-    // within 90 days, no email on file) is readable text — surfaced as-is, never swallowed.
-    onError: (err) => { setNotice(null); setError((err as Error).message); },
-  });
 
   const toggleReviewQr = () => {
     if (showReviewQr) { setShowReviewQr(false); return; }
@@ -279,14 +255,6 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
       <div className="mt-3 flex flex-wrap gap-2">
         {info.stripeConfigured && info.depositRequired && !info.depositSatisfied && depositRemaining > 0 && (
           <>
-            <button
-              className="btn btn-primary text-sm"
-              disabled={emailRequest.isPending || financing}
-              {...closed}
-              onClick={() => emailRequest.mutate("deposit")}
-            >
-              Email deposit request — {money(depositRemaining)}
-            </button>
             <button className="btn btn-secondary text-sm" {...closed} onClick={() => setShowQr(showQr === "deposit" ? null : "deposit")}>
               {showQr === "deposit" ? "Hide QR" : "Deposit QR (in person)"}
             </button>
@@ -294,85 +262,12 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
         )}
         {info.stripeConfigured && !info.paidInFull && (
           <>
-            {/*
-              SAY THAT THIS IS THE INVOICE (Kyle, 2026-09-29).
-
-              This is the ONE control that emails the whole invoice — every document on it, one
-              total, paid-to-date, the balance and one pay link (sendBalanceRequestEmail, which
-              resolves to the root). It was called "Email final bill", which named a STAGE of a
-              job rather than the thing it sends. So when Kyle went looking for a combined
-              invoice after the Hoover job he found "Email invoice…" instead — the per-document
-              signed copy — and got one document. The button now names the invoice and says what
-              is due on it.
-            */}
-            {/*
-              THE FINAL INVOICE STAYS SENDABLE WHILE FINANCING (Kyle, 2026-10-08, Phase 6 Unit 6C): "I can
-              send the final invoice out and then it is due" — a financed customer is owed the same
-              document, due upon receipt, as everyone else. The email carries the fee as its own line
-              and NO pay link (paymentReceipts.sendBalanceRequestEmail), so the card path still never
-              sees the fee-inclusive balance. Only the deposit request, the QR and the card/record
-              buttons are closed.
-            */}
-            <button
-              className="btn btn-primary text-sm"
-              disabled={emailRequest.isPending}
-              onClick={() => emailRequest.mutate("balance")}
-            >
-              Email invoice {info.number} — {money(info.balance)} due
-            </button>
             {/* The QR / pay page NEVER shows a fee-inclusive balance: closed while financing (the server refuses too). */}
             <button className="btn btn-secondary text-sm" {...closed} onClick={() => setShowQr(showQr === "balance" ? null : "balance")}>
               {showQr === "balance" ? "Hide QR" : "Balance QR (in person)"}
             </button>
           </>
         )}
-        {/*
-          FINANCING, ON ITS OWN — alongside the invoice send, per Kyle's own words (see the
-          header comment above). Relabels to "send again" once it has gone (never resets on a
-          refetch — `lastFinancing` keeps reading true after this component remounts) so a
-          second press reads as a decision, not a stale default.
-        */}
-        <button
-          type="button"
-          className="btn btn-secondary text-sm"
-          disabled={financingSend.isPending}
-          title="Emails the Synchrony financing link and an invitation to apply — no rates, terms or approval odds stated"
-          onClick={() => financingSend.mutate()}
-        >
-          {financingSend.isPending
-            ? "Sending…"
-            // Relabels off EITHER signal: `lastFinancing` (a delivery already on file when the
-            // panel opened) or `financingSend.isSuccess` (a send made just now, in this
-            // session, before the invalidated query has had a chance to round-trip and
-            // refetch) — so the relabel is never a beat behind the send that triggered it.
-            : (lastFinancing || financingSend.isSuccess)
-              ? "Send the financing link again"
-              : "Email the financing link"}
-        </button>
-        {/*
-          THE REVIEW ASK, ON ITS OWN — bypasses the automation gate because a human pressed it
-          (Kyle switched AUTOMATED_CUSTOMER_SENDS_REVIEW_REQUESTS off 2026-10-01; until this
-          button existed, no review request could reach a customer at all). Keyed by the JOB, so
-          it's greyed with the reason — not hidden — when this panel only has an estimateId
-          (InvoiceDrawer, AccountDetailPage, SigningModePage all open PaymentPanel that way).
-        */}
-        <button
-          type="button"
-          className="btn btn-secondary text-sm"
-          disabled={!jobId || reviewSend.isPending}
-          title={
-            !jobId
-              ? "This needs an open JOB, not just an estimate — send the review request from the job's own screen."
-              : "Emails the Google review ask — refused unless the job is completed, this job hasn't already asked, and this customer hasn't been asked in the last 90 days"
-          }
-          onClick={() => reviewSend.mutate()}
-        >
-          {reviewSend.isPending
-            ? "Sending…"
-            : (lastReview || reviewSend.isSuccess)
-              ? "Send the review request again"
-              : "Email a review request"}
-        </button>
         <button type="button" className="btn btn-secondary text-sm" onClick={toggleReviewQr}>
           {showReviewQr ? "Hide QR" : "Review QR (in person)"}
         </button>
@@ -400,6 +295,23 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
       </div>
 
       {/*
+        THE ONE EMAIL CONTROL (Kyle, 2026-10-27) - see the header. Click path from the Dashboard:
+        Invoices -> the invoice -> "Email the customer" -> pick Invoice / Deposit request / Financing
+        link / Review request / Message -> To and CC -> the one Send button naming both.
+      */}
+      {emailPanel && info.email && (
+        <div className="mt-3">
+          <SendEmailPanel
+            target={info.email.jobId ? "job" : "account"}
+            id={info.email.jobId ?? info.email.customerId}
+            primaryEmail={info.email.customerEmail}
+            accountIdForContacts={info.email.customerId}
+            record={invoiceEmailRecord(info)}
+          />
+        </div>
+      )}
+
+      {/*
         PAY BALANCE WITH SYNCHRONY (Kyle, 2026-10-08, decisions 7, 8, 12): pick the plan, add the
         financing fee, later record the Synchrony payment; remove the fee with a reason until then.
         Only on a signed invoice with a balance — the component greys itself with the reason.
@@ -413,22 +325,6 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
             Customer scans with their phone camera — opens the secure payment page.
           </p>
         </div>
-      )}
-
-      {/*
-        LAST SENT (security review, 2026-10-01): financing had no repeat guard at all — every
-        press re-emailed the customer — so showing when it last went is the whole remedy for
-        that finding, same pattern as SendAssessmentReport's "Last sent to…" line.
-      */}
-      {lastFinancing && (
-        <p className="mt-2 text-xs text-rce-muted">
-          Financing last emailed to {lastFinancing.to} on {new Date(lastFinancing.createdAt).toLocaleDateString()}.
-        </p>
-      )}
-      {lastReview && (
-        <p className="mt-1 text-xs text-rce-muted">
-          Review request last emailed to {lastReview.to} on {new Date(lastReview.createdAt).toLocaleDateString()}.
-        </p>
       )}
 
       {showReviewQr && (
@@ -470,7 +366,6 @@ export function PaymentPanel({ jobId, estimateId }: { jobId?: string; estimateId
           <button className="btn text-sm" onClick={() => { setRecording(null); setError(null); }}>Cancel</button>
         </div>
       )}
-      {notice && <p className="mt-2 text-xs text-green-700">{notice}</p>}
       {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
 
       {/* The warranty company's side (Kyle, 2026-09-10): claim dates + "Record RELY payment",

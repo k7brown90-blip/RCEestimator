@@ -64,7 +64,7 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
   // SAME PaymentInfo shape off either id (tests/queryKeyCollisions.test.ts only flags a shape
   // mismatch under one literal key; jobPaymentInfo/estimatePaymentInfo share a return type).
   const paymentInfoKey = ["paymentInfo", visitId];
-  const { data: paymentInfo } = useQuery({
+  const { data: paymentInfo, isLoading: paymentInfoLoading } = useQuery({
     queryKey: paymentInfoKey,
     queryFn: () => api.jobPaymentInfo(visitId),
     enabled: Boolean(visitId),
@@ -214,7 +214,16 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
           */}
           <ConversationNotes accountId={visit.customerId} surface="job" visitId={visitId} />
 
-          <SendEmailPanel target="job" id={visitId} primaryEmail={visit.customer?.email ?? null} accountIdForContacts={visit.customerId} />
+          {/*
+            ONE EMAIL CONTROL (Kyle, 2026-10-27: "one tool for one task"). When the job has a signed
+            invoice, the "Email the customer" panel lives in the payment card below (Invoice · Deposit
+            request · Financing link · Review request · Message, to a chosen contact + CC). A job with
+            no invoice yet has no payment card, so it gets the plain message panel here instead -
+            never both.
+          */}
+          {!paymentInfoLoading && !paymentInfo && (
+            <SendEmailPanel target="job" id={visitId} primaryEmail={visit.customer?.email ?? null} accountIdForContacts={visit.customerId} />
+          )}
 
           {/*
             ONE SCHEDULER (2026-10-01, plan item E3). This drawer used to host its own

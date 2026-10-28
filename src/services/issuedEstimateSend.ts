@@ -48,7 +48,7 @@
 import type { PrismaClient } from "@prisma/client";
 import fs from "node:fs";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
-import { ccSchema, cleanCc, withCcText } from "./emailCc";
+import { customerEmailBaseSchema, resolveRecipients, withCcText } from "./emailCc";
 import { generateGeneratorReport, generateHealthReport } from "./pdfGenerator";
 import { logSystemEvent } from "./systemEvents";
 // The invoice send renders the customer's PDF itself rather than reading a stored file — same
@@ -59,8 +59,9 @@ import { getCompanyProfile } from "./companyProfile";
 import { buildQuoteFinancing } from "../../shared/financing";
 import { getActiveFinancingPlans, plansFromSnapshot } from "./financingSettings";
 import { billedTotalOf, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf } from "./stripePayments";
-import { financingFeeRow, invoiceDocumentRows } from "./paymentReceipts";
-import { financingInProgress } from "./financingFee";
+import { discountRows, financingFeeRow, invoiceDocumentRows } from "./paymentReceipts";
+import { FINANCING_IN_PROGRESS, financingInProgress } from "./financingFee";
+import { FINAL_BILL_TERMS } from "./paymentTerms";
 import { warrantyEmailLine } from "./warrantyNotice";
 import { isOfficeAcceptance } from "../../shared/acceptance";
 // Kyle, 2026-09-09 ("My emails are not getting to the clients"): a send that lands at a
@@ -68,10 +69,14 @@ import { isOfficeAcceptance } from "../../shared/acceptance";
 import { clearBounceIfDifferentAddress } from "./bounceWatcher";
 import sharp from "sharp";
 import { z } from "zod";
-import { MAX_ESTIMATE_PHOTOS } from "../../shared/estimatePhotos";
 import { PHOTO_OUTSIDE_JOB_REFUSAL, photoIdsOutsideJob } from "./estimatePhotos";
 
 export type SendResult = { ok: true; to: string; cc: string[] } | { ok: false; reason: string };
+
+/** What the one invoice send reports: who got it, what was owed, and whether it went out as a reminder. */
+export type InvoiceSendResult =
+  | { ok: true; to: string; cc: string[]; amount: number; reminder: boolean }
+  | { ok: false; reason: string };
 
 /**
  * Job photos chosen by the operator to ride an estimate or invoice email (photo gallery, Kyle
@@ -195,11 +200,45 @@ export function estimateLink(token: string): string {
  * It bills what they BOUGHT. renderEstimatePdf re-sums from `selectedOptions`, so a customer who
  * took one option out of three is invoiced for one.
  */
+/*
+  ── THE ONE INVOICE EMAIL (Kyle, 2026-10-27: "A rule of thumb is there is one tool for one task.") ──
+
+  Until today three buttons emailed the same invoice with three different contents: "Email invoice
+  NNNN - $X due" (a bill with the balance and pay link and NO PDF), "Email the signed copy..." (this
+  function: the itemized PDF, the group appendix, the pay link, photos) and "Send reminder" (the bill
+  in a reminder voice, stamping the pacing clock). That is how a payer could be handed a bill with
+  nothing itemized (Miranda Greer, 2026-10-25), and how ACAR's send had no recipient choice.
+
+  Now there is ONE invoice email, and this is it: the itemized invoice PDF attached ALWAYS, the amount
+  due and the paid-to-date, the pay link (not while a financing fee is on and unpaid - the fee is its
+  own line then, the card path stays closed), "due upon receipt of this invoice", and any photos the
+  operator ticked. It is sent from the one "Email the customer" panel (POST /customer-emails), by the
+  field's "email the bill" door, and by the daily reminder sweep.
+
+  THE VOICE. If this invoice was already emailed to THIS address and is still unpaid, the same email is
+  reminder-worded ("Friendly reminder - $X still open ...") and stamps the pacing clock the sweep reads
+  (paymentRemindersSent / lastPaymentReminderAt on the ROOT), exactly as the old "Send reminder" button
+  did. Sending to an address that never received it is a first send, worded as one, and does not touch
+  the clock. A balance being paid through Synchrony is never chased: no reminder wording, no stamp.
+  The sweep passes `reminder: true` to force the voice (its own pacing decides WHEN).
+*/
 export async function sendInvoiceEmail(
   prisma: PrismaClient,
   estimateId: string,
-  opts: { sentBy: string; toOverride?: string | null; cc?: string[]; message?: string | null; photoIds?: string[] }
-): Promise<SendResult> {
+  opts: {
+    sentBy: string;
+    toOverride?: string | null;
+    cc?: string[];
+    message?: string | null;
+    photoIds?: string[];
+    /**
+     * Force the reminder voice - the daily sweep (services/invoiceReminders.ts) passes true. Left
+     * off, the voice is decided HERE from the record: reminder-worded when this invoice was already
+     * emailed to this same address and is still unpaid.
+     */
+    reminder?: boolean;
+  }
+): Promise<InvoiceSendResult> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
     include: {
@@ -212,19 +251,10 @@ export async function sendInvoiceEmail(
     return { ok: false, reason: "This estimate has not been signed yet, so there is no invoice to send." };
   }
 
-  const to = (opts.toOverride ?? est.customerEmail ?? "").trim();
-  if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
-    return {
-      ok: false,
-      reason:
-        "No valid customer email address on this estimate. Add one to the customer record, or " +
-        "supply an address when sending.",
-    };
-  }
-
-  const ccChecked = cleanCc(opts.cc, to);
-  if (!ccChecked.ok) return { ok: false, reason: ccChecked.reason };
-  const cc = ccChecked.cc;
+  // THE ONE RECIPIENT RULE (services/emailCc.ts resolveRecipients) - the same check every customer send passes.
+  const recipients = resolveRecipients({ toOverride: opts.toOverride, onFile: est.customerEmail, cc: opts.cc });
+  if (!recipients.ok) return { ok: false, reason: recipients.reason };
+  const { to, cc } = recipients;
 
   const profile = await getCompanyProfile();
   /*
@@ -234,6 +264,39 @@ export async function sendInvoiceEmail(
     (the ROOT's, so a change order's copy pays the same invoice).
   */
   const summary = (await paymentSummary(prisma, est.id, publicBaseUrl()))!;
+
+  // THE VOICE (see "THE ONE INVOICE EMAIL" above). A forced reminder (the sweep) needs something
+  // owing and a card path that is open; otherwise it is a reminder only when this exact address
+  // already got this exact document since the invoice last changed - failed, bounced and
+  // complained sends did not "get" it. A newly signed change order, or the root re-sent with a new
+  // total, is news to the customer, not a nag, and must not spend one of the sweep's three strikes
+  // (review finding, 2026-10-27).
+  const financing = financingInProgress(summary);
+  if (opts.reminder) {
+    if (summary.paidInFull) return { ok: false, reason: "This invoice is already paid in full." };
+    if (!(summary.balance > 0)) return { ok: false, reason: "Nothing is due on this invoice." };
+    if (financing) return { ok: false, reason: `${FINANCING_IN_PROGRESS} - no reminder is sent.` };
+  }
+  let reminder = Boolean(opts.reminder);
+  if (!reminder && !summary.paidInFull && !financing) {
+    const lastChange = summary.documents.reduce<Date | null>(
+      (latest, d) => (d.signedAt && (!latest || d.signedAt > latest) ? d.signedAt : latest),
+      null,
+    );
+    const already = await prisma.emailDelivery.findFirst({
+      where: {
+        issuedEstimateId: est.id,
+        ...(lastChange ? { createdAt: { gt: lastChange } } : {}),
+        // "balance" is what the retired separate bill filed itself as; those sends count as the invoice going out.
+        kind: { in: ["invoice", "balance"] },
+        status: { notIn: ["bounced", "complained", "failed"] },
+        to: { equals: to, mode: "insensitive" },
+      },
+      select: { id: true },
+    });
+    reminder = Boolean(already);
+  }
+
   // The appendix prints for a multi-document invoice, or whenever a financing fee is on it
   // (plan Detail B item J: the single-document gate "must widen for a fee line to show"): the
   // balance carries the fee, and the PDF must name it as its own line or its figures do not add
@@ -312,16 +375,18 @@ export async function sendInvoiceEmail(
     ? `<p style="font-size:14px;color:#1a5c2e;margin:0 0 4px;">${escapeHtml(warrantyEmailLine(coverage.claim, coverage.applied))}</p>`
     : "";
   const isChangeOrder = Boolean(est.changeOrderForId);
-  const rolledUp = invoiceAppendix
-    ? `<table style="width:100%;font-size:14px;border-collapse:collapse;margin:8px 0;">
+  // The statement (Kyle, 2026-10-27, one invoice email): what the invoice is made of, the total, the
+  // financing fee as its own line, paid to date and the balance due - always, not only for a
+  // multi-document invoice, because this email now stands in for the retired separate bill.
+  const rolledUp = `<table style="width:100%;font-size:14px;border-collapse:collapse;margin:8px 0;">
         ${invoiceDocumentRows(summary)}
         <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td>
           <td style="text-align:right;font-weight:700;">$${summary.billedTotal.toFixed(2)}</td></tr>
         ${financingFeeRow(summary)}
-        ${summary.totalPaid > 0 ? `<tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>
-        <tr><td style="padding:4px 0;font-weight:600;">Balance</td><td style="text-align:right;font-weight:600;">$${summary.balance.toFixed(2)}</td></tr>` : ""}
-      </table>`
-    : "";
+        ${discountRows(summary)}
+        ${summary.totalPaid > 0 ? `<tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>` : ""}
+        <tr><td style="padding:4px 0;font-weight:600;">${summary.paidInFull ? "Balance" : "Balance due"}</td><td style="text-align:right;font-weight:700;">${summary.paidInFull ? "PAID IN FULL" : `$${summary.balance.toFixed(2)}`}</td></tr>
+      </table>`;
 
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
   const note = (opts.message ?? "").trim();
@@ -332,15 +397,22 @@ export async function sendInvoiceEmail(
   // a financing fee is applied and not yet paid (2026-10-09, services/financingFee.ts
   // financingInProgress): the card path is closed then, and the fee is shown as its own line
   // instead. A locked (paid) fee leaves the link open for whatever is still owed.
-  const payUrl = stripeConfigured() && !financingInProgress(summary) ? summary.payUrl : null;
-  const financingNote = financingInProgress(summary)
-    ? `${invoiceAppendix ? "" : `<table style="width:100%;font-size:14px;border-collapse:collapse;margin:8px 0;">${financingFeeRow(summary)}</table>`}
-    <p style="font-size:14px;color:#555;">This balance is being paid through your Synchrony financing — $${summary.balance.toFixed(2)} including the financing fee.</p>`
+  // Nothing to pay on a paid-in-full invoice either (the pay page would have nothing to charge).
+  const payUrl = stripeConfigured() && !financing && !summary.paidInFull ? summary.payUrl : null;
+  const financingNote = financing
+    ? `<p style="font-size:14px;color:#555;">This balance is being paid through your Synchrony financing: $${summary.balance.toFixed(2)} including the financing fee. To pay it, release the funds with Synchrony. As soon as Synchrony confirms the release, we will send your paid-in-full receipt.</p>`
     : "";
+  // Due upon receipt (Kyle, 2026-10-08, services/paymentTerms.ts): this email IS the final invoice, so it says so.
+  const termsLine = summary.paidInFull
+    ? `<p style="font-size:14px;font-weight:600;color:#1a5c2e;">This invoice is paid in full. Thank you.</p>`
+    : `<p style="font-size:14px;font-weight:600;color:#1a5c2e;">${FINAL_BILL_TERMS}</p>`;
+  const intro = reminder
+    ? `<p style="font-size:15px;">Just a friendly reminder — the balance below is still open on <strong>${escapeHtml(est.title)}</strong> (invoice ${escapeHtml(summary.number)}). If payment is already on its way, thank you — please disregard this. The invoice is attached again for your records.</p>`
+    : `<p style="font-size:15px;">Thank you for approving <strong>${escapeHtml(est.title)}</strong>.
+    Your ${isOfficeAcceptance(est.signedChannel) ? "" : "signed "}${isChangeOrder ? "change order" : "invoice"} is attached.</p>`;
   const bodyHtml = `
     <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
-    <p style="font-size:15px;">Thank you for approving <strong>${escapeHtml(est.title)}</strong>.
-    Your ${isOfficeAcceptance(est.signedChannel) ? "" : "signed "}${isChangeOrder ? "change order" : "invoice"} is attached.</p>
+    ${intro}
     ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
     ${warrantyLine}
     <p style="font-size:15px;">${isChangeOrder
@@ -357,6 +429,7 @@ export async function sendInvoiceEmail(
           est.revision > 1 ? ` (revision ${est.revision})` : ""
         } &middot; ${coverage ? "Your total" : "Total"} <strong>${`$${(invoiceAppendix ? summary.billedTotal : billed).toFixed(2)}`}</strong>`}</p>
     ${rolledUp}
+    ${termsLine}
     ${financingNote}
     ${payUrl ? `
     <p style="margin:24px 0;">
@@ -365,7 +438,8 @@ export async function sendInvoiceEmail(
                 border-radius:6px;font-size:16px;font-weight:600;display:inline-block;">
         Pay online
       </a>
-    </p>` : ""}
+    </p>
+    <p style="font-size:13px;color:#666;">Pay by card or bank transfer online, or by cash, check, or Zelle — same amount either way.</p>` : ""}
     <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
 
   // Job photos the operator chose to include — before/after shots belong on
@@ -412,8 +486,11 @@ export async function sendInvoiceEmail(
   const sent = await sendBrandedEmail({
     to,
     ...(cc.length > 0 ? { cc } : {}),
-    subject: `Your invoice from Red Cedar Electric — ${invoiceNumber}`,
-    headline: isChangeOrder || invoiceAppendix ? "Your updated invoice" : "Your invoice",
+    // The reminder subject keeps the words the bounce watcher's classifySubject files under "balance".
+    subject: reminder
+      ? `Friendly reminder — $${summary.balance.toFixed(2)} still open on Invoice ${invoiceNumber}`
+      : `Your invoice from Red Cedar Electric — ${invoiceNumber}`,
+    headline: reminder ? "A friendly reminder" : isChangeOrder || invoiceAppendix ? "Your updated invoice" : "Your invoice",
     bodyHtml,
     // Delivery-row attribution (Kyle, 2026-09-09) — the invoice row shows THIS email's state.
     kind: "invoice",
@@ -457,7 +534,19 @@ export async function sendInvoiceEmail(
   await clearBounceIfDifferentAddress(prisma, est.id, to).catch((err) => {
     console.warn("[IssuedEstimate] bounce flag not cleared:", err);
   });
-  return { ok: true, to, cc };
+  // A reminder-voiced send restarts the sweep's quiet-days clock and counts toward its three
+  // strikes - on the ROOT, because a change order's balance rides its root's reminders. This is the
+  // stamp the retired "Send reminder" button wrote; it now happens wherever the reminder voice does.
+  if (reminder) {
+    await prisma.issuedEstimate.update({
+      where: { id: summary.estimateId },
+      data: { paymentRemindersSent: { increment: 1 }, lastPaymentReminderAt: new Date() },
+    });
+    logSystemEvent("info", "invoices", `Payment reminder emailed to ${to} — $${summary.balance.toFixed(2)} open`, {
+      estimateId: summary.estimateId,
+    });
+  }
+  return { ok: true, to, cc, amount: summary.balance, reminder };
 }
 
 /**
@@ -567,19 +656,10 @@ export async function sendEstimateEmail(
   if (est.archivedAt) return { ok: false, reason: "This estimate is archived. Unarchive it first, then send it again." };
   if (est.signedAt) return { ok: false, reason: "This estimate is already signed." };
 
-  const to = (opts.toOverride ?? est.customerEmail ?? "").trim();
-  if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
-    return {
-      ok: false,
-      reason:
-        "No valid customer email address on this estimate. Add one to the customer record, or " +
-        "supply an address when sending.",
-    };
-  }
-
-  const ccChecked = cleanCc(opts.cc, to);
-  if (!ccChecked.ok) return { ok: false, reason: ccChecked.reason };
-  const cc = ccChecked.cc;
+  // THE ONE RECIPIENT RULE (services/emailCc.ts resolveRecipients) - the same check every customer send passes.
+  const recipients = resolveRecipients({ toOverride: opts.toOverride, onFile: est.customerEmail, cc: opts.cc });
+  if (!recipients.ok) return { ok: false, reason: recipients.reason };
+  const { to, cc } = recipients;
 
   const link = estimateLink(est.token);
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
@@ -719,16 +799,12 @@ export async function sendEstimateEmail(
  * address override: the account's address is used when it is blank or absent. The names match
  * shared/estimateEmail.ts, which builds this body for both apps.
  */
-export const estimateEmailBodySchema = z.object({
-  to: z.string().trim().email().nullable().optional(),
-  // CC (Kyle, 2026-10-24: "The email will be the same as doing a CC email."). Optional; the field
-  // app does not send it. cleanCc re-checks each address, lower-cases, de-dupes and drops the To.
-  cc: ccSchema,
-  message: z.string().trim().max(2000).nullable().optional(),
-  // The photo rule lives in photoAttachments (security-reviewed 2026-10-01): an id that is not on
-  // THIS customer's account is refused there, whichever door sent it. The field door adds the
-  // job-chain wall on top (sendEstimateEmailFromBody's `scope`).
-  photoIds: z.array(z.string().min(1)).max(MAX_ESTIMATE_PHOTOS).optional(),
+// To / CC / note / photos are the ONE base every customer email shares (emailCc.customerEmailBaseSchema,
+// Kyle 2026-10-27): CC (2026-10-24) is optional and the field app does not send it - cleanCc re-checks
+// each address, lower-cases, de-dupes and drops the To. The photo rule lives in photoAttachments
+// (security-reviewed 2026-10-01): an id that is not on THIS customer's account is refused there,
+// whichever door sent it; the field door adds the job-chain wall on top (sendEstimateEmailFromBody's `scope`).
+export const estimateEmailBodySchema = customerEmailBaseSchema.extend({
   attachHealthReport: z.boolean().optional(),
   attachGeneratorReport: z.boolean().optional(),
   includeFinancingLink: z.boolean().optional(),

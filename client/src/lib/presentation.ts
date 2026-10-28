@@ -39,8 +39,24 @@ export type Audience = "customer" | "company";
  */
 export interface PresentationLine {
   itemId: string;
+  /**
+   * What the line is CALLED: the custom name the office or tech worded for the job when there is
+   * one, otherwise the price-book name (Kyle, 2026-10-27).
+   */
   description: string;
-  quantity: number;
+  /**
+   * COMPANY ONLY. The count drives the price and the ordering list, so the office and the
+   * technician keep it; the customer does not read it (Kyle, 2026-10-27: "I also want to get rid
+   * of the quantity showing on the estimates and invoices"). Absent from a customer line by
+   * construction, for the same reason the prices are: a field that is not in the object cannot be
+   * printed by a later edit that forgets the rule.
+   */
+  quantity?: number;
+  /**
+   * COMPANY ONLY. The price-book name, set only when a custom name replaced it - shown beside the
+   * custom name so the office can still tell which part to order.
+   */
+  catalogName?: string | null;
   /**
    * COMPANY ONLY, like the money and the hours.
    *
@@ -94,14 +110,17 @@ export function buildOptions(
 }
 
 function presentLine(line: PbComputedLine, audience: Audience): PresentationLine {
+  const catalogName = line.description ?? line.itemId;
+  const name = line.customName?.trim() || catalogName;
   const base: PresentationLine = {
     itemId: line.itemId,
-    description: line.description ?? line.itemId,
-    quantity: line.quantity,
+    description: name,
   };
   if (audience === "customer") return base;
   return {
     ...base,
+    quantity: line.quantity,
+    catalogName: name !== catalogName ? catalogName : null,
     unit: line.unit,
     laborHours: line.laborHours,
     laborDollars: line.laborDollars,

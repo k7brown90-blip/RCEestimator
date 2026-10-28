@@ -74,7 +74,7 @@ const fetchMock = vi.fn<(url: string | URL | Request, init?: RequestInit) => Pro
 vi.stubGlobal("fetch", fetchMock);
 
 import { app } from "../src/app";
-import { sendCustomerEmail, transactionalProvider } from "../src/services/transactionalEmail";
+import { bccSelfEnabled, sendCustomerEmail, transactionalProvider } from "../src/services/transactionalEmail";
 import { sendBrandedEmail } from "../src/services/confirmationEmail";
 import { resetResendWebhookState, signSvixPayload, verifySvixSignature } from "../src/services/resendWebhook";
 
@@ -184,7 +184,7 @@ describe("sendCustomerEmail", () => {
     expect(transactionalProvider()).toBe("resend");
   });
 
-  it("Resend success → EmailDelivery {resend, sent, id}; from service@, reply_to service@, bcc self, tags, text, attachments", async () => {
+  it("Resend success → EmailDelivery {resend, sent, id}; from service@, reply_to service@, NO bcc by default, tags, text, attachments", async () => {
     fetchMock.mockResolvedValueOnce(resendOk(`txre_ok_${RUN}`));
     const to = `ok@${DOMAIN}`;
     const r = await sendCustomerEmail({
@@ -210,7 +210,9 @@ describe("sendCustomerEmail", () => {
     expect(body.from).toBe("Red Cedar Electric <service@redcedarelectricllc.com>");
     expect(body.reply_to).toBe("service@redcedarelectricllc.com");
     expect(body.to).toEqual([to]);
-    expect(body.bcc).toEqual(["service@example.test"]);
+    // No verification copy to Kyle's mailbox by default (Kyle, 2026-10-27: "We can stop sending a
+    // duplicate to me for verification.").
+    expect(body.bcc).toBeUndefined();
     expect(body.subject).toBe("Your invoice from Red Cedar Electric — 0000-9101");
     expect(body.html).toBe("<p>Hi</p>");
     expect(body.text).toBe("Hi");
@@ -302,17 +304,35 @@ describe("sendCustomerEmail", () => {
     expect(row!.error).toBeNull();
   });
 
-  it("does not bcc Kyle's own address to itself, and TRANSACTIONAL_BCC_SELF=off drops the bcc", async () => {
-    fetchMock.mockResolvedValueOnce(resendOk(`txre_self_${RUN}`));
-    await sendCustomerEmail({ to: "service@example.test", subject: "VIEWED", html: "<p>x</p>", kind: "other" });
+  it("the verification bcc to Kyle is OFF by default (Kyle, 2026-10-27); TRANSACTIONAL_BCC_SELF=on turns it back on, and never bcc's his own address to itself", async () => {
+    // Default: no env var set → no bcc, for a customer address and for the company address alike.
+    expect(bccSelfEnabled()).toBe(false);
+    fetchMock.mockResolvedValueOnce(resendOk(`txre_nobcc_${RUN}`));
+    await sendCustomerEmail({ to: `nobcc@${DOMAIN}`, subject: "x", html: "<p>x</p>", kind: "other" });
     expect(lastFetchBody().bcc).toBeUndefined();
-    await prisma.emailDelivery.deleteMany({ where: { providerMessageId: `txre_self_${RUN}` } });
+    await prisma.emailDelivery.deleteMany({ where: { providerMessageId: `txre_nobcc_${RUN}` } });
 
+    // "off" stays an explicit off.
     process.env.TRANSACTIONAL_BCC_SELF = "off";
     try {
-      fetchMock.mockResolvedValueOnce(resendOk(`txre_nobcc_${RUN}`));
-      await sendCustomerEmail({ to: `nobcc@${DOMAIN}`, subject: "x", html: "<p>x</p>", kind: "other" });
+      expect(bccSelfEnabled()).toBe(false);
+    } finally {
+      delete process.env.TRANSACTIONAL_BCC_SELF;
+    }
+
+    // "on" is the way back: the copy returns, except when the recipient IS Kyle's mailbox.
+    process.env.TRANSACTIONAL_BCC_SELF = "on";
+    try {
+      expect(bccSelfEnabled()).toBe(true);
+      fetchMock.mockResolvedValueOnce(resendOk(`txre_bccon_${RUN}`));
+      await sendCustomerEmail({ to: `bccon@${DOMAIN}`, subject: "x", html: "<p>x</p>", kind: "other" });
+      expect(lastFetchBody().bcc).toEqual(["service@example.test"]);
+      await prisma.emailDelivery.deleteMany({ where: { providerMessageId: `txre_bccon_${RUN}` } });
+
+      fetchMock.mockResolvedValueOnce(resendOk(`txre_self_${RUN}`));
+      await sendCustomerEmail({ to: "service@example.test", subject: "VIEWED", html: "<p>x</p>", kind: "other" });
       expect(lastFetchBody().bcc).toBeUndefined();
+      await prisma.emailDelivery.deleteMany({ where: { providerMessageId: `txre_self_${RUN}` } });
     } finally {
       delete process.env.TRANSACTIONAL_BCC_SELF;
     }
@@ -536,7 +556,7 @@ describe("read side", () => {
     expect(res.body.provider).toBe("resend");
     expect(res.body.from).toBe("Red Cedar Electric <service@redcedarelectricllc.com>");
     expect(res.body.replyTo).toBe("service@redcedarelectricllc.com");
-    expect(res.body.bccSelf).toBe(true);
+    expect(res.body.bccSelf).toBe(false); // off by default, Kyle 2026-10-27
     expect(res.body.resendConfigured).toBe(true);
     expect(res.body.gmailConfigured).toBe(true);
     expect(res.body.webhookSecretSet).toBe(true);

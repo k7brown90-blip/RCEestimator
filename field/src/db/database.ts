@@ -313,6 +313,8 @@ export interface QuoteLinePatch {
   option?: EstimateOptionLetter
   note?: string | null
   location?: string | null
+  // The name the customer reads for this line (Kyle, 2026-10-27); null puts the price-book name back.
+  customName?: string | null
 }
 
 /**

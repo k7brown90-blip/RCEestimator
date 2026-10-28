@@ -15,20 +15,24 @@
  * `IssuedEstimate.jobVisitId` — is marked `status: "completed"` with a
  * `completedAt` stamp. No job, or a job still in progress, means no reminder.
  *
- * Gated as a first-class customer-send workflow; the manual button on the
- * Invoices page bypasses pacing (a human pressed it) but still stamps, so the
- * sweep's clock restarts.
+ * Gated as a first-class customer-send workflow.
+ *
+ * ONE INVOICE EMAIL (Kyle, 2026-10-27, "one tool for one task"): the sweep sends the SAME email a
+ * person sends from the "Email the customer" panel - issuedEstimateSend.sendInvoiceEmail, the
+ * itemized invoice PDF attached, the balance and the pay link - in its reminder voice, which stamps
+ * this sweep's clock. There is no separate "Send reminder" button or bill any more: a person who
+ * emails an invoice that already went to the same address gets the reminder voice, and the same
+ * stamp, from the panel itself. The schedule below is unchanged.
  */
 
 import type { PrismaClient } from "@prisma/client";
 import { paymentSummary } from "./stripePayments";
-import { sendBalanceRequestEmail } from "./paymentReceipts";
 import { customerSendsEnabled, logCustomerSendSkipped } from "./automationGate";
-import { logSystemEvent } from "./systemEvents";
 import { EXCLUDE_TEST_ACCOUNT } from "./accountSpine";
-import { publicBaseUrl } from "./issuedEstimateSend";
+import { sendInvoiceEmail } from "./issuedEstimateSend";
 import { invoiceRootId } from "./invoiceGroup";
 import { FINANCING_IN_PROGRESS, financingInProgress } from "./financingFee";
+import { logSystemEvent } from "./systemEvents";
 
 /**
  * FINANCING IN PROGRESS (Kyle, 2026-10-08; Phase 6 Unit 6C, item K). A customer whose balance is
@@ -56,17 +60,9 @@ export async function sendInvoiceReminder(
   // The manual button is covered too: "a human pressed it" lifts the pacing, not the exemption.
   const before = await paymentSummary(prisma, estimateId, "https://unused.invalid");
   if (before && financingInProgress(before)) return { ok: false, reason: REMINDER_PAUSED_FOR_FINANCING };
-  const result = await sendBalanceRequestEmail(prisma, estimateId, publicBaseUrl(), { reminder: true });
-  if (result.ok) {
-    await prisma.issuedEstimate.update({
-      where: { id: estimateId },
-      data: { paymentRemindersSent: { increment: 1 }, lastPaymentReminderAt: new Date() },
-    });
-    logSystemEvent("info", "invoices", `Payment reminder emailed to ${result.to} — $${result.amount.toFixed(2)} open`, {
-      estimateId,
-    });
-  }
-  return result;
+  // sendInvoiceEmail in the reminder voice writes the pacing stamp and the log line itself.
+  const result = await sendInvoiceEmail(prisma, estimateId, { sentBy: "system:invoice-reminder", reminder: true });
+  return result.ok ? { ok: true, to: result.to, amount: result.amount } : result;
 }
 
 export async function sweepInvoiceReminders(prisma: PrismaClient): Promise<{ reminded: number; skipped: number }> {
@@ -130,9 +126,18 @@ export async function sweepInvoiceReminders(prisma: PrismaClient): Promise<{ rem
       job.completedAt.getTime(),
     );
     if (anchor > cutoff) { skipped += 1; continue; }
-    const result = await sendInvoiceReminder(prisma, est.id);
-    if (result.ok) reminded += 1;
-    else skipped += 1;
+    // One invoice that cannot render (its PDF now rides the reminder) must not stop the rest of the
+    // sweep, today and every day after (review finding, 2026-10-27).
+    try {
+      const result = await sendInvoiceReminder(prisma, est.id);
+      if (result.ok) reminded += 1;
+      else skipped += 1;
+    } catch (err) {
+      skipped += 1;
+      logSystemEvent("error", "invoices", `Payment reminder failed for invoice ${est.id}`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
   return { reminded, skipped };
 }

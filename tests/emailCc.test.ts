@@ -187,14 +187,16 @@ describe("POST /communications/email with cc", () => {
 });
 
 describe("estimate and invoice sends with cc", () => {
-  it("POST /issued-estimates/:id/send carries the CC, keeps sentTo as the To address, and names everyone on the trail", async () => {
+  // 2026-10-27 (one email tool): the estimate and invoice sends are POST /customer-emails { kind }; the
+  // routes /issued-estimates/:id/send and /send-invoice these cases used to hit are gone.
+  it("POST /customer-emails (estimate) carries the CC, keeps sentTo as the To address, and names everyone on the trail", async () => {
     const id = await newIssuedEstimate("estimate cc");
     const res = await request(app)
-      .post(`/issued-estimates/${id}/send`)
-      .send({ to: `tenant@${DOMAIN}`, cc: [`owner@${DOMAIN}`, `TENANT@${DOMAIN}`] })
+      .post("/customer-emails")
+      .send({ kind: "estimate", estimateId: id, to: `tenant@${DOMAIN}`, cc: [`owner@${DOMAIN}`, `TENANT@${DOMAIN}`] })
       .expect(200);
 
-    expect(res.body).toMatchObject({ sent: true, to: `tenant@${DOMAIN}`, cc: [`owner@${DOMAIN}`] });
+    expect(res.body).toMatchObject({ sent: true, kind: "estimate", to: `tenant@${DOMAIN}`, cc: [`owner@${DOMAIN}`] });
     const body = lastResendBody();
     expect(body.to).toEqual([`tenant@${DOMAIN}`]);
     expect(body.cc).toEqual([`owner@${DOMAIN}`]);
@@ -209,14 +211,14 @@ describe("estimate and invoice sends with cc", () => {
 
   it("a bad CC on the estimate send is a 400 and nothing goes out", async () => {
     const id = await newIssuedEstimate("estimate bad cc");
-    const res = await request(app).post(`/issued-estimates/${id}/send`).send({ cc: ["nope"] }).expect(400);
+    const res = await request(app).post("/customer-emails").send({ kind: "estimate", estimateId: id, cc: ["nope"] }).expect(400);
     expect(JSON.stringify(res.body)).toMatch(/CC address is not a valid email/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("an estimate send with no cc is unchanged: no cc key, empty list recorded, event text has no 'cc'", async () => {
     const id = await newIssuedEstimate("estimate no cc");
-    await request(app).post(`/issued-estimates/${id}/send`).send({}).expect(200);
+    await request(app).post("/customer-emails").send({ kind: "estimate", estimateId: id }).expect(200);
     expect(Object.keys(lastResendBody())).not.toContain("cc");
     const event = await prisma.issuedEstimateEvent.findFirst({ where: { estimateId: id, type: "sent" } });
     expect(event!.detail).not.toContain(" · cc ");
@@ -230,15 +232,15 @@ describe("estimate and invoice sends with cc", () => {
     expect(result).toMatchObject({ ok: true, to: `owner@${DOMAIN}`, cc: [] });
   });
 
-  it("POST /issued-estimates/:id/send-invoice carries the CC and names everyone on the trail", async () => {
+  it("POST /customer-emails (invoice) carries the CC and names everyone on the trail", async () => {
     const id = await newIssuedEstimate("invoice cc");
     await prisma.issuedEstimate.update({ where: { id }, data: { signedAt: new Date() } });
 
     const res = await request(app)
-      .post(`/issued-estimates/${id}/send-invoice`)
-      .send({ toOverride: `tenant@${DOMAIN}`, cc: [`owner@${DOMAIN}`, `bk@${DOMAIN}`] })
+      .post("/customer-emails")
+      .send({ kind: "invoice", estimateId: id, to: `tenant@${DOMAIN}`, cc: [`owner@${DOMAIN}`, `bk@${DOMAIN}`] })
       .expect(200);
-    expect(res.body).toMatchObject({ sent: true, to: `tenant@${DOMAIN}`, cc: [`owner@${DOMAIN}`, `bk@${DOMAIN}`] });
+    expect(res.body).toMatchObject({ sent: true, kind: "invoice", to: `tenant@${DOMAIN}`, cc: [`owner@${DOMAIN}`, `bk@${DOMAIN}`] });
     expect(lastResendBody().cc).toEqual([`owner@${DOMAIN}`, `bk@${DOMAIN}`]);
     const event = await prisma.issuedEstimateEvent.findFirst({ where: { estimateId: id, type: "invoice_sent" } });
     expect(event!.detail).toContain(`Invoice emailed to tenant@${DOMAIN} · cc owner@${DOMAIN}, bk@${DOMAIN}`);

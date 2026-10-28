@@ -95,6 +95,10 @@ function mockPage(
   // The builder's photo panel is the ACCOUNT's gallery now (plan A, 2026-10-02) and reads the
   // account summary for its jobs and addresses. Empty by default; the photo tests fill it in.
   vi.spyOn(api, "accountSummary").mockResolvedValue(accountSummaryWith({ properties: [], jobs: [] }));
+  // The one email panel (2026-10-27) reads the record's sent thread, the account's contacts and addresses.
+  vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+  vi.spyOn(api, "accountContacts").mockResolvedValue([]);
+  vi.spyOn(api, "account").mockResolvedValue({ id: "acct-1", name: "Tony Hoover", properties: accountProperties } as never);
   vi.spyOn(api, "pbIssuedList").mockResolvedValue({ estimates: issuedEstimate ? [issuedEstimate] : [] });
   vi.spyOn(api, "pbIssuedDetail").mockResolvedValue(
     issuedEstimate ? { estimate: issuedEstimate, customerLink: "https://example.test/e/tok", accountProperties } : (null as never),
@@ -171,6 +175,8 @@ describe("PriceBookIntakePage — photos can ride the estimate email", () => {
     const photos = mockPhotosFor("prop-1");
 
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE_NO_ADDRESS });
+    // 2026-10-27: the picker is part of the ONE "Email the customer" panel - open it.
+    fireEvent.click(await screen.findByRole("button", { name: "Email the customer" }));
 
     // It asked for the ESTIMATE's account's address, not the URL's (which has none), and drew
     // the picker.
@@ -183,6 +189,7 @@ describe("PriceBookIntakePage — photos can ride the estimate email", () => {
     mockPhotosFor("prop-1");
 
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    fireEvent.click(await screen.findByRole("button", { name: "Email the customer" }));
 
     expect(await screen.findByText(/Attach photos/)).toBeInTheDocument();
   });
@@ -208,6 +215,7 @@ describe("PriceBookIntakePage — photos can ride the estimate email", () => {
     );
 
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    fireEvent.click(await screen.findByRole("button", { name: "Email the customer" }));
 
     await screen.findByText(/Attach photos/);
     // The second property's photo is offered, labelled with that property — not just prop-1's.
@@ -307,12 +315,24 @@ describe("PriceBookIntakePage — photos added while building are filed on a job
   been going out since 2026-09-16 on Kyle's word and a box starting empty would have silently
   stopped it. So the two assertions that matter are: ticked by default, and unticking it actually
   reaches the server.
+
+  UPDATED 2026-10-27 (one email tool): the checklist lives in the "Email the customer" panel (the
+  Estimate kind) now - "Email estimate" / "Email again" and the typed address box are gone - so each
+  case opens the panel first and sends with the one Send button that names the estimate and the
+  address. The assertions are the same.
 */
+/** Open the one panel on the Intake send card and pick a kind. */
+async function openEmailPanel(kindName?: RegExp | string) {
+  fireEvent.click(await screen.findByRole("button", { name: "Email the customer" }));
+  if (kindName) fireEvent.click(await screen.findByRole("radio", { name: kindName }));
+}
+
 describe("PriceBookIntakePage — the financing link is a tick-box on the send", () => {
   it("starts ticked, beside the other two attachments", async () => {
     mockPage(issued());
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
 
+    await openEmailPanel();
     const box = await screen.findByLabelText(/Include the Synchrony financing link/);
     expect(box).toBeChecked();
     // The reports it sits with are opt-IN; this one is opt-OUT. If this ever flips, the financing
@@ -323,30 +343,28 @@ describe("PriceBookIntakePage — the financing link is a tick-box on the send",
 
   it("sends nothing about financing while it stays ticked, so the default body is unchanged", async () => {
     mockPage(issued());
-    const send = vi.spyOn(api, "pbIssuedSend").mockResolvedValue({ sent: true, to: "t@example.com" } as never);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "estimate", to: "tony@example.com", cc: [] });
 
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
-    fireEvent.click(await screen.findByRole("button", { name: /Email estimate|Email again/ }));
+    await openEmailPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Send estimate 2026-1098 to tony@example.com" }));
 
     await waitFor(() => expect(send).toHaveBeenCalled());
-    expect(send.mock.calls[0][1].includeFinancingLink).toBeUndefined();
+    expect(send.mock.calls[0][0].includeFinancingLink).toBeUndefined();
+    expect(send.mock.calls[0][0]).toMatchObject({ kind: "estimate", estimateId: "est-1" });
   });
 
-  it("unticking it sends includeFinancingLink: false and says so in the confirm", async () => {
+  it("unticking it sends includeFinancingLink: false", async () => {
     mockPage(issued());
-    const send = vi.spyOn(api, "pbIssuedSend").mockResolvedValue({ sent: true, to: "t@example.com" } as never);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "estimate", to: "tony@example.com", cc: [] });
 
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    await openEmailPanel();
     fireEvent.click(await screen.findByLabelText(/Include the Synchrony financing link/));
-    fireEvent.click(await screen.findByRole("button", { name: /Email estimate|Email again/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send estimate 2026-1098 to tony@example.com" }));
 
     await waitFor(() => expect(send).toHaveBeenCalled());
-    expect(send.mock.calls[0][1].includeFinancingLink).toBe(false);
-    // Leaving it off is the unusual choice, so the confirm has to name it — otherwise the only
-    // way to notice is to read the email after it has gone.
-    expect(String(confirm.mock.calls[0][0])).toContain("no financing link");
+    expect(send.mock.calls[0][0].includeFinancingLink).toBe(false);
   });
 });
 
@@ -424,81 +442,94 @@ describe("PriceBookIntakePage — the discount block prints the SERVER's figures
 
 /*
   Phase 4 (2026-10-08): "Email the financing link" on the after-issue panel, BEFORE signing. Kyle:
-  "the financing link should be able to be sent before signing." Beside "Email estimate", greyed
-  with the reason when the server would refuse - never hidden - and the estimate email's own body
-  is the one shared/estimateEmail.ts builds (the phone sends the same).
+  "the financing link should be able to be sent before signing." The estimate email's own body is
+  the one shared/estimateEmail.ts builds (the phone sends the same).
+
+  UPDATED 2026-10-27 (one email tool): the financing link is the "Financing link" kind of the ONE
+  "Email the customer" panel - there is no separate button under "Email estimate" any more. Greyed
+  with the reason when the server would refuse - never hidden.
 */
-describe("PriceBookIntakePage — Email the financing link, before signing", () => {
-  it("sits under Email estimate on an issued, unsigned estimate and sends the one financing email", async () => {
+describe("PriceBookIntakePage — the one email control (Estimate · Financing link · Message)", () => {
+  it("is ONE control on an issued, unsigned estimate: the old Email estimate / Email again / Email the financing link buttons are gone", async () => {
     mockPage(issued());
-    const send = vi.spyOn(api, "emailFinancing").mockResolvedValue({ ok: true, to: "tony@example.com" });
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    expect(await screen.findAllByRole("button", { name: "Email the customer" })).toHaveLength(1);
+    for (const gone of [/^Email estimate$/, /^Email again$/, /^Email the financing link$/, /^Send the financing link again$/]) {
+      expect(screen.queryByRole("button", { name: gone })).not.toBeInTheDocument();
+    }
+    expect(screen.queryByPlaceholderText("Customer email")).not.toBeInTheDocument(); // the typed-address box is the picker now
+  });
+
+  it("sends the financing link through the one send, to the customer on file, with no confirm and no signature in the way", async () => {
+    mockPage(issued());
+    const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "financing", to: "tony@example.com", cc: [] });
 
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
-    const button = await screen.findByRole("button", { name: "Email the financing link" });
-    expect(button).toBeEnabled();
-    // No confirm and no signature in the way: nothing about signing gates it.
-    fireEvent.click(button);
+    await openEmailPanel("Financing link");
+    fireEvent.click(await screen.findByRole("button", { name: "Send financing link to tony@example.com" }));
 
-    await waitFor(() => expect(send).toHaveBeenCalledWith("est-1"));
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "financing", estimateId: "est-1", to: null })));
     expect(await screen.findByText("Financing link emailed to tony@example.com.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send the financing link again" })).toBeInTheDocument();
   });
 
   it("is available on an estimate that has never been emailed (status draft)", async () => {
     mockPage(issued({ status: "draft" }));
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
-    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeEnabled();
+    await openEmailPanel();
+    expect(await screen.findByRole("radio", { name: "Financing link" })).toBeEnabled();
   });
 
   it("greys with the reason for a lost or void estimate", async () => {
     mockPage(issued({ status: "lost" }));
     const { unmount } = renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
-    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeDisabled();
+    await openEmailPanel();
+    expect(await screen.findByRole("radio", { name: "Financing link" })).toBeDisabled();
     expect(screen.getByText(/Reopen it from the Estimates page first, then send the financing link/)).toBeInTheDocument();
     unmount();
     vi.restoreAllMocks();
 
     mockPage(issued({ status: "void" }));
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
-    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeDisabled();
-    expect(screen.getByText("This estimate is void.")).toBeInTheDocument();
+    await openEmailPanel();
+    expect(await screen.findByRole("radio", { name: "Financing link" })).toBeDisabled();
+    expect(screen.getAllByText("This estimate is void.").length).toBeGreaterThan(0);
   });
 
-  it("greys with the reason when the account has no email", async () => {
+  it("when the account has no email, says so and waits for an address - it does not guess", async () => {
     mockPage(issued({ customerEmail: null }));
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
-    expect(await screen.findByRole("button", { name: "Email the financing link" })).toBeDisabled();
-    expect(screen.getByText(/No customer email on file/)).toBeInTheDocument();
+    await openEmailPanel();
+    expect(await screen.findByText(/No email on file — pick a contact or type an address above/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Send estimate 2026-1098/ })).toBeDisabled();
   });
 
   it("shows the server's refusal in the panel", async () => {
     mockPage(issued());
-    vi.spyOn(api, "emailFinancing").mockRejectedValue(new Error("This estimate is void."));
+    vi.spyOn(api, "sendCustomerEmail").mockRejectedValue(new Error("This estimate is void."));
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
-    const button = await screen.findByRole("button", { name: "Email the financing link" });
-    fireEvent.click(button);
+    await openEmailPanel("Financing link");
+    fireEvent.click(await screen.findByRole("button", { name: "Send financing link to tony@example.com" }));
     const refusal = await screen.findByText("This estimate is void.");
     expect(refusal).toBeInTheDocument();
-    // UNDER the button that was pressed (same container), not in the red block at the top of
-    // "Send to the customer" hundreds of pixels away (review finding, 2026-10-08).
-    expect(refusal.parentElement).toBe(button.parentElement);
     expect(refusal).toHaveAttribute("role", "alert");
   });
 
   it("the estimate email body is the shared one: address, note, reports and financing box in the same names", async () => {
     mockPage(issued());
-    const send = vi.spyOn(api, "pbIssuedSend").mockResolvedValue({ sent: true, to: "x@example.com" } as never);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "estimate", to: "x@example.com", cc: [] });
 
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
-    fireEvent.change(await screen.findByPlaceholderText("tony@example.com"), { target: { value: "x@example.com" } });
+    await openEmailPanel();
+    fireEvent.change(await screen.findByLabelText("Send to"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByPlaceholderText("name@example.com"), { target: { value: "x@example.com" } });
     fireEvent.change(screen.getByPlaceholderText("Optional note to include in the email"), { target: { value: "Call me" } });
     fireEvent.click(screen.getByLabelText(/Attach Electrical Health Record report/));
     fireEvent.click(screen.getByLabelText(/Attach Generator Sizing data sheet/));
-    fireEvent.click(screen.getByRole("button", { name: /Email estimate|Email again/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Send estimate 2026-1098 to x@example.com" }));
 
     await waitFor(() => expect(send).toHaveBeenCalled());
-    expect(send.mock.calls[0][1]).toEqual({
+    expect(send.mock.calls[0][0]).toEqual({
+      kind: "estimate", estimateId: "est-1",
       to: "x@example.com", message: "Call me", photoIds: undefined,
       attachHealthReport: true, attachGeneratorReport: true, includeFinancingLink: undefined,
     });
@@ -577,5 +608,97 @@ describe("PriceBookIntakePage - arriving on a change order that was already in p
     renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
     await screen.findByText(/Estimate intake/);
     expect(screen.queryByText("Opened the change order already in progress")).toBeNull();
+  });
+});
+
+/*
+  Kyle, 2026-10-27: "I also want to get rid of the quantity showing on the estimates and invoices.
+  Instead I want to be able to edit the name of the line item so I can customize the line item name
+  to the specific job."
+
+  The box lives where the line is shown: Review tab -> the line's "Edit" form -> "Name on the
+  estimate". The exit is "Use the price-book name". On a SIGNED estimate both are greyed WITH the
+  server's own reason (optionSet.lockedReason), never hidden.
+*/
+describe("PriceBookIntakePage - Name on the estimate", () => {
+  const SIGNED = "Estimate 2026-1098 from this draft is SIGNED. A signed agreement is never edited — raise a change order instead.";
+
+  function reviewWith(line: Record<string, unknown>, lockedReason: string | null = null): PbReview {
+    return {
+      ...REVIEW,
+      optionSet: { ...REVIEW.optionSet, lockedReason },
+      confirmedLines: [{ ...REVIEW.confirmedLines[0], ...line } as unknown as PbReview["confirmedLines"][number]],
+    };
+  }
+
+  async function openEdit(review: PbReview) {
+    mockPage(null);
+    vi.mocked(api.pbReview).mockResolvedValue(review);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+  }
+
+  it("opens pre-filled with the price-book name; saving a new name sends it, saving without touching it sends none", async () => {
+    const edit = vi.spyOn(api, "pbEditLine").mockResolvedValue({} as never);
+    await openEdit(reviewWith({}));
+    const box = (await screen.findByLabelText("Name on the estimate")) as HTMLInputElement;
+    expect(box.value).toBe("Diagnostic per outlet");
+    expect(box.disabled).toBe(false);
+
+    // Untouched: a quantity save never rewrites the name.
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(edit).toHaveBeenCalledTimes(1));
+    expect(edit.mock.calls[0][1]).not.toHaveProperty("customName");
+    expect(edit.mock.calls[0][1]).toMatchObject({ quantity: 7 });
+  });
+
+  it("a reworded name is sent trimmed on Save", async () => {
+    const edit = vi.spyOn(api, "pbEditLine").mockResolvedValue({} as never);
+    await openEdit(reviewWith({}));
+    fireEvent.change(await screen.findByLabelText("Name on the estimate"), { target: { value: "  Kitchen island outlets - Hoover  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(edit).toHaveBeenCalledTimes(1));
+    expect(edit.mock.calls[0][1]).toMatchObject({ customName: "Kitchen island outlets - Hoover" });
+  });
+
+  it("typing the price-book name back, or emptying the box, saves 'no custom name'", async () => {
+    const edit = vi.spyOn(api, "pbEditLine").mockResolvedValue({} as never);
+    await openEdit(reviewWith({ customName: "Kitchen island outlets - Hoover" }));
+    const box = await screen.findByLabelText("Name on the estimate");
+    expect((box as HTMLInputElement).value).toBe("Kitchen island outlets - Hoover");
+    fireEvent.change(box, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(edit).toHaveBeenCalledTimes(1));
+    expect(edit.mock.calls[0][1]).toMatchObject({ customName: null });
+  });
+
+  it("the line shows the custom name with the price-book item beside it, and 'Use the price-book name' puts it back at once", async () => {
+    const edit = vi.spyOn(api, "pbEditLine").mockResolvedValue({} as never);
+    await openEdit(reviewWith({ customName: "Kitchen island outlets - Hoover" }));
+    expect(screen.getAllByText("Kitchen island outlets - Hoover").length).toBeGreaterThan(0);
+    expect(screen.getByText("price book: Diagnostic per outlet")).toBeInTheDocument();
+    const clear = screen.getByRole("button", { name: "Use the price-book name" }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(false);
+    fireEvent.click(clear);
+    await waitFor(() => expect(edit).toHaveBeenCalledWith("line-1", { customName: null }));
+  });
+
+  it("with no custom name there is nothing to put back - the button is greyed and says so", async () => {
+    await openEdit(reviewWith({}));
+    const clear = (await screen.findByRole("button", { name: "Use the price-book name" })) as HTMLButtonElement;
+    expect(clear.disabled).toBe(true);
+    expect(clear.title).toBe("This line already uses the price-book name.");
+  });
+
+  it("a SIGNED estimate greys the box and the button WITH the server's reason, printed on the screen", async () => {
+    await openEdit(reviewWith({ customName: "Kitchen island outlets - Hoover" }, SIGNED));
+    const box = (await screen.findByLabelText("Name on the estimate")) as HTMLInputElement;
+    const clear = screen.getByRole("button", { name: "Use the price-book name" }) as HTMLButtonElement;
+    expect(box.disabled).toBe(true);
+    expect(box.title).toBe(SIGNED);
+    expect(clear.disabled).toBe(true);
+    expect(clear.title).toBe(SIGNED);
+    expect(screen.getAllByText(SIGNED).length).toBeGreaterThan(0);
   });
 });

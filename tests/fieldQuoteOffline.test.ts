@@ -691,8 +691,9 @@ describe("GET /health-record/quotes/:draftId — the two new fields are named, a
     const d = await draftWithLine("payload-keys");
     const q = await quotePayload(d.draftId);
     expect(q.supplierId).toBe("HD");
+    // `customName` added deliberately 2026-10-27 (Kyle: the line's name for the job).
     expect(Object.keys(q.lines[0]).sort()).toEqual([
-      "description", "difficulty", "gaps", "id", "itemId", "lineTotal", "location", "note", "option", "quantity", "quantitySource", "retired", "state",
+      "customName", "description", "difficulty", "gaps", "id", "itemId", "lineTotal", "location", "note", "option", "quantity", "quantitySource", "retired", "state",
     ]);
     expect(q.lines[0].retired).toBe(false);
   });
