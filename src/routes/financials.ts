@@ -733,6 +733,11 @@ financialsRouter.get("/materials", asyncHandler(async (req, res) => {
 
 financialsRouter.get("/summary", asyncHandler(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
+  res.json(await financialSummary(year));
+}));
+
+/** The P&L the Financials screen shows — the route above, and the read-only scripts/readSoldJobs.ts. */
+export async function financialSummary(year: number) {
   const [ledger, materials] = await Promise.all([yearLedger(year), materialsByMonth(year)]);
 
   /*
@@ -801,7 +806,7 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
   // Bank expenses by the category Kyle gave each line — the same words as bills and card kinds.
   for (const b of ledger.bankRows) addExpense(`bank:${b.category}`, b.month, b.amount);
 
-  res.json({
+  return {
     year,
     stripeConfigured: stripeConfigured(),
     // Stripe fees: false + reason when the key cannot read balance transactions (the column is then empty, not zero-by-guess).
@@ -834,13 +839,18 @@ financialsRouter.get("/summary", asyncHandler(async (req, res) => {
     })).sort((a, b) => b.total - a.total),
     // The Materials card (Build 4): bought / used / inventory value per month.
     materials,
-  });
-}));
+  };
+}
 
 // ── Report 3: job profitability ─────────────────────────────────────────────
 
 financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
+  res.json(await jobProfitability(year));
+}));
+
+/** One row per sold job — the route above, and the read-only scripts/readSoldJobs.ts. */
+export async function jobProfitability(year: number) {
   const jobInclude = {
     customer: { select: { id: true, name: true } },
     // Kyle, 2026-09-07: the Financials card drills account → address → job, so each
@@ -919,7 +929,7 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
     // the account summary and the commission basis call, so the four cannot disagree.
     processingCostsForJobs(rows.map((v) => ({ visitId: v.id, rootEstimateId: rootByJob.get(v.id) ?? null }))),
   ]);
-  res.json(rows.map((visit) => {
+  return rows.map((visit) => {
     const quoted = estimateByJob.get(visit.id) ?? null;
     const material = materialByJob.get(visit.id)!;
     const materialSpend = round2(material.materialCost);
@@ -954,8 +964,8 @@ financialsRouter.get("/job-profitability", asyncHandler(async (req, res) => {
       marginBeforeLabor: quoted !== null ? round2(quoted - materialSpend - processingCost) : null,
       margin: quoted !== null ? round2(quoted - materialSpend - laborCost - processingCost) : null,
     };
-  }));
-}));
+  });
+}
 
 // ── Receipt insights (Phase 5): "update the price book and flag most used
 // items." The engine RECOMMENDS, never sets (decisions/2026-08-04): this

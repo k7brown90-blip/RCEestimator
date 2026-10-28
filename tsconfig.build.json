@@ -13,6 +13,8 @@
     "scripts/readSystemEvents.ts",
     "scripts/readReceipts.ts",
     "scripts/readPayments.ts",
+    // Read-only sold-jobs report for the hourly-rate decision (Kyle, 2026-10-27).
+    "scripts/readSoldJobs.ts",
     // Read-only data checks for the punch-list fix plan (2026-09-21): Q1, stale jobs, legacy Estimate count.
     "scripts/readDataChecks.ts",
     "scripts/tailClientLog.ts",
