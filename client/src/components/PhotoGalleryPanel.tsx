@@ -211,7 +211,7 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
           <label className="btn btn-primary cursor-pointer text-sm">
             {busy ? "Uploading…" : "+ Add photos"}
             <input
-              type="file" accept="image/*" capture="environment" multiple hidden
+              type="file" accept="image/*" multiple hidden
               onChange={(e) => void onPick(e)} disabled={busy}
             />
           </label>
@@ -510,7 +510,7 @@ export function AccountPhotoGallery(props: {
             >
               {busy ? "Uploading…" : "+ Add photos"}
               <input
-                type="file" accept="image/*" capture="environment" multiple hidden
+                type="file" accept="image/*" multiple hidden
                 onChange={(e) => void onPick(e)}
                 disabled={sortedJobs.length === 0 || (sortedJobs.length > 1 && !chosenVisitId) || busy}
               />

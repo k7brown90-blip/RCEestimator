@@ -496,6 +496,8 @@ describe("PropertyDetailPage", () => {
       fireEvent.change(select, { target: { value: "visit-2" } });
 
       const fileInput = within(card).getByLabelText("+ Add photos");
+      // No `capture`: it forces a phone's camera and locks the gallery out (Kyle, 2026-10-29).
+      expect(fileInput).not.toHaveAttribute("capture");
       fireEvent.change(fileInput, { target: { files: [new File(["fake"], "panel.jpg", { type: "image/jpeg" })] } });
 
       await waitFor(() =>
