@@ -17,6 +17,7 @@
  *   deposit   -> paymentReceipts.sendDepositRequestEmail
  *   financing -> financingEmail.sendFinancingEmail
  *   estimate  -> issuedEstimateSend.sendEstimateEmailFromBody (the same function the technician's door calls)
+ *   receipt   -> paymentReceipts.sendReceiptEmail           (paid in full only: invoice PDF + the reports ticked + photos)
  *   review    -> reviewRequest.sendReviewRequestEmail        (job-keyed: a Visit.id)
  *   message   -> POST /communications/email                  (routes/communications.ts, which also passes
  *                                                             the one recipient rule; it has its own thread keys)
@@ -33,7 +34,8 @@ import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { customerEmailBaseSchema } from "./emailCc";
 import { estimateEmailBodySchema, publicBaseUrl, sendEstimateEmailFromBody, sendInvoiceEmail } from "./issuedEstimateSend";
-import { sendDepositRequestEmail } from "./paymentReceipts";
+import { sendDepositRequestEmail, sendReceiptEmail } from "./paymentReceipts";
+import { receiptReportIdsSchema } from "../../shared/jobCompletion";
 import { sendFinancingEmail } from "./financingEmail";
 import { sendReviewRequestEmail } from "./reviewRequest";
 
@@ -45,6 +47,9 @@ export const customerEmailRequestSchema = z.discriminatedUnion("kind", [
   customerEmailBaseSchema.extend({ kind: z.literal("deposit"), estimateId }),
   customerEmailBaseSchema.extend({ kind: z.literal("financing"), estimateId }),
   estimateEmailBodySchema.extend({ kind: z.literal("estimate"), estimateId }),
+  // The paid-in-full receipt (Kyle, 2026-10-29): `reports` are the ids in shared/jobCompletion.ts ("completion",
+  // "health:<id>", "generator:<id>", "diagnostic:<id>") - the same ids the payment card's list offers.
+  customerEmailBaseSchema.extend({ kind: z.literal("receipt"), estimateId, reports: receiptReportIdsSchema }),
   customerEmailBaseSchema.extend({ kind: z.literal("review"), visitId: z.string().trim().min(1, "Which job?") }),
 ]);
 export type CustomerEmailRequest = z.infer<typeof customerEmailRequestSchema>;
@@ -62,10 +67,10 @@ export async function sendCustomerEmailRequest(
 ): Promise<CustomerEmailResult> {
   const body = customerEmailRequestSchema.parse(rawBody ?? {});
 
-  // Photos ride only an invoice or an estimate. A tick on any other kind is REFUSED, never dropped:
-  // the email must not arrive thinner than the person ticked (the same rule as the field door).
-  if (body.kind !== "invoice" && body.kind !== "estimate" && body.photoIds && body.photoIds.length > 0) {
-    return { ok: false, reason: "Photos can only be sent with an invoice or an estimate." };
+  // Photos ride only an invoice, an estimate or a receipt. A tick on any other kind is REFUSED, never
+  // dropped: the email must not arrive thinner than the person ticked (the same rule as the field door).
+  if (body.kind !== "invoice" && body.kind !== "estimate" && body.kind !== "receipt" && body.photoIds && body.photoIds.length > 0) {
+    return { ok: false, reason: "Photos can only be sent with an invoice, an estimate or a receipt." };
   }
 
   switch (body.kind) {
@@ -78,6 +83,17 @@ export async function sendCustomerEmailRequest(
         photoIds: body.photoIds,
       });
       return r.ok ? { ok: true, kind: "invoice", to: r.to, cc: r.cc, amount: r.amount, reminder: r.reminder } : r;
+    }
+    case "receipt": {
+      const r = await sendReceiptEmail(prisma, body.estimateId, {
+        sentBy,
+        toOverride: body.to ?? null,
+        cc: body.cc,
+        message: body.message ?? null,
+        photoIds: body.photoIds,
+        reports: body.reports,
+      });
+      return r.ok ? { ok: true, kind: "receipt", to: r.to, cc: r.cc } : r;
     }
     case "deposit": {
       const r = await sendDepositRequestEmail(prisma, body.estimateId, publicBaseUrl(), {

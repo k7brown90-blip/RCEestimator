@@ -17,6 +17,10 @@ import {
 } from "./companyProfile";
 import { findingCitations } from "./findingLedger";
 import { CONTRACT_PAYMENT_TERMS } from "./paymentTerms";
+import { PAYMENT_KIND_LABEL, PAYMENT_METHOD_LABEL } from "./paymentLabels";
+import { listCompletionLines } from "./jobCompletion";
+import { signedRootForJob } from "./invoiceGroup";
+import { paymentSummary } from "./stripePayments";
 import { serializeDiagnosticReport } from "./diagnosticReport";
 import {
   DEVICE_LABEL,
@@ -1998,6 +2002,211 @@ export async function generateDiagnosticReport(
     data: { id: docId, jobId: report.visitId, type: "diagnostic_report", pdfUrl: pdfPath },
   });
   return { documentId: docId, pdfPath };
+}
+
+// ─── JOB COMPLETION REPORT (Kyle, 2026-10-29) ───────────────────────────────
+
+/** Why a Job Completion Report cannot be produced - the sentence the preview and the receipt show. */
+export class CompletionReportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CompletionReportError";
+  }
+}
+
+const money = (n: number) => "$" + n.toFixed(2);
+const dateLong = (d: Date) =>
+  d.toLocaleDateString("en-US", { timeZone: "America/Chicago", month: "long", day: "numeric", year: "numeric" });
+
+/**
+ * The Job Completion Report: the document a third party (the customer's realtor, a buyer, an
+ * inspector) is handed to verify work was done. Kyle, 2026-10-29: "Each separate line item can get
+ * photos and an explination of what was done and why. It will follow our same standard as the
+ * electrical assesment report so everyone gets the code compliance and empirical data that is
+ * specific to our brand."
+ *
+ * Laid out to the assessment report's standard (generateHealthReport): brand header, a boxed
+ * statement first, the job block, then one entry per piece of work - what it was, what was done and
+ * why, the code it was done to, the readings, and its photos printed in place.
+ *
+ * RENDERED FRESH, NEVER STORED. No Document row, no file in generated/: the buffer is returned to
+ * the CRM preview route or the receipt email and nothing is left needing a delete.
+ *
+ * NO MONEY BUT THE CUSTOMER'S OWN: the PAID IN FULL box and the payments received print the
+ * invoice's total and what was paid. Nothing about cost, material sell or labour hours is read by
+ * this function - services/jobCompletion.ts never selects those columns - and a test pins that.
+ *
+ * Lines with no write-up are omitted (the entry IS the line's proof); with no write-up at all there
+ * is no report, and this refuses with the reason instead of printing an empty document.
+ */
+export async function generateCompletionReport(visitId: string): Promise<{ pdf: Buffer; filename: string }> {
+  const listed = await listCompletionLines(prisma, visitId);
+  if (listed.reason) throw new CompletionReportError(listed.reason);
+  const written = listed.lines.filter((l) => l.entry);
+  if (written.length === 0) {
+    throw new CompletionReportError("No lines are written up yet - write up at least one line of the invoice before producing the completion report.");
+  }
+
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    select: {
+      scheduledStart: true,
+      completedAt: true,
+      customer: { select: { name: true } },
+      property: { select: { addressLine1: true, city: true, state: true, postalCode: true } },
+      assignments: { orderBy: { assignedAt: "asc" }, select: { role: true, technician: { select: { name: true } } } },
+    },
+  });
+  if (!visit) throw new CompletionReportError("Job not found.");
+
+  const root = await signedRootForJob(prisma, visitId);
+  const summary = root ? await paymentSummary(prisma, root.id, "https://unused.invalid") : null;
+  const profile = await getCompanyProfile();
+
+  // Photos: downscaled once, keyed by id, only those the written lines ask for. Scoped to THIS visit
+  // so a stale id from anywhere else can never print.
+  const wantedIds = [...new Set(written.flatMap((l) => l.entry!.photoIds))];
+  const photoRows = wantedIds.length === 0
+    ? []
+    : await prisma.visitPhoto.findMany({ where: { id: { in: wantedIds }, visitId }, select: { id: true, data: true, caption: true } });
+  const photoById = new Map<string, PreparedPhoto>();
+  for (const row of photoRows) {
+    const prepared = await preparePhoto(row.data);
+    if (prepared) photoById.set(row.id, { ...prepared, caption: row.caption });
+  }
+
+  const doc = new PDFDocument({ margin: 36, bufferPages: false });
+  const chunks: Buffer[] = [];
+  doc.on("data", (c: Buffer) => chunks.push(c));
+  const finished = new Promise<Buffer>((resolve, reject) => {
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+  });
+
+  const margin = 36;
+  const width = doc.page.width - margin * 2;
+  addHeader(doc, "Job Completion Report", profile);
+
+  // ── PAID IN FULL, first (when it is) ──
+  if (summary?.paidInFull) {
+    const counted = summary.payments.filter((p) => p.status === "paid" && !p.voidedAt);
+    const lastPaid = counted
+      .map((p) => p.paidAt)
+      .filter((d): d is Date => Boolean(d))
+      .sort((a, b) => b.getTime() - a.getTime())[0];
+    const rows: string[] = [
+      `Invoice ${summary.number}`,
+      `Invoice total: ${money(summary.billedTotal)}`,
+      `Paid to date: ${money(summary.totalPaid)}`,
+      `Balance: ${money(0)}`,
+      ...(lastPaid ? [`Paid in full on ${dateLong(lastPaid)}`] : []),
+    ];
+    const body = rows.join("\n");
+    const top = doc.y;
+    doc.fontSize(10);
+    const textH = doc.heightOfString(body, { width: width - 16 });
+    const boxH = textH + 16 + 20;
+    doc.rect(margin, top, width, boxH).lineWidth(1.5).stroke(BRAND.copper);
+    doc.fillColor(BRAND.cedar).fontSize(14).text("PAID IN FULL", margin + 8, top + 8, { width: width - 16 });
+    doc.fillColor(BRAND.text).fontSize(10).text(body, margin + 8, top + 28, { width: width - 16 });
+    doc.y = top + boxH + 8;
+    doc.x = margin;
+    doc.moveDown(0.4);
+  }
+
+  // ── The job ──
+  const addr = visit.property;
+  const techs = [...new Set(visit.assignments.map((a) => a.technician.name))];
+  doc.fontSize(11).fillColor(BRAND.text);
+  doc.text(`Customer: ${visit.customer.name}`);
+  doc.text(`Service address: ${addr.addressLine1}, ${addr.city}, ${addr.state} ${addr.postalCode}`);
+  if (techs.length > 0) doc.text(`Technician${techs.length === 1 ? "" : "s"}: ${techs.join(", ")}`);
+  if (visit.scheduledStart) doc.text(`Scheduled: ${dateLong(visit.scheduledStart)}`);
+  if (visit.completedAt) doc.text(`Completed: ${dateLong(visit.completedAt)}`);
+  if (listed.invoiceNumber && !summary?.paidInFull) doc.text(`Invoice: ${listed.invoiceNumber}`);
+  doc.moveDown(0.8);
+
+  // ── One section per written-up line, in invoice order ──
+  doc.fillColor(BRAND.cedar).fontSize(12).text("Work performed", { underline: true });
+  doc.moveDown(0.3);
+  let n = 0;
+  for (const line of written) {
+    const entry = line.entry!;
+    n += 1;
+    if (doc.y > doc.page.height - 170) doc.addPage();
+    // a hairline between pieces of work, then the line's own name in bold
+    if (n > 1) {
+      doc.moveTo(margin, doc.y).lineTo(margin + width, doc.y).lineWidth(0.5).stroke("#d8d2b0");
+      doc.moveDown(0.5);
+    }
+    const qty = line.quantity > 1 ? `  (x${Number.isInteger(line.quantity) ? line.quantity : line.quantity.toFixed(2)})` : "";
+    doc.font("Helvetica-Bold").fillColor(BRAND.cedar).fontSize(11).text(`${n}. ${line.name}${qty}`, margin, doc.y, { width });
+    doc.font("Helvetica").fillColor(BRAND.text).fontSize(9);
+    const inset = margin + 14;
+    const innerWidth = width - 14;
+
+    if (entry.explanation) {
+      doc.fillColor(BRAND.muted).text("What was done and why", inset, doc.y, { width: innerWidth });
+      doc.fillColor(BRAND.text).text(entry.explanation, inset, doc.y, { width: innerWidth });
+      doc.moveDown(0.25);
+    }
+    if (entry.necRefs.length > 0) {
+      doc.fillColor(BRAND.muted).text("Code compliance", inset, doc.y, { width: innerWidth });
+      doc.fillColor(BRAND.text).text(entry.necRefs.map((r) => `NEC ${r}`).join("  \u00b7  "), inset, doc.y, { width: innerWidth });
+      doc.moveDown(0.25);
+    }
+    if (entry.readings.length > 0) {
+      doc.fillColor(BRAND.muted).text("Readings", inset, doc.y, { width: innerWidth });
+      doc.fillColor(BRAND.text);
+      const valueX = inset + Math.round(innerWidth * 0.5);
+      for (const r of entry.readings) {
+        if (doc.y > doc.page.height - 90) doc.addPage();
+        const y = doc.y;
+        doc.text(r.label, inset, y, { width: valueX - inset - 8 });
+        const afterLabel = doc.y;
+        doc.text(`${r.value}${r.unit ? ` ${r.unit}` : ""}`, valueX, y, { width: margin + width - valueX });
+        doc.y = Math.max(afterLabel, doc.y);
+      }
+      doc.moveDown(0.25);
+    }
+    doc.x = margin;
+    const photos = entry.photoIds.map((id) => photoById.get(id)).filter((p): p is PreparedPhoto => Boolean(p));
+    if (photos.length > 0) {
+      doc.moveDown(0.1);
+      drawPhotos(doc, photos);
+    }
+    doc.x = margin;
+    doc.moveDown(0.5);
+  }
+
+  // ── Payments received ──
+  const counted = summary?.payments.filter((p) => p.status === "paid" && !p.voidedAt) ?? [];
+  if (counted.length > 0) {
+    if (doc.y > doc.page.height - 140) doc.addPage();
+    doc.fillColor(BRAND.cedar).fontSize(12).text("Payments received", { underline: true });
+    doc.fillColor(BRAND.text).fontSize(9);
+    for (const p of counted) {
+      const when = p.paidAt ? dateLong(p.paidAt) : "";
+      const net = Math.round((p.amount - (p.refundedAmount ?? 0)) * 100) / 100;
+      const label = p.payer === "warranty" ? "Warranty payment" : (PAYMENT_KIND_LABEL[p.kind] ?? "Payment");
+      doc.text(`${label}: ${money(net)} ${PAYMENT_METHOD_LABEL[p.method] ?? "paid"}${when ? ` on ${when}` : ""}`);
+    }
+    doc.moveDown(0.6);
+  }
+
+  // ── Credentials and scope ──
+  // VERIFY: reviewed by counsel before the first customer-facing delivery, like REPORT_LIMITATIONS above.
+  doc.fillColor(BRAND.muted).fontSize(8).text(
+    `Work performed and recorded by ${techs.length > 0 ? techs.join(", ") : "Red Cedar Electric"}, ${profile.legalName} - ${licenseLine(profile)}. ` +
+    "Descriptions, readings and photographs are those recorded at the time of the work. NEC citations name the code articles the work was performed to, as adopted in this jurisdiction. " +
+    "This report is not a municipal inspection and does not substitute for one, and it is not a warranty or a guarantee against future failure.",
+  );
+  addFooter(doc);
+
+  doc.end();
+  const pdf = await finished;
+  const slug = (listed.invoiceNumber ?? "job").replace(/[^a-z0-9-]/gi, "");
+  return { pdf, filename: `job-completion-report-${slug}.pdf` };
 }
 
 /** Append a signed audit trail to an existing document */

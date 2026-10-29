@@ -432,6 +432,7 @@ model Visit {
   healthInspections      HealthInspection[]
   diagnosticReports      DiagnosticReport[]
   visitPhotos            VisitPhoto[]
+  jobCompletionLines     JobCompletionLine[]
   timeEntries            TimeEntry[]
   commissions            Commission[]
   emailBounces           EmailBounce[]
@@ -3576,9 +3577,42 @@ model IssuedEstimateLine {
 
   estimate IssuedEstimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
   atomic   PriceBookAtomic @relation(fields: [itemId], references: [itemId], onDelete: Restrict)
+  /// The Job Completion Report write-up of this line (2026-10-29), if any.
+  completion JobCompletionLine?
 
   @@index([estimateId])
   @@index([itemId])
+}
+
+/// The JOB COMPLETION REPORT's write-up of ONE invoice line (Kyle, 2026-10-29): "Each separate line
+/// item can get photos and an explination of what was done and why. It will follow our same
+/// standard as the electrical assesment report so everyone gets the code compliance and empirical
+/// data that is specific to our brand." Asked who fills it in: "Both" - the technician in the field
+/// app and the office in the CRM write and read this same row (services/jobCompletion.ts, contract
+/// in shared/jobCompletion.ts).
+/// One row per invoice line (unique): saving again replaces it, "Clear" deletes it. A line with no
+/// row is "not written up yet" and is left off the report. `necRefs` starts from the line's
+/// PriceBookAtomic.necArticle in the UI but is stored as written - empty means no citation. The
+/// photos are VisitPhoto ids of `visitId` (checked on save; a deleted photo drops off on read).
+/// Never holds a price, a cost or labour hours - the report is a third party's document.
+model JobCompletionLine {
+  id                   String   @id @default(cuid())
+  visitId              String
+  issuedEstimateLineId String   @unique
+  explanation          String   @default("")
+  necRefs              String[]
+  /// [{label, value, unit}] - shared/jobCompletion.ts completionReadingSchema.
+  readingsJson         Json     @default("[]")
+  photoIds             String[]
+  /// "human:crm-session" or "tech:<technicianId>".
+  updatedBy            String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  visit Visit              @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  line  IssuedEstimateLine @relation(fields: [issuedEstimateLineId], references: [id], onDelete: Cascade)
+
+  @@index([visitId])
 }
 
 // Append-only audit trail. The columns on IssuedEstimate carry the CURRENT state; this carries

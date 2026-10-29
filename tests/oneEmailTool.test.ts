@@ -310,7 +310,7 @@ describe("one recipient rule, and nothing left half-used", () => {
     const est = await issue("j");
     const res = await post({ kind: "deposit", estimateId: est.id, photoIds: ["some-photo"] });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/only be sent with an invoice or an estimate/i);
+    expect(res.body.error).toMatch(/only be sent with an invoice, an estimate or a receipt/i);
     expect(emailMock.sendBrandedEmail).not.toHaveBeenCalled();
   });
 

@@ -21,9 +21,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
-import { PaymentPanel } from "./PaymentPanel";
+import { PaymentPanel, invoiceEmailRecord } from "./PaymentPanel";
 import { api } from "../lib/api";
-import type { PaymentInfo } from "../lib/api";
+import type { PaymentInfo, ReceiptReportOption } from "../lib/api";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -539,5 +539,143 @@ describe("PaymentPanel", () => {
       // The exit is the administrator's void on the row (6B) — still offered.
       expect(screen.getByRole("button", { name: "Void…" })).toBeEnabled();
     });
+  });
+});
+
+/*
+ * THE RECEIPT - a kind of the one panel (Kyle, 2026-10-29: "the email customer should have the receipt
+ * option once the payment is competed ... I need to email the receipt and the report with photos for the
+ * customers realtor"). Paid in full, the Invoice choice BECOMES the Receipt (one tool for one task);
+ * while owing the Receipt is greyed with its reason. Under Receipt: Attach reports, the photos, the note.
+ */
+describe("receipt - the paid-in-full choice of the one panel (Kyle, 2026-10-29)", () => {
+  const reports: ReceiptReportOption[] = [
+    { id: "completion", kind: "completion" as const, label: "Job Completion Report", date: "2026-10-29T15:00:00.000Z", available: true },
+    { id: "health:insp-1", kind: "health" as const, label: "Electrical Health Record", date: "2026-10-01T15:00:00.000Z", available: true },
+    { id: "diagnostic:diag-1", kind: "diagnostic" as const, label: "Circuit Diagnostic report - Kitchen", date: "2026-10-02T15:00:00.000Z", available: false, blockedReason: "This diagnostic report is not finished yet." },
+  ];
+  const paid = (over: Partial<PaymentInfo> = {}, emailReports = reports) =>
+    info({
+      paidInFull: true, balance: 0, totalPaid: 349.86, depositPaid: 116.62,
+      email: { customerId: "acct-1", customerEmail: "tony@example.com", jobId: "visit-1", jobStatus: "completed", reviewRequestedAt: null, reports: emailReports },
+      ...over,
+    });
+  const quiet = () => {
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    vi.spyOn(api, "accountContacts").mockResolvedValue([] as never);
+    vi.spyOn(api, "account").mockResolvedValue({ id: "acct-1", name: "Tony", properties: [{ id: "prop-1", name: "Home", addressLine1: "1 Main St", city: "Eugene" }] } as never);
+    vi.spyOn(api, "propertyPhotos").mockResolvedValue({
+      jobPhotos: [{ id: "photo-1", caption: "New panel", visitId: "visit-1", visitDate: "2026-10-20T12:00:00.000Z", purpose: "Install", jobType: null, tag: null }],
+      assessmentPhotos: [],
+    } as never);
+  };
+
+  it("once paid in full the Invoice choice is replaced by 'Receipt - Invoice N paid in full' - not offered twice", async () => {
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paid());
+    quiet();
+    renderWithProviders(<PaymentPanel jobId="visit-1" />);
+
+    await openPanel();
+    expect(await screen.findByRole("radio", { name: "Receipt — Invoice 2026-1093 paid in full" })).toBeChecked();
+    expect(screen.queryByRole("radio", { name: /^Invoice 2026-1093/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send receipt 2026-1093 to tony@example.com" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Send / })).toHaveLength(1);
+  });
+
+  it("while something is owing it stays the Invoice, and the Receipt is shown greyed with the reason", async () => {
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
+    quiet();
+    renderWithProviders(<PaymentPanel jobId="visit-1" />);
+
+    await openPanel();
+    expect(await screen.findByRole("radio", { name: "Invoice 2026-1093 — $233.24 due" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /^Receipt/ })).toBeDisabled();
+    expect(screen.getByText("A receipt can go once the invoice is paid in full.")).toBeInTheDocument();
+  });
+
+  it("Attach reports: one box per report with its date, the Job Completion Report ticked by default, an unavailable one disabled WITH its reason", async () => {
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paid());
+    quiet();
+    renderWithProviders(<PaymentPanel jobId="visit-1" />);
+
+    await openPanel();
+    const completion = await screen.findByRole("checkbox", { name: /^Job Completion Report/ });
+    expect(completion).toBeChecked();
+    expect(completion).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: /^Electrical Health Record/ })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: new RegExp(`^Job Completion Report — ${new Date("2026-10-29T15:00:00.000Z").toLocaleDateString().replace(/[/.]/g, "\$&")}`) })).toBeInTheDocument();
+    const blocked = screen.getByRole("checkbox", { name: /^Circuit Diagnostic report - Kitchen/ });
+    expect(blocked).toBeDisabled();
+    expect(blocked).not.toBeChecked();
+    expect(screen.getByText("This diagnostic report is not finished yet.")).toBeInTheDocument();
+    expect(screen.getByText("Attaches the itemized invoice PDF and every report ticked.")).toBeInTheDocument();
+  });
+
+  it("the Job Completion Report is NOT ticked by default when nothing is written up; it is greyed with 'No lines are written up yet' and the send carries no reports", async () => {
+    const none: ReceiptReportOption[] = [{ id: "completion", kind: "completion" as const, label: "Job Completion Report", date: null, available: false, blockedReason: "No lines are written up yet" }];
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paid({}, none));
+    quiet();
+    const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "receipt", to: "tony@example.com", cc: [] });
+    renderWithProviders(<PaymentPanel jobId="visit-1" />);
+
+    await openPanel();
+    const box = await screen.findByRole("checkbox", { name: /^Job Completion Report/ });
+    expect(box).toBeDisabled();
+    expect(box).not.toBeChecked();
+    expect(screen.getByText("No lines are written up yet")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send receipt 2026-1093 to tony@example.com" }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "receipt", reports: [] })));
+  });
+
+  it("sends the receipt to a typed realtor with the ticked reports, the picked photos and the note", async () => {
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paid());
+    quiet();
+    const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "receipt", to: "realtor@example.com", cc: [] });
+    renderWithProviders(<PaymentPanel jobId="visit-1" />);
+
+    await openPanel();
+    await screen.findByRole("checkbox", { name: /^Electrical Health Record/ });
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Electrical Health Record/ }));
+    fireEvent.click(await screen.findByTitle(/New panel/));
+    fireEvent.change(screen.getByPlaceholderText("Optional note to include in the email"), { target: { value: "For the punch list" } });
+    fireEvent.change(await screen.findByLabelText("Send to"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByPlaceholderText("name@example.com"), { target: { value: "realtor@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send receipt 2026-1093 to realtor@example.com" }));
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith({
+      kind: "receipt",
+      estimateId: "root-1",
+      to: "realtor@example.com",
+      message: "For the punch list",
+      photoIds: ["photo-1"],
+      reports: ["completion", "health:insp-1"],
+    }));
+    expect(await screen.findByText("Receipt for invoice 2026-1093 emailed to realtor@example.com.")).toBeInTheDocument();
+  });
+
+  it("surfaces the server's refusal of a receipt instead of swallowing it", async () => {
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paid());
+    quiet();
+    vi.spyOn(api, "sendCustomerEmail").mockRejectedValue(new Error("The Electrical Health Record has an unreviewed critical finding."));
+    renderWithProviders(<PaymentPanel jobId="visit-1" />);
+
+    await openPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Send receipt 2026-1093 to tony@example.com" }));
+    expect(await screen.findByText("The Electrical Health Record has an unreviewed critical finding.")).toBeInTheDocument();
+  });
+});
+
+describe("invoiceEmailRecord - receipt", () => {
+  it("hands the panel the job's reports, and offers Receipt INSTEAD of Invoice only when paid in full", () => {
+    const rep: ReceiptReportOption[] = [{ id: "completion", kind: "completion" as const, label: "Job Completion Report", date: null, available: true }];
+    const email = { customerId: "acct-1", customerEmail: "tony@example.com", jobId: "visit-1", jobStatus: "completed", reviewRequestedAt: null, reports: rep };
+    const owing = invoiceEmailRecord(info({ email }));
+    expect(owing.kinds.map((k) => k.kind)).toEqual(["invoice", "receipt", "financing", "review", "message"]);
+    expect(owing.kinds.find((k) => k.kind === "receipt")?.blocked).toBe("A receipt can go once the invoice is paid in full.");
+    expect(owing.reports).toEqual(rep);
+
+    const settled = invoiceEmailRecord(info({ paidInFull: true, balance: 0, email }));
+    expect(settled.kinds.map((k) => k.kind)).toEqual(["receipt", "financing", "review", "message"]);
+    expect(settled.kinds[0].blocked).toBeUndefined();
   });
 });

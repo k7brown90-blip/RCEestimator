@@ -19,7 +19,10 @@ import { warrantyEmailLine } from "./warrantyNotice";
 import { invoiceRootId } from "./invoiceGroup";
 import { BALANCE_DUE_TERMS } from "./paymentTerms";
 import { FINANCING_IN_PROGRESS, financingInProgress } from "./financingFee";
-import { resolveRecipients } from "./emailCc";
+import { resolveRecipients, withCcText } from "./emailCc";
+import { photoAttachments, renderInvoicePdf } from "./issuedEstimateSend";
+import { renderReceiptReports } from "./receiptReports";
+import { PAYMENT_KIND_LABEL, PAYMENT_METHOD_LABEL } from "./paymentLabels";
 
 /**
  * What the invoice is made of (Kyle, 2026-09-20): the root estimate and every signed change
@@ -48,22 +51,8 @@ function warrantyRow(summary: {
   )}</td></tr>`;
 }
 
-const KIND_LABEL: Record<string, string> = {
-  deposit: "Deposit (1/3)",
-  final: "Payment",
-  other: "Payment",
-};
-
-const METHOD_LABEL: Record<string, string> = {
-  stripe: "paid online",
-  cash: "paid in cash",
-  check: "paid by check",
-  zelle: "paid via Zelle",
-  ach: "paid by bank transfer",
-  // The financed balance (2026-10-09, services/financingFee.ts) — the gross the customer authorized.
-  synchrony: "financed through Synchrony",
-  other: "paid",
-};
+const KIND_LABEL = PAYMENT_KIND_LABEL;
+const METHOD_LABEL = PAYMENT_METHOD_LABEL;
 
 /**
  * The financing fee as its own line (Kyle, 2026-10-08: "Shown as its own line, never folded in"),
@@ -256,4 +245,135 @@ export async function sendPaymentReceiptEmail(
       estimateId: payment.estimateId,
     });
   }
+}
+
+/**
+ * THE PAID-IN-FULL RECEIPT a person sends from the "Email the customer" panel (Kyle, 2026-10-29):
+ *
+ *   "I need a receipt that I can send to the customer that I can attach reports and photos too. This
+ *    job has been paid in full and the email customer should have the receipt option once the
+ *    payment is competed. Right now I need to email the receipt and the report with photos for the
+ *    customers realtor so they can close out their home inspection punch list."
+ *
+ * Not the automatic receipt above (sendPaymentReceiptEmail - once per payment, the customer on file,
+ * no attachments, untouched by this): this one is pressed, goes to the To and CC the panel chose,
+ * and carries the itemized invoice PDF ALWAYS plus each report ticked and each photo picked.
+ *
+ *   - It names the ROOT invoice (invoiceRootId / summary.number), never a change order's own number.
+ *   - REFUSED while anything is owing - a "receipt" for an open balance would be a lie in the
+ *     customer's inbox. The panel greys the choice with the same sentence.
+ *   - NEVER THINNER THAN TICKED: a report that is not this job's / not ready / will not render, or a
+ *     photo outside the account, refuses the whole send with the reason (receiptReports.ts).
+ *   - Who it goes to is decided by the one recipient rule (emailCc.resolveRecipients), exactly as
+ *     sendDepositRequestEmail does above.
+ */
+export async function sendReceiptEmail(
+  prisma: PrismaClient,
+  estimateId: string,
+  opts: {
+    sentBy: string;
+    toOverride?: string | null;
+    cc?: string[];
+    message?: string | null;
+    photoIds?: string[];
+    reports?: string[];
+  },
+): Promise<{ ok: true; to: string; cc: string[] } | { ok: false; reason: string }> {
+  // The receipt belongs to the INVOICE: a change order's id resolves to its root.
+  const rootId = await invoiceRootId(prisma, estimateId);
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: rootId },
+    include: { lines: { orderBy: { sortOrder: "asc" } }, options: { orderBy: { option: "asc" } } },
+  });
+  if (!est) return { ok: false, reason: "Estimate not found." };
+  if (!est.signedAt) return { ok: false, reason: "This estimate has not been signed yet, so there is no invoice to receipt." };
+
+  const summary = await paymentSummary(prisma, rootId, "https://unused.invalid");
+  if (!summary) return { ok: false, reason: "Estimate not found." };
+  if (!summary.paidInFull) {
+    return { ok: false, reason: `A receipt can go once the invoice is paid in full. $${summary.balance.toFixed(2)} is still owing on Invoice ${summary.number}.` };
+  }
+
+  const recipients = resolveRecipients(
+    { toOverride: opts.toOverride, onFile: est.customerEmail, cc: opts.cc },
+    "No customer email on file — add one to the account first, or type an address when sending.",
+  );
+  if (!recipients.ok) return { ok: false, reason: recipients.reason };
+  const { to, cc } = recipients;
+
+  // Photos: the same ownership-checked path every send uses. A photo it refuses refuses the send -
+  // the email must not arrive thinner than the person ticked.
+  const wantedPhotos = [...new Set(opts.photoIds ?? [])];
+  const photos = wantedPhotos.length > 0
+    ? await photoAttachments(prisma, wantedPhotos, { customerId: est.customerId })
+    : { attachments: [], refused: [] as string[] };
+  if (photos.refused.length > 0 || photos.attachments.length < wantedPhotos.length) {
+    const n = Math.max(photos.refused.length, wantedPhotos.length - photos.attachments.length);
+    return { ok: false, reason: `${n} of the photos you picked can't be sent (not on this customer's account, unreadable, or more than ten). Nothing was emailed.` };
+  }
+
+  const reports = await renderReceiptReports(prisma, est, opts.reports ?? []);
+  if (!reports.ok) return { ok: false, reason: reports.reason };
+
+  const invoicePdf = await renderInvoicePdf(prisma, est, summary);
+
+  const note = (opts.message ?? "").trim();
+  const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
+  const lastPaid = summary.payments
+    .filter((p) => p.status === "paid" && !p.voidedAt && p.paidAt)
+    .map((p) => p.paidAt as Date)
+    .sort((a, b) => b.getTime() - a.getTime())[0];
+  const paidOn = lastPaid
+    ? lastPaid.toLocaleDateString("en-US", { timeZone: "America/Chicago", month: "long", day: "numeric", year: "numeric" })
+    : null;
+  // Sent to someone other than the customer on file (the realtor): no first-name greeting meant for the homeowner.
+  const toOnFile = (est.customerEmail ?? "").trim().toLowerCase() === to.toLowerCase();
+  const extras = reports.attachments.length + photos.attachments.length;
+  const bodyHtml = `
+    <p style="font-size:15px;">${toOnFile ? `Hi ${escapeHtml(firstName)},` : "Hello,"}</p>
+    <p style="font-size:15px;">${toOnFile ? "This is your receipt for" : `This is the receipt for ${escapeHtml(est.customerName)}'s job${est.serviceAddress ? ` at ${escapeHtml(est.serviceAddress)}` : ""} —`} <strong>${escapeHtml(est.title)}</strong> — Invoice <strong>${escapeHtml(summary.number)}</strong> is <strong>paid in full</strong>${paidOn ? ` as of ${escapeHtml(paidOn)}` : ""}. Thank you.</p>
+    ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
+    <table style="width:100%;font-size:15px;border-collapse:collapse;margin:12px 0;">
+      ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
+      ${invoiceDocumentRows(summary)}
+      <tr><td style="padding:4px 0;color:#666;">${summary.warrantyCovered > 0 ? "Your total" : "Invoice total"}</td><td style="text-align:right;">$${summary.billedTotal.toFixed(2)}</td></tr>
+      ${financingFeeRow(summary)}
+      ${discountRows(summary)}
+      <tr><td style="padding:4px 0;color:#666;">Paid to date</td><td style="text-align:right;">$${summary.totalPaid.toFixed(2)}</td></tr>
+      <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">Balance</td><td style="text-align:right;font-weight:700;">PAID IN FULL</td></tr>
+    </table>
+    <p style="font-size:14px;">The itemized invoice is attached${extras > 0 ? `, along with ${reports.attachments.length > 0 ? `${reports.attachments.length} report${reports.attachments.length === 1 ? "" : "s"}` : ""}${reports.attachments.length > 0 && photos.attachments.length > 0 ? " and " : ""}${photos.attachments.length > 0 ? `${photos.attachments.length} photo${photos.attachments.length === 1 ? "" : "s"}` : ""}` : ""}. Keep this with your records.</p>
+    <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
+
+  const sent = await sendBrandedEmail({
+    kind: "receipt",
+    // The delivery row is the ROOT's: one invoice, one trail.
+    estimateNumber: est.number,
+    issuedEstimateId: rootId,
+    to,
+    ...(cc.length > 0 ? { cc } : {}),
+    subject: `Paid in full — receipt for Invoice ${summary.number}`,
+    headline: "Paid in full — thank you",
+    bodyHtml,
+    attachments: [
+      { filename: `invoice-${est.number}.pdf`, content: invoicePdf, contentType: "application/pdf" },
+      ...reports.attachments,
+      ...photos.attachments,
+    ],
+  });
+  if (!sent) return { ok: false, reason: "The email could not be sent — check the email connection." };
+
+  await prisma.issuedEstimateEvent.create({
+    data: {
+      estimateId: rootId,
+      type: "receipt_sent",
+      actor: opts.sentBy,
+      detail: `Paid-in-full receipt emailed to ${withCcText(to, cc)} (${reports.attachments.length} report${reports.attachments.length === 1 ? "" : "s"}, ${photos.attachments.length} photo${photos.attachments.length === 1 ? "" : "s"})`,
+    },
+  });
+  logSystemEvent("info", "stripe", `Paid-in-full receipt emailed to ${withCcText(to, cc)} on ${summary.number}`, {
+    estimateId: rootId,
+    sentBy: opts.sentBy,
+  });
+  return { ok: true, to, cc };
 }

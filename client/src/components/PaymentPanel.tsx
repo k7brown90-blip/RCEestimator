@@ -41,11 +41,38 @@ import { RefundedPaymentNote, VoidPaymentButton, VoidedPaymentNote } from "./Voi
 import { FINANCING_IN_PROGRESS, financingInProgress, SynchronyFinancing } from "./SynchronyFinancing";
 import { GOOGLE_REVIEW_URL } from "../../../shared/reviewRequestUrl";
 import { SendEmailPanel } from "./SendEmailPanel";
-import type { EmailRecord } from "./SendEmailPanel";
+import type { EmailKindOffer, EmailRecord } from "./SendEmailPanel";
+
+const RECEIPT_NOT_YET = "A receipt can go once the invoice is paid in full.";
 
 /**
- * The kinds the one "Email the customer" panel offers for an invoice (Kyle, 2026-10-27). Invoice,
- * Financing link and Message always; the Deposit request only while a deposit is due (and greyed
+ * The Receipt choice of the one "Email the customer" panel - ONE definition, used by this card and by
+ * the Property page's invoice row (Kyle, 2026-10-29). Paid in full it is offered; while owing it is
+ * shown greyed with the reason. Always about the ROOT invoice (`info` is the root's payment info).
+ */
+export function receiptOffer(info: PaymentInfo): EmailKindOffer {
+  return info.paidInFull
+    ? { kind: "receipt", label: `Receipt — Invoice ${info.number} paid in full` }
+    : { kind: "receipt", label: `Receipt — Invoice ${info.number}`, blocked: RECEIPT_NOT_YET };
+}
+
+/**
+ * The one definition of "fetch this invoice's payment info" - this card and the Property page's invoice
+ * row (which needs it for the Receipt choice) read the same cache entry, so neither adds a request.
+ */
+export function paymentInfoQuery({ jobId, estimateId }: { jobId?: string; estimateId?: string }) {
+  const queryKey = ["paymentInfo", jobId ?? estimateId];
+  return {
+    queryKey,
+    queryFn: () => (jobId ? api.jobPaymentInfo(jobId) : api.estimatePaymentInfo(estimateId!)),
+    refetchInterval: 15_000, // a webhook can land any second while the customer pays
+  };
+}
+
+/**
+ * The kinds the one "Email the customer" panel offers for an invoice (Kyle, 2026-10-27). Invoice (or,
+ * once paid in full, the Receipt in its place - 2026-10-29), Financing link and Message always; the
+ * Deposit request only while a deposit is due (and greyed
  * with the reason while a financing fee has closed the deposit pay link); the Review request is
  * greyed with its reason until the job is complete and not yet asked. Pure - the host only mounts it.
  */
@@ -66,8 +93,14 @@ export function invoiceEmailRecord(info: PaymentInfo): EmailRecord {
     number: info.number,
     visitId: e?.jobId ?? null,
     invoiceOwing: !info.paidInFull && !financing,
+    reports: e?.reports ?? [],
     kinds: [
-      { kind: "invoice", label: info.paidInFull ? `Invoice ${info.number} — paid in full` : `Invoice ${info.number} — ${money(info.balance)} due` },
+      // Kyle, 2026-10-29: once paid, the Invoice choice BECOMES the Receipt (one tool for one task - two
+      // choices that both send the paid invoice would be duplicates). While owing it is Invoice, with the
+      // Receipt shown greyed and the reason.
+      ...(info.paidInFull
+        ? [receiptOffer(info)]
+        : [{ kind: "invoice" as const, label: `Invoice ${info.number} — ${money(info.balance)} due` }, receiptOffer(info)]),
       ...(depositDue ? [{ kind: "deposit" as const, label: `Deposit request — ${money(depositRemaining)}`, blocked: financing ? FINANCING_IN_PROGRESS : null }] : []),
       { kind: "financing", label: "Financing link" },
       { kind: "review", label: "Review request", blocked: reviewBlock },
@@ -84,11 +117,7 @@ export function PaymentPanel({ jobId, estimateId, emailPanel = true }: {
 }) {
   const queryClient = useQueryClient();
   const queryKey = ["paymentInfo", jobId ?? estimateId];
-  const { data: info } = useQuery<PaymentInfo | null>({
-    queryKey,
-    queryFn: () => (jobId ? api.jobPaymentInfo(jobId) : api.estimatePaymentInfo(estimateId!)),
-    refetchInterval: 15_000, // a webhook can land any second while the customer pays
-  });
+  const { data: info } = useQuery<PaymentInfo | null>(paymentInfoQuery({ jobId, estimateId }));
   const [showQr, setShowQr] = useState<"deposit" | "balance" | null>(null);
   // The review QR (Kyle, 2026-10-01) — generated client-side from GOOGLE_REVIEW_URL, never
   // stored or fetched from a route; see shared/reviewRequestUrl.ts for why. Separate from

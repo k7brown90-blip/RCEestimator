@@ -94,6 +94,8 @@ import type {
 } from "./types";
 import type { DraftOptionSet } from "../../../shared/estimateOptions";
 import type { FinancingPlan } from "../../../shared/financing";
+import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView, ReceiptReportOption } from "../../../shared/jobCompletion";
+export type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView, ReceiptReportOption };
 
 const API_BASE = "/api";
 
@@ -299,8 +301,8 @@ export interface NextStepJob {
  * The estimate-only fields are shared/estimateEmail.ts's - the same body the field app builds.
  */
 export interface CustomerEmailInput {
-  kind: "invoice" | "deposit" | "financing" | "estimate" | "review";
-  /** invoice / deposit / financing / estimate. */
+  kind: "invoice" | "deposit" | "financing" | "estimate" | "review" | "receipt";
+  /** invoice / deposit / financing / estimate / receipt. */
   estimateId?: string;
   /** review: the job's Visit.id. */
   visitId?: string;
@@ -312,6 +314,12 @@ export interface CustomerEmailInput {
   attachHealthReport?: boolean;
   attachGeneratorReport?: boolean;
   includeFinancingLink?: boolean;
+  /**
+   * receipt only (Kyle, 2026-10-29): the report ids to attach - "completion", "health:<id>",
+   * "generator:<id>", "diagnostic:<id>" - exactly the `id`s of PaymentInfo.email.reports. A report
+   * that is not this job's or cannot be produced refuses the whole send with the reason.
+   */
+  reports?: string[];
 }
 
 export interface CustomerEmailSent {
@@ -365,6 +373,12 @@ export interface PaymentInfo {
     jobId: string | null;
     jobStatus: string | null;
     reviewRequestedAt: string | null;
+    /**
+     * What is on file for the job, for the receipt's "Attach reports" list (2026-10-29). Absent from
+     * an older server build. Completion comes first; `available: false` rows are shown greyed with
+     * `blockedReason` (e.g. "No lines are written up yet").
+     */
+    reports?: ReceiptReportOption[];
   } | null;
   payments: {
     id: string; amount: number; method: string; kind: string; status: string; paidAt: string | null;
@@ -1543,6 +1557,20 @@ export const api = {
 
   // ─── Payments & deposits (2026-08-25) ──────────────────────────────────────
   jobPaymentInfo: (jobId: string) => request<PaymentInfo | null>(`/jobs/${jobId}/payment-info`),
+
+  // ─── The Job Completion Report (Kyle, 2026-10-29) ─────────────────────────
+  // One record, two doors: the technician's field app writes the same rows (server:
+  // services/jobCompletion.ts; contract: shared/jobCompletion.ts).
+  /** The job's signed-invoice lines (selected options only), each with its entry or null; an empty list carries `reason`. */
+  jobCompletionLines: (jobId: string) => request<CompletionLinesResponse>(`/jobs/${jobId}/completion-lines`),
+  /** Save (replace) one line's write-up. A photo that is not on this job is refused with a readable 400. */
+  saveJobCompletionLine: (jobId: string, lineId: string, input: CompletionEntryBody) =>
+    request<CompletionLineView>(`/jobs/${jobId}/completion-lines/${lineId}`, { method: "PUT", body: JSON.stringify(input) }),
+  /** "Clear" - take one line's write-up off the report. */
+  clearJobCompletionLine: (jobId: string, lineId: string) =>
+    request<{ cleared: boolean }>(`/jobs/${jobId}/completion-lines/${lineId}`, { method: "DELETE" }),
+  /** The Preview path: pass to openProtectedPdf(). 409 { error } when no line is written up yet. */
+  jobCompletionReportUrl: (jobId: string) => `/jobs/${jobId}/completion-report.pdf`,
 
   // ─── Email campaigns (Kyle, 2026-09-02) ───────────────────────────────────
   campaignOverview: () => request<CampaignOverview>(`/email-campaigns/overview`),

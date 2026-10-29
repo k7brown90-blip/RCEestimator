@@ -9,6 +9,7 @@ import { useDrawerParams } from "../lib/drawers";
 import { ScheduleOnCalendar } from "../components/ScheduleOnCalendar";
 import { HealthRecordPanel } from "../components/HealthRecordPanel";
 import { JobCloseoutPanel } from "../components/JobCloseoutPanel";
+import { JobCompletionReportPanel } from "../components/JobCompletionReportPanel";
 import { MaterialsUsedPanel } from "../components/MaterialsUsedPanel";
 import { JobTimePanel } from "../components/JobTimePanel";
 import { CommissionPanel } from "../components/CommissionPanel";
@@ -200,6 +201,9 @@ export function VisitWorkspacePage() {
         {["contracted", "scheduled", "in_progress", "completed"].includes(visit.status ?? "") && (
           <>
             <JobCloseoutPanel visitId={visitId} status={visit.status ?? "estimate"} />
+            {/* The Job Completion Report (Kyle, 2026-10-29): per invoice line - what was done and why, NEC
+                articles, readings, photos - the proof of work that goes out with the receipt. */}
+            <JobCompletionReportPanel jobId={visitId} />
             {/* Materials used (Kyle, 2026-09-09, Build 4): the ledger lines that
                 charge this job, their source label, Add / Return with a reason. */}
             <MaterialsUsedPanel visitId={visitId} />

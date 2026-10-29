@@ -14,7 +14,7 @@ import { renderWithProviders } from "../test/renderWithProviders";
 import { InvoiceRow } from "./InvoiceRow";
 import { api } from "../lib/api";
 import type { AccountSummary } from "../lib/types";
-import type { PaymentInfo } from "../lib/api";
+import type { PaymentInfo, ReceiptReportOption } from "../lib/api";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -68,5 +68,64 @@ describe("InvoiceRow - the one email control", () => {
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
     renderWithProviders(<InvoiceRow doc={doc({ audience: "company" })} accountId="acct-1" properties={props} />);
     expect(screen.queryByRole("button", { name: "Email the customer" })).not.toBeInTheDocument();
+  });
+});
+
+/*
+ * THE RECEIPT ON THE PROPERTY PAGE (Kyle, 2026-10-29): standing on the Property page's invoice row, a
+ * paid-in-full ROOT invoice offers "Receipt - Invoice NNNN paid in full" in the same one panel; while
+ * owing it is greyed with the reason; a change-order row never offers one (the receipt is the root's).
+ */
+describe("InvoiceRow - Receipt", () => {
+  const reports: ReceiptReportOption[] = [{ id: "completion", kind: "completion", label: "Job Completion Report", date: null, available: true }];
+  const rootInfo = (over: Partial<PaymentInfo> = {}) => ({
+    estimateId: "root-1", number: "2026-1093", billedTotal: 349.86, depositDue: 0, depositRequired: false, documents: [], depositPaid: 0, totalPaid: 0,
+    balance: 349.86, depositSatisfied: true, paidInFull: false, payUrl: "", depositPayUrl: "", stripeConfigured: true,
+    email: { customerId: "acct-1", customerEmail: "tony@example.com", jobId: "visit-1", jobStatus: "completed", reviewRequestedAt: null, reports }, payments: [],
+    ...over,
+  }) as PaymentInfo;
+  const rootDoc = () => doc({ isChangeOrder: false, estimateNumber: "2026-1093", invoiceNumber: null, estimateId: "root-1" });
+  const quiet = () => {
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    vi.spyOn(api, "accountContacts").mockResolvedValue([]);
+  };
+
+  it("a paid-in-full root row offers the Receipt (with the job's reports) beside the signed copy, and sends it with the ROOT id", async () => {
+    quiet();
+    const info = vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(rootInfo({ paidInFull: true, balance: 0, totalPaid: 349.86 }));
+    const send = vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "receipt", to: "tony@example.com", cc: [] });
+    renderWithProviders(<InvoiceRow doc={rootDoc()} accountId="acct-1" properties={props} />);
+
+    await waitFor(() => expect(info).toHaveBeenCalledWith("root-1"));
+    fireEvent.click(screen.getByRole("button", { name: "Email the customer" }));
+    const receipt = await screen.findByRole("radio", { name: "Receipt — Invoice 2026-1093 paid in full" });
+    expect(receipt).toBeEnabled();
+    // the row's existing per-document send is kept as it was
+    expect(screen.getByRole("radio", { name: "Invoice 2026-1093 — the signed copy" })).toBeInTheDocument();
+    fireEvent.click(receipt);
+    expect(await screen.findByRole("checkbox", { name: /^Job Completion Report/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Send receipt 2026-1093 to tony@example.com" }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "receipt", estimateId: "root-1", reports: ["completion"] })));
+  });
+
+  it("while the root invoice is owing the Receipt is shown greyed WITH the reason", async () => {
+    quiet();
+    const info = vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(rootInfo());
+    renderWithProviders(<InvoiceRow doc={rootDoc()} accountId="acct-1" properties={props} />);
+
+    await waitFor(() => expect(info).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Email the customer" }));
+    expect(await screen.findByRole("radio", { name: /^Receipt/ })).toBeDisabled();
+    expect(screen.getByText("A receipt can go once the invoice is paid in full.")).toBeInTheDocument();
+  });
+
+  it("a change-order row never offers a Receipt, and does not even ask for payment info", async () => {
+    quiet();
+    const info = vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(rootInfo({ paidInFull: true, balance: 0 }));
+    renderWithProviders(<InvoiceRow doc={doc()} accountId="acct-1" properties={props} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Email the customer" }));
+    expect(screen.queryByRole("radio", { name: /^Receipt/ })).not.toBeInTheDocument();
+    expect(info).not.toHaveBeenCalled();
   });
 });

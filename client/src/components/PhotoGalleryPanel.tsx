@@ -45,6 +45,14 @@ function propertyPhotosQuery(propertyId: string) {
   return { queryKey: ["property-photos", propertyId] as const, queryFn: () => api.propertyPhotos(propertyId) };
 }
 
+/**
+ * The one definition of "fetch this job's photos" (same reason as propertyPhotosQuery above): the
+ * visit gallery and the Job Completion Report's photo picker (2026-10-29) read the same cache entry.
+ */
+export function visitPhotosQuery(visitId: string) {
+  return { queryKey: ["visit-photos", visitId] as const, queryFn: () => api.visitPhotos(visitId) };
+}
+
 /** Authed thumbnail with object-URL lifecycle handled. */
 export function AuthedPhoto(props: { path: string; alt: string; className?: string; onClick?: () => void }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -146,10 +154,7 @@ export function PhotoGalleryPanel(props: { visitId: string; propertyId: string }
   // Zoomable viewer for the history thumbnails (Kyle, 2026-08-31).
   const [lightbox, setLightbox] = useState<{ path: string; alt: string; caption?: string | null } | null>(null);
 
-  const { data: photos = [] } = useQuery({
-    queryKey: ["visit-photos", props.visitId],
-    queryFn: () => api.visitPhotos(props.visitId),
-  });
+  const { data: photos = [] } = useQuery(visitPhotosQuery(props.visitId));
   const { data: history } = useQuery({
     ...propertyPhotosQuery(props.propertyId),
     enabled: showHistory,

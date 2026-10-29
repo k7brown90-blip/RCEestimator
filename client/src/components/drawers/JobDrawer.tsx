@@ -32,6 +32,7 @@ import { shortDate } from "../../lib/utils";
 import { ConversationNotes } from "../ConversationNotes";
 import { Drawer } from "../Drawer";
 import { JobCloseoutPanel } from "../JobCloseoutPanel";
+import { JobCompletionReportPanel } from "../JobCompletionReportPanel";
 import { OpenDrawerButton } from "./OpenDrawerButton";
 import { PaymentPanel } from "../PaymentPanel";
 import { RaiseChangeOrderButton } from "../RaiseChangeOrderButton";
@@ -276,6 +277,8 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
           <SendAssessmentReport visitId={visitId} />
           {/* Close-out is JOB furniture — it appears once the visit is contracted work (Kyle, 2026-08-25). */}
           {CLOSEOUT_STATUSES.includes(status) && <JobCloseoutPanel visitId={visitId} status={status} />}
+          {/* The Job Completion Report (Kyle, 2026-10-29): same contracted-work furniture as the close-out above. */}
+          {CLOSEOUT_STATUSES.includes(status) && <JobCompletionReportPanel jobId={visitId} />}
 
           {estimateId && (
             <p className="text-xs text-rce-muted">

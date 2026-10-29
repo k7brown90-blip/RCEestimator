@@ -161,6 +161,9 @@ import {
 } from "./services/accountSpine";
 import { estimateLink, publicBaseUrl } from "./services/issuedEstimateSend";
 import { sendCustomerEmailRequest } from "./services/customerEmail";
+import { CompletionError, clearCompletionLine, listCompletionLines, saveCompletionLine } from "./services/jobCompletion";
+import { CompletionReportError, generateCompletionReport } from "./services/pdfGenerator";
+import { listReceiptReports } from "./services/receiptReports";
 // Transactional email delivery tracking (Kyle, 2026-09-09: "very few are actually getting through").
 import { lastDeliveriesForEstimates } from "./services/transactionalEmail";
 import { handleResendWebhook } from "./services/resendWebhook";
@@ -2995,8 +2998,8 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
 /*
   ── THE ONE CUSTOMER-EMAIL ROUTE (Kyle, 2026-10-27: "A rule of thumb is there is one tool for one task.") ──
 
-  POST /customer-emails { kind: "invoice" | "deposit" | "financing" | "estimate" | "review", estimateId | visitId,
-  to?, cc?, message?, photoIds?, ... } - what the "Email the customer" panel on the invoice, job and
+  POST /customer-emails { kind: "invoice" | "deposit" | "financing" | "estimate" | "receipt" | "review", estimateId | visitId,
+  to?, cc?, message?, photoIds?, reports? (receipt only - ids from payment-info email.reports), ... } - what the "Email the customer" panel on the invoice, job and
   estimate drawers, Estimate Intake and Present to the customer presses. It replaces seven routes that
   each fed one removed button: /issued-estimates/:id/send (Email estimate / Resend), /send-invoice
   ("Email the signed copy"), /email-balance-request ("Email invoice $X due"), /payment-reminder
@@ -4242,7 +4245,7 @@ app.get("/issued-estimates/:id/payment-info", asyncHandler(async (req, res) => {
 async function emailContextFor(rootId: string, fallbackJobId?: string) {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: rootId },
-    select: { customerId: true, customerEmail: true, jobVisitId: true },
+    select: { customerId: true, customerEmail: true, jobVisitId: true, visitId: true },
   });
   if (!est) return null;
   const jobId = est.jobVisitId ?? fallbackJobId ?? null;
@@ -4255,6 +4258,14 @@ async function emailContextFor(rootId: string, fallbackJobId?: string) {
     jobId: job?.id ?? null,
     jobStatus: job?.status ?? null,
     reviewRequestedAt: job?.reviewRequestedAt ?? null,
+    // What is on file for the job, for the receipt's "Attach reports" list (Kyle, 2026-10-29):
+    // the Job Completion Report plus each Health Record, Generator sheet and Diagnostic report.
+    // The same list the send validates against (services/receiptReports.ts).
+    reports: await listReceiptReports(prisma, { jobVisitId: jobId, visitId: est.visitId }).then((rs) =>
+      rs.map((r) => ({
+        id: r.id, kind: r.kind, label: r.label, date: r.date, available: r.available,
+        ...(r.blockedReason ? { blockedReason: r.blockedReason } : {}),
+      }))),
   };
 }
 
@@ -4313,6 +4324,72 @@ app.get("/jobs/:jobId/payment-info", asyncHandler(async (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   const summary = await paymentSummary(prisma, est.id, origin);
   res.json(summary ? { ...summary, stripeConfigured: stripeConfigured(), email: await emailContextFor(est.id, jobId) } : null);
+}));
+
+/*
+  ── THE JOB COMPLETION REPORT, the office's door (Kyle, 2026-10-29) ───────────────────────────────
+
+  "Each separate line item can get photos and an explination of what was done and why." Both the
+  technician (health-record.ts, PUT/GET/DELETE /health-record/visits/:visitId/completion-lines) and
+  the office fill it in: ONE record (JobCompletionLine), ONE implementation (services/jobCompletion.ts),
+  the contract in shared/jobCompletion.ts. These four routes are the CRM's thin door onto it:
+
+    GET    /jobs/:jobId/completion-lines          the signed invoice's lines (root + signed change orders,
+                                                  options taken only) with each entry or null
+    PUT    /jobs/:jobId/completion-lines/:lineId  save one line's entry (replace)
+    DELETE /jobs/:jobId/completion-lines/:lineId  Clear - take the line's write-up off the report
+    GET    /jobs/:jobId/completion-report.pdf     Preview: the report as a third party will receive it,
+                                                  rendered fresh, nothing stored
+
+  All behind the CRM session like every other route here (none is in publicRoutes.ts - the preview
+  PDF is the logged-in office's, opened with openProtectedPdf, never a public link).
+*/
+function completionRuleError(res: express.Response, err: unknown): boolean {
+  if (err instanceof CompletionError) {
+    res.status(err.statusCode).json({ error: err.message });
+    return true;
+  }
+  if (err instanceof z.ZodError) {
+    res.status(400).json({ error: err.issues.map((i) => i.message).join(" ") });
+    return true;
+  }
+  return false;
+}
+
+app.get("/jobs/:jobId/completion-lines", asyncHandler(async (req, res) => {
+  try {
+    res.json(await listCompletionLines(prisma, readParam(req, "jobId")));
+  } catch (err) {
+    if (!completionRuleError(res, err)) throw err;
+  }
+}));
+
+app.put("/jobs/:jobId/completion-lines/:lineId", asyncHandler(async (req, res) => {
+  try {
+    res.json(await saveCompletionLine(prisma, readParam(req, "jobId"), readParam(req, "lineId"), req.body, "human:crm-session"));
+  } catch (err) {
+    if (!completionRuleError(res, err)) throw err;
+  }
+}));
+
+app.delete("/jobs/:jobId/completion-lines/:lineId", asyncHandler(async (req, res) => {
+  try {
+    res.json(await clearCompletionLine(prisma, readParam(req, "jobId"), readParam(req, "lineId")));
+  } catch (err) {
+    if (!completionRuleError(res, err)) throw err;
+  }
+}));
+
+app.get("/jobs/:jobId/completion-report.pdf", asyncHandler(async (req, res) => {
+  try {
+    const { pdf, filename } = await generateCompletionReport(readParam(req, "jobId"));
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.send(pdf);
+  } catch (err) {
+    if (err instanceof CompletionReportError) { res.status(409).json({ error: err.message }); return; }
+    if (!completionRuleError(res, err)) throw err;
+  }
 }));
 
 /** Signed quote → job, on the same account and address. One tap, idempotent. */

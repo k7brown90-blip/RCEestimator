@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { SendEmailPanel } from "./SendEmailPanel";
-import { PaymentPanel } from "./PaymentPanel";
+import { PaymentPanel, paymentInfoQuery, receiptOffer } from "./PaymentPanel";
+import { useQuery } from "@tanstack/react-query";
 import { openProtectedPdf } from "../lib/api";
 import type { AccountSummary } from "../lib/types";
 
@@ -31,6 +32,11 @@ export function InvoiceRow({ doc: d, accountId, properties }: {
   const [showPay, setShowPay] = useState(false);
 
   const canSend = d.audience === "customer" && Boolean(d.estimateId);
+
+  // The Receipt choice (Kyle, 2026-10-29) belongs to the ROOT invoice, so only a root row asks for its payment
+  // info (the same cache entry the "Take payment…" card below reads). A change-order row never offers one.
+  const rootEstimateId = canSend && !d.isChangeOrder ? d.estimateId : null;
+  const { data: rootInfo } = useQuery({ ...paymentInfoQuery({ estimateId: rootEstimateId ?? undefined }), enabled: Boolean(rootEstimateId) });
 
   return (
     <div className="rounded-lg border border-rce-border/70 p-3">
@@ -90,12 +96,14 @@ export function InvoiceRow({ doc: d, accountId, properties }: {
               photoProperties: properties,
               estimateId: d.estimateId,
               number: d.estimateNumber ?? undefined,
+              reports: rootInfo?.email?.reports ?? [],
               kinds: [
                 {
                   kind: "invoice",
                   label: `${d.isChangeOrder ? "Change order" : "Invoice"}${d.estimateNumber ? ` ${d.estimateNumber}` : ""} — the signed copy`,
                   sendAs: `${d.isChangeOrder ? "change order" : "invoice"}${d.estimateNumber ? ` ${d.estimateNumber}` : ""}`,
                 },
+                ...(rootInfo ? [receiptOffer(rootInfo)] : []),
                 { kind: "financing", label: "Financing link" },
               ],
             }}

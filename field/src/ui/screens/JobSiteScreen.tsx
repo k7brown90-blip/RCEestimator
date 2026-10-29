@@ -67,6 +67,7 @@ import { CUSTOMER_PAGE_LABEL, EmailEstimateButton, EmailFinancingButton } from '
 import { JOB_BRIEF_OFFLINE, OFFLINE_EMAIL_REASON } from './QuoteOffline'
 import { SignaturePendingCard, WAITING_FOR_SIGNATURE, savedCopyWords } from './SignatureCards'
 import { MaterialsUsedStep } from '../components/MaterialsUsedStep'
+import { JobCompletionReport } from '../components/JobCompletionReport'
 import {
   PhotoPicker,
   PoNumberBanner,
@@ -887,6 +888,12 @@ export function JobSiteScreen({
           {pauseError && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{pauseError}</p>}
         </section>
       )}
+
+      {/* ── Job completion report (Kyle, 2026-10-29) — per invoice line: what was done and why, NEC
+          articles, readings, photos. A job only (a consultation has no invoice), and ABOVE "Mark
+          job complete" so it is written up before the job is closed. The same record the office
+          edits in the CRM. ── */}
+      {isJob && <JobCompletionReport visitId={assignment.visitId} />}
 
       {/* ── Close-out — every visit ends when the TECH says so (Kyle, 2026-09-05) ── */}
       {(

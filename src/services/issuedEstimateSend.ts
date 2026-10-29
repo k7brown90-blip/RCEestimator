@@ -45,7 +45,7 @@
  * NO TWILIO. Nothing in this file touches SMS. The customer gets an email; Kyle gets an email.
  */
 
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import fs from "node:fs";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { customerEmailBaseSchema, resolveRecipients, withCcText } from "./emailCc";
@@ -58,7 +58,7 @@ import { loadPdfFinancing } from "./issuedEstimatePdfFinancing";
 import { getCompanyProfile } from "./companyProfile";
 import { buildQuoteFinancing } from "../../shared/financing";
 import { getActiveFinancingPlans, plansFromSnapshot } from "./financingSettings";
-import { billedTotalOf, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf } from "./stripePayments";
+import { billedTotalOf, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf, type PaymentSummary } from "./stripePayments";
 import { discountRows, financingFeeRow, invoiceDocumentRows } from "./paymentReceipts";
 import { FINANCING_IN_PROGRESS, financingInProgress } from "./financingFee";
 import { FINAL_BILL_TERMS } from "./paymentTerms";
@@ -176,6 +176,89 @@ export function estimateLink(token: string): string {
  * data problem Kyle fixes on the account, not something to paper over by sending it to himself.
  */
 /**
+ * The appendix printed under the invoice PDF - null for an ordinary one-document invoice.
+ * The appendix prints for a multi-document invoice, or whenever a financing fee is on it
+ * (plan Detail B item J: the single-document gate "must widen for a fee line to show"): the
+ * balance carries the fee, and the PDF must name it as its own line or its figures do not add
+ * up (review finding, 2026-10-09). The same rule as app.ts invoiceAppendixFor and estimatePage.ts.
+ */
+export function invoiceAppendixOf(summary: PaymentSummary) {
+  return summary.documents.length > 1 || summary.financingFee
+    ? {
+      number: summary.number,
+      documents: summary.documents.map((d) => ({ number: d.number, title: d.title, kind: d.kind, billedTotal: d.billedTotal, signedAt: d.signedAt })),
+      billedTotal: summary.billedTotal,
+      totalPaid: summary.totalPaid,
+      balance: summary.balance,
+      financingFee: summary.financingFee ? { planNumber: summary.financingFee.planNumber, fee: summary.financingFee.fee } : null,
+    }
+    : null;
+}
+
+/** An issued row with the two relations the invoice PDF reads. */
+export type InvoicePdfEstimate = Prisma.IssuedEstimateGetPayload<{ include: { lines: true; options: true } }>;
+
+/**
+ * THE ONE BUILDER OF THE ITEMIZED INVOICE PDF (the customer's copy), rendered at send time from the
+ * frozen estimate. sendInvoiceEmail attaches it to the invoice email and sendReceiptEmail
+ * (paymentReceipts.ts, 2026-10-29) attaches it to the paid-in-full receipt - extracted from
+ * sendInvoiceEmail unchanged so the two can never print different documents. `summary` is the
+ * invoice GROUP's payment summary (the appendix and the financing fee line read it).
+ */
+export async function renderInvoicePdf(
+  prisma: PrismaClient,
+  est: InvoicePdfEstimate,
+  summary: PaymentSummary,
+): Promise<Buffer> {
+  const profile = await getCompanyProfile();
+  const invoiceAppendix = invoiceAppendixOf(summary);
+  return renderEstimatePdf(
+    {
+      number: est.number,
+      revision: est.revision,
+      title: est.title,
+      customerName: est.customerName,
+      serviceAddress: est.serviceAddress,
+      scopeText: est.scopeText,
+      total: est.total,
+      tripCharge: est.tripCharge,
+      signedAt: est.signedAt,
+      signedByName: est.signerName,
+      signatureImage: est.signatureImage,
+      // An office acceptance (2026-09-24) prints the acceptance line where the mark would go.
+      signedChannel: est.signedChannel,
+      acceptedVia: est.acceptedVia,
+      createdAt: est.createdAt,
+      invoice: invoiceAppendix,
+      options: est.options,
+      selectedOptions: est.selectedOptions,
+      // The frozen working of the job-level material check, for the company copy (2026-08-21).
+      materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
+      comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
+      discountType: est.discountType,
+      discountPercent: est.discountPercent,
+      discount: est.discountJson ? JSON.parse(est.discountJson) : null,
+      // Home-warranty coverage (Kyle, 2026-09-09) — the credit row and the claim notice.
+      warranty: parseWarrantyJson(est.warrantyJson),
+      // The Synchrony overview + terms page on the emailed invoice (Kyle, 2026-10-09). The email BODY
+      // still states no credit terms; they appear only here, beside the plans' own disclosure.
+      financing: await loadPdfFinancing(prisma, est.id),
+      lines: est.lines.map((l) => ({
+        option: l.option,
+        description: l.description,
+        quantity: l.quantity,
+        lineTotal: l.lineTotal,
+        laborHours: l.laborHours,
+        materialSell: l.materialSell,
+        materialCost: l.materialCost,
+      })),
+    },
+    "customer",
+    profile,
+  );
+}
+
+/**
  * Email the SIGNED invoice to the customer, with the PDF attached.
  *
  * Kyle, 2026-08-21: *"The signed estimates need to be labeled invoices and they need to be
@@ -256,7 +339,6 @@ export async function sendInvoiceEmail(
   if (!recipients.ok) return { ok: false, reason: recipients.reason };
   const { to, cc } = recipients;
 
-  const profile = await getCompanyProfile();
   /*
     THE INVOICE IS THE GROUP (Kyle, 2026-09-20). The attached PDF stays this frozen document;
     the email's figures — and the appendix printed under the document — are the whole invoice:
@@ -297,64 +379,9 @@ export async function sendInvoiceEmail(
     reminder = Boolean(already);
   }
 
-  // The appendix prints for a multi-document invoice, or whenever a financing fee is on it
-  // (plan Detail B item J: the single-document gate "must widen for a fee line to show"): the
-  // balance carries the fee, and the PDF must name it as its own line or its figures do not add
-  // up (review finding, 2026-10-09). The same rule as app.ts invoiceAppendixFor and estimatePage.ts.
-  const invoiceAppendix = summary.documents.length > 1 || summary.financingFee
-    ? {
-      number: summary.number,
-      documents: summary.documents.map((d) => ({ number: d.number, title: d.title, kind: d.kind, billedTotal: d.billedTotal, signedAt: d.signedAt })),
-      billedTotal: summary.billedTotal,
-      totalPaid: summary.totalPaid,
-      balance: summary.balance,
-      financingFee: summary.financingFee ? { planNumber: summary.financingFee.planNumber, fee: summary.financingFee.fee } : null,
-    }
-    : null;
-  const pdf = await renderEstimatePdf(
-    {
-      number: est.number,
-      revision: est.revision,
-      title: est.title,
-      customerName: est.customerName,
-      serviceAddress: est.serviceAddress,
-      scopeText: est.scopeText,
-      total: est.total,
-      tripCharge: est.tripCharge,
-      signedAt: est.signedAt,
-      signedByName: est.signerName,
-      signatureImage: est.signatureImage,
-      // An office acceptance (2026-09-24) prints the acceptance line where the mark would go.
-      signedChannel: est.signedChannel,
-      acceptedVia: est.acceptedVia,
-      createdAt: est.createdAt,
-      invoice: invoiceAppendix,
-      options: est.options,
-      selectedOptions: est.selectedOptions,
-      // The frozen working of the job-level material check, for the company copy (2026-08-21).
-      materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
-      comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
-      discountType: est.discountType,
-      discountPercent: est.discountPercent,
-      discount: est.discountJson ? JSON.parse(est.discountJson) : null,
-      // Home-warranty coverage (Kyle, 2026-09-09) — the credit row and the claim notice.
-      warranty: parseWarrantyJson(est.warrantyJson),
-      // The Synchrony overview + terms page on the emailed invoice (Kyle, 2026-10-09). The email BODY
-      // still states no credit terms; they appear only here, beside the plans' own disclosure.
-      financing: await loadPdfFinancing(prisma, est.id),
-      lines: est.lines.map((l) => ({
-        option: l.option,
-        description: l.description,
-        quantity: l.quantity,
-        lineTotal: l.lineTotal,
-        laborHours: l.laborHours,
-        materialSell: l.materialSell,
-        materialCost: l.materialCost,
-      })),
-    },
-    "customer",
-    profile,
-  );
+  // The itemized invoice PDF - ONE builder, shared with the paid-in-full receipt (renderInvoicePdf above).
+  const invoiceAppendix = invoiceAppendixOf(summary);
+  const pdf = await renderInvoicePdf(prisma, est, summary);
 
   // What they actually owe — the same arithmetic the PDF prints, so the email and its attachment
   // cannot quote different numbers. The third gate's frozen reduction (2026-08-22), the frozen

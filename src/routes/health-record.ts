@@ -9,6 +9,7 @@
  *   pinAuthMiddleware, so it rides the existing owner PIN/JWT session.
  */
 
+import sharp from "sharp";
 import express from "express";
 import { summarizeOptions } from "../services/atomicEstimateEngine";
 import { ALL_OPTIONS, isEstimateOption } from "../../shared/estimateOptions";
@@ -61,6 +62,7 @@ import {
 } from "../services/diagnosticReport";
 import { sendDiagnosticReportEmail } from "../services/diagnosticReportEmail";
 import { paymentSummary } from "../services/stripePayments";
+import { CompletionError, clearCompletionLine, listCompletionLines, saveCompletionLine } from "../services/jobCompletion";
 import { FINANCING_IN_PROGRESS, financingBlockedReason, financingInProgress } from "../services/financingFee";
 import { LIVE_SIGNED_CHANGE_ORDER, signedRootForJob } from "../services/invoiceGroup";
 import { logSystemEvent } from "../services/systemEvents";
@@ -3321,6 +3323,115 @@ healthRecordTechRouter.put(
     res.status(201).json({ success: true, data: { id: photoId, sizeBytes: body.length } });
   }),
 );
+
+/*
+  ── THIS VISIT'S PHOTOS, read-only (Kyle, 2026-10-29: the Job completion report's "pick a photo
+  already taken on this job") ─────────────────────────────────────────────────────────────────
+  The field's "Or pick a photo already taken on this job" list on a completion-report line. Both
+  routes sit behind the tech's bearer token AND requireAssigned, like the upload above; the token
+  rides the Authorization header (the PWA shows the image through a blob URL) - never a URL.
+  THIS visit only: it is the exact scope the completion report accepts (services/jobCompletion.ts
+  refuses a photo whose visitId is not the job's), so every photo listed here can be linked.
+
+    GET /visits/:visitId/photos                  -> { success, data: { photos: [{ id, caption, tag, uploadedAt }] } }   (no image bytes)
+    GET /visits/:visitId/photos/:photoId/image   -> the bytes, with the photo's own mimeType;
+                                                    ?size=thumb -> a small JPEG (360px) for a thumbnail.  404 if the
+                                                    photo is not on this visit.
+*/
+healthRecordTechRouter.get("/visits/:visitId/photos", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  const rows = await prisma.visitPhoto.findMany({
+    where: { visitId },
+    // No `data`: a list never carries image bytes.
+    select: { id: true, caption: true, tag: true, uploadedAt: true },
+    orderBy: { uploadedAt: "desc" },
+  });
+  res.json({
+    success: true,
+    data: { photos: rows.map((p) => ({ id: p.id, caption: p.caption, tag: p.tag, uploadedAt: p.uploadedAt.toISOString() })) },
+  });
+}));
+
+healthRecordTechRouter.get("/visits/:visitId/photos/:photoId/image", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  // findFirst on BOTH ids: another visit's photo is a 404, never served through this visit.
+  const photo = await prisma.visitPhoto.findFirst({
+    where: { id: readParam(req, "photoId"), visitId },
+    select: { data: true, mimeType: true },
+  });
+  if (!photo) {
+    res.status(404).json({ success: false, error: { code: "not_found", message: "Photo not found on this visit" } });
+    return;
+  }
+  let mimeType = photo.mimeType;
+  let bytes = Buffer.from(photo.data);
+  if (req.query.size === "thumb") {
+    try {
+      bytes = await sharp(bytes).rotate().resize({ width: 360, height: 360, fit: "inside", withoutEnlargement: true }).jpeg({ quality: 70 }).toBuffer();
+      mimeType = "image/jpeg";
+    } catch {
+      /* not decodable as an image: fall back to the original bytes */
+    }
+  }
+  res.setHeader("Content-Type", mimeType);
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  res.send(bytes);
+}));
+
+/*
+  ── THE JOB COMPLETION REPORT, the technician's door (Kyle, 2026-10-29) ───────────────────────────
+  "Each separate line item can get photos and an explination of what was done and why." Asked who
+  fills it in: "Both". The field app's "Job completion report" (on the job screen, above "Mark job
+  complete") reads and writes the SAME JobCompletionLine rows as the CRM's
+  GET/PUT/DELETE /jobs/:jobId/completion-lines (app.ts) - one implementation, services/jobCompletion.ts,
+  one contract, shared/jobCompletion.ts. Only the technician assigned to the visit may read or write
+  (requireAssigned, like the job-photo upload above). Photos come from the field's existing
+  PUT /visits/:visitId/photos/:photoId; an entry names this job's photo ids.
+
+    GET    /visits/:visitId/completion-lines          -> { success, data: CompletionLinesResponse }
+    PUT    /visits/:visitId/completion-lines/:lineId  -> { success, data: CompletionLineView }   (body: CompletionEntryInput)
+    DELETE /visits/:visitId/completion-lines/:lineId  -> { success, data: { cleared: boolean } }
+*/
+function sendCompletionError(res: express.Response, err: unknown): boolean {
+  if (err instanceof CompletionError) {
+    res.status(err.statusCode).json({ success: false, error: { code: err.statusCode === 404 ? "not_found" : "bad_request", message: err.message } });
+    return true;
+  }
+  return false;
+}
+
+healthRecordTechRouter.get("/visits/:visitId/completion-lines", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  try {
+    res.json({ success: true, data: await listCompletionLines(prisma, visitId) });
+  } catch (err) {
+    if (!sendCompletionError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.put("/visits/:visitId/completion-lines/:lineId", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  try {
+    const line = await saveCompletionLine(prisma, visitId, readParam(req, "lineId"), req.body, `tech:${req.technician!.id}`);
+    res.json({ success: true, data: line });
+  } catch (err) {
+    if (!sendCompletionError(res, err)) throw err;
+  }
+}));
+
+healthRecordTechRouter.delete("/visits/:visitId/completion-lines/:lineId", asyncHandler(async (req: TechRequest, res) => {
+  const visitId = readParam(req, "visitId");
+  if (!(await requireAssigned(req, res, visitId))) return;
+  try {
+    res.json({ success: true, data: await clearCompletionLine(prisma, visitId, readParam(req, "lineId")) });
+  } catch (err) {
+    if (!sendCompletionError(res, err)) throw err;
+  }
+}));
 
 /**
  * Run the OpenAI Vision parse for an already-persisted receipt and patch in

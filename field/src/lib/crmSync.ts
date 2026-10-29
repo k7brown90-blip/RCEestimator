@@ -24,6 +24,7 @@ import type { QuoteMoney } from '../../../shared/quoteMoney'
 import type { DraftLifecycle } from '../../../shared/draftLifecycle'
 import type { CatalogSection, FieldCatalogPage, FieldCatalogRow, FieldCatalogSnapshotResponse } from '../../../shared/quoteCatalog'
 import type { PhonePriceSheetResponse } from '../../../shared/fieldPriceSheet'
+import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView } from '../../../shared/jobCompletion'
 import type { EstimatePhoto } from '../../../shared/estimatePhotos'
 import { estimateEmailRequest, type EstimateEmailChoices } from '../../../shared/estimateEmail'
 import type { FieldOpenQuestion, QuoteSuggestedLine, FieldWalkthroughRow, WalkthroughProposal } from '../../../shared/suggestedLines'
@@ -1224,8 +1225,12 @@ export async function clockOut(visitId: string): Promise<{ minutes: number; labo
   return crmRequest(`/visits/${visitId}/clock-out`, { method: 'POST', body: '{}' })
 }
 
-/** A job-site photo, uploaded now (needs signal — the caller shows the failure). */
-export async function uploadJobPhoto(visitId: string, blob: Blob, caption?: string): Promise<void> {
+/**
+ * A job-site photo, uploaded now (needs signal — the caller shows the failure). Resolves to the
+ * photo's id (client-generated; the server upserts on it) so a caller can link the photo to
+ * something - the Job completion report puts it on an invoice line. Existing callers ignore it.
+ */
+export async function uploadJobPhoto(visitId: string, blob: Blob, caption?: string): Promise<string> {
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')
   const photoId = crypto.randomUUID()
@@ -1242,6 +1247,54 @@ export async function uploadJobPhoto(visitId: string, blob: Blob, caption?: stri
     },
   )
   if (!response.ok) throw new Error(`Photo upload failed (${response.status})`)
+  return photoId
+}
+
+// ─── The Job completion report (Kyle, 2026-10-29) — the technician's door ────────────────────────
+//    The SAME records the office edits in the CRM (services/jobCompletion.ts, one implementation).
+//    Live calls: a write-up is text the office reads, so with no signal the screen says so and the
+//    tech saves again later - there is no queue (nothing new beyond the job-photo path).
+
+/** A photo on this visit, as the list shows it - no image bytes. */
+export interface VisitPhotoSummary {
+  id: string
+  caption: string | null
+  /** Gallery tag (before | after | assessment | reference), when the office set one. */
+  tag: string | null
+  /** ISO time it was filed. */
+  uploadedAt: string
+}
+
+/** Every photo on THIS visit (the only ones a completion-report line can take), newest first. */
+export async function fetchVisitPhotos(visitId: string): Promise<VisitPhotoSummary[]> {
+  const r = await crmRequest<{ photos: VisitPhotoSummary[] }>(`/visits/${visitId}/photos`, { method: 'GET' })
+  return r.photos
+}
+
+/** A small thumbnail of one of this visit's photos. The token needs a header, which an <img> tag cannot send - so this is a fetch, shown through a blob URL. */
+export async function fetchVisitPhotoThumb(visitId: string, photoId: string): Promise<Blob> {
+  const settings = getCrmSettings()
+  if (!settings) throw new Error('CRM not configured')
+  const response = await crmFetch(`${settings.baseUrl}/api/health-record/visits/${visitId}/photos/${photoId}/image?size=thumb`, {
+    headers: { Authorization: `Bearer ${settings.token}` },
+  })
+  if (!response.ok) throw new Error(`Photo preview failed (${response.status})`)
+  return response.blob()
+}
+
+/** Every invoice line (selected options only) with its write-up, or the reason there are none. */
+export async function fetchCompletionLines(visitId: string): Promise<CompletionLinesResponse> {
+  return crmRequest(`/visits/${visitId}/completion-lines`, { method: 'GET' })
+}
+
+/** Save one line's write-up. The server refuses an empty one (use Clear), an over-limit one, or a photo not on this job - with why. */
+export async function saveCompletionLine(visitId: string, lineId: string, body: CompletionEntryBody): Promise<CompletionLineView> {
+  return crmRequest(`/visits/${visitId}/completion-lines/${lineId}`, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+/** Take one line's write-up off the report. */
+export async function clearCompletionLine(visitId: string, lineId: string): Promise<{ cleared: boolean }> {
+  return crmRequest(`/visits/${visitId}/completion-lines/${lineId}`, { method: 'DELETE' })
 }
 
 /**

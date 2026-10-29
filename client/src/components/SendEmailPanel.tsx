@@ -33,12 +33,13 @@
 import { useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { CustomerEmailInput } from "../lib/api";
+import type { CustomerEmailInput, ReceiptReportOption } from "../lib/api";
 import type { EmailDeliveryRow } from "../lib/types";
-import { money } from "../lib/utils";
+import { money, shortDate } from "../lib/utils";
 import { CcChips, SendToPicker } from "./SendToPicker";
 import { PhotoAttachPicker } from "./PhotoGalleryPanel";
 import { ESTIMATE_EMAIL_DEFAULTS, estimateEmailExtras, estimateEmailRequest } from "../../../shared/estimateEmail";
+import { COMPLETION_REPORT_ID } from "../../../shared/jobCompletionLimits";
 
 const STATUS_TONE: Record<string, string> = {
   sent: "text-rce-muted",
@@ -56,7 +57,7 @@ function threadKeyFor(target: "lead" | "account" | "job", id: string) {
 }
 
 /** What can be sent from a record. `message` is the free-form one; the rest are fixed emails. */
-export type EmailKind = "invoice" | "deposit" | "financing" | "review" | "estimate" | "message";
+export type EmailKind = "invoice" | "receipt" | "deposit" | "financing" | "review" | "estimate" | "message";
 
 export interface EmailKindOffer {
   kind: EmailKind;
@@ -70,7 +71,7 @@ export interface EmailKindOffer {
 
 /** The record the structured kinds are about. Absent = the plain "Send email" message panel. */
 export interface EmailRecord {
-  /** invoice / deposit / financing / estimate. */
+  /** invoice / receipt / deposit / financing / estimate. */
   estimateId?: string | null;
   /** "2026-1104" - named on the Send button. */
   number?: string;
@@ -79,6 +80,11 @@ export interface EmailRecord {
   kinds: EmailKindOffer[];
   /** Invoice only: something is owing and the pay link is open, so a second send reads as a reminder. */
   invoiceOwing?: boolean;
+  /**
+   * Receipt only (Kyle, 2026-10-29): the reports on file for the job - the "Attach reports" list
+   * (payment-info `email.reports`). An unavailable one is shown greyed with its `blockedReason`.
+   */
+  reports?: ReceiptReportOption[];
   /** Called after any send that went out - the host refreshes whatever it shows. */
   onSent?: () => void;
   /** Offer photos from just these addresses (the Property page: this property's). Default: every address on the account. */
@@ -87,6 +93,7 @@ export interface EmailRecord {
 
 const DEFAULT_LABEL: Record<EmailKind, (number?: string) => string> = {
   invoice: (n) => (n ? `Invoice ${n}` : "Invoice"),
+  receipt: (n) => (n ? `Receipt ${n}` : "Receipt"),
   deposit: () => "Deposit request",
   financing: () => "Financing link",
   review: () => "Review request",
@@ -97,6 +104,7 @@ const DEFAULT_LABEL: Record<EmailKind, (number?: string) => string> = {
 /** What the Send button calls the thing: "Send invoice 2026-1104 to …". */
 const SEND_WORDS: Record<EmailKind, (number?: string) => string> = {
   invoice: (n) => (n ? `invoice ${n}` : "invoice"),
+  receipt: (n) => (n ? `receipt ${n}` : "receipt"),
   deposit: () => "deposit request",
   financing: () => "financing link",
   review: () => "review request",
@@ -107,6 +115,7 @@ const SEND_WORDS: Record<EmailKind, (number?: string) => string> = {
 /** The delivery-row kinds that count as "this was sent" for each choice (a retired separate bill filed as "balance"). */
 const DELIVERY_KINDS: Record<EmailKind, string[]> = {
   invoice: ["invoice", "balance"],
+  receipt: ["receipt"],
   deposit: ["deposit"],
   financing: ["financing"],
   review: ["review_request"],
@@ -156,6 +165,8 @@ export function SendEmailPanel({
   const [attachHealthReport, setAttachHealthReport] = useState(ESTIMATE_EMAIL_DEFAULTS.attachHealthReport);
   const [attachGeneratorReport, setAttachGeneratorReport] = useState(ESTIMATE_EMAIL_DEFAULTS.attachGeneratorReport);
   const [includeFinancingLink, setIncludeFinancingLink] = useState(ESTIMATE_EMAIL_DEFAULTS.includeFinancingLink);
+  // Receipt: the report ids the office has ticked, or null = untouched (the Job Completion Report, when it has something to send).
+  const [reportPick, setReportPick] = useState<string[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -164,6 +175,11 @@ export function SendEmailPanel({
   const active: EmailKind = (offers.find((o) => o.kind === chosen && !o.blocked) ?? offers.find((o) => !o.blocked) ?? offers[0]).kind;
   const structured = active !== "message";
   const estimateId = record?.estimateId ?? null;
+  // The receipt's "Attach reports": what is ticked now (never an unavailable one).
+  const reportOptions = record?.reports ?? [];
+  const ticked = (reportPick ?? reportOptions.filter((r) => r.id === COMPLETION_REPORT_ID).map((r) => r.id))
+    .filter((rid) => reportOptions.some((r) => r.id === rid && r.available));
+  const toggleReport = (rid: string) => setReportPick(ticked.includes(rid) ? ticked.filter((x) => x !== rid) : [...ticked, rid]);
 
   // The thread: everything sent from this record. A record keyed by an estimate reads the estimate's
   // deliveries (invoice, deposit, financing, estimate and any message filed against it) plus the
@@ -198,7 +214,7 @@ export function SendEmailPanel({
   const { data: account } = useQuery({
     queryKey: ["account", accountId],
     queryFn: () => api.account(accountId as string),
-    enabled: Boolean(accountId) && !record?.photoProperties && (active === "invoice" || active === "estimate"),
+    enabled: Boolean(accountId) && !record?.photoProperties && (active === "invoice" || active === "receipt" || active === "estimate"),
   });
   const properties = record?.photoProperties ?? (account?.properties ?? []).map((p) => ({ id: p.id, name: p.name, addressLine1: p.addressLine1, city: p.city }));
 
@@ -219,6 +235,8 @@ export function SendEmailPanel({
     switch (active) {
       case "invoice":
         return { kind: "invoice", estimateId: estimateId as string, ...base, photoIds: photoIds.length > 0 ? photoIds : undefined };
+      case "receipt":
+        return { kind: "receipt", estimateId: estimateId as string, ...base, photoIds: photoIds.length > 0 ? photoIds : undefined, reports: ticked };
       case "deposit":
         return { kind: "deposit", estimateId: estimateId as string, ...base };
       case "financing":
@@ -281,6 +299,7 @@ export function SendEmailPanel({
         const owed = sent.amount !== undefined ? ` — ${money(sent.amount)} ${sent.kind === "deposit" ? "deposit requested" : "due"}` : "";
         const words: Record<string, string> = {
           invoice: sent.reminder ? `Reminder for invoice ${recordNumber ?? ""} emailed to` : `Invoice ${recordNumber ?? ""} emailed to`,
+          receipt: `Receipt for invoice ${recordNumber ?? ""} emailed to`,
           deposit: "Deposit request emailed to",
           financing: "Financing link emailed to",
           review: "Review request emailed to",
@@ -289,6 +308,7 @@ export function SendEmailPanel({
         setNotice(`${(words[sent.kind] ?? "Emailed to").replace("  ", " ")} ${everyone}${sent.kind === "invoice" || sent.kind === "deposit" ? owed : ""}.`);
         setNote("");
         setPhotoIds([]);
+        setReportPick(null);
       }
       finish();
     },
@@ -432,12 +452,43 @@ export function SendEmailPanel({
                   </label>
                 </div>
               )}
-              {(active === "invoice" || active === "estimate") && accountIdForContacts && (
+              {active === "receipt" && (
+                <fieldset className="space-y-1">
+                  {/* Kyle, 2026-10-29: the realtor needs the receipt AND the report - every report on the job rides from here. */}
+                  <legend className="text-xs font-medium text-rce-soft">Attach reports</legend>
+                  {reportOptions.length === 0 && (
+                    <p className="text-[11px] text-rce-soft">No reports are on file for this job yet.</p>
+                  )}
+                  {reportOptions.map((r) => (
+                    <div key={r.id}>
+                      <label
+                        className={`flex items-center gap-2 text-xs ${r.available ? "text-rce-soft" : "text-rce-soft opacity-70"}`}
+                        title={!r.available ? r.blockedReason : undefined}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={ticked.includes(r.id)}
+                          disabled={!r.available}
+                          onChange={() => toggleReport(r.id)}
+                        />
+                        {r.label}{r.date ? ` — ${shortDate(r.date)}` : ""}
+                      </label>
+                      {!r.available && r.blockedReason && <p className="ml-6 text-[11px] text-rce-soft">{r.blockedReason}</p>}
+                    </div>
+                  ))}
+                </fieldset>
+              )}
+              {(active === "invoice" || active === "receipt" || active === "estimate") && accountIdForContacts && (
                 <PhotoAttachPicker properties={properties} selected={photoIds} onChange={setPhotoIds} />
               )}
               {active === "invoice" && (
                 <p className="text-[11px] text-rce-soft">
                   Attaches the itemized invoice PDF and carries the amount due, the paid-to-date and the pay link.
+                </p>
+              )}
+              {active === "receipt" && (
+                <p className="text-[11px] text-rce-soft">
+                  Attaches the itemized invoice PDF and every report ticked.
                 </p>
               )}
               {active === "estimate" && estimateEmailExtras({ photoIds, attachHealthReport, attachGeneratorReport }) && (
