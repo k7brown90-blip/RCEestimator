@@ -11,7 +11,8 @@
  *       companyPrice = companyCost × tier multiplier   (Rate Config tiers)
  *       sell_d       = round(laborHours_d × billed rate + companyPrice, 2)
  *     The rate is Rate Config `billedLaborRate` ($100/hr from 2026-09-01; $150 before).
- *     Changing it recomputes every sell column — scripts/setLaborRate.ts, audited.
+ *     Changing it recomputes every sell column — services/billedRateChange.ts, audited (Settings ->
+ *     Billed labor rate, and scripts/setLaborRate.ts).
  *     A labour-only row carries no material — $0, not a missing number.
  *  2. EVERY EDIT HAS A STORY. Append-only PriceBookEdit rows: who, when,
  *     field, old, new. A price a customer asks about must be explainable.

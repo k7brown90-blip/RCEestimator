@@ -45,10 +45,6 @@ import { unreviewedReasons, type FieldOpenQuestion, type QuoteSuggestedLine } fr
 import { COPY_REFUSED_CHANGE_ORDER, COPY_REFUSED_DIAGNOSTIC } from "../../shared/draftLifecycle";
 import { logSystemEvent } from "./systemEvents";
 
-/** Kyle's ruled company-wide billed rate — $100/hr from 2026-09-01 (was $150). See laborRate.ts. */
-import { RULED_BILLED_RATE } from "./laborRate";
-export { RULED_BILLED_RATE };
-
 export interface RateContext {
   rc: RateConfig;
   provisional: boolean;
@@ -56,8 +52,9 @@ export interface RateContext {
 }
 
 /**
- * Read Rate Config out of the imported catalog and decide whether it is provisional.
- * Identical rule to Phase 1: compare, report, never override.
+ * Read Rate Config out of the price book and decide whether it is provisional.
+ * The billed rate in the cell IS Kyle's ruling (2026-10-27: he edits it on Settings); only a BLANK
+ * cell is provisional, because a missing number cannot price a labour dollar.
  */
 export async function loadRateContext(prisma: PrismaClient): Promise<RateContext> {
   const rows = await prisma.priceBookRateConfig.findMany();
@@ -79,11 +76,6 @@ export async function loadRateContext(prisma: PrismaClient): Promise<RateContext
   if (billed === null) {
     provisional = true;
     provisionalReason = "Rate Config B2 is blank — no labour rate is available.";
-  } else if (Math.abs(billed - RULED_BILLED_RATE) > 1e-9) {
-    provisional = true;
-    provisionalReason =
-      `Rate Config B2 reads $${billed.toFixed(2)}/hr. Kyle's standing ruling is ` +
-      `$${RULED_BILLED_RATE.toFixed(2)}/hr. Imported as found; not overridden.`;
   }
 
   return {

@@ -99,6 +99,7 @@ import {
   LABOR_TIERS,
 } from "./services/priceBookAssembly";
 import { acceptPriceProposalLine, runMonthlyPriceRefresh } from "./services/priceBookRefresh";
+import { applyBilledRate, billedRateProblem, previewBilledRate } from "./services/billedRateChange";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
 import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
@@ -2293,6 +2294,32 @@ app.post("/price-book/refresh/accept", asyncHandler(async (req, res) => {
   const result = await acceptPriceProposalLine(prisma, body, "human:crm-session");
   if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
   res.json(result);
+}));
+
+// ─── BILLED LABOUR RATE (Kyle, 2026-10-27) ───────────────────────────────────
+// "I want to be able to edit the chosen hourly rate in the app. This way we do not need to code
+// everytime we need to update." Settings -> Billed labor rate. Behind pinAuthMiddleware like every
+// price-book route; the logic is services/billedRateChange.ts, the SAME code scripts/setLaborRate.ts
+// runs. GET and the preview write nothing; the POST is the only write, one transaction.
+
+const billedRateSchema = z.number().superRefine((n, ctx) => {
+  const problem = billedRateProblem(n);
+  if (problem) ctx.addIssue({ code: "custom", message: problem });
+});
+
+app.get("/price-book/billed-rate", asyncHandler(async (_req, res) => {
+  const cell = await prisma.priceBookRateConfig.findUnique({ where: { key: "billedLaborRate" } });
+  res.json({ rate: cell?.numberValue ?? null });
+}));
+
+app.get("/price-book/billed-rate/preview", asyncHandler(async (req, res) => {
+  const rate = billedRateSchema.parse(Number(readQuery(req, "rate")));
+  res.json(await previewBilledRate(prisma, rate));
+}));
+
+app.post("/price-book/billed-rate", asyncHandler(async (req, res) => {
+  const body = z.object({ rate: billedRateSchema }).parse(req.body ?? {});
+  res.json(await applyBilledRate(prisma, body.rate, "human:crm-session"));
 }));
 
 // ─── DRAFTS (human path) ─────────────────────────────────────────────────────

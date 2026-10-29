@@ -37,7 +37,6 @@ import {
 } from "./priceBookPricing";
 // The second, job-level check on material markup — see that file for why it exists.
 import { allSelectionCaps, bandsFrom, capMaterial, type MaterialCapResult } from "./materialMarkupCap";
-import { RULED_BILLED_RATE } from "./laborRate";
 // ONE option list for server, CRM and field (2026-10-08) — shared/estimateOptions.ts.
 import { ALL_OPTIONS, BASE_OPTIONS, type EstimateOptionLetter } from "../../shared/estimateOptions";
 
@@ -961,15 +960,13 @@ export function finalizeEstimate(
     // warning can be said and the call is his.
     warnings.push(
       `PROVISIONAL LABOUR RATE — every labour figure on this estimate is computed from it. ` +
-        (opts.provisionalReason ??
-          `Rate Config B2 does not match Kyle's ruled $${RULED_BILLED_RATE}/hr ` +
-            `(src/services/laborRate.ts).`) +
-        ` The cell is the price-book task's lane; this engine will not override it.`
+        (opts.provisionalReason ?? `The billed labour rate in the price book is blank.`) +
+        ` Set it on Settings -> Billed labor rate; this engine will not invent one.`
     );
   } else if (opts.rateProvisional) {
     warnings.push(
       `Computed at a PROVISIONAL labour rate. ` +
-        (opts.provisionalReason ?? `Rate Config B2 is not $${RULED_BILLED_RATE}/hr.`)
+        (opts.provisionalReason ?? `The billed labour rate in the price book is blank.`)
     );
   }
 

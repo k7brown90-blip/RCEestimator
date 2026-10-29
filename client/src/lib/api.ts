@@ -1960,6 +1960,15 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ tier, value }) },
     ),
 
+  /** The billed labour rate in the price book now (null when the cell is blank). */
+  billedRate: () => request<{ rate: number | null }>("/price-book/billed-rate"),
+  /** Read-only: what a new rate would reprice, with examples and the rows it will leave alone. */
+  billedRatePreview: (rate: number) =>
+    request<BilledRatePreview>(`/price-book/billed-rate/preview?rate=${encodeURIComponent(String(rate))}`),
+  /** The write: Rate Config cell + every priced row + open drafts' snapshot, in one transaction. */
+  billedRateApply: (rate: number) =>
+    request<BilledRateApplied>("/price-book/billed-rate", { method: "POST", body: JSON.stringify({ rate }) }),
+
   pbIssuedList: (draftId?: string) =>
     request<{ estimates: PbIssuedEstimate[] }>(
       draftId ? `/issued-estimates?draftId=${encodeURIComponent(draftId)}` : "/issued-estimates"
@@ -2473,6 +2482,38 @@ export interface LegalInfo {
  * DECIMAL FRACTION (0.0975), never a percent — the Settings field converts on save/load. */
 export interface PurchasingSettings {
   salesTaxRate: number;
+}
+
+/** Kyle, 2026-10-27: "I want to be able to edit the chosen hourly rate in the app." The shapes of
+ * GET /price-book/billed-rate/preview and POST /price-book/billed-rate (src/services/billedRateChange.ts). */
+export interface BilledRateTierChange { from: number | null; to: number | null }
+export interface BilledRatePreview {
+  currentRate: number | null;
+  newRate: number;
+  rowsInBook: number;
+  repriceCount: number;
+  unchangedCount: number;
+  assemblyCount: number;
+  convertedRows: { itemId: string; description: string | null; kind: "RATE-AS-MATERIAL" | "PER-DOLLAR" }[];
+  samples: {
+    itemId: string;
+    description: string | null;
+    normal: BilledRateTierChange | null;
+    difficult: BilledRateTierChange | null;
+    veryDifficult: BilledRateTierChange | null;
+  }[];
+  untouched: { itemId: string; description: string | null; why: string }[];
+  untouchedCount: number;
+  openDrafts: number;
+}
+export interface BilledRateApplied {
+  previousRate: number | null;
+  newRate: number;
+  rowsUpdated: number;
+  editsWritten: number;
+  untouched: { itemId: string; description: string | null; why: string }[];
+  untouchedCount: number;
+  draftsResnapshotted: number;
 }
 
 /** Kyle, 2026-10-08 (decision 10): labor on a job is the TOTAL cost Red Cedar pays. The employer cost

@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import type { CompanyProfile, LegalInfo, OperatingHours, PayrollSettings, PurchasingSettings, Territory } from "../lib/api";
 import type { TreasurySettings } from "../lib/types";
 import { FinancingPlansSection } from "./FinancingPlansSection";
+import { BilledRateSection } from "./BilledRateSection";
 
 const EMPTY_PROFILE: CompanyProfile = {
   companyName: "Red Cedar Electric LLC",
@@ -457,6 +458,9 @@ export function SettingsPage() {
           {savedKey === "purchasing" ? "Saved ✓" : "Save purchasing"}
         </button>
       </SectionCard>
+
+      {/* ── Billed labor rate (Kyle, 2026-10-27): the hourly rate the price book is built from ── */}
+      <BilledRateSection />
 
       {/* ── Payroll (Kyle, 2026-10-08, decision 10): labor on a job is the TOTAL cost Red Cedar pays ── */}
       <SectionCard
