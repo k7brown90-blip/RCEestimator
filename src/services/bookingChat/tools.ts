@@ -23,6 +23,8 @@ export interface ToolContext {
   chatId: string;
   /** The latest message's smsConsent — only ever a boolean the website sent, never inferred. */
   smsConsent: boolean | undefined;
+  /** What the website saw the visitor typing on, this message. Undefined when it did not say. */
+  device?: "phone" | "computer";
   /** Set by end_conversation; the turn writes the end marker and emails Kyle after the loop. */
   ended: boolean;
   /** What end_conversation said the outcome was (a signal, not a command). */

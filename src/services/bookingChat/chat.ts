@@ -160,13 +160,23 @@ export async function startChat(input: { src?: string | null; visitorIp?: string
 
 export type MessageOutcome = { found: false } | { found: true; result: MessageResult };
 
-export async function handleMessage(token: string, text: string, smsConsent: boolean | undefined): Promise<MessageOutcome> {
+export async function handleMessage(
+  token: string,
+  text: string,
+  smsConsent: boolean | undefined,
+  device?: "phone" | "computer",
+): Promise<MessageOutcome> {
   const chat = await loadChat(token);
   if (!chat) return { found: false };
-  return { found: true, result: await withChatLock(chat.id, () => runMessage(chat.id, text, smsConsent)) };
+  return { found: true, result: await withChatLock(chat.id, () => runMessage(chat.id, text, smsConsent, device)) };
 }
 
-async function runMessage(chatId: string, text: string, smsConsent: boolean | undefined): Promise<MessageResult> {
+async function runMessage(
+  chatId: string,
+  text: string,
+  smsConsent: boolean | undefined,
+  device?: "phone" | "computer",
+): Promise<MessageResult> {
   // Re-read under the lock: the previous turn may just have changed it.
   const chat = await prisma.bookingChat.findUnique({ where: { id: chatId }, include: { lead: true } });
   if (!chat) return { reply: FALLBACK_REPLY, status: "open", heldSlot: null, acceptsPhotos: false, ended: false };
@@ -181,7 +191,7 @@ async function runMessage(chatId: string, text: string, smsConsent: boolean | un
     await prisma.lead.update({ where: { id: chat.lead.id }, data: { smsConsent } });
   }
 
-  const ctx: ToolContext = { chatId, smsConsent, ended: false, summaries: [] };
+  const ctx: ToolContext = { chatId, smsConsent, device, ended: false, summaries: [] };
   const history = parseJsonArray<TranscriptEntry>(chat.transcriptJson);
   const turn = await runModelTurn(chat, history, text, ctx);
 
@@ -285,7 +295,7 @@ async function runModelTurn(
       if (chat.aiCallCount + aiCalls >= MAX_AI_CALLS_PER_CHAT) {
         return { reply: CHAT_LIMIT_REPLY, aiCalls };
       }
-      const instructions = buildInstructions(now(), await workOrderState(chat.id));
+      const instructions = buildInstructions(now(), { ...(await workOrderState(chat.id)), device: ctx.device });
       const resp = (await openai.responses.create({
         model,
         instructions,

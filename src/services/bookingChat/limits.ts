@@ -24,4 +24,4 @@ export const CLOSED_REPLY = `This conversation has ended. For anything else, ple
 export const TOO_LONG_REPLY = `That message is too long for me to handle here. Please shorten it, or call us at ${BOOKING_PHONE}.`;
 export const CHAT_LIMIT_REPLY = `We've reached the limit for this chat. Please call us at ${BOOKING_PHONE} and we'll finish getting you scheduled.`;
 export const START_LIMIT_REPLY = `We can't start another chat from this connection right now. Please call us at ${BOOKING_PHONE}.`;
-export const PHOTO_LIMIT_REPLY = `We've reached the photo limit for this chat. You can show Kyle the rest when he arrives, or call us at ${BOOKING_PHONE}.`;
+export const PHOTO_LIMIT_REPLY = `We've reached the photo limit for this chat. You can show our technician the rest at the visit, or call us at ${BOOKING_PHONE}.`;

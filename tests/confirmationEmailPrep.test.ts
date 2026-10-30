@@ -61,7 +61,7 @@ describe("sendConfirmationEmail", () => {
     expect(html).toContain("<li>&lt;b&gt;Garage&lt;/b&gt;</li>");
     expect(html).not.toContain("<b>Garage</b>");
     expect((html.match(/<li>/g) ?? []).length).toBe(3 + 4); // three standing "what to expect" + panel, attic, Kitchen, Garage
-    expect(html).toContain("Moving furniture or items out of the way helps Kyle get started right away.");
+    expect(html).toContain("Moving furniture or items out of the way helps our technician get started right away.");
     expect(text).toContain("Before Tuesday's visit, please clear access to:");
     expect(text).toContain("The attic hatch and crawlspace entry");
   });

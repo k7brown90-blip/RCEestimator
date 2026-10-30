@@ -65,6 +65,7 @@ process.env.GOOGLE_REFRESH_TOKEN = "test_token";
 import { app } from "../src/app";
 import { prisma } from "../src/lib/prisma";
 import { runBookingChatIdleSweep } from "../src/services/bookingChat/notifyKyle";
+import { BOOKING_CHAT_SYSTEM_PROMPT } from "../src/services/bookingChat/prompt";
 
 const SECRET = "booking-chat-test-secret";
 const TAG = "BC Test";
@@ -426,6 +427,34 @@ describe("get_available_slots", () => {
     script(call("get_available_slots", {}), say("I have times."));
     await send(inside.token, "what times?");
     expect((toolOutputs()[0].slots as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  // Kyle, 2026-10-30: "if they are on the computer a picture may not be easy to take and upload."
+  it("tells the assistant whether the visitor is on a phone or a computer, and ignores anything else", async () => {
+    const res = await start();
+    const token = res.body.token as string;
+    const lastInstructions = () => {
+      const calls = mocks.openaiCreate.mock.calls;
+      return calls[calls.length - 1][0].instructions as string;
+    };
+
+    script(say("Got it."));
+    await send(token, "no power in the living room", { device: "phone" });
+    expect(lastInstructions()).toContain("Device: phone");
+
+    script(say("Got it."));
+    await send(token, "it's the outlets", { device: "computer" });
+    expect(lastInstructions()).toContain("Device: computer (ask for no photos)");
+
+    script(say("Got it."));
+    const odd = await send(token, "still out", { device: "tablet-ish" });
+    expect(odd.status).toBe(200);
+    expect(lastInstructions()).toContain("Device: unknown");
+  });
+
+  it("never names a person to the customer: the prompt speaks as the company", () => {
+    const customerLines = BOOKING_CHAT_SYSTEM_PROMPT.match(/"[^"]*"/g) ?? [];
+    expect(customerLines.filter((l) => /Kyle/.test(l))).toEqual([]);
   });
 
   it("offers no times to a chat that has no lead yet", async () => {

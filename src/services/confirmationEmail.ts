@@ -55,7 +55,7 @@ function prepReminderHtml(prep: PrepReminder | undefined): string {
         <ul style="font-size:14px;color:#555;margin:0 0 8px;padding-left:20px;">
           ${items.map((i) => `<li>${escapeHtml(i)}</li>`).join("\n          ")}
         </ul>
-        <p style="font-size:14px;color:#555;margin:0 0 16px;">Moving furniture or items out of the way helps Kyle get started right away.</p>`;
+        <p style="font-size:14px;color:#555;margin:0 0 16px;">Moving furniture or items out of the way helps our technician get started right away.</p>`;
 }
 
 /** The Gmail transporter, for the Kyle-only sender below. Customer mail does not use this directly. */
@@ -87,7 +87,7 @@ export async function sendConfirmationEmail(input: ConfirmationInput): Promise<b
 
         <p style="font-size:14px;color:#555;margin:0 0 8px;"><strong>What to expect:</strong></p>
         <ul style="font-size:14px;color:#555;margin:0 0 16px;padding-left:20px;">
-          <li>Kyle will arrive within the scheduled window in a marked Red Cedar Electric vehicle.</li>
+          <li>Our technician will arrive within the scheduled window in a marked Red Cedar Electric vehicle.</li>
           <li>Please ensure access to the electrical panel and work area.</li>
           <li>If you need to reschedule, reply to this email or call 615-625-2163.</li>
         </ul>${prepReminderHtml(input.prepReminder)}

@@ -99,6 +99,8 @@ bookingChatRouter.post("/start", door(async (req, res) => {
 const messageSchema = z.object({
   text: z.string().trim().min(1).max(MAX_TEXT_CHARS * 20),
   smsConsent: z.boolean().optional(),
+  /** What the website saw the visitor typing on. Anything else is dropped, never a 400. */
+  device: z.enum(["phone", "computer"]).optional().catch(undefined),
 });
 
 bookingChatRouter.post("/:token/message", door(async (req, res) => {
@@ -107,7 +109,7 @@ bookingChatRouter.post("/:token/message", door(async (req, res) => {
     res.status(400).json({ error: "bad_request", reply: "I didn't catch that. Could you type it again?" });
     return;
   }
-  const out = await handleMessage(String(req.params.token), body.data.text, body.data.smsConsent);
+  const out = await handleMessage(String(req.params.token), body.data.text, body.data.smsConsent, body.data.device);
   if (!out.found) {
     res.status(404).json(NOT_FOUND);
     return;
