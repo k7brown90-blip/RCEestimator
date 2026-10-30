@@ -346,19 +346,29 @@ export class BookingConflictError extends Error {
   }
 }
 
-export async function bookAppointment(params: BookingParams): Promise<BookingResult> {
-  const calendar = getCalendarClient();
-  const isDiagnostic = params.visitType === "diagnostic";
-  const durationHours = isDiagnostic ? 2 : SLOT_DURATION;
-  const startUtc = parseAvailabilityDate(params.date, params.startTime);
-  const endUtc = new Date(startUtc.getTime() + durationHours * 3600_000);
-
-  // Serialize concurrent bookings of the same slot (check-then-book race):
-  // claim the slot atomically, then RE-verify the window against the calendar
-  // before writing — this endpoint previously inserted blind.
+/**
+ * THE slot-claim + re-check core — shared by Savannah's `bookAppointment()` below and the website
+ * booking chat's hold (services/bookingChat/scheduling.ts). One implementation, so the two doors
+ * can never disagree about what "that time is free" means.
+ *
+ * Serialize concurrent bookings of the same slot (check-then-book race): claim the slot
+ * atomically, then RE-verify the window against the whole company calendar set before `write`
+ * runs — this endpoint previously inserted blind. The claim is released whether `write` succeeds
+ * or throws. Sends NOTHING: callers decide what, if anything, goes to the customer.
+ *
+ * `heldBy` labels the SlotHold row. Throws BookingConflictError when the slot is being claimed by
+ * someone else or the calendars show it busy.
+ */
+export async function withVerifiedFreeSlot<T>(
+  startUtc: Date,
+  endUtc: Date,
+  heldBy: string,
+  write: () => Promise<T>,
+  calendar: ReturnType<typeof getCalendarClient> = getCalendarClient(),
+): Promise<T> {
   const slotKey = slotKeyCT(startUtc);
   try {
-    await acquireSlotHolds([slotKey], "vapi-booking");
+    await acquireSlotHolds([slotKey], heldBy);
   } catch (err) {
     if (err instanceof SlotContentionError) {
       throw new BookingConflictError("Someone else is booking that time right now — please pick a different slot.");
@@ -366,9 +376,6 @@ export async function bookAppointment(params: BookingParams): Promise<BookingRes
     throw err;
   }
 
-  let eventId: string;
-  const prefix = isDiagnostic ? "DIAG" : "EST";
-  const summary = `${prefix}: ${params.customerName} — ${params.address.substring(0, 60)}`;
   try {
     // Re-check the whole company calendar set, not just primary — the
     // availability read promised the slot against every tech's calendar.
@@ -386,6 +393,22 @@ export async function bookAppointment(params: BookingParams): Promise<BookingRes
       throw new BookingConflictError("That time was just taken — please pick a different slot.");
     }
 
+    return await write();
+  } finally {
+    await releaseSlotHolds([slotKey]);
+  }
+}
+
+export async function bookAppointment(params: BookingParams): Promise<BookingResult> {
+  const calendar = getCalendarClient();
+  const isDiagnostic = params.visitType === "diagnostic";
+  const durationHours = isDiagnostic ? 2 : SLOT_DURATION;
+  const startUtc = parseAvailabilityDate(params.date, params.startTime);
+  const endUtc = new Date(startUtc.getTime() + durationHours * 3600_000);
+
+  const prefix = isDiagnostic ? "DIAG" : "EST";
+  const summary = `${prefix}: ${params.customerName} — ${params.address.substring(0, 60)}`;
+  const eventId = await withVerifiedFreeSlot(startUtc, endUtc, "vapi-booking", async () => {
     const inserted = await calendar.events.insert({
       calendarId: "primary",
       requestBody: {
@@ -396,10 +419,8 @@ export async function bookAppointment(params: BookingParams): Promise<BookingRes
         end: { dateTime: endUtc.toISOString(), timeZone: TZ },
       },
     });
-    eventId = inserted.data.id!;
-  } finally {
-    await releaseSlotHolds([slotKey]);
-  }
+    return inserted.data.id!;
+  }, calendar);
 
   const endTimeStr = formatTime(endUtc);
   const appointmentWindow = `${params.startTime} – ${endTimeStr}`;

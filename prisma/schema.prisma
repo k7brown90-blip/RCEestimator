@@ -1674,6 +1674,8 @@ model Lead {
   /// the thread rendered on the record, before this lead has an account to carry it instead.
   emailDeliveries   EmailDelivery[]
   emailBounces      EmailBounce[]
+  bookingChat       BookingChat?
+  photos            LeadPhoto[]
 
   @@index([customerId])
   @@index([leadStatus, followUpDate])
@@ -1687,6 +1689,65 @@ model Lead {
   @@index([address(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_address_trgm_idx")
   @@index([addressLine1(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_addressLine1_trgm_idx")
   @@index([city(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_city_trgm_idx")
+}
+
+// Website booking chat (Kyle, 2026-10-30) — plan 2026-10-30-website-booking-chat.
+// One AI chat conversation from the public website. Exists before its Lead: the Lead is created
+// when the phone number arrives (leadId null until then); deleting the Lead deletes the chat.
+model BookingChat {
+  id              String    @id @default(cuid())
+  token           String    @unique // unguessable conversation id the CRM issues to the website
+  leadId          String?   @unique
+  // open | unbooked | held | confirmed | released | out_of_scope
+  status          String    @default("open")
+  srcParam        String? // raw ?src= value from the page
+  platform        String? // mapped via shared/leadPlatform.ts
+  priority        Boolean   @default(false)
+  priorityQuote   String? // the customer's exact words
+  // Customer-provided text recorded as written, NOT numbers.
+  originalRequest String?
+  squareFootage   String?
+  yearBuilt       String?
+  // JSON-in-String, read via lib/json.ts parseJsonArray (same convention as citationsJson).
+  concernsJson    String    @default("[]") // {room, description, photoId}[]
+  questionsJson   String    @default("[]") // string[] — questions for Kyle
+  prepAreasJson   String    @default("[]") // string[]
+  transcriptJson  String    @default("[]") // {role, content, at}[]
+  // The tentative 2-hour Google Calendar hold; office clicks Confirm booking or Release hold.
+  heldEventId     String?
+  heldStart       DateTime?
+  heldEnd         DateTime?
+  // Abuse counters.
+  messageCount    Int       @default(0)
+  aiCallCount     Int       @default(0)
+  visitorIpHash   String?
+  lastActivityAt  DateTime  @default(now())
+  kyleNotifiedAt  DateTime? // the idle sweep's idempotency stamp — one email to Kyle per chat
+  confirmedAt     DateTime?
+  releasedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  lead            Lead?     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([status, lastActivityAt])
+  @@index([visitorIpHash, createdAt])
+}
+
+// A photo the homeowner uploaded in the website chat (Kyle, 2026-10-30). Bytes live in Postgres,
+// like VisitPhoto.
+model LeadPhoto {
+  id         String   @id @default(cuid())
+  leadId     String
+  kind       String // concern | panel
+  room       String?
+  caption    String?
+  mimeType   String
+  sizeBytes  Int
+  data       Bytes
+  uploadedAt DateTime @default(now())
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
 }
 
 // ─── PHASE 1 DATA MODEL — NEW MODELS ────────────────────────────────────────

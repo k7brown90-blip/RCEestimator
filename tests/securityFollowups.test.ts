@@ -493,6 +493,20 @@ describe("access log redacts customer capability tokens", () => {
     expect(out).toContain("<token>");
   });
 
+  it("redacts the website booking chat's conversation token on message and photo, with or without /api", () => {
+    for (const path of [`/booking-chat/${TOKEN}/message`, `/booking-chat/${TOKEN}/photo`, `/api/booking-chat/${TOKEN}/message`]) {
+      const out = redactPath(path);
+      expect(out, path).not.toContain(TOKEN);
+      expect(out, path).toContain("/booking-chat/<token>/");
+    }
+    expect(redactPath(`/booking-chat/${TOKEN}`)).toBe("/booking-chat/<token>");
+  });
+
+  it("leaves /booking-chat/start readable — it carries no token", () => {
+    expect(redactPath("/booking-chat/start")).toBe("/booking-chat/start");
+    expect(redactPath("/api/booking-chat/start")).toBe("/api/booking-chat/start");
+  });
+
   it("leaves ordinary paths alone", () => {
     expect(redactPath("/accounts")).toBe("/accounts");
     expect(redactPath("/issued-estimates/abc123")).toBe("/issued-estimates/abc123");

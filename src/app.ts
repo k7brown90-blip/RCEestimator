@@ -142,6 +142,10 @@ import { parseJsonStringArray } from "./lib/json";
 import { findCustomerMatches } from "./services/customerMatch";
 import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
 import { requireWebhookSecret, requireWebhookSecretWhenEnabled } from "./middleware/webhookSecret";
+import { bookingChatRouter } from "./routes/bookingChat";
+import {
+  confirmBooking, deleteHoldForLead, deleteLeadPhoto, loadLeadChatView, releaseHold, releaseHoldIfHeld,
+} from "./services/bookingChat/officeActions";
 import { savannahRouter } from "./routes/agent-savannah";
 import { jerryRouter } from "./routes/agent-jerry";
 import { sharedAgentRouter } from "./routes/agent-shared";
@@ -1499,6 +1503,8 @@ app.patch("/leads/:id/lost", asyncHandler(async (req, res) => {
       lostNotes: body.lostNotes || null,
     },
   });
+  // A lost lead must not keep a slot blocked on the calendar (website chat hold).
+  await releaseHoldIfHeld(lead.id);
 
   res.json(lead);
 }));
@@ -1609,7 +1615,35 @@ app.get("/leads/:leadId", asyncHandler(async (req, res) => {
   const lead = await prisma.lead.findUnique({ where: { id: readParam(req, "leadId") } });
   if (!lead) { res.status(404).json({ error: "Lead not found" }); return; }
   const [withLinkedVisit] = await attachLinkedVisits([lead]);
-  res.json(withLinkedVisit);
+  // The website booking chat (plan 2026-10-30): the drawer's "Website chat" section. Null / [] for
+  // every lead that did not come through the chat, so the shape is otherwise unchanged.
+  const chatView = await loadLeadChatView(lead.id);
+  res.json({ ...withLinkedVisit, ...chatView });
+}));
+
+/**
+ * GET /leads/:leadId/photos/:photoId — one photo the homeowner sent through the website chat.
+ * Session-protected like every route not named in publicRoutes.ts, so the CRM loads it with
+ * fetchProtectedObjectUrl (a plain <img src> cannot carry the session). findFirst on BOTH ids:
+ * another lead's photo is a 404, never served through this lead.
+ */
+app.get("/leads/:leadId/photos/:photoId", asyncHandler(async (req, res) => {
+  const photo = await prisma.leadPhoto.findFirst({
+    where: { id: readParam(req, "photoId"), leadId: readParam(req, "leadId") },
+    select: { data: true, mimeType: true },
+  });
+  if (!photo) { res.status(404).json({ error: "Photo not found on this lead" }); return; }
+  // The upload route sniffs the bytes and only stores image types; anything else is served inert.
+  res.setHeader("Content-Type", photo.mimeType.startsWith("image/") ? photo.mimeType : "application/octet-stream");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cache-Control", "private, max-age=300");
+  res.send(Buffer.from(photo.data));
+}));
+
+app.delete("/leads/:leadId/photos/:photoId", asyncHandler(async (req, res) => {
+  const outcome = await deleteLeadPhoto(readParam(req, "leadId"), readParam(req, "photoId"));
+  if (!outcome.ok) { res.status(outcome.status).json(outcome.body); return; }
+  res.json(outcome.result);
 }));
 
 // ─── E-SIGNATURE FLOW (no auth — public signing page) ──────────────────────
@@ -1973,6 +2007,9 @@ app.post("/bookings/from-email", asyncHandler(async (req, res) => {
 
   res.json({ booked: true, eventId: event.id, leadId });
 }));
+
+// ─── WEBSITE BOOKING CHAT (webhook_secret, called by the website server — routes/bookingChat.ts) ───
+app.use("/booking-chat", bookingChatRouter);
 
 // ─── AGENT API (Jerry — voice/SMS field assistant) ────────────────────────────
 app.use("/agent", agentRouter);
@@ -9254,6 +9291,8 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     where: { id: leadId },
     data,
   });
+  // Same rule as PATCH /leads/:id/lost: marking a lead lost frees the slot its chat was holding.
+  if (lead.status === "lost" || lead.leadStatus === "lost") await releaseHoldIfHeld(leadId);
   res.json(lead);
 }));
 
@@ -9265,6 +9304,9 @@ app.delete("/leads/:leadId", asyncHandler(async (req, res) => {
     res.status(409).json({ error: "Cannot delete a converted lead" });
     return;
   }
+  // A chat lead that holds a slot has a HOLD event on Google Calendar; the cascade below removes
+  // the rows but not the event. Removed first; a failure is logged and the lead is still deleted.
+  await deleteHoldForLead(leadId);
   await prisma.lead.delete({ where: { id: leadId } });
   res.status(204).end();
 }));
@@ -9529,6 +9571,31 @@ app.patch("/leads/:leadId/convert", asyncHandler(async (req, res) => {
     readParam(req, "leadId"),
     leadConvertSchema.parse(req.body ?? {}),
   );
+  if (!outcome.ok) { res.status(outcome.status).json(outcome.body); return; }
+  res.json(outcome.result);
+}));
+
+/**
+ * POST /leads/:leadId/confirm-booking — the lead drawer's "Confirm booking" for a website-chat
+ * lead that holds a slot (plan 2026-10-30-website-booking-chat, decision A). ONE operation: the
+ * EXISTING conversion (same duplicate-account refusal — the body takes the duplicate picker's
+ * answer, exactly like PATCH /leads/:leadId/convert), then the job scheduled at the held time with
+ * the customer's confirmation email, the lead's photos copied onto the job, an email to Kyle.
+ * See services/bookingChat/officeActions.ts. A conversion refusal writes nothing.
+ */
+app.post("/leads/:leadId/confirm-booking", asyncHandler(async (req, res) => {
+  const outcome = await confirmBooking(
+    readParam(req, "leadId"),
+    convertLeadToOpportunity,
+    leadConvertSchema.parse(req.body ?? {}),
+  );
+  if (!outcome.ok) { res.status(outcome.status).json(outcome.body); return; }
+  res.json(outcome.result);
+}));
+
+/** POST /leads/:leadId/release-hold — drop the chat's held slot from the calendar; the lead stays. */
+app.post("/leads/:leadId/release-hold", asyncHandler(async (req, res) => {
+  const outcome = await releaseHold(readParam(req, "leadId"));
   if (!outcome.ok) { res.status(outcome.status).json(outcome.body); return; }
   res.json(outcome.result);
 }));

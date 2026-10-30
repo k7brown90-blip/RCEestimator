@@ -662,6 +662,64 @@ export type LeadLinkedVisit = {
   purpose: string | null;
 };
 
+/**
+ * The website booking chat on a lead (plan 2026-10-30-website-booking-chat) — what the lead
+ * drawer's "Website chat" section shows. Customer-provided text, recorded as written.
+ */
+export type BookingChatStatus = "open" | "unbooked" | "held" | "confirmed" | "released" | "out_of_scope";
+
+export type LeadBookingChat = {
+  id: string;
+  status: BookingChatStatus;
+  srcParam: string | null;
+  platform: string | null;
+  priority: boolean;
+  /** The customer's exact words about the priority condition. */
+  priorityQuote: string | null;
+  originalRequest: string | null;
+  squareFootage: string | null;
+  yearBuilt: string | null;
+  concerns: Array<{ room: string; description: string; photoId: string | null }>;
+  questionsForKyle: string[];
+  prepAreas: string[];
+  transcript: Array<{ role: string; content: string; at: string }>;
+  heldStart: string | null;
+  heldEnd: string | null;
+  /** "Tuesday, November 3, 8:00 AM – 10:00 AM" in Central Time, worded by the server. */
+  heldLabel: string | null;
+  messageCount: number;
+  lastActivityAt: string;
+  kyleNotifiedAt: string | null;
+  confirmedAt: string | null;
+  releasedAt: string | null;
+  createdAt: string;
+};
+
+/** What "Confirm booking" answers with (POST /leads/:leadId/confirm-booking). */
+export type ConfirmBookingResult = {
+  visitId: string;
+  customerId: string;
+  scheduledStart: string;
+  scheduledEnd: string;
+  label: string;
+  photosCopied: number;
+  /** Where the customer's confirmation email went; null = the account has no email. */
+  customerEmail: string | null;
+  kyleEmailed: boolean;
+  warnings: string[];
+};
+
+/** A photo the homeowner sent through the chat. Metadata only — the bytes are fetched with the session. */
+export type LeadPhotoMeta = {
+  id: string;
+  kind: "concern" | "panel" | string;
+  room: string | null;
+  caption: string | null;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedAt: string;
+};
+
 export type Lead = {
   id: string;
   name: string;
@@ -705,6 +763,9 @@ export type Lead = {
   visitId?: string | null;
   existingVisitId?: string | null;
   linkedVisit?: LeadLinkedVisit | null;
+  /** Website booking chat — null for a lead that did not come through it. Only on the single-lead read. */
+  bookingChat?: LeadBookingChat | null;
+  photos?: LeadPhotoMeta[];
   /**
    * TRI-STATE, READ-ONLY IN THE CRM (PUNCHLIST E1). `true` = ticked the consent box on the
    * website form, `false` = shown the box and left it unticked, `null` = never asked (phone,

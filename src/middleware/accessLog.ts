@@ -102,6 +102,15 @@ const REDACT_PATH_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   */
   { pattern: /^(\/e\/)[^/]+/, replacement: "$1<token>" },
   { pattern: /^(\/confirm\/)[^/]+/, replacement: "$1<token>" },
+
+  /*
+    THE WEBSITE BOOKING CHAT'S CONVERSATION TOKEN (security review U5, M2). `/booking-chat/:token/message`
+    and `/photo` carry the chat's unguessable token as a path segment — the capability to keep talking
+    to that chat. Only the website's server calls these (with the webhook secret), but the token must
+    not sit in the log either. `/booking-chat/start` has no token and stays readable. The optional
+    `/api` prefix is covered because the app answers both spellings.
+  */
+  { pattern: /^((?:\/api)?\/booking-chat\/)(?!start(?:\/|$))[^/]+/, replacement: "$1<token>" },
 ];
 
 /** Exported so the redaction can be tested directly — a leak here is silent otherwise. */

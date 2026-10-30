@@ -26,14 +26,46 @@ interface ConfirmationInput {
   jobType?: string;
   /** The visit this is about, when the caller knows it — makes the delivery row attributable. */
   visitId?: string | null;
+  /**
+   * OPTIONAL (website booking chat, 2026-10-30). Set only by "Confirm booking" on a chat lead: the
+   * customer was promised a prep reminder and this email is where it arrives. Every other caller
+   * leaves it out and the email renders exactly as it always has. `areas` is customer text and is
+   * escaped here.
+   */
+  prepReminder?: PrepReminder;
+}
+
+export interface PrepReminder {
+  /** "Tuesday" — the weekday the visit is on. */
+  dayName: string;
+  /** The work areas the customer named, listed after the two standing items. */
+  areas: string[];
+}
+
+/** The reminder block, or "" — an empty string leaves the email byte-for-byte unchanged. */
+function prepReminderHtml(prep: PrepReminder | undefined): string {
+  if (!prep) return "";
+  const items = [
+    "The electrical panel",
+    "The attic hatch and crawlspace entry",
+    ...prep.areas.map((a) => a.trim()).filter(Boolean),
+  ];
+  return `
+        <p style="font-size:14px;color:#555;margin:0 0 8px;"><strong>Before ${escapeHtml(prep.dayName)}'s visit, please clear access to:</strong></p>
+        <ul style="font-size:14px;color:#555;margin:0 0 8px;padding-left:20px;">
+          ${items.map((i) => `<li>${escapeHtml(i)}</li>`).join("\n          ")}
+        </ul>
+        <p style="font-size:14px;color:#555;margin:0 0 16px;">Moving furniture or items out of the way helps Kyle get started right away.</p>`;
 }
 
 /** The Gmail transporter, for the Kyle-only sender below. Customer mail does not use this directly. */
 const getTransporter = getGmailTransporter;
 
+// Customer name, address and service are escaped HERE: on a website-chat booking they are text a stranger
+// typed into a web page (security review U5, M1). Plain names and addresses render exactly as before.
 export async function sendConfirmationEmail(input: ConfirmationInput): Promise<boolean> {
   const jobLine = input.jobType
-    ? `<p style="margin:0 0 6px;font-size:15px;"><strong>Service:</strong> ${input.jobType}</p>`
+    ? `<p style="margin:0 0 6px;font-size:15px;"><strong>Service:</strong> ${escapeHtml(input.jobType)}</p>`
     : "";
 
   const html = `
@@ -43,13 +75,13 @@ export async function sendConfirmationEmail(input: ConfirmationInput): Promise<b
         <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">Red Cedar Electric LLC</p>
       </div>
       <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-        <p style="font-size:16px;margin:0 0 16px;">Hi ${input.customerName},</p>
+        <p style="font-size:16px;margin:0 0 16px;">Hi ${escapeHtml(input.customerName)},</p>
         <p style="font-size:15px;margin:0 0 16px;">Your appointment has been scheduled. Here are the details:</p>
 
         <div style="background:#f0f7f1;padding:16px;border-radius:6px;margin:0 0 16px;">
           <p style="margin:0 0 6px;font-size:15px;"><strong>Date:</strong> ${input.appointmentDate}</p>
           <p style="margin:0 0 6px;font-size:15px;"><strong>Arrival Window:</strong> ${input.appointmentWindow}</p>
-          <p style="margin:0 0 6px;font-size:15px;"><strong>Address:</strong> ${input.serviceAddress}</p>
+          <p style="margin:0 0 6px;font-size:15px;"><strong>Address:</strong> ${escapeHtml(input.serviceAddress)}</p>
           ${jobLine}
         </div>
 
@@ -58,7 +90,7 @@ export async function sendConfirmationEmail(input: ConfirmationInput): Promise<b
           <li>Kyle will arrive within the scheduled window in a marked Red Cedar Electric vehicle.</li>
           <li>Please ensure access to the electrical panel and work area.</li>
           <li>If you need to reschedule, reply to this email or call 615-625-2163.</li>
-        </ul>
+        </ul>${prepReminderHtml(input.prepReminder)}
 
         ${BRANDED_FOOTER}
       </div>

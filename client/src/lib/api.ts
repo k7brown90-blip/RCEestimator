@@ -1,4 +1,5 @@
 import type {
+  ConfirmBookingResult,
   Account,
   AccountSummary,
   AssemblyTemplate,
@@ -1039,6 +1040,36 @@ export const api = {
       `/leads/${leadId}/convert`,
       { method: "PATCH", body: JSON.stringify(input ?? {}) },
     ),
+  /**
+   * Website booking chat (plan 2026-10-30): the lead's chat holds a slot on the calendar. ONE
+   * operation — convert (same duplicate-account refusal as `convertLead`, same picker answer),
+   * schedule the job at the held time, email the customer, copy the photos to the job.
+   */
+  confirmBooking: (
+    leadId: string,
+    input?: {
+      customerId?: string;
+      propertyId?: string;
+      propertyName?: string;
+      addressLine1?: string;
+      addressLine2?: string | null;
+      city?: string;
+      state?: string;
+      postalCode?: string;
+      jurisdictionId?: string;
+      createNewAccount?: boolean;
+    },
+  ) =>
+    request<ConfirmBookingResult>(`/leads/${leadId}/confirm-booking`, { method: "POST", body: JSON.stringify(input ?? {}) }),
+  /** Drop the chat's held slot from the calendar; the lead stays. */
+  releaseHold: (leadId: string) =>
+    request<{ released: true }>(`/leads/${leadId}/release-hold`, { method: "POST" }),
+  /** Delete one of the homeowner's chat photos (and its id from the concerns that point at it). */
+  deleteLeadPhoto: (leadId: string, photoId: string) =>
+    request<{ deleted: true }>(`/leads/${leadId}/photos/${photoId}`, { method: "DELETE" }),
+  /** A chat photo's bytes as an object URL (the session rides in a header, never the URL). The caller revokes it. */
+  leadPhotoUrl: (leadId: string, photoId: string) =>
+    fetchProtectedObjectUrl(`/leads/${leadId}/photos/${photoId}`),
   /** Accounts that might already be this caller — drives the duplicate picker. */
   customerMatches: (params: { phone?: string; email?: string; name?: string }) => {
     const search = new URLSearchParams();

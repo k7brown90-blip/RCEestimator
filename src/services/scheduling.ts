@@ -7,7 +7,7 @@
 import { prisma } from "../lib/prisma";
 import { createCalendarEvent, deleteCalendarEvent, moveCalendarEvent, checkAvailabilityBlock } from "./schedule";
 import * as notify from "./notifications";
-import { sendRescheduleEmail, sendCancellationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
+import { escapeHtml, sendRescheduleEmail, sendCancellationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
 import { acquireSlotHolds, releaseSlotHolds, workingDaysCT, SlotContentionError } from "./slotHolds";
 import { sendVisitConfirmationRequest, notifyTechnicianOfAssignment } from "./visitConfirmations";
 import { customerSendsEnabled, logCustomerSendSkipped } from "./automationGate";
@@ -78,6 +78,13 @@ export interface ScheduleOptions {
    * per-conflict `message` of `conflicts`.
    */
   nameCalendarOwners?: boolean;
+  /**
+   * Website booking chat "Confirm booking" only (2026-10-30). When set — even to an empty list —
+   * the customer confirmation email this function already sends carries the prep reminder
+   * ("please clear access to: the panel, the attic hatch and crawlspace entry, <these areas>").
+   * It is the SAME email, not a second one. Absent for every other caller, whose email is unchanged.
+   */
+  prepAreas?: string[];
 }
 
 /**
@@ -110,6 +117,10 @@ export interface ScheduleJobResult {
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────────
+
+function formatWeekdayCT(d: Date): string {
+  return d.toLocaleDateString("en-US", { timeZone: TZ, weekday: "long" });
+}
 
 function formatTimeCT(d: Date): string {
   return d.toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" });
@@ -474,15 +485,18 @@ export async function scheduleJob(
       appointmentWindow: `${timeDisplay} – ${formatTimeCT(scheduledEnd)}`,
       serviceAddress: `${job.property.addressLine1}, ${job.property.city}`,
       jobType: job.jobType ?? undefined,
+      ...(options?.prepAreas
+        ? { prepReminder: { dayName: formatWeekdayCT(scheduledStart), areas: options.prepAreas } }
+        : {}),
     }).catch(err => console.error("[scheduleJob] Customer email failed:", err));
     customerNotified = true;
   }
 
   sendKyleNotificationEmail("Job Scheduled", [
-    `Customer: ${job.customer.name}`,
-    `Phone: ${job.customer.phone ?? "N/A"}`,
-    `Address: ${job.property.addressLine1}, ${job.property.city}`,
-    `Job: ${job.jobType ?? "service work"} — ${durationDays} day(s)`,
+    `Customer: ${escapeHtml(job.customer.name)}`,
+    `Phone: ${escapeHtml(job.customer.phone ?? "N/A")}`,
+    `Address: ${escapeHtml(`${job.property.addressLine1}, ${job.property.city}`)}`,
+    `Job: ${escapeHtml(job.jobType ?? "service work")} — ${durationDays} day(s)`,
     `Start: ${formatDateLong(scheduledStart)} at ${timeDisplay}`,
   ].join("\n")).catch(err => console.error("[scheduleJob] Kyle email failed:", err));
 

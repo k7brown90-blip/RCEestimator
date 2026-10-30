@@ -12,6 +12,12 @@
  * "It all needs consolidated into a single scheduling system in one place." Booking a lead is
  * the same `/calendar?schedule=<visitId>` door "Book consultation" on the account page uses.
  *
+ * WEBSITE CHAT (plan 2026-10-30-website-booking-chat, U3). A lead that came through the chat has a
+ * "Website chat" section: what the homeowner said and showed, and the held time on the calendar
+ * with Confirm booking / Release hold. While a chat holds a slot THIS is the one way to book it —
+ * "Book on the Calendar" is replaced by a line saying so (one tool for one task), because a second
+ * door would book a second event on top of the hold.
+ *
  * `smsConsent` is shown as three words and never as a control (PUNCHLIST E1): `null` is "never
  * asked", the state the A2P registration attests to, and only `true` opens the SMS gate.
  */
@@ -32,6 +38,7 @@ import { LeadDuplicatePicker, type ConvertInput } from "../LeadDuplicatePicker";
 import { LeadForm } from "../LeadForm";
 import { SendEmailPanel } from "../SendEmailPanel";
 import { OpenDrawerButton } from "./OpenDrawerButton";
+import { WebsiteChatSection } from "./WebsiteChatSection";
 
 const STATUS_TONE: Record<string, string> = {
   new: "bg-rce-accentBg text-rce-warning",
@@ -72,6 +79,9 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
   const [editing, setEditing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<CustomerMatch[] | null>(null);
+  // The duplicate-account question is asked by Convert and by Confirm booking alike; the picker's
+  // answer goes back to whichever one asked.
+  const [pickerFor, setPickerFor] = useState<"convert" | "confirm">("convert");
   const [losing, setLosing] = useState(false);
   const [lostReason, setLostReason] = useState("");
   const [lostNotes, setLostNotes] = useState("");
@@ -80,9 +90,9 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
    * 409 = "this might already be a customer" — a question, so open the picker. 400 with
    * `needs: "address"` = cannot convert yet — say so instead of doing nothing.
    */
-  const handleConvertError = (err: unknown) => {
+  const handleConvertError = (err: unknown, asker: "convert" | "confirm" = "convert") => {
     const body = (err as { body?: { matches?: CustomerMatch[]; needs?: string; message?: string } })?.body;
-    if (body?.matches?.length) { setDuplicate(body.matches); return; }
+    if (body?.matches?.length) { setPickerFor(asker); setDuplicate(body.matches); return; }
     if (body?.needs === "address") {
       setNotice(body.message ?? "This lead has no usable address, so it can't be converted yet. Add a complete street address, city, state, and ZIP, then convert again.");
       return;
@@ -106,7 +116,33 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
         setNotice("Converted — account, address and job created.");
       }
     },
-    onError: handleConvertError,
+    onError: (err) => handleConvertError(err, "convert"),
+  });
+  /** Confirm booking: convert (same refusal, same picker) + schedule the held time + emails + photos, in one server call. */
+  const confirmBooking = useMutation({
+    mutationFn: (input?: ConvertInput) => api.confirmBooking(id, input),
+    onSuccess: (result) => {
+      invalidate();
+      setDuplicate(null);
+      const parts = [
+        `Booking confirmed — ${result.label}.`,
+        result.customerEmail ? `Confirmation emailed to ${result.customerEmail}.` : null,
+        result.photosCopied > 0 ? `${result.photosCopied} photo${result.photosCopied === 1 ? "" : "s"} put on the job.` : null,
+        ...result.warnings,
+      ].filter(Boolean);
+      setNotice(parts.join(" "));
+    },
+    onError: (err) => handleConvertError(err, "confirm"),
+  });
+  const releaseHold = useMutation({
+    mutationFn: () => api.releaseHold(id),
+    onSuccess: () => { invalidate(); setNotice("Hold released — the time is back on the calendar and the lead is kept."); },
+    onError: (err) => setNotice((err as Error).message),
+  });
+  const deletePhoto = useMutation({
+    mutationFn: (photoId: string) => api.deleteLeadPhoto(id, photoId),
+    onSuccess: invalidate,
+    onError: (err) => setNotice((err as Error).message),
   });
   const contact = useMutation({
     mutationFn: () => api.updateLead(id, { status: "contacted" }),
@@ -148,6 +184,9 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
   };
 
   const visit = lead?.linkedVisit ?? null;
+  const chat = lead?.bookingChat ?? null;
+  /** A website chat is holding a slot on the calendar for this lead — Confirm booking is the one way to book it. */
+  const holdsSlot = chat?.status === "held";
   const closed = lead?.status === "lost" || visit?.status === "completed" || visit?.status === "cancelled";
   const address = lead ? displayAddress(lead) : null;
 
@@ -194,6 +233,20 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
             {lead.customerId && <p className="text-xs text-rce-accent">Linked to an existing account</p>}
           </div>
 
+          {chat && (
+            <WebsiteChatSection
+              lead={lead}
+              chat={chat}
+              photos={lead.photos ?? []}
+              onConfirm={() => confirmBooking.mutate(undefined)}
+              confirming={confirmBooking.isPending}
+              onRelease={() => releaseHold.mutate()}
+              releasing={releaseHold.isPending}
+              onDeletePhoto={(photoId) => deletePhoto.mutate(photoId)}
+              deletingPhotoId={deletePhoto.isPending ? (deletePhoto.variables ?? null) : null}
+            />
+          )}
+
           {visit && (
             <p className="text-xs">
               {visit.scheduledStart
@@ -210,7 +263,7 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
               <button type="button" className="btn btn-secondary text-xs" disabled={contact.isPending} onClick={() => contact.mutate()}>Mark Contacted</button>
             )}
             {visit && <OpenDrawerButton kind="job" id={visit.id} onOpen={drawers.open} label="Go to Job" className="btn btn-secondary text-xs" />}
-            {!closed && (
+            {!closed && !holdsSlot && (
               <button
                 type="button"
                 className="btn btn-primary text-xs"
@@ -260,6 +313,13 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
             )}
           </div>
 
+          {!closed && holdsSlot && (
+            <p className="rounded bg-rce-accentBg px-2 py-1 text-xs text-rce-warning" data-testid="book-door-replaced">
+              Book on the Calendar is replaced by <strong>Confirm booking</strong> (Website chat, above) for this lead: the website chat is
+              already holding {chat?.heldLabel ?? "a time"} on the calendar, and booking it any other way would put a second event on top of the hold.
+            </p>
+          )}
+
           {losing && (
             <form
               className="space-y-2 rounded-lg border border-rce-border p-3"
@@ -302,9 +362,9 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
         <LeadDuplicatePicker
           lead={lead}
           matches={duplicate}
-          busy={convert.isPending}
-          error={convert.error ? (convert.error as Error).message : null}
-          onPick={(input) => convert.mutate(input)}
+          busy={pickerFor === "confirm" ? confirmBooking.isPending : convert.isPending}
+          error={(pickerFor === "confirm" ? confirmBooking.error : convert.error) ? ((pickerFor === "confirm" ? confirmBooking.error : convert.error) as Error).message : null}
+          onPick={(input) => (pickerFor === "confirm" ? confirmBooking.mutate(input) : convert.mutate(input))}
           onClose={() => setDuplicate(null)}
         />
       )}

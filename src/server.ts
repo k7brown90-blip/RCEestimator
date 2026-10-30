@@ -15,6 +15,7 @@ import { sendAlert } from "./services/alerting";
 import { gmailConfigured, pollBounces } from "./services/bounceWatcher";
 import { syncCardSpend } from "./services/cardSpend";
 import { flagRunaways } from "./services/timeTracking";
+import { runBookingChatIdleSweep } from "./services/bookingChat/notifyKyle";
 import {
   customerSendsEnabled,
   logAutomationGateState,
@@ -393,6 +394,20 @@ async function startServer(): Promise<void> {
   cron.schedule("*/30 * * * *", () => { void runRunawaySweep("cron"); }, { timezone: "America/Chicago" });
   setTimeout(() => { void runRunawaySweep("boot"); }, 120_000).unref();
   console.log("[Cron] Runaway clock sweep every 30 minutes (12-hour cutoff).");
+
+  // Every 10 minutes — website booking chat (Kyle, 2026-10-30). One email to Kyle for every chat
+  // that has a Lead and has gone quiet for 30 minutes, stamped on kyleNotifiedAt so it is sent once.
+  // An OPERATOR email (not behind the customer-send gate). Never throws.
+  const runBookingChatSweep = async () => {
+    try {
+      const r = await runBookingChatIdleSweep();
+      if (r.notified > 0) console.log(`[BookingChat] idle sweep emailed Kyle about ${r.notified} chat(s)`);
+    } catch (err) {
+      console.error("[BookingChat] idle sweep failed:", err);
+    }
+  };
+  cron.schedule("*/10 * * * *", () => { void runBookingChatSweep(); }, { timezone: "America/Chicago" });
+  console.log("[Cron] Website booking chat idle sweep every 10 minutes (30-minute idle cutoff).");
 
   logAutomationGateState();
 }

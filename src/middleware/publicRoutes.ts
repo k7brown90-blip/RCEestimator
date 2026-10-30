@@ -186,6 +186,18 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
     methods: ["POST"], path: "/bookings/from-email", credential: "webhook_secret header",
     reason: "Email-booking intake. Checks WEBHOOK_SECRET.",
   },
+  {
+    methods: ["POST"], path: "/booking-chat/start", credential: "webhook_secret header",
+    reason: "Website booking chat: the website's SERVER opens a conversation (visitor IP in x-visitor-ip). requireWebhookSecret on the router; capped per visitor IP per day and rate-limited.",
+  },
+  {
+    methods: ["POST"], path: "/booking-chat/:token/message", credential: "webhook_secret header",
+    reason: "Website booking chat: relays one visitor message and runs one AI turn. requireWebhookSecret on the router; length, message and AI-call caps per chat.",
+  },
+  {
+    methods: ["POST"], path: "/booking-chat/:token/photo", credential: "webhook_secret header",
+    reason: "Website booking chat: relays one visitor photo (raw image, 8mb). requireWebhookSecret on the router; refused until the chat has a Lead; 15 photos per chat; magic-byte checked.",
+  },
 
   // ── Customer-facing surfaces reached from a link we sent them ─────────────────────────────
   {
