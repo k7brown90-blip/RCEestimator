@@ -1022,7 +1022,7 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: "
  *
  * Every inspection across the account's addresses, with the two actions that
  * matter — open the report PDF, and email it to the customer — plus the status
- * trail: contractor review, the on-site customer acknowledgment, and every
+ * trail: the on-site customer acknowledgment, any past contractor review, and every
  * delivery that actually went out. Reads the enriched
  * /customers/:id/inspections feed rather than the account summary, because
  * acknowledgment and delivery proof live there.
@@ -1077,7 +1077,6 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
       <ul className="mt-3 space-y-2">
         {inspections.map((inspection) => {
           const criticals = criticalsOf(inspection.criticalFindingsJson);
-          const needsReview = criticals.length > 0 && !inspection.contractorReviewed;
           return (
             <li key={inspection.id} className="rounded-lg border border-rce-border p-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1103,9 +1102,6 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                   {inspection.hasLoadCalc && " · load calc on file"}
                   {criticals.length > 0 && (
                     <span className="ml-2 font-semibold text-red-600">⚠ {criticals.join(", ")}</span>
-                  )}
-                  {needsReview && (
-                    <span className="ml-2 rounded bg-amber-100 px-1 text-xs text-amber-800">awaiting review</span>
                   )}
                 </span>
                 <Link to={`/visits/${inspection.visitId}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
@@ -1169,8 +1165,7 @@ function HealthInspectionHistory({ accountId, customerEmail }: { accountId: stri
                 )}
                 <button
                   className="btn btn-primary text-xs"
-                  disabled={emailReport.isPending || needsReview}
-                  title={needsReview ? "Critical finding — contractor review required before this can be emailed" : undefined}
+                  disabled={emailReport.isPending}
                   onClick={() => emailReport.mutate({ id: inspection.id, includeGenerator: Boolean(inspection.hasLoadCalc) })}
                 >
                   {emailReport.isPending

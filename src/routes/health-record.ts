@@ -387,8 +387,9 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     criticalFindingsJson: JSON.stringify(body.criticalFindings),
     groundingTestMethod: body.groundingTestMethod ?? COMPANY_GROUNDING_METHOD,
     // The license holder's inspection IS the review (Kyle, 2026-08-25) — his
-    // own records never sit in a false "pending" state. A tech without the
-    // flag still needs the explicit review before a critical report ships.
+    // own records never sit in a false "pending" state. No send waits on this
+    // flag any more (Kyle, 2026-10-30: "Red Cedar Electric is the contractor
+    // creating the report") — it is history on the record, not a gate.
     contractorReviewed: body.contractorReviewed || req.technician!.licenseHolder,
     ...(!body.contractorReviewed && req.technician!.licenseHolder
       ? { reviewedAt: new Date(), reviewedBy: req.technician!.name }
@@ -492,7 +493,7 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
       await prisma.finding.create({
         data: {
           visitId: visit.id,
-          findingText: `${tag} Critical finding(s): ${body.criticalFindings.join(", ")} — contractor review required before delivery`,
+          findingText: `${tag} Critical finding(s): ${body.criticalFindings.join(", ")}`,
           confidence: "high",
         },
       });
@@ -504,7 +505,7 @@ healthRecordTechRouter.post("/inspections", asyncHandler(async (req: TechRequest
     original... the customer isn't left holding an inaccurate calculation"). If the record this
     revises was ever delivered, the corrected report — with the load-calc & generator sheet when
     the revision carries a calc — is emailed now, marked as replacing the dated original. A
-    refusal (unreviewed critical, no address on file) is NOT silent: it rides the response and is
+    refusal (no address on file) is NOT silent: it rides the response and is
     logged as a warning, so the held report is a visible fact, never a quiet gap.
   */
   let resend: { sent: boolean; to?: string; reason?: string; skipped?: string } | null = null;
@@ -581,9 +582,8 @@ healthRecordTechRouter.put(
 /**
  * POST /health-record/inspections/:id/email — the assigned technician emails
  * the finished report to the customer from the field (Kyle, 2026-08-24: the
- * tech can send from the PWA). Same gate and same delivery log as the CRM
- * door — sendHealthReportEmail refuses an unreviewed critical report either
- * way. A tech can only send a record they made or one on a visit they were
+ * tech can send from the PWA). Same delivery log as the CRM door, through
+ * sendHealthReportEmail either way. A tech can only send a record they made or one on a visit they were
  * assigned to; the address is always the account's, never typed in the field.
  */
 healthRecordTechRouter.post("/inspections/:id/email", asyncHandler(async (req: TechRequest, res) => {
@@ -4664,8 +4664,8 @@ healthRecordAdminRouter.post("/inspections/:id/generator-report", asyncHandler(a
 /**
  * POST /health-record-admin/inspections/:id/email — email the report to the
  * customer from the CRM. Body may carry `to` to override the account address
- * (the tech door can't — only the office overrides). Renders fresh, refuses an
- * unreviewed critical report, and logs the delivery.
+ * (the tech door can't — only the office overrides). Renders fresh and logs the
+ * delivery.
  */
 healthRecordAdminRouter.post("/inspections/:id/email", asyncHandler(async (req, res) => {
   // includeGenerator (2026-09-01): the CRM send carries the Load Calc &

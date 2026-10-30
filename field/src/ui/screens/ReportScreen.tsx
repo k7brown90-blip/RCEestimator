@@ -72,7 +72,7 @@ export function ReportScreen({ report, inspection, property, onNewInspection, on
 
   /**
    * Email the customer's PDF from the field (2026-08-24). The server renders
-   * the official document, enforces the critical-review gate, and logs the
+   * the official document and logs the
    * delivery — but it can only do that once this inspection has actually
    * synced, so an unsynced record is surfaced as exactly that.
    */

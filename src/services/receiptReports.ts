@@ -40,18 +40,6 @@ export function jobOfInvoice(root: { jobVisitId: string | null; visitId: string 
   return root.jobVisitId ?? root.visitId ?? null;
 }
 
-const CRITICAL_UNREVIEWED =
-  "This report carries a critical finding and has not been contractor-reviewed. Review it in the CRM first - an unreviewed critical report never goes to a customer.";
-
-function criticalCount(json: string): number {
-  try {
-    const v = JSON.parse(json) as unknown;
-    return Array.isArray(v) ? v.length : 0;
-  } catch {
-    return 0;
-  }
-}
-
 export async function listReceiptReports(
   prisma: PrismaClient,
   root: { jobVisitId: string | null; visitId: string | null },
@@ -77,28 +65,25 @@ export async function listReceiptReports(
   const inspections = await prisma.healthInspection.findMany({
     where: { visitId: { in: chain }, supersededById: null },
     orderBy: { inspectionDate: "desc" },
-    select: { id: true, inspectionDate: true, loadCalcJson: true, criticalFindingsJson: true, contractorReviewed: true },
+    select: { id: true, inspectionDate: true, loadCalcJson: true },
   });
+  // No contractor-review gate (Kyle, 2026-10-30): "Red Cedar Electric is the contractor creating
+  // the report." A critical finding no longer greys the record.
   for (const i of inspections) {
-    const blocked = criticalCount(i.criticalFindingsJson) > 0 && !i.contractorReviewed ? CRITICAL_UNREVIEWED : null;
     out.push({
       id: reportIdOf({ kind: "health", id: i.id }),
       kind: "health",
       label: "Electrical Health Record",
       date: i.inspectionDate.toISOString(),
-      available: !blocked,
-      ...(blocked ? { blockedReason: blocked } : {}),
+      available: true,
     });
-    if (i.loadCalcJson || blocked) {
+    if (i.loadCalcJson) {
       out.push({
         id: reportIdOf({ kind: "generator", id: i.id }),
         kind: "generator",
         label: "Generator Sizing sheet",
         date: i.inspectionDate.toISOString(),
-        available: !blocked && Boolean(i.loadCalcJson),
-        ...(blocked
-          ? { blockedReason: blocked }
-          : i.loadCalcJson ? {} : { blockedReason: "This assessment has no load calculation, so there is no generator sizing sheet." }),
+        available: true,
       });
     }
   }

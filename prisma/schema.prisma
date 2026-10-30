@@ -563,7 +563,8 @@ model Technician {
   // Kyle, 2026-08-25: "This has been reviewed and a whole inspection was done,
   // that was the review." When the inspecting tech holds the license, the
   // contractor-review requirement is satisfied by the inspection itself — no
-  // false "pending" state. The gate stays armed for techs without this flag.
+  // false "pending" state. No send waits on review any more (Kyle, 2026-10-30:
+  // "Red Cedar Electric is the contractor creating the report.").
   licenseHolder     Boolean            @default(false)
   accessToken       String             @unique // bearer token used by the field PWA
   isActive          Boolean            @default(true)

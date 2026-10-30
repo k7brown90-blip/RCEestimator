@@ -33,7 +33,7 @@ export function PropertyDetailPage() {
 
   // The property's health record (Kyle, 2026-10-02, plan item C): every electrical assessment and
   // circuit diagnostic ever run at THIS address, across every visit — read-only here. Editing a
-  // load calc, running the generator designer, marking a contractor review, and emailing a report
+  // load calc, running the generator designer, and emailing a report
   // all stay where they already live (the visit workspace's HealthRecordPanel, and the account
   // page's HealthInspectionHistory) so this page is not a second editor for either.
   const { data: inspections } = useQuery({
@@ -236,7 +236,7 @@ export function PropertyDetailPage() {
           here ... Property photos will also show up here."
 
           Read-only aggregation across every visit at this address. Editing a load calc, running
-          the generator designer, marking a contractor review, and emailing a report to the
+          the generator designer, and emailing a report to the
           customer all stay on the visit workspace (HealthRecordPanel) and the account page
           (HealthInspectionHistory) — duplicating those controls here would be a second editor for
           a record that already has one. This page only lists and links out.

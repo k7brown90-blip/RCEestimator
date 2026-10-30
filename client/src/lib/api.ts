@@ -1268,7 +1268,7 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(input),
     }),
-  /** Email the report to the customer — logged as a delivery; refuses an unreviewed critical report. */
+  /** Email the report to the customer — logged as a delivery. */
   emailHealthReport: (inspectionId: string, to?: string, includeGenerator?: boolean) =>
     request<{ sent: true; sentTo: string; documentId: string }>(
       `/health-record-admin/inspections/${inspectionId}/email`,

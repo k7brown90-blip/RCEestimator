@@ -6,12 +6,8 @@
  * document from the app."
  *
  * Two callers, one rule set: the CRM (owner session) and the field PWA (the
- * assigned technician). Both run through here so the critical-finding gate and
- * the delivery log cannot be bypassed by choosing the other door.
- *
- * THE GATE: a report carrying a critical finding is not customer-facing until
- * the licensed contractor has reviewed it. That rule already governed the CRM's
- * review flow; the email send is where it now has teeth.
+ * assigned technician). Both run through here so the delivery log cannot be
+ * bypassed by choosing the other door.
  *
  * THE LOG: every successful send writes a HealthReportDelivery row — when, to
  * what address, by whom. The record only protects anyone if delivery can be
@@ -68,21 +64,8 @@ export async function sendHealthReportEmail(
     };
   }
 
-  const criticals = (() => {
-    try {
-      return JSON.parse(inspection.criticalFindingsJson) as string[];
-    } catch {
-      return [];
-    }
-  })();
-  if (criticals.length > 0 && !inspection.contractorReviewed) {
-    return {
-      sent: false,
-      reason:
-        "This report carries a critical finding and has not been contractor-reviewed. " +
-        "Review it in the CRM first — an unreviewed critical report never goes to a customer.",
-    };
-  }
+  // No contractor-review gate (Kyle, 2026-10-30): "Red Cedar Electric is the contractor creating
+  // the report." A critical finding no longer holds the send.
 
   const sentTo = (opts.to ?? inspection.customer.email)?.trim();
   if (!sentTo) {

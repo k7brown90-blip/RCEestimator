@@ -291,7 +291,8 @@ describe("health record CRM integration", () => {
 
     const findings = await prisma.finding.findMany({ where: { visitId } });
     expect(findings[0].findingText).not.toContain("capped");
-    expect(findings[0].findingText).toContain("contractor review required");
+    expect(findings[0].findingText).toContain("Critical finding(s):");
+    expect(findings[0].findingText).not.toContain("contractor review");
   });
 
   it("push is idempotent — offline-queue retry replays the identical payload without duplicating", async () => {

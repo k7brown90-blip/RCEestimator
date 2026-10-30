@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { InspectionResultChip } from "./InspectionResultChip";
 import { ProtectedImage } from "./ProtectedImage";
@@ -14,10 +14,10 @@ import { PhotoLightbox } from "./PhotoLightbox";
  * scheduler (JobScheduler tech picker) when the appointment is booked, and the
  * inspection itself — including its load calculation — is the Health Report
  * product, owned by the field PWA. What the office needs here is to see synced
- * results, mark the contractor review, and generate/send the report PDF.
+ * results and generate/send the report PDF. No contractor-review step (Kyle, 2026-10-30): "Red
+ * Cedar Electric is the contractor creating the report."
  */
 export function HealthRecordPanel({ visitId }: { visitId: string }) {
-  const queryClient = useQueryClient();
   const [expandedInspectionId, setExpandedInspectionId] = useState<string | null>(null);
   // The CRM-side generator designer (Kyle, 2026-08-31) — one open at a time.
   const [designerInspectionId, setDesignerInspectionId] = useState<string | null>(null);
@@ -41,18 +41,6 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
     enabled: Boolean(expandedInspectionId),
   });
 
-  const reviewMutation = useMutation({
-    mutationFn: (inspectionId: string) => {
-      const reviewedBy = window.prompt("Reviewer name (licensed contractor):", "Kyle");
-      if (!reviewedBy) return Promise.reject(new Error("cancelled"));
-      return api.reviewInspection(inspectionId, { reviewedBy });
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["visitInspections", visitId] });
-      void queryClient.invalidateQueries({ queryKey: ["healthInspection", expandedInspectionId] });
-    },
-  });
-
   const reportMutation = useMutation({
     mutationFn: (inspectionId: string) => api.generateHealthReport(inspectionId),
     onSuccess: (result) => {
@@ -74,12 +62,12 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
     Emailing the homeowner their assessment is client-facing, and under Kyle's ruling that belongs
     on the record, not on this page: "the operations are different as they do not have actions that
     directly involve clients ... an admin can complete these tasks on their assigned page." What
-    this panel keeps is the internal work — the contractor review, the load calc, the generator
-    designer and report generation.
+    this panel keeps is the internal work — the load calc, the generator designer and report
+    generation.
 
     It lives in `components/SendAssessmentReport.tsx`, rendered by `JobDrawer`, and is a strict
-    superset of the button that used to be here: same refusal on an unreviewed critical finding,
-    same generator-sizing behaviour, plus the last-sent line and a link back here for the review.
+    superset of the button that used to be here: same generator-sizing behaviour, plus the
+    last-sent line.
     Kyle asked for this copy to go once the drawer had it — two buttons for one send is the smell
     that sent him to the wrong "Email invoice" earlier in the same week.
   */
@@ -174,11 +162,7 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                   {expanded && inspectionDetail?.id === inspection.id && (
                     <div className="mt-2 border-t border-rce-border pt-2 text-xs text-rce-muted">
                       <p>
-                        Jurisdiction: {inspectionDetail.jurisdictionId} · Contractor reviewed:{" "}
-                        {inspectionDetail.contractorReviewed
-                          ? `yes${inspectionDetail.reviewedBy ? ` (${inspectionDetail.reviewedBy}${inspectionDetail.reviewedAt ? `, ${new Date(inspectionDetail.reviewedAt).toLocaleDateString()}` : ""})` : ""}`
-                          : "no"}{" "}
-                        · Synced {new Date(inspectionDetail.syncedAt).toLocaleString()}
+                        Jurisdiction: {inspectionDetail.jurisdictionId} · Synced {new Date(inspectionDetail.syncedAt).toLocaleString()}
                       </p>
                       {/* Load calculation deliberately not shown — it belongs to
                           the Health Report product, not the CRM. */}
@@ -203,19 +187,9 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                           </div>
                         </div>
                       )}
-                      {!inspectionDetail.contractorReviewed && (
-                        <button
-                          type="button"
-                          className="btn btn-primary mt-2 text-xs"
-                          disabled={reviewMutation.isPending}
-                          onClick={() => reviewMutation.mutate(inspection.id)}
-                        >
-                          Mark contractor-reviewed
-                        </button>
-                      )}
                       <button
                         type="button"
-                        className="btn btn-secondary ml-2 mt-2 text-xs"
+                        className="btn btn-secondary mt-2 text-xs"
                         disabled={reportMutation.isPending}
                         onClick={() => reportMutation.mutate(inspection.id)}
                       >
@@ -271,9 +245,7 @@ export function HealthRecordPanel({ visitId }: { visitId: string }) {
                           forwarding address reads as a deleted feature, and the operator goes
                           looking for it — the same failure the click-through rule exists to stop. */}
                       <p className="ml-2 mt-2 text-xs text-rce-soft">
-                        {criticals.length > 0 && !inspectionDetail.contractorReviewed
-                          ? "Review this record above before it can be emailed — then send it from the job's drawer (Jobs → the job → Open)."
-                          : "Email this report to the customer from the job's drawer: Jobs → the job → Open."}
+                        Email this report to the customer from the job's drawer: Jobs → the job → Open.
                       </p>
                     </div>
                   )}

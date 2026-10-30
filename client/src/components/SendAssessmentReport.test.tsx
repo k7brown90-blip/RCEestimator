@@ -5,15 +5,15 @@
  * page. Emailing a homeowner their assessment was buried three levels down `/visits/:id` — inside
  * `HealthRecordPanel`, inside an inspection row you had to expand first.
  *
- * Pinned here: the send is reachable, it refuses OUT LOUD when a critical finding has not been
- * reviewed (and says where the review is done), and it renders away entirely on a job with no
- * assessment rather than showing an empty panel.
+ * Pinned here: the send is reachable, a critical finding does not hold it (no contractor-review
+ * gate, Kyle 2026-10-30), and it renders away entirely on a job with no assessment rather than
+ * showing an empty panel.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
-import { SendAssessmentReport, reportSendBlock } from "./SendAssessmentReport";
+import { SendAssessmentReport } from "./SendAssessmentReport";
 import { api } from "../lib/api";
 import type { HealthInspectionSummary } from "../lib/api";
 
@@ -32,20 +32,6 @@ function inspection(overrides: Partial<HealthInspectionSummary> = {}): HealthIns
     ...overrides,
   };
 }
-
-describe("reportSendBlock", () => {
-  it("passes an ordinary record, and refuses an unreviewed critical one", () => {
-    expect(reportSendBlock(inspection())).toBeNull();
-    expect(reportSendBlock(inspection({ criticalFindingsJson: '["Double-tapped breaker"]' }))).toMatch(/contractor review/i);
-    // Reviewed clears it.
-    expect(reportSendBlock(inspection({ criticalFindingsJson: '["Double-tapped breaker"]', contractorReviewed: true }))).toBeNull();
-  });
-
-  it("treats a malformed criticals column as no criticals rather than throwing", () => {
-    expect(reportSendBlock(inspection({ criticalFindingsJson: "not json" }))).toBeNull();
-    expect(reportSendBlock(inspection({ criticalFindingsJson: null as unknown as string }))).toBeNull();
-  });
-});
 
 describe("SendAssessmentReport", () => {
   it("emails the report from the record, and says where it went", async () => {
@@ -74,21 +60,22 @@ describe("SendAssessmentReport", () => {
     await waitFor(() => expect(send).toHaveBeenCalledWith("insp-1", undefined, true));
   });
 
-  it("greys the send on an unreviewed critical finding and links to where the review is done", async () => {
+  // Kyle, 2026-10-30: "Red Cedar Electric is the contractor creating the report." No review gate.
+  it("sends a record with a critical finding and no contractor review", async () => {
     vi.spyOn(api, "visitInspections").mockResolvedValue([
       inspection({ criticalFindingsJson: '["Double-tapped breaker"]' }),
     ]);
-    const send = vi.spyOn(api, "emailHealthReport");
+    const send = vi.spyOn(api, "emailHealthReport").mockResolvedValue({
+      sent: true, sentTo: "jane@example.com", documentId: "doc-1",
+    });
 
     renderWithProviders(<SendAssessmentReport visitId="visit-1" />, { route: "/jobs" });
 
     const button = await screen.findByRole("button", { name: "Email the assessment report" });
-    expect(button).toBeDisabled();
-    expect(screen.getByText(/needs a contractor review before it can go to the customer/)).toBeInTheDocument();
-    // A refusal that does not say where to go is a dead end.
-    expect(screen.getByRole("link", { name: /Review it on the workspace/ })).toHaveAttribute("href", "/visits/visit-1");
+    expect(button).toBeEnabled();
+    expect(screen.queryByText(/contractor review/i)).not.toBeInTheDocument();
     fireEvent.click(button);
-    expect(send).not.toHaveBeenCalled();
+    await waitFor(() => expect(send).toHaveBeenCalledWith("insp-1", undefined, false));
   });
 
   it("shows when it was last sent, so a second send is a decision and not a guess", async () => {

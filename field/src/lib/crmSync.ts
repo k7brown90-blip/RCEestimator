@@ -1646,7 +1646,7 @@ export async function fetchVisitPaymentInfo(visitId: string): Promise<VisitPayme
  * Email the finished report to the customer, from the field (2026-08-24).
  *
  * Deliberately NOT queued offline: the server renders and sends the customer's
- * PDF, refuses an unreviewed critical report, and logs the delivery — none of
+ * PDF and logs the delivery — none of
  * which should happen silently hours later from a retry queue. No signal means
  * the tech sees the failure and the office sends it from the CRM instead.
  */

@@ -7,8 +7,8 @@ import type { ChecklistItemDef, Inspection, ItemResult, ResultState } from './ty
  * The score was retired because a number invites "why isn't it 100?" instead of
  * "what needs fixing?" — and because a weighted average lets a serious finding
  * hide behind twenty passes. What survives from the old scoring engine is the
- * part that actually gated anything: the critical-finding banner and the
- * contractor review it requires.
+ * critical-finding banner. It no longer requires a contractor review (Kyle,
+ * 2026-10-30: "Red Cedar Electric is the contractor creating the report.").
  */
 
 export interface FindingsConfig {

@@ -400,7 +400,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
         results={session.results}
         summary={summarizeFindings(draft, visibleItems)}
         onBack={() => setScreen('checklist')}
-        onComplete={(contractorReviewed, ack) => {
+        onComplete={(ack) => {
           // The server would 422 a v2 violation at sync time; catching it here
           // keeps the inspection out of a stuck offline queue (§12.3 mirror).
           const v2Violations = session.v2 ? checkCapture(session.v2) : []
@@ -412,7 +412,7 @@ function App({ justEnrolled = false }: { justEnrolled?: boolean }) {
             setScreen('v2capture')
             return
           }
-          const final = toInspection(session, 'complete', contractorReviewed, visibleItems, ack)
+          const final = toInspection(session, 'complete', false, visibleItems, ack)
           void saveDraft(final) // transitions the draft to its immutable completed version
           void queueInspectionSync(final, session.property) // auto-push to the CRM (queued offline)
           setCompleted(final)

@@ -9,7 +9,7 @@
  * the office is on when a technician rings to say the job grew.
  *
  * What stays on the WORKSPACE (/visits/:id, linked from the header): photos, the finding ledger,
- * the job clock, materials used, the contractor review of an assessment, the load-calc editor, the
+ * the job clock, materials used, the load-calc editor, the
  * generator designer, and "Quote this work" (the builder). Those are company-internal operations,
  * not things that reach the customer. The one part of the health record that IS client-facing —
  * emailing the homeowner their assessment — is here, as `SendAssessmentReport`; a send it has to

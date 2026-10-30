@@ -13,10 +13,7 @@ interface Props {
    * refuses to complete with neither — absence must be deliberate, because the
    * record only protects anyone if review-with-the-customer can be proven.
    */
-  onComplete: (
-    contractorReviewed: boolean,
-    ack: { acknowledgment?: CustomerAcknowledgment; ackSkippedReason?: string },
-  ) => void
+  onComplete: (ack: { acknowledgment?: CustomerAcknowledgment; ackSkippedReason?: string }) => void
   onBack: () => void
 }
 
@@ -29,7 +26,6 @@ const findingLabel: Record<ResultState, string> = {
 }
 
 export function ReviewScreen({ results, summary, onComplete, onBack }: Props) {
-  const [contractorReviewed, setContractorReviewed] = useState(false)
   const [signerName, setSignerName] = useState('')
   const [signature, setSignature] = useState<string | null>(null)
   const [skipSignature, setSkipSignature] = useState(false)
@@ -83,9 +79,6 @@ export function ReviewScreen({ results, summary, onComplete, onBack }: Props) {
               </li>
             ))}
           </ul>
-          <p className="text-xs text-red-200">
-            This report requires licensed-contractor review before it can be exported.
-          </p>
         </section>
       )}
 
@@ -112,19 +105,8 @@ export function ReviewScreen({ results, summary, onComplete, onBack }: Props) {
         ))}
       </section>
 
-      {hasCritical && (
-        <label className="flex items-start gap-3 rounded-lg border border-slate-700 bg-slate-800/60 p-3 text-sm text-slate-200">
-          <input
-            type="checkbox"
-            className="mt-1"
-            checked={contractorReviewed}
-            onChange={(e) => setContractorReviewed(e.target.checked)}
-          />
-          <span>
-            The licensed contractor has reviewed the critical finding(s) on this report.
-          </span>
-        </label>
-      )}
+      {/* No contractor-review checkbox (Kyle, 2026-10-30): "Red Cedar Electric is the
+          contractor creating the report." The inspection is the review. */}
 
       {/* ── Customer acknowledgment (2026-08-24) — the paper form's signature
           box, captured digitally. Review the findings above WITH the customer,
@@ -175,9 +157,9 @@ export function ReviewScreen({ results, summary, onComplete, onBack }: Props) {
 
       <button
         type="button"
-        disabled={(hasCritical && !contractorReviewed) || !ackReady}
+        disabled={!ackReady}
         onClick={() =>
-          onComplete(contractorReviewed, skipSignature
+          onComplete(skipSignature
             ? { ackSkippedReason: skipReason.trim() }
             : {
                 acknowledgment: {

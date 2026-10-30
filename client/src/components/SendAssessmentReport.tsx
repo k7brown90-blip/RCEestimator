@@ -8,45 +8,21 @@
  * down a page, for something the customer is waiting on.
  *
  * ── WHAT STAYS ON THE WORKSPACE, AND WHY THAT IS RIGHT ───────────────────────────────────────
- * The contractor review, the load-calc editor, the generator designer and report GENERATION are
- * company-internal work. Under the ruling they belong on `/visits/:id` and this component
- * deliberately does not duplicate them. It only SENDS, and when a send is refused it names the
- * workspace as the place to go and fix it.
+ * The load-calc editor, the generator designer and report GENERATION are company-internal work.
+ * Under the ruling they belong on `/visits/:id` and this component deliberately does not
+ * duplicate them. It only SENDS. No contractor-review gate (Kyle, 2026-10-30): "Red Cedar
+ * Electric is the contractor creating the report."
  *
  * ── ONE QUERY ────────────────────────────────────────────────────────────────────────────────
- * `HealthInspectionSummary` already carries `criticalFindingsJson`, `contractorReviewed`,
- * `hasLoadCalc` and `deliveries`, so the gate, the label and the "already sent" line all come off
- * the list the visit already exposes. Same query key as `HealthRecordPanel`'s
+ * `HealthInspectionSummary` already carries `hasLoadCalc` and `deliveries`, so the label and the
+ * "already sent" line both come off the list the visit already exposes. Same query key as `HealthRecordPanel`'s
  * (`["visitInspections", visitId]`) and the same shape, so the two share one cache entry.
  */
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import type { HealthInspectionSummary } from "../lib/api";
-
-/** The critical findings on a record, tolerating a malformed column rather than throwing. */
-function criticalsOf(json: string | null | undefined): string[] {
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    return Array.isArray(parsed) ? (parsed as string[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Why this report cannot go to the customer, in words, or null when it can.
- * Mirrors the server's refusal on `POST /health-record-admin/inspections/:id/email`.
- */
-export function reportSendBlock(row: HealthInspectionSummary): string | null {
-  if (criticalsOf(row.criticalFindingsJson).length > 0 && !row.contractorReviewed) {
-    return "A critical finding was recorded, so this needs a contractor review before it can go to the customer.";
-  }
-  return null;
-}
 
 export function SendAssessmentReport({ visitId }: { visitId: string }) {
   const queryClient = useQueryClient();
@@ -74,7 +50,6 @@ export function SendAssessmentReport({ visitId }: { visitId: string }) {
     <div className="rounded-lg border border-rce-border p-2 text-xs">
       <p className="font-semibold text-rce-soft">Electrical assessment</p>
       {inspections.map((row) => {
-        const block = reportSendBlock(row);
         const lastSent = row.deliveries?.[row.deliveries.length - 1] ?? null;
         return (
           <div key={row.id} className="mt-1 space-y-1">
@@ -92,25 +67,14 @@ export function SendAssessmentReport({ visitId }: { visitId: string }) {
             <button
               type="button"
               className="btn btn-secondary text-xs"
-              // Greyed with the reason below, never hidden (CLAUDE.md click-through rule 5).
-              disabled={Boolean(block) || send.isPending}
-              title={block ?? "Emails the homeowner their assessment report, with the delivery logged"}
+              disabled={send.isPending}
+              title="Emails the homeowner their assessment report, with the delivery logged"
               onClick={() => send.mutate(row)}
             >
               {send.isPending
                 ? "Sending…"
                 : `Email the assessment report${row.hasLoadCalc ? " + generator sizing" : ""}`}
             </button>
-            {block && (
-              <p className="text-amber-800">
-                {block}{" "}
-                {/* Names WHERE the review is done — a refusal that does not say where to go is a
-                    dead end, which is the whole point of the click-through rule. */}
-                <Link to={`/visits/${visitId}`} className="underline">
-                  Review it on the workspace →
-                </Link>
-              </p>
-            )}
           </div>
         );
       })}
