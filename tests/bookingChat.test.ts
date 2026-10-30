@@ -406,6 +406,34 @@ describe("get_available_slots", () => {
     expect((toolOutputs()[0].slots as unknown[]).length).toBeGreaterThan(0);
     expect(await waitForEvent("warn", "freebusy could not read")).toBe(true);
   });
+
+  // Kyle, 2026-10-30: the bot offered times for "123 mary joe martin dr" with no city or ZIP.
+  it("offers no times until the recorded address has an in-area ZIP", async () => {
+    const noZip = await chatWithLead({ address: "123 Mary Joe Martin Dr" });
+    script(call("get_available_slots", {}), say("What's your ZIP?"));
+    await send(noZip.token, "what times?");
+    expect(toolOutputs()[0]).toMatchObject({ ok: false });
+    expect(toolOutputs()[0].slots).toBeUndefined();
+
+    await setTerritories(["37064"]);
+    const outside = await chatWithLead({ address: "1 Far Away Rd, New York, NY 10001" });
+    script(call("get_available_slots", {}), say("That's outside our area."));
+    await send(outside.token, "what times?");
+    expect(toolOutputs()[0]).toMatchObject({ ok: false });
+    expect(toolOutputs()[0].slots).toBeUndefined();
+
+    const inside = await chatWithLead();
+    script(call("get_available_slots", {}), say("I have times."));
+    await send(inside.token, "what times?");
+    expect((toolOutputs()[0].slots as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  it("offers no times to a chat that has no lead yet", async () => {
+    const res = await start();
+    script(call("get_available_slots", {}), say("First, your name and number?"));
+    await send(res.body.token as string, "when can you come?");
+    expect(toolOutputs()[0]).toMatchObject({ ok: false });
+  });
 });
 
 describe("book_appointment — the hold", () => {

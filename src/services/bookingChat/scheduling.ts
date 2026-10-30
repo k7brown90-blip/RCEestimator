@@ -23,7 +23,7 @@ import {
 import { createCalendarEvent, deleteCalendarEvent } from "../schedule";
 import { logSystemEvent } from "../systemEvents";
 import { FIXED_BLOCK_STARTS } from "./limits";
-import { checkServiceArea, extractZip } from "./serviceArea";
+import { gateRecordedAddress } from "./serviceArea";
 
 const TZ = "America/Chicago";
 const BLOCK_HOURS = 2;
@@ -137,18 +137,8 @@ export async function holdSlotForChat(
     };
   }
 
-  const zip = extractZip(lead.address);
-  if (!zip) {
-    return {
-      ok: false,
-      code: "need_zip",
-      message: "The recorded address has no ZIP code. Ask for the ZIP, record the full address with update_work_order, then check_service_area.",
-    };
-  }
-  const area = await checkServiceArea(zip);
-  if (!area.inArea) {
-    return { ok: false, code: "out_of_area", message: "The service address is outside the service area. Do not book; follow the out-of-scope reply." };
-  }
+  const gate = await gateRecordedAddress(lead.address);
+  if (!gate.ok) return { ok: false, code: gate.code, message: gate.message };
 
   if (!(FIXED_BLOCK_STARTS as readonly string[]).includes(args.startTime) || !isRealYmd(args.date)) {
     return {

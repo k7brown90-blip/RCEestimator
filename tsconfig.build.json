@@ -58,6 +58,8 @@
     // Signed-invoice email backfill by estimate number (Kyle, 2026-09-05).
     "scripts/sendInvoiceFor.ts",
     "scripts/checkGoogleCalendarConnection.ts",
+    // Fills Settings → Service territories with every ZIP within 45 mi of 37086; dry-run default, --apply (Kyle, 2026-10-30).
+    "scripts/addServiceZipsByRadius.ts",
     // scripts/price-book/* deleted 2026-09-12 on Kyle's instruction — the Excel
     // workbook path is retired. The price book is authored in the CRM now, and
     // the importer was a standing hazard to it: its cleanup pass retired every

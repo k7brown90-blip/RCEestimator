@@ -60,3 +60,29 @@ export async function checkServiceArea(rawZip: string | null | undefined): Promi
   const hit = entries.has(zip);
   return { inArea: hit, area: hit ? entries.get(zip) ?? null : null, listConfigured: true, zip };
 }
+
+export type RecordedAddressGate =
+  | { ok: true; zip: string }
+  | { ok: false; code: "need_zip" | "out_of_area"; message: string };
+
+/**
+ * The gate in front of offering AND holding a time: the address recorded on the Lead must carry a
+ * ZIP, and that ZIP must be in the service area. Enforced by the server, not left to the prompt —
+ * Kyle, 2026-10-30, after the bot offered times for "123 mary joe martin dr" with no city or ZIP:
+ * "How is it verifying the area?"
+ */
+export async function gateRecordedAddress(address: string | null | undefined): Promise<RecordedAddressGate> {
+  const zip = extractZip(address);
+  if (!zip) {
+    return {
+      ok: false,
+      code: "need_zip",
+      message: "The recorded address has no ZIP code. Ask for the city and ZIP, record the full address with update_work_order, then check_service_area.",
+    };
+  }
+  const area = await checkServiceArea(zip);
+  if (!area.inArea) {
+    return { ok: false, code: "out_of_area", message: "The service address is outside the service area. Do not book; follow the out-of-scope reply." };
+  }
+  return { ok: true, zip };
+}

@@ -14,7 +14,7 @@ import { parseJsonArray, parseJsonStringArray } from "../../lib/json";
 import { logSystemEvent } from "../systemEvents";
 import { BookingInputError } from "../googleCalendar";
 import { FIXED_BLOCK_STARTS } from "./limits";
-import { checkServiceArea } from "./serviceArea";
+import { checkServiceArea, gateRecordedAddress } from "./serviceArea";
 import { holdSlotForChat, listOfferableSlots, PLACEHOLDER_NAME } from "./scheduling";
 import { notifyKyleHeldUpdate } from "./notifyKyle";
 
@@ -221,7 +221,7 @@ export async function runTool(name: string, rawArguments: string, ctx: ToolConte
     switch (name) {
       case "update_work_order": return await updateWorkOrder(args, ctx);
       case "check_service_area": return await checkArea(args, ctx);
-      case "get_available_slots": return await getSlots(args);
+      case "get_available_slots": return await getSlots(args, ctx);
       case "book_appointment": return await bookSlot(args, ctx);
       case "end_conversation": return endConversation(args, ctx);
       default: return bad(`Unknown tool "${name}".`, `unknown tool ${name}`);
@@ -392,9 +392,15 @@ async function checkArea(rawArgs: unknown, ctx: ToolContext): Promise<ToolRun> {
   };
 }
 
-async function getSlots(rawArgs: unknown): Promise<ToolRun> {
+async function getSlots(rawArgs: unknown, ctx: ToolContext): Promise<ToolRun> {
   const parsed = getAvailableSlotsSchema.safeParse(rawArgs);
   if (!parsed.success) return bad("from_date must be YYYY-MM-DD; limit 1-24.", "get_available_slots: rejected");
+
+  // No times until the recorded address has an in-area ZIP — the same gate the hold uses.
+  const chat = await prisma.bookingChat.findUnique({ where: { id: ctx.chatId }, select: { lead: { select: { address: true } } } });
+  const gate = await gateRecordedAddress(chat?.lead?.address);
+  if (!gate.ok) return bad(gate.message, `get_available_slots: refused (${gate.code})`);
+
   try {
     const { slots } = await listOfferableSlots({ fromDate: parsed.data.from_date, limit: parsed.data.limit });
     return {
