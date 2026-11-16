@@ -3,6 +3,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { isPublicRoute } from "./publicRoutes";
 import type { AuthOutcome, RequestAuthState } from "./accessLog";
+import { AI_ADMIN_SUB, currentAdminLoginFor } from "../services/adminLogin";
+import { prisma } from "../lib/prisma";
 
 /**
  * Record how the gate resolved, for the access log (P017). Auth decides the outcome; the log
@@ -89,20 +91,47 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
     return;
   }
 
+  let claims: string | jwt.JwtPayload;
   try {
-    const claims = jwt.verify(token, JWT_SECRET);
-    // `sub` is "owner" for the PIN session. It is an identity, never a credential — the token
-    // itself must not reach the log.
-    const actor = typeof claims === "object" && claims !== null && typeof claims.sub === "string"
-      ? claims.sub
-      : "unknown";
-
-    mark(req, "ok", actor);
-    next();
+    claims = jwt.verify(token, JWT_SECRET);
   } catch {
     mark(req, "bad-credentials");
     res.status(401).json({ error: "Invalid or expired session" });
+    return;
   }
+
+  // `sub` is "owner" for the PIN session and "ai-admin" for the AI admin's own login. It is an
+  // identity, never a credential — the token itself must not reach the log.
+  const actor = typeof claims === "object" && claims !== null && typeof claims.sub === "string"
+    ? claims.sub
+    : "unknown";
+
+  if (actor !== AI_ADMIN_SUB) {
+    // Kyle's PIN session: unchanged, no database read.
+    mark(req, "ok", actor);
+    next();
+    return;
+  }
+
+  // The AI admin's session is only as good as its login row: still on, same row, same session
+  // version. Save login and Turn off bump the version, so this refuses the very next request.
+  // A database error fails CLOSED.
+  const c = claims as jwt.JwtPayload;
+  void (async () => {
+    let row: unknown = null;
+    try {
+      row = await currentAdminLoginFor(c.aid, c.ver);
+    } catch {
+      row = null;
+    }
+    if (!row) {
+      mark(req, "bad-credentials");
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+    mark(req, "ok", actor);
+    next();
+  })();
 }
 
 export async function handlePinLogin(req: Request, res: Response): Promise<void> {
@@ -127,40 +156,105 @@ export async function handlePinLogin(req: Request, res: Response): Promise<void>
   res.json(issueSessionToken());
 }
 
+/** Who a session token is for. `ver` and `aid` tie an ai-admin token to its AdminLogin row. */
+type SessionIdentity =
+  | { sub: "owner" }
+  | { sub: typeof AI_ADMIN_SUB; ver: number; aid: string };
+
 /**
- * The one place a session token is signed. Login and refresh both call it, so a session's
- * length and claims cannot drift between the two doors.
+ * The one place a session token is signed. PIN login, username/password login and refresh all call
+ * it, so a session's length and claims cannot drift between the doors. The AI admin's token also
+ * carries the login row's `aid` and `sessionVersion` as `ver`; the gate compares both on every
+ * request, which is how Save login / Turn off / Remove login end that session at once.
  */
-function issueSessionToken(): { token: string; expiresIn: number } {
-  const token = jwt.sign({ sub: "owner" }, JWT_SECRET, {
+function issueSessionToken(identity: SessionIdentity = { sub: "owner" }): { token: string; expiresIn: number } {
+  const token = jwt.sign({ ...identity }, JWT_SECRET, {
     expiresIn: `${SESSION_HOURS}h`,
   });
   return { token, expiresIn: SESSION_HOURS * 60 * 60 };
 }
 
 /**
- * POST /auth/refresh — a still-valid session token buys a fresh one (sliding renewal), so a
+ * A real bcrypt hash that no password matches, compared against when the username is unknown (or
+ * the login is off), so a miss costs the same time as a wrong password and does not reveal which
+ * usernames exist.
+ */
+const NO_SUCH_LOGIN_HASH = bcrypt.hashSync("no-such-login-" + Math.random().toString(36), 10);
+
+const BAD_LOGIN = { error: "Invalid username or password" };
+
+/**
+ * POST /auth/login — the AI admin's own sign-in (Kyle, 2026-11-15). PUBLIC (publicRoutes.ts, and
+ * on the publicLimiter list in app.ts), like /auth/pin, because it cannot require the session it
+ * issues. Every way to fail — missing field, unknown user, wrong password, login turned off — is
+ * the SAME 401 body, and the bcrypt compare runs in every case. Credentials arrive in the JSON
+ * body only, never a URL.
+ */
+export async function handleAdminLogin(req: Request, res: Response): Promise<void> {
+  const body = (req.body ?? {}) as { username?: unknown; password?: unknown };
+  const username = typeof body.username === "string" ? body.username.trim() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+
+  // A control character (a NUL above all — Postgres refuses it in a text parameter) is never a
+  // saved username, so it is a miss like any other: no lookup to throw a 500, same compare, same 401.
+  const lookupable = username !== "" && !/[\u0000-\u001f\u007f]/.test(username);
+  const row = lookupable ? await prisma.adminLogin.findUnique({ where: { username } }) : null;
+  const matches = await bcrypt.compare(password, row?.passwordHash ?? NO_SUCH_LOGIN_HASH);
+
+  if (!row || !row.enabled || !password || !matches) {
+    res.status(401).json(BAD_LOGIN);
+    return;
+  }
+
+  res.json(issueSessionToken({ sub: AI_ADMIN_SUB, ver: row.sessionVersion, aid: row.id }));
+}
+
+/**
+ * POST /auth/refresh — a still-valid session token buys a fresh one (sliding renewal, no cap), so a
  * session in use is never locked out at the 8-hour mark. It is NOT a public route: it sits behind
  * pinAuthMiddleware like everything else, and this handler re-verifies the token itself (defence
- * in depth — it does not trust that the gate ran). The PIN stays the only way to START a session;
- * an expired or invalid token gets 401, never a new one. Header only — no token in a URL.
+ * in depth — it does not trust that the gate ran). A login (PIN, or username and password) is the
+ * only way to START a session; an expired or invalid token gets 401, never a new one. The AI
+ * admin's token renews only while its login is still on and its version still matches, and the
+ * fresh token carries the same `ver`/`aid`. Header only — no token in a URL.
  */
-export function handleSessionRefresh(req: Request, res: Response): void {
+export async function handleSessionRefresh(req: Request, res: Response): Promise<void> {
+  const refuse = () => { res.status(401).json({ error: "Invalid or expired session" }); };
   const token = req.headers.authorization?.replace("Bearer ", "");
   if (!token) {
     res.status(401).json({ error: "Authentication required" });
     return;
   }
+  let claims: string | jwt.JwtPayload;
   try {
-    const claims = jwt.verify(token, JWT_SECRET);
-    if (typeof claims !== "object" || claims === null || claims.sub !== "owner") {
-      res.status(401).json({ error: "Invalid or expired session" });
+    claims = jwt.verify(token, JWT_SECRET);
+  } catch {
+    refuse();
+    return;
+  }
+  if (typeof claims !== "object" || claims === null) {
+    refuse();
+    return;
+  }
+  if (claims.sub === "owner") {
+    res.json(issueSessionToken());
+    return;
+  }
+  if (claims.sub === AI_ADMIN_SUB) {
+    let row = null;
+    try {
+      row = await currentAdminLoginFor(claims.aid, claims.ver);
+    } catch {
+      row = null;
+    }
+    if (!row) {
+      refuse();
       return;
     }
-    res.json(issueSessionToken());
-  } catch {
-    res.status(401).json({ error: "Invalid or expired session" });
+    res.json(issueSessionToken({ sub: AI_ADMIN_SUB, ver: row.sessionVersion, aid: row.id }));
+    return;
   }
+  refuse();
 }
 
 /** Utility: generate a PIN hash for use in env vars */

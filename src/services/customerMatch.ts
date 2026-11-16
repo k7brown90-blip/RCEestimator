@@ -75,6 +75,16 @@ export interface MatchQuery {
   email?: string | null;
   name?: string | null;
   limit?: number;
+  /**
+   * OPT-IN, for the lead form only (plan lead-intake-fixes F2). Off, a name never surfaces an
+   * account on its own - that is what keeps Savannah, the inbound-SMS router and the convert
+   * duplicate check from filing a stranger's job under a familiar name (routes/agent.ts takes the
+   * FIRST match and attaches the caller to it). On, an account whose FULL name equals the typed
+   * name (case and spacing aside) is returned with `matchedOn: ["name"]` and a score that ranks
+   * it below every phone or email hit. A partial or "contains" name never counts on its own, so
+   * the panel does not flash while someone is still typing "Eric".
+   */
+  includeNameOnly?: boolean;
 }
 
 /**
@@ -213,7 +223,12 @@ export async function findCustomerMatches(query: MatchQuery): Promise<CustomerMa
     // A name is a signal, never a duplicate trigger by itself. Two households
     // called "Smith" is ordinary; prompting on it would be noise, and worse, it
     // would invite someone to file a second family's job under the first.
-    if (matchedOn.size === 1 && matchedOn.has("name")) continue;
+    // The lead form alone opts in (`includeNameOnly`), and then only for an EXACT full name.
+    if (matchedOn.size === 1 && matchedOn.has("name")) {
+      if (!query.includeNameOnly) continue;
+      const rowName = normalizeName(row.name);
+      if (!name || !rowName || rowName.toLowerCase() !== name.toLowerCase()) continue;
+    }
 
     let score = 0;
     if (matchedOn.has("phone")) score += SCORE.phoneExact;
@@ -248,6 +263,112 @@ export async function findCustomerMatches(query: MatchQuery): Promise<CustomerMa
   });
 
   return matches.slice(0, limit);
+}
+
+export interface LeadMatch {
+  leadId: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  /** new | contacted | lost - a converted lead is never listed (its account shows instead). */
+  status: string;
+  platform: string | null;
+  /** The day the lead really arrived (Lead.receivedAt), so "received" reads the same as the Leads list. */
+  receivedAt: Date;
+  /** Why it surfaced. A phone or email hit sorts above a name-only one. */
+  matchedOn: MatchField[];
+}
+
+/** Leads still worth warning about: open or lost. A converted lead's account already shows. */
+const LEAD_MATCH_STATUSES = ["new", "contacted", "lost"];
+
+export interface LeadMatchQuery {
+  phone?: string | null;
+  email?: string | null;
+  name?: string | null;
+  /** The lead being edited - never offered as a match for itself. */
+  excludeLeadId?: string | null;
+  limit?: number;
+}
+
+/**
+ * Leads that look like this one, for the "Already a lead" part of the lead form's match panel.
+ *
+ * Phone is the exact last ten digits (narrowed by the last four in SQL, confirmed in JS - never
+ * `contains <10 digits>`, which misses the punctuated formats). Email is exact, ignoring case.
+ * Name is the exact FULL name, ignoring case and spacing. Filters on `status`, not `leadStatus`
+ * (the Funnel state). Pure read, like the rest of this module.
+ */
+export async function findLeadMatches(query: LeadMatchQuery): Promise<LeadMatch[]> {
+  const digits10 = phoneDigits10(query.phone);
+  const email = normalizeEmail(query.email);
+  const name = normalizeName(query.name);
+  if (!digits10 && !email && !name) return [];
+
+  const limit = Math.min(query.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
+  const base = {
+    status: { in: LEAD_MATCH_STATUSES },
+    ...(query.excludeLeadId ? { id: { not: query.excludeLeadId } } : {}),
+  };
+  const select = {
+    id: true, name: true, phone: true, email: true, status: true, platform: true, receivedAt: true,
+  } as const;
+  type Row = { id: string; name: string; phone: string | null; email: string | null; status: string; platform: string | null; receivedAt: Date };
+  const byId = new Map<string, { row: Row; matchedOn: Set<MatchField> }>();
+  const add = (rows: Row[], field: MatchField) => {
+    for (const row of rows) {
+      const existing = byId.get(row.id);
+      if (existing) existing.matchedOn.add(field);
+      else byId.set(row.id, { row, matchedOn: new Set([field]) });
+    }
+  };
+
+  if (digits10) {
+    const candidates = await prisma.lead.findMany({
+      where: { ...base, phone: { contains: digits10.slice(-4) } },
+      orderBy: { receivedAt: "desc" },
+      take: PHONE_CANDIDATE_LIMIT,
+      select,
+    });
+    add(candidates.filter((row) => phoneDigits10(row.phone) === digits10), "phone");
+  }
+  if (email) {
+    add(await prisma.lead.findMany({
+      where: { ...base, email: { equals: email, mode: "insensitive" } },
+      orderBy: { receivedAt: "desc" },
+      take: MAX_LIMIT * 2,
+      select,
+    }), "email");
+  }
+  if (name) {
+    const rows = await prisma.lead.findMany({
+      where: { ...base, name: { contains: name, mode: "insensitive" } },
+      orderBy: { receivedAt: "desc" },
+      take: MAX_LIMIT * 4,
+      select,
+    });
+    // `contains` only narrows; the match is the EXACT full name.
+    add(rows.filter((row) => normalizeName(row.name)?.toLowerCase() === name.toLowerCase()), "name");
+  }
+
+  const strength = (matchedOn: Set<MatchField>) => (matchedOn.has("phone") || matchedOn.has("email") ? 1 : 0);
+  return [...byId.values()]
+    .sort((a, b) => {
+      if (strength(b.matchedOn) !== strength(a.matchedOn)) return strength(b.matchedOn) - strength(a.matchedOn);
+      if (b.row.receivedAt.getTime() !== a.row.receivedAt.getTime()) return b.row.receivedAt.getTime() - a.row.receivedAt.getTime();
+      return a.row.id.localeCompare(b.row.id);
+    })
+    .slice(0, limit)
+    .map(({ row, matchedOn }) => ({
+      leadId: row.id,
+      name: row.name,
+      phone: row.phone,
+      email: row.email,
+      status: row.status,
+      platform: row.platform,
+      receivedAt: row.receivedAt,
+      matchedOn: (["phone", "email", "name"] as MatchField[]).filter((f) => matchedOn.has(f)),
+    }));
 }
 
 /** Human phrasing for `matchedOn`, so both clients word it identically. */

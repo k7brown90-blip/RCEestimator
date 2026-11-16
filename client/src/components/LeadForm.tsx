@@ -25,6 +25,8 @@ import {
   type LeadWriteInput,
 } from "../lib/types";
 import { LEAD_PLATFORM_LABELS } from "../../../shared/leadPlatform";
+import { chicagoToday, dayOf, parseReceivedAt, parseSourceUrl, receivedDay } from "../../../shared/calendarDay";
+import { SEARCH_QUERY_KEYS } from "../lib/queryKeys";
 
 interface FormState {
   name: string;
@@ -47,6 +49,10 @@ interface FormState {
   /** WHICH PLATFORM sent it. "" = untagged, which the funnel reads as "unknown". */
   platform: string;
   referredBy: string;
+  /** The day it really reached Red Cedar, `YYYY-MM-DD`. Blank = "it came in when I typed it". */
+  receivedAt: string;
+  /** The marketplace's own link to the lead. */
+  sourceUrl: string;
   status: string;
   leadStatus: string;
   followUpDate: string;
@@ -59,7 +65,7 @@ const blank = (): FormState => ({
   name: "", phone: "", email: "", contactPreference: "", bestTimeToReach: "",
   addressLine1: "", addressLine2: "", city: "", state: "TN", postalCode: "",
   jobType: "", callType: "", urgentFlag: false, warrantyCall: false, warrantyNote: "",
-  notes: "", source: "manual", platform: "", referredBy: "",
+  notes: "", source: "manual", platform: "", referredBy: "", receivedAt: "", sourceUrl: "",
   status: "new", leadStatus: "new", followUpDate: "", followUpReason: "",
   lostReason: "", lostNotes: "",
 });
@@ -84,9 +90,17 @@ const fromLead = (lead: Lead): FormState => ({
   source: lead.source,
   platform: lead.platform ?? "",
   referredBy: lead.referredBy ?? "",
+  // The calendar day it arrived (receivedDay): a typed day reads as stored, a real moment reads as
+  // its Chicago day - never the UTC date part, which is the NEXT day for a lead that came in after
+  // about 7 PM and would shift the date on any unrelated edit.
+  receivedAt: lead.receivedAt ? receivedDay(lead.receivedAt) : "",
+  sourceUrl: lead.sourceUrl ?? "",
   status: lead.status,
-  leadStatus: lead.leadStatus ?? "new",
-  followUpDate: lead.followUpDate ? lead.followUpDate.slice(0, 10) : "",
+  // Status alone decides Open vs Lost, so a lead whose Status says lost shows the outcome as lost
+  // too (the server writes the pair the same way — services/leadState.ts).
+  leadStatus: lead.status === "lost" ? "lost" : (lead.leadStatus ?? "new"),
+  // The day as stored (its UTC date part) — never the browser's local read (shared/calendarDay.ts).
+  followUpDate: lead.followUpDate ? dayOf(lead.followUpDate) : "",
   followUpReason: lead.followUpReason ?? "",
   lostReason: lead.lostReason ?? "",
   lostNotes: lead.lostNotes ?? "",
@@ -95,10 +109,30 @@ const fromLead = (lead: Lead): FormState => ({
 /** Empty string means "not set", never "set to blank". */
 const orNull = (value: string) => (value.trim() ? value.trim() : null);
 
-function toPayload(form: FormState, link: { customerId: string | null; propertyId: string | null }): LeadWriteInput {
+/**
+ * The received day is sent ONLY when the person changed it. A new lead with the box blank leaves it
+ * out, so the server stamps "now" (a null would be read as 1970 by a naive coercion); an edit that
+ * left the box alone leaves it out, so saving an unrelated field can never move the stored day.
+ * Clearing a stored day sends "", which the server reads as "put it back on the day it was entered".
+ */
+function receivedAtPayload(form: FormState, seed: Lead | null | undefined): Pick<LeadWriteInput, "receivedAt"> {
+  const typed = form.receivedAt.trim();
+  if (!seed) return typed ? { receivedAt: typed } : {};
+  const original = seed.receivedAt ? receivedDay(seed.receivedAt) : "";
+  return typed === original ? {} : { receivedAt: typed };
+}
+
+function toPayload(
+  form: FormState,
+  link: { customerId: string | null; propertyId: string | null },
+  seed?: Lead | null,
+): LeadWriteInput {
   // An address chosen from an existing account lives on propertyId — writing the
   // structured fields too would leave a shadow copy that could drift from it.
   const usingExistingAddress = Boolean(link.propertyId);
+  // State starts at "TN", so State ALONE is a blank address, not a one-part address (a lead
+  // may save with part of an address — Kyle, 2026-11-15 "Allow part" — but a default is not part).
+  const onlyStateFilled = !form.addressLine1.trim() && !form.city.trim() && !form.postalCode.trim();
   return {
     name: form.name.trim(),
     phone: orNull(form.phone),
@@ -108,7 +142,7 @@ function toPayload(form: FormState, link: { customerId: string | null; propertyI
     addressLine1: usingExistingAddress ? null : orNull(form.addressLine1),
     addressLine2: usingExistingAddress ? null : orNull(form.addressLine2),
     city: usingExistingAddress ? null : orNull(form.city),
-    state: usingExistingAddress ? null : orNull(form.state)?.toUpperCase() ?? null,
+    state: usingExistingAddress || onlyStateFilled ? null : orNull(form.state)?.toUpperCase() ?? null,
     postalCode: usingExistingAddress ? null : orNull(form.postalCode),
     jobType: orNull(form.jobType),
     callType: orNull(form.callType),
@@ -119,6 +153,8 @@ function toPayload(form: FormState, link: { customerId: string | null; propertyI
     source: form.source as LeadWriteInput["source"],
     platform: orNull(form.platform) as LeadWriteInput["platform"],
     referredBy: orNull(form.referredBy),
+    ...receivedAtPayload(form, seed),
+    sourceUrl: orNull(form.sourceUrl),
     status: form.status as LeadWriteInput["status"],
     leadStatus: form.leadStatus as LeadWriteInput["leadStatus"],
     followUpDate: orNull(form.followUpDate),
@@ -149,7 +185,6 @@ export function LeadForm({
   }));
   const [showPipeline, setShowPipeline] = useState(() =>
     Boolean(existing && (existing.status !== "new" || existing.followUpDate || existing.lostReason)));
-  const [addressError, setAddressError] = useState<string | null>(null);
 
   // A refetch of the lead (another surface saved it) re-seeds the form.
   useEffect(() => {
@@ -161,9 +196,11 @@ export function LeadForm({
 
   const set = (patch: Partial<FormState>) => setForm((prev) => ({ ...prev, ...patch }));
 
+  const [formError, setFormError] = useState<string | null>(null);
+
   const save = useMutation({
     mutationFn: async () => {
-      const payload = toPayload(form, link);
+      const payload = toPayload(form, link, existing);
       if (existing) return api.updateLead(existing.id, payload);
       const { lead } = await api.createLead(payload);
       return lead;
@@ -171,28 +208,43 @@ export function LeadForm({
     onSuccess: (lead) => {
       queryClient.invalidateQueries({ queryKey: ["leads"] });
       queryClient.invalidateQueries({ queryKey: ["crm-analytics"] });
+      // The Search panel (Ctrl K) lists each lead's status and stays open under the drawer.
+      for (const key of SEARCH_QUERY_KEYS) queryClient.invalidateQueries({ queryKey: [...key] });
       onSaved(lead);
     },
   });
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    setAddressError(null);
-
-    // Mirror of the server's all-or-nothing rule, so the owner hears it here
-    // rather than as a 400 after filling out the whole form.
-    if (!link.propertyId) {
-      const parts = [form.addressLine1, form.city, form.state, form.postalCode];
-      const filled = parts.filter((p) => p.trim()).length;
-      if (filled > 0 && filled < 4) {
-        setAddressError(
-          "An address needs street, city, state and ZIP together — or leave all four blank and add it later.",
-        );
-        return;
-      }
-    }
+    // No address check here: a lead saves with any part of an address (Kyle, 2026-11-15: "Allow
+    // part"). Converting it is where the full street, city, state and ZIP are required, and the
+    // server says which are missing.
+    // The two optional boxes under "Where it came from" are checked here so the message sits at
+    // the Save button; the server repeats both checks.
+    const received = form.receivedAt.trim() ? parseReceivedAt(form.receivedAt.trim()) : null;
+    if (received && !received.ok) { setFormError(received.error); return; }
+    const marketplaceLink = parseSourceUrl(form.sourceUrl);
+    if (!marketplaceLink.ok) { setFormError(marketplaceLink.error); return; }
+    setFormError(null);
     save.mutate();
   }
+
+  // Status alone decides Open vs Lost; the call outcome follows it (services/leadState.ts does the
+  // same on the server). Moving Status off lost lets an outcome of "lost" go back to "new".
+  function changeStatus(status: string) {
+    set({
+      status,
+      leadStatus: status === "lost" ? "lost" : form.leadStatus === "lost" ? "new" : form.leadStatus,
+    });
+  }
+  const statusLocked = form.status === "converted";
+  const outcomeLocked = form.status === "lost";
+  const OUTCOME_CHOICES = ["new", "booked", "unresolved", "planning", "no_answer"];
+  const outcomeLabel = (value: string) =>
+    value === "new" ? "no outcome yet"
+      : value === "lost" ? "lost — follows Status"
+        : value === "won" ? "won — set by Convert"
+          : value.replaceAll("_", " ");
 
   const grid3 = compact ? "grid gap-3 sm:grid-cols-2" : "grid gap-3 md:grid-cols-3";
   const grid2 = compact ? "grid gap-3 sm:grid-cols-2" : "grid gap-3 md:grid-cols-2";
@@ -236,6 +288,11 @@ export function LeadForm({
             phone={form.phone}
             email={form.email}
             name={form.name}
+            // The lead form alone also warns about a same-name account and about leads already on
+            // the Leads page (plan lead-intake-fixes F2). A lead being edited never lists itself.
+            includeNameOnly
+            includeLeads
+            excludeLeadId={existing?.id ?? null}
             linkedCustomerId={link.customerId}
             linkedPropertyId={link.propertyId}
             onLink={(customerId, propertyId) => setLink({ customerId, propertyId })}
@@ -249,7 +306,8 @@ export function LeadForm({
         <section className="card mb-4 p-4">
           <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-rce-soft">Where</h2>
           <p className="mb-3 text-xs text-rce-muted">
-            Optional now — but a lead can't be converted into a job without one.
+            Optional. A partial address is fine — a city and ZIP is enough to save the lead. Converting it
+            needs the full street address, city, state and ZIP.
           </p>
           <div className={grid4}>
             <label className={`text-sm font-medium ${span2}`}>
@@ -273,7 +331,6 @@ export function LeadForm({
               <input className="field mt-1" value={form.postalCode} onChange={(e) => set({ postalCode: e.target.value })} />
             </label>
           </div>
-          {addressError && <p className="mt-2 text-sm text-red-600">{addressError}</p>}
         </section>
       )}
 
@@ -346,6 +403,40 @@ export function LeadForm({
             Referred by
             <input className="field mt-1" value={form.referredBy} onChange={(e) => set({ referredBy: e.target.value })} />
           </label>
+          {/*
+            ORIGINAL RECEIVED DATE + MARKETPLACE LINK (Kyle, 2026-11-15, plan lead-intake-fixes F3).
+            A Yelp or Angi lead typed in a month late keeps the day it really arrived, so the funnel
+            and the Dashboard count it in that month; the link is the marketplace's own page for it.
+            Both are optional. A blank date means "it came in when I typed it".
+          */}
+          <label className="text-sm font-medium">
+            Original received date
+            <input
+              className="field mt-1"
+              type="date"
+              max={chicagoToday()}
+              value={form.receivedAt}
+              onChange={(e) => set({ receivedAt: e.target.value })}
+            />
+            <span className="mt-1 block text-xs text-rce-soft">
+              {isEdit
+                ? "The day it came in on Yelp, Angi or the other marketplace. Clear it to put the lead back on the day it was entered."
+                : "The day it came in on Yelp, Angi or the other marketplace. Leave blank if it came in today."}
+            </span>
+          </label>
+          <label className="text-sm font-medium">
+            Marketplace link
+            <input
+              className="field mt-1"
+              type="url"
+              placeholder="https://"
+              value={form.sourceUrl}
+              onChange={(e) => set({ sourceUrl: e.target.value })}
+            />
+            <span className="mt-1 block text-xs text-rce-soft">
+              The link to this lead on the marketplace. Optional; opens from the lead's drawer.
+            </span>
+          </label>
         </div>
       </section>
 
@@ -366,22 +457,40 @@ export function LeadForm({
           <div className={`mt-3 ${grid2}`}>
             <label className="text-sm font-medium">
               Status
-              <select className="field mt-1" value={form.status} onChange={(e) => set({ status: e.target.value })}>
+              <select className="field mt-1" value={form.status} disabled={statusLocked} onChange={(e) => changeStatus(e.target.value)}>
                 <option value="new">new</option>
                 <option value="contacted">contacted</option>
                 <option value="lost">lost</option>
-                {/* "converted" is deliberately absent — conversion is a
-                    transition that creates an account, address and job, not a
-                    status you can type. */}
+                {/* "converted" is never a choice — conversion is a transition that creates an
+                    account, address and job, not a status you can type. A converted lead shows
+                    it greyed, with the reason, so the select never reads as something else. */}
+                {statusLocked && <option value="converted">converted</option>}
               </select>
+              <span className="mt-1 block text-xs text-rce-soft">
+                {statusLocked
+                  ? "Converted — set by the Convert button, not editable here."
+                  : "Status decides whether the lead is Open or Lost."}
+              </span>
             </label>
             <label className="text-sm font-medium">
-              Funnel state
-              <select className="field mt-1" value={form.leadStatus} onChange={(e) => set({ leadStatus: e.target.value })}>
-                {["new", "booked", "unresolved", "planning", "no_answer", "lost", "won"].map((s) => (
-                  <option key={s} value={s}>{s.replaceAll("_", " ")}</option>
+              Call outcome
+              <select
+                className="field mt-1"
+                value={form.leadStatus}
+                disabled={outcomeLocked || statusLocked}
+                onChange={(e) => set({ leadStatus: e.target.value })}
+              >
+                {[...OUTCOME_CHOICES, ...(OUTCOME_CHOICES.includes(form.leadStatus) ? [] : [form.leadStatus])].map((s) => (
+                  <option key={s} value={s}>{outcomeLabel(s)}</option>
                 ))}
               </select>
+              <span className="mt-1 block text-xs text-rce-soft">
+                {outcomeLocked
+                  ? "Lost — set by Status. Pick Status new or contacted to reopen the lead."
+                  : statusLocked
+                    ? "The lead is converted, so its outcome is set by Convert."
+                    : "How the last call went — booked, unresolved, planning or no answer."}
+              </span>
             </label>
             <label className="text-sm font-medium">
               Follow up on
@@ -417,6 +526,7 @@ export function LeadForm({
         )}
       </section>
 
+      {formError && <p className="mb-3 text-sm text-red-600">{formError}</p>}
       {save.error && <p className="mb-3 text-sm text-red-600">{(save.error as Error).message}</p>}
 
       <div className="flex gap-2">

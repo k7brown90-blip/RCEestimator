@@ -72,6 +72,8 @@ async function makeLead(key: string, data: {
   platform?: string | null; status: string; leadStatus: string; lostReason?: string | null;
   callType?: string | null; customerId?: string | null; createdAt: Date;
 }) {
+  // A lead the funnel counts by the day it ARRIVED (Lead.receivedAt); here that is the same day it
+  // was created, which is what every fixture below means. tests/leadReceivedAt.test.ts pulls them apart.
   const lead = await prisma.lead.create({
     data: {
       name: `${MARK} ${key}`,
@@ -83,6 +85,7 @@ async function makeLead(key: string, data: {
       callType: data.callType ?? null,
       customerId: data.customerId ?? null,
       createdAt: data.createdAt,
+      receivedAt: data.createdAt,
     },
   });
   leads[key] = lead.id;

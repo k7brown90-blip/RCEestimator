@@ -4,6 +4,8 @@ import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
+import { useLead } from "../lib/recordQueries";
+import { ballparkHeaderLine } from "../../../shared/leadBallpark";
 import { AccountPhotoGallery } from "../components/PhotoGalleryPanel";
 import { SendEmailPanel } from "../components/SendEmailPanel";
 import { WarrantyCoveragePanel } from "../components/WarrantyCoveragePanel";
@@ -136,6 +138,14 @@ export function PriceBookIntakePage() {
   */
   const accountId = params.get("account");
   const serviceAddressId = params.get("address");
+  /*
+    A BALLPARK ON A LEAD (Kyle, 2026-11-15, plan lead-intake-fixes F4). The lead drawer's "Start a
+    ballpark estimate" / "Open ballpark estimate" arrive with `?lead=<id>`. The draft is created tied
+    to that lead (no account, no address) and cannot be sent until the lead is converted.
+  */
+  const leadParam = params.get("lead");
+  const { data: leadForBallpark } = useLead(leadParam ?? undefined);
+  const leadBallpark = leadForBallpark?.ballparks?.[0] ?? null;
   const tab = (params.get("tab") as Tab | null) ?? "browse";
   const setDraftId = (id: string | null) => {
     const next = new URLSearchParams(params);
@@ -220,6 +230,11 @@ export function PriceBookIntakePage() {
     enabled: Boolean(draftId),
   });
 
+  // Start a lead's ballpark with a title that names the lead, ready to change.
+  useEffect(() => {
+    if (leadForBallpark && !draftId && !leadBallpark && leadForBallpark.status !== "converted") setNewTitle((t) => t || `Ballpark — ${leadForBallpark.name}`);
+  }, [leadForBallpark, draftId, leadBallpark]);
+
   const createDraft = useMutation({
     // The visit id arrives as a query param from the legacy estimate page's link (P024,
     // Option A). Absent = the nav entry = an unattached draft, which is the working default.
@@ -228,11 +243,13 @@ export function PriceBookIntakePage() {
         title: newTitle.trim(),
         visitId: params.get("visitId"),
         customerId: accountId,
+        leadId: leadParam,
       }),
     onSuccess: (d) => {
       setDraftId(d.id);
       setNewTitle("");
       void queryClient.invalidateQueries({ queryKey: ["pb-drafts"] });
+      if (leadParam) void queryClient.invalidateQueries({ queryKey: ["leads"] });
     },
   });
 
@@ -264,22 +281,56 @@ export function PriceBookIntakePage() {
 
             A list of half-finished estimates invites reusing yesterday's on today's customer.
             An estimate is now reached only through the account and address it belongs to —
-            never chosen from a list. Starting a new one stays exactly where it was. */}
-        <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-          <input
-            className="field flex-1"
-            placeholder="New draft title (e.g. 'Panel change — 605 Green Farm Way')"
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-          />
-          <button
-            className="btn btn-secondary"
-            disabled={!newTitle.trim() || createDraft.isPending}
-            onClick={() => createDraft.mutate()}
-          >
-            Start draft
-          </button>
-        </div>
+            never chosen from a list. Starting a new one stays exactly where it was.
+
+            NARROWED 2026-11-15 (Kyle, plan lead-intake-fixes F4 — he chose it knowing it goes
+            against this ruling and 2026-08-18's): a LEAD may hold ONE saved ballpark, reached from
+            the lead's own drawer ("Start a ballpark estimate" / "Open ballpark estimate") and never
+            from a list here. It cannot be sent while it sits on the lead and moves onto the job
+            when the lead is converted. Every other estimate is still reached as described above. */}
+        {leadParam && leadBallpark && !draftId ? (
+          // A lead holds ONE ballpark — the way back to it, instead of a second Start.
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+            <p className="flex-1 text-sm text-rce-muted">
+              {leadForBallpark?.name ?? "This lead"} already has a ballpark estimate: <strong>{leadBallpark.title}</strong>.
+            </p>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                const next = new URLSearchParams(params);
+                next.set("draft", leadBallpark.id);
+                next.set("tab", "review");
+                setParams(next, { replace: true });
+              }}
+            >
+              Open ballpark estimate
+            </button>
+          </div>
+        ) : leadParam && !draftId && leadForBallpark?.status === "converted" ? (
+          // The server refuses a ballpark on a converted lead (it could never be unlocked) — say why here.
+          <p className="mt-2 rounded bg-amber-50 p-2 text-sm text-amber-900">
+            This lead was already converted, so a ballpark can't be started on it. The job's estimate starts from the account, as every estimate does.
+          </p>
+        ) : (
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+            <input
+              className="field flex-1"
+              placeholder="New draft title (e.g. 'Panel change — 605 Green Farm Way')"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+            />
+            <button
+              className="btn btn-secondary"
+              disabled={!newTitle.trim() || createDraft.isPending}
+              onClick={() => createDraft.mutate()}
+            >
+              Start draft
+            </button>
+          </div>
+        )}
+        {createDraft.isError && (
+          <p role="alert" className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900">{(createDraft.error as Error).message}</p>
+        )}
         {review?.draft.rateProvisional && (
           <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900">
             <strong>PROVISIONAL RATE.</strong> {review.draft.provisionalReason}
@@ -296,7 +347,9 @@ export function PriceBookIntakePage() {
         */}
         {draftId && review && (
           <p className="mt-2 text-xs text-rce-soft">
-            {attachmentLabel(activeDraft) ?? "Unattached — not linked to a job or lead"}
+            {review.draft.ballparkLockReason
+              ? ballparkHeaderLine(review.draft.lead?.name ?? leadForBallpark?.name)
+              : attachmentLabel(activeDraft) ?? "Unattached — not linked to a job or lead"}
           </p>
         )}
         {/* The title and scope the customer reads, and the way OUT of a draft nothing was issued
@@ -309,6 +362,8 @@ export function PriceBookIntakePage() {
             onDeleted={() => {
               setDraftId(null);
               void queryClient.invalidateQueries({ queryKey: ["pb-drafts"] });
+              // A deleted ballpark must leave the lead too, or "Open ballpark estimate" points at nothing.
+              void queryClient.invalidateQueries({ queryKey: ["leads"] });
             }}
           />
         )}
@@ -332,7 +387,16 @@ export function PriceBookIntakePage() {
 
           <OptionModeAndCopy draftId={draftId} letters={letters} lockedReason={lockedReason} />
 
-          {draftId && (
+          {draftId && review?.draft.ballparkLockReason ? (
+            // A ballpark on a lead cannot be presented or sent (the server refuses the issue it
+            // makes) — greyed with the reason beside it, never hidden.
+            <div>
+              <button type="button" className="btn btn-primary w-full" disabled>
+                Present to the customer
+              </button>
+              <p className="mt-1 text-xs text-amber-900">{review.draft.ballparkLockReason}</p>
+            </div>
+          ) : draftId && (
             <Link
               className="btn btn-primary w-full"
               to={`/present/${draftId}?from=intake${accountId ? `&account=${accountId}` : ""}${serviceAddressId ? `&address=${serviceAddressId}` : ""}`}
@@ -392,6 +456,7 @@ export function PriceBookIntakePage() {
               serviceAddressId={serviceAddressId}
               draftVisitId={review?.draft.visitId ?? null}
               draftCustomerId={review?.draft.customerId ?? null}
+              ballparkLockReason={review?.draft.ballparkLockReason ?? null}
               onAttached={(acc, addr) => {
                 const next = new URLSearchParams(params);
                 next.set("account", acc);
@@ -1203,6 +1268,8 @@ function ReviewTab(props: {
   draftVisitId: string | null;
   /** The draft's own account, for the photo panel when the URL carries no `?account=`. */
   draftCustomerId: string | null;
+  /** Set while the draft is a ballpark on a lead: why it cannot be sent yet (the server's words). */
+  ballparkLockReason: string | null;
 }) {
   const { draftId, review, computed, options, optionMeta, onChanged, accountId, serviceAddressId, onAttached } = props;
   // finalizeMsg went with the Check / Finalize buttons — nothing sets it now, and a
@@ -1347,11 +1414,12 @@ function ReviewTab(props: {
 
       </div>
 
-      {!(accountId && serviceAddressId) && (
+      {/* A lead's ballpark reaches an account by converting the lead, never by attaching here. */}
+      {!(accountId && serviceAddressId) && !props.ballparkLockReason && (
         <AttachDraftPanel draftId={draftId} onAttached={onAttached} />
       )}
 
-      <IssueAndSendPanel draftId={draftId} accountId={accountId} serviceAddressId={serviceAddressId} isChangeOrder={Boolean(props.isChangeOrder)} />
+      <IssueAndSendPanel draftId={draftId} accountId={accountId} serviceAddressId={serviceAddressId} isChangeOrder={Boolean(props.isChangeOrder)} lockReason={props.ballparkLockReason} />
 
       <EstimatePhotos accountId={accountId ?? props.draftCustomerId} defaultVisitId={props.draftVisitId} />
     </div>
@@ -2421,8 +2489,8 @@ function AttachDraftPanel(props: {
  * customer. Nothing else in the app may call that endpoint — no cron, no trigger, no retry
  * queue — and `AUTOMATED_CUSTOMER_SENDS` is untouched by this lane.
  */
-function IssueAndSendPanel(props: { draftId: string; accountId: string | null; serviceAddressId: string | null; isChangeOrder: boolean }) {
-  const { draftId, accountId, serviceAddressId, isChangeOrder } = props;
+function IssueAndSendPanel(props: { draftId: string; accountId: string | null; serviceAddressId: string | null; isChangeOrder: boolean; lockReason?: string | null }) {
+  const { draftId, accountId, serviceAddressId, isChangeOrder, lockReason } = props;
   const queryClient = useQueryClient();
   const [reasons, setReasons] = useState<string[]>([]);
   // No setter: the waive-trip control was removed 2026-08-22 (no trip charge is configured).
@@ -2612,7 +2680,18 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
       )}
       {notice && <p className="mt-2 rounded bg-emerald-50 p-2 text-xs text-emerald-800">{notice}</p>}
 
-      {!est && !(accountId && serviceAddressId) && (
+      {/* A ballpark on a lead (Kyle, 2026-11-15): the send control stays on screen, greyed, with
+          the reason — a hidden button teaches the office the feature does not exist. */}
+      {lockReason && (
+        <div className="mt-2">
+          <button className="btn btn-primary w-full" disabled>
+            Create customer estimate
+          </button>
+          <p className="mt-1 rounded bg-amber-50 p-2 text-xs text-amber-900">{lockReason}</p>
+        </div>
+      )}
+
+      {!lockReason && !est && !(accountId && serviceAddressId) && (
         <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900">
           This draft is not attached to an account yet. Attach it above — an estimate has to name
           the customer and the address the work is at before it can be issued.
@@ -2645,7 +2724,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
         is saved — and that revision needs signing again. Same rule, same wording, as
         WarrantyCoveragePanel's signed branch.
       */}
-      {accountId && serviceAddressId && (
+      {!lockReason && accountId && serviceAddressId && (
         <div className="mt-2">
           <div className="flex flex-wrap items-center gap-1">
             <span className="mr-1 text-xs text-rce-soft">Discount</span>
@@ -2732,7 +2811,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
         </div>
       )}
 
-      {!est && accountId && serviceAddressId && (
+      {!lockReason && !est && accountId && serviceAddressId && (
         <>
           {/* The waive-trip checkbox is GONE (Kyle, 2026-08-22): "this is not doing anything
               there is no trip charge that is even applied. we can get rid of it." He is right:

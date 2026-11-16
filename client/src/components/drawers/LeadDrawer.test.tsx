@@ -25,7 +25,7 @@ function lead(overrides: Partial<Lead>): Lead {
   return {
     id: "lead-1", name: "Jane Homeowner", email: "jane@example.com", phone: "+16155551234", source: "phone", status: "new",
     leadStatus: "new", notes: "Wants a panel upgrade", address: null, addressLine1: "12 Main St", city: "Smyrna", state: "TN",
-    postalCode: "37167", jobType: "Panel upgrade", createdAt: "2026-09-15T12:00:00.000Z", updatedAt: "2026-09-15T12:00:00.000Z",
+    postalCode: "37167", jobType: "Panel upgrade", createdAt: "2026-09-15T12:00:00.000Z", receivedAt: "2026-09-15T12:00:00.000Z", updatedAt: "2026-09-15T12:00:00.000Z",
     ...overrides,
   };
 }
@@ -53,6 +53,61 @@ describe("LeadDrawer", () => {
     expect(within(dialog).getByRole("button", { name: "Mark Lost" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "+ Email campaign" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+  });
+
+  it("shows a part address (city and ZIP, no street) on the drawer (B1, Allow part)", async () => {
+    mockCommon(lead({ addressLine1: null }));
+    renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+    expect(within(dialog).getByText(/Smyrna, TN 37167/)).toBeInTheDocument();
+  });
+
+  it("shows the follow-up day that was entered, not the evening before (B2)", async () => {
+    const zone = process.env.TZ;
+    process.env.TZ = "America/Chicago";
+    try {
+      // Midnight UTC is what the old writer stored; Chicago reads it as the evening before.
+      mockCommon(lead({ followUpDate: "2026-11-15T00:00:00.000Z", status: "contacted" }));
+      renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
+      const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+      expect(within(dialog).getByText(/Follow up:/).parentElement).toHaveTextContent("Follow up: 11/15/2026");
+    } finally {
+      if (zone === undefined) delete process.env.TZ;
+      else process.env.TZ = zone;
+    }
+  });
+
+  it("shows the marketplace link as a link that opens in a new tab (F3)", async () => {
+    mockCommon(lead({ sourceUrl: "https://www.angi.com/leads/abc123" }));
+    renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+    const link = within(dialog).getByRole("link", { name: /Open on marketplace/ });
+    expect(link).toHaveAttribute("href", "https://www.angi.com/leads/abc123");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
+  it("shows no marketplace link when there is none, and never renders a javascript: one (F3)", async () => {
+    mockCommon(lead({ sourceUrl: null }));
+    const first = renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+    expect(within(dialog).queryByText(/Marketplace link/)).not.toBeInTheDocument();
+    first.unmount();
+
+    vi.restoreAllMocks();
+    mockCommon(lead({ sourceUrl: "javascript:alert(1)" }));
+    renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
+    const again = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+    expect(within(again).queryByRole("link", { name: /Open on marketplace/ })).not.toBeInTheDocument();
+  });
+
+  it("the subtitle says received on the day it arrived, not the day it was typed in (F3)", async () => {
+    // Typed in on 11/14 (createdAt), arrived on Angi 10/20 (receivedAt, a typed day at noon UTC).
+    mockCommon(lead({ createdAt: "2026-11-15T03:57:00.000Z", receivedAt: "2026-10-20T12:00:00.000Z" }));
+    renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+    expect(within(dialog).getByText(/received 10\/20\/2026/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/received 11\/1[45]\/2026/)).not.toBeInTheDocument();
   });
 
   it("distinguishes declined from never asked", async () => {

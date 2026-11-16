@@ -43,6 +43,7 @@ import type {
 } from "../../shared/quoteCatalog";
 import { unreviewedReasons, type FieldOpenQuestion, type QuoteSuggestedLine } from "../../shared/suggestedLines";
 import { COPY_REFUSED_CHANGE_ORDER, COPY_REFUSED_DIAGNOSTIC } from "../../shared/draftLifecycle";
+import { BALLPARK_ON_LEAD_REASON, isBallparkOnLead } from "../../shared/leadBallpark";
 import { logSystemEvent } from "./systemEvents";
 
 export interface RateContext {
@@ -564,8 +565,23 @@ export async function createDraft(prisma: PrismaClient, input: CreateDraftInput)
   }
 
   let leadId = input.leadId ?? null;
-  if (leadId && !(await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true } }))) {
+  const lead = leadId ? await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, status: true } }) : null;
+  if (leadId && !lead) {
     leadId = null;
+  }
+  // A lead holds ONE ballpark (Kyle, 2026-11-15): "Open ballpark estimate" is the way back to it,
+  // so a second one is refused here rather than left for the office to find by chance.
+  if (leadId && !visitId) {
+    // A converted lead can never be converted again, so a ballpark started on it would stay locked
+    // for good. Its job's estimate starts from the account, as every estimate does.
+    if (lead?.status === "converted") {
+      throw new Error("This lead was already converted, so a ballpark can't be started on it. The job's estimate starts from the account, as every estimate does.");
+    }
+    const held = await prisma.priceBookDraftEstimate.findFirst({
+      where: { leadId, changeOrderForId: null },
+      select: { id: true },
+    });
+    if (held) throw new Error("This lead already has a ballpark estimate — open that one instead of starting another.");
   }
 
   const { rc, provisional, provisionalReason } = await loadRateContext(prisma);
@@ -1703,6 +1719,29 @@ export async function draftCopyReason(db: Db, draftId: string): Promise<string |
 }
 
 /**
+ * Why a draft may not be issued, sent or emailed YET, or null when it may (Kyle, 2026-11-15, plan
+ * lead-intake-fixes F4 — shared/leadBallpark.ts has the ruling).
+ *
+ * A draft that sits on a lead with no visit is a BALLPARK: it is saved, never sent from the CRM,
+ * and adjusted after the consultation. Converting the lead gives it a visit and the lock lifts.
+ * ONE rule, read by `finalizeDraft` (every issue and revise path passes through it, on both doors)
+ * and by the review payload, so the builder's greyed button and the server's refusal say the same
+ * words. A draft something was already issued from is not a ballpark, whatever links it carries.
+ */
+export async function ballparkLockReason(db: Db, draftId: string): Promise<string | null> {
+  const draft = await db.priceBookDraftEstimate.findUnique({
+    where: { id: draftId },
+    select: { leadId: true, visitId: true, changeOrderForId: true, lead: { select: { status: true } } },
+  });
+  if (!draft || !isBallparkOnLead(draft)) return null;
+  // The lock waits for convert. A ballpark whose lead is already converted but has no visit (its
+  // job was deleted after the move) would otherwise stay locked for good — convert can't run twice.
+  if (draft.lead?.status === "converted") return null;
+  const issued = await db.issuedEstimate.findFirst({ where: { draftId }, select: { id: true } });
+  return issued ? null : BALLPARK_ON_LEAD_REASON;
+}
+
+/**
  * Duplicate a draft (Kyle, 2026-08-31).
  *
  * "I also need a way to create a new version from already sent estimates. I want to be able to
@@ -1733,7 +1772,9 @@ export async function duplicateDraft(prisma: PrismaClient, sourceId: string): Pr
   const copy = await prisma.priceBookDraftEstimate.create({
     data: {
       title: source.title,
-      leadId: source.leadId,
+      // A lead holds ONE ballpark (2026-11-15): the copy of a ballpark that still sits on the
+      // lead (no visit yet) is an ordinary unattached draft, not a second ballpark on that lead.
+      leadId: source.visitId ? source.leadId : null,
       customerId: source.customerId,
       visitId: source.visitId,
       supplierId: source.supplierId,
@@ -2091,6 +2132,10 @@ export async function attachDraftToAccount(
   if (draft.status !== "draft") {
     throw new DraftError(`This draft is ${draft.status} and is no longer editable.`, 409);
   }
+  // A lead's ballpark reaches an account only by converting the lead (it moves onto the visit
+  // there). Attaching it here would set only customerId — the field would still not see it.
+  const lock = await ballparkLockReason(prisma, draftId);
+  if (lock) throw new DraftError(lock, 409);
   const property = await prisma.property.findUnique({ where: { id: input.serviceAddressId } });
   if (!property || property.customerId !== input.accountId) {
     throw new DraftError("That address does not belong to that account.", 400);
@@ -2475,6 +2520,15 @@ export async function finalizeDraft(
   context: "customer" | "internal" = "customer"
 ): Promise<FinalizeResult> {
   const { computed, rate, atomics } = await computeDraft(prisma, draftId);
+
+  // ── A ballpark on a lead is never sent (Kyle, 2026-11-15) ──
+  // Only the customer context is refused: an internal check is a look, not a commitment. Every
+  // door that creates or revises an estimate from a draft (CRM issue, field issue, revise) passes
+  // through here, so the rule cannot exist on one door and not the other.
+  if (context === "customer") {
+    const lock = await ballparkLockReason(prisma, draftId);
+    if (lock) return { finalized: false, reasons: [lock], warnings: [], computed };
+  }
 
   // ── Nothing finalizes while the model's work is still unreviewed ──
   // A proposed line prices nothing, so without this check a draft full of unconfirmed

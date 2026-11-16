@@ -9,6 +9,8 @@ import { useDrawerParams } from "../lib/drawers";
 import { LEAD_LOST_REASONS, type CrmFunnelReport, type OverdueLead } from "../lib/types";
 import { money } from "../lib/utils";
 import { platformLabel } from "../../../shared/leadPlatform";
+import { addDays, chicagoToday, formatDay } from "../../../shared/calendarDay";
+import { SEARCH_QUERY_KEYS } from "../lib/queryKeys";
 
 function formatDateInput(value: Date) {
   return value.toISOString().slice(0, 10);
@@ -136,6 +138,8 @@ export function DashboardPage() {
   const invalidateLeads = () => {
     queryClient.invalidateQueries({ queryKey: ["crm-analytics", "overview"] });
     queryClient.invalidateQueries({ queryKey: ["leads"] });
+    // The Search panel (Ctrl K) shows each lead's status — don't leave it stale.
+    for (const key of SEARCH_QUERY_KEYS) queryClient.invalidateQueries({ queryKey: [...key] });
   };
 
   const leadActionMutation = useMutation({
@@ -196,11 +200,9 @@ export function DashboardPage() {
     },
   });
 
-  const isoDatePlusDays = (days: number) => {
-    const date = new Date();
-    date.setDate(date.getDate() + days);
-    return date.toISOString();
-  };
+  // A follow-up is a calendar DAY (shared/calendarDay.ts): send the Chicago day, not a timestamp,
+  // so a snooze clicked in the evening doesn't land on the next UTC day.
+  const dayPlusDays = (days: number) => addDays(chicagoToday(), days);
 
   const topOverdue = data?.followUps.overdueLeads.slice(0, 8) ?? [];
   const phases = data?.phases;
@@ -394,7 +396,7 @@ export function DashboardPage() {
                           {lead.name}
                         </OpenDrawerButton>
                         <p className="text-xs text-rce-muted">
-                          {lead.jobType || "Unknown job"} • {lead.source} • Due {lead.followUpDate ? new Date(lead.followUpDate).toLocaleDateString() : "N/A"}
+                          {lead.jobType || "Unknown job"} • {lead.source} • Due {lead.followUpDate ? formatDay(lead.followUpDate) : "N/A"}
                         </p>
                         <div className="mt-2 flex flex-wrap gap-2">
                           <button
@@ -416,7 +418,7 @@ export function DashboardPage() {
                             onClick={() =>
                               runLeadAction(lead.id, {
                                 leadStatus: "planning",
-                                followUpDate: isoDatePlusDays(2),
+                                followUpDate: dayPlusDays(2),
                               })}
                           >
                             Snooze +2d

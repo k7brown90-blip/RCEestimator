@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma";
 import { getFunnelReport, type FunnelReport } from "./leadFunnel";
+import { chicagoDayBounds } from "../../shared/calendarDay";
 
 const LEAD_STATUS_ORDER = [
   "new",
@@ -41,7 +42,9 @@ export async function getLeadFunnelMetrics(range: AnalyticsRange) {
   const grouped = await prisma.lead.groupBy({
     by: ["leadStatus"],
     where: {
-      createdAt: {
+      // The day the lead REALLY arrived (Lead.receivedAt; plan lead-intake-fixes F3), so a
+      // back-entered marketplace lead counts in the month it came in.
+      receivedAt: {
         gte: range.start,
         lte: range.end,
       },
@@ -77,16 +80,18 @@ export async function getLeadFunnelMetrics(range: AnalyticsRange) {
 
 export async function getLeadFollowUpMetrics() {
   const now = new Date();
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
+  // A follow-up date is a calendar DAY (stored at noon UTC), and "today" is the Chicago day —
+  // never server-local time, and never "< now", which turned today's follow-ups overdue by
+  // mid-morning and counted a lead in both the overdue and due-today chips (plan lead-intake-fixes, B2).
+  const { startOfToday, endOfToday, sevenDaysOut } = chicagoDayBounds(now);
 
-  const endOfToday = new Date(startOfToday);
-  endOfToday.setDate(endOfToday.getDate() + 1);
-
-  const sevenDaysOut = new Date(endOfToday);
-  sevenDaysOut.setDate(sevenDaysOut.getDate() + 7);
-
-  const openLeadFilter = { leadStatus: { in: OPEN_LEAD_STATUSES } } as const;
+  // An open lead is one that is not lost by EITHER column (the Leads > Open tab's rule,
+  // isLostLead in app.ts) and not converted: "A converted lead is a consultation not a job"
+  // (Kyle, 2026-11-15), so it is no lead to chase. B3 of plan lead-intake-fixes.
+  const openLeadFilter = {
+    leadStatus: { in: OPEN_LEAD_STATUSES },
+    status: { notIn: ["lost", "converted"] },
+  };
 
   const [openLeads, overdueLeads] = await Promise.all([
     prisma.lead.findMany({
@@ -104,7 +109,7 @@ export async function getLeadFollowUpMetrics() {
     prisma.lead.findMany({
       where: {
         ...openLeadFilter,
-        followUpDate: { lt: now },
+        followUpDate: { lt: startOfToday },
       },
       select: {
         id: true,

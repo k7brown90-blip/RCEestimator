@@ -1670,6 +1670,15 @@ model Lead {
   propertyId        String?
   visitId           String?
   createdAt         DateTime                 @default(now())
+  /// When the lead FIRST reached Red Cedar (plan lead-intake-fixes F3; Kyle, 2026-11-15, counting by
+  /// "the month the lead really arrived"). For a Yelp/Angi lead typed in later it is the marketplace's
+  /// own day, stored as noon UTC (shared/calendarDay.ts); `createdAt` stays the moment the row was
+  /// entered. NOT null: the default makes every writer that never heard of it (webhook, booking chat,
+  /// Savannah) read "now", and the migration backfilled every old row from createdAt. The Received
+  /// label, the Leads list order, the funnel and the Dashboard stage counts read this column.
+  receivedAt        DateTime                 @default(now())
+  /// The marketplace's own link to this lead (Yelp/Angi/Nextdoor), http or https only. Optional.
+  sourceUrl         String?
   updatedAt         DateTime                 @updatedAt
   /// Free-form follow-up emails sent from the lead drawer (2026-09-20 communications build) —
   /// the thread rendered on the record, before this lead has an account to carry it instead.
@@ -1682,6 +1691,7 @@ model Lead {
   @@index([leadStatus, followUpDate])
   @@index([phone])
   @@index([createdAt])
+  @@index([receivedAt])
   // Global search (2026-09-20): both address tracks — free text from the phone/email intake and
   // the structured columns the CRM form fills. See Customer.
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Lead_name_trgm_idx")
@@ -4013,4 +4023,21 @@ model BankLine {
   @@index([classification])
   @@index([matchedKind, matchedId])
   @@index([payeeKey])
+}
+
+/// The AI admin's own sign-in (Kyle, 2026-11-15: "Lets do a username and password so it can save
+/// it and login on its own"; "Its own login" - his PIN keeps working for him). At most one row:
+/// Settings -> "AI admin login" creates, replaces, turns off, turns on or removes it. The password
+/// is stored ONLY as a bcrypt hash and is never returned. `sessionVersion` is bumped by Save login
+/// and Turn off; the session gate refuses an "ai-admin" token whose `ver` (or row `id`) no longer
+/// matches, which is what ends that session on its very next request. Renewal has no cap
+/// ("No cap") - a session in use renews until this row is turned off, replaced or removed.
+model AdminLogin {
+  id             String   @id @default(cuid())
+  username       String   @unique
+  passwordHash   String
+  enabled        Boolean  @default(true)
+  sessionVersion Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }

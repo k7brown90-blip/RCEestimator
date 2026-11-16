@@ -30,7 +30,8 @@ import {
 import { collectedByCustomer, lifetimeCollectedFor } from "./services/lifetimeCollected";
 import { LEAD_PLATFORMS, normalizeLeadPlatform } from "../shared/leadPlatform";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
-import { pinAuthMiddleware, handlePinLogin, handleSessionRefresh } from "./middleware/pinAuth";
+import { pinAuthMiddleware, handlePinLogin, handleAdminLogin, handleSessionRefresh } from "./middleware/pinAuth";
+import { adminLoginRouter } from "./routes/adminLogin";
 import { accessLogMiddleware } from "./middleware/accessLog";
 import { resolveWalkthroughRows, walkthroughRowsBodySchema } from "./services/walkthroughMatch";
 import { proposeWalkthroughForDraft, walkthroughTextBodySchema } from "./services/aiProposer";
@@ -60,6 +61,7 @@ import {
   // Draft-level rules, one set for both doors (2026-10-08).
   addOption,
   attachDraftToAccount,
+  ballparkLockReason,
   copyOptionBodySchema,
   copyOptionLines,
   deleteDraft,
@@ -82,6 +84,7 @@ import {
   setOptionMeta,
   setOptionsMode,
 } from "./services/atomicEstimateService";
+import { deleteLeadBallparks, leadBallparks, moveBallparkToVisit } from "./services/leadBallpark";
 import {
   createAtomic,
   listCategories,
@@ -108,6 +111,8 @@ import { activeFinancingFeesByRoot, feeDollarsOf } from "./services/financingFee
 import { groupSignedRows, INVOICE_DOC_SELECT, isLiveSigned, LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER, rollupInvoice, rootFirst, signedRootForJob, type InvoiceDocRow } from "./services/invoiceGroup";
 import { LOSABLE_STATUSES, LOST_REASONS as SHARED_LOST_REASONS } from "../shared/estimateStatus";
 import { ACCEPTED_VIA } from "../shared/acceptance";
+import { chicagoDayBounds, parseReceivedAt, parseSourceUrl, toFollowUpInstant } from "../shared/calendarDay";
+import { reconcileLeadState, WON_OUTCOME_ERROR } from "./services/leadState";
 import { ALL_OPTIONS, MAX_OPTIONS, isEstimateOption } from "../shared/estimateOptions";
 import { acceptEstimateFromOffice, undoOfficeAcceptance } from "./services/officeAcceptance";
 import { archiveCompetingEstimates, archiveEstimateByHand, unarchiveEstimate } from "./services/estimateArchive";
@@ -139,7 +144,7 @@ import { collectedOf } from "./services/paymentRefunds";
 import { closeOutMaterialWarning, consumeForJob, jobMaterials, materialNeedListForJob, returnForJob } from "./services/jobMaterials";
 import { renderMaterialsListPdf } from "./services/materialsListPdf";
 import { parseJsonStringArray } from "./lib/json";
-import { findCustomerMatches } from "./services/customerMatch";
+import { findCustomerMatches, findLeadMatches } from "./services/customerMatch";
 import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
 import { requireWebhookSecret, requireWebhookSecretWhenEnabled } from "./middleware/webhookSecret";
 import { bookingChatRouter } from "./routes/bookingChat";
@@ -419,7 +424,7 @@ const vapiWebhookLimiter = rateLimit({
   legacyHeaders: false,
   skip: skipLimiter,
 });
-app.use(["/leads", "/customer/lookup", "/calendar/availability", "/vapi", "/auth/pin", "/confirm", "/sms/inbound"], publicLimiter);
+app.use(["/leads", "/customer/lookup", "/calendar/availability", "/vapi", "/auth/pin", "/auth/login", "/confirm", "/sms/inbound"], publicLimiter);
 app.use("/vapi/end-of-call-report", vapiWebhookLimiter);
 app.use("/calendar/book", bookingLimiter);
 app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
@@ -1149,7 +1154,9 @@ app.patch("/vapi/update-lead", asyncHandler(async (req, res) => {
   if (body.status !== undefined) data.status = body.status;
   if (body.contactPreference !== undefined) data.contactPreference = body.contactPreference;
   if (body.leadStatus !== undefined) data.leadStatus = body.leadStatus;
-  if (body.followUpDate !== undefined) data.followUpDate = body.followUpDate ? new Date(body.followUpDate) : null;
+  // A bare YYYY-MM-DD is a calendar day (noon UTC); a full timestamp — the appointment time this
+  // route's confirmation email reads below — passes through untouched.
+  if (body.followUpDate !== undefined) data.followUpDate = body.followUpDate ? toFollowUpInstant(body.followUpDate) : null;
   if (body.followUpReason !== undefined) data.followUpReason = body.followUpReason;
   if (body.followUpCount !== undefined) data.followUpCount = body.followUpCount;
   if (body.lostReason !== undefined) data.lostReason = body.lostReason;
@@ -1469,10 +1476,12 @@ app.get("/leads/follow-ups-due", asyncHandler(async (req, res) => {
     return;
   }
 
-  const now = new Date();
+  // Due = its day has come (a follow-up is a calendar day, shared/calendarDay.ts), so a Nov 15
+  // follow-up is pulled on Nov 15 Chicago — not the evening before.
+  const { endOfToday } = chicagoDayBounds();
   const leads = await prisma.lead.findMany({
     where: {
-      followUpDate: { lte: now },
+      followUpDate: { lt: endOfToday },
       followUpCount: { lt: 2 },
       leadStatus: { in: ["unresolved", "planning", "no_answer"] },
     },
@@ -1607,9 +1616,10 @@ app.get("/leads/loss-report", asyncHandler(async (req, res) => {
  * drawers plan). This route requires a normal session like GET /leads does
  * and is deliberately absent from publicRoutes.ts.
  *
- * Returns the SAME shape GET /leads returns — post-processed through
- * attachLinkedVisits, so a single-lead fetch is not a differently-shaped Lead
- * than the list the client already types.
+ * Returns the same shape GET /leads returns — post-processed through attachLinkedVisits — PLUS
+ * two single-lead extras: the website-chat view and `ballparks`, the lead's saved ballpark
+ * estimate (Kyle, 2026-11-15, plan lead-intake-fixes F4; services/leadBallpark.ts). The ballpark is
+ * queried by leadId here, never through GET /price-book/drafts (capped at 50 rows).
  */
 app.get("/leads/:leadId", asyncHandler(async (req, res) => {
   const lead = await prisma.lead.findUnique({ where: { id: readParam(req, "leadId") } });
@@ -1618,7 +1628,7 @@ app.get("/leads/:leadId", asyncHandler(async (req, res) => {
   // The website booking chat (plan 2026-10-30): the drawer's "Website chat" section. Null / [] for
   // every lead that did not come through the chat, so the shape is otherwise unchanged.
   const chatView = await loadLeadChatView(lead.id);
-  res.json({ ...withLinkedVisit, ...chatView });
+  res.json({ ...withLinkedVisit, ...chatView, ballparks: await leadBallparks(prisma, lead.id) });
 }));
 
 /**
@@ -2059,7 +2069,13 @@ app.use("/health-record/capacity-checks", capacityCheckTechRouter);
 // here, and it is on the allowlist because it cannot require the session it hands out.
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
 // Sliding renewal: behind the session gate (NOT on the allowlist) — a valid token buys a fresh one.
-app.post("/auth/refresh", (req, res) => { handleSessionRefresh(req, res); });
+app.post("/auth/refresh", asyncHandler(async (req, res) => { await handleSessionRefresh(req, res); }));
+// The AI admin's own username/password sign-in (Kyle, 2026-11-15). Public, like /auth/pin, and for
+// the same reason; it is on the publicLimiter list above. Managed from Settings -> AI admin login.
+app.post("/auth/login", asyncHandler(async (req, res) => { await handleAdminLogin(req, res); }));
+// Settings -> "AI admin login": GET status, PUT save, POST disable/enable, DELETE remove. Behind the
+// session gate; changing it is owner-only (routes/adminLogin.ts).
+app.use(adminLoginRouter);
 
 // ─── AI PROPOSAL REVIEW (P011) — the human confirmation gate ─────────────────
 //
@@ -2702,6 +2718,15 @@ app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
       changeOrderForId: review.draft.changeOrderForId,
       // The scope of work the customer reads under the title — editable here now (PUT .../details).
       jobDescription: review.draft.jobDescription,
+      // A ballpark sitting on a lead (Kyle, 2026-11-15): which lead, and the one sentence that
+      // greys every send control while it has no visit. The builder reads both from here, never
+      // from the capped draft list.
+      leadId: review.draft.leadId,
+      visitId: review.draft.visitId,
+      lead: review.draft.leadId
+        ? await prisma.lead.findUnique({ where: { id: review.draft.leadId }, select: { id: true, name: true } })
+        : null,
+      ballparkLockReason: await ballparkLockReason(prisma, review.draft.id),
     },
     // Issued or not, changed since, deletable or not — ONE server answer for every screen
     // (shared/draftLifecycle.ts); the field's quote payload carries the same object.
@@ -8969,20 +8994,26 @@ async function createPropertyWithSnapshot(
   return property;
 }
 
-/** Structured address is all-or-nothing — the guarantee convert relies on. */
+/**
+ * A lead's structured address. Every part may be absent OR null — the CRM form sends null for a
+ * blank box (zod's `.optional()` alone rejects null, which is what refused a no-address lead).
+ *
+ * A lead SAVES with any part of an address (Kyle, 2026-11-15: "Allow part" — Yelp and Nextdoor
+ * give a city and ZIP, not a street). CONVERTING it still needs all four: `resolveLeadAddress`
+ * returns "none" for a fragment and `convertLeadToOpportunity` refuses with nothing written, so a
+ * Property can never be created from a partial address.
+ */
 const leadAddressSchema = z.object({
-  addressLine1: z.string().trim().min(1).optional(),
+  addressLine1: z.string().trim().min(1).nullish(),
   addressLine2: z.string().trim().nullable().optional(),
-  city: z.string().trim().min(1).optional(),
-  state: z.string().trim().length(2).optional(),
-  postalCode: z.string().trim().regex(/^\d{5}(-\d{4})?$/, "ZIP must be 12345 or 12345-6789").optional(),
+  city: z.string().trim().min(1).nullish(),
+  state: z.string().trim().length(2).nullish(),
+  postalCode: z.string().trim().regex(/^\d{5}(-\d{4})?$/, "ZIP must be 12345 or 12345-6789").nullish(),
 });
 
 /**
- * Whether a merged address is complete, empty, or a fragment.
- *
- * Evaluated against the row as it will END UP, not the patch alone — otherwise
- * clearing just `city` would sneak a fragment past the check.
+ * Whether an address is complete, empty, or a fragment. A fragment SAVES on a lead; only convert
+ * (and anything that builds a Property) needs "complete".
  */
 function addressCompleteness(a: {
   addressLine1?: string | null; city?: string | null; state?: string | null; postalCode?: string | null;
@@ -8993,9 +9024,17 @@ function addressCompleteness(a: {
   return "partial";
 }
 
-const PARTIAL_ADDRESS_ERROR =
-  "An address needs street, city, state and ZIP together — or leave all four blank. " +
-  "A partial address would create a property with no city, which is what this replaced.";
+/** Which of the four convert-required parts a lead's address is still missing, in screen order. */
+function missingAddressParts(a: {
+  addressLine1?: string | null; city?: string | null; state?: string | null; postalCode?: string | null;
+}): string[] {
+  const missing: string[] = [];
+  if (!a.addressLine1?.trim()) missing.push("street address");
+  if (!a.city?.trim()) missing.push("city");
+  if (!a.state?.trim()) missing.push("state");
+  if (!a.postalCode?.trim()) missing.push("ZIP");
+  return missing;
+}
 
 /**
  * POST /crm/leads — manual lead entry.
@@ -9031,19 +9070,53 @@ app.post("/crm/leads", asyncHandler(async (req, res) => {
     warrantyNote: z.string().trim().nullable().optional(),
     contactPreference: z.enum(CONTACT_PREFERENCES).nullable().optional(),
     bestTimeToReach: z.string().trim().nullable().optional(),
-    followUpDate: z.coerce.date().nullable().optional(),
+    // A bare YYYY-MM-DD is a calendar day, stored as noon UTC (shared/calendarDay.ts); a full
+    // timestamp parses as it always did.
+    followUpDate: z.union([z.string(), z.date()]).nullable().optional().transform((value, ctx) => {
+      if (value === null || value === undefined || value === "") return null;
+      const date = value instanceof Date ? value : toFollowUpInstant(value);
+      if (Number.isNaN(date.getTime())) {
+        ctx.addIssue({ code: "custom", message: "Invalid followUpDate" });
+        return z.NEVER;
+      }
+      return date;
+    }),
     followUpReason: z.enum(FOLLOW_UP_REASONS).nullable().optional(),
     lostReason: z.enum(LOST_REASONS).nullable().optional(),
     lostNotes: z.string().trim().nullable().optional(),
     address: z.string().trim().nullable().optional(),
     customerId: z.string().min(1).nullable().optional(),
     propertyId: z.string().min(1).nullable().optional(),
+    // The day a back-entered Yelp/Angi lead REALLY arrived (plan lead-intake-fixes F3). Blank
+    // (null / "" / absent) is NOT 1970 and NOT null: it becomes undefined, so the column's
+    // `@default(now())` applies. A day in the future is refused.
+    receivedAt: z.union([z.string(), z.date()]).nullable().optional().transform((value, ctx) => {
+      if (value === null || value === undefined || value === "") return undefined;
+      const parsed = parseReceivedAt(value);
+      if (!parsed.ok) {
+        ctx.addIssue({ code: "custom", message: parsed.error });
+        return z.NEVER;
+      }
+      return parsed.date;
+    }),
+    // The marketplace's own link: http or https only, "" clears it.
+    sourceUrl: z.string().nullable().optional().transform((value, ctx) => {
+      const parsed = parseSourceUrl(value);
+      if (!parsed.ok) {
+        ctx.addIssue({ code: "custom", message: parsed.error });
+        return z.NEVER;
+      }
+      return parsed.value;
+    }),
   }).merge(leadAddressSchema).parse(req.body);
 
-  if (addressCompleteness(body) === "partial") {
-    res.status(400).json({ error: PARTIAL_ADDRESS_ERROR });
+  // Only Convert makes an opportunity — a new lead cannot start life as one by hand.
+  if (body.leadStatus === "won") {
+    res.status(400).json({ error: WON_OUTCOME_ERROR });
     return;
   }
+  // Status and the call outcome say the same thing about lost (services/leadState.ts).
+  const pair = reconcileLeadState(null, { status: body.status, leadStatus: body.leadStatus });
 
   if (body.customerId) {
     const customer = await prisma.customer.findUnique({ where: { id: body.customerId }, select: { id: true } });
@@ -9066,6 +9139,8 @@ app.post("/crm/leads", asyncHandler(async (req, res) => {
   const lead = await prisma.lead.create({
     data: {
       ...body,
+      status: pair.status,
+      leadStatus: pair.leadStatus,
       state: body.state ? body.state.toUpperCase() : undefined,
     },
   });
@@ -9093,8 +9168,17 @@ app.get("/crm/customer-matches", asyncHandler(async (req, res) => {
     res.status(400).json({ error: "Provide at least one of phone, email or name" });
     return;
   }
-  const matches = await findCustomerMatches({ phone, email, name, limit: 10 });
-  res.json({ matches });
+  // The lead form alone opts into name-only account matches and the "Already a lead" list
+  // (plan lead-intake-fixes F2). Every other caller of the matcher is untouched - see
+  // MatchQuery.includeNameOnly.
+  const includeNameOnly = readQuery(req, "includeNameOnly") === "1";
+  const includeLeads = readQuery(req, "includeLeads") === "1";
+  const excludeLeadId = readQuery(req, "excludeLeadId");
+  const [matches, leadMatches] = await Promise.all([
+    findCustomerMatches({ phone, email, name, limit: 10, includeNameOnly }),
+    includeLeads ? findLeadMatches({ phone, email, name, excludeLeadId, limit: 10 }) : Promise.resolve([]),
+  ]);
+  res.json({ matches, leadMatches });
 }));
 
 app.get("/leads", asyncHandler(async (req, res) => {
@@ -9107,7 +9191,9 @@ app.get("/leads", asyncHandler(async (req, res) => {
 
   const rows = await prisma.lead.findMany({
     where,
-    orderBy: { createdAt: "desc" },
+    // Newest ARRIVAL first (Lead.receivedAt - a back-entered Yelp lead sits at its real date),
+    // then newest entered.
+    orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }],
   });
   const leads = await attachLinkedVisits(rows);
 
@@ -9161,6 +9247,10 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     lostNotes?: string | null;
     bestTimeToReach?: string | null;
     contactPreference?: string | null;
+    /** The day the lead really arrived (YYYY-MM-DD); blank resets to the day the row was entered. */
+    receivedAt?: string | null;
+    /** The marketplace's own link; http or https only, blank clears it. */
+    sourceUrl?: string | null;
     // ── Added for manual editing ──
     source?: string;
     /**
@@ -9194,11 +9284,20 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
   // old "Mark Won" button PATCHed status:"converted" directly and minted a
   // converted lead with no job behind it, and a converted lead can never be
   // deleted (Kyle, 2026-09-20 drawers plan).
-  if (body.status === "converted") {
+  // Only a MOVE to converted is refused: the edit form re-sends a converted lead's own status, and
+  // that edit must still save.
+  if (body.status === "converted" && existing.status !== "converted") {
     res.status(400).json({
       error: "A lead becomes converted only through PATCH /leads/:leadId/convert, which creates the account, "
         + "property and job together. This endpoint cannot set that status directly.",
     });
+    return;
+  }
+  // The same door for the call outcome "won" — only a CHANGE to it is refused. A row that already
+  // holds "won" (Savannah and Convert write it; deleting an account resets a lead to new but leaves
+  // it) saves any other edit untouched.
+  if (body.leadStatus === "won" && existing.leadStatus !== "won") {
+    res.status(400).json({ error: WON_OUTCOME_ERROR });
     return;
   }
 
@@ -9218,16 +9317,8 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
   if (invalid) { res.status(400).json({ error: invalid }); return; }
 
   const pick = <T,>(patched: T | undefined, current: T): T => (patched === undefined ? current : patched);
-  const merged = {
-    addressLine1: pick(body.addressLine1, existing.addressLine1),
-    city: pick(body.city, existing.city),
-    state: pick(body.state, existing.state),
-    postalCode: pick(body.postalCode, existing.postalCode),
-  };
-  if (addressCompleteness(merged) === "partial") {
-    res.status(400).json({ error: PARTIAL_ADDRESS_ERROR });
-    return;
-  }
+  // A lead saves with any part of an address (Kyle, 2026-11-15: "Allow part"). Convert is where
+  // all four are required — convertLeadToOpportunity refuses a fragment and writes nothing.
   if (body.postalCode && !/^\d{5}(-\d{4})?$/.test(body.postalCode.trim())) {
     res.status(400).json({ error: "ZIP must be 12345 or 12345-6789" });
     return;
@@ -9286,13 +9377,45 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     if (body.followUpDate === null || body.followUpDate === "") {
       data.followUpDate = null;
     } else {
-      const parsed = new Date(body.followUpDate);
+      // A bare YYYY-MM-DD is a calendar day -> noon UTC (shared/calendarDay.ts), so it reads as the
+      // same day in Chicago. Anything else parses as it always did.
+      const parsed = toFollowUpInstant(body.followUpDate);
       if (Number.isNaN(parsed.getTime())) {
         res.status(400).json({ error: "Invalid followUpDate" });
         return;
       }
       data.followUpDate = parsed;
     }
+  }
+
+  // Received day (plan lead-intake-fixes F3). The column is NOT null, so a blank is not "no date":
+  // it puts the lead back on the day the row was entered. A bare YYYY-MM-DD lands at noon UTC.
+  if (body.receivedAt !== undefined) {
+    if (body.receivedAt === null || body.receivedAt === "") {
+      data.receivedAt = existing.createdAt;
+    } else if (typeof body.receivedAt !== "string") {
+      res.status(400).json({ error: "Invalid original received date" });
+      return;
+    } else {
+      const parsed = parseReceivedAt(body.receivedAt);
+      if (!parsed.ok) { res.status(400).json({ error: parsed.error }); return; }
+      data.receivedAt = parsed.date;
+    }
+  }
+  if (body.sourceUrl !== undefined) {
+    const parsed = body.sourceUrl !== null && typeof body.sourceUrl !== "string"
+      ? ({ ok: false, error: "Invalid marketplace link" } as const)
+      : parseSourceUrl(body.sourceUrl);
+    if (!parsed.ok) { res.status(400).json({ error: parsed.error }); return; }
+    data.sourceUrl = parsed.value;
+  }
+
+  // Status and the call outcome say the same thing about lost (services/leadState.ts). Only when
+  // this write touches either; a converted lead and a held "won" are left as they are.
+  if (body.status !== undefined || body.leadStatus !== undefined) {
+    const pair = reconcileLeadState(existing, { status: body.status, leadStatus: body.leadStatus });
+    if (body.status !== undefined || pair.status !== existing.status) data.status = pair.status;
+    if (body.leadStatus !== undefined || pair.leadStatus !== existing.leadStatus) data.leadStatus = pair.leadStatus;
   }
 
   const lead = await prisma.lead.update({
@@ -9315,6 +9438,9 @@ app.delete("/leads/:leadId", asyncHandler(async (req, res) => {
   // A chat lead that holds a slot has a HOLD event on Google Calendar; the cascade below removes
   // the rows but not the event. Removed first; a failure is logged and the lead is still deleted.
   await deleteHoldForLead(leadId);
+  // Its unsent ballpark goes with it (Kyle's default, 2026-11-15; the drawer's confirm says so).
+  // Without this the draft would be left unlinked, with no list anywhere to find it by.
+  await deleteLeadBallparks(prisma, leadId);
   await prisma.lead.delete({ where: { id: leadId } });
   res.status(204).end();
 }));
@@ -9450,15 +9576,22 @@ async function convertLeadToOpportunity(leadId: string, input: ConvertLeadInput)
     }
   } else if (address.kind === "none") {
     // Nothing is written. The lead stays unconverted, so it remains editable and
-    // deletable rather than becoming a permanent orphan.
+    // deletable rather than becoming a permanent orphan. A lead may SAVE with part of an
+    // address (Kyle, 2026-11-15: "Allow part"), but converting needs all four — and says
+    // which are missing, so the office knows what to add.
+    const missing = missingAddressParts(lead);
+    const partial = missing.length > 0 && missing.length < 4;
     return {
       ok: false,
       status: 400,
       body: {
         error: "This lead has no usable address",
-        message:
-          "Add a street address, city, state and ZIP before converting — a job has to belong " +
-          "to somewhere. Nothing was created.",
+        message: partial
+          ? `This lead has only part of an address — still missing the ${missing.join(", ")}. ` +
+            "Add the full street address, city, state and ZIP before converting — a job has to belong " +
+            "to somewhere. Nothing was created."
+          : "Add a street address, city, state and ZIP before converting — a job has to belong " +
+            "to somewhere. Nothing was created.",
         needs: "address",
       },
     };
@@ -9505,6 +9638,12 @@ async function convertLeadToOpportunity(leadId: string, input: ConvertLeadInput)
         },
       })
       : null;
+
+    // The lead's saved ballpark becomes this consultation's quote (Kyle, 2026-11-15). The field
+    // finds a visit's quote ONLY by visitId (workingDraftForVisit), so the visit is what moves —
+    // setting customerId alone would leave it invisible on the tech's Quote screen. Here, inside
+    // the transaction, so the convert, mark-won and confirm-booking doors all carry it.
+    if (visit) await moveBallparkToVisit(tx, { leadId, customerId: customer.id, visitId: visit.id });
 
     const updatedLead = await tx.lead.update({
       where: { id: leadId },

@@ -84,6 +84,10 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
     methods: ["POST"], path: "/auth/pin", credential: "none",
     reason: "The login itself. Cannot require the session it issues.",
   },
+  {
+    methods: ["POST"], path: "/auth/login", credential: "none",
+    reason: "The AI admin's own username/password login (Kyle, 2026-11-15). Cannot require the session it issues. IP rate-limited (publicLimiter); every failure returns the same 401.",
+  },
 
   // ── Self-authenticating with a different credential ───────────────────────────────────────
   {

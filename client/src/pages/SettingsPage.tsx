@@ -6,6 +6,7 @@ import type { CompanyProfile, LegalInfo, OperatingHours, PayrollSettings, Purcha
 import type { TreasurySettings } from "../lib/types";
 import { FinancingPlansSection } from "./FinancingPlansSection";
 import { BilledRateSection } from "./BilledRateSection";
+import { AdminLoginSection } from "./AdminLoginSection";
 
 const EMPTY_PROFILE: CompanyProfile = {
   companyName: "Red Cedar Electric LLC",
@@ -499,6 +500,9 @@ export function SettingsPage() {
 
       {/* ── Treasury (Kyle, 2026-09-09): floats + the Chase destination for the month-end sweep ── */}
       <TreasurySection />
+
+      {/* ── AI admin login (Kyle, 2026-11-15): the AI admin's own username + password ── */}
+      <AdminLoginSection />
     </div>
   );
 }

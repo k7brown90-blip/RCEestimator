@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { AttentionStrip } from "../components/AttentionStrip";
 import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
-import { shortDate } from "../lib/utils";
+import { formatDay, formatReceived } from "../../../shared/calendarDay";
 import type { Lead, LeadPipeline, LeadSource, LeadStatus } from "../lib/types";
 
 /**
@@ -74,7 +74,9 @@ const sourceBadgeClass: Record<LeadSource, string> = {
  * leads fill the single free-text line.
  */
 function displayAddress(lead: Lead): string | null {
-  if (lead.addressLine1) {
+  // A part address counts (plan lead-intake-fixes B1, "Allow part") — State alone does not, the
+  // form defaults it. Same guard as LeadDrawer's copy.
+  if (lead.addressLine1 || lead.city || lead.postalCode) {
     return [
       lead.addressLine1,
       lead.addressLine2,
@@ -83,6 +85,27 @@ function displayAddress(lead: Lead): string | null {
     ].filter(Boolean).join(", ");
   }
   return lead.address ?? null;
+}
+
+/**
+ * Does this lead match what was typed in "Search leads…"? (Plan lead-intake-fixes F1.)
+ *
+ * Name, email and address match as text (case aside); `displayAddress` covers both address tracks
+ * (the structured columns and the webhook's free-text line), and city and ZIP are matched on their
+ * own for a lead that has them without a street. A PHONE matches on digits, so "(615) 555-0101"
+ * finds a lead stored as "+16155550101" — but only when the whole box looks like a phone number and
+ * has at least four digits, the same rule the global Search uses (`phoneNeedle` in
+ * services/globalSearch.ts). Otherwise "Apt 101" would match every phone containing 101.
+ */
+function leadMatchesSearch(lead: Lead, rawNeedle: string): boolean {
+  const needle = rawNeedle.trim().toLowerCase();
+  if (!needle) return true;
+  const text = [lead.name, lead.email, displayAddress(lead), lead.city, lead.postalCode]
+    .some((field) => field?.toLowerCase().includes(needle));
+  if (text) return true;
+  if (!/^[\d\s().+-]+$/.test(needle)) return false;
+  const digits = needle.replace(/\D/g, "");
+  return digits.length >= 4 && (lead.phone ?? "").replace(/\D/g, "").includes(digits);
 }
 
 /** What this lead is waiting on, derived from its linked visit. */
@@ -121,7 +144,7 @@ function LeadsAttention() {
       ]}
       rows={data.overdueLeads.map((lead) => ({
         key: lead.id,
-        text: <>{lead.name} — follow-up was due {lead.followUpDate ? shortDate(lead.followUpDate) : "earlier"}</>,
+        text: <>{lead.name} — follow-up was due {lead.followUpDate ? formatDay(lead.followUpDate) : "earlier"}</>,
         detail: [lead.jobType, lead.phone, lead.leadStatus.replaceAll("_", " ")].filter(Boolean).join(" · "),
         action: <OpenDrawerButton kind="lead" id={lead.id} onOpen={drawers.open} />,
       }))}
@@ -134,11 +157,47 @@ export function LeadsPage() {
   const drawers = useDrawerParams();
   const [pipeline, setPipeline] = useState<LeadPipeline>("open");
   const [statusFilter, setStatusFilter] = useState("");
+  // "Search leads…" (Kyle, 2026-11-15, plan lead-intake-fixes F1) — the Accounts box, for leads.
+  // Typing searches Open AND Closed together; empty = the tab view below, unchanged.
+  const [search, setSearch] = useState("");
+  const searching = search.trim() !== "";
 
-  const { data: leads = [], isLoading, error } = useQuery({
+  const { data: tabLeads = [], isLoading: tabLoading, error: tabError } = useQuery({
     queryKey: ["leads", { pipeline, statusFilter }],
     queryFn: () => api.leads({ pipeline, status: statusFilter || undefined }),
   });
+
+  // The two tabs' own lists, under the same query keys the tabs use (statusFilter "") so a lead
+  // saved from its drawer — which invalidates ["leads"] — refreshes the search results too. The
+  // server stays the only place that decides which tab a lead is on; the card is tagged from the
+  // list that returned it. Scheduled leads live on Jobs, not here, so they are not searched.
+  const tabSearches = useQueries({
+    queries: (["open", "closed"] as const).map((pipeline) => {
+      const statusFilter = "";
+      return {
+        queryKey: ["leads", { pipeline, statusFilter }],
+        queryFn: () => api.leads({ pipeline, status: statusFilter || undefined }),
+        enabled: searching,
+      };
+    }),
+  });
+  const openResult = tabSearches[0];
+  const closedResult = tabSearches[1];
+
+  const searchRows = useMemo(() => {
+    if (!searching) return [];
+    const byId = new Map<string, { lead: Lead; tab: LeadPipeline }>();
+    for (const lead of openResult?.data ?? []) byId.set(lead.id, { lead, tab: "open" });
+    // Closed wins a tie: a lost lead is lost whatever else is on its calendar.
+    for (const lead of closedResult?.data ?? []) byId.set(lead.id, { lead, tab: "closed" });
+    return [...byId.values()].filter((row) => leadMatchesSearch(row.lead, search));
+  }, [searching, search, openResult?.data, closedResult?.data]);
+
+  const rows: Array<{ lead: Lead; tab: LeadPipeline | null }> = searching
+    ? searchRows
+    : tabLeads.map((lead) => ({ lead, tab: null }));
+  const isLoading = searching ? tabSearches.some((q) => q.isLoading) : tabLoading;
+  const error = searching ? (tabSearches.find((q) => q.error)?.error ?? null) : tabError;
 
   /**
    * Email campaign membership (Kyle, 2026-09-02) is SHOWN on the card — which leads are on the
@@ -163,6 +222,29 @@ export function LeadsPage() {
 
       <LeadsAttention />
 
+      {/* One box over both tabs. Always shown — gating it on "there are leads" would hide it on an
+          empty Open tab, which is where the page opens. */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <input
+          className="field w-full md:max-w-sm"
+          placeholder="Search leads…"
+          aria-label="Search leads"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+        {searching ? (
+          <button type="button" className="btn btn-secondary text-xs" onClick={() => setSearch("")}>
+            Clear search
+          </button>
+        ) : null}
+      </div>
+
+      {searching ? (
+        <p className="mb-4 text-xs text-rce-muted">
+          Searching Open and Closed together — name, phone, email or address. Clear the box to go back to the tabs.
+        </p>
+      ) : (
+        <>
       {/* Pipeline tabs */}
       <div className="mb-2 flex flex-wrap gap-2">
         {PIPELINE_TABS.map((tab) => (
@@ -201,18 +283,22 @@ export function LeadsPage() {
           ))}
         </div>
       )}
+        </>
+      )}
 
       {isLoading ? <p className="text-sm text-rce-muted">Loading leads…</p> : null}
       {error ? <p className="text-sm text-red-500">Error loading leads: {(error as Error).message}</p> : null}
 
-      {!isLoading && leads.length === 0 ? (
+      {!isLoading && rows.length === 0 ? (
         <p className="text-sm text-rce-muted">
-          {pipeline === "open" ? "Nothing waiting — the queue is clear." : "No leads here."}
+          {searching
+            ? "No leads match that search."
+            : pipeline === "open" ? "Nothing waiting — the queue is clear." : "No leads here."}
         </p>
       ) : null}
 
       <section className="space-y-3">
-        {leads.map((lead) => {
+        {rows.map(({ lead, tab }) => {
           const state = funnelState(lead);
 
           return (
@@ -220,6 +306,17 @@ export function LeadsPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-lg font-semibold">{lead.name}</h2>
                 <div className="flex flex-wrap items-center gap-2">
+                  {/* Which tab this lead is on — only while searching both. */}
+                  {tab ? (
+                    <span
+                      data-lead-tab={tab}
+                      className={`inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold ${
+                        tab === "open" ? "bg-rce-accentBg text-rce-warning" : "bg-zinc-200 text-zinc-700"
+                      }`}
+                    >
+                      {tab === "open" ? "OPEN" : "CLOSED"}
+                    </span>
+                  ) : null}
                   {lead.callType ? (
                     <span className={`inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold ${
                       lead.callType === "warranty" ? "bg-orange-100 text-orange-700" :
@@ -249,7 +346,7 @@ export function LeadsPage() {
               <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-sm text-rce-muted">
                 {lead.email ? <span>{lead.email}</span> : null}
                 {lead.phone ? <span>{lead.phone}</span> : null}
-                <span>Received {shortDate(lead.createdAt)}</span>
+                <span>Received {formatReceived(lead.receivedAt)}</span>
               </div>
 
               {(displayAddress(lead) || lead.jobType) ? (

@@ -117,7 +117,9 @@ export interface FunnelReport {
 
 type LeadRow = {
   id: string; status: string; leadStatus: string; lostReason: string | null; platform: string | null;
-  customerId: string | null; visitId: string | null; existingVisitId: string | null; createdAt: Date;
+  customerId: string | null; visitId: string | null; existingVisitId: string | null;
+  /** When the lead really arrived (Lead.receivedAt) - NOT when the row was typed in. */
+  receivedAt: Date;
 };
 
 type EstimateRow = {
@@ -159,7 +161,7 @@ function groupByNumber(rows: EstimateRow[]): QuoteDoc[] {
 }
 
 /** The account fallback needs every lead on the account, in range or not — see `attributeQuote`. */
-type AccountLead = { id: string; createdAt: Date };
+type AccountLead = { id: string; receivedAt: Date };
 
 /**
  * Which lead a quote belongs to — no time window. Direct link first (the draft named the lead),
@@ -188,8 +190,8 @@ function attributeQuote(
     if (lead) return lead;
   }
   const closest = (accountLeads.get(doc.customerId) ?? [])
-    .filter((l) => l.createdAt <= doc.firstIssuedAt)
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+    .filter((l) => l.receivedAt <= doc.firstIssuedAt)
+    .sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime())[0];
   return closest ? byId.get(closest.id) ?? null : null;
 }
 
@@ -204,10 +206,13 @@ export async function getFunnelReport(prisma: PrismaClient, range: FunnelRange):
 
   // ── Phases 1 and 2: the leads that arrived in the range ──────────────────────────────────
   const arrivals = await prisma.lead.findMany({
-    where: { createdAt: { gte: range.start, lte: range.end } },
+    // By the day the lead REALLY arrived (Lead.receivedAt; Kyle, 2026-11-15: count by "the month
+    // the lead really arrived"), so a Yelp lead typed in on Nov 14 with an Oct 20 date counts in
+    // October. The quote attribution below ranks on the same date, so it moves with the range.
+    where: { receivedAt: { gte: range.start, lte: range.end } },
     select: {
       id: true, status: true, leadStatus: true, lostReason: true, platform: true, callType: true,
-      customerId: true, visitId: true, existingVisitId: true, createdAt: true,
+      customerId: true, visitId: true, existingVisitId: true, receivedAt: true,
     },
   });
   // PUNCHLIST G5: the test-account exclusion must apply BEFORE notLeads is counted, not only in
@@ -257,12 +262,12 @@ export async function getFunnelReport(prisma: PrismaClient, range: FunnelRange):
   // EVERY lead on the candidate accounts, in range or not — the ranking above needs them all.
   const accountLeadRows = customerIds.length === 0 ? [] : await prisma.lead.findMany({
     where: { customerId: { in: customerIds } },
-    select: { id: true, customerId: true, createdAt: true },
+    select: { id: true, customerId: true, receivedAt: true },
   });
   const accountLeads = new Map<string, AccountLead[]>();
   for (const l of accountLeadRows) {
     if (!l.customerId) continue;
-    accountLeads.set(l.customerId, [...(accountLeads.get(l.customerId) ?? []), { id: l.id, createdAt: l.createdAt }]);
+    accountLeads.set(l.customerId, [...(accountLeads.get(l.customerId) ?? []), { id: l.id, receivedAt: l.receivedAt }]);
   }
   const quotedLeadIds = new Set<string>();
   for (const doc of groupByNumber(candidateRows)) {

@@ -11,6 +11,7 @@
 
 import { prisma } from "../lib/prisma";
 import { parseJsonArray } from "../lib/json";
+import { chicagoToday, dayInstant } from "../../shared/calendarDay";
 
 export const RENEWAL_MONTHS = 11;
 
@@ -67,7 +68,7 @@ export async function generateInspectionRenewalLeads(
         callType: "estimate_followup",
         jobType: "Annual electrical health inspection",
         leadStatus: "new",
-        followUpDate: now,
+        followUpDate: dayInstant(chicagoToday(now)),
         followUpReason: "annual_inspection_renewal",
         customerId: inspection.customer.id,
         propertyId: inspection.property.id,
@@ -144,7 +145,7 @@ export async function generateUpgradeFollowUpLeads(
         callType: "estimate_followup",
         jobType: `Planned replacement — ${finding.title}`,
         leadStatus: "new",
-        followUpDate: now,
+        followUpDate: dayInstant(chicagoToday(now)),
         followUpReason: "equipment_end_of_life",
         customerId: customer.id,
         propertyId: property.id,

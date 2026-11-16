@@ -18,6 +18,9 @@ const nav = [
   // and is deliberately gone: Kyle, 2026-08-18, "The estimate flow needs to start from within
   // the customers account not as a stand alone feature." Quoting begins on an account (or a
   // visit); this entry is where you see what has been quoted and where it got to.
+  // NARROWED 2026-11-15 (Kyle, plan lead-intake-fixes F4): a LEAD may also hold one saved ballpark,
+  // started from the lead's own drawer ("Start a ballpark estimate"). That is still not a stand-alone
+  // feature and there is still no nav entry; every other estimate starts on an account.
   { to: "/estimates", label: "Estimates", primary: true },
   // "Invoices" used to sit here (Kyle, 2026-08-26). Kyle, 2026-09-07: "We should look at
   // merging invoices into the financials tab ... isolate each tab's purpose while getting

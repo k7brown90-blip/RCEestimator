@@ -176,7 +176,7 @@ describe("the allowlist itself", () => {
     // If this set grows, someone made something public with no credential at all. That should be
     // a deliberate, visible change — which is what failing here forces.
     expect(open.sort()).toEqual(
-      ["/auth/pin", "/health", "/healthz", "/sms/inbound", "/vapi/assistant-config"].sort()
+      ["/auth/login", "/auth/pin", "/health", "/healthz", "/sms/inbound", "/vapi/assistant-config"].sort()
     );
   });
 });

@@ -27,15 +27,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useDrawerParams } from "../../lib/drawers";
-import { ADDRESS_QUERY_KEYS } from "../../lib/queryKeys";
+import { ADDRESS_QUERY_KEYS, SEARCH_QUERY_KEYS } from "../../lib/queryKeys";
+import { formatDay, formatReceived, parseSourceUrl } from "../../../../shared/calendarDay";
 import { useLead } from "../../lib/recordQueries";
 import { scheduleDoorLabel, scheduleDoorPath } from "../../lib/scheduleDoor";
 import { LEAD_LOST_REASONS, type CustomerMatch, type Lead } from "../../lib/types";
-import { shortDate } from "../../lib/utils";
 import { platformLabel } from "../../../../shared/leadPlatform";
 import { Drawer } from "../Drawer";
 import { LeadDuplicatePicker, type ConvertInput } from "../LeadDuplicatePicker";
 import { LeadForm } from "../LeadForm";
+import { LeadBallparkSection } from "../LeadBallparkSection";
 import { SendEmailPanel } from "../SendEmailPanel";
 import { OpenDrawerButton } from "./OpenDrawerButton";
 import { WebsiteChatSection } from "./WebsiteChatSection";
@@ -49,7 +50,9 @@ const STATUS_TONE: Record<string, string> = {
 
 /** The address to show, from whichever track has one (structured fields, or the webhook's line). */
 function displayAddress(lead: Lead): string | null {
-  if (lead.addressLine1) {
+  // A part address counts (plan lead-intake-fixes B1, "Allow part") — State alone does not, the
+  // form defaults it. Same guard as LeadsPage's copy.
+  if (lead.addressLine1 || lead.city || lead.postalCode) {
     return [lead.addressLine1, lead.addressLine2, lead.city, [lead.state, lead.postalCode].filter(Boolean).join(" ")]
       .filter(Boolean)
       .join(", ");
@@ -74,6 +77,8 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
     void queryClient.invalidateQueries({ queryKey: ["crm-analytics"] });
     void queryClient.invalidateQueries({ queryKey: ["calendar"] });
     for (const key of ADDRESS_QUERY_KEYS) void queryClient.invalidateQueries({ queryKey: [...key] });
+    // The Search panel stays open under this drawer — it would keep the old status.
+    for (const key of SEARCH_QUERY_KEYS) void queryClient.invalidateQueries({ queryKey: [...key] });
   };
 
   const [editing, setEditing] = useState(false);
@@ -196,7 +201,7 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
     nothing, so it is obvious there is something to set in the edit form.
   */
   const subtitle = lead
-    ? `${lead.source.replaceAll("_", " ")} · ${platformLabel(lead.platform).toLowerCase()} · received ${shortDate(lead.createdAt)}`
+    ? `${lead.source.replaceAll("_", " ")} · ${platformLabel(lead.platform).toLowerCase()} · received ${formatReceived(lead.receivedAt)}`
     : undefined;
 
   return (
@@ -221,7 +226,16 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
             {address && <p><span className="text-rce-soft">Address:</span> {address}</p>}
             {lead.jobType && <p><span className="text-rce-soft">Job type:</span> {lead.jobType}</p>}
             {lead.callType && <p><span className="text-rce-soft">Call type:</span> {lead.callType.replaceAll("_", " ")}</p>}
-            {lead.followUpDate && <p><span className="text-rce-soft">Follow up:</span> {shortDate(lead.followUpDate)}{lead.followUpReason ? ` — ${lead.followUpReason.replaceAll("_", " ")}` : ""}</p>}
+            {lead.followUpDate && <p><span className="text-rce-soft">Follow up:</span> {formatDay(lead.followUpDate)}{lead.followUpReason ? ` — ${lead.followUpReason.replaceAll("_", " ")}` : ""}</p>}
+            {/* The marketplace's own page for this lead (Kyle, 2026-11-15, F3). http/https only, new tab. */}
+            {lead.sourceUrl && parseSourceUrl(lead.sourceUrl).ok && (
+              <p>
+                <span className="text-rce-soft">Marketplace link:</span>{" "}
+                <a href={lead.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-rce-accent underline">
+                  Open on marketplace ↗
+                </a>
+              </p>
+            )}
             {lead.notes && <p className="whitespace-pre-wrap">{lead.notes}</p>}
             {lead.status === "lost" && lead.lostReason && (
               <p>Lost — {lead.lostReason}{lead.lostNotes ? `: "${lead.lostNotes}"` : ""}</p>
@@ -256,6 +270,9 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
                 : <span className="rounded bg-amber-100 px-2 py-1 font-medium text-amber-800">Converted — needs scheduling</span>}
             </p>
           )}
+
+          {/* The saved ballpark (Kyle, 2026-11-15): start / open it, see it, delete it — right here. */}
+          <LeadBallparkSection lead={lead} onNotice={setNotice} />
 
           <div className="flex flex-wrap gap-2">
             <button type="button" className="btn btn-secondary text-xs" onClick={() => setEditing(true)}>Edit</button>
@@ -306,7 +323,12 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
                 type="button"
                 className="btn btn-danger text-xs"
                 disabled={remove.isPending}
-                onClick={() => { if (window.confirm(`Delete lead "${lead.name}"? This cannot be undone.`)) remove.mutate(); }}
+                onClick={() => {
+                  // Its unsent ballpark goes too (Kyle's default, 2026-11-15) — the confirm says so.
+                  const ballpark = lead.ballparks?.[0];
+                  const also = ballpark ? ` Its saved ballpark estimate "${ballpark.title}" will be deleted too.` : "";
+                  if (window.confirm(`Delete lead "${lead.name}"?${also} This cannot be undone.`)) remove.mutate();
+                }}
               >
                 Delete
               </button>

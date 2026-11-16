@@ -1,4 +1,5 @@
 import { useNavigate, useParams } from "react-router-dom";
+import { LeadBallparkSection } from "../components/LeadBallparkSection";
 import { LeadForm } from "../components/LeadForm";
 import { PageHeader } from "../components/PageHeader";
 import { useLead } from "../lib/recordQueries";
@@ -36,6 +37,12 @@ export function LeadFormPage() {
             : "A walk-in, a referral, a job written on the back of an invoice."
         }
       />
+      {/* The saved ballpark (Kyle, 2026-11-15) — the same section the lead drawer carries. */}
+      {existing && (
+        <div className="mb-4">
+          <LeadBallparkSection lead={existing} />
+        </div>
+      )}
       <LeadForm
         existing={existing ?? null}
         onSaved={(lead) => navigate("/leads", { state: { highlight: lead.id } })}

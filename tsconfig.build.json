@@ -39,6 +39,9 @@
     // WRITER with --apply (dry by default): moves this month's card swipes onto the truck whose card made them,
     // and a PO that was auto-drafted from that one swipe with it (Kyle, 2026-11-15). Not read-only — see readSystemEvents.ts above for the read-only ones.
     "scripts/rerouteCardSpendByCard.ts",
+    // WRITER with --apply (dry by default): puts every lead's Status and Call outcome back in step on "lost", and lists
+    // the "won"-but-not-converted leads without touching them (Kyle, 2026-11-15, plan lead-intake-fixes B4). Not read-only.
+    "scripts/reconcileLeadStatus.ts",
     // Duplicate-receipt removal + re-roll through the one material writer (Kyle, 2026-09-08 "do both").
     "scripts/removeReceipts.ts",
     // Deliverability probe: sends one branded email through the production transport to an address you name (Kyle, 2026-09-09).

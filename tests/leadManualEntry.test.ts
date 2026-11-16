@@ -61,14 +61,33 @@ describe("POST /crm/leads", () => {
     await request(app).post("/crm/leads").send({ phone: PHONE_TYPED }).expect(400);
   });
 
-  it("refuses a partial address rather than storing blanks", async () => {
-    // The old convert path wrote empty-string city/state/ZIP. This is where that
-    // becomes impossible.
-    await request(app)
+  it("saves a lead with only part of an address (Kyle, 2026-11-15: \"Allow part\")", async () => {
+    // Yelp and Nextdoor give a city and ZIP, not a street. The lead saves; only CONVERT needs all
+    // four (see the convert tests below), and nothing is stored as an empty string.
+    const res = await request(app)
       .post("/crm/leads")
-      .send(newLead({ city: undefined }))
-      .expect(400)
-      .expect((res) => expect(res.body.error).toMatch(/street, city, state and ZIP together/));
+      .send(newLead({ addressLine1: null, state: null }))
+      .expect(201);
+    expect(res.body.lead.addressLine1).toBeNull();
+    expect(res.body.lead.state).toBeNull();
+    expect(res.body.lead.city).toBe("Smyrna");
+    expect(res.body.lead.postalCode).toBe("37167");
+  });
+
+  it("accepts a lead whose four address fields arrive as null, exactly as the form sends them", async () => {
+    // LeadForm's orNull turns every blank box into null. zod's .optional() alone rejects null,
+    // which is what refused five Nextdoor leads on 2026-11-15.
+    const res = await request(app)
+      .post("/crm/leads")
+      .send({
+        name: `${TAG} Null Address`, phone: PHONE_TYPED, email: null,
+        addressLine1: null, addressLine2: null, city: null, state: null, postalCode: null,
+      })
+      .expect(201);
+    expect(res.body.lead.addressLine1).toBeNull();
+    expect(res.body.lead.city).toBeNull();
+    expect(res.body.lead.state).toBeNull();
+    expect(res.body.lead.postalCode).toBeNull();
   });
 
   it("accepts a lead with no address at all", async () => {
@@ -138,14 +157,24 @@ describe("PATCH /leads/:leadId", () => {
     expect(res.body.propertyId).toBe(property.id);
   });
 
-  it("evaluates the address against the merged row, not the patch alone", async () => {
-    // Clearing one field of a complete address leaves a fragment — which is
-    // exactly what the all-or-nothing rule exists to stop.
+  it("lets an edit clear part of an address, and all of it, storing nulls", async () => {
+    // "Allow part" (Kyle, 2026-11-15): clearing the city leaves a fragment, which is now fine on a
+    // lead. Clearing every box — the null payload the form sends — leaves none.
     const created = await request(app).post("/crm/leads").send(newLead()).expect(201);
-    await request(app)
+    const part = await request(app)
       .patch(`/leads/${created.body.lead.id}`)
       .send({ city: null })
-      .expect(400);
+      .expect(200);
+    expect(part.body.city).toBeNull();
+    expect(part.body.addressLine1).toBe("220 Oak St");
+
+    const none = await request(app)
+      .patch(`/leads/${created.body.lead.id}`)
+      .send({ addressLine1: null, addressLine2: null, city: null, state: null, postalCode: null })
+      .expect(200);
+    expect(none.body.addressLine1).toBeNull();
+    expect(none.body.state).toBeNull();
+    expect(none.body.postalCode).toBeNull();
   });
 
   it("rejects a lost reason outside the enum", async () => {
@@ -235,6 +264,39 @@ describe("PATCH /leads/:leadId/convert", () => {
     const after = await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } });
     expect(after.status).toBe("new");
     await request(app).delete(`/leads/${lead.id}`).expect(204);
+  });
+
+  it("refuses a lead holding only part of an address, names what is missing, and writes nothing", async () => {
+    // A lead may SAVE with a city and ZIP; converting it must never build a Property from them.
+    const created = await request(app)
+      .post("/crm/leads")
+      .send({ name: `${TAG} Partial`, phone: "615-555-0198", city: "Smyrna", postalCode: "37167" })
+      .expect(201);
+    const before = await countCustomers();
+    const properties = await prisma.property.count();
+
+    const res = await request(app)
+      .patch(`/leads/${created.body.lead.id}/convert`)
+      .send({ createNewAccount: true })
+      .expect(400);
+
+    expect(res.body.needs).toBe("address");
+    expect(res.body.message).toMatch(/only part of an address/);
+    expect(res.body.message).toMatch(/street address, state/);
+    expect(res.body.message).toMatch(/Nothing was created/);
+    expect(await countCustomers()).toBe(before);
+    expect(await prisma.property.count()).toBe(properties);
+    const after = await prisma.lead.findUniqueOrThrow({ where: { id: created.body.lead.id } });
+    expect(after.status).toBe("new");
+    // Fix it and it converts.
+    await request(app)
+      .patch(`/leads/${created.body.lead.id}`)
+      .send({ addressLine1: "5 Elm St", state: "TN" })
+      .expect(200);
+    await request(app)
+      .patch(`/leads/${created.body.lead.id}/convert`)
+      .send({ createNewAccount: true })
+      .expect(200);
   });
 
   it("writes nothing when there's no address at all", async () => {

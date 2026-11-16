@@ -36,6 +36,14 @@ export const ADDRESS_QUERY_KEYS = [
   ["property"],
 ] as const;
 
+/**
+ * The global Search panel (Ctrl K, GlobalSearch.tsx) caches under `["search", { q }]` and stays
+ * open underneath a record's drawer, so a lead saved from the drawer or the form left it showing the
+ * old status (plan lead-intake-fixes, B2: "search kept showing lost after the detail showed
+ * contacted"). Every lead save invalidates this too.
+ */
+export const SEARCH_QUERY_KEYS = [["search"]] as const;
+
 /*
   ── A QUERY KEY NAMES A RESPONSE SHAPE, NOT A SUBJECT ──────────────────────────────────────────
 

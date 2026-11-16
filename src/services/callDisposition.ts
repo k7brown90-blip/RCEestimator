@@ -6,6 +6,7 @@
  */
 import { prisma } from "../lib/prisma";
 import { normalizePhone } from "../routes/agent-helpers";
+import { toFollowUpInstant } from "../../shared/calendarDay";
 
 export interface CallDispositionInput {
   leadId?: string;
@@ -37,7 +38,8 @@ export async function applyCallDisposition(input: CallDispositionInput): Promise
     });
   }
 
-  const followUpDate = input.followUpDate ? new Date(`${input.followUpDate}T12:00:00Z`) : undefined;
+  // A bare YYYY-MM-DD becomes noon UTC of that day — the one calendar-day rule in shared/calendarDay.ts.
+  const followUpDate = input.followUpDate ? toFollowUpInstant(input.followUpDate) : undefined;
   const dispositionNote = `[Call ${new Date().toISOString().slice(0, 10)}] ${input.callType}/${input.leadStatus}${input.notes ? ` — ${input.notes}` : ""}`;
 
   let created = false;

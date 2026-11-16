@@ -4,6 +4,7 @@ import { LEAD_PLATFORMS, type LeadPlatform } from "../../../shared/leadPlatform"
 import type { DraftOptionSet, EstimateOptionLetter } from "../../../shared/estimateOptions";
 import type { DraftLifecycle } from "../../../shared/draftLifecycle";
 import type { QuoteMoney } from "../../../shared/quoteMoney";
+import type { LeadBallpark } from "../../../shared/leadBallpark";
 
 export type { IssuedEstimateStatus };
 export type EstimateStatus = "draft" | "review" | "sent" | "accepted" | "declined" | "expired" | "revised";
@@ -771,6 +772,12 @@ export type Lead = {
   bookingChat?: LeadBookingChat | null;
   photos?: LeadPhotoMeta[];
   /**
+   * The lead's saved ballpark estimate (Kyle, 2026-11-15, plan lead-intake-fixes F4) — a lead holds
+   * one. Only on the single-lead read; the lead drawer and the lead page show it. Once the lead is
+   * converted it is the consultation's quote (`visitId` set).
+   */
+  ballparks?: LeadBallpark[];
+  /**
    * TRI-STATE, READ-ONLY IN THE CRM (PUNCHLIST E1). `true` = ticked the consent box on the
    * website form, `false` = shown the box and left it unticked, `null` = never asked (phone,
    * email, manual leads). This is what the A2P registration attests to and only `true` opens
@@ -779,6 +786,14 @@ export type Lead = {
    */
   smsConsent?: boolean | null;
   createdAt: string;
+  /**
+   * When the lead FIRST reached Red Cedar - the marketplace's own day for a back-entered Yelp or
+   * Angi lead (stored as noon UTC, read with `formatDay`/`dayOf` from shared/calendarDay.ts).
+   * `createdAt` is only when the row was typed in. The Received label and list order read this.
+   */
+  receivedAt: string;
+  /** The marketplace's own link to the lead (http or https). Optional. */
+  sourceUrl?: string | null;
   updatedAt: string;
 };
 
@@ -812,6 +827,14 @@ export type LeadWriteInput = {
   lostNotes?: string | null;
   customerId?: string | null;
   propertyId?: string | null;
+  /**
+   * The day the lead really arrived, `YYYY-MM-DD`. LEFT OUT (undefined) when the box is untouched:
+   * a new lead then takes "now", and an edit never rewrites a stored date it was not asked to.
+   * Sent as "" to put a lead back on the day it was entered.
+   */
+  receivedAt?: string | null;
+  /** The marketplace link; "" or null clears it. */
+  sourceUrl?: string | null;
 };
 
 /** An account that might already be this caller. See services/customerMatch.ts. */
@@ -834,6 +857,22 @@ export type CustomerMatch = {
   }[];
   visitCount: number;
   lastVisitAt: string | null;
+};
+
+/**
+ * A lead that looks like the one being typed - the "Already a lead" part of the lead form's match
+ * panel (plan lead-intake-fixes F2). Open or lost leads only; a converted lead shows as its account.
+ */
+export type LeadMatch = {
+  leadId: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  status: LeadStatus;
+  platform: LeadPlatform | null;
+  /** The day it really arrived (Lead.receivedAt). */
+  receivedAt: string;
+  matchedOn: ("phone" | "email" | "name")[];
 };
 
 /** WHICH PLATFORM sent the lead — shared/leadPlatform.ts owns it, the CRM only renders it. */
@@ -1246,6 +1285,14 @@ export type TreasurySettings = {
   chaseAccountLabel: string | null;
   /** Stripe's payout-method id for the Chase account — the outbound transfer destination. */
   chaseExternalAccountId: string | null;
+};
+
+/** Settings -> "AI admin login" (Kyle, 2026-11-15). The server never returns the password or its hash. */
+export type AdminLoginStatus = {
+  configured: boolean;
+  username: string | null;
+  enabled: boolean;
+  updatedAt: string | null;
 };
 
 export type TreasurySweepRow = {
@@ -1916,6 +1963,12 @@ export interface PbDraft {
   billedLaborRate: number | null;
   updatedAt?: string;
   _count?: { lines: number; questions: number };
+  /**
+   * Review payload only (2026-11-15): why this draft cannot be sent yet — it is a ballpark on a lead
+   * with no visit — or null. The server's sentence (shared/leadBallpark.ts); the builder greys the
+   * send controls with it.
+   */
+  ballparkLockReason?: string | null;
 }
 
 export interface PbLine {

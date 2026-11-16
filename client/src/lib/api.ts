@@ -15,6 +15,7 @@ import type {
   CrmFunnelReport,
   Customer,
   CustomerMatch,
+  LeadMatch,
   EmailBouncePollResult,
   EmailBounceRow,
   EmailDeliveryRow,
@@ -60,6 +61,7 @@ import type {
   BankLineView,
   BankStatementView,
   TreasurySettings,
+  AdminLoginStatus,
   TreasurySweepRow,
   SweepView,
   CardSpendKind,
@@ -1125,12 +1127,24 @@ export const api = {
   leadPhotoUrl: (leadId: string, photoId: string) =>
     fetchProtectedObjectUrl(`/leads/${leadId}/photos/${photoId}`),
   /** Accounts that might already be this caller — drives the duplicate picker. */
-  customerMatches: (params: { phone?: string; email?: string; name?: string }) => {
+  customerMatches: (params: {
+    phone?: string; email?: string; name?: string;
+    /** Lead form only: also return accounts whose FULL name matches with no phone or email hit. */
+    includeNameOnly?: boolean;
+    /** Lead form only: also return open and lost leads that look like this one. */
+    includeLeads?: boolean;
+    /** The lead being edited, so it never lists itself. */
+    excludeLeadId?: string;
+  }) => {
     const search = new URLSearchParams();
     if (params.phone?.trim()) search.set("phone", params.phone.trim());
     if (params.email?.trim()) search.set("email", params.email.trim());
     if (params.name?.trim()) search.set("name", params.name.trim());
-    return request<{ matches: CustomerMatch[] }>(`/crm/customer-matches?${search.toString()}`);
+    if (params.includeNameOnly) search.set("includeNameOnly", "1");
+    if (params.includeLeads) search.set("includeLeads", "1");
+    if (params.excludeLeadId) search.set("excludeLeadId", params.excludeLeadId);
+    // `leadMatches` is only filled when `includeLeads` was asked for (and absent from older mocks).
+    return request<{ matches: CustomerMatch[]; leadMatches?: LeadMatch[] }>(`/crm/customer-matches?${search.toString()}`);
   },
   // ─── Calendar / Schedule ────────────────────────────────────────────────────
   weekSchedule: () => request<WeekSchedule>("/crm/schedule/week"),
@@ -1507,6 +1521,13 @@ export const api = {
   treasurySettings: () => request<TreasurySettings>("/settings/treasury"),
   saveTreasurySettings: (input: TreasurySettings) =>
     request<TreasurySettings>("/settings/treasury", { method: "PUT", body: JSON.stringify(input) }),
+  // ── Settings -> "AI admin login" (Kyle, 2026-11-15): the AI admin's own username + password. ──
+  adminLogin: () => request<AdminLoginStatus>("/settings/admin-login"),
+  saveAdminLogin: (input: { username: string; password: string }) =>
+    request<AdminLoginStatus>("/settings/admin-login", { method: "PUT", body: JSON.stringify(input) }),
+  turnOffAdminLogin: () => request<AdminLoginStatus>("/settings/admin-login/disable", { method: "POST" }),
+  turnOnAdminLogin: () => request<AdminLoginStatus>("/settings/admin-login/enable", { method: "POST" }),
+  removeAdminLogin: () => request<AdminLoginStatus>("/settings/admin-login", { method: "DELETE" }),
   financialsSweep: (fresh = false) => request<SweepView>(`/financials/sweep${fresh ? "?fresh=1" : ""}`),
   runSweep: (input: { amount: number; confirm: string }) =>
     request<{ sweep: TreasurySweepRow; excessAtClick: number | null }>("/financials/sweep", { method: "POST", body: JSON.stringify(input) }),
