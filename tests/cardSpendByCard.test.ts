@@ -33,7 +33,9 @@ vi.mock("../src/services/stripePayments", async (importOriginal) => {
   return {
     ...mod,
     stripeConfigured: () => true,
-    stripe: () => ({ treasury: { receivedDebits: { retrieve: mocks.receivedDebitRetrieve } } }),
+    // The card is read off the v2 ReceivedDebit via rawRequest (the v1 Treasury retrieve answers
+    // "Unrecognized request URL" on this account — production, 2026-11-15).
+    stripe: () => ({ rawRequest: mocks.receivedDebitRetrieve }),
   };
 });
 vi.mock("../src/services/systemEvents", async (importOriginal) => {
@@ -90,11 +92,12 @@ function txn(over: Partial<Record<string, unknown>> = {}) {
   };
 }
 
-/** What stripe.treasury.receivedDebits.retrieve answers for a swipe made on `card`. */
+/** What GET /v2/money_management/received_debits/:id answers for a swipe made on `card`. */
 const debitOnCard = (card: string) => ({
   id: "rd_mock",
-  initiating_payment_method_details: { type: "issuing_card", issuing_card: card, billing_details: {} },
-  linked_flows: { issuing_transaction: "ipi_mock" },
+  object: "v2.money_management.received_debit",
+  type: "card_spend",
+  card_spend: { card_v1_id: card, card_transactions: [] },
 });
 
 beforeAll(async () => {
@@ -129,7 +132,12 @@ describe("a swipe goes to the truck whose card made it", () => {
     const row = txn();
     const { spend, created } = await ingestFinancialAccountTransaction(row);
     expect(created).toBe(true);
-    expect(mocks.receivedDebitRetrieve).toHaveBeenCalledWith(row.flow.received_debit);
+    expect(mocks.receivedDebitRetrieve).toHaveBeenCalledWith(
+      "GET",
+      `/v2/money_management/received_debits/${row.flow.received_debit}`,
+      undefined,
+      expect.objectContaining({ apiVersion: expect.stringMatching(/.preview$/) }),
+    );
     expect(spend.truckId).toBe(truckB);
     expect(spend.stripeCardId).toBe(CARD_B);
   });
@@ -180,8 +188,19 @@ describe("a card that cannot be read never breaks the ingest", () => {
   });
 
   it("a received debit that names no issuing card falls back to the account", async () => {
-    mocks.receivedDebitRetrieve.mockResolvedValue({ id: "rd_x", initiating_payment_method_details: { type: "us_bank_account", billing_details: {} } });
+    mocks.receivedDebitRetrieve.mockResolvedValue({ id: "rd_x", type: "bank_transfer", bank_transfer: { statement_descriptor: "X" } });
     const { spend } = await ingestFinancialAccountTransaction(txn({ counterparty: { name: "SHELL OIL 789/HERMITAGE/USA" } }));
+    expect(spend.truckId).toBe(truckA);
+    expect(spend.stripeCardId).toBe(FA);
+    // The reason names the fields that came back (never their values), so a dry run shows the real shape.
+    const info = mocks.logSystemEvent.mock.calls.find(([level, source]) => level === "info" && source === "card-spend");
+    expect(String(info?.[2])).toContain("type bank_transfer; fields: type, bank_transfer");
+    expect(String(info?.[2])).not.toContain("statement_descriptor");
+  });
+
+  it("an id that is not an ic_ card is never taken as the card", async () => {
+    mocks.receivedDebitRetrieve.mockResolvedValue({ id: "rd_y", type: "card_spend", card_spend: { card_v1_id: FA } });
+    const { spend } = await ingestFinancialAccountTransaction(txn({ counterparty: { name: "SHELL OIL 790/HERMITAGE/USA" } }));
     expect(spend.truckId).toBe(truckA);
     expect(spend.stripeCardId).toBe(FA);
   });

@@ -207,13 +207,38 @@ async function truckForFinancialAccount(financialAccountId: string | null): Prom
  * Kyle, 2026-11-15: "The cards have their own tracking on stripe from the same account we will have
  * to connect specifically to the card rather than the spending account." Both cards (••••9891
  * Michael Schramm, ••••3805 Kyle Brown) draw on ONE Field Expenses financial account, so routing by
- * the account sent every swipe to one truck. The v2 transaction does not carry the card; the
- * Treasury ReceivedDebit it points at (flow.received_debit) does, in
- * initiating_payment_method_details.issuing_card (stripe 22.5.0, Treasury/ReceivedDebits.d.ts).
- * UNPROVEN on production: that the v2 flow.received_debit id is the rd_ id the v1 retrieve accepts —
- * so a lookup that fails, or names no card, is an answer ({ cardId: null, reason }) and never a throw.
+ * the account sent every swipe to one truck. The v2 transaction does not carry the card; the v2
+ * ReceivedDebit it points at (flow.received_debit) does, in card_spend.card_v1_id.
+ *
+ * Proven on production 2026-11-15: the v1 Treasury retrieve (stripe.treasury.receivedDebits)
+ * answers "Unrecognized request URL" — this account is on v2 money management, not Treasury — so the
+ * read is GET /v2/money_management/received_debits/:id through rawRequest, like the transaction feed.
+ * That object is a preview API with no public reference page, so a lookup that fails, or names no
+ * card, is an answer ({ cardId: null, reason }) and never a throw; the reason lists the field NAMES
+ * that did come back so the reroute dry run shows the real shape.
  */
 export interface CardLookup { cardId: string | null; reason: string | null }
+
+/** The parts of a v2 ReceivedDebit this reads. card_spend is present when type is "card_spend". */
+interface V2ReceivedDebit {
+  type?: string | null;
+  card_spend?: { card_v1_id?: string | null; [k: string]: unknown } | null;
+  [k: string]: unknown;
+}
+
+/** The ic_ card on a v2 ReceivedDebit, or null. Only an ic_ id counts — never a guess. */
+function cardOfReceivedDebit(rd: V2ReceivedDebit | null | undefined): string | null {
+  const card = rd?.card_spend?.card_v1_id;
+  return typeof card === "string" && /^ic_/.test(card) ? card : null;
+}
+
+/** Field names only (never values) — what the reason shows when no card was found. */
+function fieldNames(rd: V2ReceivedDebit | null | undefined): string {
+  if (!rd || typeof rd !== "object") return "none";
+  const top = Object.keys(rd).filter((k) => k !== "id" && k !== "object");
+  const spend = rd.card_spend && typeof rd.card_spend === "object" ? Object.keys(rd.card_spend).map((k) => `card_spend.${k}`) : [];
+  return [...top, ...spend].join(", ") || "none";
+}
 export interface CardResolver { lookup(receivedDebitId: string | null | undefined): Promise<CardLookup> }
 
 /**
@@ -239,13 +264,17 @@ export function createCardResolver(): CardResolver {
         out = { cardId: null, reason: refusal };
       } else {
         try {
-          const rd = await stripe().treasury.receivedDebits.retrieve(receivedDebitId);
-          const card = rd?.initiating_payment_method_details?.issuing_card;
-          if (typeof card === "string" && card) {
+          const rd = (await stripe().rawRequest(
+            "GET",
+            `/v2/money_management/received_debits/${encodeURIComponent(receivedDebitId)}`,
+            undefined,
+            { apiVersion: previewApiVersion() },
+          )) as V2ReceivedDebit | null;
+          const card = cardOfReceivedDebit(rd);
+          if (card) {
             out = { cardId: card, reason: null };
           } else {
-            const type = rd?.initiating_payment_method_details?.type ?? "none";
-            out = { cardId: null, reason: `received debit ${receivedDebitId} names no issuing card (initiated by ${type})` };
+            out = { cardId: null, reason: `received debit ${receivedDebitId} names no card (type ${rd?.type ?? "none"}; fields: ${fieldNames(rd)})` };
             if (!noted) {
               noted = true;
               logSystemEvent("info", "card-spend", `Card not readable from the received debit — routing by financial account instead: ${out.reason}`, { receivedDebitId });
