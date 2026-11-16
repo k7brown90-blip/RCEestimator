@@ -15,7 +15,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "./agent-helpers";
 import {
-  CARD_SPEND_INCLUDE, CARD_SPEND_KINDS, listIssuingCards, readBalances, serializeCardSpend,
+  CARD_SPEND_INCLUDE, CARD_SPEND_KINDS, activeTruckCountByAccount, listIssuingCards, readBalances, serializeCardSpend,
   syncCardSpend, truckSpendRollups, updateCardSpend,
 } from "../services/cardSpend";
 import { PO_LIST_INCLUDE, defaultTruckId, serializePurchaseOrder } from "../services/purchaseOrders";
@@ -56,6 +56,8 @@ trucksRouter.get("/trucks", asyncHandler(async (_req, res) => {
     truckInventoryRollups(),
   ]);
   const faById = new Map(balances.financialAccounts.map((fa) => [fa.id, fa]));
+  // Kyle, 2026-11-15: the balance below is the ACCOUNT's — say how many trucks share it.
+  const sharedBy = activeTruckCountByAccount(trucks);
   res.json({
     balancesAvailable: balances.available,
     balancesReason: balances.reason ?? null,
@@ -72,7 +74,7 @@ trucksRouter.get("/trucks", asyncHandler(async (_req, res) => {
         cardLast4: t.cardLast4,
         stripeFinancialAccountId: t.stripeFinancialAccountId,
         notes: t.notes,
-        balance: fa ? { cashUsd: fa.cashUsd, inboundPending: fa.inboundPending, outboundPending: fa.outboundPending, status: fa.status } : null,
+        balance: fa ? { cashUsd: fa.cashUsd, inboundPending: fa.inboundPending, outboundPending: fa.outboundPending, status: fa.status, sharedByTrucks: sharedBy.get(fa.id) ?? 0 } : null,
         mtd: { fuel: r.fuel, maintenance: r.maintenance, materials: r.materials, tool: r.tool, other: r.other },
         unmatchedMaterials: r.unmatched,
         // Kyle, 2026-09-09 (Build 3): what the truck is carrying — stock at moving-average cost, and its tools.
@@ -229,6 +231,10 @@ trucksRouter.get("/trucks/:id", asyncHandler(async (req, res) => {
     return { kind, total: Math.round(counted.reduce((s, r) => s + r.amount, 0) * 100) / 100, rows: mine };
   });
   const fa = truck.stripeFinancialAccountId ? balances.financialAccounts.find((f) => f.id === truck.stripeFinancialAccountId) ?? null : null;
+  // Kyle, 2026-11-15: the balance is the ACCOUNT's — say how many active trucks share it.
+  const sharedByTrucks = truck.stripeFinancialAccountId
+    ? await prisma.truck.count({ where: { stripeFinancialAccountId: truck.stripeFinancialAccountId, isActive: true } })
+    : 0;
   res.json({
     truck,
     year,
@@ -236,7 +242,7 @@ trucksRouter.get("/trucks/:id", asyncHandler(async (req, res) => {
     // "PO-XXXX, $651.73 at Home Depot — attach the receipt" (Kyle, 2026-09-19): the proof lives on the PO.
     needingReceipt: rows.filter((r) => r.needsProof),
     purchaseOrders: orders.map(serializePurchaseOrder),
-    balance: fa ? { cashUsd: fa.cashUsd, inboundPending: fa.inboundPending, outboundPending: fa.outboundPending, status: fa.status } : null,
+    balance: fa ? { cashUsd: fa.cashUsd, inboundPending: fa.inboundPending, outboundPending: fa.outboundPending, status: fa.status, sharedByTrucks: sharedByTrucks } : null,
     balancesAvailable: balances.available,
     balancesReason: balances.reason ?? null,
     stockValue: inventory.get(id)?.stockValue ?? 0,

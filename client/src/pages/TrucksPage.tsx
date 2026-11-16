@@ -21,6 +21,7 @@ import { AttachProofButton, useLivePurchaseOrders } from "../components/Purchase
 import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
+import { accountBalanceLabel, isSharedAccount } from "../lib/truckBalance";
 import type { CardSpendKind, CardSpendRow, TruckRow } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
 
@@ -124,7 +125,7 @@ export function TrucksPage() {
                   {!t.isActive && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[11px] text-slate-700">retired</span>}
                 </span>
                 <span className="flex flex-wrap items-center gap-3 text-xs tabular-nums text-rce-muted">
-                  <span>balance {t.balance ? money(t.balance.cashUsd) : t.stripeFinancialAccountId ? "—" : "no account"}</span>
+                  <span>{accountBalanceLabel(t.balance?.sharedByTrucks)}{isSharedAccount(t.balance?.sharedByTrucks) ? ":" : ""} {t.balance ? money(t.balance.cashUsd) : t.stripeFinancialAccountId ? "—" : "no account"}</span>
                   <span>MTD fuel {money(t.mtd.fuel)}</span>
                   <span>maint. {money(t.mtd.maintenance)}</span>
                   <span>materials on card {money(t.mtd.materials)}</span>
@@ -173,7 +174,7 @@ function TruckDetailPanel({ truck, year, technicians }: { truck: TruckRow; year:
       <TruckSettings truck={truck} technicians={technicians} />
       {detail.balance && (
         <p className="tabular-nums">
-          Financial account <span className="font-semibold">{money(detail.balance.cashUsd)}</span> cash
+          {isSharedAccount(detail.balance.sharedByTrucks) ? `${accountBalanceLabel(detail.balance.sharedByTrucks)}:` : "Financial account"} <span className="font-semibold">{money(detail.balance.cashUsd)}</span> cash
           {detail.balance.inboundPending ? ` · ${money(detail.balance.inboundPending)} inbound pending` : ""}
           {detail.balance.outboundPending ? ` · ${money(detail.balance.outboundPending)} outbound pending` : ""}
           <span className="text-rce-muted"> · {detail.balance.status}</span>

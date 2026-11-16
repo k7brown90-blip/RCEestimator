@@ -60,3 +60,47 @@ describe("PinLoginPage", () => {
     expect(await screen.findByText("Landed on home")).toBeInTheDocument();
   });
 });
+
+describe("PinLoginPage secure fill and paste", () => {
+  it("unlocks with a PIN written straight onto the box (secure fill: no key or change event)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ token: "tok-1" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    renderLogin({ pathname: "/login" });
+
+    const input = screen.getByPlaceholderText("••••") as HTMLInputElement;
+    // The native setter, with NO input/change event fired — what a browser autofill does.
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "1234");
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+
+    expect(await screen.findByText("Landed on home")).toBeInTheDocument();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/auth/pin");
+    expect(JSON.parse(init.body as string)).toEqual({ pin: "1234" });
+  });
+
+  it("gives the box a name and autocomplete so a password manager recognises the login form", () => {
+    renderLogin({ pathname: "/login" });
+    const input = screen.getByPlaceholderText("••••");
+    expect(input).toHaveAttribute("name", "pin");
+    expect(input).toHaveAttribute("autocomplete", "current-password");
+    expect(document.querySelector('input[name="username"]')).toHaveAttribute("autocomplete", "username");
+  });
+
+  it("leaves Unlock enabled with an empty box", () => {
+    renderLogin({ pathname: "/login" });
+    expect(screen.getByRole("button", { name: "Unlock" })).toBeEnabled();
+  });
+
+  it("shows the server's message when the PIN is refused", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: "Invalid PIN" }) }),
+    );
+    renderLogin({ pathname: "/login" });
+
+    fireEvent.change(screen.getByPlaceholderText("••••"), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+
+    expect(await screen.findByText("Invalid PIN")).toBeInTheDocument();
+  });
+});

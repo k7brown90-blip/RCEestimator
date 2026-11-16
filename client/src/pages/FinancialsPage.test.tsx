@@ -265,6 +265,60 @@ describe("FinancialsPage", () => {
   });
 });
 
+describe("FinancialsPage — Outstanding counts what the warranty company still owes (Kyle, 2026-11-15)", () => {
+  // Patricia Copeland: homeowner share paid (balance 0), RELY's $370 check not in yet.
+  const copeland = (overrides: Partial<InvoiceSummary> = {}) => invoice({
+    id: "inv-copeland", number: "EST-2026-0011", balance: 0, totalPaid: 1200, collected: 1200, billedTotal: 1200, paymentStatus: "paid",
+    customer: { id: "acct-cope", name: "Patricia Copeland" },
+    warrantyCovered: 370, warrantyPaid: 0, warrantyBalance: 370,
+    warrantyClaim: { company: "RELY" } as InvoiceSummary["warrantyClaim"],
+    ...overrides,
+  });
+  const outstandingSection = async () => (await screen.findByRole("heading", { name: /^Outstanding \(/ })).closest("section")!;
+
+  it("an invoice with balance 0 and warrantyBalance 370 is counted in the tile and listed with the company's line", async () => {
+    mockEverything([
+      copeland(),
+      invoice({ id: "inv-plain", number: "EST-2026-0012", balance: 100, billedTotal: 100, customer: { id: "acct-2", name: "Plain Homeowner" } }),
+    ]);
+
+    renderWithProviders(<FinancialsPage />);
+
+    const card = within(await outstandingSection());
+    expect(await card.findByRole("heading", { name: "Outstanding (2)" })).toBeInTheDocument();
+    // The Outstanding tile = the homeowner's $100 + RELY's $370.
+    expect(card.getByText("$470.00")).toBeInTheDocument();
+    // The row says who owes what: the homeowner paid, RELY owes.
+    const row = card.getByRole("button", { name: /Patricia Copeland/ });
+    expect(within(row).getByText("RELY owes $370.00")).toBeInTheDocument();
+    expect(within(row).getByText(/Homeowner paid/)).toBeInTheDocument();
+    // The attention chip uses the same rule.
+    const strip = await screen.findByRole("region", { name: /needs attention/i });
+    expect(within(strip).getByText("2 invoices outstanding · $470.00 owed")).toBeInTheDocument();
+  });
+
+  it("names both payers when both still owe, and the invoice leaves Outstanding once the warranty check is recorded", async () => {
+    mockEverything([
+      copeland({ balance: 200, paymentStatus: "partial", totalPaid: 1000 }),
+    ]);
+    const first = renderWithProviders(<FinancialsPage />);
+    const both = within(await within(await outstandingSection()).findByRole("button", { name: /Patricia Copeland/ }));
+    expect(both.getByText("Homeowner owes $200.00")).toBeInTheDocument();
+    expect(both.getByText("RELY owes $370.00")).toBeInTheDocument();
+    first.unmount();
+
+    // The warranty check is recorded: warrantyBalance 0, nothing else owed.
+    vi.restoreAllMocks();
+    mockEverything([copeland({ warrantyPaid: 370, warrantyBalance: 0 })]);
+    renderWithProviders(<FinancialsPage />);
+    const card = within(await outstandingSection());
+    // Wait for the invoices to load (the Collected tile shows Copeland's $1,200) before asserting she is gone.
+    expect(await card.findByText("$1,200.00")).toBeInTheDocument();
+    expect(card.getByRole("heading", { name: "Outstanding (0)" })).toBeInTheDocument();
+    expect(card.getByText("Nothing is owed. Every signed invoice is paid in full.")).toBeInTheDocument();
+  });
+});
+
 describe("FinancialsPage — job profitability pick list (ruling 6; review finding, 2026-10-09)", () => {
   it("a job whose card fee is still pending with Stripe says 'profit before pending card fees' in the pick list, not only one click deeper", async () => {
     mockEverything();
@@ -299,5 +353,22 @@ describe("FinancialsPage — job profitability pick list (ruling 6; review findi
     const settledRow = card.getByRole("button", { name: /Outlet add/ });
     expect(within(settledRow).getByText("$360.20")).toBeInTheDocument();
     expect(within(settledRow).queryByText(/pending/)).not.toBeInTheDocument();
+  });
+});
+
+describe("FinancialsPage — Balances strip names the shared account (Kyle, 2026-11-15)", () => {
+  it("says 'Field Expenses account balance — shared by 2 trucks' instead of naming one of the two trucks", async () => {
+    mockEverything();
+    vi.spyOn(api, "financialsBalances").mockResolvedValue({
+      payments: { available: 500, pending: 0 },
+      financialAccounts: [{ id: "fa_1", cashUsd: 812.25, inboundPending: 0, outboundPending: 0, status: "open", truckId: "t1", truckName: "Truck 1", truckCount: 2 }],
+      available: true,
+      readAt: "2026-09-18T12:00:00.000Z",
+    });
+
+    renderWithProviders(<FinancialsPage />);
+
+    expect(await screen.findByText(/Field Expenses account balance — shared by 2 trucks:/)).toBeInTheDocument();
+    expect(screen.queryByText(/^Truck 1 /)).not.toBeInTheDocument();
   });
 });

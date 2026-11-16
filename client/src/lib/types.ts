@@ -583,6 +583,8 @@ export type CalendarAppointment = {
   appointmentKind: AppointmentKind;
   scheduledStart: string;
   scheduledEnd: string | null;
+  /** Set once the consultation was closed out (its status stays "estimate"). */
+  completedAt: string | null;
   travelBufferMinutes: number;
   estimatedDurationDays: number | null;
   estimatedDurationHours: number | null;
@@ -604,6 +606,8 @@ export type UnscheduledJob = {
   purpose: string | null;
   appointmentKind: AppointmentKind;
   estimatedDurationDays: number | null;
+  /** Set once the consultation was closed out (its status stays "estimate"). */
+  completedAt: string | null;
   createdAt: string;
   /** Contracted rows: is the deposit in (Kyle's rail ruling, 2026-09-02)? Null for estimate visits. */
   depositSatisfied: boolean | null;
@@ -1163,7 +1167,8 @@ export type CardSpendRow = {
   createdAt: string;
 };
 
-export type TruckBalance = { cashUsd: number; inboundPending: number; outboundPending: number; status: string };
+/** `sharedByTrucks` (Kyle, 2026-11-15): how many active trucks draw on this one financial account — the balance is the ACCOUNT's. */
+export type TruckBalance = { cashUsd: number; inboundPending: number; outboundPending: number; status: string; sharedByTrucks?: number };
 export type TruckMtd = { fuel: number; maintenance: number; materials: number; tool: number; other: number };
 
 export type TruckRow = {
@@ -1223,7 +1228,7 @@ export type IssuingCardsResponse =
 
 export type Balances = {
   payments: { available: number; pending: number } | null;
-  financialAccounts: { id: string; cashUsd: number; inboundPending: number; outboundPending: number; status: string; truckId: string | null; truckName: string | null }[];
+  financialAccounts: { id: string; cashUsd: number; inboundPending: number; outboundPending: number; status: string; truckId: string | null; truckName: string | null; truckCount?: number }[];
   available: boolean;
   reason?: string;
   readAt: string;

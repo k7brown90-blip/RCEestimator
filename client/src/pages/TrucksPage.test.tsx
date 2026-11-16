@@ -296,3 +296,32 @@ describe("TrucksPage — existing card-spend edit behaviour still holds", () => 
     }));
   });
 });
+
+describe("TrucksPage — the balance is the shared account's (Kyle, 2026-11-15)", () => {
+  const balance = { cashUsd: 1234.5, inboundPending: 0, outboundPending: 0, status: "open" };
+
+  it("labels the balance 'Field Expenses account balance — shared by 2 trucks' on the row and in the open truck, with the real count", async () => {
+    vi.spyOn(api, "trucks").mockResolvedValue({ ...trucksResponse, trucks: [{ ...truckRow, balance: { ...balance, sharedByTrucks: 2 } }] });
+    vi.spyOn(api, "technicians").mockResolvedValue([]);
+    vi.spyOn(api, "truck").mockResolvedValue(detail({ balance: { ...balance, sharedByTrucks: 2 } }));
+    vi.spyOn(api, "purchaseOrders").mockResolvedValue([]);
+
+    await openTruck();
+
+    // Row (always visible) and the open truck's own line both say whose money it is.
+    await waitFor(() => expect(screen.getAllByText(/Field Expenses account balance — shared by 2 trucks:/)).toHaveLength(2));
+    expect(screen.queryByText(/^balance \$/)).not.toBeInTheDocument();
+  });
+
+  it("uses plain 'balance' wording when only one truck draws on the account", async () => {
+    vi.spyOn(api, "trucks").mockResolvedValue({ ...trucksResponse, trucks: [{ ...truckRow, balance: { ...balance, sharedByTrucks: 1 } }] });
+    vi.spyOn(api, "technicians").mockResolvedValue([]);
+    vi.spyOn(api, "truck").mockResolvedValue(detail({ balance: { ...balance, sharedByTrucks: 1 } }));
+    vi.spyOn(api, "purchaseOrders").mockResolvedValue([]);
+
+    await openTruck();
+
+    expect(await screen.findByText(/balance \$1,234\.50/)).toBeInTheDocument();
+    expect(screen.queryByText(/shared by/)).not.toBeInTheDocument();
+  });
+});

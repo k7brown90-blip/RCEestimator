@@ -13,6 +13,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { SCHEDULE_QUERY_KEYS } from "../lib/queryKeys";
 import type { MonthSchedule, ScheduleJobResult, TechDayAvailability } from "../lib/types";
+import { JobCrew } from "./JobCrew";
+import type { CrewAvailability } from "./JobCrew";
 
 interface Props {
   jobId: string;
@@ -83,6 +85,21 @@ function busyDuringBusinessHours(busy: TechDayAvailability["busy"]): TechDayAvai
   });
 }
 
+/** One tech's line for the chosen day: the same words in the booking picker and beside the crew on a reschedule. */
+function availabilityLine(tech: TechDayAvailability): CrewAvailability {
+  // Filter out purely personal, out-of-hours events (e.g. a 7pm calendar block on the primary
+  // account) - they don't affect scheduling and were confusing to see next to a name.
+  const inHoursBusy = busyDuringBusinessHours(tech.busy);
+  const busyLabel = inHoursBusy.length > 0
+    ? inHoursBusy.map((b) => `${b.startLocal}–${b.endLocal}`).join(", ")
+    : "free all day";
+  if (!tech.calendarAccessible) return { tone: "warn", text: "calendar not shared — can't verify" };
+  if (tech.freeAtRequested === false) {
+    return { tone: "busy", text: inHoursBusy.length > 0 ? `busy: ${busyLabel}` : "conflict at the chosen time" };
+  }
+  return { tone: "ok", text: `available · ${busyLabel}` };
+}
+
 export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, durationDays, completedAt, onScheduled, autoOpen, pickedDate, onClose }: Props) {
   const queryClient = useQueryClient();
   // The host owns the date (Calendar page). Every `setSelectedDate` below still writes the
@@ -110,16 +127,50 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   // multi-day when the end date is later. Estimates keep the fixed blocks.
   const [endDate, setEndDate] = useState<string | null>(null);
   const [endTime, setEndTime] = useState("16:00");
-  const [technicianId, setTechnicianId] = useState<string | null>(null);
+  // The crew picked for a NEW booking (Kyle, 2026-11-15: "I am unable to assign multiple techs to
+  // the same job"). Tap order is kept; the first tapped leads unless "Make lead" names someone else.
+  // A job that is already booked changes its crew in JobCrew instead - one tool, not a second picker.
+  //
+  // A job can already have a crew before it has a date (the Job drawer's "Technicians on this job"
+  // works without one), so the picker opens with those techs shown as already on the job. They are
+  // locked here - removing someone is JobCrew's job, not the booking's - and the booking keeps them.
+  // The first tech tapped leads only when the job has no lead yet; otherwise a newly tapped tech
+  // helps until "Make lead" names them.
+  const [crewIds, setCrewIds] = useState<string[]>([]);
+  const [pickedLeadId, setPickedLeadId] = useState<string | null>(null);
+  const toggleCrew = (id: string) => setCrewIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"idle" | "schedule" | "reschedule" | "cancel">(
     autoOpen ? (scheduledStart ? "reschedule" : "schedule") : "idle",
   );
 
+  // A job is a Visit, so its crew is read by visit id - spelled the way JobCrew and
+  // HealthRecordPanel spell it, so tests/queryKeyCollisions.test.ts sees one read, not two.
+  const visitId = jobId;
   const invalidateAll = () => {
     for (const key of SCHEDULE_QUERY_KEYS) queryClient.invalidateQueries({ queryKey: key });
+    queryClient.invalidateQueries({ queryKey: ["visitAssignments", visitId] });
   };
+
+  // Who is already on the job - the same read JobCrew makes (one query key), so the two never disagree.
+  const { data: assignments } = useQuery({
+    queryKey: ["visitAssignments", visitId],
+    queryFn: () => api.visitAssignments(visitId),
+    enabled: mode === "schedule",
+  });
+  const onJob = (assignments ?? []).filter((a) => a.status !== "completed");
+  const onJobIds = new Set(onJob.map((a) => a.technicianId));
+  const existingLeadId = onJob.find((a) => a.role === "primary" || a.role === "lead")?.technicianId ?? null;
+  const newIds = crewIds.filter((id) => !onJobIds.has(id));
+  // What the booking names as lead: an explicit "Make lead" (new tech or one already on the job), else
+  // the first newly tapped tech when the job has no lead. Null leaves the job's lead alone.
+  const leadId = pickedLeadId && (newIds.includes(pickedLeadId) || onJobIds.has(pickedLeadId))
+    ? pickedLeadId
+    : (existingLeadId ? null : (newIds[0] ?? null));
+  const helperIds = newIds.filter((id) => id !== leadId);
+  // Who the screen marks as lead.
+  const shownLeadId = leadId ?? existingLeadId;
 
   const {
     data: schedule,
@@ -157,7 +208,7 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   // the conflict no longer applies, so it goes (the next Schedule click asks the server afresh).
   // Other 409s (someone else booking that date, an end before the start) are never overridable
   // and fall through to the ordinary red error line.
-  const requestKey = [mode, selectedDate, startTime, endDate ?? selectedDate, endTime, technicianId ?? ""].join("|");
+  const requestKey = [mode, selectedDate, startTime, endDate ?? selectedDate, endTime, leadId ?? "", helperIds.join(",")].join("|");
   const [calendarConflict, setCalendarConflict] = useState<{ message: string; key: string } | null>(null);
   const activeConflict = calendarConflict && calendarConflict.key === requestKey ? calendarConflict : null;
 
@@ -174,7 +225,8 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
 
   const scheduleMutation = useMutation({
     mutationFn: ({ override }: { override: boolean; key: string }) => api.scheduleJob(jobId, {
-      startDate: selectedDate!, startTime, technicianId: technicianId ?? undefined,
+      startDate: selectedDate!, startTime, technicianId: leadId ?? undefined,
+      ...(helperIds.length > 0 ? { helperTechnicianIds: helperIds } : {}),
       ...(isEstimateVisit ? {} : { endDate: endDate ?? selectedDate!, endTime }),
       ...(override ? { overrideCalendarConflict: true } : {}),
     }),
@@ -182,7 +234,8 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
       invalidateAll();
       setMode("idle");
       setSelectedDate(null);
-      setTechnicianId(null);
+      setCrewIds([]);
+      setPickedLeadId(null);
       setError(null);
       setCalendarConflict(null);
       onScheduled?.(result);
@@ -193,10 +246,6 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
   const rescheduleMutation = useMutation({
     mutationFn: ({ override }: { override: boolean; key: string }) => api.rescheduleJob(jobId, {
       newStartDate: selectedDate!, newStartTime: startTime, reason,
-      // PUNCHLIST C8: rescheduling can change who does the work, not just when — the picker
-      // below now renders in this mode too. Omitted (not sent as null) when nothing was
-      // picked, which the service reads as "leave the current assignment alone".
-      technicianId: technicianId ?? undefined,
       ...(isEstimateVisit ? {} : { endDate: endDate ?? selectedDate!, endTime }),
       ...(override ? { overrideCalendarConflict: true } : {}),
     }),
@@ -204,7 +253,6 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
       invalidateAll();
       setMode("idle");
       setSelectedDate(null);
-      setTechnicianId(null);
       setReason("");
       setError(null);
       setCalendarConflict(null);
@@ -534,16 +582,40 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
             )}
           </div>
 
-          {/* Tech picker — who actually takes this appointment. Availability comes from each
-              tech's own Google Calendar for the chosen date. PUNCHLIST C8: this used to render
-              only in schedule mode, so a technician could not be changed after the first
-              booking — reschedule offers it too, and it's optional there ("leave it alone"
-              unless picked, service-side). */}
-          {(mode === "schedule" || mode === "reschedule") && selectedDate && (
+          {/* Who is on a job that is ALREADY booked: the same "Technicians on this job" control the Job
+              drawer shows (Kyle, 2026-11-15). Add, remove and make-lead save at once and move the Google
+              invites; they do not wait for the date below. */}
+          {/* Each crew member's own "available / busy" line for the day picked above: a helper booked on
+              another job that day shows here before Kyle moves this one. */}
+          {mode === "reschedule" && (
+            <JobCrew
+              visitId={jobId}
+              status={status}
+              completedAt={completedAt}
+              availability={selectedDate && !techQuery.isError
+                ? Object.fromEntries(techs.map((t) => [t.technicianId, availabilityLine(t)]))
+                : undefined}
+              availabilityNote={selectedDate
+                ? (techQuery.isPending ? "Checking tech calendars…" : techQuery.isError ? "Couldn't read tech calendars for that day." : null)
+                : "Pick a day to see who is free."}
+            />
+          )}
+
+          {/* Crew picker for a NEW booking: tap techs to add or drop them, one is the Lead. Availability
+              comes from each tech's own Google Calendar for the chosen date (a helper is a guest on the
+              event, so their busy line on every other job's picker shows this one). */}
+          {mode === "schedule" && selectedDate && (
             <div>
               <p className="mb-1 text-xs font-medium text-rce-muted">
-                {mode === "reschedule" ? "Reassign technician (leave blank to keep as-is)" : "Assign technician"}
+                {existingLeadId
+                  ? "Assign technicians (tap to add or remove; new techs help unless you tap Make lead)"
+                  : "Assign technicians (tap to add or remove; the first one tapped leads)"}
               </p>
+              {onJob.length > 0 && (
+                <p className="mb-1 text-xs text-rce-muted">
+                  Greyed techs are already on this job and stay on it. To take one off, use Technicians on this job in the job&apos;s drawer.
+                </p>
+              )}
               {techQuery.isPending && <p className="text-xs text-rce-muted animate-pulse">Checking tech calendars…</p>}
               {techQuery.isError && (
                 <p className="text-xs text-red-600">Couldn't read tech calendars — you can still book without an assignment.</p>
@@ -553,42 +625,52 @@ export function JobScheduler({ jobId, status, scheduledStart, scheduledEnd, dura
               )}
               <div className="space-y-1">
                 {techs.map((tech) => {
-                  const selected = technicianId === tech.technicianId;
-                  // Filter out purely personal, out-of-hours events (e.g. a
-                  // 7pm calendar block on the primary account) — they don't
-                  // affect scheduling and were confusing to see next to a name.
-                  const inHoursBusy = busyDuringBusinessHours(tech.busy);
-                  const busyLabel = inHoursBusy.length > 0
-                    ? inHoursBusy.map((b) => `${b.startLocal}–${b.endLocal}`).join(", ")
-                    : "free all day";
+                  const alreadyOn = onJobIds.has(tech.technicianId);
+                  const selected = alreadyOn || crewIds.includes(tech.technicianId);
+                  const isLead = shownLeadId === tech.technicianId;
+                  const line = availabilityLine(tech);
                   return (
-                    <button
-                      key={tech.technicianId}
-                      type="button"
-                      onClick={() => setTechnicianId(selected ? null : tech.technicianId)}
-                      className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition ${
-                        selected ? "border-rce-accent bg-rce-accentBg/40" : "border-rce-border bg-white hover:border-rce-accent/50"
-                      }`}
-                    >
-                      <span className="font-medium">{tech.name}</span>
-                      {!tech.calendarAccessible ? (
-                        <span className="text-xs text-amber-600">calendar not shared — can't verify</span>
-                      ) : tech.freeAtRequested === false ? (
-                        <span className="text-xs text-red-600">
-                          {inHoursBusy.length > 0 ? `busy: ${busyLabel}` : "conflict at the chosen time"}
+                    <div key={tech.technicianId} className="flex items-stretch gap-1">
+                      <button
+                        type="button"
+                        aria-pressed={selected}
+                        disabled={alreadyOn}
+                        title={alreadyOn ? "Already on this job" : undefined}
+                        onClick={() => toggleCrew(tech.technicianId)}
+                        className={`flex flex-1 items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition disabled:cursor-not-allowed ${
+                          selected ? "border-rce-accent bg-rce-accentBg/40" : "border-rce-border bg-white hover:border-rce-accent/50"
+                        }`}
+                      >
+                        <span className="font-medium">
+                          {tech.name}
+                          {selected && (
+                            <span className="ml-2 rounded bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-800">
+                              {isLead ? "Lead" : "Helper"}{alreadyOn ? " · already on this job" : ""}
+                            </span>
+                          )}
                         </span>
-                      ) : (
-                        <span className="text-xs text-green-700">available · {busyLabel}</span>
+                        <span className={`text-xs ${line.tone === "warn" ? "text-amber-600" : line.tone === "busy" ? "text-red-600" : "text-green-700"}`}>
+                          {line.text}
+                        </span>
+                      </button>
+                      {selected && !isLead && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary text-xs"
+                          onClick={() => setPickedLeadId(tech.technicianId)}
+                        >
+                          Make lead
+                        </button>
                       )}
-                    </button>
+                    </div>
                   );
                 })}
               </div>
-              {technicianId && techs.find((t) => t.technicianId === technicianId)?.freeAtRequested === false && (
-                <p className="mt-1 text-xs text-red-600">
-                  Heads up — this tech has a conflict at that time. Booking anyway will double-book them.
+              {techs.filter((t) => (crewIds.includes(t.technicianId) || onJobIds.has(t.technicianId)) && t.freeAtRequested === false).map((t) => (
+                <p key={t.technicianId} className="mt-1 text-xs text-red-600">
+                  Heads up — {t.name} has a conflict at that time. Booking anyway will double-book them.
                 </p>
-              )}
+              ))}
             </div>
           )}
 

@@ -14,6 +14,10 @@
  * (Truck.stripeFinancialAccountId) through the same CardSpend upsert, kind
  * from the merchant name, settlement pending → posted (or void).
  *
+ * Kyle, 2026-11-15: both cards share that ONE account, so routing by the account alone put every
+ * swipe on one truck. A swipe now routes by the CARD that made it (Truck.stripeCardId, read off the
+ * received debit — createCardResolver); the account is only the fallback.
+ *
  * ONE CARD CHARGE, ONE EXPENSE (Kyle, 2026-09-21, PUNCHLIST N9): the classic
  * Issuing WEBHOOK still delivers events on this account even though the
  * Issuing LIST call is refused, and every one of those events duplicated a v2
@@ -197,6 +201,75 @@ async function truckForFinancialAccount(financialAccountId: string | null): Prom
   return prisma.truck.findUnique({ where: { stripeCardId: financialAccountId }, select: { id: true, stripeCardId: true } });
 }
 
+// ─── Which card made the swipe (Kyle, 2026-11-15) ────────────────────────────
+
+/**
+ * Kyle, 2026-11-15: "The cards have their own tracking on stripe from the same account we will have
+ * to connect specifically to the card rather than the spending account." Both cards (••••9891
+ * Michael Schramm, ••••3805 Kyle Brown) draw on ONE Field Expenses financial account, so routing by
+ * the account sent every swipe to one truck. The v2 transaction does not carry the card; the
+ * Treasury ReceivedDebit it points at (flow.received_debit) does, in
+ * initiating_payment_method_details.issuing_card (stripe 22.5.0, Treasury/ReceivedDebits.d.ts).
+ * UNPROVEN on production: that the v2 flow.received_debit id is the rd_ id the v1 retrieve accepts —
+ * so a lookup that fails, or names no card, is an answer ({ cardId: null, reason }) and never a throw.
+ */
+export interface CardLookup { cardId: string | null; reason: string | null }
+export interface CardResolver { lookup(receivedDebitId: string | null | undefined): Promise<CardLookup> }
+
+/**
+ * One resolver per sync run: it caches per received-debit id, and it logs a Stripe failure ONCE
+ * (the restricted key may lack the received_debits read scope — then every row would fail the same
+ * way, so a permission refusal also short-circuits the rest of the run instead of calling Stripe
+ * again for each row).
+ */
+export function createCardResolver(): CardResolver {
+  const cache = new Map<string, CardLookup>();
+  let refusal: string | null = null;
+  let warned = false;
+  let noted = false;
+  return {
+    async lookup(receivedDebitId) {
+      if (!receivedDebitId) return { cardId: null, reason: "the transaction names no received debit" };
+      const hit = cache.get(receivedDebitId);
+      if (hit) return hit;
+      let out: CardLookup;
+      if (!stripeConfigured()) {
+        out = { cardId: null, reason: "STRIPE_SECRET_KEY is not set." };
+      } else if (refusal) {
+        out = { cardId: null, reason: refusal };
+      } else {
+        try {
+          const rd = await stripe().treasury.receivedDebits.retrieve(receivedDebitId);
+          const card = rd?.initiating_payment_method_details?.issuing_card;
+          if (typeof card === "string" && card) {
+            out = { cardId: card, reason: null };
+          } else {
+            const type = rd?.initiating_payment_method_details?.type ?? "none";
+            out = { cardId: null, reason: `received debit ${receivedDebitId} names no issuing card (initiated by ${type})` };
+            if (!noted) {
+              noted = true;
+              logSystemEvent("info", "card-spend", `Card not readable from the received debit — routing by financial account instead: ${out.reason}`, { receivedDebitId });
+            }
+          }
+        } catch (err) {
+          const { permission, reason } = describeStripeError(err);
+          if (permission) refusal = reason;
+          out = { cardId: null, reason };
+          if (!warned) {
+            warned = true;
+            logSystemEvent("warn", "card-spend", `Could not read which card made a swipe — routing by financial account instead: ${reason}`, { receivedDebitId });
+          }
+        }
+      }
+      cache.set(receivedDebitId, out);
+      return out;
+    },
+  };
+}
+
+/** A real Stripe Issuing card id, as opposed to the financial-account id stored when the card was unknown. */
+const isIssuingCardId = (id: string | null | undefined): id is string => typeof id === "string" && /^ic_/.test(id);
+
 /**
  * Upsert the CardSpend for one v2 money-management transaction, then route it
  * exactly like an Issuing row (Kyle, 2026-09-10: Issuing is not enabled on the
@@ -206,15 +279,25 @@ async function truckForFinancialAccount(financialAccountId: string | null): Prom
  *   a refund (negative).
  * - merchantName / merchantCity come from counterparty.name split at
  *   "/CITY/USA"; the raw string stays in rawJson. No MCC → kindForMerchantName.
- * - stripeCardId is the truck's card id when a truck owns the account, else
- *   the financial account id — so a truck mapped later claims the rows.
+ * - Kyle, 2026-11-15: the truck is the one whose Truck.stripeCardId made the swipe (the card is
+ *   read off the received debit, see createCardResolver); only when no truck has that card — or the
+ *   card could not be read — does it fall back to the financial account, as before.
+ * - Kyle, 2026-11-15 (review fix): CardSpend.stripeCardId holds an ic_ card id ONLY when that card
+ *   was actually read off the received debit. When the card could not be read (no scope, no card on
+ *   the debit, no received-debit id) the row stores the financial account id instead — never the
+ *   fallback truck's own ic_ card, which cannot be told apart from a confirmed read and made the
+ *   reroute report every such row "already right". A confirmed ic_ already on a row is never
+ *   overwritten by a non-card value on re-delivery.
  * - settlement mirrors Stripe's status; a void sets status "ignored", reason
  *   "voided by Stripe" — never a delete.
  * - On re-delivery only money, merchant and settlement refresh; kind, truck,
- *   PO, receipt and status stay Kyle's.
+ *   PO, receipt and status stay Kyle's. Card routing therefore applies when a row is CREATED (or
+ *   fills a still-unrouted one); a row already on a truck is never re-looked-up or moved here —
+ *   scripts/rerouteCardSpendByCard.ts is the only thing that moves existing rows.
  */
 export async function ingestFinancialAccountTransaction(
   row: FinancialAccountTransaction,
+  opts: { cards?: CardResolver } = {},
 ): Promise<{ spend: CardSpend; created: boolean; voided: boolean }> {
   if (!row?.id) throw new CardSpendError("v2 transaction has no id", 400);
   const financialAccountId = row.financial_account ?? null;
@@ -224,9 +307,23 @@ export async function ingestFinancialAccountTransaction(
   const createdMs = row.created ? Date.parse(row.created) : NaN;
   const occurredAt = Number.isFinite(createdMs) ? new Date(createdMs) : new Date();
   const settlement = settlementOf(row.status);
-  const truck = await truckForFinancialAccount(financialAccountId);
-  const cardId = truck?.stripeCardId ?? financialAccountId ?? "fa_unknown";
   const existing = await prisma.cardSpend.findUnique({ where: { stripeTransactionId: row.id } });
+  // The card that made the swipe. A row already on a truck is not looked up (the feed re-delivers
+  // every row on every sync, so Stripe is only asked about rows being created or still unrouted).
+  // A stored ic_ id is NEVER taken as proof of the card here: before 2026-11-15 the ingest stamped
+  // every account-routed row with the account truck's own ic_ card, so a stored ic_ may be a stamp.
+  let realCard: string | null = null;
+  if (!existing || existing.truckId === null) {
+    realCard = (await (opts.cards ?? createCardResolver()).lookup(row.flow?.received_debit)).cardId;
+  }
+  const byCard = realCard
+    ? await prisma.truck.findUnique({ where: { stripeCardId: realCard }, select: { id: true, stripeCardId: true } })
+    : null;
+  const truck = byCard ?? (await truckForFinancialAccount(financialAccountId));
+  // An ic_ value only when the card was read; otherwise the account id. A confirmed ic_ already on
+  // the row survives a re-delivery that could not read the card again.
+  const cardId = realCard
+    ?? (isIssuingCardId(existing?.stripeCardId) ? existing!.stripeCardId : (financialAccountId ?? "fa_unknown"));
 
   const money = {
     stripeAuthorizationId: row.flow?.received_debit ?? null,
@@ -253,7 +350,11 @@ export async function ingestFinancialAccountTransaction(
   if (existing) {
     spend = await prisma.cardSpend.update({
       where: { id: existing.id },
-      data: { ...money, ...voidPatch, ...(existing.truckId === null && truck ? { truckId: truck.id } : {}) },
+      data: {
+        ...money,
+        ...voidPatch,
+        ...(existing.truckId === null && truck ? { truckId: truck.id } : {}),
+      },
     });
   } else {
     spend = await prisma.cardSpend.create({
@@ -266,8 +367,8 @@ export async function ingestFinancialAccountTransaction(
       },
     });
     if (!truck) {
-      logSystemEvent("warn", "card-spend", `Financial account ${financialAccountId ?? "?"} is not assigned to a truck — ${merchantName} $${amount.toFixed(2)} is sitting unrouted`, {
-        stripeTransactionId: row.id, financialAccountId, amount, merchant: merchantName,
+      logSystemEvent("warn", "card-spend", `${realCard ? `Card ${realCard} and financial account ${financialAccountId ?? "?"} are` : `Financial account ${financialAccountId ?? "?"} is`} not assigned to a truck — ${merchantName} $${amount.toFixed(2)} is sitting unrouted`, {
+        stripeTransactionId: row.id, financialAccountId, cardId: realCard, amount, merchant: merchantName,
       });
     }
   }
@@ -493,6 +594,8 @@ export async function syncFinancialAccountTransactions(
   const since = new Date(Date.now() - days * DAY);
   let seen = 0, created = 0, updated = 0, voided = 0;
   const transactions: SyncedTransaction[] = [];
+  // One resolver for the whole run (Kyle, 2026-11-15): cached per received debit, one warning for a Stripe refusal.
+  const cards = createCardResolver();
   try {
     const accounts = await listFinancialAccounts();
     for (const fa of accounts) {
@@ -515,7 +618,7 @@ export async function syncFinancialAccountTransactions(
           occurredAt: row.created ? new Date(row.created) : new Date(), settlement: settlementOf(row.status),
         });
         if (dry) continue;
-        const result = await ingestFinancialAccountTransaction(row);
+        const result = await ingestFinancialAccountTransaction(row, { cards });
         if (result.created) created += 1; else updated += 1;
         if (result.voided) voided += 1;
       }
@@ -594,6 +697,8 @@ export interface FinancialAccountBalance {
   status: string;
   truckId: string | null;
   truckName: string | null;
+  /** How many ACTIVE trucks draw on this account (Kyle, 2026-11-15: both cards share the Field Expenses account). */
+  truckCount: number;
 }
 export interface Balances {
   payments: { available: number; pending: number } | null;
@@ -605,6 +710,19 @@ export interface Balances {
 
 const BALANCE_TTL = 5 * 60 * 1000;
 let balanceCache: { at: number; value: Balances } | null = null;
+
+/**
+ * Kyle, 2026-11-15: both trucks' cards draw on ONE Field Expenses financial account, so a truck's
+ * "balance" is the account's, not the truck's own money. Active trucks per account, so every screen
+ * that shows an account balance can say how many trucks share it.
+ */
+export function activeTruckCountByAccount(trucks: { isActive: boolean; stripeFinancialAccountId: string | null }[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const t of trucks) {
+    if (t.isActive && t.stripeFinancialAccountId) counts.set(t.stripeFinancialAccountId, (counts.get(t.stripeFinancialAccountId) ?? 0) + 1);
+  }
+  return counts;
+}
 
 /** Test/diagnostic hook: forget the cached balances. */
 export function resetBalancesCache(): void {
@@ -706,11 +824,12 @@ export async function readBalances(): Promise<Balances> {
   let available = true;
   let reason: string | undefined;
   try {
-    const trucks = await prisma.truck.findMany({ where: { stripeFinancialAccountId: { not: null } }, select: { id: true, name: true, stripeFinancialAccountId: true } });
+    const trucks = await prisma.truck.findMany({ where: { stripeFinancialAccountId: { not: null } }, select: { id: true, name: true, isActive: true, stripeFinancialAccountId: true } });
     const truckByFa = new Map(trucks.map((t) => [t.stripeFinancialAccountId!, t]));
+    const truckCountByFa = activeTruckCountByAccount(trucks);
     financialAccounts = (await listFinancialAccounts()).map((fa) => {
       const truck = truckByFa.get(fa.id);
-      return { ...fa, truckId: truck?.id ?? null, truckName: truck?.name ?? null };
+      return { ...fa, truckId: truck?.id ?? null, truckName: truck?.name ?? null, truckCount: truckCountByFa.get(fa.id) ?? 0 };
     });
   } catch (err) {
     available = false;

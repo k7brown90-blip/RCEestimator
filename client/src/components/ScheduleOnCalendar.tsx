@@ -14,15 +14,18 @@
  * job needs without leaving it) and "Mark consultation complete" — that is a close-out, not a
  * date choice, and before today the drawer was the only screen that showed it on the job.
  *
+ * Also here (Kyle, 2026-11-15): "Technicians on this job" (`JobCrew`) - add, remove and choose the lead,
+ * with or without a date. The crew is the job's, so it is not behind the Calendar door.
+ *
  * When the door is unavailable it says why (CLAUDE.md click-through rule 5) rather than hiding.
  */
 
-import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { SCHEDULE_QUERY_KEYS } from "../lib/queryKeys";
 import { canReachScheduler, scheduleDoorLabel, scheduleDoorPath } from "../lib/scheduleDoor";
+import { JobCrew } from "./JobCrew";
 
 interface Props {
   visitId: string;
@@ -84,6 +87,7 @@ export function ScheduleOnCalendar({ visitId, status, scheduledStart, scheduledE
           <TestVisitFieldAppCard
             visitId={visitId}
             status={status}
+            completedAt={completedAt}
             onChanged={onChanged}
             canComplete={isEstimateVisit}
             completeConsultation={completeConsultation}
@@ -152,104 +156,39 @@ export function ScheduleOnCalendar({ visitId, status, scheduledStart, scheduledE
         // Greyed with the reason beats hidden (CLAUDE.md click-through rule 5).
         <p className="text-xs text-rce-muted">Not schedulable — status: {status.replaceAll("_", " ")}</p>
       ) : null}
+
+      {/* Who is on this job (Kyle, 2026-11-15). The crew belongs to the job, not to its date, so
+          this is here whether or not the job is booked; a closed job shows it greyed with why. */}
+      <div className="mt-3">
+        <JobCrew visitId={visitId} status={status} completedAt={completedAt} onChanged={onChanged} />
+      </div>
     </div>
   );
 }
 
 /**
- * The Test Account's door: straight onto a technician's field app. Uses the same assign / unassign
- * routes the rest of the CRM already has (`/health-record-admin/visits/:id/assign`) — those set no
- * date, make no Google event and send the customer nothing; the server only emails the technician.
+ * The Test Account's door: straight onto a technician's field app. The crew control is the same
+ * `JobCrew` every other job uses (one tool for one task, Kyle 2026-10-27). Its routes set no date,
+ * make no Google event (a test visit has none, so nothing syncs) and send the customer nothing; the
+ * server only emails the technician.
  */
-function TestVisitFieldAppCard({ visitId, status, onChanged, canComplete, completeConsultation }: {
+function TestVisitFieldAppCard({ visitId, status, completedAt, onChanged, canComplete, completeConsultation }: {
   visitId: string;
   status: string;
+  completedAt?: string | null;
   onChanged?: () => void;
   canComplete: boolean;
   completeConsultation: { isPending: boolean; error: unknown; mutate: () => void };
 }) {
-  const queryClient = useQueryClient();
-  const [technicianId, setTechnicianId] = useState("");
-
-  const { data: technicians } = useQuery({ queryKey: ["technicians"], queryFn: api.technicians });
-  const { data: assignments } = useQuery({
-    queryKey: ["visitAssignments", visitId],
-    queryFn: () => api.visitAssignments(visitId),
-    enabled: Boolean(visitId),
-  });
-
-  const activeTechs = (technicians ?? []).filter((t) => t.isActive);
-  const onFieldApp = (assignments ?? []).filter((a) => a.status !== "completed");
-
-  const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ["visitAssignments", visitId] });
-    onChanged?.();
-  };
-  const assign = useMutation({
-    mutationFn: () => api.assignTechnician(visitId, { technicianId }),
-    onSuccess: () => { setTechnicianId(""); refresh(); },
-  });
-  const unassign = useMutation({
-    mutationFn: (assignmentId: string) => api.removeAssignment(assignmentId),
-    onSuccess: refresh,
-  });
-
-  // The field app does not list a cancelled or completed visit, so putting one there would do
-  // nothing - say so on screen (CLAUDE.md click-through rule 5) rather than let it silently fail.
-  const closedReason = status === "cancelled" || status === "completed"
-    ? `This visit is ${status}, so it will not show on the field app.`
-    : null;
-  const disabledReason = closedReason ?? (!technicianId ? "Pick a technician first." : null);
-
   return (
     <>
       <p className="mb-3 text-sm text-rce-muted">
         Test account: this visit goes straight to the field app. It never appears on the Calendar or
-        Google Calendar, and the customer gets no booking email.
+        Google Calendar, and the customer gets no booking email. A technician added below sees it on
+        their field app.
       </p>
 
-      {onFieldApp.length > 0 && (
-        <ul className="mb-3 space-y-2">
-          {onFieldApp.map((a) => (
-            <li key={a.id} className="flex flex-wrap items-center gap-2 rounded-md border border-green-200 bg-green-50 p-2 text-sm text-green-800">
-              <span>On {a.technician.name}&apos;s field app</span>
-              <button
-                type="button"
-                className="btn btn-secondary text-xs"
-                disabled={unassign.isPending}
-                onClick={() => unassign.mutate(a.id)}
-              >
-                Take off the field app
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="text-xs text-rce-muted">
-          Technician
-          <select
-            className="field mt-1 block"
-            value={technicianId}
-            onChange={(e) => setTechnicianId(e.target.value)}
-          >
-            <option value="">Pick a technician…</option>
-            {activeTechs.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-        </label>
-        <button
-          type="button"
-          className="btn btn-primary text-sm"
-          disabled={Boolean(disabledReason) || assign.isPending}
-          onClick={() => assign.mutate()}
-        >
-          {assign.isPending ? "Putting on…" : "Put on the field app"}
-        </button>
-      </div>
-      {disabledReason && <p className="mt-1 text-xs text-rce-muted">{disabledReason}</p>}
-      {assign.error && <p className="mt-1 text-xs text-red-600">{(assign.error as Error).message}</p>}
-      {unassign.error && <p className="mt-1 text-xs text-red-600">{(unassign.error as Error).message}</p>}
+      <JobCrew visitId={visitId} status={status} completedAt={completedAt} onChanged={onChanged} />
 
       {canComplete && (
         <div className="mt-3">

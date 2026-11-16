@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { money } from "../lib/utils";
+import { accountBalanceLabel, isSharedAccount } from "../lib/truckBalance";
 
 export function BalancesStrip() {
   const { data } = useQuery({ queryKey: ["financials-balances"], queryFn: api.financialsBalances });
@@ -33,7 +34,7 @@ export function BalancesStrip() {
         ) : (
           data.financialAccounts.map((fa) => (
             <span key={fa.id} className="min-w-0 break-words tabular-nums">
-              {fa.truckName ?? fa.id} <b>{money(fa.cashUsd)}</b>
+              {isSharedAccount(fa.truckCount) ? `${accountBalanceLabel(fa.truckCount)}:` : fa.truckName ?? fa.id} <b>{money(fa.cashUsd)}</b>
               {fa.inboundPending ? <span className="text-rce-muted"> · {money(fa.inboundPending)} inbound</span> : null}
               {fa.outboundPending ? <span className="text-rce-muted"> · {money(fa.outboundPending)} outbound</span> : null}
             </span>

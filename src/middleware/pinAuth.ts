@@ -124,11 +124,43 @@ export async function handlePinLogin(req: Request, res: Response): Promise<void>
     return;
   }
 
+  res.json(issueSessionToken());
+}
+
+/**
+ * The one place a session token is signed. Login and refresh both call it, so a session's
+ * length and claims cannot drift between the two doors.
+ */
+function issueSessionToken(): { token: string; expiresIn: number } {
   const token = jwt.sign({ sub: "owner" }, JWT_SECRET, {
     expiresIn: `${SESSION_HOURS}h`,
   });
+  return { token, expiresIn: SESSION_HOURS * 60 * 60 };
+}
 
-  res.json({ token, expiresIn: SESSION_HOURS * 60 * 60 });
+/**
+ * POST /auth/refresh — a still-valid session token buys a fresh one (sliding renewal), so a
+ * session in use is never locked out at the 8-hour mark. It is NOT a public route: it sits behind
+ * pinAuthMiddleware like everything else, and this handler re-verifies the token itself (defence
+ * in depth — it does not trust that the gate ran). The PIN stays the only way to START a session;
+ * an expired or invalid token gets 401, never a new one. Header only — no token in a URL.
+ */
+export function handleSessionRefresh(req: Request, res: Response): void {
+  const token = req.headers.authorization?.replace("Bearer ", "");
+  if (!token) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+  try {
+    const claims = jwt.verify(token, JWT_SECRET);
+    if (typeof claims !== "object" || claims === null || claims.sub !== "owner") {
+      res.status(401).json({ error: "Invalid or expired session" });
+      return;
+    }
+    res.json(issueSessionToken());
+  } catch {
+    res.status(401).json({ error: "Invalid or expired session" });
+  }
 }
 
 /** Utility: generate a PIN hash for use in env vars */

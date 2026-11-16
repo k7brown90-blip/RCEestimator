@@ -5,7 +5,8 @@
  */
 
 import { prisma } from "../lib/prisma";
-import { createCalendarEvent, deleteCalendarEvent, moveCalendarEvent, checkAvailabilityBlock } from "./schedule";
+import { createCalendarEvent, deleteCalendarEvent, moveCalendarEvent, checkAvailabilityBlock, technicianDescriptionLine } from "./schedule";
+import { assignBookingCrew, replaceLead, LEAD_ROLES } from "./visitCrew";
 import * as notify from "./notifications";
 import { escapeHtml, sendRescheduleEmail, sendCancellationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
 import { acquireSlotHolds, releaseSlotHolds, workingDaysCT, SlotContentionError } from "./slotHolds";
@@ -85,6 +86,12 @@ export interface ScheduleOptions {
    * It is the SAME email, not a second one. Absent for every other caller, whose email is unchanged.
    */
   prepAreas?: string[];
+  /**
+   * Booking only: technicians who help, in addition to the lead (`technicianId`). Kyle, 2026-11-15:
+   * "I am unable to assign multiple techs to the same job." Every one of them is a guest on the
+   * Google event and a VisitAssignment with role "helper". Only the CRM scheduler sets it.
+   */
+  helperTechnicianIds?: string[];
 }
 
 /**
@@ -322,6 +329,47 @@ export async function scheduleJob(
     ? await prisma.technician.findUnique({ where: { id: technicianId }, select: { id: true, email: true, name: true } })
     : null;
   if (technicianId && !technician) throw new Error("Technician not found");
+  // The helpers ride the same event (Kyle, 2026-11-15). Resolved up front so a bad id refuses
+  // before anything is booked, and the lead is never listed twice.
+  const helperIds = [...new Set(options?.helperTechnicianIds ?? [])].filter((id) => id !== technicianId);
+  const foundHelpers = helperIds.length > 0
+    ? await prisma.technician.findMany({ where: { id: { in: helperIds } }, select: { id: true, email: true, name: true } })
+    : [];
+  if (foundHelpers.length !== helperIds.length) throw new Error("Technician not found");
+  // Keep the order the office tapped them in (findMany answers in database order).
+  const helpers = helperIds.map((id) => foundHelpers.find((h) => h.id === id)!);
+  // The crew the job ALREADY has (Kyle, 2026-11-15: the Job drawer's "Technicians on this job" works
+  // before the job has a date, so a job reaches this booking with techs on it). They ride the same
+  // event as guests and on its "Technician:" line, so Google matches VisitAssignment the moment the
+  // event exists - assignBookingCrew below skips the re-sync. A tech picked here as lead takes the
+  // lead and the job's previous lead becomes a helper, exactly as addTechnician does.
+  const existingCrew = await prisma.visitAssignment.findMany({
+    where: { visitId: jobId, status: { not: "completed" } },
+    include: { technician: { select: { id: true, name: true, email: true } } },
+    orderBy: [{ assignedAt: "asc" }, { id: "asc" }],
+  });
+  const crew: Array<{ id: string; name: string; email: string | null; role: string }> = [];
+  if (technician) crew.push({ id: technician.id, name: technician.name, email: technician.email, role: "primary" });
+  for (const row of existingCrew) {
+    if (crew.some((c) => c.id === row.technicianId)) continue;
+    crew.push({
+      id: row.technicianId, name: row.technician.name, email: row.technician.email,
+      role: !technician && LEAD_ROLES.includes(row.role) ? "primary" : "helper",
+    });
+  }
+  for (const h of helpers) {
+    if (!crew.some((c) => c.id === h.id)) crew.push({ id: h.id, name: h.name, email: h.email, role: "helper" });
+  }
+  // A crew always has a lead (the crew service promotes the longest-assigned when none is named).
+  if (crew.length > 0 && !crew.some((c) => c.role === "primary")) crew[0].role = "primary";
+  const crewEmails = crew.flatMap((c) => (c.email ? [c.email] : []));
+  const crewLine = technicianDescriptionLine(crew);
+  // Whose calendars the availability check reads. The CRM scheduler checks the WHOLE crew, including
+  // techs already on the job; the voice agents keep their old rule (only who they name, else the
+  // company set) so an assignment the field app made never narrows their hard block.
+  const checkEmails = options?.nameCalendarOwners === true
+    ? crewEmails
+    : [technician, ...helpers].flatMap((t) => (t?.email ? [t.email] : []));
 
   const kind = appointmentKindFor(job.status);
   const isEstimate = kind === "estimate";
@@ -410,7 +458,7 @@ export async function scheduleJob(
           durationDays,
           job.googleEventId ?? undefined,
           { start: scheduledStart, end: scheduledEnd },
-          technician?.email ? [technician.email] : undefined,
+          checkEmails.length > 0 ? checkEmails : undefined,
           options?.nameCalendarOwners === true,
         );
         if (!availability.available) {
@@ -432,13 +480,13 @@ export async function scheduleJob(
         `Customer: ${job.customer.name}`,
         `Phone: ${job.customer.phone ?? "N/A"}`,
         `Address: ${job.property.addressLine1}`,
-        ...(technician ? [`Technician: ${technician.name}`] : []),
+        ...(crewLine ? [crewLine] : []),
         ...(travelBufferMinutes > 0 ? [`Includes ${travelBufferMinutes} min travel leeway after the visit.`] : []),
       ].join("\n"),
       location: `${job.property.addressLine1}, ${job.property.city}, ${job.property.state}`,
       startTime: scheduledStart,
       endTime: eventEnd,
-      attendees: technician?.email ? [technician.email] : undefined,
+      attendees: crewEmails.length > 0 ? crewEmails : undefined,
     });
   } finally {
     // The calendar event itself blocks the days from here on (or the booking
@@ -544,15 +592,10 @@ export async function scheduleJob(
     jobType: job.jobType,
   }).catch((err) => console.error("[scheduleJob] Confirmation request failed:", err));
 
-  // Assign the selected tech (upsert — rebooking the same pair just refreshes it),
-  // then notify everyone assigned, including them.
-  if (technician) {
-    await prisma.visitAssignment.upsert({
-      where: { visitId_technicianId: { visitId: jobId, technicianId: technician.id } },
-      create: { visitId: jobId, technicianId: technician.id, role: "primary" },
-      update: { status: "assigned", completedAt: null },
-    });
-  }
+  // Assign the crew through the one crew service (upsert: rebooking the same pair just refreshes
+  // it; one lead, the rest helpers), then notify everyone assigned, including them. The event was
+  // created above with exactly these guests, so the service neither re-syncs nor re-notifies.
+  await assignBookingCrew(jobId, technician?.id ?? null, helpers.map((h) => h.id));
   notifyAssignedTechs(jobId, "assigned").catch((err) => console.error("[scheduleJob] Tech notify failed:", err));
 
   return {
@@ -648,26 +691,30 @@ export async function rescheduleJob(
   try {
     if (!isEstimate) {
       // Check availability (exclude current event). From the CRM, only the
-      // assigned tech's calendar is read — the newly picked tech, else whoever the
-      // job is currently assigned to; with neither (or no calendar email), the
+      // crew's calendars are read — the newly picked lead plus the helpers who stay, else
+      // everyone the job is currently assigned to; with none (or no calendar email), the
       // whole company set as before. A CRM "Reschedule anyway" skips the check, and
       // then there is no conflict to report, so Kyle is not texted about one.
       if (!options?.overrideCalendarConflict) {
-        let checkEmail: string | null = technician?.email ?? null;
-        if (!technician && options?.scopeToCurrentTech) {
-          const current = await prisma.visitAssignment.findFirst({
-            where: { visitId: jobId, role: "primary", status: { in: ["assigned", "in_progress"] } },
-            orderBy: { assignedAt: "desc" },
-            select: { technician: { select: { email: true } } },
+        // Every tech who stays on the job is checked, not only the lead (Kyle, 2026-11-15: manage
+        // manpower between jobs - a helper booked elsewhere is a conflict too). A newly named lead
+        // replaces the old one; the helpers stay. No email on anyone means the whole company set.
+        let checkEmails: string[] = technician?.email ? [technician.email] : [];
+        if (options?.scopeToCurrentTech) {
+          const crewRows = await prisma.visitAssignment.findMany({
+            where: { visitId: jobId, status: { in: ["assigned", "in_progress"] } },
+            select: { technicianId: true, role: true, technician: { select: { email: true } } },
           });
-          checkEmail = current?.technician?.email ?? null;
+          const staying = technician ? crewRows.filter((r) => !LEAD_ROLES.includes(r.role) && r.technicianId !== technician.id) : crewRows;
+          checkEmails = [...checkEmails, ...staying.flatMap((r) => (r.technician?.email ? [r.technician.email] : []))];
+          checkEmails = [...new Set(checkEmails)];
         }
         const availability = await checkAvailabilityBlock(
           newStart,
           durationDays,
           job.googleEventId,
           { start: newStart, end: newEnd },
-          checkEmail ? [checkEmail] : undefined,
+          checkEmails.length > 0 ? checkEmails : undefined,
           options?.nameCalendarOwners === true,
         );
         if (!availability.available) {
@@ -756,23 +803,12 @@ export async function rescheduleJob(
   // booking). VisitAssignment is unique per (visit, tech), so switching techs means releasing
   // whoever else held the "primary" role before upserting the new one — otherwise the old tech
   // stays listed as assigned alongside the new one instead of being replaced by them.
+  // The crew service does the release + upsert AND patches the Google event's guests: moveCalendarEvent
+  // above moves start/end only, which is why a swapped tech never got the invite (Kyle, 2026-11-15).
+  // A Google failure there is logged, not thrown, because the reschedule itself already happened.
   if (technician) {
-    const previousPrimaries = await prisma.visitAssignment.findMany({
-      where: { visitId: jobId, role: "primary", technicianId: { not: technician.id } },
-      select: { id: true, technicianId: true },
-    });
-    if (previousPrimaries.length > 0) {
-      await prisma.visitAssignment.deleteMany({ where: { id: { in: previousPrimaries.map((p) => p.id) } } });
-      for (const prev of previousPrimaries) {
-        notifyTechnicianOfAssignment(prev.technicianId, jobId, "cancelled")
-          .catch((err) => console.error("[rescheduleJob] Released tech notify failed:", err));
-      }
-    }
-    await prisma.visitAssignment.upsert({
-      where: { visitId_technicianId: { visitId: jobId, technicianId: technician.id } },
-      create: { visitId: jobId, technicianId: technician.id, role: "primary" },
-      update: { status: "assigned", completedAt: null },
-    });
+    const swap = await replaceLead(jobId, technician.id);
+    if (swap.warning) console.error(`[rescheduleJob] ${swap.warning}`);
   }
 
   // Re-request confirmation for the new time + tech notifications (fire-and-forget)

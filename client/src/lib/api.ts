@@ -751,8 +751,62 @@ async function requestHtml(path: string): Promise<string> {
   return response.text();
 }
 
+/**
+ * Sliding session renewal (Kyle, 2026-11-15: "continual access to the CRM"). The login token lasts
+ * 8 hours; a session in use trades it for a fresh one once it is more than halfway through its
+ * life, so work in progress is never locked out. An untouched session still expires and the 401
+ * path below sends it to /login as before.
+ *
+ * Raw fetch, never `request`, so it cannot recurse into itself. Single-flight: concurrent requests
+ * share one refresh. Any failure is silent — the old token is still valid at half-life, and a truly
+ * expired one is handled by the ordinary 401 path. The token goes in the Authorization header only,
+ * and is never logged.
+ */
+let refreshInFlight: Promise<void> | null = null;
+
+function tokenIsPastHalfLife(token: string): boolean {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return false;
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const claims = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="))) as {
+      iat?: unknown;
+      exp?: unknown;
+    };
+    if (typeof claims.iat !== "number" || typeof claims.exp !== "number") return false;
+    const nowSeconds = Date.now() / 1000;
+    return nowSeconds >= claims.iat + (claims.exp - claims.iat) / 2;
+  } catch {
+    return false;
+  }
+}
+
+function refreshSessionIfNeeded(token: string | null): void {
+  if (!token || refreshInFlight || !tokenIsPastHalfLife(token)) return;
+  refreshInFlight = (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/refresh`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) return;
+      const body = (await response.json()) as { token?: unknown };
+      // Only replace the token we refreshed from. If the session was ended meanwhile (a 401
+      // removed it) or replaced by a new login, leave that alone.
+      if (typeof body.token === "string" && localStorage.getItem("rce_token") === token) {
+        localStorage.setItem("rce_token", body.token);
+      }
+    } catch {
+      // Silent: the normal 401 path still handles a genuinely expired session.
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = sessionToken();
+  refreshSessionIfNeeded(token);
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
@@ -1100,7 +1154,7 @@ export const api = {
   crmPhases: (range?: { startDate?: string; endDate?: string }) =>
     request<CrmFunnelReport>(withDateRange("/crm/analytics/win-loss", range)),
   // ─── Job Scheduling ──────────────────────────────────────────────────────
-  scheduleJob: (jobId: string, input: { startDate: string; startTime?: string; endDate?: string; endTime?: string; technicianId?: string; overrideCalendarConflict?: boolean }) =>
+  scheduleJob: (jobId: string, input: { startDate: string; startTime?: string; endDate?: string; endTime?: string; technicianId?: string; helperTechnicianIds?: string[]; overrideCalendarConflict?: boolean }) =>
     request<ScheduleJobResult>(`/crm/jobs/${jobId}/schedule`, { method: "POST", body: JSON.stringify(input) }),
   // Per-tech busy blocks for one day — drives the scheduler's tech picker.
   // calendarAccessible=false means Google can't read that tech's calendar
@@ -1134,10 +1188,13 @@ export const api = {
   verifyTechCalendar: (technicianId: string) =>
     request<{ accessible: boolean; email: string | null }>(`/health-record-admin/technicians/${technicianId}/verify-calendar`, { method: "POST" }),
   assignTechnician: (visitId: string, input: { technicianId: string; role?: "primary" | "helper" }) =>
-    request<VisitAssignment>(`/health-record-admin/visits/${visitId}/assign`, { method: "POST", body: JSON.stringify(input) }),
+    request<VisitAssignment & CrewChangeNotes>(`/health-record-admin/visits/${visitId}/assign`, { method: "POST", body: JSON.stringify(input) }),
   visitAssignments: (visitId: string) => request<VisitAssignment[]>(`/health-record-admin/visits/${visitId}/assignments`),
+  /** Make this assignment's technician the lead; the current lead becomes a helper (Kyle, 2026-11-15). */
+  makeLeadAssignment: (assignmentId: string) =>
+    request<VisitAssignment & CrewChangeNotes>(`/health-record-admin/assignments/${assignmentId}`, { method: "PATCH", body: JSON.stringify({ role: "primary" }) }),
   removeAssignment: (assignmentId: string) =>
-    request<void>(`/health-record-admin/assignments/${assignmentId}`, { method: "DELETE" }),
+    request<CrewChangeNotes & { removed?: boolean }>(`/health-record-admin/assignments/${assignmentId}`, { method: "DELETE" }),
   // ─── Job photo gallery (2026-08-28) ───────────────────────────────────────
   visitPhotos: (visitId: string) =>
     request<VisitPhotoMeta[]>(`/health-record-admin/visits/${visitId}/photos`),
@@ -2589,6 +2646,14 @@ export interface CompanySettings {
   legal?: LegalInfo | null;
   purchasing?: PurchasingSettings | null;
   payroll?: PayrollSettings | null;
+}
+
+/** What the crew routes say beside the change itself (services/visitCrew.ts). */
+export interface CrewChangeNotes {
+  /** A different tech became the lead (the lead was removed, or the job had none). */
+  promoted?: { technicianId: string; name: string } | null;
+  /** The change saved but the Google event could not be updated; shown to the office as-is. */
+  warning?: string | null;
 }
 
 export interface VisitAssignment {

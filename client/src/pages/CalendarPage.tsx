@@ -394,6 +394,7 @@ export function CalendarPage() {
                 scheduledStart={"scheduledStart" in rescheduling ? rescheduling.scheduledStart : null}
                 scheduledEnd={"scheduledEnd" in rescheduling ? rescheduling.scheduledEnd : null}
                 durationDays={rescheduling.estimatedDurationDays}
+                completedAt={rescheduling.completedAt}
                 pickedDate={pickedDate}
                 onClose={stopScheduling}
                 onScheduled={(result) => {

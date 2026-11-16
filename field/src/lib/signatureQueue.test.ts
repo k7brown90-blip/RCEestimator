@@ -70,6 +70,11 @@ function deadNetwork() {
   return fn
 }
 
+// Kyle, 2026-11-15: the fixture estimate was issued on a fixed 2026-10-08 with 30 valid days, so from 2026-11-07 it read as
+// expired and 21 tests failed. Issued two days before the test run instead, so it is never out of date. (The signedAt
+// dates below are only echoed back by the stubbed server and are never compared with the clock.)
+const ISSUED_AT = new Date(Date.now() - 2 * 86_400_000).toISOString()
+
 const SIGNED = { signed: true, estimateId: EST, number: '2026-1098', selectedOptions: ['A'], total: 950, jobVisitId: 'job-1', jobJoined: false, archivedNumbers: [] }
 const signs = (c: Call) => c.method === 'POST' && c.path === `/issued-estimates/${EST}/sign-in-person`
 const files = (c: Call) => c.method === 'POST' && c.path === `/issued-estimates/${EST}/signature-events`
@@ -81,7 +86,7 @@ function serverQuote(): QuoteState {
     jobDescription: null,
     lifecycle: {
       status: 'finalized',
-      issued: { estimateId: EST, number: '2026-1098', revision: 1, status: 'signed', signedAt: '2026-10-10T15:00:00.000Z', issuedAt: '2026-10-08T12:00:00.000Z', validDays: 30, figuresKey: KEY, archived: false, customerUrl: null },
+      issued: { estimateId: EST, number: '2026-1098', revision: 1, status: 'signed', signedAt: '2026-10-10T15:00:00.000Z', issuedAt: ISSUED_AT, validDays: 30, figuresKey: KEY, archived: false, customerUrl: null },
       hasUnsavedChanges: false, reviseReason: 'signed', deleteReason: null, copyReason: null,
     },
     suggestedLines: [], openQuestions: [], isChangeOrder: false, changeOrderFor: null, lines: [],
@@ -116,7 +121,7 @@ const capture = (over: Partial<Parameters<typeof mod.captureSignature>[0]> = {})
     estimateId: EST, draftId: D1, visitId: 'v1', number: '2026-1098',
     signerName: 'Mrs Panel', signatureImage: MARK, selectedOptions: ['A'],
     revision: 1, figuresKey: KEY, consentText: CONSENT,
-    issuedAt: '2026-10-08T12:00:00.000Z', validDays: 30,
+    issuedAt: ISSUED_AT, validDays: 30,
     ...over,
   })
 

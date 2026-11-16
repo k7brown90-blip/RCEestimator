@@ -291,6 +291,68 @@ export async function moveCalendarEvent(eventId: string, newStart: Date, newEnd:
   return mapEvent(response.data);
 }
 
+/**
+ * The description's "Technician:" line for a crew, lead first (Kyle, 2026-11-15: "I am unable to
+ * assign multiple techs to the same job"). One tech reads exactly as it always did
+ * ("Technician: Kyle Brown"); a crew reads "Technician: Kyle Brown (lead), Michael Schramm".
+ * Empty crew -> null, which removes the line. scheduling.ts writes it at booking and visitCrew.ts
+ * rewrites it on every crew change, so the two can never disagree about the format.
+ */
+export function technicianDescriptionLine(crew: Array<{ name: string; role: string }>): string | null {
+  if (crew.length === 0) return null;
+  const ordered = [...crew].sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
+  if (ordered.length === 1) return `Technician: ${ordered[0].name}`;
+  return `Technician: ${ordered.map((c) => (c.role === "primary" ? `${c.name} (lead)` : c.name)).join(", ")}`;
+}
+
+/** Replace, insert or drop the "Technician:" line of an event description; other lines are untouched. */
+export function withTechnicianLine(description: string | null | undefined, line: string | null): string {
+  const lines = description ? description.split("\n") : [];
+  const at = lines.findIndex((l) => /^Technicians?:/.test(l));
+  if (line === null) {
+    if (at >= 0) lines.splice(at, 1);
+  } else if (at >= 0) {
+    lines[at] = line;
+  } else {
+    const addr = lines.findIndex((l) => l.startsWith("Address:"));
+    lines.splice(addr >= 0 ? addr + 1 : lines.length, 0, line);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Make an existing event's guests and "Technician:" line match the job's crew (Kyle, 2026-11-15).
+ * `moveCalendarEvent` patches start/end only, so a swapped or added tech never got the invite and a
+ * removed one kept it. Guests who are NOT technicians (anyone Kyle added by hand in Google) are kept;
+ * every guest whose address belongs to a technician (`managedEmails`) is replaced by the crew's.
+ * `sendUpdates: "all"` makes Google email the invite to an added tech and the cancellation to a
+ * removed one. Throws on a Google failure — the caller decides what that means.
+ */
+export async function updateCalendarEventCrew(eventId: string, input: {
+  attendeeEmails: string[];
+  managedEmails: string[];
+  technicianLine: string | null;
+}): Promise<void> {
+  const calendar = getCalendarClient();
+  const current = await calendar.events.get({ calendarId: "primary", eventId });
+  const managed = new Set(input.managedEmails.map((e) => e.toLowerCase()));
+  const existing = current.data.attendees ?? [];
+  const byEmail = new Map(existing.filter((a) => a.email).map((a) => [a.email!.toLowerCase(), a]));
+  const kept = existing.filter((a) => a.email && !managed.has(a.email.toLowerCase()));
+  const wanted = [...new Set(input.attendeeEmails.map((e) => e.toLowerCase()))]
+    .map((email) => byEmail.get(email) ?? { email });
+
+  await calendar.events.patch({
+    calendarId: "primary",
+    eventId,
+    sendUpdates: "all",
+    requestBody: {
+      attendees: [...kept, ...wanted],
+      description: withTechnicianLine(current.data.description, input.technicianLine),
+    },
+  });
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 async function getEventsForRange(

@@ -30,7 +30,7 @@ import {
 import { collectedByCustomer, lifetimeCollectedFor } from "./services/lifetimeCollected";
 import { LEAD_PLATFORMS, normalizeLeadPlatform } from "../shared/leadPlatform";
 import { handleMcpPost, handleMcpGet, handleMcpDelete } from "./mcp/server";
-import { pinAuthMiddleware, handlePinLogin } from "./middleware/pinAuth";
+import { pinAuthMiddleware, handlePinLogin, handleSessionRefresh } from "./middleware/pinAuth";
 import { accessLogMiddleware } from "./middleware/accessLog";
 import { resolveWalkthroughRows, walkthroughRowsBodySchema } from "./services/walkthroughMatch";
 import { proposeWalkthroughForDraft, walkthroughTextBodySchema } from "./services/aiProposer";
@@ -2058,6 +2058,8 @@ app.use("/health-record/capacity-checks", capacityCheckTechRouter);
 // The gate itself now runs far above (search "SESSION GATE"). Only the login route is left
 // here, and it is on the allowlist because it cannot require the session it hands out.
 app.post("/auth/pin", asyncHandler(async (req, res) => { await handlePinLogin(req, res); }));
+// Sliding renewal: behind the session gate (NOT on the allowlist) — a valid token buys a fresh one.
+app.post("/auth/refresh", (req, res) => { handleSessionRefresh(req, res); });
 
 // ─── AI PROPOSAL REVIEW (P011) — the human confirmation gate ─────────────────
 //
@@ -4692,6 +4694,8 @@ app.get("/crm/schedule/calendar", asyncHandler(async (req, res) => {
       appointmentKind: kind,
       scheduledStart: visit.scheduledStart,
       scheduledEnd: visit.scheduledEnd,
+      // Set once a consultation was closed out - the Calendar's crew controls grey on it (Kyle, 2026-11-15).
+      completedAt: visit.completedAt,
       travelBufferMinutes: kind === "estimate" ? ESTIMATE_TRAVEL_BUFFER_MINUTES : 0,
       estimatedDurationDays: visit.estimatedDurationDays,
       estimatedDurationHours: visit.estimatedDurationHours,
@@ -4748,6 +4752,7 @@ app.get("/crm/schedule/calendar", asyncHandler(async (req, res) => {
       purpose: visit.purpose,
       appointmentKind: appointmentKindFor(visit.status),
       estimatedDurationDays: visit.estimatedDurationDays,
+      completedAt: visit.completedAt,
       createdAt: visit.createdAt,
       depositSatisfied: visit.status === "contracted" ? depositByVisit.get(visit.id) ?? false : null,
     })),
@@ -4765,6 +4770,9 @@ app.post("/crm/jobs/:jobId/schedule", asyncHandler(async (req, res) => {
     endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     endTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     technicianId: z.string().optional(),
+    // Kyle, 2026-11-15: "I am unable to assign multiple techs to the same job." The lead is
+    // `technicianId`; these are the helpers booked with them. One booking route, not a second.
+    helperTechnicianIds: z.array(z.string().min(1)).max(20).optional(),
     // "Schedule anyway" (Kyle, 2026-10-02) — book over a Google Calendar block.
     overrideCalendarConflict: z.boolean().optional(),
   }).parse(req.body);
@@ -4773,7 +4781,7 @@ app.post("/crm/jobs/:jobId/schedule", asyncHandler(async (req, res) => {
     const result = await scheduleJob(
       jobId, body.startDate, body.startTime, body.technicianId,
       body.endDate ? { date: body.endDate, time: body.endTime ?? null } : null,
-      { overrideCalendarConflict: body.overrideCalendarConflict === true, nameCalendarOwners: true },
+      { overrideCalendarConflict: body.overrideCalendarConflict === true, nameCalendarOwners: true, helperTechnicianIds: body.helperTechnicianIds },
     );
     res.json(result);
   } catch (err) {

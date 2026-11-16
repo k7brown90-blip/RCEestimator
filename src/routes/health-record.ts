@@ -46,7 +46,7 @@ import {
   generateHealthReport,
   generateUpgradeRecord,
 } from "../services/pdfGenerator";
-import { notifyTechnicianOfAssignment } from "../services/visitConfirmations";
+import { addTechnician, removeTechnician, makeLead } from "../services/visitCrew";
 import { sendHealthReportEmail } from "../services/healthReportEmail";
 import { COVERAGE_VALUES, DEVICE_TYPES, DIFFICULTY_TIERS } from "../../shared/diagnostics";
 import {
@@ -2097,7 +2097,7 @@ healthRecordTechRouter.post("/properties/:propertyId/service-call", asyncHandler
       },
     });
     await tx.visitAssignment.create({
-      data: { visitId: created.id, technicianId: req.technician!.id, role: "lead", status: "assigned" },
+      data: { visitId: created.id, technicianId: req.technician!.id, role: "primary", status: "assigned" },
     });
     return created;
   });
@@ -4118,7 +4118,13 @@ healthRecordAdminRouter.post("/technicians/:id/verify-calendar", asyncHandler(as
   res.json(outcome);
 }));
 
-/** Assign a visit's inspection to a technician. */
+/**
+ * Put a technician on a visit as lead ("primary") or helper. Goes through the ONE crew service
+ * (services/visitCrew.ts): one lead per job, the Google event's guests follow the crew, and the tech
+ * gets the existing "New Job Assigned" notification. `role` omitted: lead when the job has none,
+ * helper otherwise. The response is the assignment, plus `promoted` (a different tech became lead)
+ * and `warning` (saved, but the Google event could not be updated).
+ */
 healthRecordAdminRouter.post("/visits/:visitId/assign", asyncHandler(async (req, res) => {
   const visitId = readParam(req, "visitId");
   const body = z.object({
@@ -4126,18 +4132,8 @@ healthRecordAdminRouter.post("/visits/:visitId/assign", asyncHandler(async (req,
     role: z.enum(["primary", "helper"]).optional(),
   }).parse(req.body);
 
-  const assignment = await prisma.visitAssignment.upsert({
-    where: { visitId_technicianId: { visitId, technicianId: body.technicianId } },
-    create: { visitId, technicianId: body.technicianId, role: body.role ?? "primary" },
-    update: { role: body.role ?? "primary", status: "assigned", completedAt: null },
-    include: { technician: true },
-  });
-
-  // Dual-channel job notification to the tech (fire-and-forget)
-  notifyTechnicianOfAssignment(body.technicianId, visitId, "assigned")
-    .catch((err) => console.error("[assign] Tech notify failed:", err));
-
-  res.status(201).json(assignment);
+  const change = await addTechnician(visitId, body.technicianId, body.role);
+  res.status(201).json({ ...change.assignment, promoted: change.promoted, warning: change.warning });
 }));
 
 healthRecordAdminRouter.get("/visits/:visitId/assignments", asyncHandler(async (req, res) => {
@@ -4149,15 +4145,17 @@ healthRecordAdminRouter.get("/visits/:visitId/assignments", asyncHandler(async (
   res.json(assignments);
 }));
 
+/** Take a technician off a job. The lead leaving promotes the longest-assigned remaining tech. */
 healthRecordAdminRouter.delete("/assignments/:id", asyncHandler(async (req, res) => {
-  const id = readParam(req, "id");
-  const assignment = await prisma.visitAssignment.findUnique({ where: { id }, select: { technicianId: true, visitId: true } });
-  await prisma.visitAssignment.delete({ where: { id } });
-  if (assignment) {
-    notifyTechnicianOfAssignment(assignment.technicianId, assignment.visitId, "cancelled")
-      .catch((err) => console.error("[unassign] Tech notify failed:", err));
-  }
-  res.status(204).end();
+  const change = await removeTechnician(readParam(req, "id"));
+  res.json({ removed: true, promoted: change.promoted, warning: change.warning });
+}));
+
+/** Make this assignment's technician the lead; the current lead becomes a helper. */
+healthRecordAdminRouter.patch("/assignments/:id", asyncHandler(async (req, res) => {
+  z.object({ role: z.literal("primary") }).parse(req.body);
+  const change = await makeLead(readParam(req, "id"));
+  res.json({ ...change.assignment, promoted: change.promoted, warning: change.warning });
 }));
 
 // HealthInspectionSummary (client/src/lib/api.ts) declares schemaVersion, scope

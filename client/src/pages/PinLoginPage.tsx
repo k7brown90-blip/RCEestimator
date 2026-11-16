@@ -2,7 +2,6 @@ import { useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 export function PinLoginPage() {
-  const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -14,8 +13,12 @@ export function PinLoginPage() {
   const from = (location.state as { from?: { pathname: string; search: string; hash: string } } | null)?.from;
   const redirectTo = from ? `${from.pathname}${from.search}${from.hash}` : "/";
 
-  async function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    // Read the PIN from the form itself, not from React state: a browser secure-fill or a paste
+    // that sets the box's value without key events never reaches onChange, so state would still
+    // be empty and the fill would "submit" nothing.
+    const pin = String(new FormData(e.currentTarget).get("pin") ?? "").replace(/\D/g, "");
     setError("");
     setLoading(true);
 
@@ -54,15 +57,32 @@ export function PinLoginPage() {
 
         <h1 className="text-lg font-semibold text-rce-text">Enter PIN</h1>
 
+        {/* Visually hidden (not display:none) so a password manager sees a username + password
+            login form and can secure-fill the PIN. */}
         <input
+          type="text"
+          name="username"
+          autoComplete="username"
+          value="owner"
+          readOnly
+          tabIndex={-1}
+          aria-hidden="true"
+          className="sr-only"
+        />
+        <input
+          id="pin"
+          name="pin"
           type="password"
+          autoComplete="current-password"
           inputMode="numeric"
           pattern="[0-9]*"
           maxLength={6}
           autoFocus
+          aria-label="PIN"
           className="field mx-auto max-w-[160px] text-center text-2xl tracking-[0.3em]"
-          value={pin}
-          onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
+          onChange={(e) => {
+            e.target.value = e.target.value.replace(/\D/g, "");
+          }}
           placeholder="••••"
         />
 
@@ -72,7 +92,7 @@ export function PinLoginPage() {
 
         <button
           type="submit"
-          disabled={pin.length < 4 || loading}
+          disabled={loading}
           className="btn btn-primary w-full disabled:opacity-40"
         >
           {loading ? "Verifying…" : "Unlock"}

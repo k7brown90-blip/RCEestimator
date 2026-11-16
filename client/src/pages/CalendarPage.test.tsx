@@ -40,6 +40,7 @@ const schedule: CalendarSchedule = {
       purpose: null,
       appointmentKind: "production",
       estimatedDurationDays: 1,
+      completedAt: null,
       createdAt: "2026-09-10T12:00:00.000Z",
       depositSatisfied: true,
     },
@@ -309,5 +310,54 @@ describe("?schedule= for a job the month on screen does not hold", () => {
     expect(within(miss).getByRole("link", { name: "Open the visit" })).toHaveAttribute("href", "/visits/visit-test");
     expect(container.querySelector("[data-scheduling-panel]")).toBeNull();
     await waitFor(() => expect(screen.getByTestId("search")).toHaveTextContent(""));
+  });
+});
+
+/**
+ * A booked consultation that was closed out from the field keeps status "estimate" and carries
+ * completedAt. The Calendar's Job Scheduling panel hosts the crew control, so it has to hear that
+ * (Kyle, 2026-11-15; click-through rule 5: greyed with the reason, not live then refused).
+ */
+describe("a closed consultation on the Calendar", () => {
+  it("greys the crew controls with the reason instead of leaving them live", async () => {
+    const today = new Date();
+    const closed = {
+      visitId: "visit-closed",
+      customerId: "acct-3",
+      customerName: "Closed Consult",
+      propertyId: "prop-3",
+      address: "3 Done Dr, Smyrna",
+      status: "estimate",
+      jobType: null,
+      purpose: "Consultation — estimate visit",
+      appointmentKind: "estimate",
+      scheduledStart: new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate(), 17, 0)).toISOString(),
+      scheduledEnd: new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate(), 19, 0)).toISOString(),
+      completedAt: "2026-10-02T15:00:00.000Z",
+      travelBufferMinutes: 60,
+      estimatedDurationDays: null,
+      confirmationStatus: "confirmed",
+      technicians: [],
+    } as unknown as CalendarAppointment;
+    vi.spyOn(api, "calendarSchedule").mockResolvedValue({ start: "x", end: "y", appointments: [closed], unscheduled: [], googleOnlyEvents: [] } as CalendarSchedule);
+    vi.spyOn(api, "calendarAvailability").mockResolvedValue({ available_slots: [], current_time_central: "", current_date_central: "" });
+    vi.spyOn(api, "monthSchedule").mockResolvedValue({ year: today.getFullYear(), month: today.getMonth() + 1, days: [] } as unknown as Awaited<ReturnType<typeof api.monthSchedule>>);
+    vi.spyOn(api, "techAvailability").mockResolvedValue({ date: "x", techs: [] });
+    vi.spyOn(api, "technicians").mockResolvedValue([]);
+    vi.spyOn(api, "visitAssignments").mockResolvedValue([]);
+
+    renderWithProviders(<CalendarPage />);
+
+    // Open today's day, then "Reschedule / Cancel" on the booked visit.
+    await screen.findByTitle(/Closed Consult/);
+    const dayButton = screen.getAllByRole("button").find(
+      (b) => b.hasAttribute("aria-pressed") && b.textContent?.startsWith(String(today.getDate())),
+    ) as HTMLElement;
+    fireEvent.click(dayButton);
+    fireEvent.click(await screen.findByRole("button", { name: /Reschedule \/ Cancel/ }));
+
+    expect(await screen.findByText("Technicians on this job")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add to job" })).toBeDisabled();
+    expect(screen.getByText(/This consultation is completed, so its technicians can't be changed/)).toBeInTheDocument();
   });
 });

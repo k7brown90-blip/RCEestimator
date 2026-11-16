@@ -367,9 +367,11 @@ function FinancialsAttention({ invoices, confirmations }: { invoices: InvoiceSum
   // The bank queue (2026-09-21): lines the importer could not classify are not in Expenses until Kyle rules on them.
   const { data: bankQueue = [] } = useQuery({ queryKey: ["bank-lines", "unclassified"], queryFn: () => api.bankLines({ classification: "unclassified" }) });
   const drawers = useDrawerParams();
-  const outstanding = invoices.filter((inv) => inv.balance > 0.009);
-  const owed = outstanding.reduce((sum, inv) => sum + inv.balance, 0);
-  const bounced = outstanding.filter(invoiceBounced);
+  // Same rule as the Outstanding tile on Payments received (Kyle, 2026-11-15): the warranty company's unpaid share counts.
+  const outstanding = invoices.filter(isOutstanding);
+  const owed = outstanding.reduce((sum, inv) => sum + owedNow(inv), 0);
+  // A bounced email matters where the HOMEOWNER still owes — the row says "owes <balance>".
+  const bounced = outstanding.filter((inv) => inv.balance > OWED_EPSILON && invoiceBounced(inv));
   const overdue = (warranty?.rows ?? []).filter((r) => r.status === "overdue");
   // The prize (PUNCHLIST A6): a scheduled bill a statement covers but never shows — a bill you may have stopped paying.
   const missingBills = (confirmations?.bills ?? []).filter((b) => b.status === "unconfirmed");
@@ -1060,6 +1062,31 @@ const STATUS_META: Record<InvoiceSummary["paymentStatus"], { label: string; tone
 };
 
 /**
+ * Kyle, 2026-11-15: "On number one the patricia copeland account I still have not recieved the
+ * check from the warranty company so their should be a negative. Also shouldn't it carry a
+ * negative until final payment is recieved". An invoice is OWED while EITHER payer still owes
+ * (two payers, two ledgers — Kyle, 2026-09-10): the homeowner's `balance` and the warranty
+ * company's `warrantyBalance`. The server's `balance` stays the homeowner's alone (status,
+ * reminders and the pay page read it); this adds the second payer for the Outstanding tile,
+ * list and attention chip only.
+ */
+const OWED_EPSILON = 0.009;
+// The server calls a warranty receivable "paid" at a balance of $0.01 or less
+// (warrantyReceivableStatus, src/services/stripePayments.ts) — one rule for the Outstanding list and
+// the Warranty receivables card, so a $0.01 remainder is not owed on one and paid on the other.
+const WARRANTY_PAID_AT_OR_BELOW = 0.01;
+function warrantyOwes(inv: Pick<InvoiceSummary, "warrantyBalance">): number {
+  const bal = inv.warrantyBalance ?? 0;
+  return bal > WARRANTY_PAID_AT_OR_BELOW ? bal : 0;
+}
+function owedNow(inv: Pick<InvoiceSummary, "balance" | "warrantyBalance">): number {
+  return Math.max(inv.balance, 0) + warrantyOwes(inv);
+}
+function isOutstanding(inv: Pick<InvoiceSummary, "balance" | "warrantyBalance">): boolean {
+  return inv.balance > OWED_EPSILON || warrantyOwes(inv) > OWED_EPSILON;
+}
+
+/**
  * Kyle, 2026-09-07: "Payments received will be the same concept. A search bar -> account ->
  * Property -> job -> paid and unpaid invoices shown. Any outstanding unpaid invoices are shown
  * in the list above the search bar, when selected it shows the job details and options to
@@ -1084,12 +1111,13 @@ function PaymentsCard({
   onChange: () => void;
 }) {
   const totals = useMemo(() => ({
-    outstanding: invoices.reduce((s, inv) => s + Math.max(inv.balance, 0), 0),
+    // The homeowner's balance PLUS what the warranty company still owes (Kyle, 2026-11-15).
+    outstanding: invoices.reduce((s, inv) => s + owedNow(inv), 0),
     collected: invoices.reduce((s, inv) => s + inv.collected, 0),
   }), [invoices]);
 
-  // ── Outstanding: signed, unvoided, unsuperseded, balance still owed ──
-  const outstanding = useMemo(() => invoices.filter((inv) => inv.balance > 0.009), [invoices]);
+  // ── Outstanding: signed, unvoided, unsuperseded, still owed by the homeowner OR the warranty company ──
+  const outstanding = useMemo(() => invoices.filter(isOutstanding), [invoices]);
   const [outstandingLimit, setOutstandingLimit] = useState(PAGE_SIZE);
 
   // ── Search → account → property → job → invoices ──
@@ -1320,8 +1348,16 @@ function PaymentsCard({
 
 /** One invoice, as a line; the row opens the invoice's drawer. */
 function InvoiceRow({ inv }: { inv: InvoiceSummary }) {
-  const s = STATUS_META[inv.paymentStatus];
   const drawers = useDrawerParams();
+  // Two payers (Kyle, 2026-09-10): the homeowner's ledger and the warranty company's. An invoice the
+  // homeowner has paid in full still OWES while the warranty check is not in (Kyle, 2026-11-15).
+  const hasWarranty = (inv.warrantyCovered ?? 0) > 0;
+  const wOwes = warrantyOwes(inv);
+  const warrantyStillOwes = hasWarranty && wOwes > OWED_EPSILON;
+  const company = inv.warrantyClaim?.company ?? "Warranty company";
+  const s = inv.paymentStatus === "paid" && warrantyStillOwes
+    ? { label: "homeowner paid — warranty owes", tone: "bg-amber-100 text-amber-900" }
+    : STATUS_META[inv.paymentStatus];
   return (
     <li className="rounded-lg border border-rce-border">
       <button type="button" title="Open this invoice" onClick={() => drawers.open("invoice", inv.id)} className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left text-sm">
@@ -1346,18 +1382,24 @@ function InvoiceRow({ inv }: { inv: InvoiceSummary }) {
         <span className="shrink-0 text-right">
           <span className="block font-semibold tabular-nums">{money(inv.billedTotal)}</span>
           {inv.paymentStatus === "paid" ? (
-            <span className="block text-xs text-emerald-700">paid{inv.lastPaidAt ? ` ${new Date(inv.lastPaidAt).toLocaleDateString()}` : ""}</span>
-          ) : (
-            <span className="block text-xs font-medium text-red-700">owes {money(inv.balance)}</span>
-          )}
-          {/* Two payers (Kyle, 2026-09-10): the homeowner's line above; the warranty company's here. */}
-          {(inv.warrantyCovered ?? 0) > 0 && (
-            <span className="block text-[11px] text-green-700">
-              {inv.warrantyClaim?.company ?? "warranty"}: covered {money(inv.warrantyCovered ?? 0)}
-              {(inv.warrantyBalance ?? inv.warrantyCovered ?? 0) > 0.009
-                ? ` · owes ${money(inv.warrantyBalance ?? inv.warrantyCovered ?? 0)}`
-                : " · paid"}
+            <span className="block text-xs text-emerald-700">
+              {hasWarranty ? "Homeowner paid" : "paid"}{inv.lastPaidAt ? ` ${new Date(inv.lastPaidAt).toLocaleDateString()}` : ""}
             </span>
+          ) : (
+            <span className="block text-xs font-medium text-red-700">{hasWarranty ? "Homeowner owes" : "owes"} {money(inv.balance)}</span>
+          )}
+          {/* Two payers (Kyle, 2026-09-10): the homeowner's line above; the warranty company's here —
+              a red "owes" line until its check is recorded (Kyle, 2026-11-15: who owes what). */}
+          {hasWarranty && (
+            warrantyStillOwes ? (
+              <span className="block text-xs font-medium text-red-700" title={`${company} covered ${money(inv.warrantyCovered ?? 0)} on this invoice`}>
+                {company} owes {money(wOwes)}
+              </span>
+            ) : (
+              <span className="block text-[11px] text-green-700">
+                {company}: covered {money(inv.warrantyCovered ?? 0)} · paid
+              </span>
+            )
           )}
         </span>
       </button>
