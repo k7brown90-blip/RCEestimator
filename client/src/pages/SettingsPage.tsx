@@ -198,6 +198,7 @@ export function SettingsPage() {
   const [profile, setProfile] = useState<CompanyProfile>(EMPTY_PROFILE);
   const [hours, setHours] = useState<OperatingHours>(EMPTY_HOURS);
   const [territories, setTerritories] = useState<Territory[]>([]);
+  const [selectedTerritory, setSelectedTerritory] = useState(0);
   const [legal, setLegal] = useState<LegalInfo>(EMPTY_LEGAL);
   const [purchasing, setPurchasing] = useState<PurchasingSettings>(EMPTY_PURCHASING);
   // Edited as a percent string ("9.75"); converted to the stored decimal fraction (0.0975)
@@ -269,7 +270,14 @@ export function SettingsPage() {
   const updateTerritory = (index: number, patch: Partial<Territory>) =>
     setTerritories((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
 
-  const addTerritory = () =>
+  // One territory on screen at a time, picked from a dropdown (Kyle, 2026-11-17: "it is taking up to much
+  // space on the screen and takes way to long to scroll through to get to the other items in settings").
+  const territoryIndex = territories.length ? Math.min(selectedTerritory, territories.length - 1) : -1;
+  const territory = territoryIndex >= 0 ? territories[territoryIndex] : null;
+  const territoryLabel = (t: Territory) => `${t.zip || "New territory"}${t.area ? ` — ${t.area}` : ""}`;
+
+  const addTerritory = () => {
+    setSelectedTerritory(territories.length);
     setTerritories((rows) => [
       ...rows,
       {
@@ -286,8 +294,12 @@ export function SettingsPage() {
         inspectorNotes: "",
       },
     ]);
+  };
 
-  const removeTerritory = (index: number) => setTerritories((rows) => rows.filter((_, i) => i !== index));
+  const removeTerritory = (index: number) => {
+    setTerritories((rows) => rows.filter((_, i) => i !== index));
+    setSelectedTerritory(Math.max(0, index - 1));
+  };
 
   return (
     <div>
@@ -341,40 +353,53 @@ export function SettingsPage() {
         title="Service territories"
         subtitle="Per-ZIP operating data: adopted code cycle, utility provider with contact info for scheduling power cuts, and the AHJ inspector."
       >
-        <div className="space-y-4">
-          {territories.map((territory, index) => (
-            <div key={index} className="rounded-lg border border-rce-border bg-white p-4">
+        {territory ? (
+          <>
+            <label className="block text-sm font-medium">
+              Territory ({territories.length})
+              <select
+                className="field mt-1 w-full md:w-96"
+                value={territoryIndex}
+                onChange={(e) => setSelectedTerritory(Number(e.target.value))}
+              >
+                {territories.map((t, index) => (
+                  <option key={index} value={index}>
+                    {territoryLabel(t)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="mt-3 rounded-lg border border-rce-border bg-white p-4">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold">
-                  {territory.zip || "New territory"}
-                  {territory.area ? ` — ${territory.area}` : ""}
-                </span>
-                <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => removeTerritory(index)}>
+                <span className="text-sm font-semibold">{territoryLabel(territory)}</span>
+                <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => removeTerritory(territoryIndex)}>
                   Remove
                 </button>
               </div>
               <div className="mt-3 grid gap-3 md:grid-cols-3">
-                <Field label="ZIP code" value={territory.zip} onChange={(v) => updateTerritory(index, { zip: v })} placeholder="37064" />
-                <Field label="Area name" value={territory.area} onChange={(v) => updateTerritory(index, { area: v })} placeholder="Franklin" />
-                <Field label="Code cycle" value={territory.codeCycle} onChange={(v) => updateTerritory(index, { codeCycle: v })} placeholder="NEC 2017" />
+                <Field label="ZIP code" value={territory.zip} onChange={(v) => updateTerritory(territoryIndex, { zip: v })} placeholder="37064" />
+                <Field label="Area name" value={territory.area} onChange={(v) => updateTerritory(territoryIndex, { area: v })} placeholder="Franklin" />
+                <Field label="Code cycle" value={territory.codeCycle} onChange={(v) => updateTerritory(territoryIndex, { codeCycle: v })} placeholder="NEC 2017" />
               </div>
               <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-rce-muted">Utility provider</p>
               <div className="mt-1 grid gap-3 md:grid-cols-2">
-                <Field label="Provider" value={territory.utilityProvider} onChange={(v) => updateTerritory(index, { utilityProvider: v })} placeholder="Middle Tennessee Electric" />
-                <Field label="Phone (power cuts / disconnects)" value={territory.utilityPhone} onChange={(v) => updateTerritory(index, { utilityPhone: v })} />
-                <Field label="Email" value={territory.utilityEmail} onChange={(v) => updateTerritory(index, { utilityEmail: v })} />
-                <Field label="Notes" value={territory.utilityNotes} onChange={(v) => updateTerritory(index, { utilityNotes: v })} placeholder="48h notice required for planned cuts" />
+                <Field label="Provider" value={territory.utilityProvider} onChange={(v) => updateTerritory(territoryIndex, { utilityProvider: v })} placeholder="Middle Tennessee Electric" />
+                <Field label="Phone (power cuts / disconnects)" value={territory.utilityPhone} onChange={(v) => updateTerritory(territoryIndex, { utilityPhone: v })} />
+                <Field label="Email" value={territory.utilityEmail} onChange={(v) => updateTerritory(territoryIndex, { utilityEmail: v })} />
+                <Field label="Notes" value={territory.utilityNotes} onChange={(v) => updateTerritory(territoryIndex, { utilityNotes: v })} placeholder="48h notice required for planned cuts" />
               </div>
               <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-rce-muted">AHJ inspector</p>
               <div className="mt-1 grid gap-3 md:grid-cols-2">
-                <Field label="Inspector name" value={territory.inspectorName} onChange={(v) => updateTerritory(index, { inspectorName: v })} />
-                <Field label="Inspector phone" value={territory.inspectorPhone} onChange={(v) => updateTerritory(index, { inspectorPhone: v })} />
-                <Field label="Inspector email" value={territory.inspectorEmail} onChange={(v) => updateTerritory(index, { inspectorEmail: v })} />
-                <Field label="Notes" value={territory.inspectorNotes} onChange={(v) => updateTerritory(index, { inspectorNotes: v })} placeholder="Prefers morning inspections; books 2 days out" />
+                <Field label="Inspector name" value={territory.inspectorName} onChange={(v) => updateTerritory(territoryIndex, { inspectorName: v })} />
+                <Field label="Inspector phone" value={territory.inspectorPhone} onChange={(v) => updateTerritory(territoryIndex, { inspectorPhone: v })} />
+                <Field label="Inspector email" value={territory.inspectorEmail} onChange={(v) => updateTerritory(territoryIndex, { inspectorEmail: v })} />
+                <Field label="Notes" value={territory.inspectorNotes} onChange={(v) => updateTerritory(territoryIndex, { inspectorNotes: v })} placeholder="Prefers morning inspections; books 2 days out" />
               </div>
             </div>
-          ))}
-        </div>
+          </>
+        ) : (
+          <p className="text-sm text-rce-muted">No territories yet — click Add territory.</p>
+        )}
         <div className="mt-4 flex gap-3">
           <button className="btn" type="button" onClick={addTerritory}>
             Add territory
