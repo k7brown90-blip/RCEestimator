@@ -6,6 +6,7 @@ import { OpenDrawerButton } from "./drawers/OpenDrawerButton";
 import { useDrawerParams } from "../lib/drawers";
 import { api, openProtectedPdf } from "../lib/api";
 import { money } from "../lib/utils";
+import { quotedRangeText } from "../../../shared/quoteMoney";
 
 /**
  * Everything quoted at THIS property — the estimate half of Kyle's funnel, on the Property page.
@@ -142,7 +143,7 @@ export function PropertyEstimates({
                     With a home-warranty claim (2026-09-09) it is the homeowner share, and the
                     warranty company's credit is shown beside it so the numbers read right. */}
                 <div className="shrink-0 text-right">
-                  <p className="font-semibold">${(e.billedTotal ?? e.total).toFixed(2)}</p>
+                  <p className="font-semibold">{e.quotedRange ? quotedRangeText(e.quotedRange, money) : money(e.billedTotal ?? e.total)}</p>
                   {/* A change order joins its invoice (Kyle, 2026-09-20) — say which one. */}
                   {e.changeOrderForId && (
                     <p className="text-[11px] text-rce-soft">change order{e.changeOrderForNumber ? ` → invoice ${e.changeOrderForNumber}` : ""}</p>

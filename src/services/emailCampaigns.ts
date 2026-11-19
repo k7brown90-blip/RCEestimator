@@ -16,8 +16,8 @@
 
 import { randomBytes } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
-import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
-import { getCompanyProfile } from "./companyProfile";
+import { sendBrandedEmail, escapeHtml, htmlToPlainText, brandedFooterHtml } from "./confirmationEmail";
+import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 import { publicBaseUrl } from "./issuedEstimateSend";
 import { logSystemEvent } from "./systemEvents";
 
@@ -49,7 +49,7 @@ export function campaignTransport(): "resend" | "gmail" {
 }
 
 /** One campaign email through Resend's HTTP API. Throws on 429 so the run can stop cleanly. */
-async function sendViaResend(input: { to: string; subject: string; html: string; headers?: Record<string, string> }): Promise<void> {
+async function sendViaResend(input: { to: string; subject: string; html: string; text: string; headers?: Record<string, string> }): Promise<void> {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -62,6 +62,9 @@ async function sendViaResend(input: { to: string; subject: string; html: string;
       reply_to: RESEND_REPLY_TO,
       subject: input.subject,
       html: input.html,
+      // The plain-text twin (Kyle, 2026-09-09 deliverability; 2026-11-18 "add plain text" for campaigns):
+      // campaigns used to be the one Resend send that went out HTML-only.
+      text: input.text,
       headers: input.headers,
     }),
   });
@@ -76,16 +79,23 @@ async function sendViaResend(input: { to: string; subject: string; html: string;
   }
 }
 
-/** The branded shell campaigns wear on the Resend pipe — same look as Gmail's. */
-export function wrapCampaignHtml(headline: string, bodyHtml: string): string {
+/**
+ * The branded shell campaigns wear on the Resend pipe — same look as Gmail's (sendBrandedEmail): the
+ * company name under the headline and the footer both come from Settings → Company profile, the same
+ * builder, so one campaign reads the same on either pipe (Kyle, 2026-11-18, "Yes, company everywhere").
+ * `headline` is PLAIN text (the subject) and is escaped here: once {first_name} is merged into the
+ * subject it carries customer data (Kyle, 2026-11-18, "Yes, build it").
+ */
+export function wrapCampaignHtml(headline: string, bodyHtml: string, profile: CompanyProfile): string {
   return `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0;">
-        <h1 style="margin:0;font-size:20px;">${headline}</h1>
-        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">Red Cedar Electric LLC</p>
+        <h1 style="margin:0;font-size:20px;">${escapeHtml(headline)}</h1>
+        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">${escapeHtml(profile.legalName)}</p>
       </div>
       <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
         ${bodyHtml}
+        ${brandedFooterHtml(profile)}
       </div>
     </div>`;
 }
@@ -130,12 +140,36 @@ export async function resolveListRecipients(
   return [...byEmail.values()];
 }
 
-/** Render the block stack to email HTML — the SAME function preview and send use. */
-export function renderCampaignHtml(blocks: CampaignBlock[], unsubscribeUrl: string, mailingAddress: string): string {
+/**
+ * {first_name} in a campaign (Kyle, 2026-11-18: "Yes, build it"). The first word of the recipient's
+ * name — "John and Sandy Lewis" becomes "John" — and "there" when we have no name, so it only reads
+ * right after a greeting ("Hi {first_name},"). No first-name column exists; names are one string.
+ */
+export function campaignFirstName(name: string | null | undefined): string {
+  return name?.trim().split(/\s+/)[0] || "there";
+}
+
+/** Swap the token on RAW text. Callers escape AFTER, so an apostrophe or a "<" in a name is never double-escaped or trusted. */
+export function mergeFirstName(text: string, recipientName: string | null | undefined): string {
+  return text.replaceAll("{first_name}", () => campaignFirstName(recipientName));
+}
+
+/**
+ * Render the block stack to email HTML — the SAME function preview and send use (Kyle, 2026-09-02:
+ * "what you approve is what goes out"). `recipientName` is the one thing that differs: the send passes
+ * each row's stored name; preview and test send pass none and so show "there".
+ */
+export function renderCampaignHtml(
+  blocks: CampaignBlock[],
+  unsubscribeUrl: string,
+  mailingAddress: string,
+  recipientName?: string | null,
+): string {
+  const merge = (t: string) => mergeFirstName(t, recipientName);
   const parts: string[] = [];
   for (const b of blocks) {
     if (b.kind === "text") {
-      parts.push(`<p style="font-size:15px;line-height:1.6;">${escapeHtml(b.text).replaceAll("\n", "<br>")}</p>`);
+      parts.push(`<p style="font-size:15px;line-height:1.6;">${escapeHtml(merge(b.text)).replaceAll("\n", "<br>")}</p>`);
     } else if (b.kind === "article") {
       parts.push(`
         <div style="border:1px solid #ddd;border-radius:8px;overflow:hidden;margin:16px 0;">
@@ -147,10 +181,19 @@ export function renderCampaignHtml(blocks: CampaignBlock[], unsubscribeUrl: stri
           </div>
         </div>`);
     } else if (b.kind === "promo") {
+      // Headline and offer are optional (Kyle, 2026-11-18, "Tell admin + add plain text"): a Promotion with
+      // only a Button label and link is the stand-alone button, so a blank line prints no empty <p>.
+      // The button sits 14px under whichever line is last: the offer carries that gap, or the headline does when there is no offer.
+      const promoHeadline = b.headline.trim()
+        ? `<p style="margin:0 0 ${b.text.trim() ? "0" : "14px"};font-size:18px;font-weight:700;">${escapeHtml(merge(b.headline))}</p>`
+        : "";
+      const promoText = b.text.trim()
+        ? `<p style="margin:${promoHeadline ? "8px" : "0"} 0 14px;font-size:14px;">${escapeHtml(merge(b.text))}</p>`
+        : "";
       parts.push(`
         <div style="background:#f4f8f4;border-radius:8px;padding:18px 20px;margin:16px 0;text-align:center;">
-          <p style="margin:0;font-size:18px;font-weight:700;">${escapeHtml(b.headline)}</p>
-          <p style="margin:8px 0 14px;font-size:14px;">${escapeHtml(b.text)}</p>
+          ${promoHeadline}
+          ${promoText}
           <a href="${escapeHtml(b.ctaUrl)}"
              style="background:#1a5c2e;color:#fff;text-decoration:none;padding:12px 26px;border-radius:6px;font-size:15px;font-weight:600;display:inline-block;">
             ${escapeHtml(b.ctaLabel)}</a>
@@ -251,13 +294,18 @@ export async function sendCampaign(prisma: PrismaClient, campaignId: string): Pr
       continue;
     }
     const unsubscribeUrl = `${base}/unsubscribe/${row.unsubscribeToken}`;
-    const html = renderCampaignHtml(blocks, unsubscribeUrl, profile.mailingAddress);
+    const html = renderCampaignHtml(blocks, unsubscribeUrl, profile.mailingAddress, row.name);
+    // The subject greets this recipient too. It is the Subject header (plain text) and the email's
+    // headline — wrapCampaignHtml / the branded shell print the headline, so it is escaped there.
+    const subject = mergeFirstName(campaign.subject, row.name);
     try {
       if (transport === "resend") {
+        const fullHtml = wrapCampaignHtml(subject, html, profile);
         await sendViaResend({
           to: row.email,
-          subject: campaign.subject,
-          html: wrapCampaignHtml(campaign.subject, html),
+          subject,
+          html: fullHtml,
+          text: htmlToPlainText(fullHtml),
           headers: { "List-Unsubscribe": `<${unsubscribeUrl}>` },
         });
         await prisma.emailCampaignSend.update({ where: { id: row.id }, data: { status: "sent", sentAt: new Date() } });
@@ -267,8 +315,8 @@ export async function sendCampaign(prisma: PrismaClient, campaignId: string): Pr
         const ok = await sendBrandedEmail({
           kind: "campaign",
           to: row.email,
-          subject: campaign.subject,
-          headline: campaign.subject,
+          subject,
+          headline: escapeHtml(subject),
           bodyHtml: html,
           headers: { "List-Unsubscribe": `<${unsubscribeUrl}>` },
         });

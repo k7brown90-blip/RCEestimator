@@ -432,7 +432,8 @@ export function SendEmailPanel({
             <>
               <label className="block text-xs font-medium text-rce-soft">
                 Note <span className="font-normal">(optional, goes in the email)</span>
-                <input className="field mt-1" value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} placeholder="Optional note to include in the email" />
+                {/* Multi-line so pasted paragraphs keep their breaks (AI admin report 11/18; Kyle, 2026-11-19: "Yes, fix it"). */}
+                <textarea className="field mt-1 resize-y" rows={3} value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} placeholder="Optional note to include in the email" />
               </label>
               {active === "estimate" && (
                 <div className="space-y-1">

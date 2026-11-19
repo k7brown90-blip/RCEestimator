@@ -245,6 +245,14 @@ export interface RenderOpts {
    */
   channel?: "email" | "in_person";
   /**
+   * The option the customer chose on the office's Present screen, for the in-person render only
+   * (Kyle, 2026-11-18: a one-or-the-other estimate paints ONE option's price, never the sum). The
+   * CRM signing iframe runs no script, so the server paint is all the customer sees. Read only for
+   * an unsigned one-or-the-other estimate; an option the estimate does not hold is ignored and
+   * Option A stands. Email-link renders omit it - the page's script follows the radio.
+   */
+  selectedOptions?: readonly string[];
+  /**
    * The deposit ask on the signed page (Kyle, 2026-08-25: ⅓ deposit required
    * before scheduling). Null/absent = not signed yet, or nothing due. The page
    * a customer revisits after signing is the natural place the deposit lives.
@@ -410,7 +418,6 @@ export function renderEstimatePage(
   const liveAllKey = comboKey(estOptions.map((o) => o.option));
   const chosen = new Set((est.selectedOptions ?? []) as string[]);
   const signedOff = Boolean(est.signedAt);
-  const discountShown = signedOff ? signedDiscount?.amount ?? 0 : comboTable[liveAllKey]?.discount ?? 0;
 
   // Once signed, the document shows what was BOUGHT, not what was offered. An option the customer
   // declined has no business appearing on their agreement.
@@ -419,7 +426,21 @@ export function renderEstimatePage(
   // One-or-the-other (Kyle, 2026-08-25): radio buttons, exactly one choice,
   // Option A pre-selected so the page opens showing a real price.
   const exclusive = Boolean(est.exclusiveOptions) && selectable;
+  /*
+    THE FIRST PAINT SHOWS ONE OPTION (Kyle, 2026-11-18, "Price range": an estimate the customer
+    picks one of never shows the sum of its options). Until now every unsigned page painted
+    `liveAllKey` - every option together - and the script repainted Option A a moment later; the
+    CRM's in-person iframe runs no script, so the customer there kept the sum beside the signature
+    pad. The painted selection is the checked radio: the option chosen on Present (opts) when it
+    is one this estimate holds, else Option A (Kyle, 2026-08-25). An ordinary additive estimate
+    still opens with everything ticked.
+  */
   const firstOption = shownOptions[0]?.option ?? null;
+  const pickedOption = exclusive
+    ? estOptions.find((o) => (opts.selectedOptions ?? []).includes(o.option))?.option ?? firstOption
+    : firstOption;
+  const paintKey = exclusive && pickedOption ? pickedOption : liveAllKey;
+  const discountShown = signedOff ? signedDiscount?.amount ?? 0 : comboTable[paintKey]?.discount ?? 0;
 
   /*
     ── HOME-WARRANTY COVERAGE (Kyle, 2026-09-09) ───────────────────────────────────────────────
@@ -445,7 +466,7 @@ export function renderEstimatePage(
             (signedCombo?.reduction ?? 0) - (signedDiscount?.amount ?? 0),
         )
       : estOptions.length > 0
-        ? comboTable[liveAllKey]?.total ?? est.total
+        ? comboTable[paintKey]?.total ?? est.total
         : round2(est.total - (discountShown ?? 0));
   const warrantyApplied = warranty
     ? round2(Math.max(0, Math.min(warranty.coveredAmount, preCoverageTotal)))
@@ -494,7 +515,11 @@ export function renderEstimatePage(
   // cards on "Present to the customer" (which follows the ticks) a click earlier.
   const financingShown =
     !signedOff && est.status !== "lost" && estOptions.length > 0 && financing !== null && opts.channel !== "in_person";
-  const financingFirst = financingShown ? financingOffersFor(financing, liveAllKey.split("+")) : null;
+  // The saving row follows the painted selection. A pick-one page paints exactly one option, so the
+  // multi-option saving row never shows there (Kyle, 2026-11-18, "Price range": a pick-one estimate
+  // never shows a sum) - hard-hidden rather than left to that option's own reduction being nil.
+  const comboSavingShown = signedOff ? signedCombo?.reduction ?? 0 : exclusive ? 0 : comboTable[paintKey]?.saving ?? 0;
+  const financingFirst = financingShown ? financingOffersFor(financing, paintKey.split("+")) : null;
   const financingBlock = financingShown && financing
     ? `<details class="fin" id="finBlock"${financingFirst ? "" : ' style="display:none;"'}>
          <summary id="finFrom">${financingFirst ? escapeHtml(fromLine(financingFirst.from)) : ""}</summary>
@@ -573,7 +598,7 @@ export function renderEstimatePage(
       const box = selectable
         ? exclusive
           ? `<input type="radio" name="optchoice" class="optpick" data-option="${escapeHtml(o.option)}"
-               data-subtotal="${o.subtotal}" ${o.option === firstOption ? "checked" : ""}
+               data-subtotal="${o.subtotal}" ${o.option === pickedOption ? "checked" : ""}
                aria-label="Choose ${optionName(o)}">`
           : `<input type="checkbox" class="optpick" data-option="${escapeHtml(o.option)}"
                data-subtotal="${o.subtotal}" checked aria-label="Include ${optionName(o)}">`
@@ -797,7 +822,7 @@ export function renderEstimatePage(
            <!-- What they ticked, at the moment they signed. Filled by the script below and
                 re-validated on the server, which is what makes it true. -->
            <input type="hidden" name="selectedOptions" id="selectedOptions"
-                  value="${exclusive ? escapeHtml(firstOption ?? "") : estOptions.map((o) => escapeHtml(o.option)).join(",")}">
+                  value="${exclusive ? escapeHtml(pickedOption ?? "") : estOptions.map((o) => escapeHtml(o.option)).join(",")}">
            <label for="signerName">Your full name</label>
            <input id="signerName" name="signerName" type="text" required autocomplete="name"
                   placeholder="Your full name">
@@ -987,12 +1012,8 @@ export function renderEstimatePage(
          ${est.tripCharge > 0 || est.tripWaived
            ? `<div><span>${tripLabel}</span><span>${money(est.tripCharge)}</span></div>`
            : ""}
-         <div id="comboSaving" class="saving" ${
-           (signedOff ? (signedCombo?.reduction ?? 0) : comboTable[comboKey(estOptions.map((o) => o.option))]?.saving ?? 0) > 0
-             ? "" : 'style="display:none;"'
-         }><span>Multi-option material discount</span><span id="comboSavingAmt">&minus;${money(
-           signedOff ? signedCombo?.reduction ?? 0 : comboTable[comboKey(estOptions.map((o) => o.option))]?.saving ?? 0
-         )}</span></div>
+         <div id="comboSaving" class="saving" ${comboSavingShown > 0 ? "" : 'style="display:none;"'
+         }><span>Multi-option material discount</span><span id="comboSavingAmt">&minus;${money(comboSavingShown)}</span></div>
          <div id="progDiscount" class="saving" ${discountShown > 0 ? "" : 'style="display:none;"'}>
            <span>${programme ? escapeHtml(discountLabel(programme)) : "Discount"}</span>
            <span id="progDiscountAmt">&minus;${money(discountShown)}</span>

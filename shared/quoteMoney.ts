@@ -287,10 +287,11 @@ export function buildMoneyTable(
       pricedOnceComplete,
     };
     if (!exclusive) discountedTotal = rows[0]?.after ?? null;
-    else if (rows.length === sets.length && rows.length > 0) {
-      discountedRange = { min: Math.min(...rows.map((r) => r.after)), max: Math.max(...rows.map((r) => r.after)) };
-    }
   }
+
+  // One-or-the-other with a programme: the finished per-option prices, read by the one helper
+  // (pickOneRange below) that the office rows, the PDF and the email also use.
+  if (programme && exclusive) discountedRange = pickOneRange({ exclusiveOptions: exclusive, pickable, selections });
 
   return { exclusiveOptions, range, discount, discountedTotal, discountedRange, pickable, selections };
 }
@@ -300,6 +301,40 @@ export function buildMoneyTable(
 /** The customer picks exactly ONE option: the mode is on AND there is something to choose between. */
 export function picksOne(money: Pick<QuoteMoney, "exclusiveOptions" | "pickable">): boolean {
   return money.exclusiveOptions && money.pickable.length > 1;
+}
+
+/**
+ * The price range of a one-or-the-other estimate. Each end is what the customer pays if they sign
+ * for that ONE option alone: exactly the figure the customer's page shows when that option's radio
+ * is selected, so it includes the trip and any programme discount. It reads the finished
+ * per-selection table; it adds nothing and takes no percentage. Null unless the customer picks
+ * exactly one (`picksOne`) and every option is priced.
+ *
+ * NOT `QuoteMoney.range`: that is bare option subtotals with no trip, which the field Quote screen
+ * and the intake bar keep. An unsigned one-or-the-other estimate's stored `total` is every option
+ * added together, so no surface prints that sum; it prints this range (Kyle, 2026-11-18: "Price
+ * range"; 2026-08-25 "cannot be additive"; 2026-08-29 "it is still totaling all options together").
+ */
+export function pickOneRange(
+  money: Pick<QuoteMoney, "exclusiveOptions" | "pickable" | "selections">,
+): QuoteRange | null {
+  if (!picksOne(money)) return null;
+  const totals: number[] = [];
+  for (const option of money.pickable) {
+    const price = money.selections[option];
+    if (!price) return null;
+    totals.push(price.total);
+  }
+  return { min: Math.min(...totals), max: Math.max(...totals) };
+}
+
+/**
+ * The one wording of that range on every surface that replaces the single total (office rows, PDF,
+ * email, alerts): "$3,383.58 – $63,028.99 · choose one". `fmt` is the money formatter the surface
+ * already uses, so each keeps its own style.
+ */
+export function quotedRangeText(range: QuoteRange, fmt: (n: number) => string): string {
+  return `${fmt(range.min)} – ${fmt(range.max)} · choose one`;
 }
 
 /**

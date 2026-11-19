@@ -241,8 +241,8 @@ savannahRouter.post("/reschedule-job", asyncHandler(async (req, res) => {
   if (req.body && ("new_duration" in req.body || "duration_days" in req.body)) {
     res.status(400).json(errorResponse(
       "INVALID_PARAMETER",
-      "Duration changes are not allowed on reschedule — contact Kyle directly for scope changes.",
-      "I can't change the duration of a job. I can only move it to a new date. For scope changes, Kyle will need to discuss that with you.",
+      "Duration changes are not allowed on reschedule — contact our office directly for scope changes.",
+      "I can't change the duration of a job. I can only move it to a new date. For scope changes, our office will need to discuss that with you.",
     ));
     return;
   }
@@ -278,7 +278,7 @@ savannahRouter.post("/reschedule-job", asyncHandler(async (req, res) => {
         customer_notified: result.customerNotified,
         kyle_notified: result.kyleNotified,
       },
-      `Done — rescheduled to ${formatDate(result.scheduledStart)} at ${formatTime(result.scheduledStart)}. Both you and Kyle have been notified.`,
+      `Done — rescheduled to ${formatDate(result.scheduledStart)} at ${formatTime(result.scheduledStart)}. Both you and our office have been notified.`,
     );
     await saveIdempotency(clientRequestId, endpoint, body.job_id, resp, "savannah");
     logAgent("savannah_reschedule_job", { agent: "savannah", endpoint, responseStatus: 200, durationMs: Date.now() - start, clientRequestId });

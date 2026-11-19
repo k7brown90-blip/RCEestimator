@@ -305,7 +305,7 @@ describe("POST /agent/calendar/documents/send", () => {
     expect(res.status).toBe(502);
     expect(res.body.success).toBe(false);
     expect(res.body.error.code).toBe("DELIVERY_FAILED");
-    expect(res.body.spoken_confirmation).toMatch(/flag it for Kyle/i);
+    expect(res.body.spoken_confirmation).toMatch(/flag it for our office/i);
   });
 
   it("honors x-client-request-id for idempotent replay", async () => {

@@ -177,7 +177,7 @@ import { listReceiptReports } from "./services/receiptReports";
 import { lastDeliveriesForEstimates } from "./services/transactionalEmail";
 import { handleResendWebhook } from "./services/resendWebhook";
 import { programmeFor } from "./services/discounts";
-import { getQuoteMoney } from "./services/quoteMoney";
+import { getQuoteMoney, quotedRangeOfIssued, quotedRangesForIssued } from "./services/quoteMoney";
 import { FINANCING_PLANS_KEY, getFinancingPlans, validateFinancingPlans } from "./services/financingSettings";
 import { PAYROLL_SETTINGS_KEY, validatePayrollSettings } from "./services/payrollSettings";
 import { internalRouter, healthzHandler } from "./routes/internal-alerts";
@@ -726,7 +726,7 @@ app.post("/calendar/book", requireWebhookSecretWhenEnabled("POST /calendar/book"
     });
     res.status(500).json({
       error: "Booking failed unexpectedly",
-      spoken_fallback: "Something went wrong on my end booking that. Let me have Kyle's team confirm this appointment directly and call you back.",
+      spoken_fallback: "Something went wrong on my end booking that. I wasn't able to finish that booking, so please try again or pick a different time.",
     });
   }
 }));
@@ -2958,6 +2958,8 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
   const jobById = new Map(jobs.map((j) => [j.id, j]));
   // The newest customer email about each estimate and what became of it (Kyle, 2026-09-09).
   const lastDeliveryById = await lastDeliveriesForEstimates(prisma, rows.map((r) => r.id));
+  // The price range of every unsigned one-or-the-other row (Kyle, 2026-11-18, "Price range").
+  const quotedRangeById = await quotedRangesForIssued(prisma, rows);
 
   res.json({
     estimates: rows.map((r) => ({
@@ -2967,9 +2969,11 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
       status: r.status,
       title: r.title,
       total: r.total,
-      // The sell price: taken options + trip − combo cap − discount. On an unsigned
-      // multi-option sheet nothing is selected yet, so this equals `total`; on a signed
-      // one it is what the invoice charges (Kyle's billed-total-everywhere rule).
+      // The sell price: taken options + trip − combo cap − discount. On a signed row it is what
+      // the invoice charges (Kyle's billed-total-everywhere rule). On an UNSIGNED row nothing is
+      // selected yet, so it equals `total` - and for a one-or-the-other estimate that is EVERY
+      // option added together, which is not a price anyone pays (corrected 2026-11-18: this
+      // comment used to say the equality was harmless). Such a row shows `quotedRange` instead.
       billedTotal: billedTotalOf({
         total: r.total,
         tripCharge: r.tripCharge,
@@ -2989,6 +2993,10 @@ app.get("/issued-estimates/chain", asyncHandler(async (req, res) => {
         warrantyJson: r.warrantyJson,
         optionsSubtotals: r.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
       })?.applied ?? 0,
+      exclusiveOptions: r.exclusiveOptions,
+      // Unsigned one-or-the-other only: "$min – $max · choose one" replaces the total (shared/quoteMoney.ts
+      // pickOneRange). Null on every other row, which keep showing billedTotal.
+      quotedRange: quotedRangeById.get(r.id) ?? null,
       createdAt: r.createdAt,
       sentAt: r.sentAt,
       signedAt: r.signedAt,
@@ -3053,7 +3061,9 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
   const { changeOrderFor, token, account, financingPlansJson, ...row } = est;
   void financingPlansJson;
   res.json({
-    estimate: { ...row, changeOrderForNumber: changeOrderFor?.number ?? null },
+    // quotedRange: unsigned one-or-the-other only (Kyle, 2026-11-18, "Price range"); the intake's
+    // Review box prints it where it used to print `total`, which adds every option together.
+    estimate: { ...row, changeOrderForNumber: changeOrderFor?.number ?? null, quotedRange: quotedRangeOfIssued(est) },
     customerLink: estimateLink(token),
     accountProperties: account.properties,
   });
@@ -3625,7 +3635,13 @@ app.get("/issued-estimates/:id/customer-view", asyncHandler(async (req, res) => 
     res.status(404).type("html").send(renderUnavailable());
     return;
   }
-  res.type("html").send(renderEstimatePage(est, { channel: "in_person" }));
+  // The option(s) chosen on Present ride as `?selectedOptions=A` (an authenticated query, never a
+  // token): a one-or-the-other estimate paints that ONE option's price in the sandboxed iframe,
+  // which runs no script (Kyle, 2026-11-18). Anything this estimate does not hold is dropped here,
+  // and again by the renderer.
+  const held = new Set(est.options.map((o) => o.option as string));
+  const selectedOptions = (readQuery(req, "selectedOptions") ?? "").split(",").map((o) => o.trim()).filter((o) => held.has(o));
+  res.type("html").send(renderEstimatePage(est, { channel: "in_person", selectedOptions }));
 }));
 
 /**
@@ -3734,6 +3750,8 @@ app.get("/issued-estimates/:id/pdf", asyncHandler(async (req, res) => {
       // bare letter, and drops what the customer declined once it is signed.
       options: est.options,
       selectedOptions: est.selectedOptions,
+      // Unsigned one-or-the-other: the total row prints the range, not est.total (Kyle, 2026-11-18).
+      quotedRange: quotedRangeOfIssued(est),
       // The frozen working of the job-level material check, for the company copy (2026-08-21).
       materialCaps: est.materialCapsJson ? JSON.parse(est.materialCapsJson) : null,
       comboCap: est.comboCapJson ? JSON.parse(est.comboCapJson) : null,
@@ -3840,6 +3858,9 @@ async function serializeAccountEstimateRows(estimates: AccountEstimateRow[]) {
   */
   // The newest customer email about each estimate and what became of it (Kyle, 2026-09-09).
   const lastDeliveryById = await lastDeliveriesForEstimates(prisma, estimates.map((e) => e.id));
+  // The price range of every unsigned one-or-the-other row (Kyle, 2026-11-18, "Price range"): the
+  // row's billedTotal below is est.total there, every option added together.
+  const quotedRangeById = await quotedRangesForIssued(prisma, estimates);
   // The warranty company's money per covered estimate (Kyle, 2026-09-10) — the row reads
   // "warranty $370 · RELY unpaid/paid". One query for the covered rows, never N.
   const coveredIds = estimates.filter((e) => e.warrantyJson).map((e) => e.id);
@@ -3885,6 +3906,7 @@ async function serializeAccountEstimateRows(estimates: AccountEstimateRow[]) {
     return {
       ...safe,
       billedTotal: billedTotalOf(money),
+      quotedRange: quotedRangeById.get(e.id) ?? null,
       // What the warranty company is credited (already off billedTotal) — the row reads
       // "billed $55 · warranty −$370" so the numbers add up on the page.
       warrantyCovered: coverage?.applied ?? 0,
@@ -5186,6 +5208,16 @@ app.get("/jobs", asyncHandler(async (req, res) => {
       .map((v) => ({ visitId: v.id, rootEstimateId: signedQualifies.has(v.id) ? groupOf(signedQualifies.get(v.id)!).root.id : null })),
   );
 
+  // The unsigned one-or-the-other rows on the cards get their price range, not the sum (Kyle, 2026-11-18).
+  // Only the row each card reads (signed root, else newest) is worked, not every issued estimate.
+  const jobsQuotedRange = await quotedRangesForIssued(
+    prisma,
+    jobVisits.flatMap((v) => {
+      const row = signedQualifies.get(v.id) ?? issuedByVisit.get(v.id) ?? null;
+      return row ? [row] : [];
+    }),
+  );
+
   const jobs = jobVisits.map((visit: typeof visits[number]) => {
     const latestEstimate = visit.estimates[0] ?? null;
     const { acceptedTotal, displayTotal } = estimateOptionTotal(latestEstimate?.options ?? []);
@@ -5250,6 +5282,8 @@ app.get("/jobs", asyncHandler(async (req, res) => {
             warrantyJson: latestIssued.warrantyJson,
             optionsSubtotals: latestIssued.options.map((o) => ({ option: o.option, subtotal: o.subtotal })),
           }),
+          // Unsigned one-or-the-other: the card reads "$min – $max · choose one", never the sum.
+          quotedRange: jobsQuotedRange.get(latestIssued.id) ?? null,
           hasAcceptance: Boolean(latestIssued.signedAt),
         }
         : latestEstimate
@@ -5493,10 +5527,11 @@ app.patch("/email-campaigns/:id", asyncHandler(async (req, res) => {
 app.get("/email-campaigns/:id/preview", asyncHandler(async (req, res) => {
   const campaign = await prisma.emailCampaign.findUnique({ where: { id: String(req.params.id) } });
   if (!campaign) { res.status(404).json({ error: "Campaign not found" }); return; }
-  const { renderCampaignHtml } = await import("./services/emailCampaigns");
+  const { renderCampaignHtml, mergeFirstName } = await import("./services/emailCampaigns");
   const { getCompanyProfile } = await import("./services/companyProfile");
   const profile = await getCompanyProfile();
-  res.json({ html: renderCampaignHtml(JSON.parse(campaign.blocksJson), "#unsubscribe-preview", profile.mailingAddress), subject: campaign.subject });
+  // No recipient here, so {first_name} shows as "there" (the real send greets each person by name).
+  res.json({ html: renderCampaignHtml(JSON.parse(campaign.blocksJson), "#unsubscribe-preview", profile.mailingAddress), subject: mergeFirstName(campaign.subject, null) });
 }));
 
 /** Test send to the shop's own inbox. */
@@ -5505,13 +5540,16 @@ app.post("/email-campaigns/:id/test", asyncHandler(async (req, res) => {
   if (!campaign) { res.status(404).json({ error: "Campaign not found" }); return; }
   const { renderCampaignHtml } = await import("./services/emailCampaigns");
   const { getCompanyProfile } = await import("./services/companyProfile");
-  const { sendBrandedEmail } = await import("./services/confirmationEmail");
+  const { sendBrandedEmail, escapeHtml, htmlToPlainText } = await import("./services/confirmationEmail");
   const profile = await getCompanyProfile();
-  const { campaignTransport, wrapCampaignHtml, renderCampaignHtml: render } = await import("./services/emailCampaigns");
+  const { campaignTransport, wrapCampaignHtml, renderCampaignHtml: render, mergeFirstName } = await import("./services/emailCampaigns");
   const body = render(JSON.parse(campaign.blocksJson), "#test-send", profile.mailingAddress);
+  // A test goes to the shop's own inbox, so there is no recipient name: {first_name} reads "there".
+  const subject = mergeFirstName(campaign.subject, null);
   // The test rides the SAME pipe the real send will use — a Gmail test proving
   // out a Resend campaign would prove nothing.
   if (campaignTransport() === "resend") {
+    const html = wrapCampaignHtml(subject, body, profile);
     const res2 = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" },
@@ -5519,8 +5557,10 @@ app.post("/email-campaigns/:id/test", asyncHandler(async (req, res) => {
         from: process.env.RESEND_FROM ?? "Red Cedar Electric <news@redcedarelectricllc.com>",
         to: [profile.email],
         reply_to: profile.email,
-        subject: `[TEST] ${campaign.subject}`,
-        html: wrapCampaignHtml(campaign.subject, body),
+        subject: `[TEST] ${subject}`,
+        html,
+        // Same plain-text twin the real send carries (Kyle, 2026-11-18).
+        text: htmlToPlainText(html),
       }),
     });
     if (!res2.ok) {
@@ -5534,8 +5574,8 @@ app.post("/email-campaigns/:id/test", asyncHandler(async (req, res) => {
   const ok = await sendBrandedEmail({
     kind: "campaign",
     to: profile.email,
-    subject: `[TEST] ${campaign.subject}`,
-    headline: campaign.subject,
+    subject: `[TEST] ${subject}`,
+    headline: escapeHtml(subject),
     bodyHtml: body,
   });
   if (!ok) { res.status(502).json({ error: "The test email could not be sent — check the email connection." }); return; }

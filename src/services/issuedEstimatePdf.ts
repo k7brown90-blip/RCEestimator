@@ -35,6 +35,7 @@ import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 import { signatureBuffer } from "./signatureImage";
 import { acceptedViaPhrase, isOfficeAcceptance } from "../../shared/acceptance";
 import { ALL_OPTIONS } from "../../shared/estimateOptions";
+import { quotedRangeText, type QuoteRange } from "../../shared/quoteMoney";
 import { discountFor, discountLabel, programmeFor } from "./discounts";
 import type { WarrantyClaim } from "./stripePayments";
 import { warrantyCompanyLine, warrantyNoticeText, warrantyRowLabel } from "./warrantyNotice";
@@ -109,6 +110,12 @@ export interface PdfEstimate {
   }>;
   /** What the customer actually bought. Empty or absent means the whole estimate. */
   selectedOptions?: PriceBookOption[];
+  /**
+   * Set (by `quotedRangeOfIssued`) only for an UNSIGNED one-or-the-other estimate (Kyle,
+   * 2026-11-18, "Price range"). `total` adds every option, so the total row prints this range
+   * instead, and nothing below is worked on that sum (see the totals block).
+   */
+  quotedRange?: QuoteRange | null;
   /**
    * The job-level material check's working, frozen at issue (2026-08-21). Company copy only —
    * the customer sees the resulting price, never the machinery that produced it.
@@ -424,25 +431,44 @@ export async function renderEstimatePdf(
     copy's profit line is about.
   */
   const jobBilled = round2(preDiscount - progAmount);
+  // An unsigned one-or-the-other estimate prints its range, never the sum (Kyle, 2026-11-18). Each
+  // end already carries the trip and the programme discount (the customer-page figure), so the
+  // discount and warranty rows - worked on the all-options sum - are left off, the financing
+  // overview and the company profit line (also worked on that sum) are omitted, and the page the
+  // customer picks on shows the per-option credit and financing.
+  const ranged = !estimate.signedAt && estimate.quotedRange ? estimate.quotedRange : null;
   const warrantyApplied = estimate.warranty
     ? round2(Math.max(0, Math.min(estimate.warranty.coveredAmount, jobBilled)))
     : 0;
   const billed = round2(Math.max(0, jobBilled - warrantyApplied));
 
-  if (comboReduction > 0) {
+  if (!ranged && comboReduction > 0) {
     doc.fontSize(10).fillColor("#1a5c2e")
       .text("Multi-option material discount", { continued: true })
       .text(`-${money(comboReduction)}`, { align: "right" });
     doc.fillColor("#000");
   }
-  if (progAmount > 0) {
+  if (ranged) {
+    const label = programmeFor(estimate.discountType, estimate.discountPercent);
+    if (label) {
+      doc.fontSize(9).fillColor("#1a5c2e").text(`${discountLabel(label)} is already taken off each price in this range.`);
+      doc.fillColor("#000");
+    }
+  }
+  if (ranged && estimate.warranty && warrantyApplied > 0) {
+    // The range is before coverage; the credit row is left off because it is worked on the all-options
+    // sum (Kyle, 2026-11-18, "Price range"), so say where the warranty lands.
+    doc.fontSize(9).fillColor("#333").text("Warranty coverage is taken off the option you choose.");
+    doc.fillColor("#000");
+  }
+  if (!ranged && progAmount > 0) {
     const label = programmeFor(estimate.discountType, estimate.discountPercent);
     doc.fontSize(10).fillColor("#1a5c2e")
       .text(label ? discountLabel(label) : "Discount", { continued: true })
       .text(`-${money(progAmount)}`, { align: "right" });
     doc.fillColor("#000");
   }
-  if (estimate.warranty && warrantyApplied > 0) {
+  if (!ranged && estimate.warranty && warrantyApplied > 0) {
     // The credit row: "Warranty coverage — RELY Home, claim 343467219, auth auth45978673 · billed
     // to RELY Home    −$370.00". Generated from the claim record, never typed.
     doc.fontSize(10).fillColor("#1a5c2e")
@@ -451,11 +477,11 @@ export async function renderEstimatePdf(
     doc.fillColor("#000");
   }
   doc.fontSize(13).text(
-    estimate.warranty && warrantyApplied > 0
+    !ranged && estimate.warranty && warrantyApplied > 0
       ? "YOUR TOTAL"
       : isInvoice ? "INVOICE TOTAL" : "ESTIMATE TOTAL",
     { continued: true },
-  ).text(money(billed), { align: "right" });
+  ).text(ranged ? quotedRangeText(ranged, money) : money(billed), { align: "right" });
 
   /*
     ── FINANCING OPTIONS (Kyle, 2026-10-09) — CUSTOMER COPY ONLY ───────────────────────────────
@@ -467,7 +493,7 @@ export async function renderEstimatePdf(
     deposit/fee note and no terms page here.
   */
   const financingLines =
-    audience === "customer" && estimate.financing
+    audience === "customer" && estimate.financing && !ranged
       ? financingLinesFor({
           financing: estimate.financing,
           billedBeforeCoverage: jobBilled,
@@ -606,10 +632,13 @@ export async function renderEstimatePdf(
     const jobProfit = round2(jobBilled - materialSpend);
     doc.moveDown(0.2);
     doc.text(
-      `Profit: ${money(jobBilled)} billed` +
-        (warrantyApplied > 0 ? ` (${money(warrantyApplied)} of it to ${estimate.warranty?.company ?? "the warranty company"})` : "") +
-        ` - ${money(materialSpend)} material = ${money(jobProfit)}` +
-        (jobBilled > 0 ? `  (${((jobProfit / jobBilled) * 100).toFixed(0)}% of billed)` : ""),
+      ranged
+        // The sum of alternatives is not a bill, so no profit is worked on it (Kyle, 2026-11-18).
+        ? "Profit: worked out once the customer picks one option."
+        : `Profit: ${money(jobBilled)} billed` +
+          (warrantyApplied > 0 ? ` (${money(warrantyApplied)} of it to ${estimate.warranty?.company ?? "the warranty company"})` : "") +
+          ` - ${money(materialSpend)} material = ${money(jobProfit)}` +
+          (jobBilled > 0 ? `  (${((jobProfit / jobBilled) * 100).toFixed(0)}% of billed)` : ""),
     );
   }
 

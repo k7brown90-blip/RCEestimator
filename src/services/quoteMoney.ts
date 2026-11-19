@@ -24,12 +24,14 @@
 import type { PrismaClient } from "@prisma/client";
 import {
   buildMoneyTable,
+  pickOneRange,
   type PricingFigures,
   type QuoteMoney,
+  type QuoteRange,
   type SelectionPrice,
 } from "../../shared/quoteMoney";
 import { summarizeOptions, type ComputedEstimate, type OptionSummary } from "./atomicEstimateEngine";
-import { pricingFiguresFromIssued } from "./issuedPricingFigures";
+import { pricingFiguresFromIssued, type IssuedFiguresSource } from "./issuedPricingFigures";
 import { presentDecision } from "../../shared/presentIssue";
 import type { DraftLifecycle } from "../../shared/draftLifecycle";
 import { programmeFor, type DiscountProgramme } from "./discounts";
@@ -171,6 +173,56 @@ export async function getIssuedQuoteMoney(prisma: PrismaClient, estimateId: stri
     programmeFor(est.discountType, est.discountPercent),
     frozenPlans ? { plans: frozenPlans, warrantyCovered: parseWarrantyJson(est.warrantyJson)?.coveredAmount ?? 0 } : null,
   );
+}
+
+/** What `quotedRangeOfIssued` needs of an issued row; `lines` is loaded only for the rows that qualify. */
+export type QuotedRangeRow = Omit<IssuedFiguresSource, "lines"> & {
+  id: string;
+  exclusiveOptions: boolean | null;
+  signedAt: Date | null;
+};
+
+/**
+ * The price range an UNSIGNED one-or-the-other estimate shows instead of its sum (Kyle, 2026-11-18,
+ * "Price range"; plan admin-reports-1117 unit R1). `IssuedEstimate.total` adds every option and
+ * stays that way - the warranty cap, deposits and invoices read it - so every surface that used to
+ * print it asks here. Each end is the customer's finished price for that option alone, from the
+ * same table /e/:token's comboTable reads (`pricingFiguresFromIssued` -> `buildMoneyTable`).
+ * Null for a signed row, an additive row, a single-option row, or an option still unpriced.
+ */
+export function quotedRangeOfIssued(est: Omit<QuotedRangeRow, "id"> & Pick<IssuedFiguresSource, "lines">): QuoteRange | null {
+  if (est.signedAt || !est.exclusiveOptions || est.options.length < 2) return null;
+  const { figures } = pricingFiguresFromIssued(est);
+  return pickOneRange(buildMoneyTable(figures, true, programmeFor(est.discountType, est.discountPercent)));
+}
+
+/**
+ * The ranges for a list of issued rows, by id. Lines are read in ONE query and only for rows that
+ * qualify (unsigned, one-or-the-other, two or more options), so an ordinary list pays nothing.
+ */
+export async function quotedRangesForIssued(
+  prisma: PrismaClient,
+  rows: readonly QuotedRangeRow[],
+): Promise<Map<string, QuoteRange>> {
+  const out = new Map<string, QuoteRange>();
+  const gated = rows.filter((r) => !r.signedAt && r.exclusiveOptions && r.options.length > 1);
+  if (gated.length === 0) return out;
+  const lines = await prisma.issuedEstimateLine.findMany({
+    where: { estimateId: { in: gated.map((r) => r.id) } },
+    select: { estimateId: true, option: true, materialCost: true, materialSell: true, inMaterialCap: true },
+  });
+  // Grouped once, so the work is one pass over the lines, not rows x lines.
+  const linesById = new Map<string, typeof lines>();
+  for (const l of lines) {
+    const own = linesById.get(l.estimateId);
+    if (own) own.push(l);
+    else linesById.set(l.estimateId, [l]);
+  }
+  for (const r of gated) {
+    const range = quotedRangeOfIssued({ ...r, lines: linesById.get(r.id) ?? [] });
+    if (range) out.set(r.id, range);
+  }
+  return out;
 }
 
 /**

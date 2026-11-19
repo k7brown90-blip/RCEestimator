@@ -34,6 +34,7 @@ import type { PbChainRow } from "../lib/types";
 import { money } from "../lib/utils";
 import { isPastValidity } from "../../../shared/estimateExpiry";
 import { acceptanceWording } from "../../../shared/acceptance";
+import { quotedRangeText } from "../../../shared/quoteMoney";
 
 /** Rows shown per card before "Show more" — the page never grows on its own. */
 const PAGE_SIZE = 8;
@@ -136,7 +137,7 @@ export function EstimatesPage() {
 
   const attentionRow = ({ row, label }: Classified, why: string) => ({
     key: row.id,
-    text: <>{row.account.name} — {money(row.billedTotal ?? row.total)}, {why}</>,
+    text: <>{row.account.name} — {row.quotedRange ? quotedRangeText(row.quotedRange, money) : money(row.billedTotal ?? row.total)}, {why}</>,
     detail: `${row.number} · ${row.title} · ${label}${row.sentAt ? ` · sent ${new Date(row.sentAt).toLocaleDateString()}` : ""}`,
     action: <OpenDrawerButton kind="estimate" id={row.id} onOpen={drawers.open} />,
   });
@@ -337,7 +338,7 @@ function EstimateRow({ row, label, tone }: Classified) {
         </div>
       </Link>
       <div className="shrink-0 text-right">
-        <div className="font-semibold">{money(row.billedTotal ?? row.total)}</div>
+        <div className="font-semibold">{row.quotedRange ? quotedRangeText(row.quotedRange, money) : money(row.billedTotal ?? row.total)}</div>
         {(row.warrantyCovered ?? 0) > 0 && (
           <div className="text-[11px] text-green-700">warranty −{money(row.warrantyCovered ?? 0)}</div>
         )}

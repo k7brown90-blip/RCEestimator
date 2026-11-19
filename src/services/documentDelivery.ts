@@ -14,13 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getCompanyProfile } from "./companyProfile";
 import { sendCustomerEmail } from "./transactionalEmail";
-import { htmlToPlainText } from "./confirmationEmail";
-
-const BRANDED_FOOTER = `
-  <p style="font-size:14px;color:#888;margin:16px 0 0;border-top:1px solid #eee;padding-top:12px;">
-    Red Cedar Electric LLC &middot; Licensed &amp; Insured<br>
-    Serving Middle Tennessee
-  </p>`;
+import { brandedFooterHtml, htmlToPlainText, noteHtml } from "./confirmationEmail";
 
 export function humanizeDocType(type: string): string {
   switch (type) {
@@ -64,23 +58,24 @@ export async function sendDocumentEmail(input: SendDocumentEmailInput): Promise<
   // The same number the attached PDF prints in its footer. These had drifted —
   // the document said one thing and the email delivering it said another, which
   // on a code-cited certificate undercuts the one claim it's making.
-  const { phone } = await getCompanyProfile();
+  const profile = await getCompanyProfile();
+  const { phone } = profile;
   const noteBlock = input.note
-    ? `<p style="font-size:15px;margin:0 0 16px;">${escapeHtml(input.note)}</p>`
+    ? `<p style="font-size:15px;margin:0 0 16px;">${noteHtml(input.note)}</p>`
     : "";
 
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0;">
         <h1 style="margin:0;font-size:20px;">${label}</h1>
-        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">Red Cedar Electric LLC</p>
+        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">${escapeHtml(profile.legalName)}</p>
       </div>
       <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
         <p style="font-size:16px;margin:0 0 16px;">Hi ${escapeHtml(input.customerName)},</p>
         <p style="font-size:15px;margin:0 0 16px;">Your ${label.toLowerCase()} from Red Cedar Electric is attached to this email.</p>
         ${noteBlock}
         <p style="font-size:14px;color:#555;">If you have any questions, reply to this email or call ${phone}.</p>
-        ${BRANDED_FOOTER}
+        ${brandedFooterHtml(profile)}
       </div>
     </div>`;
 

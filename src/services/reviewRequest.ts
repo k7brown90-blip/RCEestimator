@@ -39,7 +39,7 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
-import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
+import { sendBrandedEmail, escapeHtml, noteHtml } from "./confirmationEmail";
 import { customerSendsEnabled, logCustomerSendSkipped } from "./automationGate";
 import { logSystemEvent } from "./systemEvents";
 import { resolveRecipients } from "./emailCc";
@@ -132,8 +132,8 @@ export async function sendReviewRequestEmail(
       </p>
       <p style="font-size:13px;color:#666;">If anything about the work isn't right, reply to this
       email or call us first — we'll make it right.</p>
-      ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${escapeHtml((opts.message ?? "").trim())}</p>` : ""}
-      <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
+      ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${noteHtml(opts.message ?? "")}</p>` : ""}
+      <p style="font-size:14px;">Thank you,<br>Red Cedar Electric LLC</p>`,
   });
   if (!sent) return { ok: false, reason: "The email could not be sent — check the email connection." };
   await prisma.visit.update({ where: { id: visitId }, data: { reviewRequestedAt: new Date() } });

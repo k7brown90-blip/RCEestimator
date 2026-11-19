@@ -97,6 +97,7 @@ import type {
 } from "./types";
 import type { DraftOptionSet } from "../../../shared/estimateOptions";
 import type { FinancingPlan } from "../../../shared/financing";
+import type { QuoteRange } from "../../../shared/quoteMoney";
 import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView, ReceiptReportOption } from "../../../shared/jobCompletion";
 export type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView, ReceiptReportOption };
 
@@ -2121,7 +2122,10 @@ export const api = {
     }>(`/issued-estimates/${id}`),
 
   // ── In-person signing (P028; device lock removed 2026-08-18 on Kyle's instruction) ──
-  pbCustomerView: (id: string) => requestHtml(`/issued-estimates/${id}/customer-view`),
+  // `selectedOptions`: what the office chose on Present - a one-or-the-other estimate paints that one
+  // option's price (the iframe runs no script), never the sum of all options (Kyle, 2026-11-18).
+  pbCustomerView: (id: string, selectedOptions?: readonly string[]) =>
+    requestHtml(`/issued-estimates/${id}/customer-view${selectedOptions?.length ? `?selectedOptions=${encodeURIComponent(selectedOptions.join(","))}` : ""}`),
 
   /**
    * Raise a change order against a SIGNED estimate (Kyle, 2026-08-19).
@@ -2267,7 +2271,7 @@ export const api = {
     request<{
       accepted: true; estimateId: string; jobVisitId: string | null; jobJoined: boolean;
       /** The other presented, unsigned estimates at this address that the acceptance archived (2026-10-01). */
-      archived?: { id: string; number: string; revision: number; total: number; status: string }[];
+      archived?: { id: string; number: string; revision: number; total: number; status: string; quotedRange?: QuoteRange | null }[];
     }>(`/issued-estimates/${estimateId}/accept`, {
       method: "POST",
       body: JSON.stringify(input),

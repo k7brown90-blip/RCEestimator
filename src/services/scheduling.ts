@@ -719,11 +719,14 @@ export async function rescheduleJob(
         );
         if (!availability.available) {
           const conflictSummary = availability.conflicts.map(c => `${c.date}: ${c.reason}`).join("; ");
-          // Notify Kyle about the blocked reschedule
+          // Notify Kyle about the blocked reschedule. The customer-facing line below does NOT promise that
+          // text arrived: it is gated off (Kyle, 2026-08-13) and no email follows, so it asks for another
+          // date rather than sending a caller already on the office line to "call our office"
+          // (company voice — Kyle, 2026-11-18).
           await notify.sendKyleSms(notify.kyleRescheduleConflict(jobData, newStart, conflictSummary));
           throw calendarConflictError(
             availability.conflicts,
-            "I wasn't able to reschedule — there's a conflict on that date. I've notified Kyle, and he'll call you back to find another date.",
+            "I wasn't able to reschedule — there's a conflict on that date. Would you like to try a different date?",
           );
         }
       }

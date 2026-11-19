@@ -3,7 +3,7 @@ import type { AcceptedVia, SignedChannel } from "../../../shared/acceptance";
 import { LEAD_PLATFORMS, type LeadPlatform } from "../../../shared/leadPlatform";
 import type { DraftOptionSet, EstimateOptionLetter } from "../../../shared/estimateOptions";
 import type { DraftLifecycle } from "../../../shared/draftLifecycle";
-import type { QuoteMoney } from "../../../shared/quoteMoney";
+import type { QuoteMoney, QuoteRange } from "../../../shared/quoteMoney";
 import type { LeadBallpark } from "../../../shared/leadBallpark";
 
 export type { IssuedEstimateStatus };
@@ -199,6 +199,8 @@ export type JobSummary = {
     status: EstimateStatus;
     revision: number;
     totalCost: number | null;
+    /** Unsigned one-or-the-other only: the card prints this range instead of the sum (Kyle, 2026-11-18). */
+    quotedRange?: QuoteRange | null;
     hasAcceptance: boolean;
   } | null;
   costs: JobCosts;
@@ -2213,6 +2215,12 @@ export interface PbIssuedEstimate {
   /** What the signed document actually bills — taken options + trip − combo discount (2026-08-22).
       Equals `total` until signing narrows the selection. */
   billedTotal?: number;
+  /**
+   * Set only on an UNSIGNED one-or-the-other estimate (Kyle, 2026-11-18, "Price range"): each end
+   * is what the customer pays for that option alone. `total`/`billedTotal` add every option, so
+   * a row with this prints `quotedRangeText(quotedRange, money)` instead. Null/absent otherwise.
+   */
+  quotedRange?: QuoteRange | null;
   workSubtotal?: number;
   tripCharge?: number;
   tripWaived?: boolean;
@@ -2385,6 +2393,10 @@ export interface PbChainRow {
   total: number;
   /** Sell price (taken options + trip − caps − discount); equals `total` when nothing is selected. */
   billedTotal?: number;
+  /** Unsigned one-or-the-other only: print this range instead of the total (Kyle, 2026-11-18). */
+  quotedRange?: QuoteRange | null;
+  /** Pick-one estimate: the range above is shown only when this is on and the estimate is unsigned. */
+  exclusiveOptions?: boolean | null;
   createdAt: string;
   sentAt: string | null;
   signedAt: string | null;

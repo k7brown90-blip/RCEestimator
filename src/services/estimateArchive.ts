@@ -66,11 +66,17 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { logSystemEvent } from "./systemEvents";
 import { LOSABLE_STATUSES } from "../../shared/estimateStatus";
+import type { QuoteRange } from "../../shared/quoteMoney";
+import { quotedRangesForIssued } from "./quoteMoney";
 
 /** Statuses the automatic pass may archive: presented to the customer, unsigned. */
 export const ARCHIVABLE_ON_SIGNATURE = LOSABLE_STATUSES;
 
-export type ArchivedRow = { id: string; number: string; revision: number; total: number; status: string };
+export type ArchivedRow = {
+  id: string; number: string; revision: number; total: number; status: string;
+  /** Unsigned one-or-the-other only: what the drawer's notice prints instead of `total`, which adds every option (Kyle, 2026-11-18). */
+  quotedRange: QuoteRange | null;
+};
 
 export type ArchiveSweepResult = { archived: ArchivedRow[]; skipped?: string };
 
@@ -125,9 +131,17 @@ export async function archiveCompetingEstimates(
 
     const competitors = await prisma.issuedEstimate.findMany({
       where: competingEstimatesWhere(signed),
-      select: { id: true, number: true, revision: true, total: true, status: true },
+      select: {
+        id: true, number: true, revision: true, total: true, status: true,
+        tripCharge: true, jobBandsJson: true, discountType: true, discountPercent: true, exclusiveOptions: true, signedAt: true,
+        options: { select: { option: true, subtotal: true } },
+      },
     });
     if (competitors.length === 0) return { archived: [] };
+    const ranges = await quotedRangesForIssued(prisma, competitors);
+    const archivedRows: ArchivedRow[] = competitors.map((c) => ({
+      id: c.id, number: c.number, revision: c.revision, total: c.total, status: c.status, quotedRange: ranges.get(c.id) ?? null,
+    }));
 
     const reason = competitorReason(signed.number);
     const now = new Date();
@@ -157,7 +171,7 @@ export async function archiveCompetingEstimates(
       archivedNumbers: competitors.map((c) => c.number),
       actor,
     });
-    return { archived: competitors };
+    return { archived: archivedRows };
   } catch (err) {
     // Bookkeeping, never the signature. Logged where readSystemEvents can find it.
     console.error("[estimateArchive] archiving the competing estimates failed:", err);

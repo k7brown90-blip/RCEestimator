@@ -59,6 +59,20 @@ describe("EstimatesPage", () => {
     expect(screen.getAllByText("Jane Homeowner")).toHaveLength(3);
   });
 
+  it("a one-or-the-other row shows its price range, never the sum of its options (Kyle, 2026-11-18)", async () => {
+    vi.spyOn(api, "estimateChain").mockResolvedValue({
+      estimates: [
+        // Lewis: four alternatives, $115,997.60 added together - the stored total, which no one pays.
+        row({ id: "e-lewis", status: "sent", total: 115997.6, quotedRange: { min: 3383.58, max: 63028.99 } }),
+      ],
+    });
+
+    renderWithProviders(<EstimatesPage />);
+
+    expect(await screen.findByText("$3,383.58 – $63,028.99 · choose one")).toBeInTheDocument();
+    expect(screen.queryByText(/115,997.60/)).not.toBeInTheDocument();
+  });
+
   it("gives lost estimates their own VISIBLE card, labelled with the reason (2026-09-20)", async () => {
     vi.spyOn(api, "estimateChain").mockResolvedValue({
       estimates: [

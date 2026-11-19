@@ -440,7 +440,7 @@ sharedAgentRouter.post("/documents/send", asyncHandler(async (req, res) => {
   const anySent = emailed || smsSent;
   const spoken = anySent
     ? `Sent your ${label.toLowerCase()}${emailed && smsSent ? " by email and text" : emailed ? " to your email" : " by text"}.`
-    : `I couldn't send that right now. I'll flag it for Kyle to handle personally.`;
+    : `I couldn't send that right now. I'll flag it for our office to follow up.`;
 
   const status = anySent ? 200 : 502;
   const resp = anySent

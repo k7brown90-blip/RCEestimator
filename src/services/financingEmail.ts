@@ -39,7 +39,7 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
-import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
+import { sendBrandedEmail, escapeHtml, noteHtml } from "./confirmationEmail";
 import { getCompanyProfile } from "./companyProfile";
 import { logSystemEvent } from "./systemEvents";
 import { resolveRecipients } from "./emailCc";
@@ -101,7 +101,7 @@ export async function sendFinancingEmail(
       <strong>${escapeHtml(est.title)}</strong>, Red Cedar Electric works with Synchrony.
       You're welcome to apply directly through their secure application — it only
       takes a few minutes, and there's no obligation.</p>
-      ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${escapeHtml((opts.message ?? "").trim())}</p>` : ""}
+      ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${noteHtml(opts.message ?? "")}</p>` : ""}
       <p style="margin:24px 0;">
         <a href="${escapeHtml(financingUrl)}"
            style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
@@ -111,7 +111,7 @@ export async function sendFinancingEmail(
       </p>
       <p style="font-size:13px;color:#666;">Synchrony will walk you through the details of
       any offer directly on their own site.</p>
-      <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
+      <p style="font-size:14px;">Thank you,<br>Red Cedar Electric LLC</p>`,
   });
   if (!sent) return { ok: false, reason: "The email could not be sent — check the email connection." };
   logSystemEvent("info", "stripe", `Financing link emailed to ${to} on ${est.number}`, {

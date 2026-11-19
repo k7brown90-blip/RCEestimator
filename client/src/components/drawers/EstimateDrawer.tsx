@@ -38,6 +38,7 @@ import { useEstimateRecord } from "../../lib/recordQueries";
 import { LEAD_LOST_REASONS } from "../../lib/types";
 import { money } from "../../lib/utils";
 import { ACCEPTED_VIA_CHOICES, acceptanceWording, isOfficeAcceptance } from "../../../../shared/acceptance";
+import { quotedRangeText } from "../../../../shared/quoteMoney";
 import { isPastValidity } from "../../../../shared/estimateExpiry";
 import { BounceBadge } from "../BounceBadge";
 import { DeliveryChip } from "../DeliveryChip";
@@ -179,7 +180,7 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
       // The options not chosen were put away (2026-10-01) — say which, right here, so a genuine
       // second job at the same address is unarchived now rather than found later.
       const archivedNote = r.archived && r.archived.length > 0
-        ? ` ${r.archived.length === 1 ? "1 other estimate" : `${r.archived.length} other estimates`} at this address archived: ${r.archived.map((a) => `${a.number} (${money(a.total)})`).join(", ")} — open it to unarchive if it is a separate job.`
+        ? ` ${r.archived.length === 1 ? "1 other estimate" : `${r.archived.length} other estimates`} at this address archived: ${r.archived.map((a) => `${a.number} (${a.quotedRange ? quotedRangeText(a.quotedRange, money) : money(a.total)})`).join(", ")} — open it to unarchive if it is a separate job.`
         : "";
       setFollowUp(
         (r.jobJoined ? "Accepted — added to the current job."
@@ -331,7 +332,7 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                 )}
               </div>
               <div className="shrink-0 text-right">
-                <p className="font-semibold">{money(e.billedTotal ?? e.total)}</p>
+                <p className="font-semibold">{e.quotedRange ? quotedRangeText(e.quotedRange, money) : money(e.billedTotal ?? e.total)}</p>
                 {(e.warrantyCovered ?? 0) > 0 && (
                   <p className="text-[11px] text-green-700">
                     warranty {money(e.warrantyCovered ?? 0)}{e.warranty ? ` · ${e.warranty.company} claim ${e.warranty.claimNumber}` : ""}

@@ -10,12 +10,23 @@
 
 import { getGmailTransporter } from "./gmailTransport";
 import { sendCustomerEmail, type EmailKind } from "./transactionalEmail";
+import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 
-const BRANDED_FOOTER = `
+/**
+ * The footer on every branded customer email, built from Settings → Company profile — the company
+ * speaks, with ITS name, phone and email, never a person's (Kyle, 2026-11-18, "Yes, company
+ * everywhere", extending his 2026-10-30 ruling on the booking chat). One builder: documentDelivery.ts
+ * uses this too. It takes the profile because getCompanyProfile() is async, so each send reads it once
+ * and passes it to both the header and the footer.
+ */
+export function brandedFooterHtml(profile: CompanyProfile): string {
+  return `
   <p style="font-size:14px;color:#888;margin:16px 0 0;border-top:1px solid #eee;padding-top:12px;">
-    Red Cedar Electric LLC &middot; Licensed &amp; Insured<br>
-    Serving Middle Tennessee
+    ${escapeHtml(profile.legalName)} &middot; Licensed &amp; Insured<br>
+    Serving Middle Tennessee<br>
+    ${escapeHtml(profile.phone)} &middot; ${escapeHtml(profile.email)}
   </p>`;
+}
 
 interface ConfirmationInput {
   customerName: string;
@@ -64,6 +75,7 @@ const getTransporter = getGmailTransporter;
 // Customer name, address and service are escaped HERE: on a website-chat booking they are text a stranger
 // typed into a web page (security review U5, M1). Plain names and addresses render exactly as before.
 export async function sendConfirmationEmail(input: ConfirmationInput): Promise<boolean> {
+  const profile = await getCompanyProfile();
   const jobLine = input.jobType
     ? `<p style="margin:0 0 6px;font-size:15px;"><strong>Service:</strong> ${escapeHtml(input.jobType)}</p>`
     : "";
@@ -72,7 +84,7 @@ export async function sendConfirmationEmail(input: ConfirmationInput): Promise<b
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0;">
         <h1 style="margin:0;font-size:20px;">Appointment Confirmed</h1>
-        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">Red Cedar Electric LLC</p>
+        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">${escapeHtml(profile.legalName)}</p>
       </div>
       <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
         <p style="font-size:16px;margin:0 0 16px;">Hi ${escapeHtml(input.customerName)},</p>
@@ -89,10 +101,10 @@ export async function sendConfirmationEmail(input: ConfirmationInput): Promise<b
         <ul style="font-size:14px;color:#555;margin:0 0 16px;padding-left:20px;">
           <li>Our technician will arrive within the scheduled window in a marked Red Cedar Electric vehicle.</li>
           <li>Please ensure access to the electrical panel and work area.</li>
-          <li>If you need to reschedule, reply to this email or call 615-625-2163.</li>
+          <li>If you need to reschedule, reply to this email or call ${escapeHtml(profile.phone)}.</li>
         </ul>${prepReminderHtml(input.prepReminder)}
 
-        ${BRANDED_FOOTER}
+        ${brandedFooterHtml(profile)}
       </div>
     </div>`;
 
@@ -124,6 +136,7 @@ interface RescheduleInput {
 }
 
 export async function sendRescheduleEmail(input: RescheduleInput): Promise<boolean> {
+  const profile = await getCompanyProfile();
   const jobLine = input.jobType
     ? `<p style="margin:0 0 6px;font-size:15px;"><strong>Service:</strong> ${input.jobType}</p>`
     : "";
@@ -132,7 +145,7 @@ export async function sendRescheduleEmail(input: RescheduleInput): Promise<boole
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0;">
         <h1 style="margin:0;font-size:20px;">Appointment Rescheduled</h1>
-        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">Red Cedar Electric LLC</p>
+        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">${escapeHtml(profile.legalName)}</p>
       </div>
       <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
         <p style="font-size:16px;margin:0 0 16px;">Hi ${input.customerName},</p>
@@ -151,9 +164,9 @@ export async function sendRescheduleEmail(input: RescheduleInput): Promise<boole
           ${jobLine}
         </div>
 
-        <p style="font-size:14px;color:#555;">If you need to make further changes, reply to this email or call 615-625-2163.</p>
+        <p style="font-size:14px;color:#555;">If you need to make further changes, reply to this email or call ${escapeHtml(profile.phone)}.</p>
 
-        ${BRANDED_FOOTER}
+        ${brandedFooterHtml(profile)}
       </div>
     </div>`;
 
@@ -182,6 +195,7 @@ interface CancellationInput {
 }
 
 export async function sendCancellationEmail(input: CancellationInput): Promise<boolean> {
+  const profile = await getCompanyProfile();
   const jobLine = input.jobType
     ? `<p style="margin:0 0 6px;font-size:15px;"><strong>Service:</strong> ${input.jobType}</p>`
     : "";
@@ -190,7 +204,7 @@ export async function sendCancellationEmail(input: CancellationInput): Promise<b
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0;">
         <h1 style="margin:0;font-size:20px;">Appointment Cancelled</h1>
-        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">Red Cedar Electric LLC</p>
+        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">${escapeHtml(profile.legalName)}</p>
       </div>
       <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
         <p style="font-size:16px;margin:0 0 16px;">Hi ${input.customerName},</p>
@@ -202,9 +216,9 @@ export async function sendCancellationEmail(input: CancellationInput): Promise<b
           ${jobLine}
         </div>
 
-        <p style="font-size:15px;margin:0 0 16px;">To reschedule, reply to this email or call us at 615-625-2163. We'd be happy to find a new time that works for you.</p>
+        <p style="font-size:15px;margin:0 0 16px;">To reschedule, reply to this email or call us at ${escapeHtml(profile.phone)}. We'd be happy to find a new time that works for you.</p>
 
-        ${BRANDED_FOOTER}
+        ${brandedFooterHtml(profile)}
       </div>
     </div>`;
 
@@ -232,6 +246,7 @@ interface ProposalEmailInput {
 }
 
 export async function sendProposalEmail(input: ProposalEmailInput): Promise<boolean> {
+  const profile = await getCompanyProfile();
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0;">
@@ -254,7 +269,7 @@ export async function sendProposalEmail(input: ProposalEmailInput): Promise<bool
         <p style="font-size:13px;color:#888;">If you have any questions, feel free to call or reply to this email.</p>
       </div>
       <div style="padding:12px 24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-        ${BRANDED_FOOTER}
+        ${brandedFooterHtml(profile)}
       </div>
     </div>`;
 
@@ -345,15 +360,16 @@ export async function sendBrandedEmail(input: {
   leadId?: string | null;
   customerId?: string | null;
 }): Promise<boolean> {
+  const profile = await getCompanyProfile();
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto;color:#333;">
       <div style="background:#1a5c2e;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0;">
         <h1 style="margin:0;font-size:20px;">${input.headline}</h1>
-        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">Red Cedar Electric LLC</p>
+        <p style="margin:4px 0 0;font-size:14px;opacity:0.9;">${escapeHtml(profile.legalName)}</p>
       </div>
       <div style="padding:20px 24px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
         ${input.bodyHtml}
-        ${BRANDED_FOOTER}
+        ${brandedFooterHtml(profile)}
       </div>
     </div>`;
 
@@ -389,6 +405,15 @@ export async function sendBrandedEmail(input: {
 /** HTML-escape a string for safe interpolation into email templates. */
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * The office's typed note, escaped, with its line breaks kept (AI admin report 11/18, Kyle said
+ * fix it 2026-11-19: a pasted multi-paragraph note arrived as one block). Blank lines survive as
+ * <br><br>, which htmlToPlainText turns back into a blank line for the text twin.
+ */
+export function noteHtml(s: string): string {
+  return escapeHtml(s.replace(/\r\n?/g, "\n").trim()).replace(/\n/g, "<br>");
 }
 
 /**

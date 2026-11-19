@@ -41,3 +41,17 @@ describe("SigningModePage - the consent text", () => {
     expect(screen.getByRole("button", { name: "Accept & Sign" })).toBeInTheDocument();
   });
 });
+
+describe("SigningModePage - the option chosen on Present", () => {
+  it("is asked for when the customer's page is loaded (a one-or-the-other page paints that one option)", async () => {
+    // Kyle, 2026-11-18, "Price range": the sandboxed iframe runs no script, so the server paint
+    // is all the customer sees - the choice made on Present has to reach it.
+    const view = vi.spyOn(api, "pbCustomerView").mockResolvedValue("<p>estimate</p>");
+    renderWithProviders(
+      <Routes><Route path="/sign-in-person/:estimateId" element={<SigningModePage />} /></Routes>,
+      { route: { pathname: "/sign-in-person/est-1", state: { selectedOptions: ["B"] } } },
+    );
+    await screen.findByTestId("consent-text");
+    expect(view).toHaveBeenCalledWith("est-1", ["B"]);
+  });
+});

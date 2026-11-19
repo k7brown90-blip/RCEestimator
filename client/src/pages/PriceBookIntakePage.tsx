@@ -12,7 +12,7 @@ import { WarrantyCoveragePanel } from "../components/WarrantyCoveragePanel";
 import { RaiseChangeOrderButton } from "../components/RaiseChangeOrderButton";
 import { FinancingLine } from "../components/FinancingSheet";
 import { cheapestSelection } from "../../../shared/financingDisplay";
-import { picksOne, selectionPrice, type QuoteMoney } from "../../../shared/quoteMoney";
+import { picksOne, quotedRangeText, selectionPrice, type QuoteMoney } from "../../../shared/quoteMoney";
 import { acceptanceWording, isOfficeAcceptance } from "../../../shared/acceptance";
 import {
   BASE_OPTIONS,
@@ -2864,7 +2864,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                 <div className="text-xs text-rce-muted">{est.customerName}</div>
               </div>
               <div className="text-right">
-                <div className="font-semibold">${est.total.toFixed(2)}</div>
+                <div className="font-semibold">{est.quotedRange ? quotedRangeText(est.quotedRange, (n) => `$${n.toFixed(2)}`) : `$${est.total.toFixed(2)}`}</div>
                 <div className="text-xs uppercase tracking-wide text-rce-soft">{est.status}</div>
               </div>
             </div>

@@ -61,7 +61,10 @@ export async function getCompanyProfile(): Promise<CompanyProfile> {
     // Settings already carries "Business address" as `address` — reuse it
     // (Kyle, 2026-09-02: footer address "use your best judgment").
     mailingAddress: str(raw.mailingAddress ?? raw.address, DEFAULT_COMPANY_PROFILE.mailingAddress),
-    legalName: str(raw.legalName ?? raw.name, DEFAULT_COMPANY_PROFILE.legalName),
+    // Settings → Company profile → "Company name" is saved as `companyName` (client SettingsPage.tsx).
+    // This read used to look only for `legalName` / `name`, so what Kyle typed there never reached a
+    // footer or a letterhead (Kyle, 2026-11-18: the company speaks, by its own name).
+    legalName: str(raw.companyName, str(raw.legalName, str(raw.name, DEFAULT_COMPANY_PROFILE.legalName))),
     phone: str(raw.phone, DEFAULT_COMPANY_PROFILE.phone),
     email: str(raw.email, DEFAULT_COMPANY_PROFILE.email),
     tagline: str(raw.tagline, DEFAULT_COMPANY_PROFILE.tagline),

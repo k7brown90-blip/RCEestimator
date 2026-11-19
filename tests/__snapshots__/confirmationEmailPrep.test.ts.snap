@@ -28,7 +28,8 @@ exports[`sendConfirmationEmail > renders exactly as it always has when no prep r
         
   <p style="font-size:14px;color:#888;margin:16px 0 0;border-top:1px solid #eee;padding-top:12px;">
     Red Cedar Electric LLC &middot; Licensed &amp; Insured<br>
-    Serving Middle Tennessee
+    Serving Middle Tennessee<br>
+    615-625-2163 &middot; service@redcedarelectricllc.com
   </p>
       </div>
     </div>"
@@ -61,5 +62,7 @@ exports[`sendConfirmationEmail > renders exactly as it always has when no prep r
 
     Red Cedar Electric LLC · Licensed & Insured
 
-    Serving Middle Tennessee"
+    Serving Middle Tennessee
+
+    615-625-2163 · service@redcedarelectricllc.com"
 `;

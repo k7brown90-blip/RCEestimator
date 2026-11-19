@@ -197,6 +197,7 @@ function Composer({ campaign, lists, onDone }: { campaign: Campaign | null; list
         </label>
         <label className="text-sm font-medium">Email subject
           <input className="field mt-1 w-full" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Is your home ready for storm season?" />
+          <span className="mt-1 block text-xs font-normal text-rce-muted">{'Type {first_name} to greet each person by first name ("there" if we have no name).'}</span>
         </label>
         <label className="text-sm font-medium">Send to list
           <select className="field mt-1 w-full" value={listId} onChange={(e) => setListId(e.target.value)}>
@@ -221,16 +222,19 @@ function Composer({ campaign, lists, onDone }: { campaign: Campaign | null; list
               </span>
             </div>
             {b.kind === "text" && (
-              <textarea className="field w-full" rows={3} value={b.text} onChange={(e) => patch(i, { ...b, text: e.target.value })} placeholder="A few sentences in your voice…" />
+              <>
+                <textarea className="field w-full" rows={3} value={b.text} onChange={(e) => patch(i, { ...b, text: e.target.value })} placeholder="A few sentences in your voice…" />
+                <p className="mt-1 text-xs text-rce-muted">{'Type {first_name} to greet each person by first name ("there" if we have no name).'}</p>
+              </>
             )}
             {b.kind === "article" && (
               <p className="text-sm"><b>{b.title}</b><br /><span className="text-rce-muted">{b.excerpt}</span></p>
             )}
             {b.kind === "promo" && (
               <div className="grid gap-2 md:grid-cols-2">
-                <input className="field" value={b.headline} onChange={(e) => patch(i, { ...b, headline: e.target.value })} placeholder="Headline — $149 Storm-Season Assessment" />
+                <input className="field" value={b.headline} onChange={(e) => patch(i, { ...b, headline: e.target.value })} placeholder="Headline (optional) — $149 Storm-Season Assessment" />
                 <input className="field" value={b.ctaLabel} onChange={(e) => patch(i, { ...b, ctaLabel: e.target.value })} placeholder="Button label — Book my assessment" />
-                <input className="field md:col-span-2" value={b.text} onChange={(e) => patch(i, { ...b, text: e.target.value })} placeholder="The offer, in one or two sentences" />
+                <input className="field md:col-span-2" value={b.text} onChange={(e) => patch(i, { ...b, text: e.target.value })} placeholder="The offer (optional), in one or two sentences" />
                 <input className="field md:col-span-2" value={b.ctaUrl} onChange={(e) => patch(i, { ...b, ctaUrl: e.target.value })} placeholder="Button link — https://… or tel:615-625-2163" />
               </div>
             )}
@@ -269,7 +273,7 @@ function Composer({ campaign, lists, onDone }: { campaign: Campaign | null; list
 
       {previewHtml && (
         <div className="rounded-lg border border-rce-border bg-white p-3">
-          <p className="mb-2 text-xs text-rce-muted">Exactly what recipients see (the unsubscribe link is live in the real send):</p>
+          <p className="mb-2 text-xs text-rce-muted">{`Exactly what recipients see (the unsubscribe link is live in the real send). {first_name} shows as "there" here and as each person's first name in the real send:`}</p>
           <iframe title="Campaign preview" srcDoc={previewHtml} className="h-96 w-full rounded border border-rce-border/60 bg-white" />
         </div>
       )}

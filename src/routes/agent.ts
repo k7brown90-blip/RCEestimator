@@ -766,7 +766,7 @@ agentRouter.post("/savannah/owner-question", asyncHandler(async (req, res) => {
       error: {
         code: "SMS_FAILED",
         message: "Failed to send SMS to owner",
-        spoken_fallback: "I wasn't able to text Kyle right now. Would you like to leave a voicemail or try calling back later?",
+        spoken_fallback: "I wasn't able to text our office right now. Would you like to leave a voicemail or try calling back later?",
       },
     });
     return;
@@ -775,7 +775,7 @@ agentRouter.post("/savannah/owner-question", asyncHandler(async (req, res) => {
   const responseBody = {
     success: true,
     leadId: lead.id,
-    spoken_confirmation: "Got it \u2014 texted Kyle. He'll reach out when he can.",
+    spoken_confirmation: "Got it \u2014 texted our office. They'll reach out when they can.",
   };
 
   await saveIdempotency(clientRequestId, endpoint, undefined, responseBody);
@@ -812,9 +812,9 @@ agentRouter.post("/savannah/send-confirmation", asyncHandler(async (req, res) =>
 
   let smsBody: string;
   if (body.context) {
-    smsBody = `Thanks for calling Red Cedar Electric! Regarding your ${body.context} — Kyle will reach out to you at 615-625-2163.\n\nReply STOP to opt out of texts.`;
+    smsBody = `Thanks for calling Red Cedar Electric! Regarding your ${body.context} — our office will reach out to you soon. You can also reach us at 615-625-2163.\n\nReply STOP to opt out of texts.`;
   } else {
-    smsBody = `Thanks for calling Red Cedar Electric! Kyle will reach out to you at 615-625-2163.\n\nReply STOP to opt out of texts.`;
+    smsBody = `Thanks for calling Red Cedar Electric! Our office will reach out to you soon. You can also reach us at 615-625-2163.\n\nReply STOP to opt out of texts.`;
   }
 
   // GATED (2026-08-13) — same shape: null flows into the existing failure branch, whose spoken

@@ -72,12 +72,12 @@ export function SigningModePage() {
   const load = useCallback(async () => {
     if (!estimateId) return;
     try {
-      setHtml(await api.pbCustomerView(estimateId));
+      setHtml(await api.pbCustomerView(estimateId, selectedOptions));
       setLoadError(null);
     } catch (err) {
       setLoadError((err as ApiError).message);
     }
-  }, [estimateId]);
+  }, [estimateId, selectedOptions]);
 
   useEffect(() => {
     void load();

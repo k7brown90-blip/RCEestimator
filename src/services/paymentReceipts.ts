@@ -12,7 +12,7 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
-import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
+import { sendBrandedEmail, escapeHtml, noteHtml } from "./confirmationEmail";
 import { logSystemEvent } from "./systemEvents";
 import { paymentSummary, type PaymentSummary } from "./stripePayments";
 import { warrantyEmailLine } from "./warrantyNotice";
@@ -147,7 +147,7 @@ export async function sendDepositRequestEmail(
       (invoice ${escapeHtml(est.number)}). To reserve your spot on the schedule, a deposit of
       <strong>$${due.toFixed(2)}</strong> — one third of the total — is due up front. We can't book
       the work until it's in.</p>
-      ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${escapeHtml((opts.message ?? "").trim())}</p>` : ""}
+      ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${noteHtml(opts.message ?? "")}</p>` : ""}
       <p style="margin:24px 0;">
         <a href="${escapeHtml(payUrl)}"
            style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
@@ -157,7 +157,7 @@ export async function sendDepositRequestEmail(
       </p>
       <p style="font-size:13px;color:#666;">Pay by card or bank transfer online, or by cash, check, or Zelle — same amount either way.
       Deposits are non-refundable up to $300 if the job is cancelled. ${BALANCE_DUE_TERMS}</p>
-      <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`,
+      <p style="font-size:14px;">Thank you,<br>Red Cedar Electric LLC</p>`,
   });
   if (!sent) return { ok: false, reason: "The email could not be sent — check the email connection." };
   logSystemEvent("info", "stripe", `Deposit request emailed to ${to} — $${due.toFixed(2)} on ${est.number}`, {
@@ -225,7 +225,7 @@ export async function sendPaymentReceiptEmail(
     ${paidInFull
       ? `<p style="font-size:14px;">Your invoice is paid in full. It has been a pleasure — keep this receipt with your records.</p>`
       : `<p style="font-size:14px;color:#555;">${BALANCE_DUE_TERMS}</p>`}
-    <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
+    <p style="font-size:14px;">Thank you,<br>Red Cedar Electric LLC</p>`;
 
   const sent = await sendBrandedEmail({
     kind: "receipt",
@@ -332,7 +332,7 @@ export async function sendReceiptEmail(
   const bodyHtml = `
     <p style="font-size:15px;">${toOnFile ? `Hi ${escapeHtml(firstName)},` : "Hello,"}</p>
     <p style="font-size:15px;">${toOnFile ? "This is your receipt for" : `This is the receipt for ${escapeHtml(est.customerName)}'s job${est.serviceAddress ? ` at ${escapeHtml(est.serviceAddress)}` : ""} —`} <strong>${escapeHtml(est.title)}</strong> — Invoice <strong>${escapeHtml(summary.number)}</strong> is <strong>paid in full</strong>${paidOn ? ` as of ${escapeHtml(paidOn)}` : ""}. Thank you.</p>
-    ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
+    ${note ? `<p style="font-size:15px;">${noteHtml(note)}</p>` : ""}
     <table style="width:100%;font-size:15px;border-collapse:collapse;margin:12px 0;">
       ${est.serviceAddress ? `<tr><td style="padding:4px 0;color:#666;">Service address</td><td style="text-align:right;">${escapeHtml(est.serviceAddress)}</td></tr>` : ""}
       ${invoiceDocumentRows(summary)}
@@ -343,7 +343,7 @@ export async function sendReceiptEmail(
       <tr style="border-top:2px solid #1a5c2e;"><td style="padding:6px 0;font-weight:600;">Balance</td><td style="text-align:right;font-weight:700;">PAID IN FULL</td></tr>
     </table>
     <p style="font-size:14px;">The itemized invoice is attached${extras > 0 ? `, along with ${reports.attachments.length > 0 ? `${reports.attachments.length} report${reports.attachments.length === 1 ? "" : "s"}` : ""}${reports.attachments.length > 0 && photos.attachments.length > 0 ? " and " : ""}${photos.attachments.length > 0 ? `${photos.attachments.length} photo${photos.attachments.length === 1 ? "" : "s"}` : ""}` : ""}. Keep this with your records.</p>
-    <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
+    <p style="font-size:14px;">Thank you,<br>Red Cedar Electric LLC</p>`;
 
   const sent = await sendBrandedEmail({
     kind: "receipt",

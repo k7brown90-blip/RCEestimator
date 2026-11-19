@@ -9,6 +9,7 @@ import { api, type VisitMode } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
 import { MATERIAL_SOURCE_LABEL, cardFeesPendingNote, type JobSummary } from "../lib/types";
 import { money, shortDate } from "../lib/utils";
+import { quotedRangeText } from "../../../shared/quoteMoney";
 
 const MODES: Array<{ value: VisitMode; label: string }> = [
   { value: "service_diagnostic", label: "Service / Diagnostic" },
@@ -446,7 +447,7 @@ function JobCard({
       <div className="mt-3 grid gap-2 text-sm md:grid-cols-3">
         <p><span className="text-rce-soft">Estimate:</span> {job.estimate?.title ?? "No estimate yet"}</p>
         <p><span className="text-rce-soft">Revision:</span> {job.estimate ? `Rev ${job.estimate.revision}` : "-"}</p>
-        <p className="font-semibold"><span className="text-rce-soft">Total:</span> {money(job.estimate?.totalCost)}</p>
+        <p className="font-semibold"><span className="text-rce-soft">Total:</span> {job.estimate?.quotedRange ? quotedRangeText(job.estimate.quotedRange, money) : money(job.estimate?.totalCost)}</p>
       </div>
 
       {hasCostData ? (

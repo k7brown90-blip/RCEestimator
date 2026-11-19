@@ -47,7 +47,7 @@
 
 import type { Prisma, PrismaClient } from "@prisma/client";
 import fs from "node:fs";
-import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
+import { sendBrandedEmail, escapeHtml, noteHtml } from "./confirmationEmail";
 import { customerEmailBaseSchema, resolveRecipients, withCcText } from "./emailCc";
 import { generateGeneratorReport, generateHealthReport } from "./pdfGenerator";
 import { logSystemEvent } from "./systemEvents";
@@ -57,6 +57,8 @@ import { renderEstimatePdf } from "./issuedEstimatePdf";
 import { loadPdfFinancing } from "./issuedEstimatePdfFinancing";
 import { getCompanyProfile } from "./companyProfile";
 import { buildQuoteFinancing } from "../../shared/financing";
+import { quotedRangeText } from "../../shared/quoteMoney";
+import { quotedRangesForIssued, type QuotedRangeRow } from "./quoteMoney";
 import { getActiveFinancingPlans, plansFromSnapshot } from "./financingSettings";
 import { billedTotalOf, parseWarrantyJson, paymentSummary, stripeConfigured, warrantyCoverageOf, type PaymentSummary } from "./stripePayments";
 import { discountRows, financingFeeRow, invoiceDocumentRows } from "./paymentReceipts";
@@ -440,7 +442,7 @@ export async function sendInvoiceEmail(
   const bodyHtml = `
     <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
     ${intro}
-    ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
+    ${note ? `<p style="font-size:15px;">${noteHtml(note)}</p>` : ""}
     ${warrantyLine}
     <p style="font-size:15px;">${isChangeOrder
       /*
@@ -467,7 +469,7 @@ export async function sendInvoiceEmail(
       </a>
     </p>
     <p style="font-size:13px;color:#666;">Pay by card or bank transfer online, or by cash, check, or Zelle — same amount either way.</p>` : ""}
-    <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
+    <p style="font-size:14px;">Thank you,<br>Red Cedar Electric LLC</p>`;
 
   // Job photos the operator chose to include — before/after shots belong on
   // the invoice for completed work (photo gallery, Kyle 2026-08-28; any photo
@@ -577,6 +579,20 @@ export async function sendInvoiceEmail(
 }
 
 /**
+ * What the owner-facing and customer emails print as an estimate's "Total": the price range of an
+ * UNSIGNED one-or-the-other estimate, else the flat total (Kyle, 2026-11-18, "Price range").
+ */
+async function emailTotalText(
+  prisma: PrismaClient,
+  est: QuotedRangeRow & { total: number },
+): Promise<{ text: string; ranged: boolean }> {
+  const range = (await quotedRangesForIssued(prisma, [est])).get(est.id);
+  return range
+    ? { text: quotedRangeText(range, (n) => `$${n.toFixed(2)}`), ranged: true }
+    : { text: `$${est.total.toFixed(2)}`, ranged: false };
+}
+
+/**
  * The "Finance this project" block of the estimate email (Kyle, 2026-10-10: "The estimate email is
  * sent just as it is now. At the bottom it shows the monthly payments if they choose each plan
  * after the deposit is paid and the fee applied. A 'finance this project' button is obviously
@@ -595,10 +611,18 @@ export async function sendInvoiceEmail(
 async function financingBlockHtml(
   est: { total: number; financingPlansJson: string | null; warrantyJson: string | null },
   financingUrl: string,
+  /**
+   * An unsigned one-or-the-other estimate (Kyle, 2026-11-18, "Price range"): `est.total` adds every
+   * option, so no monthly payment is worked on it. The button stays; the figures are on the page
+   * the customer picks an option on.
+   */
+  ranged = false,
 ): Promise<string> {
-  const plans = est.financingPlansJson
-    ? (plansFromSnapshot(est.financingPlansJson) ?? [])
-    : await getActiveFinancingPlans();
+  const plans = ranged
+    ? []
+    : est.financingPlansJson
+      ? (plansFromSnapshot(est.financingPlansJson) ?? [])
+      : await getActiveFinancingPlans();
   // A home-warranty claim's share is not the homeowner's to finance: pass the covered amount exactly
   // as the customer PDF and the customer page do, so the email's figures match the PDF beside it.
   const covered = parseWarrantyJson(est.warrantyJson)?.coveredAmount ?? 0;
@@ -667,7 +691,7 @@ export async function sendEstimateEmail(
 ): Promise<SendResult> {
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
-    include: { supersededBy: { select: { id: true } } },
+    include: { supersededBy: { select: { id: true } }, options: { select: { option: true, subtotal: true } } },
   });
   if (!est) return { ok: false, reason: "Estimate not found." };
   if (est.supersededBy) {
@@ -695,13 +719,16 @@ export async function sendEstimateEmail(
   // field app is such a caller and this line has been on every estimate email since 2026-09-16.
   const includeFinancing = opts.includeFinancingLink !== false;
   const profile = await getCompanyProfile();
+  // Flat total only - or, for a one-or-the-other estimate, its price range. The email carries no
+  // line detail and — like the page — no hours.
+  const totalText = await emailTotalText(prisma, est);
 
-  // Flat total only. The email carries no line detail and — like the page — no hours.
+
   const bodyHtml = `
     <p style="font-size:15px;">Hi ${escapeHtml(firstName)},</p>
     <p style="font-size:15px;">Your estimate for <strong>${escapeHtml(est.title)}</strong> is ready.
     You can review it and accept it online using the private link below.</p>
-    ${note ? `<p style="font-size:15px;">${escapeHtml(note)}</p>` : ""}
+    ${note ? `<p style="font-size:15px;">${noteHtml(note)}</p>` : ""}
     <p style="margin:24px 0;">
       <a href="${escapeHtml(link)}"
          style="background:#1a5c2e;color:#fff;text-decoration:none;padding:14px 28px;
@@ -710,11 +737,11 @@ export async function sendEstimateEmail(
       </a>
     </p>
     <p style="font-size:13px;color:#666;">Estimate ${escapeHtml(est.number)}${est.revision > 1 ? ` (revision ${est.revision})` : ""}
-    &middot; Total ${`$${est.total.toFixed(2)}`} &middot; Valid ${est.validDays} days.</p>
-    ${includeFinancing ? await financingBlockHtml(est, profile.financingUrl) : ""}
+    &middot; Total ${totalText.text} &middot; Valid ${est.validDays} days.</p>
+    ${includeFinancing ? await financingBlockHtml(est, profile.financingUrl, totalText.ranged) : ""}
     <p style="font-size:13px;color:#666;">If the "View &amp; accept your estimate" button does not work, copy this link into your browser:<br>
     <span style="word-break:break-all;">${escapeHtml(link)}</span></p>
-    <p style="font-size:14px;">Thank you,<br>Kyle Brown<br>Red Cedar Electric LLC</p>`;
+    <p style="font-size:14px;">Thank you,<br>Red Cedar Electric LLC</p>`;
 
   // Job photos the operator chose to include (photo gallery, Kyle 2026-08-28) —
   // assessment shots that show the customer what the estimate is talking about.
@@ -892,8 +919,13 @@ export async function sendEstimateEmailFromBody(
  * the phone over a bot.
  */
 export async function notifyOwnerViewed(prisma: PrismaClient, estimateId: string): Promise<boolean> {
-  const est = await prisma.issuedEstimate.findUnique({ where: { id: estimateId } });
+  const est = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    include: { options: { select: { option: true, subtotal: true } } },
+  });
   if (!est || !est.firstViewedAt) return false;
+  // The range for a one-or-the-other estimate - never the sum of its options (Kyle, 2026-11-18).
+  const totalText = await emailTotalText(prisma, est);
 
   const to = (process.env.SUMMARY_EMAIL ?? process.env.GMAIL_USER ?? "").trim();
   if (!to) {
@@ -914,7 +946,7 @@ export async function notifyOwnerViewed(prisma: PrismaClient, estimateId: string
     <strong>${escapeHtml(est.number)}</strong> for the first time.</p>
     <table style="font-size:14px;border-collapse:collapse;">
       <tr><td style="padding:3px 12px 3px 0;color:#666;">Job</td><td>${escapeHtml(est.title)}</td></tr>
-      <tr><td style="padding:3px 12px 3px 0;color:#666;">Total</td><td><strong>$${est.total.toFixed(2)}</strong></td></tr>
+      <tr><td style="padding:3px 12px 3px 0;color:#666;">Total</td><td><strong>${totalText.text}</strong></td></tr>
       ${est.customerPhone ? `<tr><td style="padding:3px 12px 3px 0;color:#666;">Phone</td><td>${escapeHtml(est.customerPhone)}</td></tr>` : ""}
     </table>
     ${scannerNote}
@@ -923,7 +955,7 @@ export async function notifyOwnerViewed(prisma: PrismaClient, estimateId: string
 
   return sendBrandedEmail({
     to,
-    subject: `VIEWED — ${est.number} — ${est.customerName} — $${est.total.toFixed(2)}`,
+    subject: `VIEWED — ${est.number} — ${est.customerName} — ${totalText.text}`,
     headline: "Estimate opened",
     bodyHtml,
   });
@@ -977,7 +1009,7 @@ export async function notifyOwnerSigned(
     </table>
     <p style="font-size:14px;margin-top:18px;">The estimate is now locked. Any change needs a new
     revision, which voids the customer's current link.</p>
-    ${opts.note ? `<p style="font-size:14px;margin-top:12px;padding:10px 12px;background:#fff7e6;border:1px solid #f0d9a8;border-radius:6px;">${escapeHtml(opts.note)}</p>` : ""}`;
+    ${opts.note ? `<p style="font-size:14px;margin-top:12px;padding:10px 12px;background:#fff7e6;border:1px solid #f0d9a8;border-radius:6px;">${noteHtml(opts.note)}</p>` : ""}`;
 
   return sendBrandedEmail({
     to,
