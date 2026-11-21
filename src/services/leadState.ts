@@ -2,21 +2,18 @@
  * A lead carries TWO columns that both used to be able to say "lost": `status`
  * (new / contacted / converted / lost — Open vs Lost vs converted) and `leadStatus`, the "call
  * outcome" (new / booked / unresolved / planning / no_answer, plus lost / won written by the
- * buttons and by Savannah). Every one-click button wrote the pair together; the lead form wrote
+ * buttons). Every one-click button wrote the pair together; the lead form wrote
  * them as two unlinked dropdowns, so a lead saved Status = lost kept a call outcome of "new" and a
  * lead reopened to Contacted stayed on the Closed tab (plan lead-intake-fixes, B4; Kyle,
  * 2026-11-15: "Rename to Call outcome").
  *
- * ONE rule, called by the CRM write doors (POST /crm/leads, PATCH /leads/:leadId). Savannah's
- * disposition door (applyCallDisposition) and PATCH /vapi/update-lead do NOT call it yet, so a
- * disposition can still leave the pair disagreeing (recorded in plan lead-intake-fixes, not in
- * that work order):
+ * ONE rule, called by the CRM write doors (POST /crm/leads, PATCH /leads/:leadId):
  *
  *  - Status decides Open vs Lost. Status moved to lost            -> call outcome becomes lost.
  *  - Status moved to new/contacted while outcome = lost            -> outcome goes back to new.
  *  - Outcome moved to lost (Status not lost or converted)          -> Status becomes lost.
  *  - Outcome moved from lost to an open value while Status = lost  -> Status becomes contacted
- *    (what /vapi/book already writes alongside "booked").
+ *    (as the booking flow writes alongside "booked").
  *  - When a save touches either column but neither MOVED (the form always sends both), a pair that
  *    disagrees on lost is healed the way the Closed tab already reads it: Status lost wins; an
  *    outcome of lost with Status new/contacted makes Status lost.
@@ -25,7 +22,7 @@
  *  - A CONVERTED lead (Status "converted") is an opportunity with an account and a job behind it.
  *    Marking its outcome lost must not demote it to lost — that would make it deletable and
  *    orphan the account (a converted lead can never be deleted, 2026-09-20 drawers plan).
- *  - The outcome "won". Convert writes it, Savannah writes it, and a customer delete resets a
+ *  - The outcome "won". Convert writes it (older Savannah-era rows hold it too), and a customer delete resets a
  *    converted lead to Status new with outcome still "won". Rows holding it are left as they are
  *    and an edit of any other field never fails because of it.
  */

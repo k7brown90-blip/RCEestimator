@@ -11,7 +11,7 @@
 import express from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
-import { asyncHandler } from "./agent-helpers";
+import { asyncHandler } from "../lib/routeHelpers";
 import { globalSearch, MAX_QUERY_LENGTH, MIN_QUERY_LENGTH, PER_KIND_MAX } from "../services/globalSearch";
 
 export const searchRouter = express.Router();

@@ -7,7 +7,6 @@ vi.mock("googleapis");
 import { app } from "../src/app";
 import { prisma } from "../src/lib/prisma";
 import { getLeadFollowUpMetrics } from "../src/services/crmAnalytics";
-import { applyCallDisposition } from "../src/services/callDisposition";
 import { dayInstant } from "../shared/calendarDay";
 import { repairLeadLostState } from "../src/services/leadStateRepair";
 
@@ -63,14 +62,6 @@ describe("B2: a follow-up date is a calendar day (noon UTC)", () => {
     const created = await post({ followUpDate: "2026-11-15" }).expect(201);
     const res = await request(app).patch(`/leads/${created.body.lead.id}`).send({ followUpDate: null }).expect(200);
     expect(res.body.followUpDate).toBeNull();
-  });
-
-  it("Savannah's disposition path stores the same noon-UTC day", async () => {
-    const lead = await prisma.lead.create({ data: { name: `${TAG} Savannah`, phone: "615-555-0177" } });
-    const { lead: updated } = await applyCallDisposition({
-      leadId: lead.id, callType: "new_job", leadStatus: "planning", followUpDate: "2026-11-20",
-    });
-    expect(updated.followUpDate?.toISOString()).toBe("2026-11-20T12:00:00.000Z");
   });
 
   it("the due-today and overdue counts follow the Chicago day, never counting one lead twice", async () => {

@@ -140,8 +140,8 @@ describe("findCustomerMatches", () => {
 
 /**
  * The lead form's two extras (plan lead-intake-fixes F2): a same-name account with nothing else in
- * common, and the leads that already exist. Both are OPT-IN, because routes/agent.ts takes the
- * FIRST match and attaches the caller to that account - a name must never reach it on its own.
+ * common, and the leads that already exist. Both are OPT-IN, because other callers take the
+ * FIRST match and attach the caller to that account - a name must never reach them on its own.
  */
 describe("findCustomerMatches - includeNameOnly (the lead form only)", () => {
   it("is OFF by default: an exact full-name account with no phone or email is still not a match", async () => {

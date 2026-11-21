@@ -77,9 +77,9 @@ export interface MatchQuery {
   limit?: number;
   /**
    * OPT-IN, for the lead form only (plan lead-intake-fixes F2). Off, a name never surfaces an
-   * account on its own - that is what keeps Savannah, the inbound-SMS router and the convert
-   * duplicate check from filing a stranger's job under a familiar name (routes/agent.ts takes the
-   * FIRST match and attaches the caller to it). On, an account whose FULL name equals the typed
+   * account on its own - that is what keeps the inbound-SMS router and the convert
+   * duplicate check from filing a stranger's job under a familiar name (they take the
+   * FIRST match and attach the caller to it). On, an account whose FULL name equals the typed
    * name (case and spacing aside) is returned with `matchedOn: ["name"]` and a score that ranks
    * it below every phone or email hit. A partial or "contains" name never counts on its own, so
    * the panel does not flash while someone is still typing "Eric".

@@ -1,7 +1,5 @@
 import { google } from "googleapis";
 
-import { sendConfirmationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
-import { customerVisitConfirmation, customerDiagnosticConfirmation, kyleNewBooking, sendCustomerSms, sendKyleSms } from "./notifications";
 import { acquireSlotHolds, releaseSlotHolds, slotKeyCT, SlotContentionError } from "./slotHolds";
 import { companyCalendarIds } from "./techCalendars";
 import { logSystemEvent } from "./systemEvents";
@@ -26,7 +24,7 @@ interface DayAvailability {
   timezone: string;
 }
 
-/** One fixed scheduling block, in the shape Vapi's tools consume directly. */
+/** One fixed scheduling block. */
 interface FixedBlockSlot {
   date: string;      // YYYY-MM-DD
   startTime: string; // "08:00" | "10:00" | "12:00" | "14:00"
@@ -265,25 +263,7 @@ export async function getAvailability(startDate?: Date): Promise<AvailabilityRes
   };
 }
 
-// ── Book appointment ────────────────────────────────────────────────────────
-
-interface BookingParams {
-  date: string;         // "Wednesday, April 16, 2026" (from availability response)
-  startTime: string;    // "10:00 AM" (from availability response)
-  customerName: string;
-  description: string;
-  address: string;
-  phone?: string;
-  email?: string;
-  visitType?: "estimate" | "diagnostic"; // defaults to "estimate"
-}
-
-interface BookingResult {
-  eventId: string;
-  start: string;
-  end: string;
-  summary: string;
-}
+// ── Date/time parsing and the slot-claim core ───────────────────────────────
 
 /** Bad date/time input from the caller's tool arguments — a 400, not a 500. */
 export class BookingInputError extends Error {
@@ -309,7 +289,7 @@ function parseTimeString(timeStr: string): { hour: number; minute: number } {
     }
   }
 
-  // 24-hour: "13:00", "08:00" — the format Vapi's tool calls actually send.
+  // 24-hour: "13:00", "08:00".
   const h24 = t.match(/^(\d{1,2}):(\d{2})$/);
   if (h24) {
     const hour = parseInt(h24[1]);
@@ -347,9 +327,8 @@ export class BookingConflictError extends Error {
 }
 
 /**
- * THE slot-claim + re-check core — shared by Savannah's `bookAppointment()` below and the website
- * booking chat's hold (services/bookingChat/scheduling.ts). One implementation, so the two doors
- * can never disagree about what "that time is free" means.
+ * THE slot-claim + re-check core — used by the website booking chat's hold
+ * (services/bookingChat/scheduling.ts).
  *
  * Serialize concurrent bookings of the same slot (check-then-book race): claim the slot
  * atomically, then RE-verify the window against the whole company calendar set before `write`
@@ -397,86 +376,4 @@ export async function withVerifiedFreeSlot<T>(
   } finally {
     await releaseSlotHolds([slotKey]);
   }
-}
-
-export async function bookAppointment(params: BookingParams): Promise<BookingResult> {
-  const calendar = getCalendarClient();
-  const isDiagnostic = params.visitType === "diagnostic";
-  const durationHours = isDiagnostic ? 2 : SLOT_DURATION;
-  const startUtc = parseAvailabilityDate(params.date, params.startTime);
-  const endUtc = new Date(startUtc.getTime() + durationHours * 3600_000);
-
-  const prefix = isDiagnostic ? "DIAG" : "EST";
-  const summary = `${prefix}: ${params.customerName} — ${params.address.substring(0, 60)}`;
-  const eventId = await withVerifiedFreeSlot(startUtc, endUtc, "vapi-booking", async () => {
-    const inserted = await calendar.events.insert({
-      calendarId: "primary",
-      requestBody: {
-        summary,
-        description: params.description,
-        location: params.address,
-        start: { dateTime: startUtc.toISOString(), timeZone: TZ },
-        end: { dateTime: endUtc.toISOString(), timeZone: TZ },
-      },
-    });
-    return inserted.data.id!;
-  }, calendar);
-
-  const endTimeStr = formatTime(endUtc);
-  const appointmentWindow = `${params.startTime} – ${endTimeStr}`;
-
-  // Send confirmation email to customer (fire-and-forget)
-  if (params.email) {
-    sendConfirmationEmail({
-      customerName: params.customerName,
-      customerEmail: params.email,
-      appointmentDate: params.date,
-      appointmentWindow,
-      serviceAddress: params.address,
-      jobType: isDiagnostic ? `Diagnostic ($175 flat fee) — ${params.description}` : params.description,
-    }).catch(err => console.error("[bookAppointment] Customer email failed:", err));
-  }
-
-  // Send dual SMS notifications (fire-and-forget)
-  const visitData: import("./notifications").VisitData = {
-    customerName: params.customerName,
-    phone: params.phone ?? "",
-    address: params.address,
-    date: startUtc,
-    time: params.startTime,
-    jobDescription: params.description,
-  };
-
-  // Customer SMS
-  if (params.phone) {
-    const customerMsg = isDiagnostic
-      ? customerDiagnosticConfirmation(visitData)
-      : customerVisitConfirmation(visitData);
-    sendCustomerSms(params.phone, customerMsg)
-      .catch(err => console.error("[bookAppointment] Customer SMS failed:", err));
-  }
-
-  // Kyle SMS
-  sendKyleSms(kyleNewBooking({ ...visitData, urgency: isDiagnostic ? "Diagnostic ($175)" : undefined }))
-    .catch(err => console.error("[bookAppointment] Kyle SMS failed:", err));
-
-  // Kyle notification email (fire-and-forget)
-  const kyleBody = [
-    `Customer: ${params.customerName}`,
-    params.phone ? `Phone: ${params.phone}` : null,
-    params.email ? `Email: ${params.email}` : null,
-    `Address: ${params.address}`,
-    `Date: ${params.date} at ${params.startTime}`,
-    `Type: ${isDiagnostic ? "Diagnostic ($175)" : "Free Estimate"}`,
-    `Description: ${params.description}`,
-  ].filter(Boolean).join("\n");
-  sendKyleNotificationEmail(isDiagnostic ? "New Diagnostic Booked" : "New Estimate Booked", kyleBody)
-    .catch(err => console.error("[bookAppointment] Kyle email failed:", err));
-
-  return {
-    eventId,
-    start: startUtc.toISOString(),
-    end: endUtc.toISOString(),
-    summary,
-  };
 }

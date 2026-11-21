@@ -1,6 +1,6 @@
 /**
- * Locked SMS notification templates for agent-triggered messages.
- * Agents never generate SMS bodies — these templates are the single source of truth.
+ * Locked SMS notification templates for scheduling messages. The SMS bodies are not generated
+ * by a model — these templates are the single source of truth.
  */
 
 import { sendSms, KYLE_PHONE } from "./twilio";
@@ -10,16 +10,6 @@ const BUSINESS_PHONE = "615-625-2163";
 const TZ = "America/Chicago";
 
 // ─── TYPE DEFINITIONS ───────────────────────────────────────────────────────────
-
-export interface VisitData {
-  customerName: string;
-  phone: string;
-  address: string;
-  date: Date;
-  time: string;       // e.g. "9:00 AM"
-  jobDescription: string;
-  urgency?: string;
-}
 
 export interface JobData {
   customerName: string;
@@ -36,11 +26,6 @@ export interface DateRange {
   start: Date;
   end: Date;
   time: string;
-}
-
-export interface CustomerData {
-  name: string;
-  phone: string;
 }
 
 // ─── FORMATTING HELPERS ─────────────────────────────────────────────────────────
@@ -62,14 +47,6 @@ function formatShortDate(d: Date): string {
 }
 
 // ─── CUSTOMER SMS TEMPLATES ─────────────────────────────────────────────────────
-
-export function customerVisitConfirmation(visit: VisitData): string {
-  return `Hi ${firstName(visit.customerName)}, this is Red Cedar Electric. Your free estimate is confirmed for ${formatDayOfWeek(visit.date)} ${formatDate(visit.date)} at ${visit.time}. Our team will text the morning of with the arrival window. Reply STOP to opt out.`;
-}
-
-export function customerDiagnosticConfirmation(visit: VisitData): string {
-  return `Hi ${firstName(visit.customerName)}, this is Red Cedar Electric. Your diagnostic visit is confirmed for ${formatDayOfWeek(visit.date)} ${formatDate(visit.date)} at ${visit.time}. The fee is $175 flat — up to 2 hours. If you go ahead with the repair, the $175 comes right off the total. Our team will text the morning of. Reply STOP to opt out.`;
-}
 
 export function customerWorkScheduled(job: JobData): string {
   return `Hi ${firstName(job.customerName)}, this is Red Cedar Electric. Your ${job.jobType} is scheduled to start ${formatDayOfWeek(job.scheduledStart)} ${formatDate(job.scheduledStart)} at ${job.startTime}. We expect ${job.durationDays} day(s) on site. Our team will text the morning of with arrival details. Reply STOP to opt out.`;
@@ -95,17 +72,6 @@ export function webOptInConfirmation(): string {
 }
 
 // ─── KYLE SMS TEMPLATES ─────────────────────────────────────────────────────────
-
-export function kyleNewBooking(visit: VisitData): string {
-  return [
-    "NEW ESTIMATE BOOKED",
-    `${visit.customerName} — ${visit.phone}`,
-    visit.address,
-    `${formatShortDate(visit.date)} at ${visit.time}`,
-    `"${visit.jobDescription}"`,
-    visit.urgency ? `Urgency: ${visit.urgency}` : null,
-  ].filter(Boolean).join("\n");
-}
 
 export function kyleWorkScheduled(job: JobData): string {
   return [
@@ -138,19 +104,7 @@ export function kyleRescheduleConflict(
     "RESCHEDULE ATTEMPTED — BLOCKED",
     `${job.customerName} (${job.phone}) wanted to move ${job.jobType} from ${formatShortDate(job.scheduledStart)} to ${formatShortDate(requestedDate)}`,
     `Conflict: ${conflict}`,
-    "Savannah told them you'll call back to find another date.",
   ].join("\n");
-}
-
-export function kyleQuestion(customer: CustomerData, question: string, context?: string): string {
-  const lines = [
-    `Question from ${customer.name} (${customer.phone}):`,
-    "",
-    `"${question}"`,
-  ];
-  if (context) lines.push("", context);
-  lines.push("", "Reply directly to them.");
-  return lines.join("\n");
 }
 
 // ─── SMS SEND WRAPPERS ─────────────────────────────────────────────────────────

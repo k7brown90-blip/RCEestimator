@@ -28,10 +28,9 @@ const port = Number(process.env.PORT ?? 4000);
 
 // Fail fast on missing security-critical configuration in production.
 // Without PIN_HASH the entire CRM is public; without WEBHOOK_SECRET the lead
-// and scheduling webhooks reject everything; the default JWT secret is public;
-// without AGENT_API_TOKEN the voice-agent scheduling tools reject everything.
+// and scheduling webhooks reject everything; the default JWT secret is public.
 if (process.env.NODE_ENV === "production") {
-  const required = ["PIN_HASH", "JWT_SECRET", "WEBHOOK_SECRET", "AGENT_API_TOKEN"] as const;
+  const required = ["PIN_HASH", "JWT_SECRET", "WEBHOOK_SECRET"] as const;
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length > 0) {
     throw new Error(`Refusing to start in production without: ${missing.join(", ")}`);

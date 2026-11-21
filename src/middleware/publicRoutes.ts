@@ -99,45 +99,15 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
     reason: "Railway crash + Twilio status webhooks. INTERNAL_WEBHOOK_TOKEN in the path, constant-time compare; neither sender can set an Authorization header.",
   },
   {
-    methods: ["*"], path: "/agent", prefix: true, credential: "bearer token",
-    reason: "Voice-agent tool surface (Savannah/Jerry). AGENT_API_TOKEN; server.ts refuses to boot in production without it.",
-  },
-  {
     methods: ["*"], path: "/health-record", prefix: true, credential: "bearer token",
     reason: "Field PWA's data surface. Per-technician bearer token. NOTE: /health-record-admin is a DIFFERENT mount and stays session-gated — the boundary check below is what keeps them apart.",
   },
 
-  // ── Vapi / phone agent ────────────────────────────────────────────────────────────────────
-  {
-    methods: ["POST"], path: "/vapi/assistant-config", credential: "none",
-    reason: "Vapi calls this at the start of every inbound call and cannot send a header. Returns assistant id + per-call variables, no customer data. IP rate-limited (publicLimiter) as its only protection — pre-existing, unchanged by P015.",
-  },
-  {
-    methods: ["POST"], path: "/vapi/end-of-call-report", credential: "query-string secret",
-    reason: "Vapi post-call webhook; carries its own query-string secret and its own limiter.",
-  },
-  {
-    methods: ["PATCH"], path: "/vapi/update-lead", credential: "webhook_secret header",
-    reason: "Agent lead update. Checks WEBHOOK_SECRET in the handler.",
-  },
-  {
-    methods: ["GET", "POST"], path: "/calendar/availability", credential: "webhook_secret header (flag-gated)",
-    reason: "Savannah availability lookup. requireWebhookSecretWhenEnabled — enforced only when AGENT_ENDPOINTS_REQUIRE_SECRET=true, because the caller's tool definitions live in the Vapi dashboard, not this repo. See the report's §4.",
-  },
-  {
-    methods: ["POST"], path: "/calendar/book", credential: "webhook_secret header (flag-gated)",
-    reason: "Savannah booking. Same flag; additionally on the 5/min bookingLimiter because a call writes a calendar event.",
-  },
-  {
-    methods: ["GET"], path: "/customer/lookup", credential: "webhook_secret header (flag-gated)",
-    reason: "Savannah caller lookup. Same flag. RETURNS CUSTOMER DATA when the flag is off — flagged in the report, not changed here (turning the flag on is a Vapi-dashboard-coupled action, not a code action).",
-  },
+  // ── Machine-to-machine, webhook_secret in the handler ─────────────────────────────────────
   {
     methods: ["GET"], path: "/calls/daily-summary", credential: "webhook_secret header",
-    reason: "requireWebhookSecret (hard, fail-closed). Not flag-gated.",
+    reason: "Today's leads (names, phones, addresses, notes). requireWebhookSecret (hard, fail-closed).",
   },
-
-  // ── Machine-to-machine, webhook_secret in the handler ─────────────────────────────────────
   {
     methods: ["POST"], path: "/leads", credential: "webhook_secret header",
     reason: "The website's lead-capture form. POST ONLY — GET /leads is the full lead list and is deliberately absent from this file; a path exemption for it was removed once before for exactly that reason (see pinAuth.ts).",

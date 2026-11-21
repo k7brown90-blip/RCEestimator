@@ -14,7 +14,7 @@
  */
 
 import express from "express";
-import { asyncHandler } from "./agent-helpers";
+import { asyncHandler } from "../lib/routeHelpers";
 import { getTreasurySettings, saveTreasurySettings } from "../services/treasury";
 
 export const treasuryRouter = express.Router();

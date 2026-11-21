@@ -15,7 +15,7 @@ import express from "express";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
-import { asyncHandler, readParam } from "./agent-helpers";
+import { asyncHandler, readParam } from "../lib/routeHelpers";
 import { pollBounces } from "../services/bounceWatcher";
 import { logSystemEvent } from "../services/systemEvents";
 

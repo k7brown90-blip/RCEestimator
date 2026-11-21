@@ -4,8 +4,8 @@
  * THE MODEL IS UNTRUSTED INPUT. Every argument is validated with zod (unknown keys are stripped,
  * so a model that sends `status` or `appointment` changes nothing), and the server — not the model
  * — owns: the chat's status, the appointment, the lead source, which photos belong to this lead,
- * and which slots are legal. This bot has NO estimate or line-item tools (it is not Savannah, and
- * it is not part of the estimating system).
+ * and which slots are legal. This bot has NO estimate or line-item tools (it is not part of the
+ * estimating system).
  */
 
 import { z } from "zod";

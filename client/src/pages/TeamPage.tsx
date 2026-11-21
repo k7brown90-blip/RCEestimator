@@ -8,7 +8,7 @@ import { api } from "../lib/api";
 
 /**
  * Team roster — technicians and staff. Each member carries an employee number
- * used across the system: voice-agent verification, health report attribution,
+ * used across the system: health report attribution,
  * assignment tracking, and (eventually) payroll.
  */
 export function TeamPage() {
@@ -81,14 +81,13 @@ export function TeamPage() {
     <div>
       <PageHeader
         title="Team"
-        subtitle="Technicians and staff — employee numbers drive agent verification, report attribution, and job tracking"
+        subtitle="Technicians and staff — employee numbers drive report attribution and job tracking"
       />
 
       <section className="card p-6">
         <h2 className="text-lg font-semibold">Add team member</h2>
         <p className="mt-1 text-sm text-rce-muted">
-          The employee number is what field staff give Savannah over the phone to verify
-          themselves. Keep it short and memorable (e.g. RCE-01). Technicians sign in to the
+          Keep the employee number short and memorable (e.g. RCE-01). Technicians sign in to the
           Health Record field app with the access token generated on creation.
         </p>
         <p className="mt-2 text-sm text-rce-muted">

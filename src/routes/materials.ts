@@ -7,7 +7,7 @@
 
 import express from "express";
 import { z } from "zod";
-import { asyncHandler, readParam } from "./agent-helpers";
+import { asyncHandler, readParam } from "../lib/routeHelpers";
 import { prisma } from "../lib/prisma";
 import {
   createMaterial, linkMaterial, listMaterials, listUnassignedMaterials, promoteMaterial, updateMaterial,

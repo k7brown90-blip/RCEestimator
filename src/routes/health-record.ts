@@ -37,7 +37,7 @@ import {
 } from "../services/inventory";
 import { closeOutMaterialWarning, consumeForJob, jobMaterials, returnForJob } from "../services/jobMaterials";
 import { createMaterial, listMaterials } from "../services/materials";
-import { asyncHandler, readParam } from "./agent-helpers";
+import { asyncHandler, readParam } from "../lib/routeHelpers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
 import {
   generateCureCertificate,
@@ -5247,8 +5247,7 @@ healthRecordAdminRouter.patch("/receipts/:id", asyncHandler(async (req, res) => 
     //
     // A calendar day arrives as "YYYY-MM-DD" and is anchored at NOON UTC, the
     // convention every other date door here uses (app.ts:5544,
-    // health-record.ts:1921, inboundSms.ts:122, receiptVision.ts:77,
-    // agent-shared.ts:76 "Noon UTC to avoid date boundary issues"). Fixed
+    // health-record.ts:1921, inboundSms.ts:122, receiptVision.ts:77). Fixed
     // 2026-09-15: z.coerce.date() read a bare date as MIDNIGHT UTC, which is
     // 7pm the PREVIOUS day in America/Chicago — Kyle typed 2026-09-08 and the
     // receipt filed itself under 9/7. Mid-month that is only cosmetic; on the

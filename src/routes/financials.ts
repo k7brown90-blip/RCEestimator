@@ -33,7 +33,7 @@
 import express from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
-import { asyncHandler, readParam } from "./agent-helpers";
+import { asyncHandler, readParam } from "../lib/routeHelpers";
 import { fullBillOf, stripeConfigured } from "../services/stripePayments";
 import { groupSignedRows, INVOICE_DOC_SELECT, invoiceRootId, LIVE_SIGNED, rollupInvoice, type InvoiceDocRow } from "../services/invoiceGroup";
 import { chainChildrenByJob, getLaborRate, materialCostForJobs, mergeCostableChain } from "../services/jobCosting";

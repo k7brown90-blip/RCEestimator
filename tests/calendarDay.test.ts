@@ -56,7 +56,7 @@ describe("calendarDay", () => {
     expect(isDayString("2026-11-15")).toBe(true);
     expect(isDayString("2026-11-15T06:00:00Z")).toBe(false);
     expect(toFollowUpInstant("2026-11-15").toISOString()).toBe("2026-11-15T12:00:00.000Z");
-    // /vapi/update-lead reads a booked lead's time of day as the appointment window — untouched.
+    // A full timestamp (a booked lead's appointment time) passes through untouched.
     expect(toFollowUpInstant("2026-11-15T14:30:00.000Z").toISOString()).toBe("2026-11-15T14:30:00.000Z");
     expect(Number.isNaN(toFollowUpInstant("nonsense").getTime())).toBe(true);
   });

@@ -12,7 +12,7 @@ import {
   ADMIN_PASSWORD_MAX_BYTES, ADMIN_PASSWORD_MIN, getAdminLogin, removeAdminLogin, saveAdminLogin,
   setAdminLoginEnabled, toAdminLoginView,
 } from "../services/adminLogin";
-import { asyncHandler } from "./agent-helpers";
+import { asyncHandler } from "../lib/routeHelpers";
 
 export const adminLoginRouter = express.Router();
 

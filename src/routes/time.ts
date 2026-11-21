@@ -13,7 +13,7 @@
 import express from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
-import { asyncHandler, readParam } from "./agent-helpers";
+import { asyncHandler, readParam } from "../lib/routeHelpers";
 import { logSystemEvent } from "../services/systemEvents";
 import { EXCLUDE_TEST_VISIT } from "../services/accountSpine";
 import {

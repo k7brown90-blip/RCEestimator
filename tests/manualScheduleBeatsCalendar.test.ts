@@ -243,7 +243,7 @@ describe("the agent paths keep the hard company-wide block", () => {
     const err = await scheduleJob(job.id, TUE, "09:00").catch((e) => e);
 
     expect(err).toBeInstanceOf(ConflictError);
-    // agent-jerry / agent-savannah pass err.message straight into the agent JSON.
+    // err.message must stay free of calendar-owner names.
     expect(err.message).toBe("Calendar conflict: Tuesday, October 7: Busy: 2:00 PM–5:00 PM");
     expect(err.officeMessage).toBeUndefined();
     expect(JSON.stringify(err.conflicts)).not.toMatch(/MSBC|Michael|Schramm/);
@@ -259,7 +259,7 @@ describe("the agent paths keep the hard company-wide block", () => {
     expect(result.conflicts).toHaveLength(1);
     expect(result.conflicts[0].date).toBe("Tuesday, October 7");
     expect(result.conflicts[0].reason).toBe("Busy: 2:00 PM–5:00 PM");
-    // agent-shared.ts returns `conflicts` to the voice agent wholesale: no named sentence unless asked for.
+    // No named sentence unless asked for.
     expect(result.conflicts[0]).not.toHaveProperty("message");
     expect(cal.queried.at(-1)).toEqual(expect.arrayContaining(["primary", KYLE_EMAIL, MICHAEL_EMAIL]));
 

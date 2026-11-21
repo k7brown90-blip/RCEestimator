@@ -10,7 +10,7 @@
 
 import express from "express";
 import { z } from "zod";
-import { asyncHandler, readParam } from "./agent-helpers";
+import { asyncHandler, readParam } from "../lib/routeHelpers";
 import {
   TOOL_CONDITIONS, WAREHOUSE_KEY, correctMovement, countStock, createStockRequest, createTool, declineStockRequest, fulfillStockRequest,
   inventoryOverview, landPurchaseOrder, landingDefaults, listMovements, listStockRequests, listTools, moveTool, searchItems, setParLevel,

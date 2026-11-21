@@ -828,21 +828,3 @@ describe("end_conversation and the email to Kyle", () => {
     expect(body).toContain("&lt;img src=x onerror=alert(1)&gt;");
   });
 });
-
-describe("the hold core is shared, and Savannah's booking is unchanged", () => {
-  it("Savannah's bookAppointment still claims, re-checks, inserts and sends", async () => {
-    const { bookAppointment, BookingConflictError } = await import("../src/services/googleCalendar");
-    const params = {
-      date: futureDate(10), startTime: "10:00", customerName: `${TAG} Savannah`, description: "Outlet",
-      address: "9 Phone Rd", phone: "6155550199", email: "sav@example.com",
-    };
-    const ok = await bookAppointment(params);
-    expect(ok.eventId).toMatch(/^evt_/);
-    expect(mocks.insert.mock.calls[0][0].requestBody.summary).toBe(`EST: ${TAG} Savannah — 9 Phone Rd`);
-    expect(mocks.customerEmail).toHaveBeenCalledTimes(1); // her path keeps its own sends
-
-    mocks.busy.value = true;
-    await expect(bookAppointment(params)).rejects.toThrow(BookingConflictError);
-    expect(await prisma.slotHold.count()).toBe(0);
-  });
-});

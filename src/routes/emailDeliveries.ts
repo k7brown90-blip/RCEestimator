@@ -13,7 +13,7 @@
 
 import express from "express";
 import { prisma } from "../lib/prisma";
-import { asyncHandler } from "./agent-helpers";
+import { asyncHandler } from "../lib/routeHelpers";
 import {
   bccSelfEnabled, transactionalFrom, transactionalProvider, transactionalReplyTo,
 } from "../services/transactionalEmail";

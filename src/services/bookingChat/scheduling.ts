@@ -2,13 +2,12 @@
  * Calendar side of the website booking chat: the slots the bot may offer and the tentative HOLD it
  * writes (plan decision A — the bot holds, the office confirms).
  *
- * The hold goes through the SAME slot-claim + freebusy re-check core Savannah's bookAppointment()
- * uses (googleCalendar.withVerifiedFreeSlot) and then writes one tentative event on the primary
+ * The hold goes through the slot-claim + freebusy re-check core
+ * (googleCalendar.withVerifiedFreeSlot) and then writes one tentative event on the primary
  * calendar. Because the event is on the calendar, every later availability read already treats the
  * slot as taken.
  *
- * NOTHING HERE SENDS ANYTHING TO THE CUSTOMER. bookAppointment() emails and texts ungated
- * (googleCalendar.ts); the hold deliberately does not go through it. Customer confirmations belong
+ * NOTHING HERE SENDS ANYTHING TO THE CUSTOMER. Customer confirmations belong
  * to "Confirm booking" (U3), behind the automation gate.
  */
 

@@ -9,15 +9,13 @@ import { prisma } from "./lib/prisma";
 import { EstimateService } from "./services/estimateService";
 import { resolveItemCable } from "./services/wiringMethodResolver";
 import { generateSupportItems } from "./services/supportItemTriggers";
-import { getAvailability, bookAppointment, BookingConflictError, BookingInputError } from "./services/googleCalendar";
+import { getAvailability } from "./services/googleCalendar";
 import { getDailySummary } from "./services/dailySummary";
 import { getTodaySchedule, getWeekSchedule, getMonthSchedule, getEventsInRange, createCalendarEvent, deleteCalendarEvent, moveCalendarEvent } from "./services/schedule";
 import { techAvailabilityForDate, ctToUtc } from "./services/techCalendars";
 import { sendSms, KYLE_PHONE } from "./services/twilio";
 import { webOptInConfirmation } from "./services/notifications";
 import { logSystemEvent } from "./services/systemEvents";
-import { applyCallDisposition } from "./services/callDisposition";
-import { truncate } from "./routes/agent-helpers";
 import { generateContract, generateChangeOrder, generateWorkOrder, generateMaterialList, markDocumentSigned } from "./services/pdfGenerator";
 import { sendConfirmationEmail, sendProposalEmail, sendKyleNotificationEmail, escapeHtml } from "./services/confirmationEmail";
 import {
@@ -104,7 +102,6 @@ import {
 import { acceptPriceProposalLine, runMonthlyPriceRefresh } from "./services/priceBookRefresh";
 import { applyBilledRate, billedRateProblem, previewBilledRate } from "./services/billedRateChange";
 import { AGENT_INSTRUCTIONS } from "./agentInstructions";
-import { agentRouter } from "./routes/agent";
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
 import { activeFinancingFeesByRoot, feeDollarsOf } from "./services/financingFee";
@@ -146,14 +143,11 @@ import { renderMaterialsListPdf } from "./services/materialsListPdf";
 import { parseJsonStringArray } from "./lib/json";
 import { findCustomerMatches, findLeadMatches } from "./services/customerMatch";
 import { KNOWN_JURISDICTION_IDS } from "./services/jurisdictionResolver";
-import { requireWebhookSecret, requireWebhookSecretWhenEnabled } from "./middleware/webhookSecret";
+import { requireWebhookSecret } from "./middleware/webhookSecret";
 import { bookingChatRouter } from "./routes/bookingChat";
 import {
   confirmBooking, deleteHoldForLead, deleteLeadPhoto, loadLeadChatView, releaseHold, releaseHoldIfHeld,
 } from "./services/bookingChat/officeActions";
-import { savannahRouter } from "./routes/agent-savannah";
-import { jerryRouter } from "./routes/agent-jerry";
-import { sharedAgentRouter } from "./routes/agent-shared";
 import { inboundSmsRouter } from "./routes/inboundSms";
 import { confirmPageRouter } from "./routes/confirmPage";
 import { estimatePageRouter } from "./routes/estimatePage";
@@ -372,16 +366,12 @@ app.use((req, res, next) => {
 // Public, unauthenticated endpoints get a tight per-IP budget; everything else
 // under the API gets a generous safety net. Disabled under test.
 const skipLimiter = () => process.env.NODE_ENV === "test";
-// /vapi/end-of-call-report carries its own query-string secret (unlike its
-// /vapi siblings, which have no auth and rely on this limiter as their only
-// spam protection), so it gets its own generous budget below instead — skip
-// it here rather than let both limiters draw from the same request.
 const publicLimiter = rateLimit({
   windowMs: 60_000,
   limit: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => skipLimiter() || req.originalUrl.startsWith("/vapi/end-of-call-report"),
+  skip: skipLimiter,
 });
 const apiLimiter = rateLimit({
   windowMs: 60_000,
@@ -390,43 +380,7 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
   skip: skipLimiter,
 });
-/**
- * Booking is its own budget, and a small one.
- *
- * `POST /calendar/book` writes a real event to the calendar, consumes the slot,
- * and sends a confirmation SMS and email to whatever phone number and address
- * the request supplies — from Red Cedar's Twilio number and Gmail account. That
- * makes an unauthenticated 30/min into a way to spend money and get the number
- * flagged as spam, which would take real customer confirmations down with it.
- *
- * The agent books one appointment per call, so five a minute costs nothing
- * legitimate. This is a stopgap: the real fix is the shared secret below, which
- * has to wait for the Vapi dashboard.
- */
-const bookingLimiter = rateLimit({
-  windowMs: 60_000,
-  limit: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: skipLimiter,
-});
-/**
- * end-of-call-report is authenticated by its own query-string secret (see the
- * route below), unlike its /vapi siblings (assistant-config, and everything
- * else on the public prefixes) which have no auth and rely on IP rate limiting
- * as their only spam protection. It doesn't need to share that tight 30/min
- * budget — it needs to never block a legitimate Vapi retry after a call ends.
- */
-const vapiWebhookLimiter = rateLimit({
-  windowMs: 60_000,
-  limit: 300,
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: skipLimiter,
-});
-app.use(["/leads", "/customer/lookup", "/calendar/availability", "/vapi", "/auth/pin", "/auth/login", "/confirm", "/sms/inbound"], publicLimiter);
-app.use("/vapi/end-of-call-report", vapiWebhookLimiter);
-app.use("/calendar/book", bookingLimiter);
+app.use(["/leads", "/auth/pin", "/auth/login", "/confirm", "/sms/inbound"], publicLimiter);
 app.use((req: express.Request & { _isApi?: boolean }, res, next) => {
   if (req._isApi) {
     apiLimiter(req, res, next);
@@ -538,383 +492,6 @@ app.get("/healthz", healthzHandler);
 // Internal ops: Railway crash webhook + Twilio delivery-status callback.
 // Auth lives in the router (URL-path token, constant-time compare).
 app.use("/internal", internalRouter);
-
-// ─── VAPI DYNAMIC VARIABLES (no auth — called at start of each inbound call) ──
-// Vapi hits this on every inbound call when the phone number's `server.url` is
-// pointed here. On `assistant-request` we reply with the existing assistantId
-// and per-call variableValues; on any other message type we ack with 200 so
-// Vapi treats the request as handled without changing the assistant.
-app.post("/vapi/assistant-config", (req, res) => {
-  const now = new Date();
-  const current_date = now.toLocaleDateString("en-US", {
-    timeZone: "America/Chicago",
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-  const current_time = now.toLocaleTimeString("en-US", {
-    timeZone: "America/Chicago",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const variableValues = {
-    current_date,
-    current_time,
-    currentDateTime: `${current_date}, ${current_time} Central Time`,
-  };
-
-  const messageType = (req.body?.message?.type ?? req.body?.type) as string | undefined;
-  const savannahAssistantId = process.env.VAPI_ASSISTANT_ID ?? "91c88bcc-098e-4816-b374-06688208c0a3";
-
-  if (messageType === "assistant-request") {
-    res.json({
-      assistantId: savannahAssistantId,
-      assistantOverrides: { variableValues },
-    });
-    return;
-  }
-
-  // Legacy / manual test callers still get the raw variableValues.
-  res.json({ variableValues, assistantId: savannahAssistantId });
-});
-
-// ─── VAPI END-OF-CALL SAFETY NET (query-string secret — see below) ──────────
-//
-// Prompt rules can tell Savannah to call log_call_disposition, but a model
-// under multi-step pressure (apologize, re-check availability, re-offer slots)
-// can skip a tool call it was told to make. This is the backend backstop:
-// point the assistant's Server URL at this address with a `key` query param,
-// and when Vapi reports a call ended, check whether that call.id already got
-// a disposition logged. If not, log a generic fallback so a dropped call never
-// produces zero record — this cannot be skipped by model drift, since it runs
-// after the call regardless of what happened during it.
-//
-// Fail-closed like every other secret in this file: with VAPI_SERVER_SECRET
-// unset, the endpoint refuses everything rather than accepting unauthenticated
-// call data.
-app.post("/vapi/end-of-call-report", asyncHandler(async (req, res) => {
-  const configured = process.env.VAPI_SERVER_SECRET;
-  if (!configured || readQuery(req, "key") !== configured) {
-    res.status(401).json({ error: "Invalid or missing key" });
-    return;
-  }
-
-  const message = req.body?.message ?? req.body;
-  const messageType = message?.type as string | undefined;
-  if (messageType !== "end-of-call-report") {
-    res.status(200).json({ ok: true });
-    return;
-  }
-
-  const callId = message?.call?.id as string | undefined;
-  if (!callId) {
-    logSystemEvent("warn", "vapi-eocr", "end-of-call-report with no call.id — cannot check for a logged disposition");
-    res.status(200).json({ ok: true });
-    return;
-  }
-
-  const alreadyLogged = await prisma.agentAuditLog.findFirst({
-    where: { action: "call_disposition", callId },
-    select: { id: true },
-  });
-  if (alreadyLogged) {
-    res.status(200).json({ ok: true, alreadyLogged: true });
-    return;
-  }
-
-  const phone = (message?.call?.customer?.number ?? message?.customer?.number) as string | undefined;
-  const transcript = (message?.transcript ?? message?.artifact?.transcript) as string | undefined;
-  const summary = (message?.summary ?? message?.analysis?.summary) as string | undefined;
-  const notes = [
-    "Auto-logged: no disposition was recorded for this call.",
-    summary ? `Summary: ${summary}` : null,
-    transcript ? `Transcript: ${truncate(transcript, 4000)}` : null,
-  ].filter(Boolean).join("\n");
-
-  const { lead, created } = await applyCallDisposition({
-    phone,
-    callType: "auto_fallback",
-    leadStatus: "unresolved",
-    notes,
-  });
-
-  logSystemEvent("warn", "vapi-eocr", "Call ended with no disposition logged — auto-fallback applied", {
-    route: "POST /vapi/end-of-call-report",
-    callId,
-    leadId: lead.id,
-    leadCreated: created,
-  });
-  // Awaited, not fire-and-forget: a near-simultaneous retry of this same
-  // webhook must see this row before it decides whether to log again.
-  await prisma.agentAuditLog.create({
-    data: {
-      action: "call_disposition",
-      endpoint: "/vapi/end-of-call-report",
-      entityType: "lead",
-      entityId: lead.id,
-      payloadJson: JSON.stringify({ leadStatus: "unresolved", callType: "auto_fallback", created, auto: true }),
-      responseStatus: 200,
-      callId,
-    },
-  });
-
-  res.status(200).json({ ok: true, leadId: lead.id, leadCreated: created });
-}));
-
-// ─── CALENDAR AVAILABILITY (agent endpoint — see middleware/webhookSecret) ───
-// Free/busy windows only: when Kyle is working and how full he is. No names, no
-// addresses, no contact details — roughly what a customer learns by calling and
-// asking. Behind the flag with its neighbours for consistency, not urgency.
-const availability = asyncHandler(async (_req: express.Request, res: express.Response) => {
-  const data = await getAvailability();
-  res.json(data);
-});
-app.get("/calendar/availability", requireWebhookSecretWhenEnabled("GET /calendar/availability"), availability);
-app.post("/calendar/availability", requireWebhookSecretWhenEnabled("POST /calendar/availability"), availability);
-
-/**
- * CALENDAR BOOKING — the endpoint with real teeth.
- *
- * A successful call writes an event to the live Google Calendar, takes the slot
- * so no one else can have it, and sends a confirmation SMS and email to whatever
- * phone number and address the request supplied — from Red Cedar's Twilio number
- * and Gmail account.
- *
- * Unauthenticated, that is an open relay: a way to spend money sending branded
- * messages to arbitrary recipients, and to get the number flagged as spam, which
- * would take real customer confirmations down with it. It is also a way to book
- * out the calendar so no genuine customer can get a slot.
- *
- * Rate-limited to 5/min above as a stopgap. The actual fix is the shared secret,
- * waiting on the Vapi dashboard.
- */
-app.post("/calendar/book", requireWebhookSecretWhenEnabled("POST /calendar/book"), asyncHandler(async (req, res) => {
-  const { date, startTime, customerName, description, address, email, phone } = req.body;
-  if (!date || !startTime || !customerName || !description || !address) {
-    res.status(400).json({
-      error: "Required: date, startTime, customerName, description, address",
-      spoken_fallback: "I'm missing some details to book that — can you give me the customer's name, the address, and what the visit is for?",
-    });
-    return;
-  }
-  try {
-    const result = await bookAppointment({ date, startTime, customerName, description, address, email, phone });
-    res.json(result);
-  } catch (err) {
-    if (err instanceof BookingConflictError) {
-      res.status(409).json({
-        error: err.message,
-        spoken_fallback: "That time just became unavailable. Let me check the openings again and offer you another slot.",
-      });
-      return;
-    }
-    if (err instanceof BookingInputError) {
-      res.status(400).json({
-        error: err.message,
-        spoken_fallback: "I want to make sure I book this correctly — could you confirm the exact day and time once more?",
-      });
-      return;
-    }
-    // Every failure path from here on must still carry a spoken_fallback —
-    // the tool-use rule is "error key present -> speak spoken_fallback", and
-    // an unhandled error falling through to the generic 500 handler doesn't
-    // have one, which leaves the caller with dead air instead of an apology.
-    logSystemEvent("error", "calendar-book", err instanceof Error ? err.message : "Unknown booking error", {
-      route: "POST /calendar/book",
-      stack: err instanceof Error ? err.stack : undefined,
-    });
-    res.status(500).json({
-      error: "Booking failed unexpectedly",
-      spoken_fallback: "Something went wrong on my end booking that. I wasn't able to finish that booking, so please try again or pick a different time.",
-    });
-  }
-}));
-
-// ─── CUSTOMER LOOKUP (no auth — called by Vapi AI assistant) ─────────────────
-const KYLE_PHONE_10 = "9706661626";
-
-/**
- * Caller lookup for the phone agent.
- *
- * Returns a complete customer record — name, phone, email, every property
- * address, every visit with its purpose and estimate total, warranty status and
- * open leads. It has never required authentication.
- *
- * It cannot simply be locked: the tool definitions that call it live in the Vapi
- * dashboard, outside this repository, so the caller and the endpoint cannot be
- * changed in one commit. Locking it blind would find out whether the dashboard
- * was updated by failing during a customer's call.
- *
- * So enforcement sits behind AGENT_ENDPOINTS_REQUIRE_SECRET, and every
- * unauthenticated call is logged either way. Add the `webhook_secret` header to
- * the Vapi tools, watch the log go quiet, then set the flag.
- * See docs/SECURING_THE_AGENT.md.
- */
-app.get("/customer/lookup", requireWebhookSecretWhenEnabled("GET /customer/lookup"), asyncHandler(async (req, res) => {
-  const phoneRaw = (readQuery(req, "phone") ?? "").replace(/\D/g, "").slice(-10);
-  const nameRaw = (readQuery(req, "name") ?? "").trim();
-
-  // Must provide phone or name
-  if ((!phoneRaw || phoneRaw.length < 10) && !nameRaw) {
-    res.json({ found: false });
-    return;
-  }
-
-  // Kyle's cell → transfer signal (phone lookup only)
-  if (phoneRaw === KYLE_PHONE_10) {
-    res.json({ found: true, type: "kyle_transfer", name: "Kyle" });
-    return;
-  }
-
-  // ── Helper: build full customer response ──
-  const buildCustomerResponse = async (customer: Awaited<ReturnType<typeof prisma.customer.findMany>>[0] & { properties: Array<{ id: string; addressLine1: string; city: string | null; state: string | null; postalCode: string | null; occupancyType: string | null; visits: Array<{ id: string; visitDate: Date; mode: string; purpose: string | null; estimates: Array<{ status: string; options: Array<{ accepted: boolean; totalPrice?: number }> }> }> }> }) => {
-    const now = new Date();
-    const oneYearAgo = new Date(now.getTime() - 365 * 86_400_000);
-    let warrantyEligible = false;
-    let warrantyNote: string | null = null;
-
-    const properties = customer.properties.map((prop) => ({
-      propertyId: prop.id,
-      address: [prop.addressLine1, prop.city, prop.state, prop.postalCode].filter(Boolean).join(", "),
-      occupancyType: prop.occupancyType || "residential",
-      visits: prop.visits.map((visit) => {
-        const acceptedOpt = visit.estimates[0]?.options.find((o) => o.accepted);
-        const total = acceptedOpt ? (acceptedOpt as unknown as { totalPrice?: number }).totalPrice ?? 0 : 0;
-        if (visit.estimates.length > 0 && visit.visitDate >= oneYearAgo) {
-          warrantyEligible = true;
-          warrantyNote = `${visit.purpose || "Work"} completed ${visit.visitDate.toISOString().slice(0, 10)} — within 12 month warranty window`;
-        }
-        return {
-          visitId: visit.id,
-          date: visit.visitDate.toISOString().slice(0, 10),
-          mode: visit.mode,
-          purpose: visit.purpose,
-          estimateStatus: visit.estimates[0]?.status ?? null,
-          estimateTotal: total,
-        };
-      }),
-    }));
-
-    const allVisits = properties.flatMap((p) => p.visits);
-    const mostRecent = allVisits[0] ?? null;
-    const openLeads = await prisma.lead.findMany({
-      where: { customerId: customer.id, status: { in: ["new", "contacted"] } },
-      orderBy: { createdAt: "desc" },
-    });
-
-    return {
-      found: true,
-      type: "customer",
-      name: customer.name,
-      customerId: customer.id,
-      phone: customer.phone,
-      email: customer.email,
-      properties,
-      totalVisits: allVisits.length,
-      mostRecentVisit: mostRecent ? {
-        date: mostRecent.date,
-        mode: mostRecent.mode,
-        purpose: mostRecent.purpose,
-        propertyAddress: properties.find((p) => p.visits.some((v) => v.visitId === mostRecent.visitId))?.address ?? "",
-      } : null,
-      warrantyEligible,
-      warrantyNote,
-      openLeads: openLeads.map((l) => ({
-        leadId: l.id,
-        status: l.status,
-        jobType: l.jobType,
-        createdAt: l.createdAt.toISOString().slice(0, 10),
-      })),
-    };
-  };
-
-  const customerInclude = {
-    properties: {
-      include: {
-        visits: {
-          orderBy: { visitDate: "desc" as const },
-          include: {
-            estimates: {
-              where: { status: "accepted" },
-              include: { options: { where: { accepted: true } } },
-            },
-          },
-        },
-      },
-    },
-  };
-
-  const buildLeadResponse = (lead: { id: string; name: string; phone: string | null; email: string | null; address: string | null; jobType: string | null; status: string; callType: string | null; notes: string | null; createdAt: Date }) => ({
-    found: true,
-    type: "lead",
-    name: lead.name,
-    leadId: lead.id,
-    phone: lead.phone,
-    email: lead.email,
-    address: lead.address,
-    jobType: lead.jobType,
-    status: lead.status,
-    callType: lead.callType,
-    notes: lead.notes,
-    createdAt: lead.createdAt.toISOString().slice(0, 10),
-  });
-
-  // ── Phone-based lookup ──
-  // TODO: switch to services/customerMatch.findCustomerMatches. `contains phoneRaw`
-  // finds "+16155550101" but misses "(615) 555-0101", so the shared matcher would
-  // find strictly more accounts — but this is the live voice-agent path, and what
-  // it returns changes what a caller hears. Pin the current behaviour with a test
-  // before swapping it.
-  if (phoneRaw && phoneRaw.length === 10) {
-    const customers = await prisma.customer.findMany({
-      where: { phone: { contains: phoneRaw } },
-      include: customerInclude,
-    });
-    if (customers.length > 0) {
-      res.json(await buildCustomerResponse(customers[0] as Parameters<typeof buildCustomerResponse>[0]));
-      return;
-    }
-
-    const leads = await prisma.lead.findMany({
-      where: { phone: { contains: phoneRaw }, status: { in: ["new", "contacted"] } },
-      orderBy: { createdAt: "desc" },
-    });
-    if (leads.length > 0) {
-      res.json(buildLeadResponse(leads[0]));
-      return;
-    }
-  }
-
-  // ── Name-based lookup (for Kyle transfer scenario) ──
-  //
-  // Minimum length is a guard, not a nicety. This endpoint is unauthenticated
-  // (see the block comment above the route) and returns a full customer record,
-  // so `?name=a` was a substring match that would walk the customer base one
-  // letter at a time. Three characters is long enough that a caller's actual name
-  // still matches and short enough not to break any real lookup.
-  if (nameRaw.length >= 3) {
-    const customers = await prisma.customer.findMany({
-      where: { name: { contains: nameRaw } },
-      include: customerInclude,
-    });
-    if (customers.length > 0) {
-      res.json(await buildCustomerResponse(customers[0] as Parameters<typeof buildCustomerResponse>[0]));
-      return;
-    }
-
-    const leads = await prisma.lead.findMany({
-      where: { name: { contains: nameRaw }, status: { in: ["new", "contacted"] } },
-      orderBy: { createdAt: "desc" },
-    });
-    if (leads.length > 0) {
-      res.json(buildLeadResponse(leads[0]));
-      return;
-    }
-  }
-
-  res.json({ found: false });
-}));
 
 // ─── DAILY CALL SUMMARY ─────────────────────────────────────────────────────
 // Returns today's leads with names, phone numbers, addresses and notes, so it
@@ -1114,80 +691,6 @@ ${emailBody}`;
   } catch {
     res.json({ ...fallback, reason: "Classification failed" });
   }
-}));
-
-// ─── UPDATE LEAD (no JWT — webhook secret, called by Vapi) ──────────────────
-app.patch("/vapi/update-lead", asyncHandler(async (req, res) => {
-  const secret = req.headers["webhook_secret"];
-  if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
-    res.status(401).json({ error: "Invalid or missing webhook secret" });
-    return;
-  }
-
-  const body = req.body as {
-    leadId?: string; notes?: string; callType?: string; address?: string;
-    jobType?: string; warrantyCall?: boolean; warrantyNote?: string;
-    urgentFlag?: boolean; referredBy?: string; email?: string;
-    estimateId?: string; existingVisitId?: string; status?: string;
-    contactPreference?: string; leadStatus?: string;
-    followUpDate?: string; followUpReason?: string; followUpCount?: number;
-    lostReason?: string; lostNotes?: string; bestTimeToReach?: string;
-  };
-
-  if (!body.leadId) {
-    res.status(400).json({ error: "leadId is required" });
-    return;
-  }
-
-  const data: Record<string, unknown> = {};
-  if (body.notes !== undefined) data.notes = body.notes;
-  if (body.callType !== undefined) data.callType = body.callType;
-  if (body.address !== undefined) data.address = body.address;
-  if (body.jobType !== undefined) data.jobType = body.jobType;
-  if (body.warrantyCall !== undefined) data.warrantyCall = body.warrantyCall;
-  if (body.warrantyNote !== undefined) data.warrantyNote = body.warrantyNote;
-  if (body.urgentFlag !== undefined) data.urgentFlag = body.urgentFlag;
-  if (body.referredBy !== undefined) data.referredBy = body.referredBy;
-  if (body.email !== undefined) data.email = body.email;
-  if (body.estimateId !== undefined) data.estimateId = body.estimateId;
-  if (body.existingVisitId !== undefined) data.existingVisitId = body.existingVisitId;
-  if (body.status !== undefined) data.status = body.status;
-  if (body.contactPreference !== undefined) data.contactPreference = body.contactPreference;
-  if (body.leadStatus !== undefined) data.leadStatus = body.leadStatus;
-  // A bare YYYY-MM-DD is a calendar day (noon UTC); a full timestamp — the appointment time this
-  // route's confirmation email reads below — passes through untouched.
-  if (body.followUpDate !== undefined) data.followUpDate = body.followUpDate ? toFollowUpInstant(body.followUpDate) : null;
-  if (body.followUpReason !== undefined) data.followUpReason = body.followUpReason;
-  if (body.followUpCount !== undefined) data.followUpCount = body.followUpCount;
-  if (body.lostReason !== undefined) data.lostReason = body.lostReason;
-  if (body.lostNotes !== undefined) data.lostNotes = body.lostNotes;
-  if (body.bestTimeToReach !== undefined) data.bestTimeToReach = body.bestTimeToReach;
-
-  const lead = await prisma.lead.update({
-    where: { id: body.leadId },
-    data,
-  });
-
-  // Fire confirmation email when lead is booked and has an email
-  if (body.leadStatus === "booked" && lead.email) {
-    const apptDate = lead.followUpDate
-      ? lead.followUpDate.toLocaleDateString("en-US", { timeZone: "America/Chicago", weekday: "long", month: "long", day: "numeric" })
-      : "TBD";
-    const apptWindow = lead.followUpDate
-      ? `${lead.followUpDate.toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric", minute: "2-digit" })} — 2hr window`
-      : "To be confirmed";
-
-    sendConfirmationEmail({
-      customerName: lead.name,
-      customerEmail: lead.email,
-      appointmentDate: apptDate,
-      appointmentWindow: apptWindow,
-      serviceAddress: lead.address ?? "See appointment details",
-      jobType: lead.jobType ?? undefined,
-    }).catch((err) => console.error("[update-lead] Confirmation email error:", err));
-  }
-
-  res.json(lead);
 }));
 
 // ─── SCHEDULE ENDPOINTS (webhook-secret auth — called by Make.com SMS dispatch) ──
@@ -2020,12 +1523,6 @@ app.post("/bookings/from-email", asyncHandler(async (req, res) => {
 
 // ─── WEBSITE BOOKING CHAT (webhook_secret, called by the website server — routes/bookingChat.ts) ───
 app.use("/booking-chat", bookingChatRouter);
-
-// ─── AGENT API (Jerry — voice/SMS field assistant) ────────────────────────────
-app.use("/agent", agentRouter);
-app.use("/agent/savannah", savannahRouter);
-app.use("/agent/jerry", jerryRouter);
-app.use("/agent/calendar", sharedAgentRouter);
 
 // ─── HEALTH RECORD PWA (per-technician bearer auth, not the CRM session) ─────
 app.use("/health-record", healthRecordTechRouter);
@@ -9295,7 +8792,7 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     source?: string;
     /**
      * WHICH PLATFORM sent the lead (Kyle, 2026-09-20). Editable after the fact on purpose: a
-     * phone lead arrives untagged and Kyle or Savannah picks it once the caller says where they
+     * phone lead arrives untagged and Kyle picks it once the caller says where they
      * found Red Cedar. `null` clears it back to "unknown".
      */
     platform?: string | null;
@@ -9334,7 +8831,7 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     return;
   }
   // The same door for the call outcome "won" — only a CHANGE to it is refused. A row that already
-  // holds "won" (Savannah and Convert write it; deleting an account resets a lead to new but leaves
+  // holds "won" (Convert writes it; deleting an account resets a lead to new but leaves
   // it) saves any other edit untouched.
   if (body.leadStatus === "won" && existing.leadStatus !== "won") {
     res.status(400).json({ error: WON_OUTCOME_ERROR });

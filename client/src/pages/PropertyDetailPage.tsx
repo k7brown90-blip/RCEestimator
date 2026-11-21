@@ -243,8 +243,7 @@ export function PropertyDetailPage() {
 
           NOTE for the architect: the old "System Snapshot" form (service/panel/grounding/wiring
           summaries + deficiencies) is removed per Kyle's own instruction above, but it was the
-          ONLY CRM read/write surface for that data — SystemSnapshot is still written by the
-          Savannah phone-intake agent (src/routes/agent.ts, agent-jerry.ts). Flagging since nothing
+          ONLY CRM read/write surface for that data. Flagging since nothing
           in the CRM can view or edit it after this change; no other screen showed it before. */}
       <section className="card mb-5 space-y-5 p-4">
         <h2 className="text-lg font-semibold">Health Record</h2>

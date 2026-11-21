@@ -494,9 +494,8 @@ export async function checkAvailabilityBlock(
   calendarIdsToCheck?: string[],
   /**
    * Fill in each conflict's `message` — the sentence that names WHOSE calendar is busy.
-   * Only the CRM scheduler asks for it. It is off by default because the voice agents
-   * return `conflicts` to the caller wholesale (agent-shared.ts), and a technician's name
-   * must not reach them.
+   * Only the CRM scheduler asks for it. It is off by default because a technician's name must not reach
+   * a caller who is not the office.
    */
   nameOwners?: boolean,
 ): Promise<AvailabilityCheckResult> {

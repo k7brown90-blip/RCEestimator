@@ -563,11 +563,11 @@ export function CalendarPage() {
         </aside>
       </div>
 
-      {/* AI Availability */}
+      {/* Availability */}
       <section>
         <h2 className="mb-1 text-lg font-semibold">AI Availability View</h2>
         <p className="mb-3 text-xs text-rce-muted">
-          This is exactly what Savannah and Jerry see when checking availability.
+          This is the availability the booking calendar is working from.
           {availability && ` Current time: ${availability.current_time_central}`}
         </p>
         {!availability ? (

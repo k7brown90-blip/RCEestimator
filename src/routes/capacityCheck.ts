@@ -19,7 +19,7 @@
 import express from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
-import { asyncHandler, readParam } from "./agent-helpers";
+import { asyncHandler, readParam } from "../lib/routeHelpers";
 import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
 import { parseJsonObject } from "../lib/json";
 import {

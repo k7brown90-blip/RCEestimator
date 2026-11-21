@@ -14,7 +14,7 @@
 import express from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
-import { asyncHandler } from "./agent-helpers";
+import { asyncHandler } from "../lib/routeHelpers";
 import { sendRecordEmail, type RecordEmailTarget } from "../services/recordEmail";
 import { ccSchema, resolveRecipients } from "../services/emailCc";
 
