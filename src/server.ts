@@ -38,7 +38,7 @@ if (process.env.NODE_ENV === "production") {
   if (!process.env.RAILWAY_PUBLIC_DOMAIN) {
     // eslint-disable-next-line no-console
     console.warn(
-      "[startup] RAILWAY_PUBLIC_DOMAIN is not set — the OpenAI agent MCP URL will fall back to localhost and be unreachable.",
+      "[startup] RAILWAY_PUBLIC_DOMAIN is not set — customer links built from it will fall back to localhost and be unreachable.",
     );
   }
 }

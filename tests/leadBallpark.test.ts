@@ -12,7 +12,7 @@
  *   - converting the lead (any door: convertLeadToOpportunity) gives it the new visit, so the
  *     tech's Quote screen finds it by visitId and the lock lifts;
  *   - deleting the lead deletes it; a stub account's deletion hands it back to the lead;
- *   - Savannah (agent routes, MCP server) has no estimate or draft tool.
+ *   - Savannah (agent routes) has no estimate or draft tool.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -384,15 +384,11 @@ describe("deleting a lead deletes its unsent ballpark", () => {
 });
 
 describe("Savannah is not part of the estimating system", () => {
-  // Narrower than "touches no draft": the pre-existing MCP tool propose_estimate_lines can still add
-  // PROPOSED (unpriced, unsendable) lines to any draftId. This checks no Savannah file names or
-  // creates a ballpark.
-  it("no agent route, agent instruction or MCP tool names or creates a ballpark", () => {
+  // Narrower than "touches no draft": this checks no Savannah agent route names or creates a ballpark.
+  it("no agent route names or creates a ballpark", () => {
     const src = join(__dirname, "..", "src");
     const files = [
       ...readdirSync(join(src, "routes")).filter((f) => f.startsWith("agent")).map((f) => join(src, "routes", f)),
-      join(src, "agentInstructions.ts"),
-      join(src, "mcp", "server.ts"),
     ];
     for (const file of files) {
       const text = readFileSync(file, "utf8");

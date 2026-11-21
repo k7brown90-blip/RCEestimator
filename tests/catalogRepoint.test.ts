@@ -221,35 +221,6 @@ describe("candidate matching proposes only price-book codes", () => {
   });
 });
 
-describe("the model's tool surface has one catalog tool", () => {
-  const mcp = SRC("src/mcp/server.ts");
-
-  it("query_atomic_units is retired, not live", () => {
-    expect(mcp).not.toMatch(/server\.registerTool\(\s*\n?\s*"query_atomic_units"/);
-    expect(mcp, "kept on the retired server — move, never delete").toMatch(
-      /retired\.registerTool\(\s*\n?\s*"query_atomic_units"/
-    );
-  });
-
-  it("query_price_book_atomics is the live catalog tool", () => {
-    expect(mcp).toMatch(/server\.registerTool\(\s*\n?\s*"query_price_book_atomics"/);
-  });
-
-  it("no live tool reads prisma.atomicUnit for catalog search", () => {
-    // `atomicUnit` still appears via `include: { atomicUnit: true }` on EstimateItem — that is
-    // historical estimate rendering and is deliberately untouched. What must be gone is a
-    // catalog-wide findMany against the legacy table on a reachable tool.
-    const live = mcp.slice(0, mcp.indexOf('retired.registerTool(\n    "query_atomic_units"'));
-    expect(live).not.toContain("prisma.atomicUnit.findMany");
-  });
-
-  it("the agent instructions no longer point at the legacy list", () => {
-    const instructions = SRC("src/agentInstructions.ts");
-    expect(instructions).toContain("query_price_book_atomics");
-    expect(instructions).not.toMatch(/query_atomic_units reads/);
-  });
-});
-
 describe("the legacy catalog itself is untouched", () => {
   it("AtomicUnit is still a model with its EstimateItem relation", () => {
     const schema = SRC("prisma/schema.prisma");

@@ -91,10 +91,6 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
 
   // ── Self-authenticating with a different credential ───────────────────────────────────────
   {
-    methods: ["*"], path: "/mcp", prefix: true, credential: "bearer token",
-    reason: "MCP_BEARER_TOKEN, checked by mcpAuth in app.ts, fail-closed 503 when unset (P012).",
-  },
-  {
     methods: ["*"], path: "/internal", prefix: true, credential: "URL-path token",
     reason: "Railway crash + Twilio status webhooks. INTERNAL_WEBHOOK_TOKEN in the path, constant-time compare; neither sender can set an Authorization header.",
   },
