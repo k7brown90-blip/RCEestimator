@@ -174,16 +174,16 @@ describe("PaymentPanel", () => {
       expect(screen.getByText(/once the job is marked complete/)).toBeInTheDocument();
     });
 
-    it("surfaces the server's refusal reason (completed / dedupe / 90-day rule) rather than swallowing it", async () => {
+    it("surfaces the server's refusal reason (completed / dedupe / no email) rather than swallowing it", async () => {
       vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
       vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-      vi.spyOn(api, "sendCustomerEmail").mockRejectedValue(new Error("Tony was already asked for a review within the last 90 days."));
+      vi.spyOn(api, "sendCustomerEmail").mockRejectedValue(new Error("A review request has already been sent for this job."));
 
       renderWithProviders(<PaymentPanel jobId="visit-1" />);
 
       await openPanel("Review request");
       fireEvent.click(await screen.findByRole("button", { name: "Send review request to tony@example.com" }));
-      expect(await screen.findByText("Tony was already asked for a review within the last 90 days.")).toBeInTheDocument();
+      expect(await screen.findByText("A review request has already been sent for this job.")).toBeInTheDocument();
     });
   });
 

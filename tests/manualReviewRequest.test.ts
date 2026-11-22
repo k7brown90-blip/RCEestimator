@@ -13,8 +13,7 @@
  *   2. With the gate OFF, the MANUAL call (opts.manual: true) still sends —
  *      the whole point of this build.
  *   3. Every OTHER guard (job must be completed, no duplicate ask on this
- *      job, no repeat ask on this customer within 90 days, customer must
- *      have an email) still applies on the manual path exactly as it does
+ *      job, customer must have an email) still applies on the manual path exactly as it does
  *      on the automatic one — the gate is the ONLY thing bypassed.
  *   4. The two new routes — CRM `POST /jobs/:jobId/email-review-request` and
  *      field `POST /health-record/visits/:visitId/email-review-request` —
@@ -150,6 +149,45 @@ describe("services/reviewRequest — manual bypass vs. the automatic gate", () =
       if (second.ok) return;
       expect(second.reason).toMatch(/already been sent/i);
       expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a repeat customer can be asked again on a NEW completed job — no 90-day window (Kyle, 2026-11-21)", async () => {
+    // Kyle, 2026-11-21: "I don't like that 90 day rule please get rid of it". The only per-ask limit
+    // left is one ask per JOB.
+    const { visitId: firstVisitId } = await makeCompletedVisit("repeat");
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const { sendReviewRequestEmail } = await import("../src/services/reviewRequest");
+      const first = await sendReviewRequestEmail(prisma, firstVisitId, { manual: true });
+      expect(first.ok).toBe(true);
+
+      // A second completed job for the SAME customer, finished the next day.
+      const secondVisit = await prisma.visit.create({
+        data: {
+          customerId: customerIdsBySuffix["repeat"],
+          propertyId: propertyIdsBySuffix["repeat"],
+          mode: "onsite",
+          purpose: `${MARK} job repeat 2`,
+          status: "completed",
+          completedAt: new Date(),
+        },
+      });
+      visitIds.push(secondVisit.id);
+
+      const second = await sendReviewRequestEmail(prisma, secondVisit.id, { manual: true });
+      expect(second.ok).toBe(true);
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      // Still one ask per job: the first job refuses a second press.
+      const again = await sendReviewRequestEmail(prisma, firstVisitId, { manual: true });
+      expect(again.ok).toBe(false);
+      if (again.ok) return;
+      expect(again.reason).toMatch(/already been sent/i);
+      expect(spy).toHaveBeenCalledTimes(2);
     } finally {
       spy.mockRestore();
     }

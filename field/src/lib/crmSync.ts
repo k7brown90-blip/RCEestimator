@@ -1722,7 +1722,7 @@ export async function emailFinancing(estimateId: string): Promise<{ to: string }
  * review request to email on its own" / "manual send both from the field app and from the
  * CRM"). Bypasses the automation gate the same way a manual press always does — see
  * services/reviewRequest.ts — but every other guard (job completed, no duplicate ask on this
- * job, no repeat ask on this customer within 90 days, email on file) still applies and comes
+ * job, email on file) still applies and comes
  * back as a readable refusal.
  */
 export async function emailReviewRequest(visitId: string): Promise<{ to: string }> {

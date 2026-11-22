@@ -4,7 +4,7 @@
  *   1. Both controls are present under one heading.
  *   2. The send is greyed with its reason when the account has no completed job — never hidden.
  *   3. A successful send shows who it went to, and "Send it again" afterwards.
- *   4. The server's refusal (dedupe / 90-day rule / no email) surfaces as readable text.
+ *   4. The server's refusal (dedupe / no email) surfaces as readable text.
  *   5. Marking review confirmed requires a name (no prefilled "Kyle" — CustomerNote precedent),
  *      then reads "Review confirmed ... — marked by ..." with a way back out ("Unconfirm").
  */
@@ -111,13 +111,13 @@ describe("ReviewRequestPanel — both controls, on the account", () => {
   it("surfaces the server's refusal instead of swallowing it", async () => {
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
     vi.spyOn(api, "emailAccountReviewRequest").mockRejectedValue(
-      new Error("Jane Homeowner was already asked for a review within the last 90 days."),
+      new Error("A review request has already been sent for this job."),
     );
 
     renderWithProviders(<ReviewRequestPanel accountId="cust-1" jobs={[job()]} reviewConfirmedAt={null} reviewConfirmedBy={null} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Send a Google review request" }));
-    expect(await screen.findByText("Jane Homeowner was already asked for a review within the last 90 days.")).toBeInTheDocument();
+    expect(await screen.findByText("A review request has already been sent for this job.")).toBeInTheDocument();
   });
 
   it("shows the last-sent line the same way SendAssessmentReport/the financing button do, from the server", async () => {

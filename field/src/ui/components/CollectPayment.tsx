@@ -135,8 +135,8 @@ export function CollectPayment({ visitId, startOpen = false, blockedReason = nul
       setReviewState('idle')
     } catch (err) {
       setReviewState('idle')
-      // The server's refusal — job not completed, already asked on this job, this customer
-      // asked within 90 days, no email on file — is readable text; surfaced as-is.
+      // The server's refusal — job not completed, already asked on this job, no email on
+      // file — is readable text; surfaced as-is.
       setError(err instanceof Error ? err.message : String(err))
     }
   }

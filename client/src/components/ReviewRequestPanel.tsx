@@ -30,8 +30,8 @@
  * job, so this button resolves the account's own most recently completed job itself — server-side,
  * authoritatively, via `POST /accounts/:id/email-review-request` — and greys only when there is
  * truly no completed job to resolve (CLAUDE.md click-through rule 5: greyed with a reason, never
- * hidden). Every other guard (no duplicate ask on that job, no repeat ask on this customer within
- * 90 days, email on file) comes back from the server as a plain-English 400, surfaced as-is — a
+ * hidden). Every other guard (no duplicate ask on that job, email on file) comes back from the
+ * server as a plain-English 400, surfaced as-is — a
  * refusal Kyle can read out loud while still on the phone.
  *
  * ── "LAST SENT", THE SAME WAY SendAssessmentReport AND THE FINANCING BUTTON SHOW IT ─────────────
@@ -120,8 +120,8 @@ export function ReviewRequestPanel({
       setSendMessage(`Review request emailed to ${r.to}.`);
       void queryClient.invalidateQueries({ queryKey: ["email-deliveries", "job", jobId, "review_request"] });
     },
-    // The server's refusal (no completed job, already asked on that job, this customer asked
-    // within 90 days, no email on file) is readable text — surfaced as-is, never swallowed.
+    // The server's refusal (no completed job, already asked on that job, no email on file) is
+    // readable text — surfaced as-is, never swallowed.
     onError: (err) => setSendMessage((err as Error).message),
   });
 

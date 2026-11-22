@@ -13,9 +13,7 @@
  *
  * Guards, in order:
  *   - the visit is a completed job with a customer email on file;
- *   - this job hasn't asked already (reviewRequestedAt);
- *   - this CUSTOMER hasn't been asked in the last 90 days on any job — a
- *     repeat customer gets one ask per season, not one per service call;
+ *   - this job hasn't asked already (reviewRequestedAt) — one ask per job;
  *   - the automation gate (customerSendsEnabled "reviewRequests") — a
  *     suppressed send logs itself, per the never-silent rule.
  *
@@ -28,9 +26,13 @@
  * UNCHANGED; this does not reach in and flip it, it just lets a human-pressed
  * call skip the `customerSendsEnabled` check the way the invoice-reminder
  * button already skips ITS gate on a manual press. Every other guard above —
- * job must be completed, no duplicate ask on this job, no repeat ask on this
- * customer within 90 days, customer must have an email on file — still
- * applies on the manual path exactly as it does on the automatic one.
+ * job must be completed, no duplicate ask on this job, customer must have an
+ * email on file — still applies on the manual path exactly as it does on the
+ * automatic one.
+ *
+ * There is NO repeat-customer window. Kyle, 2026-11-21: "I don't like that 90
+ * day rule please get rid of it" — a customer asked on an earlier job can be
+ * asked again on a new completed job (plan 2026-11-21-remove-review-90-day-rule).
  *
  * The automatic call sites remain fire-and-forget (`.catch(...)`, no await on
  * the result) — a review email must never fail a completion that is already
@@ -55,7 +57,6 @@ import { resolveRecipients } from "./emailCc";
 */
 export { GOOGLE_REVIEW_URL } from "../../shared/reviewRequestUrl";
 import { GOOGLE_REVIEW_URL } from "../../shared/reviewRequestUrl";
-const REPEAT_ASK_DAYS = 90;
 
 export async function sendReviewRequestEmail(
   prisma: PrismaClient,
@@ -84,17 +85,6 @@ export async function sendReviewRequestEmail(
   if (!visit.customer.email && !opts.toOverride) {
     logSystemEvent("info", "jobs", `Review request skipped — no email on ${visit.customer.name}'s account`, { visitId });
     return { ok: false, reason: `No email on file for ${visit.customer.name} — add one to the account first.` };
-  }
-  const recentAsk = await prisma.visit.findFirst({
-    where: {
-      customerId: visit.customer.id,
-      reviewRequestedAt: { gte: new Date(Date.now() - REPEAT_ASK_DAYS * 24 * 3600 * 1000) },
-    },
-    select: { id: true },
-  });
-  if (recentAsk) {
-    logSystemEvent("info", "jobs", `Review request skipped — ${visit.customer.name} was asked within ${REPEAT_ASK_DAYS} days`, { visitId });
-    return { ok: false, reason: `${visit.customer.name} was already asked for a review within the last ${REPEAT_ASK_DAYS} days.` };
   }
   if (!opts.manual && !customerSendsEnabled("reviewRequests")) {
     logCustomerSendSkipped("reviewRequests", `visit ${visitId} (${visit.customer.name})`);
