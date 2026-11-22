@@ -121,36 +121,58 @@ export type SendRecordMessageResult =
   | { ok: true; to: string; cc: string[]; suppressed: boolean; deliveryId: string | null }
   | { ok: false; status: 400 | 404 | 502; error: string; suppressed: boolean; deliveryId: string | null };
 
+export type RecordRecipients =
+  | { ok: true; to: string; cc: string[]; customerId: string | null }
+  | { ok: false; status: 400 | 404; error: string };
+
 /**
- * The whole "email one person from a record" send (lifted out of POST /communications/email, work order
- * agent-team U4): look the record up, take its primary address when none was chosen, pass THE one
- * recipient rule, send. The route and the Messages hub's send function (services/hubSend.ts) both call
- * this, so an approved draft goes out exactly the way "Email the customer" does: same pipe, one
- * EmailDelivery row, same CC rule.
+ * WHO a free-form email from a record goes to: look the record up, take its primary address when none was
+ * chosen, pass THE one recipient rule (emailCc.resolveRecipients). The send (sendRecordMessage) and the AI
+ * admin's draft of the same email (routes/communications.ts) both call this, so a draft is refused for exactly
+ * the reasons a send would be, and carries exactly the address the send would use. customerId is the record's
+ * account, when it has one (a lead that has not become an account has none).
  */
-export async function sendRecordMessage(input: SendRecordMessageInput): Promise<SendRecordMessageResult> {
-  const refuse = (status: 400 | 404, error: string): SendRecordMessageResult => ({ ok: false, status, error, suppressed: false, deliveryId: null });
+export async function resolveRecordRecipients(
+  target: RecordEmailTarget, toOverride: string | null | undefined, cc: string[] | undefined,
+): Promise<RecordRecipients> {
+  const refuse = (status: 400 | 404, error: string): RecordRecipients => ({ ok: false, status, error });
   let onFile: string | null;
-  if (input.target.kind === "lead") {
-    const lead = await prisma.lead.findUnique({ where: { id: input.target.leadId }, select: { email: true } });
+  let customerId: string | null = null;
+  if (target.kind === "lead") {
+    const lead = await prisma.lead.findUnique({ where: { id: target.leadId }, select: { email: true, customerId: true } });
     if (!lead) return refuse(404, "Lead not found.");
     onFile = lead.email;
-  } else if (input.target.kind === "account") {
-    const customer = await prisma.customer.findUnique({ where: { id: input.target.customerId }, select: { email: true } });
+    customerId = lead.customerId;
+  } else if (target.kind === "account") {
+    const customer = await prisma.customer.findUnique({ where: { id: target.customerId }, select: { email: true } });
     if (!customer) return refuse(404, "Account not found.");
     onFile = customer.email;
+    customerId = target.customerId;
   } else {
-    const visit = await prisma.visit.findUnique({ where: { id: input.target.visitId }, select: { customer: { select: { email: true } } } });
+    const visit = await prisma.visit.findUnique({ where: { id: target.visitId }, select: { customerId: true, customer: { select: { email: true } } } });
     if (!visit) return refuse(404, "Job not found.");
     onFile = visit.customer.email;
+    customerId = visit.customerId;
   }
 
   // THE ONE RECIPIENT RULE (emailCc.resolveRecipients) - the same check every customer send passes.
   const recipients = resolveRecipients(
-    { toOverride: input.to?.trim() || null, onFile, cc: input.cc },
+    { toOverride: toOverride?.trim() || null, onFile, cc },
     "No email address on file for this record — add one, or type an address to send to.",
   );
   if (!recipients.ok) return refuse(400, recipients.reason);
+  return { ok: true, to: recipients.to, cc: recipients.cc, customerId };
+}
+
+/**
+ * The whole "email one person from a record" send (lifted out of POST /communications/email, work order
+ * agent-team U4): resolve WHO (resolveRecordRecipients), send. The route and the Messages hub's send function
+ * (services/hubSend.ts) both call this, so an approved draft goes out exactly the way "Email the customer"
+ * does: same pipe, one EmailDelivery row, same CC rule.
+ */
+export async function sendRecordMessage(input: SendRecordMessageInput): Promise<SendRecordMessageResult> {
+  const recipients = await resolveRecordRecipients(input.target, input.to, input.cc);
+  if (!recipients.ok) return { ok: false, status: recipients.status, error: recipients.error, suppressed: false, deliveryId: null };
 
   const result = await sendRecordEmail({
     to: recipients.to, cc: recipients.cc, subject: input.subject, body: input.body,

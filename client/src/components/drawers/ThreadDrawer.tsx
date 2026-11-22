@@ -286,6 +286,9 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
         .catch(() => { restoring.current.delete(held.id); });
     }
   }, [data?.staged]);
+  // The ONE id of the message being composed: made on the first press of Post, reused by every retry of it (a failed answer, a
+  // second press), and dropped when it goes or the words or pictures change. The server turns a repeat into the message it made.
+  const composeId = useRef<string | null>(null);
   const post = useMutation({
     mutationFn: async () => {
       // A job's pictures are filed on the job first (its own VisitPhoto), then named by the message.
@@ -300,13 +303,17 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
         }
       }
       const attachmentIds = staged.flatMap((p) => (p.attachmentId ? [p.attachmentId] : []));
+      const clientMessageId = composeId.current ?? crypto.randomUUID();
+      composeId.current = clientMessageId;
       return api.postHubMessage(id, {
         body: text.trim(),
+        clientMessageId,
         ...(photoIds.length > 0 ? { photoIds } : {}),
         ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
       });
     },
     onSuccess: () => {
+      composeId.current = null;
       for (const p of staged) URL.revokeObjectURL(p.preview);
       setStaged([]); setText(""); setActionError(null); refreshHub(queryClient);
     },
@@ -319,6 +326,7 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
     setPicking(true);
     setActionError(null);
     try {
+      composeId.current = null; // a different picture set is a different message
       if (data.thread.kind === "job") {
         // Kept here and filed on the job when the message is posted; a data URL previews itself.
         const dataUrl = await downscale(file);
@@ -340,6 +348,7 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
   async function removePhoto(photo: StagedPhoto) {
     try {
       if (photo.attachmentId) await api.removeHubAttachment(photo.attachmentId);
+      composeId.current = null;
       URL.revokeObjectURL(photo.preview);
       setStaged((list) => list.filter((p) => p.key !== photo.key));
     } catch (e) {
@@ -453,7 +462,7 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
           >
             <label className="block text-xs font-medium text-rce-soft">
               Message
-              <textarea className="field mt-1" rows={3} value={text} onChange={(e) => setText(e.target.value)} disabled={closed || Boolean(data?.postBlock)} />
+              <textarea className="field mt-1" rows={3} value={text} onChange={(e) => { composeId.current = null; setText(e.target.value); }} disabled={closed || Boolean(data?.postBlock)} />
             </label>
             {staged.length > 0 && (
               <ul className="flex flex-wrap gap-2" aria-label="Photos to send">

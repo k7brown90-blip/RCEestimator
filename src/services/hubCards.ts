@@ -163,6 +163,8 @@ export interface ApprovalFilter {
   status?: "pending" | "all";
   threadId?: string;
   messageId?: string;
+  /** Leave out cards of these kinds (the field app's list leaves out the CRM-only ones). A plain draft has no kind stored and is never left out. */
+  excludeKinds?: readonly string[];
 }
 
 const INCLUDE = { thread: true, emailDelivery: true } as const;
@@ -182,6 +184,10 @@ export async function listApprovalCards(
   }];
   if (filter.threadId) base.push({ threadId: filter.threadId });
   if (filter.messageId) base.push({ id: filter.messageId });
+  if (filter.excludeKinds && filter.excludeKinds.length > 0) {
+    // NOT IN drops rows whose actionKind is null, and a plain draft has none: keep those explicitly.
+    base.push({ OR: [{ actionKind: null }, { actionKind: { notIn: [...filter.excludeKinds] } }] });
+  }
   const where = (status: Prisma.HubMessageWhereInput): Prisma.HubMessageWhereInput => ({ AND: [...base, status] });
 
   // Oldest first for the queue (first drafted, first reviewed); a conversation's cards read as a history.

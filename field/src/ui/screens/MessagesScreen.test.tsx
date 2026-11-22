@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   EDIT_NEEDS_WORDS, EditReason, MessageBubble, MessageThreadScreen, MessagesScreen, PHOTO_BUTTON, PHOTO_CLOSED_REASON, ThreadRows, UNSENT_TEXT,
-  UnsentRow, heldPhotosToRestore, jobMessagesLabel, messagesButtonLabel, photoClosedReason, sentAlready, takeBackHeldPhotos,
+  UnsentRow, heldPhotosToRestore, jobMessagesLabel, messagesButtonLabel, needsApprovalLabel, photoClosedReason, takeBackHeldPhotos,
 } from './MessagesScreen'
 import type { TechMessage, TechThreadRow } from '../../../../shared/hub/views'
 
@@ -33,6 +33,10 @@ describe('the buttons', () => {
   })
   it('the photo button says what it does', () => {
     expect(PHOTO_BUTTON).toBe('📷 Add photo')
+  })
+  it("an approver's chip at the top of Messages counts what waits", () => {
+    expect(needsApprovalLabel(3)).toBe('Needs approval (3)')
+    expect(needsApprovalLabel(0)).toBe('Needs approval (0)')
   })
 })
 
@@ -89,7 +93,7 @@ describe('a message', () => {
 
 describe('no signal', () => {
   it("a message that did not go stays on screen as 'Not sent, no signal. Tap to retry.'", () => {
-    const html = renderToStaticMarkup(<UnsentRow unsent={{ localId: 'u1', body: 'Need the 200 amp base', photos: [], startedAt: '2026-11-22T15:00:00.000Z' }} onRetry={() => undefined} onDiscard={() => undefined} />)
+    const html = renderToStaticMarkup(<UnsentRow unsent={{ localId: 'u1', body: 'Need the 200 amp base', photos: [], clientMessageId: 'c-0001-aaaa' }} onRetry={() => undefined} onDiscard={() => undefined} />)
     expect(html).toContain('Need the 200 amp base')
     expect(html).toContain(UNSENT_TEXT)
     expect(UNSENT_TEXT).toBe('Not sent, no signal. Tap to retry.')
@@ -98,37 +102,14 @@ describe('no signal', () => {
 
   it('says how many pictures are waiting with it', () => {
     const photo = { key: 'p', preview: 'blob:x', blob: new Blob(['x']) }
-    const html = renderToStaticMarkup(<UnsentRow unsent={{ localId: 'u1', body: '', photos: [photo, photo], startedAt: '2026-11-22T15:00:00.000Z' }} />)
+    const html = renderToStaticMarkup(<UnsentRow unsent={{ localId: 'u1', body: '', photos: [photo, photo], clientMessageId: 'c-0001-aaaa' }} />)
     expect(html).toContain('2 photos')
   })
 })
 
-describe('a retry never posts the same message twice', () => {
-  const started = '2026-11-22T15:00:00.000Z'
-  const when = '2026-11-22T15:00:05.000Z'
-  const unsentOf = (over: Partial<Parameters<typeof sentAlready>[1]> = {}) => ({ body: 'On site', photos: [], startedAt: started, ...over })
-
-  it('knows the first try got through when a message of mine with the same words was made since it began', () => {
-    expect(sentAlready([message({ body: 'On site', createdAt: when })], unsentOf())).toBe(true)
-  })
-
-  it("does not mistake an older message, someone else's, a deleted one or different words for it", () => {
-    expect(sentAlready([message({ body: 'On site', createdAt: '2026-11-22T14:59:00.000Z' })], unsentOf())).toBe(false)
-    expect(sentAlready([message({ body: 'On site', createdAt: when, mine: false })], unsentOf())).toBe(false)
-    expect(sentAlready([message({ body: null, deleted: true, createdAt: when })], unsentOf())).toBe(false)
-    expect(sentAlready([message({ body: 'Something else', createdAt: when })], unsentOf())).toBe(false)
-    expect(sentAlready([], unsentOf())).toBe(false)
-  })
-
-  it("matches a job's pictures by the id they were filed under, and a Team picture by its attachment", () => {
-    const job = { key: 'photo-1', preview: 'blob:x', blob: new Blob(['x']) }
-    const team = { key: 'att-1', preview: 'blob:y', blob: new Blob(['y']), attachmentId: 'att-1' }
-    expect(sentAlready([message({ body: '', photoIds: ['photo-1'], createdAt: when })], unsentOf({ body: '', photos: [job] }))).toBe(true)
-    expect(sentAlready([message({ body: '', photoIds: ['photo-9'], createdAt: when })], unsentOf({ body: '', photos: [job] }))).toBe(false)
-    expect(sentAlready([message({ body: '', attachments: [{ id: 'att-1', mimeType: 'image/jpeg' }], createdAt: when })], unsentOf({ body: '', photos: [team] }))).toBe(true)
-    expect(sentAlready([message({ body: '', attachments: [], createdAt: when })], unsentOf({ body: '', photos: [team] }))).toBe(false)
-  })
-})
+// A retry never posts the same message twice: the office answers a repeat of a clientMessageId with the message it already
+// made (tests/hubClientMessageId.test.ts), so the old "did the first try get through?" word-matching guess is gone.
+// What this screen owes is to send the SAME id on every try (crmSync.hubMessages.test.ts pins the request).
 
 describe('a photo that was added and never sent is never stranded', () => {
   it('offers back the held photos the screen is not already showing', () => {

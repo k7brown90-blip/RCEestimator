@@ -38,6 +38,8 @@ import {
 import { closeOutMaterialWarning, consumeForJob, jobMaterials, returnForJob } from "../services/jobMaterials";
 import { createMaterial, listMaterials } from "../services/materials";
 import { asyncHandler, readParam } from "../lib/routeHelpers";
+import { isKyle } from "../middleware/kylePowers";
+import { TECH_TOKEN_ROLE_REASON } from "../../shared/crmPowers";
 import { generateInspectionRenewalLeads } from "../services/inspectionRetention";
 import {
   generateCureCertificate,
@@ -4069,13 +4071,31 @@ healthRecordTechRouter.use(zodErrorHandler);
 
 export const healthRecordAdminRouter = express.Router();
 
-/** List technicians (tokens included — owner-only surface). */
-healthRecordAdminRouter.get("/technicians", asyncHandler(async (_req, res) => {
+/**
+ * A technician's access token is the phone's whole sign-in, and since work order agent-team U10 it can also decide
+ * what the agents draft (when that person's CRM login holds approve_drafts). So only Kyle's own session (the PIN, or his
+ * principal login) is ever shown one: every other CRM session, the AI admin included, gets the row without it.
+ */
+function withoutTokenUnlessKyle<T extends { accessToken?: string }>(req: express.Request, row: T): Omit<T, "accessToken"> | T {
+  if (isKyle(req)) return row;
+  const { accessToken: _hidden, ...rest } = row;
+  return rest;
+}
+
+/** The refusal for a change only Kyle's own session may make. */
+function refuseUnlessKyle(req: express.Request, res: express.Response): boolean {
+  if (isKyle(req)) return false;
+  res.status(403).json({ error: TECH_TOKEN_ROLE_REASON });
+  return true;
+}
+
+/** List technicians. The access token is shown to Kyle's session only (see withoutTokenUnlessKyle). */
+healthRecordAdminRouter.get("/technicians", asyncHandler(async (req, res) => {
   const technicians = await prisma.technician.findMany({
     orderBy: { createdAt: "asc" },
     include: { _count: { select: { assignments: true, healthInspections: true } } },
   });
-  res.json(technicians);
+  res.json(technicians.map((t) => withoutTokenUnlessKyle(req, t)));
 }));
 
 healthRecordAdminRouter.post("/technicians", asyncHandler(async (req, res) => {
@@ -4086,11 +4106,13 @@ healthRecordAdminRouter.post("/technicians", asyncHandler(async (req, res) => {
     employeeNumber: z.string().min(1).optional(),
     role: z.enum(["technician", "supervisor", "admin"]).optional(),
   }).parse(req.body);
+  // Choosing a role other than the default is a role change: Kyle's session only (the same sentence as the PATCH).
+  if (body.role !== undefined && body.role !== "technician" && refuseUnlessKyle(req, res)) return;
 
   const technician = await prisma.technician.create({
     data: { ...body, accessToken: crypto.randomBytes(24).toString("base64url") },
   });
-  res.status(201).json(technician);
+  res.status(201).json(withoutTokenUnlessKyle(req, technician));
 }));
 
 healthRecordAdminRouter.patch("/technicians/:id", asyncHandler(async (req, res) => {
@@ -4108,6 +4130,10 @@ healthRecordAdminRouter.patch("/technicians/:id", asyncHandler(async (req, res) 
     commissionPercent: z.number().min(0).max(100).nullable().optional(),
   }).parse(req.body);
 
+  // The role and the token are what make a person who they are in the field: Kyle's session only. Every other field
+  // keeps the gating it had (pay is guarded where it is shown; nothing else changed).
+  if ((body.role !== undefined || body.rotateToken === true) && refuseUnlessKyle(req, res)) return;
+
   const { rotateToken, ...fields } = body;
   const technician = await prisma.technician.update({
     where: { id: readParam(req, "id") },
@@ -4122,7 +4148,7 @@ healthRecordAdminRouter.patch("/technicians/:id", asyncHandler(async (req, res) 
   // A rotated token cuts the old phone off: it must stop getting this person's notifications too (U7). The tech
   // turns notifications back on from the phone that has the new token.
   if (rotateToken) await removeAllSubscriptionsFor(`tech:${technician.id}`);
-  res.json(technician);
+  res.json(withoutTokenUnlessKyle(req, technician));
 }));
 
 /**

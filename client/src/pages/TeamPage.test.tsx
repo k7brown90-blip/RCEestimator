@@ -132,3 +132,48 @@ describe("the person's own page: a CRM login card with the same button and dialo
     expect(within(card).getByTestId("crm-login-card-status").textContent).toMatch(/Only Kyle/);
   });
 });
+
+/*
+ * A technician's token and role are Kyle's alone (work order agent-team, U10): the server sends no token to anyone else, so
+ * Show token / Show QR / Rotate token and the Role choice are GREYED with the reason on the screen, never hidden.
+ */
+describe("Team roster: token and role are Kyle's alone", () => {
+  const REASON = "Only Kyle's PIN sign-in can change this.";
+  const tokenless = (t: Technician): Technician => ({ ...t, accessToken: undefined });
+
+  for (const [label, session] of [["an owner-role login without Kyle's say-so", OWNER_NO_GRANT], ["the AI admin", AI_ADMIN_SESSION]] as const) {
+    it(`for ${label}: the three token buttons and the Role choice are greyed with the sentence, and no token is ever shown`, async () => {
+      vi.spyOn(api, "session").mockResolvedValue(session);
+      vi.spyOn(api, "technicians").mockResolvedValue([tokenless(MICHAEL), tokenless(SAM)]);
+      vi.spyOn(api, "crmLogins").mockResolvedValue({ logins: [] });
+      renderWithProviders(<TeamPage />);
+      await screen.findByText("Michael Schramm");
+      await waitFor(() => expect(screen.getByTestId("token-role-reason").textContent).toContain(REASON));
+      const row = within(rowOf("Michael Schramm"));
+      for (const name of ["Show token", "Show QR", "Rotate token"]) {
+        const button = row.getByRole("button", { name }) as HTMLButtonElement;
+        expect(button.disabled, name).toBe(true);
+        expect(button.title, name).toBe(REASON);
+      }
+      const role = screen.getByLabelText("Role") as HTMLSelectElement;
+      expect(role.disabled).toBe(true);
+      expect(role.title).toBe(REASON);
+      expect(role.value).toBe("technician");
+      expect(document.body.textContent).not.toContain("token-t1");
+    });
+  }
+
+  it("for Kyle every one of them is live and the token still shows", async () => {
+    vi.spyOn(api, "session").mockResolvedValue(PIN_SESSION);
+    vi.spyOn(api, "technicians").mockResolvedValue([MICHAEL]);
+    vi.spyOn(api, "crmLogins").mockResolvedValue({ logins: [] });
+    renderWithProviders(<TeamPage />);
+    await screen.findByText("Michael Schramm");
+    const row = within(rowOf("Michael Schramm"));
+    for (const name of ["Show token", "Show QR", "Rotate token"]) expect((row.getByRole("button", { name }) as HTMLButtonElement).disabled, name).toBe(false);
+    expect((screen.getByLabelText("Role") as HTMLSelectElement).disabled).toBe(false);
+    expect(screen.queryByTestId("token-role-reason")).toBeNull();
+    fireEvent.click(row.getByRole("button", { name: "Show token" }));
+    expect(screen.getByText("token-t1")).toBeInTheDocument();
+  });
+});

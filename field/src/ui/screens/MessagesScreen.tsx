@@ -11,7 +11,12 @@
  *                   "Edit" and "Delete" (Delete leaves "Deleted" where it was; the office keeps the words).
  *   No signal       the message stays on screen as "Not sent, no signal. Tap to retry."
  *
+ * Needs approval  only for a person whose CRM login holds the approve_drafts power (Kyle's): "Needs approval (n)" at the top
+ *                  of Messages opens the drafts the AI team left, each with "Approve and send", "Edit" ("Send my version")
+ *                  and "Reject" ("Why?" then "Reject draft"). Anyone else never sees it.
+ *
  * Click path from home: Messages -> the thread (2 taps). From a job: Job site -> Job messages (1 tap).
+ * An approver: Messages -> Needs approval (n) -> the card (2 taps, then the button).
  * You see the crew's messages only; a text or email to the customer never shows here. Names only: your own
  * name, the office's, "<name> (AI)".
  */
@@ -19,7 +24,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   compressReceiptImage,
   deleteHubMessage,
+  approveHubMessage,
+  editApproveHubMessage,
   editHubMessage,
+  fetchHubApprovals,
   fetchHubAttachment,
   fetchHubThread,
   fetchHubThreads,
@@ -27,6 +35,7 @@ import {
   isNetworkFailure,
   markHubThreadRead,
   openJobThread,
+  rejectHubMessage,
   removeHubAttachment,
   sendHubMessage,
   uploadHubAttachment,
@@ -35,7 +44,8 @@ import {
 import { liveLabel, useHubLive } from '../../lib/hubLive'
 import { NotificationsButton } from '../components/NotificationsButton'
 import { PhotoPicker } from '../components/PurchaseOrderPanel'
-import type { AttachmentRef, TechMessage, TechThreadDetail, TechThreadRow } from '../../../../shared/hub/views'
+import { ApprovalCard } from '../components/ApprovalCard'
+import type { ApprovalCardView, AttachmentRef, TechMessage, TechThreadDetail, TechThreadRow } from '../../../../shared/hub/views'
 
 // ── words the screens share (and the tests pin) ────────────────────────────────────────────────
 
@@ -43,6 +53,8 @@ import type { AttachmentRef, TechMessage, TechThreadDetail, TechThreadRow } from
 export const messagesButtonLabel = (unread: number): string => `💬 Messages${unread > 0 ? ` (${unread} new)` : ''}`
 /** The Job site's button. */
 export const jobMessagesLabel = (unread: number): string => `💬 Job messages${unread > 0 ? ` (${unread})` : ''}`
+/** The approver's chip at the top of Messages. */
+export const needsApprovalLabel = (n: number): string => `Needs approval (${n})`
 export const UNSENT_TEXT = 'Not sent, no signal. Tap to retry.'
 export const PHOTO_BUTTON = '📷 Add photo'
 /** Why "Save changes" is greyed on an empty box (a photo-only message edited down to nothing). */
@@ -91,6 +103,9 @@ export function MessagesScreen({ onBack, openThreadId }: { onBack: () => void; o
   const live = useHubLive()
   const [threads, setThreads] = useState<TechThreadRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // How many drafts wait for THIS person to decide; null for everyone who may not (they never see the chip).
+  const [approvals, setApprovals] = useState<number | null>(null)
+  const [approving, setApproving] = useState(false)
   const [selected, setSelected] = useState<{ threadId?: string; visitId?: string; title: string } | null>(
     openThreadId ? { threadId: openThreadId, title: 'Messages' } : null,
   )
@@ -100,8 +115,14 @@ export function MessagesScreen({ onBack, openThreadId }: { onBack: () => void; o
     fetchHubThreads()
       .then((r) => { if (alive) { setThreads(r.threads); setError(null) } })
       .catch((err) => { if (alive) setError(isNetworkFailure(err) ? 'No signal — showing nothing new until you are back.' : err instanceof Error ? err.message : String(err)) })
+    // The chip is the server's say-so (canApprove), never the technician's role; a failure here only means no chip.
+    fetchHubApprovals()
+      .then((r) => { if (alive) setApprovals(r.canApprove ? r.cards.length : null) })
+      .catch(() => { if (alive) setApprovals(null) })
     return () => { alive = false }
-  }, [live.tick, selected])
+  }, [live.tick, selected, approving])
+
+  if (approving) return <NeedsApprovalScreen onBack={() => setApproving(false)} />
 
   if (selected) {
     return (
@@ -122,6 +143,17 @@ export function MessagesScreen({ onBack, openThreadId }: { onBack: () => void; o
         <p className="text-xs text-slate-400" data-testid="live-status">{liveLabel(live.status)}</p>
       </header>
       <NotificationsButton />
+      {approvals !== null && (
+        <button
+          type="button"
+          onClick={() => setApproving(true)}
+          data-testid="needs-approval-chip"
+          className="w-full rounded-lg border border-amber-600 bg-amber-950/40 p-3 text-left text-sm font-semibold text-amber-100"
+        >
+          {needsApprovalLabel(approvals)}
+          <span className="mt-0.5 block text-xs font-normal text-amber-200">Drafts the AI team left for you to send, edit or reject.</span>
+        </button>
+      )}
       {error && <p className="rounded-lg bg-slate-800 p-2 text-xs text-amber-200">{error}</p>}
       {threads === null && !error && <p className="text-sm text-slate-400">Loading…</p>}
       {threads && (
@@ -130,6 +162,70 @@ export function MessagesScreen({ onBack, openThreadId }: { onBack: () => void; o
           onOpen={(t) => setSelected({ threadId: t.threadId ?? undefined, visitId: t.threadId ? undefined : t.visitId ?? undefined, title: t.kind === 'team' ? 'Team' : t.title })}
         />
       )}
+    </div>
+  )
+}
+
+// ── needs approval (U10) ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * The drafts waiting for this person (an approver: their CRM login holds approve_drafts). The cards are the CRM's, built by
+ * the CRM's card builder; a decision here is the same decision as at the desk (the same service, the same audit). A card
+ * decided in this visit stays on screen with what happened (Sent by Kyle / Rejected: ...), and a failed one keeps its
+ * "Try sending again", so nothing vanishes before it is read.
+ */
+export function NeedsApprovalScreen({ onBack }: { onBack: () => void }) {
+  const live = useHubLive()
+  const [cards, setCards] = useState<ApprovalCardView[] | null>(null)
+  const [canApprove, setCanApprove] = useState(true)
+  const [approveReason, setApproveReason] = useState<string | null>(null)
+  const [after, setAfter] = useState<Record<string, ApprovalCardView>>({})
+  const [error, setError] = useState<string | null>(null)
+
+  const reload = useCallback(async () => {
+    try {
+      const r = await fetchHubApprovals()
+      setCards(r.cards)
+      setCanApprove(r.canApprove)
+      setApproveReason(r.approveReason)
+      setError(null)
+    } catch (err) {
+      setError(isNetworkFailure(err) ? 'No signal — showing what was last loaded.' : err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+  useEffect(() => { void reload() }, [reload, live.tick])
+
+  const decided = async (fn: () => Promise<{ card: ApprovalCardView }>) => {
+    const r = await fn()
+    setAfter((a) => ({ ...a, [r.card.id]: r.card }))
+    await reload()
+  }
+  const shown = [...(cards ?? []).map((c) => after[c.id] ?? c), ...Object.values(after).filter((c) => !(cards ?? []).some((x) => x.id === c.id))]
+
+  return (
+    <div className="mx-auto max-w-xl space-y-4 p-6 pb-16">
+      <button type="button" onClick={onBack} className="text-sm text-sky-300">← Messages</button>
+      <header className="space-y-1">
+        <h1 className="text-xl font-semibold text-white">Needs approval</h1>
+        <p className="text-xs text-slate-400" data-testid="live-status">{liveLabel(live.status)}</p>
+      </header>
+      {error && <p className="rounded-lg bg-slate-800 p-2 text-xs text-amber-200">{error}</p>}
+      {cards === null && !error && <p className="text-sm text-slate-400">Loading…</p>}
+      {cards !== null && shown.length === 0 && <p className="text-sm text-slate-400">Nothing is waiting for you.</p>}
+      <ul className="space-y-3">
+        {shown.map((card) => (
+          <li key={card.id}>
+            <ApprovalCard
+              card={card}
+              canApprove={canApprove}
+              approveReason={approveReason}
+              onApprove={(c) => decided(() => approveHubMessage(c.id))}
+              onEditSend={(c, edit) => decided(() => editApproveHubMessage(c.id, edit))}
+              onReject={(c, reason) => decided(() => rejectHubMessage(c.id, reason))}
+            />
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -149,8 +245,11 @@ export interface Unsent {
   localId: string
   body: string
   photos: Staged[]
-  /** When the first try began (this phone's clock): a message of mine made after it means the first try DID reach the office. */
-  startedAt: string
+  /**
+   * The ONE id of this composed message, sent again on every retry. The office answers a repeat with the message it
+   * already made (200), so a send whose answer was lost can be retried without ever posting twice.
+   */
+  clientMessageId: string
   error?: string
 }
 
@@ -163,18 +262,6 @@ export function EditReason({ draft }: { draft: string }) {
 /** Why "📷 Add photo" is greyed on this thread, or null. Only Team and Training photos are uploaded ahead of the message. */
 export function photoClosedReason(status: string | undefined, kind: string | undefined): string | null {
   return status === 'closed' && kind !== 'job' ? PHOTO_CLOSED_REASON : null
-}
-
-/**
- * Did the first try of an unsent message reach the office after all (the answer was lost, the message made)? A message of
- * mine, made since the first try began, with these words and these pictures. Checked before a retry sends it again, so a
- * retry can never post it twice.
- */
-export function sentAlready(messages: TechMessage[], item: Pick<Unsent, 'body' | 'photos' | 'startedAt'>): boolean {
-  return messages.some((m) =>
-    m.mine && !m.deleted && m.createdAt >= item.startedAt && (m.body ?? '') === item.body &&
-    item.photos.every((p) => (p.attachmentId ? m.attachments.some((a) => a.id === p.attachmentId) : m.photoIds.includes(p.key))),
-  )
 }
 
 /** The photos the server holds for this person that this screen is not already showing (a reload, "← Messages", a discarded message). */
@@ -323,6 +410,9 @@ export function MessageThreadScreen({
   const [unsent, setUnsent] = useState<Unsent[]>([])
   const [busy, setBusy] = useState(false)
   const markedAt = useRef<string | null>(null)
+  // The id of the message being composed: made when it is first sent, reused by every retry of it (a second try with no
+  // signal, a failed answer), and dropped the moment it goes or the words or pictures change.
+  const composeId = useRef<string | null>(null)
   // The held photos already on this screen (in the box or in an unsent message), and the ones being fetched back.
   const heldIds = useRef<Set<string>>(new Set())
   const restoring = useRef<Set<string>>(new Set())
@@ -375,6 +465,7 @@ export function MessageThreadScreen({
     setError(null)
     try {
       const { blob } = await compressReceiptImage(file)
+      composeId.current = null // a different picture set is a different message
       if (kind === 'job') {
         setStaged((l) => [...l, { key: crypto.randomUUID(), blob, preview: URL.createObjectURL(blob) }])
       } else {
@@ -392,6 +483,7 @@ export function MessageThreadScreen({
     try {
       if (photo.attachmentId) await removeHubAttachment(photo.attachmentId)
       URL.revokeObjectURL(photo.preview)
+      composeId.current = null
       setStaged((l) => l.filter((p) => p.key !== photo.key))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -399,7 +491,7 @@ export function MessageThreadScreen({
   }
 
   /** Send now. A job's pictures are filed on the job first (its own photos), then named by the message. */
-  async function deliver(body: string, photos: Staged[]): Promise<void> {
+  async function deliver(body: string, photos: Staged[], clientMessageId: string): Promise<void> {
     if (!id) throw new Error('This conversation is not open yet.')
     const photoIds: string[] = []
     if (kind === 'job') {
@@ -408,26 +500,29 @@ export function MessageThreadScreen({
       for (const p of photos) photoIds.push(await uploadJobPhoto(jobVisitId, p.blob, undefined, p.key))
     }
     const attachmentIds = photos.flatMap((p) => (p.attachmentId ? [p.attachmentId] : []))
-    await sendHubMessage(id, { body, ...(photoIds.length ? { photoIds } : {}), ...(attachmentIds.length ? { attachmentIds } : {}) })
+    await sendHubMessage(id, { body, clientMessageId, ...(photoIds.length ? { photoIds } : {}), ...(attachmentIds.length ? { attachmentIds } : {}) })
   }
 
   async function send() {
     const body = text.trim()
     if ((!body && staged.length === 0) || busy) return
     const photos = staged
-    const startedAt = new Date().toISOString()
+    const clientMessageId = composeId.current ?? crypto.randomUUID()
+    composeId.current = clientMessageId
     setBusy(true)
     setError(null)
     try {
-      await deliver(body, photos)
+      await deliver(body, photos, clientMessageId)
+      composeId.current = null
       for (const p of photos) URL.revokeObjectURL(p.preview)
       setText('')
       setStaged([])
       await load()
     } catch (err) {
       if (isNetworkFailure(err)) {
-        // Kept on screen, words and pictures, until it goes.
-        setUnsent((l) => [...l, { localId: crypto.randomUUID(), body, photos, startedAt }])
+        // Kept on screen, words and pictures, until it goes. Its id travels with it: the retry is the same message.
+        composeId.current = null
+        setUnsent((l) => [...l, { localId: crypto.randomUUID(), body, photos, clientMessageId }])
         setText('')
         setStaged([])
       } else {
@@ -436,12 +531,6 @@ export function MessageThreadScreen({
     } finally {
       setBusy(false)
     }
-  }
-
-  /** Did the first try reach the office after all (the answer was lost)? A message of mine, made since, with these words and these pictures. */
-  async function alreadySent(item: Unsent): Promise<boolean> {
-    if (!id) return false
-    return sentAlready((await fetchHubThread(id)).messages, item)
   }
 
   /** Discard: the words go from the screen and any picture held for them is taken back. With no signal the picture is shown again, with its Remove, the next time this thread opens. */
@@ -454,7 +543,8 @@ export function MessageThreadScreen({
   async function retry(item: Unsent) {
     setBusy(true)
     try {
-      if (!(await alreadySent(item))) await deliver(item.body, item.photos)
+      // The same id as the first try: if the office already made this message it says so (200) and makes no second one.
+      await deliver(item.body, item.photos, item.clientMessageId)
       for (const p of item.photos) URL.revokeObjectURL(p.preview)
       setUnsent((l) => l.filter((u) => u.localId !== item.localId))
       await load()
@@ -503,7 +593,7 @@ export function MessageThreadScreen({
           placeholder="Write a message"
           aria-label="Message"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => { composeId.current = null; setText(e.target.value) }}
         />
         {staged.length > 0 && (
           <ul className="flex flex-wrap gap-2" aria-label="Photos to send">

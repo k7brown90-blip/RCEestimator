@@ -6,7 +6,8 @@ import { PageHeader } from "../components/PageHeader";
 import { TechnicianQr } from "../components/TechnicianQr";
 import { api } from "../lib/api";
 import { CrmLoginButton, crmLoginTag, useCrmLogins } from "../components/CrmLoginDialog";
-import { useSession } from "../lib/session";
+import { useIsKyle, useSession } from "../lib/session";
+import { TECH_TOKEN_ROLE_REASON } from "../../../shared/crmPowers";
 
 /**
  * Team roster — technicians and staff. Each member carries an employee number
@@ -30,6 +31,10 @@ export function TeamPage() {
   // (another session would be answered 403).
   const session = useSession();
   const { data: crmLogins } = useCrmLogins(session?.isKyle === true);
+  // A technician's token and role are Kyle's alone (work order agent-team, U10): the server sends no token to anyone else
+  // and refuses the change, so the controls are greyed with the reason rather than hidden. Unknown session: left on.
+  const isKyle = useIsKyle();
+  const kyleOnly = isKyle ? undefined : TECH_TOKEN_ROLE_REASON;
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -128,7 +133,7 @@ export function TeamPage() {
           </label>
           <label className="text-sm font-medium">
             Role
-            <select className="field mt-1" value={role} onChange={(e) => setRole(e.target.value)}>
+            <select className="field mt-1" value={isKyle ? role : "technician"} disabled={!isKyle} title={kyleOnly} onChange={(e) => setRole(e.target.value)}>
               <option value="technician">Technician</option>
               <option value="supervisor">Supervisor</option>
               <option value="admin">Admin</option>
@@ -157,6 +162,11 @@ export function TeamPage() {
 
       <section className="card mt-5 p-6">
         <h2 className="text-lg font-semibold">Roster</h2>
+        {!isKyle && (
+          <p className="mt-2 text-xs text-amber-800" data-testid="token-role-reason">
+            Show token, Show QR, Rotate token and the Role choice are greyed: {TECH_TOKEN_ROLE_REASON}
+          </p>
+        )}
         <ul className="mt-4 space-y-2">
           {(technicians ?? []).map((tech) => (
             <li key={tech.id} className="rounded-lg border border-rce-border bg-white p-3 text-sm">
@@ -230,6 +240,8 @@ export function TeamPage() {
                   <button
                     type="button"
                     className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
+                    disabled={!isKyle}
+                    title={kyleOnly}
                     onClick={() => setRevealedTokenId(revealedTokenId === tech.id ? null : tech.id)}
                   >
                     {revealedTokenId === tech.id ? "Hide token" : "Show token"}
@@ -237,6 +249,8 @@ export function TeamPage() {
                   <button
                     type="button"
                     className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
+                    disabled={!isKyle}
+                    title={kyleOnly}
                     onClick={() => setQrTokenId(qrTokenId === tech.id ? null : tech.id)}
                   >
                     {qrTokenId === tech.id ? "Hide QR" : "Show QR"}
@@ -244,6 +258,8 @@ export function TeamPage() {
                   <button
                     type="button"
                     className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"
+                    disabled={!isKyle}
+                    title={kyleOnly}
                     onClick={() => updateMutation.mutate({ technicianId: tech.id, rotateToken: true })}
                   >
                     Rotate token
@@ -282,12 +298,12 @@ export function TeamPage() {
                   </button>
                 </form>
               )}
-              {revealedTokenId === tech.id && (
+              {isKyle && tech.accessToken && revealedTokenId === tech.id && (
                 <p className="mt-2 break-all rounded bg-rce-accentBg/40 p-2 font-mono text-xs">
                   {tech.accessToken}
                 </p>
               )}
-              {qrTokenId === tech.id && <TechnicianQr token={tech.accessToken} name={tech.name} />}
+              {isKyle && tech.accessToken && qrTokenId === tech.id && <TechnicianQr token={tech.accessToken} name={tech.name} />}
             </li>
           ))}
         </ul>

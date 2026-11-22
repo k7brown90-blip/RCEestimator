@@ -23,6 +23,14 @@ export const CARD_KINDS = {
 
 export type CardKind = keyof typeof CARD_KINDS;
 
+/**
+ * Kinds the field app does not decide (work order agent-team, U10; amendment on "Call or email instead": "CRM only,
+ * U10 field approvals exclude it"). The field's approvals list leaves them out and the field decision routes refuse them,
+ * with the sentence below. Anything not listed is decided in both apps, with the same card.
+ */
+export const FIELD_CRM_ONLY_KINDS: readonly string[] = ["contact_instead"];
+export const FIELD_CRM_ONLY_REASON = "This kind of card is decided on the CRM.";
+
 export function isCardKind(value: unknown): value is CardKind {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(CARD_KINDS, value);
 }

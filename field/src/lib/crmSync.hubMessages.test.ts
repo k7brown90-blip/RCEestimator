@@ -160,3 +160,33 @@ describe('a job photo that is sent again is the same photo', () => {
     expect(a).not.toBe(b)
   })
 })
+
+describe('one id per composed message (C4 carry-over a)', () => {
+  it('sends the id with the message, and the SAME id again on a retry', async () => {
+    const f = mockFetchOk({ id: 'm1' })
+    await crmSync.sendHubMessage('t1', { body: 'On site', clientMessageId: 'c-1111-2222-3333' })
+    const first = lastCall(f).body
+    await crmSync.sendHubMessage('t1', { body: 'On site', clientMessageId: 'c-1111-2222-3333' })
+    expect(lastCall(f).body).toEqual(first)
+    expect(first).toEqual({ body: 'On site', clientMessageId: 'c-1111-2222-3333' })
+  })
+})
+
+describe('Needs approval (U10)', () => {
+  it('reads the drafts and decides them through the technician routes, the bearer in the header and no token in any address', async () => {
+    const f = mockFetchOk({ cards: [], canApprove: true, approveReason: null })
+    await crmSync.fetchHubApprovals()
+    expect(lastCall(f)).toMatchObject({ url: `${BASE}/approvals`, method: 'GET' })
+    expect(lastCall(f).headers.Authorization).toBe('Bearer secret-tech-token')
+
+    mockFetchOk({ card: { id: 'm1' }, send: { status: 'sent', error: null } })
+    const g = vi.mocked(globalThis.fetch) as unknown as ReturnType<typeof vi.fn>
+    await crmSync.approveHubMessage('m 1')
+    expect(lastCall(g)).toMatchObject({ url: `${BASE}/messages/m%201/approve`, method: 'POST', body: {} })
+    await crmSync.editApproveHubMessage('m1', { body: 'Mine', subject: 'Tuesday', cc: ['pat@example.com'] })
+    expect(lastCall(g)).toMatchObject({ url: `${BASE}/messages/m1/edit-approve`, method: 'POST', body: { body: 'Mine', subject: 'Tuesday', cc: ['pat@example.com'] } })
+    await crmSync.rejectHubMessage('m1', 'wrong customer')
+    expect(lastCall(g)).toMatchObject({ url: `${BASE}/messages/m1/reject`, method: 'POST', body: { reason: 'wrong customer' } })
+    for (const [url] of g.mock.calls as Array<[string]>) expect(url).not.toContain('secret-tech-token')
+  })
+})

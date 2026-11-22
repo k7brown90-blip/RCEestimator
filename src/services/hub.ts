@@ -34,6 +34,7 @@ import { getPrincipalLogin } from "./crmLogin";
 import { emitHubEventSafe } from "./hubEvents";
 import { publishHubChange } from "./hubBus";
 import { notifyNewMessage } from "./hubNotifier";
+import { stagedPhotoIds } from "./hubAttachments";
 import { messageCategoryFor, type MessageClass } from "../../shared/hub/messageCategories";
 import {
   HUB_AUTHOR_TYPES, HUB_CHANNELS, HUB_DIRECTIONS, HUB_MESSAGE_STATUSES, HUB_READABLE_STATUSES,
@@ -483,6 +484,8 @@ export interface CreateMessageInput {
   heldReason?: string | null;
   sentAt?: Date | null;
   deliveredAt?: Date | null;
+  /** postMessage only: the composing screen's one id for this message (see HubMessage.clientMessageId). */
+  clientMessageId?: string | null;
 }
 
 const oneOf = <T extends string>(list: readonly T[], value: string, what: string): T => {
@@ -553,6 +556,7 @@ export async function createMessageRow(db: Db, input: CreateMessageInput): Promi
       heldReason: input.heldReason ?? null,
       sentAt: input.sentAt ?? null,
       deliveredAt: input.deliveredAt ?? null,
+      clientMessageId: input.clientMessageId ?? null,
     },
   });
 }
@@ -639,6 +643,20 @@ export interface PostMessageInput {
   issuedEstimateId?: string | null;
   /** Where the conversation was started from, carried only into the event (TC7 supplies it). */
   context?: { kind: string; id: string } | null;
+  /**
+   * The composing screen's id for THIS message, made once when the person composes it and sent again on every retry.
+   * The same author posting the same id again gets the message they already made, not a second one.
+   */
+  clientMessageId?: string | null;
+}
+
+export const CLIENT_MESSAGE_ID_MIN = 8;
+export const CLIENT_MESSAGE_ID_MAX = 100;
+
+export interface PostMessageResult {
+  message: HubMessage;
+  /** True when this id had already made a message: nothing new was written and nothing was announced. */
+  replayed: boolean;
 }
 
 /**
@@ -651,6 +669,33 @@ export interface PostMessageInput {
  *     as an internal message whatever the body says.
  */
 export async function postMessage(reader: HubReader, input: PostMessageInput, db: PrismaClient = defaultPrisma): Promise<HubMessage> {
+  return (await postMessageResult(reader, input, db)).message;
+}
+
+/** The message this author already made under this client id, or null. Scoped to the author: nobody else's id matches. */
+async function messageForClientId(reader: HubReader, clientMessageId: string, db: PrismaClient): Promise<HubMessage | null> {
+  return db.hubMessage.findFirst({ where: { authorKey: reader.key, clientMessageId } });
+}
+
+/**
+ * postMessage, saying whether it made a message or found the one this author already made under the same
+ * clientMessageId (a retry of a send whose answer was lost). The routes answer 201 for a new message and 200 for the
+ * existing one. Same function, same writer: postMessage is this with the flag dropped.
+ */
+export async function postMessageResult(reader: HubReader, input: PostMessageInput, db: PrismaClient = defaultPrisma): Promise<PostMessageResult> {
+  const clientMessageId = input.clientMessageId?.trim() || null;
+  if (clientMessageId !== null && (clientMessageId.length < CLIENT_MESSAGE_ID_MIN || clientMessageId.length > CLIENT_MESSAGE_ID_MAX)) {
+    throw new HubError("That message id is not valid.");
+  }
+  // A retry is answered BEFORE anything else is checked: its photos were taken by the first try, so checking them
+  // again would refuse the very message that already went.
+  if (clientMessageId !== null) {
+    const existing = await messageForClientId(reader, clientMessageId, db);
+    if (existing) {
+      if (existing.threadId !== input.threadId) throw new HubError("That message id was already used in a different conversation.", 409);
+      return { message: existing, replayed: true };
+    }
+  }
   const body = (input.body ?? "").trim();
   const photoIds = [...new Set(input.photoIds ?? [])];
   const attachmentIds = [...new Set(input.attachmentIds ?? [])];
@@ -671,6 +716,18 @@ export async function postMessage(reader: HubReader, input: PostMessageInput, db
   const refusal = await teamPostRefusal(reader, thread, db);
   if (refusal) throw new HubError(refusal, 403);
 
+  if (attachmentIds.length > 0) {
+    // A photo goes only in the message of the person who ADDED it (the attachment_added audit row's actor, the
+    // same test as "Remove"): on a Training or Team thread, someone else's staged photo is not yours to send.
+    const mine = new Set(await stagedPhotoIds(reader, thread.id, db));
+    const notMine = attachmentIds.filter((id) => !mine.has(id));
+    if (notMine.length > 0) {
+      const others = await db.hubAttachment.count({ where: { id: { in: notMine }, threadId: thread.id, messageId: null, deletedAt: null } });
+      if (others > 0) throw new HubError("That photo was added by someone else, so it cannot go in your message.", 409);
+      // Not in this thread, already on a message, or removed: the existing refusal below says so.
+    }
+  }
+
   let status: HubMessageStatus = "posted";
   if (reader.kind === "agent") {
     // A draft to a CUSTOMER is a send, with a channel and a send type; it comes through the draft door
@@ -687,7 +744,9 @@ export async function postMessage(reader: HubReader, input: PostMessageInput, db
     }
   }
 
-  const message = await db.$transaction(async (tx) => {
+  let message: HubMessage;
+  try {
+    message = await db.$transaction(async (tx) => {
     const row = await createMessageRow(tx, {
       threadId: thread.id,
       authorType: authorTypeFor(reader),
@@ -704,6 +763,7 @@ export async function postMessage(reader: HubReader, input: PostMessageInput, db
       tags: input.tags ?? [],
       visitId: input.visitId ?? null,
       issuedEstimateId: input.issuedEstimateId ?? null,
+      clientMessageId,
     });
     if (attachmentIds.length > 0) {
       // Take the photos uploaded to this thread: still unattached, not removed, in THIS thread only.
@@ -720,9 +780,17 @@ export async function postMessage(reader: HubReader, input: PostMessageInput, db
       details: { status: row.status, channel: row.channel },
     });
     return row;
-  });
+    });
+  } catch (err) {
+    // Two sends of the same composed message at once: the unique key kept one. The loser gets the winner's row.
+    if (clientMessageId !== null && isUniqueRace(err)) {
+      const winner = await messageForClientId(reader, clientMessageId, db);
+      if (winner) return { message: winner, replayed: true };
+    }
+    throw err;
+  }
   fanOutMessage(message, thread, input.context ?? null);
-  return message;
+  return { message, replayed: false };
 }
 
 /**

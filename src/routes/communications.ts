@@ -9,13 +9,22 @@
  *
  * Mounted behind the operator PIN session like every other CRM route (app.use(pinAuthMiddleware)
  * in app.ts runs before any router is registered) — nothing here is a webhook or agent surface.
+ *
+ * THE AI ADMIN'S SEND IS A DRAFT (work order agent-team, U4b, default D2): when the session is the AI admin, this
+ * same route does not send. It leaves the email as a message waiting for approval on the record's customer
+ * conversation (services/hubDrafts.ts createDraftMessage, the ONE draft door), carrying exactly the To and CC the
+ * panel chose; Kyle (or a login holding approve_drafts) sends it from Messages -> Needs approval, and the send is
+ * hubSend's email branch - the very sendRecordMessage below. Kyle's session and every other office login send
+ * directly, as before. The structured kinds on /customer-emails are not touched.
  */
 
 import express from "express";
 import { z } from "zod";
 import { asyncHandler } from "../lib/routeHelpers";
-import { sendRecordMessage, type RecordEmailTarget } from "../services/recordEmail";
+import { resolveRecordRecipients, sendRecordMessage, type RecordEmailTarget } from "../services/recordEmail";
 import { ccSchema } from "../services/emailCc";
+import { HubError, ensureThreadFor, readerFor } from "../services/hub";
+import { createDraftMessage } from "../services/hubDrafts";
 
 export const communicationsRouter = express.Router();
 
@@ -43,6 +52,36 @@ communicationsRouter.post("/communications/email", asyncHandler(async (req, res)
   const target: RecordEmailTarget = parsed.target === "lead" ? { kind: "lead", leadId: parsed.id }
     : parsed.target === "account" ? { kind: "account", customerId: parsed.id }
       : { kind: "job", visitId: parsed.id };
+
+  const reader = readerFor(req);
+  if (reader?.kind === "ai-admin") {
+    // The same refusals as a send (no record, no address), then a draft instead of a send.
+    const recipients = await resolveRecordRecipients(target, parsed.to?.trim() || null, parsed.cc);
+    if (!recipients.ok) {
+      res.status(recipients.status).json({ error: recipients.error });
+      return;
+    }
+    try {
+      const thread = await ensureThreadFor(
+        target.kind === "lead" ? { leadId: target.leadId }
+          : target.kind === "account" ? { customerId: target.customerId }
+            : { customerId: recipients.customerId as string },
+      );
+      const { message } = await createDraftMessage(reader, {
+        threadId: thread.id, channel: "email", category: "thread_reply",
+        subject: parsed.subject, body: parsed.body, toAddress: recipients.to, cc: recipients.cc,
+        visitId: target.kind === "job" ? target.visitId : null, issuedEstimateId: parsed.estimateId ?? null,
+      });
+      res.json({ sent: false, drafted: true, messageId: message.id, to: recipients.to, cc: recipients.cc, suppressed: false });
+    } catch (err) {
+      if (err instanceof HubError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
 
   const result = await sendRecordMessage({
     target, to: parsed.to?.trim() || null, cc: parsed.cc, subject: parsed.subject, body: parsed.body, estimateId: parsed.estimateId ?? null,

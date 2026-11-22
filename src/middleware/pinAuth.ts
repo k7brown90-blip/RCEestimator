@@ -26,6 +26,13 @@ function mark(req: Request, outcome: AuthOutcome, actor: string | null = null): 
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "rce-dev-secret-change-me";
 const SESSION_HOURS = 8;
+/**
+ * The AI admin's sign-in lasts a day, not 8 hours. Kyle, 2026-11-22: "I don't want the login to expire until
+ * we fix this, I need the agent to have at least 24 hours of access so when leads come in it isn't locked out".
+ * It is still renewed while in use, and still ends at once when its login is saved, turned off or removed
+ * (the gate checks the row and `ver` on every request). The PIN and a person's login stay at 8 hours.
+ */
+const AI_ADMIN_SESSION_HOURS = 24;
 
 /**
  * Session gate. DEFAULT-DENY as of P015 — see middleware/publicRoutes.ts for the why and the
@@ -232,10 +239,11 @@ type SessionIdentity =
  * request, which is how Save login / Turn off / Remove login end that session at once.
  */
 function issueSessionToken(identity: SessionIdentity = { sub: "owner" }): { token: string; expiresIn: number } {
+  const hours = identity.sub === AI_ADMIN_SUB ? AI_ADMIN_SESSION_HOURS : SESSION_HOURS;
   const token = jwt.sign({ ...identity }, JWT_SECRET, {
-    expiresIn: `${SESSION_HOURS}h`,
+    expiresIn: `${hours}h`,
   });
-  return { token, expiresIn: SESSION_HOURS * 60 * 60 };
+  return { token, expiresIn: hours * 60 * 60 };
 }
 
 /**

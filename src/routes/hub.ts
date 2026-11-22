@@ -41,14 +41,13 @@ import { z } from "zod";
 import { asyncHandler, readParam } from "../lib/routeHelpers";
 import { canApprove, requireKyle, requireKylePower } from "../middleware/kylePowers";
 import {
-  HubError, editOwnMessage, ensureThreadFor, findVisibleThread, markThreadRead, postMessage, readerFor,
+  CLIENT_MESSAGE_ID_MAX, CLIENT_MESSAGE_ID_MIN, HubError, editOwnMessage, ensureThreadFor, findVisibleThread, markThreadRead, postMessageResult, readerFor,
   renameThread, setThreadStatus, softDeleteMessage, type HubReader,
 } from "../services/hub";
 import { hubBadge, listThreads, threadDetail } from "../services/hubInbox";
-import { approveMessage, editApproveMessage, rejectMessage, type DecisionResult } from "../services/hubApproval";
+import { approveMessage, decisionView, editApproveMessage, editApproveSchema, rejectMessage, rejectSchema } from "../services/hubApproval";
 import { listApprovalCards } from "../services/hubCards";
 import { listAudit } from "../services/hubAuditView";
-import { ccSchema } from "../services/emailCc";
 import { buildTimeline, type TimelineTarget } from "../services/hubTimeline";
 import { isHubThreadKind } from "../../shared/agentScopes";
 import { openHubStream } from "../services/hubStream";
@@ -158,6 +157,8 @@ const postSchema = z.object({
   photoIds: z.array(z.string().min(1)).max(6).default([]),
   /** A Team or Training thread's photos: HubAttachment ids added to this thread and not yet sent. */
   attachmentIds: z.array(z.string().min(1)).max(6).default([]),
+  /** One id per composed message, sent again on every retry of it: a repeat answers with the message already made. */
+  clientMessageId: z.string().trim().min(CLIENT_MESSAGE_ID_MIN).max(CLIENT_MESSAGE_ID_MAX).optional(),
 });
 
 hubRouter.post("/hub/threads/:id/messages", withReader(async (req, res, reader) => {
@@ -169,10 +170,12 @@ hubRouter.post("/hub/threads/:id/messages", withReader(async (req, res, reader) 
     // One writer per thing: a call note is the notes route's, an email is the "Email the customer" panel's.
     throw new HubError("A customer's conversation takes a call note or an email: use Add call note or Email the customer on the account.", 409);
   }
-  const message = await postMessage(reader, {
+  const { message, replayed } = await postMessageResult(reader, {
     threadId: id, body: body.body, subject: body.subject ?? null, photoIds: body.photoIds, attachmentIds: body.attachmentIds,
+    clientMessageId: body.clientMessageId ?? null,
   });
-  res.status(201).json({ id: message.id });
+  // 200 when this id had already made the message (a retry), 201 when this call made it.
+  res.status(replayed ? 200 : 201).json({ id: message.id });
 }));
 
 hubRouter.post("/hub/threads/:id/read", withReader(async (req, res, reader) => {
@@ -209,8 +212,7 @@ hubRouter.get("/hub/approvals", withReader(async (req, res, reader) => {
   }, canApprove(req)));
 }));
 
-/** What a decision answers: the card as it now stands and, when something was sent, what the send did. */
-const decided = (r: DecisionResult) => ({ card: r.card, send: r.send ? { status: r.send.status, error: r.send.error } : null });
+const decided = decisionView;
 
 // The approve_drafts power is the ONE approver gate (Kyle only at launch). Without it: 403 with the power's sentence.
 const approver = requireKylePower("approve_drafts");
@@ -219,19 +221,10 @@ hubRouter.post("/hub/messages/:id/approve", approver, withReader(async (req, res
   res.json(decided(await approveMessage(reader, readParam(req, "id"))));
 }));
 
-const editApproveSchema = z.object({
-  body: z.string().trim().min(1, "A message needs text.").max(10_000),
-  subject: z.string().trim().max(200).optional(),
-  to: z.string().trim().email("That is not a valid email address.").nullable().optional(),
-  cc: ccSchema,
-});
-
 hubRouter.post("/hub/messages/:id/edit-approve", approver, withReader(async (req, res, reader) => {
   const edit = editApproveSchema.parse(req.body ?? {});
   res.json(decided(await editApproveMessage(reader, readParam(req, "id"), edit)));
 }));
-
-const rejectSchema = z.object({ reason: z.string().trim().min(3, "Say why you are rejecting it (at least 3 characters).").max(500) });
 
 hubRouter.post("/hub/messages/:id/reject", approver, withReader(async (req, res, reader) => {
   const { reason } = rejectSchema.parse(req.body ?? {});

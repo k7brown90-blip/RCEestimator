@@ -49,6 +49,8 @@ import {
 import { announceDecision, hubListenerCount } from "../src/services/hubBus";
 import { HUB_STREAM_TIMING } from "../src/services/hubStream";
 import { techReader } from "../src/services/hubTech";
+import { createDraftMessage } from "../src/services/hubDrafts";
+import { saveCrmLogin, setPowers } from "../src/services/crmLogin";
 
 const TAG = "HubStream";
 const techIds: string[] = [];
@@ -63,6 +65,7 @@ async function wipe() {
     await prisma.property.deleteMany({ where: { customerId: { in: ids } } });
     await prisma.customer.deleteMany({ where: { id: { in: ids } } });
   }
+  await prisma.crmLogin.deleteMany({ where: { technicianId: { in: techIds } } });
   await prisma.technician.deleteMany({ where: { id: { in: techIds.splice(0) } } });
 }
 
@@ -317,4 +320,56 @@ describe("heartbeat, cap and cleanup", () => {
     while (hubListenerCount() !== before && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
     expect(hubListenerCount()).toBe(before);
   });
+});
+
+describe("an approver technician's stream carries the customer-thread events behind Needs approval", () => {
+  const ai: HubReader = { key: "ai-admin", kind: "ai-admin", display: "RCE Admin", technicianId: null, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false };
+
+  async function customerDraft() {
+    const customer = await prisma.customer.create({ data: { name: `${TAG} Jane`, phone: "6155550101", email: "jane@hubstream.example" } });
+    const thread = await ensureThreadFor({ customerId: customer.id });
+    const { message } = await createDraftMessage(ai, { threadId: thread.id, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday." });
+    return { thread, message };
+  }
+
+  it("an approver's phone hears the draft on a customer thread; another technician's does not", async () => {
+    const eric = await makeTech("Eric");
+    const sam = await makeTech("Sam");
+    const login = await saveCrmLogin(eric.id, { username: `eric-${Date.now()}`, role: "owner", password: "correct horse battery" });
+    await setPowers(login.id, ["approve_drafts"]);
+    const ericStream = await openStream("/health-record/hub/stream", { Authorization: `Bearer ${eric.accessToken}` });
+    const samStream = await openStream("/health-record/hub/stream", { Authorization: `Bearer ${sam.accessToken}` });
+    try {
+      await ericStream.waitFor((o) => o.events().some((e) => e.name === "ready"));
+      await samStream.waitFor((o) => o.events().some((e) => e.name === "ready"));
+      const { thread, message } = await customerDraft();
+      const heard = await ericStream.waitFor((o) => o.events().some((e) => e.name === "hub"), 5000);
+      expect(heard).toBe(true);
+      expect(ericStream.events().find((e) => e.name === "hub")!.data).toMatchObject({ threadId: thread.id, messageId: message.id });
+      await new Promise((r) => setTimeout(r, 400));
+      expect(samStream.events().filter((e) => e.name === "hub")).toEqual([]);
+    } finally {
+      ericStream.close();
+      samStream.close();
+      await prisma.hubThread.deleteMany({ where: { customer: { name: { startsWith: TAG } } } });
+      await prisma.crmLogin.deleteMany({ where: { technicianId: eric.id } });
+    }
+  }, 30_000);
+
+  it("a technician whose login does not hold the power hears nothing about a customer thread either", async () => {
+    const eric = await makeTech("Eric");
+    const login = await saveCrmLogin(eric.id, { username: `eric-${Date.now()}`, role: "owner", password: "correct horse battery" });
+    expect(login.id).toBeTruthy();
+    const s = await openStream("/health-record/hub/stream", { Authorization: `Bearer ${eric.accessToken}` });
+    try {
+      await s.waitFor((o) => o.events().some((e) => e.name === "ready"));
+      await customerDraft();
+      await new Promise((r) => setTimeout(r, 400));
+      expect(s.events().filter((e) => e.name === "hub")).toEqual([]);
+    } finally {
+      s.close();
+      await prisma.hubThread.deleteMany({ where: { customer: { name: { startsWith: TAG } } } });
+      await prisma.crmLogin.deleteMany({ where: { technicianId: eric.id } });
+    }
+  }, 30_000);
 });

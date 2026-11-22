@@ -58,7 +58,7 @@ describe("ThreadDrawer: a crew thread", () => {
     const posted = vi.spyOn(api, "postHubMessage").mockResolvedValue({ id: "m-9" });
     fireEvent.change(within(dialog).getByLabelText("Message"), { target: { value: "Bring the 200 amp base" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Post to crew" }));
-    await waitFor(() => expect(posted).toHaveBeenCalledWith("thread-1", { body: "Bring the 200 amp base" }));
+    await waitFor(() => expect(posted).toHaveBeenCalledWith("thread-1", { body: "Bring the 200 amp base", clientMessageId: expect.any(String) }));
   });
 
   it("says 'Post to team' on a Team thread", async () => {
@@ -249,7 +249,7 @@ describe("ThreadDrawer: Add photo (U5, amendment 9b)", () => {
     await waitFor(() => expect(post).toBeEnabled());
     const posted = vi.spyOn(api, "postHubMessage").mockResolvedValue({ id: "m-9" });
     fireEvent.click(post);
-    await waitFor(() => expect(posted).toHaveBeenCalledWith("thread-1", { body: "", attachmentIds: ["att-1"] }));
+    await waitFor(() => expect(posted).toHaveBeenCalledWith("thread-1", { body: "", clientMessageId: expect.any(String), attachmentIds: ["att-1"] }));
 
     // The exit before it is sent: Remove takes it off the server too.
     pick(dialog, "q.jpg");
@@ -270,7 +270,7 @@ describe("ThreadDrawer: Add photo (U5, amendment 9b)", () => {
     expect(hold).not.toHaveBeenCalled();
     const posted = vi.spyOn(api, "postHubMessage").mockResolvedValue({ id: "m-9" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Post to crew" }));
-    await waitFor(() => expect(posted).toHaveBeenCalledWith("thread-1", { body: "", photoIds: ["vp-1"] }));
+    await waitFor(() => expect(posted).toHaveBeenCalledWith("thread-1", { body: "", clientMessageId: expect.any(String), photoIds: ["vp-1"] }));
     expect(upload).toHaveBeenCalledWith("visit-1", { dataUrl: "data:image/jpeg;base64,AAAA" });
   });
 
@@ -308,7 +308,11 @@ describe("ThreadDrawer: Add photo (U5, amendment 9b)", () => {
     await waitFor(() => expect(posted).toHaveBeenCalledTimes(2));
     // Still two uploads, and the retry named the same two photos.
     expect(upload).toHaveBeenCalledTimes(2);
-    expect(posted).toHaveBeenLastCalledWith("thread-1", { body: "", photoIds: ["vp-1", "vp-2"] });
+    expect(posted).toHaveBeenLastCalledWith("thread-1", { body: "", clientMessageId: expect.any(String), photoIds: ["vp-1", "vp-2"] });
+    // The retry is the SAME message: one id on both tries, so a first try that did get through is never posted twice.
+    const ids = posted.mock.calls.map((c) => (c[1] as { clientMessageId?: string }).clientMessageId);
+    expect(ids[0]).toBeTruthy();
+    expect(ids[1]).toBe(ids[0]);
   });
 
   it("brings back a photo that was added and never sent, with its Remove, so it is never stranded out of sight", async () => {

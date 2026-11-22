@@ -431,8 +431,16 @@ async function sendEmail(db: PrismaClient, message: HubMessage, thread: HubThrea
   if (!recipient?.target) {
     return settleFailed(db, message, thread, "An email can only go from a customer's or a job's conversation.", actor);
   }
+  // A draft written from a job's "Email the customer" is tagged with that job but sits on the customer's account
+  // thread. File the delivery against the job, the way a direct send from the same panel does, so the job's Email
+  // history lists it. Only when the job really belongs to this thread's customer (never a stray tag).
+  let target: RecordEmailTarget = recipient.target;
+  if (message.visitId && recipient.customerId) {
+    const visit = await db.visit.findUnique({ where: { id: message.visitId }, select: { customerId: true } });
+    if (visit?.customerId === recipient.customerId) target = { kind: "job", visitId: message.visitId };
+  }
   const result = await sendRecordMessage({
-    target: recipient.target, to: message.toAddress, cc: message.cc,
+    target, to: message.toAddress, cc: message.cc,
     subject: message.subject?.trim() || "A message from Red Cedar Electric", body: message.body, estimateId: message.issuedEstimateId,
   });
   if (!result.ok) {

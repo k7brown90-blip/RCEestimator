@@ -28,7 +28,7 @@ import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView }
 import type { EstimatePhoto } from '../../../shared/estimatePhotos'
 import { estimateEmailRequest, type EstimateEmailChoices } from '../../../shared/estimateEmail'
 import type { FieldOpenQuestion, QuoteSuggestedLine, FieldWalkthroughRow, WalkthroughProposal } from '../../../shared/suggestedLines'
-import type { TechBadge, TechThreadDetail, TechThreadsResponse } from '../../../shared/hub/views'
+import type { ApprovalCardView, ApprovalsResponse, TechBadge, TechThreadDetail, TechThreadsResponse } from '../../../shared/hub/views'
 import { toPushV2 } from '../domain/v2Types'
 
 const BASE_URL_KEY = 'rce_crm_base_url'
@@ -2402,10 +2402,41 @@ export async function fetchHubThread(threadId: string): Promise<TechThreadDetail
   return crmRequest(`/hub/threads/${encodeURIComponent(threadId)}/messages`, { method: 'GET' })
 }
 
+/**
+ * Send a message. `clientMessageId` is the ONE id of this composed message, made when it was composed and sent again on
+ * every retry: the office answers a repeat with the message it already made (200), never a second one.
+ */
 export async function sendHubMessage(
-  threadId: string, input: { body: string; photoIds?: string[]; attachmentIds?: string[] },
+  threadId: string, input: { body: string; photoIds?: string[]; attachmentIds?: string[]; clientMessageId?: string },
 ): Promise<{ id: string }> {
   return crmRequest(`/hub/threads/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify(input) })
+}
+
+// ─── Needs approval (work order agent-team, U10) — only for a person whose CRM login holds approve_drafts ─────
+//    Messages -> "Needs approval (n)". The same cards as the office's Approve queue (routes/hubTechRoutes.ts).
+
+export interface HubDecisionResult {
+  card: ApprovalCardView
+  send: { status: string; error: string | null } | null
+}
+
+/** The drafts waiting for a decision. `canApprove` is false (and the list empty) for everyone but an approver. */
+export async function fetchHubApprovals(): Promise<ApprovalsResponse> {
+  return crmRequest('/hub/approvals', { method: 'GET' })
+}
+
+export async function approveHubMessage(id: string): Promise<HubDecisionResult> {
+  return crmRequest(`/hub/messages/${encodeURIComponent(id)}/approve`, { method: 'POST', body: '{}' })
+}
+
+export async function editApproveHubMessage(
+  id: string, input: { body: string; subject?: string; to?: string | null; cc?: string[] },
+): Promise<HubDecisionResult> {
+  return crmRequest(`/hub/messages/${encodeURIComponent(id)}/edit-approve`, { method: 'POST', body: JSON.stringify(input) })
+}
+
+export async function rejectHubMessage(id: string, reason: string): Promise<HubDecisionResult> {
+  return crmRequest(`/hub/messages/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ reason }) })
 }
 
 export async function markHubThreadRead(threadId: string): Promise<void> {

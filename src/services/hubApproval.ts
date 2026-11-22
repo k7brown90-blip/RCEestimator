@@ -18,11 +18,12 @@
  * a failed or held message, and Reject cancels one.
  */
 import type { HubMessage, HubThread, PrismaClient } from "@prisma/client";
+import { z } from "zod";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import { HubError, createMessageRow, findVisibleThread, hubAudit, type HubReader } from "./hub";
 import { emitHubEventSafe } from "./hubEvents";
 import { entryFor } from "./hubActions/registry";
-import { SINGLE_ADDRESS, cleanCc } from "./emailCc";
+import { SINGLE_ADDRESS, ccSchema, cleanCc } from "./emailCc";
 import { approvalCardFor } from "./hubCards";
 import { prepareSms, releaseStaleSends, settleBlocked, type SendResult } from "./hubSend";
 import { twilioSendEnabled } from "./automationGate";
@@ -36,6 +37,21 @@ export interface DecisionResult {
   /** What the send did (sent, held, blocked, failed); null when the decision sent nothing (a rejection). */
   send: SendResult | null;
 }
+
+/**
+ * What the three decision routes accept, defined ONCE: the CRM's (routes/hub.ts) and the field's
+ * (routes/hubTechRoutes.ts) both parse with these, so the two doors cannot disagree about a request.
+ */
+export const editApproveSchema = z.object({
+  body: z.string().trim().min(1, "A message needs text.").max(10_000),
+  subject: z.string().trim().max(200).optional(),
+  to: z.string().trim().email("That is not a valid email address.").nullable().optional(),
+  cc: ccSchema,
+});
+export const rejectSchema = z.object({ reason: z.string().trim().min(3, "Say why you are rejecting it (at least 3 characters).").max(500) });
+
+/** What a decision answers: the card as it now stands and, when something was sent, what the send did. */
+export const decisionView = (r: DecisionResult) => ({ card: r.card, send: r.send ? { status: r.send.status, error: r.send.error } : null });
 
 const NOT_YET = "This kind of card is handled in a later step, so it cannot be approved here yet.";
 

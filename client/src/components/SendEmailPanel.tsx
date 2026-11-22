@@ -41,9 +41,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { CustomerEmailInput, ReceiptReportOption } from "../lib/api";
 import type { EmailDeliveryRow } from "../lib/types";
-import { money, shortDate } from "../lib/utils";
+import { maskEmail, money, shortDate } from "../lib/utils";
 import { CcChips, SendToPicker } from "./SendToPicker";
 import { PhotoAttachPicker } from "./PhotoGalleryPanel";
+import { refreshHub } from "../lib/hubQueries";
+import { useSession } from "../lib/session";
 import { ESTIMATE_EMAIL_DEFAULTS, estimateEmailExtras, estimateEmailRequest } from "../../../shared/estimateEmail";
 import { COMPLETION_REPORT_ID } from "../../../shared/jobCompletionLimits";
 
@@ -161,6 +163,8 @@ export function SendEmailPanel({
 }) {
   const queryClient = useQueryClient();
   const radioName = useId();
+  // The AI admin's free-form Message is not sent: it becomes a draft Kyle approves (work order agent-team, U4b). Unknown session: sends as before.
+  const aiAdmin = useSession()?.kind === "ai-admin";
   const [open, setOpen] = useState(startOpen);
   const [chosen, setChosen] = useState<EmailKind | null>(null);
   const [to, setTo] = useState<string | null>(null);
@@ -275,8 +279,8 @@ export function SendEmailPanel({
 
   const finish = () => {
     void queryClient.invalidateQueries({ queryKey: ["email-deliveries"] });
-    // The record's Conversation timeline lists this email too.
-    void queryClient.invalidateQueries({ queryKey: ["hub-timeline"] });
+    // The record's Conversation timeline lists this email too, and a draft shows in Messages -> Needs approval.
+    refreshHub(queryClient);
     for (const key of REFRESH_KEYS) void queryClient.invalidateQueries({ queryKey: key });
     record?.onSent?.();
   };
@@ -304,7 +308,9 @@ export function SendEmailPanel({
         setBody("");
         const everyone = message.cc && message.cc.length > 0 ? `${message.to}, cc ${message.cc.join(", ")}` : message.to;
         setNotice(
-          message.suppressed
+          message.drafted
+            ? `Left for Kyle's approval. It goes to ${everyone} once he approves it, from Messages → Needs approval.`
+            : message.suppressed
             ? `Sent to ${everyone}. Note: this address unsubscribed from marketing email — this was a direct reply, not a campaign send.`
             : `Sent to ${everyone}.`,
         );
@@ -339,11 +345,15 @@ export function SendEmailPanel({
   const canSend = active === "message"
     ? Boolean(subject.trim() && body.trim())
     : Boolean(who);
+  // The AI admin's Message names who it would go to, masked, and says whose approval it waits for.
+  const forApproval = aiAdmin && active === "message";
   const sendLabel = send.isPending
     ? "Sending…"
-    : !record
-      ? "Send"
-      : who ? `Send ${sendWords} to ${who}` : `Send ${sendWords}`;
+    : forApproval
+      ? who ? `Send for Kyle's approval to ${maskEmail(who)}` : "Send for Kyle's approval"
+      : !record
+        ? "Send"
+        : who ? `Send ${sendWords} to ${who}` : `Send ${sendWords}`;
 
   return (
     <div className="space-y-2">

@@ -35,7 +35,7 @@ const CHIPS: Array<{ id: string; label: string }> = [
   { id: "no_target", label: "No URL" },
 ];
 
-export const NO_URL_BANNER = "No receiving address is set (HUB_AGENT_WEBHOOK_URL in Railway). Events are being kept — press Resend once it is set.";
+export const NO_URL_BANNER = "No receiving address is set. Add the agents' address in the Agent webhooks card below. Events are being kept — press Resend once it is set.";
 export const NO_SECRET_BANNER = "HUB_WEBHOOK_SECRET is not set — nothing is sent until it is.";
 
 const STATUS_TEXT: Record<string, string> = {

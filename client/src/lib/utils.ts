@@ -37,6 +37,12 @@ export const categoryLabels: Record<string, string> = {
   package: "Packages",
 };
 
+/** "jane@example.com" -> "jane@…": the person's name and nothing of the domain, for a button that names who gets it. */
+export function maskEmail(address: string): string {
+  const at = address.indexOf("@");
+  return at > 0 ? `${address.slice(0, at)}@…` : address;
+}
+
 export function money(value: number | null | undefined): string {
   if (typeof value !== "number") {
     return "-";

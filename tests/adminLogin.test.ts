@@ -85,8 +85,10 @@ describe("POST /auth/login", () => {
     await saveLogin();
     const res = await request(app).post("/auth/login").send({ username: USER, password: PASS });
     expect(res.status).toBe(200);
-    expect(res.body.expiresIn).toBe(8 * 60 * 60);
-    const claims = jwt.verify(res.body.token as string, JWT_SECRET) as { sub: string; ver: number; aid: string };
+    // A day, not 8 hours (Kyle, 2026-11-22: "at least 24 hours of access so when leads come in it isn't locked out").
+    expect(res.body.expiresIn).toBe(24 * 60 * 60);
+    const claims = jwt.verify(res.body.token as string, JWT_SECRET) as { sub: string; ver: number; aid: string; iat: number; exp: number };
+    expect(claims.exp - claims.iat).toBe(24 * 60 * 60);
     expect(claims.sub).toBe("ai-admin");
     expect(claims.ver).toBe(1);
     expect(typeof claims.aid).toBe("string");
@@ -211,6 +213,8 @@ describe("POST /auth/refresh for the AI admin", () => {
     const old = jwt.verify(token, JWT_SECRET) as { aid: string; ver: number };
     const fresh = jwt.verify(res.body.token as string, JWT_SECRET) as { sub: string; aid: string; ver: number };
     expect(fresh.sub).toBe("ai-admin");
+    // A renewal is a day long too.
+    expect(res.body.expiresIn).toBe(24 * 60 * 60);
     expect(fresh.aid).toBe(old.aid);
     expect(fresh.ver).toBe(old.ver);
     // The renewed token works too (no cap).

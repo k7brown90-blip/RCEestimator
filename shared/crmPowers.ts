@@ -47,6 +47,13 @@ export const CRM_POWERS = {
 
 export type CrmPower = keyof typeof CRM_POWERS;
 
+/**
+ * Why a technician's access token and role are Kyle's alone (work order agent-team, U10): the token is the phone's
+ * sign-in and, for a person whose login holds approve_drafts, the way to approve from the field. Printed on the
+ * greyed Show token / Show QR / Rotate token / Role controls and returned (403) by the routes behind them.
+ */
+export const TECH_TOKEN_ROLE_REASON = "Only Kyle's PIN sign-in can change this.";
+
 /** Every power key, in the order the CRM shows them. */
 export const CRM_POWER_KEYS = Object.keys(CRM_POWERS) as CrmPower[];
 

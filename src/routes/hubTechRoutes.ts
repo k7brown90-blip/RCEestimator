@@ -18,6 +18,10 @@
  *   DELETE /health-record/hub/attachments/:id            take back a photo you added and did not send
  *   GET    /health-record/hub/attachments/:id            the picture, with your bearer (never a token in a URL)
  *   GET    /health-record/hub/stream                     live updates (U6): text/event-stream, ids only
+ *   GET    /health-record/hub/approvals                  the field's "Needs approval (n)": the CRM's cards, for an approver only (U10)
+ *   POST   /health-record/hub/messages/:id/approve       Approve and send / Send now        (approver only)
+ *   POST   /health-record/hub/messages/:id/edit-approve  { body, subject?, to?, cc? }  Send my version  (approver only)
+ *   POST   /health-record/hub/messages/:id/reject        { reason }                     Reject draft  (approver only)
  *   GET    /health-record/hub/push/key                   whether notifications are set up, and the public key (U7)
  *   POST   /health-record/hub/push/subscription          { endpoint, keys }   Turn on notifications on this device
  *   DELETE /health-record/hub/push/subscription          { endpoint }         Turn off ({ removed } says whether it was this person's)
@@ -26,15 +30,23 @@
  * A job's PHOTO is not sent here: the phone files it on the job through the existing
  * PUT /health-record/visits/:visitId/photos/:photoId and then sends the message with that id in photoIds.
  * Responses never carry the technician's access token or any key: the author is the technician's name.
+ *
+ * APPROVALS (U10, work order default D1). The approver is the ONE approve_drafts power, not Technician.role: the
+ * technician must be linked to a CRM login that holds it, or be Kyle's principal login (services/hubTech.ts
+ * techApproverReader). The three decisions are services/hubApproval.ts, called with that login's office reader; this file
+ * has no second implementation and never imports hubSend. A technician who is not an approver gets an empty
+ * list on GET and the power's sentence (403) on a decision.
  */
 import express from "express";
 import { z } from "zod";
 import { asyncHandler, readParam } from "../lib/routeHelpers";
 import type { TechRequest } from "./technicianAuth";
 import {
-  HubError, editOwnMessage, ensureThreadFor, markThreadRead, postMessage, softDeleteMessage, type HubReader,
+  CLIENT_MESSAGE_ID_MAX, CLIENT_MESSAGE_ID_MIN, HubError, editOwnMessage, ensureThreadFor, markThreadRead, postMessageResult, softDeleteMessage, type HubReader,
 } from "../services/hub";
-import { listTechThreads, techBadge, techReader, techThread, techThreadDetail } from "../services/hubTech";
+import { assertFieldDecidable, listTechThreads, techApprovals, techApproverReader, techBadge, techReader, techThread, techThreadDetail } from "../services/hubTech";
+import { approveMessage, decisionView, editApproveMessage, editApproveSchema, rejectMessage, rejectSchema } from "../services/hubApproval";
+import { CRM_POWERS } from "../../shared/crmPowers";
 import { readAttachment, removeAttachment, uploadAttachment } from "../services/hubAttachments";
 import { openHubStream } from "../services/hubStream";
 import { PushError, isSubscribedHere, pushConfig, removeSubscription, saveSubscription, subscriptionCount } from "../services/hubPush";
@@ -49,6 +61,8 @@ const postSchema = z.object({
   body: z.string().trim().max(10_000).default(""),
   photoIds: z.array(z.string().min(1)).max(6).default([]),
   attachmentIds: z.array(z.string().min(1)).max(6).default([]),
+  /** One id per composed message, sent again on every retry of it: a repeat answers with the message already made. */
+  clientMessageId: z.string().trim().min(CLIENT_MESSAGE_ID_MIN).max(CLIENT_MESSAGE_ID_MAX).optional(),
 });
 const editSchema = z.object({ body: z.string().trim().min(1, "A message needs text.").max(10_000) });
 const deleteSchema = z.object({ reason: z.string().trim().max(500).optional() });
@@ -99,8 +113,39 @@ export function registerHubTechRoutes(
     const id = readParam(req, "id");
     const body = postSchema.parse(req.body ?? {});
     await techThread(reader, id); // 404 / 403 before anything is written
-    const message = await postMessage(reader, { threadId: id, body: body.body, photoIds: body.photoIds, attachmentIds: body.attachmentIds });
-    res.status(201).json({ success: true, data: { id: message.id } });
+    const { message, replayed } = await postMessageResult(reader, {
+      threadId: id, body: body.body, photoIds: body.photoIds, attachmentIds: body.attachmentIds, clientMessageId: body.clientMessageId ?? null,
+    });
+    // 200 when this id had already made the message (a retry), 201 when this call made it.
+    res.status(replayed ? 200 : 201).json({ success: true, data: { id: message.id } });
+  }));
+
+  // ── approvals (U10) ──────────────────────────────────────────────────────────────────────────────
+  router.get("/hub/approvals", route(async (req, res) => {
+    res.json({ success: true, data: (await techApprovals(req.technician!.id)).response });
+  }));
+
+  // Every decision: the approver rule first (403 with the power's sentence), then a card the field may decide, then the ONE service.
+  const decision = (run: (approver: HubReader, id: string, req: TechRequest) => Promise<ReturnType<typeof decisionView> | null>): express.RequestHandler =>
+    route(async (req, res) => {
+      const approver = await techApproverReader(req.technician!.id);
+      if (!approver) {
+        fail(res, 403, CRM_POWERS.approve_drafts.reason);
+        return;
+      }
+      const id = readParam(req, "id");
+      await assertFieldDecidable(id);
+      res.json({ success: true, data: await run(approver, id, req) });
+    });
+
+  router.post("/hub/messages/:id/approve", decision(async (approver, id) => decisionView(await approveMessage(approver, id))));
+  router.post("/hub/messages/:id/edit-approve", decision(async (approver, id, req) => {
+    const edit = editApproveSchema.parse(req.body ?? {});
+    return decisionView(await editApproveMessage(approver, id, edit));
+  }));
+  router.post("/hub/messages/:id/reject", decision(async (approver, id, req) => {
+    const { reason } = rejectSchema.parse(req.body ?? {});
+    return decisionView(await rejectMessage(approver, id, reason));
   }));
 
   router.post("/hub/threads/:id/read", route(async (req, res, reader) => {
@@ -158,8 +203,12 @@ export function registerHubTechRoutes(
   }));
 
   // Live updates. Not wrapped: the stream owns the response until it ends.
-  router.get("/hub/stream", (req: TechRequest, res) => {
-    openHubStream(req, res, techReader(req.technician!));
+  router.get("/hub/stream", async (req: TechRequest, res) => {
+    const tech = req.technician!;
+    // An approver's phone also hears the customer-thread events behind "Needs approval" (ids only; every refetch
+    // still goes through the tech routes with their own filters).
+    const approver = await techApproverReader(tech.id).catch(() => null);
+    openHubStream(req, res, techReader(tech), approver);
   });
 
   router.get("/hub/push/key", route(async (_req, res, reader) => {

@@ -7,6 +7,9 @@
  *
  *   * Each subscriber sees only events for threads its reader may see (visibleThreadWhere, asked of the
  *     database for every event), so a technician on an unassigned job hears nothing about it.
+ *   * A technician who is also an approver (U10) passes a second reader, their CRM login's: an event is sent when
+ *     EITHER reader may see the thread, so a draft on a customer thread moves their "Needs approval" count. The
+ *     technician's own reader is never replaced, so their team and job threads keep working.
  *   * An event is ids only: {type, threadId, messageId}. The client asks the server again for what it shows.
  *   * A heartbeat comment every 25 seconds keeps a proxy from closing an idle stream, and the server ends
  *     every stream after 10 minutes. That is on purpose: the client reconnects through the gate again, so a
@@ -14,6 +17,7 @@
  *   * While a stream is down the client polls every 15 seconds, so a missed event costs a few seconds.
  */
 import type { Request, Response } from "express";
+import type { Prisma } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import { subscribeHub, type HubBusEvent } from "./hubBus";
 import { visibleThreadWhere, type HubReader } from "./hub";
@@ -25,7 +29,19 @@ const writeEvent = (res: Response, name: string, data: unknown): void => {
   res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
 };
 
-export function openHubStream(req: Request, res: Response, reader: HubReader): void {
+/**
+ * The threads either reader may see. An empty where means "every thread" (an office reader), and Prisma reads an
+ * empty object INSIDE an OR as matching nothing, so the two are never OR-ed when one of them is empty.
+ */
+function visibleToEither(reader: HubReader, alsoReader: HubReader | null): Prisma.HubThreadWhereInput {
+  const first = visibleThreadWhere(reader);
+  if (!alsoReader) return first;
+  const second = visibleThreadWhere(alsoReader);
+  if (Object.keys(first).length === 0 || Object.keys(second).length === 0) return {};
+  return { OR: [first, second] };
+}
+
+export function openHubStream(req: Request, res: Response, reader: HubReader, alsoReader: HubReader | null = null): void {
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -47,7 +63,8 @@ export function openHubStream(req: Request, res: Response, reader: HubReader): v
     queue = queue.then(async () => {
       if (closed) return;
       try {
-        const seen = await defaultPrisma.hubThread.count({ where: { AND: [{ id: event.threadId }, visibleThreadWhere(reader)] } });
+        const visible = visibleToEither(reader, alsoReader);
+        const seen = await defaultPrisma.hubThread.count({ where: { AND: [{ id: event.threadId }, visible] } });
         if (seen > 0 && !closed) writeEvent(res, "hub", { type: event.type, threadId: event.threadId, messageId: event.messageId });
       } catch {
         // A failed check drops this one event; the client's next refetch or poll catches up.

@@ -32,18 +32,13 @@ import { refreshHub } from "../lib/hubQueries";
 import { messageStatusChip, whenText } from "../lib/hubLabels";
 import type { HubDecision } from "../lib/types";
 import type { ApprovalCardView } from "../../../shared/hub/views";
+import { REJECT_FIRST_HINT, REJECT_REASON_MIN, cardLocks, isActionable, isOpenCard } from "../../../shared/hub/approvalRules";
 import { DeliveryChip } from "./DeliveryChip";
 import { SendToPicker } from "./SendToPicker";
 
-const EXIT_STATES = new Set(["pending_approval", "failed", "approved"]);
-/** Statuses with buttons: a draft waiting, a failed send to try again, a text held because texting is off. */
-export const isActionable = (card: Pick<ApprovalCardView, "status" | "outcome">): boolean =>
-  card.status === "pending_approval" || card.status === "failed" || (card.status === "approved" && card.outcome.text === "Approved — SMS disabled");
-
-/** Statuses a card stays on the screen for, with its reason: waiting, held, failed and refused. */
-export const isOpenCard = (status: string): boolean => EXIT_STATES.has(status) || status === "blocked" || status === "approving";
-
-export const REJECT_FIRST_HINT = "Type a reason first";
+// The card's rules (what is greyed, why, what the buttons say) are shared/hub/approvalRules.ts: the field app's card
+// reads the same ones. Re-exported here for the screens that already import them from this file.
+export { REJECT_FIRST_HINT, isActionable, isOpenCard };
 
 type Mode = "view" | "edit" | "reject";
 
@@ -75,12 +70,10 @@ export function ApprovalCard({
   const customerFacing = card.chip.tone === "customer";
   const isEmail = card.channel === "email";
 
-  const lock = !canApprove ? approveReason : card.approve.blockedReason;
   // Edit is greyed only for reasons editing cannot cure (the power, consent, marketing...). A draft that is
   // blocked because of its own words, or a missing address, keeps Edit live: Edit is the remedy.
-  const editLock = !canApprove ? approveReason : card.approve.editBlockedReason;
-  const lockText = lock ?? "";
-  const retry = card.status === "failed" ? "Try sending again" : card.status === "approved" ? "Send now" : card.approve.label;
+  const { lock, editLock, rejectLock, approveLabel: retry } = cardLocks(card, canApprove, approveReason);
+  const lockText = rejectLock ?? "";
 
   const done = (result: HubDecision) => {
     setMode("view");
@@ -242,7 +235,7 @@ export function ApprovalCard({
         <form
           className="mt-2 space-y-2 rounded border border-red-200 bg-red-50 p-2"
           aria-label="Reject draft"
-          onSubmit={(e) => { e.preventDefault(); if (reason.trim().length >= 3 && !busy) reject.mutate(); }}
+          onSubmit={(e) => { e.preventDefault(); if (reason.trim().length >= REJECT_REASON_MIN && !busy) reject.mutate(); }}
         >
           <label className="block text-xs font-medium text-rce-soft">
             Why?
@@ -252,12 +245,12 @@ export function ApprovalCard({
             <button
               type="submit"
               className="btn btn-danger text-xs"
-              disabled={reason.trim().length < 3 || busy}
-              title={reason.trim().length < 3 ? REJECT_FIRST_HINT : "Rejects this draft; nothing is sent and your reason is kept"}
+              disabled={reason.trim().length < REJECT_REASON_MIN || busy}
+              title={reason.trim().length < REJECT_REASON_MIN ? REJECT_FIRST_HINT : "Rejects this draft; nothing is sent and your reason is kept"}
             >
               {reject.isPending ? "Rejecting…" : "Reject draft"}
             </button>
-            {reason.trim().length < 3 && <span className="text-xs text-rce-muted">{REJECT_FIRST_HINT}</span>}
+            {reason.trim().length < REJECT_REASON_MIN && <span className="text-xs text-rce-muted">{REJECT_FIRST_HINT}</span>}
             <button type="button" className="btn btn-secondary text-xs" onClick={() => { setMode("view"); setReason(""); setError(null); }}>Cancel</button>
           </div>
         </form>

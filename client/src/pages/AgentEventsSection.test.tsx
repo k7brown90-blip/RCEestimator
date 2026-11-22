@@ -71,7 +71,7 @@ describe("AgentEventsSection for Kyle", () => {
   it("shows the no-address banner with its exact words, and the no-secret banner, only when they apply", async () => {
     show([], { ...CONFIG, urlSet: false, secretSet: false });
     expect((await screen.findByTestId("agent-events-no-url")).textContent).toBe(NO_URL_BANNER);
-    expect(NO_URL_BANNER).toBe("No receiving address is set (HUB_AGENT_WEBHOOK_URL in Railway). Events are being kept — press Resend once it is set.");
+    expect(NO_URL_BANNER).toBe("No receiving address is set. Add the agents' address in the Agent webhooks card below. Events are being kept — press Resend once it is set.");
     expect(screen.getByTestId("agent-events-no-secret").textContent).toBe(NO_SECRET_BANNER);
     expect(NO_SECRET_BANNER).toBe("HUB_WEBHOOK_SECRET is not set — nothing is sent until it is.");
   });

@@ -4248,8 +4248,14 @@ model HubMessage {
   createdAt          DateTime        @default(now())
   sentAt             DateTime?
   deliveredAt        DateTime?
+  /// One id per COMPOSED message, made by the screen that sends it and reused on every retry of it
+  /// (work order agent-team, C5b). A repeat of the same id by the same author is the same message:
+  /// postMessage returns the existing row instead of making a second. Null for everything that is not a
+  /// person's in-app post; Postgres lets any number of nulls share the unique key.
+  clientMessageId    String?
   attachments        HubAttachment[]
 
+  @@unique([authorKey, clientMessageId])
   @@index([threadId, createdAt])
   @@index([status, createdAt])
   @@index([channel, toPhone10, status])

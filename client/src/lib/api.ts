@@ -938,7 +938,8 @@ export const api = {
    * sending an email straight from the CRM." `to: null` uses the record's own primary email.
    */
   sendRecordEmail: (input: { target: "lead" | "account" | "job"; id: string; to?: string | null; cc?: string[]; subject: string; body: string; estimateId?: string }) =>
-    request<{ sent: true; to: string; cc?: string[]; suppressed: boolean }>("/communications/email", {
+    // The AI admin's session does not send: the email is left as a draft for approval ({ sent: false, drafted: true }), work order agent-team U4b.
+    request<{ sent: boolean; drafted?: boolean; messageId?: string; to: string; cc?: string[]; suppressed: boolean }>("/communications/email", {
       method: "POST",
       body: JSON.stringify(input),
     }),
@@ -1606,8 +1607,12 @@ export const api = {
   /** Open a job's crew thread, making it the first time. */
   openJobThread: (visitId: string) =>
     request<{ id: string }>(`/hub/threads/job/${encodeURIComponent(visitId)}`, { method: "POST" }),
-  /** photoIds: a job thread's photos (VisitPhoto ids filed on that job). attachmentIds: a Team thread's photos (uploadHubAttachment). */
-  postHubMessage: (threadId: string, input: { body: string; photoIds?: string[]; attachmentIds?: string[] }) =>
+  /**
+   * photoIds: a job thread's photos (VisitPhoto ids filed on that job). attachmentIds: a Team thread's photos (uploadHubAttachment).
+   * clientMessageId: ONE id per composed message, sent again on every retry of it: the server answers a repeat with the message it
+   * already made instead of making a second.
+   */
+  postHubMessage: (threadId: string, input: { body: string; photoIds?: string[]; attachmentIds?: string[]; clientMessageId?: string }) =>
     request<{ id: string }>(`/hub/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", body: JSON.stringify(input) }),
   markHubThreadRead: (threadId: string) =>
     request<void>(`/hub/threads/${encodeURIComponent(threadId)}/read`, { method: "POST" }),
@@ -2715,7 +2720,8 @@ export interface Technician {
   phone?: string | null;
   employeeNumber?: string | null;
   role: string;
-  accessToken: string;
+  /** Kyle's session only: every other session gets the row without it (work order agent-team, U10). */
+  accessToken?: string;
   isActive: boolean;
   /** Set by the Team page's "verify calendar" probe — Google can read their calendar. */
   calendarShared: boolean;

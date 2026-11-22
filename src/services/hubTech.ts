@@ -17,8 +17,11 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import {
-  HubError, ensureTeamThread, findVisibleThread, unreadCounts, visibleThreadWhere, type HubReader,
+  HubError, ensureTeamThread, findVisibleThread, readerForKey, unreadCounts, visibleThreadWhere, type HubReader,
 } from "./hub";
+import { listApprovalCards } from "./hubCards";
+import { FIELD_CRM_ONLY_KINDS, FIELD_CRM_ONLY_REASON } from "../../shared/hub/cards";
+import type { ApprovalsResponse } from "../../shared/hub/views";
 import { THREAD_MESSAGE_LIMIT } from "./hubInbox";
 import { stagedPhotos } from "./hubAttachments";
 import type { TechBadge, TechMessage, TechThreadDetail, TechThreadRow, TechThreadsResponse } from "../../shared/hub/views";
@@ -38,6 +41,39 @@ export function techReader(tech: { id: string; name: string }): HubReader {
     key: `tech:${tech.id}`, kind: "tech", display: tech.name, technicianId: tech.id,
     threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false,
   };
+}
+
+/**
+ * The ONE approver rule, seen from the field (work order agent-team, U10 under default D1): a technician may decide
+ * what the agents draft only when the person they are is linked to a CRM login that holds the approve_drafts power, or
+ * is Kyle's own principal login. It is the CRM's test (readerForKey applies the same canApprove rule to a stored
+ * login), never the technician's role. Returns the OFFICE reader of that login: the decisions are made, audited and
+ * shown as that person's CRM identity, so an approval reads the same whichever phone or desk it was made on.
+ * Null for everyone else (a technician with no login, a login without the power, a login that is turned off).
+ */
+export async function techApproverReader(technicianId: string, db: PrismaClient = defaultPrisma): Promise<HubReader | null> {
+  const login = await db.crmLogin.findUnique({ where: { technicianId }, select: { id: true } });
+  if (!login) return null;
+  const found = await readerForKey("user:" + login.id, db);
+  return found?.canApprove ? found.reader : null;
+}
+
+/**
+ * The field's "Needs approval" list for this technician: the CRM's cards, built by the CRM's card builder (a
+ * technician's own message filter hides drafts and customer threads on purpose, so an approver reads the cards, not
+ * the messages), minus the kinds only the CRM decides. A technician who may not approve gets an empty list that
+ * says so, so the screen never shows them the chip.
+ */
+export async function techApprovals(technicianId: string, db: PrismaClient = defaultPrisma): Promise<{ approver: HubReader | null; response: ApprovalsResponse }> {
+  const approver = await techApproverReader(technicianId, db);
+  if (!approver) return { approver: null, response: { cards: [], canApprove: false, approveReason: null } };
+  return { approver, response: await listApprovalCards(approver, { status: "pending", excludeKinds: FIELD_CRM_ONLY_KINDS }, true, db) };
+}
+
+/** A card kind only the CRM decides is refused here, by id, as well as left out of the list. */
+export async function assertFieldDecidable(messageId: string, db: PrismaClient = defaultPrisma): Promise<void> {
+  const row = await db.hubMessage.findUnique({ where: { id: messageId }, select: { actionKind: true } });
+  if (row?.actionKind && FIELD_CRM_ONLY_KINDS.includes(row.actionKind)) throw new HubError(FIELD_CRM_ONLY_REASON, 409);
 }
 
 /** The same "still on my list" test as GET /health-record/assignments. */
