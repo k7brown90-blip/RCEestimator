@@ -19,6 +19,20 @@ export const ADMIN_PASSWORD_MIN = 12;
 /** bcrypt only reads the first 72 bytes; refuse longer than that rather than silently truncate. */
 export const ADMIN_PASSWORD_MAX_BYTES = 72;
 
+/**
+ * The AI admin's username may not be the same as a person's CRM login (work order agent-team, HA1:
+ * "AI admin username may not collide with a person's login"). The sign-in door checks AdminLogin
+ * first, so a shared name would silently shadow the person. Compared case-insensitively. The route
+ * answers this with 409.
+ */
+export class UsernameTakenError extends Error {
+  readonly statusCode = 409;
+  constructor(message: string) {
+    super(message);
+    this.name = "UsernameTakenError";
+  }
+}
+
 export interface AdminLoginView {
   configured: boolean;
   username: string | null;
@@ -62,6 +76,12 @@ export async function saveAdminLogin(
   password: string,
   db: PrismaClient = defaultPrisma,
 ): Promise<AdminLogin> {
+  // lower() = lower(), not Prisma's ILIKE-based insensitive mode, which would read _ and % as wildcards.
+  const taken = await db.$queryRaw<Array<{ id: string }>>`
+    SELECT "id" FROM "CrmLogin" WHERE lower("username") = lower(${username}) LIMIT 1`;
+  if (taken.length > 0) {
+    throw new UsernameTakenError("That username is already a person's CRM login. Pick a different one for the AI admin.");
+  }
   const passwordHash = await bcrypt.hash(password, 10);
   const existing = await getAdminLogin(db);
   if (!existing) {

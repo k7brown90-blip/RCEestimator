@@ -1,6 +1,6 @@
 // Bump on any change to this file — a new name is what forces waiting clients
 // to reinstall and drop the previous cache.
-const CACHE_NAME = "rce-v4";
+const CACHE_NAME = "rce-v5";
 const APP_SHELL = "/";
 
 self.addEventListener("install", (event) => {
@@ -72,6 +72,47 @@ self.addEventListener("fetch", (event) => {
         }
         return response;
       });
+    })
+  );
+});
+
+/**
+ * Web push for Messages (work order agent-team, U7). The server sends a title, one generic line, a tap URL
+ * and a tag - never a customer's name, address or phone, never message text. Showing it is all this does;
+ * what a tap opens is decided by the URL the server chose (/messages?thread=<id>).
+ */
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (e) {
+    data = {};
+  }
+  const title = typeof data.title === "string" && data.title ? data.title : "Red Cedar Messages";
+  const options = {
+    body: typeof data.body === "string" ? data.body : "",
+    tag: typeof data.tag === "string" ? data.tag : undefined,
+    icon: "/logo.png",
+    data: { url: typeof data.url === "string" ? data.url : "/messages" },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  // Only a path on this site: the notification's URL is a path (/messages?thread=...), never another origin.
+  let target = "/messages";
+  const wanted = event.notification.data && event.notification.data.url;
+  if (typeof wanted === "string" && wanted.startsWith("/") && !wanted.startsWith("//") && !wanted.startsWith("/field")) {
+    target = wanted;
+  }
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+      const open = windows.find((w) => new URL(w.url).origin === self.location.origin && !new URL(w.url).pathname.startsWith("/field"));
+      if (open) {
+        return open.focus().then(() => (typeof open.navigate === "function" ? open.navigate(target) : undefined));
+      }
+      return self.clients.openWindow(target);
     })
   );
 });

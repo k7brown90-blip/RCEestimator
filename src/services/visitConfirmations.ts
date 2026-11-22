@@ -60,12 +60,27 @@ export async function ensureConfirmationToken(visitId: string): Promise<string> 
 
 export interface VisitContact {
   visitId: string;
+  /** The account the visit is for: the text is filed in that customer's conversation. */
+  customerId?: string | null;
   customerName: string;
   email?: string | null;
   phone?: string | null;
   address: string;
   scheduledStart: Date;
+  /**
+   * The end of the booked block. For a consultation (an estimate visit) it is the 2-hour arrival window the
+   * text's header prints ("Appointment Confirmation Mon 11/23, 8-10 AM"); for production work it is the end of
+   * the whole job, so the header prints only the start.
+   */
+  scheduledEnd?: Date | null;
+  /** consultation ("estimate") or production work, as appointmentKindFor() says it. */
+  visitKind?: "estimate" | "production";
   jobType?: string | null;
+}
+
+/** The window a header names for a visit: the arrival window of a consultation, the start alone for a job. */
+export function headerWindow(start: Date, end: Date | null | undefined, kind: "estimate" | "production" | undefined): { start: Date; end: Date | null } {
+  return { start, end: kind === "estimate" && end ? end : null };
 }
 
 /**
@@ -111,8 +126,14 @@ export async function sendVisitConfirmationRequest(c: VisitContact): Promise<{ e
   // The whole function is additionally behind class 1 at its call sites in scheduling.ts.
   if (c.phone) {
     if (twilioSendEnabled("customerLifecycleSms")) {
-      const sms = `Hi ${firstName(c.customerName)}, this is Red Cedar Electric. Please confirm your appointment on ${dateStr} at ${timeStr}. Reply YES to confirm, RESCHEDULE for a new time, or NO to cancel. Details: ${url} Reply STOP to opt out.`;
-      result.sms = (await sendSms(c.phone, sms)) !== null;
+      // The company name, the reason label and "Reply STOP to opt out." are the composer's (inside sendSms).
+      const sms = `Hi ${firstName(c.customerName)}, please confirm your appointment on ${dateStr} at ${timeStr}. Reply YES to confirm, RESCHEDULE for a new time, or NO to cancel. Details: ${url}`;
+      result.sms = (await sendSms(c.phone, sms, {
+        messageClass: "transactional",
+        category: "confirmation_request",
+        when: headerWindow(c.scheduledStart, c.scheduledEnd, c.visitKind),
+        hub: { customerId: c.customerId ?? null, visitId: c.visitId },
+      })) !== null;
     } else {
       logTwilioSendSkipped("customerLifecycleSms", `Confirmation request SMS for visit ${c.visitId} suppressed; the email half is unaffected.`);
     }
@@ -177,7 +198,11 @@ export async function applyConfirmationAction(
     // GATED (2026-08-13). The visit row already carries confirmationStatus/confirmationChannel,
     // so the customer's decision is durably recorded and visible in the CRM without the text.
     if (twilioSendEnabled("operatorNotifications")) {
-      sendSms(KYLE_PHONE, kyleMsg[action]).catch((err) => console.error("[VisitConfirmations] Kyle SMS failed:", err));
+      // Both doors reach here (the customer's text reply and the email link), so the customer and the visit are
+      // named once, for both: the text is filed in that customer's conversation.
+      sendSms(KYLE_PHONE, kyleMsg[action], {
+        messageClass: "internal", category: "internal_alert", hub: { customerId: visit.customerId, visitId },
+      }).catch((err) => console.error("[VisitConfirmations] Kyle SMS failed:", err));
     } else {
       logTwilioSendSkipped("operatorNotifications", `Visit ${visitId} marked ${target}; Kyle not texted — the status is on the visit row.`);
     }
@@ -232,7 +257,13 @@ export async function sendVisitReminders(now = new Date()): Promise<number> {
       if (twilioSendEnabled("customerLifecycleSms")) {
         await sendSms(
           visit.customer.phone,
-          `Hi ${firstName(visit.customer.name)}, reminder from Red Cedar Electric: we'll see you tomorrow, ${dateStr} at ${timeStr}. Reply RESCHEDULE if you need a new time. Reply STOP to opt out.`,
+          `Hi ${firstName(visit.customer.name)}, we'll see you tomorrow, ${dateStr} at ${timeStr}. Reply RESCHEDULE if you need a new time.`,
+          {
+            messageClass: "transactional",
+            category: "visit_reminder",
+            when: headerWindow(start, visit.scheduledEnd, visit.status === "estimate" ? "estimate" : "production"),
+            hub: { customerId: visit.customerId, visitId: visit.id },
+          },
         ).catch((err) => console.error("[VisitReminders] SMS failed:", err));
       } else {
         logTwilioSendSkipped("customerLifecycleSms", `Reminder SMS for visit ${visit.id} suppressed; the reminder email is unaffected.`);
@@ -285,13 +316,16 @@ export async function notifyTechnicianOfAssignment(
     logTwilioSendSkipped("technicianSends", `Assignment (${event}) for visit ${visitId} not texted to ${tech.name}${tech.email ? "; the assignment email still sent" : " — NO EMAIL ON FILE for this tech"}.`);
   } else if (tech.phone) {
     const sms = [
-      `${smsLead[event]} — Red Cedar Electric`,
+      // The company name is the "Red Cedar Electric:" prefix sendSms puts on every internal text.
+      smsLead[event],
       `${visit.customer.name} — ${address}`,
       `${purpose}`,
       `When: ${when}`,
       event !== "cancelled" ? "Details in the field app." : null,
     ].filter(Boolean).join("\n");
-    sendSms(tech.phone, sms).catch((err) => console.error("[TechNotify] SMS failed:", err));
+    sendSms(tech.phone, sms, {
+      messageClass: "internal", category: "tech_notice", hub: { technicianId: tech.id, visitId },
+    }).catch((err) => console.error("[TechNotify] SMS failed:", err));
   }
 
   if (tech.email) {

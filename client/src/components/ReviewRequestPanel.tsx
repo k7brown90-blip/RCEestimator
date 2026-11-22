@@ -119,6 +119,8 @@ export function ReviewRequestPanel({
     onSuccess: (r) => {
       setSendMessage(`Review request emailed to ${r.to}.`);
       void queryClient.invalidateQueries({ queryKey: ["email-deliveries", "job", jobId, "review_request"] });
+      // The account's Conversation timeline lists this email too.
+      void queryClient.invalidateQueries({ queryKey: ["hub-timeline"] });
     },
     // The server's refusal (no completed job, already asked on that job, no email on file) is
     // readable text — surfaced as-is, never swallowed.

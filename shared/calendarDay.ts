@@ -75,6 +75,25 @@ export function chicagoToday(now: Date = new Date()): string {
   return `${pick("year")}-${pick("month")}-${pick("day")}`;
 }
 
+/**
+ * A moment as the agents read it: ISO 8601 with the America/Chicago offset, like
+ * `2026-11-23T09:00:00-06:00` (CDT is `-05:00`). The offset is the zone's own at that instant, read
+ * through Intl (`longOffset`), never the server's. Whole seconds; the instant is not changed, only
+ * written in Chicago's clock. Throws RangeError for an invalid Date, as Intl does.
+ */
+export function toChicagoIso(instant: Date | string | number): string {
+  const at = instant instanceof Date ? instant : new Date(instant);
+  if (Number.isNaN(at.getTime())) throw new RangeError("Invalid date");
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: CALENDAR_DAY_TIME_ZONE, hourCycle: "h23", timeZoneName: "longOffset",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(at);
+  const pick = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  // longOffset prints "GMT-06:00" (or just "GMT" for a zero offset, which Chicago never has).
+  const offset = pick("timeZoneName").replace("GMT", "") || "+00:00";
+  return `${pick("year")}-${pick("month")}-${pick("day")}T${pick("hour") === "24" ? "00" : pick("hour")}:${pick("minute")}:${pick("second")}${offset}`;
+}
+
 /** `YYYY-MM-DD` plus (or minus) whole days. */
 export function addDays(ymd: string, days: number): string {
   return dayOf(new Date(dayInstant(ymd).getTime() + days * DAY_MS));

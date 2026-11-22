@@ -10,6 +10,7 @@
 import type express from "express";
 import { ZodError } from "zod";
 import { prisma } from "../lib/prisma";
+import { isAgentKeyShaped } from "../agentApi/keys";
 
 export interface TechRequest extends express.Request {
   technician?: { id: string; name: string; role: string; employeeNumber: string | null; licenseHolder: boolean };
@@ -20,6 +21,11 @@ export const technicianAuth: express.RequestHandler = (req: TechRequest, res, ne
     const token = req.headers.authorization?.replace("Bearer ", "");
     if (!token) {
       res.status(401).json({ success: false, error: { code: "unauthorized", message: "Technician token required" } });
+      return;
+    }
+    // An agent key is never a technician token: refused before any lookup (work order agent-team, K-U1).
+    if (isAgentKeyShaped(token)) {
+      res.status(401).json({ success: false, error: { code: "unauthorized", message: "Invalid or inactive technician token" } });
       return;
     }
     const technician = await prisma.technician.findUnique({ where: { accessToken: token } });

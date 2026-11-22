@@ -15,7 +15,7 @@
 import express from "express";
 import { prisma } from "../lib/prisma";
 import { asyncHandler } from "../lib/routeHelpers";
-import { sendSms, KYLE_PHONE, isFromKyle, fetchTwilioMedia } from "../services/twilio";
+import { sendSms, KYLE_PHONE, isFromKyle, fetchTwilioMedia, type SmsHubContext } from "../services/twilio";
 import { parseReceiptImage } from "../services/receiptVision";
 import { applyConfirmationAction, type ConfirmationAction } from "../services/visitConfirmations";
 import { findCustomerMatches, phoneDigits10 } from "../services/customerMatch";
@@ -39,12 +39,15 @@ const TZ = "America/Chicago";
  * InboundMessage row is what Kyle reads instead of the text while this is off, so nothing
  * that arrives is lost; what changes is that he has to look rather than be pushed.
  */
-async function forwardToKyle(message: string, detail: string): Promise<void> {
+async function forwardToKyle(message: string, detail: string, hub?: SmsHubContext): Promise<void> {
   if (!twilioSendEnabled("operatorNotifications")) {
     logTwilioSendSkipped("operatorNotifications", `${detail} Logged to InboundMessage; not forwarded by text.`);
     return;
   }
-  await sendSms(KYLE_PHONE, message).catch(() => {});
+  // INTERNAL: it goes to Kyle, and it QUOTES the customer's own words, so the composer never refuses it for
+  // containing the company name or "Reply STOP". With a customer or a job named it is filed in that
+  // conversation; an unknown number has no conversation, so it is not filed.
+  await sendSms(KYLE_PHONE, message, { messageClass: "internal", category: "internal_alert", hub }).catch(() => {});
 }
 
 const last10 = (phone: string): string => phoneDigits10(phone) ?? "";
@@ -140,7 +143,7 @@ async function captureReceipts(
     if (twilioSendEnabled("inboundAcks")) {
       const ack = `Receipt${captured === 1 ? "" : "s"} logged: ${summaries.join("; ")}. ${noteText ? `Note: "${noteText}". ` : ""}Review & confirm in the CRM.`;
       // Reply to the sender's own MMS — Kyle or a tech, never a campaign message.
-      await sendSms(senderPhone, ack, { bypassConsentCheck: true }).catch(() => {});
+      await sendSms(senderPhone, ack, { bypassConsentCheck: true, messageClass: "internal", category: "tech_notice", hub: technicianId ? { technicianId } : undefined }).catch(() => {});
     } else {
       logTwilioSendSkipped("inboundAcks", `${captured} receipt(s) captured and waiting at pending_review in the CRM; sender not acknowledged by text.`);
     }
@@ -248,11 +251,13 @@ inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"
       });
       // The note is already written to the visit above — the ack text is the gated part.
       if (twilioSendEnabled("technicianSends")) {
-        await sendSms(from, `Noted on the ${assignment.visit.customer.name} job. — Red Cedar Electric`, { bypassConsentCheck: true }).catch(() => {});
+        await sendSms(from, `Noted on the ${assignment.visit.customer.name} job.`, {
+          bypassConsentCheck: true, messageClass: "internal", category: "tech_notice", hub: { technicianId: tech.id, visitId: assignment.visitId },
+        }).catch(() => {});
       } else {
         logTwilioSendSkipped("technicianSends", `Note from ${tech.name} saved on visit ${assignment.visitId}; tech not acknowledged by text.`);
       }
-      await forwardToKyle(`TECH NOTE — ${tech.name} on ${assignment.visit.customer.name}: "${text}"`, `Tech note from ${tech.name}.`);
+      await forwardToKyle(`TECH NOTE — ${tech.name} on ${assignment.visit.customer.name}: "${text}"`, `Tech note from ${tech.name}.`, { customerId: assignment.visit.customerId, visitId: assignment.visitId });
       await log("technician", tech.id, "tech_note");
     } else {
       await forwardToKyle(`TECH SMS (no active job) — ${tech.name}: "${text}"`, `Text from ${tech.name}, no active job.`);
@@ -279,10 +284,15 @@ inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"
       if (upcoming) {
         const outcome = await applyConfirmationAction(upcoming.id, action, "sms_reply");
         const when = upcoming.scheduledStart ? formatWhen(upcoming.scheduledStart) : "your appointment";
+        // The words only: the company name and the reason label ("Appointment Confirmation", "Reschedule" or
+        // "Cancellation Request", with the visit's date) are the composer's header.
         const replies: Record<ConfirmationAction, string> = {
-          confirm: `You're confirmed for ${when}. See you then! — Red Cedar Electric`,
-          reschedule: `Got it — we'll call you shortly to arrange a new time. — Red Cedar Electric`,
-          cancel: `Understood — we've flagged your cancellation request and will follow up to confirm. — Red Cedar Electric`,
+          confirm: `You're confirmed for ${when}. See you then!`,
+          reschedule: `Got it — we'll call you shortly to arrange a new time.`,
+          cancel: `Understood — we've flagged your cancellation request and will follow up to confirm.`,
+        };
+        const replyCategory: Record<ConfirmationAction, string> = {
+          confirm: "confirmation_reply", reschedule: "reschedule_reply", cancel: "cancel_request_reply",
         };
         // Direct reply to a message they just sent — answering an inbound text
         // is permitted even for a recipient whose broadcast consent is false.
@@ -295,7 +305,15 @@ inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"
         // DOUBLE-GATED since 2026-08-13: class 1 governs "should the system answer for Kyle",
         // class 2 governs "may a Twilio text leave at all". Either one closed means no reply.
         if (customerSendsEnabled("inboundAutoReply") && twilioSendEnabled("customerLifecycleSms")) {
-          await sendSms(from, replies[outcome.action], { bypassConsentCheck: true }).catch(() => {});
+          await sendSms(from, replies[outcome.action], {
+            bypassConsentCheck: true,
+            messageClass: "transactional",
+            category: replyCategory[outcome.action],
+            when: upcoming.scheduledStart
+              ? { start: upcoming.scheduledStart, end: upcoming.status === "estimate" ? upcoming.scheduledEnd : null }
+              : null,
+            hub: { customerId: customer.id, visitId: upcoming.id },
+          }).catch(() => {});
         } else {
           if (!customerSendsEnabled("inboundAutoReply")) {
             logCustomerSendSkipped("inboundAutoReply", `Auto-reply to ${outcome.action} from customer ${customer.id} suppressed.`);
@@ -305,6 +323,7 @@ inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"
           await forwardToKyle(
             `CUSTOMER ${outcome.action.toUpperCase()} — ${customer.name} (${from}). Auto-reply is OFF; reply manually.`,
             `Customer ${customer.name} sent ${outcome.action.toUpperCase()}; the visit row is updated and needs a manual reply.`,
+            { customerId: customer.id, visitId: upcoming.id },
           );
         }
         await log("customer", customer.id, "confirmation_reply");
@@ -314,7 +333,7 @@ inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"
     }
 
     // Free-form customer text (or keyword with no upcoming visit) → forward
-    await forwardToKyle(`CUSTOMER SMS — ${customer.name} (${from}): "${text}"`, `Free-form text from customer ${customer.name}.`);
+    await forwardToKyle(`CUSTOMER SMS — ${customer.name} (${from}): "${text}"`, `Free-form text from customer ${customer.name}.`, { customerId: customer.id });
     await log("customer", customer.id, "forwarded");
     respond();
     return;

@@ -37,6 +37,7 @@ import { Drawer } from "../Drawer";
 import { LeadDuplicatePicker, type ConvertInput } from "../LeadDuplicatePicker";
 import { LeadForm } from "../LeadForm";
 import { LeadBallparkSection } from "../LeadBallparkSection";
+import { RecordConversation } from "../RecordConversation";
 import { SendEmailPanel } from "../SendEmailPanel";
 import { OpenDrawerButton } from "./OpenDrawerButton";
 import { WebsiteChatSection } from "./WebsiteChatSection";
@@ -368,9 +369,23 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
 
           {notice &&<p className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-900">{notice}</p>}
 
-          {lead.email && (
-            <SendEmailPanel target="lead" id={id} primaryEmail={lead.email} accountIdForContacts={lead.customerId ?? undefined} />
-          )}
+          {/*
+            ONE Conversation per record (work order agent-team, U2 / D3): the lead's emails, the website
+            chat's one line, what the hub holds — and, once the lead is an account, the account's whole
+            conversation. "Email the customer" is the ONE composer (it used to sit here alone, with its
+            own list of what was sent; the list is now this timeline).
+          */}
+          <RecordConversation
+            surface="lead"
+            record={{ key: "leadId", id }}
+            accountId={lead.customerId ?? null}
+            emailPanel={
+              lead.email
+                ? <SendEmailPanel target="lead" id={id} primaryEmail={lead.email} accountIdForContacts={lead.customerId ?? undefined} showThread={false} openLabel="Email the customer" />
+                : undefined
+            }
+            emailNote="This lead has no email address. Add one with Edit, then email from here."
+          />
         </div>
       )}
 

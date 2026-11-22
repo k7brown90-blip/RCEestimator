@@ -44,6 +44,7 @@ import { LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER } from "./invoiceGroup";
 import { selectionCap, type MarkupBand } from "./materialMarkupCap";
 import { frozenSelectionDiscount } from "./discounts";
 import { logSystemEvent } from "./systemEvents";
+import { emitHubEventSafe } from "./hubEvents";
 
 export { ACCEPTED_VIA };
 
@@ -268,6 +269,12 @@ export async function acceptEstimateFromOffice(
     from: est.status,
     actor,
   });
+
+  // The agents hear of the office-recorded acceptance (work order agent-team, BA6, team answer 5):
+  // once, after the transaction committed and the conflict return above, never inside the transaction.
+  // Every door that records an acceptance calls this function, so each fires it exactly once. It is
+  // NOT estimate.signed (nobody signed) and carries no job id (the job is made after this returns).
+  void emitHubEventSafe({ type: "estimate.accepted", estimateId });
 
   return { ok: true, estimateId, number: est.number, revision: est.revision, adopted: written.adopted };
 }

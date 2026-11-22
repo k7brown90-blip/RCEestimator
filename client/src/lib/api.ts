@@ -62,6 +62,22 @@ import type {
   BankStatementView,
   TreasurySettings,
   AdminLoginStatus,
+  AgentAccessMode,
+  AgentAccessState,
+  AgentKeyCreateInput,
+  AgentKeyPatchInput,
+  AgentWebhooksValue,
+  HubDecision,
+  HubAutoSendResponse,
+  HubNotifyResponse,
+  HubPushKey,
+  HubEventView,
+  HubEventsConfig,
+  HubEventsPage,
+  AgentKeyView,
+  AgentKeysData,
+  SessionView,
+  CrmLoginView,
   TreasurySweepRow,
   SweepView,
   CardSpendKind,
@@ -99,6 +115,9 @@ import type { DraftOptionSet } from "../../../shared/estimateOptions";
 import type { FinancingPlan } from "../../../shared/financing";
 import type { QuoteRange } from "../../../shared/quoteMoney";
 import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView, ReceiptReportOption } from "../../../shared/jobCompletion";
+import type {
+  ApprovalsResponse, AuditResponse, HubBadge, ThreadDetail, ThreadsResponse, TimelineResponse,
+} from "../../../shared/hub/views";
 export type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView, ReceiptReportOption };
 
 const API_BASE = "/api";
@@ -807,6 +826,20 @@ function refreshSessionIfNeeded(token: string | null): void {
   })();
 }
 
+/**
+ * The same Authorization header every request carries, and the same sliding renewal, for the one caller that
+ * cannot use `request`: the live Messages stream (lib/hubStream.ts reads a fetch body, and an EventSource cannot
+ * send a header). The token goes in the header only, never in a URL.
+ */
+export function authHeaders(): Record<string, string> {
+  const token = sessionToken();
+  refreshSessionIfNeeded(token);
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** The API's base path, for the stream. */
+export const apiBase = (): string => API_BASE;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = sessionToken();
   refreshSessionIfNeeded(token);
@@ -1358,9 +1391,7 @@ export const api = {
   // the delete half failed. An omitted field keeps its value; an explicit null clears it.
   patchAccountContact: (accountId: string, contactId: string, input: { label?: string; email?: string | null; phone?: string | null }) =>
     request<CustomerContact>(`/accounts/${accountId}/contacts/${contactId}`, { method: "PATCH", body: JSON.stringify(input) }),
-  // ─── Account conversation notes (2026-10-01) — newest first ─────────────────
-  accountNotes: (accountId: string) =>
-    request<CustomerNote[]>(`/accounts/${accountId}/notes`),
+  // ─── Account conversation notes (2026-10-01). Read through hubTimeline (one conversation per record, D3). ──
   addAccountNote: (accountId: string, input: { body: string; takenBy: string; visitId?: string | null }) =>
     request<CustomerNote>(`/accounts/${accountId}/notes`, { method: "POST", body: JSON.stringify(input) }),
   updateAccountNote: (accountId: string, noteId: string, input: { body?: string; takenBy?: string }) =>
@@ -1529,6 +1560,126 @@ export const api = {
   turnOffAdminLogin: () => request<AdminLoginStatus>("/settings/admin-login/disable", { method: "POST" }),
   turnOnAdminLogin: () => request<AdminLoginStatus>("/settings/admin-login/enable", { method: "POST" }),
   removeAdminLogin: () => request<AdminLoginStatus>("/settings/admin-login", { method: "DELETE" }),
+  // ── Settings -> "Agent keys" (K-U2). The plaintext key is in the create and rotate answers ONLY; these are
+  // called from handlers that keep it in component state, never in the query cache. The kill switch is the
+  // one owner-settings key agentAccess - the server stamps who and when. ──
+  agentKeys: () => request<AgentKeysData>("/settings/agent-keys"),
+  createAgentKey: (input: AgentKeyCreateInput) =>
+    request<{ key: AgentKeyView; secret: string }>("/settings/agent-keys", { method: "POST", body: JSON.stringify(input) }),
+  updateAgentKey: (id: string, input: AgentKeyPatchInput) =>
+    request<{ key: AgentKeyView }>(`/settings/agent-keys/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  rotateAgentKey: (id: string) =>
+    request<{ key: AgentKeyView; retired: AgentKeyView; secret: string }>(`/settings/agent-keys/${encodeURIComponent(id)}/rotate`, { method: "POST" }),
+  revokeAgentKey: (id: string) =>
+    request<{ key: AgentKeyView }>(`/settings/agent-keys/${encodeURIComponent(id)}/revoke`, { method: "POST", body: JSON.stringify({}) }),
+  setAgentAccess: (mode: AgentAccessMode) =>
+    request<{ key: "agentAccess"; value: AgentAccessState }>("/owner-settings/agentAccess", { method: "PUT", body: JSON.stringify({ mode }) }),
+  // ── Settings -> "Agent events" (BA5) and "Agent webhooks" (TC4). The log never carries a payload, an address or the secret. ──
+  hubEvents: (filter: { status?: string; type?: string; before?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (filter.status && filter.status !== "all") q.set("status", filter.status);
+    if (filter.type) q.set("type", filter.type);
+    if (filter.before) q.set("before", filter.before);
+    const qs = q.toString();
+    return request<HubEventsPage>(`/hub/events${qs ? `?${qs}` : ""}`);
+  },
+  hubEventsConfig: () => request<HubEventsConfig>("/hub/events/config"),
+  // ── The Messages hub (work order agent-team, U2/U3) ──
+  /** One record's whole conversation: call notes, emails and hub messages, newest first. Ask for ONE record. */
+  hubTimeline: (record: { customerId?: string; leadId?: string; visitId?: string; propertyId?: string }) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(record)) if (v) q.set(k, v);
+    return request<TimelineResponse>(`/hub/timeline?${q.toString()}`);
+  },
+  hubThreads: (filter: { kind?: string; status?: string; needsApproval?: boolean; q?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (filter.kind) q.set("kind", filter.kind);
+    if (filter.status) q.set("status", filter.status);
+    if (filter.needsApproval) q.set("needs", "approval");
+    if (filter.q?.trim()) q.set("q", filter.q.trim());
+    const qs = q.toString();
+    return request<ThreadsResponse>(`/hub/threads${qs ? `?${qs}` : ""}`);
+  },
+  hubThread: (id: string) => request<ThreadDetail>(`/hub/threads/${encodeURIComponent(id)}`),
+  patchHubThread: (id: string, input: { title?: string; status?: "open" | "closed" }) =>
+    request<ThreadDetail>(`/hub/threads/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  /** Open a job's crew thread, making it the first time. */
+  openJobThread: (visitId: string) =>
+    request<{ id: string }>(`/hub/threads/job/${encodeURIComponent(visitId)}`, { method: "POST" }),
+  /** photoIds: a job thread's photos (VisitPhoto ids filed on that job). attachmentIds: a Team thread's photos (uploadHubAttachment). */
+  postHubMessage: (threadId: string, input: { body: string; photoIds?: string[]; attachmentIds?: string[] }) =>
+    request<{ id: string }>(`/hub/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", body: JSON.stringify(input) }),
+  markHubThreadRead: (threadId: string) =>
+    request<void>(`/hub/threads/${encodeURIComponent(threadId)}/read`, { method: "POST" }),
+  editHubMessage: (id: string, input: { body: string }) =>
+    request<{ id: string; editedAt: string | null }>(`/hub/messages/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteHubMessage: (id: string, input: { reason: string }) =>
+    request<void>(`/hub/messages/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify(input) }),
+  hubBadge: () => request<HubBadge>("/hub/badge"),
+  /** A photo on a Team thread: the picture as the raw body (already shrunk to 1600 px). Held on the message once sent. */
+  uploadHubAttachment: (threadId: string, picture: Blob) =>
+    request<{ id: string; mimeType: string; sizeBytes: number }>(`/hub/threads/${encodeURIComponent(threadId)}/attachments`, {
+      method: "POST", headers: { "Content-Type": picture.type || "image/jpeg" }, body: picture,
+    }),
+  /** Take back a photo that was added and not sent. */
+  removeHubAttachment: (id: string) => request<void>(`/hub/attachments/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  // ── Notifications on this device (U7) and Settings -> "Message reminders" (U8, the owner setting hubNotify). ──
+  hubPushKey: () => request<HubPushKey>("/hub/push/key"),
+  hubPushSubscribe: (subscription: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    request<{ subscribed: true }>("/hub/push/subscription", { method: "POST", body: JSON.stringify(subscription) }),
+  /** removed:false = that device is not this person's, so the browser keeps its own subscription. */
+  hubPushUnsubscribe: (endpoint: string) =>
+    request<{ subscribed: false; removed: boolean }>("/hub/push/subscription", { method: "DELETE", body: JSON.stringify({ endpoint }) }),
+  /** Is THIS device (its address, sent in the body) on for the signed-in person? */
+  hubPushHere: (endpoint: string) =>
+    request<{ subscribedHere: boolean }>("/hub/push/subscription/status", { method: "POST", body: JSON.stringify({ endpoint }) }),
+  hubNotify: () => request<HubNotifyResponse>("/owner-settings/hubNotify"),
+  saveHubNotify: (value: { start: string; end: string }) =>
+    request<HubNotifyResponse>("/owner-settings/hubNotify", { method: "PUT", body: JSON.stringify(value) }),
+  // ── Approve / Edit / Reject (U4) and the Message audit log (Kyle only) ──
+  hubApprovals: (filter: { status?: "pending" | "all"; threadId?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (filter.status) q.set("status", filter.status);
+    if (filter.threadId) q.set("threadId", filter.threadId);
+    const qs = q.toString();
+    return request<ApprovalsResponse>(`/hub/approvals${qs ? `?${qs}` : ""}`);
+  },
+  approveHubMessage: (id: string) =>
+    request<HubDecision>(`/hub/messages/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({}) }),
+  editApproveHubMessage: (id: string, input: { body: string; subject?: string; to?: string; cc?: string[] }) =>
+    request<HubDecision>(`/hub/messages/${encodeURIComponent(id)}/edit-approve`, { method: "POST", body: JSON.stringify(input) }),
+  rejectHubMessage: (id: string, input: { reason: string }) =>
+    request<HubDecision>(`/hub/messages/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify(input) }),
+  hubAudit: (filter: { threadId?: string; actor?: string; action?: string; before?: string } = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(filter)) if (v) q.set(k, v);
+    const qs = q.toString();
+    return request<AuditResponse>(`/hub/audit${qs ? `?${qs}` : ""}`);
+  },
+  // ── Settings -> "AI auto-send rules" (BA8), the owner setting hubAutoSend. ──
+  hubAutoSend: () => request<HubAutoSendResponse>("/owner-settings/hubAutoSend"),
+  saveHubAutoSend: (categories: Record<string, boolean>) =>
+    request<HubAutoSendResponse>("/owner-settings/hubAutoSend", { method: "PUT", body: JSON.stringify({ categories }) }),
+  resendHubEvent: (id: string) =>
+    request<{ event: HubEventView }>(`/hub/events/${encodeURIComponent(id)}/resend`, { method: "POST" }),
+  agentWebhooks: () => request<{ key: "agentWebhooks"; value: AgentWebhooksValue }>("/owner-settings/agentWebhooks"),
+  saveAgentWebhooks: (value: AgentWebhooksValue) =>
+    request<{ key: "agentWebhooks"; value: AgentWebhooksValue }>("/owner-settings/agentWebhooks", { method: "PUT", body: JSON.stringify(value) }),
+  // ── Who is signed in (HA2/HA5) and Team -> "CRM login" (HA4, Kyle only). ──
+  session: () => request<SessionView>("/auth/session"),
+  crmLogins: () => request<{ logins: CrmLoginView[] }>("/crm-logins"),
+  saveCrmLogin: (technicianId: string, input: { username: string; role: string; password?: string }) =>
+    request<CrmLoginView>(`/crm-logins/${encodeURIComponent(technicianId)}`, { method: "PUT", body: JSON.stringify(input) }),
+  turnOffCrmLogin: (technicianId: string) =>
+    request<CrmLoginView>(`/crm-logins/${encodeURIComponent(technicianId)}/disable`, { method: "POST" }),
+  turnOnCrmLogin: (technicianId: string) =>
+    request<CrmLoginView>(`/crm-logins/${encodeURIComponent(technicianId)}/enable`, { method: "POST" }),
+  removeCrmLogin: (technicianId: string) =>
+    request<{ removed: true; technicianId: string }>(`/crm-logins/${encodeURIComponent(technicianId)}`, { method: "DELETE" }),
+  setCrmLoginPowers: (technicianId: string, powers: string[]) =>
+    request<CrmLoginView>(`/crm-logins/${encodeURIComponent(technicianId)}/powers`, { method: "PUT", body: JSON.stringify({ powers }) }),
+  setCrmLoginPrincipal: (technicianId: string, principal: boolean) =>
+    request<CrmLoginView>(`/crm-logins/${encodeURIComponent(technicianId)}/principal`, { method: "POST", body: JSON.stringify({ principal }) }),
   financialsSweep: (fresh = false) => request<SweepView>(`/financials/sweep${fresh ? "?fresh=1" : ""}`),
   runSweep: (input: { amount: number; confirm: string }) =>
     request<{ sweep: TreasurySweepRow; excessAtClick: number | null }>("/financials/sweep", { method: "POST", body: JSON.stringify(input) }),

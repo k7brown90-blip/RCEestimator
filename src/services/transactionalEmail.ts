@@ -35,6 +35,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import { getGmailTransporter, describeGmailFailure, missingGmailEnvVars } from "./gmailTransport";
 import { logSystemEvent } from "./systemEvents";
+import { REHEARSAL_SKIPPED, inRehearsal, noteRehearsalSkip } from "./rehearsal";
 
 export type EmailKind =
   | "estimate" | "invoice" | "appointment" | "deposit" | "balance" | "receipt"
@@ -80,7 +81,9 @@ export interface CustomerEmailInput {
 }
 
 export type SendCustomerEmailResult =
-  | { ok: true; provider: EmailProvider; id: string | null; deliveryId: string }
+  // provider is REHEARSAL_SKIPPED ("skipped (test account)") when a test account's approval skipped the send
+  // (services/rehearsal.ts): it is ok, it has no id and no delivery row, and nothing left the building.
+  | { ok: true; provider: EmailProvider | typeof REHEARSAL_SKIPPED; id: string | null; deliveryId: string }
   | { ok: false; error: string; deliveryId: string | null };
 
 export const RESEND_API_URL = "https://api.resend.com/emails";
@@ -224,6 +227,11 @@ export async function sendCustomerEmail(
   input: CustomerEmailInput,
   opts: { prisma?: PrismaClient } = {},
 ): Promise<SendCustomerEmailResult> {
+  // A rehearsal (an approval on a test account) emails nobody: this is the one door, so one check covers
+  // every customer email, the record email behind the Messages hub included. No EmailDelivery row is written.
+  if (inRehearsal()) {
+    return { ok: true, provider: noteRehearsalSkip("email", `${input.kind} email`), id: null, deliveryId: "" };
+  }
   const prisma = opts.prisma ?? defaultPrisma;
   const to = input.to.trim();
   const cc = input.cc ?? [];

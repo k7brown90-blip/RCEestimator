@@ -22,6 +22,7 @@ import type { StockMovement } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { InventoryError, WAREHOUSE_KEY, adhocItemId, applyMovement, serializeMovement, truckLocationKey } from "./inventory";
 import { defaultTruckId } from "./purchaseOrders";
+import { emitHubEventSafe } from "./hubEvents";
 import { estimateMaterialCost, materialCostForJobs, stockMaterialByJob, type MaterialCostResult, type StockMaterial } from "./jobCosting";
 import { aggregateMaterialList, isAssemblyRowType, type ComponentInput, type MaterialListEntry, type MaterialListLine } from "./priceBookAssembly";
 
@@ -440,7 +441,7 @@ export async function consumeForJob(input: ConsumeInput): Promise<StockMovement[
     const itemId = l.itemId?.trim() || adhocItemId(l.name ?? "");
     return { itemId, qty: l.qty, ...(await describe(itemId, l.name, l.unit)) };
   }));
-  return prisma.$transaction(async (tx) => {
+  const movements = await prisma.$transaction(async (tx) => {
     const out: StockMovement[] = [];
     for (const line of described) {
       out.push(await applyMovement(tx, {
@@ -451,6 +452,11 @@ export async function consumeForJob(input: ConsumeInput): Promise<StockMovement[
     }
     return out;
   });
+  // The Inventory agent hears that material was used (work order agent-team, BA6): after the movements
+  // committed, one event for the whole call, ids only (movement ids, never item names). Every door that
+  // consumes material for a job - the CRM, the field app - goes through this function.
+  void emitHubEventSafe({ type: "material.used", jobId: input.jobId, movementIds: movements.map((m) => m.id), truckId: truck.id });
+  return movements;
 }
 
 export interface ReturnInput {

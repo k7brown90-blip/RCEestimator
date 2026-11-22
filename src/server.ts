@@ -26,6 +26,9 @@ import {
 
 const port = Number(process.env.PORT ?? 4000);
 
+/** Every cron text below goes to Kyle: internal, so sendSms puts the "Red Cedar Electric:" prefix on it (no sign-off in the words). */
+const INTERNAL_ALERT = { messageClass: "internal", category: "internal_alert" } as const;
+
 // Fail fast on missing security-critical configuration in production.
 // Without PIN_HASH the entire CRM is public; without WEBHOOK_SECRET the lead
 // and scheduling webhooks reject everything; the default JWT secret is public.
@@ -70,14 +73,14 @@ async function startServer(): Promise<void> {
       try {
         const tomorrow = await getNextDaySchedule();
         if (tomorrow.events.length === 0) {
-          await sendSms(KYLE_PHONE, `Tomorrow — No jobs scheduled.\n\nRed Cedar Electric`);
+          await sendSms(KYLE_PHONE, "Tomorrow — No jobs scheduled.", INTERNAL_ALERT);
         } else {
           const lines = tomorrow.events.map((e) => {
             const loc = e.location ? ` — ${e.location}` : "";
             return `${e.startLocal}–${e.endLocal}: ${e.summary}${loc}`;
           });
           const msg = `Tomorrow — Red Cedar Schedule:\n${lines.join("\n")}\n\n${tomorrow.events.length} job${tomorrow.events.length === 1 ? "" : "s"} total`;
-          await sendSms(KYLE_PHONE, msg);
+          await sendSms(KYLE_PHONE, msg, INTERNAL_ALERT);
         }
       } catch (err) {
         console.error("[Cron] Kyle SMS digest failed:", err);
@@ -103,7 +106,7 @@ async function startServer(): Promise<void> {
         // The rows land in the follow-up queue, which is where Kyle works them from anyway.
         console.log(`[Cron] Created ${result.created} inspection renewal lead(s).`);
         if (twilioSendEnabled("operatorNotifications")) {
-          await sendSms(KYLE_PHONE, `Retention: ${result.created} annual inspection renewal lead(s) created — check the follow-up queue.\n\nRed Cedar Electric`).catch((err) => console.error("[Cron] Retention SMS failed:", err));
+          await sendSms(KYLE_PHONE, `Retention: ${result.created} annual inspection renewal lead(s) created — check the follow-up queue.`, INTERNAL_ALERT).catch((err) => console.error("[Cron] Retention SMS failed:", err));
         } else {
           logTwilioSendSkipped("operatorNotifications", `${result.created} renewal lead(s) created and waiting in the follow-up queue.`);
         }
@@ -121,7 +124,7 @@ async function startServer(): Promise<void> {
       if (result.created > 0) {
         console.log(`[Cron] Created ${result.created} planned-replacement lead(s).`);
         if (twilioSendEnabled("operatorNotifications")) {
-          await sendSms(KYLE_PHONE, `Upgrade track: ${result.created} planned replacement lead(s) created from documented end-of-life equipment.\n\nRed Cedar Electric`).catch((err) => console.error("[Cron] EOL SMS failed:", err));
+          await sendSms(KYLE_PHONE, `Upgrade track: ${result.created} planned replacement lead(s) created from documented end-of-life equipment.`, INTERNAL_ALERT).catch((err) => console.error("[Cron] EOL SMS failed:", err));
         } else {
           logTwilioSendSkipped("operatorNotifications", `${result.created} planned-replacement lead(s) created and waiting in the follow-up queue.`);
         }
@@ -407,6 +410,50 @@ async function startServer(): Promise<void> {
   };
   cron.schedule("*/10 * * * *", () => { void runBookingChatSweep(); }, { timezone: "America/Chicago" });
   console.log("[Cron] Website booking chat idle sweep every 10 minutes (30-minute idle cutoff).");
+
+  // Every 30 seconds - the signed agent-event outbox (work order agent-team, BA4). Delivers what is
+  // due: new events, retries at +30s/2m/10m/1h/6h, and events kept while HUB_WEBHOOK_SECRET was unset.
+  // OUTBOUND to Kyle's own agents, carrying ids and a templated summary only; it contacts no customer,
+  // so it is not behind the customer-send gate. Two overlapping runs cannot send one event twice (the
+  // claim in services/hubEvents.ts deliverEvent). Never throws.
+  let hubEventRunning = false;
+  cron.schedule("*/30 * * * * *", () => {
+    if (hubEventRunning) return;
+    hubEventRunning = true;
+    void (async () => {
+      try {
+        const { deliverDueEvents } = await import("./services/hubEvents");
+        await deliverDueEvents();
+      } catch (err) {
+        console.error("[HubEvents] delivery pass failed:", err);
+      } finally {
+        hubEventRunning = false;
+      }
+    })();
+  }, { timezone: "America/Chicago" });
+  console.log("[Cron] Agent event delivery every 30 seconds.");
+
+  // Every 5 minutes - the waiting-approval reminder (work order agent-team, U8). A draft that has waited 15
+  // minutes gets one push to the approvers, then at most one an hour, only Mon-Fri 8:00 AM-8:00 PM Chicago
+  // (the owner setting hubNotify; shared/sms/quietHours.ts isSendableNow). It messages Kyle's own devices, never
+  // a customer, so it is not behind the customer-send gate. Never throws.
+  let hubRenotifyRunning = false;
+  cron.schedule("*/5 * * * *", () => {
+    if (hubRenotifyRunning) return;
+    hubRenotifyRunning = true;
+    void (async () => {
+      try {
+        const { runRenotify } = await import("./services/hubRenotify");
+        const r = await runRenotify();
+        if (r.reminded > 0) console.log(`[HubRenotify] reminded about ${r.reminded} draft(s) waiting for approval`);
+      } catch (err) {
+        console.error("[HubRenotify] reminder pass failed:", err);
+      } finally {
+        hubRenotifyRunning = false;
+      }
+    })();
+  }, { timezone: "America/Chicago" });
+  console.log("[Cron] Waiting-approval reminder every 5 minutes (15 min, then hourly, Mon-Fri inside the hubNotify hours).");
 
   logAutomationGateState();
 }

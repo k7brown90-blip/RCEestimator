@@ -109,11 +109,13 @@ export function invoiceEmailRecord(info: PaymentInfo): EmailRecord {
   };
 }
 
-export function PaymentPanel({ jobId, estimateId, emailPanel = true }: {
+export function PaymentPanel({ jobId, estimateId, emailPanel = true, emailThread = true }: {
   jobId?: string;
   estimateId?: string;
   /** Mount the one "Email the customer" panel inside this card (default). A host that carries it itself passes false. */
   emailPanel?: boolean;
+  /** List what was sent under the email panel (default). The Job drawer shows it in its Conversation instead and passes false. */
+  emailThread?: boolean;
 }) {
   const queryClient = useQueryClient();
   const queryKey = ["paymentInfo", jobId ?? estimateId];
@@ -336,6 +338,7 @@ export function PaymentPanel({ jobId, estimateId, emailPanel = true }: {
             primaryEmail={info.email.customerEmail}
             accountIdForContacts={info.email.customerId}
             record={invoiceEmailRecord(info)}
+            showThread={emailThread}
           />
         </div>
       )}

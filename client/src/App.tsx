@@ -23,6 +23,7 @@ import { PriceBookCatalogPage } from "./pages/PriceBookCatalogPage";
 import { SigningModePage } from "./pages/SigningModePage";
 import { TrucksPage } from "./pages/TrucksPage";
 import { PurchasingPage } from "./pages/PurchasingPage";
+import { MessagesPage } from "./pages/MessagesPage";
 
 /** PUNCHLIST C6: the shell's catch-all — an unknown path inside the app said nothing before this. */
 function NotFoundPage() {
@@ -78,6 +79,8 @@ function App() {
                 <Route path="/jobs" element={<JobsPage />} />
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/leads" element={<LeadsPage />} />
+                {/* Messages (work order agent-team, U3): every conversation, and what is waiting for approval. */}
+                <Route path="/messages" element={<MessagesPage />} />
                 <Route path="/leads/new" element={<LeadFormPage />} />
                 <Route path="/leads/:leadId/edit" element={<LeadFormPage />} />
                 <Route path="/accounts" element={<AccountsPage />} />

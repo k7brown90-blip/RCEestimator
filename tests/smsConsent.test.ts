@@ -66,12 +66,26 @@ const fetchMock = vi.fn().mockResolvedValue({
   json: async () => ({ sid: "SM_test" }),
 });
 
-beforeAll(() => {
+/**
+ * U9 files every text the CRM sends under the customer or lead it was for, and the "first text to a number
+ * carries Reply STOP" rule reads those lines. A lead's thread survives the lead (its leadId is set null), so
+ * the lines this file writes are removed with the leads, and any left by an earlier run are cleared first.
+ */
+async function clearHubLinesForConsentFixtures() {
+  const leads = await prisma.lead.findMany({ where: { name: { startsWith: "Consent Test" } }, select: { id: true } });
+  const customers = await prisma.customer.findMany({ where: { name: { startsWith: "Consent Test" } }, select: { id: true } });
+  await prisma.hubThread.deleteMany({ where: { OR: [{ leadId: { in: leads.map((l) => l.id) } }, { customerId: { in: customers.map((c) => c.id) } }] } });
+  await prisma.hubMessage.deleteMany({ where: { channel: "sms", toPhone10: { startsWith: "6155559" } } });
+}
+
+beforeAll(async () => {
   vi.stubGlobal("fetch", fetchMock);
+  await clearHubLinesForConsentFixtures();
 });
 
 afterAll(async () => {
   vi.unstubAllGlobals();
+  await clearHubLinesForConsentFixtures();
   await prisma.lead.deleteMany({ where: { name: { startsWith: "Consent Test" } } });
   await prisma.customer.deleteMany({ where: { name: { startsWith: "Consent Test" } } });
 });
@@ -170,11 +184,19 @@ describe("web lead opt-in confirmation SMS", () => {
     // by name so this test doesn't finish — and bleed a pending fetch call
     // into the next test — before they land.
     await waitUntil(() => sentBodies().some((p) => p.get("To") === KYLE_PHONE));
-    await waitUntil(() => sentBodies().some((p) => p.get("Body") === webOptInConfirmation()));
+    // U9: the words are webOptInConfirmation(); the header and the footer are the composer's (this is the
+    // first text ever sent to the number, so it carries "Reply STOP to opt out.").
+    await waitUntil(() => sentBodies().some((p) => (p.get("Body") ?? "").includes(webOptInConfirmation())));
 
-    const optInCall = sentBodies().find((p) => p.get("Body") === webOptInConfirmation());
+    const optInCall = sentBodies().find((p) => (p.get("Body") ?? "").includes(webOptInConfirmation()));
     expect(optInCall).toBeDefined();
     expect(optInCall!.get("To")).toBe(WEB_OPT_IN_PHONE);
+    const sent = optInCall!.get("Body") ?? "";
+    expect(sent).toMatch(/^Red Cedar Electric: Text Alerts Confirmed \w{3} \d{1,2}\/\d{1,2}, \d{1,2}(:\d{2})? [AP]M\n/);
+    expect(sent.endsWith("\nReply STOP to opt out.")).toBe(true);
+    // The wording carries no STOP line of its own and no company name: the composer would have refused it.
+    expect(webOptInConfirmation()).not.toMatch(/reply\s+stop/i);
+    expect(webOptInConfirmation()).not.toMatch(/^\s*red\s+cedar/i);
   });
 
   it("TWILIO GATE: a consenting web lead produces ZERO Twilio calls — not to the lead, not to Kyle", async () => {
@@ -219,7 +241,7 @@ describe("web lead opt-in confirmation SMS", () => {
     // fire-and-forget work, so nothing bleeds into the next test.
     await waitUntil(() => sentBodies().some((p) => p.get("To") === KYLE_PHONE));
 
-    const optInCall = sentBodies().find((p) => p.get("Body") === webOptInConfirmation());
+    const optInCall = sentBodies().find((p) => (p.get("Body") ?? "").includes(webOptInConfirmation()));
     expect(optInCall).toBeUndefined();
   });
 });
@@ -227,7 +249,7 @@ describe("web lead opt-in confirmation SMS", () => {
 describe("sendSms consent gate", () => {
   it("blocks a number whose lead declined", async () => {
     // Lead created in the test above with smsConsent: false
-    const result = await sendSms(DECLINED_PHONE, "test message");
+    const result = await sendSms(DECLINED_PHONE, "test message", {"messageClass":"transactional","category":"thread_reply"});
     expect(result).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -236,32 +258,32 @@ describe("sendSms consent gate", () => {
     await prisma.customer.create({
       data: { name: "Consent Test Punctuated", phone: DECLINED_PUNCTUATED, smsConsent: false },
     });
-    const result = await sendSms("+16155559002", "test message");
+    const result = await sendSms("+16155559002", "test message", {"messageClass":"transactional","category":"thread_reply"});
     expect(result).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("sends when consent is true", async () => {
-    const result = await sendSms(CONSENTED_PHONE, "test message");
-    expect(result).toEqual({ sid: "SM_test" });
+    const result = await sendSms(CONSENTED_PHONE, "test message", {"messageClass":"transactional","category":"thread_reply"});
+    expect(result).toMatchObject({ sid: "SM_test" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("blocks a known lead who was never asked (null) — the checkbox is the only opt-in channel", async () => {
-    const result = await sendSms(NEVER_ASKED_PHONE, "test message");
+    const result = await sendSms(NEVER_ASKED_PHONE, "test message", {"messageClass":"transactional","category":"thread_reply"});
     expect(result).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("does not gate a number with no matching Lead/Customer at all (e.g. a technician)", async () => {
-    const result = await sendSms(UNKNOWN_PHONE, "test message");
-    expect(result).toEqual({ sid: "SM_test" });
+    const result = await sendSms(UNKNOWN_PHONE, "test message", {"messageClass":"transactional","category":"thread_reply"});
+    expect(result).toMatchObject({ sid: "SM_test" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("bypasses the gate for direct replies when asked to", async () => {
-    const result = await sendSms(DECLINED_PHONE, "reply to their inbound text", { bypassConsentCheck: true });
-    expect(result).toEqual({ sid: "SM_test" });
+    const result = await sendSms(DECLINED_PHONE, "reply to their inbound text", { bypassConsentCheck: true, ...{"messageClass":"transactional","category":"thread_reply"} });
+    expect(result).toMatchObject({ sid: "SM_test" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
@@ -292,7 +314,7 @@ describe("inbound STOP / START keywords", () => {
 
     // And the gate now blocks them.
     fetchMock.mockClear();
-    expect(await sendSms(STOP_PHONE, "should not go out")).toBeNull();
+    expect(await sendSms(STOP_PHONE, "should not go out", {"messageClass":"transactional","category":"thread_reply"})).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

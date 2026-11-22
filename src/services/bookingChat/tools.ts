@@ -17,6 +17,7 @@ import { FIXED_BLOCK_STARTS } from "./limits";
 import { checkServiceArea, gateRecordedAddress } from "./serviceArea";
 import { holdSlotForChat, listOfferableSlots, PLACEHOLDER_NAME } from "./scheduling";
 import { notifyKyleHeldUpdate } from "./notifyKyle";
+import { emitHubEventSafe } from "../hubEvents";
 
 /** Mutable per-turn context handed to every tool run. */
 export interface ToolContext {
@@ -333,6 +334,8 @@ async function updateWorkOrder(rawArgs: unknown, ctx: ToolContext): Promise<Tool
       });
       lead = created;
       leadCreated = true;
+      // The agents hear of a website-chat lead (work order agent-team, BA6), only when this call made it.
+      void emitHubEventSafe({ type: "lead.web_chat", leadId: created.id });
     } else {
       await prisma.bookingChat.update({ where: { id: chat.id }, data: chatData });
     }

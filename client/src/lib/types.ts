@@ -1297,6 +1297,32 @@ export type AdminLoginStatus = {
   updatedAt: string | null;
 };
 
+/** GET /auth/session (work order agent-team, HA2): who is signed in and what they may do. No token, no hash. */
+export type SessionView = {
+  kind: "kyle-pin" | "user" | "ai-admin";
+  name: string;
+  /** owner | admin | office | tech for a person, "owner" for the PIN, "ai-admin" for the AI admin. */
+  role: string;
+  isKyle: boolean;
+  /** The Kyle-only powers this session holds (shared/crmPowers.ts keys). */
+  powers: string[];
+};
+
+/** Team -> "CRM login" (HA4): one person's CRM sign-in as the server shows it. NEVER carries the hash. */
+export type CrmLoginView = {
+  id: string;
+  technicianId: string;
+  name: string;
+  username: string;
+  role: string;
+  isPrincipal: boolean;
+  powers: string[];
+  enabled: boolean;
+  hasPassword: boolean;
+  personActive: boolean;
+  updatedAt: string;
+};
+
 export type TreasurySweepRow = {
   id: string;
   financialAccountId: string;
@@ -2615,4 +2641,121 @@ export type BankConfirmations = {
   }[];
   /** Bill-months a statement covers and nothing confirms — the "stopped paying?" list. */
   unconfirmedBillMonths: number;
+};
+
+/** Settings -> "Agent keys" (work order agent-team, K-U2). The server never returns a hash, and the plaintext key only in the create and rotate answers. */
+export type AgentKeyStatus = "active" | "retiring" | "retired" | "revoked" | "expired";
+export type AgentAccessMode = "on" | "read_only" | "off";
+
+export type AgentKeyView = {
+  id: string;
+  name: string;
+  agentRole: string;
+  environment: "live" | "test" | string;
+  displayPrefix: string;
+  scopes: string[];
+  hubThreadKinds: string[];
+  writesEnabled: boolean;
+  /** Chicago ISO times. */
+  expiresAt: string | null;
+  retiresAt: string | null;
+  revokedAt: string | null;
+  revokedReason: string | null;
+  lastUsedAt: string | null;
+  lastUsedTool: string | null;
+  createdAt: string;
+  createdBy: string;
+  rotatedFromId: string | null;
+  status: AgentKeyStatus;
+};
+
+export type AgentAccessState = { mode: AgentAccessMode; changedAt: string | null; changedBy: string | null };
+
+export type AgentKeysData = {
+  pepperConfigured: boolean;
+  environment: "live" | "test" | string;
+  writeToolsAvailable: boolean;
+  agentAccess: AgentAccessState;
+  keys: AgentKeyView[];
+};
+
+export type AgentKeyCreateInput = {
+  name: string;
+  agentRole: string;
+  scopes: string[];
+  hubThreadKinds: string[];
+  /** YYYY-MM-DD: the end of that day in Chicago. */
+  expiresAt?: string | null;
+};
+
+export type AgentKeyPatchInput = {
+  name?: string;
+  scopes?: string[];
+  hubThreadKinds?: string[];
+  writesEnabled?: boolean;
+  expiresAt?: string | null;
+};
+
+/**
+ * Settings -> "Agent events" (work order agent-team, BA5): one signed event the CRM sent, or kept, for
+ * the AI agents. The summary is templated and holds no name, link or contact detail; the answer never
+ * carries the payload, the receiving address or the secret. Times are Chicago ISO.
+ */
+export type HubEventView = {
+  id: string;
+  type: string;
+  createdAt: string;
+  summary: string;
+  status: "pending" | "retrying" | "delivered" | "dead" | "no_target" | string;
+  target: string | null;
+  attempts: number;
+  lastError: string | null;
+  lastStatusCode: number | null;
+  nextAttemptAt: string | null;
+  deliveredAt: string | null;
+  attemptLog: Array<{ at: string; statusCode: number | null; error: string | null; ms: number | null }>;
+};
+export type HubEventsPage = { events: HubEventView[]; nextBefore: string | null };
+/** Booleans only: whether Admin or Inventory has a receiving address, and whether HUB_WEBHOOK_SECRET is set. */
+export type HubEventsConfig = {
+  /** Admin (the default target of eleven of the twelve event types) has a receiving address. */
+  urlSet: boolean;
+  secretSet: boolean;
+  /** HUB_AGENT_WEBHOOK_URL is set in Railway and allowed (Admin uses it when no address is saved). Never the address itself. */
+  adminEnvUrlSet: boolean;
+  /** HUB_AGENT_WEBHOOK_URL is set but is not an allowed https address, so it is ignored. */
+  adminEnvUrlRefused: boolean;
+};
+
+/** What Approve, Send my version and Reject answer: the card as it now stands, and what the send did. */
+export type HubDecision = {
+  card: import("../../../shared/hub/views").ApprovalCardView;
+  send: { status: string; error: string | null } | null;
+};
+
+/** GET/PUT /owner-settings/hubAutoSend: the value, and whether the server-side gate lets anything go. */
+export type HubAutoSendResponse = {
+  key: "hubAutoSend";
+  value: import("../../../shared/hub/autoSendCategories").HubAutoSendValue;
+  status?: import("../../../shared/hub/autoSendCategories").HubAutoSendStatus;
+};
+
+/** Settings -> "Message reminders" (U8), the owner setting `hubNotify`: the hours of the day, Chicago. Weekdays are fixed. */
+export type HubNotifyResponse = {
+  key: "hubNotify";
+  value: { start: string; end: string };
+};
+
+/** GET /hub/push/key (U7): are notifications set up on the server, the public key a browser subscribes with, and is this person already subscribed. */
+export type HubPushKey = {
+  configured: boolean;
+  publicKey: string | null;
+  reason: string | null;
+  subscribed: boolean;
+};
+
+/** Settings -> "Agent webhooks" (TC4), the owner setting `agentWebhooks`. `routes` holds only the types Kyle re-pointed. */
+export type AgentWebhooksValue = {
+  targets: Array<{ id: "admin" | "inventory"; url: string | null; enabled: boolean }>;
+  routes: Record<string, "admin" | "inventory">;
 };

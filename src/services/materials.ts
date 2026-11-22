@@ -268,6 +268,10 @@ export interface PromoteMaterialInput {
 }
 
 /** PROMOTE — create a brand new price book item for a material with no counterpart in the book.
+ * `deriveCost` says whether a companyCost the caller did not type may be taken from the material's
+ * own lastCost/packQty. lastCost is typed by whoever creates or edits the material (the material
+ * routes are not Kyle-only), so only a caller who may set a price (price_book_edit) passes true:
+ * otherwise a cost would reach the price book through a field nobody gated.
  * Reuses `createAtomic` (services/priceBookCatalog.ts) rather than a second creation path;
  * `createAtomic` itself refuses `rowType: "ASSEMBLY"`, so a promoted material can never become an
  * assembly. */
@@ -276,13 +280,14 @@ export async function promoteMaterial(
   id: string,
   input: PromoteMaterialInput,
   editedBy: string,
+  deriveCost: boolean,
 ): Promise<{ ok: true; material: Material; atomic: unknown } | { ok: false; reason: string }> {
   const material = await prisma.material.findUnique({ where: { id } });
   if (!material) return { ok: false, reason: `Material ${id} not found.` };
   if (material.itemId) return { ok: false, reason: `Material ${id} is already linked to ${material.itemId}. Unlink it before promoting.` };
 
   let companyCost = input.companyCost ?? null;
-  if (companyCost === null && material.lastCost !== null && material.packQty !== null) {
+  if (deriveCost && companyCost === null && material.lastCost !== null && material.packQty !== null) {
     companyCost = perUnitCostFromPack(material.lastCost, material.packQty);
   }
 

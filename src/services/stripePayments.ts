@@ -34,6 +34,7 @@ import { sendKyleNotificationEmail } from "./confirmationEmail";
 import { activeFinancingFeeFor, FINANCING_IN_PROGRESS, financingInProgress, type FinancingFeeView } from "./financingFee";
 import { BALANCE_DUE_TERMS } from "./paymentTerms";
 import { collectedOf, recordRefundEvent, recordRefundsFromCharge } from "./paymentRefunds";
+import { emitHubEventSafe } from "./hubEvents";
 
 export function stripeConfigured(): boolean {
   return Boolean(process.env.STRIPE_SECRET_KEY);
@@ -723,6 +724,9 @@ export async function dispatchStripeEvent(prisma: PrismaClient, event: Stripe.Ev
     // show something is paid"). Fire-and-forget — the payment is already durable.
     if (firstPaidRecording) {
       const row = await prisma.payment.findUnique({ where: { stripeSessionId: session.id }, select: { id: true } });
+      // The agents hear of the payment ONCE, on the first paid recording only (work order agent-team,
+      // BA6): a Stripe retry or a duplicate completed event is not a second payment.received.
+      if (row) void emitHubEventSafe({ type: "payment.received", paymentId: row.id });
       if (row) {
         const { sendPaymentReceiptEmail } = await import("./paymentReceipts");
         sendPaymentReceiptEmail(prisma, row.id).catch((err) =>

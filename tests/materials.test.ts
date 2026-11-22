@@ -204,7 +204,7 @@ describe("promote — create a new price book item for a material with no counte
     const result = await promoteMaterial(prisma, material.id, {
       description: "Duplex receptacle", category: "Test", idPrefix: "TPRM", rowType: "MATERIAL + LABOR",
       laborNormal: 0.25,
-    }, "test");
+    }, "test", true);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     createdItemIds.push((result.atomic as { itemId: string }).itemId);
@@ -222,7 +222,7 @@ describe("promote — create a new price book item for a material with no counte
     const material = await makeMaterial({ lastCost: 5, itemId: atomic.itemId });
     const result = await promoteMaterial(prisma, material.id, {
       description: "should fail", category: "Test", idPrefix: "TPRM", rowType: "MATERIAL + LABOR",
-    }, "test");
+    }, "test", true);
     expect(result.ok).toBe(false);
   });
 
@@ -230,7 +230,7 @@ describe("promote — create a new price book item for a material with no counte
     const material = await makeMaterial({ lastCost: 5 });
     const result = await promoteMaterial(prisma, material.id, {
       description: "should fail", category: "Test", idPrefix: "TPRM", rowType: "ASSEMBLY",
-    }, "test");
+    }, "test", true);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/ASSEMBLY/);
     // The material must not have been linked to anything by the failed attempt.

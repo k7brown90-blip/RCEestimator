@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { InspectionResultChip } from "../components/InspectionResultChip";
-import { ConversationNotes } from "../components/ConversationNotes";
+import { RecordConversation } from "../components/RecordConversation";
 import { ReviewRequestPanel } from "../components/ReviewRequestPanel";
 import { SendEmailPanel } from "../components/SendEmailPanel";
 import { GeneratorDesigner } from "../components/GeneratorDesigner";
@@ -410,23 +410,30 @@ export function AccountDetailPage() {
             the contact card." Used to be its own section below Addresses — whoever answers the
             phone now sees every way to reach this customer in one look, not two. */}
         {!editing && <AdditionalContacts accountId={account.id} />}
-        {!editing && (
-          <div className="mt-3 border-t border-rce-border/70 pt-3">
-            <SendEmailPanel target="account" id={accountId} primaryEmail={account.email ?? null} accountIdForContacts={accountId} />
-          </div>
-        )}
       </div>
 
-      {/* ── Conversation notes (Kyle, 2026-10-01) ─────────────────────────
-          The HOME of the account's call log: what the customer said, who took it, when.
-          Right under the contact card because that is where the person answering the phone is
-          looking. The same component sits in the job drawer, tagged to the job; this is the
-          whole list. */}
-      <ConversationNotes accountId={account.id} surface="account" />
+      {/* ── Conversation (Kyle, 2026-10-01; one timeline per record, work order agent-team U2 / D3) ──
+          The HOME of everything said to or about this customer: the call notes (what they said, who
+          took it, when), every email sent from any door, and the hub's messages. Right under the
+          contact card because that is where the person answering the phone is looking. "Email the
+          customer" used to be a button inside the contact card; it is the ONE composer, now one of
+          this section's two buttons, so it is not offered twice. The Job drawer shows the newest
+          three of this same conversation. */}
+      <RecordConversation
+        surface="account"
+        record={{ key: "customerId", id: account.id }}
+        accountId={account.id}
+        emailPanel={
+          <SendEmailPanel
+            target="account" id={accountId} primaryEmail={account.email ?? null}
+            accountIdForContacts={accountId} showThread={false} openLabel="Email the customer"
+          />
+        }
+      />
 
       {/* ── Google review — send and confirm (Kyle, 2026-10-02, item E / ruling E2) ──────────
           "Under the conversation notes on the main account" — literally right under it. Its own
-          component, not folded into ConversationNotes: see ReviewRequestPanel.tsx's header for
+          component, not folded into the conversation: see ReviewRequestPanel.tsx's header for
           why. */}
       <ReviewRequestPanel
         accountId={account.id}

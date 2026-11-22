@@ -106,6 +106,9 @@ export async function sendAlert(event: AlertEvent): Promise<AlertResult> {
   const result = await sendSms(operatorNumber(), body, {
     bypassConsentCheck: true,
     statusCallback: statusCallbackUrl(),
+    // To the operator alert number (or Kyle): an internal text, which only gets the "Red Cedar Electric:" prefix.
+    messageClass: "internal",
+    category: "internal_alert",
   });
   if (!result) {
     logSystemEvent("warn", "alerting", `Twilio unavailable — no SMS sent`, { event });

@@ -3,8 +3,14 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { isPublicRoute } from "./publicRoutes";
 import type { AuthOutcome, RequestAuthState } from "./accessLog";
-import { AI_ADMIN_SUB, currentAdminLoginFor } from "../services/adminLogin";
+import { AI_ADMIN_SUB, currentAdminLoginFor, getAdminLogin } from "../services/adminLogin";
+import { CRM_USER_SUB_PREFIX, currentCrmLoginFor, findCrmLoginByUsername, getPrincipalLogin } from "../services/crmLogin";
+import { CRM_POWER_KEYS } from "../../shared/crmPowers";
+import { isKyle } from "./kylePowers";
 import { prisma } from "../lib/prisma";
+import { agentKeyRouteFor } from "./publicRoutes";
+import { isAgentKeyShaped } from "../agentApi/keys";
+import { agentKeyGate } from "../agentApi/gate";
 
 /**
  * Record how the gate resolved, for the access log (P017). Auth decides the outcome; the log
@@ -38,6 +44,16 @@ const SESSION_HOURS = 8;
  * The middleware is now installed ahead of every route, and the only exemption is the allowlist.
  */
 export function pinAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // A route that lists agent keys (AGENT_KEY_ROUTES, work order agent-team K-U1) hands a key-shaped
+  // bearer to the agent gate FIRST, ahead of every PIN_HASH branch below, so that the dev/test
+  // convenience (no PIN_HASH) and a misconfigured production can never leave an agent route without
+  // its key check. An agent-only route (/mcp) hands over every request, key or not.
+  const agentRoute = agentKeyRouteFor(req.method, req.path);
+  if (agentRoute && (agentRoute.agentOnly || isAgentKeyShaped(req.headers.authorization?.replace("Bearer ", "")))) {
+    agentKeyGate(req, res, next);
+    return;
+  }
+
   // Dev/test convenience ONLY, and gated on NODE_ENV so the convenience cannot leak into
   // production by itself (PUNCHLIST B3).
   //
@@ -91,6 +107,16 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
     return;
   }
 
+  // An agent key (rce_live_ / rce_test_) is a different credential from every session token and is
+  // never given a session (work order agent-team, K-U1). On a route that lists agent keys
+  // (AGENT_KEY_ROUTES) it already went to the agent gate at the top of this function; anywhere else
+  // it is refused here, before jwt.verify and before any identity is built.
+  if (isAgentKeyShaped(token)) {
+    mark(req, "agent-key");
+    res.status(401).json({ code: "agent_key_not_accepted", reason: "Agent keys are not accepted here.", retryable: false });
+    return;
+  }
+
   let claims: string | jwt.JwtPayload;
   try {
     claims = jwt.verify(token, JWT_SECRET);
@@ -100,11 +126,44 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  // `sub` is "owner" for the PIN session and "ai-admin" for the AI admin's own login. It is an
-  // identity, never a credential — the token itself must not reach the log.
+  // `sub` is "owner" for the PIN session, "ai-admin" for the AI admin's own login and "user:<id>"
+  // for a person's CRM login. It is an identity, never a credential — the token itself must not
+  // reach the log.
   const actor = typeof claims === "object" && claims !== null && typeof claims.sub === "string"
     ? claims.sub
     : "unknown";
+
+  if (actor.startsWith(CRM_USER_SUB_PREFIX)) {
+    // A person's CRM login is only as good as its row: still on, same session version, the roster
+    // person still active. Role and powers are read from the row on THIS request, never from the
+    // token, so a grant, revoke or role change takes effect at once. A database error fails CLOSED.
+    const c = claims as jwt.JwtPayload;
+    void (async () => {
+      let row: Awaited<ReturnType<typeof currentCrmLoginFor>> = null;
+      try {
+        row = await currentCrmLoginFor(c.lid, c.ver);
+      } catch {
+        row = null;
+      }
+      if (!row || actor !== `${CRM_USER_SUB_PREFIX}${row.id}`) {
+        mark(req, "bad-credentials");
+        res.status(401).json({ error: "Invalid or expired session" });
+        return;
+      }
+      (req as Request & RequestAuthState)._crmLogin = {
+        id: row.id,
+        technicianId: row.technicianId,
+        name: row.technician.name,
+        username: row.username,
+        role: row.role,
+        isPrincipal: row.isPrincipal,
+        powers: [...row.powers],
+      };
+      mark(req, "ok", actor);
+      next();
+    })();
+    return;
+  }
 
   if (actor !== AI_ADMIN_SUB) {
     // Kyle's PIN session: unchanged, no database read.
@@ -156,10 +215,15 @@ export async function handlePinLogin(req: Request, res: Response): Promise<void>
   res.json(issueSessionToken());
 }
 
-/** Who a session token is for. `ver` and `aid` tie an ai-admin token to its AdminLogin row. */
+/**
+ * Who a session token is for. `ver` and `aid` tie an ai-admin token to its AdminLogin row; `lid` and
+ * `ver` tie a person's token to their CrmLogin row. The token carries NO role and NO powers - the
+ * gate reads those from the row on every request.
+ */
 type SessionIdentity =
   | { sub: "owner" }
-  | { sub: typeof AI_ADMIN_SUB; ver: number; aid: string };
+  | { sub: typeof AI_ADMIN_SUB; ver: number; aid: string }
+  | { sub: `user:${string}`; lid: string; ver: number };
 
 /**
  * The one place a session token is signed. PIN login, username/password login and refresh all call
@@ -184,11 +248,17 @@ const NO_SUCH_LOGIN_HASH = bcrypt.hashSync("no-such-login-" + Math.random().toSt
 const BAD_LOGIN = { error: "Invalid username or password" };
 
 /**
- * POST /auth/login — the AI admin's own sign-in (Kyle, 2026-11-15). PUBLIC (publicRoutes.ts, and
- * on the publicLimiter list in app.ts), like /auth/pin, because it cannot require the session it
- * issues. Every way to fail — missing field, unknown user, wrong password, login turned off — is
- * the SAME 401 body, and the bcrypt compare runs in every case. Credentials arrive in the JSON
- * body only, never a URL.
+ * POST /auth/login — the username/password sign-in: the AI admin (Kyle, 2026-11-15) and a person's
+ * CRM login (work order agent-team, HA2) share this one door. PUBLIC (publicRoutes.ts, and on the
+ * publicLimiter list in app.ts), like /auth/pin, because it cannot require the session it issues.
+ * The AdminLogin row and the CrmLogin row are BOTH looked up, concurrently, on every attempt (one
+ * query each), and the AI admin's row wins when both match (the two tables may not share a username).
+ * Every way to fail — missing field, unknown user, wrong password, login turned off, no password set,
+ * roster person deactivated, a tech-role login (no CRM sign-in yet) — is the SAME 401 body, and
+ * exactly ONE bcrypt compare runs in every case (against a throwaway hash when there is no usable
+ * row), so neither the body nor the number of database round trips nor the timing says which
+ * usernames exist.
+ * Credentials arrive in the JSON body only, never a URL.
  */
 export async function handleAdminLogin(req: Request, res: Response): Promise<void> {
   const body = (req.body ?? {}) as { username?: unknown; password?: unknown };
@@ -198,15 +268,35 @@ export async function handleAdminLogin(req: Request, res: Response): Promise<voi
   // A control character (a NUL above all — Postgres refuses it in a text parameter) is never a
   // saved username, so it is a miss like any other: no lookup to throw a 500, same compare, same 401.
   const lookupable = username !== "" && !/[\u0000-\u001f\u007f]/.test(username);
-  const row = lookupable ? await prisma.adminLogin.findUnique({ where: { username } }) : null;
-  const matches = await bcrypt.compare(password, row?.passwordHash ?? NO_SUCH_LOGIN_HASH);
+  // BOTH lookups run, concurrently, for every attempt - one query each - so the number of database
+  // round trips is the same whether the name is unknown, the AI admin's or a person's. The AI
+  // admin's row wins when both match (the two tables may not share a username). The person lookup is
+  // case-insensitive: the service refuses two logins that differ only by case, so there is at most one.
+  const [row, person] = lookupable
+    ? await Promise.all([prisma.adminLogin.findUnique({ where: { username } }), findCrmLoginByUsername(username)])
+    : [null, null];
+  // The ONE compare. A null password hash counts as a miss: compare against the throwaway.
+  const hash = row?.passwordHash ?? person?.passwordHash ?? NO_SUCH_LOGIN_HASH;
+  const matches = await bcrypt.compare(password, hash);
 
-  if (!row || !row.enabled || !password || !matches) {
-    res.status(401).json(BAD_LOGIN);
+  if (row) {
+    if (!row.enabled || !password || !matches) {
+      res.status(401).json(BAD_LOGIN);
+      return;
+    }
+    res.json(issueSessionToken({ sub: AI_ADMIN_SUB, ver: row.sessionVersion, aid: row.id }));
     return;
   }
 
-  res.json(issueSessionToken({ sub: AI_ADMIN_SUB, ver: row.sessionVersion, aid: row.id }));
+  // A tech-role login has no CRM sign-in yet: the same plain 401 as every other miss.
+  if (!person || !person.enabled || person.role === "tech" || person.passwordHash === null
+    || !person.technician.isActive || !password || !matches) {
+    res.status(401).json(BAD_LOGIN);
+    return;
+  }
+  res.json(issueSessionToken({
+    sub: `${CRM_USER_SUB_PREFIX}${person.id}`, lid: person.id, ver: person.sessionVersion,
+  }));
 }
 
 /**
@@ -240,6 +330,22 @@ export async function handleSessionRefresh(req: Request, res: Response): Promise
     res.json(issueSessionToken());
     return;
   }
+  if (typeof claims.sub === "string" && claims.sub.startsWith(CRM_USER_SUB_PREFIX)) {
+    // A person's session renews only while the login is still on, the version matches and the
+    // roster person is active; the fresh token carries the same `lid`/`ver`.
+    let row = null;
+    try {
+      row = await currentCrmLoginFor(claims.lid, claims.ver);
+    } catch {
+      row = null;
+    }
+    if (!row || claims.sub !== `${CRM_USER_SUB_PREFIX}${row.id}`) {
+      refuse();
+      return;
+    }
+    res.json(issueSessionToken({ sub: `${CRM_USER_SUB_PREFIX}${row.id}`, lid: row.id, ver: row.sessionVersion }));
+    return;
+  }
   if (claims.sub === AI_ADMIN_SUB) {
     let row = null;
     try {
@@ -255,6 +361,63 @@ export async function handleSessionRefresh(req: Request, res: Response): Promise
     return;
   }
   refuse();
+}
+
+/** The ONE who-am-I (work order agent-team, HA2): what kind of session this is, and what it may do. */
+export interface SessionView {
+  kind: "kyle-pin" | "user" | "ai-admin";
+  name: string;
+  role: string;
+  isKyle: boolean;
+  /** The Kyle-only powers this session holds (shared/crmPowers.ts keys). */
+  powers: string[];
+}
+
+/**
+ * GET /auth/session — who the caller is. Behind the session gate (NOT on the public allowlist), so
+ * it answers only a session the gate already accepted, and for a person it reflects the row as it
+ * is on THIS request (role and powers read fresh by the gate). Returns no token and no hash.
+ *
+ *   * the PIN (or the gate-disabled dev/test convenience): kind "kyle-pin", role "owner", every
+ *     power. The name is the principal CRM login's person when Kyle has marked one, else "Kyle".
+ *   * a person's login: kind "user", their own role; every power if it is the principal login,
+ *     otherwise exactly the powers Kyle granted.
+ *   * the AI admin: kind "ai-admin", no powers, isKyle false.
+ */
+export async function handleAuthSession(req: Request, res: Response): Promise<void> {
+  const state = req as Request & RequestAuthState;
+  let view: SessionView;
+
+  if (state._crmLogin) {
+    const login = state._crmLogin;
+    view = {
+      kind: "user",
+      name: login.name,
+      role: login.role,
+      isKyle: isKyle(req),
+      powers: login.isPrincipal ? [...CRM_POWER_KEYS] : [...login.powers],
+    };
+  } else if (state._authActor === AI_ADMIN_SUB) {
+    let name = "AI admin";
+    try {
+      name = (await getAdminLogin())?.username ?? name;
+    } catch {
+      // The name is decoration; the answer does not depend on it.
+    }
+    view = { kind: "ai-admin", name, role: "ai-admin", isKyle: false, powers: [] };
+  } else if (state._authActor === "owner" || state._authOutcome === "gate-disabled") {
+    let name = "Kyle";
+    try {
+      name = (await getPrincipalLogin())?.technician.name ?? name;
+    } catch {
+      // Same: fall back to the plain name.
+    }
+    view = { kind: "kyle-pin", name, role: "owner", isKyle: true, powers: [...CRM_POWER_KEYS] };
+  } else {
+    res.status(401).json({ error: "Invalid or expired session" });
+    return;
+  }
+  res.json(view);
 }
 
 /** Utility: generate a PIN hash for use in env vars */

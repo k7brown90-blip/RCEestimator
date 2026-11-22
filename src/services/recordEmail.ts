@@ -51,6 +51,7 @@
 import { prisma } from "../lib/prisma";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { isSuppressed } from "./emailCampaigns";
+import { resolveRecipients } from "./emailCc";
 
 export type RecordEmailTarget =
   | { kind: "lead"; leadId: string }
@@ -71,6 +72,10 @@ export interface SendRecordEmailInput {
 export interface SendRecordEmailResult {
   ok: boolean;
   suppressed: boolean;
+  /** The EmailDelivery row this send wrote (also on a failure), or null when it could not be written. */
+  deliveryId: string | null;
+  /** The transport's reason when the send failed. */
+  error: string | null;
 }
 
 /** Plain typed text -> the same branded shell every other customer email uses, newlines kept. */
@@ -82,6 +87,7 @@ export async function sendRecordEmail(input: SendRecordEmailInput): Promise<Send
   const to = input.to.trim();
   const suppressed = await isSuppressed(prisma, to);
 
+  const outcome: { deliveryId?: string | null; error?: string | null } = {};
   const ok = await sendBrandedEmail({
     to,
     ...(input.cc && input.cc.length > 0 ? { cc: input.cc } : {}),
@@ -93,7 +99,68 @@ export async function sendRecordEmail(input: SendRecordEmailInput): Promise<Send
     leadId: input.target.kind === "lead" ? input.target.leadId : null,
     customerId: input.target.kind === "account" ? input.target.customerId : null,
     visitId: input.target.kind === "job" ? input.target.visitId : null,
+    outcome,
   });
 
-  return { ok, suppressed };
+  return { ok, suppressed, deliveryId: outcome.deliveryId ?? null, error: outcome.error ?? null };
+}
+
+export interface SendRecordMessageInput {
+  target: RecordEmailTarget;
+  /** The address to send to; null or absent uses the record's own primary email. */
+  to?: string | null;
+  /** Already cleaned by cleanCc / ccSchema. */
+  cc?: string[];
+  subject: string;
+  body: string;
+  /** The estimate / invoice the message is about, so its drawer's thread shows it. */
+  estimateId?: string | null;
+}
+
+export type SendRecordMessageResult =
+  | { ok: true; to: string; cc: string[]; suppressed: boolean; deliveryId: string | null }
+  | { ok: false; status: 400 | 404 | 502; error: string; suppressed: boolean; deliveryId: string | null };
+
+/**
+ * The whole "email one person from a record" send (lifted out of POST /communications/email, work order
+ * agent-team U4): look the record up, take its primary address when none was chosen, pass THE one
+ * recipient rule, send. The route and the Messages hub's send function (services/hubSend.ts) both call
+ * this, so an approved draft goes out exactly the way "Email the customer" does: same pipe, one
+ * EmailDelivery row, same CC rule.
+ */
+export async function sendRecordMessage(input: SendRecordMessageInput): Promise<SendRecordMessageResult> {
+  const refuse = (status: 400 | 404, error: string): SendRecordMessageResult => ({ ok: false, status, error, suppressed: false, deliveryId: null });
+  let onFile: string | null;
+  if (input.target.kind === "lead") {
+    const lead = await prisma.lead.findUnique({ where: { id: input.target.leadId }, select: { email: true } });
+    if (!lead) return refuse(404, "Lead not found.");
+    onFile = lead.email;
+  } else if (input.target.kind === "account") {
+    const customer = await prisma.customer.findUnique({ where: { id: input.target.customerId }, select: { email: true } });
+    if (!customer) return refuse(404, "Account not found.");
+    onFile = customer.email;
+  } else {
+    const visit = await prisma.visit.findUnique({ where: { id: input.target.visitId }, select: { customer: { select: { email: true } } } });
+    if (!visit) return refuse(404, "Job not found.");
+    onFile = visit.customer.email;
+  }
+
+  // THE ONE RECIPIENT RULE (emailCc.resolveRecipients) - the same check every customer send passes.
+  const recipients = resolveRecipients(
+    { toOverride: input.to?.trim() || null, onFile, cc: input.cc },
+    "No email address on file for this record — add one, or type an address to send to.",
+  );
+  if (!recipients.ok) return refuse(400, recipients.reason);
+
+  const result = await sendRecordEmail({
+    to: recipients.to, cc: recipients.cc, subject: input.subject, body: input.body,
+    target: input.target, issuedEstimateId: input.estimateId ?? null,
+  });
+  if (!result.ok) {
+    return {
+      ok: false, status: 502, suppressed: result.suppressed, deliveryId: result.deliveryId,
+      error: "The email could not be sent — see the delivery log (email-deliveries) for the reason.",
+    };
+  }
+  return { ok: true, to: recipients.to, cc: recipients.cc, suppressed: result.suppressed, deliveryId: result.deliveryId };
 }

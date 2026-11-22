@@ -7,6 +7,7 @@ import { FindingLedgerPanel } from "../components/FindingLedgerPanel";
 import { InspectionResultChip } from "../components/InspectionResultChip";
 import { AccountPhotoGallery } from "../components/PhotoGalleryPanel";
 import { PropertyEstimates } from "../components/PropertyEstimates";
+import { RecordConversation } from "../components/RecordConversation";
 import { InvoiceRow } from "../components/InvoiceRow";
 import { api, openProtectedPdf } from "../lib/api";
 import { money, shortDate } from "../lib/utils";
@@ -341,6 +342,17 @@ export function PropertyDetailPage() {
         </div>
 
       </section>
+
+      {/* ── Conversation at THIS address (work order agent-team, U2 / D3) ─────────────────────
+          The account's conversation filtered to the jobs at this address: no property thread (Kyle,
+          2026-10-01: notes are account-based). Read-only here, with a way to the account's whole
+          conversation, and BELOW the Health Record card — never in the top card, which stays
+          untitled with exactly two buttons (Kyle, 2026-10-02). */}
+      <RecordConversation
+        surface="property"
+        record={{ key: "propertyId", id: property.id }}
+        accountId={property.customerId}
+      />
 
       {/* ── Photos at THIS address, with upload and remove (Kyle, 2026-10-24: "Photos should be
           organized per property too"; Kyle 2026-10-01 upload ruling carried over from the account

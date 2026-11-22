@@ -2,8 +2,8 @@
  * AccountDetailPage render test — the conversation log's home (plan item F, 2026-10-01).
  *
  * Kyle: "Notes should be account based for an admin that is answering calls and dispatching."
- * Pins that the account page carries the "Conversation notes" card with the account's notes,
- * newest first as the server returns them, and that "Add note" files a note on this account
+ * Pins that the account page carries the "Conversation" section with the account's notes,
+ * newest first as the server returns them, and that "Add call note" files a note on this account
  * WITHOUT a job tag (the job drawer is the surface that tags).
  *
  * This page reads `:accountId` off the route (useParams), so like VisitWorkspacePage.test.tsx it
@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Route, Routes } from "react-router-dom";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { noteEntry, timeline } from "../test/hubFixtures";
 import { AccountDetailPage } from "./AccountDetailPage";
 import { api } from "../lib/api";
 import type { CustomerContact, CustomerNote, PropertyPhotos } from "../lib/api";
@@ -44,7 +45,7 @@ function note(overrides: Partial<CustomerNote> = {}): CustomerNote {
 
 function mockAccountReads(notes: CustomerNote[]) {
   vi.spyOn(api, "accountSummary").mockResolvedValue(summary);
-  vi.spyOn(api, "accountNotes").mockResolvedValue(notes);
+  vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline(notes.map((n) => noteEntry(n))));
   vi.spyOn(api, "accountContacts").mockResolvedValue([]);
   vi.spyOn(api, "accountEstimates").mockResolvedValue({ estimates: [] } as never);
   vi.spyOn(api, "customerInspections").mockResolvedValue([]);
@@ -69,8 +70,8 @@ describe("AccountDetailPage — conversation notes", () => {
 
     renderPage();
 
-    const card = await screen.findByRole("region", { name: "Conversation notes" });
-    expect(within(card).getByRole("heading", { name: "Conversation notes" })).toBeInTheDocument();
+    const card = await screen.findByRole("region", { name: "Conversation" });
+    expect(within(card).getByRole("heading", { name: "Conversation" })).toBeInTheDocument();
     // The card renders before its notes arrive — wait for the rows, not the frame.
     const items = await within(card).findAllByRole("listitem");
     expect(items[0]).toHaveTextContent("Second call: wants Tuesday.");
@@ -80,18 +81,39 @@ describe("AccountDetailPage — conversation notes", () => {
     // Every note has its way out, on the row.
     expect(within(items[0]).getByRole("button", { name: "Edit" })).toBeInTheDocument();
     expect(within(items[0]).getByRole("button", { name: "Delete" })).toBeInTheDocument();
-    expect(api.accountNotes).toHaveBeenCalledWith("cust-1");
+    expect(api.hubTimeline).toHaveBeenCalledWith({ customerId: "cust-1" });
   });
 
-  it("'Add note' files a note on this account with no job tag", async () => {
+  // One tool for one task (Kyle, 2026-10-27) and one Conversation per record (work order agent-team, U2).
+  // "Email the customer" used to be a button inside the contact card AND the conversation had its own
+  // list of sent emails; now it is one of the Conversation's two buttons and the list is the timeline.
+  it("has exactly one 'Email the customer' button, in the Conversation, whose list holds the emails sent", async () => {
+    mockAccountReads([]);
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline([{
+      type: "email", id: "email:e-1", at: "2026-11-02T10:00:00.000Z", visitId: null, jobLabel: null,
+      email: { id: "e-1", provider: "resend", status: "delivered", statusAt: null, to: "jane@example.com", cc: [], subject: "Your estimate", kind: "estimate", estimateNumber: null, error: null, createdAt: "2026-11-02T10:00:00.000Z" },
+    }]));
+
+    renderPage();
+
+    const card = await screen.findByRole("region", { name: "Conversation" });
+    expect(await within(card).findByText("Your estimate")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Email the customer" })).toHaveLength(1);
+    expect(within(card).getByRole("button", { name: "Email the customer" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send email" })).not.toBeInTheDocument();
+    // The panel's own "Email thread (n)" list is not shown: the timeline above is the one list.
+    expect(screen.queryByText(/Email thread \(/)).not.toBeInTheDocument();
+  });
+
+  it("'Add call note' files a note on this account with no job tag", async () => {
     mockAccountReads([]);
     const add = vi.spyOn(api, "addAccountNote").mockResolvedValue(note());
 
     renderPage();
 
-    const card = await screen.findByRole("region", { name: "Conversation notes" });
-    expect(await within(card).findByText("No conversation notes yet.")).toBeInTheDocument();
-    fireEvent.click(within(card).getByRole("button", { name: "Add note" }));
+    const card = await screen.findByRole("region", { name: "Conversation" });
+    expect(await within(card).findByText("No conversation yet.")).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "Add call note" }));
     fireEvent.change(within(card).getByLabelText("What was said"), { target: { value: "Asked for the invoice again." } });
     fireEvent.change(within(card).getByLabelText("Taken by"), { target: { value: "Kyle" } });
     fireEvent.click(within(card).getByRole("button", { name: "Save note" }));
@@ -127,7 +149,7 @@ function accountSummaryWithJobs(overrides: { properties: unknown[]; jobs: unknow
 
 function mockAccountReadsFor(summary: AccountSummary, photosByProperty: Record<string, PropertyPhotos>) {
   vi.spyOn(api, "accountSummary").mockResolvedValue(summary);
-  vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+  vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline());
   vi.spyOn(api, "accountContacts").mockResolvedValue([]);
   vi.spyOn(api, "accountEstimates").mockResolvedValue({ estimates: [] } as never);
   vi.spyOn(api, "customerInspections").mockResolvedValue([]);
@@ -212,7 +234,7 @@ describe("AccountDetailPage — Start work removed, additional contacts in the c
   function mockAccountReadsWithContacts(initialContacts: CustomerContact[]) {
     let contacts = [...initialContacts];
     vi.spyOn(api, "accountSummary").mockResolvedValue(accountSummaryWithOneProperty());
-    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline());
     vi.spyOn(api, "accountContacts").mockImplementation(async () => contacts);
     vi.spyOn(api, "accountEstimates").mockResolvedValue({ estimates: [] } as never);
     vi.spyOn(api, "customerInspections").mockResolvedValue([]);

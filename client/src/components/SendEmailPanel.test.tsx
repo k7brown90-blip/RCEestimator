@@ -130,3 +130,31 @@ describe("SendEmailPanel with a record - Email the customer", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
   });
 });
+
+/*
+ * ONE Conversation per record (work order agent-team, U2 / D3): where a record's Conversation timeline
+ * lists every email, the panel is the composer only. It lists nothing of its own and says "Email the
+ * customer". Everywhere else (the estimate and invoice drawers) its list of what was sent stays.
+ */
+describe("SendEmailPanel inside a record's Conversation", () => {
+  const delivery = {
+    id: "d-1", provider: "resend" as const, providerMessageId: null, status: "delivered" as const, statusAt: null, to: "jane@example.com", cc: [],
+    error: null, createdAt: "2026-11-02T10:00:00.000Z", subject: "Earlier note", kind: "communication" as const, estimateNumber: null,
+    issuedEstimateId: null, visitId: null, leadId: "lead-1", customerId: null, estimate: null,
+  };
+
+  it("lists nothing of its own with showThread off, and the closed button says what openLabel says", async () => {
+    const list = vi.spyOn(api, "emailDeliveries").mockResolvedValue([delivery]);
+    renderWithProviders(<SendEmailPanel target="lead" id="lead-1" primaryEmail="jane@example.com" showThread={false} openLabel="Email the customer" />);
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Email the customer" })).toBeInTheDocument();
+    expect(screen.queryByText(/Email thread/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Earlier note")).not.toBeInTheDocument();
+  });
+
+  it("keeps its list of what was sent by default", async () => {
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([delivery]);
+    renderWithProviders(<SendEmailPanel target="lead" id="lead-1" primaryEmail="jane@example.com" />);
+    expect(await screen.findByText("Email thread (1)")).toBeInTheDocument();
+  });
+});

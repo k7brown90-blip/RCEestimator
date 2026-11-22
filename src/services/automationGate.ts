@@ -57,7 +57,12 @@ export type CustomerSendWorkflow =
   /** Google review request email when a job is marked done (Kyle, 2026-09-02). */
   | "reviewRequests"
   /** Gentle unpaid-invoice reminder emails, weekly, three max (Kyle, 2026-09-02). */
-  | "invoiceReminders";
+  | "invoiceReminders"
+  /**
+   * An AI draft in a category Kyle switched ON in Settings -> "AI auto-send rules" goes out without a
+   * person pressing Approve (work order agent-team, BA7/BA8). Needs this gate AND the category switch.
+   */
+  | "hubAutoSend";
 
 const MASTER_ENV = "AUTOMATED_CUSTOMER_SENDS";
 
@@ -68,6 +73,7 @@ const WORKFLOW_ENV: Record<CustomerSendWorkflow, string> = {
   inboundAutoReply: "AUTOMATED_CUSTOMER_SENDS_INBOUND_AUTOREPLY",
   reviewRequests: "AUTOMATED_CUSTOMER_SENDS_REVIEW_REQUESTS",
   invoiceReminders: "AUTOMATED_CUSTOMER_SENDS_INVOICE_REMINDERS",
+  hubAutoSend: "AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND",
 };
 
 const WORKFLOW_LABEL: Record<CustomerSendWorkflow, string> = {
@@ -77,6 +83,7 @@ const WORKFLOW_LABEL: Record<CustomerSendWorkflow, string> = {
   inboundAutoReply: "auto-replies to customer inbound texts",
   reviewRequests: "Google review request email on job completion",
   invoiceReminders: "weekly unpaid-invoice reminder emails (3 max)",
+  hubAutoSend: "AI drafts sent without an Approve press (Settings -> AI auto-send rules)",
 };
 
 /**
@@ -205,7 +212,13 @@ export type TwilioSendLeg =
    * class 1; both gates must pass. The class-1 inventory in P004 missed the scheduling.ts and
    * googleCalendar.ts sites entirely — see the P013 report.
    */
-  | "customerLifecycleSms";
+  | "customerLifecycleSms"
+  /**
+   * A text sent from the Messages hub: an approved draft in a customer's conversation (services/hubSend.ts).
+   * Off, an approved text is held as "Approved — SMS disabled" and nothing is sent to Twilio. This is the
+   * ONE hub SMS leg; its env var is HUB_SMS_OUTBOUND_ENABLED (work order agent-team, BA7).
+   */
+  | "hubSms";
 
 const TWILIO_MASTER_ENV = "TWILIO_SENDS";
 
@@ -216,6 +229,7 @@ const TWILIO_LEG_ENV: Record<TwilioSendLeg, string> = {
   inboundAcks: "TWILIO_SENDS_INBOUND_ACKS",
   agentSends: "TWILIO_SENDS_AGENT",
   customerLifecycleSms: "TWILIO_SENDS_CUSTOMER_LIFECYCLE",
+  hubSms: "HUB_SMS_OUTBOUND_ENABLED",
 };
 
 const TWILIO_LEG_LABEL: Record<TwilioSendLeg, string> = {
@@ -225,6 +239,7 @@ const TWILIO_LEG_LABEL: Record<TwilioSendLeg, string> = {
   inboundAcks: "receipt acknowledgement replies to Kyle/tech MMS",
   agentSends: "Savannah/Jerry agent-triggered texts",
   customerLifecycleSms: "customer job-lifecycle texts (scheduled/rescheduled/cancelled, reminders, auto-replies)",
+  hubSms: "texts sent from the Messages hub (approved drafts in a customer's conversation)",
 };
 
 /** True when this Twilio leg is permitted to send a text right now. Default-deny. */

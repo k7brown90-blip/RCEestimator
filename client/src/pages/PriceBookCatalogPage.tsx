@@ -15,6 +15,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
+import { PowerLockNote } from "../components/PowerLockNote";
+import { useCan } from "../lib/session";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type {
   PbCatalogAtomic,
@@ -612,6 +614,10 @@ function ItemDrawer({
     queryFn: () => api.pbCatalogItem(itemId),
   });
   const atomic = data?.atomic;
+  // Price, hours, name, row type and unit label are Kyle-only (price_book_edit): greyed WITH the
+  // reason for a session without the power. Notes, category, sub-category and sector stay open.
+  const { allowed: canPrice, reason: priceReason } = useCan("price_book_edit");
+  const lock = !canPrice;
 
   // Form state mirrors the editable fields as strings; seeded once per fetch.
   const [form, setForm] = useState<Record<string, string> | null>(null);
@@ -755,17 +761,26 @@ function ItemDrawer({
   // guard, which refuses exactly these fields on an ASSEMBLY row.
   const isAssembly = isAssemblyRowType(atomic.rowType);
 
+  // Every field is compared with the SAME normalised value the form was seeded from (trimmed text,
+  // and the row type's "MATERIAL + LABOR" default), so a drawer nobody touched is never dirty - for
+  // anyone - and never sends a field that did not change.
+  const seed = (s: string | null | undefined): string | null => textOrNull(s ?? "");
+  const seedRowType = atomic.rowType ?? "MATERIAL + LABOR";
+
   const buildPatch = (): PbCatalogPatch => {
     const patch: PbCatalogPatch = {};
-    if (form.description.trim() && form.description.trim() !== (atomic.description ?? "")) patch.description = form.description.trim();
-    if (form.category.trim() && form.category.trim() !== (atomic.category ?? "")) patch.category = form.category.trim();
-    if (textOrNull(form.subCategory) !== (atomic.subCategory ?? null)) patch.subCategory = textOrNull(form.subCategory);
-    if (textOrNull(form.unitLabel) !== (atomic.unitLabel ?? null)) patch.unitLabel = textOrNull(form.unitLabel);
-    if (textOrNull(form.sector) !== (atomic.sector ?? null)) patch.sector = textOrNull(form.sector);
-    if (textOrNull(form.notes) !== (atomic.notes ?? null)) patch.notes = textOrNull(form.notes);
+    if (form.category.trim() && form.category.trim() !== seed(atomic.category)) patch.category = form.category.trim();
+    if (textOrNull(form.subCategory) !== seed(atomic.subCategory)) patch.subCategory = textOrNull(form.subCategory);
+    if (textOrNull(form.sector) !== seed(atomic.sector)) patch.sector = textOrNull(form.sector);
+    if (textOrNull(form.notes) !== seed(atomic.notes)) patch.notes = textOrNull(form.notes);
+    // Description, unit label, row type, cost and hours are Kyle-only (price_book_edit): a session
+    // without the power never puts them in the patch, so a Notes or Category save is never refused.
+    if (lock) return patch;
+    if (form.description.trim() && form.description.trim() !== seed(atomic.description)) patch.description = form.description.trim();
+    if (textOrNull(form.unitLabel) !== seed(atomic.unitLabel)) patch.unitLabel = textOrNull(form.unitLabel);
     // rowType is read-only for assemblies (server: updateAtomic refuses the change outright —
     // it would orphan the component list and freeze the derived cost as a stale typed value).
-    if (!isAssembly && form.rowType && form.rowType !== (atomic.rowType ?? "")) patch.rowType = form.rowType;
+    if (!isAssembly && form.rowType && form.rowType !== seedRowType) patch.rowType = form.rowType;
     if (!isAssembly) {
       if (numOrNull(form.companyCost) !== (atomic.companyCost ?? null)) patch.companyCost = numOrNull(form.companyCost);
       if (numOrNull(form.laborNormal) !== (atomic.laborNormal ?? null)) patch.laborNormal = numOrNull(form.laborNormal);
@@ -781,8 +796,9 @@ function ItemDrawer({
   return (
     <DrawerShell title={`${atomic.itemId} — edit`} onClose={onClose}>
       <div className="space-y-3">
+        <PowerLockNote power="price_book_edit" />
         <Field label="Description">
-          <input className={inputCls} value={form.description} onChange={set("description")} />
+          <input className={inputCls} value={form.description} onChange={set("description")} disabled={lock} title={priceReason ?? undefined} />
         </Field>
         <div className="grid grid-cols-2 gap-2">
           <Field label="Category">
@@ -797,13 +813,13 @@ function ItemDrawer({
         </datalist>
         <div className="grid grid-cols-2 gap-2">
           <Field label="Unit label">
-            <input className={inputCls} value={form.unitLabel} onChange={set("unitLabel")} placeholder="e.g. per opening" />
+            <input className={inputCls} value={form.unitLabel} onChange={set("unitLabel")} placeholder="e.g. per opening" disabled={lock} title={priceReason ?? undefined} />
           </Field>
           <Field label="Row type">
             {isAssembly ? (
               <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{atomic.rowType ?? "ASSEMBLY"}</div>
             ) : (
-              <select className={inputCls} value={form.rowType} onChange={set("rowType")}>
+              <select className={inputCls} value={form.rowType} onChange={set("rowType")} disabled={lock} title={priceReason ?? undefined}>
                 {ROW_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             )}
@@ -818,7 +834,7 @@ function ItemDrawer({
                 <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{money(atomic.companyCost)}</div>
               )
             ) : (
-              <input className={inputCls} inputMode="decimal" value={form.companyCost} onChange={set("companyCost")} />
+              <input className={inputCls} inputMode="decimal" value={form.companyCost} onChange={set("companyCost")} disabled={lock} title={priceReason ?? undefined} />
             )}
           </Field>
           <Field label="Sector">
@@ -841,21 +857,21 @@ function ItemDrawer({
             {isAssembly ? (
               <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{form.laborNormal || "0"}</div>
             ) : (
-              <input className={inputCls} inputMode="decimal" value={form.laborNormal} onChange={set("laborNormal")} />
+              <input className={inputCls} inputMode="decimal" value={form.laborNormal} onChange={set("laborNormal")} disabled={lock} title={priceReason ?? undefined} />
             )}
           </Field>
           <Field label="Hrs difficult">
             {isAssembly ? (
               <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{form.laborDifficult || "0"}</div>
             ) : (
-              <input className={inputCls} inputMode="decimal" value={form.laborDifficult} onChange={set("laborDifficult")} />
+              <input className={inputCls} inputMode="decimal" value={form.laborDifficult} onChange={set("laborDifficult")} disabled={lock} title={priceReason ?? undefined} />
             )}
           </Field>
           <Field label="Hrs very diff.">
             {isAssembly ? (
               <div className={`${inputCls} bg-rce-accentBg/30 text-rce-muted`}>{form.laborVeryDifficult || "0"}</div>
             ) : (
-              <input className={inputCls} inputMode="decimal" value={form.laborVeryDifficult} onChange={set("laborVeryDifficult")} />
+              <input className={inputCls} inputMode="decimal" value={form.laborVeryDifficult} onChange={set("laborVeryDifficult")} disabled={lock} title={priceReason ?? undefined} />
             )}
           </Field>
         </div>
@@ -870,6 +886,7 @@ function ItemDrawer({
         </Field>
 
         {isAssembly ? (
+          <fieldset disabled={lock} className="contents" title={priceReason ?? undefined}>
           <div className="space-y-3 rounded-lg border border-rce-border/70 p-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-rce-muted">Components</div>
             <ComponentPicker
@@ -1040,6 +1057,7 @@ function ItemDrawer({
               ) : null}
             </div>
           </div>
+          </fieldset>
         ) : null}
 
         {/* Computed by the server on save — shown so the effect of an edit is visible. */}
@@ -1128,6 +1146,11 @@ function NewItemDrawer({
     notes: "",
   });
 
+  // A new item given a cost or hours is Kyle-only (price_book_edit); the cost and hours boxes are
+  // greyed WITH the reason for a session without it. Description, row type and unit label stay open.
+  const { allowed: canPrice, reason: priceReason } = useCan("price_book_edit");
+  const lock = !canPrice;
+
   const createMutation = useMutation({
     mutationFn: (input: PbCatalogCreate) => api.pbCatalogCreateItem(input),
     onSuccess: (d) => onCreated(d.atomic),
@@ -1141,6 +1164,7 @@ function NewItemDrawer({
   return (
     <DrawerShell title="New price book item" onClose={onClose}>
       <div className="space-y-3">
+        <PowerLockNote power="price_book_edit" />
         <Field label="Description">
           <input className={inputCls} value={form.description} onChange={set("description")} autoFocus />
         </Field>
@@ -1167,7 +1191,7 @@ function NewItemDrawer({
         </div>
         <div className="grid grid-cols-2 gap-2">
           <Field label="Company cost ($)">
-            <input className={inputCls} inputMode="decimal" value={form.companyCost} onChange={set("companyCost")} />
+            <input className={inputCls} inputMode="decimal" value={form.companyCost} onChange={set("companyCost")} disabled={lock} title={priceReason ?? undefined} />
           </Field>
           <Field label="Unit label">
             <input className={inputCls} value={form.unitLabel} onChange={set("unitLabel")} placeholder="e.g. per opening" />
@@ -1175,13 +1199,13 @@ function NewItemDrawer({
         </div>
         <div className="grid grid-cols-3 gap-2">
           <Field label="Hrs normal">
-            <input className={inputCls} inputMode="decimal" value={form.laborNormal} onChange={set("laborNormal")} />
+            <input className={inputCls} inputMode="decimal" value={form.laborNormal} onChange={set("laborNormal")} disabled={lock} title={priceReason ?? undefined} />
           </Field>
           <Field label="Hrs difficult">
-            <input className={inputCls} inputMode="decimal" value={form.laborDifficult} onChange={set("laborDifficult")} />
+            <input className={inputCls} inputMode="decimal" value={form.laborDifficult} onChange={set("laborDifficult")} disabled={lock} title={priceReason ?? undefined} />
           </Field>
           <Field label="Hrs very diff.">
-            <input className={inputCls} inputMode="decimal" value={form.laborVeryDifficult} onChange={set("laborVeryDifficult")} />
+            <input className={inputCls} inputMode="decimal" value={form.laborVeryDifficult} onChange={set("laborVeryDifficult")} disabled={lock} title={priceReason ?? undefined} />
           </Field>
         </div>
         <Field label="Notes">
@@ -1278,6 +1302,11 @@ function CreateAssemblyDrawer({
 
   const preview = useMemo(() => previewRollup(components), [components]);
 
+  // An assembly's cost is its components' roll-up and its hours come from them or an override, so
+  // both blocks are Kyle-only (price_book_edit): greyed together WITH the reason.
+  const { allowed: canPrice, reason: priceReason } = useCan("price_book_edit");
+  const lock = !canPrice;
+
   const createMutation = useMutation({
     mutationFn: (input: PbAssemblyCreate) => api.pbCatalogCreateAssembly(input),
     onSuccess: (d) => onCreated(d.atomic),
@@ -1327,6 +1356,8 @@ function CreateAssemblyDrawer({
           <textarea className={inputCls} rows={2} value={form.notes} onChange={set("notes")} />
         </Field>
 
+        <PowerLockNote power="price_book_edit" />
+        <fieldset disabled={lock} className="contents" title={priceReason ?? undefined}>
         {/* Component picker — the heart of an assembly. Search, attach with a quantity, edit,
             remove. Kyle builds "Hardwired EV Charger" from a breaker, raceway, wire, and so on. */}
         <div className="rounded-lg border border-rce-border/70 p-3">
@@ -1454,6 +1485,7 @@ function CreateAssemblyDrawer({
             );
           })}
         </div>
+        </fieldset>
 
         {createMutation.isError ? <p className="text-sm text-red-600">{(createMutation.error as Error).message}</p> : null}
 

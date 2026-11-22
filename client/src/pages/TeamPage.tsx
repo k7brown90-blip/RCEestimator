@@ -5,6 +5,8 @@ import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { TechnicianQr } from "../components/TechnicianQr";
 import { api } from "../lib/api";
+import { CrmLoginButton, crmLoginTag, useCrmLogins } from "../components/CrmLoginDialog";
+import { useSession } from "../lib/session";
 
 /**
  * Team roster — technicians and staff. Each member carries an employee number
@@ -24,6 +26,10 @@ export function TeamPage() {
   const [editEmployeeNumber, setEditEmployeeNumber] = useState("");
 
   const { data: technicians } = useQuery({ queryKey: ["technicians"], queryFn: api.technicians });
+  // CRM logins are Kyle's to see: they are requested only once the session is known to be Kyle's
+  // (another session would be answered 403).
+  const session = useSession();
+  const { data: crmLogins } = useCrmLogins(session?.isKyle === true);
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -190,11 +196,19 @@ export function TeamPage() {
                   ) : (
                     <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">rate not set</span>
                   )}
+                  {/* Their CRM sign-in at a glance (Team -> "CRM login"). Kyle's roster only. */}
+                  {(() => {
+                    const tag = crmLoginTag(crmLogins?.logins.find((l) => l.technicianId === tech.id));
+                    return tag ? (
+                      <span className="ml-2 rounded bg-rce-accentBg px-1.5 py-0.5 text-xs text-rce-accentDark" data-testid={`crm-tag-${tech.id}`}>{tag}</span>
+                    ) : null;
+                  })()}
                 </span>
                 <span className="flex gap-2">
                   <Link to={`/team/${tech.id}`} className="btn btn-secondary px-2 py-0.5 text-xs min-h-0">
                     Pay &amp; hours →
                   </Link>
+                  <CrmLoginButton technician={{ id: tech.id, name: tech.name }} />
                   <button
                     type="button"
                     className="btn btn-secondary px-2 py-0.5 text-xs min-h-0"

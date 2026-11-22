@@ -1,4 +1,6 @@
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 const TEST_DB_ENV = {
   ...process.env,
@@ -52,9 +54,43 @@ async function applyHandWrittenIndexes(databaseUrl: string) {
         ON "PropertyFinding"("propertyId", "itemId", "locationKey")
         WHERE "status" IN ('open', 'scheduled')
     `);
+
+    // The append-only triggers on AgentAuditLog (work order agent-team, K-U3) and HubAuditLog (U1).
+    // Each lives in its migration's SQL between two marker comments; this runs that same block so the
+    // tests exercise the real trigger. Two statements: the function, then the trigger (dropped first
+    // so a re-run over a surviving table is harmless).
+    await applyAppendOnlyTrigger(prisma, "20261121130000_agent_keys", "AgentAuditLog");
+    await applyAppendOnlyTrigger(prisma, "20261121140000_hub_core", "HubAuditLog");
+    // The event outbox fills up as a side effect of the business tests (a signed estimate, a payment);
+    // none of those rows mean anything to the next run, so it starts empty (the attempts first: Restrict).
+    await prisma.$executeRawUnsafe(`TRUNCATE "HubEventAttempt", "HubEvent"`);
   } finally {
     await prisma.$disconnect();
   }
+}
+
+/**
+ * Run a migration's hand-written append-only trigger block and empty the audit table. The audit
+ * tables are append-only, so a test run cannot clean up after itself with DELETE. TRUNCATE is a
+ * statement-level operation the row trigger does not fire on (tests/agentAudit proves that on a
+ * scratch table), so the throwaway test database is emptied here, once per run.
+ */
+async function applyAppendOnlyTrigger(
+  prisma: { $executeRawUnsafe: (sql: string) => Promise<unknown> },
+  migrationFolder: string,
+  table: string,
+) {
+  const migration = readFileSync(
+    path.join(__dirname, "..", "prisma", "migrations", migrationFolder, "migration.sql"),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
+  const block = migration.split("-- BEGIN append-only trigger\n")[1]?.split("-- END append-only trigger")[0];
+  if (!block) throw new Error(`append-only trigger block missing from the ${migrationFolder} migration`);
+  const [fn, trigger] = block.trim().split(/;\s*\n\s*\n/);
+  await prisma.$executeRawUnsafe(`${fn};`);
+  await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "${table}_append_only" ON "${table}"`);
+  await prisma.$executeRawUnsafe(trigger.replace(/;\s*$/, ""));
+  await prisma.$executeRawUnsafe(`TRUNCATE "${table}"`);
 }
 
 /** pg_trgm, before `db push` asks for the GIN indexes that need it. See globalSetup above. */

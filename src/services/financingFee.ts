@@ -51,6 +51,7 @@ import {
 } from "../../shared/financing";
 import { getActiveFinancingPlans, plansFromSnapshot } from "./financingSettings";
 import { logSystemEvent } from "./systemEvents";
+import { emitHubEventSafe } from "./hubEvents";
 
 /** The one sentence every closed card path shows while a fee is applied. */
 export const FINANCING_IN_PROGRESS = "Financing in progress — balance is being paid through Synchrony";
@@ -488,6 +489,8 @@ export async function recordSynchronyPayment(prisma: PrismaClient, input: Synchr
     });
     return row;
   });
+  // The agents hear of the financed payment (work order agent-team, BA6), after the transaction.
+  void emitHubEventSafe({ type: "payment.received", paymentId: payment.id });
   logSystemEvent("info", "financials", `Synchrony payment recorded — $${amount.toFixed(2)} Plan ${fee.planNumber} on ${root.number}; net funded $${toDollars(netCents).toFixed(2)}`, {
     paymentId: payment.id, estimateId: root.id, feeId: fee.id, planNumber: fee.planNumber, gross: amount, cut: toDollars(cutCents), net: toDollars(netCents), actor,
   });

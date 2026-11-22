@@ -28,6 +28,7 @@ import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView }
 import type { EstimatePhoto } from '../../../shared/estimatePhotos'
 import { estimateEmailRequest, type EstimateEmailChoices } from '../../../shared/estimateEmail'
 import type { FieldOpenQuestion, QuoteSuggestedLine, FieldWalkthroughRow, WalkthroughProposal } from '../../../shared/suggestedLines'
+import type { TechBadge, TechThreadDetail, TechThreadsResponse } from '../../../shared/hub/views'
 import { toPushV2 } from '../domain/v2Types'
 
 const BASE_URL_KEY = 'rce_crm_base_url'
@@ -1230,10 +1231,12 @@ export async function clockOut(visitId: string): Promise<{ minutes: number; labo
  * photo's id (client-generated; the server upserts on it) so a caller can link the photo to
  * something - the Job completion report puts it on an invoice line. Existing callers ignore it.
  */
-export async function uploadJobPhoto(visitId: string, blob: Blob, caption?: string): Promise<string> {
+export async function uploadJobPhoto(visitId: string, blob: Blob, caption?: string, existingPhotoId?: string): Promise<string> {
   const settings = getCrmSettings()
   if (!settings) throw new Error('CRM not configured')
-  const photoId = crypto.randomUUID()
+  // A caller that may try the SAME picture again (a message that did not go, tapped to retry) passes the id it chose
+  // the first time: the server upserts on it, so the retry updates the one photo instead of filing a second.
+  const photoId = existingPhotoId ?? crypto.randomUUID()
   const response = await crmFetch(
     `${settings.baseUrl}/api/health-record/visits/${visitId}/photos/${photoId}`,
     {
@@ -2373,4 +2376,117 @@ export function registerSyncListener(): void {
     void flushFindingActions()
     void flushReceiptQueue()
   })
+}
+
+// ─── Messages (work order agent-team, U5/U6/U7) — the technician's door onto the hub ─────────────────
+//    Home -> "Messages", Job site -> "Job messages". The same hub as the office's Messages page, read through
+//    the technician's own routes (routes/hubTechRoutes.ts): their Team thread, their Training thread and the
+//    crew thread of each job they are on. Live calls - a message needs signal; with none the screen says
+//    "Not sent, no signal. Tap to retry." and the words stay on the screen. A job's photo is the job's own
+//    (uploadJobPhoto above, then named in photoIds); a Team photo is held on the message (attachments).
+
+export async function fetchHubThreads(): Promise<TechThreadsResponse> {
+  return crmRequest('/hub/threads', { method: 'GET' })
+}
+
+export async function fetchHubBadge(): Promise<TechBadge> {
+  return crmRequest('/hub/badge', { method: 'GET' })
+}
+
+/** The crew thread of a job this technician is on, made the first time it is opened. */
+export async function openJobThread(visitId: string): Promise<{ id: string }> {
+  return crmRequest(`/hub/job/${encodeURIComponent(visitId)}/thread`, { method: 'POST', body: '{}' })
+}
+
+export async function fetchHubThread(threadId: string): Promise<TechThreadDetail> {
+  return crmRequest(`/hub/threads/${encodeURIComponent(threadId)}/messages`, { method: 'GET' })
+}
+
+export async function sendHubMessage(
+  threadId: string, input: { body: string; photoIds?: string[]; attachmentIds?: string[] },
+): Promise<{ id: string }> {
+  return crmRequest(`/hub/threads/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify(input) })
+}
+
+export async function markHubThreadRead(threadId: string): Promise<void> {
+  await crmRequest(`/hub/threads/${encodeURIComponent(threadId)}/read`, { method: 'POST', body: '{}' })
+}
+
+export async function editHubMessage(id: string, body: string): Promise<void> {
+  await crmRequest(`/hub/messages/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ body }) })
+}
+
+/** Delete your own message: it leaves "Deleted", the text stays in the office's audit. */
+export async function deleteHubMessage(id: string, reason?: string): Promise<void> {
+  await crmRequest(`/hub/messages/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify(reason ? { reason } : {}) })
+}
+
+/** A photo on the technician's own Team thread: the picture as the raw body. Held on the message once sent. */
+export async function uploadHubAttachment(threadId: string, blob: Blob): Promise<{ id: string; mimeType: string }> {
+  const settings = getCrmSettings()
+  if (!settings) throw new Error('CRM not configured')
+  const response = await crmFetch(`${settings.baseUrl}/api/health-record/hub/threads/${encodeURIComponent(threadId)}/attachments`, {
+    method: 'POST',
+    headers: { 'Content-Type': blob.type || 'image/jpeg', Authorization: `Bearer ${settings.token}` },
+    body: blob,
+  })
+  const body = (await response.json().catch(() => null)) as { success?: boolean; data?: { id: string; mimeType: string }; error?: { message?: string } } | null
+  if (!response.ok || !body?.data) throw new CrmRequestError(body?.error?.message ?? `Photo upload failed (${response.status})`, body, response.status)
+  return body.data
+}
+
+/** Take back a photo added and not sent. */
+export async function removeHubAttachment(id: string): Promise<void> {
+  await crmRequest(`/hub/attachments/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' })
+}
+
+/** A Team photo's bytes. The token needs a header, which an <img> cannot send, so this is a fetch shown through a blob URL. */
+export async function fetchHubAttachment(id: string): Promise<Blob> {
+  const settings = getCrmSettings()
+  if (!settings) throw new Error('CRM not configured')
+  const response = await crmFetch(`${settings.baseUrl}/api/health-record/hub/attachments/${encodeURIComponent(id)}`, {
+    headers: { Authorization: `Bearer ${settings.token}` },
+  })
+  if (!response.ok) throw new Error(`Photo failed to load (${response.status})`)
+  return response.blob()
+}
+
+/** Where the live stream is and the header it needs (never the token in the address). Null when this phone is not connected. */
+export function hubStreamRequest(): { url: string; headers: () => Record<string, string> } | null {
+  const settings = getCrmSettings()
+  if (!settings) return null
+  return {
+    url: `${settings.baseUrl}/api/health-record/hub/stream`,
+    headers: (): Record<string, string> => {
+      const now = getCrmSettings()
+      return now ? { Authorization: `Bearer ${now.token}` } : {}
+    },
+  }
+}
+
+export interface HubPushKey {
+  configured: boolean
+  publicKey: string | null
+  reason: string | null
+  /** This person has SOME device subscribed. Whether THIS device is: fetchHubPushHere. */
+  subscribed: boolean
+}
+
+export async function fetchHubPushKey(): Promise<HubPushKey> {
+  return crmRequest('/hub/push/key', { method: 'GET' })
+}
+
+export async function subscribeHubPush(subscription: { endpoint: string; keys: { p256dh: string; auth: string } }): Promise<void> {
+  await crmRequest('/hub/push/subscription', { method: 'POST', body: JSON.stringify(subscription) })
+}
+
+/** `removed: false` means that device is not this technician's, so the phone keeps its own subscription. */
+export async function unsubscribeHubPush(endpoint: string): Promise<{ removed: boolean }> {
+  return crmRequest('/hub/push/subscription', { method: 'DELETE', body: JSON.stringify({ endpoint }) })
+}
+
+/** Is THIS device (its address) on for this technician? The address goes in the body, never in the URL. */
+export async function fetchHubPushHere(endpoint: string): Promise<boolean> {
+  const answer = await crmRequest<{ subscribedHere: boolean }>('/hub/push/subscription/status', { method: 'POST', body: JSON.stringify({ endpoint }) })
+  return answer.subscribedHere === true
 }

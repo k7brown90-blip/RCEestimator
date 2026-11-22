@@ -14,6 +14,7 @@ import { renderWithProviders } from "../test/renderWithProviders";
 import { AdminLoginSection } from "./AdminLoginSection";
 import { api } from "../lib/api";
 import type { AdminLoginStatus } from "../lib/types";
+import { OWNER_NO_GRANT, PIN_SESSION, PRINCIPAL_SESSION } from "../test/sessions";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -120,4 +121,53 @@ describe("AdminLoginSection", () => {
     fireEvent.click(saveBtn());
     expect(await screen.findByText("Only the owner can change the AI admin login.")).toBeTruthy();
   });
+});
+
+describe("AdminLoginSection for a session that is not Kyle", () => {
+  const REASON = "Only Kyle can change the AI admin login.";
+  function showAs(session: typeof PIN_SESSION) {
+    vi.spyOn(api, "session").mockResolvedValue(session);
+    vi.spyOn(api, "adminLogin").mockResolvedValue(ON);
+    const save = vi.spyOn(api, "saveAdminLogin").mockResolvedValue(ON);
+    renderWithProviders(<AdminLoginSection />);
+    return save;
+  }
+
+  it("greys Save login, Turn off and Remove login with the reason on the card, and Save does nothing", async () => {
+    const save = showAs(OWNER_NO_GRANT);
+    await waitFor(() => expect(screen.getByTestId("admin-login-only-kyle").textContent).toBe(REASON));
+    fireEvent.change(username(), { target: { value: "grok-admin" } });
+    fireEvent.change(password(), { target: { value: "correct horse battery" } });
+    expect(saveBtn().disabled).toBe(true);
+    expect(saveBtn().title).toBe(REASON);
+    for (const name of ["Turn off", "Remove login"]) {
+      const button = (await screen.findByRole("button", { name })) as HTMLButtonElement;
+      expect(button.disabled, name).toBe(true);
+      expect(button.title, name).toBe(REASON);
+    }
+    fireEvent.submit(saveBtn().closest("form")!);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("greys Turn on too when the login is off", async () => {
+    vi.spyOn(api, "session").mockResolvedValue(OWNER_NO_GRANT);
+    vi.spyOn(api, "adminLogin").mockResolvedValue(OFF);
+    renderWithProviders(<AdminLoginSection />);
+    const button = (await screen.findByRole("button", { name: "Turn on" })) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(true));
+    expect(button.title).toBe(REASON);
+  });
+
+  for (const [who, session] of [["the owner PIN", PIN_SESSION], ["Kyle's principal login", PRINCIPAL_SESSION]] as const) {
+    it(`is fully enabled for ${who}, with no reason line`, async () => {
+      showAs(session);
+      const off = (await screen.findByRole("button", { name: "Turn off" })) as HTMLButtonElement;
+      fireEvent.change(username(), { target: { value: "grok-admin" } });
+      fireEvent.change(password(), { target: { value: "correct horse battery" } });
+      await waitFor(() => expect(off.disabled).toBe(false));
+      expect(saveBtn().disabled).toBe(false);
+      expect((screen.getByRole("button", { name: "Remove login" }) as HTMLButtonElement).disabled).toBe(false);
+      expect(screen.queryByTestId("admin-login-only-kyle")).toBeNull();
+    });
+  }
 });

@@ -21,7 +21,10 @@ describe("Notification templates", () => {
     expect(msg).toContain("Panel Upgrade");
     expect(msg).toContain("7:00 AM");
     expect(msg).toContain("2 day(s)");
-    expect(msg).toContain("Reply STOP to opt out");
+    // U9: the words only. The company name is the header and "Reply STOP to opt out." is the footer, both added by
+    // the one composer inside sendSms, so a template that wrote either would be refused as a double.
+    expect(msg).not.toMatch(/reply\s+stop/i);
+    expect(msg).not.toMatch(/red\s+cedar/i);
   });
 
   it("generates correct Kyle work scheduled SMS", async () => {

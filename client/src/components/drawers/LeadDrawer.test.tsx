@@ -160,7 +160,7 @@ describe("LeadDrawer", () => {
     renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
     const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Send email" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Email the customer" }));
     fireEvent.change(within(dialog).getByLabelText("Subject"), { target: { value: "Checking in" } });
     fireEvent.change(within(dialog).getByLabelText("Message"), { target: { value: "Just following up on your quote." } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));

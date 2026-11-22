@@ -1,17 +1,25 @@
-import { NavLink, useLocation } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { PropsWithChildren } from "react";
 import { api } from "../lib/api";
+import { roleLabel, useSession } from "../lib/session";
+import { useHubBadge } from "../lib/hubQueries";
+import { useHubStreamConnection } from "../lib/hubStream";
 import { DebugSidebar } from "./DebugSidebar";
 import { DrawerHost } from "./drawers/DrawerHost";
 import { GlobalSearchButton, GlobalSearchPanel } from "./GlobalSearch";
 
 // Ordered to follow the funnel: a lead becomes an appointment on the calendar,
 // then a job, and the account is the ledger all of it rolls up into.
-const nav = [
+type NavBadge = "leads" | "messages";
+const nav: Array<{ to: string; label: string; badge?: NavBadge; primary?: boolean; short?: string }> = [
   { to: "/dashboard", label: "Dashboard" },
-  { to: "/leads", label: "Leads", badgeQuery: true },
+  { to: "/leads", label: "Leads", badge: "leads" },
+  // Messages (work order agent-team, U3): every conversation and what is waiting for approval. The badge is
+  // unread messages plus the approvals this session may act on. Not a phone-bar tab (the bar never grows,
+  // below): on a phone it is in the More sheet and its count joins More's badge.
+  { to: "/messages", label: "Messages", badge: "messages" },
   { to: "/calendar", label: "Calendar", primary: true },
   { to: "/jobs", label: "Jobs", primary: true },
   // The Estimates CHAIN VIEW (P029) — a record, not a workshop. `/estimate-intake` was here
@@ -103,6 +111,25 @@ export function AppShell({ children }: PropsWithChildren) {
     refetchInterval: 60_000,
   });
   const newLeadCount = openLeads.length;
+  // The Messages badge: unread + approvals waiting for this session (GET /hub/badge). Polled gently.
+  const { data: hubBadge } = useHubBadge();
+  // The live Messages stream (U6): one connection for the whole CRM, so this badge and every Messages screen move at once.
+  useHubStreamConnection();
+  const badgeFor = (item: { badge?: NavBadge }): number =>
+    item.badge === "leads" ? newLeadCount : item.badge === "messages" ? hubBadge?.total ?? 0 : 0;
+
+  // Who is signed in (HA5): so two people can share one office PC, the header names the person and
+  // Sign out ends THEIR session. The session is read once (lib/session.ts) and shared by every
+  // component that needs it. Sign out also empties the query cache, so the next person to sign in
+  // never sees the previous person's cached screens or session.
+  const session = useSession();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const signOut = () => {
+    localStorage.removeItem("rce_token");
+    queryClient.clear();
+    navigate("/login", { replace: true });
+  };
 
   // The More sheet (Kyle, 2026-09-10). It closes when the route changes — so a
   // tap inside it navigates and gets out of the way — and on Escape. The tab
@@ -118,7 +145,7 @@ export function AppShell({ children }: PropsWithChildren) {
     return () => window.removeEventListener("keydown", onKey);
   }, [moreOpen]);
   const moreHoldsCurrentRoute = MOBILE_MORE.some((item) => pathname.startsWith(item.to));
-  const moreBadge = MOBILE_MORE.some((item) => item.badgeQuery) ? newLeadCount : 0;
+  const moreBadge = MOBILE_MORE.reduce((n, item) => n + badgeFor(item), 0);
 
   // Global search (2026-09-20, drawers plan Phase 5). Open state is the PATHNAME it was opened
   // on: a result that navigates (an account) changes the pathname and the panel is closed by
@@ -150,12 +177,25 @@ export function AppShell({ children }: PropsWithChildren) {
         </div>
         <GlobalSearchButton variant="sidebar" onOpen={openSearch} />
         {nav.map((item) => (
-          <NavItem key={item.to} to={item.to} label={item.label} badge={item.badgeQuery ? newLeadCount : undefined} />
+          <NavItem key={item.to} to={item.to} label={item.label} badge={badgeFor(item) || undefined} />
         ))}
       </aside>
 
       <main className="pb-20 md:pb-0">
         <div className="mx-auto w-full max-w-7xl p-4 md:p-6">
+          <div className="mb-3 flex items-center justify-end gap-2 text-xs text-rce-muted" data-testid="session-bar">
+            {session ? (
+              <>
+                <span data-testid="signed-in-as">
+                  Signed in as <strong className="font-semibold text-rce-text">{session.name}</strong> ({roleLabel(session.role)})
+                </span>
+                <span aria-hidden="true">·</span>
+              </>
+            ) : null}
+            <button type="button" className="font-medium underline hover:text-rce-text" onClick={signOut}>
+              Sign out
+            </button>
+          </div>
           {/* Search on a phone: one tap, at the top of every tab (GlobalSearch.tsx says why here). */}
           <div className="mb-3 md:hidden">
             <GlobalSearchButton variant="phone" onOpen={openSearch} />
@@ -212,9 +252,9 @@ export function AppShell({ children }: PropsWithChildren) {
                   }
                 >
                   <span className="min-w-0 truncate">{item.label}</span>
-                  {item.badgeQuery && newLeadCount > 0 ? (
+                  {badgeFor(item) > 0 ? (
                     <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-rce-warning px-1.5 text-[11px] font-bold text-white">
-                      {newLeadCount}
+                      {badgeFor(item)}
                     </span>
                   ) : null}
                 </NavLink>
@@ -237,9 +277,9 @@ export function AppShell({ children }: PropsWithChildren) {
             }
           >
             {item.short ?? item.label}
-            {item.badgeQuery && newLeadCount > 0 ? (
+            {badgeFor(item) > 0 ? (
               <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-rce-warning px-1 text-[10px] font-bold text-white">
-                {newLeadCount}
+                {badgeFor(item)}
               </span>
             ) : null}
           </NavLink>

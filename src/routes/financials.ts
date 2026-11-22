@@ -34,6 +34,7 @@ import express from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, readParam } from "../lib/routeHelpers";
+import { requireKylePower } from "../middleware/kylePowers";
 import { fullBillOf, stripeConfigured } from "../services/stripePayments";
 import { groupSignedRows, INVOICE_DOC_SELECT, invoiceRootId, LIVE_SIGNED, rollupInvoice, type InvoiceDocRow } from "../services/invoiceGroup";
 import { chainChildrenByJob, getLaborRate, materialCostForJobs, mergeCostableChain } from "../services/jobCosting";
@@ -52,6 +53,7 @@ import {
   FinancingFeeError, financingInProgress, financingOptionsFor, recordSynchronyPayment, removeFinancingFee, synchronyCutRows,
 } from "../services/financingFee";
 import { recordObservationsForReceipt, summarizeObservationsByMaterial } from "../services/materialPriceObservations";
+import { emitHubEventSafe } from "../services/hubEvents";
 import {
   EXCLUDE_TEST_ACCOUNT,
   EXCLUDE_TEST_CARD_SPEND,
@@ -282,6 +284,8 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
       });
       return row;
     });
+    // The agents hear of a recorded payment (work order agent-team, BA6): the warranty company's check too.
+    void emitHubEventSafe({ type: "payment.received", paymentId: payment.id });
     const after = (await paymentSummary(prisma, est.id, "https://unused.invalid"))!;
     const { logSystemEvent } = await import("../services/systemEvents");
     logSystemEvent(
@@ -338,6 +342,8 @@ financialsRouter.post("/payments", asyncHandler(async (req, res) => {
       paidAt: body.paidAt ? new Date(body.paidAt) : new Date(),
     },
   });
+  // The agents hear of a recorded payment (work order agent-team, BA6). Fire-and-forget.
+  void emitHubEventSafe({ type: "payment.received", paymentId: payment.id });
   // A recorded cash/check tied to an invoice emails the customer their receipt
   // too (Kyle, 2026-08-25) — same document either way the money arrived.
   if (payment.estimateId) {
@@ -1116,7 +1122,7 @@ financialsRouter.get("/sweep", asyncHandler(async (req, res) => {
  * scope, no destination, no excess), 502 with Stripe's exact message when Stripe
  * refuses — every attempt is a TreasurySweep row either way.
  */
-financialsRouter.post("/sweep", asyncHandler(async (req, res) => {
+financialsRouter.post("/sweep", requireKylePower("treasury"), asyncHandler(async (req, res) => {
   const body = z.object({
     amount: z.number().finite().positive(),
     confirm: z.string().trim().default(""),

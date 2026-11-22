@@ -27,6 +27,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
+import { PowerLockNote } from "../components/PowerLockNote";
+import { useCan } from "../lib/session";
 import {
   AttachProofButton,
   PO_PURPOSE_LABEL,
@@ -464,7 +466,13 @@ function LinkPicker({ busy, onPick, onCancel }: { busy: boolean; onPick: (itemId
   );
 }
 
-function PromoteForm({ material, onDone, onCancel }: { material: MaterialRow; onDone: () => void; onCancel: () => void }) {
+/** Exported for its test (the Kyle-only cost and hours boxes). */
+export function PromoteForm({ material, onDone, onCancel }: { material: MaterialRow; onDone: () => void; onCancel: () => void }) {
+  // A cost or hours on a promoted item is a Kyle-only price edit (price_book_edit). For a session
+  // without the power those boxes are greyed WITH the reason, start empty, and the promote is sent
+  // with no cost or hours (the server derives none either): the item is created unpriced, for Kyle.
+  const { allowed: canPrice, reason: priceReason } = useCan("price_book_edit");
+  const lock = !canPrice;
   const { data: catData } = useQuery({ queryKey: ["materials-pb-categories"], queryFn: api.pbCatalogCategories });
   const categories = (catData?.categories ?? []).map((c) => c.name);
   const derivedCost = material.lastCost != null && material.packQty != null && material.packQty > 0
@@ -475,7 +483,7 @@ function PromoteForm({ material, onDone, onCancel }: { material: MaterialRow; on
     category: "",
     rowType: "MATERIAL + LABOR",
     unitLabel: material.packUnit ?? "",
-    companyCost: derivedCost != null ? String(derivedCost) : "",
+    companyCost: derivedCost != null && canPrice ? String(derivedCost) : "",
     laborNormal: "",
     laborDifficult: "",
     laborVeryDifficult: "",
@@ -487,10 +495,10 @@ function PromoteForm({ material, onDone, onCancel }: { material: MaterialRow; on
       category: form.category.trim(),
       rowType: form.rowType,
       unitLabel: form.unitLabel.trim() || null,
-      companyCost: form.companyCost.trim() === "" ? null : Number(form.companyCost),
-      laborNormal: form.laborNormal.trim() === "" ? null : Number(form.laborNormal),
-      laborDifficult: form.laborDifficult.trim() === "" ? null : Number(form.laborDifficult),
-      laborVeryDifficult: form.laborVeryDifficult.trim() === "" ? null : Number(form.laborVeryDifficult),
+      companyCost: lock || form.companyCost.trim() === "" ? null : Number(form.companyCost),
+      laborNormal: lock || form.laborNormal.trim() === "" ? null : Number(form.laborNormal),
+      laborDifficult: lock || form.laborDifficult.trim() === "" ? null : Number(form.laborDifficult),
+      laborVeryDifficult: lock || form.laborVeryDifficult.trim() === "" ? null : Number(form.laborVeryDifficult),
     }),
     onSuccess: onDone,
     onError: (err) => setError((err as Error).message),
@@ -507,14 +515,15 @@ function PromoteForm({ material, onDone, onCancel }: { material: MaterialRow; on
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-1">
         <span>Cost/ea $</span>
-        <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" value={form.companyCost} onChange={set("companyCost")} />
+        <input className="field w-20 px-1 py-0.5 text-xs" inputMode="decimal" value={lock ? "" : form.companyCost} onChange={set("companyCost")} disabled={lock} title={priceReason ?? undefined} />
         <span>Hrs normal</span>
-        <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={form.laborNormal} onChange={set("laborNormal")} />
+        <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={form.laborNormal} onChange={set("laborNormal")} disabled={lock} title={priceReason ?? undefined} />
         <span>difficult</span>
-        <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={form.laborDifficult} onChange={set("laborDifficult")} />
+        <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={form.laborDifficult} onChange={set("laborDifficult")} disabled={lock} title={priceReason ?? undefined} />
         <span>very diff.</span>
-        <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={form.laborVeryDifficult} onChange={set("laborVeryDifficult")} />
+        <input className="field w-16 px-1 py-0.5 text-xs" inputMode="decimal" value={form.laborVeryDifficult} onChange={set("laborVeryDifficult")} disabled={lock} title={priceReason ?? undefined} />
       </div>
+      <PowerLockNote power="price_book_edit" className="mt-1" />
       <div className="mt-1 flex items-center gap-2">
         <button type="button" className="btn btn-primary px-2 py-0.5 text-xs" disabled={!canSave} onClick={() => promote.mutate()}>{promote.isPending ? "Creating…" : "Promote"}</button>
         <button type="button" className="btn btn-secondary px-2 py-0.5 text-xs min-h-0" onClick={onCancel}>cancel</button>

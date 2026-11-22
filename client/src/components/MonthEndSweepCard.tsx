@@ -17,6 +17,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
+import { PowerLockNote } from "./PowerLockNote";
+import { useCan } from "../lib/session";
 import type { SweepView, TreasurySweepRow } from "../lib/types";
 import { money } from "../lib/utils";
 import { CollapsibleCard } from "./CollapsibleCard";
@@ -42,6 +44,9 @@ function when(iso: string): string {
 
 export function MonthEndSweepCard() {
   const queryClient = useQueryClient();
+  // The sweep moves real money out of the main account: Kyle-only (treasury). The button is greyed
+  // WITH the reason for a session without the power.
+  const { allowed: canTreasury, reason: treasuryReason } = useCan("treasury");
   const { data, isFetching } = useQuery({ queryKey: ["financials-sweep"], queryFn: () => api.financialsSweep(false) });
   const [confirming, setConfirming] = useState(false);
   const [amount, setAmount] = useState("");
@@ -171,9 +176,18 @@ export function MonthEndSweepCard() {
         {!data.canSweep ? (
           <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{data.reason}</p>
         ) : !confirming ? (
-          <button type="button" className="btn btn-primary" onClick={openConfirm}>
-            Sweep {money(excess)} to {data.destination?.label ?? "Chase"}
-          </button>
+          <>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!canTreasury}
+              title={treasuryReason ?? undefined}
+              onClick={openConfirm}
+            >
+              Sweep {money(excess)} to {data.destination?.label ?? "Chase"}
+            </button>
+            <PowerLockNote power="treasury" className="mt-2" />
+          </>
         ) : (
           <div className="rounded-lg border border-rce-border bg-white p-3">
             <p className="text-sm font-semibold">Confirm the sweep</p>

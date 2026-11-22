@@ -28,6 +28,12 @@
  * Every kind except Message goes through `POST /customer-emails` (api.sendCustomerEmail); Message
  * keeps `POST /communications/email`. The server decides WHO through one rule
  * (emailCc.resolveRecipients) and each email's words stay in its own service.
+ *
+ * ── THE THREAD BELOW IS OPTIONAL (work order agent-team, U2, default D3) ───────────────────────────
+ * Where a record has its ONE Conversation timeline (the Account page, the Lead and Job drawers; see
+ * RecordConversation.tsx), that timeline lists every email, so this panel passes `showThread={false}`
+ * and `openLabel="Email the customer"` and lists nothing itself. Elsewhere (the estimate and invoice
+ * drawers, the payment card) nothing changes: the thread of what was sent from that record stays.
  */
 
 import { useId, useState } from "react";
@@ -138,6 +144,8 @@ export function SendEmailPanel({
   accountIdForContacts,
   record,
   startOpen = false,
+  showThread = true,
+  openLabel,
 }: {
   target: "lead" | "account" | "job";
   id: string;
@@ -146,6 +154,10 @@ export function SendEmailPanel({
   record?: EmailRecord;
   /** Open already expanded - for a screen whose own button just asked for it (Present to the customer). */
   startOpen?: boolean;
+  /** False where the record's Conversation timeline already lists every email (default true). */
+  showThread?: boolean;
+  /** The closed button's words; default "Email the customer" with a record, "Send email" without. */
+  openLabel?: string;
 }) {
   const queryClient = useQueryClient();
   const radioName = useId();
@@ -263,6 +275,8 @@ export function SendEmailPanel({
 
   const finish = () => {
     void queryClient.invalidateQueries({ queryKey: ["email-deliveries"] });
+    // The record's Conversation timeline lists this email too.
+    void queryClient.invalidateQueries({ queryKey: ["hub-timeline"] });
     for (const key of REFRESH_KEYS) void queryClient.invalidateQueries({ queryKey: key });
     record?.onSent?.();
   };
@@ -335,14 +349,14 @@ export function SendEmailPanel({
     <div className="space-y-2">
       {!open && (
         <button type="button" className="btn btn-secondary text-xs" onClick={() => setOpen(true)}>
-          {record ? "Email the customer" : "Send email"}
+          {openLabel ?? (record ? "Email the customer" : "Send email")}
         </button>
       )}
 
       {open && (
         <form
           className="space-y-2 rounded-lg border border-rce-border p-3"
-          aria-label={record ? "Email the customer" : "Send email"}
+          aria-label={openLabel ?? (record ? "Email the customer" : "Send email")}
           onSubmit={(event) => { event.preventDefault(); if (canSend) send.mutate(); }}
         >
           {record && <p className="text-sm font-semibold">Email the customer</p>}
@@ -521,7 +535,7 @@ export function SendEmailPanel({
       {notice && <p className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-900">{notice}</p>}
       {error && <p role="alert" className="rounded bg-red-50 px-2 py-1 text-xs text-red-800">{error}</p>}
 
-      {thread && thread.length > 0 && (
+      {showThread && thread && thread.length > 0 && (
         <details className="text-xs">
           <summary className="cursor-pointer text-rce-soft">Email thread ({thread.length})</summary>
           <ul className="mt-1 space-y-1">

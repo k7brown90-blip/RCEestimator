@@ -10,6 +10,7 @@
 
 import { getGmailTransporter } from "./gmailTransport";
 import { sendCustomerEmail, type EmailKind } from "./transactionalEmail";
+import { inRehearsal, noteRehearsalSkip } from "./rehearsal";
 import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 
 /**
@@ -288,6 +289,12 @@ export async function sendProposalEmail(input: ProposalEmailInput): Promise<bool
 // ─── KYLE NOTIFICATION EMAIL ──────────────────────────────────────────────────
 
 export async function sendKyleNotificationEmail(subject: string, body: string): Promise<boolean> {
+  // A rehearsal (an approval on the office's test account, services/rehearsal.ts) emails nobody, Kyle's own
+  // copy included: this is the one direct Gmail send the scheduling functions make that is not a customer email.
+  if (inRehearsal()) {
+    noteRehearsalSkip("email", "notification to Kyle");
+    return false;
+  }
   const mail = getTransporter();
   if (!mail) {
     console.warn("[KyleNotificationEmail] Gmail not configured — skipping.");
@@ -359,6 +366,13 @@ export async function sendBrandedEmail(input: {
   visitId?: string | null;
   leadId?: string | null;
   customerId?: string | null;
+  /**
+   * Filled in by this function with what happened to the message (the EmailDelivery row's id, and the
+   * transport's reason when it failed), for a caller that records the send somewhere else - the Messages
+   * hub links its message to the delivery row (services/hubSend.ts). Optional, and never read by the
+   * existing callers, so none of them changes.
+   */
+  outcome?: { deliveryId?: string | null; error?: string | null };
 }): Promise<boolean> {
   const profile = await getCompanyProfile();
   const html = `
@@ -394,6 +408,10 @@ export async function sendBrandedEmail(input: {
     leadId: input.leadId ?? null,
     customerId: input.customerId ?? null,
   });
+  if (input.outcome) {
+    input.outcome.deliveryId = result.deliveryId ? result.deliveryId : null;
+    input.outcome.error = result.ok ? null : result.error;
+  }
   if (result.ok) {
     console.log(`[BrandedEmail] Sent "${input.subject}" to ${input.to} via ${result.provider}`);
   } else {

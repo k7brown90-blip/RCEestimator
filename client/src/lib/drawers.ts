@@ -32,7 +32,7 @@
 import { useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 
-export const DRAWER_KINDS = ["po", "job", "estimate", "invoice", "lead", "receipt"] as const;
+export const DRAWER_KINDS = ["po", "job", "estimate", "invoice", "lead", "receipt", "thread"] as const;
 export type DrawerKind = (typeof DRAWER_KINDS)[number];
 
 export function isDrawerKind(key: string): key is DrawerKind {

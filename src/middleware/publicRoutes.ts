@@ -37,6 +37,7 @@
  */
 
 import { twilioInboundEnabled } from "../services/automationGate";
+import type { AgentScope } from "../../shared/agentScopes";
 
 /** HTTP methods an entry covers. `"*"` means every method. */
 type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE" | "*";
@@ -265,7 +266,7 @@ function matchesParamPath(path: string, declared: string): boolean {
  * its own matcher (catching a typo that would silently grant nothing) without that check being
  * defeated by a conditional entry that happens to be switched off.
  */
-export function entryCovers(entry: PublicRoute, method: string, rawPath: string): boolean {
+export function entryCovers(entry: Pick<PublicRoute, "methods" | "path" | "prefix">, method: string, rawPath: string): boolean {
   const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, "") : rawPath;
   const m = method.toUpperCase();
   if (!entry.methods.includes("*") && !entry.methods.includes(m as Method)) return false;
@@ -290,4 +291,51 @@ export function publicRouteFor(method: string, rawPath: string): PublicRoute | n
 /** True when this request may proceed without a PIN/JWT session. */
 export function isPublicRoute(method: string, path: string): boolean {
   return publicRouteFor(method, path) !== null;
+}
+
+// ── Agent-key routes (work order agent-team, K-U1) ────────────────────────────────────────────────
+//
+// NOT public, and NOT in PUBLIC_ROUTES: nothing here is reachable without a credential. These are the
+// routes that accept an AGENT KEY (`rce_live_...` / `rce_test_...`) instead of a session. The session
+// gate hands a key-shaped bearer to agentKeyGate (src/agentApi/gate.ts) only when an entry below
+// covers the request; a key-shaped bearer anywhere else is a 401, and a session token on one of these
+// routes is not an agent key. Each entry names the ONE scope that opens it (or "any" where the door
+// checks scopes per tool, as /mcp will), reusing `entryCovers` so the path rules are the allowlist's.
+//
+// The list starts EMPTY on purpose. /mcp arrives with Step 2 and REST /api/hub/* with K-U7; each adds
+// its entries here, in the diff that adds the route.
+
+export interface AgentKeyRoute extends Pick<PublicRoute, "methods" | "path" | "prefix"> {
+  /** The scope a key must hold, or "any" when the door checks scopes itself, tool by tool. */
+  scope: AgentScope | "any";
+  /** A write: refused while the kill switch is read_only and for a key with writes off. */
+  write?: boolean;
+  /** Makes a draft: a write that also counts toward the key's 500 a day. */
+  draft?: boolean;
+  /** The name the audit records for this route. */
+  tool?: string;
+  /**
+   * Only agent keys use this route (/mcp): every request, with or without a bearer, goes to the agent
+   * gate, so a session JWT, a technician token or no credential at all is a 401 there. Without it
+   * (REST /api/hub/*, shared with the CRM's own screens) only a key-shaped bearer goes to the gate.
+   */
+  agentOnly?: boolean;
+  reason: string;
+}
+
+export const AGENT_KEY_ROUTES: AgentKeyRoute[] = [];
+
+/** The agent-key entry covering this request (path as the session gate sees it, after the /api strip), or null. */
+export function agentKeyRouteFor(
+  method: string, rawPath: string, routes: readonly AgentKeyRoute[] = AGENT_KEY_ROUTES,
+): AgentKeyRoute | null {
+  // Match the way Express ROUTES: path case-insensitive, and HEAD goes to the GET handler. Without
+  // this, `POST /MCP` or `HEAD /mcp` would miss an agent-only entry while Express still served the
+  // handler behind a human session. (Trailing slashes are already normalized by entryCovers.)
+  const m = method.toUpperCase() === "HEAD" ? "GET" : method.toUpperCase();
+  const path = rawPath.toLowerCase();
+  for (const entry of routes) {
+    if (entryCovers({ ...entry, path: entry.path.toLowerCase() }, m, path)) return entry;
+  }
+  return null;
 }

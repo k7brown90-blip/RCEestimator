@@ -66,6 +66,9 @@ import { CompletionError, clearCompletionLine, listCompletionLines, saveCompleti
 import { FINANCING_IN_PROGRESS, financingBlockedReason, financingInProgress } from "../services/financingFee";
 import { LIVE_SIGNED_CHANGE_ORDER, signedRootForJob } from "../services/invoiceGroup";
 import { logSystemEvent } from "../services/systemEvents";
+import { emitHubEventSafe } from "../services/hubEvents";
+import { registerHubTechRoutes } from "./hubTechRoutes";
+import { removeAllSubscriptionsFor } from "../services/hubPush";
 import { sendKyleNotificationEmail } from "../services/confirmationEmail";
 import { resolveJurisdictions } from "../services/jurisdictionResolver";
 import { technicianAuth, zodErrorHandler, type TechRequest } from "./technicianAuth";
@@ -973,8 +976,8 @@ healthRecordTechRouter.post("/visits/:visitId/email-payment-request", asyncHandl
  * Bypasses the automation gate exactly like the CRM's sibling route
  * (`POST /jobs/:jobId/email-review-request`, app.ts) — a human pressed it, same precedent as
  * `/issued-estimates/:id/payment-reminder`. Every OTHER correctness check inside
- * sendReviewRequestEmail (job must be completed, no duplicate ask on this job, no repeat ask on
- * this customer within 90 days, customer must have an email on file) still applies unchanged —
+ * sendReviewRequestEmail (job must be completed, no duplicate ask on this job, customer must have
+ * an email on file) still applies unchanged —
  * see services/reviewRequest.ts's header for the full guard order.
  */
 healthRecordTechRouter.post("/visits/:visitId/email-review-request", asyncHandler(async (req: TechRequest, res) => {
@@ -2708,8 +2711,10 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
   const materialWarning = await closeOutMaterialWarning(visitId);
   if (materialWarning) warnings.push(materialWarning);
 
-  await prisma.visit.update({
-    where: { id: visitId },
+  // Only the press that flips the job to completed tells the agents (a second tech's close-out and a
+  // repeat press find it already completed and announce nothing).
+  const flipped = await prisma.visit.updateMany({
+    where: { id: visitId, status: { not: "completed" } },
     data: { status: "completed", completedAt: new Date() },
   });
   await prisma.visitAssignment.updateMany({
@@ -2723,6 +2728,8 @@ healthRecordTechRouter.post("/visits/:visitId/complete", asyncHandler(async (req
     technician: req.technician!.name,
     warnings,
   });
+  // The agents hear the job is complete (work order agent-team, BA6); the CRM door emits it too.
+  if (flipped.count === 1) void emitHubEventSafe({ type: "job.completed", visitId });
   // The review ask rides completion (Kyle, 2026-09-02) — fire-and-forget.
   {
     const { sendReviewRequestEmail } = await import("../services/reviewRequest");
@@ -3379,6 +3386,14 @@ healthRecordTechRouter.get("/visits/:visitId/photos/:photoId/image", asyncHandle
   res.setHeader("Cache-Control", "private, max-age=86400");
   res.send(bytes);
 }));
+
+/*
+  ── THE FIELD APP'S MESSAGES (work order agent-team, U5/U6/U7) ─────────────────────────────────────
+  Home -> "Messages", and the Job site's "Job messages". Registered from routes/hubTechRoutes.ts: the list,
+  the thread, send / edit / delete, a Team-thread photo, the live stream and the push subscription. A job's
+  thread opens only through requireAssigned (below); the rest go by the one hub visibility rule.
+*/
+registerHubTechRoutes(healthRecordTechRouter, requireAssigned);
 
 /*
   ── THE JOB COMPLETION REPORT, the technician's door (Kyle, 2026-10-29) ───────────────────────────
@@ -4104,6 +4119,9 @@ healthRecordAdminRouter.patch("/technicians/:id", asyncHandler(async (req, res) 
       ...(rotateToken ? { accessToken: crypto.randomBytes(24).toString("base64url") } : {}),
     },
   });
+  // A rotated token cuts the old phone off: it must stop getting this person's notifications too (U7). The tech
+  // turns notifications back on from the phone that has the new token.
+  if (rotateToken) await removeAllSubscriptionsFor(`tech:${technician.id}`);
   res.json(technician);
 }));
 

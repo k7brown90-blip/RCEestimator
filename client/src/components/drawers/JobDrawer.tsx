@@ -29,7 +29,7 @@ import { api } from "../../lib/api";
 import { useDrawerParams } from "../../lib/drawers";
 import { useVisit } from "../../lib/recordQueries";
 import { shortDate } from "../../lib/utils";
-import { ConversationNotes } from "../ConversationNotes";
+import { RecordConversation } from "../RecordConversation";
 import { Drawer } from "../Drawer";
 import { JobCloseoutPanel } from "../JobCloseoutPanel";
 import { JobCompletionReportPanel } from "../JobCompletionReportPanel";
@@ -208,23 +208,36 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
 
           {/*
             WHAT THE LAST CALLER SAID (Kyle, 2026-10-01). This is the screen the dispatcher is on
-            when the phone rings about a job, so the ACCOUNT's conversation log is here — the
-            newest few, with "Show all" — and a note added here is tagged to this job. Same
-            component and same query as the account page, which holds the whole list. Not
+            when the phone rings about a job, so the ACCOUNT's conversation is here — the newest few
+            entries, with "Show all" — and a note added here is tagged to this job. Same component
+            and same query as the account page, which holds the whole list (work order agent-team,
+            U2 / D3: one timeline per record). "Crew chat" opens this job's crew thread. Not
             `Visit.notes` above: that is one box about the job, with no author and no time.
-          */}
-          <ConversationNotes accountId={visit.customerId} surface="job" visitId={visitId} />
 
-          {/*
             ONE EMAIL CONTROL (Kyle, 2026-10-27: "one tool for one task"). When the job has a signed
             invoice, the "Email the customer" panel lives in the payment card below (Invoice · Deposit
             request · Financing link · Review request · Message, to a chosen contact + CC). A job with
-            no invoice yet has no payment card, so it gets the plain message panel here instead -
-            never both.
+            no invoice yet has no payment card, so the conversation's "Email the customer" is the
+            plain message panel - never both.
           */}
-          {!paymentInfoLoading && !paymentInfo && (
-            <SendEmailPanel target="job" id={visitId} primaryEmail={visit.customer?.email ?? null} accountIdForContacts={visit.customerId} />
-          )}
+          <RecordConversation
+            surface="job"
+            record={{ key: "visitId", id: visitId }}
+            accountId={visit.customerId}
+            visitId={visitId}
+            emailPanel={
+              !paymentInfoLoading && !paymentInfo
+                ? <SendEmailPanel target="job" id={visitId} primaryEmail={visit.customer?.email ?? null} accountIdForContacts={visit.customerId} showThread={false} openLabel="Email the customer" />
+                : undefined
+            }
+            emailElsewhere={
+              paymentInfoLoading
+                ? "Checking whether this job has an invoice…"
+                : paymentInfo
+                  ? "This job has an invoice: email from Email the customer in the payment card below, so the invoice, deposit, financing link and review request all go from one place."
+                  : null
+            }
+          />
 
           {/*
             ONE SCHEDULER (2026-10-01, plan item E3). This drawer used to host its own
@@ -244,7 +257,7 @@ export function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) 
             onChanged={refreshVisit}
           />
           {/* Renders itself only when a signed estimate exists (reactive flow, Kyle 2026-08-25). */}
-          <PaymentPanel jobId={visitId} />
+          <PaymentPanel jobId={visitId} emailThread={false} />
 
           {/*
             THE JOB GREW (2026-09-29).

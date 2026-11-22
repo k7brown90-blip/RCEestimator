@@ -15,6 +15,7 @@
 
 import express from "express";
 import { asyncHandler } from "../lib/routeHelpers";
+import { requireKylePower } from "../middleware/kylePowers";
 import { getTreasurySettings, saveTreasurySettings } from "../services/treasury";
 
 export const treasuryRouter = express.Router();
@@ -24,6 +25,6 @@ treasuryRouter.get("/settings/treasury", asyncHandler(async (_req, res) => {
 }));
 
 /** Numbers ≥ 0 or a 400 (ZodError → the app's validation handler). */
-treasuryRouter.put("/settings/treasury", asyncHandler(async (req, res) => {
+treasuryRouter.put("/settings/treasury", requireKylePower("treasury"), asyncHandler(async (req, res) => {
   res.json(await saveTreasurySettings(req.body ?? {}));
 }));

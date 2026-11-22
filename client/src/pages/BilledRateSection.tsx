@@ -16,6 +16,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { PowerLockNote } from "../components/PowerLockNote";
+import { useCan } from "../lib/session";
 import type { BilledRateApplied, BilledRatePreview, BilledRateTierChange } from "../lib/api";
 
 const MAX_RATE = 1000;
@@ -36,6 +38,9 @@ const tierText = (label: string, c: BilledRateTierChange | null) => (c ? `${labe
 
 export function BilledRateSection() {
   const queryClient = useQueryClient();
+  // Repricing the whole book is a Kyle-only price edit (price_book_edit): the box and both buttons
+  // are greyed WITH the reason for a session without the power.
+  const { allowed: canPrice, reason: priceReason } = useCan("price_book_edit");
   const { data: current, isLoading } = useQuery({ queryKey: ["billed-rate"], queryFn: api.billedRate });
   const [text, setText] = useState("");
   const [preview, setPreview] = useState<BilledRatePreview | null>(null);
@@ -95,6 +100,8 @@ export function BilledRateSection() {
         re-prices the price book and the estimates still being built. Estimates already sent or signed keep the prices they were sent at.
       </p>
 
+      <PowerLockNote power="price_book_edit" className="mt-3" />
+
       <div className="mt-4">
         <p className="text-sm">
           Current rate:{" "}
@@ -115,6 +122,8 @@ export function BilledRateSection() {
             inputMode="decimal"
             placeholder={currentRate === null ? "100" : String(currentRate)}
             value={text}
+            disabled={!canPrice}
+            title={priceReason ?? undefined}
             onChange={(e) => onType(e.target.value)}
           />
         </label>
@@ -124,8 +133,8 @@ export function BilledRateSection() {
         <button
           className="btn btn-secondary"
           type="button"
-          disabled={previewReason !== null || previewMutation.isPending}
-          title={previewReason ?? undefined}
+          disabled={!canPrice || previewReason !== null || previewMutation.isPending}
+          title={priceReason ?? previewReason ?? undefined}
           onClick={() => typed !== null && previewMutation.mutate(typed)}
         >
           {previewMutation.isPending ? "Working it out…" : "Preview the change"}
@@ -133,8 +142,8 @@ export function BilledRateSection() {
         <button
           className="btn btn-primary"
           type="button"
-          disabled={applyReason !== null || applyMutation.isPending}
-          title={applyReason ?? undefined}
+          disabled={!canPrice || applyReason !== null || applyMutation.isPending}
+          title={priceReason ?? applyReason ?? undefined}
           onClick={onApply}
         >
           {applyMutation.isPending ? "Applying…" : typed !== null ? `Apply ${dollars(typed)}/hr to the price book` : "Apply to the price book"}

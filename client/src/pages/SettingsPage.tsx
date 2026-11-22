@@ -2,11 +2,19 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
+import { PowerLockNote } from "../components/PowerLockNote";
+import { useCan } from "../lib/session";
 import type { CompanyProfile, LegalInfo, OperatingHours, PayrollSettings, PurchasingSettings, Territory } from "../lib/api";
 import type { TreasurySettings } from "../lib/types";
 import { FinancingPlansSection } from "./FinancingPlansSection";
 import { BilledRateSection } from "./BilledRateSection";
 import { AdminLoginSection } from "./AdminLoginSection";
+import { AgentKeysSection } from "./AgentKeysSection";
+import { AgentEventsSection } from "./AgentEventsSection";
+import { AgentWebhooksSection } from "./AgentWebhooksSection";
+import { AutoSendRulesSection } from "./AutoSendRulesSection";
+import { MessageRemindersSection } from "./MessageRemindersSection";
+import { MessageAuditLogSection } from "./MessageAuditLogSection";
 
 const EMPTY_PROFILE: CompanyProfile = {
   companyName: "Red Cedar Electric LLC",
@@ -57,8 +65,12 @@ type TreasuryForm = {
 };
 const EMPTY_TREASURY: TreasuryForm = { mainFinancialAccountId: "", mainFloat: "0", truckFloats: {}, chaseAccountLabel: "", chaseExternalAccountId: "" };
 
-function TreasurySection() {
+/** Exported for its test (the Kyle-only Save). */
+export function TreasurySection() {
   const queryClient = useQueryClient();
+  // Saving the floats and the Chase destination is Kyle-only (treasury): Save is greyed WITH the
+  // reason for a session without the power.
+  const { allowed: canTreasury, reason: treasuryReason } = useCan("treasury");
   const { data: treasury } = useQuery({ queryKey: ["treasury-settings"], queryFn: api.treasurySettings });
   const { data: balances } = useQuery({ queryKey: ["financials-balances"], queryFn: api.financialsBalances });
   const { data: trucksData } = useQuery({ queryKey: ["trucks"], queryFn: api.trucks });
@@ -153,7 +165,14 @@ function TreasurySection() {
         </div>
       )}
       {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{error}</p>}
-      <button className="btn btn-primary mt-4" type="button" disabled={save.isPending} onClick={onSave}>
+      <PowerLockNote power="treasury" className="mt-3" />
+      <button
+        className="btn btn-primary mt-4"
+        type="button"
+        disabled={save.isPending || !canTreasury}
+        title={treasuryReason ?? undefined}
+        onClick={onSave}
+      >
         {saved ? "Saved ✓" : "Save treasury"}
       </button>
     </SectionCard>
@@ -528,6 +547,24 @@ export function SettingsPage() {
 
       {/* ── AI admin login (Kyle, 2026-11-15): the AI admin's own username + password ── */}
       <AdminLoginSection />
+
+      {/* ── Agent keys (work order agent-team, K-U2): the keys the AI agents use, and the pause switch ── */}
+      <AgentKeysSection />
+
+      {/* ── Agent events (work order agent-team, BA5): the signed-event log and Resend ── */}
+      <AgentEventsSection />
+
+      {/* ── Agent webhooks (TC4, Kyle only): where each agent's events go ── */}
+      <AgentWebhooksSection />
+
+      {/* ── AI auto-send rules (BA8, Kyle only): which AI messages may go out without Approve (all OFF) ── */}
+      <AutoSendRulesSection />
+
+      {/* ── Message reminders (U8, Kyle only): the hours the waiting-approval reminder may go out ── */}
+      <MessageRemindersSection />
+
+      {/* ── Message audit log (U4, Kyle only): what the hub did, with the "Blocked texts" filter ── */}
+      <MessageAuditLogSection />
     </div>
   );
 }

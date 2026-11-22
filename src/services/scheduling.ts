@@ -8,6 +8,7 @@ import { prisma } from "../lib/prisma";
 import { createCalendarEvent, deleteCalendarEvent, moveCalendarEvent, checkAvailabilityBlock, technicianDescriptionLine } from "./schedule";
 import { assignBookingCrew, replaceLead, LEAD_ROLES } from "./visitCrew";
 import * as notify from "./notifications";
+import type { SmsMeta } from "./twilio";
 import { escapeHtml, sendRescheduleEmail, sendCancellationEmail, sendKyleNotificationEmail } from "./confirmationEmail";
 import { acquireSlotHolds, releaseSlotHolds, workingDaysCT, SlotContentionError } from "./slotHolds";
 import { sendVisitConfirmationRequest, notifyTechnicianOfAssignment } from "./visitConfirmations";
@@ -43,6 +44,14 @@ export function appointmentKindFor(visitStatus: string): AppointmentKind {
 
 /** Statuses from which a visit may be put on the calendar. */
 const SCHEDULABLE_STATUSES = ["estimate", "contracted"] as const;
+
+/**
+ * What every text to Kyle about a visit says about itself: internal (it carries the customer's phone and
+ * address, so it is filed in THAT customer's conversation, never a Team or job thread), sent to Kyle only.
+ */
+function kyleSmsMeta(customerId: string, visitId: string): SmsMeta {
+  return { messageClass: "internal", category: "internal_alert", hub: { customerId, visitId } };
+}
 
 /** Fire-and-forget: notify every tech assigned to a visit about an event. */
 async function notifyAssignedTechs(visitId: string, event: "assigned" | "changed" | "cancelled"): Promise<void> {
@@ -514,11 +523,17 @@ export async function scheduleJob(
     const customerResult = await notify.sendCustomerSms(
       job.customer.phone,
       notify.customerWorkScheduled(jobData),
+      {
+        messageClass: "transactional",
+        category: isEstimate ? "consultation_scheduled" : "job_scheduled",
+        when: { start: scheduledStart, end: scheduledEnd },
+        hub: { customerId: job.customerId, visitId: jobId },
+      },
     );
     customerNotified = customerResult !== null;
   }
 
-  const kyleResult = await notify.sendKyleSms(notify.kyleWorkScheduled(jobData));
+  const kyleResult = await notify.sendKyleSms(notify.kyleWorkScheduled(jobData), kyleSmsMeta(job.customerId, jobId));
   kyleNotified = kyleResult !== null;
 
   // Send email notifications (primary channel while A2P is pending)
@@ -589,6 +604,9 @@ export async function scheduleJob(
     phone: job.customer.phone,
     address: `${job.property.addressLine1}, ${job.property.city}`,
     scheduledStart,
+    scheduledEnd,
+    customerId: job.customerId,
+    visitKind: kind,
     jobType: job.jobType,
   }).catch((err) => console.error("[scheduleJob] Confirmation request failed:", err));
 
@@ -723,7 +741,7 @@ export async function rescheduleJob(
           // text arrived: it is gated off (Kyle, 2026-08-13) and no email follows, so it asks for another
           // date rather than sending a caller already on the office line to "call our office"
           // (company voice — Kyle, 2026-11-18).
-          await notify.sendKyleSms(notify.kyleRescheduleConflict(jobData, newStart, conflictSummary));
+          await notify.sendKyleSms(notify.kyleRescheduleConflict(jobData, newStart, conflictSummary), kyleSmsMeta(job.customerId, jobId));
           throw calendarConflictError(
             availability.conflicts,
             "I wasn't able to reschedule — there's a conflict on that date. Would you like to try a different date?",
@@ -753,11 +771,17 @@ export async function rescheduleJob(
     const customerResult = await notify.sendCustomerSms(
       job.customer.phone,
       notify.customerReschedule(jobData, oldDates, newDates),
+      {
+        messageClass: "transactional",
+        category: "visit_rescheduled",
+        when: { start: newStart, end: newEnd },
+        hub: { customerId: job.customerId, visitId: jobId },
+      },
     );
     customerNotified = customerResult !== null;
   }
 
-  const kyleResult = await notify.sendKyleSms(notify.kyleReschedule(jobData, oldDates, newDates, reason));
+  const kyleResult = await notify.sendKyleSms(notify.kyleReschedule(jobData, oldDates, newDates, reason), kyleSmsMeta(job.customerId, jobId));
   kyleNotified = kyleResult !== null;
 
   // Send email notifications (primary channel while A2P is pending)
@@ -832,6 +856,9 @@ export async function rescheduleJob(
     phone: job.customer.phone,
     address: `${job.property.addressLine1}, ${job.property.city}`,
     scheduledStart: newStart,
+    scheduledEnd: newEnd,
+    customerId: job.customerId,
+    visitKind: kind,
     jobType: job.jobType,
   }).catch((err) => console.error("[rescheduleJob] Confirmation request failed:", err));
   notifyAssignedTechs(jobId, "changed").catch((err) => console.error("[rescheduleJob] Tech notify failed:", err));
@@ -900,7 +927,12 @@ export async function cancelJob(
       durationDays: job.estimatedDurationDays ?? 1,
       startTime: timeDisplay,
     };
-    const smsResult = await notify.sendCustomerSms(job.customer.phone, notify.customerCancellation(jobData));
+    const smsResult = await notify.sendCustomerSms(job.customer.phone, notify.customerCancellation(jobData), {
+      messageClass: "transactional",
+      category: "visit_cancelled",
+      when: { start: job.scheduledStart, end: job.scheduledEnd },
+      hub: { customerId: job.customerId, visitId: jobId },
+    });
     if (smsResult) customerNotified = true;
   }
 
@@ -913,7 +945,7 @@ export async function cancelJob(
     `Reason: ${reason}`,
   ].join("\n");
   const kyleEmailSent = await sendKyleNotificationEmail("Job Cancelled", kyleBody).catch(() => false);
-  const kyleSmsSent = await notify.sendKyleSms(`CANCELLED: ${job.customer.name} — ${formatDateLong(job.scheduledStart)} at ${timeDisplay}. Reason: ${reason}`);
+  const kyleSmsSent = await notify.sendKyleSms(`CANCELLED: ${job.customer.name} — ${formatDateLong(job.scheduledStart)} at ${timeDisplay}. Reason: ${reason}`, kyleSmsMeta(job.customerId, jobId));
   kyleNotified = kyleEmailSent === true || kyleSmsSent !== null;
 
   // Update the job record

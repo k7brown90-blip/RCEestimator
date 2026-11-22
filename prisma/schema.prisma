@@ -13,6 +13,7 @@ datasource db {
 }
 
 model Customer {
+  hubThreads        HubThread[]
   priceBookDrafts   PriceBookDraftEstimate[]
   id                String                   @id @default(cuid())
   name              String
@@ -370,6 +371,8 @@ model SystemSnapshot {
 }
 
 model Visit {
+  hubThreads        HubThread[]
+  hubMessages       HubMessage[]
   priceBookDrafts        PriceBookDraftEstimate[]
   id                     String                   @id @default(cuid())
   propertyId             String
@@ -551,6 +554,7 @@ model Commission {
 // ─── Health Record (field inspection PWA) integration ──────────────────────
 
 model Technician {
+  hubThreads        HubThread[]
   id                String             @id @default(cuid())
   name              String
   // Company Google Workspace address (assigned at onboarding). Doubles as the
@@ -586,6 +590,9 @@ model Technician {
   trucks            Truck[]
   shiftEntries      ShiftEntry[]
   commissions       Commission[]
+  // The person's CRM sign-in, if they have one (work order agent-team, HA1). NEVER include this in
+  // a technician query that is returned to the CRM: it carries a password hash.
+  crmLogin          CrmLogin?
 }
 
 // Flexible company configuration store — license info, operating territories,
@@ -1605,6 +1612,7 @@ model JobType {
 }
 
 model Lead {
+  hubThreads        HubThread[]
   priceBookDrafts   PriceBookDraftEstimate[]
   id                String                   @id @default(cuid())
   name              String
@@ -2384,10 +2392,21 @@ model InboundMessage {
   @@index([fromPhone, createdAt])
 }
 
+/// The ONE append-only audit of agent activity (work order agent-team, K-U3). Savannah and Jerry were
+/// removed 2026-11-21; their old rows stay as history and keep agent "savannah" | "jerry", and the
+/// Vapi `callId` below. A call by an AgentKey (src/agentApi/audit.ts recordAgentCall) writes ONE row,
+/// before the response is sent: action = the tool name, endpoint = the route, agent = the key's
+/// agentRole, door = "mcp" | "rest", scopeUsed = the scope that authorised it, recordIds = ids only,
+/// resultCode = ok | replayed | the error code, clientRequestId = sha256 of the idempotency key.
+/// entityType "draft" marks a call that made a draft (the daily draft cap counts these).
+/// NO bodies are ever written (payloadJson stays null for agent rows) and no key: agentKeyId is the
+/// key's id, a plain string with NO foreign key, so a key can be removed without touching the audit.
+/// The migration adds a trigger that raises on UPDATE and DELETE of this table: append-only is
+/// enforced by the database, not by convention (tests/globalSetup.ts applies the same trigger).
 model AgentAuditLog {
   id              String   @id @default(cuid())
   action          String
-  agent           String? // "savannah" | "jerry"
+  agent           String? // agent key role (admin | inventory | ...); old rows: "savannah" | "jerry"
   endpoint        String?
   visitId         String?
   entityType      String?
@@ -2400,9 +2419,46 @@ model AgentAuditLog {
   // x-vapi-call-id) — lets /vapi/end-of-call-report check whether THIS call
   // already got a disposition logged, independent of model behavior.
   callId          String?
+  agentKeyId      String?
+  door            String? // "mcp" | "rest"
+  scopeUsed       String?
+  recordIds       Json?
+  resultCode      String?
   createdAt       DateTime @default(now())
 
   @@index([action, callId])
+  @@index([agentKeyId, createdAt])
+}
+
+/// One agent API key (work order agent-team, K-U1): the ONE key table for the /mcp door and the REST
+/// /api/hub/* door. The plaintext key (`rce_live_` or `rce_test_` + 43 base64url characters) is shown
+/// once at mint and never stored: `secretHash` is HMAC-SHA256 keyed with env AGENT_KEY_PEPPER and is
+/// the lookup. `scopes` are validated against shared/agentScopes.ts. `hubThreadKinds` limits which
+/// hub threads the key may touch (empty means no limit; Scout is ['training'], Claude Code ['dev']).
+/// `agentRole` is one of admin | inventory | outreach | research | facebook | scout | nec_coach |
+/// claude_code | other. A key is revoked (revokedAt), never deleted; `retiresAt` is the end of a
+/// rotation's 24-hour overlap. `agentKeyId` on AgentAuditLog and AgentIdempotency points here by
+/// value only (no foreign key).
+model AgentKey {
+  id             String    @id @default(cuid())
+  name           String
+  agentRole      String
+  environment    String // "live" | "test"
+  displayPrefix  String
+  secretHash     String    @unique
+  scopes         String[]  @default([])
+  writesEnabled  Boolean   @default(false)
+  hubThreadKinds String[]  @default([])
+  expiresAt      DateTime?
+  retiresAt      DateTime?
+  rotatedFromId  String?   @unique
+  revokedAt      DateTime?
+  revokedReason  String?
+  lastUsedAt     DateTime?
+  lastUsedTool   String?
+  createdBy      String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 }
 
 // ─── System events ─────────────────────────────────────────────────────────
@@ -2429,15 +2485,23 @@ model SystemEvent {
   @@index([createdAt])
 }
 
+/// 24-hour replay store for agent writes (work order agent-team, K-U6; src/agentApi/idempotency.ts).
+/// clientRequestId = "<agentKeyId>:<idempotency_key>", endpoint = "op:<operation>" (shared by the MCP
+/// and REST doors of one operation), requestHash = sha256 of the canonical input, status = pending |
+/// done. Old Savannah and Jerry rows (removed 2026-11-21) keep agent "savannah" | "jerry" and status
+/// "done".
 model AgentIdempotency {
   id              String   @id @default(cuid())
   clientRequestId String
   endpoint        String
-  agent           String? // "savannah" | "jerry"
+  agent           String? // agent key role; old rows: "savannah" | "jerry"
   visitId         String?
   responseJson    String
   createdAt       DateTime @default(now())
   expiresAt       DateTime
+  agentKeyId      String?
+  requestHash     String?
+  status          String   @default("done")
 
   @@unique([clientRequestId, endpoint])
 }
@@ -3222,6 +3286,7 @@ model PriceBookDraftLine {
 // `PriceBookAtomic`, the current catalog, through its own foreign key. Kyle's reorganized units
 // swap in later as a data migration — the flow reads no atomic ID it did not get from the draft.
 model IssuedEstimate {
+  hubMessages       HubMessage[]
   id       String @id @default(cuid())
   // House numbering, continuing the issued PDFs (…2026-1010). Shared across revisions of the
   // same estimate; `revision` is what distinguishes them.
@@ -3839,6 +3904,7 @@ model EmailBounce {
 /// Resend webhook (delivered / delayed / bounced / complained); a Gmail send stays "sent" — Gmail
 /// reports nothing, the DSN watcher covers its bounces. "failed" means neither pipe took it.
 model EmailDelivery {
+  hubMessage        HubMessage?
   id                String          @id @default(cuid())
   /// "resend" | "gmail"
   provider          String
@@ -4040,4 +4106,270 @@ model AdminLogin {
   sessionVersion Int      @default(1)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+}
+
+/// A PERSON's sign-in to the CRM (work order agent-team, HA1; the paste-pack "human accounts"). The
+/// AI admin keeps its own AdminLogin table; human rows never go there. The person is a Technician
+/// (the person id everywhere is Technician.id), one login per person. Reached through the same
+/// POST /auth/login door as the AI admin, which checks AdminLogin first and CrmLogin second.
+/// `passwordHash` is bcrypt only and never leaves the server; null means no password is set (Kyle,
+/// who signs in with the PIN, or a login not set up yet). `role` is owner | admin | office | tech and
+/// decides which screens open; the Kyle-only powers (shared/crmPowers.ts) are NEVER read from it:
+/// they come from `powers`, or from `isPrincipal` (Kyle's own login, which holds every power).
+/// `isPrincipal` is true on at most one row - enforced by setPrincipal in services/crmLogin.ts,
+/// inside one transaction, NOT by a partial unique index (a hand-written index shows up as drift in
+/// every later prisma migrate diff). `sessionVersion` is bumped by a password change and Turn off;
+/// the gate refuses a session whose `ver` no longer matches, on its very next request.
+model CrmLogin {
+  id             String     @id @default(cuid())
+  technicianId   String     @unique
+  technician     Technician @relation(fields: [technicianId], references: [id], onDelete: Restrict)
+  username       String     @unique
+  passwordHash   String?
+  role           String
+  isPrincipal    Boolean    @default(false)
+  powers         String[]   @default([])
+  enabled        Boolean    @default(true)
+  sessionVersion Int        @default(1)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+}
+
+// ─── MESSAGES HUB (work order agent-team, U1; BA4) ───────────────────────────────────────────────
+//
+// One conversation per record, for people and for the AI agents. This is the data core: all five
+// thread kinds and every column the later units use are here, in ONE migration
+// (20261121140000_hub_core), so no later unit has to alter these tables. Screens and the send
+// function come with U2-U4; nothing here sends anything to a customer.
+//
+// Person id everywhere is Technician.id. A thread is made lazily on its first message
+// (services/hub.ts ensureThreadFor / ensureTeamThread). Nothing in the hub is permanent: a message
+// is soft-deleted (deletedAt + reason, body kept in the audit), a thread is closed or reopened.
+
+/// One conversation. `kind`: customer (an account, or a lead before it converts, or an unknown
+/// sender held by `phone`) | job (the crew's thread for one Visit) | team (one per person, in
+/// `technicianId`) | dev (a dev ticket) | training (one per apprentice, in `technicianId`).
+/// Team answer 9a: @@unique([kind, technicianId]) is what makes "one Team thread per person" true.
+/// `phone` is the last 10 digits of an unknown sender's number (P2B-9). `status`: open | snoozed | closed.
+model HubThread {
+  id            String          @id @default(cuid())
+  kind          String
+  title         String
+  customerId    String?
+  customer      Customer?       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  leadId        String?
+  lead          Lead?           @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  visitId       String?
+  visit         Visit?          @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  technicianId  String?
+  technician    Technician?     @relation(fields: [technicianId], references: [id], onDelete: Restrict)
+  phone         String?
+  assignedAgent String?
+  status        String          @default("open")
+  lastMessageAt DateTime        @default(now())
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  messages      HubMessage[]
+  readStates    HubReadState[]
+  attachments   HubAttachment[]
+
+  @@unique([kind, customerId])
+  @@unique([kind, leadId])
+  @@unique([kind, visitId])
+  @@unique([kind, technicianId])
+  @@index([phone])
+  @@index([kind, lastMessageAt])
+}
+
+/// One message in a thread. Rows are created ONLY by services/hub.ts createMessageRow, which derives
+/// `messageClass` and `purposeKey` from `category` through the one registry (shared/hub/messageCategories.ts)
+/// and never takes either from a caller. authorType: customer | tech | office | ai_agent | claude | system.
+/// channel: in_app | email | sms | web_chat | system. direction: inbound | outbound | internal.
+/// status: draft | pending_approval | approving | approved | sent | failed | received | posted | edited |
+/// rejected | superseded | blocked ('blocked' = a text the CRM refused; `error` says why, e.g. opted_out,
+/// quiet_hours). `authorKey` is the author's reader key (owner, user:<id>, ai-admin, tech:<id>);
+/// `authorTechnicianId` is the person (Technician.id) when there is one; `authorBotKeyId` is the agent
+/// key's id by value only (no foreign key, like AgentAuditLog). `photoIds` are VisitPhoto ids; a photo
+/// with no job lives in HubAttachment. `actionKind`/`actionPayloadJson` carry a card's action (TC1).
+/// `sentText` is the exact text that went out, with its header and footer. `toPhone10` is the
+/// recipient's last 10 digits (first-text lookup, U9). deletedAt/deletedBy/deletedReason is the exit.
+model HubMessage {
+  id                 String          @id @default(cuid())
+  threadId           String
+  thread             HubThread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  authorType         String
+  authorKey          String?
+  authorTechnicianId String?
+  authorBotKeyId     String?
+  authorDisplay      String
+  channel            String
+  direction          String
+  subject            String?
+  body               String
+  toAddress          String?
+  cc                 String[]        @default([])
+  photoIds           String[]        @default([])
+  category           String?
+  messageClass       String?
+  purposeKey         String?
+  tags               String[]        @default([])
+  status             String
+  visitId            String?
+  visit              Visit?          @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  issuedEstimateId   String?
+  issuedEstimate     IssuedEstimate? @relation(fields: [issuedEstimateId], references: [id], onDelete: SetNull)
+  editedFromId       String?
+  editedFrom         HubMessage?     @relation("HubMessageEdit", fields: [editedFromId], references: [id], onDelete: SetNull)
+  editedCopies       HubMessage[]    @relation("HubMessageEdit")
+  decidedBy          String?
+  decidedAt          DateTime?
+  rejectedReason     String?
+  emailDeliveryId    String?         @unique
+  emailDelivery      EmailDelivery?  @relation(fields: [emailDeliveryId], references: [id], onDelete: SetNull)
+  providerMessageId  String?         @unique
+  error              String?
+  toPhone10          String?
+  sentText           String?
+  footerIncluded     Boolean         @default(false)
+  headerAt           DateTime?
+  eventStart         DateTime?
+  eventEnd           DateTime?
+  actionKind         String?
+  actionPayloadJson  String?
+  sendAfter          DateTime?
+  claimedAt          DateTime?
+  heldReason         String?
+  lastNotifiedAt     DateTime?
+  notifyCount        Int             @default(0)
+  editedAt           DateTime?
+  deletedAt          DateTime?
+  deletedBy          String?
+  deletedReason      String?
+  createdAt          DateTime        @default(now())
+  sentAt             DateTime?
+  deliveredAt        DateTime?
+  attachments        HubAttachment[]
+
+  @@index([threadId, createdAt])
+  @@index([status, createdAt])
+  @@index([channel, toPhone10, status])
+}
+
+/// When this reader last looked at this thread. readerKey: owner | user:<crmLoginId> | ai-admin |
+/// tech:<Technician.id> | agent:<AgentKey.id>.
+model HubReadState {
+  readerKey  String
+  threadId   String
+  thread     HubThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  lastReadAt DateTime  @default(now())
+
+  @@id([readerKey, threadId])
+}
+
+/// The ONE action audit for the hub (and for the units that write to it later: ticket status, photo
+/// clearing, training sign-off, opt-out decisions). Append-only: the migration's trigger raises on
+/// UPDATE and DELETE (tests/globalSetup.ts applies the same trigger), and nothing in the app updates
+/// or deletes these rows. `entityType`/`entityId` name what was acted on (message, thread, visit_photo...);
+/// `agentAuditLogId` links the request telemetry row for an agent's call (by value, no foreign key).
+/// threadId and messageId are plain strings too, so the history outlives a deleted thread.
+model HubAuditLog {
+  id              String   @id @default(cuid())
+  at              DateTime @default(now())
+  actorKey        String
+  actorDisplay    String
+  action          String
+  entityType      String?
+  entityId        String?
+  threadId        String?
+  messageId       String?
+  agentAuditLogId String?
+  beforeText      String?
+  afterText       String?
+  detailsJson     String?
+
+  @@index([threadId, at])
+  @@index([actorKey, at])
+  @@index([entityType, entityId])
+}
+
+/// A photo or file held on a message when there is no job to file it under (a Team-thread photo, an
+/// unknown-sender MMS) - team answer 9b. The ONE such store; job photos stay in VisitPhoto and lead
+/// photos in LeadPhoto. `deletedAt` is set when its author deletes the message; `removedAt` and
+/// `removedReason` when the office removes it. The bytes are never served without a session or a
+/// short-lived grant (TC6).
+model HubAttachment {
+  id            String      @id @default(cuid())
+  threadId      String
+  thread        HubThread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  messageId     String?
+  message       HubMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  mimeType      String
+  sizeBytes     Int
+  data          Bytes
+  technicianId  String?
+  botKeyId      String?
+  createdAt     DateTime    @default(now())
+  deletedAt     DateTime?
+  removedAt     DateTime?
+  removedReason String?
+
+  @@index([threadId])
+  @@index([messageId])
+}
+
+/// A device that asked for notifications (work order agent-team, U7). One row per browser/phone push
+/// endpoint. readerKey is the hub reader (owner | user:<CrmLogin.id> | tech:<Technician.id>); a person
+/// on two devices has two rows. The row is deleted when the push service answers 404/410 (the device
+/// is gone) or when the person turns notifications off on that device.
+model HubPushSubscription {
+  id          String    @id @default(cuid())
+  readerKey   String
+  endpoint    String    @unique
+  p256dh      String
+  auth        String
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+  lastOkAt    DateTime?
+  lastError   String?
+
+  @@index([readerKey])
+}
+
+/// The signed outbound event outbox (work order agent-team, BA4). One row per event per target; `id`
+/// IS the event_id the receiver dedupes on, and never changes across retries or Resend. `payloadJson`
+/// is the exact text POSTed (scrubbed once, at emit). `target` is the webhook TARGET's id (admin |
+/// inventory), not its URL - the URL is read when the attempt is made, so fixing it fixes the retries.
+/// status: pending | retrying | delivered | dead | no_target. `nextAttemptAt` doubles as the worker's
+/// lease (a claim moves it two minutes out), so two overlapping runs cannot send one event twice.
+model HubEvent {
+  id             String            @id @default(uuid())
+  eventKey       String
+  type           String
+  payloadJson    String
+  target         String?
+  status         String            @default("pending")
+  attempts       Int               @default(0)
+  nextAttemptAt  DateTime?
+  lastError      String?
+  lastStatusCode Int?
+  deliveredAt    DateTime?
+  createdAt      DateTime          @default(now())
+  attemptLog     HubEventAttempt[]
+
+  @@index([status, nextAttemptAt])
+  @@index([type, createdAt])
+  @@index([eventKey])
+}
+
+/// One delivery attempt of a HubEvent: when, what the receiver answered, how long it took.
+model HubEventAttempt {
+  id         String   @id @default(cuid())
+  eventId    String
+  event      HubEvent @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  at         DateTime @default(now())
+  statusCode Int?
+  error      String?
+  ms         Int?
+
+  @@index([eventId, at])
 }

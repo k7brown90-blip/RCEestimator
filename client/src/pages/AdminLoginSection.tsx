@@ -12,14 +12,19 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { useIsKyle } from "../lib/session";
 import type { AdminLoginStatus } from "../lib/types";
 
 const PASSWORD_MIN = 12;
 const USERNAME_MIN = 3;
+const ONLY_KYLE = "Only Kyle can change the AI admin login.";
 const SIGNED_OUT = "The AI admin is signed out and will have to sign in again on its next click.";
 
 export function AdminLoginSection() {
   const queryClient = useQueryClient();
+  // Changing the AI admin's login is Kyle's alone (the PIN, or his own principal login); the server
+  // answers anyone else 403, so the buttons are greyed WITH the reason rather than left to fail.
+  const isKyle = useIsKyle();
   const { data: status, isLoading } = useQuery({ queryKey: ["adminLogin"], queryFn: () => api.adminLogin() });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -135,10 +140,11 @@ export function AdminLoginSection() {
           />
         </label>
         <div className="md:col-span-2">
-          <button className="btn btn-primary" type="submit" disabled={busy || saveReason !== null}>
+          <button className="btn btn-primary" type="submit" disabled={busy || saveReason !== null || !isKyle} title={isKyle ? undefined : ONLY_KYLE}>
             Save login
           </button>
-          {saveReason && (
+          {!isKyle && <span className="ml-3 text-xs text-rce-muted" data-testid="admin-login-only-kyle">{ONLY_KYLE}</span>}
+          {isKyle && saveReason && (
             <span className="ml-3 text-xs text-rce-muted" data-testid="admin-login-save-reason">{saveReason}</span>
           )}
         </div>
@@ -150,18 +156,19 @@ export function AdminLoginSection() {
       {configured && (
         <div className="mt-4 flex flex-wrap gap-2 border-t border-rce-border pt-4">
           {enabled ? (
-            <button className="btn btn-secondary" type="button" disabled={busy} onClick={() => offMutation.mutate()}>
+            <button className="btn btn-secondary" type="button" disabled={busy || !isKyle} title={isKyle ? undefined : ONLY_KYLE} onClick={() => offMutation.mutate()}>
               Turn off
             </button>
           ) : (
-            <button className="btn btn-secondary" type="button" disabled={busy} onClick={() => onMutation.mutate()}>
+            <button className="btn btn-secondary" type="button" disabled={busy || !isKyle} title={isKyle ? undefined : ONLY_KYLE} onClick={() => onMutation.mutate()}>
               Turn on
             </button>
           )}
           <button
             className="btn btn-danger"
             type="button"
-            disabled={busy}
+            disabled={busy || !isKyle}
+            title={isKyle ? undefined : ONLY_KYLE}
             onClick={() => {
               if (window.confirm("Remove the AI admin login? It is signed out and cannot sign in again until you set a new login.")) {
                 removeMutation.mutate();

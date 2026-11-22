@@ -48,7 +48,12 @@ export type AuthOutcome =
   /** The gate did not run — dev/test only, where PIN_HASH is unset. */
   | "gate-disabled"
   /** Production, PIN_HASH unset, protected route: refused rather than let through (PUNCHLIST B3). */
-  | "unconfigured";
+  | "unconfigured"
+  /**
+   * An agent key (rce_live_ / rce_test_) was presented: served by agentKeyGate, or refused (on a
+   * human door, or by the gate). The actor is `agent:<key name>`, never the key itself.
+   */
+  | "agent-key";
 
 /** The complete set of fields a line may contain. Adding one is a deliberate edit here. */
 export interface AccessLogLine {
@@ -67,6 +72,23 @@ export interface AccessLogLine {
 export interface RequestAuthState {
   _authOutcome?: AuthOutcome;
   _authActor?: string | null;
+  /**
+   * Set by the session gate for a person's CRM login ("user:<id>" sessions). Read from the database
+   * on that request - never from the token - so role and powers are as of this request.
+   */
+  _crmLogin?: CrmLoginState;
+}
+
+/** What the gate attaches for a person's CRM session. No hash, no token. */
+export interface CrmLoginState {
+  id: string;
+  technicianId: string;
+  /** The roster person's name. */
+  name: string;
+  username: string;
+  role: string;
+  isPrincipal: boolean;
+  powers: string[];
 }
 
 /**
@@ -100,8 +122,17 @@ const REDACT_PATH_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
     route visible (`/e/<token>`), so the log still shows that a customer opened their estimate
     and what the server said — the observability survives, the capability does not.
   */
-  { pattern: /^(\/e\/)[^/]+/, replacement: "$1<token>" },
-  { pattern: /^(\/confirm\/)[^/]+/, replacement: "$1<token>" },
+  { pattern: /^((?:\/api)?\/e\/)[^/]+/, replacement: "$1<token>" },
+  { pattern: /^((?:\/api)?\/confirm\/)[^/]+/, replacement: "$1<token>" },
+  /*
+    The same capability under the other customer-link paths (work order agent-team, BA4's cross-egress
+    test): `/pay/:token` carries the estimate's own token (the one /e/ takes), and `/sign/` and
+    `/unsubscribe/` carry a capability in the same position. They were left in the log in plaintext;
+    the optional `/api` prefix is covered because the app answers both spellings.
+  */
+  { pattern: /^((?:\/api)?\/pay\/)[^/]+/, replacement: "$1<token>" },
+  { pattern: /^((?:\/api)?\/sign\/)[^/]+/, replacement: "$1<token>" },
+  { pattern: /^((?:\/api)?\/unsubscribe\/)[^/]+/, replacement: "$1<token>" },
 
   /*
     THE WEBSITE BOOKING CHAT'S CONVERSATION TOKEN (security review U5, M2). `/booking-chat/:token/message`

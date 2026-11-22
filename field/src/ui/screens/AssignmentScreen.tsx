@@ -5,6 +5,7 @@ import {
   confirmClock,
   defaultBaseUrl,
   endShift,
+  fetchHubBadge,
   fetchMe,
   fetchShiftStatus,
   getCrmSettings,
@@ -19,6 +20,8 @@ import {
 import { cacheVisitQuotes, forgetOfficeCopies, onQuoteSyncSettled, pendingQuoteOpCount, syncPriceSheet, syncQuoteCatalog } from '../../lib/quoteSync'
 import { onSignatureSyncSettled, pendingCancellationCount, pendingSignatureCount, pruneRecordedSignatures } from '../../lib/signatureQueue'
 import type { CrmAssignment } from '../../domain/types'
+import { useHubLive } from '../../lib/hubLive'
+import { MessagesScreen, messagesButtonLabel } from './MessagesScreen'
 
 /** Production job or estimate visit — the card dresses as what it is (Phase 2). */
 const JOB_STATUSES = new Set(['contracted', 'scheduled', 'in_progress'])
@@ -256,6 +259,28 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
   const [baseUrl, setBaseUrl] = useState(getCrmSettings()?.baseUrl ?? defaultBaseUrl())
   const [token, setToken] = useState('')
   const [loading, setLoading] = useState(false)
+  // Messages (work order agent-team, U5): the button's count, and the screen it opens (a local view of this
+  // screen, so the home screen stays what it is underneath). A notification's tap arrives as /field/?thread=<id>.
+  const [showMessages, setShowMessages] = useState(false)
+  const [linkedThread, setLinkedThread] = useState<string | null>(null)
+  const [unreadMessages, setUnreadMessages] = useState(0)
+  const live = useHubLive()
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const thread = params.get('thread')
+    if (!thread) return
+    params.delete('thread')
+    const rest = params.toString()
+    window.history.replaceState(null, '', `${window.location.pathname}${rest ? `?${rest}` : ''}${window.location.hash}`)
+    setLinkedThread(thread)
+    setShowMessages(true)
+  }, [])
+  useEffect(() => {
+    if (!configured) return
+    let alive = true
+    fetchHubBadge().then((b) => { if (alive) setUnreadMessages(b.unread) }).catch(() => undefined)
+    return () => { alive = false }
+  }, [configured, live.tick, showMessages])
 
   useEffect(() => {
     void pendingSyncCount().then(setPending)
@@ -343,6 +368,10 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
     const bucket = laterByDay.find(([k]) => k === key)
     if (bucket) bucket[1].push(a)
     else laterByDay.push([key, [a]])
+  }
+
+  if (showMessages) {
+    return <MessagesScreen onBack={() => { setShowMessages(false); setLinkedThread(null) }} openThreadId={linkedThread} />
   }
 
   return (
@@ -470,6 +499,14 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
               </p>
             )}
           </section>
+
+          <button
+            type="button"
+            onClick={() => setShowMessages(true)}
+            className="w-full rounded-lg border border-violet-800 bg-slate-800/60 p-3 text-sm font-medium text-violet-200"
+          >
+            {messagesButtonLabel(unreadMessages)} — you, the office and the AI team
+          </button>
 
           {onOpenAccounts && (
             <button

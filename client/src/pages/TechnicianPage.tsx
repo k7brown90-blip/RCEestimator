@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type PayrollEntry } from "../lib/api";
+import { CrmLoginButton, crmLoginTag, useCrmLogins } from "../components/CrmLoginDialog";
+import { useSession } from "../lib/session";
 import { money } from "../lib/utils";
 
 /**
@@ -55,6 +57,10 @@ export function TechnicianPage() {
     queryFn: () => api.payrollWeek(technicianId, new Date(`${weekStart}T12:00:00`).toISOString()),
     enabled: Boolean(technicianId),
   });
+
+  const session = useSession();
+  const { data: crmLogins } = useCrmLogins(session?.isKyle === true);
+  const crmLogin = crmLogins?.logins.find((l) => l.technicianId === technicianId);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["payrollWeek"] });
@@ -143,6 +149,23 @@ export function TechnicianPage() {
           hours × hourly rate × (1 + employer cost % from Settings → Payroll)). A job that lost money pays $0, never
           less. The math is shown on each job's page under "Commission on this job". A rate change takes effect going
           forward: hours already closed keep the rate they were paid at.
+        </p>
+      </section>
+
+      {/* ── CRM login (Kyle only): the same dialog as the Team roster's "CRM login" button ── */}
+      <section className="card mt-5 p-5" aria-label="CRM login">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold">CRM login</h2>
+          <span className="flex flex-wrap items-center gap-2">
+            <CrmLoginButton technician={{ id: technicianId, name: tech?.name ?? week?.technicianName ?? "this team member" }} />
+          </span>
+        </div>
+        <p className="mt-2 text-sm text-rce-muted" data-testid="crm-login-card-status">
+          {!session
+            ? "Loading…"
+            : !session.isKyle
+              ? "Only Kyle sees and manages CRM logins."
+              : (crmLoginTag(crmLogin) ?? "No CRM login yet — this person cannot sign in to the CRM.")}
         </p>
       </section>
 

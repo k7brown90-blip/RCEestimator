@@ -1,8 +1,8 @@
 /**
  * Renders whichever drawers the URL says are open (2026-09-20, drawers plan Phase 1).
  *
- * Mounted once in AppShell. Reads `?po=`, `?job=`, `?estimate=`, `?invoice=`, `?lead=` and
- * `?receipt=` off the current route (lib/drawers.ts explains why the URL), renders one drawer
+ * Mounted once in AppShell. Reads `?po=`, `?job=`, `?estimate=`, `?invoice=`, `?lead=`,
+ * `?receipt=` and `?thread=` (a Messages conversation) off the current route (lib/drawers.ts explains why the URL), renders one drawer
  * per param in the order they were opened, and closes each by deleting only its own key — the
  * host page's own query state (`?archived`, `?address`, the builder's `draft`/`tab`) is never
  * touched.
@@ -19,6 +19,7 @@ import { JobDrawer } from "./JobDrawer";
 import { LeadDrawer } from "./LeadDrawer";
 import { PoDrawer } from "./PoDrawer";
 import { ReceiptDrawer } from "./ReceiptDrawer";
+import { ThreadDrawer } from "./ThreadDrawer";
 
 const DRAWER_FOR: Record<DrawerKind, (props: { id: string; onClose: () => void }) => React.ReactElement> = {
   po: PoDrawer,
@@ -27,6 +28,7 @@ const DRAWER_FOR: Record<DrawerKind, (props: { id: string; onClose: () => void }
   invoice: InvoiceDrawer,
   lead: LeadDrawer,
   receipt: ReceiptDrawer,
+  thread: ThreadDrawer,
 };
 
 export function DrawerHost() {

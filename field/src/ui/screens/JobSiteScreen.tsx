@@ -40,6 +40,7 @@ import {
   completeVisitFromField,
   emailEstimateToCustomer,
   emailFinancing,
+  fetchHubThreads,
   fetchJobBrief,
   fetchPurchaseOrders,
   isNetworkFailure,
@@ -51,6 +52,8 @@ import {
   type JobBrief,
 } from '../../lib/crmSync'
 import { onQuoteSyncSettled, pendingQuoteOpCountForVisit, workingQuoteMirrorForVisit } from '../../lib/quoteSync'
+import { useHubLive } from '../../lib/hubLive'
+import { MessageThreadScreen, jobMessagesLabel } from './MessagesScreen'
 import {
   cancelSignature,
   dismissRefusedSignature,
@@ -149,6 +152,16 @@ export function JobSiteScreen({
   const [briefError, setBriefError] = useState<string | null>(null)
   const [coBusy, setCoBusy] = useState(false)
   const [coError, setCoError] = useState<string | null>(null)
+  const [showJobMessages, setShowJobMessages] = useState(false)
+  const [jobUnread, setJobUnread] = useState(0)
+  const hubLive = useHubLive()
+  useEffect(() => {
+    let alive = true
+    fetchHubThreads()
+      .then((r) => { if (alive) setJobUnread(r.threads.find((t) => t.visitId === assignment.visitId)?.unread ?? 0) })
+      .catch(() => undefined)
+    return () => { alive = false }
+  }, [assignment.visitId, hubLive.tick, showJobMessages])
 
   // No signal: the brief got no answer (fetch threw), never an HTTP refusal. With it, the saved copy
   // of the visit's quote stands in for the brief's estimate (U8).
@@ -444,6 +457,12 @@ export function JobSiteScreen({
       : null
   const canPauseJob = Boolean(brief) && PAUSABLE_STATUSES.has(status) && !alreadyDone
   const waitingOnOffice = isJob && status === 'contracted' && !brief?.scheduledStart
+
+  // Job messages (work order agent-team, U5): this job's crew thread, opened right here. The count is this
+  // job's unread; the screen is a local view of this one, so Back returns to the job exactly as it was.
+  if (showJobMessages) {
+    return <MessageThreadScreen visitId={assignment.visitId} title="Job messages" onBack={() => setShowJobMessages(false)} />
+  }
 
   return (
     <div className="mx-auto max-w-xl space-y-4 p-6 pb-16">
@@ -794,6 +813,15 @@ export function JobSiteScreen({
           Adding load here? Run the 220.83 capacity check
         </button>
       )}
+
+      {/* ── Job messages (U5): the crew thread of THIS job ── */}
+      <button
+        type="button"
+        onClick={() => setShowJobMessages(true)}
+        className="w-full rounded-lg border border-violet-800 bg-slate-800/60 p-3 text-sm font-medium text-violet-200"
+      >
+        {jobMessagesLabel(jobUnread)} — talk to the office and the crew about this job
+      </button>
 
       {/* ── Photos ── */}
       <section className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">

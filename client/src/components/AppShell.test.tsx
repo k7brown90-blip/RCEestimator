@@ -8,7 +8,7 @@
  * useful here: it means a single render lets this test check both layouts by
  * scoping into each container rather than needing two viewport sizes.
  *
- * Desktop sidebar (AppShell.tsx, the `nav` array): all 13 entries.
+ * Desktop sidebar (AppShell.tsx, the `nav` array): all 14 entries (Messages joined 2026-11-21, work order agent-team U3).
  * Phone bottom bar (MOBILE_PRIMARY/MOBILE_MORE split): exactly 5 links plus
  * the "More" button — adding a 6th nav entry must change the More sheet, never
  * grow the bar.
@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe("AppShell", () => {
-  it("renders all 13 nav entries on the desktop sidebar and 5 primary + More on the phone bar", async () => {
+  it("renders all 14 nav entries on the desktop sidebar and 5 primary + More on the phone bar", async () => {
     vi.spyOn(api, "leads").mockResolvedValue([]);
 
     const { container } = renderWithProviders(
@@ -47,7 +47,8 @@ describe("AppShell", () => {
     const aside = container.querySelector("aside");
     expect(aside).not.toBeNull();
     const desktopLinks = within(aside as HTMLElement).getAllByRole("link");
-    expect(desktopLinks).toHaveLength(13);
+    expect(desktopLinks).toHaveLength(14);
+    expect(within(aside as HTMLElement).getByRole("link", { name: "Messages" })).toHaveAttribute("href", "/messages");
     expect(desktopLinks.map((a) => a.textContent)).toContain("Financials");
     expect(desktopLinks.map((a) => a.textContent)).toContain("Campaigns");
     // Inventory became Purchasing & Stock (2026-09-20); the old label is gone from the sidebar.
@@ -88,8 +89,9 @@ describe("AppShell", () => {
     moreButton.click();
 
     const sheet = await screen.findByRole("dialog", { name: /more/i });
-    // Everything not in the phone's primary 5 lives here — 13 total minus 5 primary.
-    expect(within(sheet).getAllByRole("link")).toHaveLength(8);
+    // Everything not in the phone's primary 5 lives here — 14 total minus 5 primary. Messages is one of them.
+    expect(within(sheet).getAllByRole("link")).toHaveLength(9);
+    expect(within(sheet).getByRole("link", { name: /^messages$/i })).toHaveAttribute("href", "/messages");
     expect(within(sheet).getByRole("link", { name: /^dashboard$/i })).toBeInTheDocument();
     expect(within(sheet).getByRole("link", { name: /^price book$/i })).toBeInTheDocument();
     // Financials gave its phone slot to Purchasing & Stock (2026-09-20) and lives here now.

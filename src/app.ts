@@ -27,8 +27,18 @@ import {
 } from "./services/crmAnalytics";
 import { collectedByCustomer, lifetimeCollectedFor } from "./services/lifetimeCollected";
 import { LEAD_PLATFORMS, normalizeLeadPlatform } from "../shared/leadPlatform";
-import { pinAuthMiddleware, handlePinLogin, handleAdminLogin, handleSessionRefresh } from "./middleware/pinAuth";
+import { LEAD_SOURCES } from "../shared/leadSources";
+import { pinAuthMiddleware, handlePinLogin, handleAdminLogin, handleSessionRefresh, handleAuthSession } from "./middleware/pinAuth";
 import { adminLoginRouter } from "./routes/adminLogin";
+import { agentKeysRouter } from "./routes/agentKeys";
+import { hubEventsRouter } from "./routes/hubEvents";
+import { hubRouter } from "./routes/hub";
+import { emitHubEventSafe } from "./services/hubEvents";
+import { announceThreadMoved, mergeLeadThread, returnThreadToLead } from "./services/hub";
+import { ownerSettingsRouter } from "./routes/ownerSettings";
+import { crmLoginsRouter } from "./routes/crmLogins";
+import { isOwnerSettingKey } from "./services/ownerSettings";
+import { requireKylePower, givesCostOrHours } from "./middleware/kylePowers";
 import { accessLogMiddleware } from "./middleware/accessLog";
 import { resolveWalkthroughRows, walkthroughRowsBodySchema } from "./services/walkthroughMatch";
 import { proposeWalkthroughForDraft, walkthroughTextBodySchema } from "./services/aiProposer";
@@ -519,6 +529,9 @@ app.post("/leads", asyncHandler(async (req, res) => {
   });
 
   res.status(201).json(lead);
+  // The agents hear of the new lead (work order agent-team, BA6): the website door and the office door
+  // only; the automatic renewal leads (inspectionRetention) never emit. Ids only, no name or contact.
+  void emitHubEventSafe({ type: "lead.created", leadId: lead.id });
 
   // SMS Kyle for web leads (fire-and-forget)
   //
@@ -527,7 +540,9 @@ app.post("/leads", asyncHandler(async (req, res) => {
   // Lead row is created regardless and shows up in the CRM lead queue — that is the channel now.
   if ((body.source === "web") && lead.phone) {
     if (twilioSendEnabled("operatorNotifications")) {
-      sendSms(KYLE_PHONE, `New web lead — ${lead.name}, ${lead.jobType ?? "general"}, ${lead.phone}`).catch(() => {});
+      sendSms(KYLE_PHONE, `New web lead — ${lead.name}, ${lead.jobType ?? "general"}, ${lead.phone}`, {
+        messageClass: "internal", category: "internal_alert", hub: { leadId: lead.id },
+      }).catch(() => {});
     } else {
       logTwilioSendSkipped("operatorNotifications", `New web lead ${lead.id} is in the CRM lead queue.`);
     }
@@ -552,7 +567,11 @@ app.post("/leads", asyncHandler(async (req, res) => {
     } else if (!twilioSendEnabled("customerLifecycleSms")) {
       logTwilioSendSkipped("customerLifecycleSms", `Opt-in confirmation SMS to lead ${lead.id} suppressed.`);
     } else {
-      sendSms(lead.phone, webOptInConfirmation()).catch((err) => console.error("[leads] Opt-in confirmation SMS failed:", err));
+      // The header ("Red Cedar Electric: Text Alerts Confirmed <send time>") and, on the first text to this number,
+      // "Reply STOP to opt out." are added by the one composer inside sendSms.
+      sendSms(lead.phone, webOptInConfirmation(), {
+        messageClass: "transactional", category: "opt_in_confirmation", hub: { leadId: lead.id },
+      }).catch((err) => console.error("[leads] Opt-in confirmation SMS failed:", err));
     }
   }
 
@@ -1205,7 +1224,10 @@ app.post("/documents/:id/sign", asyncHandler(async (req, res) => {
   // GATED (no-Twilio-texts ruling 2026-08-13) — the signature itself is recorded on the Document
   // row by markDocumentSigned() above, which is the durable record; only the text is suppressed.
   if (twilioSendEnabled("operatorNotifications")) {
-    sendSms(KYLE_PHONE, `${body.name.trim()} signed the ${doc.type.replace(/_/g, " ")} for ${addr}`).catch(() => {});
+    sendSms(KYLE_PHONE, `${body.name.trim()} signed the ${doc.type.replace(/_/g, " ")} for ${addr}`, {
+      messageClass: "internal", category: "internal_alert",
+      hub: doc.job ? { customerId: doc.job.customerId, visitId: doc.job.id } : undefined,
+    }).catch(() => {});
   } else {
     logTwilioSendSkipped("operatorNotifications", `Document ${docId} signed and recorded; Kyle not texted.`);
   }
@@ -1473,7 +1495,9 @@ app.post("/bookings/from-email", asyncHandler(async (req, res) => {
   // GATED (no-Twilio-texts ruling 2026-08-13). The Google Calendar event is the booking record
   // and it is already created above; the text was only a heads-up.
   if (twilioSendEnabled("operatorNotifications")) {
-    sendSms(KYLE_PHONE, `Email booking: ${lead.name} — ${lead.jobType ?? "service"} — ${dateStr} ${timeStr}`).catch(() => {});
+    sendSms(KYLE_PHONE, `Email booking: ${lead.name} — ${lead.jobType ?? "service"} — ${dateStr} ${timeStr}`, {
+      messageClass: "internal", category: "internal_alert", hub: { leadId },
+    }).catch(() => {});
   } else {
     logTwilioSendSkipped("operatorNotifications", `Email booking for lead ${leadId} is on the calendar (event ${event.id}).`);
   }
@@ -1533,6 +1557,20 @@ app.post("/auth/login", asyncHandler(async (req, res) => { await handleAdminLogi
 // Settings -> "AI admin login": GET status, PUT save, POST disable/enable, DELETE remove. Behind the
 // session gate; changing it is owner-only (routes/adminLogin.ts).
 app.use(adminLoginRouter);
+app.use(agentKeysRouter);
+// Settings -> "Agent events": the signed-event log and Resend (work order agent-team, BA5). Session gate + bot_keys power.
+app.use(hubEventsRouter);
+// The CRM's Messages (work order agent-team, U2/U3): the record conversation and the Messages page. Session gate; no new public route.
+app.use(hubRouter);
+// The ONE who-am-I (work order agent-team, HA2): kind, name, role, isKyle, powers. Behind the
+// session gate, NOT on the public allowlist. No token and no hash in the answer.
+app.get("/auth/session", asyncHandler(async (req, res) => { await handleAuthSession(req, res); }));
+// The owner-guarded settings family (CompanySetting keys only Kyle may read or change). NOT the open
+// PUT /crm/settings/:key below; a key that lives here is never added there.
+app.use(ownerSettingsRouter);
+// Team -> "CRM login": Kyle manages each person's CRM sign-in. Every route requires Kyle himself
+// (not a grantable power); the principal mark is the PIN session only (routes/crmLogins.ts).
+app.use(crmLoginsRouter);
 
 // ─── AI PROPOSAL REVIEW (P011) — the human confirmation gate ─────────────────
 //
@@ -1671,14 +1709,35 @@ const atomicPatchSchema = z.object({
   laborVeryDifficult: z.number().nonnegative().nullable().optional(),
 });
 
-app.patch("/price-book/catalog/items/:itemId", asyncHandler(async (req, res) => {
+// Kyle-only price-book edits (work order agent-team, HA3): the power is `price_book_edit`, held by
+// Kyle (the PIN, or his principal login) and by a login Kyle granted it to; the AI admin never holds
+// it. The gate is decided from the request body so the open edits stay open. Never gate the estimate
+// draft lines (/price-book/lines/:lineId): that would split the one estimating system from the field door.
+const bodyOf = (req: express.Request): Record<string, unknown> =>
+  req.body !== null && typeof req.body === "object" && !Array.isArray(req.body) ? (req.body as Record<string, unknown>) : {};
+/**
+ * The editable fields that are a price, hours or a name, or that move a price: rowType is in
+ * PRICING_FIELDS (services/priceBookCatalog.ts), so changing it rewrites companyPrice and every sell
+ * column; unitLabel is the unit fallback isContinuousLengthMaterial reads (services/
+ * atomicEstimateEngine.ts) to decide whether a row is banded and scaled as a job. notes, category,
+ * subCategory and sector stay open.
+ */
+const PRICE_NAME_FIELDS = ["description", "rowType", "unitLabel", "companyCost", "laborNormal", "laborDifficult", "laborVeryDifficult"] as const;
+
+app.patch("/price-book/catalog/items/:itemId",
+  // A PATCH that carries any of these keys (even to clear one with null) is a price, hours or name edit.
+  requireKylePower("price_book_edit", (req) => PRICE_NAME_FIELDS.some((k) => k in bodyOf(req))),
+  asyncHandler(async (req, res) => {
   const patch = atomicPatchSchema.parse(req.body ?? {});
   const result = await updateAtomic(prisma, readParam(req, "itemId"), patch, "human:crm-session");
   if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
   res.json({ atomic: result.atomic });
 }));
 
-app.post("/price-book/catalog/items", asyncHandler(async (req, res) => {
+app.post("/price-book/catalog/items",
+  // A new item is Kyle-only when it is given a cost or hours; a description-only create stays open.
+  requireKylePower("price_book_edit", givesCostOrHours),
+  asyncHandler(async (req, res) => {
   const body = z.object({
     itemId: z.string().trim().nullable().optional(),
     idPrefix: z.string().trim().nullable().optional(),
@@ -1739,7 +1798,17 @@ const componentInputSchema = z.object({
   quantity: z.number().positive(),
 });
 
-app.post("/price-book/catalog/assemblies", asyncHandler(async (req, res) => {
+app.post("/price-book/catalog/assemblies",
+  // An assembly's cost is the roll-up of its components and its hours come from them or from an
+  // override, so a create with any component or any hours override is Kyle-only; an empty shell stays open.
+  requireKylePower("price_book_edit", (req) => {
+    const body = bodyOf(req);
+    const overrides = body.laborOverrides;
+    const hasOverride = overrides !== null && typeof overrides === "object"
+      && Object.values(overrides as Record<string, unknown>).some((v) => v !== undefined && v !== null);
+    return (Array.isArray(body.components) && body.components.length > 0) || hasOverride;
+  }),
+  asyncHandler(async (req, res) => {
   const body = z.object({
     itemId: z.string().trim().nullable().optional(),
     idPrefix: z.string().trim().nullable().optional(),
@@ -1766,14 +1835,14 @@ app.get("/price-book/catalog/assemblies/:itemId", asyncHandler(async (req, res) 
   res.json(detail);
 }));
 
-app.put("/price-book/catalog/assemblies/:itemId/components", asyncHandler(async (req, res) => {
+app.put("/price-book/catalog/assemblies/:itemId/components", requireKylePower("price_book_edit"), asyncHandler(async (req, res) => {
   const body = z.object({ components: z.array(componentInputSchema) }).parse(req.body ?? {});
   const result = await setAssemblyComponents(prisma, readParam(req, "itemId"), body.components, "human:crm-session");
   if (!result.ok) { res.status(409).json({ error: result.reason }); return; }
   res.json({ atomic: result.atomic, rollup: result.rollup });
 }));
 
-app.put("/price-book/catalog/assemblies/:itemId/labor-override", asyncHandler(async (req, res) => {
+app.put("/price-book/catalog/assemblies/:itemId/labor-override", requireKylePower("price_book_edit"), asyncHandler(async (req, res) => {
   const body = z.object({
     tier: z.enum(LABOR_TIERS),
     value: z.number().nonnegative().nullable(),
@@ -1801,7 +1870,7 @@ app.get("/price-book/refresh/proposal", asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
-app.post("/price-book/refresh/accept", asyncHandler(async (req, res) => {
+app.post("/price-book/refresh/accept", requireKylePower("price_book_edit"), asyncHandler(async (req, res) => {
   const body = z.object({
     itemId: z.string().trim().min(1),
     supplierName: z.string().trim().min(1),
@@ -1832,7 +1901,7 @@ app.get("/price-book/billed-rate/preview", asyncHandler(async (req, res) => {
   res.json(await previewBilledRate(prisma, rate));
 }));
 
-app.post("/price-book/billed-rate", asyncHandler(async (req, res) => {
+app.post("/price-book/billed-rate", requireKylePower("price_book_edit"), asyncHandler(async (req, res) => {
   const body = z.object({ rate: billedRateSchema }).parse(req.body ?? {});
   res.json(await applyBilledRate(prisma, body.rate, "human:crm-session"));
 }));
@@ -3835,8 +3904,7 @@ async function emailContextFor(rootId: string, fallbackJobId?: string) {
  * CUSTOMER, not a specific Visit.id, so this door resolves this account's own most recently
  * completed job (by `completedAt`) and hands it to the same service the panel's review kind calls.
  * Every guard applies exactly as it does there: the job must be completed (true by construction of
- * the query below), no duplicate ask on that job, no repeat ask on this customer within 90 days,
- * email on file. With no completed job at all, this reads as a sentence, not a 404.
+ * the query below), no duplicate ask on that job, email on file. With no completed job at all, this reads as a sentence, not a 404.
  */
 app.post("/accounts/:accountId/email-review-request", asyncHandler(async (req, res) => {
   const accountId = readParam(req, "accountId");
@@ -4012,6 +4080,9 @@ app.get("/crm/settings", asyncHandler(async (_req, res) => {
   const rows = await prisma.companySetting.findMany();
   const settings: Record<string, unknown> = {};
   for (const row of rows) {
+    // Owner-guarded keys (services/ownerSettings.ts) are read only through GET /owner-settings/:key,
+    // which requires Kyle; this open list never carries them.
+    if (isOwnerSettingKey(row.key)) continue;
     try {
       settings[row.key] = JSON.parse(row.valueJson);
     } catch {
@@ -5656,14 +5727,19 @@ app.post("/jobs/:jobId/complete", asyncHandler(async (req, res) => {
   const materialWarning = await closeOutMaterialWarning(jobId);
   if (materialWarning) warnings.push(materialWarning);
 
-  const updated = await prisma.visit.update({
-    where: { id: jobId },
+  // Only the press that actually flips the job to completed tells the agents: a second press on a
+  // finished job (or a second tech closing out) must not announce the same job again.
+  const flipped = await prisma.visit.updateMany({
+    where: { id: jobId, status: { not: "completed" } },
     data: { status: "completed", completedAt: new Date() },
   });
+  const updated = await prisma.visit.findUniqueOrThrow({ where: { id: jobId }, select: { completedAt: true } });
   logSystemEvent("info", "jobs", `Job completed — ${visit.jobType ?? visit.purpose ?? jobId}`, {
     visitId: jobId,
     warnings,
   });
+  // The agents hear the job is complete (work order agent-team, BA6); the field door emits it too.
+  if (flipped.count === 1) void emitHubEventSafe({ type: "job.completed", visitId: jobId });
   // The review ask rides completion (Kyle, 2026-09-02) — never able to fail it.
   {
     const { sendReviewRequestEmail } = await import("./services/reviewRequest");
@@ -6455,7 +6531,15 @@ const deleteCustomer = asyncHandler(async (req: express.Request, res: express.Re
   // orphan references.
   const visitIds = visits.map((v) => v.id);
   const propertyIds = customer.properties.map((p) => p.id);
+  let returnedThread: { threadId: string | null } = { threadId: null };
   await prisma.$transaction(async (tx) => {
+    // The lead this account came from goes back to being a lead, so its conversation goes back with it
+    // (work order agent-team, U1) instead of being deleted with the account.
+    const returning = await tx.lead.findFirst({
+      where: { OR: [{ customerId }, ...(visitIds.length > 0 ? [{ visitId: { in: visitIds } }] : [])] },
+      orderBy: { createdAt: "desc" }, select: { id: true },
+    });
+    returnedThread = await returnThreadToLead(tx, { customerId, leadId: returning?.id ?? null });
     if (visitIds.length > 0) {
       await tx.lead.updateMany({
         where: { OR: [{ customerId }, { visitId: { in: visitIds } }] },
@@ -6473,6 +6557,7 @@ const deleteCustomer = asyncHandler(async (req: express.Request, res: express.Re
     }
     await tx.customer.delete({ where: { id: customerId } });
   });
+  announceThreadMoved(returnedThread); // committed: open Messages screens refetch (U6)
   res.status(204).send();
 });
 app.delete("/customers/:customerId", deleteCustomer);
@@ -8191,10 +8276,8 @@ export const CALL_TYPES = [
   "new_job", "warranty", "reschedule", "cancellation", "estimate_followup", "callback",
   "vendor", "referral", "invoice", "dispute", "wrong_number", "solicitation", "other",
 ] as const;
-/** `manual` is what the CRM's own form uses; the rest are what writes them today. */
-export const LEAD_SOURCES = [
-  "manual", "phone", "email", "web", "referral", "savannah_text", "retention",
-] as const;
+/** The one list lives in shared/leadSources.ts (the signed agent events read it too); re-exported so callers here are unchanged. */
+export { LEAD_SOURCES };
 
 /**
  * A lead's address, resolved once into something that cannot be half-formed.
@@ -8435,6 +8518,9 @@ app.post("/crm/leads", asyncHandler(async (req, res) => {
     phone: lead.phone, email: lead.email, name: lead.name,
   });
   res.status(201).json({ lead, matches });
+  // The office door (work order agent-team, BA6, team answer 5): emitted here at the route, not inside
+  // any lead-making service, so a draft lead an agent makes never fires it.
+  void emitHubEventSafe({ type: "lead.created", leadId: lead.id });
 }));
 
 /**
@@ -8701,10 +8787,21 @@ app.patch("/leads/:leadId", asyncHandler(async (req, res) => {
     if (body.leadStatus !== undefined || pair.leadStatus !== existing.leadStatus) data.leadStatus = pair.leadStatus;
   }
 
-  const lead = await prisma.lead.update({
-    where: { id: leadId },
-    data,
-  });
+  // Linking the lead to an account: its conversation so far joins the account's, in the same
+  // transaction (ensureThreadFor resolves a linked lead to the account's thread, so without this the
+  // earlier conversation would be stranded in a thread nobody reaches). Unlinking changes nothing:
+  // the account keeps its thread.
+  const linking = body.customerId !== undefined && body.customerId !== null && body.customerId !== existing.customerId;
+  let linkedThread: { threadId: string | null } = { threadId: null };
+  const lead = linking
+    ? await prisma.$transaction(async (tx) => {
+        const updated = await tx.lead.update({ where: { id: leadId }, data });
+        linkedThread = await mergeLeadThread(tx, { leadId, customerId: body.customerId as string });
+        return updated;
+      })
+    : await prisma.lead.update({ where: { id: leadId }, data });
+  // The merge committed: open Messages screens refetch (U6; the writer inside the transaction cannot say it).
+  announceThreadMoved(linkedThread);
   // Same rule as PATCH /leads/:id/lost: marking a lead lost frees the slot its chat was holding.
   if (lead.status === "lost" || lead.leadStatus === "lost") await releaseHoldIfHeld(leadId);
   res.json(lead);
@@ -8880,6 +8977,7 @@ async function convertLeadToOpportunity(leadId: string, input: ConvertLeadInput)
     };
   }
 
+  let movedThread: { threadId: string | null } = { threadId: null };
   const result = await prisma.$transaction(async (tx) => {
     const customer = customerId
       ? (await tx.customer.findUniqueOrThrow({ where: { id: customerId } }))
@@ -8940,8 +9038,14 @@ async function convertLeadToOpportunity(leadId: string, input: ConvertLeadInput)
       },
     });
 
+    // The lead's conversation joins the account's (work order agent-team, U1), inside this transaction
+    // so all three conversion doors (convert, mark won, confirm booking) carry it.
+    movedThread = await mergeLeadThread(tx, { leadId, customerId: customer.id });
+
     return { customer, property, visit, lead: updatedLead };
   });
+  // The conversation moved and the transaction committed: open Messages screens refetch (U6).
+  announceThreadMoved(movedThread);
 
   const newsletter = await enrolAccountInNewsletter(
     { id: result.customer.id, name: result.customer.name, email: result.customer.email ?? lead.email },

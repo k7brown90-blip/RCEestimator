@@ -203,7 +203,10 @@ describe("inbound SMS routing", () => {
     const res = await postSignedTwilioWebhook(app, "/sms/inbound", { From: "+15550009999", Body: "hey is this the electrician" });
     expect(res.status).toBe(200);
 
-    expect(sendSmsMock).toHaveBeenCalledWith("+19706661626", expect.stringContaining("UNKNOWN SMS"));
+    // U9: every text carries its class and send type. An unknown sender has no conversation to file it in.
+    expect(sendSmsMock).toHaveBeenCalledWith(
+      "+19706661626", expect.stringContaining("UNKNOWN SMS"), { messageClass: "internal", category: "internal_alert", hub: undefined },
+    );
     const logged = await prisma.inboundMessage.findFirst({ where: { fromPhone: "+15550009999" } });
     expect(logged!.matchType).toBe("unknown");
     delete process.env.TWILIO_SENDS_OPERATOR_NOTIFICATIONS;

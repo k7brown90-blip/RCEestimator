@@ -9,6 +9,7 @@ import express from "express";
 import { z } from "zod";
 import { asyncHandler, readParam } from "../lib/routeHelpers";
 import { prisma } from "../lib/prisma";
+import { givesCostOrHours, hasKylePower, requireKylePower } from "../middleware/kylePowers";
 import {
   createMaterial, linkMaterial, listMaterials, listUnassignedMaterials, promoteMaterial, updateMaterial,
 } from "../services/materials";
@@ -67,7 +68,12 @@ materialsRouter.post("/materials/:id/link", asyncHandler(async (req, res) => {
   res.json(result.material);
 }));
 
-materialsRouter.post("/materials/:id/promote", asyncHandler(async (req, res) => {
+// Promoting creates a price-book item, so a cost or hours typed here is a Kyle-only price edit (HA3),
+// exactly as on POST /price-book/catalog/items. A cost DERIVED from the material's lastCost/packQty is
+// the same thing: lastCost is typed on the ungated POST /materials and PATCH /materials/:id, so it is
+// derived only for a caller who holds price_book_edit; anyone else's promote creates the item with
+// a null cost.
+materialsRouter.post("/materials/:id/promote", requireKylePower("price_book_edit", givesCostOrHours), asyncHandler(async (req, res) => {
   const body = z.object({
     description: z.string().trim().min(1),
     category: z.string().trim().min(1),
@@ -83,7 +89,7 @@ materialsRouter.post("/materials/:id/promote", asyncHandler(async (req, res) => 
     idPrefix: nullableString(10),
     companyCost: nullableNumber,
   }).parse(req.body);
-  const result = await promoteMaterial(prisma, readParam(req, "id"), body, "owner");
+  const result = await promoteMaterial(prisma, readParam(req, "id"), body, "owner", hasKylePower(req, "price_book_edit"));
   if (!result.ok) return res.status(409).json({ error: result.reason });
   res.status(201).json({ material: result.material, atomic: result.atomic });
 }));

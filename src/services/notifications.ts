@@ -3,7 +3,7 @@
  * by a model — these templates are the single source of truth.
  */
 
-import { sendSms, KYLE_PHONE } from "./twilio";
+import { sendSms, KYLE_PHONE, type SmsMeta, type SmsSent } from "./twilio";
 import { twilioSendEnabled, logTwilioSendSkipped } from "./automationGate";
 
 const BUSINESS_PHONE = "615-625-2163";
@@ -47,17 +47,22 @@ function formatShortDate(d: Date): string {
 }
 
 // ─── CUSTOMER SMS TEMPLATES ─────────────────────────────────────────────────────
+//
+// These are the WORDS only. The company name and the reason label ("Red Cedar Electric: Job Scheduled Mon
+// 11/23, 8 AM") are the header, and "Reply STOP to opt out." is the footer on the first text to a number:
+// both are added by the one composer inside sendSms (shared/sms/compose.ts), so a template never writes
+// either (a body that does is refused).
 
 export function customerWorkScheduled(job: JobData): string {
-  return `Hi ${firstName(job.customerName)}, this is Red Cedar Electric. Your ${job.jobType} is scheduled to start ${formatDayOfWeek(job.scheduledStart)} ${formatDate(job.scheduledStart)} at ${job.startTime}. We expect ${job.durationDays} day(s) on site. Our team will text the morning of with arrival details. Reply STOP to opt out.`;
+  return `Hi ${firstName(job.customerName)}, your ${job.jobType} is scheduled to start ${formatDayOfWeek(job.scheduledStart)} ${formatDate(job.scheduledStart)} at ${job.startTime}. We expect ${job.durationDays} day(s) on site. Our team will text the morning of with arrival details.`;
 }
 
 export function customerReschedule(job: JobData, oldDates: DateRange, newDates: DateRange): string {
-  return `Hi ${firstName(job.customerName)}, this is Red Cedar Electric. Your ${job.jobType} has been moved to ${formatDayOfWeek(newDates.start)} ${formatDate(newDates.start)} at ${newDates.time}. Same ${job.durationDays} day(s) on site. Our team will text the morning of. Reply STOP to opt out.`;
+  return `Hi ${firstName(job.customerName)}, your ${job.jobType} has been moved to ${formatDayOfWeek(newDates.start)} ${formatDate(newDates.start)} at ${newDates.time}. Same ${job.durationDays} day(s) on site. Our team will text the morning of.`;
 }
 
 export function customerCancellation(job: JobData): string {
-  return `Hi ${firstName(job.customerName)}, this is Red Cedar Electric. Your ${job.jobType} originally scheduled for ${formatDate(job.scheduledStart)} has been cancelled. Call us at ${BUSINESS_PHONE} to reschedule. Reply STOP to opt out.`;
+  return `Hi ${firstName(job.customerName)}, your ${job.jobType} originally scheduled for ${formatDate(job.scheduledStart)} has been cancelled. Call us at ${BUSINESS_PHONE} to reschedule.`;
 }
 
 /**
@@ -66,9 +71,16 @@ export function customerCancellation(job: JobData): string {
  * confirmation declared in the Twilio A2P campaign — the wording here must
  * match what's registered there. Do not add variables or personalize it;
  * carriers expect the opt-in confirmation to be a fixed, predictable message.
+ *
+ * U9 (2026-11-21): it now goes out through the one composer like every customer text, so the words
+ * below are what follows the header ("Red Cedar Electric: Text Alerts Confirmed <send time>") and the
+ * "Reply STOP to opt out." footer comes from the composer (this is the first text to a new number).
+ * The old wording began with the company name and carried its own "Reply STOP to cancel", both now
+ * refused as a double header and a double footer. KYLE: the A2P opt-in sample must be re-registered
+ * with this wording and the header (see the report).
  */
 export function webOptInConfirmation(): string {
-  return "Red Cedar Electric: You're confirmed to receive service and appointment texts from us. Msg frequency varies, up to 10 msgs/month. Msg & data rates may apply. Reply STOP to cancel, HELP for help. Terms: redcedarelectricllc.com/terms Privacy: redcedarelectricllc.com/privacy";
+  return "You're confirmed to receive service and appointment texts from us. Msg frequency varies, up to 10 msgs/month. Msg & data rates may apply. Reply HELP for help. Terms: redcedarelectricllc.com/terms Privacy: redcedarelectricllc.com/privacy";
 }
 
 // ─── KYLE SMS TEMPLATES ─────────────────────────────────────────────────────────
@@ -122,18 +134,18 @@ export function kyleRescheduleConflict(
  * unavailable", so no call site changes behaviour beyond reporting the send as not made.
  * Every one of these paths has an email counterpart that is untouched.
  */
-export async function sendCustomerSms(phone: string, body: string): Promise<{ sid: string } | null> {
+export async function sendCustomerSms(phone: string, body: string, meta: SmsMeta): Promise<SmsSent | null> {
   if (!twilioSendEnabled("customerLifecycleSms")) {
     logTwilioSendSkipped("customerLifecycleSms", "Customer job-lifecycle SMS suppressed; the confirmation email path is unaffected.");
-    return null;
+    return null; // a leg switched off writes nothing to the conversation
   }
-  return sendSms(phone, body);
+  return sendSms(phone, body, meta);
 }
 
-export async function sendKyleSms(body: string): Promise<{ sid: string } | null> {
+export async function sendKyleSms(body: string, meta: SmsMeta): Promise<SmsSent | null> {
   if (!twilioSendEnabled("operatorNotifications")) {
     logTwilioSendSkipped("operatorNotifications", "Kyle notification SMS suppressed; the Kyle notification email is unaffected.");
     return null;
   }
-  return sendSms(KYLE_PHONE, body);
+  return sendSms(KYLE_PHONE, body, meta);
 }

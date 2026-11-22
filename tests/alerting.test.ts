@@ -26,7 +26,7 @@ describe("sendAlert", () => {
   beforeEach(() => {
     _resetDedupForTests();
     sendSmsMock.mockReset();
-    sendSmsMock.mockResolvedValue({ sid: "SMxxx", status: "queued" });
+    sendSmsMock.mockResolvedValue({ sid: "SMxxx", status: "queued", sentText: "Red Cedar Electric: x", footerIncluded: false });
     // Operator alert texts are OFF in production (no-Twilio-texts ruling 2026-08-13).
     // These tests exist to pin the dedup and formatting logic, which only runs on the
     // enabled path, so the leg is opened explicitly. The gated case is its own describe
@@ -93,7 +93,7 @@ describe("sendAlert — Twilio gate (production state)", () => {
   beforeEach(() => {
     _resetDedupForTests();
     sendSmsMock.mockReset();
-    sendSmsMock.mockResolvedValue({ sid: "SMxxx", status: "queued" });
+    sendSmsMock.mockResolvedValue({ sid: "SMxxx", status: "queued", sentText: "Red Cedar Electric: x", footerIncluded: false });
     vi.mocked(logSystemEvent).mockClear();
     delete process.env.TWILIO_SENDS_OPERATOR_ALERTS;
     delete process.env.TWILIO_SENDS;

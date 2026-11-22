@@ -39,6 +39,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { noteEntry, timeline } from "../test/hubFixtures";
 import { PropertyDetailPage } from "./PropertyDetailPage";
 import { api, openProtectedPdf } from "../lib/api";
 import type { AccountSummary, Property, Visit } from "../lib/types";
@@ -128,6 +129,7 @@ function renderPage(summary: AccountSummary = summaryWith()) {
   // Invoices list and the photo gallery's jobs are filtered from. Tests that care pass their own.
   if (!vi.isMockFunction(api.accountEstimates)) vi.spyOn(api, "accountEstimates").mockResolvedValue({ estimates: [] } as never);
   vi.spyOn(api, "accountSummary").mockResolvedValue(summary);
+  if (!vi.isMockFunction(api.hubTimeline)) vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline([], { readOnly: true }));
   return renderWithProviders(
     <>
       <Routes>
@@ -141,6 +143,32 @@ function renderPage(summary: AccountSummary = summaryWith()) {
 }
 
 describe("PropertyDetailPage", () => {
+  // Work order agent-team U2 / D3: no property thread (Kyle, 2026-10-01: notes are account-based). The
+  // account's conversation, filtered to this address, sits BELOW the Health Record card, read-only, and
+  // the top card stays untitled with exactly its two doors (Kyle, 2026-10-02).
+  it("shows the account's conversation for this address below the Health Record card, read-only, never in the top card", async () => {
+    mockEmptyHealthRecordReads();
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline([noteEntry({
+      id: "n-1", customerId: "cust-1", visitId: "visit-1", body: "Gate code is 4411.", takenBy: "Eric",
+      createdAt: "2026-09-30T14:05:00.000Z", updatedAt: "2026-09-30T14:05:00.000Z", visit: null,
+    })], { readOnly: true }));
+    renderPage();
+
+    const section = await screen.findByRole("region", { name: "Conversation" });
+    expect(within(section).getByRole("heading", { name: "Conversation at this address" })).toBeInTheDocument();
+    expect(await within(section).findByText("Gate code is 4411.")).toBeInTheDocument();
+    expect(api.hubTimeline).toHaveBeenCalledWith({ propertyId: "prop-1" });
+    expect(within(section).queryByRole("button", { name: "Add call note" })).not.toBeInTheDocument();
+    expect(within(section).getByRole("link", { name: "Open the account's conversation" })).toHaveAttribute("href", "/accounts/cust-1");
+
+    const healthRecord = screen.getByRole("heading", { name: "Health Record" });
+    // After the Health Record card in the page, before it never.
+    expect(healthRecord.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The top card is the one holding "Schedule Consultation"; the conversation is not inside it.
+    const topCard = screen.getByRole("button", { name: "Schedule Consultation" }).closest("section") as HTMLElement;
+    expect(topCard.contains(section)).toBe(false);
+  });
+
   it("does not offer its own 'Start New Visit' door — that was a duplicate of AccountDetailPage's StartWorkCard", async () => {
     mockEmptyHealthRecordReads();
     renderPage();

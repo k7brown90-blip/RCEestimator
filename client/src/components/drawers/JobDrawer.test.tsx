@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useLocation } from "react-router-dom";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../../test/renderWithProviders";
+import { noteEntry, timeline } from "../../test/hubFixtures";
 import { DrawerHost } from "./DrawerHost";
 import { api } from "../../lib/api";
 import type { PaymentInfo } from "../../lib/api";
@@ -53,7 +54,7 @@ describe("JobDrawer", () => {
     vi.spyOn(api, "visit").mockResolvedValue(visit("estimate"));
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(null);
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline());
 
     renderWithProviders(<><DrawerHost /><LocationProbe /></>, { route: "/jobs?job=visit-1" });
 
@@ -77,8 +78,9 @@ describe("JobDrawer", () => {
     expect(screen.queryByText("Job close-out")).not.toBeInTheDocument();
     // An unsigned visit keeps its way out.
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
-    // The record carries its own actions (2026-09-20 communications build).
-    expect(screen.getByRole("button", { name: "Send email" })).toBeInTheDocument();
+    // The record carries its own actions (2026-09-20 communications build): the Conversation's two buttons.
+    expect(screen.getByRole("button", { name: "Email the customer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add call note" })).toBeInTheDocument();
   });
 
   /*
@@ -97,7 +99,7 @@ describe("JobDrawer", () => {
     });
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(null);
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline());
     vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
     vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([]);
     vi.spyOn(api, "receiptsNeedingPo").mockResolvedValue([]);
@@ -125,14 +127,14 @@ describe("JobDrawer", () => {
     vi.spyOn(api, "visit").mockResolvedValue(visit("estimate"));
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(null);
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline());
     vi.spyOn(api, "accountContacts").mockResolvedValue([]);
     vi.spyOn(api, "sendRecordEmail").mockResolvedValue({ sent: true, to: "jane@example.com", suppressed: false });
 
     renderWithProviders(<><DrawerHost /><LocationProbe /></>, { route: "/jobs?job=visit-1" });
     const dialog = await screen.findByRole("dialog", { name: "12 Main St" });
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Send email" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Email the customer" }));
     fireEvent.change(within(dialog).getByLabelText("Subject"), { target: { value: "Your appointment" } });
     fireEvent.change(within(dialog).getByLabelText("Message"), { target: { value: "See you Tuesday." } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
@@ -145,14 +147,15 @@ describe("JobDrawer", () => {
   /*
     ONE EMAIL CONTROL on the job (Kyle, 2026-10-27: "one tool for one task"). A job with a signed
     invoice carries the "Email the customer" panel in its payment card (Invoice · Financing link ·
-    Review request · Message...) and NO separate "Send email"; a job with no invoice yet has no
-    payment card and keeps the plain "Send email" - never both, never neither.
+    Review request · Message...) and NO second button in the Conversation (it says where to look); a
+    job with no invoice yet has no payment card, so the Conversation's own "Email the customer" is the
+    plain message panel - never both, never neither.
   */
   it("a job WITH an invoice shows exactly one email control, 'Email the customer', and no separate 'Send email'", async () => {
     vi.spyOn(api, "visit").mockResolvedValue(visit("contracted"));
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paymentInfo);
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline());
     vi.spyOn(api, "accountContacts").mockResolvedValue([]);
 
     renderWithProviders(<DrawerHost />, { route: "/jobs?job=visit-1" });
@@ -188,7 +191,7 @@ describe("JobDrawer", () => {
     // The landing panel's read is not under test; a rejected read renders its own error line.
     vi.spyOn(api, "landingDefaults").mockRejectedValue(new Error("not in this test"));
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline());
 
     renderWithProviders(<><DrawerHost /><LocationProbe /></>, { route: "/accounts/cust-1?job=visit-1" });
 
@@ -204,7 +207,7 @@ describe("JobDrawer", () => {
     vi.spyOn(api, "visit").mockResolvedValue(visit("contracted"));
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paymentInfo);
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline());
     vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
     vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([]);
     vi.spyOn(api, "receiptsNeedingPo").mockResolvedValue([]);
@@ -241,7 +244,7 @@ describe("JobDrawer", () => {
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(paymentInfo);
     vi.spyOn(api, "estimatePaymentInfo").mockResolvedValue(null);
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-    vi.spyOn(api, "accountNotes").mockResolvedValue([]);
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline());
     vi.spyOn(api, "jobMaterials").mockResolvedValue(materials);
     vi.spyOn(api, "jobPurchaseOrders").mockResolvedValue([]);
     vi.spyOn(api, "receiptsNeedingPo").mockResolvedValue([]);
@@ -276,11 +279,11 @@ describe("JobDrawer", () => {
     vi.spyOn(api, "visit").mockResolvedValue(visit("estimate"));
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(null);
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
-    vi.spyOn(api, "accountNotes").mockResolvedValue([{
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline([noteEntry({
       id: "note-1", customerId: "cust-1", visitId: "visit-0", body: "Said the breaker trips when the dryer runs.", takenBy: "Eric",
       createdAt: "2026-09-30T14:05:00.000Z", updatedAt: "2026-09-30T14:05:00.000Z",
       visit: { id: "visit-0", jobType: "Service call", purpose: null, visitDate: "2026-09-20T12:00:00.000Z", property: { addressLine1: "12 Main St" } },
-    }]);
+    })], { scope: { customerId: "cust-1", leadId: null, visitId: "visit-1", propertyId: null, name: "Jane Homeowner" } }));
     const add = vi.spyOn(api, "addAccountNote").mockResolvedValue({
       id: "note-2", customerId: "cust-1", visitId: "visit-1", body: "Gate code is 4411.", takenBy: "Kyle",
       createdAt: "2026-10-01T10:00:00.000Z", updatedAt: "2026-10-01T10:00:00.000Z", visit: null,
@@ -290,13 +293,14 @@ describe("JobDrawer", () => {
     const dialog = await screen.findByRole("dialog", { name: "12 Main St" });
 
     // The account's log is read by the visit's customer, not by the visit.
-    await waitFor(() => expect(api.accountNotes).toHaveBeenCalledWith("cust-1"));
-    const log = within(dialog).getByRole("group", { name: "Conversation notes" });
+    await waitFor(() => expect(api.hubTimeline).toHaveBeenCalledWith({ visitId: "visit-1" }));
+    const log = within(dialog).getByRole("group", { name: "Conversation" });
+    await within(log).findByText("Said the breaker trips when the dryer runs.");
     expect(log).toHaveTextContent("Said the breaker trips when the dryer runs.");
     expect(log).toHaveTextContent("Taken by Eric");
     expect(log).toHaveTextContent("about Service call — 12 Main St");
 
-    fireEvent.click(within(log).getByRole("button", { name: "Add note" }));
+    fireEvent.click(within(log).getByRole("button", { name: "Add call note" }));
     expect(within(log).getByText("Filed on the account and tagged to this job.")).toBeInTheDocument();
     fireEvent.change(within(log).getByLabelText("What was said"), { target: { value: "Gate code is 4411." } });
     fireEvent.change(within(log).getByLabelText("Taken by"), { target: { value: "Kyle" } });

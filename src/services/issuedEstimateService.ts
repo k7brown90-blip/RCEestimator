@@ -44,6 +44,7 @@ import { bandsFrom, selectionCap, type MarkupBand } from "./materialMarkupCap";
 import { frozenSelectionDiscount, programmeFor } from "./discounts";
 import { snapshotActiveFinancingPlansJson } from "./financingSettings";
 import { notifyOwnerViewed } from "./issuedEstimateSend";
+import { emitHubEventSafe } from "./hubEvents";
 import { getIssuedQuoteMoney } from "./quoteMoney";
 import { ALL_OPTIONS, type EstimateOptionLetter } from "../../shared/estimateOptions";
 import { CONSENT_TEXT } from "../../shared/consentText";
@@ -634,18 +635,24 @@ export async function getEstimateByToken(
 export async function recordFirstView(prisma: PrismaClient, estimateId: string): Promise<void> {
   const est = await prisma.issuedEstimate.findUnique({ where: { id: estimateId } });
   if (!est || est.firstViewedAt || est.signedAt || est.status === "lost") return;
-  await prisma.$transaction(async (tx) => {
-    await tx.issuedEstimate.update({
-      where: { id: estimateId },
+  // The first view is CLAIMED atomically (firstViewedAt still null): a mail scanner and the customer
+  // opening the link at the same instant both pass the read above, but only one wins the claim, so
+  // there is one "viewed" event and one estimate.viewed to the agents.
+  const won = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.issuedEstimate.updateMany({
+      where: { id: estimateId, firstViewedAt: null, signedAt: null, status: { not: "lost" } },
       data: {
         firstViewedAt: new Date(),
-        status: est.status === "sent" ? "viewed" : est.status,
+        status: est.status === "sent" ? "viewed" : undefined,
       },
     });
+    if (claimed.count !== 1) return false;
     await tx.issuedEstimateEvent.create({
       data: { estimateId, type: "viewed", actor: "customer" },
     });
+    return true;
   });
+  if (!won) return;
 
   /*
     Kyle's heads-up, AFTER the record is durable and fire-and-forget (2026-08-22): the customer is
@@ -653,6 +660,8 @@ export async function recordFirstView(prisma: PrismaClient, estimateId: string):
     never fail the customer's page load — same rule as the signature notification.
   */
   void notifyOwnerViewed(prisma, estimateId).catch(() => {});
+  // The agents hear of the first view too (work order agent-team, BA6). Fire-and-forget: never fails the page.
+  void emitHubEventSafe({ type: "estimate.viewed", estimateId });
 }
 
 // ─── Signing ────────────────────────────────────────────────────────────────────
@@ -1242,6 +1251,10 @@ async function applySignature(
     signatureCapturedAtOffice: capturedAtOffice?.toISOString() ?? null,
     phoneClockSkewMs,
   });
+  // The agents hear of the signature (work order agent-team, BA6), after it is durable. One site covers
+  // the emailed link and in-person signing: both go through this function. Office acceptance does NOT
+  // pass here (it emits estimate.accepted instead). Fire-and-forget: never undoes or slows a signature.
+  void emitHubEventSafe({ type: "estimate.signed", estimateId });
 
   /*
     ── FILING AND NOTIFYING, NEITHER OF WHICH MAY UNDO A SIGNATURE ─────────────────────────────
