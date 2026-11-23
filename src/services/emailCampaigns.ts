@@ -20,6 +20,7 @@ import { sendBrandedEmail, escapeHtml, htmlToPlainText, brandedFooterHtml } from
 import { getCompanyProfile, type CompanyProfile } from "./companyProfile";
 import { publicBaseUrl } from "./issuedEstimateSend";
 import { logSystemEvent } from "./systemEvents";
+import type { DoorActor } from "./doorActor";
 
 export const DEFAULT_LIST_NAME = "Storm Preparedness Campaign";
 
@@ -406,3 +407,21 @@ Add your intro (and a promotion if you want one), preview, and press Send — no
   return { drafted };
 }
 
+
+/**
+ * A new campaign draft, on the list given or the default list (work order agent-team, TM0: the
+ * route body of POST /email-campaigns, lifted so the agent tools make a draft the same way). It only
+ * saves the draft; nothing is sent from here.
+ */
+export async function createCampaignDraft(
+  prisma: PrismaClient,
+  input: { name: string; subject: string; listId?: string; blocks: CampaignBlock[] },
+  // The door's identity ("human:crm-session" or "agent:<key>"); a draft has no author column.
+  _actor: DoorActor,
+): Promise<{ id: string }> {
+  const listId = input.listId ?? (await ensureDefaultList(prisma)).id;
+  const campaign = await prisma.emailCampaign.create({
+    data: { listId, name: input.name, subject: input.subject, blocksJson: JSON.stringify(input.blocks) },
+  });
+  return { id: campaign.id };
+}

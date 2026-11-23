@@ -71,6 +71,25 @@ describe("reading the conversation", () => {
     expect(api.hubTimeline).toHaveBeenCalledWith({ customerId: "cust-1" });
   });
 
+  it("shows the note a converted lead leaves on the account: 'From the lead:' with its lines, who took it, the job, and Edit and Delete", async () => {
+    // Converting a lead files its "What they need" section here as an ordinary call note (plan 2026-11-22).
+    account([
+      noteEntry(note({
+        id: "n-lead", takenBy: "Lead intake", visitId: "visit-1", visit: taggedVisit,
+        body: ["From the lead:", "Job type: Panel upgrade", "Call type: new job", "Urgent", "Notes: Gate code 4411"].join("\n"),
+      })),
+    ]);
+    const row = (await screen.findAllByRole("listitem"))[0];
+    expect(row).toHaveTextContent("From the lead:");
+    expect(row).toHaveTextContent("Job type: Panel upgrade");
+    expect(row).toHaveTextContent("Notes: Gate code 4411");
+    expect(row).toHaveTextContent("Taken by Lead intake");
+    expect(row).toHaveTextContent("about Panel upgrade — 12 Main St");
+    expect(row.textContent).not.toMatch(/edited/);
+    expect(within(row).getByRole("button", { name: "Edit" })).toBeEnabled();
+    expect(within(row).getByRole("button", { name: "Delete" })).toBeEnabled();
+  });
+
   it("marks a changed note as edited, and leaves an unchanged one alone", async () => {
     account([
       noteEntry(note({ id: "n-edited", body: "Changed later.", updatedAt: "2026-09-30T16:20:00.000Z" })),

@@ -115,10 +115,45 @@ export const HUB_THREAD_KINDS = {
   team: "Team",
   dev: "Dev",
   training: "Training",
+  /** An office-made group chat (work order agent-team, C7): an agent key sees one only when it is a member (hub.ts visibleThreadWhere). */
+  group: "Group",
 } as const;
 export type HubThreadKind = keyof typeof HUB_THREAD_KINDS;
 export const HUB_THREAD_KIND_KEYS = Object.keys(HUB_THREAD_KINDS) as HubThreadKind[];
 export const isHubThreadKind = (v: string): v is HubThreadKind => Object.prototype.hasOwnProperty.call(HUB_THREAD_KINDS, v);
+
+/**
+ * Which scope opens which kind of hub thread to an AGENT key (work order agent-team, C6; one small table so a
+ * new kind, such as C7's `group`, is one line). A key needs ONE of the scopes listed: `read` to see the thread
+ * and its messages, `post` to leave a draft in it. An empty `post` list means a key can never post there
+ * through the hub door (a Dev thread is written through the dev door). A key's hubThreadKinds still narrows on
+ * top of this: the kinds a key may use are the ones its scopes open AND its hubThreadKinds allow.
+ */
+export const HUB_KIND_SCOPES: Record<HubThreadKind, { read: readonly AgentScope[]; post: readonly AgentScope[] }> = {
+  customer: { read: ["hub:read"], post: ["hub:draft"] },
+  job: { read: ["hub:read"], post: ["hub:draft"] },
+  team: { read: ["team:reply"], post: ["team:reply"] },
+  dev: { read: ["dev:read"], post: [] },
+  training: { read: ["training:read", "training:write"], post: ["training:write"] },
+  // C7: the same scope as a Team post. The scope is only half the rule: the key must also be a MEMBER of the group
+  // (visibleThreadWhere for the hub, hubDoor.threadFor for the door), and a group the key is not in answers as not found.
+  group: { read: ["team:reply"], post: ["team:reply"] },
+};
+
+export type HubKindAccess = "read" | "post" | "any";
+
+/**
+ * The thread kinds these scopes open, narrowed by the key's hubThreadKinds (`limit`, empty = no limit).
+ * `any` is read-or-post: what a key may SEE at all (the hub's visibility rule); `read` and `post` are what
+ * the door checks for a list/detail and for a draft.
+ */
+export function hubKindsFor(scopes: readonly string[], access: HubKindAccess, limit: readonly string[] = []): HubThreadKind[] {
+  return HUB_THREAD_KIND_KEYS.filter((kind) => {
+    if (limit.length > 0 && !limit.includes(kind)) return false;
+    const wanted = access === "any" ? [...HUB_KIND_SCOPES[kind].read, ...HUB_KIND_SCOPES[kind].post] : HUB_KIND_SCOPES[kind][access];
+    return wanted.some((s) => scopes.includes(s));
+  });
+}
 
 export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   admin: "Admin",

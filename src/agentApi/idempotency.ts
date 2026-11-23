@@ -30,6 +30,12 @@ import { AgentApiError } from "./errors";
 export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 /** A pending row older than this belongs to a call that died; a new caller may take it over. */
 export const PENDING_STALE_MS = 2 * 60 * 1000;
+/**
+ * How long the operation's transaction may run. The default is 5 seconds, and a draft's effects (the row, the
+ * auto-send decision, which can be a real send once a category is switched on, and the fan-out) can take longer
+ * on a slow provider: a timeout would roll the audit row back and answer 500 although the message went.
+ */
+export const IDEMPOTENT_TX_TIMEOUT_MS = 30_000;
 
 export const idempotencyKeySchema = z.string().min(8).max(128);
 
@@ -143,7 +149,7 @@ export async function withIdempotency<T>(
       const json = JSON.stringify(out === undefined ? null : out);
       await tx.agentIdempotency.update({ where: { id: rowId }, data: { status: "done", responseJson: json } });
       return JSON.parse(json) as T;
-    });
+    }, { timeout: IDEMPOTENT_TX_TIMEOUT_MS, maxWait: 10_000 });
     return { result, replayed: false };
   } catch (err) {
     // Rolled back: free the key so the agent can retry. Never mask the real error.

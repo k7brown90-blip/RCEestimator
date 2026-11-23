@@ -487,6 +487,8 @@ describe("the per-event-type target table", () => {
         targets: [{ id: "admin", url: receiver.url, enabled: true }, { id: "inventory", url: inventory.url, enabled: true }], routes: {},
       }).expect(200);
       delete process.env.HUB_AGENT_WEBHOOK_URL;
+      // Inventory signs only with its OWN secret (C6b): HUB_WEBHOOK_SECRET is Admin's fallback alone.
+      const invSecret = (await request(app).post("/hub/webhooks/inventory/signing-secret").set(bearer(token)).expect(200)).body.secret as string;
 
       const tech = await prisma.technician.create({ data: { name: `${TAG} Poster`, accessToken: `hubev-${Math.random().toString(36).slice(2)}` } });
       techIds.push(tech.id);
@@ -505,7 +507,8 @@ describe("the per-event-type target table", () => {
       await waitFor(() => inventory.requests.length === 1);
       expect(receiver.requests).toHaveLength(1);
       expect(JSON.parse(inventory.requests[0].body)).toMatchObject({ type: "material.used", job_id: job.id, movement_ids: ["m1", "m2"], line_count: 2 });
-      expect(verify(inventory.requests[0])).toEqual({ ok: true });
+      expect(verify(inventory.requests[0], invSecret)).toEqual({ ok: true });
+      expect(verify(inventory.requests[0])).toEqual({ ok: false, why: "bad signature" });
       await prisma.hubEvent.deleteMany({ where: { type: "material.used" } }).catch(() => undefined);
       await prisma.visit.deleteMany({ where: { id: job.id } });
       await prisma.property.deleteMany({ where: { customerId: customer.id } });
@@ -544,6 +547,7 @@ describe("the per-event-type target table", () => {
         targets: [{ id: "admin", url: receiver.url, enabled: true }, { id: "inventory", url: inventory.url, enabled: true }],
         routes: { "lead.created": "inventory" },
       }).expect(200);
+      await request(app).post("/hub/webhooks/inventory/signing-secret").set(bearer(token)).expect(200);
       const lead = await makeLead("rerouted");
       await emitHubEvent({ type: "lead.created", leadId: lead.id });
       await waitFor(() => inventory.requests.length === 1);

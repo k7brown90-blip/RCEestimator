@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useLocation } from "react-router-dom";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../../test/renderWithProviders";
+import { noteEntry, timeline } from "../../test/hubFixtures";
 import { DrawerHost } from "./DrawerHost";
 import { LeadsPage } from "../../pages/LeadsPage";
 import { ApiError, api } from "../../lib/api";
@@ -498,5 +499,74 @@ describe("LeadDrawer — Website chat", () => {
     renderWithProviders(<><LeadsPage /><DrawerHost /></>, { route: "/leads?lead=lead-1" });
     const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
     expect(await within(dialog).findByRole("region", { name: "Website chat" })).toBeInTheDocument();
+  });
+});
+
+describe("LeadDrawer — the note a conversion leaves on the account", () => {
+  const LEAD_NOTE = "From the lead:\nJob type: Panel upgrade";
+  const fromLead = () => noteEntry({
+    id: "note-lead", customerId: "cust-1", visitId: "visit-new", body: LEAD_NOTE, takenBy: "Kyle",
+    createdAt: "2026-11-22T14:00:00.000Z", updatedAt: "2026-11-22T14:00:00.000Z", visit: null,
+  });
+
+  /** The Conversation starts empty; once the server has converted, it holds the note. */
+  function conversationFills() {
+    const state = { converted: false };
+    vi.spyOn(api, "hubTimeline").mockImplementation(() => Promise.resolve(timeline(state.converted ? [fromLead()] : [])));
+    return state;
+  }
+
+  it("Convert only: the drawer's Conversation reads again and shows the 'From the lead:' note without a reload", async () => {
+    mockCommon(lead({}));
+    const state = conversationFills();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(api, "convertLead").mockImplementation(async () => {
+      state.converted = true;
+      return {
+        customer: { id: "cust-1", name: "Jane Homeowner" } as never,
+        property: { id: "prop-1" } as never,
+        visit: { id: "visit-new", propertyId: "prop-1", customerId: "cust-1", mode: "service_diagnostic", status: "estimate", visitDate: "2026-10-01T12:00:00.000Z" } as Visit,
+        lead: lead({ status: "converted" }),
+      };
+    });
+
+    renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+    await waitFor(() => expect(api.hubTimeline).toHaveBeenCalled());
+    expect(within(dialog).queryByText(/From the lead:/)).not.toBeInTheDocument();
+    const before = vi.mocked(api.hubTimeline).mock.calls.length;
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Convert only" }));
+
+    await waitFor(() => expect(api.convertLead).toHaveBeenCalled());
+    await waitFor(() => expect(vi.mocked(api.hubTimeline).mock.calls.length).toBeGreaterThan(before));
+    expect(await within(dialog).findByText(/From the lead:/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Job type: Panel upgrade/)).toBeInTheDocument();
+  });
+
+  it("Confirm booking: the drawer's Conversation reads again and shows the 'From the lead:' note without a reload", async () => {
+    mockCommon(chatLead());
+    mockPhotos();
+    const state = conversationFills();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(api, "confirmBooking").mockImplementation(async () => {
+      state.converted = true;
+      return {
+        visitId: "visit-new", customerId: "cust-1", scheduledStart: "2026-11-10T14:00:00.000Z", scheduledEnd: "2026-11-10T16:00:00.000Z",
+        label: HELD_LABEL, photosCopied: 0, customerEmail: null, kyleEmailed: true, warnings: [],
+      };
+    });
+
+    renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+    const button = await within(dialog).findByRole("button", { name: "Confirm booking" });
+    await waitFor(() => expect(api.hubTimeline).toHaveBeenCalled());
+    const before = vi.mocked(api.hubTimeline).mock.calls.length;
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(api.confirmBooking).toHaveBeenCalled());
+    await waitFor(() => expect(vi.mocked(api.hubTimeline).mock.calls.length).toBeGreaterThan(before));
+    expect(await within(dialog).findByText(/From the lead:/)).toBeInTheDocument();
   });
 });

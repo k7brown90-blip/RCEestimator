@@ -250,7 +250,7 @@ describe("a photo goes only in the message of the person who added it (carry-ove
     const eric = await tech("Eric");
     const training = await trainingFor(eric.id);
     const own = await techUpload(eric.token, training.id);
-    const scout: HubReader = { key: "agent:scout", kind: "agent", display: "Scout", technicianId: null, threadKinds: ["training"], agentRole: "scout", agentKeyId: "k1", isKyle: false };
+    const scout: HubReader = { key: "agent:scout", kind: "agent", display: "Scout", technicianId: null, threadKinds: ["training"], agentRole: "scout", agentKeyId: "k1", agentScopes: ["hub:read", "hub:draft", "team:reply", "dev:read", "training:read", "training:write"], isKyle: false };
     await expect(postMessage(scout, { threadId: training.id, body: "borrowed", attachmentIds: [own.body.data.id] })).rejects.toMatchObject({ status: 409 });
     expect((await prisma.hubAttachment.findUniqueOrThrow({ where: { id: own.body.data.id } })).messageId).toBeNull();
   });

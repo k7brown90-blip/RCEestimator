@@ -593,6 +593,8 @@ model Technician {
   // The person's CRM sign-in, if they have one (work order agent-team, HA1). NEVER include this in
   // a technician query that is returned to the CRM: it carries a password hash.
   crmLogin          CrmLogin?
+  /// The office-made group chats this person is a member of (work order agent-team, C7).
+  hubGroupMemberships HubThreadMember[]
 }
 
 // Flexible company configuration store — license info, operating territories,
@@ -4151,6 +4153,9 @@ model CrmLogin {
 /// `technicianId`) | dev (a dev ticket) | training (one per apprentice, in `technicianId`).
 /// Team answer 9a: @@unique([kind, technicianId]) is what makes "one Team thread per person" true.
 /// `phone` is the last 10 digits of an unknown sender's number (P2B-9). `status`: open | snoozed | closed.
+/// Kind `group` (C7, Kyle 2026-11-22: "The office can create the chat groups and assign members to it including
+/// specific AI bots"): an office-made chat, `title` = the group's name, members in HubThreadMember. It has no
+/// customer, lead, visit, technician or phone, so none of the unique keys above ever applies to it.
 model HubThread {
   id            String          @id @default(cuid())
   kind          String
@@ -4172,6 +4177,8 @@ model HubThread {
   messages      HubMessage[]
   readStates    HubReadState[]
   attachments   HubAttachment[]
+  /// Only a `group` thread has members (work order agent-team, C7).
+  members       HubThreadMember[]
 
   @@unique([kind, customerId])
   @@unique([kind, leadId])
@@ -4259,6 +4266,27 @@ model HubMessage {
   @@index([threadId, createdAt])
   @@index([status, createdAt])
   @@index([channel, toPhone10, status])
+}
+
+/// One member of a `group` thread (work order agent-team, C7): a PERSON (technicianId = Technician.id) or an AI
+/// agent (agentKeyId = AgentKey.id, by value only like HubMessage.authorBotKeyId - no foreign key, so a revoked or
+/// removed key never blocks anything). Exactly one of the two is set (the migration adds a CHECK for it; the
+/// service refuses anything else). A customer is never a member. `addedBy` is the reader key of whoever added
+/// the member. The row is deleted when the member is removed; the audit (HubAuditLog) keeps who and when.
+model HubThreadMember {
+  id           String      @id @default(cuid())
+  threadId     String
+  thread       HubThread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  technicianId String?
+  technician   Technician? @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  agentKeyId   String?
+  addedAt      DateTime    @default(now())
+  addedBy      String
+
+  @@unique([threadId, technicianId])
+  @@unique([threadId, agentKeyId])
+  @@index([technicianId])
+  @@index([agentKeyId])
 }
 
 /// When this reader last looked at this thread. readerKey: owner | user:<crmLoginId> | ai-admin |

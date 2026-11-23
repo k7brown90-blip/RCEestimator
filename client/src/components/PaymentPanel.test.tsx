@@ -22,6 +22,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { PaymentPanel, invoiceEmailRecord } from "./PaymentPanel";
+import { REVIEW_BLOCK_SENTENCES } from "../../../shared/reviewRequestBlock";
 import { api } from "../lib/api";
 import type { PaymentInfo, ReceiptReportOption } from "../lib/api";
 
@@ -171,7 +172,7 @@ describe("PaymentPanel", () => {
       renderWithProviders(<PaymentPanel jobId="visit-1" />);
       await openPanel();
       expect(await screen.findByRole("radio", { name: "Review request" })).toBeDisabled();
-      expect(screen.getByText(/once the job is marked complete/)).toBeInTheDocument();
+      expect(screen.getByText(REVIEW_BLOCK_SENTENCES.not_complete)).toBeInTheDocument();
     });
 
     it("surfaces the server's refusal reason (completed / dedupe / no email) rather than swallowing it", async () => {

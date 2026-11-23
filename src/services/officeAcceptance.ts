@@ -37,7 +37,7 @@
 
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { ACCEPTED_VIA, acceptedViaPhrase, type AcceptedVia } from "../../shared/acceptance";
-import { isPastValidity } from "../../shared/estimateExpiry";
+import { expiredRefusal, officeAcceptanceBlock } from "../../shared/officeAcceptanceGate";
 import { reopenedStatusOf } from "./estimateExpiry";
 import { adoptSupersededInvoice, type AdoptedInvoice } from "./issuedEstimateService";
 import { LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER } from "./invoiceGroup";
@@ -45,8 +45,11 @@ import { selectionCap, type MarkupBand } from "./materialMarkupCap";
 import { frozenSelectionDiscount } from "./discounts";
 import { logSystemEvent } from "./systemEvents";
 import { emitHubEventSafe } from "./hubEvents";
+import { createJobFromSignedEstimate } from "./accountSpine";
+import { archiveCompetingEstimates } from "./estimateArchive";
+import type { DoorActor } from "./doorActor";
 
-export { ACCEPTED_VIA };
+export { ACCEPTED_VIA, expiredRefusal };
 
 /**
  * What `consentText` says on an office acceptance. Deliberately NOT the e-signature consent
@@ -80,13 +83,8 @@ export type AcceptResult =
   | { ok: true; estimateId: string; number: string; revision: number; adopted: AdoptedInvoice | null }
   | { ok: false; status: 400 | 404 | 409; reason: string };
 
-const CHICAGO_DATE: Intl.DateTimeFormatOptions = { timeZone: "America/Chicago" };
-
-/** The Copy-to-new sentence — Kyle's ruling, 2026-09-24: an expired quote is reissued, never accepted. */
-export function expiredRefusal(est: { createdAt: Date; validDays: number }): string {
-  const expiresAt = new Date(est.createdAt.getTime() + est.validDays * 86_400_000);
-  return `This quote expired on ${expiresAt.toLocaleDateString("en-US", CHICAGO_DATE)}. Use Copy to new to reissue at today's pricing.`;
-}
+// The Copy-to-new sentence (expiredRefusal) and every refusal below live in shared/officeAcceptanceGate.ts
+// (TM0): the Estimate drawer prints the same sentences, so the screen and the route cannot disagree.
 
 /**
  * Record the acceptance. Each refusal names the door (the /lost convention):
@@ -126,21 +124,11 @@ export async function acceptEstimateFromOffice(
     },
   });
   if (!est) return { ok: false, status: 404, reason: "Estimate not found." };
-  if (est.signedAt || est.status === "signed") return { ok: false, status: 409, reason: "Already accepted / signed." };
-  if (est.status === "void" || est.voidedAt) return { ok: false, status: 409, reason: "This estimate is void." };
-  if (est.status === "lost" || est.lostAt) return { ok: false, status: 409, reason: "Marked lost — reopen it first." };
-  if (est.supersededBy) {
-    return { ok: false, status: 409, reason: `Replaced by rev ${est.supersededBy.revision} — accept that one.` };
-  }
-  // Past validity is checked BEFORE the status allow-list so a row the sweep has already
-  // relabelled "expired" gets the Copy-to-new sentence rather than a status complaint.
-  if (est.status === "expired" || isPastValidity(est)) {
-    return { ok: false, status: 409, reason: expiredRefusal(est) };
-  }
-  if (est.status !== "sent" && est.status !== "viewed") {
-    // Only "draft" reaches here today; an allow-list so a future status is refused, not accepted.
-    return { ok: false, status: 409, reason: "Never sent to the customer. Send it first, then record their acceptance." };
-  }
+  // The one gate (shared/officeAcceptanceGate.ts): already accepted, void, lost, replaced, expired
+  // (judged before the status allow-list so a swept "expired" row gets the Copy-to-new sentence), then
+  // anything but sent or viewed.
+  const block = officeAcceptanceBlock(est);
+  if (block) return { ok: false, status: 409, reason: block.reason };
 
   /*
     ── WHAT THEY ACTUALLY BOUGHT — the same reading applySignature gives ──────────────────────
@@ -277,6 +265,43 @@ export async function acceptEstimateFromOffice(
   void emitHubEventSafe({ type: "estimate.accepted", estimateId });
 
   return { ok: true, estimateId, number: est.number, revision: est.revision, adopted: written.adopted };
+}
+
+/**
+ * The whole "Customer accepted" action (work order agent-team, TM0: lifted out of
+ * POST /issued-estimates/:id/accept so a tool and the drawer's button do the same thing): record the
+ * acceptance, make the job right here so the drawer's "Job" door works the moment it is recorded, and
+ * put away the options not chosen. The job and the archive can never fail the acceptance - it is
+ * durably recorded before either runs.
+ *
+ * NO AUTO-SEND (Kyle, 2026-10-01): no invoice email, no deposit request and no owner notice go out from
+ * here; the customer gets the invoice when Kyle presses "Email the signed copy…" on the invoice drawer.
+ */
+export async function recordOfficeAcceptance(
+  prisma: PrismaClient,
+  estimateId: string,
+  input: Omit<AcceptInput, "actor">,
+  actor: DoorActor,
+): Promise<
+  | { ok: true; estimateId: string; jobVisitId: string | null; jobJoined: boolean; archived: Awaited<ReturnType<typeof archiveCompetingEstimates>>["archived"] }
+  | { ok: false; status: 400 | 404 | 409; reason: string }
+> {
+  const result = await acceptEstimateFromOffice(prisma, estimateId, { ...input, actor });
+  if (!result.ok) return result;
+
+  let jobVisitId: string | null = null;
+  let jobJoined = false;
+  try {
+    const job = await createJobFromSignedEstimate(prisma, result.estimateId, { actor: "system:office-accept" });
+    if (job.ok) { jobVisitId = job.visitId; jobJoined = Boolean(job.joined); }
+    else console.error("[IssuedEstimate] job creation after office acceptance refused:", job.reason);
+  } catch (err) {
+    console.error("[IssuedEstimate] job creation after office acceptance failed:", err);
+  }
+
+  // The options not chosen are put away (Kyle, 2026-10-01); services/estimateArchive.ts owns the rule.
+  const { archived } = await archiveCompetingEstimates(prisma, result.estimateId, "system:office-accept");
+  return { ok: true, estimateId: result.estimateId, jobVisitId, jobJoined, archived };
 }
 
 // ─── The undo (Kyle's standing rule: nothing the app creates is permanent) ──────────────────

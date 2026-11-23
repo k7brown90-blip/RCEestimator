@@ -181,6 +181,43 @@ export interface AttachmentRef {
   mimeType: string;
 }
 
+/** One member of an office-made group chat (work order agent-team, C7). */
+export interface GroupMemberView {
+  kind: "person" | "agent";
+  /** Technician.id for a person, AgentKey.id for an agent. */
+  id: string;
+  name: string;
+  /** An agent's role as the Agent keys card names it ("Admin", "Inventory Manager"); null for a person. */
+  roleLabel: string | null;
+  addedAt: string;
+  /** This member is the signed-in reader. */
+  you: boolean;
+  /** False for a person who left the team or an agent key that is switched off or cannot reach groups: they stay listed so the office can remove them. */
+  active: boolean;
+  /** Why this member is not active (an agent: switched off, or its key cannot see a group), or null. The panel shows it beside the name. */
+  reason: string | null;
+}
+
+/** What the Thread drawer shows of a group: who is in it, and the state of "Delete group". */
+export interface GroupView {
+  members: GroupMemberView[];
+  /** Every message row ever made in the group, deleted ones included (history). */
+  messageCount: number;
+  /** The signed-in reader is a member (a member's messages count as unread, and only a member may post). */
+  youAreMember: boolean;
+  /** "Delete group" is live only while the group holds no message. */
+  canDelete: boolean;
+  /** Why "Delete group" is greyed, or null when it is live. */
+  deleteReason: string | null;
+}
+
+/** Who can be put in a group chat: the New group chat picker. Never a customer. */
+export interface GroupChoices {
+  people: Array<{ id: string; name: string }>;
+  /** `canJoin` false = the key could never see or post in a group (no team:reply, or its kinds leave out group): greyed, with `reason`. */
+  agents: Array<{ id: string; name: string; roleLabel: string; canJoin: boolean; reason: string | null }>;
+}
+
 export interface ThreadDetail {
   thread: ThreadRow;
   messages: ThreadMessage[];
@@ -192,6 +229,8 @@ export interface ThreadDetail {
   postBlock: string | null;
   /** Photos this reader added to this thread and has not sent: shown again with their Remove, so none is ever stranded. */
   staged: AttachmentRef[];
+  /** A group chat's members and its delete state; null for every other kind of thread. */
+  group: GroupView | null;
 }
 
 export interface HubBadge {
@@ -314,9 +353,9 @@ export interface AuditResponse {
  * token or a phone number, and a draft an AI agent left for approval is not shown until it is approved.
  */
 export interface TechThreadRow {
-  /** "team", "training" or "job:<visitId>": stable before a job's thread exists. */
+  /** "team", "training", "group:<threadId>" or "job:<visitId>": stable before a job's thread exists. */
   key: string;
-  kind: "team" | "training" | "job";
+  kind: "team" | "training" | "job" | "group";
   /** Null for an assigned job nobody has written in yet; opening it makes the thread. */
   threadId: string | null;
   title: string;
@@ -353,7 +392,7 @@ export interface TechMessage {
 }
 
 export interface TechThreadDetail {
-  thread: { id: string; kind: "team" | "training" | "job"; title: string; visitId: string | null; status: string };
+  thread: { id: string; kind: "team" | "training" | "job" | "group"; title: string; visitId: string | null; status: string };
   messages: TechMessage[];
   lastReadAt: string | null;
   truncated: boolean;

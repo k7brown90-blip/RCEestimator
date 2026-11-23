@@ -248,12 +248,12 @@ describe("Approve", () => {
     const list = await request(app).get(`/hub/approvals?threadId=${thread.id}`).set(bearer(kyle));
     const card = (list.body.cards as Array<{ id: string; headerLine: string; approve: { blockedReason: string | null } }>).find((c) => c.id === row.id)!;
     expect(card.headerLine).toBe("Text · Marketing");
-    expect(card.approve.blockedReason).toBe("No marketing text opt-in on record");
+    expect(card.approve.blockedReason).toBe("Red Cedar never sends marketing by text");
 
     const r = await request(app).post(`/hub/messages/${row.id}/approve`).set(bearer(kyle)).send({});
     expect(r.status).toBe(200);
     expect(r.body.send).toEqual({ status: "blocked", error: "marketing_not_opted_in" });
-    expect(r.body.card.outcome.text).toBe("Not sent: No marketing text opt-in on record");
+    expect(r.body.card.outcome.text).toBe("Not sent: Red Cedar never sends marketing by text");
     expect(await audits(row.id, "send_blocked")).toBe(1);
     expect(await audits(row.id, "message_held")).toBe(0);
     expect(twilioCalls()).toHaveLength(0);
@@ -386,7 +386,7 @@ describe("the Message audit log (Kyle only)", () => {
     const blocked = await request(app).get("/hub/audit?action=send_blocked").set(bearer(kyle));
     const mine = (blocked.body.entries as Array<Record<string, unknown>>).find((e) => e.messageId === row.id)!;
     expect(mine).toMatchObject({
-      action: "send_blocked", actionLabel: "Blocked text", reason: "No marketing text opt-in on record", messageClass: "marketing", category: "seasonal_offer",
+      action: "send_blocked", actionLabel: "Blocked text", reason: "Red Cedar never sends marketing by text", messageClass: "marketing", category: "seasonal_offer",
     });
     expect(JSON.stringify(blocked.body)).not.toContain(phone);
     expect(JSON.stringify(blocked.body)).not.toContain(phone.slice(-4));
@@ -456,8 +456,8 @@ describe("a text that can never go out is refused BEFORE anything is recorded as
     expect(byId(wordy.id).approve.editBlockedReason).toBeNull();
     expect(byId(emailless.id).approve.blockedReason).toMatch(/no email address/i);
     expect(byId(emailless.id).approve.editBlockedReason).toBeNull();
-    expect(byId(marketing.id).approve.blockedReason).toBe("No marketing text opt-in on record");
-    expect(byId(marketing.id).approve.editBlockedReason).toBe("No marketing text opt-in on record");
+    expect(byId(marketing.id).approve.blockedReason).toBe("Red Cedar never sends marketing by text");
+    expect(byId(marketing.id).approve.editBlockedReason).toBe("Red Cedar never sends marketing by text");
   });
 
   it("Edit-and-approve: a marketing text is blocked with one send_blocked row and no copy; an edit that still carries the STOP line is a 409; a fixed edit sends", async () => {

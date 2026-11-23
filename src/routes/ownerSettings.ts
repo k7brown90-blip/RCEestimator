@@ -14,7 +14,7 @@ import { asyncHandler, readParam } from "../lib/routeHelpers";
 import { requireBotKeys, requireKyle as requireKyleWith } from "../middleware/kylePowers";
 import { actorNameOf } from "../lib/actorName";
 import {
-  OWNER_SETTINGS, getOwnerSetting, isOwnerSettingKey, saveOwnerSetting, type OwnerSettingKey,
+  OWNER_SETTINGS, OwnerSettingInputError, getOwnerSetting, isOwnerSettingKey, saveOwnerSetting, type OwnerSettingKey,
 } from "../services/ownerSettings";
 
 export const ownerSettingsRouter = express.Router();
@@ -47,7 +47,9 @@ ownerSettingsRouter.get("/owner-settings/:key", guard, asyncHandler(async (req, 
   const key = knownKey(req, res);
   if (key === null) return;
   const def = OWNER_SETTINGS[key];
-  res.json({ key, value: await getOwnerSetting(key), ...(def.status ? { status: def.status() } : {}) });
+  const stored = await getOwnerSetting(key);
+  // A key that holds secrets answers a masked view, never the stored (encrypted) value.
+  res.json({ key, value: def.view ? def.view(stored) : stored, ...(def.status ? { status: def.status() } : {}) });
 }));
 
 ownerSettingsRouter.put("/owner-settings/:key", guard, asyncHandler(async (req, res) => {
@@ -56,12 +58,17 @@ ownerSettingsRouter.put("/owner-settings/:key", guard, asyncHandler(async (req, 
   try {
     const def = OWNER_SETTINGS[key];
     const actor = await actorNameOf(req);
-    const previous = def.onSaved ? await getOwnerSetting(key) : null;
-    const input = def.stamp ? def.stamp(req.body, actor, new Date()) : req.body;
+    const previous = def.onSaved || def.prepare ? await getOwnerSetting(key) : null;
+    const stamped = def.stamp ? def.stamp(req.body, actor, new Date()) : req.body;
+    const input = def.prepare ? def.prepare(stamped, previous) : stamped;
     const value = await saveOwnerSetting(key, input);
     def.onSaved?.(previous, value, actor);
-    res.json({ key, value, ...(def.status ? { status: def.status() } : {}) });
+    res.json({ key, value: def.view ? def.view(value) : value, ...(def.status ? { status: def.status() } : {}) });
   } catch (err) {
+    if (err instanceof OwnerSettingInputError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
     // The schema's own sentence is the answer ("Quiet hours can't go earlier than ..."), not the
     // app-wide "Validation failed".
     if (err instanceof z.ZodError) {

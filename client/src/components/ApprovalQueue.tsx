@@ -6,7 +6,7 @@
  *
  * Someone without the approve_drafts power can read what is waiting; every button is greyed and the power's
  * sentence is printed above the list. A decision's result stays on screen as a banner after the card leaves
- * the queue, so "Approved — SMS disabled" or "Not sent: No marketing text opt-in on record" is never missed.
+ * the queue, so "Approved — SMS disabled" or "Not sent: Red Cedar never sends marketing by text" is never missed.
  */
 import { useState } from "react";
 import { useHubApprovals } from "../lib/hubQueries";

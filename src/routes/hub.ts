@@ -10,8 +10,14 @@
  *   GET    /hub/timeline?customerId=|leadId=|visitId=|propertyId=   one record's conversation
  *   GET    /hub/threads?kind=&status=&needs=approval&q=             the Messages page
  *   GET    /hub/threads/:id                                          one thread with its messages
+ *   GET    /hub/threads/:id/messages                                 the same thread, for an agent key only (the contract's path)
  *   PATCH  /hub/threads/:id            { title? , status? }          Rename, Close thread / Reopen
  *   POST   /hub/threads/job/:visitId                                 open (or make) a job's crew thread
+ *   GET    /hub/groups/choices                                       who can be put in a group chat (C7: people and active agent keys)
+ *   POST   /hub/groups  { name, technicianIds, agentKeyIds }         New group chat
+ *   POST   /hub/groups/:id/members  { technicianIds, agentKeyIds }   Add members
+ *   DELETE /hub/groups/:id/members  { technicianId | agentKeyId }    Remove a member
+ *   DELETE /hub/groups/:id                                           Delete group (only while it holds no message)
  *   POST   /hub/threads/:id/messages   { body, subject? }            Post to crew / Post to team
  *   POST   /hub/threads/:id/read                                     mark read
  *   PATCH  /hub/messages/:id           { body }                      edit your own message
@@ -30,8 +36,16 @@
  *   POST   /hub/push/subscription  { endpoint, keys }                Turn on notifications on this device
  *   DELETE /hub/push/subscription  { endpoint }                      Turn off
  *
+ * AGENT KEYS (K-U7, work order agent-team): exactly three of these routes also answer an agent key, through
+ * the agent gate (middleware/publicRoutes.ts AGENT_KEY_ROUTES) and src/agentApi/hubDoor.ts:
+ *   GET  /hub/threads, GET /hub/threads/:id/messages   (hub:read)   what the key may read, as the every-key message profile
+ *   POST /hub/messages  { thread_id | one record link, channel, body, ... idempotency_key }   (hub:draft)
+ * a DRAFT, never approved or sent. It is the same route table the CRM uses, not a second router; every
+ * other route here is refused to an agent key (401 at the session gate, 403 in withReader). The CRM keeps
+ * GET /hub/threads/:id; an agent key is not accepted there.
+ *
  * Deliberately NOT here: any way to make or delete a Team thread (team answer 9a: one per person,
- * made on first use), and any way to post into a customer thread (a customer conversation takes a
+ * made on first use; only an office-made GROUP, C7, is made and deleted by hand), and any way to post into a customer thread (a customer conversation takes a
  * call note or the "Email the customer" panel, so there is one writer for each). The three decisions
  * run services/hubApproval.ts, which sends through hubSend and nothing else; there is no route that
  * calls hubSend directly, and a technician's token or an agent key never reaches any of these.
@@ -45,11 +59,13 @@ import {
   renameThread, setThreadStatus, softDeleteMessage, type HubReader,
 } from "../services/hub";
 import { hubBadge, listThreads, threadDetail } from "../services/hubInbox";
+import { addGroupMembers, createGroup, deleteGroup, groupChoices, removeGroupMember } from "../services/hubGroups";
 import { approveMessage, decisionView, editApproveMessage, editApproveSchema, rejectMessage, rejectSchema } from "../services/hubApproval";
 import { listApprovalCards } from "../services/hubCards";
 import { listAudit } from "../services/hubAuditView";
 import { buildTimeline, type TimelineTarget } from "../services/hubTimeline";
 import { isHubThreadKind } from "../../shared/agentScopes";
+import { agentCreateMessage, agentListThreads, agentRefusal, agentThreadDetail } from "../agentApi/hubDoor";
 import { openHubStream } from "../services/hubStream";
 import { readAttachment, removeAttachment, uploadAttachment } from "../services/hubAttachments";
 import { PushError, isSubscribedHere, pushConfig, removeSubscription, saveSubscription, subscriptionCount } from "../services/hubPush";
@@ -58,20 +74,29 @@ export const hubRouter = express.Router();
 
 type Handler = (req: express.Request, res: express.Response, reader: HubReader) => Promise<void>;
 
-/** Identify the reader, turn the hub's own refusals into their status, and keep technicians and agents out. */
-const withReader = (fn: Handler): express.RequestHandler => asyncHandler(async (req, res) => {
+/**
+ * Identify the reader (ONE resolver: readerFor, an agent key or a session), turn the hub's own refusals into
+ * their status, and keep technicians out. An agent key is let through ONLY on a route that says `agent: true`
+ * (the three in the header above); there its handler answers through src/agentApi/hubDoor.ts, and any refusal
+ * is answered in the agent error shape with its audit row.
+ */
+const withReader = (fn: Handler, opts: { agent?: boolean } = {}): express.RequestHandler => asyncHandler(async (req, res) => {
   const reader = readerFor(req);
   if (!reader) {
     res.status(401).json({ error: "Sign in to use Messages." });
     return;
   }
-  if (reader.kind === "tech" || reader.kind === "agent") {
+  if (reader.kind === "tech" || (reader.kind === "agent" && !opts.agent)) {
     res.status(403).json({ error: "Messages in the CRM are for the office." });
     return;
   }
   try {
     await fn(req, res, reader);
   } catch (err) {
+    if (reader.kind === "agent") {
+      await agentRefusal(req, res, err);
+      return;
+    }
     if (err instanceof HubError || err instanceof PushError) {
       res.status(err.status).json({ error: err.message });
       return;
@@ -105,6 +130,14 @@ hubRouter.get("/hub/timeline", withReader(async (req, res, reader) => {
 }));
 
 hubRouter.get("/hub/threads", withReader(async (req, res, reader) => {
+  // An agent's query is validated by its own door, so a bad kind, status or since (and any q) is the agent error
+  // shape with its audit row, like every other refusal an agent gets.
+  if (reader.kind === "agent") {
+    await agentListThreads(req, res, reader, {
+      kind: queryText(req, "kind"), status: queryText(req, "status"), q: queryText(req, "q"), since: queryText(req, "since"),
+    });
+    return;
+  }
   const kind = queryText(req, "kind");
   if (kind && !isHubThreadKind(kind)) {
     res.status(400).json({ error: "Unknown thread kind." });
@@ -118,7 +151,7 @@ hubRouter.get("/hub/threads", withReader(async (req, res, reader) => {
   res.json(await listThreads(reader, {
     kind, status, needsApproval: queryText(req, "needs") === "approval", q: queryText(req, "q"),
   }, canApprove(req)));
-}));
+}, { agent: true }));
 
 hubRouter.get("/hub/badge", withReader(async (req, res, reader) => {
   res.json(await hubBadge(reader, canApprove(req)));
@@ -134,6 +167,61 @@ hubRouter.post("/hub/threads/job/:visitId", withReader(async (req, res, reader) 
 
 hubRouter.get("/hub/threads/:id", withReader(async (req, res, reader) => {
   res.json(await threadDetail(reader, readParam(req, "id")));
+}));
+
+// An agent key reads a thread here (hub:read; the path the team's contract names). The CRM's screens use
+// GET /hub/threads/:id above, so a session gets a plain 404 and there is still one reader of a thread per door.
+hubRouter.get("/hub/threads/:id/messages", withReader(async (req, res, reader) => {
+  if (reader.kind !== "agent") {
+    res.status(404).json({ error: "Not found. The CRM reads a conversation at /hub/threads/:id." });
+    return;
+  }
+  await agentThreadDetail(req, res, reader, readParam(req, "id"));
+}, { agent: true }));
+
+// An agent key leaves a DRAFT here (hub:draft). The CRM has no use for this route: a person posts in a
+// conversation's own box, so a session gets a plain 403. The work is src/agentApi/hubDoor.ts, which calls
+// createDraftMessage (customer and job conversations) or postMessageResult (Team and Training) - never hubSend.
+hubRouter.post("/hub/messages", withReader(async (req, res, reader) => {
+  if (reader.kind !== "agent") {
+    res.status(403).json({ error: "Only an AI agent key leaves a draft here. Post in the conversation's own box." });
+    return;
+  }
+  await agentCreateMessage(req, res, reader);
+}, { agent: true }));
+
+// ── office-made group chats (C7): any office sign-in; services/hubGroups.ts says who ───────────────────────────────
+
+hubRouter.get("/hub/groups/choices", withReader(async (_req, res, reader) => {
+  res.json(await groupChoices(reader));
+}));
+
+const idList = z.array(z.string().trim().min(1).max(64)).max(100).default([]);
+const groupSchema = z.object({ name: z.string().trim().min(1, "A group needs a name.").max(120), technicianIds: idList, agentKeyIds: idList });
+const membersSchema = z.object({ technicianIds: idList, agentKeyIds: idList });
+const removeMemberSchema = z.object({ technicianId: z.string().trim().min(1).max(64).optional(), agentKeyId: z.string().trim().min(1).max(64).optional() });
+
+hubRouter.post("/hub/groups", withReader(async (req, res, reader) => {
+  const body = groupSchema.parse(req.body ?? {});
+  const thread = await createGroup(reader, body);
+  res.status(201).json({ id: thread.id });
+}));
+
+hubRouter.post("/hub/groups/:id/members", withReader(async (req, res, reader) => {
+  const id = readParam(req, "id");
+  await addGroupMembers(reader, id, membersSchema.parse(req.body ?? {}));
+  res.json(await threadDetail(reader, id));
+}));
+
+hubRouter.delete("/hub/groups/:id/members", withReader(async (req, res, reader) => {
+  const id = readParam(req, "id");
+  await removeGroupMember(reader, id, removeMemberSchema.parse(req.body ?? {}));
+  res.json(await threadDetail(reader, id));
+}));
+
+hubRouter.delete("/hub/groups/:id", withReader(async (req, res, reader) => {
+  await deleteGroup(reader, readParam(req, "id"));
+  res.status(204).end();
 }));
 
 const patchThreadSchema = z.object({

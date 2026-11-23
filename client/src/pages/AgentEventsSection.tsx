@@ -6,13 +6,20 @@
  * Click path from the Dashboard: left nav "Settings" -> scroll to "Agent events", directly under
  * "Agent keys" (two clicks).
  *
- *   * Filter chips: All / Delivered / Retrying / Dead / No URL, and an Event-type dropdown.
- *   * Each row shows the time, the event type, a one-line summary, the status, the number of attempts
- *     and the last error, with "Show attempts" (the attempt history) and "Resend".
+ *   * Filter chips: All / Delivered / Retrying / Dead / No URL, an Event-type dropdown and an Agent
+ *     dropdown (All agents / Admin / Inventory: the same log filtered to one webhook).
+ *   * Each row shows the time, the event id, the event type, a one-line summary, the status, the last
+ *     HTTP code, the number of attempts and the last error, with "Show attempts" (the attempt history)
+ *     and "Resend".
  *   * A banner says when no receiving address is set (events are KEPT, and Resend delivers them once
- *     it is) and when HUB_WEBHOOK_SECRET is not set (nothing is sent until it is).
+ *     it is) and when Admin has no signing secret (nothing is sent until it does).
  *   * "Resend" is on every row. On a Delivered row it is greyed with its reason (the agents drop a
- *     repeat of the same event, so it would do nothing); on Dead, Retrying and No URL rows it is live.
+ *     repeat of the same event, so it would do nothing); on a test event it is greyed (a test is never
+ *     sent again); on Dead, Retrying and No URL rows it is live.
+ *
+ * The table is ONE component, AgentEventsTable, and the Agent webhooks card shows it again under each
+ * webhook as that webhook's delivery log (work order C6b): a filtered view of this same log, never a
+ * second log.
  *
  * Controls are GREYED with their reason, never hidden: a session without the bot_keys power (and the
  * AI admin) sees the card with every control greyed and the reason printed. The log holds only the
@@ -25,7 +32,10 @@ import { api } from "../lib/api";
 import { useCan, useSession, useSessionFailed } from "../lib/session";
 import type { HubEventView } from "../lib/types";
 import { AGENT_KEYS_AI_ADMIN_REASON } from "../../../shared/agentScopes";
-import { HUB_EVENT_LABELS, HUB_EVENT_TYPES, RESEND_DELIVERED_REASON, type HubEventType } from "../../../shared/hub/events";
+import {
+  HUB_EVENT_LABELS, HUB_EVENT_TYPES, HUB_TEST_EVENT_TYPE, HUB_WEBHOOK_TARGET_IDS, HUB_WEBHOOK_TARGET_LABELS, RESEND_DELIVERED_REASON,
+  TEST_RESEND_REASON, type HubEventType, type HubWebhookTargetId,
+} from "../../../shared/hub/events";
 
 const CHIPS: Array<{ id: string; label: string }> = [
   { id: "all", label: "All" },
@@ -36,7 +46,7 @@ const CHIPS: Array<{ id: string; label: string }> = [
 ];
 
 export const NO_URL_BANNER = "No receiving address is set. Add the agents' address in the Agent webhooks card below. Events are being kept — press Resend once it is set.";
-export const NO_SECRET_BANNER = "HUB_WEBHOOK_SECRET is not set — nothing is sent until it is.";
+export const NO_SECRET_BANNER = "Admin has no signing secret — nothing is sent until it does. Generate one in the Agent webhooks card below, or set HUB_WEBHOOK_SECRET in Railway.";
 
 const STATUS_TEXT: Record<string, string> = {
   pending: "Waiting to send",
@@ -58,20 +68,29 @@ const whenText = (iso: string | null): string =>
     ? new Date(iso).toLocaleString("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
     : "";
 
-const typeLabel = (type: string): string => HUB_EVENT_LABELS[type as HubEventType] ?? type;
+const typeLabel = (type: string): string =>
+  type === HUB_TEST_EVENT_TYPE ? "A test from Send test event" : HUB_EVENT_LABELS[type as HubEventType] ?? type;
 
-export function AgentEventsSection() {
+/** Rows to show without paging in the small per-webhook log. */
+export const WEBHOOK_LOG_ROWS = 5;
+
+export interface AgentEventsTableProps {
+  status?: string;
+  type?: string;
+  /** Only this agent's events (the per-webhook delivery log, or the Agent dropdown). */
+  target?: HubWebhookTargetId | "";
+  /** Newest N rows and no paging: the small log under each webhook. */
+  limit?: number;
+  allowed: boolean;
+  lockReason: string | null;
+  ready: boolean;
+  /** Shown in place of "No events yet." */
+  emptyText?: string;
+}
+
+/** The event table with Show attempts and Resend: used by the Agent events card and, filtered, under each webhook. */
+export function AgentEventsTable({ status = "all", type = "", target = "", limit, allowed, lockReason, ready, emptyText = "No events yet." }: AgentEventsTableProps) {
   const queryClient = useQueryClient();
-  const session = useSession();
-  const sessionFailed = useSessionFailed();
-  const can = useCan("bot_keys");
-  const isAiAdmin = session?.kind === "ai-admin";
-  const allowed = can.allowed && !isAiAdmin;
-  const lockReason: string | null = isAiAdmin ? AGENT_KEYS_AI_ADMIN_REASON : can.reason;
-  const ready = allowed && (session !== null || sessionFailed);
-
-  const [status, setStatus] = useState("all");
-  const [type, setType] = useState("");
   const [older, setOlder] = useState<HubEventView[]>([]);
   const [olderCursor, setOlderCursor] = useState<string | null | undefined>(undefined);
   const [open, setOpen] = useState<string | null>(null);
@@ -79,16 +98,16 @@ export function AgentEventsSection() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const key = ["hubEvents", status, type] as const;
-  const { data, error: loadError } = useQuery({ queryKey: key, queryFn: () => api.hubEvents({ status, type }), enabled: ready });
-  const { data: config } = useQuery({ queryKey: ["hubEventsConfig"], queryFn: () => api.hubEventsConfig(), enabled: ready });
+  const filter = { status, type, ...(target ? { target } : {}), ...(limit ? { limit } : {}) };
+  const key = ["hubEvents", status, type, target, limit ?? 0] as const;
+  const { data, error: loadError } = useQuery({ queryKey: key, queryFn: () => api.hubEvents(filter), enabled: ready });
 
   // A different filter starts a new list.
   useEffect(() => {
     setOlder([]);
     setOlderCursor(undefined);
     setOpen(null);
-  }, [status, type]);
+  }, [status, type, target]);
 
   const events = [...(data?.events ?? []), ...older];
   const nextBefore = olderCursor === undefined ? data?.nextBefore ?? null : olderCursor;
@@ -99,7 +118,7 @@ export function AgentEventsSection() {
     if (!nextBefore) return;
     setError(null);
     try {
-      const page = await api.hubEvents({ status, type, before: nextBefore });
+      const page = await api.hubEvents({ ...filter, before: nextBefore });
       setOlder((prev) => [...prev, ...page.events]);
       setOlderCursor(page.nextBefore);
     } catch (e) {
@@ -135,60 +154,13 @@ export function AgentEventsSection() {
 
   const resendReason = (ev: HubEventView): string | null => {
     if (!allowed) return lockReason;
+    if (ev.type === HUB_TEST_EVENT_TYPE) return TEST_RESEND_REASON;
     if (ev.status === "delivered") return RESEND_DELIVERED_REASON;
     return null;
   };
 
   return (
-    <section className="card mt-5 p-6" aria-label="Agent events">
-      <h2 className="text-lg font-semibold">Agent events</h2>
-      <p className="mt-1 text-sm text-rce-muted">
-        Every signed message the CRM sends the AI agents: an estimate opened or signed, a payment recorded, a new lead, a job completed,
-        material used, a team message. Each row says only what happened and to which record, never a name or contact detail.
-      </p>
-
-      {!allowed && lockReason && (
-        <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="agent-events-locked">
-          {lockReason}
-        </p>
-      )}
-      {allowed && config && !config.urlSet && (
-        <p className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="agent-events-no-url">{NO_URL_BANNER}</p>
-      )}
-      {allowed && config && !config.secretSet && (
-        <p className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900" data-testid="agent-events-no-secret">{NO_SECRET_BANNER}</p>
-      )}
-
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        {CHIPS.map((c) => (
-          <button
-            key={c.id}
-            type="button"
-            className={`btn ${status === c.id ? "btn-primary" : "btn-secondary"}`}
-            aria-pressed={status === c.id}
-            disabled={!allowed}
-            title={!allowed ? lockReason ?? undefined : undefined}
-            onClick={() => setStatus(c.id)}
-          >
-            {c.label}
-          </button>
-        ))}
-        <label className="ml-auto flex items-center gap-2 text-sm">
-          Event type
-          <select
-            className="field"
-            value={type}
-            disabled={!allowed}
-            title={!allowed ? lockReason ?? undefined : undefined}
-            onChange={(e) => setType(e.target.value)}
-            aria-label="Event type"
-          >
-            <option value="">All types</option>
-            {HUB_EVENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </label>
-      </div>
-
+    <>
       {notice && <p className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-900">{notice}</p>}
       {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{error}</p>}
       {loadFailed && allowed && (
@@ -201,15 +173,15 @@ export function AgentEventsSection() {
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-rce-border text-xs uppercase tracking-wide text-rce-muted">
-              <th className="py-2 pr-3">Time</th><th className="pr-3">Event</th><th className="pr-3">What happened</th>
-              <th className="pr-3">Status</th><th className="pr-3">Tries</th><th className="pr-3">Last error</th><th>Actions</th>
+              <th className="py-2 pr-3">Time</th><th className="pr-3">Event id</th><th className="pr-3">Event</th><th className="pr-3">What happened</th>
+              <th className="pr-3">Status</th><th className="pr-3">Last code</th><th className="pr-3">Tries</th><th className="pr-3">Last error</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {events.length === 0 && (
               <tr>
-                <td colSpan={7} className="py-3 text-rce-muted" data-testid="agent-events-empty">
-                  {!allowed ? "" : loadFailed ? "Couldn't load agent events." : !known ? "Loading…" : "No events yet."}
+                <td colSpan={9} className="py-3 text-rce-muted" data-testid="agent-events-empty">
+                  {!allowed ? "" : loadFailed ? "Couldn't load agent events." : !known ? "Loading…" : emptyText}
                 </td>
               </tr>
             )}
@@ -218,6 +190,7 @@ export function AgentEventsSection() {
               return (
                 <tr key={ev.id} className="border-b border-rce-border align-top" data-testid={`agent-event-${ev.id}`}>
                   <td className="py-2 pr-3 whitespace-nowrap">{whenText(ev.createdAt)}</td>
+                  <td className="mono pr-3 text-xs break-all">{ev.id}</td>
                   <td className="pr-3">
                     <div className="mono text-xs">{ev.type}</div>
                     <div className="text-xs text-rce-muted">{typeLabel(ev.type)}</div>
@@ -231,6 +204,7 @@ export function AgentEventsSection() {
                       <div className="text-xs text-rce-muted">Next try {whenText(ev.nextAttemptAt)}</div>
                     )}
                   </td>
+                  <td className="pr-3" data-testid={`last-code-${ev.id}`}>{ev.lastStatusCode ?? ""}</td>
                   <td className="pr-3">{ev.attempts}</td>
                   <td className="pr-3 text-xs">{ev.lastError ?? ""}</td>
                   <td>
@@ -274,9 +248,93 @@ export function AgentEventsSection() {
         </table>
       </div>
 
-      {allowed && nextBefore && (
+      {allowed && !limit && nextBefore && (
         <button type="button" className="btn btn-secondary mt-3" onClick={() => void loadOlder()}>Load older events</button>
       )}
+    </>
+  );
+}
+
+export function AgentEventsSection() {
+  const session = useSession();
+  const sessionFailed = useSessionFailed();
+  const can = useCan("bot_keys");
+  const isAiAdmin = session?.kind === "ai-admin";
+  const allowed = can.allowed && !isAiAdmin;
+  const lockReason: string | null = isAiAdmin ? AGENT_KEYS_AI_ADMIN_REASON : can.reason;
+  const ready = allowed && (session !== null || sessionFailed);
+
+  const [status, setStatus] = useState("all");
+  const [type, setType] = useState("");
+  const [target, setTarget] = useState<HubWebhookTargetId | "">("");
+
+  const { data: config } = useQuery({ queryKey: ["hubEventsConfig"], queryFn: () => api.hubEventsConfig(), enabled: ready });
+
+  return (
+    <section className="card mt-5 p-6" aria-label="Agent events">
+      <h2 className="text-lg font-semibold">Agent events</h2>
+      <p className="mt-1 text-sm text-rce-muted">
+        Every signed message the CRM sends the AI agents: an estimate opened or signed, a payment recorded, a new lead, a job completed,
+        material used, a team message. Each row says only what happened and to which record, never a name or contact detail.
+      </p>
+
+      {!allowed && lockReason && (
+        <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="agent-events-locked">
+          {lockReason}
+        </p>
+      )}
+      {allowed && config && !config.urlSet && (
+        <p className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="agent-events-no-url">{NO_URL_BANNER}</p>
+      )}
+      {allowed && config && !config.secretSet && (
+        <p className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900" data-testid="agent-events-no-secret">{NO_SECRET_BANNER}</p>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {CHIPS.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            className={`btn ${status === c.id ? "btn-primary" : "btn-secondary"}`}
+            aria-pressed={status === c.id}
+            disabled={!allowed}
+            title={!allowed ? lockReason ?? undefined : undefined}
+            onClick={() => setStatus(c.id)}
+          >
+            {c.label}
+          </button>
+        ))}
+        <label className="ml-auto flex items-center gap-2 text-sm">
+          Agent
+          <select
+            className="field"
+            value={target}
+            disabled={!allowed}
+            title={!allowed ? lockReason ?? undefined : undefined}
+            onChange={(e) => setTarget(e.target.value as HubWebhookTargetId | "")}
+            aria-label="Agent"
+          >
+            <option value="">All agents</option>
+            {HUB_WEBHOOK_TARGET_IDS.map((id) => <option key={id} value={id}>{HUB_WEBHOOK_TARGET_LABELS[id]}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          Event type
+          <select
+            className="field"
+            value={type}
+            disabled={!allowed}
+            title={!allowed ? lockReason ?? undefined : undefined}
+            onChange={(e) => setType(e.target.value)}
+            aria-label="Event type"
+          >
+            <option value="">All types</option>
+            {HUB_EVENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <AgentEventsTable status={status} type={type} target={target} allowed={allowed} lockReason={lockReason} ready={ready} />
     </section>
   );
 }

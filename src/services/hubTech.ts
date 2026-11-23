@@ -6,7 +6,8 @@
  *
  * Who a technician can reach, by the ONE visibility rule (visibleThreadWhere): the job threads of visits
  * they are assigned to, their OWN Team thread (one per person, made here the first time they open
- * Messages), and their own Training thread if one exists. Never a customer thread and never a Dev thread
+ * Messages), their own Training thread if one exists, and the office-made GROUP chats they are a member of (C7;
+ * a closed group leaves the list, like a closed job thread). Never a customer thread and never a Dev thread
  * (team answer 11b). A thread that exists but is not theirs is a 403, not a hint that it is there.
  *
  * What they read: the crew's in-app messages that stand as posted. A text or an email to a customer that
@@ -85,7 +86,7 @@ const ASSIGNED_NOW: Prisma.VisitAssignmentWhereInput = {
 const ellipsis = (text: string): string => (text.length > 120 ? `${text.slice(0, 120)}…` : text);
 
 /**
- * The Messages list: Team, Training (when there is one), and one row per job the technician is on - a job
+ * The Messages list: Team, Training (when there is one), the groups this person is in, and one row per job the technician is on - a job
  * nobody has written in yet is a row with no thread, opened by visit id. Makes the Team thread on first use.
  */
 export async function listTechThreads(reader: HubReader, db: PrismaClient = defaultPrisma): Promise<TechThreadsResponse> {
@@ -110,7 +111,11 @@ export async function listTechThreads(reader: HubReader, db: PrismaClient = defa
       ],
     },
   });
-  const threads = [team, ...(training ? [training] : []), ...jobThreads];
+  const groups = await db.hubThread.findMany({
+    where: { AND: [visibleThreadWhere(reader), { kind: "group" }, { status: { not: "closed" } }] },
+    orderBy: { lastMessageAt: "desc" },
+  });
+  const threads = [team, ...(training ? [training] : []), ...groups, ...jobThreads];
   const ids = threads.map((t) => t.id);
 
   const [unread, lastRows] = await Promise.all([
@@ -136,6 +141,7 @@ export async function listTechThreads(reader: HubReader, db: PrismaClient = defa
   });
   rows.push(row(team, "team", "team", "Team"));
   if (training) rows.push(row(training, "training", "training", "Training"));
+  for (const g of groups) rows.push(row(g, "group", `group:${g.id}`, g.title));
 
   const byVisit = new Map(jobThreads.map((t) => [t.visitId, t]));
   const jobRows: TechThreadRow[] = [];
@@ -179,7 +185,7 @@ export async function techThread(reader: HubReader, threadId: string, db: Prisma
 /** One thread with its readable messages. Does not mark anything read (the screen asks for that). */
 export async function techThreadDetail(reader: HubReader, threadId: string, db: PrismaClient = defaultPrisma): Promise<TechThreadDetail> {
   const thread = await techThread(reader, threadId, db);
-  if (thread.kind !== "team" && thread.kind !== "training" && thread.kind !== "job") {
+  if (thread.kind !== "team" && thread.kind !== "training" && thread.kind !== "job" && thread.kind !== "group") {
     throw new HubError("That conversation is not yours to open.", 403);
   }
   const [rowsDesc, readState, staged] = await Promise.all([

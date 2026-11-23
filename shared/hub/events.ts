@@ -77,3 +77,15 @@ export const HUB_EVENT_RETRY_SECONDS = [30, 120, 600, 3600, 21600] as const;
 export const HUB_EVENT_MAX_ATTEMPTS = HUB_EVENT_RETRY_SECONDS.length + 1;
 
 export const RESEND_DELIVERED_REASON = "Already delivered — the agents ignore a repeat of the same event";
+
+/**
+ * The type of the test event "Send test event" delivers (work order C6b). It is NOT one of
+ * HUB_EVENT_TYPES: it is never routed, never in the Agent webhooks table, never emitted by a code site
+ * and never retried. Its payload is exactly event_id, type, occurred_at and target.
+ */
+export const HUB_TEST_EVENT_TYPE = "test.ping";
+export const TEST_RESEND_REASON = "A test event is never sent again — press Send test event for a new one.";
+
+export function isHubWebhookTargetId(value: unknown): value is HubWebhookTargetId {
+  return typeof value === "string" && (HUB_WEBHOOK_TARGET_IDS as readonly string[]).includes(value);
+}

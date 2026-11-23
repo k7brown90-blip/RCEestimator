@@ -15,7 +15,7 @@
 import sharp from "sharp";
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
-import { HubError, findVisibleThread, hubAudit, teamPostRefusal, visibleThreadWhere, type HubReader } from "./hub";
+import { HubError, findVisibleThread, hubAudit, postRefusal, visibleThreadWhere, type HubReader } from "./hub";
 import { publishHubChange } from "./hubBus";
 import type { AttachmentRef } from "../../shared/hub/views";
 
@@ -40,7 +40,7 @@ export async function uploadAttachment(
   const thread = await findVisibleThread(reader, threadId, db);
   if (!thread) throw new HubError("Conversation not found", 404);
   if (thread.kind !== "team" && thread.kind !== "training") throw new HubError(`${ATTACHMENT_JOB_REASON}, not here.`, 409);
-  const refusal = await teamPostRefusal(reader, thread, db);
+  const refusal = await postRefusal(reader, thread, db);
   if (refusal) throw new HubError(refusal, 403);
   if (thread.status === "closed") throw new HubError("This thread is closed. Reopen it to add a photo.", 409);
 

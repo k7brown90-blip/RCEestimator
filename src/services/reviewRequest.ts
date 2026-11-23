@@ -45,6 +45,8 @@ import { sendBrandedEmail, escapeHtml, noteHtml } from "./confirmationEmail";
 import { customerSendsEnabled, logCustomerSendSkipped } from "./automationGate";
 import { logSystemEvent } from "./systemEvents";
 import { resolveRecipients } from "./emailCc";
+import type { DoorActor } from "./doorActor";
+import { reviewBlockCodeOf, reviewBlockReason, type ReviewBlockCode } from "../../shared/reviewRequestBlock";
 
 /** Kyle's Google review link, given 2026-09-02. */
 /*
@@ -57,6 +59,60 @@ import { resolveRecipients } from "./emailCc";
 */
 export { GOOGLE_REVIEW_URL } from "../../shared/reviewRequestUrl";
 import { GOOGLE_REVIEW_URL } from "../../shared/reviewRequestUrl";
+
+/**
+ * Why a review request cannot go out for this job, in ONE place (work order agent-team, TM0): the
+ * email function below, the CRM's review panel and the agent tools all read it, so the refusal
+ * sentence is the same everywhere. The codes are exactly these four. There is NO repeat-customer
+ * window (the 90-day rule was removed 2026-11-21) and NO filter on "Customer happy?" (addendum v2,
+ * Kyle T3): a completed job with an email on file, not yet asked, is askable whatever the customer said.
+ *
+ * Returns `code: null` and `reason: null` when nothing blocks it. `firstName` is the customer's first
+ * name, for the greeting. reviewRequestBlock throws when the visit does not exist (callers look the
+ * visit up first). Order: not complete, already asked, no email, automation off (a manual press skips
+ * only the last).
+ */
+export type { ReviewBlockCode };
+
+export interface ReviewRequestBlock {
+  code: ReviewBlockCode | null;
+  reason: string | null;
+  firstName: string;
+}
+
+export interface ReviewBlockOptions {
+  /** A human pressed the button: the automation gate does not apply. */
+  manual?: boolean;
+  /** The caller typed a recipient, so the account's missing email does not block. */
+  hasToOverride?: boolean;
+}
+
+export interface ReviewBlockVisit {
+  status: string;
+  reviewRequestedAt: Date | null;
+  customer: { name: string; email: string | null };
+}
+
+export function reviewRequestBlockOf(visit: ReviewBlockVisit, opts: ReviewBlockOptions = {}): ReviewRequestBlock {
+  const firstName = visit.customer.name.trim().split(/\s+/)[0] || visit.customer.name;
+  // The ordering and the four sentences live in shared/reviewRequestBlock.ts, which the CRM's panel reads too.
+  const code = reviewBlockCodeOf({
+    status: visit.status, reviewRequestedAt: visit.reviewRequestedAt, email: visit.customer.email, customerName: visit.customer.name,
+    hasToOverride: opts.hasToOverride, manual: opts.manual, automationOn: customerSendsEnabled("reviewRequests"),
+  });
+  return code ? { code, reason: reviewBlockReason(code, visit.customer.name), firstName } : { code: null, reason: null, firstName };
+}
+
+export async function reviewRequestBlock(
+  prisma: PrismaClient, visitId: string, opts: ReviewBlockOptions = {},
+): Promise<ReviewRequestBlock> {
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    select: { status: true, reviewRequestedAt: true, customer: { select: { name: true, email: true } } },
+  });
+  if (!visit) throw new Error("Visit not found.");
+  return reviewRequestBlockOf(visit, opts);
+}
 
 export async function sendReviewRequestEmail(
   prisma: PrismaClient,
@@ -76,22 +132,14 @@ export async function sendReviewRequestEmail(
     },
   });
   if (!visit) return { ok: false, reason: "Visit not found." };
-  if (visit.status !== "completed") {
-    return { ok: false, reason: "This job is not marked complete yet." };
-  }
-  if (visit.reviewRequestedAt) {
-    return { ok: false, reason: "A review request has already been sent for this job." };
-  }
-  if (!visit.customer.email && !opts.toOverride) {
+  const block = reviewRequestBlockOf(visit, { manual: opts.manual, hasToOverride: Boolean(opts.toOverride) });
+  if (block.code === "no_email") {
     logSystemEvent("info", "jobs", `Review request skipped — no email on ${visit.customer.name}'s account`, { visitId });
-    return { ok: false, reason: `No email on file for ${visit.customer.name} — add one to the account first.` };
-  }
-  if (!opts.manual && !customerSendsEnabled("reviewRequests")) {
+  } else if (block.code === "automation_off") {
     logCustomerSendSkipped("reviewRequests", `visit ${visitId} (${visit.customer.name})`);
-    return { ok: false, reason: "Review requests are not sending automatically right now." };
   }
-
-  const firstName = visit.customer.name.trim().split(/\s+/)[0] || visit.customer.name;
+  if (block.reason) return { ok: false, reason: block.reason };
+  const firstName = block.firstName;
   const recipients = resolveRecipients(
     { toOverride: opts.toOverride, onFile: visit.customer.email, cc: opts.cc },
     `No valid email address for ${visit.customer.name} — add one to the account first, or type one when sending.`,
@@ -129,4 +177,38 @@ export async function sendReviewRequestEmail(
   await prisma.visit.update({ where: { id: visitId }, data: { reviewRequestedAt: new Date() } });
   logSystemEvent("info", "jobs", `Review request emailed to ${to} (${visit.customer.name})`, { visitId });
   return { ok: true, to, cc };
+}
+
+/**
+ * "Review confirmed" on an account (Kyle: "I would like the google review to be a manual only marked ...
+ * Once once is done we can mark that and that button changes to review confirmed."). Google gives this
+ * app no way to detect a review landing, so this is a recorded fact a human enters after checking
+ * Google themselves - not a toggle the system derives from anything. `confirmedBy` is required and
+ * typed, the same house pattern as CustomerNote.takenBy: no per-user identity behind the shared PIN,
+ * so the server will not invent an author. REVERSIBLE (standing rule): clearReviewConfirmed puts both
+ * columns back to null. Both lifted out of the account routes (work order agent-team, TM0) so a tool
+ * and the button write the same two columns.
+ */
+export async function setReviewConfirmed(
+  db: PrismaClient, customerId: string, confirmedBy: string, _actor: DoorActor,
+) {
+  const existing = await db.customer.findUnique({ where: { id: customerId }, select: { id: true } });
+  if (!existing) return { ok: false as const, status: 404 as const, error: "Account not found" };
+  const updated = await db.customer.update({
+    where: { id: customerId },
+    data: { reviewConfirmedAt: new Date(), reviewConfirmedBy: confirmedBy },
+    select: { reviewConfirmedAt: true, reviewConfirmedBy: true },
+  });
+  return { ok: true as const, value: updated };
+}
+
+export async function clearReviewConfirmed(db: PrismaClient, customerId: string, _actor: DoorActor) {
+  const existing = await db.customer.findUnique({ where: { id: customerId }, select: { id: true } });
+  if (!existing) return { ok: false as const, status: 404 as const, error: "Account not found" };
+  const updated = await db.customer.update({
+    where: { id: customerId },
+    data: { reviewConfirmedAt: null, reviewConfirmedBy: null },
+    select: { reviewConfirmedAt: true, reviewConfirmedBy: true },
+  });
+  return { ok: true as const, value: updated };
 }

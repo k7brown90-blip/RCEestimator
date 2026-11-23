@@ -2,8 +2,9 @@
  * The waiting-approval reminder (work order agent-team, U8, team answer 8). A draft that has been waiting
  * for approval gets ONE reminder 15 minutes after it was drafted, then at most one an hour for as long as it
  * waits - never every 15 minutes. Reminders go out only inside Mon-Fri 8:00 AM-8:00 PM America/Chicago, the
- * hours from the owner setting `hubNotify` (the weekday rule is fixed, in the ONE helper
- * isSendableNow, shared/sms/quietHours.ts). A draft whose 15 minutes ended outside the window gets its first
+ * hours from the owner setting `hubNotify` (the weekday rule is fixed, in the helper isReminderSendableNow,
+ * shared/sms/quietHours.ts - customer texts use the separate every-day rule, isSendableNow, since Kyle's
+ * 2026-11-22 ruling, and the two cannot drift into each other). A draft whose 15 minutes ended outside the window gets its first
  * reminder when the window next opens, then hourly.
  *
  * A server cron (server.ts, every 5 minutes) runs `runRenotify`. It picks the drafts that are due, CLAIMS them
@@ -16,7 +17,7 @@
  */
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
-import { isSendableNow } from "../../shared/sms/quietHours";
+import { isReminderSendableNow } from "../../shared/sms/quietHours";
 import { CALENDAR_DAY_TIME_ZONE } from "../../shared/calendarDay";
 import { getNotifyWindow } from "./ownerSettings";
 import { notifyApprovers } from "./hubNotifier";
@@ -44,7 +45,7 @@ const dueWhere = (now: Date): Prisma.HubMessageWhereInput => ({
 export async function runRenotify(now: Date = new Date(), db: PrismaClient = defaultPrisma): Promise<RenotifyResult> {
   if (!pushConfig().configured) return { reminded: 0, skipped: "push_not_set_up" };
   const window = await getNotifyWindow(db);
-  if (!isSendableNow(now, window, CALENDAR_DAY_TIME_ZONE)) return { reminded: 0, skipped: "outside_hours" };
+  if (!isReminderSendableNow(now, window, CALENDAR_DAY_TIME_ZONE)) return { reminded: 0, skipped: "outside_hours" };
 
   const due = await db.hubMessage.findMany({ where: dueWhere(now), select: { id: true, threadId: true }, orderBy: { createdAt: "asc" } });
   if (due.length === 0) return { reminded: 0, skipped: "none_due" };

@@ -17,7 +17,7 @@ import type { HubEventView } from "../lib/types";
 import { AI_ADMIN_SESSION, OWNER_NO_GRANT, ownerWith, PIN_SESSION } from "../test/sessions";
 import { AGENT_KEYS_AI_ADMIN_REASON } from "../../../shared/agentScopes";
 import { CRM_POWERS } from "../../../shared/crmPowers";
-import { HUB_EVENT_TYPES, RESEND_DELIVERED_REASON } from "../../../shared/hub/events";
+import { HUB_EVENT_TYPES, RESEND_DELIVERED_REASON, TEST_RESEND_REASON } from "../../../shared/hub/events";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -73,7 +73,7 @@ describe("AgentEventsSection for Kyle", () => {
     expect((await screen.findByTestId("agent-events-no-url")).textContent).toBe(NO_URL_BANNER);
     expect(NO_URL_BANNER).toBe("No receiving address is set. Add the agents' address in the Agent webhooks card below. Events are being kept — press Resend once it is set.");
     expect(screen.getByTestId("agent-events-no-secret").textContent).toBe(NO_SECRET_BANNER);
-    expect(NO_SECRET_BANNER).toBe("HUB_WEBHOOK_SECRET is not set — nothing is sent until it is.");
+    expect(NO_SECRET_BANNER).toBe("Admin has no signing secret — nothing is sent until it does. Generate one in the Agent webhooks card below, or set HUB_WEBHOOK_SECRET in Railway.");
   });
 
   it("shows neither banner when both are set", async () => {
@@ -170,5 +170,28 @@ describe("AgentEventsSection greys out for a session that may not use it", () =>
     expect(await screen.findByText(/Estimate 2026-1042/)).toBeTruthy();
     expect(screen.queryByTestId("agent-events-locked")).toBeNull();
     expect(btn("Dead").disabled).toBe(false);
+  });
+});
+
+describe("AgentEventsSection per-agent filter and test events (work order C6b)", () => {
+  it("has an Agent dropdown that asks the server for one agent's events", async () => {
+    const { list } = show([ev()]);
+    await screen.findByText(/Estimate 2026-1042/);
+    const agent = screen.getByLabelText("Agent") as HTMLSelectElement;
+    expect([...agent.options].map((o) => o.value)).toEqual(["", "admin", "inventory"]);
+    fireEvent.change(agent, { target: { value: "inventory" } });
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith({ status: "all", type: "", target: "inventory" }));
+    fireEvent.change(agent, { target: { value: "" } });
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith({ status: "all", type: "" }));
+  });
+
+  it("shows the event id and the last HTTP code, and greys Resend on a test event with the reason", async () => {
+    show([ev({ id: "t-7", type: "test.ping", status: "dead", summary: "Test event (ids only)", lastStatusCode: 500, attempts: 1 })]);
+    await screen.findByText("Test event (ids only)");
+    const row = within(screen.getByTestId("agent-event-t-7"));
+    expect(row.getByText("t-7")).toBeTruthy();
+    expect(screen.getByTestId("last-code-t-7").textContent).toBe("500");
+    expect((row.getByRole("button", { name: "Resend test.ping" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("resend-reason-t-7").textContent).toBe(TEST_RESEND_REASON);
   });
 });

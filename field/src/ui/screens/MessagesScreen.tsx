@@ -5,6 +5,7 @@
  *   Home            "💬 Messages (3 new)" under the day's list, beside "My accounts", "Purchases", "My truck".
  *   Job site        "💬 Job messages (n)": opens THAT job's crew thread straight away.
  *   Messages        the list: your own "Team" thread (you and the AI team), your "Training" thread if you have one,
+ *                   the group chats the office put you in (C7, tagged "Group"; words only, no photos),
  *                   and one row per job you are on. "Turn on notifications on this device" is at the top of it.
  *   A thread        the messages, a box and "Send". "📷 Add photo" puts a picture on the message: on a job it is
  *                   filed on the JOB's own photos; on Team it is held on the message. Your own messages carry
@@ -61,6 +62,10 @@ export const PHOTO_BUTTON = '📷 Add photo'
 export const EDIT_NEEDS_WORDS = "Type some words to save. A message can't be edited down to nothing. To take the photo back, use Delete."
 /** Why "📷 Add photo" is greyed on a Team or Training thread the office closed (a job's photo is the job's and is not held here). */
 export const PHOTO_CLOSED_REASON = 'The office closed this thread. Send a message to open it again, then add a photo.'
+/** Why "📷 Add photo" is greyed in a group chat (C7): a group holds words only. */
+export const PHOTO_GROUP_REASON = 'Photos go on a job, Team or Training thread, not a group chat.'
+/** Why Send is greyed in a closed group: a message never reopens a group, only the office's Reopen does. */
+export const GROUP_CLOSED_NOTE = 'The office closed this group. You can read it; sending is off until the office reopens it.'
 
 const whenText = (iso: string): string =>
   new Date(iso).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
@@ -83,6 +88,7 @@ export function ThreadRows({ threads, onOpen }: { threads: TechThreadRow[]; onOp
               <span className="flex items-center justify-between gap-2">
                 <span className={`truncate text-sm ${t.unread > 0 ? 'font-bold' : 'font-medium'}`}>
                   {t.kind === 'team' ? 'Team — you and the AI team' : t.kind === 'training' ? 'Training' : t.title}
+                  {t.kind === 'group' && <span className="ml-2 rounded bg-slate-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-slate-300">Group</span>}
                 </span>
                 {t.unread > 0 && <span className="shrink-0 text-[11px] font-semibold text-sky-300">{t.unread} new</span>}
               </span>
@@ -556,9 +562,11 @@ export function MessageThreadScreen({
   }
 
   const heading = detail ? (detail.thread.kind === 'team' ? 'Team' : detail.thread.kind === 'training' ? 'Training' : detail.thread.title) : title
-  const closedNote = detail?.thread.status === 'closed' ? 'The office closed this thread; sending a message opens it again.' : null
+  const groupClosed = kind === 'group' && detail?.thread.status === 'closed'
+  const closedNote = groupClosed ? GROUP_CLOSED_NOTE : detail?.thread.status === 'closed' ? 'The office closed this thread; sending a message opens it again.' : null
   // A Team or Training photo is uploaded before the message, and the server will not take one into a closed thread.
   const photoClosed = photoClosedReason(detail?.thread.status, kind) !== null
+  const noPhotos = kind === 'group'
 
   return (
     <div className="mx-auto max-w-xl space-y-4 p-6 pb-16">
@@ -592,6 +600,7 @@ export function MessageThreadScreen({
           rows={3}
           placeholder="Write a message"
           aria-label="Message"
+          disabled={groupClosed}
           value={text}
           onChange={(e) => { composeId.current = null; setText(e.target.value) }}
         />
@@ -605,12 +614,14 @@ export function MessageThreadScreen({
             ))}
           </ul>
         )}
-        <PhotoPicker onPick={(f) => void addPhoto(f)} disabled={busy || !detail || staged.length >= 6 || photoClosed} cameraLabel={PHOTO_BUTTON} />
-        {photoClosed && <p className="text-xs text-slate-400" data-testid="photo-closed-reason">{PHOTO_CLOSED_REASON}</p>}
+        <PhotoPicker onPick={(f) => void addPhoto(f)} disabled={busy || !detail || staged.length >= 6 || photoClosed || noPhotos} cameraLabel={PHOTO_BUTTON} />
+        {photoClosed && !noPhotos && <p className="text-xs text-slate-400" data-testid="photo-closed-reason">{PHOTO_CLOSED_REASON}</p>}
+        {noPhotos && <p className="text-xs text-slate-400" data-testid="photo-group-reason">{PHOTO_GROUP_REASON}</p>}
         <button
           type="button"
           onClick={() => void send()}
-          disabled={busy || !detail || (!text.trim() && staged.length === 0)}
+          disabled={busy || !detail || groupClosed || (!text.trim() && staged.length === 0)}
+          title={groupClosed ? GROUP_CLOSED_NOTE : undefined}
           className="w-full rounded-lg bg-sky-600 p-3 text-sm font-medium text-white disabled:opacity-40"
         >
           {busy ? 'Sending…' : 'Send'}

@@ -2755,7 +2755,27 @@ export type HubPushKey = {
 };
 
 /** Settings -> "Agent webhooks" (TC4), the owner setting `agentWebhooks`. `routes` holds only the types Kyle re-pointed. */
+export type AgentWebhookTargetView = {
+  id: "admin" | "inventory";
+  url: string | null;
+  enabled: boolean;
+  /** Custom headers: the name and "••••" + last four. The value is never sent back (work order C6b). */
+  headers?: Array<{ name: string; masked: string }>;
+  /** This agent's own signing secret, masked; null when it has none. */
+  signingSecret?: { masked: string; createdAt: string } | null;
+  /** Which secret signs this agent's events: its own, Admin's HUB_WEBHOOK_SECRET fallback, or none. */
+  secretSource?: "own" | "env" | "none";
+};
 export type AgentWebhooksValue = {
-  targets: Array<{ id: "admin" | "inventory"; url: string | null; enabled: boolean }>;
+  targets: AgentWebhookTargetView[];
   routes: Record<string, "admin" | "inventory">;
 };
+/** GET and PUT /owner-settings/agentWebhooks: the masked value and whether secrets can be stored (AGENT_KEY_PEPPER set). */
+export type AgentWebhooksResponse = { key: "agentWebhooks"; value: AgentWebhooksValue; status?: { pepperSet: boolean } };
+/** What the screen sends: a header with a value is new or re-entered, one without a value is kept as stored; no `headers` keeps them all. */
+export type AgentWebhooksSave = {
+  targets: Array<{ id: "admin" | "inventory"; url: string | null; enabled: boolean; headers?: Array<{ name: string; value?: string }> }>;
+  routes: Record<string, "admin" | "inventory">;
+};
+/** POST /hub/webhooks/:target/test: the logged test.ping and how the receiver answered. */
+export type WebhookTestResult = { event: HubEventView; statusCode: number | null; ms: number | null; error: string | null };

@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
-  EDIT_NEEDS_WORDS, EditReason, MessageBubble, MessageThreadScreen, MessagesScreen, PHOTO_BUTTON, PHOTO_CLOSED_REASON, ThreadRows, UNSENT_TEXT,
+  EDIT_NEEDS_WORDS, EditReason, GROUP_CLOSED_NOTE, MessageBubble, MessageThreadScreen, MessagesScreen, PHOTO_BUTTON, PHOTO_CLOSED_REASON, PHOTO_GROUP_REASON, ThreadRows, UNSENT_TEXT,
   UnsentRow, heldPhotosToRestore, jobMessagesLabel, messagesButtonLabel, needsApprovalLabel, photoClosedReason, takeBackHeldPhotos,
 } from './MessagesScreen'
 import type { TechMessage, TechThreadRow } from '../../../../shared/hub/views'
@@ -55,6 +55,24 @@ describe('the list', () => {
     expect(html).toContain('RCE Admin (AI): Bring the 200 amp base')
     expect(html).toContain('Jane Homeowner — 12 Main St')
     expect(html).toContain('Nothing said yet.')
+  })
+
+  it("shows a group chat the office put you in by its name with a 'Group' tag, between Team and the jobs (C7)", () => {
+    const html = renderToStaticMarkup(
+      <ThreadRows
+        threads={[
+          row(),
+          row({ key: 'group:g1', kind: 'group', threadId: 'g1', title: 'Install crew', unread: 2, lastLine: { authorLabel: 'Sam', text: 'Truck is loaded', at: '2026-11-22T15:00:00.000Z' } }),
+          row({ key: 'job:v1', kind: 'job', threadId: null, title: 'Jane Homeowner — 12 Main St', visitId: 'v1' }),
+        ]}
+      />,
+    )
+    expect(html).toContain('Install crew')
+    expect(html).toContain('>Group<')
+    expect(html).toContain('2 new')
+    expect(html).toContain('Sam: Truck is loaded')
+    expect(html.indexOf('Team — you and the AI team')).toBeLessThan(html.indexOf('Install crew'))
+    expect(html.indexOf('Install crew')).toBeLessThan(html.indexOf('Jane Homeowner'))
   })
 
   it('shows a Training row only when it is given one', () => {
@@ -148,6 +166,17 @@ describe('greyed with the real reason, never silently', () => {
     expect(renderToStaticMarkup(<EditReason draft="" />)).toContain('Type some words to save.')
     expect(renderToStaticMarkup(<EditReason draft="   " />)).toContain('use Delete')
     expect(renderToStaticMarkup(<EditReason draft="Panel is open" />)).toBe('')
+  })
+})
+
+describe('a group chat is words only and a message never reopens it (C7)', () => {
+  it('has its reasons in words the screen shows', () => {
+    expect(PHOTO_GROUP_REASON).toBe('Photos go on a job, Team or Training thread, not a group chat.')
+    expect(GROUP_CLOSED_NOTE).toBe('The office closed this group. You can read it; sending is off until the office reopens it.')
+  })
+  it('a group shows its own photo reason, never the Team one (the screen picks PHOTO_GROUP_REASON for kind group)', () => {
+    expect(photoClosedReason('closed', 'group')).toBe(PHOTO_CLOSED_REASON)
+    expect(photoClosedReason('open', 'group')).toBeNull()
   })
 })
 

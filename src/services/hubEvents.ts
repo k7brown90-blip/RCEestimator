@@ -13,11 +13,25 @@
  * scrub), with every live technician token and every secret-named environment value as exact
  * matches, as a last net.
  *
- * SIGNING (team answer 2). X-RCE-Signature is `sha256=` + hex HMAC-SHA256(HUB_WEBHOOK_SECRET,
+ * SIGNING (team answer 2; per-agent secrets, work order C6b). X-RCE-Signature is `sha256=` + hex HMAC-SHA256(secret,
  * `${X-RCE-Timestamp}.${raw body}`). The timestamp (Unix seconds) is taken FRESH at each attempt and
  * the signature is recomputed, while the body is byte-identical and occurred_at inside it stays fixed,
  * so the receiver's 5-minute window accepts a retry an hour later and a Resend. event_id (the row
  * id, also sent as X-RCE-Event-Id) never changes. With no secret set nothing is ever sent unsigned.
+ * The secret is the target's OWN signing secret (Settings -> Agent webhooks, stored encrypted). Admin
+ * with none falls back to HUB_WEBHOOK_SECRET, exactly as its address falls back to
+ * HUB_AGENT_WEBHOOK_URL; Inventory with none has no secret, so its events are kept, not sent. ONE
+ * function decides: signingSecretFor.
+ *
+ * CUSTOM HEADERS (work order C6b). A target may carry up to five custom headers (an Authorization
+ * bearer, for example), stored encrypted. They are decrypted at EVERY attempt (so a retry and a Resend
+ * carry them) and sent alongside X-RCE-Signature, X-RCE-Timestamp and X-RCE-Event-Id, which they can
+ * never override. A value is never logged, never in a payload and never in an attempt error.
+ *
+ * TEST EVENTS (C6b). "Send test event" delivers ONE signed `test.ping` (event_id, type, occurred_at,
+ * target; nothing else) to one target through the same deliverEvent, recorded as a HubEvent row so it
+ * shows in the log. It is not a routable type, is never retried (the worker skips it) and is never
+ * resent.
  *
  * RETRIES (team answer 1). Any 2xx is delivered. A 408, a 429, a 5xx, a timeout or a connection
  * error is retried at +30 seconds, 2 minutes, 10 minutes, 1 hour, 6 hours, and dead after the 6th
@@ -35,11 +49,13 @@ import { toChicagoIso } from "../../shared/calendarDay";
 import { normalizeLeadPlatform } from "../../shared/leadPlatform";
 import { closedLeadSource } from "../../shared/leadSources";
 import {
-  DEFAULT_EVENT_ROUTES, HUB_EVENT_MAX_ATTEMPTS, HUB_EVENT_RETRY_SECONDS, RESEND_DELIVERED_REASON,
-  type HubEventType, type HubWebhookTargetId,
+  DEFAULT_EVENT_ROUTES, HUB_EVENT_MAX_ATTEMPTS, HUB_EVENT_RETRY_SECONDS, HUB_TEST_EVENT_TYPE, HUB_WEBHOOK_TARGET_LABELS,
+  RESEND_DELIVERED_REASON, TEST_RESEND_REASON, isHubWebhookTargetId, type HubEventType, type HubWebhookTargetId,
 } from "../../shared/hub/events";
+import { isReservedWebhookHeader } from "../../shared/hub/webhookHeaders";
 import { loadSecretValues, scrub } from "../agentApi/respond";
 import { getAgentWebhooks, isAllowedWebhookUrl, type AgentWebhooks } from "./ownerSettings";
+import { SettingSecretsError, decryptSecret } from "./settingSecrets";
 import { announceDecision } from "./hubBus";
 import { logSystemEvent } from "./systemEvents";
 
@@ -257,11 +273,62 @@ export async function webhookConfigState(db: PrismaClient = defaultPrisma): Prom
   const envAllowed = envUrl !== null && isAllowedWebhookUrl(envUrl);
   return {
     urlSet: Boolean(admin.url),
-    secretSet: Boolean(process.env.HUB_WEBHOOK_SECRET),
+    // Admin can sign: it has its own signing secret, or HUB_WEBHOOK_SECRET is set (the one signing rule).
+    secretSet: Boolean(settings.targets.find((t) => t.id === "admin")?.signingSecret) || Boolean(process.env.HUB_WEBHOOK_SECRET),
     // The variable itself: set and allowed (Admin falls back to it when no address is saved), or set and refused.
     adminEnvUrlSet: envAllowed,
     adminEnvUrlRefused: envUrl !== null && !envAllowed,
   };
+}
+
+// ── what one delivery to a target is made of: its secret and its custom headers ─────────────────────
+
+/** Why a target has nothing to sign with, as the one line the Agent events screen shows. */
+function noSecretReason(id: HubWebhookTargetId): string {
+  return id === "admin" ? "HUB_WEBHOOK_SECRET not set" : `No signing secret is set for ${HUB_WEBHOOK_TARGET_LABELS[id]}`;
+}
+
+export type DeliveryParts =
+  | { ok: true; secret: string; headers: Headers }
+  | { ok: false; error: string };
+
+/**
+ * The ONE signing rule: a target with its own secret signs with it; Admin with none signs with
+ * HUB_WEBHOOK_SECRET; anything else has no secret (null). Throws SettingSecretsError when its own
+ * secret cannot be decrypted (AGENT_KEY_PEPPER unset or changed).
+ */
+export function signingSecretFor(id: HubWebhookTargetId, settings: AgentWebhooks): string | null {
+  const own = settings.targets.find((t) => t.id === id)?.signingSecret;
+  if (own) return decryptSecret(own.enc);
+  if (id === "admin") return process.env.HUB_WEBHOOK_SECRET || null;
+  return null;
+}
+
+/** The target's custom headers, decrypted. A reserved name is skipped (it cannot be saved, and a hand-edited row must not override a signature header). */
+function customHeadersFor(id: HubWebhookTargetId, settings: AgentWebhooks): Headers {
+  const headers = new Headers();
+  for (const h of settings.targets.find((t) => t.id === id)?.headers ?? []) {
+    if (isReservedWebhookHeader(h.name)) continue;
+    headers.set(h.name, decryptSecret(h.enc));
+  }
+  return headers;
+}
+
+/** Everything one attempt to this target needs, or the one-line reason it cannot go (never a secret or a header value). */
+export function deliveryPartsFor(id: HubWebhookTargetId, settings: AgentWebhooks): DeliveryParts {
+  let secret: string | null;
+  try {
+    secret = signingSecretFor(id, settings);
+  } catch (err) {
+    return { ok: false, error: err instanceof SettingSecretsError ? "The signing secret could not be read - is AGENT_KEY_PEPPER set?" : "The signing secret could not be read" };
+  }
+  if (!secret) return { ok: false, error: noSecretReason(id) };
+  try {
+    return { ok: true, secret, headers: customHeadersFor(id, settings) };
+  } catch {
+    // Fixed words only: the HTTP client's own message can quote the value it refused.
+    return { ok: false, error: "A custom header could not be read - is AGENT_KEY_PEPPER set?" };
+  }
 }
 
 // ── emit ─────────────────────────────────────────────────────────────────────────────────────────
@@ -318,6 +385,37 @@ export async function emitHubEventSafe(input: EmitInput, db: PrismaClient = defa
   }
 }
 
+/**
+ * The wake-up for a person's words in a GROUP chat (work order C7). A group's agent members are keys, and the only way an
+ * agent hears of a new message is its webhook, so a post in a group sends the ordinary `message.team` event - but ONLY when
+ * the agent that event is routed to (Admin unless Kyle re-pointed it) is a switched-on member of THIS group. A group without
+ * that agent in it sends nothing (so the event cannot show the group exists to an agent outside it), and a member removed
+ * from the group sends nothing. Never throws, like emitHubEventSafe.
+ */
+export async function emitGroupMessageEventSafe(
+  input: { messageId: string; threadId: string; context?: { kind: string; id: string } | null }, db: PrismaClient = defaultPrisma,
+): Promise<string | null> {
+  try {
+    const settings = await getAgentWebhooks(db);
+    const target = targetIdFor("message.team", settings);
+    const now = new Date();
+    const members = await db.hubThreadMember.findMany({ where: { threadId: input.threadId, agentKeyId: { not: null } }, select: { agentKeyId: true } });
+    const keyIds = members.flatMap((m) => (m.agentKeyId ? [m.agentKeyId] : []));
+    if (keyIds.length === 0) return null;
+    const routed = await db.agentKey.count({
+      where: {
+        id: { in: keyIds }, agentRole: target, revokedAt: null,
+        AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }, { OR: [{ retiresAt: null }, { retiresAt: { gt: now } }] }],
+      },
+    });
+    if (routed === 0) return null;
+    return await emitHubEventSafe({ type: "message.team", messageId: input.messageId, context: input.context ?? null }, db);
+  } catch (err) {
+    logSystemEvent("error", "agent_events", `Could not record message.team for a group: ${errorLabel(err)}`);
+    return null;
+  }
+}
+
 // ── delivery ─────────────────────────────────────────────────────────────────────────────────────
 
 /** The signature a receiver recomputes: sha256= + hex HMAC-SHA256(secret, `${timestamp}.${rawBody}`). */
@@ -336,8 +434,14 @@ type Outcome =
   | { kind: "retry"; status: number | null; error: string }
   | { kind: "refused"; status: number };
 
-async function post(url: string, event: HubEvent, secret: string): Promise<Outcome> {
+async function post(url: string, event: HubEvent, secret: string, custom: Headers): Promise<Outcome> {
   const timestamp = String(Math.floor(Date.now() / 1000));
+  // The custom headers first, then the CRM's own with .set: a custom header can never override these.
+  const headers = new Headers(custom);
+  headers.set("Content-Type", "application/json");
+  headers.set("X-RCE-Event-Id", event.id);
+  headers.set("X-RCE-Timestamp", timestamp);
+  headers.set("X-RCE-Signature", signEvent(secret, timestamp, event.payloadJson));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deliveryTimeoutMs);
   try {
@@ -345,12 +449,7 @@ async function post(url: string, event: HubEvent, secret: string): Promise<Outco
       method: "POST",
       redirect: "manual",
       signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        "X-RCE-Event-Id": event.id,
-        "X-RCE-Timestamp": timestamp,
-        "X-RCE-Signature": signEvent(secret, timestamp, event.payloadJson),
-      },
+      headers,
       body: event.payloadJson,
     });
     await res.body?.cancel().catch(() => undefined);
@@ -391,17 +490,10 @@ export async function deliverEvent(id: string, db: PrismaClient = defaultPrisma,
   const event = await claim(id, db, now);
   if (!event) return null;
 
-  const secret = process.env.HUB_WEBHOOK_SECRET;
-  if (!secret) {
-    await db.hubEvent.update({
-      where: { id },
-      data: { lastError: "HUB_WEBHOOK_SECRET not set", nextAttemptAt: new Date(now.getTime() + SECRET_UNSET_RETRY_MS) },
-    });
-    return event.status;
-  }
-
+  const isTest = event.type === HUB_TEST_EVENT_TYPE;
   const settings = await getAgentWebhooks(db);
-  const target = event.target ? resolveTarget(event.target as HubWebhookTargetId, settings) : null;
+  const targetId = isHubWebhookTargetId(event.target) ? event.target : null;
+  const target = targetId ? resolveTarget(targetId, settings) : null;
   if (!target || !target.url || !target.enabled) {
     await db.hubEvent.update({
       where: { id },
@@ -413,11 +505,27 @@ export async function deliverEvent(id: string, db: PrismaClient = defaultPrisma,
     return "no_target";
   }
 
+  // This target's signing secret and custom headers (one rule: signingSecretFor). With no secret, or
+  // one that cannot be read, nothing is sent and nothing is counted: the event waits 30 seconds and
+  // looks again. A test is one try, so it ends here instead.
+  const parts = deliveryPartsFor(target.id, settings);
+  if (!parts.ok) {
+    if (isTest) {
+      await db.hubEvent.update({ where: { id }, data: { status: "dead", nextAttemptAt: null, lastError: `${parts.error} - the test was not sent` } });
+      return "dead";
+    }
+    await db.hubEvent.update({
+      where: { id },
+      data: { lastError: parts.error, nextAttemptAt: new Date(now.getTime() + SECRET_UNSET_RETRY_MS) },
+    });
+    return event.status;
+  }
+
   const started = Date.now();
   inFlight.add(id);
   let outcome: Outcome;
   try {
-    outcome = await post(target.url, event, secret);
+    outcome = await post(target.url, event, parts.secret, parts.headers);
   } finally {
     inFlight.delete(id);
   }
@@ -439,6 +547,9 @@ export async function deliverEvent(id: string, db: PrismaClient = defaultPrisma,
       status: "dead", attempts, nextAttemptAt: null, lastStatusCode: outcome.status,
       lastError: `Receiver refused (HTTP ${outcome.status}) — not retried`,
     };
+  } else if (isTest) {
+    // A test is one try: a timeout or a 5xx is the answer, not a reason to retry.
+    data = { status: "dead", attempts, nextAttemptAt: null, lastStatusCode: outcome.status, lastError: `${outcome.error} - a test is not retried` };
   } else if (attempts >= HUB_EVENT_MAX_ATTEMPTS) {
     data = { status: "dead", attempts, nextAttemptAt: null, lastStatusCode: outcome.status, lastError: `${outcome.error} — gave up after ${attempts} tries` };
   } else {
@@ -464,7 +575,7 @@ export async function deliverEvent(id: string, db: PrismaClient = defaultPrisma,
  */
 export async function deliverDueEvents(db: PrismaClient = defaultPrisma, now: Date = new Date(), limit = 25): Promise<number> {
   const due = await db.hubEvent.findMany({
-    where: { status: { in: ["pending", "retrying"] }, nextAttemptAt: { lte: now } },
+    where: { status: { in: ["pending", "retrying"] }, nextAttemptAt: { lte: now }, type: { not: HUB_TEST_EVENT_TYPE } },
     orderBy: { nextAttemptAt: "asc" },
     take: limit,
     select: { id: true },
@@ -489,6 +600,7 @@ export async function deliverDueEvents(db: PrismaClient = defaultPrisma, now: Da
 export async function resendEvent(id: string, db: PrismaClient = defaultPrisma): Promise<HubEvent> {
   const row = await db.hubEvent.findUnique({ where: { id } });
   if (!row) throw new HubEventError("Event not found", 404);
+  if (row.type === HUB_TEST_EVENT_TYPE) throw new HubEventError(TEST_RESEND_REASON, 409);
   if (row.status === "delivered") throw new HubEventError(RESEND_DELIVERED_REASON, 409);
   if (inFlight.has(id)) throw new HubEventError("This event is being sent right now - wait a moment and look again.", 409);
   const settings = await getAgentWebhooks(db);
@@ -501,6 +613,45 @@ export async function resendEvent(id: string, db: PrismaClient = defaultPrisma):
   });
   await deliverEvent(id, db);
   return db.hubEvent.findUniqueOrThrow({ where: { id } });
+}
+
+/** What "Send test event" answers: the logged row and how the receiver answered. */
+export interface TestEventResult {
+  event: HubEventView;
+  statusCode: number | null;
+  ms: number | null;
+  error: string | null;
+}
+
+/**
+ * Deliver ONE signed test.ping to ONE target now, with its custom headers, through the same
+ * deliverEvent as a real event. The payload is exactly event_id, type, occurred_at and target (no
+ * summary, no ids of records, nothing personal). Recorded as a HubEvent row for that target so it shows
+ * in the log; it is not retried and cannot be resent. Refused 409, with the reason in words, when the
+ * target has no address, is turned Off or has nothing to sign with.
+ */
+export async function sendTestEvent(targetId: HubWebhookTargetId, db: PrismaClient = defaultPrisma): Promise<TestEventResult> {
+  const settings = await getAgentWebhooks(db);
+  const target = resolveTarget(targetId, settings);
+  if (!target.enabled) throw new HubEventError(`${HUB_WEBHOOK_TARGET_LABELS[targetId]} is turned Off - turn it on first.`, 409);
+  if (!target.url) throw new HubEventError(`${HUB_WEBHOOK_TARGET_LABELS[targetId]} has no receiving address - set one first.`, 409);
+  const parts = deliveryPartsFor(targetId, settings);
+  if (!parts.ok) throw new HubEventError(parts.error, 409);
+
+  const id = randomUUID();
+  const payload = { event_id: id, type: HUB_TEST_EVENT_TYPE, occurred_at: toChicagoIso(new Date()), target: targetId };
+  await db.hubEvent.create({
+    data: { id, eventKey: randomUUID(), type: HUB_TEST_EVENT_TYPE, payloadJson: JSON.stringify(payload), target: targetId, status: "pending", nextAttemptAt: null },
+  });
+  await deliverEvent(id, db);
+  const row = await db.hubEvent.findUniqueOrThrow({ where: { id }, include: { attemptLog: { orderBy: { at: "asc" } } } });
+  const last = row.attemptLog[row.attemptLog.length - 1];
+  return {
+    event: viewEvent(row),
+    statusCode: last?.statusCode ?? null,
+    ms: last?.ms ?? null,
+    error: row.status === "delivered" ? null : (row.lastError ?? last?.error ?? null),
+  };
 }
 
 // ── reading the log (the Agent events screen) ───────────────────────────────────────────────────
@@ -534,7 +685,7 @@ export function viewEvent(row: HubEvent & { attemptLog?: HubEventAttempt[] }): H
     id: row.id,
     type: row.type,
     createdAt: toChicagoIso(row.createdAt),
-    summary: summaryOf(row.payloadJson),
+    summary: summaryOf(row.payloadJson) || (row.type === HUB_TEST_EVENT_TYPE ? "Test event (ids only)" : ""),
     status: row.status,
     target: row.target,
     attempts: row.attempts,
@@ -550,7 +701,7 @@ export const EVENT_PAGE_SIZE = 50;
 
 /** Newest first. `status` filters (retrying also covers pending); `before` is the createdAt of the last row seen. */
 export async function listEvents(
-  filter: { status?: string; type?: string; before?: Date; limit?: number },
+  filter: { status?: string; type?: string; target?: HubWebhookTargetId; before?: Date; limit?: number },
   db: PrismaClient = defaultPrisma,
 ): Promise<{ events: HubEventView[]; nextBefore: string | null }> {
   const take = Math.min(Math.max(filter.limit ?? EVENT_PAGE_SIZE, 1), 200);
@@ -558,6 +709,7 @@ export async function listEvents(
   if (filter.status === "retrying") where.status = { in: ["pending", "retrying"] };
   else if (filter.status && filter.status !== "all") where.status = filter.status;
   if (filter.type) where.type = filter.type;
+  if (filter.target) where.target = filter.target;
   if (filter.before) where.createdAt = { lt: filter.before };
   const rows = await db.hubEvent.findMany({
     where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: take + 1,

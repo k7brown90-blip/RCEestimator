@@ -57,7 +57,7 @@ const TAG = "HubCore";
 const owner: HubReader = { key: "owner", kind: "owner", display: "Kyle", technicianId: null, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: true };
 const aiAdmin: HubReader = { key: "ai-admin", kind: "ai-admin", display: "AI admin", technicianId: null, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false };
 const tech = (id: string, name = "Tech"): HubReader => ({ key: `tech:${id}`, kind: "tech", display: name, technicianId: id, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false });
-const agent = (id: string, role: string, kinds: string[] = []): HubReader => ({ key: `agent:${id}`, kind: "agent", display: `${role} key`, technicianId: null, threadKinds: kinds, agentRole: role, agentKeyId: id, isKyle: false });
+const agent = (id: string, role: string, kinds: string[] = []): HubReader => ({ key: `agent:${id}`, kind: "agent", display: `${role} key`, technicianId: null, threadKinds: kinds, agentRole: role, agentKeyId: id, agentScopes: ["hub:read", "hub:draft", "team:reply", "dev:read", "training:read", "training:write"], isKyle: false });
 
 const techIds: string[] = [];
 
@@ -396,8 +396,9 @@ describe("who may see which thread", () => {
 
   it("reads the reader out of a request: agent, technician, CRM login, AI admin, owner, gate-disabled", () => {
     const req = (o: object) => o as unknown as Request;
-    expect(readerKeyFor(req({ agentPrincipal: { keyId: "K9", name: "Scout", role: "scout", hubThreadKinds: ["training"] } }))).toBe("agent:K9");
-    expect(readerFor(req({ agentPrincipal: { keyId: "K9", name: "Scout", role: "scout", hubThreadKinds: ["training"] } }))?.threadKinds).toEqual(["training"]);
+    const scout = { keyId: "K9", name: "Scout", role: "scout", hubThreadKinds: ["training"], scopes: ["hub:read", "training:read"] };
+    expect(readerKeyFor(req({ agentPrincipal: scout }))).toBe("agent:K9");
+    expect(readerFor(req({ agentPrincipal: scout }))).toMatchObject({ threadKinds: ["training"], agentScopes: ["hub:read", "training:read"] });
     expect(readerKeyFor(req({ technician: { id: "T1", name: "Eric" } }))).toBe("tech:T1");
     expect(readerKeyFor(req({ _crmLogin: { id: "L1", technicianId: "T2", name: "Michael" }, _authActor: "user:L1" }))).toBe("user:L1");
     expect(readerFor(req({ _crmLogin: { id: "L1", technicianId: "T2", name: "Michael" } }))?.technicianId).toBe("T2");

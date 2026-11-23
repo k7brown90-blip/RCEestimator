@@ -302,8 +302,11 @@ export function isPublicRoute(method: string, path: string): boolean {
 // routes is not an agent key. Each entry names the ONE scope that opens it (or "any" where the door
 // checks scopes per tool, as /mcp will), reusing `entryCovers` so the path rules are the allowlist's.
 //
-// The list starts EMPTY on purpose. /mcp arrives with Step 2 and REST /api/hub/* with K-U7; each adds
-// its entries here, in the diff that adds the route.
+// The list is short on purpose. REST /api/hub/* (K-U7) is the three entries below, mounted in the SAME
+// router the CRM screens use (routes/hub.ts) - there is no separate bot router. The thread read is
+// GET /hub/threads/:id/messages (the path the team's contract names); GET /hub/threads/:id stays the CRM's. /mcp arrives with Step 2 and
+// adds its own entry here, in the diff that adds the route. NEVER list an approve, edit-approve, reject,
+// send or audit route: an agent key that reaches one is refused by the session gate with a 401.
 
 export interface AgentKeyRoute extends Pick<PublicRoute, "methods" | "path" | "prefix"> {
   /** The scope a key must hold, or "any" when the door checks scopes itself, tool by tool. */
@@ -323,7 +326,20 @@ export interface AgentKeyRoute extends Pick<PublicRoute, "methods" | "path" | "p
   reason: string;
 }
 
-export const AGENT_KEY_ROUTES: AgentKeyRoute[] = [];
+export const AGENT_KEY_ROUTES: AgentKeyRoute[] = [
+  {
+    methods: ["GET"], path: "/hub/threads", scope: "hub:read", tool: "hub.threads.list",
+    reason: "K-U7: an agent lists the Messages threads its key may read (its scopes and hubThreadKinds limit the kinds; no search); the answer is the every-key message profile.",
+  },
+  {
+    methods: ["GET"], path: "/hub/threads/:id/messages", scope: "hub:read", tool: "hub.threads.get",
+    reason: "K-U7: an agent reads one thread and its messages (403 on a kind its scopes or hubThreadKinds do not open); no phone, email, street address, toAddress or cc.",
+  },
+  {
+    methods: ["POST"], path: "/hub/messages", scope: "hub:draft", draft: true, tool: "hub.messages.draft",
+    reason: "K-U7: an agent leaves a DRAFT (draft or pending_approval, never approved or sent); it reaches no customer until a person approves it.",
+  },
+];
 
 /** The agent-key entry covering this request (path as the session gate sees it, after the /api strip), or null. */
 export function agentKeyRouteFor(

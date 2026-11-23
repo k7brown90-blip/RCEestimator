@@ -7,8 +7,8 @@
  * rules" (two clicks). The reminder is a notification on the person's device: "Messages" -> "Turn on
  * notifications on this device" turns that on (the card says so).
  *
- *   * Only the hours are set here. Mon-Fri is fixed text, not a field (it is the one weekday rule every
- *     customer text uses too), so there is no control that could silently do nothing.
+ *   * Only the hours are set here. Mon-Fri is fixed text, not a field (it is Kyle's reminder rule only: customer
+ *     texts go out all seven days since 2026-11-22), so there is no control that could silently do nothing.
  *   * "Save hours" keeps the two times; "Use 8:00 AM - 8:00 PM" puts the default back. Both are the exit.
  *   * Kyle only. The AI admin and every other login see the card with the boxes GREYED and the reason printed.
  *     State lives in the one owner-settings route (PUT /owner-settings/hubNotify).

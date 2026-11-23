@@ -12,6 +12,7 @@ import { approvalCard, approvalsResponse, threadRow, threadsResponse } from "../
 import { MessagesPage } from "./MessagesPage";
 import { api } from "../lib/api";
 import { setHubStreamStatus } from "../lib/hubStreamStatus";
+import { AI_ADMIN_SESSION } from "../test/sessions";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -50,10 +51,10 @@ describe("MessagesPage", () => {
     expect(screen.getByRole("button", { name: /Kyle and the AI team/ })).toHaveTextContent("Team");
   });
 
-  it("has the five chips, with the waiting count on Needs approval, and no 'New thread'", async () => {
+  it("has the six chips, with the waiting count on Needs approval, and no 'New thread'", async () => {
     show({ needsApproval: 3 });
     await screen.findByRole("button", { name: /Jane Homeowner/ });
-    for (const name of ["All", "Customers", "Jobs", "Team", "Needs approval (3)"]) {
+    for (const name of ["All", "Customers", "Jobs", "Team", "Groups", "Needs approval (3)"]) {
       expect(screen.getByRole("tab", { name })).toBeInTheDocument();
     }
     expect(screen.queryByRole("button", { name: /new .*thread/i })).not.toBeInTheDocument();
@@ -116,6 +117,54 @@ describe("MessagesPage", () => {
     expect(await screen.findByTestId("approval-queue-lock")).toHaveTextContent(reason);
     expect(screen.getByRole("button", { name: "Approve and send" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+  });
+});
+
+describe("MessagesPage: office-made group chats (C7)", () => {
+  const groupRow = threadRow({
+    id: "t-group", kind: "group", title: "Install crew", visitId: null, technicianId: null, unread: 0,
+    lastLine: null,
+  });
+
+  it("lists a group on the Groups chip, tagged 'Group', before anybody has said anything, and asks the server for kind group", async () => {
+    const spy = vi.spyOn(api, "hubThreads").mockResolvedValue(threadsResponse([groupRow]));
+    renderWithProviders(<MessagesPage />, { route: "/messages" });
+    const row = await screen.findByRole("button", { name: /Install crew/ });
+    expect(row).toHaveTextContent("Group");
+    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ kind: "group", status: "open", needsApproval: false, q: undefined }));
+  });
+
+  it("says what an empty Groups chip means and where the button is", async () => {
+    vi.spyOn(api, "hubThreads").mockResolvedValue(threadsResponse([]));
+    renderWithProviders(<MessagesPage />, { route: "/messages" });
+    fireEvent.click(await screen.findByRole("tab", { name: "Groups" }));
+    expect(await screen.findByText("No group chats yet. Press New group chat to make one.")).toBeInTheDocument();
+  });
+
+  it("'New group chat' opens the dialog; creating a group opens its drawer and shows the Groups chip", async () => {
+    vi.spyOn(api, "hubThreads").mockResolvedValue(threadsResponse([]));
+    vi.spyOn(api, "hubGroupChoices").mockResolvedValue({ people: [{ id: "tech-eric", name: "Eric" }], agents: [] });
+    const create = vi.spyOn(api, "createHubGroup").mockResolvedValue({ id: "group-9" });
+    renderWithProviders(<><MessagesPage /><LocationProbe /></>, { route: "/messages" });
+    fireEvent.click(await screen.findByRole("button", { name: "New group chat" }));
+    const dialog = await screen.findByRole("dialog", { name: "New group chat" });
+    fireEvent.change(within(dialog).getByLabelText("Group name"), { target: { value: "Install crew" } });
+    fireEvent.click(await within(dialog).findByLabelText("Eric"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create group chat" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ name: "Install crew", technicianIds: ["tech-eric"], agentKeyIds: [] }));
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("?thread=group-9"));
+    expect(screen.queryByRole("dialog", { name: "New group chat" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "Groups" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("the AI admin session sees 'New group chat' greyed with the reason", async () => {
+    vi.spyOn(api, "hubThreads").mockResolvedValue(threadsResponse([]));
+    vi.spyOn(api, "session").mockResolvedValue(AI_ADMIN_SESSION);
+    renderWithProviders(<MessagesPage />, { route: "/messages" });
+    const button = await screen.findByRole("button", { name: "New group chat" });
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(button).toHaveAttribute("title", "Only an office sign-in can make or change a group chat.");
   });
 });
 

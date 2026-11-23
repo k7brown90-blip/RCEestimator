@@ -25,6 +25,7 @@ import { emitHubEventSafe } from "./hubEvents";
 import { entryFor } from "./hubActions/registry";
 import { SINGLE_ADDRESS, ccSchema, cleanCc } from "./emailCc";
 import { approvalCardFor } from "./hubCards";
+import { groupDraftBlock } from "./hubGroups";
 import { prepareSms, releaseStaleSends, settleBlocked, type SendResult } from "./hubSend";
 import { twilioSendEnabled } from "./automationGate";
 import { logSystemEvent } from "./systemEvents";
@@ -103,6 +104,8 @@ export async function approveMessage(reader: HubReader, messageId: string, db: P
   const actor = asActor(reader);
 
   if (message.status === "pending_approval") {
+    const groupBlock = await groupDraftBlock(thread, message, db);
+    if (groupBlock) throw new HubError(groupBlock, 409);
     const refused = await refuseUnsendableText(reader, message, thread, kind, db);
     if (refused) return { card: await approvalCardFor(reader, messageId, db), send: refused };
     const decidedAt = new Date();
@@ -196,6 +199,8 @@ export async function editApproveMessage(reader: HubReader, messageId: string, e
     throw new HubError(`This message is ${original.status.replace(/_/g, " ")}, so it cannot be edited and sent.`, 409);
   }
   if (original.sentAt) throw new HubError("This message already went out, so it will not be sent again.", 409);
+  const groupBlock = await groupDraftBlock(thread, original, db);
+  if (groupBlock) throw new HubError(groupBlock, 409);
   const body = (edit.body ?? "").trim();
   if (!body) throw new HubError("A message needs text.", 400);
   if (body.length > 10_000) throw new HubError("Keep the message under 10,000 characters.", 400);

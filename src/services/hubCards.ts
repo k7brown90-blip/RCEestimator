@@ -17,6 +17,7 @@ import { findVisibleThread, visibleThreadWhere, HubError, type HubReader } from 
 import { prepareSms, recipientFor, releaseStaleSends, type Recipient, type SmsPrepared } from "./hubSend";
 import { entryFor } from "./hubActions/registry";
 import { emailOf } from "./hubTimeline";
+import { groupDraftBlock } from "./hubGroups";
 import { REHEARSAL_RESULT_LINE } from "./rehearsal";
 import { CARD_KINDS, isCardKind } from "../../shared/hub/cards";
 import { SMS_DISABLED_ERROR, sendBlockText } from "../../shared/hub/sendBlocks";
@@ -115,6 +116,8 @@ async function viewOf(db: PrismaClient, m: CardRow, who: Map<string, string>): P
   const described = entry?.describe({ message: m, thread: m.thread, recipient, sms });
   const decidedBy = who.get(m.id) ?? (m.decidedBy?.startsWith("rule:") ? "an auto-send rule" : null);
   const ai = AI_AUTHORS.has(m.authorType);
+  // A draft waiting in a group that has since been closed, or whose agent has left it, cannot be approved: say why on the card.
+  const groupBlock = m.status === "pending_approval" ? await groupDraftBlock(m.thread, m, db) : null;
   return {
     id: m.id,
     threadId: m.threadId,
@@ -142,8 +145,8 @@ async function viewOf(db: PrismaClient, m: CardRow, who: Map<string, string>): P
     approve: {
       label: described?.approveLabel ?? "Approve",
       confirm: described?.confirm ?? "Approve this?",
-      blockedReason: described ? described.blockedReason : "This kind of card is not handled by this version.",
-      editBlockedReason: described ? described.editBlockedReason : "This kind of card is not handled by this version.",
+      blockedReason: groupBlock ?? (described ? described.blockedReason : "This kind of card is not handled by this version."),
+      editBlockedReason: groupBlock ?? (described ? described.editBlockedReason : "This kind of card is not handled by this version."),
     },
     editable: described?.editable ?? { subject: false, to: false, cc: false },
     outcome: {

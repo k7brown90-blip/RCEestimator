@@ -4,7 +4,7 @@
  * informative tools" — this page lists and opens; reading and answering happen in the Thread drawer
  * (`?thread=<id>`), which a click on a row opens.
  *
- *   Chips   All · Customers · Jobs · Team · Needs approval (n)
+ *   Chips   All · Customers · Jobs · Team · Groups · Needs approval (n)
  *   Rows    title, the last line, when, an unread dot, an "AI" chip when the newest message came from an
  *           AI author, and the chip of that message's state (Draft, Needs approval, Sent, Failed, …)
  *   Search  the thread's name or anything said in it
@@ -12,9 +12,14 @@
  * "Needs approval" lists the drafts themselves, each as the one ApprovalCard with Approve, Edit and Reject on it
  * (U4/TC3), not conversation rows: Messages -> Needs approval -> Approve and send.
  *
- * There is no "New thread" and no "Delete thread" here: a Team thread is one per person, made the first
+ * There is no "New thread" and no "Delete thread" for a Team thread: it is one per person, made the first
  * time they write (team answer 9a), and a conversation leaves the list by "Close thread" in its drawer.
  * "Show closed threads" brings the closed ones back so they can be reopened.
+ *
+ * "New group chat" (C7, Kyle 2026-11-22: "The office can create the chat groups and assign members to it including
+ * specific AI bots"): the office names a group and picks its people and AI agents. The group lists here (chip
+ * "Groups") and opens in the same Thread drawer, where it is renamed, added to, removed from, closed and - while
+ * nothing has been said in it - deleted. The office sees every group; a technician sees only their own.
  *
  * Live (U6): the header says "Live" while the stream is up and "Reconnecting…" while it is not (the lists then
  * refresh every 15 seconds on their own). Notifications (U7): "Turn on notifications on this device", beside it.
@@ -25,19 +30,23 @@ import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { ApprovalQueue } from "../components/ApprovalQueue";
 import { NotificationsButton } from "../components/NotificationsButton";
+import { NewGroupChatDialog } from "../components/NewGroupChatDialog";
+import { useSession } from "../lib/session";
+import { GROUP_OFFICE_ONLY } from "../../../shared/hub/groups";
 import { api } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
 import { streamLabel, useHubPollMs, useHubStreamStatus } from "../lib/hubStreamStatus";
 import { authorLabel, messageStatusChip, threadKindLabel, whenText } from "../lib/hubLabels";
 import type { ThreadRow } from "../../../shared/hub/views";
 
-type Chip = "all" | "customer" | "job" | "team" | "approval";
+type Chip = "all" | "customer" | "job" | "team" | "group" | "approval";
 
 const CHIPS: Array<{ id: Chip; label: string }> = [
   { id: "all", label: "All" },
   { id: "customer", label: "Customers" },
   { id: "job", label: "Jobs" },
   { id: "team", label: "Team" },
+  { id: "group", label: "Groups" },
 ];
 
 const EMPTY: Record<Chip, string> = {
@@ -45,6 +54,7 @@ const EMPTY: Record<Chip, string> = {
   customer: "No customer conversations yet.",
   job: "No crew chats yet. Open a job and press Crew chat to start one.",
   team: "No Team threads yet. Each person's thread is made the first time they write to the AI team.",
+  group: "No group chats yet. Press New group chat to make one.",
   approval: "Nothing is waiting for approval.",
 };
 
@@ -98,9 +108,13 @@ export function MessagesPage() {
   const [showClosed, setShowClosed] = useState(false);
   const pollMs = useHubPollMs();
   const streamStatus = useHubStreamStatus();
+  const session = useSession();
+  const [newGroup, setNewGroup] = useState(false);
+  // Only an office sign-in makes groups; the AI admin session sees the button greyed, with why.
+  const groupBlocked = session?.kind === "ai-admin" ? GROUP_OFFICE_ONLY : null;
 
   const filter = {
-    kind: chip === "customer" || chip === "job" || chip === "team" ? chip : undefined,
+    kind: chip === "customer" || chip === "job" || chip === "team" || chip === "group" ? chip : undefined,
     status: showClosed ? "all" : "open",
     needsApproval: chip === "approval",
     q: search.trim() || undefined,
@@ -130,6 +144,15 @@ export function MessagesPage() {
             >
               {streamLabel(streamStatus)}
             </span>
+            <button
+              type="button"
+              className="btn btn-primary text-sm"
+              disabled={Boolean(groupBlocked)}
+              title={groupBlocked ?? "Make a chat for the people and AI agents you pick"}
+              onClick={() => setNewGroup(true)}
+            >
+              New group chat
+            </button>
             <NotificationsButton />
           </>
         )}
@@ -174,6 +197,13 @@ export function MessagesPage() {
           Show closed threads
         </label>
       </div>
+      )}
+
+      {newGroup && (
+        <NewGroupChatDialog
+          onClose={() => setNewGroup(false)}
+          onCreated={(id) => { setNewGroup(false); setChip("group"); drawers.open("thread", id); }}
+        />
       )}
 
       {chip === "approval" ? (

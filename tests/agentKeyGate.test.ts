@@ -17,8 +17,8 @@ import { AGENT_SCOPE_KEYS, DEFAULT_SCOPES_BY_ROLE, isAgentScope } from "../share
 import { cleanupCrmLoginFixtures, makePerson } from "./helpers/crmLoginFixture";
 
 /**
- * Work order agent-team, K-U1: ONE agent-key store and ONE gate. The gate is mounted on no real
- * route yet (AGENT_KEY_ROUTES is empty until /mcp and REST /api/hub/*), so most of these mount it on
+ * Work order agent-team, K-U1: ONE agent-key store and ONE gate. The real app lists only the three K-U7
+ * hub routes in AGENT_KEY_ROUTES (tests/hubBotDoor.test.ts drives those), so most of these mount the gate on
  * a test express app with dummy routes. The human-door tests use the real app.
  */
 
@@ -153,8 +153,13 @@ describe("shared/agentScopes.ts", () => {
 });
 
 describe("AGENT_KEY_ROUTES", () => {
-  it("starts empty: no agent route exists yet", () => {
-    expect(AGENT_KEY_ROUTES).toEqual([]);
+  it("holds exactly the three REST /api/hub/* routes (K-U7) and never an approve, edit-approve, reject, send or audit route", () => {
+    expect(AGENT_KEY_ROUTES.map((r) => `${r.methods.join("|")} ${r.path} ${r.scope}`)).toEqual([
+      "GET /hub/threads hub:read",
+      "GET /hub/threads/:id/messages hub:read",
+      "POST /hub/messages hub:draft",
+    ]);
+    for (const r of AGENT_KEY_ROUTES) expect(r.path).not.toMatch(/approve|reject|send|audit|stream|attachments|push/);
   });
 
   it("every entry declares a scope that exists (or any) and matches its own path", () => {

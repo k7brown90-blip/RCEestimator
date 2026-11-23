@@ -114,7 +114,7 @@ async function makeJob(suffix: string, assignTo: string[] = []) {
   return { customer, visit };
 }
 const subscribe = (readerKey: string, name: string) => saveSubscription(readerKey, { endpoint: endpoint(name), keys }, "test-agent");
-const agent: HubReader = { key: "agent:scout", kind: "agent", display: "Scout", technicianId: null, threadKinds: [], agentRole: "admin", agentKeyId: "scout", isKyle: false };
+const agent: HubReader = { key: "agent:scout", kind: "agent", display: "Scout", technicianId: null, threadKinds: [], agentRole: "admin", agentKeyId: "scout", agentScopes: ["hub:read", "hub:draft", "team:reply", "dev:read", "training:read", "training:write"], isKyle: false };
 const settle = () => new Promise((r) => setTimeout(r, 150));
 
 describe("when notifications are not set up", () => {

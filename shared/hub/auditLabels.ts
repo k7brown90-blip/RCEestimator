@@ -22,6 +22,10 @@ export const HUB_AUDIT_ACTION_LABELS: Record<string, string> = {
   thread_status: "Conversation closed or reopened",
   thread_renamed: "Conversation renamed",
   thread_merged: "Conversations joined",
+  group_created: "Group chat made",
+  group_member_added: "Member added to a group",
+  group_member_removed: "Member removed from a group",
+  group_deleted: "Group chat deleted",
 };
 
 export const hubAuditActionLabel = (action: string): string => HUB_AUDIT_ACTION_LABELS[action] ?? action;

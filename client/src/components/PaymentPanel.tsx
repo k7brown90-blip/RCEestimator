@@ -40,6 +40,7 @@ import { WarrantyClaimTracker } from "./WarrantyCoveragePanel";
 import { RefundedPaymentNote, VoidPaymentButton, VoidedPaymentNote } from "./VoidPaymentButton";
 import { FINANCING_IN_PROGRESS, financingInProgress, SynchronyFinancing } from "./SynchronyFinancing";
 import { GOOGLE_REVIEW_URL } from "../../../shared/reviewRequestUrl";
+import { REVIEW_BLOCK_SENTENCES } from "../../../shared/reviewRequestBlock";
 import { SendEmailPanel } from "./SendEmailPanel";
 import type { EmailKindOffer, EmailRecord } from "./SendEmailPanel";
 
@@ -84,9 +85,9 @@ export function invoiceEmailRecord(info: PaymentInfo): EmailRecord {
   const reviewBlock = !e?.jobId
     ? "A review request needs the job - this invoice has no job yet."
     : e.jobStatus !== "completed"
-      ? "A review request can go once the job is marked complete."
+      ? REVIEW_BLOCK_SENTENCES.not_complete
       : e.reviewRequestedAt
-        ? "A review request has already been sent for this job."
+        ? REVIEW_BLOCK_SENTENCES.already_asked_job
         : null;
   return {
     estimateId: info.estimateId,

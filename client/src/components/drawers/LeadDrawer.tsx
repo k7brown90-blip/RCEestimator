@@ -27,6 +27,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useDrawerParams } from "../../lib/drawers";
+import { refreshHub } from "../../lib/hubQueries";
 import { ADDRESS_QUERY_KEYS, SEARCH_QUERY_KEYS } from "../../lib/queryKeys";
 import { formatDay, formatReceived, parseSourceUrl } from "../../../../shared/calendarDay";
 import { useLead } from "../../lib/recordQueries";
@@ -80,6 +81,9 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
     for (const key of ADDRESS_QUERY_KEYS) void queryClient.invalidateQueries({ queryKey: [...key] });
     // The Search panel stays open under this drawer — it would keep the old status.
     for (const key of SEARCH_QUERY_KEYS) void queryClient.invalidateQueries({ queryKey: [...key] });
+    // Convert and Confirm booking file the lead's "From the lead:" call note on the account; this
+    // drawer's own Conversation is the screen where the button was pressed, so it must read again.
+    refreshHub(queryClient);
   };
 
   const [editing, setEditing] = useState(false);

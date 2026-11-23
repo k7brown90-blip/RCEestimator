@@ -14,6 +14,9 @@
  *   * ONE visibility rule (visibleThreadWhere). A technician sees the job threads they are assigned
  *     to, their own Team thread and their own Training thread, and never a Dev thread. An agent key
  *     sees only the thread kinds in its `hubThreadKinds` (empty means no limit).
+ *     A GROUP (C7, an office-made chat) is seen by its members: a technician and an agent key only when they
+ *     are in it; the office (an owner or a CRM login) sees every group, because the office makes and manages
+ *     them, but is only counted and pushed to as a member. The AI admin session sees none.
  *   * ONE fan-out call site (fanOutMessage): where a new message becomes the live-update event
  *     (services/hubBus.ts), the web push (services/hubNotifier.ts) and the signed webhook event
  *     (services/hubEvents.ts). No other place emits for a message; an edit and a delete announce
@@ -31,7 +34,7 @@ import type { AgentRequestState } from "../agentApi/gate";
 import { logSystemEvent } from "./systemEvents";
 import { isKylePhone } from "./kylePhone";
 import { getPrincipalLogin } from "./crmLogin";
-import { emitHubEventSafe } from "./hubEvents";
+import { emitGroupMessageEventSafe, emitHubEventSafe } from "./hubEvents";
 import { publishHubChange } from "./hubBus";
 import { notifyNewMessage } from "./hubNotifier";
 import { stagedPhotoIds } from "./hubAttachments";
@@ -40,7 +43,8 @@ import {
   HUB_AUTHOR_TYPES, HUB_CHANNELS, HUB_DIRECTIONS, HUB_MESSAGE_STATUSES, HUB_READABLE_STATUSES,
   HUB_THREAD_STATUSES, type HubChannel, type HubMessageStatus,
 } from "../../shared/hub/model";
-import { isHubThreadKind, type HubThreadKind } from "../../shared/agentScopes";
+import { hubKindsFor, isHubThreadKind, type HubThreadKind } from "../../shared/agentScopes";
+import { GROUP_CLOSED_POST_REASON } from "../../shared/hub/groups";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -74,6 +78,11 @@ export interface HubReader {
   /** The agent key's id; only for kind "agent". */
   agentKeyId: string | null;
   /**
+   * The agent key's scopes; only for kind "agent". Which kinds of thread the key may see and post in comes from
+   * these (shared/agentScopes.ts HUB_KIND_SCOPES). Missing means none: an agent reader built without scopes sees nothing.
+   */
+  agentScopes?: readonly string[];
+  /**
    * Kyle himself: his PIN session, gate-disabled, or his principal CRM login (the same test as
    * middleware/kylePowers isKyle). A "user" reader can be Kyle, so `kind === "owner"` alone is not it.
    */
@@ -93,7 +102,7 @@ export function readerFor(req: Request): HubReader | null {
     const p = r.agentPrincipal;
     return {
       key: `agent:${p.keyId}`, kind: "agent", display: p.name, technicianId: null,
-      threadKinds: [...p.hubThreadKinds], agentRole: p.role, agentKeyId: p.keyId, isKyle: false,
+      threadKinds: [...p.hubThreadKinds], agentRole: p.role, agentKeyId: p.keyId, agentScopes: [...p.scopes], isKyle: false,
     };
   }
   if (r.technician) {
@@ -163,15 +172,18 @@ export async function readerForKey(key: string, db: Db = defaultPrisma): Promise
  *   - owner, a person's CRM login and the AI admin: every thread;
  *   - a technician: a job thread for a visit they are assigned to, their own Team thread, their own
  *     Training thread. Never a customer thread and never a Dev thread (team answer 11b);
- *   - an agent key: every thread, or only the kinds in its hubThreadKinds when that list is not empty
- *     (Scout: training only; Claude Code: dev only).
+ *   - an agent key: only the kinds its scopes open (customer and job: hub:read or hub:draft; team: team:reply;
+ *     dev: dev:read; training: training:read or training:write), and of those only the kinds in its hubThreadKinds
+ *     when that list is not empty (Scout: training only; Claude Code: dev only).
  */
 export function visibleThreadWhere(reader: HubReader): Prisma.HubThreadWhereInput {
   switch (reader.kind) {
     case "owner":
     case "user":
-    case "ai-admin":
       return {};
+    case "ai-admin":
+      // The AI admin session is not a member of anything: an office-made group is the office's and its members'.
+      return { kind: { not: "group" } };
     case "tech": {
       const id = reader.technicianId;
       if (!id) return { id: { in: [] } };
@@ -180,12 +192,48 @@ export function visibleThreadWhere(reader: HubReader): Prisma.HubThreadWhereInpu
           { kind: "job", visit: { assignments: { some: { technicianId: id } } } },
           { kind: "team", technicianId: id },
           { kind: "training", technicianId: id },
+          { kind: "group", members: { some: { technicianId: id } } },
         ],
       };
     }
-    case "agent":
-      return reader.threadKinds.length > 0 ? { kind: { in: reader.threadKinds } } : {};
+    case "agent": {
+      // What the key's scopes open, narrowed by its hubThreadKinds (ONE rule: HUB_KIND_SCOPES). The door
+      // narrows again to read or post for the call it is answering.
+      const kinds = hubKindsFor(reader.agentScopes ?? [], "any", reader.threadKinds);
+      if (!kinds.includes("group")) return { kind: { in: kinds } };
+      // A group the key is not a member of is not there at all (the door answers it as not found).
+      const others = kinds.filter((k) => k !== "group");
+      const memberOf: Prisma.HubThreadWhereInput = reader.agentKeyId
+        ? { kind: "group", members: { some: { agentKeyId: reader.agentKeyId } } }
+        : { id: { in: [] } };
+      return others.length > 0 ? { OR: [{ kind: { in: others } }, memberOf] } : memberOf;
+    }
   }
+}
+
+/**
+ * The person (Technician.id) a reader is, when they are one: a technician, a CRM login tied to a person, or Kyle's PIN
+ * session, which acts as the principal login's person. Null for the AI admin, an agent key and a sign-in tied to no one.
+ */
+export async function personIdOf(reader: HubReader, db: PrismaClient = defaultPrisma): Promise<string | null> {
+  if (reader.technicianId) return reader.technicianId;
+  if (reader.kind === "owner") return (await getPrincipalLogin(db))?.technicianId ?? null;
+  return null;
+}
+
+/**
+ * Which of these GROUP threads the reader is a member of (C7): a person by Technician.id, an agent key by AgentKey.id.
+ * The office reads and manages every group, but only a member is counted unread, pushed to and let post.
+ */
+export async function memberGroupIds(reader: HubReader, groupIds: readonly string[], db: PrismaClient = defaultPrisma): Promise<Set<string>> {
+  if (groupIds.length === 0) return new Set();
+  const personId = await personIdOf(reader, db);
+  const or: Prisma.HubThreadMemberWhereInput[] = [];
+  if (personId) or.push({ technicianId: personId });
+  if (reader.kind === "agent" && reader.agentKeyId) or.push({ agentKeyId: reader.agentKeyId });
+  if (or.length === 0) return new Set();
+  const rows = await db.hubThreadMember.findMany({ where: { threadId: { in: [...groupIds] }, OR: or }, select: { threadId: true } });
+  return new Set(rows.map((r) => r.threadId));
 }
 
 /** The thread, only if this reader may see it; otherwise null (callers answer 404, never "forbidden"). */
@@ -562,14 +610,30 @@ export async function createMessageRow(db: Db, input: CreateMessageInput): Promi
 }
 
 /**
- * A Team thread is ONE person's channel with the AI team (team answer 9a). Office people may READ every
- * one, but a signed-in office person (a CRM login, or Kyle's PIN session, which posts as the principal
- * login's person) may only POST in their OWN. Returns the sentence that says why not, or null when the
- * post is fine. The AI admin and agent keys are the other side of that channel and are not limited here;
- * a technician can only see their own Team thread to begin with. Used by postMessage (the one writer)
- * and by the thread detail (so the screen greys the box with the same sentence).
+ * Who may POST in a thread that limits it. Returns the sentence that says why not, or null when the post is fine.
+ * Used by postMessage (the one writer), the photo upload and the thread detail (so the screen greys the box with
+ * the same sentence).
+ *
+ *   * A Team thread is ONE person's channel with the AI team (team answer 9a). Office people may READ every
+ *     one, but a signed-in office person (a CRM login, or Kyle's PIN session, which posts as the principal
+ *     login's person) may only POST in their OWN. The AI admin and agent keys are the other side of that channel
+ *     and are not limited here; a technician can only see their own Team thread to begin with.
+ *   * A GROUP (C7) is posted in by its members only, and not while it is closed (a message never reopens a group: its
+ *     exit is Close, and Reopen is the way back). The office reads and manages every group; to post in one it is not
+ *     in, add yourself under Members. A technician and an agent key only ever see a group they are in.
  */
-export async function teamPostRefusal(reader: HubReader, thread: HubThread, db: PrismaClient = defaultPrisma): Promise<string | null> {
+export async function postRefusal(reader: HubReader, thread: HubThread, db: PrismaClient = defaultPrisma): Promise<string | null> {
+  if (thread.kind === "group") {
+    if (thread.status === "closed") return GROUP_CLOSED_POST_REASON;
+    if (reader.kind === "ai-admin") return "The AI admin session is not a member of any group.";
+    if ((await memberGroupIds(reader, [thread.id], db)).has(thread.id)) return null;
+    if (reader.kind === "owner" || reader.kind === "user") {
+      return (await personIdOf(reader, db))
+        ? "You are not a member of this group, so you can read and manage it but not post. Add yourself under Members to post."
+        : "This sign-in is not tied to a person on the team, so it cannot post in a group. Sign in with your own login.";
+    }
+    return "You are not a member of this group.";
+  }
   if (thread.kind !== "team") return null;
   if (reader.kind !== "owner" && reader.kind !== "user") return null;
   const mine = reader.kind === "owner" ? (await getPrincipalLogin(db))?.technicianId ?? null : reader.technicianId;
@@ -594,9 +658,11 @@ export async function teamPostRefusal(reader: HubReader, thread: HubThread, db: 
 export async function bumpThreadForMessage(
   tx: Db, threadId: string, message: Pick<HubMessage, "id" | "createdAt">, actor: { key: string; display: string }, at: Date = message.createdAt,
 ): Promise<void> {
-  const current = await tx.hubThread.findUnique({ where: { id: threadId }, select: { status: true, lastMessageAt: true } });
+  const current = await tx.hubThread.findUnique({ where: { id: threadId }, select: { status: true, kind: true, lastMessageAt: true } });
   if (!current) return;
-  const reopen = current.status === "closed";
+  // A message never reopens a GROUP (C7): the office closed it on purpose, and Reopen is the way back (an approval of
+  // a post drafted before the close lands in it quietly).
+  const reopen = current.status === "closed" && current.kind !== "group";
   await tx.hubThread.update({
     where: { id: threadId },
     data: { lastMessageAt: at > current.lastMessageAt ? at : current.lastMessageAt, ...(reopen ? { status: "open" } : {}) },
@@ -713,7 +779,7 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
     if (onJob !== photoIds.length) throw new HubError("A photo is not filed on this job.");
   }
 
-  const refusal = await teamPostRefusal(reader, thread, db);
+  const refusal = await postRefusal(reader, thread, db);
   if (refusal) throw new HubError(refusal, 403);
 
   if (attachmentIds.length > 0) {
@@ -735,6 +801,13 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
     if (thread.kind === "customer") throw new HubError("Customer drafts go through the draft door, not an in-app post.", 403);
     if (thread.kind === "dev" && reader.agentRole === "claude_code") {
       status = "posted";
+    } else if (thread.kind === "training") {
+      // Amendment 16b: every agent post in a training thread waits for approval - a "draft" is not an option there.
+      // (Anything other than draft or pending_approval is still refused below the same way.)
+      if (input.status !== undefined && input.status !== "pending_approval" && input.status !== "draft") {
+        throw new HubError("An agent can only leave a draft or a message waiting for approval.", 403);
+      }
+      status = "pending_approval";
     } else if (input.status === undefined || input.status === "pending_approval") {
       status = "pending_approval";
     } else if (input.status === "draft") {
@@ -813,6 +886,11 @@ export function fanOutMessage(message: HubMessage, thread: HubThread, context: {
   if (message.authorType === "customer" && message.direction === "inbound") type = "message.inbound";
   else if (byPerson && thread.kind === "dev") type = "message.dev";
   else if (byPerson && (thread.kind === "team" || thread.kind === "job")) type = "message.team";
+  else if (byPerson && thread.kind === "group") {
+    // A group's agents are its members: the wake-up goes only if the routed agent is one of them (hubEvents.ts).
+    void emitGroupMessageEventSafe({ messageId: message.id, threadId: thread.id, context });
+    return;
+  }
   if (!type) return;
   void emitHubEventSafe({ type, messageId: message.id, context });
 }
@@ -895,8 +973,17 @@ export async function unreadCounts(
   const and: Prisma.HubThreadWhereInput[] = [visibleThreadWhere(reader)];
   if (only) and.push({ id: { in: [...only] } });
   if (opts.openOnly) and.push({ status: { not: "closed" } });
-  const visible = await db.hubThread.findMany({ where: { AND: and }, select: { id: true } });
-  const ids = visible.map((t) => t.id);
+  const visible = await db.hubThread.findMany({ where: { AND: and }, select: { id: true, kind: true } });
+  let ids = visible.map((t) => t.id);
+  if (reader.kind === "owner" || reader.kind === "user") {
+    // The office SEES every group, but a group's messages are unread only for a member of it (C7): a group Kyle is not in
+    // is not on his badge.
+    const groups = visible.filter((t) => t.kind === "group").map((t) => t.id);
+    if (groups.length > 0) {
+      const mine = await memberGroupIds(reader, groups, db);
+      ids = ids.filter((id) => !groups.includes(id) || mine.has(id));
+    }
+  }
   if (ids.length === 0) return { total: 0, byThread: {} };
   // A technician sees only what the crew said to each other: an in-app message, never a text or an email to
   // a customer that happens to sit in a job's conversation. The count must match what they can read.

@@ -5,10 +5,11 @@
  * seeds a LIVE Technician.accessToken, a JWT, the three customer capability links (/e/, /pay/ and the
  * field's /field/#t=), an agent key and the webhook secret into the free-text columns that feed each
  * way data leaves the process, then drives every egress that exists and asserts not one seed comes out.
+ * The REST bot door (K-U7) is one of the entries below.
  *
- * EGRESSES is the list. A unit that adds a new way out (the live stream U6, web push U7, the REST bot
- * door BA3/K-U7) adds ONE entry here; the assertions below run over every entry. Those three do not
- * exist yet; their it.todo lines below say so.
+ * EGRESSES is the list. A unit that adds a new way out (the live stream U6, web push U7) adds ONE entry
+ * here; the assertions below run over every entry. Those two do not exist as egresses to drive yet; their
+ * it.todo lines below say so.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import http from "node:http";
@@ -190,6 +191,29 @@ const EGRESSES: Egress[] = [
     },
   },
   {
+    name: "the REST bot door's answers (GET /api/hub/threads and /api/hub/threads/:id/messages with an agent key)",
+    run: async () => {
+      const { mintAgentKey } = await import("../src/agentApi/keys");
+      const savedPepper = process.env.AGENT_KEY_PEPPER;
+      process.env.AGENT_KEY_PEPPER = "test-pepper-for-the-egress-suite";
+      const thread = await prisma.hubThread.create({ data: { kind: "dev", title: `${TAG} dev ${SEEDED_TEXT}` } });
+      const made = await mintAgentKey({ name: `${TAG} door key`, agentRole: "admin", createdBy: "owner", scopes: ["hub:read", "dev:read"], hubThreadKinds: [] });
+      try {
+        await prisma.hubMessage.create({
+          data: { threadId: thread.id, authorType: "tech", authorDisplay: `${TAG} Tech`, channel: "in_app", direction: "internal", status: "posted", body: SEEDED_TEXT, subject: SEEDED_TEXT },
+        });
+        const auth = { Authorization: `Bearer ${made.key}` };
+        const detail = await request(app).get(`/api/hub/threads/${thread.id}/messages`).set(auth).expect(200);
+        const list = await request(app).get("/api/hub/threads").set(auth).expect(200);
+        return [detail.text, list.text];
+      } finally {
+        await prisma.agentKey.deleteMany({ where: { id: made.row.id } });
+        await prisma.hubThread.delete({ where: { id: thread.id } });
+        if (savedPepper === undefined) delete process.env.AGENT_KEY_PEPPER; else process.env.AGENT_KEY_PEPPER = savedPepper;
+      }
+    },
+  },
+  {
     name: "the access log, for a request with the token in the path, the query and the Authorization header",
     run: async () => {
       const lines: string[] = [];
@@ -256,5 +280,4 @@ describe("nothing secret leaves by any egress", () => {
   // The ways out that do not exist yet. Each adds ONE entry to EGRESSES when it lands.
   it.todo("the live message stream (U6)");
   it.todo("a web push payload (U7)");
-  it.todo("the REST bot door's responses (BA3 / K-U7)");
 });

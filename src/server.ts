@@ -435,7 +435,7 @@ async function startServer(): Promise<void> {
 
   // Every 5 minutes - the waiting-approval reminder (work order agent-team, U8). A draft that has waited 15
   // minutes gets one push to the approvers, then at most one an hour, only Mon-Fri 8:00 AM-8:00 PM Chicago
-  // (the owner setting hubNotify; shared/sms/quietHours.ts isSendableNow). It messages Kyle's own devices, never
+  // (the owner setting hubNotify; shared/sms/quietHours.ts isReminderSendableNow, the Mon-Fri reminder rule - customer texts are open every day). It messages Kyle's own devices, never
   // a customer, so it is not behind the customer-send gate. Never throws.
   let hubRenotifyRunning = false;
   cron.schedule("*/5 * * * *", () => {

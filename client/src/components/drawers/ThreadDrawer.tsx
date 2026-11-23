@@ -9,6 +9,8 @@
  *   Customer threads      the record's own Conversation (RecordConversation): "Add call note" and
  *                         "Email the customer" are the same buttons as on the account, never a second
  *                         email box here.
+ *   Group chats (C7)      the office-made kind: a Members panel on top (Remove, Add members, Delete group - only
+ *                         while nothing has been said in it) and "Post to group". Header "Close group" / "Reopen".
  *   Header                "Rename" and "Close thread" / "Reopen". There is no Delete thread and no New
  *                         thread: a Team thread is one per person, made the first time they write
  *                         (team answer 9a), so its exit is Close. "Audit" (Kyle only, greyed with the reason
@@ -44,6 +46,7 @@ import { RecordConversation } from "../RecordConversation";
 import { ApprovalCard, isOpenCard } from "../ApprovalCard";
 import { MessageAuditLog, AUDIT_LOCK_REASON } from "../MessageAuditLog";
 import { SendEmailPanel } from "../SendEmailPanel";
+import { GroupPanel } from "../GroupPanel";
 
 /** One picture, fetched with the session (a browser will not send the Authorization header from an <img src>). */
 function PhotoThumb({ path, alt }: { path: string; alt: string }) {
@@ -366,7 +369,7 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
   // The server says when this is another person's Team thread (data.postBlock); that reason leads.
   const postBlock = data?.postBlock ?? (closed ? "This thread is closed. Reopen it to post." : !text.trim() && staged.length === 0 ? "Write a message first." : null);
   // Dev threads hold no photos; every other kind that has a composer does.
-  const photoBlock: string | null = !thread || thread.kind === "dev" ? "Photos go on a job, Team or Training thread."
+  const photoBlock: string | null = !thread || thread.kind === "dev" || thread.kind === "group" ? "Photos go on a job, Team or Training thread."
     : data?.postBlock ?? (closed ? "This thread is closed. Reopen it to add a photo." : null);
   const newAfter = seenAt.current ? new Date(seenAt.current).getTime() : 0;
 
@@ -398,7 +401,7 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
             title={closed ? "Bring this conversation back to the Messages list" : "Take this conversation off the Messages list; it can be reopened"}
             onClick={() => patch.mutate({ status: closed ? "open" : "closed" })}
           >
-            {closed ? "Reopen" : "Close thread"}
+            {closed ? "Reopen" : thread.kind === "group" ? "Close group" : "Close thread"}
           </button>
         </>
       ) : null}
@@ -440,6 +443,7 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
               </button>
             </p>
           )}
+          {thread.kind === "group" && data.group && <GroupPanel threadId={thread.id} group={data.group} onDeleted={onClose} notMemberReason={data.postBlock} />}
           {data.truncated && <p className="text-xs text-rce-muted">Showing the most recent messages; older ones are not listed here.</p>}
           <ul className="space-y-2">
             {data.messages.map((m) => {

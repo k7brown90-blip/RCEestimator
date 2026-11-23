@@ -30,6 +30,7 @@ import { sendCustomerSms } from "../src/services/notifications";
 import { applyConfirmationAction, notifyTechnicianOfAssignment, sendVisitConfirmationRequest, sendVisitReminders } from "../src/services/visitConfirmations";
 import { saveOwnerSetting } from "../src/services/ownerSettings";
 import { SMS_PURPOSES } from "../shared/sms/purposes";
+import { formatHeaderWhen } from "../shared/sms/compose";
 import { MESSAGE_CATEGORY_LIST } from "../shared/hub/messageCategories";
 
 const TAG = "SmsHF";
@@ -150,7 +151,7 @@ describe("the header and the footer, composed inside sendSms", () => {
     expect(sent!.footerIncluded).toBe(false);
   });
 
-  it("a marketing text is refused: there is no marketing opt-in on record", async () => {
+  it("a marketing text is refused: Red Cedar never sends marketing by text", async () => {
     const { to } = await account();
     const sent = await sendSms(to, "Fall special.", { messageClass: "marketing", category: "thread_reply" });
     expect(sent).toBeNull();
@@ -266,11 +267,13 @@ describe("every live send site wears its class and header label (addendum sectio
 
   it("the 24-hour reminder is 'Appointment Reminder <window>' and the mid-body brand is gone", async () => {
     const start = new Date(Date.now() + 24 * 3600_000);
-    const a = await account({ status: "estimate", start, end: new Date(start.getTime() + 2 * 3600_000) });
+    const end = new Date(start.getTime() + 2 * 3600_000);
+    const a = await account({ status: "estimate", start, end });
     await sendVisitReminders();
     const mine = sentBodies().filter((_b, i) => sentTo()[i]!.endsWith(a.phone10));
     expect(mine).toHaveLength(1);
-    expect(lines(mine[0]!)[0]).toMatch(/^Red Cedar Electric: Appointment Reminder \w{3} \d{1,2}\/\d{1,2}, \d{1,2}(:\d{2})?-\d{1,2}(:\d{2})? [AP]M$/);
+    // Built from the same formatter the header uses, so it holds at any hour (a window can cross noon or midnight).
+    expect(lines(mine[0]!)[0]).toBe(`Red Cedar Electric: Appointment Reminder ${formatHeaderWhen(start, end)}`);
     expect(mine[0]).not.toMatch(/reminder from Red Cedar Electric/);
     expect(mine[0]!.endsWith("\nReply STOP to opt out.")).toBe(true);
     const row = await prisma.hubMessage.findFirstOrThrow({ where: { thread: { customerId: a.customer.id }, channel: "sms" } });

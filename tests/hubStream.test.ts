@@ -158,7 +158,7 @@ async function makeJob(suffix: string, assignTo?: string) {
 }
 
 const owner: HubReader = { key: "owner", kind: "owner", display: "Kyle", technicianId: null, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: true };
-const agent: HubReader = { key: "agent:scout", kind: "agent", display: "Scout", technicianId: null, threadKinds: [], agentRole: "admin", agentKeyId: "scout", isKyle: false };
+const agent: HubReader = { key: "agent:scout", kind: "agent", display: "Scout", technicianId: null, threadKinds: [], agentRole: "admin", agentKeyId: "scout", agentScopes: ["hub:read", "hub:draft", "team:reply", "dev:read", "training:read", "training:write"], isKyle: false };
 
 describe("who may open a stream", () => {
   it("refuses a visitor on both doors, and a technician's bearer is not a CRM session", async () => {

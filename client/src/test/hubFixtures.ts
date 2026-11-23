@@ -40,7 +40,25 @@ export const threadMessage = (over: Partial<ThreadMessage> = {}): ThreadMessage 
 });
 
 export const threadDetail = (messages: ThreadMessage[] = [], over: Partial<ThreadRow> = {}, lastReadAt: string | null = null): ThreadDetail => ({
-  thread: threadRow(over), messages, lastReadAt, truncated: false, postBlock: null, staged: [],
+  thread: threadRow(over), messages, lastReadAt, truncated: false, postBlock: null, staged: [], group: null,
+});
+
+/** An office-made group chat's members panel data (shared/hub/views.ts GroupView): Eric, and RCE Admin (an AI agent). */
+export const groupView = (over: Partial<import("../../../shared/hub/views").GroupView> = {}): import("../../../shared/hub/views").GroupView => ({
+  members: [
+    { kind: "person", id: "tech-eric", name: "Eric", roleLabel: null, addedAt: "2026-11-22T12:00:00.000Z", you: false, active: true, reason: null },
+    { kind: "agent", id: "key-admin", name: "RCE Admin", roleLabel: "Admin", addedAt: "2026-11-22T12:00:00.000Z", you: false, active: true, reason: null },
+  ],
+  messageCount: 0, youAreMember: true, canDelete: true, deleteReason: null, ...over,
+});
+
+/** Who the New group chat picker offers (shared/hub/views.ts GroupChoices). */
+export const groupChoices = (): import("../../../shared/hub/views").GroupChoices => ({
+  people: [{ id: "tech-eric", name: "Eric" }, { id: "tech-sam", name: "Sam" }],
+  agents: [
+    { id: "key-admin", name: "RCE Admin", roleLabel: "Admin", canJoin: true, reason: null },
+    { id: "key-inv", name: "Stock Bot", roleLabel: "Inventory Manager", canJoin: true, reason: null },
+  ],
 });
 
 export const badge = (over: Partial<HubBadge> = {}): HubBadge => ({ unread: 0, needsApproval: 0, canApprove: true, total: 0, ...over });

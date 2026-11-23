@@ -18,7 +18,7 @@
 
 import crypto from "node:crypto";
 import type { BookingChat, Lead } from "@prisma/client";
-import type { ConvertLeadInput, ConvertLeadOutcome } from "../../app";
+import type { ConvertLeadInput, ConvertLeadOutcome } from "../leads";
 import { prisma } from "../../lib/prisma";
 import { parseJsonArray, parseJsonStringArray } from "../../lib/json";
 import { escapeHtml, sendKyleNotificationEmail } from "../confirmationEmail";

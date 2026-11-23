@@ -18,7 +18,7 @@
  */
 import type { HubMessage, HubThread, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
-import { readerForKey, visibleThreadWhere, type HubReader } from "./hub";
+import { memberGroupIds, readerForKey, visibleThreadWhere, type HubReader } from "./hub";
 import { pushConfig, sendPush, type PushPayload, type PushSend } from "./hubPush";
 
 const TITLE = "Red Cedar Messages";
@@ -33,6 +33,7 @@ const WHERE: Record<string, string> = {
   job: "New message on a job thread",
   team: "New message in a Team thread",
   training: "New message in a Training thread",
+  group: "New message in a group chat",
   dev: "New message in a Dev thread",
   customer: "New customer message",
 };
@@ -105,6 +106,8 @@ export async function notifyNewMessage(message: HubMessage, thread: HubThread, d
       if (reader.kind === "tech" && (message.channel !== "in_app" || message.direction !== "internal")) continue;
       const visible = await db.hubThread.count({ where: { AND: [{ id: thread.id }, visibleThreadWhere(reader)] } });
       if (visible === 0) continue;
+      // The office sees every group but is told only of the ones it is in (C7); a technician's visibility IS membership.
+      if (thread.kind === "group" && reader.kind !== "tech" && !(await memberGroupIds(reader, [thread.id], db)).has(thread.id)) continue;
       sends.push({ readerKey: key, payload: payloadFor(reader, thread.id, WHERE[thread.kind] ?? "New message", `thread:${thread.id}`) });
     }
     await sendPush(sends, db);

@@ -18,6 +18,8 @@ import {
 } from "../../shared/hub/autoSendCategories";
 import { customerSendsEnabled, workflowEnvVar } from "./automationGate";
 import { SMS_PURPOSES, isSmsPurposeKey, smsPurposeLabel, type SmsPurposeKey } from "../../shared/sms/purposes";
+import { WEBHOOK_HEADERS_MAX, webhookHeaderNameProblem, webhookHeaderNameShapeProblem, webhookHeaderValueProblem } from "../../shared/hub/webhookHeaders";
+import { PEPPER_UNSET_MESSAGE, encryptSecret, generateSigningSecret, maskSecret, settingSecretsAvailable } from "./settingSecrets";
 
 const clock = z.string().refine((v) => parseClock(v) !== null, 'Use a 24-hour time written HH:MM, like "08:00"');
 
@@ -66,8 +68,10 @@ export const DEFAULT_AGENT_ACCESS: AgentAccess = { mode: "on", changedAt: null, 
 
 /**
  * Where the signed agent events go (work order agent-team, TC4): the receiving address and On/Off for
- * each agent that listens (Admin, Inventory), and which agent gets which event type. ONE secret
- * (HUB_WEBHOOK_SECRET) signs everything, so there is no secret here. An empty address means "no
+ * each agent that listens (Admin, Inventory), and which agent gets which event type. Work order C6b
+ * adds, per agent, up to five custom headers and an own HMAC signing secret, both stored ENCRYPTED
+ * (services/settingSecrets.ts) and never returned: GET and PUT answer a masked view (agentWebhooksView).
+ * Admin with no own secret signs with HUB_WEBHOOK_SECRET (services/hubEvents.ts signingSecretFor). An empty address means "no
  * address - the agent will poll": the event is recorded and kept. The Admin target with no address
  * falls back to the HUB_AGENT_WEBHOOK_URL environment variable (services/hubEvents.ts
  * resolveTargetUrl). `routes` holds ONLY the event types Kyle re-pointed; every other type goes where
@@ -90,6 +94,27 @@ export function isAllowedWebhookUrl(text: string): boolean {
   return url.protocol === "http:" && process.env.NODE_ENV !== "production";
 }
 
+/**
+ * A custom header or signing secret as STORED (work order C6b): the value is AES-256-GCM ciphertext
+ * (services/settingSecrets.ts), `masked` is the "••••" + last four the screen shows. Nothing in this
+ * shape can be turned back into the value without AGENT_KEY_PEPPER, and the GET answer never carries
+ * `enc` at all (agentWebhooksView below).
+ */
+const storedHeaderSchema = z
+  .object({
+    name: z.string().superRefine((v, ctx) => {
+      // Shape only: a row saved before a name became reserved must still read (the sender skips it).
+      const problem = webhookHeaderNameShapeProblem(v);
+      if (problem) ctx.addIssue({ code: "custom", message: problem });
+    }),
+    enc: z.string().min(1).max(8000),
+    masked: z.string().max(20),
+  })
+  .strict();
+const storedSigningSecretSchema = z
+  .object({ enc: z.string().min(1).max(500), masked: z.string().max(20), createdAt: z.string() })
+  .strict();
+
 export const agentWebhooksSchema = z
   .object({
     targets: z
@@ -99,6 +124,12 @@ export const agentWebhooksSchema = z
           url: z.string().trim().max(500).nullable().transform((v) => (v === "" ? null : v))
             .refine((v) => v === null || isAllowedWebhookUrl(v), WEBHOOK_URL_ERROR),
           enabled: z.boolean(),
+          headers: z
+            .array(storedHeaderSchema)
+            .max(WEBHOOK_HEADERS_MAX, `At most ${WEBHOOK_HEADERS_MAX} custom headers per agent.`)
+            .refine((list) => new Set(list.map((h) => h.name.toLowerCase())).size === list.length, "Each header name can be used once.")
+            .default([]),
+          signingSecret: storedSigningSecretSchema.nullable().default(null),
         }).strict(),
       )
       .max(HUB_WEBHOOK_TARGET_IDS.length)
@@ -110,11 +141,147 @@ export const agentWebhooksSchema = z
   .strict();
 
 export type AgentWebhooks = z.infer<typeof agentWebhooksSchema>;
+export type AgentWebhookTarget = AgentWebhooks["targets"][number];
+type WebhookTargetId = (typeof HUB_WEBHOOK_TARGET_IDS)[number];
 
 export const DEFAULT_AGENT_WEBHOOKS: AgentWebhooks = {
-  targets: HUB_WEBHOOK_TARGET_IDS.map((id) => ({ id, url: null, enabled: true })),
+  targets: HUB_WEBHOOK_TARGET_IDS.map((id) => ({ id, url: null, enabled: true, headers: [], signingSecret: null })),
   routes: {},
 };
+
+/** A refusal the owner-settings route answers in words (not a schema error): the status and the sentence. */
+export class OwnerSettingInputError extends Error {
+  readonly status: number;
+  constructor(message: string, status = 400) {
+    super(message);
+    this.name = "OwnerSettingInputError";
+    this.status = status;
+  }
+}
+
+/**
+ * What the screen SENDS for agentWebhooks (the PUT body): the address, On/Off and, per agent, the custom
+ * headers as {name, value?}. A header with a `value` is new or re-entered; one with no value is kept as
+ * stored (matched by name). A target that sends no `headers` at all keeps its stored headers. The
+ * signing secret is never taken from the client: only the generate / remove actions below change it.
+ */
+const webhooksInputSchema = z
+  .object({
+    targets: z.array(
+      z.object({
+        id: z.enum(HUB_WEBHOOK_TARGET_IDS),
+        url: z.string().trim().max(500).nullable(),
+        enabled: z.boolean(),
+        headers: z.array(z.object({ name: z.string().trim(), value: z.string().optional() }).strict()).optional(),
+      }).strict(),
+    ),
+    routes: z.record(z.string(), z.string()),
+  })
+  .strict();
+
+/** The PUT body -> the value to store: encrypts new header values, keeps the rest as stored. Fails closed without the pepper. */
+export function prepareAgentWebhooks(body: unknown, previous: unknown): unknown {
+  const input = webhooksInputSchema.parse(body);
+  const before = (previous as AgentWebhooks | null)?.targets ?? [];
+  return {
+    ...input,
+    targets: input.targets.map((t) => {
+      const prior = before.find((x) => x.id === t.id);
+      const priorHeaders = prior?.headers ?? [];
+      let headers = priorHeaders;
+      if (t.headers !== undefined) {
+        headers = t.headers.map((h) => {
+          if (h.value === undefined) {
+            // A header already stored is kept as it is (it may predate a newly reserved name; the sender skips it and Remove header still works).
+            const kept = priorHeaders.find((x) => x.name.toLowerCase() === h.name.toLowerCase());
+            if (!kept) throw new OwnerSettingInputError(`Enter a value for the "${h.name}" header.`);
+            return kept;
+          }
+          const nameProblem = webhookHeaderNameProblem(h.name);
+          if (nameProblem) throw new OwnerSettingInputError(nameProblem);
+          const value = h.value.trim();
+          const valueProblem = webhookHeaderValueProblem(value);
+          if (valueProblem) throw new OwnerSettingInputError(`${h.name}: ${valueProblem}`);
+          if (!settingSecretsAvailable()) throw new OwnerSettingInputError(PEPPER_UNSET_MESSAGE, 409);
+          return { name: h.name, enc: encryptSecret(value), masked: maskSecret(value) };
+        });
+      }
+      return { id: t.id, url: t.url, enabled: t.enabled, headers, signingSecret: prior?.signingSecret ?? null };
+    }),
+  };
+}
+
+export type SecretSource = "own" | "env" | "none";
+
+/** Which signing secret a target signs with: its own; for Admin with none, the HUB_WEBHOOK_SECRET variable; else none. */
+export function signingSecretSource(target: Pick<AgentWebhookTarget, "id" | "signingSecret">): SecretSource {
+  if (target.signingSecret) return "own";
+  if (target.id === "admin" && process.env.HUB_WEBHOOK_SECRET) return "env";
+  return "none";
+}
+
+/**
+ * The stored value as ANY reader gets it (GET and PUT /owner-settings/agentWebhooks): both agents, the
+ * header names with "••••" + last four, the signing secret as "••••" + last four, and which secret is
+ * in use. Never `enc`, so nothing in an answer can be decrypted.
+ */
+export function agentWebhooksView(value: unknown) {
+  const v = value as AgentWebhooks;
+  return {
+    targets: HUB_WEBHOOK_TARGET_IDS.map((id) => {
+      const t: AgentWebhookTarget = v.targets.find((x) => x.id === id) ?? { id, url: null, enabled: true, headers: [], signingSecret: null };
+      return {
+        id,
+        url: t.url,
+        enabled: t.enabled,
+        headers: t.headers.map((h) => ({ name: h.name, masked: h.masked })),
+        signingSecret: t.signingSecret ? { masked: t.signingSecret.masked, createdAt: t.signingSecret.createdAt } : null,
+        secretSource: signingSecretSource(t),
+      };
+    }),
+    routes: v.routes,
+  };
+}
+
+/** Read-only facts beside the value: can secrets be stored at all (AGENT_KEY_PEPPER set)? A boolean, never the pepper. */
+export function agentWebhooksStatus(): { pepperSet: boolean } {
+  return { pepperSet: settingSecretsAvailable() };
+}
+
+async function changeTarget(id: WebhookTargetId, change: (t: AgentWebhookTarget) => AgentWebhookTarget, db: PrismaClient): Promise<void> {
+  const current = await getAgentWebhooks(db);
+  const all: AgentWebhookTarget[] = HUB_WEBHOOK_TARGET_IDS.map((tid) => current.targets.find((x) => x.id === tid)
+    ?? { id: tid, url: null, enabled: true, headers: [], signingSecret: null });
+  await saveOwnerSetting("agentWebhooks", { ...current, targets: all.map((t) => (t.id === id ? change(t) : t)) }, db);
+}
+
+/**
+ * Make (or replace) one agent's own signing secret. Returns the plaintext ONCE, for the answer that
+ * created it; only the ciphertext and the masked tail are kept. Fails closed with no pepper.
+ */
+export async function generateWebhookSigningSecret(
+  id: WebhookTargetId, db: PrismaClient = defaultPrisma,
+): Promise<{ secret: string; masked: string; replaced: boolean }> {
+  if (!settingSecretsAvailable()) throw new OwnerSettingInputError(PEPPER_UNSET_MESSAGE, 409);
+  const secret = generateSigningSecret();
+  const masked = maskSecret(secret);
+  let replaced = false;
+  await changeTarget(id, (t) => {
+    replaced = t.signingSecret !== null;
+    return { ...t, signingSecret: { enc: encryptSecret(secret), masked, createdAt: new Date().toISOString() } };
+  }, db);
+  return { secret, masked, replaced };
+}
+
+/** Remove one agent's own signing secret (Admin then signs with HUB_WEBHOOK_SECRET again, Inventory has none). */
+export async function removeWebhookSigningSecret(id: WebhookTargetId, db: PrismaClient = defaultPrisma): Promise<boolean> {
+  let had = false;
+  await changeTarget(id, (t) => {
+    had = t.signingSecret !== null;
+    return { ...t, signingSecret: null };
+  }, db);
+  return had;
+}
 
 /**
  * Which AI message categories go out WITHOUT a person pressing Approve (work order agent-team, BA8).
@@ -141,7 +308,7 @@ export const hubAutoSendSchema = z
 /**
  * When the waiting-approval reminder may go out (work order agent-team, U8, team answer 8): the hours of
  * the day, America/Chicago. The days are NOT a setting: a reminder goes out Monday to Friday only (the same
- * fixed weekday rule as every customer text, shared/sms/quietHours.ts isSendableNow), and the card says so
+ * fixed weekday rule of shared/sms/quietHours.ts isReminderSendableNow; customer texts are open all seven days since 2026-11-22 and use a different helper), and the card says so
  * in plain text. Default 8:00 AM to 8:00 PM. Unlike the customer quiet-hours window this one may be set
  * wider or narrower: it is Kyle's own reminder, not a message to a customer. Kyle only.
  */
@@ -199,6 +366,10 @@ export interface OwnerSettingDef {
   /** Read-only facts the screen needs beside the value (not stored, not writable), sent with GET and PUT. */
   status?: () => unknown;
   stamp?: (body: unknown, actorName: string, now: Date) => unknown;
+  /** Turns the request body into the value to store, given the value before it (encrypts what must be encrypted). May throw OwnerSettingInputError. */
+  prepare?: (body: unknown, previous: unknown) => unknown;
+  /** The value as GET and PUT answer it, when that must differ from the stored one (secrets masked). */
+  view?: (stored: unknown) => unknown;
   /** Called after a save, with the value before it, the value saved and the actor's name. For the key's own audit. */
   onSaved?: (previous: unknown, next: unknown, actorName: string) => void;
 }
@@ -210,13 +381,17 @@ export const OWNER_SETTINGS: Record<OwnerSettingKey, OwnerSettingDef> = {
     schema: agentWebhooksSchema,
     default: DEFAULT_AGENT_WEBHOOKS as unknown,
     guard: "kyle",
-    // The address itself is never logged (it is the place the events go); only that it changed.
+    status: agentWebhooksStatus,
+    prepare: prepareAgentWebhooks,
+    view: agentWebhooksView,
+    // The address itself is never logged (it is the place the events go), and no header or secret VALUE
+    // ever is: only that an address is set, how many headers there are and whether there is an own secret.
     onSaved: (_previous, next, actorName) => {
       const v = next as AgentWebhooks;
       logSystemEvent("info", "agent_events", "Agent webhook addresses changed", {
         route: "PUT /owner-settings/agentWebhooks",
         actor: actorName,
-        targets: v.targets.map((t) => ({ id: t.id, set: t.url !== null, enabled: t.enabled })),
+        targets: v.targets.map((t) => ({ id: t.id, set: t.url !== null, enabled: t.enabled, headers: t.headers.length, ownSecret: t.signingSecret !== null })),
         routes: v.routes,
       });
     },

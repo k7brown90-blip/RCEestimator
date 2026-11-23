@@ -16,7 +16,7 @@
  *           hold, so a text that can never go out is refused at Approve (with a send_blocked audit row), not
  *           parked until the switch is turned on and refused then:
  *             1. a message with no class is refused;
- *             2. marketing is ALWAYS refused in this build ("No marketing text opt-in on record"), with one
+ *             2. marketing is ALWAYS refused in this build ("Red Cedar never sends marketing by text"), with one
  *                send_blocked row and the reason on the card - never held, so it cannot release later;
  *             3. transactional keeps the consent gate (services/twilio.ts smsConsentFor, the same question
  *                sendSms asks);

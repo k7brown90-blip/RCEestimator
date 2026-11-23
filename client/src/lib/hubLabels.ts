@@ -61,6 +61,7 @@ export const THREAD_KIND_LABELS: Record<string, string> = {
   team: "Team",
   dev: "Dev",
   training: "Training",
+  group: "Group",
 };
 
 export const threadKindLabel = (kind: string): string => THREAD_KIND_LABELS[kind] ?? kind;
@@ -77,6 +78,7 @@ export function authorLabel(authorType: string, display: string): string {
 export function postButtonLabel(kind: string): string {
   if (kind === "job") return "Post to crew";
   if (kind === "team") return "Post to team";
+  if (kind === "group") return "Post to group";
   return "Post";
 }
 

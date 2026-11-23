@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_QUIET_WINDOW, isSendableNow, isValidQuietWindow, nextSendableAt, parseClock,
+  DEFAULT_QUIET_WINDOW, isReminderSendableNow, isSendableNow, isValidQuietWindow, nextReminderSendableAt, nextSendableAt, parseClock,
 } from "../shared/sms/quietHours";
 
 /**
- * Customer SMS goes out only 8:00 AM to 8:00 PM, never Saturday or Sunday (work order agent-team,
- * step 0). Every instant is written in UTC so the test cannot depend on the machine's own zone; the
+ * Customer SMS goes out 8:00 AM to 8:00 PM on ALL SEVEN days (Kyle, 2026-11-22: "Weekends should be open to
+ * customer texts 8AM - 8PM"); Kyle's own approval reminders keep Monday to Friday (work order agent-team, U8). Every instant is written in UTC so the test cannot depend on the machine's own zone; the
  * Chicago reading is in the comment. 2026 US daylight saving: springs forward Sun Mar 8, falls back
  * Sun Nov 1. Nov 20 2026 is a Friday.
  */
@@ -26,16 +26,23 @@ describe("isSendableNow", () => {
     expect(isSendableNow(utc("2026-11-24T02:00:00Z"))).toBe(false); // Mon 8:00 PM CST
   });
 
-  it("is never sendable on Saturday or Sunday, even at noon", () => {
-    expect(isSendableNow(utc("2026-11-21T18:00:00Z"))).toBe(false); // Sat noon CST
-    expect(isSendableNow(utc("2026-11-22T18:00:00Z"))).toBe(false); // Sun noon CST
+  it("is sendable on Saturday and Sunday inside the same 8-to-8 window", () => {
+    expect(isSendableNow(utc("2026-11-21T18:00:00Z"))).toBe(true); // Sat noon CST
+    expect(isSendableNow(utc("2026-11-22T18:00:00Z"))).toBe(true); // Sun noon CST
+    expect(isSendableNow(utc("2026-11-21T13:59:00Z"))).toBe(false); // Sat 7:59 AM CST
+    expect(isSendableNow(utc("2026-11-21T14:00:00Z"))).toBe(true); // Sat 8:00 AM CST
+    expect(isSendableNow(utc("2026-11-22T01:59:00Z"))).toBe(true); // Sat 7:59 PM CST
+    expect(isSendableNow(utc("2026-11-22T02:00:00Z"))).toBe(false); // Sat 8:00 PM CST
+    expect(isSendableNow(utc("2026-11-22T14:00:00Z"))).toBe(true); // Sun 8:00 AM CST
+    expect(isSendableNow(utc("2026-11-23T02:00:00Z"))).toBe(false); // Sun 8:00 PM CST
   });
 
-  it("reads Friday evening and Monday morning by the Chicago date, not the UTC date", () => {
-    // Fri 7:30 PM CST is already Saturday in UTC and is still sendable.
+  it("reads the day by the Chicago date, not the UTC date", () => {
+    // Fri 7:30 PM CST is already Saturday in UTC and is sendable.
     expect(isSendableNow(utc("2026-11-21T01:30:00Z"))).toBe(true);
-    // Sat 9 AM CST is Saturday in both.
-    expect(isSendableNow(utc("2026-11-21T15:00:00Z"))).toBe(false);
+    // Sat 7:30 PM CST is Sunday in UTC; Sat 9 PM CST is closed on the hour rule, not the day.
+    expect(isSendableNow(utc("2026-11-22T01:30:00Z"))).toBe(true);
+    expect(isSendableNow(utc("2026-11-22T03:00:00Z"))).toBe(false);
   });
 
   it("follows daylight saving: 8 AM / 8 PM Chicago is a different UTC hour in summer", () => {
@@ -51,8 +58,8 @@ describe("isSendableNow", () => {
     expect(isSendableNow(utc("2026-03-07T02:00:00Z"))).toBe(false); // Fri 8:00 PM CST
     expect(isSendableNow(utc("2026-03-11T00:59:00Z"))).toBe(true); // Tue 7:59 PM CDT
     expect(isSendableNow(utc("2026-03-11T01:00:00Z"))).toBe(false); // Tue 8:00 PM CDT
-    // Sunday Mar 8 itself, the day of the change, is a weekend.
-    expect(isSendableNow(utc("2026-03-08T18:00:00Z"))).toBe(false);
+    // Sunday Mar 8 itself, the day of the change, is open like any other day (8 AM CST/CDT boundary: 2 AM change).
+    expect(isSendableNow(utc("2026-03-08T18:00:00Z"))).toBe(true);
   });
 
   it("honours a custom window", () => {
@@ -89,14 +96,19 @@ describe("nextSendableAt", () => {
     expect(nextSendableAt(at).getTime()).toBe(at.getTime());
   });
 
-  it("approved Friday 9 PM Chicago -> Monday 8:00 AM Chicago", () => {
-    expect(next("2026-11-21T03:00:00Z")).toBe("2026-11-23T14:00:00.000Z"); // Fri 9 PM CST -> Mon 8 AM CST
+  it("approved Friday 9 PM Chicago -> Saturday 8:00 AM Chicago", () => {
+    expect(next("2026-11-21T03:00:00Z")).toBe("2026-11-21T14:00:00.000Z"); // Fri 9 PM CST -> Sat 8 AM CST
   });
 
-  it("a weekend moment waits for Monday 8:00 AM", () => {
-    expect(next("2026-11-21T18:00:00Z")).toBe("2026-11-23T14:00:00.000Z"); // Sat noon
-    expect(next("2026-11-22T23:00:00Z")).toBe("2026-11-23T14:00:00.000Z"); // Sun 5 PM
-    expect(next("2026-11-23T05:00:00Z")).toBe("2026-11-23T14:00:00.000Z"); // Sun 11 PM CST
+  it("a weekend moment inside the window is sendable as it is", () => {
+    expect(next("2026-11-21T18:00:00Z")).toBe("2026-11-21T18:00:00.000Z"); // Sat noon
+    expect(next("2026-11-22T23:00:00Z")).toBe("2026-11-22T23:00:00.000Z"); // Sun 5 PM
+  });
+
+  it("a weekend moment outside the window waits for the next 8:00 AM, weekend or not", () => {
+    expect(next("2026-11-21T12:00:00Z")).toBe("2026-11-21T14:00:00.000Z"); // Sat 6 AM -> Sat 8 AM
+    expect(next("2026-11-22T03:00:00Z")).toBe("2026-11-22T14:00:00.000Z"); // Sat 9 PM -> Sun 8 AM
+    expect(next("2026-11-23T05:00:00Z")).toBe("2026-11-23T14:00:00.000Z"); // Sun 11 PM CST -> Mon 8 AM
   });
 
   it("before opening on a business day waits for that same morning", () => {
@@ -108,12 +120,14 @@ describe("nextSendableAt", () => {
     expect(next("2026-11-24T02:00:00Z")).toBe("2026-11-24T14:00:00.000Z"); // Mon 8 PM -> Tue 8 AM
   });
 
-  it("crosses the fall-back change: Friday 9 PM CDT -> Monday 8 AM CST", () => {
-    expect(next("2026-10-31T02:00:00Z")).toBe("2026-11-02T14:00:00.000Z");
+  it("crosses the fall-back change: Saturday 9 PM CDT -> Sunday 8 AM CST", () => {
+    // Sat Oct 31 9 PM CDT = Nov 1 02:00Z; the clock falls back at 2 AM Sunday, so 8 AM Sunday is CST = 14:00Z.
+    expect(next("2026-11-01T02:00:00Z")).toBe("2026-11-01T14:00:00.000Z");
   });
 
-  it("crosses the spring-forward change: Friday 9 PM CST -> Monday 8 AM CDT", () => {
-    expect(next("2026-03-07T03:00:00Z")).toBe("2026-03-09T13:00:00.000Z");
+  it("crosses the spring-forward change: Saturday 9 PM CST -> Sunday 8 AM CDT", () => {
+    // Sat Mar 7 9 PM CST = Mar 8 03:00Z; the clock springs forward at 2 AM Sunday, so 8 AM Sunday is CDT = 13:00Z.
+    expect(next("2026-03-08T03:00:00Z")).toBe("2026-03-08T13:00:00.000Z");
   });
 
   it("the result is always sendable and never earlier than the input", () => {
@@ -132,6 +146,29 @@ describe("nextSendableAt", () => {
     expect(next("2026-11-18T01:30:00Z", "America/New_York")).toBe("2026-11-18T13:00:00.000Z");
     // The same instant is sendable as-is in Chicago.
     expect(next("2026-11-18T01:30:00Z")).toBe("2026-11-18T01:30:00.000Z");
+  });
+});
+
+describe("Kyle's approval reminder keeps Monday to Friday (team answer 8)", () => {
+  it("is sendable on a weekday inside the window and never on a Saturday or Sunday", () => {
+    expect(isReminderSendableNow(utc("2026-11-24T18:00:00Z"))).toBe(true); // Tue noon CST
+    expect(isReminderSendableNow(utc("2026-11-24T14:00:00Z"))).toBe(true); // Tue 8 AM CST
+    expect(isReminderSendableNow(utc("2026-11-25T02:00:00Z"))).toBe(false); // Tue 8 PM CST
+    expect(isReminderSendableNow(utc("2026-11-21T18:00:00Z"))).toBe(false); // Sat noon CST
+    expect(isReminderSendableNow(utc("2026-11-22T18:00:00Z"))).toBe(false); // Sun noon CST
+  });
+
+  it("the same Saturday instant is open to a customer and closed to a reminder: the rules do not drift", () => {
+    const sat = utc("2026-11-21T18:00:00Z");
+    expect(isSendableNow(sat)).toBe(true);
+    expect(isReminderSendableNow(sat)).toBe(false);
+  });
+
+  it("a weekend moment waits for Monday 8:00 AM, and Friday 9 PM does too", () => {
+    const nextR = (iso: string) => nextReminderSendableAt(utc(iso)).toISOString();
+    expect(nextR("2026-11-21T18:00:00Z")).toBe("2026-11-23T14:00:00.000Z"); // Sat noon
+    expect(nextR("2026-11-21T03:00:00Z")).toBe("2026-11-23T14:00:00.000Z"); // Fri 9 PM CST
+    expect(nextR("2026-11-24T11:00:00Z")).toBe("2026-11-24T14:00:00.000Z"); // Tue 5 AM
   });
 });
 

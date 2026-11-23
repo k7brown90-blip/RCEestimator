@@ -3,7 +3,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-describe("Notification templates", () => {
+// The first test pays the cold import of services/notifications, which now pulls in the SMS composer and the hub
+// (U9); on this machine that alone is ~5.4 s, past vitest's 5 s default. The templates themselves are instant.
+describe("Notification templates", { timeout: 30_000 }, () => {
   it("generates correct customer work scheduled SMS", async () => {
     const { customerWorkScheduled } = await import("../src/services/notifications");
     const msg = customerWorkScheduled({

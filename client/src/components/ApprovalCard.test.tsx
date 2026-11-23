@@ -2,7 +2,7 @@
  * The ONE approval card (work order agent-team, U4 + TC1/TC3): what it says (header from the frozen class and
  * purpose, the chip, "When you approve", "Sends as:"), and what its three buttons do - Approve and send (asks
  * first), Edit then "Send my version", Reject (a reason first). Greyed, never hidden, with the reason printed:
- * the approve_drafts sentence for someone without the power, and "No marketing text opt-in on record" for a
+ * the approve_drafts sentence for someone without the power, and "Red Cedar never sends marketing by text" for a
  * text that can never go. A held text has "Send now" and a failed one "Try sending again"; decided cards show
  * who and what, with the delivery chip for a sent email.
  */
@@ -98,14 +98,14 @@ describe("greyed, never hidden, with the reason printed", () => {
     expect(screen.getByTestId("approval-lock")).toHaveTextContent(REASON);
   });
 
-  it("a marketing text greys Approve and Edit with 'No marketing text opt-in on record', but Reject still works", async () => {
+  it("a marketing text greys Approve and Edit with 'Red Cedar never sends marketing by text', but Reject still works", async () => {
     show(approvalCard({
       channel: "sms", headerLine: "Text · Marketing", recipientAddress: null, subject: null, sendsAs: null,
-      approve: { label: "Approve and send", confirm: "Text this to Jane? It goes to the customer.", blockedReason: "No marketing text opt-in on record", editBlockedReason: "No marketing text opt-in on record" },
+      approve: { label: "Approve and send", confirm: "Text this to Jane? It goes to the customer.", blockedReason: "Red Cedar never sends marketing by text", editBlockedReason: "Red Cedar never sends marketing by text" },
     }));
     expect(btn("Approve and send")).toBeDisabled();
     expect(btn("Edit")).toBeDisabled();
-    expect(screen.getByTestId("approval-lock")).toHaveTextContent("No marketing text opt-in on record");
+    expect(screen.getByTestId("approval-lock")).toHaveTextContent("Red Cedar never sends marketing by text");
     expect(btn("Reject")).toBeEnabled();
     expect(screen.getByTestId("approval-card")).toHaveTextContent("Text · Marketing");
   });

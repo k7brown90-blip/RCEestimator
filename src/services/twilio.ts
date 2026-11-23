@@ -203,7 +203,7 @@ export async function sendSms(
   if (!entry) return refuse("no_class", "SMS has an unknown send type");
   if (entry.messageClass !== opts.messageClass) return refuse("class_mismatch", "SMS class does not match its send type");
 
-  if (opts.messageClass === "marketing") return refuse("marketing_not_opted_in", "Marketing SMS has no opt-in on record");
+  if (opts.messageClass === "marketing") return refuse("marketing_not_opted_in", "Red Cedar never sends marketing by text");
 
   if (opts.messageClass === "internal") {
     // Ruling A: an internal text skips the consent gate and the footer, so it may only go to the people

@@ -8,7 +8,7 @@ export const SEND_BLOCK_REASONS = {
   no_class: "This text has no class, so no rule can be applied to it.",
   no_purpose: "This text has no reason label, so it cannot be sent.",
   class_mismatch: "This text's class does not match its send type, so it cannot be sent.",
-  marketing_not_opted_in: "No marketing text opt-in on record",
+  marketing_not_opted_in: "Red Cedar never sends marketing by text",
   internal_not_allowed: "Internal texts go only to Kyle, the alert number and the technicians.",
   review_never_sms: "A review request is never sent by text. Ask on site (QR or email) instead.",
   no_phone: "There is no phone number on file to text.",

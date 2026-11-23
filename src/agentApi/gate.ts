@@ -25,8 +25,9 @@
  * Revocation needs no extra step: the key row is loaded on every request, so a revoke or a scope edit
  * applies to the very next call (the stateless /mcp ruling, team answer 12).
  *
- * The gate is exported and mounted nowhere yet: AGENT_KEY_ROUTES is empty until /mcp (Step 2) and
- * REST /api/hub/* (K-U7) add their entries. Nothing here is public: it adds nothing to PUBLIC_ROUTES.
+ * The gate is mounted by pinAuthMiddleware (middleware/pinAuth.ts) for exactly the routes in AGENT_KEY_ROUTES:
+ * today the three REST /api/hub/* routes (K-U7, src/agentApi/hubDoor.ts); /mcp (Step 2) adds its own entry.
+ * Nothing here is public: it adds nothing to PUBLIC_ROUTES.
  */
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { rateLimit } from "express-rate-limit";

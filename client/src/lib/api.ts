@@ -66,7 +66,9 @@ import type {
   AgentAccessState,
   AgentKeyCreateInput,
   AgentKeyPatchInput,
-  AgentWebhooksValue,
+  AgentWebhooksResponse,
+  AgentWebhooksSave,
+  WebhookTestResult,
   HubDecision,
   HubAutoSendResponse,
   HubNotifyResponse,
@@ -116,7 +118,7 @@ import type { FinancingPlan } from "../../../shared/financing";
 import type { QuoteRange } from "../../../shared/quoteMoney";
 import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView, ReceiptReportOption } from "../../../shared/jobCompletion";
 import type {
-  ApprovalsResponse, AuditResponse, HubBadge, ThreadDetail, ThreadsResponse, TimelineResponse,
+  ApprovalsResponse, AuditResponse, GroupChoices, HubBadge, ThreadDetail, ThreadsResponse, TimelineResponse,
 } from "../../../shared/hub/views";
 export type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView, ReceiptReportOption };
 
@@ -1576,10 +1578,12 @@ export const api = {
   setAgentAccess: (mode: AgentAccessMode) =>
     request<{ key: "agentAccess"; value: AgentAccessState }>("/owner-settings/agentAccess", { method: "PUT", body: JSON.stringify({ mode }) }),
   // ── Settings -> "Agent events" (BA5) and "Agent webhooks" (TC4). The log never carries a payload, an address or the secret. ──
-  hubEvents: (filter: { status?: string; type?: string; before?: string } = {}) => {
+  hubEvents: (filter: { status?: string; type?: string; target?: string; limit?: number; before?: string } = {}) => {
     const q = new URLSearchParams();
     if (filter.status && filter.status !== "all") q.set("status", filter.status);
     if (filter.type) q.set("type", filter.type);
+    if (filter.target) q.set("target", filter.target);
+    if (filter.limit) q.set("limit", String(filter.limit));
     if (filter.before) q.set("before", filter.before);
     const qs = q.toString();
     return request<HubEventsPage>(`/hub/events${qs ? `?${qs}` : ""}`);
@@ -1602,6 +1606,15 @@ export const api = {
     return request<ThreadsResponse>(`/hub/threads${qs ? `?${qs}` : ""}`);
   },
   hubThread: (id: string) => request<ThreadDetail>(`/hub/threads/${encodeURIComponent(id)}`),
+  // ── Office-made group chats (C7): Messages -> New group chat, and the group's own drawer. ──
+  hubGroupChoices: () => request<GroupChoices>("/hub/groups/choices"),
+  createHubGroup: (input: { name: string; technicianIds: string[]; agentKeyIds: string[] }) =>
+    request<{ id: string }>("/hub/groups", { method: "POST", body: JSON.stringify(input) }),
+  addHubGroupMembers: (id: string, input: { technicianIds: string[]; agentKeyIds: string[] }) =>
+    request<ThreadDetail>(`/hub/groups/${encodeURIComponent(id)}/members`, { method: "POST", body: JSON.stringify(input) }),
+  removeHubGroupMember: (id: string, input: { technicianId?: string; agentKeyId?: string }) =>
+    request<ThreadDetail>(`/hub/groups/${encodeURIComponent(id)}/members`, { method: "DELETE", body: JSON.stringify(input) }),
+  deleteHubGroup: (id: string) => request<void>(`/hub/groups/${encodeURIComponent(id)}`, { method: "DELETE" }),
   patchHubThread: (id: string, input: { title?: string; status?: "open" | "closed" }) =>
     request<ThreadDetail>(`/hub/threads/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
   /** Open a job's crew thread, making it the first time. */
@@ -1667,9 +1680,16 @@ export const api = {
     request<HubAutoSendResponse>("/owner-settings/hubAutoSend", { method: "PUT", body: JSON.stringify({ categories }) }),
   resendHubEvent: (id: string) =>
     request<{ event: HubEventView }>(`/hub/events/${encodeURIComponent(id)}/resend`, { method: "POST" }),
-  agentWebhooks: () => request<{ key: "agentWebhooks"; value: AgentWebhooksValue }>("/owner-settings/agentWebhooks"),
-  saveAgentWebhooks: (value: AgentWebhooksValue) =>
-    request<{ key: "agentWebhooks"; value: AgentWebhooksValue }>("/owner-settings/agentWebhooks", { method: "PUT", body: JSON.stringify(value) }),
+  agentWebhooks: () => request<AgentWebhooksResponse>("/owner-settings/agentWebhooks"),
+  saveAgentWebhooks: (value: AgentWebhooksSave) =>
+    request<AgentWebhooksResponse>("/owner-settings/agentWebhooks", { method: "PUT", body: JSON.stringify(value) }),
+  /** Make or replace an agent's own signing secret. The answer is the ONLY time the secret is shown. */
+  generateWebhookSecret: (target: string) =>
+    request<{ secret: string; masked: string; replaced: boolean }>(`/hub/webhooks/${encodeURIComponent(target)}/signing-secret`, { method: "POST" }),
+  removeWebhookSecret: (target: string) =>
+    request<{ removed: boolean }>(`/hub/webhooks/${encodeURIComponent(target)}/signing-secret`, { method: "DELETE" }),
+  sendWebhookTest: (target: string) =>
+    request<WebhookTestResult>(`/hub/webhooks/${encodeURIComponent(target)}/test`, { method: "POST" }),
   // ── Who is signed in (HA2/HA5) and Team -> "CRM login" (HA4, Kyle only). ──
   session: () => request<SessionView>("/auth/session"),
   crmLogins: () => request<{ logins: CrmLoginView[] }>("/crm-logins"),

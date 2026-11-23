@@ -10,7 +10,8 @@
 import { Prisma, type HubThread, type PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import { stagedPhotos } from "./hubAttachments";
-import { HubError, findVisibleThread, maskedRecipient, teamPostRefusal, unreadCounts, visibleThreadWhere, type HubReader } from "./hub";
+import { groupView } from "./hubGroups";
+import { HubError, findVisibleThread, maskedRecipient, postRefusal, unreadCounts, visibleThreadWhere, type HubReader } from "./hub";
 import type {
   HubBadge, ThreadDetail, ThreadLastLine, ThreadMessage, ThreadRow, ThreadsResponse,
 } from "../../shared/hub/views";
@@ -30,7 +31,16 @@ export interface ThreadListFilter {
   status?: string;
   needsApproval?: boolean;
   q?: string;
+  /** Only these kinds (an agent key: the ones its scopes open for reading). Narrows `kind`, never widens the reader's own rule. */
+  kinds?: readonly string[];
+  /** Only threads with a message after this time (an agent's `since`). */
+  since?: Date;
+  /** Keep each last line whole instead of cutting it at 140: the agent door scrubs the full text first, then cuts. */
+  wholeLastLine?: boolean;
 }
+
+/** The longest last line the Messages page shows. */
+export const LAST_LINE_MAX = 140;
 
 function rowOf(t: HubThread, unread: number, pending: number, last: ThreadLastLine | null): ThreadRow {
   return {
@@ -41,7 +51,7 @@ function rowOf(t: HubThread, unread: number, pending: number, last: ThreadLastLi
 }
 
 /** The newest message of each thread that was not deleted, one query for all of them. */
-async function lastLines(db: PrismaClient, ids: string[]): Promise<Map<string, ThreadLastLine>> {
+async function lastLines(db: PrismaClient, ids: string[], whole = false): Promise<Map<string, ThreadLastLine>> {
   const out = new Map<string, ThreadLastLine>();
   if (ids.length === 0) return out;
   const rows = await db.$queryRaw<Array<{ threadId: string; authorType: string; authorDisplay: string; status: string; body: string; createdAt: Date }>>`
@@ -53,7 +63,7 @@ async function lastLines(db: PrismaClient, ids: string[]): Promise<Map<string, T
   for (const r of rows) {
     out.set(r.threadId, {
       authorType: r.authorType, authorDisplay: r.authorDisplay, status: r.status as HubMessageStatus,
-      text: r.body.length > 140 ? `${r.body.slice(0, 140)}…` : r.body, at: r.createdAt.toISOString(),
+      text: whole || r.body.length <= LAST_LINE_MAX ? r.body : `${r.body.slice(0, LAST_LINE_MAX)}…`, at: r.createdAt.toISOString(),
     });
   }
   return out;
@@ -75,8 +85,12 @@ export async function countNeedsApproval(reader: HubReader, db: PrismaClient = d
 export async function listThreads(
   reader: HubReader, filter: ThreadListFilter, canApprove: boolean, db: PrismaClient = defaultPrisma,
 ): Promise<ThreadsResponse> {
-  const and: Prisma.HubThreadWhereInput[] = [visibleThreadWhere(reader), { messages: { some: {} } }];
+  // A conversation is listed once somebody has said something in it - except a GROUP, which the office made and its members
+  // must be able to open and write in before the first word is said (C7).
+  const and: Prisma.HubThreadWhereInput[] = [visibleThreadWhere(reader), { OR: [{ messages: { some: {} } }, { kind: "group" }] }];
   if (filter.kind) and.push({ kind: filter.kind });
+  if (filter.kinds) and.push({ kind: { in: [...filter.kinds] } });
+  if (filter.since) and.push({ lastMessageAt: { gt: filter.since } });
   // The approval queue never hides a draft because its thread was closed: countNeedsApproval counts every
   // visible thread, so the list behind "Needs approval (n)" lists every one of them too.
   const status = filter.status ?? "open";
@@ -98,7 +112,7 @@ export async function listThreads(
   const threads = await db.hubThread.findMany({ where: { AND: and }, orderBy: { lastMessageAt: "desc" }, take: THREAD_LIST_LIMIT });
   const ids = threads.map((t) => t.id);
   const [unread, pending, last, needsApproval] = await Promise.all([
-    unreadCounts(reader, db, ids), pendingByThread(db, ids), lastLines(db, ids), countNeedsApproval(reader, db),
+    unreadCounts(reader, db, ids), pendingByThread(db, ids), lastLines(db, ids, filter.wholeLastLine), countNeedsApproval(reader, db),
   ]);
   return {
     threads: threads.map((t) => rowOf(t, unread.byThread[t.id] ?? 0, pending.get(t.id) ?? 0, last.get(t.id) ?? null)),
@@ -107,7 +121,9 @@ export async function listThreads(
   };
 }
 
-export async function threadDetail(reader: HubReader, threadId: string, db: PrismaClient = defaultPrisma): Promise<ThreadDetail> {
+export async function threadDetail(
+  reader: HubReader, threadId: string, db: PrismaClient = defaultPrisma, opts: { wholeLastLine?: boolean } = {},
+): Promise<ThreadDetail> {
   const thread = await findVisibleThread(reader, threadId, db);
   if (!thread) throw new HubError("Conversation not found", 404);
 
@@ -115,11 +131,12 @@ export async function threadDetail(reader: HubReader, threadId: string, db: Pris
     db.hubMessage.findMany({ where: { threadId }, orderBy: { createdAt: "desc" }, take: THREAD_MESSAGE_LIMIT + 1 }),
     unreadCounts(reader, db, [threadId]),
     pendingByThread(db, [threadId]),
-    lastLines(db, [threadId]),
+    lastLines(db, [threadId], opts.wholeLastLine),
     db.hubReadState.findUnique({ where: { readerKey_threadId: { readerKey: reader.key, threadId } } }),
-    teamPostRefusal(reader, thread, db),
+    postRefusal(reader, thread, db),
     stagedPhotos(reader, threadId, db),
   ]);
+  const group = thread.kind === "group" ? await groupView(reader, thread, db) : null;
   const truncated = rowsDesc.length > THREAD_MESSAGE_LIMIT;
   if (truncated) rowsDesc.length = THREAD_MESSAGE_LIMIT;
   const rows = rowsDesc.reverse();
@@ -166,6 +183,7 @@ export async function threadDetail(reader: HubReader, threadId: string, db: Pris
     truncated,
     postBlock,
     staged,
+    group,
   };
 }
 

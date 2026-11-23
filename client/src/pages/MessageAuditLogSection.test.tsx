@@ -25,7 +25,7 @@ describe("Message audit log", () => {
   it("lists what happened, and 'Blocked texts' asks the server for send_blocked and shows the reason, class and send type", async () => {
     const audit = vi.spyOn(api, "hubAudit").mockImplementation(async (f) => (f?.action === "send_blocked"
       ? page([entry({
-        id: "b-1", action: "send_blocked", actionLabel: "Blocked text", reason: "No marketing text opt-in on record", messageClass: "marketing",
+        id: "b-1", action: "send_blocked", actionLabel: "Blocked text", reason: "Red Cedar never sends marketing by text", messageClass: "marketing",
         category: "seasonal_offer", summary: "marketing text (seasonal_offer) was not sent — Jane Homeowner",
       })])
       : page()));
@@ -35,7 +35,7 @@ describe("Message audit log", () => {
 
     fireEvent.change(screen.getByLabelText("Show"), { target: { value: "send_blocked" } });
     await waitFor(() => expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: "send_blocked" })));
-    expect(await screen.findByText("No marketing text opt-in on record")).toBeInTheDocument();
+    expect(await screen.findByText("Red Cedar never sends marketing by text")).toBeInTheDocument();
     expect(screen.getByText(/marketing text \(seasonal_offer\) was not sent/)).toBeInTheDocument();
     expect(screen.getByText("Blocked text")).toBeInTheDocument();
   });

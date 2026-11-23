@@ -39,7 +39,7 @@ import { LEAD_LOST_REASONS } from "../../lib/types";
 import { money } from "../../lib/utils";
 import { ACCEPTED_VIA_CHOICES, acceptanceWording, isOfficeAcceptance } from "../../../../shared/acceptance";
 import { quotedRangeText } from "../../../../shared/quoteMoney";
-import { isPastValidity } from "../../../../shared/estimateExpiry";
+import { officeAcceptanceBlock } from "../../../../shared/officeAcceptanceGate";
 import { BounceBadge } from "../BounceBadge";
 import { DeliveryChip } from "../DeliveryChip";
 import { Drawer } from "../Drawer";
@@ -209,19 +209,11 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
   const live = e ? e.status !== "void" && !lost : false;
 
   // Why "Customer accepted…" is unavailable, in words on the screen — greyed with the reason,
-  // never hidden (CLAUDE.md click-through rule 5). The same doors the server names, so the
-  // button never promises what the route will refuse. Expiry is the shared date arithmetic
-  // (createdAt + validDays), not the nightly sweep's label, so a quote that lapsed this morning
-  // reads expired here before the cron relabels it.
-  const expiresOn = e?.validDays ? new Date(new Date(e.createdAt).getTime() + e.validDays * 86_400_000) : null;
-  const pastValidity = e?.validDays ? isPastValidity({ createdAt: e.createdAt, validDays: e.validDays }) : e?.status === "expired";
-  const acceptBlock: string | null = !e ? null
-    : lost ? "Marked lost — reopen it first."
-    : e.supersededBy ? `Replaced by rev ${e.supersededBy.revision} — accept that one.`
-    : unfinished ? "Never sent to the customer — send it first."
-    : e.status === "expired" || pastValidity
-      ? `This quote expired on ${(expiresOn ?? new Date(e.createdAt)).toLocaleDateString()}. Use Copy to new to reissue at today's pricing.`
-    : null;
+  // never hidden (CLAUDE.md click-through rule 5). The ONE gate the server and the agent tools use
+  // (shared/officeAcceptanceGate.ts, TM0), so the button never promises what the route will refuse and
+  // the sentence on screen is the sentence the refusal carries. Expiry is the shared date arithmetic
+  // (createdAt + validDays), not the nightly sweep's label.
+  const acceptBlock: string | null = e ? (officeAcceptanceBlock(e)?.reason ?? null) : null;
   const financingBlock: string | null = !e ? null
     : e.status === "void" ? "This estimate is void."
     : lost ? "Marked lost - reopen it first, then send the financing link."

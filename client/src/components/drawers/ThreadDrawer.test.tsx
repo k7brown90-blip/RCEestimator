@@ -8,7 +8,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../../test/renderWithProviders";
-import { approvalCard, approvalsResponse, threadDetail, threadMessage, timeline } from "../../test/hubFixtures";
+import { approvalCard, approvalsResponse, groupView, threadDetail, threadMessage, timeline } from "../../test/hubFixtures";
+import { GROUP_CLOSED_POST_REASON, GROUP_HAS_HISTORY_REASON } from "../../../../shared/hub/groups";
 import { OWNER_NO_GRANT, PIN_SESSION } from "../../test/sessions";
 import { DrawerHost } from "./DrawerHost";
 import { api } from "../../lib/api";
@@ -59,6 +60,31 @@ describe("ThreadDrawer: a crew thread", () => {
     fireEvent.change(within(dialog).getByLabelText("Message"), { target: { value: "Bring the 200 amp base" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Post to crew" }));
     await waitFor(() => expect(posted).toHaveBeenCalledWith("thread-1", { body: "Bring the 200 amp base", clientMessageId: expect.any(String) }));
+  });
+
+  it("a group chat shows its Members panel above the messages, says 'Post to group', offers 'Close group' and no photos", async () => {
+    const dialog = await open({
+      ...threadDetail([threadMessage({ id: "m-1", body: "Truck is loaded" })], { kind: "group", title: "Install crew", visitId: null, technicianId: null }),
+      group: groupView({ messageCount: 1, canDelete: false, deleteReason: GROUP_HAS_HISTORY_REASON }),
+    });
+    expect(within(dialog).getByTestId("group-panel")).toBeInTheDocument();
+    expect(within(dialog).getByText("Members (2)")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Post to group" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Close group" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Rename" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Delete group" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Add photo" })).toBeDisabled();
+  });
+
+  it("a closed group says why it cannot be posted in and offers Reopen", async () => {
+    const dialog = await open({
+      ...threadDetail([], { kind: "group", title: "Install crew", status: "closed", visitId: null, technicianId: null }),
+      group: groupView(),
+      postBlock: GROUP_CLOSED_POST_REASON,
+    });
+    expect(within(dialog).getByRole("button", { name: "Reopen" })).toBeInTheDocument();
+    expect(within(dialog).getByText(GROUP_CLOSED_POST_REASON)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Post to group" })).toBeDisabled();
   });
 
   it("says 'Post to team' on a Team thread", async () => {

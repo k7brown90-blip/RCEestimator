@@ -115,3 +115,80 @@ export const marketingOriginalSchema = z.object({
   accessHoles: z.array(pixelBoxSchema).max(50),
 });
 export type MarketingOriginal = z.infer<typeof marketingOriginalSchema>;
+
+// ── hub reads and the draft answer (K-U7: REST /api/hub/*) ───────────────────────────────────────
+
+/**
+ * What an agent gets of a hub message on REST GET /api/hub/threads/:id/messages: the every-key message read
+ * (`messageReadSchema`, team answer 4) plus the hub's own fields. NEVER toAddress, cc, a thread's
+ * phone, the masked recipient, the send error or a record's contact details: those keys are not here,
+ * so zod strips them, and the text is the three-pass scrubbed text.
+ */
+export const hubMessageReadSchema = messageReadSchema.extend({
+  channel: z.string().max(20),
+  direction: z.string().max(20),
+  status: z.string().max(30),
+  messageClass: z.string().max(20).nullable(),
+  editedAt: z.string().nullable(),
+});
+export type HubMessageRead = z.infer<typeof hubMessageReadSchema>;
+
+export const hubThreadLastLineSchema = z.object({
+  authorType: z.string().max(40),
+  authorFirstName: z.string().nullable(),
+  status: z.string().max(30),
+  text: z.string(),
+  at: z.string(),
+});
+
+/**
+ * One thread as an agent sees it: ids, never a phone number. The title of a customer, lead or job thread is the
+ * contact's FIRST name only (null when the key's profile allows no names), "Unknown sender" for a number nobody
+ * knows; any other kind keeps its scrubbed title.
+ */
+export const hubThreadReadSchema = z.object({
+  id: z.string(),
+  kind: z.string().max(20),
+  title: z.string().nullable(),
+  status: z.string().max(20),
+  lastMessageAt: z.string(),
+  /** Messages in this thread waiting for someone to approve them. */
+  pending: z.number().int(),
+  customerId: z.string().nullable(),
+  leadId: z.string().nullable(),
+  visitId: z.string().nullable(),
+  technicianId: z.string().nullable(),
+  lastLine: hubThreadLastLineSchema.nullable(),
+});
+export type HubThreadRead = z.infer<typeof hubThreadReadSchema>;
+
+export const hubThreadListSchema = z.object({ threads: z.array(hubThreadReadSchema) });
+export const hubThreadDetailSchema = z.object({
+  thread: hubThreadReadSchema,
+  messages: z.array(hubMessageReadSchema),
+  truncated: z.boolean(),
+});
+
+/**
+ * A training thread as the Scout key sees it (amendment 16a): the thread row without the record links
+ * (customerId, leadId, visitId) and the messages in the Scout training profile (`scoutTrainingMessageSchema`).
+ */
+export const scoutTrainingThreadReadSchema = hubThreadReadSchema.omit({ customerId: true, leadId: true, visitId: true });
+export type ScoutTrainingThreadRead = z.infer<typeof scoutTrainingThreadReadSchema>;
+export const scoutTrainingThreadListSchema = z.object({ threads: z.array(scoutTrainingThreadReadSchema) });
+export const scoutTrainingThreadDetailSchema = z.object({
+  thread: scoutTrainingThreadReadSchema,
+  messages: z.array(scoutTrainingMessageSchema),
+  truncated: z.boolean(),
+});
+
+/** The answer to a draft: ids and states only. The words the agent sent are not echoed back. */
+export const hubDraftResultSchema = z.object({
+  messageId: z.string(),
+  threadId: z.string(),
+  status: z.string().max(30),
+  channel: z.string().max(20),
+  category: z.string().max(60).nullable(),
+  createdAt: z.string(),
+});
+export type HubDraftResult = z.infer<typeof hubDraftResultSchema>;
