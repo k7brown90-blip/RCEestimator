@@ -1,7 +1,8 @@
 /**
  * Settings -> "AI auto-send rules" (work order agent-team, BA8; Kyle only). Which kinds of AI message may
- * go out WITHOUT anyone pressing Approve. Every one is OFF until Kyle turns it on here; "Off means every
- * AI message waits for someone to press Approve."
+ * go out WITHOUT anyone pressing Approve. Every one is OFF until Kyle turns it on here; off means an AI's customer
+ * messages and Training replies wait for someone to press Approve. W2: AI posts in the Team, group and crew chats are NOT here -
+ * they are set per key ("Team posts publish immediately", Settings -> Agent keys) - and nothing here sends while Agent access is not On.
  *
  * Click path from the Dashboard: left nav "Settings" -> scroll to "AI auto-send rules", under "Agent
  * events" (two clicks).
@@ -25,10 +26,10 @@ import { whenText } from "../lib/hubLabels";
 import { AUTO_SEND_CATEGORIES } from "../../../shared/hub/autoSendCategories";
 
 export const AUTOSEND_LOCK_REASON = "Only Kyle's PIN sign-in can change these.";
-export const AUTOSEND_SUBTITLE = "Off means every AI message waits for someone to press Approve.";
+export const AUTOSEND_SUBTITLE = "Off means an AI's customer messages and Training replies wait for someone to press Approve. Nothing here sends while Agent access is not On. AI posts in the Team, group and job crew chats are set per key on Settings → Agent keys (\"Team posts publish immediately\").";
 export const AUTOSEND_TURN_ON_QUESTION = "Messages in this category will go out without anyone pressing Approve. Turn on?";
 export const AUTOSEND_GATE_ENV = "AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND";
-export const AUTOSEND_GATE_NOTE = `Also needs ${AUTOSEND_GATE_ENV}=on in Railway — nothing sends automatically until then.`;
+export const AUTOSEND_GATE_NOTE = `Also needs ${AUTOSEND_GATE_ENV}=on in Railway — none of these rules sends anything until then.`;
 
 const QUERY_KEY = ["hubAutoSend"] as const;
 

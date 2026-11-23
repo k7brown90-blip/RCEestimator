@@ -29,7 +29,7 @@ const access = (mode: AgentAccessMode, changedAt: string | null = null, changedB
 
 const key = (over: Partial<AgentKeyView> = {}): AgentKeyView => ({
   id: "k1", name: "Admin Agent", agentRole: "admin", environment: "live", displayPrefix: "rce_live_AbC1",
-  scopes: ["crm:read", "hub:read"], hubThreadKinds: [], writesEnabled: false, expiresAt: null, retiresAt: null,
+  scopes: ["crm:read", "hub:read"], hubThreadKinds: [], writesEnabled: false, teamPostsPublish: true, expiresAt: null, retiresAt: null,
   revokedAt: null, revokedReason: null, lastUsedAt: null, lastUsedTool: null, createdAt: "2026-11-21T10:00:00-06:00",
   createdBy: "owner", rotatedFromId: null, status: "active", ...over,
 });
@@ -87,7 +87,7 @@ describe("AgentKeysSection for Kyle", () => {
 
   // W1 (2026-11-22): the first write tool (POST /hub/messages) shipped, so the old "Write tools arrive in
   // Phase B" lock is gone; Allow writes is live for Kyle and greyed only with a real reason.
-  it("Allow writes is LIVE for Kyle, and Activity is greyed with its reason", async () => {
+  it("Allow writes is LIVE for Kyle, and so is Activity (W2: it is no longer greyed with 'arrives with the Messages hub')", async () => {
     show(data());
     await screen.findByText("Admin Agent");
     const writes = screen.getByLabelText("Allow writes for Admin Agent") as HTMLInputElement;
@@ -95,8 +95,8 @@ describe("AgentKeysSection for Kyle", () => {
     expect(writes.title).toBe("");
     expect(screen.queryByText("Write tools arrive in Phase B")).toBeNull();
     const activity = btn("Activity");
-    expect(activity.disabled).toBe(true);
-    expect(activity.title).toMatch(/Messages hub/);
+    expect(activity.disabled).toBe(false);
+    expect(screen.queryByText(/arrives with the Messages hub/)).toBeNull();
   });
 
   it("shows a retiring key as 'Retiring until <time>' with 'Revoke now', and collapses revoked keys under 'Revoked keys (n)'", async () => {
@@ -133,10 +133,12 @@ describe("Allow writes (W1: agent writes switched on)", () => {
     const confirm = vi.spyOn(window, "confirm");
     confirm.mockReturnValueOnce(false);
     fireEvent.click(screen.getByLabelText("Allow writes for Admin Agent"));
+    // W2: team posts publish at once when that key's box is ticked; a message to a customer waits for Approve unless a customer auto-send rule is on.
     expect(confirm).toHaveBeenCalledWith(
-      'Let "Admin Agent" post in Messages? Its posts in Team, group and crew chats wait for your Approve unless "Team post by an AI" '
-      + 'is on; its replies in a Training thread unless "Reply in a Training thread" is on; and a message to a customer unless '
-      + '"Appointment reminder" or "First reply to a new request" is on (under AI auto-send rules). Any of them also needs the server-side auto-send switch.',
+      'Let "Admin Agent" post in Messages? Its posts in the Team, group and crew chats are published at once when "Team posts publish immediately" is ticked for it '
+      + '(and wait for your Approve when it is not). A message to a customer waits for your Approve unless one of these rules is on under AI auto-send rules: '
+      + '"Appointment reminder" or "First reply to a new request". Its replies in a Training thread wait unless "Reply in a Training thread" is on. '
+      + 'While Agent access is paused or off, nothing an AI wrote is published or sent on its own.',
     );
     expect(update).not.toHaveBeenCalled();
     confirm.mockReturnValueOnce(true);
@@ -185,6 +187,115 @@ describe("Allow writes (W1: agent writes switched on)", () => {
     const writes = within(revoked).getByLabelText("Allow writes for Gone one") as HTMLInputElement;
     expect(writes.disabled).toBe(true);
     expect(writes.title).toBe("This key is revoked — it can no longer write");
+  });
+});
+
+describe("W2: the Messages scopes, Team posts publish immediately, and Activity", () => {
+  it("the new-key form has a Messages group with Kyle's four words as labels and the description as helper text, in his order", async () => {
+    show(data({ keys: [] }));
+    await openNewKey();
+    const messages = screen.getByText("Messages", { selector: "legend" }).closest("fieldset") as HTMLElement;
+    const labels = within(messages).getAllByRole("checkbox").map((c) => c.getAttribute("aria-label"));
+    expect(labels).toEqual(["New key scope team:read", "New key scope team:reply", "New key scope hub:read", "New key scope hub:draft"]);
+    for (const [word, helper] of [
+      ["Read team", "Read the Team, group and job crew chats"], ["Post team", "Post in the Team, group and job crew chats"],
+      ["Read customer", "Read customer conversations (and job crew chats) — not the Team or group chats"], ["Draft customer", "Draft customer messages for approval"],
+    ]) {
+      expect(within(messages).getByText(word)).toBeTruthy();
+      expect(within(messages).getByText(helper)).toBeTruthy();
+    }
+    // The four boxes are not repeated under Read / Draft / Write.
+    expect(screen.getAllByLabelText("New key scope team:reply")).toHaveLength(1);
+    expect(screen.getAllByLabelText("New key scope hub:read")).toHaveLength(1);
+  });
+
+  it("Edit shows the same Messages group with the key's own ticks", async () => {
+    show(data({ keys: [key({ scopes: ["team:read"] })] }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect((screen.getByLabelText("Admin Agent scope team:read") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("Admin Agent scope team:reply") as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByText("Read team")).toBeTruthy();
+  });
+
+  it("'Team posts publish immediately' sits beside Allow writes, and sends teamPostsPublish when it is changed", async () => {
+    const { update } = show(data({ keys: [key({ writesEnabled: true })] }));
+    await screen.findByText("Admin Agent");
+    const box = screen.getByLabelText("Team posts publish immediately for Admin Agent") as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(box.disabled).toBe(false);
+    expect(screen.getByText("Team posts publish immediately")).toBeTruthy();
+    fireEvent.click(box); // unticking needs no confirm
+    await waitFor(() => expect(update).toHaveBeenCalledWith("k1", { teamPostsPublish: false }));
+  });
+
+  it("is greyed with its reason while writes are off, while Agent access is not On, and under Revoked keys; a ticked box can still be unticked", async () => {
+    // Writes off (a new key's state), box OFF: cannot be ticked, with the reason.
+    const off = show(data({ keys: [key({ writesEnabled: false, teamPostsPublish: false })] }));
+    await screen.findByText("Admin Agent");
+    const writesOff = screen.getByLabelText("Team posts publish immediately for Admin Agent") as HTMLInputElement;
+    expect(writesOff.disabled).toBe(true);
+    expect(writesOff.title).toBe("Allow writes is off for this key — it cannot post until that is ticked");
+    expect(screen.getByTestId("publish-reason-k1").textContent).toBe("Allow writes is off for this key — it cannot post until that is ticked");
+    expect(off.update).not.toHaveBeenCalled();
+  });
+
+  it("while Agent access is paused the box says nothing is published until it is On", async () => {
+    show(data({ agentAccess: access("read_only", null, "Kyle"), keys: [key({ writesEnabled: true, teamPostsPublish: false })] }));
+    await screen.findByText("Admin Agent");
+    const box = screen.getByLabelText("Team posts publish immediately for Admin Agent") as HTMLInputElement;
+    expect(box.disabled).toBe(true);
+    expect(box.title).toBe("Agent access is not On — nothing an AI wrote is published until it is On");
+  });
+
+  it("a ticked box is never trapped: it can be unticked while writes are off or Agent access is off", async () => {
+    const { update } = show(data({ agentAccess: access("off", null, "Kyle"), keys: [key({ writesEnabled: true, teamPostsPublish: true })] }));
+    await screen.findByText("Admin Agent");
+    const box = screen.getByLabelText("Team posts publish immediately for Admin Agent") as HTMLInputElement;
+    expect(box.disabled).toBe(false);
+    expect(screen.getByTestId("publish-reason-k1")).toBeTruthy(); // the reason still shows beside it
+    fireEvent.click(box);
+    await waitFor(() => expect(update).toHaveBeenCalledWith("k1", { teamPostsPublish: false }));
+  });
+
+  it("a revoked key shows the box greyed with its reason under 'Revoked keys', never hidden", async () => {
+    show(data({ keys: [key({ id: "b", name: "Gone one", status: "revoked", revokedAt: "2026-11-20T09:00:00-06:00" })] }));
+    const revoked = await screen.findByTestId("agent-revoked-keys");
+    const box = within(revoked).getByLabelText("Team posts publish immediately for Gone one") as HTMLInputElement;
+    expect(box.disabled).toBe(true);
+    expect(box.title).toBe("This key is revoked — it can no longer post");
+  });
+
+  it("Activity opens that key's calls newest first with the Chicago time, the key's name, the action, the endpoint and the result, and Close puts it away", async () => {
+    show(data());
+    const activity = vi.spyOn(api, "agentKeyActivity").mockResolvedValue({
+      keyId: "k1", keyName: "Admin Agent",
+      activity: [
+        { id: "a2", at: "2026-11-23T09:15:00-06:00", keyName: "Admin Agent", action: "hub.messages.draft", endpoint: "POST /hub/messages", resultCode: "ok", status: 201 },
+        { id: "a1", at: "2026-11-23T09:14:00-06:00", keyName: "Admin Agent", action: "hub.threads.list", endpoint: "GET /hub/threads", resultCode: "scope_denied", status: 403 },
+      ],
+    });
+    await screen.findByText("Admin Agent");
+    fireEvent.click(btn("Activity"));
+    const panel = await screen.findByTestId("agent-activity-k1");
+    expect(activity).toHaveBeenCalledWith("k1");
+    const rows = await within(panel).findAllByRole("row");
+    expect(rows).toHaveLength(3); // header + 2
+    expect(rows[1].textContent).toContain("Nov 23, 9:15 AM");
+    expect(rows[1].textContent).toContain("hub.messages.draft");
+    expect(rows[1].textContent).toContain("POST /hub/messages");
+    expect(rows[1].textContent).toContain("ok (201)");
+    expect(rows[2].textContent).toContain("scope_denied (403)");
+    expect(within(panel).getAllByText("Admin Agent").length).toBeGreaterThan(0);
+    fireEvent.click(within(panel).getByRole("button", { name: "Close" }));
+    expect(screen.queryByTestId("agent-activity-k1")).toBeNull();
+  });
+
+  it("Activity for a key with no calls says so", async () => {
+    show(data());
+    vi.spyOn(api, "agentKeyActivity").mockResolvedValue({ keyId: "k1", keyName: "Admin Agent", activity: [] });
+    await screen.findByText("Admin Agent");
+    fireEvent.click(btn("Activity"));
+    expect(await screen.findByTestId("agent-activity-empty")).toBeTruthy();
   });
 });
 
@@ -377,15 +488,28 @@ describe("making a key", () => {
     expect((screen.getByLabelText("New key scope crm:read") as HTMLInputElement).checked).toBe(true); // Admin default
     expect((screen.getByLabelText("New key scope training:write") as HTMLInputElement).checked).toBe(false);
 
+    // W2 (Kyle 2026-11-23): Scout and Claude Code read and post in the Team chats and have no thread limit any more.
     fireEvent.change(agent, { target: { value: "scout" } });
     expect((screen.getByLabelText("New key scope training:write") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("New key scope team:read") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("New key scope team:reply") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("New key scope hub:read") as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText("New key scope hub:draft") as HTMLInputElement).checked).toBe(false);
     expect((screen.getByLabelText("New key scope crm:read") as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByLabelText("New key thread kind Training") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("New key thread kind Training") as HTMLInputElement).checked).toBe(false);
     expect((screen.getByLabelText("New key thread kind Customer") as HTMLInputElement).checked).toBe(false);
 
     fireEvent.change(agent, { target: { value: "claude_code" } });
     expect((screen.getByLabelText("New key scope dev:write") as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByLabelText("New key thread kind Dev") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("New key scope team:reply") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("New key thread kind Dev") as HTMLInputElement).checked).toBe(false);
+
+    // CFO is one of the agents, with its own defaults.
+    expect(within(agent).getByRole("option", { name: "CFO" })).toBeTruthy();
+    fireEvent.change(agent, { target: { value: "cfo" } });
+    expect((screen.getByLabelText("New key scope finance:read") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("New key scope team:read") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("New key scope hub:draft") as HTMLInputElement).checked).toBe(false);
 
     expect(btn("Create key").disabled).toBe(true);
     expect(screen.getByTestId("agent-create-reason").textContent).toMatch(/name/);
@@ -396,15 +520,16 @@ describe("making a key", () => {
     await openNewKey();
     fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "scout" } });
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Scout key" } });
-    fireEvent.click(screen.getByLabelText("New key scope hub:draft")); // untick one
+    fireEvent.click(screen.getByLabelText("New key scope team:reply")); // untick one
     fireEvent.change(screen.getByLabelText("Expires (optional)"), { target: { value: "2099-06-15" } });
     expect(btn("Create key").disabled).toBe(false);
     fireEvent.click(btn("Create key"));
 
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     const sent = create.mock.calls[0][0];
-    expect(sent).toMatchObject({ name: "Scout key", agentRole: "scout", hubThreadKinds: ["training"], expiresAt: "2099-06-15" });
-    expect(sent.scopes).not.toContain("hub:draft");
+    expect(sent).toMatchObject({ name: "Scout key", agentRole: "scout", hubThreadKinds: [], expiresAt: "2099-06-15" });
+    expect(sent.scopes).not.toContain("team:reply");
+    expect(sent.scopes).toContain("team:read");
     expect(sent.scopes).toContain("training:write");
 
     const dialog = await screen.findByRole("dialog", { name: "New agent key" });

@@ -73,7 +73,7 @@ describe("NewGroupChatDialog", () => {
     const dialog = await screen.findByRole("dialog", { name: "New group chat" });
     const stock = await within(dialog).findByLabelText(/Stock Bot/);
     expect(stock).toBeDisabled();
-    expect(within(dialog).getByTestId("agent-cannot-join")).toHaveTextContent("no Team replies scope");
+    expect(within(dialog).getByTestId("agent-cannot-join")).toHaveTextContent("neither Read team (team:read) nor Post team (team:reply)");
     expect(within(dialog).getByLabelText(/RCE Admin/)).toBeEnabled();
     fireEvent.change(within(dialog).getByLabelText("Group name"), { target: { value: "Crew" } });
     fireEvent.click(stock);

@@ -7,7 +7,7 @@
  * "Agent keys" (two clicks).
  *
  *   * Filter chips: All / Delivered / Retrying / Dead / No URL, an Event-type dropdown and an Agent
- *     dropdown (All agents / Admin / Inventory: the same log filtered to one webhook).
+ *     dropdown (All agents, then each agent that has a webhook: the same log filtered to one webhook).
  *   * Each row shows the time, the event id, the event type, a one-line summary, the status, the last
  *     HTTP code, the number of attempts and the last error, with "Show attempts" (the attempt history)
  *     and "Resend".
@@ -45,7 +45,7 @@ const CHIPS: Array<{ id: string; label: string }> = [
   { id: "no_target", label: "No URL" },
 ];
 
-export const NO_URL_BANNER = "No receiving address is set. Add the agents' address in the Agent webhooks card below. Events are being kept — press Resend once it is set.";
+export const NO_URL_BANNER = "Admin has no receiving address, so its events (customer messages, leads, estimates, payments, jobs) are being kept. Add Admin's address in the Agent webhooks card below, then press Resend. Team messages go to every agent that has its own address.";
 export const NO_SECRET_BANNER = "Admin has no signing secret — nothing is sent until it does. Generate one in the Agent webhooks card below, or set HUB_WEBHOOK_SECRET in Railway.";
 
 const STATUS_TEXT: Record<string, string> = {

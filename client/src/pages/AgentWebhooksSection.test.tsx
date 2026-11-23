@@ -1,13 +1,14 @@
 /**
  * Settings -> "Agent webhooks" (work order agent-team, TC4; Kyle only).
  *
- * Pinned: each agent row (Admin, Inventory) with its name, On/Off and its address, or "No address —
- * the agent will poll"; "Edit address" saves through the ONE owner-settings writer; "Turn off" and
- * "Remove address" (the exit, with a confirm); the event-type table with its defaults (Admin for
- * everything, Inventory for material.used) and a re-point that is stored only when it differs from the
- * default; and that every control is greyed with the reason for anyone but Kyle.
+ * Pinned: each agent block (W2-C: Admin, Inventory, Facebook, Outreach, Scout, Research, CFO, NEC Coach) with its name, one line of
+ * status and its address, or "No address — the agent will poll"; a block that is not set up starts folded behind "Set up" (the tests
+ * below open every block first, through renderCard, except the ones that test the folding itself); "Edit address" saves through the ONE
+ * owner-settings writer; "Turn off" and "Remove address" (the exit, with a confirm); the event-type table with its defaults (Admin for
+ * everything, Inventory for material.used; message.team is NOT in it - the fan-out decides) and a re-point that is stored only when it
+ * differs from the default; and that every control is greyed with the reason for anyone but Kyle.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import {
@@ -16,12 +17,36 @@ import {
 import { api } from "../lib/api";
 import type { AgentWebhooksResponse, AgentWebhooksSave, AgentWebhooksValue } from "../lib/types";
 import { AI_ADMIN_SESSION, OWNER_NO_GRANT, PIN_SESSION } from "../test/sessions";
-import { HUB_EVENT_TYPES } from "../../../shared/hub/events";
+import { HUB_EVENT_TYPES, HUB_WEBHOOK_TARGET_IDS, HUB_WEBHOOK_TARGET_LABELS, WEBHOOK_VERIFY_RECIPE } from "../../../shared/hub/events";
 
-afterEach(() => vi.restoreAllMocks());
+let watcher: MutationObserver | null = null;
+beforeEach(() => { watcher = null; });
+afterEach(() => { watcher?.disconnect(); vi.restoreAllMocks(); });
+
+/**
+ * Render the card. A block that is not set up starts FOLDED behind its "Set up" button (W2-C), so by default the test opens each one as it
+ * appears, the way a person would click it; pass autoOpen false to test the folding itself.
+ */
+function renderCard(autoOpen = true) {
+  const view = renderWithProviders(<AgentWebhooksSection />);
+  if (autoOpen) {
+    const click = () => {
+      for (const b of Array.from(document.querySelectorAll<HTMLButtonElement>("button[aria-expanded=false]"))) if (b.textContent === "Set up") fireEvent.click(b);
+    };
+    watcher = new MutationObserver(click);
+    watcher.observe(document.body, { childList: true, subtree: true, attributes: true });
+    click();
+  }
+  return view;
+}
+
+/** The six agents the card lists after Admin and Inventory, as the screen sends them when nothing about them changed. */
+const OTHERS = HUB_WEBHOOK_TARGET_IDS.filter((id) => id !== "admin" && id !== "inventory");
+const othersSaved = OTHERS.map((id) => ({ id, url: null, enabled: true }));
+const othersView = OTHERS.map((id) => ({ id, url: null, enabled: true }));
 
 const value = (over: Partial<AgentWebhooksValue> = {}): AgentWebhooksValue => ({
-  targets: [{ id: "admin", url: null, enabled: true }, { id: "inventory", url: null, enabled: true }],
+  targets: [{ id: "admin", url: null, enabled: true }, { id: "inventory", url: null, enabled: true }, ...othersView],
   routes: {}, ...over,
 });
 
@@ -34,13 +59,13 @@ const answer = (v: AgentWebhooksSave): AgentWebhooksResponse => ({
   status: { pepperSet: true },
 });
 
-function show(initial: AgentWebhooksValue, session = PIN_SESSION, config = NO_ENV) {
+function show(initial: AgentWebhooksValue, session = PIN_SESSION, config = NO_ENV, autoOpen = true) {
   vi.spyOn(api, "session").mockResolvedValue(session);
   vi.spyOn(api, "hubEventsConfig").mockResolvedValue(config);
   vi.spyOn(api, "hubEvents").mockResolvedValue({ events: [], nextBefore: null });
   const load = vi.spyOn(api, "agentWebhooks").mockResolvedValue({ key: "agentWebhooks", value: initial, status: { pepperSet: true } });
   const save = vi.spyOn(api, "saveAgentWebhooks").mockImplementation(async (v) => answer(v));
-  const view = renderWithProviders(<AgentWebhooksSection />);
+  const view = renderCard(autoOpen);
   return { load, save, ...view };
 }
 
@@ -53,9 +78,11 @@ describe("AgentWebhooksSection for Kyle", () => {
     await waitFor(() => expect(screen.getByTestId("webhook-address-admin").textContent).toBe(NO_ADDRESS_TEXT));
     expect(NO_ADDRESS_TEXT).toBe("No address — the agent will poll");
     expect(screen.getByTestId("webhook-address-inventory").textContent).toBe(NO_ADDRESS_TEXT);
-    for (const type of HUB_EVENT_TYPES) {
+    for (const type of HUB_EVENT_TYPES.filter((t) => t !== "message.team")) {
       const select = screen.getByLabelText(`Where ${type} goes`) as HTMLSelectElement;
       expect(select.value).toBe(type === "material.used" ? "inventory" : "admin");
+      // Every agent with a webhook can be pointed at, not only Admin and Inventory.
+      expect(Array.from(select.options).map((o) => o.value)).toEqual([...HUB_WEBHOOK_TARGET_IDS]);
     }
   });
 
@@ -68,7 +95,7 @@ describe("AgentWebhooksSection for Kyle", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save address" }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0][0].targets).toEqual([
-      { id: "admin", url: "https://agents.example.com/hook", enabled: true }, { id: "inventory", url: null, enabled: true },
+      { id: "admin", url: "https://agents.example.com/hook", enabled: true }, { id: "inventory", url: null, enabled: true }, ...othersSaved,
     ]);
     await waitFor(() => expect(screen.getByTestId("webhook-address-admin").textContent).toBe("https://agents.example.com/hook"));
     expect(await screen.findByText("Admin address saved.")).toBeTruthy();
@@ -287,7 +314,7 @@ describe("AgentWebhooksSection custom headers", () => {
     vi.spyOn(api, "hubEventsConfig").mockResolvedValue(NO_ENV);
     vi.spyOn(api, "hubEvents").mockResolvedValue({ events: [], nextBefore: null });
     vi.spyOn(api, "agentWebhooks").mockResolvedValue({ key: "agentWebhooks", value: full({}, { headers: [{ name: "Authorization", masked: "••••abcd" }] }), status: { pepperSet: false } });
-    renderWithProviders(<AgentWebhooksSection />);
+    renderCard();
     expect((await screen.findByTestId("agent-webhooks-no-pepper")).textContent).toContain("Set AGENT_KEY_PEPPER in Railway first.");
     await waitFor(() => expect(screen.getByTestId("webhook-secret-status-admin").textContent).not.toBe(""));
     for (const id of ["admin", "inventory"]) {
@@ -312,6 +339,7 @@ describe("AgentWebhooksSection custom headers", () => {
     expect(save.mock.calls[0][0].targets).toEqual([
       { id: "admin", url: null, enabled: true, headers: [{ name: "Authorization", value: "Bearer sk-live-0123456789WXYZ" }] },
       { id: "inventory", url: null, enabled: true },
+      ...othersSaved,
     ]);
     await waitFor(() => expect(screen.getByTestId("webhook-header-masked-admin-Authorization").textContent).toBe("••••WXYZ"));
     expect(document.body.textContent).not.toContain("sk-live");
@@ -382,7 +410,7 @@ describe("AgentWebhooksSection Send test event", () => {
       ),
       status: { pepperSet: false },
     });
-    renderWithProviders(<AgentWebhooksSection />);
+    renderCard();
     await waitFor(() => expect(screen.getByTestId("webhook-test-reason-inventory").textContent).toBe("Set AGENT_KEY_PEPPER in Railway first."));
     expect((screen.getByLabelText("Send test event to Inventory") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByLabelText("Send test event to Admin") as HTMLButtonElement).disabled).toBe(false);
@@ -422,7 +450,7 @@ describe("AgentWebhooksSection delivery log per webhook", () => {
     vi.spyOn(api, "hubEventsConfig").mockResolvedValue(NO_ENV);
     const list = vi.spyOn(api, "hubEvents").mockImplementation(async (f) => ({ events: f?.target === "admin" ? [ev] : [], nextBefore: null }));
     vi.spyOn(api, "agentWebhooks").mockResolvedValue({ key: "agentWebhooks", value: full(), status: { pepperSet: true } });
-    renderWithProviders(<AgentWebhooksSection />);
+    renderCard();
     const log = await screen.findByTestId("webhook-log-admin");
     await waitFor(() => expect(within(log).getByText("New lead from web")).toBeTruthy());
     expect(list).toHaveBeenCalledWith({ status: "all", type: "", target: "admin", limit: 5 });
@@ -448,5 +476,149 @@ describe("AgentWebhooksSection new controls are greyed for anyone but Kyle", () 
     expect((screen.getByLabelText("Add header to Admin") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByLabelText("Send test event to Admin") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByLabelText("Send test event to Admin") as HTMLButtonElement).title).toBe(WEBHOOKS_LOCK_REASON);
+  });
+});
+
+// ── W2-C (Kyle 2026-11-23 item 4): a receiver for every agent ───────────────────────────────────────
+
+describe("AgentWebhooksSection: one block per agent that can hear a team chat (W2-C)", () => {
+  const LABELS = ["Admin", "Inventory", "Facebook", "Outreach", "Scout", "Research", "CFO", "NEC Coach"];
+
+  it("shows eight blocks, in the card's order, and none for Claude Code or Other", async () => {
+    show(value(), PIN_SESSION, NO_ENV, false);
+    await screen.findByTestId("webhook-target-admin");
+    expect([...HUB_WEBHOOK_TARGET_IDS]).toEqual(["admin", "inventory", "facebook", "outreach", "scout", "research", "cfo", "nec_coach"]);
+    expect(HUB_WEBHOOK_TARGET_IDS.map((id) => HUB_WEBHOOK_TARGET_LABELS[id])).toEqual(LABELS);
+    const blocks = Array.from(document.querySelectorAll("[data-testid^='webhook-target-']"));
+    expect(blocks).toHaveLength(8);
+    for (const id of HUB_WEBHOOK_TARGET_IDS) expect(screen.getByTestId(`webhook-target-${id}`)).toBeTruthy();
+    expect(screen.queryByTestId("webhook-target-claude_code")).toBeNull();
+    expect(screen.queryByTestId("webhook-target-other")).toBeNull();
+  });
+
+  it("says in each header, in one line, whether the agent is Not set up, On — signed, Off or has an address with no signing secret", async () => {
+    const v = value({
+      targets: [
+        { id: "admin", url: "https://a.example.com/h", enabled: true, headers: [], signingSecret: null, secretSource: "env" },
+        { id: "inventory", url: "https://i.example.com/h", enabled: true, headers: [], signingSecret: null, secretSource: "none" },
+        { id: "facebook", url: "https://f.example.com/h", enabled: false, headers: [], signingSecret: { masked: "••••abcd", createdAt: "x" }, secretSource: "own" },
+        { id: "outreach", url: null, enabled: true, headers: [], signingSecret: null, secretSource: "none" },
+        { id: "scout", url: "https://s.example.com/h", enabled: true, headers: [], signingSecret: { masked: "••••abcd", createdAt: "x" }, secretSource: "own" },
+        { id: "research", url: null, enabled: true }, { id: "cfo", url: null, enabled: true }, { id: "nec_coach", url: null, enabled: true },
+      ],
+    });
+    show(v, PIN_SESSION, { ...NO_ENV, adminEnvUrlSet: false }, false);
+    await waitFor(() => expect(screen.getByTestId("webhook-status-admin").textContent).toBe("On — signed"));
+    const status = (id: string) => screen.getByTestId(`webhook-status-${id}`).textContent;
+    expect(status("inventory")).toBe("Address set, no signing secret — nothing is sent");
+    expect(status("facebook")).toBe("Off");
+    expect(status("outreach")).toBe("Not set up");
+    expect(status("scout")).toBe("On — signed");
+    for (const id of ["research", "cfo", "nec_coach"]) expect(status(id)).toBe("Not set up");
+  });
+
+  it("folds a block that is not set up behind 'Set up' (never hides it) and opens configured ones; Show / Hide settings toggles either", async () => {
+    show(value({
+      targets: [
+        { id: "admin", url: "https://a.example.com/h", enabled: true, headers: [], signingSecret: null, secretSource: "env" },
+        { id: "inventory", url: null, enabled: true }, { id: "facebook", url: null, enabled: true }, { id: "outreach", url: null, enabled: true },
+        { id: "scout", url: null, enabled: true }, { id: "research", url: null, enabled: true }, { id: "cfo", url: null, enabled: true }, { id: "nec_coach", url: null, enabled: true },
+      ],
+    }), PIN_SESSION, NO_ENV, false);
+    await waitFor(() => expect(screen.getByTestId("webhook-status-admin").textContent).toBe("On — signed"));
+    // Admin is set up: open, its controls are there and its button says Hide settings.
+    expect(btn(screen.getByTestId("webhook-target-admin"), "Edit address")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide Admin settings" }).textContent).toBe("Hide settings");
+    // CFO is not set up: folded, with a Set up button, and no controls until it is pressed.
+    const cfo = screen.getByTestId("webhook-target-cfo");
+    expect(within(cfo).queryByRole("button", { name: "Edit address" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Set up CFO settings" }).textContent).toBe("Set up");
+    fireEvent.click(screen.getByRole("button", { name: "Set up CFO settings" }));
+    expect(btn(screen.getByTestId("webhook-target-cfo"), "Edit address")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide CFO settings" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide CFO settings" }));
+    expect(within(screen.getByTestId("webhook-target-cfo")).queryByRole("button", { name: "Edit address" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Set up CFO settings" })).toBeTruthy();
+    // A configured block can be folded by hand too, and comes back as Show settings.
+    fireEvent.click(screen.getByRole("button", { name: "Hide Admin settings" }));
+    expect(within(screen.getByTestId("webhook-target-admin")).queryByRole("button", { name: "Edit address" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Show Admin settings" }).textContent).toBe("Show settings");
+  });
+
+  it("says who hears a team chat, where @mentions fit, and prints the receiver's signature recipe", async () => {
+    show(value(), PIN_SESSION, NO_ENV, false);
+    const note = await screen.findByTestId("agent-webhooks-fan-out-note");
+    expect(note.textContent).toContain("Every agent whose key can read a Team, group or crew chat gets each new message");
+    expect(note.textContent).toContain("@Mentions say who should answer");
+    expect(note.textContent).toContain("with no mention, Admin answers");
+    const recipe = screen.getByTestId("agent-webhooks-recipe");
+    expect(recipe.textContent).toContain(WEBHOOK_VERIFY_RECIPE);
+    expect(WEBHOOK_VERIFY_RECIPE).toContain('cut it at the LAST occurrence of ,"timestamp":');
+    expect(WEBHOOK_VERIFY_RECIPE).toContain("<timestamp>.<payload>");
+    expect(WEBHOOK_VERIFY_RECIPE).toContain("X-RCE-Signature");
+    // Claude Code is named as having no webhook, so its absence is explained on the screen.
+    expect(document.body.textContent).toContain("Claude Code has no webhook");
+  });
+
+  it("leaves message.team out of the 'Which agent gets which event' table (the fan-out decides), and drops a stored route for it on the next save", async () => {
+    const { save } = show(value({ routes: { "message.team": "inventory", "lead.created": "cfo" } }));
+    await waitFor(() => expect((screen.getByLabelText("Where lead.created goes") as HTMLSelectElement).value).toBe("cfo"));
+    expect(screen.queryByLabelText("Where message.team goes")).toBeNull();
+    expect(screen.getByText(/Team, group and crew-chat messages are not listed/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Where job.completed goes"), { target: { value: "research" } });
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0][0].routes).toEqual({ "lead.created": "cfo", "job.completed": "research" });
+  });
+
+  it("gives a new agent every control the first two had: Edit address, Turn off, Remove address, Generate signing secret, Add header, Send test event and Recent events", async () => {
+    const { save } = show(value({
+      targets: [
+        { id: "admin", url: null, enabled: true }, { id: "inventory", url: null, enabled: true }, { id: "facebook", url: null, enabled: true },
+        { id: "outreach", url: null, enabled: true }, { id: "scout", url: null, enabled: true }, { id: "research", url: null, enabled: true },
+        { id: "cfo", url: "https://cfo.example.com/h", enabled: true, headers: [{ name: "Authorization", masked: "••••abcd" }], signingSecret: null, secretSource: "none" },
+        { id: "nec_coach", url: null, enabled: true },
+      ],
+    }));
+    await waitFor(() => expect(screen.getByTestId("webhook-status-cfo").textContent).toBe("Address set, no signing secret — nothing is sent"));
+    const cfo = screen.getByTestId("webhook-target-cfo");
+    for (const name of ["Edit address", "Turn off", "Remove address", "Generate signing secret"]) expect(btn(cfo, name), name).toBeTruthy();
+    expect(screen.getByLabelText("Add header to CFO")).toBeTruthy();
+    expect(screen.getByLabelText("Edit value of Authorization on CFO")).toBeTruthy();
+    expect(screen.getByLabelText("Remove header Authorization from CFO")).toBeTruthy();
+    expect(screen.getByLabelText("Send test event to CFO")).toBeTruthy();
+    expect(screen.getByTestId("webhook-log-cfo")).toBeTruthy();
+    expect(within(screen.getByTestId("webhook-log-cfo")).getByText("Recent events to CFO")).toBeTruthy();
+
+    // Turn off saves ONLY that agent's change, with all eight agents in the body.
+    await waitFor(() => expect(btn(cfo, "Turn off").disabled).toBe(false));
+    fireEvent.click(btn(cfo, "Turn off"));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    const sent = save.mock.calls[0][0].targets;
+    expect(sent.map((t) => t.id)).toEqual([...HUB_WEBHOOK_TARGET_IDS]);
+    expect(sent.find((t) => t.id === "cfo")).toEqual({ id: "cfo", url: "https://cfo.example.com/h", enabled: false });
+    await waitFor(() => expect(screen.getByTestId("webhook-status-cfo").textContent).toBe("Off"));
+    // Generate shows the secret once, for that agent only.
+    const gen = vi.spyOn(api, "generateWebhookSecret").mockResolvedValue({ secret: "cfo-secret-value-1234", masked: "••••1234", replaced: false });
+    fireEvent.click(btn(screen.getByTestId("webhook-target-cfo"), "Generate signing secret"));
+    await waitFor(() => expect(gen).toHaveBeenCalledWith("cfo"));
+    expect((await screen.findByTestId("webhook-secret-value-cfo")).textContent).toBe("cfo-secret-value-1234");
+    expect(screen.queryByTestId("webhook-secret-value-admin")).toBeNull();
+  });
+});
+
+describe("AgentWebhooksSection when the settings fail to load (W2-C review)", () => {
+  it("shows every block open with its controls greyed and the reason, plus a visible banner - never eight bare names", async () => {
+    vi.spyOn(api, "session").mockResolvedValue(PIN_SESSION);
+    vi.spyOn(api, "hubEventsConfig").mockResolvedValue(NO_ENV);
+    vi.spyOn(api, "hubEvents").mockResolvedValue({ events: [], nextBefore: null });
+    vi.spyOn(api, "agentWebhooks").mockRejectedValue(new Error("network down"));
+    renderCard(false);
+    expect((await screen.findByTestId("agent-webhooks-load-failed")).textContent).toContain("Agent webhooks could not be loaded.");
+    for (const id of HUB_WEBHOOK_TARGET_IDS) {
+      const block = screen.getByTestId(`webhook-target-${id}`);
+      const edit = btn(block, "Edit address");
+      expect(edit.disabled).toBe(true);
+      expect(edit.title).toBe("Agent webhooks could not be loaded.");
+    }
   });
 });

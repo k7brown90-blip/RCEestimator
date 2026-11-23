@@ -12,7 +12,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
 import { DEFAULT_QUIET_WINDOW, isValidQuietWindow, parseClock, type QuietWindow } from "../../shared/sms/quietHours";
-import { HUB_EVENT_TYPES, HUB_WEBHOOK_TARGET_IDS, isHubEventType } from "../../shared/hub/events";
+import { HUB_EVENT_TYPES, HUB_WEBHOOK_TARGET_IDS, isFanOutEventType, isHubEventType } from "../../shared/hub/events";
 import {
   AUTO_SEND_CATEGORIES, DEFAULT_HUB_AUTO_SEND, isAutoSendCategory, type HubAutoSendStatus, type HubAutoSendValue,
 } from "../../shared/hub/autoSendCategories";
@@ -68,7 +68,9 @@ export const DEFAULT_AGENT_ACCESS: AgentAccess = { mode: "on", changedAt: null, 
 
 /**
  * Where the signed agent events go (work order agent-team, TC4): the receiving address and On/Off for
- * each agent that listens (Admin, Inventory), and which agent gets which event type. Work order C6b
+ * each agent that listens (Admin, Inventory, Facebook, Outreach, Scout, Research, CFO, NEC Coach - W2, Kyle 2026-11-23 item 4; EXTEND
+ * HUB_WEBHOOK_TARGET_IDS, never rename or remove an id, or this strict schema fails and the stored row reads as the default), and which
+ * agent gets which routed event type (message.team is not routed: every agent whose key can read the thread gets it). Work order C6b
  * adds, per agent, up to five custom headers and an own HMAC signing secret, both stored ENCRYPTED
  * (services/settingSecrets.ts) and never returned: GET and PUT answer a masked view (agentWebhooksView).
  * Admin with no own secret signs with HUB_WEBHOOK_SECRET (services/hubEvents.ts signingSecretFor). An empty address means "no
@@ -183,8 +185,14 @@ const webhooksInputSchema = z
 export function prepareAgentWebhooks(body: unknown, previous: unknown): unknown {
   const input = webhooksInputSchema.parse(body);
   const before = (previous as AgentWebhooks | null)?.targets ?? [];
+  const sent = new Set(input.targets.map((t) => t.id));
+  // A CRM tab still running an older bundle sends only the targets it knew (admin, inventory). A stored target missing from the body is
+  // KEPT exactly as stored (address, headers, encrypted signing secret) - never silently wiped by a stale save (W2-C review).
+  const keptUnsent = before.filter((x) => !sent.has(x.id));
   return {
     ...input,
+    // A fan-out type has no route (W2): one left in the stored setting is ignored when read, and dropped here the next time it is saved.
+    routes: Object.fromEntries(Object.entries(input.routes).filter(([type]) => !isFanOutEventType(type))),
     targets: input.targets.map((t) => {
       const prior = before.find((x) => x.id === t.id);
       const priorHeaders = prior?.headers ?? [];
@@ -207,7 +215,7 @@ export function prepareAgentWebhooks(body: unknown, previous: unknown): unknown 
         });
       }
       return { id: t.id, url: t.url, enabled: t.enabled, headers, signingSecret: prior?.signingSecret ?? null };
-    }),
+    }).concat(keptUnsent),
   };
 }
 
@@ -284,6 +292,19 @@ export async function removeWebhookSigningSecret(id: WebhookTargetId, db: Prisma
 }
 
 /**
+ * Categories that WERE auto-send rules and are not any more. A stored value that still holds one (Kyle's saved row has
+ * `team_internal: true`) is read with that key dropped, instead of failing the strict check below: a failed check makes the whole
+ * setting read as the default (everything OFF), which would silently switch off the rules that are still his. W2 (Kyle 2026-11-23):
+ * an AI's Team post is published by its key's own box, no longer by a rule here (shared/hub/messageCategories.ts team_internal).
+ */
+const RETIRED_AUTO_SEND_CATEGORIES: readonly string[] = ["team_internal"];
+
+function dropRetiredAutoSendCategories(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k]) => !RETIRED_AUTO_SEND_CATEGORIES.includes(k)));
+}
+
+/**
  * Which AI message categories go out WITHOUT a person pressing Approve (work order agent-team, BA8).
  * Every category is OFF until Kyle turns it on in Settings -> "AI auto-send rules"; a missing row means
  * all OFF, so no seed is needed. The categories are the ones the send-type registry marks
@@ -294,12 +315,15 @@ export async function removeWebhookSigningSecret(id: WebhookTargetId, db: Prisma
  */
 export const hubAutoSendSchema = z
   .object({
-    categories: z
-      .record(z.string(), z.boolean())
-      .refine(
-        (c) => Object.keys(c).every(isAutoSendCategory),
-        `Unknown category. Categories that can be switched on: ${AUTO_SEND_CATEGORIES.map((c) => c.key).join(", ") || "none"}`,
-      ),
+    categories: z.preprocess(
+      dropRetiredAutoSendCategories,
+      z
+        .record(z.string(), z.boolean())
+        .refine(
+          (c) => Object.keys(c).every(isAutoSendCategory),
+          `Unknown category. Categories that can be switched on: ${AUTO_SEND_CATEGORIES.map((c) => c.key).join(", ") || "none"}`,
+        ),
+    ),
     changedAt: z.string().nullable().default(null),
     changedBy: z.string().nullable().default(null),
   })

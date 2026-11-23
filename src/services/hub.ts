@@ -34,7 +34,7 @@ import type { AgentRequestState } from "../agentApi/gate";
 import { logSystemEvent } from "./systemEvents";
 import { isKylePhone } from "./kylePhone";
 import { getPrincipalLogin } from "./crmLogin";
-import { emitGroupMessageEventSafe, emitHubEventSafe } from "./hubEvents";
+import { emitHubEventSafe, emitTeamMessageEventsSafe, voidTeamEventsForDeletedMessage } from "./hubEvents";
 import { publishHubChange } from "./hubBus";
 import { notifyNewMessage } from "./hubNotifier";
 import { stagedPhotoIds } from "./hubAttachments";
@@ -746,6 +746,8 @@ export interface PostMessageResult {
   message: HubMessage;
   /** True when this id had already made a message: nothing new was written and nothing was announced. */
   replayed: boolean;
+  /** W2: for an AI post that stayed waiting for approval after it was offered to the auto-send step, why, in plain words. Null otherwise. */
+  pendingReason?: string | null;
 }
 
 /**
@@ -754,8 +756,9 @@ export interface PostMessageResult {
  *
  *   - People (owner, a login, the AI admin, a technician): the message is `posted` at once.
  *   - An agent key: `pending_approval`, or `draft` when it asks for draft. The agent never posts or approves its own
- *     message (team answer 3): a pending_approval post is then OFFERED to the auto-send rule (team_internal / training_reply,
- *     offerToAutoSend), which may approve and post it; a requested draft is never offered. The one exception is Claude Code
+ *     message (team answer 3): a pending_approval post is then OFFERED to the auto-send step (offerToAutoSend, services/hubAutoSend.ts),
+ *     which may approve and post it - a Team, group or crew post (team_internal) by its author KEY's "Team posts publish immediately"
+ *     box (W2), a Training reply (training_reply) by Kyle's owner rule; a requested draft is never offered. The one exception is Claude Code
  *     in a Dev thread, which is `posted` as an internal message whatever the body says.
  */
 export async function postMessage(reader: HubReader, input: PostMessageInput, db: PrismaClient = defaultPrisma): Promise<HubMessage> {
@@ -900,7 +903,8 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
   // An AI's post that is waiting for approval is offered to the auto-send rule AFTER the write committed (the row is
   // already in the database: this function never runs inside the caller's transaction) and BEFORE the one fan-out.
   if (!askedDraft && message.status === "pending_approval" && (message.authorType === "ai_agent" || message.authorType === "claude")) {
-    return { message: await offerToAutoSend(message, thread, input.context ?? null, db), replayed: false };
+    const offered = await offerToAutoSend(message, thread, input.context ?? null, db);
+    return { message: offered.message, replayed: false, pendingReason: offered.pendingReason };
   }
   fanOutMessage(message, thread, input.context ?? null);
   return { message, replayed: false };
@@ -915,25 +919,34 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
  */
 async function offerToAutoSend(
   message: HubMessage, thread: HubThread, context: { kind: string; id: string } | null, db: PrismaClient,
-): Promise<HubMessage> {
+): Promise<{ message: HubMessage; pendingReason: string | null }> {
   let fresh: HubMessage = message;
+  // W2: why the post is still waiting, kept so the door can tell the agent in plain words (it used to be thrown away).
+  let pendingReason: string | null = null;
   try {
     const { maybeAutoApprove } = await import("./hubAutoSend");
-    await maybeAutoApprove(message.id, db);
+    const offered = await maybeAutoApprove(message.id, db);
+    if (!offered.autoApproved) pendingReason = offered.why;
   } catch (err) {
+    pendingReason = "The step that publishes it failed, so it waits for a person to approve it.";
     logSystemEvent("error", "hub", `The auto-send rule failed on message ${message.id}: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     fresh = (await db.hubMessage.findUnique({ where: { id: message.id } })) ?? message;
     if (fresh.status !== "posted" && fresh.status !== "sent") fanOutMessage(fresh, thread, context);
   }
-  return fresh;
+  // Only a post that is actually still waiting has a reason to give.
+  return { message: fresh, pendingReason: fresh.status === "pending_approval" ? pendingReason : null };
 }
 
 /**
  * The ONE fan-out call site for a new message: the live-update event for open screens, the web push for
  * the people who should hear of it, and one signed webhook event - all fire-and-forget (none can fail or
- * slow the post). Nothing else emits for a message. Only a human's words and a customer's words wake an agent: an agent's own post, a draft
- * and a system line do not (that would have the agents answering each other).
+ * slow the post). Nothing else emits for a message. A customer's words and a person's words in a Team, group or crew chat wake agents, and
+ * (W2, Kyle 2026-11-23 items 4 and 5, which REVERSE the old "an agent's own post wakes no agent" rule) so does an AGENT's posted message in
+ * one of those three conversations: every agent whose key can read it gets one event, except the agent that wrote it (hubEvents.ts
+ * emitTeamMessageEvents is the loop guard) - the agents answer a person or a mention, never themselves, and the per-thread limit in the
+ * door (hubDoor refuseAgentLoop, 8 AI posts since the last person's post) is what stops two agents ping-ponging. A draft, a system line
+ * and an agent's post in a customer or Dev conversation still wake nobody.
  */
 export function fanOutMessage(message: HubMessage, thread: HubThread, context: { kind: string; id: string } | null = null): void {
   if (message.deletedAt) return;
@@ -944,14 +957,15 @@ export function fanOutMessage(message: HubMessage, thread: HubThread, context: {
   if (message.status !== "posted" && message.status !== "received" && message.status !== "sent") return;
   // A person's words INSIDE the app. A message that went out to a customer (an edited-and-approved email or
   // text, direction outbound) is not a team message and wakes no agent.
-  const byPerson = (message.authorType === "tech" || message.authorType === "office") && message.direction === "internal";
-  let type: "message.inbound" | "message.team" | "message.dev" | null = null;
+  const internal = message.direction === "internal";
+  const byPerson = (message.authorType === "tech" || message.authorType === "office") && internal;
+  const byAgent = (message.authorType === "ai_agent" || message.authorType === "claude") && internal;
+  let type: "message.inbound" | "message.dev" | null = null;
   if (message.authorType === "customer" && message.direction === "inbound") type = "message.inbound";
   else if (byPerson && thread.kind === "dev") type = "message.dev";
-  else if (byPerson && (thread.kind === "team" || thread.kind === "job")) type = "message.team";
-  else if (byPerson && thread.kind === "group") {
-    // A group's agents are its members: the wake-up goes only if the routed agent is one of them (hubEvents.ts).
-    void emitGroupMessageEventSafe({ messageId: message.id, threadId: thread.id, context });
+  else if ((byPerson || byAgent) && (thread.kind === "team" || thread.kind === "group" || thread.kind === "job")) {
+    // One event per agent whose key can read the conversation (a group: that is a member of it), never the author's own role.
+    void emitTeamMessageEventsSafe({ messageId: message.id, context });
     return;
   }
   if (!type) return;
@@ -996,6 +1010,8 @@ export async function softDeleteMessage(reader: HubReader, messageId: string, re
       data: { deletedAt: now, deletedBy: reader.key, deletedReason: reason?.trim() || null },
     });
     await tx.hubAttachment.updateMany({ where: { messageId, deletedAt: null }, data: { deletedAt: now } });
+    // W2: a deleted message is never sent to an agent later - its waiting message.team rows end dead, without the text (hubEvents).
+    await voidTeamEventsForDeletedMessage(tx, messageId);
     await hubAudit(tx, {
       actorKey: reader.key, actorDisplay: reader.display, action: "message_deleted", entityType: "message",
       entityId: messageId, threadId: message.threadId, messageId, beforeText: message.body,

@@ -2426,6 +2426,10 @@ model AgentAuditLog {
   scopeUsed       String?
   recordIds       Json?
   resultCode      String?
+  // W2 (2026-11-23): the key's NAME when the call was made (a snapshot, so a renamed or revoked key still reads right in the
+  // Activity view). Nullable: rows from before W2 and refusals for an unknown key have none. This table is append-only by
+  // trigger: this column is written on INSERT only, never updated.
+  agentKeyName    String?
   createdAt       DateTime @default(now())
 
   @@index([action, callId])
@@ -2450,6 +2454,10 @@ model AgentKey {
   secretHash     String    @unique
   scopes         String[]  @default([])
   writesEnabled  Boolean   @default(false)
+  // W2 (Kyle 2026-11-23, "Team posts publish immediately"): when true AND Agent access is On, this key's post in a Team, group or
+  // crew chat is published as posted at once (no Approve, no 320-character cap, no dollar rule, no customer-send env gate).
+  // Default ON for every key. It never touches a message to a customer (those wait for Approve or an owner auto-send rule).
+  teamPostsPublish Boolean @default(true)
   hubThreadKinds String[]  @default([])
   expiresAt      DateTime?
   retiresAt      DateTime?
@@ -4371,8 +4379,12 @@ model HubPushSubscription {
 
 /// The signed outbound event outbox (work order agent-team, BA4). One row per event per target; `id`
 /// IS the event_id the receiver dedupes on, and never changes across retries or Resend. `payloadJson`
-/// is the exact text POSTed (scrubbed once, at emit). `target` is the webhook TARGET's id (admin |
-/// inventory), not its URL - the URL is read when the attempt is made, so fixing it fixes the retries.
+/// is the payload (scrubbed once, at emit) and is identical on every attempt; the body POSTED is that text plus
+/// `,"timestamp":"..","signature":".."` spliced in before its final brace, with a fresh timestamp each attempt (W2, Kyle 2026-11-23:
+/// the signature and timestamp are in the body as well as the headers; the signed text is payloadJson, services/hubEvents.ts). `target`
+/// is the webhook TARGET's id (an agent role: admin | inventory | facebook | outreach | scout | research | cfo | nec_coach), not its URL
+/// - the URL is read when the attempt is made, so fixing it fixes the retries. `eventKey` is shared by the rows of ONE logical
+/// event: a team message's rows (one per receiving agent) carry `message.team:<messageId>`.
 /// status: pending | retrying | delivered | dead | no_target. `nextAttemptAt` doubles as the worker's
 /// lease (a claim moves it two minutes out), so two overlapping runs cannot send one event twice.
 model HubEvent {

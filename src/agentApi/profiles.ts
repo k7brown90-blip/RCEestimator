@@ -190,5 +190,55 @@ export const hubDraftResultSchema = z.object({
   channel: z.string().max(20),
   category: z.string().max(60).nullable(),
   createdAt: z.string(),
+  /** W2: when status is pending_approval, why it is waiting, in plain words; null when it posted. Without this line zod would strip it. */
+  pending_reason: z.string().max(400).nullable().optional(),
 });
 export type HubDraftResult = z.infer<typeof hubDraftResultSchema>;
+
+// ── reports:read and finance:read (W2-B, R-f): the Research and CFO read tools ────────────────────
+
+/**
+ * The ONE field profile for the Research (reports:read) and CFO (finance:read) read tools, de-identified (Kyle, 2026-11-23): record ids,
+ * status and enum fields, dates, money amounts, job and invoice numbers and at most a customer's FIRST name. The names a field can hold are
+ * these and no others; zod stripping is the allowlist, so a column added to a query later cannot reach an agent until it is named here.
+ * NEVER named here: phone, email, street, last name, tokens or pay links, free text (notes, purpose, titles, scopes of work, call outcomes,
+ * transcripts), pay rates, commission or payroll, card or bank details.
+ */
+const day = z.string().max(40).nullable();
+export const reportJobSchema = z.object({
+  id: z.string(), status: z.string().max(40), mode: z.string().max(60),
+  visit_date: z.string().max(40), scheduled_start: day, scheduled_end: day, completed_at: day, contracted_at: day,
+  customer_id: z.string(), customer_first_name: z.string().max(60).nullable(), invoice_number: z.string().max(40).nullable(),
+  contracted_revenue: z.number().nullable(), labor_hours: z.number().nullable(),
+});
+export const reportJobListSchema = z.object({ items: z.array(reportJobSchema), truncated: z.boolean() });
+
+export const reportInvoiceSchema = z.object({
+  id: z.string(), number: z.string().max(40), revision: z.number().int(), status: z.string().max(30),
+  payment_status: z.enum(["paid", "deposit_paid", "partial", "unpaid"]),
+  customer_id: z.string(), customer_first_name: z.string().max(60).nullable(), job_id: z.string().nullable(), signed_at: day,
+  billed_total: z.number(), deposit_due: z.number(), deposit_required: z.boolean(), financing_fee: z.number(),
+  total_paid: z.number(), balance: z.number(), last_paid_at: day,
+  change_orders: z.array(z.object({ number: z.string().max(40), billed_total: z.number(), signed_at: day })),
+});
+export const reportInvoiceListSchema = z.object({ items: z.array(reportInvoiceSchema), truncated: z.boolean() });
+
+export const reportVisitSchema = z.object({
+  id: z.string(), status: z.string().max(40), mode: z.string().max(60),
+  scheduled_start: day, scheduled_end: day, customer_id: z.string(), customer_first_name: z.string().max(60).nullable(),
+  technician_first_names: z.array(z.string().max(60)),
+});
+export const reportVisitListSchema = z.object({ items: z.array(reportVisitSchema), truncated: z.boolean() });
+
+export const reportPaymentSchema = z.object({
+  id: z.string(), invoice_id: z.string().nullable(), job_id: z.string().nullable(), amount: z.number(), refunded_amount: z.number(),
+  method: z.string().max(30), kind: z.string().max(30), status: z.string().max(30), payer: z.string().max(30),
+  received_at: day, voided: z.boolean(),
+});
+export const reportPaymentListSchema = z.object({ items: z.array(reportPaymentSchema), truncated: z.boolean() });
+
+export const reportLeadSourcesSchema = z.object({
+  from: z.string().max(12).nullable(), to: z.string().max(12).nullable(), total: z.number().int(),
+  by_source: z.array(z.object({ source: z.string().max(60), count: z.number().int() })),
+  by_platform: z.array(z.object({ platform: z.string().max(60), count: z.number().int() })),
+});

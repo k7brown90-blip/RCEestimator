@@ -58,6 +58,7 @@ async function wipe() {
     await prisma.customer.deleteMany({ where: { id: { in: ids } } });
   }
   await prisma.technician.deleteMany({ where: { id: { in: techIds.splice(0) } } });
+  await prisma.agentKey.deleteMany({ where: { name: { startsWith: TAG } } });
 }
 beforeAll(wipe);
 beforeEach(wipe);
@@ -374,6 +375,10 @@ describe("a Team thread takes posts only from its own person", () => {
     await saveCrmLogin(michael.id, { username: mName, role: "office", password: PASS });
     const as = await signIn(mName);
 
+    // W2-C: a team message wakes the agents whose KEY can read it (not "Admin whatever"), so a live Admin key is what makes the control mean something.
+    await prisma.agentKey.create({
+      data: { name: `${TAG} admin`, agentRole: "admin", environment: "test", displayPrefix: "rce_test_hubr", secretHash: `${TAG}-${Math.random().toString(36).slice(2)}`, scopes: ["team:read", "team:reply"], createdBy: "owner" },
+    });
     // Positive control: his own thread takes the post and wakes the team (so the "none" below means something).
     expect((await request(app).post(`/hub/threads/${michaelThread.id}/messages`).set(as).send({ body: "My own question" })).status).toBe(201);
     const deadline = Date.now() + 4000;

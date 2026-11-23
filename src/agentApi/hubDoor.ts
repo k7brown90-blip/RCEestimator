@@ -4,10 +4,17 @@
  * the actor is an agent key (req.agentPrincipal, set by the agent gate, src/agentApi/gate.ts). The
  * entries that let a key reach them are the three AGENT_KEY_ROUTES in middleware/publicRoutes.ts:
  *
- *   GET  /api/hub/threads                 hub:read   the threads the key may read (filters: kind, status, since; NO search)
- *   GET  /api/hub/threads/:id/messages    hub:read   one thread and its messages (the path the team's contract names)
- *   POST /api/hub/messages                hub:draft (customer draft) / team:reply (Team, group, job crew chat): a draft or a message waiting
- *                                         for approval; an in-app post may then be approved by an AI auto-send rule, a customer message never is
+ *   GET  /api/hub/threads                 any scope that opens a kind (HUB_KIND_SCOPES; the gate takes any one of them) - the threads the key
+ *                                         may read (filters: kind, status, since; NO search)
+ *   GET  /api/hub/threads/:id/messages    the same scopes - one thread and its messages (the path the team's contract names)
+ *   POST /api/hub/messages                hub:draft (customer draft) / team:reply (Team, group, job crew chat) / training:write: a customer
+ *                                         draft waits for a person (or an owner rule); a Team, group or crew post is published at once when its
+ *                                         key's "Team posts publish immediately" box is ticked (services/hubAutoSend.ts), else it waits too.
+ *                                         The answer says which (status) and, when it waits, why (pending_reason).
+ *
+ * W2-B: each of the three is a CORE (listThreadsCore, threadDetailCore, createMessageCore) that takes a DoorCall instead of an Express request. The REST
+ * handlers below are thin wrappers; the /mcp tools list_threads, read_thread and post_message (src/agentApi/tools.ts) call the SAME cores, so the
+ * scrub, the idempotency table, the draft slot, the agent-loop limit and the Team publish rule are one implementation.
  *
  * Every other hub route (approve, edit-approve, reject, send, audit, stream, attachments, push, thread
  * writes) is refused to an agent key by the session gate (401) and again by `withReader` (403).
@@ -19,8 +26,8 @@
  *   * GROUPS (C7). An office-made group chat is read and posted in as a Team post (team:reply), and ONLY by a key that
  *     is a member of it: a group the key is not in is the same 404 as an unknown id, and is not in its list.
  *   * THREAD KINDS. Which kinds a key may read or draft in comes from its scopes (shared/agentScopes.ts
- *     HUB_KIND_SCOPES: customer = hub:read / hub:draft, job (the crew chat) = hub:read to read and team:reply to post,
- *     team and group = team:reply, dev = dev:read, training = training:read or training:write), narrowed by its hubThreadKinds (Scout: ['training']). A thread of a kind
+ *     HUB_KIND_SCOPES: customer = hub:read / hub:draft, job (the crew chat) = team:read, team:reply or hub:read to read and team:reply to post,
+ *     team and group = team:read or team:reply to read and team:reply to post, dev = dev:read, training = training:read or training:write), narrowed by its hubThreadKinds. A thread of a kind
  *     the key may not use is 403 (not 404), on a read and on a write. An agent never creates a team thread
  *     (team answer 9a) and never a dev thread (step 7): a record link makes a CUSTOMER thread only.
  *   * NO SEARCH. `q` is refused to an agent: a search that matches raw titles and bodies would let a key rebuild a
@@ -48,7 +55,9 @@ import { LAST_LINE_MAX, listThreads, threadDetail } from "../services/hubInbox";
 import { createDraftMessage } from "../services/hubDrafts";
 import { campaignFirstName } from "../services/emailCampaigns";
 import { messageCategoryFor } from "../../shared/hub/messageCategories";
-import { hubKindsFor, isHubThreadKind, type HubKindAccess } from "../../shared/agentScopes";
+import {
+  agentScopeChoiceText, hubKindsFor, hubRouteScopes, HUB_KIND_SCOPES, HUB_THREAD_KINDS, isHubThreadKind, type AgentScope, type HubKindAccess,
+} from "../../shared/agentScopes";
 import { AgentApiError, toAgentError, type AgentErrorCode } from "./errors";
 import {
   agentDateTime, agentRespond, authorFirstName, scrubMessageText, scrubTrainingText, toChicagoIso, type AgentToolOutput, type LinkedContacts,
@@ -57,20 +66,19 @@ import {
   hubDraftResultSchema, hubThreadDetailSchema, hubThreadListSchema, projectMessageRead, projectScoutTrainingMessage,
   scoutTrainingThreadDetailSchema, scoutTrainingThreadListSchema, type HubMessageRead, type HubThreadRead,
 } from "./profiles";
-import { agentAuditRecord, finishAgentCall, sendAgentResult, type AgentRequest } from "./gate";
-import { recordAgentCall } from "./audit";
+import {
+  agentAuditRecord, finishAgentCall, reserveAgentDraftSlot, sendAgentResult, type AgentPrincipal, type AgentRequest, type FinishAgentCall,
+} from "./gate";
+import { recordAgentCall, type AgentCallRecord } from "./audit";
 import { idempotencyKeySchema, requestHashOf, withIdempotency } from "./idempotency";
 
 // ── the tools (what the one response layer answers with, by scope) ───────────────────────────────
 
-const THREADS_OUT: AgentToolOutput = {
-  name: "hub.threads.list",
-  profiles: [{ scope: "hub:read", schema: hubThreadListSchema, withholdContact: true }],
-};
-const THREAD_OUT: AgentToolOutput = {
-  name: "hub.threads.get",
-  profiles: [{ scope: "hub:read", schema: hubThreadDetailSchema, withholdContact: true }],
-};
+// W2 (trap T2): EVERY scope that can open the tool must have a profile here, or a key the gate lets in (a team-only reader, a team-only poster) would
+// be refused by agentRespond AFTER the message was already written. The lists come from the one table (HUB_KIND_SCOPES), so they cannot drift from the gate.
+const profilesFor = (scopes: readonly AgentScope[], schema: z.ZodType) => scopes.map((scope) => ({ scope, schema, withholdContact: true }));
+const THREADS_OUT: AgentToolOutput = { name: "hub.threads.list", profiles: profilesFor(hubRouteScopes("read"), hubThreadListSchema) };
+const THREAD_OUT: AgentToolOutput = { name: "hub.threads.get", profiles: profilesFor(hubRouteScopes("read"), hubThreadDetailSchema) };
 // A key limited to training threads (Scout) is answered with the Scout training profile (amendment 16a), not the
 // every-key one. The door chooses it; the scopes here are only what agentRespond needs to find a profile.
 const SCOUT_THREADS_OUT: AgentToolOutput = {
@@ -87,10 +95,7 @@ const SCOUT_THREAD_OUT: AgentToolOutput = {
     { scope: "training:write", schema: scoutTrainingThreadDetailSchema, withholdContact: true },
   ],
 };
-const DRAFT_OUT: AgentToolOutput = {
-  name: "hub.messages.draft",
-  profiles: [{ scope: "hub:draft", schema: hubDraftResultSchema, withholdContact: true }],
-};
+const DRAFT_OUT: AgentToolOutput = { name: "hub.messages.draft", profiles: profilesFor(hubRouteScopes("post"), hubDraftResultSchema) };
 
 /** The one operation name idempotency stores (a later /mcp draft tool shares it, so a retry through the other door replays). */
 export const DRAFT_OPERATION = "hub.messages.draft";
@@ -100,8 +105,44 @@ export const AGENT_DRAFT_TAGS = ["possible_opt_out"] as const;
 
 // ── errors ───────────────────────────────────────────────────────────────────────────────────────
 
+/**
+ * W2-B (one tool for one task): the hub door's three operations are CORES that take a DoorCall instead of an Express request, so the REST routes
+ * (the thin wrappers at the foot of each section) and the /mcp tools (src/agentApi/registry.ts) run the SAME code - the same scrub, idempotency
+ * table, draft slot, agent-loop limit, Team publish path and pending_reason. A DoorCall is what a core needs from "the call it is part of".
+ */
+export interface DoorCall {
+  principal: AgentPrincipal;
+  /** The scope that opened the thread kind, for the audit row (HUB_KIND_SCOPES), when it is not the one the gate matched. */
+  markScope(scope: string): void;
+  /** Take one of the key's draft slots for a CUSTOMER draft: null when taken, else the seconds to wait. */
+  reserveDraft(): Promise<number | null>;
+  /** The audit row for a WRITE, as data, built with this call's tool, route and scope; the core inserts it inside the idempotency transaction. */
+  auditRecord(result: FinishAgentCall): AgentCallRecord;
+}
+
+/** What a core answers with. `auditWritten` is true when the core already inserted the call's audit row (a fresh write does, inside its transaction). */
+export interface DoorResult {
+  status: number;
+  body: unknown;
+  recordIds: string[];
+  replayed?: boolean;
+  auditWritten?: boolean;
+  idempotencyKey?: string;
+}
+
+/** The REST door's DoorCall: the request the gate accepted. */
+function restCall(req: Request, res: Response): DoorCall {
+  const state = req as AgentRequest;
+  return {
+    principal: state.agentPrincipal!,
+    markScope: (scope) => { if (state.agentCall) state.agentCall.scopeUsed = scope; },
+    reserveDraft: () => reserveAgentDraftSlot(req, res),
+    auditRecord: (result) => agentAuditRecord(req, result),
+  };
+}
+
 /** A hub refusal as the agent error it is. The sentence is scrubbed: it can name a record, never reveal contact details. */
-function agentErrorFrom(err: unknown): unknown {
+export function agentErrorFrom(err: unknown): unknown {
   if (err instanceof HubError) {
     const code: AgentErrorCode = err.status === 404 ? "not_found" : err.status === 403 ? "forbidden" : "bad_request";
     return new AgentApiError(code, { reason: scrubMessageText(err.message) });
@@ -114,6 +155,7 @@ export async function agentRefusal(req: Request, res: Response, err: unknown): P
   const state = req as AgentRequest;
   const route = state.agentCall?.route ? `${req.method} ${state.agentCall.route.path}` : req.method;
   const { status, body } = toAgentError(agentErrorFrom(err), route);
+  if (body.retry_after !== undefined) res.setHeader("Retry-After", String(body.retry_after));
   await finishAgentCall(req, res, { status, body, resultCode: body.code });
 }
 
@@ -129,11 +171,49 @@ const kindsFor = (reader: HubReader, access: Access): string[] => hubKindsFor(re
 
 const kindAllowed = (reader: HubReader, kind: string, access: Access): boolean => kindsFor(reader, access).includes(kind);
 
-/** Why a kind is refused: the key's own kind limit, the dev door, or the scope that would open it. */
+/**
+ * W2 audit: once the thread is known, the audit row's scopeUsed is the scope that opened THAT kind (HUB_KIND_SCOPES), not the first any-of scope the gate matched
+ * for the whole route - an Admin key posting in the Team chat is audited as team:reply, never as hub:draft (Draft customer). The gate's value stays when the kind
+ * names none the key holds. Both finishAgentCall and agentAuditRecord copy it from the call.
+ */
+function markScopeUsed(call: DoorCall, reader: HubReader, kind: string, access: Access): void {
+  if (!isHubThreadKind(kind)) return;
+  const held = HUB_KIND_SCOPES[kind][access].find((s) => (reader.agentScopes ?? []).includes(s));
+  if (held) call.markScope(held);
+}
+
+const kindName = (kind: string): string => (isHubThreadKind(kind) ? HUB_THREAD_KINDS[kind] : kind).toLowerCase();
+
+/**
+ * Why a kind is refused: the key's own kind limit, the dev door, or the scope that would open it - named the way Settings -> Agent keys names it
+ * (W2: "Read team (team:read)"), so Kyle or the agent's author can tick the right box.
+ */
 function refusalSentence(reader: HubReader, kind: string, access: Access): string {
-  if (reader.threadKinds.length > 0 && !reader.threadKinds.includes(kind)) return `This key may only use ${reader.threadKinds.join(", ")} threads.`;
+  if (reader.threadKinds.length > 0 && !reader.threadKinds.includes(kind)) {
+    return `This key may only use ${reader.threadKinds.join(", ")} threads. Change the limit on Settings \u2192 Agent keys.`;
+  }
   if (kind === "dev" && access === "post") return "Dev threads are written through the dev door, not here.";
-  return `This key's scopes do not open ${kind} threads${access === "post" ? " for drafts" : ""}.`;
+  const needed = isHubThreadKind(kind) ? HUB_KIND_SCOPES[kind][access] : [];
+  if (needed.length === 0) return `This key's scopes do not open ${kindName(kind)} threads.`;
+  return `This key needs ${agentScopeChoiceText(needed)} to ${access === "post" ? "post in" : "read"} ${kindName(kind)} threads. Tick it on Settings \u2192 Agent keys.`;
+}
+
+/**
+ * The 403 for a key whose scopes (with its thread limit) open no conversation to read at all. It used to be a quiet 200 with an empty list (the
+ * 2026-11-23 Facebook failure); now it says which box to tick, or which limit to change.
+ */
+function noKindsSentence(reader: HubReader): string {
+  const scopes = reader.agentScopes ?? [];
+  if (reader.threadKinds.length > 0 && hubKindsFor(scopes, "read", []).length > 0) {
+    const open = hubKindsFor(scopes, "read", []).map(kindName).join(", ");
+    const wantedForLimit = [...new Set(reader.threadKinds.flatMap((k) => (isHubThreadKind(k) ? HUB_KIND_SCOPES[k].read : [])))];
+    const needs = wantedForLimit.length > 0 ? ` It needs ${agentScopeChoiceText(wantedForLimit)} for ${reader.threadKinds.join(", ")} threads.` : "";
+    return `This key is limited to ${reader.threadKinds.join(", ")} threads, but its scopes open only ${open} threads.${needs} Tick it, or change the limit, on Settings \u2192 Agent keys.`;
+  }
+  const wanted = reader.threadKinds.length > 0
+    ? [...new Set(reader.threadKinds.flatMap((k) => (isHubThreadKind(k) ? HUB_KIND_SCOPES[k].read : [])))]
+    : hubRouteScopes("read");
+  return `This key needs ${agentScopeChoiceText(wanted)}. Tick it on Settings \u2192 Agent keys.`;
 }
 
 /**
@@ -150,8 +230,16 @@ async function threadFor(reader: HubReader, id: string, access: Access): Promise
   return thread;
 }
 
-/** A key limited to training threads (Scout) is answered with the Scout training profile. */
-const scoutShaped = (reader: HubReader): boolean => reader.threadKinds.length > 0 && reader.threadKinds.every((k) => k === "training");
+/**
+ * The Scout training profile (no record links, the apprentice's first name only, the customers' names removed) is the answer for the Scout KEY (its role) and
+ * for any key limited to training threads - W2 trap T4: Scout lost its "training only" limit, so the choice can no longer rest on the limit alone. It needs one of the
+ * training scopes, or the profile list would have nothing the key holds. For a thread that is not a training one the every-key message profile still answers.
+ */
+const scoutShaped = (reader: HubReader): boolean => {
+  const holdsTraining = (reader.agentScopes ?? []).some((s) => s === "training:read" || s === "training:write");
+  const trainingOnly = reader.threadKinds.length > 0 && reader.threadKinds.every((k) => k === "training");
+  return holdsTraining && (trainingOnly || reader.agentRole === "scout");
+};
 
 // ── projections: what an agent sees of the CRM's own reads ───────────────────────────────────────
 
@@ -170,7 +258,7 @@ const addressText = (p: { addressLine1: string; city: string; state: string; pos
  * visits (Scout's extra name removal, ruling R2). Also who each customer, lead and job thread is about, for
  * its first-name title. One round of queries for all the threads.
  */
-async function linkedFor(threads: readonly HubThread[]): Promise<Linked> {
+export async function linkedFor(threads: readonly HubThread[]): Promise<Linked> {
   const customerIds = new Set<string>();
   const leadIds = new Set<string>();
   const visitIds = new Set<string>();
@@ -331,8 +419,9 @@ type ScoutMessage = ReturnType<typeof projectScoutTrainingMessage>;
 /** What the list route reads off the query string, still raw: the door validates it, so a bad value is an agent error. */
 export interface AgentListQuery { kind?: string; status?: string; q?: string; since?: string }
 
-export async function agentListThreads(req: Request, res: Response, reader: HubReader, query: AgentListQuery): Promise<void> {
-  const principal = (req as AgentRequest).agentPrincipal!;
+/** GET /hub/threads and the list_threads tool: the ONE core. */
+export async function listThreadsCore(call: DoorCall, reader: HubReader, query: AgentListQuery): Promise<DoorResult> {
+  const principal = call.principal;
   // Every refusal here is thrown, so withReader answers it in the agent error shape and writes the audit row.
   // Search is not offered: it matches raw titles and bodies, so a key could rebuild a phone, email, address or
   // a withheld name by guessing (the answers are scrubbed, the match is not).
@@ -345,6 +434,8 @@ export async function agentListThreads(req: Request, res: Response, reader: HubR
     since = new Date(query.since);
   }
   const kinds = kindsFor(reader, "read");
+  // W2: a key whose scopes open nothing is told so (403), never answered with an empty list that looks like "no conversations".
+  if (kinds.length === 0) throw forbidden(noKindsSentence(reader));
   if (query.kind && !kinds.includes(query.kind)) throw forbidden(refusalSentence(reader, query.kind, "read"));
 
   const list = await listThreads(reader, { kind: query.kind, status: query.status, kinds, since, wholeLastLine: true }, false);
@@ -354,16 +445,23 @@ export async function agentListThreads(req: Request, res: Response, reader: HubR
   const scout = scoutShaped(reader);
   const raw = { threads: list.threads.map((t) => threadRead(t, linked, allowNames, scout)) };
   const { data } = await agentRespond(principal, scout ? SCOUT_THREADS_OUT : THREADS_OUT, raw, { linked });
-  await finishAgentCall(req, res, { status: 200, body: data, recordIds: list.threads.map((t) => t.id) });
+  return { status: 200, body: data, recordIds: list.threads.map((t) => t.id) };
 }
 
-export async function agentThreadDetail(req: Request, res: Response, reader: HubReader, threadId: string): Promise<void> {
-  const principal = (req as AgentRequest).agentPrincipal!;
+export async function agentListThreads(req: Request, res: Response, reader: HubReader, query: AgentListQuery): Promise<void> {
+  const out = await listThreadsCore(restCall(req, res), reader, query);
+  await finishAgentCall(req, res, { status: out.status, body: out.body, recordIds: out.recordIds });
+}
+
+/** GET /hub/threads/:id/messages and the read_thread tool: the ONE core. */
+export async function threadDetailCore(call: DoorCall, reader: HubReader, threadId: string): Promise<DoorResult> {
+  const principal = call.principal;
   const thread = await threadFor(reader, threadId, "read");
+  markScopeUsed(call, reader, thread.kind, "read");
   const detail = await threadDetail(reader, thread.id, undefined, { wholeLastLine: true });
   const linked = await linkedFor([thread]);
   const allowNames = allowNamesFor(reader);
-  const scout = scoutShaped(reader);
+  const scout = scoutShaped(reader) && thread.kind === "training";
   const raw = {
     thread: threadRead(detail.thread, linked, allowNames, scout),
     // A deleted message carries no text for anyone; an agent is not told it existed.
@@ -373,7 +471,12 @@ export async function agentThreadDetail(req: Request, res: Response, reader: Hub
     truncated: detail.truncated,
   };
   const { data } = await agentRespond(principal, scout ? SCOUT_THREAD_OUT : THREAD_OUT, raw, { linked });
-  await finishAgentCall(req, res, { status: 200, body: data, recordIds: [thread.id] });
+  return { status: 200, body: data, recordIds: [thread.id] };
+}
+
+export async function agentThreadDetail(req: Request, res: Response, reader: HubReader, threadId: string): Promise<void> {
+  const out = await threadDetailCore(restCall(req, res), reader, threadId);
+  await finishAgentCall(req, res, { status: out.status, body: out.body, recordIds: out.recordIds });
 }
 
 // ── POST /hub/messages ───────────────────────────────────────────────────────────────────────────
@@ -382,6 +485,33 @@ export async function agentThreadDetail(req: Request, res: Response, reader: Hub
 const RECIPIENT_KEYS = ["toAddress", "to_address", "to", "cc", "bcc", "toPhone", "to_phone", "phone", "email"] as const;
 
 const linkId = z.string().trim().min(1).max(64);
+
+/**
+ * W2 (R-j): the agent-to-agent limit. In one thread an AI may leave at most this many posts within this window with no person's post after them;
+ * the next one is refused 429 `thread_agent_limit`. A person's post (a technician or the office) starts the count over. It runs from the
+ * existing HubMessage (threadId, createdAt) index. Only threads that are not a customer's: the loop it prevents is agents answering agents.
+ */
+export const THREAD_AGENT_POST_LIMIT = 8;
+export const THREAD_AGENT_WINDOW_MS = 10 * 60 * 1000;
+const AI_MESSAGE_STATES = ["posted", "sent", "approved", "approving", "pending_approval"];
+
+async function refuseAgentLoop(threadId: string, now: Date = new Date()): Promise<void> {
+  const lastPerson = await prisma.hubMessage.findFirst({
+    where: { threadId, authorType: { in: ["tech", "office"] }, deletedAt: null },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  const windowStart = new Date(now.getTime() - THREAD_AGENT_WINDOW_MS);
+  const since = lastPerson && lastPerson.createdAt > windowStart ? lastPerson.createdAt : windowStart;
+  const posts = await prisma.hubMessage.count({
+    where: { threadId, authorType: { in: ["ai_agent", "claude"] }, deletedAt: null, status: { in: AI_MESSAGE_STATES }, createdAt: { gt: since } },
+  });
+  if (posts >= THREAD_AGENT_POST_LIMIT) throw new AgentApiError("thread_agent_limit");
+}
+
+/** What a post that did not publish says about itself: the reason it was given, or a plain default. Null for anything that is not waiting. */
+const pendingReasonFor = (status: string, reason: string | null | undefined): string | null =>
+  status === "pending_approval" ? reason ?? "It is waiting for a person to approve it." : null;
 
 const draftBodySchema = z.object({
   thread_id: linkId.optional(),
@@ -462,10 +592,15 @@ async function resolveTarget(reader: HubReader, body: z.infer<typeof draftBodySc
 const clientIdFor = (idempotencyKey: string, requestHash: string): string =>
   `idem-${createHash("sha256").update(`${idempotencyKey}:${requestHash}`).digest("hex").slice(0, 32)}`;
 
-export async function agentCreateMessage(req: Request, res: Response, reader: HubReader): Promise<void> {
-  const state = req as AgentRequest;
-  const principal = state.agentPrincipal!;
-  const raw = (req.body ?? {}) as Record<string, unknown>;
+/** What a thread's own draft/post body is, as the tool's input schema (the registry's post_message input is this same object). */
+export const postMessageInputSchema = draftBodySchema;
+
+/**
+ * POST /hub/messages and the post_message tool: the ONE core. A fresh write has its audit row inserted inside the idempotency
+ * transaction (`auditWritten`); a replay returns the first result and leaves the audit row to the caller.
+ */
+export async function createMessageCore(call: DoorCall, reader: HubReader, raw: Record<string, unknown>): Promise<DoorResult> {
+  const principal = call.principal;
 
   const sentRecipient = RECIPIENT_KEYS.filter((k) => raw[k] !== undefined);
   if (sentRecipient.length > 0) throw badRequest("A draft takes no recipient or cc: the CRM fills the address in when it is approved.");
@@ -513,11 +648,26 @@ export async function agentCreateMessage(req: Request, res: Response, reader: Hu
   const { idempotency_key: idempotencyKey, ...hashed } = body;
   const clientMessageId = clientIdFor(idempotencyKey, requestHashOf(hashed));
 
+  // W2: a CUSTOMER draft takes one of the key's 500-a-day slots (the gate no longer does it for the whole route, because a Team post is not a draft).
+  markScopeUsed(call, reader, thread.kind, "post");
+  if (toCustomer) {
+    const wait = await call.reserveDraft();
+    if (wait !== null) throw new AgentApiError("daily_draft_limit", { retryAfterSeconds: wait });
+  }
+
   const out = await withIdempotency(
     { keyId: principal.keyId, role: principal.role }, DRAFT_OPERATION, idempotencyKey, hashed,
     async (tx) => {
       let message;
       let replayedInside = false;
+      let heldBecause: string | null | undefined;
+      // A retry that already made its post is answered from what it made (below); only a NEW post is counted against the loop limit.
+      // W2: the check and the insert are not one step, so concurrent posts (every agent answering one person's post at once) would all read the same count.
+      // One transaction-scoped advisory lock per thread, held until this transaction commits, makes the next waiter count AFTER this post has committed.
+      if (!toCustomer) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${thread.id}))`;
+        await refuseAgentLoop(thread.id);
+      }
       if (toCustomer) {
         const made = await createDraftMessage(reader, {
           threadId: thread.id, channel: channel as "email" | "sms", body: body.body, subject: body.subject ?? null,
@@ -526,6 +676,7 @@ export async function agentCreateMessage(req: Request, res: Response, reader: Hu
         });
         message = made.message;
         replayedInside = made.replayed === true;
+        heldBecause = made.autoSendNote;
       } else {
         const made = await postMessageResult(reader, {
           threadId: thread.id, body: body.body, subject: body.subject ?? null, tags: body.tags, status, category: postCategory,
@@ -533,24 +684,35 @@ export async function agentCreateMessage(req: Request, res: Response, reader: Hu
         });
         message = made.message;
         replayedInside = made.replayed;
+        heldBecause = made.pendingReason;
       }
       const raw = {
         messageId: message.id, threadId: message.threadId, status: message.status, channel: message.channel,
         category: message.category, createdAt: toChicagoIso(message.createdAt),
+        // W2: why a post is still waiting, in plain words (the agent is told "posted", or "pending" and the reason).
+        pending_reason: pendingReasonFor(message.status, heldBecause),
       };
       const answer = await agentRespond(principal, DRAFT_OUT, raw);
       // The audit row commits WITH the idempotency record. A retry that found the draft already made is not a new draft.
-      await recordAgentCall(agentAuditRecord(req, {
-        status: 201, body: answer.data, recordIds: [message.id, message.threadId], madeDraft: !replayedInside,
+      await recordAgentCall(call.auditRecord({
+        // Only a draft to a customer counts toward the 500 a day; a Team, group or crew post is a post (W2).
+        status: 201, body: answer.data, recordIds: [message.id, message.threadId], madeDraft: toCustomer && !replayedInside,
         resultCode: replayedInside ? "replayed" : "ok", idempotencyKey,
       }), tx);
       return answer.data;
     },
   );
 
+  const ids = out.replayed ? [] : [(out.result as { messageId?: string }).messageId, thread.id].filter((v): v is string => typeof v === "string");
+  if (out.replayed) return { status: 200, body: out.result, recordIds: [], replayed: true, idempotencyKey };
+  return { status: 201, body: out.result, recordIds: ids, auditWritten: true, idempotencyKey };
+}
+
+export async function agentCreateMessage(req: Request, res: Response, reader: HubReader): Promise<void> {
+  const out = await createMessageCore(restCall(req, res), reader, (req.body ?? {}) as Record<string, unknown>);
   if (out.replayed) {
-    await finishAgentCall(req, res, { status: 200, body: out.result, resultCode: "replayed", idempotencyKey });
+    await finishAgentCall(req, res, { status: 200, body: out.body, resultCode: "replayed", idempotencyKey: out.idempotencyKey });
     return;
   }
-  sendAgentResult(res, 201, out.result);
+  sendAgentResult(res, 201, out.body);
 }

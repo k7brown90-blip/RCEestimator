@@ -38,7 +38,7 @@ import { _setDeliveryTimeoutMsForTests, deliverDueEvents, deliverEvent, emitHubE
 import {
   SETTING_SECRETS_INFO, SettingSecretsError, decryptSecret, encryptSecret, generateSigningSecret, maskSecret, settingSecretsAvailable,
 } from "../src/services/settingSecrets";
-import { DEFAULT_EVENT_ROUTES, HUB_EVENT_TYPES, HUB_TEST_EVENT_TYPE, TEST_RESEND_REASON } from "../shared/hub/events";
+import { DEFAULT_EVENT_ROUTES, HUB_EVENT_TYPES, HUB_TEST_EVENT_TYPE, TEST_RESEND_REASON, splitWireBody } from "../shared/hub/events";
 import { cleanupCrmLoginFixtures, makePerson } from "./helpers/crmLoginFixture";
 
 const TAG = "HubWh";
@@ -72,9 +72,15 @@ async function startReceiver(): Promise<Receiver> {
   return r;
 }
 
+/**
+ * The W2 receiver recipe (Kyle 2026-11-23): the signed text is the payload WITHOUT the timestamp and signature members that end the wire
+ * body (cut at the last `,"timestamp":`, add `}`); the headers carry the same timestamp and signature.
+ */
 function verify(req: Received, secret: string): boolean {
   const ts = String(req.headers["x-rce-timestamp"] ?? "");
-  const expected = `sha256=${createHmac("sha256", secret).update(`${ts}.${req.body}`).digest("hex")}`;
+  const wire = splitWireBody(req.body);
+  if (!wire || wire.timestamp !== ts || wire.signature !== req.headers["x-rce-signature"]) return false;
+  const expected = `sha256=${createHmac("sha256", secret).update(`${ts}.${wire.payloadJson}`).digest("hex")}`;
   return req.headers["x-rce-signature"] === expected;
 }
 
@@ -518,7 +524,9 @@ describe("Send test event", () => {
     expect(admin.requests).toHaveLength(1);
     const sent = admin.requests[0];
     const payload = JSON.parse(sent.body);
-    expect(Object.keys(payload).sort()).toEqual(["event_id", "occurred_at", "target", "type"]);
+    // W2: the wire body carries the signature and timestamp as well; the STORED payload is still exactly the four fields.
+    expect(Object.keys(payload).sort()).toEqual(["event_id", "occurred_at", "signature", "target", "timestamp", "type"]);
+    expect(Object.keys(JSON.parse(splitWireBody(sent.body)!.payloadJson)).sort()).toEqual(["event_id", "occurred_at", "target", "type"]);
     expect(payload).toMatchObject({ type: "test.ping", target: "admin", event_id: res.body.event.id });
     expect(payload.occurred_at).toMatch(/[+-]\d{2}:\d{2}$/);
     expect(sent.headers["x-rce-event-id"]).toBe(payload.event_id);
@@ -679,5 +687,29 @@ describe("access and secrecy", () => {
     // The settings change was logged by name and count only.
     const audit = await prisma.systemEvent.findMany({ where: { source: "agent_events", message: "Agent webhook addresses changed" } });
     expect(JSON.stringify(audit.map((a) => JSON.parse(a.detailsJson ?? "{}").targets))).toContain('"headers":1');
+  });
+});
+
+// W2-C review: a CRM tab still on the pre-W2 bundle sends only admin and inventory. The six newer agents' stored address, header and
+// encrypted signing secret must survive that save (a target missing from the body is kept as stored, never wiped).
+describe("a save from an older CRM tab (only admin and inventory in the body)", () => {
+  it("keeps every stored target it did not send: address, header and signing secret", async () => {
+    const kyle = await pinToken();
+    const full = body({ url: admin.url }, { url: inventory.url });
+    full.targets.push({ id: "facebook", url: "https://facebook.example.com/hook", enabled: true, headers: [{ name: "Authorization", value: "Bearer fb-token-9999" }] } as never);
+    await put(kyle, full).expect(200);
+    const gen = await request(app).post("/hub/webhooks/facebook/signing-secret").set(bearer(kyle)).expect(200);
+    const before = (await read(kyle)).value.targets.find((t: { id: string }) => t.id === "facebook");
+    expect(before).toMatchObject({ url: "https://facebook.example.com/hook", headers: [{ name: "Authorization" }], signingSecret: { masked: expect.any(String) } });
+
+    // The old tab edits Admin's address and sends only the two agents it knows.
+    await put(kyle, body({ url: "https://admin.example.com/changed" }, { url: inventory.url })).expect(200);
+    const after = await read(kyle);
+    expect(after.value.targets.find((t: { id: string }) => t.id === "admin").url).toBe("https://admin.example.com/changed");
+    expect(after.value.targets.find((t: { id: string }) => t.id === "facebook")).toEqual(before);
+    // The kept secret is the same one: the stored value still decrypts and signs (the generate answer's masked tail matches).
+    expect(before.signingSecret.masked.endsWith((gen.body.secret as string).slice(-4))).toBe(true);
+    const stored = await prisma.companySetting.findUnique({ where: { key: "agentWebhooks" } });
+    expect(JSON.stringify(stored)).not.toContain("fb-token-9999");
   });
 });

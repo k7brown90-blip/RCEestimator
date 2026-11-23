@@ -314,57 +314,145 @@ describe("evaluation in the draft-create path", () => {
 });
 
 
-describe("the four BA8 categories", () => {
-  it("lead_first_response, visit_reminder (appointment reminder), team_internal and training_reply are all switchable, all OFF by default", async () => {
+describe("the BA8 categories after W2 (Kyle 2026-11-23)", () => {
+  // W2: "Team post by an AI" (team_internal) left this card: an AI's Team, group or crew post is published by its author KEY's own
+  // "Team posts publish immediately" box (Settings -> Agent keys), not by an owner rule. Three rules remain.
+  it("lead_first_response, visit_reminder (appointment reminder) and training_reply are switchable, all OFF by default; team_internal is no longer a rule", async () => {
     const kyle = await pinToken();
     const keys = AUTO_SEND_CATEGORIES.map((c) => c.key);
-    expect(keys).toEqual(expect.arrayContaining(["lead_first_response", "visit_reminder", "team_internal", "training_reply"]));
+    expect(keys).toEqual(expect.arrayContaining(["lead_first_response", "visit_reminder", "training_reply"]));
+    expect(keys).not.toContain("team_internal");
     expect((await request(app).get("/owner-settings/hubAutoSend").set(bearer(kyle))).body.value.categories).toEqual({});
-    const on = await turnOn(kyle, { visit_reminder: true, team_internal: true, training_reply: true });
+    const on = await turnOn(kyle, { visit_reminder: true, training_reply: true });
     expect(on.status).toBe(200);
-    expect(on.body.value.categories).toEqual({ visit_reminder: true, team_internal: true, training_reply: true });
+    expect(on.body.value.categories).toEqual({ visit_reminder: true, training_reply: true });
     // A send type that is not eligible still cannot be switched on.
     expect((await turnOn(kyle, { thread_reply: true })).status).toBe(400);
   });
 
-  async function teamPost(category: string, threadId: string) {
+  async function teamPost(category: string, threadId: string, authorBotKeyId: string | null = null) {
     return createMessageRow(prisma, {
       threadId, authorType: "ai_agent", authorDisplay: "RCE Admin", channel: "in_app", direction: "internal", status: "pending_approval", body: "Noted for the team.", category,
+      authorBotKeyId,
     });
   }
+  const setAccess = (mode: "on" | "read_only" | "off") => {
+    const valueJson = JSON.stringify({ mode, changedAt: null, changedBy: null });
+    return prisma.companySetting.upsert({ where: { key: "agentAccess" }, create: { key: "agentAccess", valueJson }, update: { valueJson } });
+  };
 
-  it("a team_internal / training_reply post auto-posts in a Team thread only when its category is ON and the gate is ON; never in a customer's conversation", async () => {
+  it("a team_internal post is decided by its author KEY (box on, writes on, not revoked) while Agent access is On: no owner rule, no gate, never in a customer's conversation", async () => {
     const tech = await prisma.technician.create({ data: { name: `${TAG} Tech`, accessToken: `hubautosend-${randomUUID()}` } });
+    const key = await prisma.agentKey.create({
+      data: {
+        name: `${TAG} Admin Agent`, agentRole: "admin", environment: "test", displayPrefix: "rce_test_xxxx", secretHash: `hash-${randomUUID()}`,
+        scopes: ["team:reply"], writesEnabled: true, teamPostsPublish: true, createdBy: "owner",
+      },
+    });
     try {
       const team = await ensureTeamThread(tech.id);
       const { thread: customerThread } = await account();
+      expect(process.env[GATE]).toBeUndefined(); // the customer-send gate is OFF and no rule is on: neither matters for a team post
 
-      // Off by default: stays waiting.
-      const off = await teamPost("team_internal", team.id);
-      expect(await maybeAutoApprove(off.id)).toMatchObject({ autoApproved: false, why: expect.stringMatching(/off for/i) });
+      // No author key on the row: nothing to decide it, so it waits.
+      const orphan = await teamPost("team_internal", team.id);
+      expect(await maybeAutoApprove(orphan.id)).toMatchObject({ autoApproved: false, why: expect.stringMatching(/no agent key/i) });
 
-      await turnOn(await pinToken(), { team_internal: true, training_reply: true });
-      expect(await maybeAutoApprove(off.id)).toMatchObject({ autoApproved: false, why: expect.stringMatching(/gate is off/i) });
-
-      process.env[GATE] = "on";
-      const result = await maybeAutoApprove(off.id);
+      // Box ON + access On: posted, approved by the KEY, audit names the key. No 320 cap, no "$" rule.
+      const long = await createMessageRow(prisma, {
+        threadId: team.id, authorType: "ai_agent", authorDisplay: "RCE Admin", channel: "in_app", direction: "internal", status: "pending_approval",
+        body: `The invoice is $4,250. ${"x".repeat(1_000)}`, category: "team_internal", authorBotKeyId: key.id,
+      });
+      const result = await maybeAutoApprove(long.id);
       expect(result).toMatchObject({ autoApproved: true, category: "team_internal", send: { status: "posted" } });
-      expect(await prisma.hubAuditLog.count({ where: { messageId: off.id, action: "message_auto_approved", afterText: "auto-approved by rule team_internal" } })).toBe(1);
+      const row = await prisma.hubMessage.findUniqueOrThrow({ where: { id: long.id } });
+      expect(row).toMatchObject({ status: "posted", decidedBy: `key:${key.id}` });
+      const audit = await prisma.hubAuditLog.findFirstOrThrow({ where: { messageId: long.id, action: "message_auto_approved" } });
+      expect(audit).toMatchObject({ actorKey: `key:${key.id}`, actorDisplay: key.name });
       expect(twilioCalls()).toHaveLength(0);
       expect(resendCalls()).toHaveLength(0);
 
+      // The row is re-read each time: box OFF, writes OFF, revoked, and Agent access not On each leave the post waiting, with a reason.
+      const waits = async (why: RegExp) => {
+        const m = await teamPost("team_internal", team.id, key.id);
+        expect(await maybeAutoApprove(m.id)).toMatchObject({ autoApproved: false, why: expect.stringMatching(why) });
+        expect((await prisma.hubMessage.findUniqueOrThrow({ where: { id: m.id } })).status).toBe("pending_approval");
+      };
+      await prisma.agentKey.update({ where: { id: key.id }, data: { teamPostsPublish: false } });
+      await waits(/Team posts publish immediately.*off/);
+      await prisma.agentKey.update({ where: { id: key.id }, data: { teamPostsPublish: true, writesEnabled: false } });
+      await waits(/Writes are off/);
+      await prisma.agentKey.update({ where: { id: key.id }, data: { writesEnabled: true, revokedAt: new Date() } });
+      await waits(/revoked/);
+      await prisma.agentKey.update({ where: { id: key.id }, data: { revokedAt: null } });
+      for (const mode of ["read_only", "off"] as const) {
+        await setAccess(mode);
+        await waits(/Agent access is not On/);
+      }
+      await setAccess("on");
+
       // The same category in a customer's conversation is refused: an in-app post must never land there.
-      const wrongPlace = await teamPost("team_internal", customerThread.id);
+      const wrongPlace = await teamPost("team_internal", customerThread.id, key.id);
       expect(await maybeAutoApprove(wrongPlace.id)).toMatchObject({ autoApproved: false, why: expect.stringMatching(/customer's conversation/) });
       expect((await prisma.hubMessage.findUniqueOrThrow({ where: { id: wrongPlace.id } })).status).toBe("pending_approval");
 
       // A customer-facing category on an in-app message is still refused.
-      const mismatch = await teamPost("lead_first_response", team.id);
+      const mismatch = await teamPost("lead_first_response", team.id, key.id);
       await turnOn(await pinToken(), { lead_first_response: true });
       expect(await maybeAutoApprove(mismatch.id)).toMatchObject({ autoApproved: false });
     } finally {
+      await prisma.companySetting.deleteMany({ where: { key: "agentAccess" } });
+      await prisma.hubThread.deleteMany({ where: { technicianId: tech.id } });
+      await prisma.agentKey.delete({ where: { id: key.id } });
+      await prisma.technician.delete({ where: { id: tech.id } });
+    }
+  });
+
+  it("training_reply is still Kyle's owner rule: off by default, then the gate, then it posts - and Agent access must be On", async () => {
+    const tech = await prisma.technician.create({ data: { name: `${TAG} Apprentice`, accessToken: `hubautosend-${randomUUID()}` } });
+    try {
+      const training = await prisma.hubThread.create({ data: { kind: "training", title: `${TAG} training`, technicianId: tech.id } });
+      const m = await teamPost("training_reply", training.id);
+      expect(await maybeAutoApprove(m.id)).toMatchObject({ autoApproved: false, why: expect.stringMatching(/off for/i) });
+      await turnOn(await pinToken(), { training_reply: true });
+      expect(await maybeAutoApprove(m.id)).toMatchObject({ autoApproved: false, why: expect.stringMatching(/gate is off/i) });
+      process.env[GATE] = "on";
+      await setAccess("read_only");
+      expect(await maybeAutoApprove(m.id)).toMatchObject({ autoApproved: false, why: expect.stringMatching(/Agent access is not On/) });
+      await setAccess("on");
+      expect(await maybeAutoApprove(m.id)).toMatchObject({ autoApproved: true, category: "training_reply", send: { status: "posted" } });
+    } finally {
+      await prisma.companySetting.deleteMany({ where: { key: "agentAccess" } });
       await prisma.hubThread.deleteMany({ where: { technicianId: tech.id } });
       await prisma.technician.delete({ where: { id: tech.id } });
+    }
+  });
+
+  it("the kill switch overrides the customer rules too: with Agent access paused or off a draft that the rule would send stays waiting, and with it On it goes", async () => {
+    await turnOn(await pinToken(), { lead_first_response: true });
+    process.env[GATE] = "on";
+    try {
+      for (const mode of ["read_only", "off"] as const) {
+        await setAccess(mode);
+        const { thread } = await account();
+        const held = await draftEmail(thread.id);
+        expect(held.autoApproved, mode).toBe(false);
+        expect(held.autoSendNote, mode).toMatch(/Agent access is not On/);
+        expect(held.message.status, mode).toBe("pending_approval");
+        expect(resendCalls(), mode).toHaveLength(0);
+      }
+      await setAccess("on");
+      const { thread } = await account();
+      const sent = await draftEmail(thread.id);
+      expect(sent.autoApproved).toBe(true);
+      expect(sent.message.status).toBe("sent");
+      expect(resendCalls()).toHaveLength(1);
+      // The rule still has to be ON: with access On and the rule off, the same draft waits.
+      await turnOn(await pinToken(), { lead_first_response: false });
+      const { thread: other } = await account();
+      expect((await draftEmail(other.id)).autoApproved).toBe(false);
+    } finally {
+      await prisma.companySetting.deleteMany({ where: { key: "agentAccess" } });
     }
   });
 

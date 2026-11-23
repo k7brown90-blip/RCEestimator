@@ -32,6 +32,7 @@ import { adminLoginRouter } from "./routes/adminLogin";
 import { agentKeysRouter } from "./routes/agentKeys";
 import { hubEventsRouter } from "./routes/hubEvents";
 import { hubRouter } from "./routes/hub";
+import { handleMcpNotPost, handleMcpPost } from "./mcp/agentServer";
 import { emitHubEventSafe } from "./services/hubEvents";
 import { announceThreadMoved, returnThreadToLead } from "./services/hub";
 import { ownerSettingsRouter } from "./routes/ownerSettings";
@@ -113,6 +114,7 @@ import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
 import { activeFinancingFeesByRoot, feeDollarsOf } from "./services/financingFee";
 import { groupSignedRows, INVOICE_DOC_SELECT, isLiveSigned, LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER, rollupInvoice, rootFirst, signedRootForJob, type InvoiceDocRow } from "./services/invoiceGroup";
+import { invoiceMoneyOf, loadInvoiceMoneyInputs } from "./services/invoiceMoney";
 import { LOSABLE_STATUSES } from "../shared/estimateStatus";
 import { ACCEPTED_VIA } from "../shared/acceptance";
 import { chicagoDayBounds } from "../shared/calendarDay";
@@ -246,6 +248,21 @@ if (fs.existsSync(fieldDist)) {
   });
 }
 
+/** The server-rendered public surfaces: HTML the SERVER builds, never the SPA shell (see the comment in the fallback below). */
+const SERVER_RENDERED_PREFIXES = ["/e/", "/confirm/", "/sign/", "/documents/", "/pay/"];
+
+/**
+ * Does the SPA fallback answer this request with index.html? Only a browser GET (Accept: text/html) for a path that is not under /api, not
+ * a server-rendered page, and not /mcp. /mcp is the agents' API door, not a screen (W2-B): a GET with Accept text/html must reach pinAuth
+ * and the 405 answer, never index.html. Pure, so a test can pin it without client/dist on disk (the fallback is mounted only when it exists).
+ */
+export function spaFallbackServes(method: string, reqPath: string, accept: string): boolean {
+  const lower = reqPath.toLowerCase();
+  const isMcp = lower === "/mcp" || lower.startsWith("/mcp/");
+  const isServerRendered = SERVER_RENDERED_PREFIXES.some((prefix) => reqPath.startsWith(prefix));
+  return method === "GET" && accept.includes("text/html") && !reqPath.startsWith("/api") && !isServerRendered && !isMcp;
+}
+
 // ─── SERVE CLIENT STATIC FILES (before auth, so login page loads) ────────────
 // At runtime __dirname is dist/src/, so go up two levels to reach app root
 const clientDist = path.join(__dirname, "..", "..", "client", "dist");
@@ -272,17 +289,8 @@ if (fs.existsSync(clientDist)) {
     chain — but naming the exclusions is the change that can be read and checked, so it is the one
     made here.
   */
-  const SERVER_RENDERED_PREFIXES = ["/e/", "/confirm/", "/sign/", "/documents/", "/pay/"];
-
   app.use((req, res, next) => {
-    const accepts = req.headers.accept || "";
-    const isServerRendered = SERVER_RENDERED_PREFIXES.some((prefix) => req.path.startsWith(prefix));
-    if (
-      req.method === "GET" &&
-      accepts.includes("text/html") &&
-      !req.path.startsWith("/api") &&
-      !isServerRendered
-    ) {
+    if (spaFallbackServes(req.method, req.path, req.headers.accept || "")) {
       res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.sendFile(path.join(clientDist, "index.html"));
       return;
@@ -438,6 +446,13 @@ app.use(pinAuthMiddleware);
 const asyncHandler = (fn: express.RequestHandler): express.RequestHandler => {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 };
+
+// The agents' MCP door (W2-B). After pinAuth on purpose: AGENT_KEY_ROUTES lists /mcp as agentOnly, so pinAuth has already sent this request
+// through the ONE agent gate (a missing, session, technician or revoked credential never gets here). Stateless: POST carries the call,
+// GET and DELETE are a plain 405. Nothing about /mcp is in PUBLIC_ROUTES.
+app.post("/mcp", asyncHandler(handleMcpPost));
+app.get("/mcp", asyncHandler(handleMcpNotPost));
+app.delete("/mcp", asyncHandler(handleMcpNotPost));
 
 const readParam = (req: express.Request, key: string): string => {
   const raw = req.params[key];
@@ -5130,16 +5145,9 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     },
     orderBy: { signedAt: "desc" },
   });
-  // The signed, live change orders on those invoices — one query, never N.
-  const changeOrderRows = estimates.length === 0 ? [] : await prisma.issuedEstimate.findMany({
-    where: { changeOrderForId: { in: estimates.map((e) => e.id) }, ...LIVE_SIGNED_CHANGE_ORDER },
-    select: INVOICE_DOC_SELECT,
-    orderBy: { signedAt: "asc" },
-  });
-  const changeOrdersByRoot = new Map<string, InvoiceDocRow[]>();
-  for (const co of changeOrderRows as InvoiceDocRow[]) {
-    changeOrdersByRoot.set(co.changeOrderForId!, [...(changeOrdersByRoot.get(co.changeOrderForId!) ?? []), co]);
-  }
+  // The signed live change orders, the paid payments (keyed to the ROOT) and the financing fee per invoice: the ONE per-invoice money read
+  // (services/invoiceMoney.ts), shared with the agents' invoice tools so a figure here and there cannot disagree. Three batched queries.
+  const moneyInputs = await loadInvoiceMoneyInputs(prisma, estimates.map((e) => e.id));
 
   // Kyle, 2026-09-07: the Financials drill-down goes account → property → job → invoices,
   // so each row names its job. One query for the lot, never N.
@@ -5152,30 +5160,8 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     : [];
   const invoiceJobById = new Map(invoiceJobs.map((j) => [j.id, j]));
 
-  const paidRows = estimates.length === 0 ? [] : await prisma.payment.findMany({
-    // Voided rows (2026-10-09, services/paymentVoid.ts) are listed on the invoice's own panel
-    // but are not money: they count in no total, balance or status here.
-    where: { estimateId: { in: [...estimates.map((e) => e.id), ...changeOrderRows.map((c) => c.id)] }, status: "paid", voidedAt: null },
-    // refundedAmount: a card refund recorded from Stripe (2026-10-09, ruling 7) comes off inside
-    // splitPaidByPayer; a row refunded in full is status "refunded" and is not fetched at all.
-    select: { estimateId: true, amount: true, method: true, paidAt: true, payer: true, refundedAmount: true },
-  });
-  // Keyed by the ROOT: money that history left on a change order's own row counts on its invoice.
-  const rootOfId = new Map<string, string>(changeOrderRows.map((c) => [c.id, c.changeOrderForId!]));
-  const paymentsByEstimate = new Map<string, typeof paidRows>();
-  for (const row of paidRows) {
-    if (!row.estimateId) continue;
-    const key = rootOfId.get(row.estimateId) ?? row.estimateId;
-    const list = paymentsByEstimate.get(key) ?? [];
-    list.push(row);
-    paymentsByEstimate.set(key, list);
-  }
   // The newest customer email about each invoice and what became of it (Kyle, 2026-09-09).
   const lastDeliveryById = await lastDeliveriesForEstimates(prisma, estimates.map((e) => e.id));
-  // The live financing fee per invoice (Kyle, 2026-10-08; services/financingFee.ts) — one query.
-  // It is owed on top of the documents and is NOT in billedTotal or depositDue.
-  const feesByRoot = await activeFinancingFeesByRoot(prisma, estimates.map((e) => e.id));
-
   const round2 = (n: number) => Math.round(n * 100) / 100;
   res.json(estimates.map((est) => {
     const money = {
@@ -5189,37 +5175,19 @@ app.get("/invoices", asyncHandler(async (_req, res) => {
     };
     // The whole invoice (2026-09-20): the homeowner share of the root plus its signed change
     // orders — a home-warranty credit (Kyle, 2026-09-09) is already off each document.
-    const group = rollupInvoice(est as unknown as InvoiceDocRow, changeOrdersByRoot.get(est.id) ?? []);
+    // Two payers, two ledgers (Kyle, 2026-09-10): totalPaid / balance / paymentStatus are the HOMEOWNER's; the warranty company's money sits
+    // on its own lines below. What is OWED is the documents plus the financing fee (Kyle, 2026-10-08). All of it is services/invoiceMoney.ts.
+    const { group, split, financingFee, owed, totalPaid, lastPaidAt, paymentStatus } = invoiceMoneyOf(est as unknown as InvoiceDocRow, moneyInputs);
     const billedTotal = group.billedTotal;
     const rootCoverage = warrantyCoverageOf(money);
     const coverage = group.warrantyCovered > 0
       ? { applied: group.warrantyCovered, claim: (rootCoverage?.claim ?? group.documents.find((d) => d.warrantyClaim)!.warrantyClaim)! }
       : null;
-    // Two payers, two ledgers (Kyle, 2026-09-10): totalPaid / balance / paymentStatus are
-    // the HOMEOWNER's; the warranty company's money sits on its own lines below.
-    const split = splitPaidByPayer(paymentsByEstimate.get(est.id) ?? []);
     const rows = split.customer;
-    const totalPaid = split.customerPaid;
     const discountTotal = round2(rows.filter((r) => r.method === "discount").reduce((s, r) => s + r.amount, 0));
-    const lastPaidAt = rows.reduce<Date | null>(
-      (latest, r) => (r.paidAt && (!latest || r.paidAt > latest) ? r.paidAt : latest), null,
-    );
     const depositDue = group.depositDue;
-    // What is OWED is the documents plus the financing fee when one is applied (Kyle, 2026-10-08)
-    // — the same arithmetic paymentSummary runs, so this row and the payment panel agree.
-    const financingFee = feesByRoot.get(est.id) ?? null;
-    const owed = round2(billedTotal + (financingFee?.fee ?? 0));
-    const paidInFull = totalPaid >= owed - 0.01;
     const warrantyPaid = coverage ? split.warrantyPaid : 0;
     const warrantyBalance = coverage ? round2(coverage.applied - warrantyPaid) : 0;
-    // "deposit_paid" only means something when a deposit is required (2026-09-20).
-    const paymentStatus = paidInFull
-      ? "paid"
-      : group.depositRequired && totalPaid >= depositDue - 0.01
-        ? "deposit_paid"
-        : totalPaid > 0.009
-          ? "partial"
-          : "unpaid";
 
     return {
       id: est.id,

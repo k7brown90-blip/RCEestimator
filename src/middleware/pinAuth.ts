@@ -120,7 +120,7 @@ export function pinAuthMiddleware(req: Request, res: Response, next: NextFunctio
   // it is refused here, before jwt.verify and before any identity is built.
   if (isAgentKeyShaped(token)) {
     mark(req, "agent-key");
-    res.status(401).json({ code: "agent_key_not_accepted", reason: "Agent keys are not accepted here.", retryable: false });
+    res.status(401).json({ code: "agent_key_not_accepted", reason: "Agent keys are not accepted here. Agent keys work on GET /api/hub/threads, GET /api/hub/threads/:id/messages, POST /api/hub/messages and /mcp.", retryable: false });
     return;
   }
 

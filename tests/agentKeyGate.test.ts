@@ -13,7 +13,9 @@ import {
   AGENT_KEY_SHAPE, hashAgentKey, isAgentKeyShaped, mintAgentKey, type MintAgentKeyInput,
 } from "../src/agentApi/keys";
 import { chicagoDayStart } from "../src/agentApi/audit";
-import { AGENT_SCOPE_KEYS, DEFAULT_SCOPES_BY_ROLE, isAgentScope } from "../shared/agentScopes";
+import {
+  AGENT_SCOPE_KEYS, DEFAULT_HUB_THREAD_KINDS_BY_ROLE, DEFAULT_SCOPES_BY_ROLE, HUB_KIND_SCOPES, HUB_THREAD_KIND_KEYS, hubRouteScopes, isAgentScope,
+} from "../shared/agentScopes";
 import { cleanupCrmLoginFixtures, makePerson } from "./helpers/crmLoginFixture";
 
 /**
@@ -108,10 +110,13 @@ describe("minting and storing a key", () => {
   it("takes the role's default scopes and thread kinds, and refuses a scope that is not in the one enum", async () => {
     const scout = await mint({ agentRole: "scout" });
     expect(scout.row.scopes.sort()).toEqual([...DEFAULT_SCOPES_BY_ROLE.scout].sort());
-    expect(scout.row.hubThreadKinds).toEqual(["training"]);
+    // W2 (Kyle 2026-11-23): Scout and Claude Code are no longer limited to one kind of thread; both read and post in the Team chats.
+    expect(scout.row.hubThreadKinds).toEqual([]);
     const claude = await mint({ agentRole: "claude_code" });
-    expect(claude.row.scopes.sort()).toEqual(["dev:read", "dev:write"]);
-    expect(claude.row.hubThreadKinds).toEqual(["dev"]);
+    expect(claude.row.scopes.sort()).toEqual(["dev:read", "dev:write", "team:read", "team:reply"]);
+    expect(claude.row.hubThreadKinds).toEqual([]);
+    // W2: "Team posts publish immediately" is ON for every new key.
+    expect(claude.row.teamPostsPublish).toBe(true);
     await expect(mint({ scopes: ["crm:read", "root:everything"] })).rejects.toThrow(/Unknown scope: root:everything/);
   });
 
@@ -132,39 +137,67 @@ describe("shared/agentScopes.ts", () => {
     for (const [role, scopes] of Object.entries(DEFAULT_SCOPES_BY_ROLE)) {
       for (const s of scopes) expect(isAgentScope(s), `${role}: ${s}`).toBe(true);
     }
-    expect(AGENT_SCOPE_KEYS.length).toBe(27);
+    expect(AGENT_SCOPE_KEYS.length).toBe(29); // W2 added team:read and finance:read
     expect(new Set(AGENT_SCOPE_KEYS).size).toBe(AGENT_SCOPE_KEYS.length);
     for (const s of ["hub:read", "hub:draft", "inventory:usage", "campaign:draft", "media:marketing:read", "training:write",
       "crm:read", "leads:write", "leads:draft", "leads:dupcheck", "schedule:propose", "estimate:draft", "estimate:propose_accept",
       "notes:write", "team:reply", "dev:ticket", "inventory:read", "pricebook:propose", "outreach:read", "reviews:confirm",
-      "reports:read", "marketing:read", "training:read", "media:original:read", "media:edit:upload", "dev:read", "dev:write"]) {
+      "reports:read", "marketing:read", "training:read", "media:original:read", "media:edit:upload", "dev:read", "dev:write",
+      "team:read", "finance:read"]) {
       expect(isAgentScope(s), s).toBe(true);
     }
   });
 
-  it("gives Facebook the original-photo scopes and Scout training-only hub access", () => {
+  // W2 (Kyle 2026-11-23): every role's HUB part follows his defaults; each role keeps the non-hub scopes it had.
+  it("gives Facebook the original-photo scopes, and Scout the Team scopes with its training scopes and no customer scopes", () => {
     expect(DEFAULT_SCOPES_BY_ROLE.facebook).toEqual(
-      ["marketing:read", "media:marketing:read", "media:original:read", "campaign:draft", "media:edit:upload"]);
-    expect(DEFAULT_SCOPES_BY_ROLE.scout).toContain("hub:read");
-    expect(DEFAULT_SCOPES_BY_ROLE.scout).toContain("hub:draft");
+      ["marketing:read", "media:marketing:read", "media:original:read", "campaign:draft", "media:edit:upload", "team:read", "team:reply"]);
+    expect(DEFAULT_SCOPES_BY_ROLE.scout).toEqual(expect.arrayContaining(["training:read", "training:write", "team:read", "team:reply"]));
+    expect(DEFAULT_SCOPES_BY_ROLE.scout).not.toContain("hub:read");
+    expect(DEFAULT_SCOPES_BY_ROLE.scout).not.toContain("hub:draft");
     expect(DEFAULT_SCOPES_BY_ROLE.scout).not.toContain("media:original:read");
     expect(DEFAULT_SCOPES_BY_ROLE.other).toEqual([]);
+  });
+
+  it("the hub part of every role's defaults is exactly Kyle's table (Read team, Post team, Read customer, Draft customer)", () => {
+    const hub = (role: keyof typeof DEFAULT_SCOPES_BY_ROLE) =>
+      DEFAULT_SCOPES_BY_ROLE[role].filter((s) => ["team:read", "team:reply", "hub:read", "hub:draft"].includes(s)).sort();
+    const all4 = ["hub:draft", "hub:read", "team:read", "team:reply"];
+    const team = ["team:read", "team:reply"];
+    expect(hub("admin")).toEqual(all4);
+    expect(hub("outreach")).toEqual(all4);
+    for (const role of ["inventory", "facebook", "scout", "claude_code", "research", "cfo", "nec_coach"] as const) expect(hub(role), role).toEqual(team);
+    expect(hub("other")).toEqual([]);
+    // Research and CFO carry their own read-only data scopes; NEC Coach carries nothing else.
+    expect(DEFAULT_SCOPES_BY_ROLE.research).toContain("reports:read");
+    expect(DEFAULT_SCOPES_BY_ROLE.cfo).toContain("finance:read");
+    expect(DEFAULT_SCOPES_BY_ROLE.nec_coach).toEqual(team);
+    // Inventory keeps its stock scopes; Admin keeps its CRM ones.
+    expect(DEFAULT_SCOPES_BY_ROLE.inventory).toEqual(expect.arrayContaining(["inventory:read", "inventory:usage", "pricebook:propose"]));
+    expect(DEFAULT_SCOPES_BY_ROLE.admin).toEqual(expect.arrayContaining(["crm:read", "leads:write", "dev:ticket"]));
+    // No role is limited to one kind of thread any more.
+    for (const kinds of Object.values(DEFAULT_HUB_THREAD_KINDS_BY_ROLE)) expect(kinds).toEqual([]);
   });
 });
 
 describe("AGENT_KEY_ROUTES", () => {
-  it("holds exactly the three REST /api/hub/* routes (K-U7) and never an approve, edit-approve, reject, send or audit route", () => {
-    expect(AGENT_KEY_ROUTES.map((r) => `${r.methods.join("|")} ${r.path} ${r.scope}`)).toEqual([
-      "GET /hub/threads hub:read",
-      "GET /hub/threads/:id/messages hub:read",
-      "POST /hub/messages hub:draft",
+  it("holds exactly the three REST /api/hub/* routes (K-U7) plus /mcp (W2-B) and never an approve, edit-approve, reject, send or audit route", () => {
+    // W2: each route takes ANY scope that opens some kind of thread (the lists are derived from HUB_KIND_SCOPES, never typed twice).
+    // W2-B: the fourth entry is the agents' stateless /mcp door (scope "any": each tool checks its own scopes per call), agentOnly.
+    expect(AGENT_KEY_ROUTES.map((r) => `${r.methods.join("|")} ${r.path} ${[r.scope].flat().join(",")}`)).toEqual([
+      "GET /hub/threads hub:read,team:read,team:reply,dev:read,training:read,training:write",
+      "GET /hub/threads/:id/messages hub:read,team:read,team:reply,dev:read,training:read,training:write",
+      "POST /hub/messages hub:draft,team:reply,training:write",
+      "GET|POST|DELETE /mcp any",
     ]);
+    expect(AGENT_KEY_ROUTES.find((r) => r.path === "/mcp")?.agentOnly).toBe(true);
+    expect([hubRouteScopes("read")]).toEqual([[...new Set(HUB_THREAD_KIND_KEYS.flatMap((k) => HUB_KIND_SCOPES[k].read))]]);
     for (const r of AGENT_KEY_ROUTES) expect(r.path).not.toMatch(/approve|reject|send|audit|stream|attachments|push/);
   });
 
   it("every entry declares a scope that exists (or any) and matches its own path", () => {
     for (const entry of [...AGENT_KEY_ROUTES, ...ROUTES]) {
-      expect(entry.scope === "any" || isAgentScope(entry.scope), entry.path).toBe(true);
+      expect(entry.scope === "any" || [entry.scope].flat().every((s) => isAgentScope(s)), entry.path).toBe(true);
       expect(entry.methods.length, entry.path).toBeGreaterThan(0);
       const concrete = entry.path.replace(/:[A-Za-z]+/g, "abc123");
       for (const m of entry.methods) {

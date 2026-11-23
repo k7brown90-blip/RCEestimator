@@ -164,6 +164,47 @@ const EGRESSES: Egress[] = [
     },
   },
   {
+    // W2-C (Kyle 2026-11-23 item 4): a team message's TEXT now goes out. The seeded secrets are in that text; the one scrub layer must still remove
+    // every one of them from the stored payload, the wire body (which also carries the signature - an HMAC, never the secret) and every header.
+    name: "a message.team event with the seeded secrets in the message TEXT (stored payload, the signed wire body and its headers)",
+    run: async () => {
+      const { mintAgentKey } = await import("../src/agentApi/keys");
+      const { emitTeamMessageEvents } = await import("../src/services/hubEvents");
+      const savedPepper = process.env.AGENT_KEY_PEPPER;
+      process.env.AGENT_KEY_PEPPER = "test-pepper-for-the-egress-suite";
+      const seen: string[] = [];
+      const server = http.createServer((req, res) => {
+        let body = "";
+        req.on("data", (c) => { body += c; });
+        req.on("end", () => { seen.push(body, JSON.stringify(req.headers), req.url ?? ""); res.statusCode = 200; res.end("ok"); });
+      });
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+      process.env.HUB_AGENT_WEBHOOK_URL = `http://127.0.0.1:${(server.address() as AddressInfo).port}/hook`;
+      const thread = await prisma.hubThread.create({ data: { kind: "team", title: `${TAG} team`, technicianId: techId } });
+      const made = await mintAgentKey({ name: `${TAG} team key`, agentRole: "admin", createdBy: "owner" });
+      try {
+        const msg = await prisma.hubMessage.create({
+          data: { threadId: thread.id, authorType: "tech", authorTechnicianId: techId, authorDisplay: `${TAG} Tech`, channel: "in_app", direction: "internal", status: "posted", body: SEEDED_TEXT },
+        });
+        const ids = await emitTeamMessageEvents({ messageId: msg.id });
+        expect(ids).toHaveLength(1);
+        for (let i = 0; i < 80 && seen.length < 3; i += 1) await new Promise((r) => setTimeout(r, 25));
+        const rows = await prisma.hubEvent.findMany({ where: { id: { in: ids } } });
+        // The text really does go out (that is the point of W2-C): the words around the seeds survive, the seeds do not.
+        expect(rows[0].payloadJson).toContain("token ");
+        expect(seen[0]).toContain('"signature":"sha256=');
+        return [...rows.map((r) => r.payloadJson), ...seen];
+      } finally {
+        delete process.env.HUB_AGENT_WEBHOOK_URL;
+        server.closeAllConnections();
+        await new Promise((r) => server.close(r));
+        await prisma.agentKey.deleteMany({ where: { id: made.row.id } });
+        await prisma.hubThread.delete({ where: { id: thread.id } });
+        if (savedPepper === undefined) delete process.env.AGENT_KEY_PEPPER; else process.env.AGENT_KEY_PEPPER = savedPepper;
+      }
+    },
+  },
+  {
     name: "GET /hub/events (the Agent events screen's own answer)",
     run: async () => {
       await seededLeadEvent();

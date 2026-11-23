@@ -23,6 +23,7 @@ import type { HubThread, Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import { HubError, hubAudit, memberGroupIds, personIdOf, type HubReader } from "./hub";
 import { publishHubChange } from "./hubBus";
+import { activeKeyWhere } from "../agentApi/keys";
 import { AGENT_ROLE_LABELS, hubKindsFor, isAgentRole } from "../../shared/agentScopes";
 import type { GroupChoices, GroupMemberView, GroupView } from "../../shared/hub/views";
 import {
@@ -36,17 +37,6 @@ export function assertOfficePerson(reader: HubReader): void {
 }
 
 const unique = (list: readonly string[] | undefined): string[] => [...new Set((list ?? []).map((s) => s.trim()).filter(Boolean))];
-
-/** An agent key that can still be used: not revoked, not expired, not retired. Nothing else is offered or added. */
-function activeKeyWhere(now: Date): Prisma.AgentKeyWhereInput {
-  return {
-    revokedAt: null,
-    AND: [
-      { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
-      { OR: [{ retiresAt: null }, { retiresAt: { gt: now } }] },
-    ],
-  };
-}
 
 /**
  * Whether an agent key could see and post in a group at all: the ONE rule the hub (visibleThreadWhere) and the door (hubDoor

@@ -64,6 +64,7 @@ import type {
   AdminLoginStatus,
   AgentAccessMode,
   AgentAccessState,
+  AgentKeyActivity,
   AgentKeyCreateInput,
   AgentKeyPatchInput,
   AgentWebhooksResponse,
@@ -1571,6 +1572,7 @@ export const api = {
     request<{ key: AgentKeyView; secret: string }>("/settings/agent-keys", { method: "POST", body: JSON.stringify(input) }),
   updateAgentKey: (id: string, input: AgentKeyPatchInput) =>
     request<{ key: AgentKeyView }>(`/settings/agent-keys/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  agentKeyActivity: (id: string) => request<AgentKeyActivity>(`/settings/agent-keys/${encodeURIComponent(id)}/activity`),
   rotateAgentKey: (id: string) =>
     request<{ key: AgentKeyView; retired: AgentKeyView; secret: string }>(`/settings/agent-keys/${encodeURIComponent(id)}/rotate`, { method: "POST" }),
   revokeAgentKey: (id: string) =>

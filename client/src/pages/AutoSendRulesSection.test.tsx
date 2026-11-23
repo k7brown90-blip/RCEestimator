@@ -44,7 +44,7 @@ describe("AutoSendRulesSection for Kyle", () => {
     expect(toggle()).toHaveAttribute("aria-checked", "false");
     expect(screen.getByTestId(`autosend-${CATEGORY.key}`)).toHaveTextContent("Off");
     expect(screen.getByTestId("autosend-gate-note")).toHaveTextContent(AUTOSEND_GATE_NOTE);
-    expect(AUTOSEND_GATE_NOTE).toBe("Also needs AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND=on in Railway — nothing sends automatically until then.");
+    expect(AUTOSEND_GATE_NOTE).toBe("Also needs AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND=on in Railway — none of these rules sends anything until then.");
   });
 
   it("turning one ON asks first; a 'No' saves nothing and a 'Yes' saves through the one writer", async () => {
@@ -89,13 +89,17 @@ describe("AutoSendRulesSection for anyone else", () => {
 });
 
 describe("the categories BA8 names", () => {
-  it("shows one switch each for the first reply, the appointment reminder, a team post and a Training reply, all Off", async () => {
+  // W2 (Kyle 2026-11-23): "Team post by an AI" left this card. An AI's Team, group and crew posts are published by the author KEY's own box on
+  // Settings -> Agent keys ("Team posts publish immediately"), so it is not here twice (one tool for one task). Three rules remain.
+  it("shows one switch each for the first reply, the appointment reminder and a Training reply, all Off, and none for a team post", async () => {
     show(response());
     await waitFor(() => expect(toggle()).toBeEnabled());
-    for (const key of ["lead_first_response", "visit_reminder", "team_internal", "training_reply"]) {
+    for (const key of ["lead_first_response", "visit_reminder", "training_reply"]) {
       expect(screen.getByTestId(`autosend-${key}`)).toHaveTextContent("Off");
     }
+    expect(screen.queryByTestId("autosend-team_internal")).toBeNull();
     expect(screen.getAllByRole("switch")).toHaveLength(AUTO_SEND_CATEGORIES.length);
-    expect(AUTO_SEND_CATEGORIES.map((c) => c.key)).toEqual(expect.arrayContaining(["lead_first_response", "visit_reminder", "team_internal", "training_reply"]));
+    expect(AUTO_SEND_CATEGORIES.map((c) => c.key)).toEqual(expect.arrayContaining(["lead_first_response", "visit_reminder", "training_reply"]));
+    expect(AUTO_SEND_CATEGORIES.map((c) => c.key)).not.toContain("team_internal");
   });
 });

@@ -8,10 +8,14 @@
  *   * The top strip says "Agents: Running", "Writes paused" or "All agents off", with "Pause writes",
  *     "Turn all agents off" and "Resume agents" (each confirms). While not running, a red banner names
  *     who changed it and when. These call the ONE kill-switch writer, PUT /owner-settings/agentAccess.
- *   * "+ New agent key" opens a form: Agent (prefills the default scopes and hub thread limit), Name,
- *     scope checkboxes grouped Read / Draft / Write, "Limit to hub threads", an optional expiry, and
- *     "Create key". The key is then shown ONCE in a dialog, closed only by "I've saved it".
- *   * Each key row: Edit, Rotate key, Revoke ("Revoke now" while retiring), Activity (greyed).
+ *   * "+ New agent key" opens a form: Agent (prefills the default scopes and hub thread limit; CFO is one of them), Name,
+ *     scope checkboxes grouped Messages (Read team, Post team, Read customer, Draft customer - Kyle's words, W2) / Read /
+ *     Draft / Write, "Limit to hub threads", an optional expiry, and "Create key". The key is then shown ONCE in a
+ *     dialog, closed only by "I've saved it".
+ *   * Each key row: the "Allow writes" box and, beside it, "Team posts publish immediately" (W2: ticked = that key's post in a
+ *     Team, group or crew chat is posted at once; greyed with its reason while writes are off, Agent access is not On or the
+ *     key is revoked), then Edit, Rotate key, Revoke ("Revoke now" while retiring) and Activity (opens that key's calls,
+ *     newest first, with the time in Chicago, the key's name, what it did and how it ended - never a message).
  *     Revoked keys collapse under "Revoked keys (n)". Rows are never deleted: Revoke is the exit.
  *
  * Controls are GREYED with their reason, never hidden: a session without the bot_keys power (and the AI
@@ -32,7 +36,7 @@ import { useCan, useSession, useSessionFailed } from "../lib/session";
 import type { AgentAccessMode, AgentKeyPatchInput, AgentKeyView, AgentKeysData } from "../lib/types";
 import { AUTO_SEND_CATEGORIES } from "../../../shared/hub/autoSendCategories";
 import {
-  AGENT_KEYS_AI_ADMIN_REASON, AGENT_ROLES, AGENT_ROLE_LABELS, AGENT_SCOPES, AGENT_SCOPE_GROUP,
+  AGENT_KEYS_AI_ADMIN_REASON, AGENT_MESSAGE_SCOPE_LABELS, AGENT_ROLES, AGENT_ROLE_LABELS, AGENT_SCOPES, AGENT_SCOPE_GROUP,
   DEFAULT_HUB_THREAD_KINDS_BY_ROLE, DEFAULT_SCOPES_BY_ROLE, HUB_THREAD_KINDS,
   HUB_THREAD_KIND_KEYS, type AgentRole, type AgentScope, type AgentScopeGroup,
 } from "../../../shared/agentScopes";
@@ -43,19 +47,25 @@ const QUERY_KEY = ["agentKeys"] as const;
 const runningMode: AgentAccessMode = "on";
 const RUNNING = { mode: runningMode, changedAt: null, changedBy: null };
 const PEPPER_REASON = "Set AGENT_KEY_PEPPER in Railway first.";
-const ACTIVITY_REASON = "The activity view arrives with the Messages hub.";
 const WRITES_READ_ONLY_REASON = "Agent access is read-only — writes are refused until it is On";
 const WRITES_OFF_REASON = "Agent access is Off";
 const WRITES_REVOKED_REASON = "This key is revoked — it can no longer write";
+// "Team posts publish immediately" (W2): the reasons it is greyed. A box that is already ticked can always be unticked.
+const PUBLISH_REVOKED_REASON = "This key is revoked — it can no longer post";
+const PUBLISH_WRITES_OFF_REASON = "Allow writes is off for this key — it cannot post until that is ticked";
+const PUBLISH_ACCESS_REASON = "Agent access is not On — nothing an AI wrote is published until it is On";
 // The send types Kyle can switch on under "AI auto-send rules", named by the label that card shows. Read from the one
 // registry view so the two cards cannot drift apart.
 const autoSendLabel = (key: string): string => `"${AUTO_SEND_CATEGORIES.find((c) => c.key === key)?.label ?? key}"`;
 const CUSTOMER_AUTO_SEND_LABELS = AUTO_SEND_CATEGORIES.filter((c) => c.customerFacing).map((c) => `"${c.label}"`).join(" or ");
+// W2 (Kyle 2026-11-23): a Team, group or crew post is published by the key's own box; a message to a customer still waits for an Approve.
 const writesConfirmText = (name: string): string =>
-  `Let "${name}" post in Messages? Its posts in Team, group and crew chats wait for your Approve unless ${autoSendLabel("team_internal")} `
-  + `is on; its replies in a Training thread unless ${autoSendLabel("training_reply")} is on; and a message to a customer unless `
-  + `${CUSTOMER_AUTO_SEND_LABELS} is on (under AI auto-send rules). Any of them also needs the server-side auto-send switch.`;
+  `Let "${name}" post in Messages? Its posts in the Team, group and crew chats are published at once when "Team posts publish immediately" is ticked for it `
+  + `(and wait for your Approve when it is not). A message to a customer waits for your Approve unless one of these rules is on under AI auto-send rules: `
+  + `${CUSTOMER_AUTO_SEND_LABELS}. Its replies in a Training thread wait unless ${autoSendLabel("training_reply")} is on. `
+  + "While Agent access is paused or off, nothing an AI wrote is published or sent on its own.";
 const GROUPS: Array<{ id: AgentScopeGroup; label: string }> = [
+  { id: "messages", label: "Messages" },
   { id: "read", label: "Read" },
   { id: "draft", label: "Draft (a person approves)" },
   { id: "write", label: "Write" },
@@ -102,6 +112,55 @@ function statusText(k: AgentKeyView): string {
 
 // ── scope and thread pickers, shared by the new-key form and the row editor ──────────────────────
 
+/** The scopes of one card group; the Messages group keeps Kyle's order (Read team, Post team, Read customer, Draft customer). */
+const scopesIn = (group: AgentScopeGroup): AgentScope[] =>
+  group === "messages"
+    ? (Object.keys(AGENT_MESSAGE_SCOPE_LABELS) as AgentScope[])
+    : (Object.keys(AGENT_SCOPES) as AgentScope[]).filter((s) => AGENT_SCOPE_GROUP[s] === group);
+
+/**
+ * One key's recent calls (W2: the "Activity" button), newest first. The time is Chicago; the row names the key, what it did (the tool),
+ * the endpoint and how it ended (result code and status). It never carries a message or a body: the audit table holds none.
+ */
+function KeyActivity({ keyId, keyName, onClose }: { keyId: string; keyName: string; onClose: () => void }) {
+  const { data, error, isLoading } = useQuery({ queryKey: ["agentKeyActivity", keyId], queryFn: () => api.agentKeyActivity(keyId) });
+  const rows = data?.activity ?? [];
+  return (
+    <div className="mt-3 min-w-[26rem] rounded-md border border-rce-border p-3" data-testid={`agent-activity-${keyId}`}>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">Activity for {keyName}</h3>
+        <button type="button" className="btn btn-secondary px-3 text-xs" style={{ minHeight: 32 }} onClick={onClose}>Close</button>
+      </div>
+      <p className="mt-1 text-xs text-rce-muted">Newest first. Times are Chicago. Every read, post and refusal is listed; no message text is ever kept here.</p>
+      {isLoading && <p className="mt-2 text-xs text-rce-muted">Loading…</p>}
+      {error && <p className="mt-2 text-xs text-red-800">Couldn't load the activity — {(error as Error).message}</p>}
+      {!isLoading && !error && rows.length === 0 && <p className="mt-2 text-xs text-rce-muted" data-testid="agent-activity-empty">No calls from this key yet.</p>}
+      {rows.length > 0 && (
+        <div className="mt-2 max-h-72 overflow-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-rce-border uppercase tracking-wide text-rce-muted">
+                <th className="py-1 pr-2">When</th><th className="pr-2">Key</th><th className="pr-2">Action</th><th className="pr-2">Endpoint</th><th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-b border-rce-border align-top">
+                  <td className="py-1 pr-2 whitespace-nowrap">{whenText(r.at)}</td>
+                  <td className="pr-2">{r.keyName}</td>
+                  <td className="pr-2 mono">{r.action ?? ""}</td>
+                  <td className="pr-2 mono">{r.endpoint ?? ""}</td>
+                  <td className="mono">{r.resultCode ?? ""}{r.status !== null ? ` (${r.status})` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScopePicker({
   scopes, onChange, kinds, onKindsChange, idPrefix,
 }: {
@@ -118,7 +177,7 @@ function ScopePicker({
         <fieldset key={g.id} className="rounded-md border border-rce-border p-3">
           <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-rce-muted">{g.label}</legend>
           <div className="grid gap-1">
-            {(Object.keys(AGENT_SCOPES) as AgentScope[]).filter((s) => AGENT_SCOPE_GROUP[s] === g.id).map((s) => (
+            {scopesIn(g.id).map((s) => (
               <label key={s} className="flex items-start gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -127,7 +186,16 @@ function ScopePicker({
                   onChange={() => onChange(toggle(scopes, s))}
                   aria-label={`${idPrefix} scope ${s}`}
                 />
-                <span><span className="mono text-xs">{s}</span> — {AGENT_SCOPES[s]}</span>
+                {g.id === "messages" ? (
+                  // W2: the four Messages boxes carry Kyle's own words as their label, the description under it as helper text.
+                  <span>
+                    <span className="font-medium">{AGENT_MESSAGE_SCOPE_LABELS[s as keyof typeof AGENT_MESSAGE_SCOPE_LABELS]}</span>{" "}
+                    <span className="mono text-xs text-rce-muted">{s}</span>
+                    <span className="block text-xs text-rce-muted">{AGENT_SCOPES[s]}</span>
+                  </span>
+                ) : (
+                  <span><span className="mono text-xs">{s}</span> — {AGENT_SCOPES[s]}</span>
+                )}
               </label>
             ))}
           </div>
@@ -224,6 +292,8 @@ export function AgentKeysSection() {
   const [expires, setExpires] = useState("");
 
   const [editing, setEditing] = useState<string | null>(null);
+  // The key whose Activity is open (one at a time).
+  const [activityFor, setActivityFor] = useState<string | null>(null);
   const [eName, setEName] = useState("");
   const [eScopes, setEScopes] = useState<string[]>([]);
   const [eKinds, setEKinds] = useState<string[]>([]);
@@ -314,7 +384,17 @@ export function AgentKeysSection() {
 
   async function setWrites(k: AgentKeyView, on: boolean) {
     if (on && !window.confirm(writesConfirmText(k.name))) return;
-    if (await run(() => api.updateAgentKey(k.id, { writesEnabled: on }), `"${k.name}" ${on ? "can now post in Messages (what it posts waits for Approve unless an AI auto-send rule is on)" : "can no longer post"}.`)) await refresh();
+    const done = on
+      ? "can now post in Messages (Team, group and crew posts publish at once while its Team posts box is ticked; a message to a customer waits for Approve unless an AI auto-send rule is on)"
+      : "can no longer post";
+    if (await run(() => api.updateAgentKey(k.id, { writesEnabled: on }), `"${k.name}" ${done}.`)) await refresh();
+  }
+
+  async function setPublish(k: AgentKeyView, on: boolean) {
+    const done = on
+      ? "now publishes its Team, group and crew posts at once"
+      : "no longer publishes its Team posts on its own: they wait for your Approve";
+    if (await run(() => api.updateAgentKey(k.id, { teamPostsPublish: on }), `"${k.name}" ${done}.`)) await refresh();
   }
 
   // Why "Allow writes" cannot be turned ON right now (null when it can): the kill switch is not On.
@@ -443,7 +523,7 @@ export function AgentKeysSection() {
           <thead>
             <tr className="border-b border-rce-border text-xs uppercase tracking-wide text-rce-muted">
               <th className="py-2 pr-3">Name</th><th className="pr-3">Key</th><th className="pr-3">Scopes</th>
-              <th className="pr-3">Allow writes</th><th className="pr-3">Expires</th><th className="pr-3">Last used</th>
+              <th className="pr-3">Allow writes / Team posts</th><th className="pr-3">Expires</th><th className="pr-3">Last used</th>
               <th className="pr-3">Status</th><th>Actions</th>
             </tr>
           </thead>
@@ -456,6 +536,10 @@ export function AgentKeysSection() {
               // A greyed box says why. Turning ON waits for the kill switch; a ticked box can always be unticked.
               const writesReason = lockReason ?? writesModeReason;
               const writesDisabled = busy || locked || (!k.writesEnabled && writesModeReason !== null);
+              // "Team posts publish immediately" (W2): only has an effect with writes on and Agent access On. While one of those is
+              // missing the box says why; a box already ticked can always be unticked, one that is off cannot be ticked until then.
+              const publishReason: string | null = !k.writesEnabled ? PUBLISH_WRITES_OFF_REASON : writesModeReason !== null ? PUBLISH_ACCESS_REASON : null;
+              const publishDisabled = busy || locked || (!k.teamPostsPublish && publishReason !== null);
               // Rotate is always shown; when it can't be used the screen says why (and what to do instead).
               const rotateReason: string | null = k.status === "active" ? null
                 : k.status === "retiring" ? "This key is already being replaced."
@@ -489,6 +573,18 @@ export function AgentKeysSection() {
                       Allow writes
                     </label>
                     {writesReason && <div className="text-xs text-rce-muted">{writesReason}</div>}
+                    <label className="mt-2 flex items-center gap-1 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={k.teamPostsPublish}
+                        disabled={publishDisabled}
+                        title={controlTitle(lockReason ?? publishReason)}
+                        aria-label={`Team posts publish immediately for ${k.name}`}
+                        onChange={(e) => void setPublish(k, e.target.checked)}
+                      />
+                      Team posts publish immediately
+                    </label>
+                    {!locked && publishReason && <div className="text-xs text-rce-muted" data-testid={`publish-reason-${k.id}`}>{publishReason}</div>}
                   </td>
                   <td className="pr-3">{dayText(k.expiresAt)}</td>
                   <td className="pr-3">{k.lastUsedAt ? `Last used ${whenText(k.lastUsedAt)}${k.lastUsedTool ? ` · ${k.lastUsedTool}` : ""}` : "Never used"}</td>
@@ -500,9 +596,15 @@ export function AgentKeysSection() {
                       <button className="btn btn-danger px-3 text-xs" style={{ minHeight: 32 }} type="button" disabled={busy || locked} title={controlTitle(lockReason)} onClick={() => void revoke(k)}>
                         {k.status === "retiring" ? "Revoke now" : "Revoke"}
                       </button>
-                      <button className="btn btn-secondary px-3 text-xs" style={{ minHeight: 32 }} type="button" disabled title={ACTIVITY_REASON}>Activity</button>
+                      <button
+                        className="btn btn-secondary px-3 text-xs" style={{ minHeight: 32 }} type="button" disabled={locked} title={controlTitle(lockReason)}
+                        onClick={() => setActivityFor(activityFor === k.id ? null : k.id)}
+                      >
+                        Activity
+                      </button>
                     </div>
                     {rotateReason && <div className="mt-1 text-xs text-rce-muted" data-testid={`rotate-reason-${k.id}`}>{rotateReason}</div>}
+                    {activityFor === k.id && !locked && <KeyActivity keyId={k.id} keyName={k.name} onClose={() => setActivityFor(null)} />}
                     {editing === k.id && (
                       <form
                         className="mt-3 grid min-w-[22rem] gap-3 rounded-md border border-rce-border p-3"
@@ -530,7 +632,6 @@ export function AgentKeysSection() {
           </tbody>
         </table>
       </div>
-      <p className="mt-2 text-xs text-rce-muted">Activity: {ACTIVITY_REASON}</p>
 
       {revoked.length > 0 && (
         <details className="mt-4" data-testid="agent-revoked-keys">
@@ -544,6 +645,17 @@ export function AgentKeysSection() {
                   <input type="checkbox" checked={k.writesEnabled} disabled title={WRITES_REVOKED_REASON} aria-label={`Allow writes for ${k.name}`} />
                   Allow writes — {WRITES_REVOKED_REASON}
                 </label>
+                <label className="mt-1 flex items-center gap-1 text-xs text-rce-muted">
+                  <input type="checkbox" checked={k.teamPostsPublish} disabled title={PUBLISH_REVOKED_REASON} aria-label={`Team posts publish immediately for ${k.name}`} />
+                  Team posts publish immediately — {PUBLISH_REVOKED_REASON}
+                </label>
+                <button
+                  className="btn btn-secondary mt-1 px-3 text-xs" style={{ minHeight: 32 }} type="button" disabled={locked} title={controlTitle(lockReason)}
+                  onClick={() => setActivityFor(activityFor === k.id ? null : k.id)}
+                >
+                  Activity
+                </button>
+                {activityFor === k.id && !locked && <KeyActivity keyId={k.id} keyName={k.name} onClose={() => setActivityFor(null)} />}
               </li>
             ))}
           </ul>

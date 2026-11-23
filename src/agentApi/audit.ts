@@ -9,7 +9,8 @@
  *     role, door = "mcp" | "rest", scopeUsed = the scope that authorised it, recordIds = ids only,
  *     resultCode = "ok" | "replayed" | the error code, responseStatus, durationMs, agentKeyId.
  *   * clientRequestId = the idempotency key as a sha256 (never the key itself).
- *   * NEVER a request or response body, a message, a name, a token or a key. `payloadJson` is never
+ *   * agentKeyName (W2) is the KEY's own name at the time of the call, a snapshot for Settings -> Agent keys -> Activity.
+ *   * NEVER a request or response body, a message, a person's name, a token or a key. `payloadJson` is never
  *     written. This function has no parameter that could carry one.
  *   * Unknown-key refusals (a 401 for a key that is not in the table) are written with agentKeyId
  *     null and nothing from the credential.
@@ -37,6 +38,8 @@ export interface AgentCallRecord {
   agentKeyId: string | null;
   /** The key's role (admin, inventory, ...), or null for an unknown key. */
   agentRole: string | null;
+  /** W2: the key's NAME at the time of the call (a snapshot for the Activity view), or null for an unknown key. */
+  agentKeyName?: string | null;
   /** The tool name, or the route's action for REST. */
   tool: string;
   /** The route (method and path) for REST, "/mcp" for MCP. */
@@ -89,6 +92,7 @@ export async function recordAgentCall(
       durationMs: Math.max(0, Math.round(call.durationMs)),
       clientRequestId: call.idempotencyKey ? sha256Hex(call.idempotencyKey) : null,
       agentKeyId: call.agentKeyId,
+      agentKeyName: call.agentKeyName ? call.agentKeyName.slice(0, 100) : null,
       door: call.door,
       scopeUsed: call.scopeUsed,
       recordIds: cleanRecordIds(call.recordIds) ?? undefined,

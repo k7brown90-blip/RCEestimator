@@ -26,7 +26,8 @@
  * applies to the very next call (the stateless /mcp ruling, team answer 12).
  *
  * The gate is mounted by pinAuthMiddleware (middleware/pinAuth.ts) for exactly the routes in AGENT_KEY_ROUTES:
- * today the three REST /api/hub/* routes (K-U7, src/agentApi/hubDoor.ts); /mcp (Step 2) adds its own entry.
+ * the three REST /api/hub/* routes (K-U7, src/agentApi/hubDoor.ts) and /mcp (W2-B, src/mcp/agentServer.ts: one HTTP request is one pass here;
+ * the tool registry, src/agentApi/registry.ts, then checks each tool's own scopes and writes switch and audits each tools/call).
  * Nothing here is public: it adds nothing to PUBLIC_ROUTES.
  */
 import type { NextFunction, Request, RequestHandler, Response } from "express";
@@ -38,7 +39,7 @@ import { getAgentAccess, type AgentAccessMode } from "../services/ownerSettings"
 import { prisma } from "../lib/prisma";
 import { shiftDate, zonedParts, zonedWallToInstant } from "../../shared/businessDays";
 import { CALENDAR_DAY_TIME_ZONE } from "../../shared/calendarDay";
-import { isAgentScope, type AgentScope } from "../../shared/agentScopes";
+import { agentScopeChoiceText, isAgentScope, type AgentScope } from "../../shared/agentScopes";
 import {
   AGENT_KEY_SHAPE, AgentKeyPepperMissingError, bearerFrom, currentAgentEnvironment, findAgentKey,
   type AgentKeyEnvironment,
@@ -57,6 +58,8 @@ export interface AgentPrincipal {
   env: AgentKeyEnvironment;
   scopes: AgentScope[];
   writesEnabled: boolean;
+  /** W2: the key's "Team posts publish immediately" box, as the row read on THIS request (the publish decision re-reads the row itself). */
+  teamPostsPublish: boolean;
   /** Hub thread kinds the key is limited to; empty means no limit. */
   hubThreadKinds: string[];
   /** The kill switch as it read on this request. */
@@ -66,7 +69,13 @@ export interface AgentPrincipal {
 export interface AgentRequestState {
   agentPrincipal?: AgentPrincipal;
   /** When the gate accepted the call, and through which door, for the audit row. */
-  agentCall?: { startedAt: number; door: AgentDoor; route: AgentKeyRoute | null };
+  agentCall?: {
+    startedAt: number; door: AgentDoor; route: AgentKeyRoute | null;
+    /** The scope that opened the route (the first of an any-of list the key holds), for the audit row (W2). */
+    scopeUsed: string | null;
+    /** The daily draft cap this gate enforces, for the door's own reservation of a customer draft (W2). */
+    dailyDraftLimit: number;
+  };
 }
 
 export type AgentRequest = Request & AgentRequestState & RequestAuthState;
@@ -128,6 +137,7 @@ function principalFrom(row: AgentKey, mode: AgentAccessMode): AgentPrincipal {
     env: row.environment === "live" ? "live" : "test",
     scopes: row.scopes.filter(isAgentScope),
     writesEnabled: row.writesEnabled,
+    teamPostsPublish: row.teamPostsPublish,
     hubThreadKinds: [...row.hubThreadKinds],
     mode,
   };
@@ -137,6 +147,57 @@ function principalFrom(row: AgentKey, mode: AgentAccessMode): AgentPrincipal {
 function sendError(res: Response, status: number, body: AgentErrorBody): void {
   if (body.retry_after !== undefined) res.setHeader("Retry-After", String(body.retry_after));
   res.status(status).json(body);
+}
+
+/**
+ * The sentence a key is given when it holds none of the scopes that open something, by the names Settings -> Agent keys shows
+ * (W2). The REST gate and the /mcp tool registry say it the same way: ONE helper.
+ */
+export function scopeDeniedReason(wanted: readonly AgentScope[]): string {
+  return `This key needs ${agentScopeChoiceText(wanted)}. Tick it on Settings → Agent keys.`;
+}
+
+/** The scopes that open a route, as a list, or null for an "any" route. */
+export function routeScopes(route: AgentKeyRoute): readonly AgentScope[] | null {
+  if (route.scope === "any") return null;
+  return typeof route.scope === "string" ? [route.scope] : route.scope;
+}
+
+/**
+ * Take one of the key's 500-a-day draft slots, or say when to retry (seconds). The gate calls it for a route marked `draft`; the
+ * hub door calls it (reserveAgentDraftSlot) for a CUSTOMER draft only, because POST /hub/messages is one route for two things and a
+ * Team post is not a draft (W2). The slot is held until the response ends, so a burst at 499 cannot all pass.
+ */
+async function reserveDraftSlot(keyId: string, now: Date, limit: number, res: Response, req: Request): Promise<number | null> {
+  const made = await countDraftsToday(keyId, now, prisma);
+  const pending = draftsInFlight.get(keyId) ?? 0;
+  if (made + pending >= limit) return (nextChicagoMidnight(now).getTime() - now.getTime()) / 1000;
+  // Reserve this call's slot (synchronously after the read above, so parallel calls cannot both take the last one) and give it
+  // back when the response ends.
+  draftsInFlight.set(keyId, pending + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const left = (draftsInFlight.get(keyId) ?? 1) - 1;
+    if (left <= 0) draftsInFlight.delete(keyId);
+    else draftsInFlight.set(keyId, left);
+  };
+  res.once("finish", release);
+  res.once("close", release);
+  // The client may have gone while the gate was awaiting the database, before these listeners existed: 'close' already fired and
+  // will not fire again. Give the slot back at once.
+  if (res.writableEnded || res.destroyed || req.socket?.destroyed) release();
+  return null;
+}
+
+/** The hub door's call for a customer draft: null when a slot was taken, else the seconds to wait. Throws on a request the gate did not accept. */
+export async function reserveAgentDraftSlot(req: Request, res: Response): Promise<number | null> {
+  const state = req as AgentRequest;
+  const principal = state.agentPrincipal;
+  const call = state.agentCall;
+  if (!principal || !call) throw new Error("reserveAgentDraftSlot on a request the agent gate did not accept");
+  return reserveDraftSlot(principal.keyId, new Date(), call.dailyDraftLimit, res, req);
 }
 
 export function createAgentKeyGate(options: AgentKeyGateOptions = {}): RequestHandler {
@@ -189,12 +250,13 @@ export function createAgentKeyGate(options: AgentKeyGateOptions = {}): RequestHa
       let scopeUsed: string | null = null;
 
       /** Audit, then answer. If the audit insert fails the caller gets a 500 and no more. */
-      const refuse = async (code: AgentErrorCode, extra: { retryAfterSeconds?: number } = {}): Promise<void> => {
+      const refuse = async (code: AgentErrorCode, extra: { retryAfterSeconds?: number; reason?: string } = {}): Promise<void> => {
         const body = agentErrorBody(code, extra);
         try {
           await recordAgentCall({
             agentKeyId: row?.id ?? null,
             agentRole: row?.agentRole ?? null,
+            agentKeyName: row?.name ?? null,
             tool,
             route: auditRoute,
             door,
@@ -272,40 +334,27 @@ export function createAgentKeyGate(options: AgentKeyGateOptions = {}): RequestHa
         // 8. The route's own rule. A path no entry covers is refused.
         const principal = principalFrom(row, mode);
         if (!route) { await refuse("scope_denied"); return; }
-        if (route.scope !== "any") {
-          if (!principal.scopes.includes(route.scope)) { await refuse("scope_denied"); return; }
-          scopeUsed = route.scope;
+        // W2: a route lists the scopes that open it (any ONE of them does). The one matched is what the audit records, and a key that
+        // holds none is told which ones to tick, by the names the Agent keys card shows.
+        const wanted = routeScopes(route);
+        if (wanted) {
+          const held = wanted.find((s) => principal.scopes.includes(s));
+          if (!held) {
+            await refuse("scope_denied", { reason: scopeDeniedReason(wanted) });
+            return;
+          }
+          scopeUsed = held;
         }
         if (route.write || route.draft) {
           if (mode === "read_only") { await refuse("agents_read_only"); return; }
           if (!principal.writesEnabled) { await refuse("writes_disabled"); return; }
         }
         if (route.draft) {
-          const made = await countDraftsToday(row.id, now, prisma);
-          const pending = draftsInFlight.get(row.id) ?? 0;
-          if (made + pending >= dailyDraftLimit) {
-            await refuse("daily_draft_limit", {
-              retryAfterSeconds: (nextChicagoMidnight(now).getTime() - now.getTime()) / 1000,
-            });
+          const slot = await reserveDraftSlot(row.id, now, dailyDraftLimit, res, req);
+          if (slot !== null) {
+            await refuse("daily_draft_limit", { retryAfterSeconds: slot });
             return;
           }
-          // Reserve this call's slot (synchronously after the read above, so parallel calls cannot
-          // both take the last one) and give it back when the response ends.
-          const keyId = row.id;
-          draftsInFlight.set(keyId, pending + 1);
-          let released = false;
-          const release = () => {
-            if (released) return;
-            released = true;
-            const left = (draftsInFlight.get(keyId) ?? 1) - 1;
-            if (left <= 0) draftsInFlight.delete(keyId);
-            else draftsInFlight.set(keyId, left);
-          };
-          res.once("finish", release);
-          res.once("close", release);
-          // The client may have gone while the gate was awaiting the database, before these listeners
-          // existed: 'close' already fired and will not fire again. Give the slot back at once.
-          if (res.writableEnded || res.destroyed || req.socket?.destroyed) release();
         }
 
         // 9. In. lastUsedAt moves at most once a minute and never delays or fails the call.
@@ -318,7 +367,7 @@ export function createAgentKeyGate(options: AgentKeyGateOptions = {}): RequestHa
             .catch(() => undefined);
         }
         state.agentPrincipal = principal;
-        state.agentCall = { startedAt, door, route };
+        state.agentCall = { startedAt, door, route, scopeUsed, dailyDraftLimit };
         next();
       } catch (err) {
         if (err instanceof AgentKeyPepperMissingError) {
@@ -369,10 +418,11 @@ export function agentAuditRecord(req: Request, result: FinishAgentCall): AgentCa
   return {
     agentKeyId: principal.keyId,
     agentRole: principal.role,
+    agentKeyName: principal.name,
     tool: result.tool ?? route?.tool ?? auditRoute,
     route: auditRoute,
     door: call.door,
-    scopeUsed: route && route.scope !== "any" ? route.scope : null,
+    scopeUsed: call.scopeUsed,
     recordIds: result.recordIds,
     resultCode: result.resultCode ?? (result.status < 400 ? "ok" : "error"),
     status: result.status,

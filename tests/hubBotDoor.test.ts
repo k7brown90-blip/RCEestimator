@@ -413,7 +413,8 @@ describe("POST /api/hub/messages", () => {
     const before = await prisma.hubThread.count({ where: { kind: "team" } });
     const team = await post(token, { thread_id: teamThreadId, body: "A reply into an existing team thread.", idempotency_key: key() });
     expect(team.status).toBe(201);
-    expect(team.body.status).toBe("pending_approval");
+    // W2 (Kyle 2026-11-23): a Team post by a key whose "Team posts publish immediately" box is on (the default) is posted at once.
+    expect(team.body.status).toBe("posted");
     expect(team.body.channel).toBe("in_app");
     expect(await prisma.hubThread.count({ where: { kind: "team" } })).toBe(before);
   });
@@ -449,8 +450,10 @@ describe("what an agent key cannot reach, and the kill switch", () => {
     }
     expect((await request(app).patch(`/api/hub/threads/${trainingThreadId}`).set(bearer(token)).send({ status: "closed" })).status).toBe(401);
     expect((await request(app).post(`/api/hub/threads/${trainingThreadId}/messages`).set(bearer(token)).send({ body: "x" })).status).toBe(401);
-    expect(AGENT_KEY_ROUTES.map((r) => `${r.methods.join("|")} ${r.path} ${r.scope}`)).toEqual([
-      "GET /hub/threads hub:read", "GET /hub/threads/:id/messages hub:read", "POST /hub/messages hub:draft",
+    // W2: still exactly three hub routes; each now opens for ANY scope that opens some kind of thread (tests/agentKeyGate.test.ts lists the scopes).
+    // W2-B: plus the agents' /mcp door (tests/agentMcpW2.test.ts).
+    expect(AGENT_KEY_ROUTES.map((r) => `${r.methods.join("|")} ${r.path}`)).toEqual([
+      "GET /hub/threads", "GET /hub/threads/:id/messages", "POST /hub/messages", "GET|POST|DELETE /mcp",
     ]);
   });
 
@@ -685,7 +688,7 @@ describe("which kinds of thread a key may read or draft in come from its scopes 
     expect((await getMessages(token, teamThreadId)).status).toBe(200);
     const dev = await getMessages(token, devThreadId);
     expect(dev.status).toBe(403);
-    expect(dev.body.reason).toBe("This key may only use team threads.");
+    expect(dev.body.reason).toBe("This key may only use team threads. Change the limit on Settings → Agent keys.");
   });
 
   it("a draft needs the posting scope for the kind: hub:draft for a customer, team:reply for Team, training:write for Training, and Dev is never drafted here", async () => {

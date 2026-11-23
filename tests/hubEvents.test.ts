@@ -9,8 +9,15 @@
  * delivered; no address means no_target and Resend delivers it once an address is set; with no secret
  * nothing is sent; two overlapping runs send once; Resend refuses a delivered event; the payload is
  * the closed shape (no name, link, phone, email or free text); the routes are bot_keys-gated; the
- * agentWebhooks setting is Kyle's alone and validates its addresses; one team post reaches Admin only
- * and material.used reaches Inventory.
+ * agentWebhooks setting is Kyle's alone and validates its addresses; a team post reaches every agent whose
+ * live key can read it and material.used reaches Inventory.
+ *
+ * W2-C (Kyle 2026-11-23, items 4 and 5): the timestamp and signature are ALSO the last two members of every
+ * wire body (the signed text is the stored payloadJson, which never holds them, so the "body is byte-identical
+ * across attempts" tests below now pin the STORED payload and the reconstructed signed string); a message.team
+ * payload carries the author's first name, the scrubbed text, mentions[] and reply_expected (the old "ids only,
+ * no text" test is changed deliberately, and keeps its no-phone/no-street assertions). The fan-out itself
+ * (every reader, the loop guard, groups, the edit-approved copy) is tests/hubTeamFanOut.test.ts.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import http from "node:http";
@@ -48,10 +55,12 @@ import { saveAdminLogin } from "../src/services/adminLogin";
 import { saveCrmLogin, setPowers } from "../src/services/crmLogin";
 import { mintAgentKey } from "../src/agentApi/keys";
 import {
-  _setDeliveryTimeoutMsForTests, deliverDueEvents, deliverEvent, emitHubEvent, resendEvent, signEvent,
+  _setDeliveryTimeoutMsForTests, deliverDueEvents, deliverEvent, emitHubEvent, resendEvent, sendTestEvent, signEvent, viewEvent,
 } from "../src/services/hubEvents";
 import { ensureTeamThread, postMessage, type HubReader } from "../src/services/hub";
+import { splitWireBody } from "../shared/hub/events";
 import { scrub } from "../src/agentApi/respond";
+import type { AgentRole } from "../shared/agentScopes";
 import { HUB_EVENT_MAX_ATTEMPTS, HUB_EVENT_RETRY_SECONDS, HUB_EVENT_TYPES, RESEND_DELIVERED_REASON } from "../shared/hub/events";
 import { cleanupCrmLoginFixtures, makePerson } from "./helpers/crmLoginFixture";
 
@@ -89,13 +98,29 @@ async function startReceiver(): Promise<Receiver> {
   return r;
 }
 
-/** What a careful receiver does: reject a timestamp more than 5 minutes from its own clock, then recompute the HMAC over the raw body. */
+/**
+ * What a careful receiver does (W2 recipe): reject a timestamp more than 5 minutes from its own clock, cut the raw body at the LAST
+ * `,"timestamp":` and add `}` (that is the payload), then recompute the HMAC over `<timestamp>.<payload>`. The headers AND the two body
+ * members must both carry the same timestamp and signature.
+ */
 function verify(req: Received, secret = SECRET, nowMs = Date.now()): { ok: boolean; why?: string } {
   const ts = String(req.headers["x-rce-timestamp"] ?? "");
   if (!/^\d{10}$/.test(ts)) return { ok: false, why: "timestamp is not Unix seconds" };
   if (Math.abs(nowMs / 1000 - Number(ts)) > 300) return { ok: false, why: "timestamp more than 5 minutes off" };
-  const expected = `sha256=${createHmac("sha256", secret).update(`${ts}.${req.body}`).digest("hex")}`;
+  const wire = splitWireBody(req.body);
+  if (!wire) return { ok: false, why: "body does not end with the timestamp and signature" };
+  const expected = `sha256=${createHmac("sha256", secret).update(`${ts}.${wire.payloadJson}`).digest("hex")}`;
+  if (wire.timestamp !== ts || wire.signature !== req.headers["x-rce-signature"]) return { ok: false, why: "body and headers disagree" };
   return req.headers["x-rce-signature"] === expected ? { ok: true } : { ok: false, why: "bad signature" };
+}
+
+/** The same check from the BODY ALONE: what a receiver that strips every custom header can still do. */
+function verifyBodyOnly(body: string, secret = SECRET, nowMs = Date.now()): { ok: boolean; why?: string } {
+  const wire = splitWireBody(body);
+  if (!wire) return { ok: false, why: "body does not end with the timestamp and signature" };
+  if (Math.abs(nowMs / 1000 - Number(wire.timestamp)) > 300) return { ok: false, why: "timestamp more than 5 minutes off" };
+  const expected = `sha256=${createHmac("sha256", secret).update(`${wire.timestamp}.${wire.payloadJson}`).digest("hex")}`;
+  return wire.signature === expected ? { ok: true } : { ok: false, why: "bad signature" };
 }
 
 const waitFor = async (fn: () => boolean | Promise<boolean>, ms = 4000) => {
@@ -122,6 +147,7 @@ async function wipeEvents() {
 }
 async function wipe() {
   await wipeEvents();
+  await prisma.agentKey.deleteMany({ where: { name: { startsWith: TAG } } });
   await prisma.companySetting.deleteMany({ where: { key: "agentWebhooks" } });
   await prisma.hubThread.deleteMany({ where: { OR: [{ title: { startsWith: TAG } }, { technicianId: { in: techIds } }] } });
   await prisma.lead.deleteMany({ where: { name: { startsWith: TAG } } });
@@ -161,6 +187,11 @@ afterEach(async () => {
   await receiver.close();
 });
 
+/** A live agent key (the role's default scopes, so Admin and Inventory both read the Team chat). */
+async function liveKey(role: AgentRole, over: { scopes?: string[]; hubThreadKinds?: string[]; retiresAt?: Date | null } = {}) {
+  return (await mintAgentKey({ name: `${TAG} ${role} ${Math.random().toString(36).slice(2, 7)}`, agentRole: role, createdBy: "owner", ...over })).row;
+}
+
 async function makeLead(suffix = "lead") {
   return prisma.lead.create({ data: { name: `${TAG} ${suffix}`, phone: "6155550123", email: "secret.person@example.com", source: "web" } });
 }
@@ -195,7 +226,7 @@ async function aiAdminToken() {
 // ── delivery ─────────────────────────────────────────────────────────────────────────────────────
 
 describe("a signed delivery", () => {
-  it("POSTs the stored body byte for byte; the receiver verifies timestamp, signature and event id", async () => {
+  it("POSTs the stored payload plus the timestamp and signature as its last two members; the receiver verifies them from the headers and from the body alone", async () => {
     const lead = await makeLead();
     const id = await emitHubEvent({ type: "lead.created", leadId: lead.id });
     await waitFor(() => receiver.requests.some((r) => r.headers["x-rce-event-id"] === id));
@@ -204,7 +235,16 @@ describe("a signed delivery", () => {
     expect(got.headers["content-type"]).toBe("application/json");
     expect(got.headers["x-rce-event-id"]).toBe(id);
     const row = await prisma.hubEvent.findUniqueOrThrow({ where: { id } });
-    expect(got.body).toBe(row.payloadJson);
+    // The STORED payload never holds the two members; the wire body is that text with them spliced in before the final brace.
+    expect(row.payloadJson).not.toContain('"signature"');
+    expect(row.payloadJson).not.toContain('"timestamp"');
+    const wire = splitWireBody(got.body)!;
+    expect(wire.payloadJson).toBe(row.payloadJson);
+    expect(wire.timestamp).toBe(got.headers["x-rce-timestamp"]);
+    expect(wire.signature).toBe(got.headers["x-rce-signature"]);
+    expect(got.body).toBe(`${row.payloadJson.slice(0, -1)},"timestamp":"${wire.timestamp}","signature":"${wire.signature}"}`);
+    expect(Object.keys(JSON.parse(got.body)).slice(-2)).toEqual(["timestamp", "signature"]);
+    expect(verifyBodyOnly(got.body)).toEqual({ ok: true });
     const payload = JSON.parse(got.body);
     expect(payload.event_id).toBe(id);
     expect(payload.type).toBe("lead.created");
@@ -215,7 +255,7 @@ describe("a signed delivery", () => {
     expect(done.attemptLog).toHaveLength(1);
   });
 
-  it("signs exactly `${timestamp}.${raw body}` with the one secret", () => {
+  it("signs exactly `${timestamp}.${payloadJson}` (the body without the two members) with the one secret", () => {
     const sig = signEvent("s3cret", "1700000000", '{"a":1}');
     expect(sig).toBe(`sha256=${createHmac("sha256", "s3cret").update('1700000000.{"a":1}').digest("hex")}`);
     expect(signEvent("other", "1700000000", '{"a":1}')).not.toBe(sig);
@@ -236,7 +276,11 @@ describe("a signed delivery", () => {
     expect(await deliverEvent(id, prisma, new Date())).toBe("delivered");
     const second = receiver.requests[1];
 
-    expect(second.body).toBe(first.body);
+    // The stored payload is identical on every attempt; the wire body differs only by its timestamp and signature members.
+    expect(splitWireBody(second.body)!.payloadJson).toBe(splitWireBody(first.body)!.payloadJson);
+    expect(second.body).not.toBe(first.body);
+    expect(verifyBodyOnly(second.body, SECRET, Date.now())).toEqual({ ok: true });
+    expect(verifyBodyOnly(first.body, SECRET, Date.now())).toEqual({ ok: false, why: "timestamp more than 5 minutes off" });
     expect(second.headers["x-rce-event-id"]).toBe(first.headers["x-rce-event-id"]);
     expect(second.headers["x-rce-timestamp"]).not.toBe(first.headers["x-rce-timestamp"]);
     const now = Date.now(); // the faked clock, an hour on
@@ -329,7 +373,8 @@ describe("no address, no secret, two workers", () => {
     const out = await resendEvent(id);
     expect(out).toMatchObject({ id, status: "delivered", attempts: 1 });
     row = await prisma.hubEvent.findUniqueOrThrow({ where: { id } });
-    expect(row.payloadJson).toBe(receiver.requests[0].body);
+    expect(row.payloadJson).toBe(splitWireBody(receiver.requests[0].body)!.payloadJson);
+    expect(verify(receiver.requests[0])).toEqual({ ok: true });
     expect(receiver.requests[0].headers["x-rce-event-id"]).toBe(id);
   });
 
@@ -366,7 +411,9 @@ describe("no address, no secret, two workers", () => {
     expect(out.id).toBe(id);
     expect(new Set(receiver.requests.map((r) => r.headers["x-rce-event-id"]))).toEqual(new Set([id]));
     expect(new Set(receiver.requests.map((r) => JSON.parse(r.body).event_id))).toEqual(new Set([id]));
-    expect(new Set(receiver.requests.map((r) => r.body)).size).toBe(1);
+    // The stored payload is one text across attempts and the Resend; each wire body carries its own fresh timestamp and signature.
+    expect(new Set(receiver.requests.map((r) => splitWireBody(r.body)!.payloadJson)).size).toBe(1);
+    for (const r of receiver.requests) expect(verify(r)).toEqual({ ok: true });
     expect(await prisma.hubEventAttempt.count({ where: { eventId: id } })).toBe(3);
   });
 
@@ -457,18 +504,49 @@ describe("the payload is a closed shape", () => {
     for (const leaked of ["wrong customer", "555-0199", "Secret Street", "Jane"]) expect(ev.payloadJson).not.toContain(leaked);
   });
 
-  it("carries a team message as ids only, with the context and no text", async () => {
+  // W2-C (Kyle 2026-11-23 item 4) SUPERSEDES the old "ids only, no text, no name" rule for message.team ONLY (team answer 1 / TC4). The text and
+  // the author's first name now go out; team answer 4 stands, so a phone number and a street address in the text are still withheld.
+  it("carries a team message with its author's first name, its text and the context, but never a phone number or a street address (message.team only)", async () => {
+    await liveKey("admin");
     const tech = await prisma.technician.create({ data: { name: `${TAG} Eric Ward`, accessToken: `hubev-${Math.random().toString(36).slice(2)}` } });
     techIds.push(tech.id);
     const thread = await ensureTeamThread(tech.id);
-    const reader: HubReader = { key: `tech:${tech.id}`, kind: "tech", display: "Eric", technicianId: tech.id, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false };
-    const msg = await postMessage(reader, { threadId: thread.id, body: "Used 40 ft of 12 THHN at 12 Main St, call 615-555-0100" });
+    const reader: HubReader = { key: `tech:${tech.id}`, kind: "tech", display: "Eric Ward", technicianId: tech.id, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false };
+    const msg = await postMessage(reader, { threadId: thread.id, body: "Used 40 ft of THHN on the Smyrna panel, see 12 Main St, call 615-555-0100" });
     await waitFor(async () => (await prisma.hubEvent.count({ where: { type: "message.team" } })) === 1);
     const ev = await prisma.hubEvent.findFirstOrThrow({ where: { type: "message.team" } });
     const payload = JSON.parse(ev.payloadJson);
+    expect(Object.keys(payload).sort()).toEqual([
+      "attachment_ids", "author_agent", "author_id", "author_kind", "author_name", "author_type", "context", "created_at", "event_id", "mentions",
+      "message_id", "occurred_at", "reply_expected", "summary", "text", "thread_id", "thread_kind", "type",
+    ]);
+    expect(payload).toMatchObject({
+      message_id: msg.id, thread_id: thread.id, thread_kind: "team", author_type: "person", author_kind: "tech", author_name: "Eric", author_id: tech.id,
+      author_agent: null, mentions: [], reply_expected: true, context: { kind: "team", id: thread.id }, attachment_ids: [],
+    });
+    expect(payload.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+    expect(payload.text).toContain("Used 40 ft of THHN on the Smyrna panel");
+    for (const leaked of ["Main St", "555-0100", "Ward"]) expect(ev.payloadJson).not.toContain(leaked);
+    // The summary is the template and NEVER the text: it shows on the Agent events log and in GET /hub/events.
+    expect(payload.summary).toBe("New team message");
+    expect(viewEvent(ev).summary).toBe("New team message");
+  });
+
+  it("keeps message.dev at ids only (no text, no name) and message.inbound unchanged", async () => {
+    const tech = await prisma.technician.create({ data: { name: `${TAG} Dev Poster`, accessToken: `hubev-${Math.random().toString(36).slice(2)}` } });
+    techIds.push(tech.id);
+    const thread = await prisma.hubThread.create({ data: { kind: "dev", title: `${TAG} dev thread` } });
+    const reader: HubReader = { key: `tech:${tech.id}`, kind: "tech", display: "Poster", technicianId: tech.id, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false };
+    const msg = await prisma.hubMessage.create({
+      data: { threadId: thread.id, authorType: "tech", authorTechnicianId: tech.id, authorKey: reader.key, authorDisplay: "Poster", channel: "in_app", direction: "internal", status: "posted", body: "The invoice page 500s, call 615-555-0100" },
+    });
+    const id = await emitHubEvent({ type: "message.dev", messageId: msg.id });
+    const ev = await prisma.hubEvent.findUniqueOrThrow({ where: { id } });
+    const payload = JSON.parse(ev.payloadJson);
     expect(Object.keys(payload).sort()).toEqual(["attachment_ids", "author_id", "author_type", "context", "event_id", "message_id", "occurred_at", "summary", "thread_id", "type"]);
-    expect(payload).toMatchObject({ message_id: msg.id, thread_id: thread.id, author_type: "tech", author_id: tech.id, context: { kind: "team", id: thread.id }, attachment_ids: [] });
-    for (const leaked of ["THHN", "Main St", "555-0100", "Eric"]) expect(ev.payloadJson).not.toContain(leaked);
+    expect(payload).toMatchObject({ author_type: "tech", summary: "New dev-thread message" });
+    for (const leaked of ["invoice page", "555-0100", "Poster"]) expect(ev.payloadJson).not.toContain(leaked);
+    await prisma.hubThread.deleteMany({ where: { id: thread.id } });
   });
 
   it("has a builder for every event type in the shared list", () => {
@@ -479,9 +557,11 @@ describe("the payload is a closed shape", () => {
 // ── where each event goes (TC4) ──────────────────────────────────────────────────────────────────
 
 describe("the per-event-type target table", () => {
-  it("sends one team post to the Admin address and none to Inventory; material.used goes to Inventory", async () => {
+  it("sends one team post to every agent whose key can read it (Admin and Inventory here); material.used goes to Inventory alone", async () => {
     const inventory = await startReceiver();
     try {
+      await liveKey("admin");
+      await liveKey("inventory");
       const token = await pinToken();
       await request(app).put("/owner-settings/agentWebhooks").set(bearer(token)).send({
         targets: [{ id: "admin", url: receiver.url, enabled: true }, { id: "inventory", url: inventory.url, enabled: true }], routes: {},
@@ -495,17 +575,20 @@ describe("the per-event-type target table", () => {
       const thread = await ensureTeamThread(tech.id);
       const reader: HubReader = { key: `tech:${tech.id}`, kind: "tech", display: "P", technicianId: tech.id, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false };
       await postMessage(reader, { threadId: thread.id, body: "hello team" });
-      await waitFor(() => receiver.requests.length === 1);
-      expect(inventory.requests).toHaveLength(0);
+      await waitFor(() => receiver.requests.length === 1 && inventory.requests.length === 1);
       expect(JSON.parse(receiver.requests[0].body).type).toBe("message.team");
+      expect(JSON.parse(receiver.requests[0].body)).toMatchObject({ text: "hello team", reply_expected: true });
+      expect(JSON.parse(inventory.requests[0].body)).toMatchObject({ type: "message.team", text: "hello team", reply_expected: false });
       expect(verify(receiver.requests[0])).toEqual({ ok: true });
+      expect(verify(inventory.requests[0], invSecret)).toEqual({ ok: true });
+      inventory.requests.length = 0;
 
       // material.used needs a real job; make one.
       const customer = await prisma.customer.create({ data: { name: `${TAG} Cust`, properties: { create: { name: "H", addressLine1: "1 A St", city: "X", state: "TN", postalCode: "37000" } } }, include: { properties: true } });
       const job = await prisma.visit.create({ data: { customerId: customer.id, propertyId: customer.properties[0].id, mode: "service_call" } });
       await emitHubEvent({ type: "material.used", jobId: job.id, movementIds: ["m1", "m2"], truckId: "t1" });
       await waitFor(() => inventory.requests.length === 1);
-      expect(receiver.requests).toHaveLength(1);
+      expect(receiver.requests).toHaveLength(1); // still only the team message: material.used did not go to Admin
       expect(JSON.parse(inventory.requests[0].body)).toMatchObject({ type: "material.used", job_id: job.id, movement_ids: ["m1", "m2"], line_count: 2 });
       expect(verify(inventory.requests[0], invSecret)).toEqual({ ok: true });
       expect(verify(inventory.requests[0])).toEqual({ ok: false, why: "bad signature" });
@@ -812,5 +895,63 @@ describe("an attempt that has been taken over", () => {
     await expect(resendEvent(id)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("being sent right now") });
     expect(await slow).toBe("delivered");
     expect(receiver.requests).toHaveLength(1);
+  });
+});
+
+// ── the signature and timestamp are IN the body, for every event type (W2-C, Kyle 2026-11-23 item 4) ──
+
+describe("the timestamp and signature are in the body of every event type", () => {
+  it("verifies from the body alone (no headers) for lead.created, material.used, approval.decided, message.team and test.ping", async () => {
+    await liveKey("admin");
+    const token = await pinToken();
+    await request(app).put("/owner-settings/agentWebhooks").set(bearer(token)).send({
+      targets: [{ id: "admin", url: receiver.url, enabled: true }], routes: { "material.used": "admin" },
+    }).expect(200);
+
+    const lead = await makeLead("wire");
+    await emitHubEvent({ type: "lead.created", leadId: lead.id });
+    await emitHubEvent({ type: "material.used", jobId: "job-x", movementIds: ["m1"] });
+    const tech = await prisma.technician.create({ data: { name: `${TAG} Wire`, accessToken: `hubev-${Math.random().toString(36).slice(2)}` } });
+    techIds.push(tech.id);
+    const thread = await ensureTeamThread(tech.id);
+    const reader: HubReader = { key: `tech:${tech.id}`, kind: "tech", display: "Wire", technicianId: tech.id, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false };
+    const msg = await postMessage(reader, { threadId: thread.id, body: "wire check" });
+    await emitHubEvent({ type: "approval.decided", messageId: msg.id, status: "approved", resultIds: {} });
+    const sentTest = await sendTestEvent("admin");
+    expect(sentTest.event.status).toBe("delivered");
+    await waitFor(() => receiver.requests.length === 5);
+
+    const types = receiver.requests.map((r) => JSON.parse(r.body).type as string).sort();
+    expect(types).toEqual(["approval.decided", "lead.created", "material.used", "message.team", "test.ping"]);
+    for (const r of receiver.requests) {
+      const parsed = JSON.parse(r.body) as Record<string, unknown>;
+      expect(Object.keys(parsed).slice(-2), String(parsed.type)).toEqual(["timestamp", "signature"]);
+      expect(verifyBodyOnly(r.body), String(parsed.type)).toEqual({ ok: true });
+      expect(verify(r), String(parsed.type)).toEqual({ ok: true });
+      // The body's copies are the headers' copies.
+      expect(parsed.timestamp).toBe(r.headers["x-rce-timestamp"]);
+      expect(parsed.signature).toBe(r.headers["x-rce-signature"]);
+    }
+    // A tampered text fails the body-only check, and so does a wrong secret.
+    const ping = receiver.requests.find((r) => JSON.parse(r.body).type === "test.ping")!;
+    expect(verifyBodyOnly(ping.body, "not-the-secret")).toEqual({ ok: false, why: "bad signature" });
+    expect(verifyBodyOnly(ping.body.replace("test.ping", "test.pong"))).toEqual({ ok: false, why: "bad signature" });
+    // The stored payload of a test event is still exactly event_id, type, occurred_at and target.
+    const stored = JSON.parse((await prisma.hubEvent.findUniqueOrThrow({ where: { id: sentTest.event.id } })).payloadJson);
+    expect(Object.keys(stored).sort()).toEqual(["event_id", "occurred_at", "target", "type"]);
+  });
+
+  it("splices by string, never by re-serialising: the signed text is the stored text even with unicode and escapes in it", async () => {
+    await liveKey("admin");
+    const tech = await prisma.technician.create({ data: { name: `${TAG} Uni`, accessToken: `hubev-${Math.random().toString(36).slice(2)}` } });
+    techIds.push(tech.id);
+    const thread = await ensureTeamThread(tech.id);
+    const reader: HubReader = { key: `tech:${tech.id}`, kind: "tech", display: "Uni", technicianId: tech.id, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false };
+    await postMessage(reader, { threadId: thread.id, body: 'Quote "12/2" — café ½" conduit\nline two \ done' });
+    await waitFor(() => receiver.requests.length === 1);
+    const ev = await prisma.hubEvent.findFirstOrThrow({ where: { type: "message.team" } });
+    expect(JSON.parse(ev.payloadJson).text).toContain('café');
+    expect(splitWireBody(receiver.requests[0].body)!.payloadJson).toBe(ev.payloadJson);
+    expect(verifyBodyOnly(receiver.requests[0].body)).toEqual({ ok: true });
   });
 });

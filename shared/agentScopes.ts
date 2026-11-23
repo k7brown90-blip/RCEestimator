@@ -12,7 +12,7 @@
 
 export const AGENT_SCOPES = {
   // Hub (spec section 3.2)
-  "hub:read": "Read Messages hub threads and messages",
+  "hub:read": "Read customer conversations (and job crew chats) — not the Team or group chats",
   "hub:draft": "Draft customer messages for approval",
   "inventory:usage": "Draft stock movements, counts and reorder lists",
   "campaign:draft": "Draft email campaigns (never send)",
@@ -27,7 +27,11 @@ export const AGENT_SCOPES = {
   "estimate:draft": "Create estimate drafts (never issue or send)",
   "estimate:propose_accept": "Propose recording a customer's acceptance",
   "notes:write": "Add notes to records",
-  "team:reply": "Read and post in the Team and group chats; post in job crew chats (needs hub:read to read them)",
+  // W2 (Kyle 2026-11-23): the Team scopes are two, so the card can offer "Read team" and "Post team" apart. team:reply keeps its
+  // stored name (a renamed scope is silently dropped from every live key); it still OPENS reads too, so an older key keeps reading.
+  "team:read": "Read the Team, group and job crew chats",
+  "team:reply": "Post in the Team, group and job crew chats",
+  "finance:read": "Read jobs, invoices and payments — ids and customer first names only",
   "dev:ticket": "File and read dev tickets",
   "inventory:read": "Read price book, stock, purchase orders and receipts",
   "pricebook:propose": "Propose price book additions for approval",
@@ -53,7 +57,7 @@ export function isAgentScope(value: string): value is AgentScope {
 }
 
 export const AGENT_ROLES = [
-  "admin", "inventory", "outreach", "research", "facebook", "scout", "nec_coach", "claude_code", "other",
+  "admin", "inventory", "outreach", "research", "cfo", "facebook", "scout", "nec_coach", "claude_code", "other",
 ] as const;
 
 export type AgentRole = (typeof AGENT_ROLES)[number];
@@ -62,38 +66,46 @@ export function isAgentRole(value: string): value is AgentRole {
   return (AGENT_ROLES as readonly string[]).includes(value);
 }
 
-/** What a new key of this role is ticked with; Kyle may change any of it. */
+/**
+ * What a new key of this role is ticked with; Kyle may change any of it. W2 (Kyle 2026-11-23) set the HUB part
+ * (hub:read, hub:draft, team:read, team:reply) for every role; each role keeps the non-hub scopes it already had.
+ * The 2026-11-23 data migration (prisma/migrations/20261123120000_w2_agent_chat) brings the live keys to the same table.
+ */
 export const DEFAULT_SCOPES_BY_ROLE: Record<AgentRole, readonly AgentScope[]> = {
   admin: [
     "crm:read", "hub:read", "inventory:read", "leads:write", "notes:write", "estimate:draft",
-    "schedule:propose", "estimate:propose_accept", "hub:draft", "team:reply", "dev:ticket",
+    "schedule:propose", "estimate:propose_accept", "hub:draft", "team:read", "team:reply", "dev:ticket",
   ],
-  inventory: ["inventory:read", "hub:read", "inventory:usage", "pricebook:propose"],
-  outreach: ["outreach:read", "hub:draft", "leads:draft", "reviews:confirm"],
-  research: ["reports:read"],
+  inventory: ["inventory:read", "inventory:usage", "pricebook:propose", "team:read", "team:reply"],
+  outreach: ["outreach:read", "hub:read", "hub:draft", "leads:draft", "reviews:confirm", "team:read", "team:reply"],
+  research: ["team:read", "team:reply", "reports:read"],
+  cfo: ["team:read", "team:reply", "finance:read"],
   // Team answer 15a: the Facebook agent reads originals and uploads a separate edited copy.
-  facebook: ["marketing:read", "media:marketing:read", "media:original:read", "campaign:draft", "media:edit:upload"],
-  // Team answer 16a: Scout reaches hub threads, but only training ones (hubThreadKinds below).
+  facebook: [
+    "marketing:read", "media:marketing:read", "media:original:read", "campaign:draft", "media:edit:upload", "team:read", "team:reply",
+  ],
+  // W2: Scout reads and posts in the Team chats like the rest; its training scopes stay (it is no longer limited to training threads).
   scout: [
     "marketing:read", "media:marketing:read", "leads:dupcheck", "leads:draft", "training:read",
-    "training:write", "hub:read", "hub:draft",
+    "training:write", "team:read", "team:reply",
   ],
-  nec_coach: ["hub:read"],
-  // Work order default D29: Claude Code's own revocable key, dev threads only.
-  claude_code: ["dev:read", "dev:write"],
+  nec_coach: ["team:read", "team:reply"],
+  // W2: Claude Code keeps its dev scopes and also joins the Team chats (it is no longer limited to dev threads).
+  claude_code: ["dev:read", "dev:write", "team:read", "team:reply"],
   other: [],
 };
 
-/** Hub thread kinds a new key of this role is limited to. Empty means no limit (team answer 16a). */
+/** Hub thread kinds a new key of this role is limited to. Empty means no limit (W2: Scout and Claude Code lost their limits). */
 export const DEFAULT_HUB_THREAD_KINDS_BY_ROLE: Record<AgentRole, readonly string[]> = {
   admin: [],
   inventory: [],
   outreach: [],
   research: [],
+  cfo: [],
   facebook: [],
-  scout: ["training"],
+  scout: [],
   nec_coach: [],
-  claude_code: ["dev"],
+  claude_code: [],
   other: [],
 };
 
@@ -125,14 +137,51 @@ export const HUB_KIND_SCOPES: Record<HubThreadKind, { read: readonly AgentScope[
   customer: { read: ["hub:read"], post: ["hub:draft"] },
   // W1b: a job thread is the CREW chat. For an agent a post there is an in-app crew post (the same scope as a Team post,
   // team:reply), never a draft to the homeowner: a customer message goes in the customer's own conversation (customer or job link).
-  job: { read: ["hub:read"], post: ["team:reply"] },
-  team: { read: ["team:reply"], post: ["team:reply"] },
+  // W2: it is read with the Team scopes, or hub:read (which opened it before, so no live key loses the crew chat).
+  job: { read: ["team:read", "team:reply", "hub:read"], post: ["team:reply"] },
+  team: { read: ["team:read", "team:reply"], post: ["team:reply"] },
   dev: { read: ["dev:read"], post: [] },
   training: { read: ["training:read", "training:write"], post: ["training:write"] },
-  // C7: the same scope as a Team post. The scope is only half the rule: the key must also be a MEMBER of the group
+  // C7: the same scopes as a Team chat. The scope is only half the rule: the key must also be a MEMBER of the group
   // (visibleThreadWhere for the hub, hubDoor.threadFor for the door), and a group the key is not in answers as not found.
-  group: { read: ["team:reply"], post: ["team:reply"] },
+  group: { read: ["team:read", "team:reply"], post: ["team:reply"] },
 };
+
+/**
+ * Every scope that opens a hub route for an agent key, DERIVED from the table above (W2): the scopes that open at least one
+ * kind to READ (the two GET routes) or to POST (POST /hub/messages). The gate checks "any of these", then the door checks the
+ * thread's own kind. Derived, never typed twice.
+ */
+export function hubRouteScopes(access: "read" | "post"): AgentScope[] {
+  const out: AgentScope[] = [];
+  for (const kind of HUB_THREAD_KIND_KEYS) for (const s of HUB_KIND_SCOPES[kind][access]) if (!out.includes(s)) out.push(s);
+  return out;
+}
+
+/** The four scopes the card shows under "Messages", with the words Kyle used for them (2026-11-23). Used by the card AND by every scope error. */
+export const AGENT_MESSAGE_SCOPE_LABELS = {
+  "team:read": "Read team",
+  "team:reply": "Post team",
+  "hub:read": "Read customer",
+  "hub:draft": "Draft customer",
+} as const;
+
+/** A scope as Settings -> Agent keys names it: "Read team (team:read)", or the bare scope string when it has no card label. */
+export function agentScopeLabel(scope: string): string {
+  const label = (AGENT_MESSAGE_SCOPE_LABELS as Record<string, string>)[scope];
+  return label ? `${label} (${scope})` : scope;
+}
+
+/**
+ * "Read team (team:read), Post team (team:reply) or Read customer (hub:read)" for a list of scopes that each open the thing:
+ * the four Messages scopes by their card names and in the card's order, then any other scope as its plain string.
+ */
+export function agentScopeChoiceText(scopes: readonly string[]): string {
+  const labelled = (Object.keys(AGENT_MESSAGE_SCOPE_LABELS) as string[]).filter((s) => scopes.includes(s));
+  const items = [...labelled, ...scopes.filter((s) => !labelled.includes(s))].map(agentScopeLabel);
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}`;
+}
 
 export type HubKindAccess = "read" | "post" | "any";
 
@@ -154,21 +203,25 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   inventory: "Inventory Manager",
   outreach: "Outreach",
   research: "Research",
+  cfo: "CFO",
   facebook: "Facebook",
   scout: "Scout",
   nec_coach: "NEC Coach",
-  claude_code: "Claude Code (dev threads only)",
+  claude_code: "Claude Code (Coding)",
   other: "Other (no scopes ticked)",
 };
 
 /** How the card groups the scope checkboxes. Every scope must be in exactly one group (the type enforces it). */
-export type AgentScopeGroup = "read" | "draft" | "write";
+export type AgentScopeGroup = "messages" | "read" | "draft" | "write";
 export const AGENT_SCOPE_GROUP: Record<AgentScope, AgentScopeGroup> = {
-  "crm:read": "read", "hub:read": "read", "inventory:read": "read", "outreach:read": "read", "reports:read": "read",
+  // W2: the four Messages scopes are their own group (Read team, Post team, Read customer, Draft customer).
+  "team:read": "messages", "team:reply": "messages", "hub:read": "messages", "hub:draft": "messages",
+  "finance:read": "read",
+  "crm:read": "read", "inventory:read": "read", "outreach:read": "read", "reports:read": "read",
   "marketing:read": "read", "training:read": "read", "media:marketing:read": "read", "media:original:read": "read",
   "dev:read": "read", "leads:dupcheck": "read",
-  "hub:draft": "draft", "campaign:draft": "draft", "leads:draft": "draft", "estimate:draft": "draft",
+  "campaign:draft": "draft", "leads:draft": "draft", "estimate:draft": "draft",
   "schedule:propose": "draft", "estimate:propose_accept": "draft", "pricebook:propose": "draft", "inventory:usage": "draft",
-  "leads:write": "write", "notes:write": "write", "team:reply": "write", "dev:ticket": "write", "dev:write": "write",
+  "leads:write": "write", "notes:write": "write", "dev:ticket": "write", "dev:write": "write",
   "reviews:confirm": "write", "training:write": "write", "media:edit:upload": "write",
 };

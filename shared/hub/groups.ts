@@ -16,7 +16,7 @@ export const GROUP_CLOSED_POST_REASON = "This group is closed. Reopen it to post
 
 /** Why an AI agent cannot be put in a group, or is dead weight in one: its key could not see or post there. One rule (hubKindsFor). */
 export const GROUP_AGENT_CANNOT_REASON =
-  "This agent's key has no Team replies scope (team:reply), or its thread kinds leave out Group chats, so it could not see or post in a group. Change the key on Settings \u2192 Agent keys.";
+  "This agent's key has neither Read team (team:read) nor Post team (team:reply), or its thread kinds leave out Group chats, so it could not see or post in a group. Change the key on Settings \u2192 Agent keys.";
 
 /** Why an approval is greyed when its draft was left in a group that is closed. */
 export const GROUP_DRAFT_CLOSED_REASON = "This draft is in a closed group. Reopen the group to approve it, or Reject it.";

@@ -2656,6 +2656,8 @@ export type AgentKeyView = {
   scopes: string[];
   hubThreadKinds: string[];
   writesEnabled: boolean;
+  /** W2: "Team posts publish immediately" (default on). */
+  teamPostsPublish: boolean;
   /** Chicago ISO times. */
   expiresAt: string | null;
   retiresAt: string | null;
@@ -2692,8 +2694,21 @@ export type AgentKeyPatchInput = {
   scopes?: string[];
   hubThreadKinds?: string[];
   writesEnabled?: boolean;
+  teamPostsPublish?: boolean;
   expiresAt?: string | null;
 };
+
+/** One line of a key's Activity (W2): who, when, what, and how it ended. Never a body or a message. Chicago ISO time. */
+export type AgentActivityRow = {
+  id: string;
+  at: string;
+  keyName: string;
+  action: string | null;
+  endpoint: string | null;
+  resultCode: string | null;
+  status: number | null;
+};
+export type AgentKeyActivity = { keyId: string; keyName: string; activity: AgentActivityRow[] };
 
 /**
  * Settings -> "Agent events" (work order agent-team, BA5): one signed event the CRM sent, or kept, for
@@ -2755,7 +2770,7 @@ export type HubPushKey = {
 
 /** Settings -> "Agent webhooks" (TC4), the owner setting `agentWebhooks`. `routes` holds only the types Kyle re-pointed. */
 export type AgentWebhookTargetView = {
-  id: "admin" | "inventory";
+  id: import("../../../shared/hub/events").HubWebhookTargetId;
   url: string | null;
   enabled: boolean;
   /** Custom headers: the name and "••••" + last four. The value is never sent back (work order C6b). */
@@ -2767,14 +2782,14 @@ export type AgentWebhookTargetView = {
 };
 export type AgentWebhooksValue = {
   targets: AgentWebhookTargetView[];
-  routes: Record<string, "admin" | "inventory">;
+  routes: Record<string, import("../../../shared/hub/events").HubWebhookTargetId>;
 };
 /** GET and PUT /owner-settings/agentWebhooks: the masked value and whether secrets can be stored (AGENT_KEY_PEPPER set). */
 export type AgentWebhooksResponse = { key: "agentWebhooks"; value: AgentWebhooksValue; status?: { pepperSet: boolean } };
 /** What the screen sends: a header with a value is new or re-entered, one without a value is kept as stored; no `headers` keeps them all. */
 export type AgentWebhooksSave = {
-  targets: Array<{ id: "admin" | "inventory"; url: string | null; enabled: boolean; headers?: Array<{ name: string; value?: string }> }>;
-  routes: Record<string, "admin" | "inventory">;
+  targets: Array<{ id: import("../../../shared/hub/events").HubWebhookTargetId; url: string | null; enabled: boolean; headers?: Array<{ name: string; value?: string }> }>;
+  routes: Record<string, import("../../../shared/hub/events").HubWebhookTargetId>;
 };
 /** POST /hub/webhooks/:target/test: the logged test.ping and how the receiver answered. */
 export type WebhookTestResult = { event: HubEventView; statusCode: number | null; ms: number | null; error: string | null };

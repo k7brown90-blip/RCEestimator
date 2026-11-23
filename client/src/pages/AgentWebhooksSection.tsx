@@ -1,11 +1,19 @@
 /**
- * Settings -> "Agent webhooks" (work order agent-team, TC4; work order C6b; Kyle only). Where the signed
- * agent events are sent and how: the receiving address and On/Off for each agent that listens (Admin and
- * Inventory), each agent's custom headers, its signing secret, a test button and its delivery log, plus a
- * table saying which agent gets which event type.
+ * Settings -> "Agent webhooks" (work order agent-team, TC4; work order C6b; W2-C; Kyle only). Where the signed
+ * agent events are sent and how: the receiving address and On/Off for each agent that listens (Admin, Inventory,
+ * Facebook, Outreach, Scout, Research, CFO and NEC Coach - eight blocks), each agent's custom headers, its signing
+ * secret, a test button and its delivery log, plus a table saying which agent gets which routed event type.
+ * Claude Code has no block: it is woken by the GitHub dispatch, not a webhook.
  *
  * Click path from the Dashboard: left nav "Settings" -> scroll to "Agent webhooks", under "Agent events"
- * (two clicks). Every control below sits on that agent's own block.
+ * (two clicks). Every control below sits on that agent's own block. Each block's header says the agent and one
+ * line of status ("Not set up", "On — signed", "Off", "Address set, no signing secret — nothing is sent"); a block
+ * that is not set up starts folded behind a "Set up" button (a folded block shows "Show settings", an open one
+ * "Hide settings"), and a locked session sees every block open with its controls greyed and the reason printed.
+ *
+ * Which agent hears a Team, group or crew-chat message is NOT set here (W2, Kyle 2026-11-23): every agent whose key
+ * can read that conversation gets each new message, with its full text, its @mentions and whether it is expected to
+ * answer, so the "Which agent gets which event" table leaves message.team out. @Mentions say who should answer.
  *
  *   * Address: "Edit address", "Turn off" / "Turn on" and "Remove address" (the exit: the row stays, the
  *     address goes, and events are kept until a new one is set).
@@ -36,8 +44,8 @@ import { useIsKyle, useSession, useSessionFailed } from "../lib/session";
 import type { AgentWebhooksSave, AgentWebhooksValue, AgentWebhookTargetView } from "../lib/types";
 import { AgentEventsTable, WEBHOOK_LOG_ROWS } from "./AgentEventsSection";
 import {
-  DEFAULT_EVENT_ROUTES, HUB_EVENT_LABELS, HUB_EVENT_TYPES, HUB_WEBHOOK_TARGET_IDS, HUB_WEBHOOK_TARGET_LABELS,
-  type HubEventType, type HubWebhookTargetId,
+  DEFAULT_EVENT_ROUTES, HUB_EVENT_LABELS, HUB_EVENT_TYPES, HUB_WEBHOOK_TARGET_IDS, HUB_WEBHOOK_TARGET_LABELS, WEBHOOK_VERIFY_RECIPE,
+  isFanOutEventType, type HubEventType, type HubWebhookTargetId,
 } from "../../../shared/hub/events";
 import {
   WEBHOOK_HEADERS_MAX, webhookHeaderNameProblem, webhookHeaderValueProblem,
@@ -53,6 +61,11 @@ export const ENV_SECRET_TEXT = "Using HUB_WEBHOOK_SECRET from Railway";
 export const NO_SECRET_TEXT = "No signing secret — events are kept, not sent";
 export const REGENERATE_CONFIRM = "Regenerate the signing secret? The agents' receiver will reject events until it has the new one.";
 export const HEADERS_FULL_REASON = `At most ${WEBHOOK_HEADERS_MAX} custom headers per agent — remove one first.`;
+export const STATUS_NOT_SET_UP = "Not set up";
+export const STATUS_ON_SIGNED = "On — signed";
+export const STATUS_OFF = "Off";
+export const STATUS_NO_SECRET = "Address set, no signing secret — nothing is sent";
+export const TEAM_FAN_OUT_NOTE = "Every agent whose key can read a Team, group or crew chat gets each new message there, with its text. @Mentions say who should answer (with no mention, Admin answers). Customer messages and the other events below go to the agent named in the table.";
 
 const EMPTY: AgentWebhooksValue = {
   targets: HUB_WEBHOOK_TARGET_IDS.map((id) => ({ id, url: null, enabled: true })),
@@ -90,13 +103,17 @@ export function AgentWebhooksSection() {
   const [headerForm, setHeaderForm] = useState<{ id: HubWebhookTargetId; kind: "add" | "edit"; name: string; value: string } | null>(null);
   const [headerError, setHeaderError] = useState<string | null>(null);
   const [tests, setTests] = useState<Partial<Record<HubWebhookTargetId, TestState>>>({});
+  /** A block the person folded or opened by hand; until they do, a block that is not set up is folded. */
+  const [openBy, setOpenBy] = useState<Partial<Record<HubWebhookTargetId, boolean>>>({});
 
   const targetOf = (id: HubWebhookTargetId): AgentWebhookTargetView => value.targets.find((t) => t.id === id) ?? { id, url: null, enabled: true };
   const headersOf = (id: HubWebhookTargetId) => targetOf(id).headers ?? [];
   const unknownReason: string | null = !allowed ? WEBHOOKS_LOCK_REASON : known ? null : loadFailed ? "Agent webhooks could not be loaded." : "Loading…";
 
   /** What the screen sends: each agent's address and On/Off, never a header unless this save changes the headers. */
-  const toSave = (patch: Partial<Record<HubWebhookTargetId, { url?: string | null; enabled?: boolean; headers?: Array<{ name: string; value?: string }> }>> = {}, routes = value.routes): AgentWebhooksSave => ({
+  // A stored route for a fan-out type (message.team) is not shown and not sent back: the next save drops it.
+  const routedOnly = (r: AgentWebhooksValue["routes"]): AgentWebhooksValue["routes"] => Object.fromEntries(Object.entries(r).filter(([type]) => !isFanOutEventType(type)));
+  const toSave = (patch: Partial<Record<HubWebhookTargetId, { url?: string | null; enabled?: boolean; headers?: Array<{ name: string; value?: string }> }>> = {}, routes = routedOnly(value.routes)): AgentWebhooksSave => ({
     targets: HUB_WEBHOOK_TARGET_IDS.map((id) => {
       const t = targetOf(id);
       const p = patch[id] ?? {};
@@ -129,7 +146,7 @@ export function AgentWebhooksSection() {
   }
 
   async function setRoute(type: HubEventType, target: HubWebhookTargetId) {
-    const routes = { ...value.routes };
+    const routes = { ...routedOnly(value.routes) };
     if (target === DEFAULT_EVENT_ROUTES[type]) delete routes[type];
     else routes[type] = target;
     await save(toSave({}, routes), `${type} now goes to ${HUB_WEBHOOK_TARGET_LABELS[target]}.`);
@@ -218,10 +235,15 @@ export function AgentWebhooksSection() {
       <h2 className="text-lg font-semibold">Agent webhooks</h2>
       <p className="mt-1 text-sm text-rce-muted">
         Where the signed agent events are sent. Each agent that listens has its own receiving address, its own signing secret and optional custom
-        headers. Admin signs with HUB_WEBHOOK_SECRET from Railway until it has a secret of its own; Inventory has none until you generate one. With no
-        address an event is kept in Agent events and the agent polls instead. Admin uses
-        HUB_AGENT_WEBHOOK_URL from Railway when no address is saved here.
+        headers. Admin signs with HUB_WEBHOOK_SECRET from Railway until it has a secret of its own; every other agent has none until you generate
+        one. With no address an event is kept in Agent events and the agent polls instead. Admin uses
+        HUB_AGENT_WEBHOOK_URL from Railway when no address is saved here. Claude Code has no webhook: it is woken another way.
       </p>
+      <p className="mt-2 text-sm text-rce-muted" data-testid="agent-webhooks-fan-out-note">{TEAM_FAN_OUT_NOTE}</p>
+      <details className="mt-2 text-xs text-rce-muted" data-testid="agent-webhooks-recipe">
+        <summary className="cursor-pointer font-semibold">How a receiver checks an event</summary>
+        <p className="mt-1">{WEBHOOK_VERIFY_RECIPE}</p>
+      </details>
 
       {!allowed && (
         <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="agent-webhooks-locked">
@@ -231,6 +253,11 @@ export function AgentWebhooksSection() {
       {allowed && known && !pepperSet && (
         <p className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="agent-webhooks-no-pepper">
           {PEPPER_UNSET_REASON} Custom headers and signing secrets are stored encrypted, so they cannot be added until it is set.
+        </p>
+      )}
+      {allowed && loadFailed && !known && (
+        <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" data-testid="agent-webhooks-load-failed">
+          Agent webhooks could not be loaded.
         </p>
       )}
       {notice && <p className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-900">{notice}</p>}
@@ -262,19 +289,38 @@ export function AgentWebhooksSection() {
               : null);
           const once = shown[id];
           const form = headerForm?.id === id ? headerForm : null;
+          // One line of status for the block's header (never a secret or an address).
+          const status = !t.enabled ? STATUS_OFF : !hasAddress ? STATUS_NOT_SET_UP : secretSource === "none" ? STATUS_NO_SECRET : STATUS_ON_SIGNED;
+          // A locked session sees every block open (greyed controls, never hidden); otherwise a block that is not set up starts folded.
+          // Also open while the setting is unknown (loading or failed to load): every control shows greyed with its reason, never hidden.
+          const defaultOpen = !allowed || !known ? true : status !== STATUS_NOT_SET_UP;
+          const isOpen = openBy[id] ?? defaultOpen;
           return (
             <div key={id} className="rounded-md border border-rce-border p-3" data-testid={`webhook-target-${id}`}>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold">{label}</span>
-                <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${t.enabled ? "bg-green-100 text-green-900" : "bg-gray-200 text-gray-800"}`}>
-                  {t.enabled ? "On" : "Off"}
+                <span
+                  className={`rounded px-1.5 py-0.5 text-xs font-semibold ${status === STATUS_ON_SIGNED ? "bg-green-100 text-green-900" : status === STATUS_NO_SECRET ? "bg-amber-100 text-amber-900" : "bg-gray-200 text-gray-800"}`}
+                  data-testid={`webhook-status-${id}`}
+                >
+                  {!allowed || !known ? "" : status}
                 </span>
-                {!isEditing && (
+                {!isEditing && isOpen && (
                   <span className="mono break-all text-xs" data-testid={`webhook-address-${id}`}>
                     {!allowed || !known ? "" : addressText}
                   </span>
                 )}
+                {allowed && known && (
+                  <button
+                    type="button" className="btn btn-secondary ml-auto" aria-expanded={isOpen} aria-label={`${isOpen ? "Hide" : status === STATUS_NOT_SET_UP ? "Set up" : "Show"} ${label} settings`}
+                    onClick={() => setOpenBy((o) => ({ ...o, [id]: !isOpen }))}
+                  >
+                    {isOpen ? "Hide settings" : status === STATUS_NOT_SET_UP ? "Set up" : "Show settings"}
+                  </button>
+                )}
               </div>
+
+              {isOpen && (<>
 
               {isEditing ? (
                 <form
@@ -486,12 +532,14 @@ export function AgentWebhooksSection() {
                   emptyText={`No events sent to ${label} yet.`}
                 />
               </div>
+              </>)}
             </div>
           );
         })}
       </div>
 
       <h3 className="mt-5 text-sm font-semibold">Which agent gets which event</h3>
+      <p className="mt-1 text-xs text-rce-muted">Team, group and crew-chat messages are not listed: they go to every agent that can read the conversation.</p>
       <div className="mt-2 overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
@@ -500,7 +548,7 @@ export function AgentWebhooksSection() {
             </tr>
           </thead>
           <tbody>
-            {HUB_EVENT_TYPES.map((type) => {
+            {HUB_EVENT_TYPES.filter((type) => !isFanOutEventType(type)).map((type) => {
               const target = value.routes[type] ?? DEFAULT_EVENT_ROUTES[type];
               return (
                 <tr key={type} className="border-b border-rce-border">

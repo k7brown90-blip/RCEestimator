@@ -19,8 +19,8 @@
  *     counting the group at once), and Delete group only while nothing has been said in it;
  *   * REACH: an agent key that could never see or post in a group (no team:reply, or a thread-kinds list that leaves group
  *     out) is greyed in the picker with the reason, refused on create and on add, and flagged in the Members panel when its
- *     scopes change later; AGENT WAKE-UP: a person's post in a group sends message.team only when the routed agent (Admin) is
- *     a member; APPROVALS: a draft in a closed group, or by an agent that has left, cannot be approved and its card says why;
+ *     scopes change later; AGENT WAKE-UP (W2-C: every member agent whose key can read the group, one event per role; no agent in it, or an agent outside it, sends nothing) - a person's post in a group sends message.team to each such agent;
+ *     APPROVALS: a draft in a closed group, or by an agent that has left, cannot be approved and its card says why;
  *   * the marketing-text block reads "Red Cedar never sends marketing by text".
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -445,9 +445,21 @@ describe("the exits: rename, close and reopen, add and remove a member, delete a
 });
 
 describe("the agent door: a key sees and posts only in the groups it is a member of", () => {
-  it("a member key lists the group, reads it and leaves a pending_approval in_app draft (the Team rule), scrubbed; the human's name is a first name", async () => {
+  // W2 (Kyle 2026-11-23): a key's post in a group is published by its own "Team posts publish immediately" box (default ON). The tests that are about a
+  // post WAITING for a person mint the key with the box off, which is the case they were written for.
+  it("a member key with its Team posts box ON posts at once in the group, and the technician sees it", async () => {
     const eric = await makeTech("Eric");
     const bot = await mint();
+    const id = await groupOf(await pinToken(), `${TAG} Crew`, { technicianIds: [eric.id], agentKeyIds: [bot.id] });
+    const res = await request(app).post("/api/hub/messages").set(bearer(bot.key)).send({ thread_id: id, body: "Parts are in.", idempotency_key: `idem-${randomUUID()}` });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ threadId: id, status: "posted", channel: "in_app" });
+    expect(JSON.stringify((await fieldGet(eric.accessToken, `/hub/threads/${id}/messages`)).body)).toContain("Parts are in.");
+  });
+
+  it("a member key (Team posts box off) lists the group, reads it and leaves a pending_approval in_app draft (the Team rule), scrubbed; the human's name is a first name", async () => {
+    const eric = await makeTech("Eric");
+    const bot = await mint({ teamPostsPublish: false });
     const pin = await pinToken();
     const id = await groupOf(pin, `${TAG} Crew 615-555-0142`, { technicianIds: [eric.id], agentKeyIds: [bot.id] });
     expect((await fieldPost(eric.accessToken, `/hub/threads/${id}/messages`, { body: "Call me on 615-555-0142" })).status).toBe(201);
@@ -520,7 +532,7 @@ describe("the agent door: a key sees and posts only in the groups it is a member
     const removed = await request(app).delete(`/hub/groups/${id}/members`).set(bearer(pin)).send({ agentKeyId: bot.id });
     expect(removed.status).toBe(200);
     expect((await request(app).get(`/api/hub/threads/${id}/messages`).set(bearer(bot.key))).status).toBe(404);
-    expect(HUB_KIND_SCOPES.group).toEqual({ read: ["team:reply"], post: ["team:reply"] });
+    expect(HUB_KIND_SCOPES.group).toEqual({ read: ["team:read", "team:reply"], post: ["team:reply"] });
     // W1b: a job thread is the crew chat; an agent posts there with team:reply (an in-app crew post), not hub:draft (a message to the customer).
     expect(hubKindsFor(["team:reply"], "post")).toEqual(["job", "team", "group"]);
     expect(hubKindsFor(["hub:draft"], "post")).toEqual(["customer"]);
@@ -528,7 +540,7 @@ describe("the agent door: a key sees and posts only in the groups it is a member
 
   it("an agent's pending post is approved by the approver and lands in the group; a draft in a CLOSED group cannot be approved (and nothing reopens it)", async () => {
     const eric = await makeTech("Eric");
-    const bot = await mint();
+    const bot = await mint({ teamPostsPublish: false });
     const pin = await pinToken();
     const id = await groupOf(pin, `${TAG} Crew`, { technicianIds: [eric.id], agentKeyIds: [bot.id] });
     const send = (text: string) => request(app).post("/api/hub/messages").set(bearer(bot.key)).send({ thread_id: id, body: text, idempotency_key: `idem-${randomUUID()}` });
@@ -569,7 +581,7 @@ describe("the agent door: a key sees and posts only in the groups it is a member
 
   it("a draft whose agent was taken out of the group cannot be approved or edit-approved, its card says why, and Reject clears it", async () => {
     const eric = await makeTech("Eric");
-    const bot = await mint();
+    const bot = await mint({ teamPostsPublish: false });
     const pin = await pinToken();
     const id = await groupOf(pin, `${TAG} Crew`, { technicianIds: [eric.id], agentKeyIds: [bot.id] });
     const draft = await request(app).post("/api/hub/messages").set(bearer(bot.key)).send({ thread_id: id, body: "Parts are in.", idempotency_key: `idem-${randomUUID()}` });
@@ -675,18 +687,25 @@ describe("a person's post in a group wakes the routed agent only when that agent
     expect(await eventCount(id, 1)).toBe(1);
     const row = (await teamEventsFor(id))[0];
     const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
-    expect(payload).toMatchObject({ type: "message.team", thread_id: id, author_type: "tech" });
+    // W2-C (Kyle 2026-11-23 item 4): the event now carries the author's first name and the text (the old "ids only" rule is superseded for message.team).
+    expect(payload).toMatchObject({ type: "message.team", thread_id: id, thread_kind: "group", author_type: "person", author_kind: "tech", text: "Panel is set.", reply_expected: true });
     expect(payload.context).toMatchObject({ kind: "group", id });
-    // Ids only: the words are never in the event.
-    expect(row.payloadJson).not.toContain("Panel is set.");
+    expect(payload.summary).toBe("New team message");
+    expect(row.target).toBe("admin");
   });
 
-  it("a group with no Admin member sends nothing - not even when another agent is in it", async () => {
+  // W2-C: the wake-up is no longer "the routed agent (Admin) only if it is a member". EVERY member agent whose key can read the group hears it
+  // (one event per role); a group no agent is in still sends nothing, and an agent outside the group never hears of it.
+  it("a group's wake-up goes to every member agent that can read it, in its own role's row, and to no agent outside the group", async () => {
     const eric = await makeTech("Eric");
     const inv = await mint({ agentRole: "inventory", scopes: ["team:reply"] });
+    const outsider = await mint({ agentRole: "admin" });
     const id = await groupOf(await pinToken(), `${TAG} Crew`, { technicianIds: [eric.id], agentKeyIds: [inv.id] });
     expect((await fieldPost(eric.accessToken, `/hub/threads/${id}/messages`, { body: "Hello" })).status).toBe(201);
-    expect(await settledCount(id)).toBe(0);
+    expect(await eventCount(id, 1)).toBe(1);
+    const rows = await teamEventsFor(id);
+    expect(rows.map((r) => r.target)).toEqual(["inventory"]); // not Admin: Admin's key is not a member
+    void outsider;
     // And a group with no agents at all.
     const plain = await groupOf(await pinToken(), `${TAG} Plain`, { technicianIds: [eric.id] });
     expect((await fieldPost(eric.accessToken, `/hub/threads/${plain}/messages`, { body: "Hello" })).status).toBe(201);

@@ -39,6 +39,21 @@ export function isAgentKeyShaped(token: string | undefined | null): boolean {
   return typeof token === "string" && AGENT_KEY_PREFIX.test(token);
 }
 
+/**
+ * An agent key that can still be used: not revoked, not expired, not retired. The ONE definition (W2-C): the Agent keys picker for a
+ * group, the group-member check and the webhook fan-out's "every key that can read this thread" all read it, so a key a person can
+ * no longer use is never offered, added or woken.
+ */
+export function activeKeyWhere(now: Date): Prisma.AgentKeyWhereInput {
+  return {
+    revokedAt: null,
+    AND: [
+      { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+      { OR: [{ retiresAt: null }, { retiresAt: { gt: now } }] },
+    ],
+  };
+}
+
 /** The label this deployment mints and accepts: "live" on Railway production, "test" everywhere else. */
 export function currentAgentEnvironment(): AgentKeyEnvironment {
   return process.env.RAILWAY_ENVIRONMENT_NAME === "production" ? "live" : "test";
@@ -66,6 +81,8 @@ export interface MintAgentKeyInput {
   /** Defaults to the role's default thread kinds. Empty means no limit. */
   hubThreadKinds?: readonly string[];
   writesEnabled?: boolean;
+  /** W2: the "Team posts publish immediately" box. Defaults to ON (Kyle, 2026-11-23); a rotation copies the old key's. */
+  teamPostsPublish?: boolean;
   expiresAt?: Date | null;
   retiresAt?: Date | null;
   rotatedFromId?: string | null;
@@ -115,6 +132,7 @@ export async function mintAgentKey(
       secretHash: hashAgentKey(key),
       scopes,
       writesEnabled: input.writesEnabled ?? false,
+      teamPostsPublish: input.teamPostsPublish ?? true,
       hubThreadKinds: [...(input.hubThreadKinds ?? DEFAULT_HUB_THREAD_KINDS_BY_ROLE[input.agentRole])],
       expiresAt: input.expiresAt ?? null,
       retiresAt: input.retiresAt ?? null,

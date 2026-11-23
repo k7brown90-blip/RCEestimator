@@ -71,7 +71,8 @@ describe("AgentEventsSection for Kyle", () => {
   it("shows the no-address banner with its exact words, and the no-secret banner, only when they apply", async () => {
     show([], { ...CONFIG, urlSet: false, secretSet: false });
     expect((await screen.findByTestId("agent-events-no-url")).textContent).toBe(NO_URL_BANNER);
-    expect(NO_URL_BANNER).toBe("No receiving address is set. Add the agents' address in the Agent webhooks card below. Events are being kept — press Resend once it is set.");
+    // W2-C: Admin is no longer the target of nearly everything (a Team message goes to every agent that can read it), so the banner is about Admin's own events.
+    expect(NO_URL_BANNER).toBe("Admin has no receiving address, so its events (customer messages, leads, estimates, payments, jobs) are being kept. Add Admin's address in the Agent webhooks card below, then press Resend. Team messages go to every agent that has its own address.");
     expect(screen.getByTestId("agent-events-no-secret").textContent).toBe(NO_SECRET_BANNER);
     expect(NO_SECRET_BANNER).toBe("Admin has no signing secret — nothing is sent until it does. Generate one in the Agent webhooks card below, or set HUB_WEBHOOK_SECRET in Railway.");
   });
@@ -178,7 +179,7 @@ describe("AgentEventsSection per-agent filter and test events (work order C6b)",
     const { list } = show([ev()]);
     await screen.findByText(/Estimate 2026-1042/);
     const agent = screen.getByLabelText("Agent") as HTMLSelectElement;
-    expect([...agent.options].map((o) => o.value)).toEqual(["", "admin", "inventory"]);
+    expect([...agent.options].map((o) => o.value)).toEqual(["", "admin", "inventory", "facebook", "outreach", "scout", "research", "cfo", "nec_coach"]);
     fireEvent.change(agent, { target: { value: "inventory" } });
     await waitFor(() => expect(list).toHaveBeenLastCalledWith({ status: "all", type: "", target: "inventory" }));
     fireEvent.change(agent, { target: { value: "" } });

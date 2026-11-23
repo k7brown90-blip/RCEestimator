@@ -37,7 +37,7 @@
  */
 
 import { twilioInboundEnabled } from "../services/automationGate";
-import type { AgentScope } from "../../shared/agentScopes";
+import { hubRouteScopes, type AgentScope } from "../../shared/agentScopes";
 
 /** HTTP methods an entry covers. `"*"` means every method. */
 type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE" | "*";
@@ -302,15 +302,18 @@ export function isPublicRoute(method: string, path: string): boolean {
 // routes is not an agent key. Each entry names the ONE scope that opens it (or "any" where the door
 // checks scopes per tool, as /mcp will), reusing `entryCovers` so the path rules are the allowlist's.
 //
-// The list is short on purpose. REST /api/hub/* (K-U7) is the three entries below, mounted in the SAME
+// The list is short on purpose. REST /api/hub/* (K-U7) is the first three entries below, mounted in the SAME
 // router the CRM screens use (routes/hub.ts) - there is no separate bot router. The thread read is
-// GET /hub/threads/:id/messages (the path the team's contract names); GET /hub/threads/:id stays the CRM's. /mcp arrives with Step 2 and
-// adds its own entry here, in the diff that adds the route. NEVER list an approve, edit-approve, reject,
+// GET /hub/threads/:id/messages (the path the team's contract names); GET /hub/threads/:id stays the CRM's. The fourth entry is /mcp (W2-B). NEVER list an approve, edit-approve, reject,
 // send or audit route: an agent key that reaches one is refused by the session gate with a 401.
 
 export interface AgentKeyRoute extends Pick<PublicRoute, "methods" | "path" | "prefix"> {
-  /** The scope a key must hold, or "any" when the door checks scopes itself, tool by tool. */
-  scope: AgentScope | "any";
+  /**
+   * The scope a key must hold; a LIST means any ONE of them opens the route (W2: the hub routes take every scope that opens
+   * some kind of thread, HUB_KIND_SCOPES, and the door then checks the thread's own kind); "any" where the door checks scopes
+   * itself, tool by tool.
+   */
+  scope: AgentScope | readonly AgentScope[] | "any";
   /** A write: refused while the kill switch is read_only and for a key with writes off. */
   write?: boolean;
   /** Makes a draft: a write that also counts toward the key's 500 a day. */
@@ -328,16 +331,27 @@ export interface AgentKeyRoute extends Pick<PublicRoute, "methods" | "path" | "p
 
 export const AGENT_KEY_ROUTES: AgentKeyRoute[] = [
   {
-    methods: ["GET"], path: "/hub/threads", scope: "hub:read", tool: "hub.threads.list",
+    methods: ["GET"], path: "/hub/threads", scope: hubRouteScopes("read"), tool: "hub.threads.list",
     reason: "K-U7: an agent lists the Messages threads its key may read (its scopes and hubThreadKinds limit the kinds; no search); the answer is the every-key message profile.",
   },
   {
-    methods: ["GET"], path: "/hub/threads/:id/messages", scope: "hub:read", tool: "hub.threads.get",
+    methods: ["GET"], path: "/hub/threads/:id/messages", scope: hubRouteScopes("read"), tool: "hub.threads.get",
     reason: "K-U7: an agent reads one thread and its messages (403 on a kind its scopes or hubThreadKinds do not open); no phone, email, street address, toAddress or cc.",
   },
   {
-    methods: ["POST"], path: "/hub/messages", scope: "hub:draft", draft: true, tool: "hub.messages.draft",
-    reason: "K-U7: an agent leaves a DRAFT (draft or pending_approval, never approved or sent); it reaches no customer until a person approves it.",
+    // W2: any scope that opens a thread kind to post in (hub:draft, team:reply, training:write). A customer DRAFT counts toward the
+    // 500 a day (the door reserves a slot and records madeDraft only for those, so the route itself is a plain write); a Team, group or
+    // crew post does not count. Both need the key's writes switch and a kill switch that is not read_only.
+    methods: ["POST"], path: "/hub/messages", scope: hubRouteScopes("post"), write: true, tool: "hub.messages.draft",
+    reason: "K-U7 + W2: an agent leaves a DRAFT to a customer (never approved or sent without a person or an owner rule) or a post in a Team, group or crew chat (published at once when its key's Team posts publish immediately box is ticked).",
+  },
+  {
+    // W2-B: the agents' MCP door. agentOnly, so pinAuth hands EVERY /mcp request (key or not) to the one gate: no bearer, a session token,
+    // a technician token or a revoked key is refused there with an audit row, and nothing here ever joins PUBLIC_ROUTES. The scope is
+    // "any": whoami needs none, and each tool checks its own any-of list, writes switch and kill switch per call (src/agentApi/registry.ts).
+    // Stateless (team answer 12): POST carries the JSON-RPC call; GET and DELETE are answered 405 by the handler (src/mcp/agentServer.ts).
+    methods: ["GET", "POST", "DELETE"], path: "/mcp", scope: "any", agentOnly: true, tool: "mcp",
+    reason: "W2-B: the agents' stateless MCP door (whoami, the hub tools and the Research and CFO read tools); every tool call is audited.",
   },
 ];
 

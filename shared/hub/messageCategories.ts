@@ -64,9 +64,11 @@ export const MESSAGE_CATEGORY_LIST: readonly MessageCategory[] = [
   transactional("thread_reply", "Reply in a conversation", "thread_reply"),
   internal("internal_alert", "Alert to Kyle or the operator"),
   internal("tech_notice", "Notice to a technician"),
-  // In-app posts that never reach a customer (BA8 lists team_internal; amendment 16b adds training_reply). Both are
-  // eligible so Kyle has the one switch for them; each stays OFF until he turns it on.
-  internal("team_internal", "Team post by an AI", true),
+  // In-app posts that never reach a customer (BA8 lists team_internal; amendment 16b adds training_reply).
+  // W2 (Kyle 2026-11-23): team_internal is NO LONGER an owner rule. A Team, group or crew post by an AI is published by its author KEY's own
+  // "Team posts publish immediately" box (Settings -> Agent keys, services/hubAutoSend.ts evaluateTeamPost), so it leaves the
+  // "AI auto-send rules" card (one tool for one task). training_reply stays an owner rule (amendment 16b).
+  internal("team_internal", "Team post by an AI"),
   internal("training_reply", "Reply in a Training thread", true),
 ];
 

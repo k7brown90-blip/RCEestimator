@@ -8,7 +8,8 @@
  *
  *   GET    /settings/agent-keys              the card's data: keys, the kill switch, pepper and write state
  *   POST   /settings/agent-keys              make a key; the secret comes back ONCE in this response
- *   PATCH  /settings/agent-keys/:id          name, scopes, hub thread kinds, expiry, allow-writes
+ *   PATCH  /settings/agent-keys/:id          name, scopes, hub thread kinds, expiry, allow-writes, team-posts-publish
+ *   GET    /settings/agent-keys/:id/activity that key's recent calls from the append-only AgentAuditLog (W2: the card's "Activity" button)
  *   POST   /settings/agent-keys/:id/rotate   a new key with the same settings; the old one stops in 24 hours
  *   POST   /settings/agent-keys/:id/revoke   the exit: the key stops at once. Rows are never deleted
  *
@@ -57,6 +58,8 @@ export interface AgentKeyView {
   scopes: string[];
   hubThreadKinds: string[];
   writesEnabled: boolean;
+  /** W2: "Team posts publish immediately" (default on). */
+  teamPostsPublish: boolean;
   expiresAt: string | null;
   retiresAt: string | null;
   revokedAt: string | null;
@@ -88,6 +91,7 @@ export function toAgentKeyView(row: AgentKey, now: Date = new Date()): AgentKeyV
     scopes: [...row.scopes],
     hubThreadKinds: [...row.hubThreadKinds],
     writesEnabled: row.writesEnabled,
+    teamPostsPublish: row.teamPostsPublish,
     expiresAt: iso(row.expiresAt),
     retiresAt: iso(row.retiresAt),
     revokedAt: iso(row.revokedAt),
@@ -130,6 +134,7 @@ const patchSchema = z.object({
   scopes: scopesSchema.optional(),
   hubThreadKinds: kindsSchema.optional(),
   writesEnabled: z.boolean().optional(),
+  teamPostsPublish: z.boolean().optional(),
   expiresAt: expirySchema.nullable().optional(),
 }).strict();
 
@@ -182,6 +187,48 @@ agentKeysRouter.get("/settings/agent-keys", guard, asyncHandler(async (_req, res
   });
 }));
 
+/** One row of a key's Activity (W2): who, when, what and how it ended. Never a body, a message, an id list or a secret. */
+export interface AgentActivityRow {
+  id: string;
+  at: string;
+  keyName: string;
+  action: string | null;
+  endpoint: string | null;
+  resultCode: string | null;
+  status: number | null;
+}
+
+export const AGENT_ACTIVITY_DEFAULT = 100;
+export const AGENT_ACTIVITY_MAX = 200;
+
+agentKeysRouter.get("/settings/agent-keys/:id/activity", guard, asyncHandler(async (req, res) => {
+  const id = readParam(req, "id");
+  const limit = z.coerce.number().int().min(1).max(AGENT_ACTIVITY_MAX).catch(AGENT_ACTIVITY_DEFAULT).parse(req.query.limit ?? AGENT_ACTIVITY_DEFAULT);
+  const key = await prisma.agentKey.findUnique({ where: { id }, select: { id: true, name: true } });
+  if (!key) {
+    res.status(404).json({ error: "That key does not exist." });
+    return;
+  }
+  // The audit table is append-only; this only reads it. Newest first.
+  const rows = await prisma.agentAuditLog.findMany({
+    where: { agentKeyId: id },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit,
+    select: { id: true, createdAt: true, agentKeyName: true, action: true, endpoint: true, resultCode: true, responseStatus: true },
+  });
+  const activity: AgentActivityRow[] = rows.map((r) => ({
+    id: r.id,
+    at: toChicagoIso(r.createdAt),
+    // A row written before W2 has no name snapshot: it is this key's, so show the key's name now.
+    keyName: r.agentKeyName ?? key.name,
+    action: r.action,
+    endpoint: r.endpoint,
+    resultCode: r.resultCode,
+    status: r.responseStatus,
+  }));
+  res.json({ keyId: key.id, keyName: key.name, activity });
+}));
+
 agentKeysRouter.post("/settings/agent-keys", guard, asyncHandler(async (req, res) => {
   try {
     const body = createSchema.parse(req.body);
@@ -220,6 +267,7 @@ agentKeysRouter.patch("/settings/agent-keys/:id", guard, asyncHandler(async (req
     if (body.scopes !== undefined) data.scopes = validateScopes(body.scopes);
     if (body.hubThreadKinds !== undefined) data.hubThreadKinds = validKinds(body.hubThreadKinds);
     if (body.writesEnabled !== undefined) data.writesEnabled = body.writesEnabled;
+    if (body.teamPostsPublish !== undefined) data.teamPostsPublish = body.teamPostsPublish;
     if (body.expiresAt !== undefined) data.expiresAt = body.expiresAt === null ? null : parseExpiry(body.expiresAt);
     const row = await prisma.agentKey.update({ where: { id }, data });
     audit("Agent key changed", req, await actorNameOf(req), row, { changed: Object.keys(body) });
@@ -246,7 +294,7 @@ agentKeysRouter.post("/settings/agent-keys/:id/rotate", guard, asyncHandler(asyn
     const made = await prisma.$transaction(async (tx) => {
       const fresh = await mintAgentKey({
         name: old.name, agentRole: old.agentRole as (typeof AGENT_ROLES)[number], scopes: old.scopes,
-        hubThreadKinds: old.hubThreadKinds, writesEnabled: old.writesEnabled, expiresAt: old.expiresAt,
+        hubThreadKinds: old.hubThreadKinds, writesEnabled: old.writesEnabled, teamPostsPublish: old.teamPostsPublish, expiresAt: old.expiresAt,
         rotatedFromId: old.id, createdBy: creatorOf(req),
       }, tx);
       const retired = await tx.agentKey.update({ where: { id: old.id }, data: { retiresAt } });

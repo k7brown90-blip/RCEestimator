@@ -86,7 +86,7 @@ describe("GroupPanel", () => {
         { kind: "agent", id: "key-inv", name: "Stock Bot", roleLabel: "Inventory Manager", addedAt: "2026-11-22T12:00:00.000Z", you: false, active: false, reason: GROUP_AGENT_CANNOT_REASON },
       ],
     }));
-    expect(within(panel).getByTestId("group-member-reason")).toHaveTextContent("no Team replies scope");
+    expect(within(panel).getByTestId("group-member-reason")).toHaveTextContent("neither Read team (team:read) nor Post team (team:reply)");
     expect(within(panel).queryByText("switched off")).toBeNull();
   });
 

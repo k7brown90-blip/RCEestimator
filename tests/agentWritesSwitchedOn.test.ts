@@ -16,10 +16,12 @@
  *      Scout's posts in a training thread stay pending_approval (rule off);
  *   5. every PATCH is audited ("Agent key changed").
  *
- * W1b (work order "W1b", Kyle 2026-11-22: "I turned these on"): an agent's in-app post follows the auto-send rules Kyle switched
- * on. With "Team post by an AI" ON and the server-side gate ON, a post in a Team thread, a group the key is in, or a job's crew
- * chat is posted at once (decidedBy rule:team_internal) and announced ONCE; "Reply in a Training thread" does the same for Scout.
- * Rule OFF or gate off, it waits for Approve as before. A job thread is the crew chat: never an email or a text.
+ * W1b (work order "W1b", Kyle 2026-11-22: "I turned these on"): an agent's in-app post followed the auto-send rules Kyle switched on.
+ * W2 (Kyle 2026-11-23) CHANGED THAT for Team, group and crew posts: the owner rule "Team post by an AI" and the customer-send env gate
+ * no longer decide them. They are published by the author KEY's own "Team posts publish immediately" box (default ON) while Agent access
+ * is On: posted at once (decidedBy key:<keyId>, announced ONCE), no 320-character cap, no dollar rule. Box off, or Agent access paused or
+ * off, it waits for Approve and the door says why (pending_reason). "Reply in a Training thread" (Scout) is still Kyle's owner rule
+ * (amendment 16b) and is unchanged. A job thread is the crew chat: never an email or a text.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
@@ -191,6 +193,12 @@ beforeEach(async () => {
   delete process.env.AUTOMATED_CUSTOMER_SENDS;
   await prisma.companySetting.deleteMany({ where: { key: "hubAutoSend" } });
   notified.calls.length = 0;
+  // W2's agent-to-agent limit (8 AI posts in 10 minutes with no person's post) counts the messages the earlier tests left in these shared
+  // threads: age them out so each test starts with a clean count (the limit itself is pinned in agentTeamChatW2.test.ts).
+  await prisma.hubMessage.updateMany({
+    where: { authorType: { in: ["ai_agent", "claude"] }, threadId: { in: [teamThreadId, jobThreadId, trainingThreadId] } },
+    data: { createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000) },
+  });
   await setSwitch("on");
   smsSent.calls.length = 0;
   emailSent.calls.length = 0;
@@ -280,7 +288,7 @@ describe("who may tick Allow writes", () => {
   });
 });
 
-describe("with writes on and the kill switch On, a member key drafts - and every draft waits for Approve", () => {
+describe("with writes on and the kill switch On, a customer draft waits for Approve, and a Team post waits only when its key's box is off", () => {
   it("a customer thread: hub:draft leaves a pending_approval draft, authored by the key, and nothing is sent", async () => {
     const k = await makeKey({ scopes: ["hub:read", "hub:draft"] });
     await tick(k.id, true);
@@ -299,17 +307,28 @@ describe("with writes on and the kill switch On, a member key drafts - and every
     nothingSent();
   });
 
-  it("a Team thread: team:reply leaves a pending_approval in-app draft while the team_internal auto-send rule is OFF", async () => {
-    const setting = await prisma.companySetting.findUnique({ where: { key: "hubAutoSend" } });
-    expect(setting === null || !(JSON.parse(setting.valueJson) as { categories?: Record<string, boolean> }).categories?.team_internal).toBe(true);
+  // W2: a key's "Team posts publish immediately" box decides its Team post. A key made on the card starts with it ON.
+  it("a Team thread: with the key's Team posts box OFF, team:reply leaves a pending_approval in-app post and says why (pending_reason)", async () => {
     const k = await makeKey({ scopes: ["hub:read", "hub:draft", "team:reply"] });
     await tick(k.id, true);
+    expect((await request(app).patch(`/settings/agent-keys/${k.id}`).set(bearer(pin)).send({ teamPostsPublish: false })).status).toBe(200);
     const res = await post(k.secret, { thread_id: teamThreadId, body: "Eric, the Smyrna panel is ordered.", idempotency_key: idem() });
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({ threadId: teamThreadId, status: "pending_approval", channel: "in_app" });
+    expect(res.body.pending_reason).toMatch(/Team posts publish immediately.*off.*waits for a person to approve/);
     const row = await prisma.hubMessage.findUniqueOrThrow({ where: { id: res.body.messageId } });
     expect(row).toMatchObject({ status: "pending_approval", authorType: "ai_agent", direction: "internal" });
     expect(row.decidedBy).toBeNull();
+    nothingSent();
+  });
+
+  it("a Team thread: a new key's box is ON, so the same post is posted at once with no pending_reason", async () => {
+    const k = await makeKey({ scopes: ["hub:read", "hub:draft", "team:reply"] });
+    await tick(k.id, true);
+    expect((await prisma.agentKey.findUniqueOrThrow({ where: { id: k.id } })).teamPostsPublish).toBe(true);
+    const res = await post(k.secret, { thread_id: teamThreadId, body: "Eric, the Smyrna panel is ordered.", idempotency_key: idem() });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ threadId: teamThreadId, status: "posted", channel: "in_app", pending_reason: null });
     nothingSent();
   });
 
@@ -321,7 +340,7 @@ describe("with writes on and the kill switch On, a member key drafts - and every
     expect(await rowsIn(teamThreadId)).toBe(before);
   });
 
-  it("a group the key is a member of: pending_approval; a group it is NOT in answers the very same 404 as an id nobody has", async () => {
+  it("a group the key is a member of: posted (the key's box is ON); a group it is NOT in answers the very same 404 as an id nobody has", async () => {
     const member = await makeKey({ scopes: ["hub:read", "hub:draft", "team:reply"] });
     const outsider = await makeKey({ scopes: ["hub:read", "hub:draft", "team:reply"] });
     await tick(member.id, true);
@@ -333,7 +352,7 @@ describe("with writes on and the kill switch On, a member key drafts - and every
 
     const ok = await post(member.secret, { thread_id: groupId, body: "Noted, thanks.", idempotency_key: idem() });
     expect(ok.status).toBe(201);
-    expect(ok.body).toMatchObject({ threadId: groupId, status: "pending_approval", channel: "in_app" });
+    expect(ok.body).toMatchObject({ threadId: groupId, status: "posted", channel: "in_app" }); // W2: the key's Team posts box is ON
 
     const unknown = `cl${randomUUID().replace(/-/g, "").slice(0, 23)}`;
     const hidden = await post(outsider.secret, { thread_id: groupId, body: "Let me in", idempotency_key: idem() });
@@ -378,7 +397,7 @@ async function watchBus<T>(fn: () => Promise<T>): Promise<{ out: T; events: HubB
 }
 const messageEvents = (events: HubBusEvent[], id: string) => events.filter((e) => e.type === "message" && e.messageId === id);
 
-describe("W1b: an agent's in-app post follows the auto-send rules Kyle switched on", () => {
+describe("W1b + W2: an agent's in-app post is published by its key's Team posts box (Training replies still follow Kyle's rule)", () => {
   /** A writes-on Admin-style key that may use customer, job (crew), team and group threads. */
   async function crewKey() {
     const k = await makeKey({ scopes: ["hub:read", "hub:draft", "team:reply"], hubThreadKinds: ["customer", "job", "team", "group"] });
@@ -390,14 +409,15 @@ describe("W1b: an agent's in-app post follows the auto-send rules Kyle switched 
     expect(made.status).toBe(201);
     return made.body.id as string;
   }
-  async function expectAutoPosted(secret: string, threadId: string, body: string) {
-    const { out: res, events } = await watchBus(() => post(secret, { thread_id: threadId, body, idempotency_key: idem() }));
+  async function expectAutoPosted(k: { id: string; secret: string; name: string }, threadId: string, body: string) {
+    const { out: res, events } = await watchBus(() => post(k.secret, { thread_id: threadId, body, idempotency_key: idem() }));
     expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({ threadId, status: "posted", channel: "in_app", category: "team_internal" });
+    expect(res.body).toMatchObject({ threadId, status: "posted", channel: "in_app", category: "team_internal", pending_reason: null });
     const row = await prisma.hubMessage.findUniqueOrThrow({ where: { id: res.body.messageId } });
-    expect(row).toMatchObject({ status: "posted", decidedBy: "rule:team_internal", direction: "internal", channel: "in_app", category: "team_internal", authorType: "ai_agent" });
+    // W2: approved by the KEY (key:<id>), never by a rule; the audit row names the key.
+    expect(row).toMatchObject({ status: "posted", decidedBy: `key:${k.id}`, direction: "internal", channel: "in_app", category: "team_internal", authorType: "ai_agent" });
     expect(row.sentAt).not.toBeNull();
-    expect(await prisma.hubAuditLog.count({ where: { messageId: row.id, action: "message_auto_approved" } })).toBe(1);
+    expect(await prisma.hubAuditLog.count({ where: { messageId: row.id, action: "message_auto_approved", actorKey: `key:${k.id}`, actorDisplay: k.name } })).toBe(1);
     // ONE announcement, of the final row: never the "needs approval" wake for the approvers, and never twice (hubSend already announced it).
     expect(announced(row.id)).toEqual(["posted"]);
     expect(messageEvents(events, row.id)).toHaveLength(1);
@@ -408,50 +428,82 @@ describe("W1b: an agent's in-app post follows the auto-send rules Kyle switched 
     return res;
   }
 
-  it("rule ON + gate ON: a post in the key's Team thread is posted at once, decided by rule:team_internal, announced once", async () => {
-    expect((await rules({ team_internal: true })).status).toBe(200);
-    gate(true);
+  // W2: neither the owner rule nor the customer-send env gate is consulted for a team post: both stay OFF in these tests (beforeEach).
+  it("key box ON + Agent access On: a post in the key's Team thread is posted at once, decided by key:<id>, announced once - with no owner rule and no env gate", async () => {
+    expect((await prisma.companySetting.findUnique({ where: { key: "hubAutoSend" } }))).toBeNull();
+    expect(process.env[workflowEnvVar("hubAutoSend")]).toBeUndefined();
     const k = await crewKey();
-    await expectAutoPosted(k.secret, teamThreadId, "Eric, the Smyrna panel is ordered.");
+    await expectAutoPosted(k, teamThreadId, "Eric, the Smyrna panel is ordered.");
   });
 
-  it("rule ON + gate ON: a post in a group the key is a member of is posted at once", async () => {
-    await rules({ team_internal: true });
-    gate(true);
+  it("key box ON: a post in a group the key is a member of is posted at once", async () => {
     const k = await crewKey();
-    await expectAutoPosted(k.secret, await groupWith(k.id), "Noted, thanks.");
+    await expectAutoPosted(k, await groupWith(k.id), "Noted, thanks.");
   });
 
-  it("rule ON + gate ON: a post in a job's CREW chat is an in-app post, posted at once (never an email or text to the homeowner)", async () => {
-    await rules({ team_internal: true });
-    gate(true);
+  it("key box ON: a post in a job's CREW chat is an in-app post, posted at once (never an email or text to the homeowner)", async () => {
     const k = await crewKey();
-    await expectAutoPosted(k.secret, jobThreadId, "Crew: the panel is in the garage.");
+    await expectAutoPosted(k, jobThreadId, "Crew: the panel is in the garage.");
   });
 
-  it("rule OFF (or gate off) leaves the post waiting for Approve, announced once as waiting - exactly as before", async () => {
+  it("key box OFF, or Agent access not On, leaves the post waiting for Approve with a plain reason, announced once as waiting", async () => {
     const k = await crewKey();
-    for (const [label, ruleOn, gateOn] of [["rule off, gate on", false, true], ["rule on, gate off", true, false], ["both off", false, false]] as const) {
+    const box = (on: boolean) => request(app).patch(`/settings/agent-keys/${k.id}`).set(bearer(pin)).send({ teamPostsPublish: on });
+    expect((await box(false)).status).toBe(200);
+    for (const threadId of [teamThreadId, jobThreadId]) {
       notified.calls.length = 0;
-      await rules({ team_internal: ruleOn });
-      gate(gateOn);
-      for (const threadId of [teamThreadId, jobThreadId]) {
-        const res = await post(k.secret, { thread_id: threadId, body: `Hold for Approve (${label}).`, idempotency_key: idem() });
-        expect(res.status, label).toBe(201);
-        expect(res.body.status, label).toBe("pending_approval");
-        const row = await prisma.hubMessage.findUniqueOrThrow({ where: { id: res.body.messageId } });
-        expect(row, label).toMatchObject({ status: "pending_approval", decidedBy: null, category: "team_internal", channel: "in_app", actionKind: "team_reply" });
-        expect(row.sentAt).toBeNull();
-        expect(announced(row.id), label).toEqual(["pending_approval"]);
-        expect(await prisma.hubAuditLog.count({ where: { messageId: row.id, action: "message_auto_approved" } })).toBe(0);
-      }
+      const res = await post(k.secret, { thread_id: threadId, body: "Hold for Approve (box off).", idempotency_key: idem() });
+      expect(res.status).toBe(201);
+      expect(res.body.status).toBe("pending_approval");
+      expect(res.body.pending_reason).toMatch(/Team posts publish immediately.*off/);
+      const row = await prisma.hubMessage.findUniqueOrThrow({ where: { id: res.body.messageId } });
+      expect(row).toMatchObject({ status: "pending_approval", decidedBy: null, category: "team_internal", channel: "in_app", actionKind: "team_reply" });
+      expect(row.sentAt).toBeNull();
+      expect(announced(row.id)).toEqual(["pending_approval"]);
+      expect(await prisma.hubAuditLog.count({ where: { messageId: row.id, action: "message_auto_approved" } })).toBe(0);
     }
+    // Box back on, but the key is re-read on EVERY post: un-ticking it again takes effect on the very next one.
+    expect((await box(true)).status).toBe(200);
+    expect((await post(k.secret, { thread_id: teamThreadId, body: "Back on.", idempotency_key: idem() })).body.status).toBe("posted");
+    expect((await box(false)).status).toBe(200);
+    expect((await post(k.secret, { thread_id: teamThreadId, body: "Off again.", idempotency_key: idem() })).body.status).toBe("pending_approval");
     nothingSent();
   });
 
-  it("a draft the agent asks for ('draft') is never offered to the rule, even with the rule and gate ON", async () => {
-    await rules({ team_internal: true });
-    gate(true);
+  it("the kill switch overrides the box: while Agent access is read_only the door refuses the post, and a post made while it was On and then held is never auto-published later", async () => {
+    const k = await crewKey();
+    await setSwitch("read_only");
+    const refused = await post(k.secret, { thread_id: teamThreadId, body: "Paused.", idempotency_key: idem() });
+    expect(refused.status).toBe(503);
+    expect(refused.body.code).toBe("agents_read_only");
+    await setSwitch("on");
+    // The decision itself fails closed too: evaluateAutoSend re-reads Agent access, so a post offered while it is not On waits.
+    const { evaluateAutoSend } = await import("../src/services/hubAutoSend");
+    const held = await post(k.secret, { thread_id: teamThreadId, body: "Held by the decision.", status: "draft", idempotency_key: idem() });
+    const row = await prisma.hubMessage.findUniqueOrThrow({ where: { id: held.body.messageId }, include: { thread: true } });
+    const asPending = { ...row, status: "pending_approval" };
+    await setSwitch("read_only");
+    expect(await evaluateAutoSend(asPending, row.thread)).toMatchObject({ ok: false, why: expect.stringMatching(/Agent access is not On/) });
+    await setSwitch("off");
+    expect(await evaluateAutoSend(asPending, row.thread)).toMatchObject({ ok: false, why: expect.stringMatching(/Agent access is not On/) });
+    await setSwitch("on");
+    expect(await evaluateAutoSend(asPending, row.thread)).toMatchObject({ ok: true, category: "team_internal" });
+  });
+
+  it("a revoked key's post is never auto-published, and the owner's old team_internal switch is gone from the rules card", async () => {
+    const k = await crewKey();
+    const { evaluateAutoSend } = await import("../src/services/hubAutoSend");
+    const made = await post(k.secret, { thread_id: teamThreadId, body: "Before revoke.", status: "draft", idempotency_key: idem() });
+    const row = await prisma.hubMessage.findUniqueOrThrow({ where: { id: made.body.messageId }, include: { thread: true } });
+    await prisma.agentKey.update({ where: { id: k.id }, data: { revokedAt: new Date() } });
+    expect(await evaluateAutoSend({ ...row, status: "pending_approval" }, row.thread)).toMatchObject({ ok: false, why: expect.stringMatching(/revoked/) });
+    const card = await request(app).get("/owner-settings/hubAutoSend").set(bearer(pin));
+    expect(card.status).toBe(200);
+    const { AUTO_SEND_CATEGORIES } = await import("../shared/hub/autoSendCategories");
+    expect(AUTO_SEND_CATEGORIES.map((c) => c.key)).not.toContain("team_internal");
+  });
+
+  it("a draft the agent asks for ('draft') is never offered to the auto-publish step, even with the key's box ON", async () => {
     const k = await crewKey();
     const res = await post(k.secret, { thread_id: teamThreadId, status: "draft", body: "Not ready yet.", idempotency_key: idem() });
     expect(res.status).toBe(201);
@@ -479,13 +531,13 @@ describe("W1b: an agent's in-app post follows the auto-send rules Kyle switched 
     nothingSent();
   });
 
-  it("a post over the rule's length cap stays waiting for Approve", async () => {
-    await rules({ team_internal: true });
-    gate(true);
+  it("W2: a long team post and one with a dollar amount are posted too: no 320-character cap and no price rule (CFO and Inventory talk money)", async () => {
     const k = await crewKey();
-    const res = await post(k.secret, { thread_id: teamThreadId, body: "x".repeat(2_000), idempotency_key: idem() });
-    expect(res.status).toBe(201);
-    expect(res.body.status).toBe("pending_approval");
+    const long = await post(k.secret, { thread_id: teamThreadId, body: "x".repeat(2_000), idempotency_key: idem() });
+    expect(long.status).toBe(201);
+    expect(long.body.status).toBe("posted");
+    const priced = await post(k.secret, { thread_id: teamThreadId, body: "The Smyrna panel job invoiced at $4,250.", idempotency_key: idem() });
+    expect(priced.body.status).toBe("posted");
   });
 
   it("Scout: a Training post is posted at once with 'Reply in a Training thread' ON, and waits with it OFF", async () => {
@@ -528,7 +580,7 @@ describe("W1b: an agent's in-app post follows the auto-send rules Kyle switched 
   it("a job thread is the crew chat: a customer message by thread_id is refused 400, and by jobId it is the account-thread draft, still waiting for Approve", async () => {
     // Replaces the W1 test that pinned the defect (an agent post in the crew chat became an outbound email draft to the homeowner).
     // Why: Kyle's "the AI team can talk with us in the field" means the crew chat is a crew post; a customer message goes in the customer's own conversation.
-    await rules({ lead_first_response: true, team_internal: true });
+    await rules({ lead_first_response: true });
     gate(true);
     const k = await crewKey();
     const before = await rowsIn(jobThreadId);
@@ -550,13 +602,13 @@ describe("W1b: an agent's in-app post follows the auto-send rules Kyle switched 
     nothingSent();
   });
 
-  it("an agent customer draft keeps waiting for Approve with team_internal ON (it is not a team post)", async () => {
-    await rules({ team_internal: true });
+  it("an agent customer draft keeps waiting for Approve with the key's Team posts box ON (it is not a team post)", async () => {
     gate(true);
     const k = await crewKey();
     const res = await post(k.secret, customerDraft());
     expect(res.status).toBe(201);
     expect(res.body.status).toBe("pending_approval");
+    expect(res.body.pending_reason).toEqual(expect.any(String)); // W2: a waiting draft says why
     nothingSent();
   });
 
@@ -570,8 +622,6 @@ describe("W1b: an agent's in-app post follows the auto-send rules Kyle switched 
   });
 
   it("an idempotent replay of an auto-posted message returns the same final row and sends and announces nothing again", async () => {
-    await rules({ team_internal: true });
-    gate(true);
     const k = await crewKey();
     const body = { thread_id: teamThreadId, body: "One send only.", idempotency_key: idem() };
     const first = await post(k.secret, body);
@@ -588,7 +638,6 @@ describe("W1b: an agent's in-app post follows the auto-send rules Kyle switched 
   });
 
   it("a technician's post (a person, not an AI) is never offered to the rule: it is posted by its author, with no rule decision", async () => {
-    await rules({ team_internal: true });
     gate(true);
     const res = await request(app).post(`/health-record/hub/threads/${teamThreadId}/messages`).set(bearer(techToken)).send({ body: "Eric here: panel is in.", clientMessageId: `tech-${randomUUID()}` });
     expect(res.status).toBe(201);

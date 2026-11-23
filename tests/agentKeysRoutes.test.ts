@@ -101,6 +101,7 @@ describe("who may use the routes", () => {
       await request(app).patch(`/settings/agent-keys/${id}`).set(bearer(token)).send({ name: "y" }),
       await request(app).post(`/settings/agent-keys/${id}/rotate`).set(bearer(token)),
       await request(app).post(`/settings/agent-keys/${id}/revoke`).set(bearer(token)).send({}),
+      await request(app).get(`/settings/agent-keys/${id}/activity`).set(bearer(token)), // W2: the card's Activity button
       await request(app).put("/owner-settings/agentAccess").set(bearer(token)).send({ mode: "off" }),
       await request(app).get("/owner-settings/agentAccess").set(bearer(token)),
     ]) {
@@ -116,6 +117,7 @@ describe("who may use the routes", () => {
     for (const res of [
       await request(app).get("/settings/agent-keys").set(bearer(without)),
       await request(app).post("/settings/agent-keys").set(bearer(without)).send({ name: "x", agentRole: "admin" }),
+      await request(app).get("/settings/agent-keys/anything/activity").set(bearer(without)),
       await request(app).put("/owner-settings/agentAccess").set(bearer(without)).send({ mode: "off" }),
     ]) {
       expect(res.status).toBe(403);
@@ -185,12 +187,17 @@ describe("POST /settings/agent-keys (create)", () => {
   it("takes the role's default scopes and hub thread kinds when none are given, and honours edited ones", async () => {
     const pin = await pinToken();
     const scout = await create(pin, { name: "Scout", agentRole: "scout" });
-    expect(scout.body.key.scopes.sort()).toEqual(["hub:draft", "hub:read", "leads:dupcheck", "leads:draft", "marketing:read",
-      "media:marketing:read", "training:read", "training:write"].sort());
-    expect(scout.body.key.hubThreadKinds).toEqual(["training"]);
+    // W2 (Kyle 2026-11-23): Scout and Claude Code read and post in the Team chats and are no longer limited to one kind of thread.
+    expect(scout.body.key.scopes.sort()).toEqual(["leads:dupcheck", "leads:draft", "marketing:read",
+      "media:marketing:read", "team:read", "team:reply", "training:read", "training:write"].sort());
+    expect(scout.body.key.hubThreadKinds).toEqual([]);
     const claude = await create(pin, { name: "Claude Code", agentRole: "claude_code" });
-    expect(claude.body.key.scopes.sort()).toEqual(["dev:read", "dev:write"]);
-    expect(claude.body.key.hubThreadKinds).toEqual(["dev"]);
+    expect(claude.body.key.scopes.sort()).toEqual(["dev:read", "dev:write", "team:read", "team:reply"]);
+    expect(claude.body.key.hubThreadKinds).toEqual([]);
+    // A CFO key can be made, and gets its own defaults.
+    const cfo = await create(pin, { name: "CFO", agentRole: "cfo" });
+    expect(cfo.status).toBe(201);
+    expect(cfo.body.key.scopes.sort()).toEqual(["finance:read", "team:read", "team:reply"]);
     const custom = await create(pin, { name: "Narrow", agentRole: "admin", scopes: ["hub:read"], hubThreadKinds: ["team", "dev"] });
     expect(custom.body.key.scopes).toEqual(["hub:read"]);
     expect(custom.body.key.hubThreadKinds.sort()).toEqual(["dev", "team"]);
@@ -278,6 +285,27 @@ describe("PATCH /settings/agent-keys/:id (edit)", () => {
     expect((await prisma.agentKey.findUnique({ where: { id: made.body.key.id } }))?.writesEnabled).toBe(false);
   });
 
+  // W2 (Kyle 2026-11-23): the per-key "Team posts publish immediately" box. Default ON; Kyle (bot_keys) edits it; a rotation copies it.
+  it("Team posts publish immediately starts ON, can be turned off and on, is audited, and a rotation keeps the setting", async () => {
+    const pin = await pinToken();
+    const made = await create(pin, { name: "Publisher", agentRole: "inventory" });
+    expect(made.body.key.teamPostsPublish).toBe(true);
+    const off = await request(app).patch(`/settings/agent-keys/${made.body.key.id}`).set(bearer(pin)).send({ teamPostsPublish: false });
+    expect(off.status).toBe(200);
+    expect(off.body.key.teamPostsPublish).toBe(false);
+    expect((await prisma.agentKey.findUniqueOrThrow({ where: { id: made.body.key.id } })).teamPostsPublish).toBe(false);
+    const rot = await request(app).post(`/settings/agent-keys/${made.body.key.id}/rotate`).set(bearer(pin));
+    expect(rot.status).toBe(201);
+    madeIds.push(rot.body.key.id);
+    expect(rot.body.key.teamPostsPublish).toBe(false); // the new key keeps what the old one had
+    const on = await request(app).patch(`/settings/agent-keys/${rot.body.key.id}`).set(bearer(pin)).send({ teamPostsPublish: true });
+    expect(on.body.key.teamPostsPublish).toBe(true);
+    expect((await request(app).patch(`/settings/agent-keys/${rot.body.key.id}`).set(bearer(pin)).send({ teamPostsPublish: "yes" })).status).toBe(400);
+    await new Promise((r) => setTimeout(r, 150)); // logSystemEvent is fire-and-forget
+    const events = await prisma.systemEvent.findMany({ where: { source: "agent_keys", message: "Agent key changed" }, orderBy: { createdAt: "desc" }, take: 5 });
+    expect(events.some((e) => (e.detailsJson ?? "").includes("teamPostsPublish"))).toBe(true);
+  });
+
   it("is refused for unknown fields, bad values, an unknown key (404) and a revoked key (409)", async () => {
     const pin = await pinToken();
     const made = await create(pin);
@@ -288,6 +316,35 @@ describe("PATCH /settings/agent-keys/:id (edit)", () => {
     expect((await request(app).patch("/settings/agent-keys/nope").set(bearer(pin)).send({ name: "x" })).status).toBe(404);
     await request(app).post(`${url}/revoke`).set(bearer(pin)).send({});
     expect((await request(app).patch(url).set(bearer(pin)).send({ name: "x" })).status).toBe(409);
+  });
+});
+
+describe("GET /settings/agent-keys/:id/activity (W2: the card's Activity button)", () => {
+  it("lists that key's calls newest first with the key's name, the action, the endpoint and the result - never a body - and 404s an unknown key", async () => {
+    const pin = await pinToken();
+    const made = await create(pin, { name: "Watched Agent", agentRole: "admin" });
+    const other = await create(pin, { name: "Other Agent", agentRole: "admin" });
+    const t0 = Date.now();
+    await request(gateApp(() => new Date(t0))).get("/ping").set(bearer(made.body.secret));
+    await request(gateApp(() => new Date(t0))).get("/ping").set(bearer(other.body.secret));
+    await request(gateApp(() => new Date(t0))).get("/ping").set(bearer(made.body.secret));
+    const res = await request(app).get(`/settings/agent-keys/${made.body.key.id}/activity`).set(bearer(pin));
+    expect(res.status).toBe(200);
+    expect(res.body.keyName).toBe("Watched Agent");
+    expect(res.body.activity).toHaveLength(2); // the other key's call is not here
+    expect(res.body.activity[0].at >= res.body.activity[1].at).toBe(true); // newest first
+    expect(res.body.activity[0]).toMatchObject({ keyName: "Watched Agent", action: "test.ping", endpoint: "GET /ping", resultCode: "ok", status: 200 });
+    expect(Object.keys(res.body.activity[0]).sort()).toEqual(["action", "at", "endpoint", "id", "keyName", "resultCode", "status"]);
+    expect(JSON.stringify(res.body)).not.toContain(made.body.secret);
+    expect((await request(app).get("/settings/agent-keys/nope/activity").set(bearer(pin))).status).toBe(404);
+  });
+
+  it("a row written before W2 (no name snapshot) shows the key's own name", async () => {
+    const pin = await pinToken();
+    const made = await create(pin, { name: "Old Rows", agentRole: "admin" });
+    await prisma.agentAuditLog.create({ data: { action: "hub.threads.list", agent: "admin", endpoint: "GET /hub/threads", agentKeyId: made.body.key.id, door: "rest", resultCode: "ok", responseStatus: 200 } });
+    const res = await request(app).get(`/settings/agent-keys/${made.body.key.id}/activity`).set(bearer(pin));
+    expect(res.body.activity[0].keyName).toBe("Old Rows");
   });
 });
 

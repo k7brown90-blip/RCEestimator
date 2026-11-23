@@ -23,10 +23,15 @@ export const AGENT_ERRORS = {
   not_configured: { status: 503, retryable: false, reason: "Agent access is not configured on this server." },
   rate_limited: { status: 429, retryable: true, reason: "Too many requests. Wait and try again." },
   daily_draft_limit: { status: 429, retryable: true, reason: "The daily draft limit for this key has been reached." },
+  // W2 (R-j): too many AI posts in one thread with no person in between.
+  thread_agent_limit: { status: 429, retryable: true, reason: "Too many AI replies in this thread in a row. A person needs to post before the AI team posts again." },
   scope_denied: { status: 403, retryable: false, reason: "This key's scopes do not allow that." },
   writes_disabled: { status: 403, retryable: false, reason: "Writes are not enabled for this key." },
   forbidden: { status: 403, retryable: false, reason: "This key may not do that." },
   not_found: { status: 404, retryable: false, reason: "Not found." },
+  // W2-B: /mcp is stateless (team answer 12): there is no event stream to open and no session to close.
+  method_not_allowed: { status: 405, retryable: false, reason: "Send each /mcp request as a POST with a JSON-RPC body. This door is stateless: there is no event stream (GET) and no session to close (DELETE)." },
+  unknown_tool: { status: 400, retryable: false, reason: "There is no such tool. Ask tools/list for the tools this key may use." },
   bad_request: { status: 400, retryable: false, reason: "The request was not valid." },
   bad_time: { status: 400, retryable: false, reason: "Times must be ISO 8601 with an offset, like 2026-11-23T09:00:00-06:00." },
   bad_cursor: { status: 400, retryable: false, reason: "The cursor is not valid. Start again from the first page." },
